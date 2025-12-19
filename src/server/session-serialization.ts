@@ -23,6 +23,7 @@
 
 import type {
 	ComposerAttachment,
+	ComposerContentBlock,
 	ComposerMessage,
 	ComposerToolCall,
 	ComposerUsage,
@@ -361,6 +362,49 @@ function extractToolCalls(
 		}));
 }
 
+function extractComposerTextContent(
+	content: ComposerMessage["content"],
+): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("");
+}
+
+function normalizeComposerContentBlocks(
+	content: ComposerMessage["content"],
+): Array<TextContent | ThinkingContent | ToolCall | ImageContent> {
+	if (!Array.isArray(content)) return [];
+	const normalized: Array<
+		TextContent | ThinkingContent | ToolCall | ImageContent
+	> = [];
+	for (const block of content as ComposerContentBlock[]) {
+		if (!block || typeof block !== "object") continue;
+		if (block.type === "text") {
+			normalized.push({ type: "text", text: block.text });
+		} else if (block.type === "thinking") {
+			normalized.push({ type: "thinking", thinking: block.thinking });
+		} else if (block.type === "toolCall") {
+			normalized.push({
+				type: "toolCall",
+				id: block.id,
+				name: block.name,
+				arguments: block.arguments,
+				thoughtSignature: block.thoughtSignature,
+			});
+		} else if (block.type === "image") {
+			normalized.push({
+				type: "image",
+				data: block.data,
+				mimeType: block.mimeType,
+			});
+		}
+	}
+	return normalized;
+}
+
 /**
  * Convert a single internal AppMessage to Composer protocol format.
  *
@@ -530,10 +574,26 @@ export function convertComposerMessageToApp(
 	// User messages - wrap content in text block
 	if (message.role === "user") {
 		const attachments = fromComposerAttachments(message.attachments);
+		if (Array.isArray(message.content)) {
+			const normalized = normalizeComposerContentBlocks(message.content).filter(
+				(block) => block.type === "text" || block.type === "image",
+			);
+			return [
+				{
+					role: "user",
+					content:
+						normalized.length > 0 ? normalized : [{ type: "text", text: "" }],
+					attachments,
+					timestamp: toTimestamp(message.timestamp, context),
+				},
+			];
+		}
 		return [
 			{
 				role: "user",
-				content: [{ type: "text", text: message.content || "" }],
+				content: [
+					{ type: "text", text: extractComposerTextContent(message.content) },
+				],
 				attachments,
 				timestamp: toTimestamp(message.timestamp, context),
 			},
@@ -542,6 +602,80 @@ export function convertComposerMessageToApp(
 
 	// Assistant messages - reconstruct content array from components
 	if (message.role === "assistant") {
+		if (Array.isArray(message.content)) {
+			const normalizedSequence = normalizeComposerContentBlocks(
+				message.content,
+			).filter(
+				(block): block is TextContent | ThinkingContent | ToolCall =>
+					block.type !== "image",
+			);
+			const hasThinking = normalizedSequence.some(
+				(block) => block.type === "thinking",
+			);
+			const hasToolCalls = normalizedSequence.some(
+				(block) => block.type === "toolCall",
+			);
+
+			if (!hasThinking && message.thinking?.trim()) {
+				normalizedSequence.unshift({
+					type: "thinking",
+					thinking: message.thinking.trim(),
+				});
+			}
+
+			const tools = message.tools ?? [];
+			if (!hasToolCalls && tools.length > 0) {
+				const baseContentLength = normalizedSequence.length;
+				const toolCalls: ToolCall[] = tools.map((tool, toolIndex) =>
+					normalizeToolCall(tool, index, baseContentLength + toolIndex),
+				);
+				normalizedSequence.push(...toolCalls);
+			}
+
+			const assistantMessage: AssistantMessage = {
+				role: "assistant",
+				content: normalizedSequence,
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: message.usage
+					? {
+							input: message.usage.input ?? 0,
+							output: message.usage.output ?? 0,
+							cacheRead: message.usage.cacheRead ?? 0,
+							cacheWrite: message.usage.cacheWrite ?? 0,
+							cost: {
+								input: message.usage.cost?.input ?? 0,
+								output: message.usage.cost?.output ?? 0,
+								cacheRead: message.usage.cost?.cacheRead ?? 0,
+								cacheWrite: message.usage.cost?.cacheWrite ?? 0,
+								total: message.usage.cost?.total ?? 0,
+							},
+						}
+					: createEmptyUsage(),
+				stopReason: "stop",
+				timestamp: toTimestamp(message.timestamp, context),
+			};
+
+			const results: AppMessage[] = [assistantMessage];
+			const toolCallBlocks = normalizedSequence.filter(
+				(block): block is ToolCall => block.type === "toolCall",
+			);
+
+			// Generate tool result messages for each tool call
+			tools.forEach((tool, toolIndex) => {
+				const normalizedCall =
+					(tool.toolCallId
+						? toolCallBlocks.find((block) => block.id === tool.toolCallId)
+						: toolCallBlocks[toolIndex]) ??
+					normalizeToolCall(tool, index, normalizedSequence.length + toolIndex);
+				results.push(
+					normalizeToolResult(tool, normalizedCall, message.timestamp, context),
+				);
+			});
+
+			return results;
+		}
 		// Build content array: thinking first, then text, then tool calls
 		const normalizedSequence: Array<TextContent | ThinkingContent | ToolCall> =
 			[];
@@ -555,10 +689,10 @@ export function convertComposerMessageToApp(
 		}
 
 		// Add text content if present
-		if (message.content) {
+		if (extractComposerTextContent(message.content)) {
 			normalizedSequence.push({
 				type: "text",
-				text: message.content,
+				text: extractComposerTextContent(message.content),
 			});
 		}
 
@@ -621,7 +755,7 @@ export function convertComposerMessageToApp(
 				content: [
 					{
 						type: "text",
-						text: message.content || "",
+						text: extractComposerTextContent(message.content),
 					},
 				],
 				isError: Boolean(message.isError),
@@ -636,7 +770,9 @@ export function convertComposerMessageToApp(
 		return [
 			{
 				role: "assistant",
-				content: [{ type: "text", text: message.content || "" }],
+				content: [
+					{ type: "text", text: extractComposerTextContent(message.content) },
+				],
 				api: model.api,
 				provider: model.provider,
 				model: model.id,

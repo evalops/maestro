@@ -49,6 +49,8 @@
  */
 
 import type {
+	ComposerAgentEvent,
+	ComposerAssistantMessageEvent,
 	ComposerChatRequest,
 	ComposerMessage,
 	ComposerSession,
@@ -59,127 +61,10 @@ import type {
 export type Message = ComposerMessage;
 export type { ComposerToolCall };
 
-/** Simplified AssistantMessage type matching backend structure */
-interface AssistantMessage {
-	role: "assistant";
-	content: Array<{
-		type: "text" | "thinking" | "toolCall";
-		text?: string;
-		thinking?: string;
-		id?: string;
-		name?: string;
-		arguments?: Record<string, unknown>;
-	}>;
-}
-
-/** ToolCall type matching backend structure */
-interface ToolCall {
-	id: string;
-	name: string;
-	arguments: Record<string, unknown>;
-}
-
-/** Assistant message event discriminated union matching backend structure (src/agent/types.ts:159) */
-export type AssistantMessageEvent =
-	| {
-			type: "start";
-			partial: AssistantMessage;
-	  }
-	| {
-			type: "text_start";
-			contentIndex: number;
-			partial: AssistantMessage;
-	  }
-	| {
-			type: "text_delta";
-			contentIndex: number;
-			delta: string;
-			partial: AssistantMessage;
-	  }
-	| {
-			type: "text_end";
-			contentIndex: number;
-			content: string;
-			partial: AssistantMessage;
-	  }
-	| {
-			type: "thinking_start";
-			contentIndex: number;
-			partial: AssistantMessage;
-	  }
-	| {
-			type: "thinking_delta";
-			contentIndex: number;
-			delta: string;
-			partial: AssistantMessage;
-	  }
-	| {
-			type: "thinking_end";
-			contentIndex: number;
-			content: string;
-			partial: AssistantMessage;
-	  }
-	| {
-			type: "toolcall_start";
-			contentIndex: number;
-			partial: AssistantMessage;
-	  }
-	| {
-			type: "toolcall_delta";
-			contentIndex: number;
-			delta: string;
-			partial: AssistantMessage;
-	  }
-	| {
-			type: "toolcall_end";
-			contentIndex: number;
-			toolCall: ToolCall;
-			partial: AssistantMessage;
-	  }
-	| {
-			type: "done";
-			reason: "stop" | "length" | "toolUse";
-			message: AssistantMessage;
-	  }
-	| {
-			type: "error";
-			reason: "aborted" | "error";
-			error: AssistantMessage;
-	  };
+export type AssistantMessageEvent = ComposerAssistantMessageEvent;
 
 /** AgentEvent is a discriminated union of all possible server-sent events */
-export type AgentEvent =
-	| { type: "agent_start" }
-	| { type: "agent_end"; messages?: Message[] }
-	| { type: "session_update"; sessionId: string }
-	| { type: "message_start"; message: Message }
-	| {
-			type: "message_update";
-			message: Message;
-			assistantMessageEvent: AssistantMessageEvent;
-	  }
-	| { type: "message_end"; message: Message }
-	| {
-			type: "tool_execution_start";
-			toolCallId: string;
-			toolName: string;
-			args?: unknown;
-	  }
-	| {
-			type: "tool_execution_end";
-			toolCallId: string;
-			toolName: string;
-			result: unknown;
-			isError: boolean;
-	  }
-	| {
-			type: "client_tool_request";
-			toolCallId: string;
-			toolName: string;
-			args: unknown;
-	  }
-	| { type: "error"; message: string }
-	| { type: "status"; status: string; details: Record<string, unknown> };
+export type AgentEvent = ComposerAgentEvent;
 
 export interface Model {
 	id: string;
@@ -209,6 +94,8 @@ export type SessionSummary = ComposerSessionSummary;
 
 export type ChatRequest = ComposerChatRequest;
 
+const MAX_SSE_BUFFER = 1024 * 1024; // 1MB safeguard
+
 function arrayBufferToBase64(arrayBuffer: ArrayBuffer): string {
 	const bytes = new Uint8Array(arrayBuffer);
 	let binary = "";
@@ -218,6 +105,47 @@ function arrayBufferToBase64(arrayBuffer: ArrayBuffer): string {
 		binary += String.fromCharCode(...chunk);
 	}
 	return btoa(binary);
+}
+
+type ParsedSseEvent = {
+	event?: string;
+	data: string;
+};
+
+function parseSseEvents(buffer: string): {
+	events: ParsedSseEvent[];
+	remainder: string;
+} {
+	const normalized = buffer.replace(/\r\n/g, "\n");
+	const events: ParsedSseEvent[] = [];
+	let remainder = normalized;
+
+	while (true) {
+		const separatorIndex = remainder.indexOf("\n\n");
+		if (separatorIndex === -1) break;
+
+		const rawEvent = remainder.slice(0, separatorIndex);
+		remainder = remainder.slice(separatorIndex + 2);
+
+		if (!rawEvent.trim()) continue;
+
+		let eventType: string | undefined;
+		const dataLines: string[] = [];
+		for (const line of rawEvent.split("\n")) {
+			if (line.startsWith("event:")) {
+				eventType = line.slice(6).trim();
+				continue;
+			}
+			if (line.startsWith("data:")) {
+				dataLines.push(line.slice(5).trimStart());
+			}
+		}
+		if (dataLines.length > 0) {
+			events.push({ event: eventType, data: dataLines.join("\n") });
+		}
+	}
+
+	return { events, remainder };
 }
 
 export interface ChatResponse {
@@ -533,31 +461,33 @@ export class ApiClient {
 				if (done) break;
 
 				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
+				if (buffer.length > MAX_SSE_BUFFER) {
+					throw new Error("SSE buffer exceeded maximum size (1MB)");
+				}
 
-				for (const line of lines) {
-					if (line.startsWith("data: ")) {
-						const data = line.slice(6).trim();
-						if (!data || data === "[DONE]") continue;
+				const parsed = parseSseEvents(buffer);
+				buffer = parsed.remainder;
 
-						try {
-							const event = JSON.parse(data);
+				for (const sseEvent of parsed.events) {
+					const data = sseEvent.data.trim();
+					if (!data || data === "[DONE]") continue;
 
-							// Handle different event types from Agent
-							if (event.type === "done") {
-								return;
-							}
-							if (event.type === "content_block_delta" && event.text) {
-								yield event.text;
-							} else if (event.type === "text_delta" && event.text) {
-								yield event.text;
-							} else if (event.type === "text" && event.text) {
-								yield event.text;
-							}
-						} catch (e) {
-							console.warn("Failed to parse SSE data:", data);
+					try {
+						const event = JSON.parse(data);
+
+						// Handle different event types from Agent
+						if (event.type === "done") {
+							return;
 						}
+						if (event.type === "content_block_delta" && event.text) {
+							yield event.text;
+						} else if (event.type === "text_delta" && event.text) {
+							yield event.text;
+						} else if (event.type === "text" && event.text) {
+							yield event.text;
+						}
+					} catch (e) {
+						console.warn("Failed to parse SSE data:", data);
 					}
 				}
 			}
@@ -599,20 +529,22 @@ export class ApiClient {
 				if (done) break;
 
 				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
+				if (buffer.length > MAX_SSE_BUFFER) {
+					throw new Error("SSE buffer exceeded maximum size (1MB)");
+				}
 
-				for (const line of lines) {
-					if (line.startsWith("data: ")) {
-						const data = line.slice(6).trim();
-						if (!data || data === "[DONE]") continue;
+				const parsed = parseSseEvents(buffer);
+				buffer = parsed.remainder;
 
-						try {
-							const event = JSON.parse(data) as AgentEvent;
-							yield event;
-						} catch (e) {
-							console.warn("Failed to parse SSE data:", data);
-						}
+				for (const sseEvent of parsed.events) {
+					const data = sseEvent.data.trim();
+					if (!data || data === "[DONE]") continue;
+
+					try {
+						const event = JSON.parse(data) as AgentEvent;
+						yield event;
+					} catch (e) {
+						console.warn("Failed to parse SSE data:", data);
 					}
 				}
 			}

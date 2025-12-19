@@ -69,8 +69,8 @@ const pathInputSchema = Type.Optional(
 	]),
 );
 
-const diffSchema = Type.Intersect([
-	Type.Object({
+const diffSchema = Type.Object(
+	{
 		mode: Type.Optional(
 			Type.Literal("diff", { description: "Show patch output (default)." }),
 		),
@@ -133,15 +133,12 @@ const diffSchema = Type.Intersect([
 			}),
 		),
 		paths: pathInputSchema,
-	}),
-	Type.Object(
-		{},
-		{
-			description:
-				"Cannot request both name-only and word-diff output (diff mode only).",
-		},
-	),
-]);
+	},
+	{
+		description:
+			"Cannot request both name-only and word-diff output (diff mode only).",
+	},
+);
 
 function normalizePaths(paths: string | string[] | undefined): string[] {
 	if (paths === undefined) {

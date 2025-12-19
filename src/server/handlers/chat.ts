@@ -37,6 +37,15 @@ import { createLogger } from "../../utils/logger.js";
 
 const logger = createLogger("web:chat");
 
+function getComposerTextContent(content: ComposerMessage["content"]): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("");
+}
+
 // SessionManager type import for annotations, value import for instantiation
 import type { SessionManager } from "../../session/manager.js";
 import {
@@ -200,7 +209,7 @@ export async function handleChat(
 			return;
 		}
 
-		const userInput = (latestMessage.content ?? "").trim();
+		const userInput = getComposerTextContent(latestMessage.content).trim();
 		if (!userInput && !attachmentsToSend) {
 			sendJson(res, 400, { error: "User message cannot be empty" }, cors, req);
 			return;

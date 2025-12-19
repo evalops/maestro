@@ -97,14 +97,14 @@ ${content}
 		});
 
 		it("loads skill case-insensitively", async () => {
-			createTestSkill("CamelCase", "Test", "Content");
+			createTestSkill("camelcase", "Test", "Content");
 
 			const tool = createSkillTool(testDir);
-			const result = await tool.execute("test-4", { skill: "camelcase" });
+			const result = await tool.execute("test-4", { skill: "CamelCase" });
 			const text = getResultText(result);
 
 			expect(result.isError).toBeUndefined();
-			expect(text).toContain("# Skill: CamelCase");
+			expect(text).toContain("# Skill: camelcase");
 		});
 
 		it("returns error for unknown skill", async () => {

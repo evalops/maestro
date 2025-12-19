@@ -62,8 +62,8 @@ import {
 } from "./ripgrep-utils.js";
 import { createTool, expandUserPath } from "./tool-dsl.js";
 
-const searchSchema = Type.Intersect([
-	Type.Object({
+const searchSchema = Type.Object(
+	{
 		pattern: Type.String({
 			description: "Regex pattern (or literal when literal=true)",
 			minLength: 1,
@@ -179,15 +179,12 @@ const searchSchema = Type.Intersect([
 				maximum: 10000,
 			}),
 		),
-	}),
-	Type.Object(
-		{},
-		{
-			description:
-				"Use either context or before/after context options, not both.",
-		},
-	),
-]);
+	},
+	{
+		description:
+			"Use either context or before/after context options, not both.",
+	},
+);
 
 const JSON_DETAIL_LIMIT = 200;
 const DEFAULT_MAX_RESULTS = 500;

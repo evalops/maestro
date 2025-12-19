@@ -23,6 +23,8 @@ import {
 	createWriteStream,
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
+	readdirSync,
 	renameSync,
 	rmSync,
 } from "node:fs";
@@ -203,6 +205,48 @@ async function downloadFile(url: string, dest: string): Promise<void> {
 	);
 }
 
+function runExtractor(
+	command: string,
+	args: string[],
+	description: string,
+): void {
+	const result = spawnSync(command, args, { stdio: "pipe" });
+	if (result.error) {
+		throw new Error(`${description} failed: ${result.error.message}`);
+	}
+	if (result.status !== 0) {
+		const stderr = result.stderr?.toString().trim();
+		throw new Error(
+			`${description} exited with code ${result.status}${
+				stderr ? `: ${stderr}` : ""
+			}`,
+		);
+	}
+}
+
+function findBinary(root: string, binaryName: string): string | null {
+	const stack = [root];
+	while (stack.length > 0) {
+		const current = stack.pop();
+		if (!current) continue;
+		const entries = readdirSync(current, { withFileTypes: true });
+		for (const entry of entries) {
+			if (entry.isSymbolicLink()) {
+				continue;
+			}
+			const entryPath = join(current, entry.name);
+			if (entry.isDirectory()) {
+				stack.push(entryPath);
+				continue;
+			}
+			if (entry.isFile() && entry.name === binaryName) {
+				return entryPath;
+			}
+		}
+	}
+	return null;
+}
+
 /**
  * Download and install a tool from GitHub releases.
  *
@@ -245,34 +289,37 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	await downloadFile(downloadUrl, archivePath);
 
 	// Create temp directory for extraction
-	const extractDir = join(TOOLS_DIR, "extract_tmp");
-	mkdirSync(extractDir, { recursive: true });
+	const extractDir = mkdtempSync(join(TOOLS_DIR, "extract-"));
 
 	try {
 		// Extract based on archive type
 		if (assetName.endsWith(".tar.gz")) {
-			spawnSync("tar", ["xzf", archivePath, "-C", extractDir], {
-				stdio: "pipe",
-			});
+			runExtractor(
+				"tar",
+				["-xzf", archivePath, "-C", extractDir],
+				"tar extract",
+			);
 		} else if (assetName.endsWith(".zip")) {
-			spawnSync("unzip", ["-o", archivePath, "-d", extractDir], {
-				stdio: "pipe",
-			});
-		}
-
-		// Find the binary in the extracted directory
-		const extractedDir = join(
-			extractDir,
-			assetName.replace(/\.(tar\.gz|zip)$/, ""),
-		);
-		const extractedBinary = join(extractedDir, config.binaryName + binaryExt);
-
-		if (existsSync(extractedBinary)) {
-			// Move binary to final location
-			renameSync(extractedBinary, binaryPath);
+			runExtractor(
+				"unzip",
+				["-o", archivePath, "-d", extractDir],
+				"unzip extract",
+			);
 		} else {
-			throw new Error(`Binary not found in archive: ${extractedBinary}`);
+			throw new Error(`Unsupported archive format: ${assetName}`);
 		}
+
+		const extractedBinary =
+			findBinary(extractDir, config.binaryName + binaryExt) ??
+			(() => {
+				throw new Error(
+					`Binary not found in archive: ${config.binaryName}${binaryExt}`,
+				);
+			})();
+
+		// Move binary to final location
+		rmSync(binaryPath, { force: true });
+		renameSync(extractedBinary, binaryPath);
 
 		// Make executable on Unix systems
 		if (plat !== "win32") {

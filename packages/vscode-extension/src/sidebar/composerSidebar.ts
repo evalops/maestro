@@ -801,6 +801,9 @@ export class ComposerSidebarProvider
 					);
 					if (!evt) continue;
 					if (evt.type === "text_delta" && evt.delta) {
+						if (typeof assistantMsg.content !== "string") {
+							assistantMsg.content = "";
+						}
 						assistantMsg.content += evt.delta;
 						assistantHasContent = true;
 						this._view?.webview.postMessage({
@@ -864,6 +867,9 @@ export class ComposerSidebarProvider
 					// Fallback for flat events if any
 					const text = getEventProp<string>("text");
 					if (text) {
+						if (typeof assistantMsg.content !== "string") {
+							assistantMsg.content = "";
+						}
 						assistantMsg.content += text;
 						assistantHasContent = true;
 						this._view?.webview.postMessage({
