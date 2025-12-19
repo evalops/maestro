@@ -37,6 +37,9 @@ use composer_tui::App;
 // In Rust, a package can have both a binary (main.rs) and a library (lib.rs).
 // This imports from lib.rs.
 
+use composer_tui::tools::cleanup_background_processes;
+// Import the process cleanup function for signal handlers.
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +200,19 @@ struct Args {
 ///   the Ok value and continue."
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Set up panic hook for process cleanup on unexpected termination.
+    // This ensures background processes are killed even if the app panics.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        // Clean up background processes before panicking
+        let count = cleanup_background_processes();
+        if count > 0 {
+            eprintln!("[panic] Cleaned up {} background process(es)", count);
+        }
+        // Call the default panic hook to print the panic message
+        default_hook(panic_info);
+    }));
+
     // Parse command-line arguments using clap.
     // `Args::parse()` reads from std::env::args() and returns our Args struct.
     // If parsing fails (e.g., unknown flag), clap prints help and exits.
@@ -259,6 +275,13 @@ async fn main() -> Result<()> {
     // `.await` suspends this function until the Future completes.
     // The app handles all user interaction, AI communication, and rendering.
     let exit_code = app.run().await?;
+
+    // Final cleanup - the app should have already cleaned up, but this is a safety net.
+    // This catches cases where the app returned without going through its normal exit path.
+    let remaining = cleanup_background_processes();
+    if remaining > 0 {
+        eprintln!("[main] Final cleanup: {} background process(es)", remaining);
+    }
 
     // Exit with the appropriate code.
     //

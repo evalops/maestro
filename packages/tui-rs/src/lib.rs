@@ -453,14 +453,17 @@ pub use palette::{
 };
 
 // Tool system
+pub use tools::process_registry; // Process registry module for fine-grained control
 pub use tools::{
-    BashTool,      // Executes shell commands
-    HistoryFilter, // Filter for tool history search
-    ToolExecution, // Single tool execution record
-    ToolExecutor,  // Trait for tool execution
-    ToolHistory,   // Tool execution history tracker
-    ToolRegistry,  // Registry of available tools
-    ToolStats,     // Statistics about tool executions
+    background_process_count,     // Count of tracked background processes
+    cleanup_background_processes, // Kill all tracked background processes
+    BashTool,                     // Executes shell commands
+    HistoryFilter,                // Filter for tool history search
+    ToolExecution,                // Single tool execution record
+    ToolExecutor,                 // Trait for tool execution
+    ToolHistory,                  // Tool execution history tracker
+    ToolRegistry,                 // Registry of available tools
+    ToolStats,                    // Statistics about tool executions
 };
 
 // Tooltips

@@ -338,7 +338,13 @@ impl App {
             }
         }
 
-        // Cleanup
+        // Cleanup background processes before exit
+        let process_count = crate::tools::cleanup_background_processes();
+        if process_count > 0 {
+            eprintln!("[app] Cleaned up {} background process(es)", process_count);
+        }
+
+        // Cleanup terminal
         terminal::restore()?;
 
         Ok(0)

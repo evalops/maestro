@@ -50,6 +50,11 @@ pub struct CompactionConfig {
     pub summarize_tool_results: bool,
     /// Minimum recent tokens to preserve (used with token-based cut point)
     pub keep_recent_tokens: u64,
+    /// Auto-compaction threshold as a percentage (0.0 - 1.0)
+    /// When context reaches this percentage of max_context_tokens, compact proactively
+    pub auto_compact_threshold: f64,
+    /// Whether auto-compaction is enabled
+    pub auto_compact_enabled: bool,
 }
 
 impl Default for CompactionConfig {
@@ -60,6 +65,8 @@ impl Default for CompactionConfig {
             preserve_recent_count: 10,   // Keep last 10 messages
             summarize_tool_results: true,
             keep_recent_tokens: 20_000, // Keep at least 20K recent tokens
+            auto_compact_threshold: 0.85, // Compact at 85% capacity
+            auto_compact_enabled: true, // Enabled by default
         }
     }
 }
@@ -226,6 +233,31 @@ impl ContextCompactor {
     pub fn needs_compaction(&self, messages: &[Message]) -> bool {
         let tokens = self.estimate_tokens(messages);
         tokens > self.config.max_context_tokens
+    }
+
+    /// Check if auto-compaction should trigger (proactive compaction before overflow)
+    ///
+    /// Returns true when:
+    /// - Auto-compaction is enabled
+    /// - Current token count exceeds the auto-compact threshold percentage
+    ///
+    /// This allows proactive compaction at e.g. 85% capacity instead of waiting
+    /// for the model to hit MaxTokens and fail.
+    pub fn should_auto_compact(&self, messages: &[Message]) -> bool {
+        if !self.config.auto_compact_enabled {
+            return false;
+        }
+
+        let tokens = self.estimate_tokens(messages);
+        let threshold =
+            (self.config.max_context_tokens as f64 * self.config.auto_compact_threshold) as u64;
+        tokens > threshold
+    }
+
+    /// Get the current token usage as a percentage of max capacity
+    pub fn usage_percentage(&self, messages: &[Message]) -> f64 {
+        let tokens = self.estimate_tokens(messages);
+        (tokens as f64 / self.config.max_context_tokens as f64) * 100.0
     }
 
     /// Compact messages by summarizing older history
@@ -921,5 +953,80 @@ mod tests {
             }),
         };
         assert!(result_split.was_turn_split());
+    }
+
+    // ============================================================
+    // Auto-Compaction Tests
+    // ============================================================
+
+    #[test]
+    fn test_should_auto_compact_disabled() {
+        let config = CompactionConfig {
+            max_context_tokens: 1000,
+            auto_compact_enabled: false, // Disabled
+            auto_compact_threshold: 0.85,
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        // Even with lots of tokens, should not trigger when disabled
+        let messages = vec![make_user_message(&"a".repeat(4000))]; // ~1000 tokens
+
+        assert!(!compactor.should_auto_compact(&messages));
+    }
+
+    #[test]
+    fn test_should_auto_compact_below_threshold() {
+        let config = CompactionConfig {
+            max_context_tokens: 1000,
+            auto_compact_enabled: true,
+            auto_compact_threshold: 0.85, // 850 tokens
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        // ~200 tokens (800 chars / 4)
+        let messages = vec![make_user_message(&"a".repeat(800))];
+
+        assert!(!compactor.should_auto_compact(&messages));
+    }
+
+    #[test]
+    fn test_should_auto_compact_above_threshold() {
+        let config = CompactionConfig {
+            max_context_tokens: 1000,
+            auto_compact_enabled: true,
+            auto_compact_threshold: 0.85, // 850 tokens
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        // ~1000 tokens (4000 chars / 4), which is above 850 threshold
+        let messages = vec![make_user_message(&"a".repeat(4000))];
+
+        assert!(compactor.should_auto_compact(&messages));
+    }
+
+    #[test]
+    fn test_usage_percentage() {
+        let config = CompactionConfig {
+            max_context_tokens: 1000,
+            ..Default::default()
+        };
+        let compactor = ContextCompactor::new(config);
+
+        // ~250 tokens = 25%
+        let messages = vec![make_user_message(&"a".repeat(1000))];
+        let pct = compactor.usage_percentage(&messages);
+
+        assert!(pct > 20.0 && pct < 30.0);
+    }
+
+    #[test]
+    fn test_auto_compact_default_config() {
+        let config = CompactionConfig::default();
+
+        assert!(config.auto_compact_enabled);
+        assert!((config.auto_compact_threshold - 0.85).abs() < 0.01);
     }
 }

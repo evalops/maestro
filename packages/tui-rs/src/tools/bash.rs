@@ -655,6 +655,11 @@ impl BashTool {
 
         // If running in background, return immediately
         if args.run_in_background {
+            // Register the background process for cleanup on exit
+            if let Some(pid) = child_pid {
+                super::process_registry::register(pid);
+            }
+
             let mut details = BashDetails::background(&args.command, child_pid.unwrap_or(0))
                 .with_cwd(cwd_string.clone())
                 .with_duration(start_time.elapsed().as_millis() as u64);

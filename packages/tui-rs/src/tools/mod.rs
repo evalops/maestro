@@ -82,6 +82,7 @@ pub mod details;
 mod history;
 mod image;
 pub mod inline;
+pub mod process_registry;
 mod registry;
 mod web_fetch;
 
@@ -97,6 +98,9 @@ pub use image::ImageTool;
 pub use inline::{
     get_config_paths as get_inline_tools_config_paths, load_inline_tools, InlineTool,
     InlineToolExecutor, InlineToolSource, InlineToolsConfig, InlineToolsPaths,
+};
+pub use process_registry::{
+    cleanup_all as cleanup_background_processes, count as background_process_count,
 };
 pub use registry::{ToolExecutor, ToolRegistry};
 pub use web_fetch::WebFetchTool;

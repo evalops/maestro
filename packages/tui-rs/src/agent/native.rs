@@ -1494,6 +1494,46 @@ impl NativeAgentRunner {
             }
 
             // No tool calls, we're done
+            // Check for auto-compaction before the next turn
+            if self.compactor.should_auto_compact(&self.messages) {
+                let usage_pct = self.compactor.usage_percentage(&self.messages);
+                eprintln!(
+                    "[agent] Auto-compaction triggered at {:.1}% capacity",
+                    usage_pct
+                );
+                let result = self.compactor.compact_with_tokens(&self.messages);
+                if result.was_compacted() {
+                    let split_note = if result.was_turn_split() {
+                        " (turn was split)"
+                    } else {
+                        ""
+                    };
+                    eprintln!(
+                        "[agent] Auto-compacted {} messages{}",
+                        result.compacted_count, split_note
+                    );
+                    self.messages = result.messages;
+
+                    // Notify the UI about auto-compaction
+                    let status_msg = if let Some(ref cut_point) = result.cut_point {
+                        format!(
+                            "Auto-compacted: {} messages summarized (~{} → ~{} tokens){}",
+                            result.compacted_count,
+                            cut_point.tokens_before,
+                            cut_point.tokens_after,
+                            split_note
+                        )
+                    } else {
+                        format!(
+                            "Auto-compacted: {} messages summarized",
+                            result.compacted_count
+                        )
+                    };
+                    let _ = self.event_tx.send(FromAgent::Status {
+                        message: status_msg,
+                    });
+                }
+            }
             break;
         }
 
