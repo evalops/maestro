@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
 import type { FooterMode } from "./utils/footer-utils.js";
 
@@ -18,13 +18,9 @@ export interface UiState {
 	favoriteCommands?: string[];
 }
 
-const UI_STATE_PATH =
-	process.env.COMPOSER_UI_STATE ??
-	join(homedir(), ".composer", "agent", "ui-state.json");
+const UI_STATE_PATH = PATHS.UI_STATE_FILE;
 
-const getCommandPrefsPath = () =>
-	process.env.COMPOSER_COMMAND_PREFS ??
-	join(homedir(), ".composer", "agent", "command-prefs.json");
+const getCommandPrefsPath = () => PATHS.COMMAND_PREFS_FILE;
 
 export function loadUiState(): UiState {
 	if (!existsSync(UI_STATE_PATH)) {

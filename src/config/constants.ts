@@ -63,6 +63,14 @@ export const PATHS = {
 	TOOL_FAILURE_LOG: join(homedir(), ".composer", "tool-failures.log"),
 	/** Background task log directory */
 	BACKGROUND_TASK_LOG_DIR: join(homedir(), ".composer", "background-tasks"),
+	/** UI state file path */
+	UI_STATE_FILE:
+		process.env.COMPOSER_UI_STATE ??
+		join(homedir(), ".composer", "agent", "ui-state.json"),
+	/** Command prefs file path */
+	COMMAND_PREFS_FILE:
+		process.env.COMPOSER_COMMAND_PREFS ??
+		join(homedir(), ".composer", "agent", "command-prefs.json"),
 	/** Cost tracking database path */
 	COST_DB:
 		process.env.COMPOSER_COST_DB ?? join(homedir(), ".composer", "costs.db"),

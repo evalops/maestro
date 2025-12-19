@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname } from "node:path";
+import { PATHS } from "../../config/constants.js";
 import type { WebServerContext } from "../app-context.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 
@@ -10,7 +10,7 @@ type CommandPrefs = {
 	recents: string[];
 };
 
-const PREF_PATH = join(homedir(), ".composer", "agent", "command-prefs.json");
+const PREF_PATH = PATHS.COMMAND_PREFS_FILE;
 
 function loadPrefs(): CommandPrefs {
 	try {
@@ -31,7 +31,7 @@ function loadPrefs(): CommandPrefs {
 }
 
 function savePrefs(prefs: CommandPrefs): void {
-	mkdirSync(join(homedir(), ".composer", "agent"), { recursive: true });
+	mkdirSync(dirname(PREF_PATH), { recursive: true });
 	writeFileSync(PREF_PATH, JSON.stringify(prefs, null, 2), "utf8");
 }
 
