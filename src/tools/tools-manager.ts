@@ -168,31 +168,39 @@ export function getToolPath(tool: "fd" | "rg"): string | null {
 async function fetchWithTimeout(
 	url: string,
 	init?: RequestInit,
-): Promise<Response> {
+): Promise<{ response: Response; clearTimeout: () => void }> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 	try {
-		return await fetch(url, { ...init, signal: controller.signal });
-	} finally {
+		const response = await fetch(url, { ...init, signal: controller.signal });
+		return {
+			response,
+			clearTimeout: () => clearTimeout(timeout),
+		};
+	} catch (error) {
 		clearTimeout(timeout);
+		throw error;
 	}
 }
 
 async function getLatestVersion(repo: string): Promise<string> {
-	const response = await fetchWithTimeout(
+	const { response, clearTimeout } = await fetchWithTimeout(
 		`https://api.github.com/repos/${repo}/releases/latest`,
 		{
 			headers: { "User-Agent": "composer-coding-agent" },
 		},
 	);
+	try {
+		if (!response.ok) {
+			throw new Error(`GitHub API error: ${response.status}`);
+		}
 
-	if (!response.ok) {
-		throw new Error(`GitHub API error: ${response.status}`);
+		const data = (await response.json()) as { tag_name: string };
+		// Strip "v" prefix if present for consistent version handling
+		return data.tag_name.replace(/^v/, "");
+	} finally {
+		clearTimeout();
 	}
-
-	const data = (await response.json()) as { tag_name: string };
-	// Strip "v" prefix if present for consistent version handling
-	return data.tag_name.replace(/^v/, "");
 }
 
 /**
@@ -200,23 +208,26 @@ async function getLatestVersion(repo: string): Promise<string> {
  * Uses streaming to handle large files efficiently.
  */
 async function downloadFile(url: string, dest: string): Promise<void> {
-	const response = await fetchWithTimeout(url);
+	const { response, clearTimeout } = await fetchWithTimeout(url);
+	try {
+		if (!response.ok) {
+			throw new Error(`Failed to download: ${response.status}`);
+		}
 
-	if (!response.ok) {
-		throw new Error(`Failed to download: ${response.status}`);
+		if (!response.body) {
+			throw new Error("No response body");
+		}
+
+		// Stream the response directly to disk
+		const fileStream = createWriteStream(dest);
+		await finished(
+			Readable.fromWeb(
+				response.body as Parameters<typeof Readable.fromWeb>[0],
+			).pipe(fileStream),
+		);
+	} finally {
+		clearTimeout();
 	}
-
-	if (!response.body) {
-		throw new Error("No response body");
-	}
-
-	// Stream the response directly to disk
-	const fileStream = createWriteStream(dest);
-	await finished(
-		Readable.fromWeb(
-			response.body as Parameters<typeof Readable.fromWeb>[0],
-		).pipe(fileStream),
-	);
 }
 
 function runExtractor(
