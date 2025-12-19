@@ -1,6 +1,16 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, dirname, join, delimiter as pathDelimiter } from "node:path";
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	delimiter as pathDelimiter,
+} from "node:path";
 import type { AutocompleteItem, AutocompleteProvider } from "@evalops/tui";
+import {
+	expandTildePathWithHomeDir,
+	getHomeDir,
+} from "../../utils/path-expansion.js";
 
 /**
  * Common shell builtins that should appear in command completion.
@@ -317,11 +327,12 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 		const token = text.slice(lastSpaceIdx + 1);
 		// Only complete if it looks like a path
 		if (
-			token.startsWith("/") ||
+			isAbsolute(token) ||
 			token.startsWith("./") ||
 			token.startsWith("../") ||
 			token.startsWith("~/") ||
-			token.includes("/")
+			token.includes("/") ||
+			token.includes("\\")
 		) {
 			return token;
 		}
@@ -343,7 +354,7 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 				searchPrefix = basename(expandedPrefix);
 			}
 
-			if (!searchDir.startsWith("/")) {
+			if (!isAbsolute(searchDir)) {
 				searchDir = join(this.basePath, searchDir);
 			}
 
@@ -388,14 +399,7 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 	}
 
 	private expandHomePath(path: string): string {
-		if (path.startsWith("~/")) {
-			const home = process.env.HOME || process.cwd();
-			return join(home, path.slice(2));
-		}
-		if (path === "~") {
-			return process.env.HOME || process.cwd();
-		}
-		return path;
+		return expandTildePathWithHomeDir(path, getHomeDir());
 	}
 
 	private buildRelativePath(originalPrefix: string, entryName: string): string {
