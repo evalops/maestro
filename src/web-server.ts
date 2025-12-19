@@ -9,7 +9,7 @@ import {
 	createServer,
 } from "node:http";
 import type { Socket } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, parse } from "node:url";
 import {
 	ActionApprovalService,
@@ -742,7 +742,7 @@ export async function startWebServer(port = 8080) {
 }
 
 // Run if called directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && __filename === resolve(process.argv[1])) {
 	const port = Number.parseInt(process.env.PORT || "8080", 10);
 	startWebServer(port);
 }

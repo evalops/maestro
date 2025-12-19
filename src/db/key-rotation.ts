@@ -6,6 +6,8 @@
  * values with a new key.
  */
 
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 import { createLogger } from "../utils/logger.js";
 import { getDb, isDatabaseConfigured } from "./client.js";
@@ -13,6 +15,7 @@ import { generateEncryptionKey, reEncryptField } from "./encryption.js";
 import { organizations, users } from "./schema.js";
 
 const logger = createLogger("db:key-rotation");
+const __filename = fileURLToPath(import.meta.url);
 
 export interface KeyRotationResult {
 	success: boolean;
@@ -225,7 +228,7 @@ export async function runKeyRotationCli(): Promise<void> {
 }
 
 // Run if called directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && __filename === resolve(process.argv[1])) {
 	runKeyRotationCli().catch((err) => {
 		console.error("Key rotation failed:", err);
 		process.exit(1);

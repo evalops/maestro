@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { formatGuardianResult, runGuardian } from "./runner.js";
 import type { GuardianTarget } from "./types.js";
 
@@ -81,7 +83,9 @@ export async function runGuardianCli(
 	return result.exitCode;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const __filename = fileURLToPath(import.meta.url);
+
+if (process.argv[1] && __filename === resolve(process.argv[1])) {
 	void runGuardianCli().then((code) => {
 		process.exitCode = code;
 	});
