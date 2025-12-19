@@ -1,4 +1,4 @@
-import { Editor } from "@evalops/tui";
+import { Editor, KittyKeys, isCtrlD, isShiftTab } from "@evalops/tui";
 
 type CustomEditorBinding = {
 	description: string;
@@ -44,9 +44,25 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 	},
 	{
 		description: "Shift+Tab cycles thinking levels (or slash reverse cycle)",
-		matches: (data) => data === "\x1b[Z",
+		matches: (data) => isShiftTab(data),
 		when: (editor) => Boolean(editor.onShiftTab),
 		handle: (editor) => editor.onShiftTab?.() === true,
+	},
+	{
+		description: "Shift+Enter inserts newline (Kitty protocol)",
+		matches: (data) => data === KittyKeys.SHIFT_ENTER,
+		handle: (editor) => {
+			editor.insertText("\n");
+			return true;
+		},
+	},
+	{
+		description: "Alt+Enter inserts newline (Kitty protocol)",
+		matches: (data) => data === KittyKeys.ALT_ENTER,
+		handle: (editor) => {
+			editor.insertText("\n");
+			return true;
+		},
 	},
 	{
 		description: "Escape closes Composer modals (unless autocomplete is open)",
@@ -119,10 +135,19 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 		handle: (editor) => editor.onShortcut?.("ctrl+u") === true,
 	},
 	{
-		description: "Ctrl+D scrolls chat history half a page down (vim-style)",
-		matches: (data) => data === "\x04",
-		when: (editor) => Boolean(editor.onShortcut),
-		handle: (editor) => editor.onShortcut?.("ctrl+d") === true,
+		description:
+			"Ctrl+D exits when editor empty, otherwise scrolls half page down",
+		matches: (data) => isCtrlD(data),
+		when: (editor) => Boolean(editor.onShortcut) || Boolean(editor.onCtrlD),
+		handle: (editor) => {
+			// When editor is empty and onCtrlD is set, exit
+			if (editor.isEditorEmpty() && editor.onCtrlD) {
+				editor.onCtrlD();
+				return true;
+			}
+			// Otherwise scroll (vim-style behavior)
+			return editor.onShortcut?.("ctrl+d") === true;
+		},
 	},
 	{
 		description: "Ctrl+Home jumps to top of chat history",
@@ -144,6 +169,7 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 export class CustomEditor extends Editor {
 	public onEscape?: () => void;
 	public onCtrlC?: () => void;
+	public onCtrlD?: () => void;
 	public onShortcut?: (shortcut: string) => boolean;
 	public onHistoryNavigate?: (direction: "prev" | "next") => boolean;
 	public onShiftTab?: () => boolean | undefined;

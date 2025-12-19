@@ -99,6 +99,7 @@ import { EditorView } from "./editor-view.js";
 import { FeedbackView } from "./feedback-view.js";
 import { FooterComponent } from "./footer.js";
 import { GitView } from "./git/git-view.js";
+import { HotkeysView } from "./hotkeys-view.js";
 import { ImportExportView } from "./import-view.js";
 import { InfoView } from "./info-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
@@ -338,6 +339,7 @@ export class TuiRenderer {
 	private feedbackView: FeedbackView;
 	private aboutView: AboutView;
 	private changelogView: ChangelogView;
+	private hotkeysView: HotkeysView;
 	private trainingView: TrainingView;
 	private contextView?: ContextView;
 	private infoView: InfoView;
@@ -905,6 +907,10 @@ export class TuiRenderer {
 			ui: this.ui,
 			showError: (message: string) => this.notificationView.showError(message),
 		});
+		this.hotkeysView = new HotkeysView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+		});
 		this.infoView = new InfoView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -1116,6 +1122,7 @@ export class TuiRenderer {
 			handleUpdate: (_context) => this.updateView.handleUpdateCommand(),
 			handleChangelog: (_context) =>
 				this.changelogView.handleChangelogCommand(),
+			handleHotkeys: (_context) => this.hotkeysView.handleHotkeysCommand(),
 			handleConfig: (context) => this.configView.handleConfigCommand(context),
 			handleCost: (context) => this.costView.handleCostCommand(context),
 			handleQuota: (context) => this.quotaView.handleQuotaCommand(context),
@@ -1363,6 +1370,7 @@ export class TuiRenderer {
 			onInterrupt: () => this.handleInterruptRequest(),
 			onKeepPartial: () => this.handleKeepPartialRequest(),
 			onCtrlC: () => this.runController.handleCtrlC(),
+			onCtrlD: () => this.handleCtrlDExit(),
 			showCommandPalette: () => this.commandPaletteView.showCommandPalette(),
 			showFileSearch: () => this.fileSearchView.showFileSearch(),
 		});
@@ -1699,6 +1707,15 @@ export class TuiRenderer {
 	 */
 	handleKeepPartialRequest(): boolean {
 		return this.interruptController.handleKeepPartialRequest();
+	}
+
+	/**
+	 * Handle Ctrl+D with empty editor - graceful exit.
+	 * Standard Unix behavior: Ctrl+D on empty input means end of input/exit.
+	 */
+	private handleCtrlDExit(): void {
+		this.stop();
+		process.exit(0);
 	}
 
 	private renderHeader(): void {

@@ -625,6 +625,18 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "hotkeys",
+				description: "Show all keyboard shortcuts",
+				usage: "/hotkeys",
+				tags: ["help"],
+				aliases: ["keys", "shortcuts"],
+			},
+			equals("hotkeys", ["keys", "shortcuts"]),
+			handlers.hotkeys,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "telemetry",
 				description: "Show telemetry status or toggle runtime overrides",
 				usage: "/telemetry [status|on|off|reset]",

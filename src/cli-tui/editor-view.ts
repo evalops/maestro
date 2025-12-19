@@ -15,6 +15,11 @@ interface EditorViewOptions {
 	 */
 	onKeepPartial?: () => boolean;
 	onCtrlC?: () => void;
+	/**
+	 * Called when Ctrl+D is pressed with an empty editor.
+	 * Standard Unix behavior: exit/end of input.
+	 */
+	onCtrlD?: () => void;
 	showCommandPalette: () => void;
 	showFileSearch: () => void;
 }
@@ -29,6 +34,9 @@ export class EditorView {
 		};
 		editor.onCtrlC = () => {
 			this.options.onCtrlC?.();
+		};
+		editor.onCtrlD = () => {
+			this.options.onCtrlD?.();
 		};
 		editor.onShortcut = (shortcut) => {
 			if (shortcut === "ctrl+k") {

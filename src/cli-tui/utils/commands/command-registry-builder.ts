@@ -39,6 +39,7 @@ interface CommandRegistryOptions {
 	showHelp: (context: CommandExecutionContext) => void;
 	handleUpdate: (context: CommandExecutionContext) => void | Promise<void>;
 	handleChangelog: (context: CommandExecutionContext) => void;
+	handleHotkeys: (context: CommandExecutionContext) => void;
 	handleConfig: (context: CommandExecutionContext) => void | Promise<void>;
 	handleCost: (context: CommandExecutionContext) => void | Promise<void>;
 	handleQuota: (context: CommandExecutionContext) => void | Promise<void>;
@@ -132,6 +133,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			help: opts.showHelp,
 			update: opts.handleUpdate,
 			changelog: opts.handleChangelog,
+			hotkeys: opts.handleHotkeys,
 			config: opts.handleConfig,
 			cost: opts.handleCost,
 			quota: opts.handleQuota,

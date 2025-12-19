@@ -37,6 +37,7 @@ export interface CommandHandlers {
 	help(context: CommandExecutionContext): void;
 	update(context: CommandExecutionContext): Promise<void> | void;
 	changelog(context: CommandExecutionContext): void;
+	hotkeys(context: CommandExecutionContext): void;
 	config(context: CommandExecutionContext): Promise<void> | void;
 	cost(context: CommandExecutionContext): Promise<void> | void;
 	quota(context: CommandExecutionContext): Promise<void> | void;
