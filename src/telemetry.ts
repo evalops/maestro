@@ -1,8 +1,8 @@
 import { appendFile, mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { type Span, SpanStatusCode } from "@opentelemetry/api";
 
+import { PATHS } from "./config/constants.js";
 import {
 	getTelemetryTracer,
 	initOpenTelemetry,
@@ -196,8 +196,8 @@ const parseSamplingRate = (): number => {
 
 const samplingRate = parseSamplingRate();
 
-const defaultTelemetryFile = join(homedir(), ".composer", "telemetry.log");
-const toolFailureLogFile = join(homedir(), ".composer", "tool-failures.log");
+const defaultTelemetryFile = PATHS.TELEMETRY_LOG;
+const toolFailureLogFile = PATHS.TOOL_FAILURE_LOG;
 const BACKGROUND_TASK_HISTORY_LIMIT = 50;
 const backgroundTaskHistory: BackgroundTaskTelemetry[] = [];
 
