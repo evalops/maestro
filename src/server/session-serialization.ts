@@ -658,16 +658,17 @@ export function convertComposerMessageToApp(
 			};
 
 			const results: AppMessage[] = [assistantMessage];
+			const toolCallBlocks = normalizedSequence.filter(
+				(block): block is ToolCall => block.type === "toolCall",
+			);
 
 			// Generate tool result messages for each tool call
 			tools.forEach((tool, toolIndex) => {
-				const normalizedCall = hasToolCalls
-					? normalizeToolCall(tool, index, toolIndex)
-					: normalizeToolCall(
-							tool,
-							index,
-							normalizedSequence.length + toolIndex,
-						);
+				const normalizedCall =
+					(tool.toolCallId
+						? toolCallBlocks.find((block) => block.id === tool.toolCallId)
+						: toolCallBlocks[toolIndex]) ??
+					normalizeToolCall(tool, index, normalizedSequence.length + toolIndex);
 				results.push(
 					normalizeToolResult(tool, normalizedCall, message.timestamp, context),
 				);
