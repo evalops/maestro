@@ -2,6 +2,7 @@
  * Message display component
  */
 
+import type { ComposerContentBlock } from "@evalops/contracts";
 import DOMPurify from "dompurify";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
@@ -21,6 +22,12 @@ const hljsLoadListeners = new Set<() => void>();
 
 const NO_PROVIDERS: unknown[] = [];
 
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+	if (node instanceof HTMLAnchorElement && node.target === "_blank") {
+		node.setAttribute("rel", "noopener noreferrer");
+	}
+});
+
 function escapeHtml(input: string): string {
 	return input
 		.replaceAll("&", "&amp;")
@@ -28,6 +35,15 @@ function escapeHtml(input: string): string {
 		.replaceAll(">", "&gt;")
 		.replaceAll('"', "&quot;")
 		.replaceAll("'", "&#39;");
+}
+
+function contentToPlainText(content: string | ComposerContentBlock[]): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("");
 }
 
 function ensureHljsLoaded(): void {
@@ -460,7 +476,7 @@ export class ComposerMessage extends LitElement {
 	`;
 
 	@property() role: "user" | "assistant" | "system" = "user";
-	@property() content = "";
+	@property({ attribute: false }) content: string | ComposerContentBlock[] = "";
 	@property() timestamp = "";
 	@property() thinking = "";
 	@property() tools: Array<{
@@ -504,9 +520,10 @@ export class ComposerMessage extends LitElement {
 		// Simple fenced-code extraction. This is intentionally conservative:
 		// we only treat explicit ```html / ```svg blocks as previewable artifacts.
 		const artifacts: Array<{ language: string; code: string }> = [];
+		const source = contentToPlainText(this.content);
 		const pattern = /```(html|svg)\s*\n([\s\S]*?)```/gi;
 		for (;;) {
-			const match = pattern.exec(this.content);
+			const match = pattern.exec(source);
 			if (!match) break;
 			const language = (match[1] || "").toLowerCase();
 			const code = match[2] ?? "";
@@ -601,9 +618,10 @@ export class ComposerMessage extends LitElement {
 	}
 
 	private renderContent() {
+		const textContent = contentToPlainText(this.content);
 		if (this.role === "user") {
 			// User messages are plain text with basic formatting
-			const escaped = this.content
+			const escaped = textContent
 				.replace(/&/g, "&amp;")
 				.replace(/</g, "&lt;")
 				.replace(/>/g, "&gt;")
@@ -612,7 +630,7 @@ export class ComposerMessage extends LitElement {
 		}
 
 		// Assistant messages support full markdown
-		const rendered = marked.parse(this.content, { async: false }) as string;
+		const rendered = marked.parse(textContent, { async: false }) as string;
 		const sanitized = DOMPurify.sanitize(rendered, {
 			ADD_ATTR: ["target", "rel"],
 		});

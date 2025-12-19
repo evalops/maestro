@@ -7,116 +7,14 @@ import type * as Contracts from "@evalops/contracts";
 export type Message = Contracts.ComposerMessage;
 export type ComposerToolCall = Contracts.ComposerToolCall;
 
-/** Base event properties */
-interface BaseAgentEvent {
-	type: string;
-}
-
-/** Message update event with text/thinking deltas */
-interface MessageUpdateEvent extends BaseAgentEvent {
-	type: "message_update";
-	assistantMessageEvent: {
-		type: "text_delta" | "thinking_start" | "thinking_delta" | "thinking_end";
-		delta?: string;
-	};
-}
-
-/** Message end event with final message */
-interface MessageEndEvent extends BaseAgentEvent {
-	type: "message_end";
-	message: {
-		role: string;
-		content:
-			| string
-			| Array<{
-					type: string;
-					text?: string;
-					thinking?: string;
-					name?: string;
-					arguments?: Record<string, unknown>;
-					id?: string;
-			  }>;
-		timestamp?: number | string;
-		toolName?: string;
-		isError?: boolean;
-		usage?: Contracts.ComposerUsage;
-	};
-}
-
-/** Tool execution events */
-interface ToolExecutionStartEvent extends BaseAgentEvent {
-	type: "tool_execution_start";
-	toolCallId: string;
-	toolName: string;
-	args: Record<string, unknown>;
-}
-
-interface ToolExecutionEndEvent extends BaseAgentEvent {
-	type: "tool_execution_end";
-	toolCallId: string;
-	result?: unknown;
-}
-
-/** Thinking events for streaming */
-interface ThinkingStartEvent extends BaseAgentEvent {
-	type: "thinking_start";
-}
-
-interface ThinkingEndEvent extends BaseAgentEvent {
-	type: "thinking_end";
-}
-
-/** Approval events */
-interface ApprovalRequiredEvent extends BaseAgentEvent {
-	type: "action_approval_required";
-	request: {
-		id: string;
-		toolName: string;
-		args: Record<string, unknown>;
-		reason: string;
-	};
-}
-
-interface ApprovalResolvedEvent extends BaseAgentEvent {
-	type: "action_approval_resolved";
-	request: { id: string };
-	decision: "approved" | "denied";
-}
-
-/** Client tool request */
-interface ClientToolRequestEvent extends BaseAgentEvent {
-	type: "client_tool_request";
-	toolCallId: string;
-	toolName: string;
-	args: Record<string, unknown>;
-}
-
-/** Error event */
-interface StreamErrorEvent extends BaseAgentEvent {
+/** Error event for stream parsing failures */
+interface StreamErrorEvent {
 	type: "stream_error";
 	message: string;
 	raw?: string;
 }
-
-/** Unknown event type for fallback handling */
-interface UnknownAgentEvent {
-	type: string;
-	[key: string]: unknown;
-}
-
 /** Union of all agent event types */
-export type AgentEvent =
-	| MessageUpdateEvent
-	| MessageEndEvent
-	| ToolExecutionStartEvent
-	| ToolExecutionEndEvent
-	| ThinkingStartEvent
-	| ThinkingEndEvent
-	| ApprovalRequiredEvent
-	| ApprovalResolvedEvent
-	| ClientToolRequestEvent
-	| StreamErrorEvent
-	| UnknownAgentEvent;
+export type AgentEvent = Contracts.ComposerAgentEvent | StreamErrorEvent;
 
 export interface Model {
 	id: string;
@@ -133,6 +31,48 @@ export type SessionSummary = Contracts.ComposerSessionSummary;
 export type ChatRequest = Contracts.ComposerChatRequest;
 
 const MAX_SSE_BUFFER = 1024 * 1024; // 1MB safeguard
+
+type ParsedSseEvent = {
+	event?: string;
+	data: string;
+};
+
+function parseSseEvents(buffer: string): {
+	events: ParsedSseEvent[];
+	remainder: string;
+} {
+	const normalized = buffer.replace(/\r\n/g, "\n");
+	const events: ParsedSseEvent[] = [];
+	let remainder = normalized;
+
+	while (true) {
+		const separatorIndex = remainder.indexOf("\n\n");
+		if (separatorIndex === -1) break;
+
+		const rawEvent = remainder.slice(0, separatorIndex);
+		remainder = remainder.slice(separatorIndex + 2);
+
+		if (!rawEvent.trim()) continue;
+
+		let eventType: string | undefined;
+		const dataLines: string[] = [];
+		for (const line of rawEvent.split("\n")) {
+			if (line.startsWith("event:")) {
+				eventType = line.slice(6).trim();
+				continue;
+			}
+			if (line.startsWith("data:")) {
+				dataLines.push(line.slice(5).trimStart());
+			}
+		}
+
+		if (dataLines.length > 0) {
+			events.push({ event: eventType, data: dataLines.join("\n") });
+		}
+	}
+
+	return { events, remainder };
+}
 
 async function safeJson(response: Response) {
 	const contentType = response.headers.get("content-type") || "";
@@ -215,25 +155,24 @@ export class ApiClient {
 				if (buffer.length > MAX_SSE_BUFFER) {
 					throw new Error("SSE buffer exceeded maximum size (1MB)");
 				}
-				const lines = buffer.split("\n");
-				buffer = lines.pop() || "";
 
-				for (const line of lines) {
-					if (line.startsWith("data: ")) {
-						const data = line.slice(6).trim();
-						if (!data || data === "[DONE]") continue;
+				const parsed = parseSseEvents(buffer);
+				buffer = parsed.remainder;
 
-						try {
-							const event = JSON.parse(data) as AgentEvent;
-							yield event;
-						} catch (e) {
-							yield {
-								type: "stream_error",
-								message:
-									e instanceof Error ? e.message : "Failed to parse SSE event",
-								raw: data,
-							};
-						}
+				for (const sseEvent of parsed.events) {
+					const data = sseEvent.data.trim();
+					if (!data || data === "[DONE]") continue;
+
+					try {
+						const event = JSON.parse(data) as AgentEvent;
+						yield event;
+					} catch (e) {
+						yield {
+							type: "stream_error",
+							message:
+								e instanceof Error ? e.message : "Failed to parse SSE event",
+							raw: data,
+						};
 					}
 				}
 			}

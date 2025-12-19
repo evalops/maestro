@@ -9,7 +9,7 @@
  * import { loadSkills, createSkillTool, getSkillsSummary } from "./skills";
  *
  * // Load all available skills
- * const skills = loadSkills(process.cwd());
+ * const { skills } = loadSkills(process.cwd());
  *
  * // Create the Skill tool for the agent
  * const skillTool = createSkillTool(process.cwd());

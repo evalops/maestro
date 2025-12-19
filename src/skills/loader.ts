@@ -37,6 +37,11 @@ const ALLOWED_FIELDS = new Set([
 	"compatibility",
 	"allowed-tools",
 	"metadata",
+	// Legacy fields (deprecated but supported for backwards compatibility)
+	"tags",
+	"author",
+	"version",
+	"triggers",
 ]);
 
 /**

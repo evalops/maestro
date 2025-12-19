@@ -54,6 +54,41 @@
 export type ComposerRole = "user" | "assistant" | "system" | "tool";
 
 /**
+ * Content blocks used for rich message payloads.
+ */
+export interface ComposerTextContent {
+	type: "text";
+	text: string;
+	textSignature?: string;
+}
+
+export interface ComposerImageContent {
+	type: "image";
+	data: string;
+	mimeType: string;
+}
+
+export interface ComposerThinkingContent {
+	type: "thinking";
+	thinking: string;
+	thinkingSignature?: string;
+}
+
+export interface ComposerToolCallContent {
+	type: "toolCall";
+	id: string;
+	name: string;
+	arguments: Record<string, unknown>;
+	thoughtSignature?: string;
+}
+
+export type ComposerContentBlock =
+	| ComposerTextContent
+	| ComposerImageContent
+	| ComposerThinkingContent
+	| ComposerToolCallContent;
+
+/**
  * Extended thinking/reasoning level for supported models.
  *
  * Higher levels produce more detailed reasoning at the cost of latency:
@@ -130,7 +165,7 @@ export interface ComposerMessage {
 	/** Role of the message sender */
 	role: ComposerRole;
 	/** Text content of the message */
-	content: string;
+	content: string | ComposerContentBlock[];
 	/** Optional file attachments (for user messages) */
 	attachments?: ComposerAttachment[];
 	/** ISO 8601 timestamp when the message was created */
@@ -232,6 +267,167 @@ export interface ComposerSession extends ComposerSessionSummary {
 	/** Complete conversation history */
 	messages: ComposerMessage[];
 }
+
+/**
+ * Streaming events emitted while generating assistant messages.
+ */
+export type ComposerAssistantMessageEvent =
+	| {
+			type: "start";
+			partial: ComposerMessage;
+	  }
+	| {
+			type: "text_start";
+			contentIndex: number;
+			partial: ComposerMessage;
+	  }
+	| {
+			type: "text_delta";
+			contentIndex: number;
+			delta: string;
+			partial: ComposerMessage;
+	  }
+	| {
+			type: "text_end";
+			contentIndex: number;
+			content: string;
+			partial: ComposerMessage;
+	  }
+	| {
+			type: "thinking_start";
+			contentIndex: number;
+			partial: ComposerMessage;
+	  }
+	| {
+			type: "thinking_delta";
+			contentIndex: number;
+			delta: string;
+			partial: ComposerMessage;
+	  }
+	| {
+			type: "thinking_end";
+			contentIndex: number;
+			content: string;
+			partial: ComposerMessage;
+	  }
+	| {
+			type: "toolcall_start";
+			contentIndex: number;
+			partial: ComposerMessage;
+	  }
+	| {
+			type: "toolcall_delta";
+			contentIndex: number;
+			delta: string;
+			partial: ComposerMessage;
+	  }
+	| {
+			type: "toolcall_end";
+			contentIndex: number;
+			toolCall: ComposerToolCallContent;
+			partial: ComposerMessage;
+	  }
+	| {
+			type: "done";
+			reason: "stop" | "length" | "toolUse";
+			message: ComposerMessage;
+	  }
+	| {
+			type: "error";
+			reason: "aborted" | "error";
+			error: ComposerMessage;
+	  };
+
+export interface ComposerActionApprovalRequest {
+	id: string;
+	toolName: string;
+	args: unknown;
+	reason: string;
+}
+
+export interface ComposerActionApprovalDecision {
+	approved: boolean;
+	reason?: string;
+	resolvedBy: "policy" | "user";
+}
+
+/**
+ * Agent-level streaming events (SSE payloads).
+ */
+export type ComposerAgentEvent =
+	| { type: "agent_start" }
+	| {
+			type: "agent_end";
+			messages: ComposerMessage[];
+			aborted?: boolean;
+			partialAccepted?: ComposerMessage;
+			stopReason?: "stop" | "length" | "toolUse" | "error" | "aborted";
+	  }
+	| { type: "status"; status: string; details: Record<string, unknown> }
+	| { type: "error"; message: string }
+	| { type: "turn_start" }
+	| {
+			type: "turn_end";
+			message: ComposerMessage;
+			toolResults: ComposerMessage[];
+	  }
+	| { type: "message_start"; message: ComposerMessage }
+	| {
+			type: "message_update";
+			message: ComposerMessage;
+			assistantMessageEvent: ComposerAssistantMessageEvent;
+	  }
+	| { type: "message_end"; message: ComposerMessage }
+	| {
+			type: "tool_execution_start";
+			toolCallId: string;
+			toolName: string;
+			args: Record<string, unknown>;
+	  }
+	| {
+			type: "tool_execution_end";
+			toolCallId: string;
+			toolName: string;
+			result: unknown;
+			isError: boolean;
+	  }
+	| { type: "action_approval_required"; request: ComposerActionApprovalRequest }
+	| {
+			type: "action_approval_resolved";
+			request: ComposerActionApprovalRequest;
+			decision: ComposerActionApprovalDecision;
+	  }
+	| {
+			type: "client_tool_request";
+			toolCallId: string;
+			toolName: string;
+			args: unknown;
+	  }
+	| {
+			type: "compaction";
+			summary: string;
+			firstKeptEntryIndex: number;
+			tokensBefore: number;
+			auto?: boolean;
+			customInstructions?: string;
+			timestamp: string;
+	  }
+	| {
+			type: "auto_retry_start";
+			attempt: number;
+			maxAttempts: number;
+			delayMs: number;
+			errorMessage: string;
+	  }
+	| {
+			type: "auto_retry_end";
+			success: boolean;
+			attempt: number;
+			finalError?: string;
+	  }
+	| { type: "session_update"; sessionId: string }
+	| { type: "heartbeat" }
+	| { type: "aborted" };
 
 /**
  * Response payload for session list endpoint.

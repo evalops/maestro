@@ -15,11 +15,41 @@ const ajvInstance = new Ajv({
 });
 addFormats(ajvInstance);
 
+const ComposerContentBlockSchema = Type.Union([
+	Type.Object({
+		type: Type.Literal("text"),
+		text: Type.String(),
+		textSignature: Type.Optional(Type.String()),
+	}),
+	Type.Object({
+		type: Type.Literal("image"),
+		data: Type.String(),
+		mimeType: Type.String(),
+	}),
+	Type.Object({
+		type: Type.Literal("thinking"),
+		thinking: Type.String(),
+		thinkingSignature: Type.Optional(Type.String()),
+	}),
+	Type.Object({
+		type: Type.Literal("toolCall"),
+		id: Type.String(),
+		name: Type.String(),
+		arguments: Type.Record(Type.String(), Type.Unknown()),
+		thoughtSignature: Type.Optional(Type.String()),
+	}),
+]);
+
 export const ChatRequestSchema = Type.Object({
 	messages: Type.Array(
 		Type.Object({
 			role: Type.String(),
-			content: Type.Optional(Type.String()),
+			content: Type.Optional(
+				Type.Union([
+					Type.String(),
+					Type.Array(ComposerContentBlockSchema, { minItems: 1 }),
+				]),
+			),
 			attachments: Type.Optional(
 				Type.Array(
 					Type.Object({

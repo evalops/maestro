@@ -1038,7 +1038,7 @@ export class ComposerChat extends LitElement {
 			}
 			this.currentSessionId = session.id;
 			this.messages = Array.isArray(session.messages)
-				? [...session.messages]
+				? this.normalizeMessages(session.messages)
 				: [];
 			this.renderLimit = 200;
 			this.syncRenderWindowToBottom();
@@ -1343,6 +1343,27 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
+	private coerceMessageContent(content: Message["content"]): string {
+		if (typeof content === "string") return content;
+		if (!Array.isArray(content)) return "";
+		return content
+			.filter((block) => block?.type === "text")
+			.map((block) => (block?.type === "text" ? block.text : ""))
+			.join("");
+	}
+
+	private normalizeMessage(message: Message): Message {
+		if (typeof message.content === "string") return message;
+		return {
+			...message,
+			content: this.coerceMessageContent(message.content),
+		};
+	}
+
+	private normalizeMessages(messages: Message[]): Message[] {
+		return messages.map((message) => this.normalizeMessage(message));
+	}
+
 	private async loadSessions() {
 		try {
 			this.sessions = await this.apiClient.getSessions();
@@ -1577,7 +1598,9 @@ export class ComposerChat extends LitElement {
 		try {
 			const session = await this.apiClient.createSession("New Chat");
 			this.currentSessionId = session.id;
-			this.messages = session.messages || [];
+			this.messages = Array.isArray(session.messages)
+				? this.normalizeMessages(session.messages)
+				: [];
 			this.renderLimit = 200;
 			this.syncRenderWindowToBottom();
 			this.attachmentContentCache.clear();
@@ -1601,7 +1624,7 @@ export class ComposerChat extends LitElement {
 			}
 			this.currentSessionId = session.id;
 			this.messages = Array.isArray(session.messages)
-				? [...session.messages]
+				? this.normalizeMessages(session.messages)
 				: [];
 			this.renderLimit = 200;
 			this.syncRenderWindowToBottom();
@@ -1819,6 +1842,11 @@ export class ComposerChat extends LitElement {
 
 							// Text deltas
 							if (msgEvent.type === "text_delta") {
+								if (typeof assistantMessage.content !== "string") {
+									assistantMessage.content = this.coerceMessageContent(
+										assistantMessage.content,
+									);
+								}
 								assistantMessage.content += msgEvent.delta;
 								this.messages = [...this.messages];
 							}
@@ -1846,7 +1874,9 @@ export class ComposerChat extends LitElement {
 
 							// Tool call tracking
 							else if (msgEvent.type === "toolcall_start") {
-								const partial = msgEvent.partial.content[msgEvent.contentIndex];
+								const partial = Array.isArray(msgEvent.partial.content)
+									? msgEvent.partial.content[msgEvent.contentIndex]
+									: undefined;
 								if (partial?.type === "toolCall" && partial.id) {
 									const args = partial.arguments ?? {};
 									const name = partial.name || "tool";
@@ -1880,7 +1910,9 @@ export class ComposerChat extends LitElement {
 									this.messages = [...this.messages];
 								}
 							} else if (msgEvent.type === "toolcall_delta") {
-								const partial = msgEvent.partial.content[msgEvent.contentIndex];
+								const partial = Array.isArray(msgEvent.partial.content)
+									? msgEvent.partial.content[msgEvent.contentIndex]
+									: undefined;
 								if (partial?.type === "toolCall" && partial.id) {
 									const args = partial.arguments ?? {};
 									if (!assistantMessage.tools) assistantMessage.tools = [];

@@ -4,8 +4,7 @@
 		"outDir": "./dist",
 		"rootDir": "../../",
 		"composite": true,
-		"tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo",
-		"emitDeclarationOnly": true
+		"tsBuildInfoFile": "./dist/tsconfig.build.tsbuildinfo"
 	},
 	"include": ["src/**/*.ts", "../../src/**/*.ts", "../../package.json"],
 	"exclude": ["node_modules", "dist"],
