@@ -130,7 +130,7 @@ export function getWorkspaceFiles(limit = 2000): string[] {
 		.map((file) => file.replace(/^[.][/\\]/, ""))
 		.filter((file) => file.length > 0);
 
-	cachedFiles = normalized.slice(0, limit);
+	cachedFiles = normalized;
 	cachedAt = now;
-	return cachedFiles;
+	return normalized.slice(0, limit);
 }
