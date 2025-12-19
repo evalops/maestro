@@ -63,11 +63,11 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
+import { PATHS } from "../config/constants.js";
 import { setPlanSatisfied } from "../safety/safe-mode.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
@@ -265,8 +265,7 @@ type TodoStore = Record<
 	{ goal: string; items: NormalizedTodo[]; updatedAt: string }
 >;
 
-export const defaultStorePath =
-	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
+export const defaultStorePath = PATHS.TODO_STORE;
 
 async function ensureParentDirectory(filePath: string) {
 	await mkdir(dirname(filePath), { recursive: true });
