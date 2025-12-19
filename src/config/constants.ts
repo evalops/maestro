@@ -51,6 +51,10 @@ export const PATHS = {
 	TODO_STORE:
 		process.env.COMPOSER_TODO_FILE ??
 		join(homedir(), ".composer", "todos.json"),
+	/** Usage tracking file path */
+	USAGE_FILE:
+		process.env.COMPOSER_USAGE_FILE ??
+		join(homedir(), ".composer", "usage.json"),
 	/** Telemetry log file path */
 	TELEMETRY_LOG:
 		process.env.COMPOSER_TELEMETRY_FILE ??

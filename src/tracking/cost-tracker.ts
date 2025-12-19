@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { parseJsonOr } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -13,10 +13,7 @@ const logger = createLogger("cost-tracker");
  */
 
 function getUsageFilePathInternal(): string {
-	if (process.env.COMPOSER_USAGE_FILE) {
-		return process.env.COMPOSER_USAGE_FILE;
-	}
-	return join(homedir(), ".composer", "usage.json");
+	return process.env.COMPOSER_USAGE_FILE ?? PATHS.USAGE_FILE;
 }
 
 export interface UsageEntry {
