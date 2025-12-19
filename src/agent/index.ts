@@ -83,15 +83,6 @@ export {
 	type PromptCacheConfig,
 } from "./prompt-cache.js";
 export {
-	CourseCorrector,
-	createCourseCorrector,
-	createCourseCorrectionProvider,
-	formatCorrectionMessage,
-	type CourseCorrectorConfig,
-	type CourseIssueType,
-	type DetectedIssue,
-} from "./course-correction.js";
-export {
 	MODE_CONFIGS,
 	MODEL_BY_TIER,
 	formatModeDisplay,
@@ -120,27 +111,6 @@ export {
 	type ContextUsage,
 	type HandoffContext,
 } from "./context-handoff.js";
-export {
-	ToolLedger,
-	createToolLedger,
-	formatDuration,
-	type ToolCallRecord,
-	type ToolStats,
-	type SessionStats,
-	type UsagePattern,
-} from "./tool-ledger.js";
-export {
-	Bookkeeper,
-	createBookkeeper,
-	SUPPORTED_EXTENSIONS as BOOKKEEPER_SUPPORTED_EXTENSIONS,
-	type CellValue,
-	type Row,
-	type SheetData,
-	type WorkbookData,
-	type QueryResult,
-	type ColumnStats,
-	type SheetSummary,
-} from "./bookkeeper.js";
 export {
 	SUBAGENT_SPECS,
 	TOOL_CATEGORIES,
