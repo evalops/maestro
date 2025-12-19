@@ -959,24 +959,22 @@ export class Scheduler {
 	}
 
 	private async runCheck(): Promise<void> {
-		if (this.checking) {
-			return this.checkPromise ?? Promise.resolve();
+		if (this.checkPromise) {
+			return this.checkPromise;
 		}
-		this.checking = true;
 		const runPromise = (async () => {
+			this.checking = true;
 			try {
 				await this.checkDueTasks();
 			} catch (error) {
 				logger.logWarning("Scheduler check failed", String(error));
+			} finally {
+				this.checking = false;
+				this.checkPromise = null;
 			}
 		})();
 		this.checkPromise = runPromise;
-		try {
-			await runPromise;
-		} finally {
-			this.checking = false;
-			this.checkPromise = null;
-		}
+		return runPromise;
 	}
 
 	private async checkDueTasks(): Promise<void> {
