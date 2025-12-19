@@ -10,10 +10,13 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import {
+	expandTildePathWithHomeDir,
+	getHomeDir,
+} from "../utils/path-expansion.js";
 import type {
 	HookCommandConfig,
 	HookConfig,
@@ -26,14 +29,11 @@ import type {
 const logger = createLogger("hooks:config");
 
 function resolveHomeDirectory(): string {
-	return process.env.HOME || process.env.USERPROFILE || homedir();
+	return getHomeDir();
 }
 
 function expandHome(path: string): string {
-	if (path.startsWith("~/")) {
-		return join(resolveHomeDirectory(), path.slice(2));
-	}
-	return path;
+	return expandTildePathWithHomeDir(path, resolveHomeDirectory());
 }
 
 /**
