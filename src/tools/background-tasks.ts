@@ -78,6 +78,7 @@ import { dirname, join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { StringEnum } from "../agent/providers/typebox-helpers.js";
 
+import { PATHS } from "../config/constants.js";
 import {
 	type BackgroundTaskSettings,
 	getBackgroundTaskSettings,
@@ -910,8 +911,7 @@ class BackgroundTaskManager extends EventEmitter {
 
 	private getLogDir(): string {
 		const base =
-			process.env.COMPOSER_BACKGROUND_LOG_DIR ??
-			join(os.homedir(), ".composer", "background-tasks");
+			process.env.COMPOSER_BACKGROUND_LOG_DIR ?? PATHS.BACKGROUND_TASK_LOG_DIR;
 		const expanded = expandUserPath(base);
 		const shouldRefresh =
 			this.logDir === null ||
