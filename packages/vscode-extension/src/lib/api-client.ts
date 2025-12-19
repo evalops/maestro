@@ -13,8 +13,24 @@ interface StreamErrorEvent {
 	message: string;
 	raw?: string;
 }
+interface LegacyTextDeltaEvent {
+	type: "text_delta";
+	text?: string;
+	delta?: string;
+}
+interface LegacyThinkingStartEvent {
+	type: "thinking_start";
+}
+interface LegacyThinkingEndEvent {
+	type: "thinking_end";
+}
 /** Union of all agent event types */
-export type AgentEvent = Contracts.ComposerAgentEvent | StreamErrorEvent;
+export type AgentEvent =
+	| Contracts.ComposerAgentEvent
+	| StreamErrorEvent
+	| LegacyTextDeltaEvent
+	| LegacyThinkingStartEvent
+	| LegacyThinkingEndEvent;
 
 export interface Model {
 	id: string;
