@@ -28,14 +28,15 @@ import {
 	renameSync,
 	rmSync,
 } from "node:fs";
-import { arch, homedir, platform } from "node:os";
+import { arch, platform } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import chalk from "chalk";
+import { PATHS } from "../config/constants.js";
 
 /** Directory where downloaded tools are installed */
-const TOOLS_DIR = join(homedir(), ".composer", "tools");
+const TOOLS_DIR = PATHS.TOOLS_DIR;
 const FETCH_TIMEOUT_MS = 30_000;
 const DOWNLOAD_IDLE_TIMEOUT_MS = 60_000;
 
