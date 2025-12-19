@@ -1,8 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { type Container, Spacer, type TUI, Text } from "@evalops/tui";
 import type { AgentState } from "../agent/types.js";
+import { PATHS } from "../config/constants.js";
 import {
 	badge,
 	heading,
@@ -11,11 +10,7 @@ import {
 	separator as themedSeparator,
 } from "../style/theme.js";
 
-export const TOOL_FAILURE_LOG_PATH = join(
-	homedir(),
-	".composer",
-	"tool-failures.log",
-);
+export const TOOL_FAILURE_LOG_PATH = PATHS.TOOL_FAILURE_LOG;
 
 interface ToolStatusViewOptions {
 	chatContainer: Container;
