@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
-import { getAgentDir } from "../config/constants.js";
+import { PATHS, getAgentDir } from "../config/constants.js";
 
 // Tool descriptions for dynamic system prompt generation
 const TOOL_DESCRIPTIONS: Record<string, string> = {
@@ -153,15 +153,8 @@ interface ContextFile {
 	content: string;
 }
 
-const CONTEXT_FILE_CANDIDATES = [
-	"AGENTS.override.md",
-	"AGENTS.md",
-	"AGENT.md",
-	"CLAUDE.md",
-];
-
 function loadContextFileFromDir(dir: string): ContextFile | null {
-	const candidates = CONTEXT_FILE_CANDIDATES;
+	const candidates = PATHS.AGENT_CONTEXT_FILES;
 	for (const filename of candidates) {
 		const filePath = join(dir, filename);
 		if (existsSync(filePath)) {
