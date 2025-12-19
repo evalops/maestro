@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import type {
 	HookCommandConfig,
@@ -115,7 +116,7 @@ function applyRegisteredHooks(
  * Get the user hooks config path.
  */
 export function getUserHooksConfigPath(): string {
-	return join(resolveHomeDirectory(), ".composer", "hooks.json");
+	return join(PATHS.COMPOSER_HOME, "hooks.json");
 }
 
 /**
