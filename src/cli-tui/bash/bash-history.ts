@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { PATHS } from "../../config/constants.js";
 
 const MAX_HISTORY_SIZE = 500;
 
@@ -13,10 +13,7 @@ export interface BashHistoryStore {
  * Get the history file path. Evaluated at call time to support testing.
  */
 export function getHistoryFilePath(): string {
-	return (
-		process.env.COMPOSER_BASH_HISTORY ??
-		join(homedir(), ".composer", "bash-history.json")
-	);
+	return process.env.COMPOSER_BASH_HISTORY ?? PATHS.BASH_HISTORY_FILE;
 }
 
 /**

@@ -71,6 +71,10 @@ export const PATHS = {
 	COMMAND_PREFS_FILE:
 		process.env.COMPOSER_COMMAND_PREFS ??
 		join(homedir(), ".composer", "agent", "command-prefs.json"),
+	/** Bash history file path */
+	BASH_HISTORY_FILE:
+		process.env.COMPOSER_BASH_HISTORY ??
+		join(homedir(), ".composer", "bash-history.json"),
 	/** Cost tracking database path */
 	COST_DB:
 		process.env.COMPOSER_COST_DB ?? join(homedir(), ".composer", "costs.db"),
