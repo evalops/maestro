@@ -78,10 +78,10 @@ import {
 	statSync,
 	unlinkSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { v4 as uuidv4 } from "uuid";
 import type { AgentState, AppMessage } from "../agent/types.js";
+import { getAgentDir } from "../config/constants.js";
 import {
 	buildConversationModel,
 	isRenderableUserMessage,
@@ -389,12 +389,7 @@ export class SessionManager {
 		// Replace all path separators and colons (for Windows drive letters) with dashes
 		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 
-		const configDir = resolve(
-			process.env.COMPOSER_AGENT_DIR ??
-				process.env.PLAYWRIGHT_AGENT_DIR ??
-				process.env.CODING_AGENT_DIR ??
-				join(homedir(), ".composer/agent/"),
-		);
+		const configDir = resolve(getAgentDir());
 		const sessionDir = join(configDir, "sessions", safePath);
 		if (!existsSync(sessionDir)) {
 			mkdirSync(sessionDir, { recursive: true });
