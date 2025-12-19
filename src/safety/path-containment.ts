@@ -114,8 +114,3 @@ export function getSafePathMatch(
 export function isContainedInWorkspace(filePath: string): boolean {
 	return getSafePathMatch(filePath) !== null;
 }
-
-export function isContainedInWorkspaceOrTemp(filePath: string): boolean {
-	const match = getSafePathMatch(filePath);
-	return match === "workspace" || match === "temp";
-}

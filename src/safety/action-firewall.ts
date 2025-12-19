@@ -66,11 +66,7 @@ import {
 	tokenizeSimple,
 	unwrapShellCommand,
 } from "./bash-safety-analyzer.js";
-import {
-	isContainedInWorkspace,
-	isContainedInWorkspaceOrTemp,
-	isSystemPath,
-} from "./path-containment.js";
+import { isContainedInWorkspace, isSystemPath } from "./path-containment.js";
 import { checkPolicy } from "./policy.js";
 import { RuleCache } from "./rule-cache.js";
 import { TOOL_TAGS, looksLikeEgress } from "./workflow-state.js";
@@ -398,7 +394,7 @@ const treeSitterCommandRule: ActionFirewallRule = {
  * - C:\Program Files: Installed applications
  *
  * Note: /var/folders (macOS temp) and /tmp are explicitly allowed
- * through the isContainedInWorkspaceOrTemp check before system path blocking.
+ * through the isContainedInWorkspace check before system path blocking.
  */
 function extractFilePaths(context: ActionApprovalContext): string[] {
 	const args = getArgsObject(context);
@@ -492,11 +488,11 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 				return { allowed: true };
 			}
 			const paths = extractFilePaths(ctx);
-			// We check system paths first, but if it's in workspace or temp (safe), we should allow it.
+			// We check system paths first, but if it's in workspace, temp, or a trusted path (safe), we should allow it.
 			// System paths like /var include /var/folders (temp on mac), so we need to exclude safe temp paths from system path blocking.
 
-			// Filter out paths that are inside the workspace or temp directory (which are safe)
-			const unsafePaths = paths.filter((p) => !isContainedInWorkspaceOrTemp(p));
+			// Filter out paths that are inside the workspace, temp, or trusted paths (which are safe)
+			const unsafePaths = paths.filter((p) => !isContainedInWorkspace(p));
 
 			// Only check remaining paths against system blocklist
 			if (unsafePaths.some(isSystemPath)) {
