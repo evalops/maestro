@@ -144,6 +144,35 @@ describe("session serialization", () => {
 		});
 	});
 
+	it("preserves tool call IDs when content includes tool calls", () => {
+		const composerMessage: ComposerMessage = {
+			role: "assistant",
+			content: [
+				{ type: "text", text: "Running tool" },
+				{
+					type: "toolCall",
+					id: "tool-42",
+					name: "read",
+					arguments: { path: "README.md" },
+				},
+			],
+			timestamp: new Date(1732067600000).toISOString(),
+			tools: [
+				{
+					name: "read",
+					status: "completed",
+					args: { path: "README.md" },
+					toolCallId: "tool-42",
+				},
+			],
+		};
+
+		const appMessages = convertComposerMessageToApp(composerMessage, mockModel);
+		expect(appMessages).toHaveLength(2);
+		const toolResult = appMessages[1] as ToolResultMessage;
+		expect(toolResult.toolCallId).toBe("tool-42");
+	});
+
 	it("summarizes image content when converting app messages", () => {
 		const userMessage: AppMessage = {
 			role: "user",
