@@ -1,5 +1,3 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { SlashCommand } from "@evalops/tui";
 import {
 	Container,
@@ -25,6 +23,7 @@ import type {
 	AppMessage,
 	ThinkingLevel,
 } from "../agent/types.js";
+import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
@@ -231,8 +230,7 @@ import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
 const logger = createLogger("tui:renderer");
 
-const TODO_STORE_PATH =
-	process.env.COMPOSER_TODO_FILE ?? join(homedir(), ".composer", "todos.json");
+const TODO_STORE_PATH = PATHS.TODO_STORE;
 
 /**
  * Main TUI (Terminal User Interface) renderer for the Composer coding agent.
