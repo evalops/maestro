@@ -1,8 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { PATHS } from "../config/constants.js";
-import { resolveEnvPath } from "../utils/path-expansion.js";
+import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 
 type StoredKey = {
 	apiKey?: string;
@@ -16,7 +15,7 @@ const PROJECT_KEYS_PATH = join(process.cwd(), ".composer", "keys.json");
 
 function getFactoryPaths(): { keysPath: string; configPath: string } {
 	const factoryHome =
-		resolveEnvPath(process.env.FACTORY_HOME) ?? join(homedir(), ".factory");
+		resolveEnvPath(process.env.FACTORY_HOME) ?? join(getHomeDir(), ".factory");
 	return {
 		keysPath: join(factoryHome, "keys.json"),
 		configPath: join(factoryHome, "config.json"),
@@ -30,7 +29,7 @@ function sanitizePath(pathOverride?: string): string | undefined {
 		DEFAULT_KEYS_PATH;
 	if (!candidate) return undefined;
 	const resolved = resolve(candidate);
-	const allowedRoots = [homedir(), PATHS.COMPOSER_HOME, process.cwd()].map(
+	const allowedRoots = [getHomeDir(), PATHS.COMPOSER_HOME, process.cwd()].map(
 		(p) => resolve(p),
 	);
 	const isAllowed = allowedRoots.some((root) => resolved.startsWith(root));

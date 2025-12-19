@@ -1,11 +1,11 @@
-import * as os from "node:os";
 import { visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
 import * as Diff from "diff";
 import { highlightCodeLines } from "../../style/code-highlighter.js";
+import { getHomeDir } from "../../utils/path-expansion.js";
 
 export function shortenPath(path: string): string {
-	const home = os.homedir();
+	const home = getHomeDir();
 	if (path.startsWith(home)) {
 		return `~${path.slice(home.length)}`;
 	}

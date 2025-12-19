@@ -12,7 +12,7 @@
  * - Can be disabled via environment variable
  */
 
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { registerHook } from "../hooks/config.js";
 import type {
 	HookCallbackConfig,
@@ -96,7 +96,7 @@ function createTestVerificationCallback(
 		}
 
 		// Record the file change (this will debounce and eventually trigger tests)
-		const absolutePath = filePath.startsWith("/")
+		const absolutePath = isAbsolute(filePath)
 			? filePath
 			: join(postInput.cwd, filePath);
 

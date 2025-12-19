@@ -1,6 +1,5 @@
 import { createReadStream, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { AgentState, AppMessage } from "./agent/types.js";
@@ -16,6 +15,7 @@ import {
 	isRenderableUserMessage,
 } from "./conversation/render-model.js";
 import type { SessionHeaderEntry, SessionManager } from "./session/manager.js";
+import { getHomeDir } from "./utils/path-expansion.js";
 
 // Get version from package.json without import assertions (Node16 compatible)
 const packageJson = createRequire(import.meta.url)("../package.json") as {
@@ -80,7 +80,7 @@ function escapeHtml(text: string): string {
  * Shorten path with tilde notation
  */
 function shortenPath(path: string): string {
-	const home = homedir();
+	const home = getHomeDir();
 	if (path.startsWith(home)) {
 		return `~${path.slice(home.length)}`;
 	}

@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { Spacer, Text } from "@evalops/tui";
 import type { Container, TUI } from "@evalops/tui";
 import chalk from "chalk";
@@ -12,6 +11,7 @@ import {
 	validateConfig,
 } from "../models/registry.js";
 import { badge, muted, separator } from "../style/theme.js";
+import { getHomeDir } from "../utils/path-expansion.js";
 import type { CommandExecutionContext } from "./commands/types.js";
 
 interface ConfigViewOptions {
@@ -185,8 +185,11 @@ export class ConfigView {
 		if (inspection.sources.length === 0) {
 			return "";
 		}
+		const homeDir = getHomeDir();
 		const lines = inspection.sources.map((source) => {
-			const rel = source.path.replace(homedir(), "~");
+			const rel = source.path.startsWith(homeDir)
+				? `~${source.path.slice(homeDir.length)}`
+				: source.path;
 			const status = source.exists
 				? badge(source.loaded ? "loaded" : "present", undefined, "success")
 				: badge("missing", undefined, "warn");
@@ -253,8 +256,11 @@ export class ConfigView {
 		if (inspection.fileReferences.length === 0) {
 			return "";
 		}
+		const homeDir = getHomeDir();
 		const lines = inspection.fileReferences.map((ref) => {
-			const rel = ref.path.replace(homedir(), "~");
+			const rel = ref.path.startsWith(homeDir)
+				? `~${ref.path.slice(homeDir.length)}`
+				: ref.path;
 			const status = ref.exists
 				? badge("present", undefined, "success")
 				: badge("missing", undefined, "danger");

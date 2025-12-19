@@ -73,7 +73,6 @@
  */
 
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
@@ -94,7 +93,11 @@ import {
 	printParseErrorCode,
 } from "../utils/jsonc-umd.js";
 import { createLogger } from "../utils/logger.js";
-import { expandTildePath, resolveEnvPath } from "../utils/path-expansion.js";
+import {
+	expandTildePath,
+	getHomeDir,
+	resolveEnvPath,
+} from "../utils/path-expansion.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { getModel, getModels, getProviders } from "./builtin.js";
 import { normalizeLLMBaseUrl } from "./url-normalize.js";
@@ -330,7 +333,7 @@ const configPath = (): string =>
 	join(PATHS.COMPOSER_HOME, "models.json");
 
 const FACTORY_HOME =
-	resolveEnvPath(process.env.FACTORY_HOME) ?? join(homedir(), ".factory");
+	resolveEnvPath(process.env.FACTORY_HOME) ?? join(getHomeDir(), ".factory");
 const FACTORY_CONFIG_PATH = join(FACTORY_HOME, "config.json");
 const FACTORY_SETTINGS_PATH = join(FACTORY_HOME, "settings.json");
 const FACTORY_KEYS_PATH = join(FACTORY_HOME, "keys.json");
