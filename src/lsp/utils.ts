@@ -1,3 +1,5 @@
+import { fileURLToPath, pathToFileURL } from "node:url";
+
 /**
  * Check if an error indicates a dead connection
  */
@@ -15,11 +17,10 @@ export function isConnectionDead(error: unknown): boolean {
  * Convert file path to LSP URI
  */
 export function pathToUri(path: string): string {
-	// Normalize path and convert to file:// URI
-	const normalized = path.replace(/\\/g, "/");
-	return normalized.startsWith("file://")
-		? normalized
-		: `file://${normalized.startsWith("/") ? "" : "/"}${normalized}`;
+	if (path.startsWith("file://")) {
+		return path;
+	}
+	return pathToFileURL(path).toString();
 }
 
 /**
@@ -27,12 +28,16 @@ export function pathToUri(path: string): string {
  */
 export function uriToPath(uri: string): string {
 	if (uri.startsWith("file://")) {
-		let path = uri.slice(7);
-		// Remove leading slash for Windows drive-letter paths (e.g., "/C:/...")
-		if (path.length >= 3 && path[0] === "/" && path[2] === ":") {
-			path = path.slice(1);
+		try {
+			return fileURLToPath(uri);
+		} catch {
+			let path = uri.slice(7);
+			// Remove leading slash for Windows drive-letter paths (e.g., "/C:/...")
+			if (path.length >= 3 && path[0] === "/" && path[2] === ":") {
+				path = path.slice(1);
+			}
+			return path;
 		}
-		return path;
 	}
 	return uri;
 }
