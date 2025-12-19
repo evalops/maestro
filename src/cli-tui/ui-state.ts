@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
 import type { FooterMode } from "./utils/footer-utils.js";
 
@@ -18,20 +18,19 @@ export interface UiState {
 	favoriteCommands?: string[];
 }
 
-const UI_STATE_PATH =
-	process.env.COMPOSER_UI_STATE ??
-	join(homedir(), ".composer", "agent", "ui-state.json");
+const getUiStatePath = () =>
+	process.env.COMPOSER_UI_STATE ?? PATHS.UI_STATE_FILE;
 
 const getCommandPrefsPath = () =>
-	process.env.COMPOSER_COMMAND_PREFS ??
-	join(homedir(), ".composer", "agent", "command-prefs.json");
+	process.env.COMPOSER_COMMAND_PREFS ?? PATHS.COMMAND_PREFS_FILE;
 
 export function loadUiState(): UiState {
-	if (!existsSync(UI_STATE_PATH)) {
+	const uiStatePath = getUiStatePath();
+	if (!existsSync(uiStatePath)) {
 		return {};
 	}
 	try {
-		const raw = readFileSync(UI_STATE_PATH, "utf-8");
+		const raw = readFileSync(uiStatePath, "utf-8");
 		const parsed = JSON.parse(raw) as UiState;
 		return {
 			queueMode:
@@ -80,8 +79,9 @@ export function loadUiState(): UiState {
 export function saveUiState(partial: UiState): void {
 	const current = loadUiState();
 	const next: UiState = { ...current, ...partial };
-	mkdirSync(dirname(UI_STATE_PATH), { recursive: true });
-	writeFileSync(UI_STATE_PATH, JSON.stringify(next, null, 2), "utf-8");
+	const uiStatePath = getUiStatePath();
+	mkdirSync(dirname(uiStatePath), { recursive: true });
+	writeFileSync(uiStatePath, JSON.stringify(next, null, 2), "utf-8");
 }
 
 export function loadCommandPrefs(): {

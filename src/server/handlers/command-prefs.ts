@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname } from "node:path";
+import { PATHS } from "../../config/constants.js";
 import type { WebServerContext } from "../app-context.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 
@@ -10,12 +10,14 @@ type CommandPrefs = {
 	recents: string[];
 };
 
-const PREF_PATH = join(homedir(), ".composer", "agent", "command-prefs.json");
+const getPrefsPath = () =>
+	process.env.COMPOSER_COMMAND_PREFS ?? PATHS.COMMAND_PREFS_FILE;
 
 function loadPrefs(): CommandPrefs {
 	try {
-		if (!existsSync(PREF_PATH)) return { favorites: [], recents: [] };
-		const raw = readFileSync(PREF_PATH, "utf8");
+		const prefsPath = getPrefsPath();
+		if (!existsSync(prefsPath)) return { favorites: [], recents: [] };
+		const raw = readFileSync(prefsPath, "utf8");
 		const parsed = JSON.parse(raw);
 		return {
 			favorites: Array.isArray(parsed.favorites)
@@ -31,8 +33,9 @@ function loadPrefs(): CommandPrefs {
 }
 
 function savePrefs(prefs: CommandPrefs): void {
-	mkdirSync(join(homedir(), ".composer", "agent"), { recursive: true });
-	writeFileSync(PREF_PATH, JSON.stringify(prefs, null, 2), "utf8");
+	const prefsPath = getPrefsPath();
+	mkdirSync(dirname(prefsPath), { recursive: true });
+	writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), "utf8");
 }
 
 export async function handleCommandPrefs(
