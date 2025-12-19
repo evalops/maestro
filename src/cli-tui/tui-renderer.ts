@@ -230,7 +230,8 @@ import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
 const logger = createLogger("tui:renderer");
 
-const TODO_STORE_PATH = PATHS.TODO_STORE;
+const getTodoStorePath = () =>
+	process.env.COMPOSER_TODO_FILE ?? PATHS.TODO_STORE;
 
 /**
  * Main TUI (Terminal User Interface) renderer for the Composer coding agent.
@@ -650,7 +651,7 @@ export class TuiRenderer {
 			},
 		});
 		const planSubsystem = createPlanSubsystem({
-			filePath: TODO_STORE_PATH,
+			filePath: getTodoStorePath(),
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			modalManager: this.modalManager,
@@ -746,7 +747,7 @@ export class TuiRenderer {
 			getPendingTools: () => this.pendingTools,
 			toolStatusView: this.toolStatusView,
 			gitView: this.gitView,
-			todoStorePath: TODO_STORE_PATH,
+			todoStorePath: getTodoStorePath(),
 			getApprovalMode: () => this.approvalService.getMode(),
 			getAlertCount: () => this.footer.getUnseenAlertCount(),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
