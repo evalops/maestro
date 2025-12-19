@@ -36,6 +36,8 @@ import chalk from "chalk";
 
 /** Directory where downloaded tools are installed */
 const TOOLS_DIR = join(homedir(), ".composer", "tools");
+const FETCH_TIMEOUT_MS = 30_000;
+const DOWNLOAD_IDLE_TIMEOUT_MS = 60_000;
 
 /**
  * Configuration for an external tool.
@@ -164,21 +166,42 @@ export function getToolPath(tool: "fd" | "rg"): string | null {
  * @param repo - Repository in owner/repo format
  * @returns Version string (without "v" prefix)
  */
+async function fetchWithTimeout(
+	url: string,
+	init?: RequestInit,
+): Promise<{ response: Response; clearTimeout: () => void }> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+	try {
+		const response = await fetch(url, { ...init, signal: controller.signal });
+		return {
+			response,
+			clearTimeout: () => clearTimeout(timeout),
+		};
+	} catch (error) {
+		clearTimeout(timeout);
+		throw error;
+	}
+}
+
 async function getLatestVersion(repo: string): Promise<string> {
-	const response = await fetch(
+	const { response, clearTimeout: clearFetchTimeout } = await fetchWithTimeout(
 		`https://api.github.com/repos/${repo}/releases/latest`,
 		{
 			headers: { "User-Agent": "composer-coding-agent" },
 		},
 	);
+	try {
+		if (!response.ok) {
+			throw new Error(`GitHub API error: ${response.status}`);
+		}
 
-	if (!response.ok) {
-		throw new Error(`GitHub API error: ${response.status}`);
+		const data = (await response.json()) as { tag_name: string };
+		// Strip "v" prefix if present for consistent version handling
+		return data.tag_name.replace(/^v/, "");
+	} finally {
+		clearFetchTimeout();
 	}
-
-	const data = (await response.json()) as { tag_name: string };
-	// Strip "v" prefix if present for consistent version handling
-	return data.tag_name.replace(/^v/, "");
 }
 
 /**
@@ -186,23 +209,67 @@ async function getLatestVersion(repo: string): Promise<string> {
  * Uses streaming to handle large files efficiently.
  */
 async function downloadFile(url: string, dest: string): Promise<void> {
-	const response = await fetch(url);
+	const { response, clearTimeout: clearFetchTimeout } =
+		await fetchWithTimeout(url);
+	try {
+		if (!response.ok) {
+			throw new Error(`Failed to download: ${response.status}`);
+		}
 
-	if (!response.ok) {
-		throw new Error(`Failed to download: ${response.status}`);
-	}
+		if (!response.body) {
+			throw new Error("No response body");
+		}
 
-	if (!response.body) {
-		throw new Error("No response body");
-	}
+		clearFetchTimeout();
 
-	// Stream the response directly to disk
-	const fileStream = createWriteStream(dest);
-	await finished(
-		Readable.fromWeb(
+		// Stream the response directly to disk
+		const stream = Readable.fromWeb(
 			response.body as Parameters<typeof Readable.fromWeb>[0],
-		).pipe(fileStream),
-	);
+		);
+		const fileStream = createWriteStream(dest);
+		let idleTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+		const clearIdleTimeout = (): void => {
+			if (idleTimeoutId) {
+				clearTimeout(idleTimeoutId);
+				idleTimeoutId = null;
+			}
+		};
+
+		const resetIdleTimeout = (): void => {
+			clearIdleTimeout();
+			idleTimeoutId = setTimeout(() => {
+				const error = new Error(
+					`Tool download idle timeout after ${Math.round(DOWNLOAD_IDLE_TIMEOUT_MS / 1000)}s`,
+				);
+				stream.destroy();
+				fileStream.destroy();
+				fileStream.emit("error", error);
+			}, DOWNLOAD_IDLE_TIMEOUT_MS);
+		};
+
+		const onStreamEnd = (): void => {
+			clearIdleTimeout();
+		};
+
+		resetIdleTimeout();
+		stream.on("data", resetIdleTimeout);
+		stream.on("end", onStreamEnd);
+		stream.on("close", onStreamEnd);
+		stream.on("error", onStreamEnd);
+
+		try {
+			await finished(stream.pipe(fileStream));
+		} finally {
+			stream.off("data", resetIdleTimeout);
+			stream.off("end", onStreamEnd);
+			stream.off("close", onStreamEnd);
+			stream.off("error", onStreamEnd);
+			clearIdleTimeout();
+		}
+	} finally {
+		clearFetchTimeout();
+	}
 }
 
 function runExtractor(
