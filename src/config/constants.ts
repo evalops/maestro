@@ -61,6 +61,8 @@ export const PATHS = {
 		join(homedir(), ".composer", "telemetry.log"),
 	/** Tool failure log file path */
 	TOOL_FAILURE_LOG: join(homedir(), ".composer", "tool-failures.log"),
+	/** Background task log directory */
+	BACKGROUND_TASK_LOG_DIR: join(homedir(), ".composer", "background-tasks"),
 	/** Cost tracking database path */
 	COST_DB:
 		process.env.COMPOSER_COST_DB ?? join(homedir(), ".composer", "costs.db"),
