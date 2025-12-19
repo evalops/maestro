@@ -17,7 +17,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { resolveEnvPath } from "../utils/path-expansion.js";
+import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 import type { AppMessage, Message } from "./types.js";
 
 /**
@@ -77,7 +77,7 @@ export class FileTranscriptStore implements TranscriptStore {
 			baseDir ||
 			join(
 				resolveEnvPath(process.env.COMPOSER_DATA_DIR) ??
-					resolveEnvPath(process.env.HOME) ??
+					resolveEnvPath(getHomeDir()) ??
 					"/tmp",
 				".composer",
 				"transcripts",
