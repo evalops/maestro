@@ -52,8 +52,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { getAgentDir } from "../config/constants.js";
 import { safeJsonParse } from "../utils/json.js";
 
 export type OpenAILoginMode = "openai-oauth";
@@ -84,13 +84,7 @@ interface OpenAIExchangeResponse {
 	access_token: string; // This is the API key
 }
 
-const DEFAULT_BASE_DIR = (() => {
-	const agentDir = process.env.COMPOSER_AGENT_DIR;
-	if (agentDir) {
-		return resolve(agentDir, "..");
-	}
-	return join(homedir(), ".composer");
-})();
+const DEFAULT_BASE_DIR = resolve(getAgentDir(), "..");
 
 const AUTH_FILE = resolve(
 	process.env.OPENAI_OAUTH_FILE ?? join(DEFAULT_BASE_DIR, "openai-oauth.json"),

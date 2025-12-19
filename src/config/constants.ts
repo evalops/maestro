@@ -8,6 +8,14 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+export const getAgentDir = (): string => {
+	const envAgentDir =
+		process.env.COMPOSER_AGENT_DIR?.trim() ||
+		process.env.PLAYWRIGHT_AGENT_DIR?.trim() ||
+		process.env.CODING_AGENT_DIR?.trim();
+	return envAgentDir || join(homedir(), ".composer", "agent");
+};
+
 /**
  * Session management configuration
  */
@@ -19,12 +27,7 @@ export const SESSION_CONFIG = {
 	),
 	/** Default session directory path */
 	DEFAULT_DIR: (() => {
-		const configDir =
-			process.env.COMPOSER_AGENT_DIR ??
-			process.env.PLAYWRIGHT_AGENT_DIR ??
-			process.env.CODING_AGENT_DIR ??
-			join(homedir(), ".composer/agent/");
-		return join(configDir, "sessions");
+		return join(getAgentDir(), "sessions");
 	})(),
 } as const;
 

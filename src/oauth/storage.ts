@@ -5,8 +5,8 @@ import {
 	readFileSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("oauth:storage");
@@ -27,10 +27,7 @@ interface OAuthStorageFormat {
  * Get path to oauth.json
  */
 function getOAuthFilePath(): string {
-	const agentDir = process.env.COMPOSER_AGENT_DIR;
-	const configDir = agentDir
-		? join(agentDir, "..")
-		: join(homedir(), ".composer");
+	const configDir = join(getAgentDir(), "..");
 	return join(configDir, "oauth.json");
 }
 

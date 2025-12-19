@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
+import { getAgentDir } from "../config/constants.js";
 
 // Tool descriptions for dynamic system prompt generation
 const TOOL_DESCRIPTIONS: Record<string, string> = {
@@ -183,13 +183,7 @@ function loadContextFileFromDir(dir: string): ContextFile | null {
 export function loadProjectContextFiles(cwdOverride?: string): ContextFile[] {
 	const contextFiles: ContextFile[] = [];
 
-	const homeDir = homedir();
-	const globalContextDir = resolve(
-		process.env.COMPOSER_AGENT_DIR ??
-			process.env.PLAYWRIGHT_AGENT_DIR ??
-			process.env.CODING_AGENT_DIR ??
-			join(homeDir, ".composer/agent/"),
-	);
+	const globalContextDir = resolve(getAgentDir());
 	const globalContext = loadContextFileFromDir(globalContextDir);
 	if (globalContext) {
 		contextFiles.push(globalContext);
