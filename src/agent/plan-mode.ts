@@ -161,10 +161,10 @@ export function generatePlanFilePath(
 
 	// Environment variable takes precedence (useful for CI/testing)
 	if (process.env.COMPOSER_PLAN_FILE) {
-		return (
-			resolveEnvPath(process.env.COMPOSER_PLAN_FILE) ??
-			process.env.COMPOSER_PLAN_FILE
-		);
+		const resolved = resolveEnvPath(process.env.COMPOSER_PLAN_FILE);
+		if (resolved) {
+			return resolved;
+		}
 	}
 
 	// Generate a unique filename based on timestamp and optional name

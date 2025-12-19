@@ -77,7 +77,7 @@ export class FileTranscriptStore implements TranscriptStore {
 			baseDir ||
 			join(
 				resolveEnvPath(process.env.COMPOSER_DATA_DIR) ??
-					process.env.HOME ??
+					resolveEnvPath(process.env.HOME) ??
 					"/tmp",
 				".composer",
 				"transcripts",
