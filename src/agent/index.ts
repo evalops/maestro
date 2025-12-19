@@ -1,5 +1,11 @@
 export { Agent, type AgentOptions } from "./agent.js";
 export {
+	AgentContextManager,
+	type AgentContextSource,
+	type ContextLoadResult,
+	type SourceLoadStatus,
+} from "./context-manager.js";
+export {
 	ProviderTransport,
 	type ProviderTransportOptions,
 } from "./transport.js";

@@ -1873,6 +1873,48 @@ export class TuiRenderer {
 		this.modalManager.push(contextView);
 	}
 
+	private async handleSourcesCommand(
+		context: CommandExecutionContext,
+	): Promise<void> {
+		try {
+			const result = await this.agent.getContextSourceStatus();
+			const lines: string[] = ["Context Sources Status:"];
+			lines.push(
+				`  Total: ${result.successCount} success, ${result.failureCount} failed (${result.totalDurationMs}ms)`,
+			);
+			lines.push("");
+
+			for (const source of result.sourceStatuses) {
+				const icon =
+					source.status === "success"
+						? "✓"
+						: source.status === "empty"
+							? "○"
+							: source.status === "skipped"
+								? "⊘"
+								: "✗";
+				const status =
+					source.status === "success"
+						? source.truncated
+							? `success (truncated from ${source.originalLength} chars)`
+							: "success"
+						: source.status;
+				const duration =
+					source.durationMs > 0 ? ` (${source.durationMs}ms)` : "";
+				lines.push(`  ${icon} ${source.name}: ${status}${duration}`);
+				if (source.error) {
+					lines.push(`      Error: ${source.error}`);
+				}
+			}
+
+			context.showInfo(lines.join("\n"));
+		} catch (error) {
+			context.showError(
+				`Failed to get context source status: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
 	private handleFooterCommand(context: CommandExecutionContext): void {
 		this.uiStateController.handleFooterCommand(context, {
 			getToastHistory: (count: number) => this.footer.getToastHistory(count),
@@ -2401,6 +2443,7 @@ export class TuiRenderer {
 					handleConfig: (ctx) => this.configView.handleConfigCommand(ctx),
 					handleLsp: (ctx) => this.lspView.handleLspCommand(ctx.rawInput),
 					handleMcp: (ctx) => this.handleMcpCommand(ctx),
+					handleSources: (ctx) => this.handleSourcesCommand(ctx),
 				},
 				ui: {
 					showTheme: () => this.themeSelectorView.show(),

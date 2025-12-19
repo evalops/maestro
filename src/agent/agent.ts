@@ -85,6 +85,7 @@ import { createLogger } from "../utils/logger.js";
 import {
 	AgentContextManager,
 	type AgentContextSource,
+	type ContextLoadResult,
 } from "./context-manager.js";
 import {
 	type PreprocessMessagesFn,
@@ -383,6 +384,26 @@ export class Agent {
 	 */
 	get state(): Readonly<AgentState> {
 		return this._state;
+	}
+
+	/**
+	 * Gets detailed status of all context sources.
+	 *
+	 * Context sources provide dynamic content injected into the system prompt,
+	 * such as todo lists, LSP diagnostics, and IDE information.
+	 *
+	 * @returns Promise resolving to context load result with per-source status
+	 *
+	 * @example
+	 * ```typescript
+	 * const result = await agent.getContextSourceStatus();
+	 * for (const source of result.sourceStatuses) {
+	 *   console.log(`${source.name}: ${source.status} (${source.durationMs}ms)`);
+	 * }
+	 * ```
+	 */
+	async getContextSourceStatus(): Promise<ContextLoadResult> {
+		return this.contextManager.getCombinedSystemPromptWithStatus();
 	}
 
 	/**

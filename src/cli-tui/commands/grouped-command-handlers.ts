@@ -38,6 +38,7 @@ export type GroupedCommandDeps = {
 		handleConfig: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleLsp: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleMcp: (ctx: CommandExecutionContext) => void | Promise<void>;
+		handleSources: (ctx: CommandExecutionContext) => void | Promise<void>;
 	};
 	ui: {
 		showTheme: () => void | Promise<void>;
@@ -159,6 +160,8 @@ export function createGroupedCommandHandlers(
 					deps.diag.handleConfig(ctx),
 				handleLsp: (ctx: CommandExecutionContext) => deps.diag.handleLsp(ctx),
 				handleMcp: (ctx: CommandExecutionContext) => deps.diag.handleMcp(ctx),
+				handleSources: (ctx: CommandExecutionContext) =>
+					deps.diag.handleSources(ctx),
 				showInfo: (msg: string) => context.showInfo(msg),
 				isDatabaseConfigured: () => false,
 			});

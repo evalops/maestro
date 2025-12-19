@@ -42,6 +42,7 @@ export interface DiagCommandDeps {
 	handleConfig: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleLsp: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleMcp: (ctx: CommandExecutionContext) => void;
+	handleSources: (ctx: CommandExecutionContext) => void | Promise<void>;
 	showInfo: (message: string) => void;
 	isDatabaseConfigured: () => boolean;
 }
@@ -95,6 +96,11 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 
 			case "mcp":
 				deps.handleMcp(ctx);
+				break;
+
+			case "sources":
+			case "ctx":
+				await deps.handleSources(ctx);
 				break;
 
 			case "keys":
@@ -204,6 +210,7 @@ function showDiagHelp(ctx: CommandExecutionContext): void {
   /diag status          Health snapshot
   /diag about           Build and version info
   /diag context         Token usage visualization
+  /diag sources         Context source load status (todo, lsp, ide, etc.)
   /diag stats           Combined status and cost
   /diag background      Background task config
   /diag lsp [cmd]       LSP server (status|start|stop|restart|detect)
