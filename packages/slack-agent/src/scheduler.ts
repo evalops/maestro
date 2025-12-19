@@ -713,6 +713,7 @@ export class Scheduler {
 	private defaultTimezone: string;
 	private checkInterval: ReturnType<typeof setInterval> | null = null;
 	private checking = false;
+	private checkPromise: Promise<void> | null = null;
 	private tasksFile: string;
 	private historyFile: string;
 	private runningTaskIds: Set<string> = new Set();
@@ -946,23 +947,35 @@ export class Scheduler {
 	/**
 	 * Stop the scheduler
 	 */
-	stop(): void {
+	async stop(): Promise<void> {
 		if (this.checkInterval) {
 			clearInterval(this.checkInterval);
 			this.checkInterval = null;
 			logger.logInfo("Scheduler stopped");
 		}
+		if (this.checkPromise) {
+			await this.checkPromise;
+		}
 	}
 
 	private async runCheck(): Promise<void> {
-		if (this.checking) return;
+		if (this.checking) {
+			return this.checkPromise ?? Promise.resolve();
+		}
 		this.checking = true;
+		const runPromise = (async () => {
+			try {
+				await this.checkDueTasks();
+			} catch (error) {
+				logger.logWarning("Scheduler check failed", String(error));
+			}
+		})();
+		this.checkPromise = runPromise;
 		try {
-			await this.checkDueTasks();
-		} catch (error) {
-			logger.logWarning("Scheduler check failed", String(error));
+			await runPromise;
 		} finally {
 			this.checking = false;
+			this.checkPromise = null;
 		}
 	}
 
