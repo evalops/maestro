@@ -72,6 +72,16 @@ export type {
 	PreMessageHookInput,
 	PostMessageHookInput,
 	OnErrorHookInput,
+	// Tool-specific hook input types
+	BashToolHookInput,
+	ReadToolHookInput,
+	WriteToolHookInput,
+	EditToolHookInput,
+	GlobToolHookInput,
+	GrepToolHookInput,
+	TaskToolHookInput,
+	WebFetchToolHookInput,
+	WebSearchToolHookInput,
 	// Output types
 	HookJsonOutput,
 	HookSpecificOutput,
@@ -113,7 +123,21 @@ export type {
 	LoadedTypeScriptHook,
 } from "./types.js";
 
-export { isAsyncHookResponse } from "./types.js";
+export {
+	isAsyncHookResponse,
+	// Type guards for tool-specific hook inputs
+	isBashToolHook,
+	isReadToolHook,
+	isWriteToolHook,
+	isEditToolHook,
+	isGlobToolHook,
+	isGrepToolHook,
+	isTaskToolHook,
+	isWebFetchToolHook,
+	isWebSearchToolHook,
+	isFileToolHook,
+	isSearchToolHook,
+} from "./types.js";
 
 // Configuration exports
 export {

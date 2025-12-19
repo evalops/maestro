@@ -329,6 +329,162 @@ export type HookInput =
 	| OnErrorHookInput
 	| BranchHookInput;
 
+// ============================================================================
+// Tool-Specific Hook Input Types
+// ============================================================================
+
+/**
+ * PostToolUseHookInput narrowed to a specific tool.
+ * Use the type guards below to narrow PostToolUseHookInput to these types.
+ */
+export interface BashToolHookInput extends PostToolUseHookInput {
+	tool_name: "Bash";
+}
+
+export interface ReadToolHookInput extends PostToolUseHookInput {
+	tool_name: "Read";
+}
+
+export interface WriteToolHookInput extends PostToolUseHookInput {
+	tool_name: "Write";
+}
+
+export interface EditToolHookInput extends PostToolUseHookInput {
+	tool_name: "Edit";
+}
+
+export interface GlobToolHookInput extends PostToolUseHookInput {
+	tool_name: "Glob";
+}
+
+export interface GrepToolHookInput extends PostToolUseHookInput {
+	tool_name: "Grep";
+}
+
+export interface TaskToolHookInput extends PostToolUseHookInput {
+	tool_name: "Task";
+}
+
+export interface WebFetchToolHookInput extends PostToolUseHookInput {
+	tool_name: "WebFetch";
+}
+
+export interface WebSearchToolHookInput extends PostToolUseHookInput {
+	tool_name: "WebSearch";
+}
+
+// ============================================================================
+// Type Guards for Tool-Specific Hook Inputs
+// ============================================================================
+
+/**
+ * Type guard to narrow PostToolUseHookInput or PreToolUseHookInput to Bash tool.
+ * @example
+ * if (isBashToolHook(input)) {
+ *   // input.tool_name is "Bash"
+ *   console.log("Bash command executed");
+ * }
+ */
+export function isBashToolHook(
+	input: PostToolUseHookInput | PreToolUseHookInput,
+): input is BashToolHookInput {
+	return input.tool_name === "Bash";
+}
+
+/**
+ * Type guard to narrow PostToolUseHookInput or PreToolUseHookInput to Read tool.
+ */
+export function isReadToolHook(
+	input: PostToolUseHookInput | PreToolUseHookInput,
+): input is ReadToolHookInput {
+	return input.tool_name === "Read";
+}
+
+/**
+ * Type guard to narrow PostToolUseHookInput or PreToolUseHookInput to Write tool.
+ */
+export function isWriteToolHook(
+	input: PostToolUseHookInput | PreToolUseHookInput,
+): input is WriteToolHookInput {
+	return input.tool_name === "Write";
+}
+
+/**
+ * Type guard to narrow PostToolUseHookInput or PreToolUseHookInput to Edit tool.
+ */
+export function isEditToolHook(
+	input: PostToolUseHookInput | PreToolUseHookInput,
+): input is EditToolHookInput {
+	return input.tool_name === "Edit";
+}
+
+/**
+ * Type guard to narrow PostToolUseHookInput or PreToolUseHookInput to Glob tool.
+ */
+export function isGlobToolHook(
+	input: PostToolUseHookInput | PreToolUseHookInput,
+): input is GlobToolHookInput {
+	return input.tool_name === "Glob";
+}
+
+/**
+ * Type guard to narrow PostToolUseHookInput or PreToolUseHookInput to Grep tool.
+ */
+export function isGrepToolHook(
+	input: PostToolUseHookInput | PreToolUseHookInput,
+): input is GrepToolHookInput {
+	return input.tool_name === "Grep";
+}
+
+/**
+ * Type guard to narrow PostToolUseHookInput or PreToolUseHookInput to Task tool.
+ */
+export function isTaskToolHook(
+	input: PostToolUseHookInput | PreToolUseHookInput,
+): input is TaskToolHookInput {
+	return input.tool_name === "Task";
+}
+
+/**
+ * Type guard to narrow PostToolUseHookInput or PreToolUseHookInput to WebFetch tool.
+ */
+export function isWebFetchToolHook(
+	input: PostToolUseHookInput | PreToolUseHookInput,
+): input is WebFetchToolHookInput {
+	return input.tool_name === "WebFetch";
+}
+
+/**
+ * Type guard to narrow PostToolUseHookInput or PreToolUseHookInput to WebSearch tool.
+ */
+export function isWebSearchToolHook(
+	input: PostToolUseHookInput | PreToolUseHookInput,
+): input is WebSearchToolHookInput {
+	return input.tool_name === "WebSearch";
+}
+
+/**
+ * Check if hook input is for a file operation tool (Read, Write, Edit).
+ */
+export function isFileToolHook(
+	input: PostToolUseHookInput | PreToolUseHookInput,
+): input is ReadToolHookInput | WriteToolHookInput | EditToolHookInput {
+	return (
+		input.tool_name === "Read" ||
+		input.tool_name === "Write" ||
+		input.tool_name === "Edit"
+	);
+}
+
+/**
+ * Check if hook input is for a search tool (Glob, Grep).
+ */
+export function isSearchToolHook(
+	input: PostToolUseHookInput | PreToolUseHookInput,
+): input is GlobToolHookInput | GrepToolHookInput {
+	return input.tool_name === "Glob" || input.tool_name === "Grep";
+}
+
 /**
  * Permission decision that hooks can return.
  */
