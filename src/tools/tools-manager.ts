@@ -36,6 +36,7 @@ import chalk from "chalk";
 
 /** Directory where downloaded tools are installed */
 const TOOLS_DIR = join(homedir(), ".composer", "tools");
+const FETCH_TIMEOUT_MS = 30_000;
 
 /**
  * Configuration for an external tool.
@@ -164,8 +165,21 @@ export function getToolPath(tool: "fd" | "rg"): string | null {
  * @param repo - Repository in owner/repo format
  * @returns Version string (without "v" prefix)
  */
+async function fetchWithTimeout(
+	url: string,
+	init?: RequestInit,
+): Promise<Response> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+	try {
+		return await fetch(url, { ...init, signal: controller.signal });
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
 async function getLatestVersion(repo: string): Promise<string> {
-	const response = await fetch(
+	const response = await fetchWithTimeout(
 		`https://api.github.com/repos/${repo}/releases/latest`,
 		{
 			headers: { "User-Agent": "composer-coding-agent" },
@@ -186,7 +200,7 @@ async function getLatestVersion(repo: string): Promise<string> {
  * Uses streaming to handle large files efficiently.
  */
 async function downloadFile(url: string, dest: string): Promise<void> {
-	const response = await fetch(url);
+	const response = await fetchWithTimeout(url);
 
 	if (!response.ok) {
 		throw new Error(`Failed to download: ${response.status}`);
