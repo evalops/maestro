@@ -83,7 +83,12 @@ export const PATHS = {
 	COST_DB:
 		process.env.COMPOSER_COST_DB ?? join(homedir(), ".composer", "costs.db"),
 	/** Agent context files */
-	AGENT_CONTEXT_FILES: ["AGENT.md", "CLAUDE.md"] as const,
+	AGENT_CONTEXT_FILES: [
+		"AGENTS.override.md",
+		"AGENTS.md",
+		"AGENT.md",
+		"CLAUDE.md",
+	] as const,
 } as const;
 
 /**
