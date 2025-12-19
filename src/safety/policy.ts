@@ -97,10 +97,10 @@ import {
 	readFileSync,
 	watch,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { ActionApprovalContext } from "../agent/action-approval.js";
+import { PATHS } from "../config/constants.js";
 import { extractDependencies } from "../utils/dependency-extractor.js";
 import {
 	isLocalhostAlias,
@@ -242,7 +242,7 @@ const PolicySchema = Type.Object({
 
 const validatePolicy = compileTypeboxSchema(PolicySchema);
 
-const POLICY_PATH = join(homedir(), ".composer", "policy.json");
+const getPolicyPath = (): string => join(PATHS.COMPOSER_HOME, "policy.json");
 
 let cachedPolicy: EnterprisePolicy | null = null;
 let policyWatcher: FSWatcher | undefined;
@@ -251,14 +251,15 @@ function startPolicyWatcher() {
 	if (policyWatcher) return;
 
 	try {
+		const policyPath = getPolicyPath();
 		// Only watch if the file exists
-		if (!existsSync(POLICY_PATH)) return;
+		if (!existsSync(policyPath)) return;
 
-		policyWatcher = watch(POLICY_PATH, (eventType) => {
+		policyWatcher = watch(policyPath, (eventType) => {
 			if (eventType === "rename") {
 				// File deleted or renamed
 				cachedPolicy = null;
-				if (!existsSync(POLICY_PATH)) {
+				if (!existsSync(policyPath)) {
 					policyWatcher?.close();
 					policyWatcher = undefined;
 				}
@@ -277,8 +278,9 @@ function startPolicyWatcher() {
 }
 
 export function loadPolicy(force = false): EnterprisePolicy | null {
+	const policyPath = getPolicyPath();
 	// Check if file exists first - if not, clear cache and return null
-	if (!existsSync(POLICY_PATH)) {
+	if (!existsSync(policyPath)) {
 		cachedPolicy = null;
 		if (policyWatcher) {
 			policyWatcher.close();
@@ -292,7 +294,7 @@ export function loadPolicy(force = false): EnterprisePolicy | null {
 	}
 
 	try {
-		const raw = readFileSync(POLICY_PATH, "utf8");
+		const raw = readFileSync(policyPath, "utf8");
 		const result = safeJsonParse<EnterprisePolicy>(raw);
 		if (result.success) {
 			if (!validatePolicy(result.data)) {

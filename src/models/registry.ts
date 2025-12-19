@@ -80,6 +80,7 @@ import type { Static } from "@sinclair/typebox";
 import type { ErrorObject } from "ajv";
 import { getStoredCredentials } from "../agent/keys.js";
 import type { Api, Model, Provider } from "../agent/types.js";
+import { PATHS } from "../config/constants.js";
 import { hasAwsCredentials } from "../providers/aws-auth.js";
 import { PolicyError, checkModelPolicy } from "../safety/policy.js";
 import {
@@ -93,6 +94,7 @@ import {
 	printParseErrorCode,
 } from "../utils/jsonc-umd.js";
 import { createLogger } from "../utils/logger.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { getModel, getModels, getProviders } from "./builtin.js";
 import { normalizeLLMBaseUrl } from "./url-normalize.js";
@@ -290,8 +292,8 @@ const getConfigPaths = (): string[] => {
 	const paths: string[] = [];
 
 	// 1. Global config
-	paths.push(join(homedir(), ".composer", "config.json"));
-	paths.push(join(homedir(), ".composer", "local.json"));
+	paths.push(join(PATHS.COMPOSER_HOME, "config.json"));
+	paths.push(join(PATHS.COMPOSER_HOME, "local.json"));
 
 	// 2. Project config (current directory)
 	const projectConfig = join(process.cwd(), ".composer", "config.json");
@@ -304,33 +306,34 @@ const getConfigPaths = (): string[] => {
 	}
 
 	// 3. Legacy path for backward compatibility
-	const legacyPath = join(homedir(), ".composer", "models.json");
+	const legacyPath = join(PATHS.COMPOSER_HOME, "models.json");
 	if (existsSync(legacyPath)) {
 		paths.push(legacyPath);
 	}
 
 	// 4. Environment variable override
 	if (process.env.COMPOSER_MODELS_FILE) {
-		paths.push(resolve(process.env.COMPOSER_MODELS_FILE));
+		const override = resolveEnvPath(process.env.COMPOSER_MODELS_FILE);
+		if (override) paths.push(override);
 	}
 
 	if (process.env.COMPOSER_CONFIG) {
-		paths.push(resolve(process.env.COMPOSER_CONFIG));
+		const override = resolveEnvPath(process.env.COMPOSER_CONFIG);
+		if (override) paths.push(override);
 	}
 
 	return paths;
 };
 
 const configPath = (): string =>
-	process.env.COMPOSER_MODELS_FILE
-		? resolve(process.env.COMPOSER_MODELS_FILE)
-		: join(homedir(), ".composer", "models.json");
+	resolveEnvPath(process.env.COMPOSER_MODELS_FILE) ??
+	join(PATHS.COMPOSER_HOME, "models.json");
 
 const FACTORY_HOME = process.env.FACTORY_HOME ?? join(homedir(), ".factory");
 const FACTORY_CONFIG_PATH = join(FACTORY_HOME, "config.json");
 const FACTORY_SETTINGS_PATH = join(FACTORY_HOME, "settings.json");
 const FACTORY_KEYS_PATH = join(FACTORY_HOME, "keys.json");
-const COMPOSER_KEYS_PATH = join(homedir(), ".composer", "keys.json");
+const COMPOSER_KEYS_PATH = join(PATHS.COMPOSER_HOME, "keys.json");
 
 let cachedConfig: CustomModelConfig | null = null;
 let cachedProviders: RegisteredModel[] | null = null;

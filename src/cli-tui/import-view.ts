@@ -12,6 +12,7 @@ import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import type { Agent } from "../agent/agent.js";
+import { PATHS } from "../config/constants.js";
 import { exportSessionToHtml, exportSessionToText } from "../export-html.js";
 import { importFactoryConfig } from "../factory/index.js";
 import { reloadModelConfig } from "../models/registry.js";
@@ -32,7 +33,7 @@ export class ImportExportView {
 		new Set([
 			normalize(resolve(process.cwd())),
 			normalize(homedir()),
-			normalize(join(homedir(), ".composer")),
+			normalize(PATHS.COMPOSER_HOME),
 			normalize(tmpdir()),
 		]),
 	);
@@ -166,7 +167,7 @@ export class ImportExportView {
 	async handleShareCommand(text: string): Promise<void> {
 		const parts = text.trim().split(/\s+/);
 		const customTarget = parts[1];
-		const baseDir = join(homedir(), ".composer", "share");
+		const baseDir = join(PATHS.COMPOSER_HOME, "share");
 		let outputPath: string;
 		try {
 			if (customTarget) {

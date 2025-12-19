@@ -41,17 +41,17 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
+import { PATHS } from "./constants.js";
 
 const logger = createLogger("config:firewall");
 
-const CONFIG_PATH = join(homedir(), ".composer", "firewall.json");
+const CONFIG_PATH = join(PATHS.COMPOSER_HOME, "firewall.json");
 
 const firewallConfigSchema = Type.Object({
 	containment: Type.Optional(

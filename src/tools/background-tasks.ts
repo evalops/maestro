@@ -96,6 +96,7 @@ import {
 } from "../utils/env-parser.js";
 import { isErrno } from "../utils/fs.js";
 import { createLogger } from "../utils/logger.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 import { safejoin } from "../utils/path-validation.js";
 import { redactSecrets } from "../utils/secret-redactor.js";
 import {
@@ -126,7 +127,7 @@ import {
 	parseCommandArguments,
 	validateShellParams,
 } from "./shell-utils.js";
-import { ToolError, createTool, expandUserPath } from "./tool-dsl.js";
+import { ToolError, createTool } from "./tool-dsl.js";
 import type { ToolResponseBuilder } from "./tool-dsl.js";
 
 const LOG_TAIL_BYTES = 200_000;
@@ -910,9 +911,9 @@ class BackgroundTaskManager extends EventEmitter {
 	}
 
 	private getLogDir(): string {
-		const base =
-			process.env.COMPOSER_BACKGROUND_LOG_DIR ?? PATHS.BACKGROUND_TASK_LOG_DIR;
-		const expanded = expandUserPath(base);
+		const expanded =
+			resolveEnvPath(process.env.COMPOSER_BACKGROUND_LOG_DIR) ??
+			PATHS.BACKGROUND_TASK_LOG_DIR;
 		const shouldRefresh =
 			this.logDir === null ||
 			this.logDirBase !== expanded ||

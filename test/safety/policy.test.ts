@@ -29,6 +29,8 @@ const POLICY_PATH = join("/mock-home", ".composer", "policy.json");
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReadFileSync = vi.mocked(fs.readFileSync);
 const mockWatch = vi.mocked(fs.watch);
+const originalHome = process.env.HOME;
+const originalUserProfile = process.env.USERPROFILE;
 
 function setupPolicy(policy: object | null) {
 	if (policy === null) {
@@ -54,7 +56,23 @@ function clearPolicyCache() {
 describe("Enterprise Policy Enforcement", () => {
 	beforeEach(() => {
 		vi.resetAllMocks();
+		process.env.HOME = "/mock-home";
+		process.env.USERPROFILE = "/mock-home";
 		clearPolicyCache();
+	});
+	afterEach(() => {
+		if (originalHome === undefined) {
+			// biome-ignore lint/performance/noDelete: required for process.env cleanup
+			delete process.env.HOME;
+		} else {
+			process.env.HOME = originalHome;
+		}
+		if (originalUserProfile === undefined) {
+			// biome-ignore lint/performance/noDelete: required for process.env cleanup
+			delete process.env.USERPROFILE;
+		} else {
+			process.env.USERPROFILE = originalUserProfile;
+		}
 	});
 
 	describe("Tool Constraints", () => {

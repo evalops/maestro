@@ -2,9 +2,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { getAgentDir } from "../../config/constants.js";
 import { isPlainObject, tryParseJson } from "../../utils/json.js";
+import { resolveEnvPath } from "../../utils/path-expansion.js";
 
 const ZEN_STATE_PATH =
-	process.env.COMPOSER_ZEN_STATE ?? resolve(getAgentDir(), "zen-state.json");
+	resolveEnvPath(process.env.COMPOSER_ZEN_STATE) ??
+	resolve(getAgentDir(), "zen-state.json");
 
 const KEY_REGEX = /^[A-Za-z0-9._-]+$/;
 

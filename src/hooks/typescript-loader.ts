@@ -11,8 +11,9 @@
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
-import { expandTildePath, getHomeDir } from "../utils/path-expansion.js";
+import { expandTildePath } from "../utils/path-expansion.js";
 import type {
 	ExecResult,
 	HookAPI,
@@ -267,7 +268,7 @@ export async function discoverAndLoadTypeScriptHooks(
 	const seenPaths = new Set<string>();
 
 	// Discover global hooks
-	const globalHooksDir = join(getHomeDir(), ".composer", "hooks");
+	const globalHooksDir = join(PATHS.COMPOSER_HOME, "hooks");
 	const globalHookPaths = discoverHooksInDir(globalHooksDir);
 
 	// Discover project hooks

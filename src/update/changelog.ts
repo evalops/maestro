@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "../config/constants.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 
 export interface ChangelogEntry {
 	major: number;
@@ -13,10 +14,8 @@ export interface ChangelogEntry {
 const CHANGELOG_STATE_ENV = "COMPOSER_CHANGELOG_STATE";
 
 const resolveStatePath = (): string => {
-	const override = process.env[CHANGELOG_STATE_ENV];
-	if (override) {
-		return override;
-	}
+	const override = resolveEnvPath(process.env[CHANGELOG_STATE_ENV]);
+	if (override) return override;
 	return resolve(getAgentDir(), "changelog-state.json");
 };
 

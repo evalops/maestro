@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { PATHS } from "../config/constants.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 
 type StoredKey = {
 	apiKey?: string;
@@ -9,16 +11,12 @@ type StoredKey = {
 
 type KeyStore = Record<string, StoredKey>;
 
-const DEFAULT_KEYS_PATH = join(
-	process.env.HOME ?? process.cwd(),
-	".composer",
-	"keys.json",
-);
+const DEFAULT_KEYS_PATH = join(PATHS.COMPOSER_HOME, "keys.json");
 const PROJECT_KEYS_PATH = join(process.cwd(), ".composer", "keys.json");
 
 function getFactoryPaths(): { keysPath: string; configPath: string } {
 	const factoryHome =
-		process.env.FACTORY_HOME ?? join(process.env.HOME ?? "", ".factory");
+		resolveEnvPath(process.env.FACTORY_HOME) ?? join(homedir(), ".factory");
 	return {
 		keysPath: join(factoryHome, "keys.json"),
 		configPath: join(factoryHome, "config.json"),
@@ -27,10 +25,14 @@ function getFactoryPaths(): { keysPath: string; configPath: string } {
 
 function sanitizePath(pathOverride?: string): string | undefined {
 	const candidate =
-		pathOverride ?? process.env.COMPOSER_KEYS_PATH ?? DEFAULT_KEYS_PATH;
+		pathOverride ??
+		resolveEnvPath(process.env.COMPOSER_KEYS_PATH) ??
+		DEFAULT_KEYS_PATH;
 	if (!candidate) return undefined;
 	const resolved = resolve(candidate);
-	const allowedRoots = [homedir(), process.cwd()].map((p) => resolve(p));
+	const allowedRoots = [homedir(), PATHS.COMPOSER_HOME, process.cwd()].map(
+		(p) => resolve(p),
+	);
 	const isAllowed = allowedRoots.some((root) => resolved.startsWith(root));
 	if (!isAllowed) return undefined;
 	return resolved;

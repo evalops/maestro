@@ -28,16 +28,11 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("commands:prompts");
-
-function resolveHomeDirectory(): string {
-	// Prefer env vars so tests (and some shells) can override HOME reliably.
-	return process.env.HOME || process.env.USERPROFILE || homedir();
-}
 
 /**
  * Prompt definition from YAML frontmatter.
@@ -313,9 +308,8 @@ function scanPromptsDirectory(
  * @returns Array of loaded prompts (project prompts override user prompts by name)
  */
 export function loadPrompts(workspaceDir: string): PromptDefinition[] {
-	const homeDir = resolveHomeDirectory();
-	const userPromptsDir = join(homeDir, ".composer", "prompts");
-	const userCommandsDir = join(homeDir, ".composer", "commands");
+	const userPromptsDir = join(PATHS.COMPOSER_HOME, "prompts");
+	const userCommandsDir = join(PATHS.COMPOSER_HOME, "commands");
 	const projectPromptsDir = join(workspaceDir, ".composer", "prompts");
 	const projectCommandsDir = join(workspaceDir, ".composer", "commands");
 

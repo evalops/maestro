@@ -15,6 +15,9 @@ let testDir: string;
 let globalDir: string;
 let projectDir: string;
 
+const originalHome = process.env.HOME;
+const originalUserProfile = process.env.USERPROFILE;
+
 // Mock homedir at module level for ESM compatibility
 vi.mock("node:os", async () => {
 	const actual = await vi.importActual<typeof import("node:os")>("node:os");
@@ -33,6 +36,8 @@ describe("global config loading", () => {
 		testDir = join(tmpdir(), `composer-global-config-test-${Date.now()}`);
 		globalDir = join(testDir, "home");
 		projectDir = join(testDir, "project");
+		process.env.HOME = globalDir;
+		process.env.USERPROFILE = globalDir;
 		mkdirSync(join(globalDir, ".composer"), { recursive: true });
 		mkdirSync(join(projectDir, ".composer"), { recursive: true });
 		clearConfigCache();
@@ -41,6 +46,18 @@ describe("global config loading", () => {
 	afterEach(() => {
 		clearConfigCache();
 		rmSync(testDir, { recursive: true, force: true });
+		if (originalHome === undefined) {
+			// biome-ignore lint/performance/noDelete: required for process.env cleanup
+			delete process.env.HOME;
+		} else {
+			process.env.HOME = originalHome;
+		}
+		if (originalUserProfile === undefined) {
+			// biome-ignore lint/performance/noDelete: required for process.env cleanup
+			delete process.env.USERPROFILE;
+		} else {
+			process.env.USERPROFILE = originalUserProfile;
+		}
 		// Clean up env vars - must use delete because assignment to undefined
 		// sets the value to the string "undefined" instead of removing it
 		// biome-ignore lint/performance/noDelete: required for process.env cleanup

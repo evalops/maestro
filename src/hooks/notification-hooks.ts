@@ -20,9 +20,9 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentEvent, AppMessage } from "../agent/types.js";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("hooks:notify");
@@ -118,7 +118,7 @@ export function loadNotificationConfig(): NotificationHooksConfig {
 
 	// Check config file if no environment override
 	if (!config.program) {
-		const configPath = join(homedir(), ".composer", "hooks.json");
+		const configPath = join(PATHS.COMPOSER_HOME, "hooks.json");
 		if (existsSync(configPath)) {
 			try {
 				const fileConfig = JSON.parse(readFileSync(configPath, "utf-8"));

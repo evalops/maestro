@@ -24,10 +24,10 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as parseTOML } from "smol-toml";
 import { createLogger } from "../utils/logger.js";
+import { PATHS } from "./constants.js";
 
 const logger = createLogger("config:toml");
 
@@ -388,7 +388,7 @@ export function loadConfig(
 	let config = { ...DEFAULT_CONFIG };
 
 	// Load global config
-	const globalPath = join(homedir(), ".composer", "config.toml");
+	const globalPath = join(PATHS.COMPOSER_HOME, "config.toml");
 	const globalConfig = parseConfigFile(globalPath);
 	if (globalConfig) {
 		config = deepMerge(config, globalConfig);

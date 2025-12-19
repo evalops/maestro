@@ -37,8 +37,8 @@ import {
 	readFileSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("safety:execpolicy");
@@ -560,7 +560,7 @@ export function loadPolicy(workspaceDir: string): Policy {
 
 	const policy = new Policy();
 
-	const globalPath = join(homedir(), ".composer", "execpolicy");
+	const globalPath = join(PATHS.COMPOSER_HOME, "execpolicy");
 	const projectPath = join(workspaceDir, ".composer", "execpolicy");
 
 	// Load global policy

@@ -54,10 +54,11 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 import { defaultEnvValidators, evaluateEnvValidators } from "./env-limits.js";
 import {
 	type McpServerInput,
@@ -72,12 +73,12 @@ const PROJECT_CONFIG_NAME = ".composer/mcp.json";
 const LOCAL_CONFIG_NAME = ".composer/mcp.local.json";
 
 const getEnterpriseConfigPath = (): string =>
-	process.env.COMPOSER_ENTERPRISE_MCP_PATH ??
-	join(homedir(), ".composer", "enterprise", "mcp.json");
+	resolveEnvPath(process.env.COMPOSER_ENTERPRISE_MCP_PATH) ??
+	join(PATHS.COMPOSER_HOME, "enterprise", "mcp.json");
 
 const getUserConfigPath = (): string =>
-	process.env.COMPOSER_USER_MCP_PATH ??
-	join(homedir(), ".composer", "mcp.json");
+	resolveEnvPath(process.env.COMPOSER_USER_MCP_PATH) ??
+	join(PATHS.COMPOSER_HOME, "mcp.json");
 
 type ParsedConfig = { servers: McpServerConfig[] };
 

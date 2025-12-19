@@ -6,8 +6,8 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -19,7 +19,7 @@ const logger = createLogger("models:models-dev");
  */
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
-const CACHE_DIR = join(homedir(), ".composer");
+const CACHE_DIR = PATHS.COMPOSER_HOME;
 const CACHE_FILE = join(CACHE_DIR, "models-dev-cache.json");
 const CACHE_MAX_AGE_MS = 1000 * 60 * 60; // 1 hour
 

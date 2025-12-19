@@ -18,8 +18,8 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("skills:loader");
@@ -564,7 +564,7 @@ export function loadSkills(workspaceDir: string): {
 	skills: LoadedSkill[];
 	errors: SkillLoadError[];
 } {
-	const userSkillsDir = join(homedir(), ".composer", "skills");
+	const userSkillsDir = join(PATHS.COMPOSER_HOME, "skills");
 	const projectSkillsDir = join(workspaceDir, ".composer", "skills");
 
 	logger.debug("Scanning for skills", { userSkillsDir, projectSkillsDir });

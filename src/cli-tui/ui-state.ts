@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 import type { FooterMode } from "./utils/footer-utils.js";
 
 export type QueueMode = "one" | "all";
@@ -19,10 +20,11 @@ export interface UiState {
 }
 
 const getUiStatePath = () =>
-	process.env.COMPOSER_UI_STATE ?? PATHS.UI_STATE_FILE;
+	resolveEnvPath(process.env.COMPOSER_UI_STATE) ?? PATHS.UI_STATE_FILE;
 
 const getCommandPrefsPath = () =>
-	process.env.COMPOSER_COMMAND_PREFS ?? PATHS.COMMAND_PREFS_FILE;
+	resolveEnvPath(process.env.COMPOSER_COMMAND_PREFS) ??
+	PATHS.COMMAND_PREFS_FILE;
 
 export function loadUiState(): UiState {
 	const uiStatePath = getUiStatePath();

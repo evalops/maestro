@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import chalk from "chalk";
+import { PATHS } from "../../config/constants.js";
 import {
 	type ConfigInspection,
 	type ConfigValidationResult,
@@ -868,9 +869,7 @@ export async function handleConfigLocal(): Promise<void> {
 			)
 		).trim();
 		const targetDir =
-			scope === "2"
-				? join(homedir(), ".composer")
-				: join(process.cwd(), ".composer");
+			scope === "2" ? PATHS.COMPOSER_HOME : join(process.cwd(), ".composer");
 		mkdirSync(targetDir, { recursive: true });
 		const localPath = join(targetDir, "local.json");
 		const config = loadLocalConfig(localPath);

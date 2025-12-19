@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { PATHS } from "../config/constants.js";
 import { parseJsonOr } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 
 const logger = createLogger("cost-tracker");
 
@@ -13,7 +14,7 @@ const logger = createLogger("cost-tracker");
  */
 
 function getUsageFilePathInternal(): string {
-	return process.env.COMPOSER_USAGE_FILE ?? PATHS.USAGE_FILE;
+	return resolveEnvPath(process.env.COMPOSER_USAGE_FILE) ?? PATHS.USAGE_FILE;
 }
 
 export interface UsageEntry {

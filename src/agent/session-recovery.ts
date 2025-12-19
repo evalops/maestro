@@ -19,9 +19,10 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 import type { AppMessage } from "./types.js";
 
 const logger = createLogger("session-recovery");
@@ -76,7 +77,7 @@ export interface SessionRecoveryConfig {
 
 const DEFAULT_CONFIG: SessionRecoveryConfig = {
 	enabled: true,
-	backupDir: join(homedir(), ".composer", "session-backups"),
+	backupDir: join(PATHS.COMPOSER_HOME, "session-backups"),
 	backupInterval: 60000, // 1 minute
 	maxBackupsPerSession: 3,
 	maxBackupAge: 7 * 24 * 60 * 60 * 1000, // 7 days
@@ -88,7 +89,8 @@ const DEFAULT_CONFIG: SessionRecoveryConfig = {
 export function getSessionRecoveryConfig(): SessionRecoveryConfig {
 	const enabled = process.env.COMPOSER_SESSION_RECOVERY_ENABLED !== "false";
 	const backupDir =
-		process.env.COMPOSER_SESSION_BACKUP_DIR || DEFAULT_CONFIG.backupDir;
+		resolveEnvPath(process.env.COMPOSER_SESSION_BACKUP_DIR) ??
+		DEFAULT_CONFIG.backupDir;
 	const backupInterval = Number.parseInt(
 		process.env.COMPOSER_SESSION_BACKUP_INTERVAL || "60000",
 		10,

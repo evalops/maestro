@@ -1,15 +1,15 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
 import yaml from "js-yaml";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { getBuiltinAgents } from "./builtin.js";
 import type { ComposerConfig, LoadedComposer } from "./types.js";
 
 const logger = createLogger("composers:loader");
 
-const PERSONAL_DIR = join(homedir(), ".composer", "composers");
+const PERSONAL_DIR = join(PATHS.COMPOSER_HOME, "composers");
 const PROJECT_DIR_NAME = ".composer/composers";
 
 function parseYaml(content: string): Record<string, unknown> | null {
