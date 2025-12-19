@@ -43,7 +43,8 @@ export function createSkillTool(workspaceDir: string): AgentTool {
 
 	const getSkills = (): LoadedSkill[] => {
 		if (cachedSkills === null) {
-			cachedSkills = loadSkills(workspaceDir);
+			const result = loadSkills(workspaceDir);
+			cachedSkills = result.skills;
 		}
 		return cachedSkills;
 	};
