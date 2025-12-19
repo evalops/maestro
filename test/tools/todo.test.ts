@@ -405,6 +405,4 @@ describe("formatting functions", () => {
 	});
 });
 
-// Note: The store functions use module-level defaultStorePath which is evaluated
-// at import time, so we can't easily test them in isolation without reimporting
-// the module. The persistence is tested through the todoTool tests above.
+// Note: Store persistence is exercised through the todoTool tests above.
