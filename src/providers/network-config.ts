@@ -16,9 +16,9 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Provider } from "../agent/types.js";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("providers:network");
@@ -191,11 +191,7 @@ function loadGlobalOverrides(): Partial<ProviderNetworkConfig> {
 function loadProviderConfigs(): Map<string, Partial<ProviderNetworkConfig>> {
 	const configs = new Map<string, Partial<ProviderNetworkConfig>>();
 
-	const configPath = join(
-		process.env.HOME ?? homedir(),
-		".composer",
-		"providers.json",
-	);
+	const configPath = join(PATHS.COMPOSER_HOME, "providers.json");
 	if (!existsSync(configPath)) {
 		return configs;
 	}
