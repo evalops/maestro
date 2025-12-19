@@ -1,41 +1,368 @@
 # @evalops/ai
 
-Shared Composer AI SDK that exposes the model registry, provider-agnostic transport, and agent event stream primitives used by the CLI, TUI, and web UI.
+Shared Composer AI SDK providing model registry, provider-agnostic transport, and agent event stream primitives. Used by the CLI, TUI, and web UI.
 
-## Install
+## Supported Providers
+
+| Provider | Models | Environment Variable |
+|----------|--------|---------------------|
+| **Anthropic** | Claude 3.5, Claude 4, Sonnet, Opus | `ANTHROPIC_API_KEY` |
+| **OpenAI** | GPT-4o, GPT-4o-mini, o1, o3 | `OPENAI_API_KEY` |
+| **Google** | Gemini 2.0, Gemini 2.5 | `GOOGLE_API_KEY` |
+| **AWS Bedrock** | Claude via AWS | AWS credentials |
+| **Azure OpenAI** | GPT-4o via Azure | `AZURE_OPENAI_API_KEY` |
+
+## Installation
 
 ```bash
 npm install @evalops/ai
 ```
 
-## API Surface
-
-- **Models**: `getProviders()`, `getModels(provider)`, `getModel(provider, id)`
-- **Transport**: `ProviderTransport` for streaming assistant + tool events
-- **Types**: `Model`, `AgentEvent`, `AgentRunConfig`, `Message`, `Tool`, `ToolResultMessage`, `ReasoningEffort`, `ThinkingLevel`, `StreamOptions`
-
 ## Quick Start
 
 ```typescript
-import { ProviderTransport, getModel, type AgentRunConfig } from "@evalops/ai";
+import { Agent, ProviderTransport, getModel } from "@evalops/ai";
 
+// Create transport with API key provider
 const transport = new ProviderTransport({
-  getApiKey: () => process.env.OPENAI_API_KEY,
+  getApiKey: (provider) => {
+    if (provider === "anthropic") return process.env.ANTHROPIC_API_KEY;
+    if (provider === "openai") return process.env.OPENAI_API_KEY;
+  },
 });
 
-const model = getModel("openai", "gpt-4o-mini");
-const userMessage = { role: "user", content: "Hello!", timestamp: Date.now() };
-const cfg: AgentRunConfig = { systemPrompt: "Be helpful", model!, tools: [] };
+// Get model configuration (fully typed)
+const model = getModel("anthropic", "claude-sonnet-4-5-20250929");
 
-for await (const event of transport.run([], userMessage, cfg)) {
-  console.log(event);
+// Create agent
+const agent = new Agent({
+  transport,
+  initialState: {
+    model: model!,
+    systemPrompt: "You are a helpful assistant.",
+    tools: [],
+    messages: [],
+  },
+});
+
+// Subscribe to events for streaming output
+agent.subscribe((event) => {
+  switch (event.type) {
+    case "content_block_delta":
+      if (event.delta.type === "text_delta") {
+        process.stdout.write(event.delta.text);
+      }
+      break;
+    case "message_end":
+      console.log("\n[Done]");
+      break;
+    case "error":
+      console.error("Error:", event.error);
+      break;
+  }
+});
+
+// Send a message
+await agent.prompt("Hello, world!");
+```
+
+## Streaming Events
+
+The agent emits events during execution that you can subscribe to:
+
+```typescript
+agent.subscribe((event) => {
+  switch (event.type) {
+    // Message lifecycle
+    case "message_start":
+      console.log("Assistant is responding...");
+      break;
+    case "message_update":
+      // Partial message available at event.message
+      break;
+    case "message_end":
+      console.log("Response complete:", event.message);
+      break;
+
+    // Content streaming
+    case "content_block_start":
+      console.log(`Content block ${event.index} started`);
+      break;
+    case "content_block_delta":
+      if (event.delta.type === "text_delta") {
+        process.stdout.write(event.delta.text);
+      } else if (event.delta.type === "thinking_delta") {
+        // Extended thinking content
+        console.log("[Thinking]", event.delta.thinking);
+      }
+      break;
+    case "content_block_end":
+      console.log(`Content block ${event.index} ended`);
+      break;
+
+    // Tool execution
+    case "tool_execution_start":
+      console.log(`Executing tool: ${event.toolName}`);
+      break;
+    case "tool_execution_end":
+      console.log(`Tool result: ${event.result}`);
+      break;
+
+    // Turn management
+    case "turn_start":
+      console.log("Turn started");
+      break;
+    case "turn_end":
+      console.log("Turn ended, stop reason:", event.stopReason);
+      break;
+
+    // Errors
+    case "error":
+      console.error("Error:", event.error);
+      break;
+  }
+});
+```
+
+## Tool Calling
+
+Define tools that the agent can use:
+
+```typescript
+import { Type } from "@sinclair/typebox";
+import type { AgentTool } from "@evalops/ai";
+
+const weatherTool: AgentTool = {
+  name: "get_weather",
+  description: "Get current weather for a location",
+  parameters: Type.Object({
+    location: Type.String({ description: "City name" }),
+    units: Type.Optional(
+      Type.Union([Type.Literal("celsius"), Type.Literal("fahrenheit")])
+    ),
+  }),
+  execute: async (params) => {
+    // Your implementation here
+    const weather = await fetchWeather(params.location, params.units);
+    return { temperature: weather.temp, conditions: weather.conditions };
+  },
+};
+
+// Add tools to agent
+const agent = new Agent({
+  transport,
+  initialState: {
+    model: model!,
+    tools: [weatherTool],
+    messages: [],
+  },
+});
+```
+
+## Model Discovery
+
+Discover available models programmatically:
+
+```typescript
+import { getProviders, getModels, getModel } from "@evalops/ai";
+
+// List all providers
+const providers = getProviders();
+// ['anthropic', 'openai', 'google', 'bedrock', ...]
+
+// Get all models for a provider
+const anthropicModels = getModels("anthropic");
+for (const model of anthropicModels) {
+  console.log(`${model.id}: context=${model.contextWindow}, reasoning=${model.reasoning}`);
+}
+
+// Get a specific model (fully typed)
+const claude = getModel("anthropic", "claude-sonnet-4-5-20250929");
+if (claude) {
+  console.log(`Using ${claude.id} with ${claude.contextWindow} token context`);
 }
 ```
+
+## Extended Thinking
+
+For models that support extended thinking (Claude 4, o1, Gemini 2.5):
+
+```typescript
+const agent = new Agent({
+  transport,
+  initialState: {
+    model: getModel("anthropic", "claude-sonnet-4-5-20250929")!,
+    thinkingLevel: "medium", // off | minimal | low | medium | high | max
+    tools: [],
+    messages: [],
+  },
+});
+
+// Subscribe to thinking events
+agent.subscribe((event) => {
+  if (
+    event.type === "content_block_delta" &&
+    event.delta.type === "thinking_delta"
+  ) {
+    console.log("[Thinking]", event.delta.thinking);
+  }
+});
+```
+
+## Agent State
+
+Access the agent's current state:
+
+```typescript
+const state = agent.state;
+
+console.log("Model:", state.model.id);
+console.log("Messages:", state.messages.length);
+console.log("Tools:", state.tools.map((t) => t.name));
+console.log("Streaming:", state.streaming);
+console.log("Thinking level:", state.thinkingLevel);
+```
+
+## Message Types
+
+The SDK uses strongly-typed messages:
+
+```typescript
+import type {
+  UserMessage,
+  AssistantMessage,
+  ToolResultMessage,
+  Message,
+} from "@evalops/ai";
+
+// User message
+const userMsg: UserMessage = {
+  role: "user",
+  content: "Hello!",
+  timestamp: Date.now(),
+};
+
+// User message with image
+const imageMsg: UserMessage = {
+  role: "user",
+  content: [
+    { type: "text", text: "What's in this image?" },
+    { type: "image", source: { type: "base64", data: "...", mediaType: "image/png" } },
+  ],
+  timestamp: Date.now(),
+};
+
+// Assistant message (from LLM response)
+const assistantMsg: AssistantMessage = {
+  role: "assistant",
+  content: [{ type: "text", text: "Hello! How can I help?" }],
+  usage: { input: 10, output: 8, cacheRead: 0, cacheWrite: 0, cost: { total: 0.001 } },
+  timestamp: Date.now(),
+};
+
+// Tool result
+const toolResult: ToolResultMessage = {
+  role: "toolResult",
+  toolCallId: "call_123",
+  toolName: "get_weather",
+  content: [{ type: "text", text: "72°F, sunny" }],
+  isError: false,
+  timestamp: Date.now(),
+};
+```
+
+## Direct Transport Usage
+
+For lower-level control, use the transport directly:
+
+```typescript
+import { ProviderTransport, type AgentRunConfig } from "@evalops/ai";
+
+const transport = new ProviderTransport({
+  getApiKey: () => process.env.ANTHROPIC_API_KEY,
+});
+
+const config: AgentRunConfig = {
+  systemPrompt: "You are helpful.",
+  model: getModel("anthropic", "claude-sonnet-4-5-20250929")!,
+  tools: [],
+};
+
+const messages = [{ role: "user", content: "Hi!", timestamp: Date.now() }];
+const userMessage = { role: "user", content: "Hello!", timestamp: Date.now() };
+
+// Stream events directly
+for await (const event of transport.run(messages, userMessage, config)) {
+  console.log(event.type, event);
+}
+```
+
+## Error Handling
+
+```typescript
+agent.subscribe((event) => {
+  if (event.type === "error") {
+    if (event.error.code === "rate_limit") {
+      console.log("Rate limited, retrying...");
+    } else if (event.error.code === "context_overflow") {
+      console.log("Context too large, consider compacting");
+    } else {
+      console.error("Unexpected error:", event.error.message);
+    }
+  }
+});
+
+// Or use try/catch with prompt
+try {
+  await agent.prompt("Hello!");
+} catch (error) {
+  console.error("Prompt failed:", error);
+}
+```
+
+## Type Reference
+
+### Core Types
+
+| Type | Description |
+|------|-------------|
+| `Agent` | Main class for LLM interactions |
+| `AgentState` | Current state of an agent |
+| `AgentEvent` | Events emitted during execution |
+| `ProviderTransport` | Low-level transport for LLM calls |
+
+### Message Types
+
+| Type | Description |
+|------|-------------|
+| `Message` | Union of all message types |
+| `UserMessage` | Message from user |
+| `AssistantMessage` | Response from LLM |
+| `ToolResultMessage` | Result from tool execution |
+
+### Content Types
+
+| Type | Description |
+|------|-------------|
+| `TextContent` | Plain text block |
+| `ImageContent` | Base64-encoded image |
+| `ThinkingContent` | Extended reasoning trace |
+| `ToolCall` | Tool invocation in response |
+
+### Configuration Types
+
+| Type | Description |
+|------|-------------|
+| `Model` | LLM model configuration |
+| `Tool` | Tool definition schema |
+| `AgentTool` | Tool with execute function |
+| `AgentRunConfig` | Runtime configuration |
+| `ThinkingLevel` | Extended thinking level |
 
 ## Testing
 
 ```bash
-npm run test --workspaces --if-present
+npm run test
 ```
 
 ## License

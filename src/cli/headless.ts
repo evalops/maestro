@@ -32,6 +32,7 @@ import { access, readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { lookup as lookupMimeType } from "mime-types";
 
+import type { ActionApprovalService } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
 import type {
 	AgentEvent,
@@ -453,6 +454,7 @@ function handleAgentEvent(event: AgentEvent): void {
 export async function runHeadlessMode(
 	agent: Agent,
 	sessionManager: SessionManager,
+	approvalService?: ActionApprovalService,
 ): Promise<void> {
 	// Subscribe to agent events
 	agent.subscribe((event) => {
@@ -515,10 +517,35 @@ export async function runHeadlessMode(
 					break;
 
 				case "tool_response":
-					// Tool approval/rejection is handled via the approval service
-					// The headless mode uses auto-approval, so this is mainly for
-					// forwarding results back
-					// TODO: Implement tool response handling if needed
+					// Handle tool approval/rejection from the TUI
+					if (approvalService) {
+						if (msg.approved) {
+							const resolved = approvalService.approve(msg.call_id);
+							if (!resolved) {
+								send({
+									type: "error",
+									message: `No pending approval found for call_id: ${msg.call_id}`,
+									fatal: false,
+								});
+							}
+						} else {
+							const reason = msg.result?.error ?? "Denied by user";
+							const resolved = approvalService.deny(msg.call_id, reason);
+							if (!resolved) {
+								send({
+									type: "error",
+									message: `No pending approval found for call_id: ${msg.call_id}`,
+									fatal: false,
+								});
+							}
+						}
+					} else {
+						// No approval service - headless mode is using auto-approval
+						send({
+							type: "status",
+							message: "Tool response ignored (auto-approval mode)",
+						});
+					}
 					break;
 
 				case "cancel":

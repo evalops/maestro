@@ -2023,7 +2023,7 @@ export async function main(args: string[]) {
 		console.log(chalk.dim(`AGENTS.md generated at ${displayPath}`));
 	} else if (mode === "headless" || parsed.headless) {
 		// Headless mode - for native TUI communication
-		await runHeadlessMode(agent, sessionManager);
+		await runHeadlessMode(agent, sessionManager, approvalService);
 	} else if (mode === "rpc") {
 		// RPC mode - headless operation
 		await runRpcMode(agent, sessionManager);
