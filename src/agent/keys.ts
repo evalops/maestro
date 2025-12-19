@@ -16,7 +16,7 @@ const PROJECT_KEYS_PATH = join(process.cwd(), ".composer", "keys.json");
 
 function getFactoryPaths(): { keysPath: string; configPath: string } {
 	const factoryHome =
-		process.env.FACTORY_HOME ?? join(process.env.HOME ?? "", ".factory");
+		resolveEnvPath(process.env.FACTORY_HOME) ?? join(homedir(), ".factory");
 	return {
 		keysPath: join(factoryHome, "keys.json"),
 		configPath: join(factoryHome, "config.json"),
@@ -30,7 +30,9 @@ function sanitizePath(pathOverride?: string): string | undefined {
 		DEFAULT_KEYS_PATH;
 	if (!candidate) return undefined;
 	const resolved = resolve(candidate);
-	const allowedRoots = [homedir(), process.cwd()].map((p) => resolve(p));
+	const allowedRoots = [homedir(), PATHS.COMPOSER_HOME, process.cwd()].map(
+		(p) => resolve(p),
+	);
 	const isAllowed = allowedRoots.some((root) => resolved.startsWith(root));
 	if (!isAllowed) return undefined;
 	return resolved;
