@@ -55,10 +55,13 @@ const CACHE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 // ============================================================================
 
 function matchesPattern(path: string, pattern: string): boolean {
-	return minimatch(path, pattern, {
+	const normalizedPath = path.replace(/\\/g, "/");
+	const normalizedPattern = pattern.replace(/\\/g, "/");
+	return minimatch(normalizedPath, normalizedPattern, {
 		dot: true,
 		matchBase: false,
 		nocomment: true,
+		nocase: process.platform === "win32",
 	});
 }
 
