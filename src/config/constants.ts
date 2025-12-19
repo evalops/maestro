@@ -5,12 +5,11 @@
  * to improve maintainability and allow environment-based overrides.
  */
 
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { resolveEnvPath } from "../utils/path-expansion.js";
+import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 
 export const getComposerHome = (): string =>
-	resolveEnvPath(process.env.COMPOSER_HOME) ?? join(homedir(), ".composer");
+	resolveEnvPath(process.env.COMPOSER_HOME) ?? join(getHomeDir(), ".composer");
 
 export const getAgentDir = (): string => {
 	const envAgentDir =
