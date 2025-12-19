@@ -108,7 +108,21 @@ pub enum SkillLoadError {
         dir_name: String,
         skill_name: String,
     },
+
+    /// Unexpected fields in frontmatter
+    #[error("Unexpected fields in '{path}': {fields}. Only name, description, license, compatibility, allowed-tools, metadata are allowed.")]
+    UnexpectedFields { path: PathBuf, fields: String },
 }
+
+/// Allowed frontmatter fields per Agent Skills spec
+const ALLOWED_FIELDS: &[&str] = &[
+    "name",
+    "description",
+    "license",
+    "compatibility",
+    "allowed-tools",
+    "metadata",
+];
 
 /// YAML frontmatter structure for skill files (per Agent Skills spec)
 #[derive(Debug, Deserialize)]
@@ -162,6 +176,57 @@ impl SkillResources {
     /// Check if the skill has any resources
     pub fn has_resources(&self) -> bool {
         self.scripts_dir.is_some() || self.references_dir.is_some() || self.assets_dir.is_some()
+    }
+}
+
+impl LoadedSkill {
+    /// Convert to a JSON-serializable dictionary (per Agent Skills SDK)
+    ///
+    /// Excludes None values to match the Python SDK behavior.
+    pub fn to_dict(&self) -> serde_json::Value {
+        let mut result = serde_json::Map::new();
+
+        result.insert("name".to_string(), serde_json::json!(self.definition.name));
+        result.insert(
+            "description".to_string(),
+            serde_json::json!(self.definition.description),
+        );
+
+        // Add optional fields only if present
+        if let Some(license) = self.definition.metadata.get("license") {
+            result.insert("license".to_string(), license.clone());
+        }
+
+        if let Some(compat) = self.definition.metadata.get("compatibility") {
+            result.insert("compatibility".to_string(), compat.clone());
+        }
+
+        if !self.definition.provided_tools.is_empty() {
+            result.insert(
+                "allowed-tools".to_string(),
+                serde_json::json!(self.definition.provided_tools.join(" ")),
+            );
+        }
+
+        // Add metadata if non-empty (excluding license/compatibility which are top-level)
+        let filtered_metadata: HashMap<String, serde_json::Value> = self
+            .definition
+            .metadata
+            .iter()
+            .filter(|(k, _)| *k != "license" && *k != "compatibility")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        if !filtered_metadata.is_empty() {
+            result.insert("metadata".to_string(), serde_json::json!(filtered_metadata));
+        }
+
+        serde_json::Value::Object(result)
+    }
+
+    /// Convert to JSON string
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(&self.to_dict()).unwrap_or_default()
     }
 }
 
@@ -258,6 +323,25 @@ impl SkillLoader {
         Ok(())
     }
 
+    /// Find the SKILL.md file in a directory (case-insensitive)
+    ///
+    /// Prefers SKILL.md (uppercase) but accepts skill.md (lowercase) per spec.
+    fn find_skill_md(dir: &Path) -> Option<PathBuf> {
+        // Check for uppercase first (preferred)
+        let uppercase = dir.join("SKILL.md");
+        if uppercase.exists() {
+            return Some(uppercase);
+        }
+
+        // Fall back to lowercase
+        let lowercase = dir.join("skill.md");
+        if lowercase.exists() {
+            return Some(lowercase);
+        }
+
+        None
+    }
+
     /// Load all skills from all search paths
     pub fn load_all(&self) -> Vec<Result<LoadedSkill, SkillLoadError>> {
         let mut results = Vec::new();
@@ -276,8 +360,8 @@ impl SkillLoader {
         let mut results = Vec::new();
 
         // Look for SKILL.md directly in the skills directory (single-file skill)
-        let skill_file = dir.join("SKILL.md");
-        if skill_file.exists() {
+        // Supports both SKILL.md and skill.md (case-insensitive per spec)
+        if let Some(skill_file) = Self::find_skill_md(dir) {
             results.push(self.load_skill_file(&skill_file, SkillSource::User));
         }
 
@@ -286,8 +370,7 @@ impl SkillLoader {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
                 if path.is_dir() {
-                    let skill_file = path.join("SKILL.md");
-                    if skill_file.exists() {
+                    if let Some(skill_file) = Self::find_skill_md(&path) {
                         // Determine source based on path
                         let source = if dir.starts_with(
                             dirs::home_dir()
@@ -375,6 +458,38 @@ impl SkillLoader {
         })
     }
 
+    /// Validate that only allowed fields are present in frontmatter
+    fn validate_fields(frontmatter_str: &str, path: &Path) -> Result<(), SkillLoadError> {
+        // Parse as generic YAML value to check keys
+        let value: serde_yaml::Value =
+            serde_yaml::from_str(frontmatter_str).map_err(|e| SkillLoadError::YamlParseError {
+                path: path.to_path_buf(),
+                message: e.to_string(),
+            })?;
+
+        if let serde_yaml::Value::Mapping(map) = value {
+            let mut unexpected: Vec<String> = Vec::new();
+
+            for key in map.keys() {
+                if let serde_yaml::Value::String(key_str) = key {
+                    if !ALLOWED_FIELDS.contains(&key_str.as_str()) {
+                        unexpected.push(key_str.clone());
+                    }
+                }
+            }
+
+            if !unexpected.is_empty() {
+                unexpected.sort();
+                return Err(SkillLoadError::UnexpectedFields {
+                    path: path.to_path_buf(),
+                    fields: unexpected.join(", "),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     /// Parse skill content from a string
     fn parse_skill_content(
         &self,
@@ -385,6 +500,9 @@ impl SkillLoader {
         // Extract frontmatter and body
         let (frontmatter_str, body) = self.extract_frontmatter(content, path)?;
 
+        // Validate that only allowed fields are present (per Agent Skills spec)
+        Self::validate_fields(&frontmatter_str, path)?;
+
         // Parse YAML frontmatter
         let frontmatter: SkillFrontmatter =
             serde_yaml::from_str(&frontmatter_str).map_err(|e| SkillLoadError::YamlParseError {
@@ -392,7 +510,7 @@ impl SkillLoader {
                 message: e.to_string(),
             })?;
 
-        // Validate name per spec
+        // Validate name per spec (with Unicode normalization)
         Self::validate_name(&frontmatter.name, path)?;
 
         // Validate description length
@@ -1479,5 +1597,149 @@ description: Description for {}
         assert_eq!(html_escape("hello"), "hello");
         assert_eq!(html_escape("<>&\"'"), "&lt;&gt;&amp;&quot;&#39;");
         assert_eq!(html_escape("a<b>c"), "a&lt;b&gt;c");
+    }
+
+    #[test]
+    fn test_lowercase_skill_md() {
+        let temp_dir = TempDir::new().unwrap();
+        let skill_dir = temp_dir.path().join("lowercase-skill");
+        fs::create_dir(&skill_dir).unwrap();
+
+        // Use lowercase skill.md instead of SKILL.md
+        fs::write(
+            skill_dir.join("skill.md"),
+            r#"---
+name: lowercase-skill
+description: A skill with lowercase filename
+---
+Content.
+"#,
+        )
+        .unwrap();
+
+        let loader = SkillLoader::new();
+        let results = loader.load_from_directory(temp_dir.path());
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_ok());
+        assert_eq!(
+            results[0].as_ref().unwrap().definition.name,
+            "lowercase-skill"
+        );
+    }
+
+    #[test]
+    fn test_uppercase_preferred_over_lowercase() {
+        let temp_dir = TempDir::new().unwrap();
+        let skill_dir = temp_dir.path().join("prefer-skill");
+        fs::create_dir(&skill_dir).unwrap();
+
+        // Create both uppercase and lowercase - uppercase should be preferred
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            r#"---
+name: prefer-skill
+description: From uppercase SKILL.md
+---
+"#,
+        )
+        .unwrap();
+
+        fs::write(
+            skill_dir.join("skill.md"),
+            r#"---
+name: prefer-skill
+description: From lowercase skill.md
+---
+"#,
+        )
+        .unwrap();
+
+        let loader = SkillLoader::new();
+        let skill = loader
+            .load_skill_file(&skill_dir.join("SKILL.md"), SkillSource::User)
+            .unwrap();
+
+        assert!(skill.definition.description.contains("uppercase"));
+    }
+
+    #[test]
+    fn test_unexpected_fields_rejected() {
+        let content = r#"---
+name: field-test
+description: Testing field validation
+unknown_field: should fail
+another_bad_field: also fails
+---
+Content.
+"#;
+
+        let loader = SkillLoader::new();
+        let result = loader.parse_skill_content(content, Path::new("test.md"), SkillSource::User);
+
+        assert!(matches!(
+            result,
+            Err(SkillLoadError::UnexpectedFields { .. })
+        ));
+
+        if let Err(SkillLoadError::UnexpectedFields { fields, .. }) = result {
+            assert!(fields.contains("unknown_field"));
+            assert!(fields.contains("another_bad_field"));
+        }
+    }
+
+    #[test]
+    fn test_allowed_fields_accepted() {
+        let content = r#"---
+name: all-fields-skill
+description: Testing all allowed fields
+license: MIT
+compatibility: Requires Python 3.10+
+allowed-tools: read write bash
+metadata:
+  category: testing
+  priority: high
+---
+Content.
+"#;
+
+        let loader = SkillLoader::new();
+        let result = loader.parse_skill_content(content, Path::new("test.md"), SkillSource::User);
+
+        assert!(result.is_ok());
+        let skill = result.unwrap();
+        assert_eq!(skill.name, "all-fields-skill");
+        assert_eq!(
+            skill.metadata.get("license"),
+            Some(&serde_json::json!("MIT"))
+        );
+    }
+
+    #[test]
+    fn test_find_skill_md_uppercase() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("SKILL.md"), "test").unwrap();
+
+        let result = SkillLoader::find_skill_md(temp_dir.path());
+        assert!(result.is_some());
+        assert!(result.unwrap().ends_with("SKILL.md"));
+    }
+
+    #[test]
+    fn test_find_skill_md_lowercase() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("skill.md"), "test").unwrap();
+
+        let result = SkillLoader::find_skill_md(temp_dir.path());
+        assert!(result.is_some());
+        assert!(result.unwrap().ends_with("skill.md"));
+    }
+
+    #[test]
+    fn test_find_skill_md_none() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = SkillLoader::find_skill_md(temp_dir.path());
+        assert!(result.is_none());
     }
 }
