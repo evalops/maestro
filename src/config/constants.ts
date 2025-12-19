@@ -6,7 +6,7 @@
  */
 
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 export const getAgentDir = (): string => {
 	const envAgentDir =
@@ -68,11 +68,11 @@ export const PATHS = {
 	BACKGROUND_TASK_LOG_DIR: join(homedir(), ".composer", "background-tasks"),
 	/** UI state file path */
 	UI_STATE_FILE:
-		process.env.COMPOSER_UI_STATE ?? join(getAgentDir(), "ui-state.json"),
+		process.env.COMPOSER_UI_STATE ?? resolve(getAgentDir(), "ui-state.json"),
 	/** Command prefs file path */
 	COMMAND_PREFS_FILE:
 		process.env.COMPOSER_COMMAND_PREFS ??
-		join(getAgentDir(), "command-prefs.json"),
+		resolve(getAgentDir(), "command-prefs.json"),
 	/** Bash history file path */
 	BASH_HISTORY_FILE:
 		process.env.COMPOSER_BASH_HISTORY ??
