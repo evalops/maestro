@@ -4,12 +4,13 @@
  */
 
 import { realpath } from "node:fs/promises";
-import { normalize, resolve } from "node:path";
+import { join, normalize, resolve } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { minimatch } from "minimatch";
 import { type DbClient, getDb } from "../db/client.js";
 import { directoryAccessRules } from "../db/schema.js";
 import { createLogger } from "../utils/logger.js";
+import { getHomeDir } from "../utils/path-expansion.js";
 
 const logger = createLogger("directory-access");
 
@@ -245,11 +246,8 @@ export function clearDirectoryRulesCache(orgId?: string): void {
  * Get default safe directories (always allowed regardless of rules)
  */
 export function getDefaultSafeDirectories(): string[] {
-	return [
-		"/tmp",
-		"/var/tmp",
-		process.env.HOME ? `${process.env.HOME}/.composer` : "~/.composer",
-	];
+	const homeDir = getHomeDir();
+	return ["/tmp", "/var/tmp", join(homeDir, ".composer")];
 }
 
 /**
@@ -330,10 +328,10 @@ export async function seedDefaultDirectoryRules(
 	orgId: string,
 	dbClient: DirectoryRuleInsertClient = getDb(),
 ): Promise<void> {
-	const homeDir = process.env.HOME || process.env.USERPROFILE;
+	const homeDir = getHomeDir();
 	if (!homeDir) {
 		logger.warn(
-			"HOME environment variable not set; skipping home directory allow rule",
+			"Home directory unavailable; skipping home directory allow rule",
 			{ orgId },
 		);
 	}

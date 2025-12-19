@@ -53,6 +53,7 @@ import {
 	themePalette,
 	separator as themedSeparator,
 } from "../../style/theme.js";
+import { getHomeDir } from "../../utils/path-expansion.js";
 import { type GitStatusName, gitGlyph } from "./glyphs.js";
 import { shimmerText } from "./shimmer.js";
 import { STAGE_SHIMMER_OPTIONS } from "./stage-labels.js";
@@ -391,7 +392,7 @@ export function formatPath(path: string, width: number, minWidth = 20): string {
 		Math.max(1, Math.floor(minWidth)),
 		usableWidth,
 	);
-	const home = process.env.HOME || process.env.USERPROFILE;
+	const home = getHomeDir();
 	let pwd = path;
 	if (home && pwd.startsWith(home)) {
 		pwd = `~${pwd.slice(home.length)}`;
@@ -1129,7 +1130,7 @@ export function formatPathWithBranch(
 	branch: string | null,
 	minWidth = 20,
 ): string {
-	const home = process.env.HOME || process.env.USERPROFILE;
+	const home = getHomeDir();
 	let pwd = path;
 	if (home && pwd.startsWith(home)) {
 		pwd = `~${pwd.slice(home.length)}`;
