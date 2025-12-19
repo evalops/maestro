@@ -5,6 +5,7 @@ import {
 	getSystemPaths,
 	isSystemPath,
 } from "../../safety/path-containment.js";
+import { expandUserPath } from "../../utils/path-validation.js";
 import { isHelpRequest } from "./grouped/utils.js";
 import type { CommandExecutionContext } from "./types.js";
 
@@ -68,10 +69,15 @@ export function handleAccessCommand(context: CommandExecutionContext): void {
 				context.showError("Usage: /access test <path>");
 				return;
 			}
-			const resolvedPath = resolve(rawPath);
+			const expandedPath = expandUserPath(rawPath);
+			const resolvedPath = resolve(expandedPath);
 			const summary = getSafePathSummary();
 			const match = getSafePathMatch(resolvedPath, summary);
-			const lines = [`Path: ${rawPath}`, `Resolved: ${resolvedPath}`];
+			const lines = [`Path: ${rawPath}`];
+			if (expandedPath !== rawPath) {
+				lines.push(`Expanded: ${expandedPath}`);
+			}
+			lines.push(`Resolved: ${resolvedPath}`);
 
 			if (match) {
 				lines.push(
