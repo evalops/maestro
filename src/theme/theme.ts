@@ -6,13 +6,13 @@
  * https://github.com/badlogic/pi-mono
  */
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@evalops/tui";
 import { type Static, Type } from "@sinclair/typebox";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import chalk from "chalk";
+import { getAgentDir } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	type ColorMode,
@@ -548,7 +548,7 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 function getThemesDir(): string {
 	const override = process.env.COMPOSER_THEMES_DIR?.trim();
 	if (override) return path.resolve(override);
-	return path.join(os.homedir(), ".composer", "agent", "themes");
+	return path.resolve(getAgentDir(), "themes");
 }
 
 export function getAvailableThemes(): string[] {
