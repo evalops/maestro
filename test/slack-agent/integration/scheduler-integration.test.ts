@@ -12,7 +12,7 @@ import { Scheduler } from "../../../packages/slack-agent/src/scheduler.js";
 
 describe("Scheduler Integration", () => {
 	let testDir: string;
-	let scheduler: Scheduler;
+	let scheduler: Scheduler | undefined;
 	let executedTasks: Array<{ id: string; description: string; prompt: string }>;
 
 	beforeEach(() => {
@@ -21,13 +21,19 @@ describe("Scheduler Integration", () => {
 			`scheduler-integration-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
 		mkdirSync(testDir, { recursive: true });
+		scheduler = undefined;
 		executedTasks = [];
 	});
 
 	afterEach(async () => {
 		await scheduler?.stop();
 		if (existsSync(testDir)) {
-			rmSync(testDir, { recursive: true, force: true });
+			rmSync(testDir, {
+				recursive: true,
+				force: true,
+				maxRetries: 5,
+				retryDelay: 50,
+			});
 		}
 	});
 
