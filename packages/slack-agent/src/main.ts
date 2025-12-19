@@ -892,7 +892,7 @@ async function shutdownWithCleanup(signal: string): Promise<void> {
 	console.log(`\nReceived ${signal}, shutting down...`);
 
 	// Stop scheduler
-	schedulerHolder.instance?.stop();
+	await schedulerHolder.instance?.stop();
 
 	// Stop approval manager
 	approvalManager.stop();

@@ -24,8 +24,8 @@ describe("Scheduler Integration", () => {
 		executedTasks = [];
 	});
 
-	afterEach(() => {
-		scheduler?.stop();
+	afterEach(async () => {
+		await scheduler?.stop();
 		if (existsSync(testDir)) {
 			rmSync(testDir, { recursive: true, force: true });
 		}
@@ -80,7 +80,7 @@ describe("Scheduler Integration", () => {
 			"Do something",
 			"in 2 hours",
 		);
-		scheduler1.stop();
+		await scheduler1.stop();
 
 		// Create second scheduler - should load the task
 		const scheduler2 = new Scheduler({
@@ -92,7 +92,7 @@ describe("Scheduler Integration", () => {
 		expect(tasks).toHaveLength(1);
 		expect(tasks[0].description).toBe("Persisted task");
 
-		scheduler2.stop();
+		await scheduler2.stop();
 	});
 
 	it("executes due tasks", async () => {
