@@ -66,6 +66,7 @@ import type { ApprovalController } from "./approval/approval-controller.js";
 import type { BackgroundTasksController } from "./background/background-tasks-controller.js";
 import { BashModeView } from "./bash-mode-view.js";
 import { ChangelogView } from "./changelog-view.js";
+import { handleAccessCommand } from "./commands/access-command.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
 import {
 	type ComposerRenderContext,
@@ -1118,6 +1119,7 @@ export class TuiRenderer {
 			handleUndo: (context) => this.handleEnhancedUndoCommand(context),
 			handleMention: (context) =>
 				this.fileSearchView.handleMentionCommand(context.rawInput),
+			handleAccess: (context) => handleAccessCommand(context),
 			showHelp: (_context) => this.infoView.showHelp(),
 			handleUpdate: (_context) => this.updateView.handleUpdateCommand(),
 			handleChangelog: (_context) =>

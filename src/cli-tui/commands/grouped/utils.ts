@@ -236,6 +236,16 @@ export const DIAG_SUBCOMMANDS: SubcommandDef[] = [
 	{ name: "bedrock", description: "AWS Bedrock status", aliases: ["aws"] },
 ];
 
+export const ACCESS_SUBCOMMANDS: SubcommandDef[] = [
+	{ name: "safe", description: "Safe roots for file writes" },
+	{
+		name: "restricted",
+		description: "System-protected paths",
+		aliases: ["blocked"],
+	},
+	{ name: "test", description: "Test a path against containment rules" },
+];
+
 export const UI_SUBCOMMANDS: SubcommandDef[] = [
 	{
 		name: "status",

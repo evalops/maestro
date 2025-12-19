@@ -36,6 +36,7 @@ interface CommandRegistryOptions {
 	handleUndo: (context: CommandExecutionContext) => void | Promise<void>;
 	handleReport: (context: CommandExecutionContext) => void;
 	handleMention: (context: CommandExecutionContext) => void | Promise<void>;
+	handleAccess: (context: CommandExecutionContext) => void;
 	showHelp: (context: CommandExecutionContext) => void;
 	handleUpdate: (context: CommandExecutionContext) => void | Promise<void>;
 	handleChangelog: (context: CommandExecutionContext) => void;
@@ -130,6 +131,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			review: opts.handleReview,
 			undoChanges: opts.handleUndo,
 			mention: opts.handleMention,
+			access: opts.handleAccess,
 			help: opts.showHelp,
 			update: opts.handleUpdate,
 			changelog: opts.handleChangelog,
