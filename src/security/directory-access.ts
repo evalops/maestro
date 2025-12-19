@@ -4,6 +4,7 @@
  */
 
 import { realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { minimatch } from "minimatch";
@@ -247,7 +248,13 @@ export function clearDirectoryRulesCache(orgId?: string): void {
  */
 export function getDefaultSafeDirectories(): string[] {
 	const homeDir = getHomeDir();
-	return ["/tmp", "/var/tmp", join(homeDir, ".composer")];
+	const candidates = ["/tmp", "/var/tmp", tmpdir(), join(homeDir, ".composer")];
+	const seen = new Set<string>();
+	return candidates.filter((dir) => {
+		if (seen.has(dir)) return false;
+		seen.add(dir);
+		return true;
+	});
 }
 
 /**

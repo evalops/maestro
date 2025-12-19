@@ -49,6 +49,7 @@ import {
 	ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { createLogger } from "../utils/logger.js";
+import { getHomeDir } from "../utils/path-expansion.js";
 import type {
 	McpConfig,
 	McpManagerStatus,
@@ -245,7 +246,12 @@ export class McpClientManager extends EventEmitter {
 				// Do NOT pass process.env - this would leak API keys and secrets
 				const safeBaseEnv: Record<string, string> = {};
 				if (process.env.PATH) safeBaseEnv.PATH = process.env.PATH;
-				if (process.env.HOME) safeBaseEnv.HOME = process.env.HOME;
+				if (process.env.HOME) {
+					safeBaseEnv.HOME = process.env.HOME;
+				} else {
+					const homeDir = getHomeDir();
+					if (homeDir) safeBaseEnv.HOME = homeDir;
+				}
 				if (process.env.USER) safeBaseEnv.USER = process.env.USER;
 				if (process.env.SHELL) safeBaseEnv.SHELL = process.env.SHELL;
 				if (process.env.TERM) safeBaseEnv.TERM = process.env.TERM;
