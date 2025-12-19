@@ -8,6 +8,7 @@ import {
 	relative,
 	resolve,
 } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { Container, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
@@ -188,7 +189,7 @@ export class ImportExportView {
 				outputPath,
 			);
 			this.options.recordShareArtifact(filePath);
-			const fileUrl = `file://${filePath}`;
+			const fileUrl = pathToFileURL(filePath).toString();
 			this.options.chatContainer.addChild(new Spacer(1));
 			this.options.chatContainer.addChild(
 				new Text(

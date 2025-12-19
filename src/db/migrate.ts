@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sql } from "drizzle-orm";
 import { createLogger } from "../utils/logger.js";
@@ -14,7 +14,8 @@ import { getDb, isDatabaseConfigured } from "./client.js";
 
 const logger = createLogger("db:migrate");
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 const MIGRATIONS_DIR = join(__dirname, "migrations");
 
 interface MigrationJournal {
@@ -374,6 +375,6 @@ export async function runMigrationsCli(): Promise<void> {
 }
 
 // Run if called directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && __filename === resolve(process.argv[1])) {
 	runMigrationsCli();
 }
