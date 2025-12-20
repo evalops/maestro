@@ -136,9 +136,14 @@ function shouldExcludeFile(
 	filePath: string,
 	config: CheckpointConfig,
 ): boolean {
-	return config.excludePatterns.some((pattern) =>
-		minimatch(filePath, pattern, { dot: true }),
-	);
+	const normalizedPath = filePath.replace(/\\/g, "/");
+	return config.excludePatterns.some((pattern) => {
+		const normalizedPattern = pattern.replace(/\\/g, "/");
+		return minimatch(normalizedPath, normalizedPattern, {
+			dot: true,
+			nocase: process.platform === "win32",
+		});
+	});
 }
 
 /**
