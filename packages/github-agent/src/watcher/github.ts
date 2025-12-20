@@ -205,6 +205,21 @@ export class GitHubWatcher {
 					maxEventAt = maxIsoTimestamp(maxEventAt, nextCursor);
 				}
 			} catch (err) {
+				const status =
+					typeof err === "object" &&
+					err !== null &&
+					"status" in err &&
+					typeof (err as { status?: unknown }).status === "number"
+						? (err as { status: number }).status
+						: undefined;
+				if (status === 404 || status === 410) {
+					console.warn(
+						`[watcher] PR #${prNumber} not found (status ${status}); removing from tracking`,
+					);
+					this.trackedPRs.delete(prNumber);
+					this.trackedPrPollTimes.delete(prNumber);
+					continue;
+				}
 				console.error(`[watcher] Error checking PR #${prNumber}:`, err);
 				hadError = true;
 			}
