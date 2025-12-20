@@ -28,6 +28,8 @@ import { join, resolve } from "node:path";
 import { minimatch } from "minimatch";
 import { expandTildePathWithHomeDir, getOsHomeDir } from "./path-expansion.js";
 
+const normalizeForMatch = (value: string): string => value.replace(/\\/g, "/");
+
 /**
  * Expand ~ to user's home directory.
  *
@@ -137,19 +139,26 @@ export function matchesPathPattern(
 		for (const pathToCheck of [normalizedPath, realPath]) {
 			// Use minimatch for glob patterns (**, *, ?)
 			// IMPORTANT: matchBase: false ensures patterns must match from root
-			if (minimatch(pathToCheck, resolvedPattern, { dot: true })) {
+			const normalizedPath = normalizeForMatch(pathToCheck);
+			const normalizedPattern = normalizeForMatch(resolvedPattern);
+			if (
+				minimatch(normalizedPath, normalizedPattern, {
+					dot: true,
+					nocase: process.platform === "win32",
+				})
+			) {
 				return true;
 			}
 
 			// For directory patterns without globs, check proper hierarchy (with separator)
 			// This handles cases like "/home/user" matching "/home/user/file.txt"
-			if (
-				!pattern.includes("*") &&
-				!pattern.includes("?") &&
-				(pathToCheck === resolvedPattern ||
-					pathToCheck.startsWith(`${resolvedPattern}/`))
-			) {
-				return true;
+			if (!pattern.includes("*") && !pattern.includes("?")) {
+				if (
+					normalizedPath === normalizedPattern ||
+					normalizedPath.startsWith(`${normalizedPattern}/`)
+				) {
+					return true;
+				}
 			}
 		}
 	}
