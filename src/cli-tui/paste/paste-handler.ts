@@ -164,7 +164,12 @@ export class PasteHandler {
 		return `${meta}\n${summary.trim()}\n[[End paste summary]]`;
 	}
 
-	private extractTextFromMessage(message: AppMessage): string {
+	private extractTextFromMessage(
+		message: AppMessage | null | undefined,
+	): string {
+		if (!message) {
+			return "";
+		}
 		const rawContent = (message as { content?: unknown }).content;
 		if (typeof rawContent === "string") {
 			return rawContent;
