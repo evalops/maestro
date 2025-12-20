@@ -144,13 +144,29 @@ function stripAnsi(value: string): string {
 	return value.replace(ANSI_ESCAPE_SEQUENCE, "");
 }
 
+const normalizeForCompare = (value: string): string =>
+	process.platform === "win32" ? value.toLowerCase() : value;
+
+function replaceHomePrefix(path: string, homeDir: string): string {
+	const normalizedPath = path.replace(/\\/g, "/");
+	const normalizedHome = homeDir.replace(/\\/g, "/");
+	const pathCheck = normalizeForCompare(normalizedPath);
+	const homeCheck = normalizeForCompare(normalizedHome);
+	if (pathCheck === homeCheck) {
+		return "~";
+	}
+	if (pathCheck.startsWith(`${homeCheck}/`)) {
+		return `~${normalizedPath.slice(normalizedHome.length)}`;
+	}
+	return path;
+}
+
 export function buildConfigShowSections(
 	inspection: ConfigInspection,
 	options: ConfigShowRenderOptions,
 ): string[] {
 	const homeDir = options.homeDir ?? getHomeDir();
-	const rel = (path: string) =>
-		path.startsWith(homeDir) ? `~${path.slice(homeDir.length)}` : path;
+	const rel = (path: string) => replaceHomePrefix(path, homeDir);
 	const output: string[] = [];
 
 	output.push(sectionHeading("Configuration Inspection"));
@@ -258,9 +274,7 @@ export async function handleConfigValidate(): Promise<void> {
 	if (result.summary.configFiles.length > 0) {
 		console.log(muted("Config Files:"));
 		for (const file of result.summary.configFiles) {
-			const relPath = file.startsWith(homeDir)
-				? `~${file.slice(homeDir.length)}`
-				: file;
+			const relPath = replaceHomePrefix(file, homeDir);
 			console.log(muted(`  • ${relPath}`));
 		}
 		console.log();
@@ -331,9 +345,7 @@ function renderConfigShowLegacy(
 	// Show config sources
 	console.log(badge("Config Sources", undefined, "info"));
 	for (const source of inspection.sources) {
-		const relPath = source.path.startsWith(homeDir)
-			? `~${source.path.slice(homeDir.length)}`
-			: source.path;
+		const relPath = replaceHomePrefix(source.path, homeDir);
 		const status = source.exists
 			? badge("present", undefined, "success")
 			: badge("missing", undefined, "warn");
@@ -393,9 +405,7 @@ function renderConfigShowLegacy(
 			),
 		);
 		for (const ref of inspection.fileReferences) {
-			const relPath = ref.path.startsWith(homeDir)
-				? `~${ref.path.slice(homeDir.length)}`
-				: ref.path;
+			const relPath = replaceHomePrefix(ref.path, homeDir);
 			const status = ref.exists
 				? badge("present", undefined, "success")
 				: badge("missing", undefined, "danger");
