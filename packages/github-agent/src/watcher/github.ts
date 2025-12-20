@@ -41,6 +41,7 @@ export class GitHubWatcher {
 	private lastIssuePollTime: string;
 	private lastTrackedPrPollTime: string;
 	private trackedPRs: Set<number> = new Set();
+	private trackedPrPollTimes: Map<number, string> = new Map();
 
 	constructor(token: string, config: AgentConfig, events: WatcherEvents) {
 		this.octokit = new Octokit({ auth: token });
@@ -85,6 +86,9 @@ export class GitHubWatcher {
 	 */
 	trackPR(prNumber: number): void {
 		this.trackedPRs.add(prNumber);
+		if (!this.trackedPrPollTimes.has(prNumber)) {
+			this.trackedPrPollTimes.set(prNumber, new Date().toISOString());
+		}
 	}
 
 	private async poll(): Promise<void> {
@@ -171,9 +175,9 @@ export class GitHubWatcher {
 		since: string,
 		pollStartedAt: string,
 	): Promise<string | null> {
-		let maxEventAt: string | null = null;
 		let hadError = false;
 		for (const prNumber of this.trackedPRs) {
+			const prSince = this.trackedPrPollTimes.get(prNumber) ?? since;
 			try {
 				const pr = await this.fetchPR(prNumber);
 
@@ -181,14 +185,22 @@ export class GitHubWatcher {
 					console.log(`[watcher] PR #${prNumber} merged`);
 					await this.events.onPRMerged(pr);
 					this.trackedPRs.delete(prNumber);
+					this.trackedPrPollTimes.delete(prNumber);
 				} else if (pr.state === "closed") {
 					console.log(`[watcher] PR #${prNumber} closed without merge`);
 					await this.events.onPRClosed(pr);
 					this.trackedPRs.delete(prNumber);
+					this.trackedPrPollTimes.delete(prNumber);
 				} else {
 					// Check for new reviews
-					const latest = await this.pollPRReviews(prNumber, pr, since);
-					maxEventAt = maxIsoTimestamp(maxEventAt, latest);
+					const result = await this.pollPRReviews(prNumber, pr, prSince);
+					if (!result.ok) {
+						hadError = true;
+						continue;
+					}
+					const nextCursor =
+						maxIsoTimestamp(pollStartedAt, result.latest) ?? pollStartedAt;
+					this.trackedPrPollTimes.set(prNumber, nextCursor);
 				}
 			} catch (err) {
 				console.error(`[watcher] Error checking PR #${prNumber}:`, err);
@@ -231,7 +243,7 @@ export class GitHubWatcher {
 		prNumber: number,
 		pr: GitHubPR,
 		since: string,
-	): Promise<string | null> {
+	): Promise<{ latest: string | null; ok: boolean }> {
 		try {
 			const reviews = await this.octokit.paginate(
 				this.octokit.pulls.listReviews,
@@ -249,7 +261,7 @@ export class GitHubWatcher {
 			for (const review of reviews) {
 				if (!review.submitted_at) continue;
 				const submittedAt = new Date(review.submitted_at);
-				// Use < not <= to include reviews at exact poll time
+				// Use < (not <=) so reviews at the exact poll time are included.
 				if (submittedAt < sinceTime) continue;
 				maxEventAt = maxIsoTimestamp(maxEventAt, review.submitted_at);
 
@@ -294,10 +306,10 @@ export class GitHubWatcher {
 					createdAt: comment.created_at,
 				});
 			}
-			return maxEventAt;
+			return { latest: maxEventAt, ok: true };
 		} catch (err) {
 			console.error(`[watcher] Error polling PR #${prNumber} reviews:`, err);
-			return null;
+			return { latest: null, ok: false };
 		}
 	}
 

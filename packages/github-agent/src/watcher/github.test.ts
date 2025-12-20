@@ -79,8 +79,22 @@ describe("GitHubWatcher", () => {
 				listReviewComments: vi.fn().mockResolvedValue({ data: [] }),
 			},
 			paginate: vi.fn(async (fn, params) => {
-				const result = await fn(params);
-				return result?.data ?? result;
+				const perPage =
+					typeof params?.per_page === "number" ? params.per_page : 100;
+				const results: unknown[] = [];
+				let page = 1;
+				// Minimal pagination emulation: keep fetching while page is full.
+				for (;;) {
+					const result = await fn({ ...params, page });
+					const data = Array.isArray(result?.data)
+						? result.data
+						: (result?.data ?? result);
+					if (!Array.isArray(data)) return data;
+					results.push(...data);
+					if (data.length < perPage) break;
+					page += 1;
+				}
+				return results;
 			}),
 		};
 		(Octokit as unknown as ReturnType<typeof vi.fn>).mockImplementation(
