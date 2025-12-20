@@ -168,6 +168,32 @@ describe("ApiQueue", () => {
 		expect(attempts).toBe(2);
 	});
 
+	it("parses retryAfter string values", async () => {
+		const queue = new ApiQueue();
+		let rateLimited = true;
+		const timestamps: number[] = [];
+
+		const promise = queue.enqueue("test.method", async () => {
+			timestamps.push(Date.now());
+			if (rateLimited) {
+				rateLimited = false;
+				const error: Error & { code?: string; retryAfter?: string } = new Error(
+					"Rate limited",
+				);
+				error.code = "slack_webapi_rate_limited";
+				error.retryAfter = "2.0";
+				throw error;
+			}
+			return "success";
+		});
+
+		await vi.runAllTimersAsync();
+
+		expect(await promise).toBe("success");
+		expect(timestamps[1] - timestamps[0]).toBeGreaterThanOrEqual(2000);
+		expect(timestamps[1] - timestamps[0]).toBeLessThan(5000);
+	});
+
 	it("getStats returns queue information", async () => {
 		const queue = new ApiQueue();
 

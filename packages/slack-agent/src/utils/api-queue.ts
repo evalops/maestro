@@ -270,16 +270,30 @@ export class ApiQueue {
 	private getRetryAfter(error: unknown): number {
 		if (error && typeof error === "object") {
 			// Slack SDK includes retryAfter
-			if ("retryAfter" in error && typeof error.retryAfter === "number") {
-				return error.retryAfter;
+			if ("retryAfter" in error) {
+				const value = (error as { retryAfter?: unknown }).retryAfter;
+				if (typeof value === "number") {
+					return value;
+				}
+				if (typeof value === "string") {
+					const parsed = Number.parseFloat(value);
+					if (Number.isFinite(parsed)) {
+						return parsed;
+					}
+				}
 			}
 			// Check headers
 			if ("headers" in error && error.headers) {
-				const headers = error.headers as Record<string, string>;
-				const retryAfter = headers["retry-after"];
+				const headers = error.headers as
+					| Record<string, string>
+					| { get?: (name: string) => string | null };
+				const retryAfter =
+					typeof headers.get === "function"
+						? headers.get("retry-after")
+						: headers["retry-after"] || headers["Retry-After"];
 				if (retryAfter) {
-					const parsed = Number.parseInt(retryAfter, 10);
-					if (!Number.isNaN(parsed)) {
+					const parsed = Number.parseFloat(retryAfter);
+					if (Number.isFinite(parsed)) {
 						return parsed;
 					}
 				}
