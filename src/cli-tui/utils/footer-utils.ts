@@ -386,6 +386,22 @@ export function formatTokenCount(count: number): string {
 	return `${Math.round(count / 1000)}k`;
 }
 
+function replaceHomePrefix(path: string, home: string): string {
+	const normalizedPath = path.replace(/\\/g, "/");
+	const normalizedHome = home.replace(/\\/g, "/");
+	const normalizeForCompare = (value: string) =>
+		process.platform === "win32" ? value.toLowerCase() : value;
+	const pathCheck = normalizeForCompare(normalizedPath);
+	const homeCheck = normalizeForCompare(normalizedHome);
+	if (pathCheck === homeCheck) {
+		return "~";
+	}
+	if (pathCheck.startsWith(`${homeCheck}/`)) {
+		return `~${normalizedPath.slice(normalizedHome.length)}`;
+	}
+	return path;
+}
+
 export function formatPath(path: string, width: number, minWidth = 20): string {
 	const usableWidth = Math.max(1, Math.floor(width));
 	const clampedMinWidth = Math.min(
@@ -393,14 +409,7 @@ export function formatPath(path: string, width: number, minWidth = 20): string {
 		usableWidth,
 	);
 	const home = getHomeDir();
-	let pwd = path;
-	if (home) {
-		const homeCheck = process.platform === "win32" ? home.toLowerCase() : home;
-		const pwdCheck = process.platform === "win32" ? pwd.toLowerCase() : pwd;
-		if (pwdCheck.startsWith(homeCheck)) {
-			pwd = `~${pwd.slice(home.length)}`;
-		}
-	}
+	const pwd = home ? replaceHomePrefix(path, home) : path;
 	const maxPathLength = Math.max(clampedMinWidth, usableWidth - 10);
 	if (visibleWidth(pwd) <= maxPathLength) {
 		return pwd;
@@ -1135,14 +1144,7 @@ export function formatPathWithBranch(
 	minWidth = 20,
 ): string {
 	const home = getHomeDir();
-	let pwd = path;
-	if (home) {
-		const homeCheck = process.platform === "win32" ? home.toLowerCase() : home;
-		const pwdCheck = process.platform === "win32" ? pwd.toLowerCase() : pwd;
-		if (pwdCheck.startsWith(homeCheck)) {
-			pwd = `~${pwd.slice(home.length)}`;
-		}
-	}
+	let pwd = home ? replaceHomePrefix(path, home) : path;
 
 	// Add branch suffix if available
 	if (branch) {
