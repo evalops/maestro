@@ -152,7 +152,7 @@ export function matchesPathPattern(
 
 			// For directory patterns without globs, check proper hierarchy (with separator)
 			// This handles cases like "/home/user" matching "/home/user/file.txt"
-			if (!pattern.includes("*") && !pattern.includes("?")) {
+			if (!isGlob) {
 				if (
 					normalizedPath === normalizedPattern ||
 					normalizedPath.startsWith(`${normalizedPattern}/`)

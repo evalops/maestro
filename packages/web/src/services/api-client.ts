@@ -1170,8 +1170,10 @@ export class ApiClient {
 	}
 
 	// Preview
-	async getPreview(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/preview");
+	async getPreview(file: string): Promise<Record<string, unknown>> {
+		return await this.fetchJsonWithFallback(
+			`/api/preview?file=${encodeURIComponent(file)}`,
+		);
 	}
 
 	// Composer

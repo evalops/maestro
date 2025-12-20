@@ -715,6 +715,9 @@ export async function* streamOpenAI(
 					}
 
 					const delta = choice.delta;
+					if (!delta) {
+						continue;
+					}
 
 					if (delta.content) {
 						const contentDelta = Array.isArray(delta.content)
