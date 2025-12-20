@@ -10,6 +10,18 @@ export interface SandboxAttachment {
 	extractedText?: string;
 }
 
+function normalizeBase64(input: string): string {
+	return input.replace(/\s+/g, "");
+}
+
+function isValidBase64(input: string): boolean {
+	if (!input) return false;
+	if (input.length % 4 !== 0) return false;
+	return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+		input,
+	);
+}
+
 export class AttachmentsRuntimeProvider implements SandboxRuntimeProvider {
 	constructor(private attachments: SandboxAttachment[]) {}
 
@@ -61,7 +73,11 @@ export class AttachmentsRuntimeProvider implements SandboxRuntimeProvider {
 				if (!a) throw new Error(`Attachment not found: ${attachmentId}`);
 				if (a.extractedText) return a.extractedText;
 				try {
-					return atob(a.content);
+					const normalized = normalizeBase64(a.content);
+					if (!isValidBase64(normalized)) {
+						throw new Error("Invalid base64 content");
+					}
+					return atob(normalized);
 				} catch {
 					throw new Error(`Failed to decode attachment: ${attachmentId}`);
 				}
@@ -70,10 +86,18 @@ export class AttachmentsRuntimeProvider implements SandboxRuntimeProvider {
 			w.readBinaryAttachment = (attachmentId: string) => {
 				const a = (w.attachments || []).find((x) => x.id === attachmentId);
 				if (!a) throw new Error(`Attachment not found: ${attachmentId}`);
-				const bin = atob(a.content);
-				const bytes = new Uint8Array(bin.length);
-				for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-				return bytes;
+				try {
+					const normalized = normalizeBase64(a.content);
+					if (!isValidBase64(normalized)) {
+						throw new Error("Invalid base64 content");
+					}
+					const bin = atob(normalized);
+					const bytes = new Uint8Array(bin.length);
+					for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+					return bytes;
+				} catch {
+					throw new Error(`Failed to decode attachment: ${attachmentId}`);
+				}
 			};
 		};
 	}
