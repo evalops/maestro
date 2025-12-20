@@ -103,6 +103,40 @@ describe("handlePreview", () => {
 		}
 	});
 
+	it("returns diff for deleted tracked files", async () => {
+		const repoRoot = mkdtempSync(join(tmpdir(), "preview-deleted-"));
+		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(repoRoot);
+		try {
+			execFileSync("git", ["init"], { cwd: repoRoot });
+			writeFileSync(join(repoRoot, "deleted.txt"), "bye\n", "utf-8");
+			execFileSync("git", ["add", "deleted.txt"], { cwd: repoRoot });
+			rmSync(join(repoRoot, "deleted.txt"));
+
+			const req = new PassThrough() as MockRequest;
+			req.method = "GET";
+			req.url = "/api/preview?file=deleted.txt";
+			req.headers = { "x-composer-api-key": apiKey };
+			const res = makeRes();
+
+			await handlePreview(
+				req as unknown as IncomingMessage,
+				res as unknown as ServerResponse,
+				cors,
+			);
+
+			const payload = JSON.parse(res.body) as {
+				diff: string;
+				hasChanges: boolean;
+			};
+			expect(res.statusCode).toBe(200);
+			expect(payload.hasChanges).toBe(true);
+			expect(payload.diff).not.toBe("No changes");
+		} finally {
+			cwdSpy.mockRestore();
+			rmSync(repoRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects repo root paths", async () => {
 		const repoRoot = mkdtempSync(join(tmpdir(), "preview-root-"));
 		const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(repoRoot);

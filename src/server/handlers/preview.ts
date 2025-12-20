@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, realpathSync, statSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { requireApiAuth } from "../authz.js";
@@ -24,28 +24,43 @@ function assertFileWithinRepo(filePath: string, repoRoot: string) {
 
 	try {
 		const rootRealPath = realpathSync(normalizedRoot);
-		const targetRealPath = realpathSync(absolute);
-		const realRelative = relative(rootRealPath, targetRealPath);
-		if (
-			realRelative === "" ||
-			realRelative === "." ||
-			realRelative === ".." ||
-			realRelative.startsWith(`..${sep}`) ||
-			isAbsolute(realRelative)
-		) {
-			throw new ApiError(
-				400,
-				"Invalid file path: must be a file in repository",
-			);
-		}
+		if (existsSync(absolute)) {
+			const targetRealPath = realpathSync(absolute);
+			const realRelative = relative(rootRealPath, targetRealPath);
+			if (
+				realRelative === "" ||
+				realRelative === "." ||
+				realRelative === ".." ||
+				realRelative.startsWith(`..${sep}`) ||
+				isAbsolute(realRelative)
+			) {
+				throw new ApiError(
+					400,
+					"Invalid file path: must be a file in repository",
+				);
+			}
 
-		const lstat = lstatSync(absolute);
-		const stats = lstat.isSymbolicLink() ? statSync(absolute) : lstat;
-		if (!stats.isFile()) {
-			throw new ApiError(
-				400,
-				"Invalid file path: must be a file in repository",
-			);
+			const lstat = lstatSync(absolute);
+			const stats = lstat.isSymbolicLink() ? statSync(absolute) : lstat;
+			if (!stats.isFile()) {
+				throw new ApiError(
+					400,
+					"Invalid file path: must be a file in repository",
+				);
+			}
+		} else {
+			const parentRealPath = realpathSync(resolve(absolute, ".."));
+			const parentRelative = relative(rootRealPath, parentRealPath);
+			if (
+				parentRelative === ".." ||
+				parentRelative.startsWith(`..${sep}`) ||
+				isAbsolute(parentRelative)
+			) {
+				throw new ApiError(
+					400,
+					"Invalid file path: must be a file in repository",
+				);
+			}
 		}
 	} catch {
 		throw new ApiError(400, "Invalid file path: must be a file in repository");
