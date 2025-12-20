@@ -88,7 +88,6 @@ async function checkBucket(
 		return { allowed: true, remaining: limit - 1 };
 	}
 	if (existing.count >= limit) {
-		maybeCleanupFallback(now);
 		return { allowed: false, remaining: 0 };
 	}
 	existing.count += 1;
