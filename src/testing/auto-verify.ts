@@ -14,9 +14,12 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { minimatch } from "minimatch";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("auto-verify");
+
+const normalizeForMatch = (value: string): string => value.replace(/\\/g, "/");
 
 /**
  * Test runner type detection.
@@ -282,12 +285,12 @@ export function shouldTriggerTests(
 	}
 
 	// Quick check for common exclusion paths (works with any path format)
-	const pathLower = filePath.toLowerCase();
+	const normalizedLower = normalizeForMatch(filePath).toLowerCase();
 	if (
-		pathLower.includes("/node_modules/") ||
-		pathLower.includes("/dist/") ||
-		pathLower.includes("/coverage/") ||
-		pathLower.endsWith(".d.ts")
+		normalizedLower.includes("/node_modules/") ||
+		normalizedLower.includes("/dist/") ||
+		normalizedLower.includes("/coverage/") ||
+		normalizedLower.endsWith(".d.ts")
 	) {
 		return false;
 	}
@@ -311,15 +314,14 @@ export function shouldTriggerTests(
  * Simple glob matching (supports * and **).
  */
 function matchGlob(path: string, pattern: string): boolean {
-	// Convert glob to regex
-	const regexPattern = pattern
-		.replace(/\./g, "\\.")
-		.replace(/\*\*/g, "{{GLOBSTAR}}")
-		.replace(/\*/g, "[^/]*")
-		.replace(/{{GLOBSTAR}}/g, ".*");
-
-	const regex = new RegExp(`^${regexPattern}$`);
-	return regex.test(path);
+	const normalizedPath = normalizeForMatch(path);
+	const normalizedPattern = normalizeForMatch(pattern);
+	return minimatch(normalizedPath, normalizedPattern, {
+		dot: true,
+		matchBase: true,
+		nocomment: true,
+		nocase: process.platform === "win32",
+	});
 }
 
 /**
@@ -327,13 +329,14 @@ function matchGlob(path: string, pattern: string): boolean {
  */
 export function isTestFile(filePath: string): boolean {
 	const name = basename(filePath);
+	const normalizedPath = normalizeForMatch(filePath);
 	return (
 		name.includes(".test.") ||
 		name.includes(".spec.") ||
 		name.includes("_test.") ||
-		filePath.includes("__tests__/") ||
-		filePath.includes("/test/") ||
-		filePath.includes("/tests/")
+		normalizedPath.includes("__tests__/") ||
+		normalizedPath.includes("/test/") ||
+		normalizedPath.includes("/tests/")
 	);
 }
 

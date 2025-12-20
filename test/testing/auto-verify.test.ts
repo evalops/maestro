@@ -283,6 +283,15 @@ describe("Auto-Verify Service", () => {
 			expect(result).toBe(false);
 		});
 
+		it("returns false for nested .md files", () => {
+			const result = shouldTriggerTests(
+				"/docs/guide/README.md",
+				getAutoVerifyConfig(),
+			);
+
+			expect(result).toBe(false);
+		});
+
 		it("returns false for .json files", () => {
 			const result = shouldTriggerTests("/package.json", getAutoVerifyConfig());
 
@@ -332,6 +341,10 @@ describe("Auto-Verify Service", () => {
 
 		it("detects files in __tests__/", () => {
 			expect(isTestFile("/src/__tests__/foo.ts")).toBe(true);
+		});
+
+		it("detects windows-style __tests__ paths", () => {
+			expect(isTestFile("src\\__tests__\\foo.ts")).toBe(true);
 		});
 
 		it("detects files in test/", () => {
