@@ -148,6 +148,23 @@ function parseSseEvents(buffer: string): {
 	return { events, remainder };
 }
 
+function extractTextFromMessage(message: Message | undefined): string {
+	if (!message) return "";
+	const { content } = message;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter(
+			(block): block is { type: "text"; text: string } =>
+				!!block &&
+				typeof block === "object" &&
+				(block as { type?: string }).type === "text" &&
+				typeof (block as { text?: string }).text === "string",
+		)
+		.map((block) => block.text)
+		.join("");
+}
+
 export interface ChatResponse {
 	message: Message;
 	usage?: {
@@ -454,6 +471,8 @@ export class ApiClient {
 
 		const decoder = new TextDecoder();
 		let buffer = "";
+		let sawTextDelta = false;
+		let sawMessageUpdateDelta = false;
 
 		try {
 			while (true) {
@@ -479,11 +498,64 @@ export class ApiClient {
 						if (event.type === "done") {
 							return;
 						}
-						if (event.type === "content_block_delta" && event.text) {
-							yield event.text;
-						} else if (event.type === "text_delta" && event.text) {
-							yield event.text;
-						} else if (event.type === "text" && event.text) {
+						if (
+							event.type === "message_update" &&
+							event.assistantMessageEvent
+						) {
+							const msgEvent = event.assistantMessageEvent;
+							if (msgEvent.type === "text_delta" && msgEvent.delta) {
+								sawTextDelta = true;
+								sawMessageUpdateDelta = true;
+								yield msgEvent.delta;
+							} else if (
+								!sawTextDelta &&
+								msgEvent.type === "text_end" &&
+								msgEvent.content
+							) {
+								sawTextDelta = true;
+								sawMessageUpdateDelta = true;
+								yield msgEvent.content;
+							} else if (
+								!sawTextDelta &&
+								msgEvent.type === "done" &&
+								msgEvent.message
+							) {
+								const finalText = extractTextFromMessage(msgEvent.message);
+								if (finalText) {
+									sawTextDelta = true;
+									sawMessageUpdateDelta = true;
+									yield finalText;
+								}
+							}
+						} else if (event.type === "message_end" && !sawTextDelta) {
+							const finalText = extractTextFromMessage(event.message);
+							if (finalText) {
+								sawTextDelta = true;
+								sawMessageUpdateDelta = true;
+								yield finalText;
+							}
+						} else if (
+							event.type === "content_block_delta" &&
+							!sawMessageUpdateDelta
+						) {
+							const deltaText =
+								event?.delta?.text ?? event?.text ?? event?.delta;
+							if (typeof deltaText === "string" && deltaText.length > 0) {
+								sawTextDelta = true;
+								yield deltaText;
+							}
+						} else if (event.type === "text_delta" && !sawMessageUpdateDelta) {
+							const deltaText = event?.delta ?? event?.text;
+							if (typeof deltaText === "string" && deltaText.length > 0) {
+								sawTextDelta = true;
+								yield deltaText;
+							}
+						} else if (
+							event.type === "text" &&
+							event.text &&
+							!sawMessageUpdateDelta
+						) {
+							sawTextDelta = true;
 							yield event.text;
 						}
 					} catch (e) {
