@@ -14,6 +14,7 @@ vi.mock("@octokit/rest", () => ({
 			listReviews: vi.fn(),
 			listReviewComments: vi.fn(),
 		},
+		paginate: vi.fn(),
 	})),
 }));
 
@@ -56,6 +57,7 @@ describe("GitHubWatcher", () => {
 			listReviews: ReturnType<typeof vi.fn>;
 			listReviewComments: ReturnType<typeof vi.fn>;
 		};
+		paginate: ReturnType<typeof vi.fn>;
 	};
 
 	beforeEach(async () => {
@@ -76,6 +78,24 @@ describe("GitHubWatcher", () => {
 				listReviews: vi.fn().mockResolvedValue({ data: [] }),
 				listReviewComments: vi.fn().mockResolvedValue({ data: [] }),
 			},
+			paginate: vi.fn(async (fn, params) => {
+				const perPage =
+					typeof params?.per_page === "number" ? params.per_page : 100;
+				const results: unknown[] = [];
+				let page = 1;
+				// Minimal pagination emulation: keep fetching while page is full.
+				for (;;) {
+					const result = await fn({ ...params, page });
+					const data = Array.isArray(result?.data)
+						? result.data
+						: (result?.data ?? result);
+					if (!Array.isArray(data)) return data;
+					results.push(...data);
+					if (data.length < perPage) break;
+					page += 1;
+				}
+				return results;
+			}),
 		};
 		(Octokit as unknown as ReturnType<typeof vi.fn>).mockImplementation(
 			() => mockOctokit,
