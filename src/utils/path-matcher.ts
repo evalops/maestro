@@ -24,7 +24,7 @@
  */
 
 import { existsSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { minimatch } from "minimatch";
 import { expandTildePathWithHomeDir, getOsHomeDir } from "./path-expansion.js";
 
@@ -77,8 +77,8 @@ export function resolveRealPath(filePath: string): string {
 		const parentDir = resolve(expanded, "..");
 		if (existsSync(parentDir)) {
 			const realParent = realpathSync(parentDir);
-			const basename = resolve(expanded).split("/").pop() || "";
-			return join(realParent, basename);
+			const fileName = basename(resolve(expanded));
+			return join(realParent, fileName);
 		}
 		return resolved;
 	} catch {
