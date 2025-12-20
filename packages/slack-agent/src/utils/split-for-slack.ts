@@ -8,8 +8,18 @@ export function splitForSlack(
 	text: string,
 	options: { maxLength?: number; suffixPadding?: number } = {},
 ): string[] {
-	const maxLength = options.maxLength ?? 40000;
-	const suffixPadding = options.suffixPadding ?? 50;
+	const rawMaxLength = options.maxLength ?? 40000;
+	const maxLength = Math.max(1, rawMaxLength);
+	const rawSuffixPadding = options.suffixPadding ?? 50;
+	let suffixPadding = Math.max(0, rawSuffixPadding);
+	let suffixEnabled = true;
+
+	// Avoid negative/zero chunk sizes and infinite loops when padding exceeds max length.
+	// If there's no room for suffix, disable it (but keep splitting safely).
+	if (suffixPadding >= maxLength) {
+		suffixPadding = 0;
+		suffixEnabled = false;
+	}
 
 	if (text.length <= maxLength) return [text];
 
@@ -38,7 +48,10 @@ export function splitForSlack(
 
 		const chunk = remaining.slice(0, cut);
 		remaining = remaining.slice(cut);
-		const suffix = remaining.length > 0 ? `\n_(continued ${partNum}...)_` : "";
+		const suffix =
+			remaining.length > 0 && suffixEnabled
+				? `\n_(continued ${partNum}...)_`
+				: "";
 		parts.push(chunk + suffix);
 		partNum++;
 	}

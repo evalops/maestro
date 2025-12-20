@@ -22,4 +22,14 @@ describe("splitForSlack", () => {
 			.join("");
 		expect(reconstructed).toBe(text);
 	});
+
+	it("handles suffix padding larger than maxLength without exceeding limit", () => {
+		const text = "1234567890";
+		const parts = splitForSlack(text, { maxLength: 4, suffixPadding: 50 });
+
+		expect(parts.join("")).toBe(text);
+		for (const part of parts) {
+			expect(part.length).toBeLessThanOrEqual(4);
+		}
+	});
 });
