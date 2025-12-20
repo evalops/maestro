@@ -520,20 +520,25 @@ ${muted("(persists for this bash mode session)")}`;
 
 	private formatDisplayPath(path: string): string {
 		const normalized = this.normalizePath(path);
-		const relToRoot = relative(this.projectRoot, normalized);
-		if (!relToRoot || relToRoot === "") {
+		const relToRoot = relative(this.projectRoot, normalized).replace(
+			/\\/g,
+			"/",
+		);
+		if (!relToRoot) {
 			return ".";
 		}
 		if (!relToRoot.startsWith("..")) {
 			return relToRoot;
 		}
-		if (normalized === this.homeDir) {
+		const normalizedDisplay = normalized.replace(/\\/g, "/");
+		const homeDisplay = this.homeDir.replace(/\\/g, "/");
+		if (normalizedDisplay === homeDisplay) {
 			return "~";
 		}
-		if (normalized.startsWith(`${this.homeDir}/`)) {
-			return `~/${normalized.slice(this.homeDir.length + 1)}`;
+		if (normalizedDisplay.startsWith(`${homeDisplay}/`)) {
+			return `~/${normalizedDisplay.slice(homeDisplay.length + 1)}`;
 		}
-		return normalized;
+		return normalizedDisplay;
 	}
 
 	private normalizePath(path: string): string {
