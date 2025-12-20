@@ -4,10 +4,20 @@ import * as Diff from "diff";
 import { highlightCodeLines } from "../../style/code-highlighter.js";
 import { getHomeDir } from "../../utils/path-expansion.js";
 
+const normalizeForCompare = (value: string): string =>
+	process.platform === "win32" ? value.toLowerCase() : value;
+
 export function shortenPath(path: string): string {
 	const home = getHomeDir();
-	if (path.startsWith(home)) {
-		return `~${path.slice(home.length)}`;
+	const normalizedPath = path.replace(/\\/g, "/");
+	const normalizedHome = home.replace(/\\/g, "/");
+	const pathCheck = normalizeForCompare(normalizedPath);
+	const homeCheck = normalizeForCompare(normalizedHome);
+	if (pathCheck === homeCheck) {
+		return "~";
+	}
+	if (pathCheck.startsWith(`${homeCheck}/`)) {
+		return `~${normalizedPath.slice(normalizedHome.length)}`;
 	}
 	return path;
 }
