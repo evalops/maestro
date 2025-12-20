@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import { basename } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import v8 from "node:v8";
 import { circuitBreakers } from "./circuit-breaker.js";
@@ -333,7 +334,7 @@ function getCallSite() {
 				!fileName.includes("logger.ts")
 			) {
 				return {
-					file: fileName.split("/").pop(), // Just basename for cleaner logs
+					file: fileName ? basename(fileName) : undefined, // Just basename for cleaner logs
 					line: frame.getLineNumber(),
 					function: frame.getFunctionName() || "<anonymous>",
 				};
