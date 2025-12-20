@@ -11,7 +11,7 @@
  * - Manual invalidation API
  */
 
-import { dirname, extname, relative } from "node:path";
+import { basename, dirname, extname, relative } from "node:path";
 import { createLogger } from "../utils/logger.js";
 import type {
 	FileChangeEvent,
@@ -262,7 +262,7 @@ export class CacheInvalidationService {
 	 * Check if a path should trigger full cache clear.
 	 */
 	private shouldFullClear(relativePath: string): boolean {
-		const filename = relativePath.split("/").pop() ?? relativePath;
+		const filename = basename(relativePath) || relativePath;
 
 		for (const pattern of this.config.fullClearPatterns) {
 			if (pattern.includes("*")) {
