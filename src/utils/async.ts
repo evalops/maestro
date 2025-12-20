@@ -98,6 +98,7 @@ export async function batchExecute<T, R>(
 	} = {},
 ): Promise<R[]> {
 	const { concurrency = 5, onProgress } = options;
+	const limit = Math.max(1, concurrency);
 	const results: R[] = [];
 	const executing: Promise<void>[] = [];
 	let completed = 0;
@@ -112,13 +113,15 @@ export async function batchExecute<T, R>(
 		});
 
 		executing.push(promise);
+		promise.finally(() => {
+			const index = executing.indexOf(promise);
+			if (index >= 0) {
+				executing.splice(index, 1);
+			}
+		});
 
-		if (executing.length >= concurrency) {
+		if (executing.length >= limit) {
 			await Promise.race(executing);
-			executing.splice(
-				executing.findIndex((p) => p === promise),
-				1,
-			);
 		}
 	}
 
