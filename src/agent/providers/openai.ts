@@ -715,11 +715,7 @@ export async function* streamOpenAI(
 					}
 
 					const delta = choice.delta;
-					if (!delta) {
-						continue;
-					}
-
-					if (delta.content) {
+					if (delta?.content) {
 						const contentDelta = Array.isArray(delta.content)
 							? delta.content
 									.map((part: unknown) => {
@@ -784,8 +780,9 @@ export async function* streamOpenAI(
 					// Handle reasoning/thinking content
 					// Some endpoints return reasoning in "reasoning_content" (llama.cpp),
 					// others use "reasoning" (other OpenAI-compatible endpoints)
-					const reasoningDelta =
-						delta.reasoning_content || delta.reasoning || "";
+					const reasoningDelta = delta
+						? delta.reasoning_content || delta.reasoning || ""
+						: "";
 					if (reasoningDelta.length > 0) {
 						// Find or create thinking block
 						let thinkingBlock = partial.content.find(
@@ -816,7 +813,7 @@ export async function* streamOpenAI(
 						}
 					}
 
-					if (delta.tool_calls) {
+					if (delta?.tool_calls) {
 						for (const toolCall of delta.tool_calls) {
 							const idx = toolCall.index;
 
