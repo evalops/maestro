@@ -19,6 +19,7 @@
  * and skipped, allowing the agent to continue with partial context.
  */
 
+import { type Clock, systemClock } from "../utils/clock.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("context-manager");
@@ -88,6 +89,8 @@ interface AgentContextOptions {
 	maxCharsPerSource?: number;
 	/** Whitelist of source names to enable (null = all enabled) */
 	enabledSources?: string[] | null;
+	/** Clock for timing (default: system clock) */
+	clock?: Clock;
 }
 
 /** Status of a single source load operation */
@@ -133,6 +136,7 @@ export class AgentContextManager {
 			sourceTimeoutMs: options.sourceTimeoutMs ?? 1500,
 			maxCharsPerSource: options.maxCharsPerSource ?? 4000,
 			enabledSources: options.enabledSources ?? null,
+			clock: options.clock ?? systemClock,
 		};
 	}
 
@@ -165,7 +169,7 @@ export class AgentContextManager {
 	 * 5. Joins successful results into a single prompt
 	 */
 	async getCombinedSystemPromptWithStatus(): Promise<ContextLoadResult> {
-		const startTime = Date.now();
+		const startTime = this.options.clock.now();
 		const parts: string[] = []; // Successful content fragments
 		const sourceStatuses: SourceLoadStatus[] = []; // Status for each source
 
@@ -173,7 +177,7 @@ export class AgentContextManager {
 		// Each source has its own timeout, so slow sources don't block fast ones.
 		const results = await Promise.all(
 			this.sources.map(async (source) => {
-				const sourceStart = Date.now();
+				const sourceStart = this.options.clock.now();
 
 				// Skip disabled sources immediately (no timeout overhead)
 				if (
@@ -199,9 +203,10 @@ export class AgentContextManager {
 						this.options.sourceTimeoutMs,
 						controller,
 						source.name,
+						this.options.clock,
 					);
 
-					const durationMs = Date.now() - sourceStart;
+					const durationMs = this.options.clock.now() - sourceStart;
 
 					if (result === null) {
 						return {
@@ -236,7 +241,7 @@ export class AgentContextManager {
 						originalLength,
 					};
 				} catch (error) {
-					const durationMs = Date.now() - sourceStart;
+					const durationMs = this.options.clock.now() - sourceStart;
 
 					if (error instanceof ContextTimeoutError) {
 						logger.warn(`Context source '${source.name}' timed out`, {
@@ -289,7 +294,7 @@ export class AgentContextManager {
 			}
 		}
 
-		const totalDurationMs = Date.now() - startTime;
+		const totalDurationMs = this.options.clock.now() - startTime;
 
 		// Log summary if there were failures
 		if (failureCount > 0) {
@@ -347,13 +352,14 @@ async function withTimeout<T>(
 	timeoutMs: number,
 	controller: AbortController,
 	sourceName: string,
+	clock: Clock,
 ): Promise<T> {
 	let timeoutHandle: NodeJS.Timeout | undefined;
 	try {
 		return await Promise.race([
 			promise,
 			new Promise<never>((_, reject) => {
-				timeoutHandle = setTimeout(() => {
+				timeoutHandle = clock.setTimeout(() => {
 					// Abort the controller first to signal the source to stop
 					controller.abort(new ContextTimeoutError(sourceName, timeoutMs));
 					// Then reject to complete the race
@@ -363,7 +369,7 @@ async function withTimeout<T>(
 		]);
 	} finally {
 		// Always clean up the timer to prevent memory leaks
-		if (timeoutHandle) clearTimeout(timeoutHandle);
+		if (timeoutHandle) clock.clearTimeout(timeoutHandle);
 	}
 }
 
@@ -384,5 +390,5 @@ function truncate(value: string, maxChars: number): string {
 	const suffix = `\n\n[truncated ${value.length - maxChars} chars]`;
 	const available = Math.max(0, maxChars - suffix.length);
 	const head = available > 0 ? value.slice(0, available) : "";
-	return `${head}${suffix}`;
+	return `${head}${suffix}`.slice(0, Math.max(0, maxChars));
 }

@@ -37,6 +37,18 @@ describe("AgentContextManager", () => {
 		expect(result).toContain("[truncated ");
 	});
 
+	it("respects maxCharsPerSource even when the suffix is longer", async () => {
+		const long = "a".repeat(120);
+		const maxCharsPerSource = 5;
+
+		const manager = new AgentContextManager({ maxCharsPerSource });
+		manager.addSource(makeSource("tiny", async () => long));
+
+		const result = await manager.getCombinedSystemPrompt();
+
+		expect(result.length).toBeLessThanOrEqual(maxCharsPerSource);
+	});
+
 	it("times out slow sources and still returns other results", async () => {
 		vi.useFakeTimers();
 		try {
