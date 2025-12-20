@@ -3,6 +3,7 @@ import DOMPurify from "dompurify";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import { isValidBase64, normalizeBase64 } from "./base64-utils.js";
 
 type PdfjsModule = typeof import("pdfjs-dist");
 type XlsxModule = typeof import("xlsx");
@@ -38,7 +39,11 @@ async function loadDocxPreview(): Promise<DocxPreviewModule> {
 }
 
 function decodeBase64ToBytes(base64: string): Uint8Array {
-	const bin = atob(base64);
+	const normalized = normalizeBase64(base64);
+	if (!isValidBase64(normalized)) {
+		throw new Error("Invalid base64 content");
+	}
+	const bin = atob(normalized);
 	const bytes = new Uint8Array(bin.length);
 	for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
 	return bytes;
@@ -56,7 +61,9 @@ function encodeBytesToBase64(bytes: Uint8Array): string {
 
 function safeDecodeBase64ToText(base64: string): string | null {
 	try {
-		return atob(base64);
+		const normalized = normalizeBase64(base64);
+		if (!isValidBase64(normalized)) return null;
+		return atob(normalized);
 	} catch {
 		return null;
 	}
@@ -474,21 +481,26 @@ export class ComposerAttachmentViewer extends LitElement {
 			typeof att.content === "string" &&
 			att.content.length > 0
 		) {
-			const bytes = decodeBase64ToBytes(att.content);
-			const blob = new Blob([bytes], {
-				type: att.mimeType || "application/octet-stream",
-			});
-			this.cleanupLoaded();
-			this.loadedBytes = bytes;
-			this.blobUrl = URL.createObjectURL(blob);
-			if (opts?.decodeText && this.isTextLike(att)) {
-				try {
-					this.loadedText = new TextDecoder().decode(bytes);
-				} catch {
-					this.loadedText = null;
+			try {
+				const bytes = decodeBase64ToBytes(att.content);
+				const blob = new Blob([bytes], {
+					type: att.mimeType || "application/octet-stream",
+				});
+				this.cleanupLoaded();
+				this.loadedBytes = bytes;
+				this.blobUrl = URL.createObjectURL(blob);
+				if (opts?.decodeText && this.isTextLike(att)) {
+					try {
+						this.loadedText = new TextDecoder().decode(bytes);
+					} catch {
+						this.loadedText = null;
+					}
 				}
+				return;
+			} catch {
+				this.loadError = "Attachment content is not valid base64";
+				return;
 			}
-			return;
 		}
 
 		if (!needsFetch) return;
@@ -548,8 +560,15 @@ export class ComposerAttachmentViewer extends LitElement {
 			a.rel = "noopener";
 			a.click();
 			URL.revokeObjectURL(url);
-		} catch {
-			// ignore
+		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.message === "Invalid base64 content"
+			) {
+				this.loadError = "Attachment content is not valid base64";
+			} else {
+				this.loadError = "Failed to download attachment";
+			}
 		}
 	}
 
