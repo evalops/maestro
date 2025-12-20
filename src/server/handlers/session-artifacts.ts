@@ -360,6 +360,9 @@ window.addEventListener("message", (e) => {
   if (e.data.type !== "open-external-url") return;
   const url = e.data.url;
   if (typeof url !== "string") return;
+  let parsed;
+  try { parsed = new URL(url); } catch { return; }
+  if (!parsed || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) return;
   window.open(url, "_blank", "noopener,noreferrer");
 });
 </script>

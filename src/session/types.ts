@@ -44,6 +44,15 @@ export interface SessionMessageEntry extends BaseSessionEntry {
 }
 
 /**
+ * Attachment extraction entry (append-only cache for extracted text)
+ */
+export interface AttachmentExtractedEntry extends BaseSessionEntry {
+	type: "attachment_extract";
+	attachmentId: string;
+	extractedText: string;
+}
+
+/**
  * Thinking level change event
  */
 export interface ThinkingLevelChangeEntry extends BaseSessionEntry {
@@ -98,6 +107,7 @@ export interface CompactionEntry extends BaseSessionEntry {
 export type SessionEntry =
 	| SessionHeaderEntry
 	| SessionMessageEntry
+	| AttachmentExtractedEntry
 	| ThinkingLevelChangeEntry
 	| ModelChangeEntry
 	| SessionMetaEntry
@@ -131,6 +141,24 @@ export function isSessionMessageEntry(
 		"type" in entry &&
 		entry.type === "message" &&
 		"message" in entry
+	);
+}
+
+/**
+ * Type guard to check if an entry is an attachment extraction
+ */
+export function isAttachmentExtractedEntry(
+	entry: unknown,
+): entry is AttachmentExtractedEntry {
+	return (
+		typeof entry === "object" &&
+		entry !== null &&
+		"type" in entry &&
+		entry.type === "attachment_extract" &&
+		"attachmentId" in entry &&
+		typeof (entry as AttachmentExtractedEntry).attachmentId === "string" &&
+		"extractedText" in entry &&
+		typeof (entry as AttachmentExtractedEntry).extractedText === "string"
 	);
 }
 
@@ -202,6 +230,7 @@ export function parseSessionEntry(line: string): SessionEntry {
 
 		if (isSessionHeaderEntry(parsed)) return parsed;
 		if (isSessionMessageEntry(parsed)) return parsed;
+		if (isAttachmentExtractedEntry(parsed)) return parsed;
 		if (isThinkingLevelChangeEntry(parsed)) return parsed;
 		if (isModelChangeEntry(parsed)) return parsed;
 		if (isSessionMetaEntry(parsed)) return parsed;

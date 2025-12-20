@@ -95,12 +95,20 @@ export class RuntimeMessageRouter {
 
 			for (const provider of ctx.providers) {
 				if (provider.handleMessage) {
-					await provider.handleMessage(e.data, respond);
+					try {
+						await provider.handleMessage(e.data, respond);
+					} catch (error) {
+						console.warn("Sandbox provider error", error);
+					}
 				}
 			}
 
 			for (const consumer of ctx.consumers) {
-				await consumer.handleMessage(e.data);
+				try {
+					await consumer.handleMessage(e.data);
+				} catch (error) {
+					console.warn("Sandbox consumer error", error);
+				}
 			}
 		};
 
