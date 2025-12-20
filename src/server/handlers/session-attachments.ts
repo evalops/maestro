@@ -1,4 +1,3 @@
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { SessionManager } from "../../session/manager.js";
 import { extractDocumentText } from "../../utils/document-extractor.js";
@@ -57,60 +56,6 @@ function findAttachmentInSession(
 		}
 	}
 	return null;
-}
-
-function persistExtractedTextToSessionFile(opts: {
-	sessionFile: string;
-	attachmentId: string;
-	extractedText: string;
-}): boolean {
-	const raw = readFileSync(opts.sessionFile, "utf8");
-	const lines = raw
-		.trimEnd()
-		.split("\n")
-		.filter((l) => l.trim().length > 0);
-	if (lines.length === 0) return false;
-
-	let updated = false;
-	const nextLines: string[] = [];
-	for (const line of lines) {
-		try {
-			const entry = JSON.parse(line) as {
-				type?: unknown;
-				message?: { attachments?: unknown };
-			};
-
-			if (entry?.type === "message") {
-				const atts = entry.message?.attachments;
-				if (Array.isArray(atts)) {
-					let changed = false;
-					const nextAtts = atts.map((att) => {
-						if (!att || typeof att !== "object") return att;
-						const a = att as { id?: unknown; extractedText?: unknown };
-						if (a.id !== opts.attachmentId) return att;
-						changed = true;
-						return {
-							...(att as Record<string, unknown>),
-							extractedText: opts.extractedText,
-						};
-					});
-					if (changed && entry.message) {
-						entry.message.attachments = nextAtts;
-						updated = true;
-					}
-				}
-			}
-			nextLines.push(JSON.stringify(entry));
-		} catch {
-			nextLines.push(line);
-		}
-	}
-
-	if (!updated) return false;
-	const tmp = `${opts.sessionFile}.${Date.now()}.tmp`;
-	writeFileSync(tmp, `${nextLines.join("\n")}\n`, "utf8");
-	renameSync(tmp, opts.sessionFile);
-	return true;
 }
 
 export async function handleSessionAttachment(
@@ -242,13 +187,13 @@ export async function handleSessionAttachmentExtract(
 		});
 
 		const sessionFile = sessionManager.getSessionFileById(sessionId);
-		if (sessionFile) {
+		if (sessionFile && typeof extracted.extractedText === "string") {
 			try {
-				persistExtractedTextToSessionFile({
+				sessionManager.saveAttachmentExtraction(
 					sessionFile,
 					attachmentId,
-					extractedText: extracted.extractedText,
-				});
+					extracted.extractedText,
+				);
 			} catch {
 				// ignore persistence errors; extraction result still returned
 			}

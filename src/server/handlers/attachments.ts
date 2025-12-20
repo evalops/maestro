@@ -13,6 +13,17 @@ interface ExtractAttachmentBody {
 	maxChars?: number;
 }
 
+function normalizeBase64(input: string): string {
+	return input.replace(/\s+/g, "");
+}
+
+function isValidBase64(input: string): boolean {
+	if (!input) return false;
+	const mod = input.length % 4;
+	if (mod === 1) return false;
+	return /^[A-Za-z0-9+/]*={0,2}$/.test(input);
+}
+
 export async function handleAttachmentExtract(
 	req: IncomingMessage,
 	res: ServerResponse,
@@ -50,13 +61,13 @@ export async function handleAttachmentExtract(
 			return;
 		}
 
-		let buffer: Buffer;
-		try {
-			buffer = Buffer.from(contentBase64, "base64");
-		} catch {
+		const normalized = normalizeBase64(contentBase64);
+		if (!isValidBase64(normalized)) {
 			sendJson(res, 400, { error: "Invalid base64 content" }, cors, req);
 			return;
 		}
+
+		const buffer = Buffer.from(normalized, "base64");
 
 		const extracted = await extractDocumentText({
 			buffer,

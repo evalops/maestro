@@ -12,6 +12,20 @@ vi.mock("../src/session/manager.js", () => ({
 	SessionManager: vi.fn().mockImplementation(() => ({
 		loadSession: vi.fn().mockImplementation(async () => loadedSession),
 		getSessionFileById: vi.fn().mockImplementation(() => sessionFilePath),
+		saveAttachmentExtraction: vi
+			.fn()
+			.mockImplementation(
+				(_path: string, attachmentId: string, text: string) => {
+					const line = JSON.stringify({
+						type: "attachment_extract",
+						timestamp: new Date().toISOString(),
+						attachmentId,
+						extractedText: text,
+					});
+					const existing = readFileSync(sessionFilePath, "utf8");
+					writeFileSync(sessionFilePath, `${existing}${line}\n`, "utf8");
+				},
+			),
 	})),
 }));
 
@@ -122,6 +136,7 @@ describe("Session Attachment Extract Endpoint", () => {
 		expect(json.extractedText).toBe("hello");
 
 		const updated = readFileSync(sessionFilePath, "utf8");
+		expect(updated).toContain('"type":"attachment_extract"');
 		expect(updated).toContain('"extractedText":"hello"');
 	});
 });

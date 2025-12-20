@@ -96,6 +96,7 @@ import {
 	type SessionModelMetadata,
 } from "./metadata-cache.js";
 import {
+	type AttachmentExtractedEntry,
 	type CompactionEntry,
 	type ModelChangeEntry,
 	type SessionEntry,
@@ -121,6 +122,35 @@ interface SessionFileInfo {
 	favorite: boolean;
 	firstMessage: string;
 	allMessagesText: string;
+}
+
+function applyAttachmentExtracts(
+	message: AppMessage,
+	extractedById: Map<string, string>,
+): AppMessage {
+	const attachments = (message as { attachments?: unknown }).attachments;
+	if (!Array.isArray(attachments) || attachments.length === 0) {
+		return message;
+	}
+
+	let changed = false;
+	const nextAttachments = attachments.map((att) => {
+		if (!att || typeof att !== "object") return att;
+		const record = att as Record<string, unknown>;
+		const id = typeof record.id === "string" ? record.id : "";
+		if (!id) return att;
+		const extracted = extractedById.get(id);
+		if (!extracted) return att;
+		if (record.extractedText === extracted) return att;
+		changed = true;
+		return { ...record, extractedText: extracted };
+	});
+
+	if (!changed) return message;
+	return {
+		...(message as unknown as Record<string, unknown>),
+		attachments: nextAttachments,
+	} as AppMessage;
 }
 
 function readSessionEntries(filePath: string): SessionEntry[] {
@@ -170,6 +200,7 @@ function buildSessionFileInfo(
 	let tags: string[] | undefined;
 	let favorite = false;
 	const appMessages: AppMessage[] = [];
+	const extractedById = new Map<string, string>();
 
 	for (const entry of entries) {
 		switch (entry.type) {
@@ -179,10 +210,19 @@ function buildSessionFileInfo(
 					created = new Date(entry.timestamp);
 				}
 				break;
+			case "attachment_extract":
+				if (entry.attachmentId && entry.extractedText) {
+					extractedById.set(entry.attachmentId, entry.extractedText);
+				}
+				break;
 			case "message":
 				if (entry.message) {
 					messageCount++;
-					appMessages.push(entry.message as AppMessage);
+					const normalized = applyAttachmentExtracts(
+						entry.message as AppMessage,
+						extractedById,
+					);
+					appMessages.push(normalized);
 				}
 				break;
 			case "session_meta":
@@ -234,6 +274,7 @@ function buildSessionFileInfo(
 export type { SessionModelMetadata } from "./metadata-cache.js";
 
 export type {
+	AttachmentExtractedEntry,
 	CompactionEntry,
 	SessionHeaderEntry,
 	SessionMessageEntry,
@@ -661,6 +702,43 @@ export class SessionManager {
 				error instanceof Error ? error : new Error(String(error)),
 			);
 		}
+	}
+
+	private appendAttachmentExtractEntry(
+		targetFile: string,
+		payload: { attachmentId: string; extractedText: string },
+	): void {
+		if (!existsSync(targetFile)) return;
+		if (!payload.attachmentId || !payload.extractedText) return;
+		const entry: AttachmentExtractedEntry = {
+			type: "attachment_extract",
+			timestamp: new Date().toISOString(),
+			attachmentId: payload.attachmentId,
+			extractedText: payload.extractedText,
+		};
+		try {
+			appendFileSync(targetFile, `${JSON.stringify(entry)}\n`);
+		} catch (error) {
+			logger.error(
+				"Failed to append attachment extraction",
+				error instanceof Error ? error : new Error(String(error)),
+			);
+		}
+	}
+
+	/**
+	 * Persist extracted attachment text as an append-only cache entry.
+	 */
+	saveAttachmentExtraction(
+		sessionPath: string,
+		attachmentId: string,
+		text: string,
+	): void {
+		if (!sessionPath || !existsSync(sessionPath)) return;
+		this.appendAttachmentExtractEntry(sessionPath, {
+			attachmentId,
+			extractedText: text,
+		});
 	}
 
 	saveSessionSummary(summary: string, sessionPath?: string): void {

@@ -23,6 +23,15 @@ function escapeScriptContent(code: string): string {
 	return code.replace(/<\/script/gi, "<\\/script");
 }
 
+function isSafeExternalUrl(url: string): boolean {
+	try {
+		const parsed = new URL(url);
+		return parsed.protocol === "http:" || parsed.protocol === "https:";
+	} catch {
+		return false;
+	}
+}
+
 function wrapHtmlDocument(htmlContent: string): string {
 	const trimmed = htmlContent.trim();
 	const looksLikeDocument =
@@ -82,6 +91,7 @@ export class ComposerSandboxedIframe extends LitElement {
 			if (m.type !== "open-external-url") return;
 			const url = m.url;
 			if (typeof url !== "string" || url.trim().length === 0) return;
+			if (!isSafeExternalUrl(url)) return;
 			window.open(url, "_blank", "noopener,noreferrer");
 		},
 	};
