@@ -3,6 +3,7 @@ import DOMPurify from "dompurify";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import { isValidBase64, normalizeBase64 } from "./base64-utils.js";
 
 type PdfjsModule = typeof import("pdfjs-dist");
 type XlsxModule = typeof import("xlsx");
@@ -11,18 +12,6 @@ type DocxPreviewModule = typeof import("docx-preview");
 let cachedPdfjs: PdfjsModule | null = null;
 let cachedXlsx: XlsxModule | null = null;
 let cachedDocxPreview: DocxPreviewModule | null = null;
-
-function normalizeBase64(input: string): string {
-	return input.replace(/\s+/g, "");
-}
-
-function isValidBase64(input: string): boolean {
-	if (!input) return false;
-	if (input.length % 4 !== 0) return false;
-	return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-		input,
-	);
-}
 
 async function loadPdfjs(): Promise<PdfjsModule> {
 	if (!cachedPdfjs) {

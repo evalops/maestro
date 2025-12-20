@@ -1,3 +1,4 @@
+import { isValidBase64, normalizeBase64 } from "../base64-utils.js";
 import type { SandboxRuntimeProvider } from "./sandbox-runtime-provider.js";
 
 export interface SandboxAttachment {
@@ -8,18 +9,6 @@ export interface SandboxAttachment {
 	/** base64-encoded bytes */
 	content: string;
 	extractedText?: string;
-}
-
-function normalizeBase64(input: string): string {
-	return input.replace(/\s+/g, "");
-}
-
-function isValidBase64(input: string): boolean {
-	if (!input) return false;
-	if (input.length % 4 !== 0) return false;
-	return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-		input,
-	);
 }
 
 export class AttachmentsRuntimeProvider implements SandboxRuntimeProvider {
