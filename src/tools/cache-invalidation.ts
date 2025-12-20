@@ -12,6 +12,7 @@
  */
 
 import { basename, dirname, extname, relative } from "node:path";
+import { minimatch } from "minimatch";
 import { createLogger } from "../utils/logger.js";
 import type {
 	FileChangeEvent,
@@ -263,20 +264,11 @@ export class CacheInvalidationService {
 	 */
 	private shouldFullClear(relativePath: string): boolean {
 		const filename = basename(relativePath) || relativePath;
+		const nocase = process.platform === "win32";
 
-		for (const pattern of this.config.fullClearPatterns) {
-			if (pattern.includes("*")) {
-				// Simple glob matching
-				const regex = new RegExp(`^${pattern.replace(/\*/g, ".*")}$`);
-				if (regex.test(filename)) {
-					return true;
-				}
-			} else if (filename === pattern) {
-				return true;
-			}
-		}
-
-		return false;
+		return this.config.fullClearPatterns.some((pattern) =>
+			minimatch(filename, pattern, { dot: true, nocase }),
+		);
 	}
 
 	/**
