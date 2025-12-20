@@ -252,7 +252,11 @@ export class McpClientManager extends EventEmitter {
 					const homeDir = getHomeDir();
 					if (homeDir) safeBaseEnv.HOME = homeDir;
 				}
-				if (process.env.USER) safeBaseEnv.USER = process.env.USER;
+				if (process.env.USER) {
+					safeBaseEnv.USER = process.env.USER;
+				} else if (process.env.USERNAME) {
+					safeBaseEnv.USER = process.env.USERNAME;
+				}
 				if (process.env.SHELL) safeBaseEnv.SHELL = process.env.SHELL;
 				if (process.env.TERM) safeBaseEnv.TERM = process.env.TERM;
 
