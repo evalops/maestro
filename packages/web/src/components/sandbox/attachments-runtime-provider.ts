@@ -78,7 +78,13 @@ export class AttachmentsRuntimeProvider implements SandboxRuntimeProvider {
 						throw new Error("Invalid base64 content");
 					}
 					return atob(normalized);
-				} catch {
+				} catch (error) {
+					if (
+						error instanceof Error &&
+						error.message === "Invalid base64 content"
+					) {
+						throw error;
+					}
 					throw new Error(`Failed to decode attachment: ${attachmentId}`);
 				}
 			};
@@ -95,7 +101,13 @@ export class AttachmentsRuntimeProvider implements SandboxRuntimeProvider {
 					const bytes = new Uint8Array(bin.length);
 					for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
 					return bytes;
-				} catch {
+				} catch (error) {
+					if (
+						error instanceof Error &&
+						error.message === "Invalid base64 content"
+					) {
+						throw error;
+					}
 					throw new Error(`Failed to decode attachment: ${attachmentId}`);
 				}
 			};
