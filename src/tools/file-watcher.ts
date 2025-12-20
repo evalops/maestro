@@ -114,7 +114,7 @@ function matchesPattern(path: string, pattern: string): boolean {
 		nobrace: true,
 		noext: true,
 		nocomment: true,
-		nocase: true,
+		nocase: process.platform === "win32",
 	});
 }
 

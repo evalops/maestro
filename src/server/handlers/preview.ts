@@ -101,17 +101,19 @@ export async function handlePreview(
 			}
 
 			try {
-				const safePath = assertFileWithinRepo(filePath, process.cwd());
-				execFileSync("git", ["ls-files", "--error-unmatch", safePath], {
-					cwd: process.cwd(),
+				const repoRoot = process.cwd();
+				const safePath = assertFileWithinRepo(filePath, repoRoot);
+				const gitPath = relative(repoRoot, safePath);
+				execFileSync("git", ["ls-files", "--error-unmatch", gitPath], {
+					cwd: repoRoot,
 					stdio: "ignore",
 					encoding: "utf-8",
 				});
 				const diff = execFileSync(
 					"git",
-					["diff", "--no-color", "--", safePath],
+					["diff", "--no-color", "--", gitPath],
 					{
-						cwd: process.cwd(),
+						cwd: repoRoot,
 						encoding: "utf-8",
 						stdio: ["ignore", "pipe", "ignore"],
 						timeout: PREVIEW_TIMEOUT_MS,
