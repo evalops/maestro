@@ -111,6 +111,8 @@ function matchesPattern(path: string, pattern: string): boolean {
 	return minimatch(normalizedPath, normalizedPattern, {
 		dot: true,
 		matchBase: false,
+		nobrace: true,
+		noext: true,
 		nocomment: true,
 		nocase: true,
 	});

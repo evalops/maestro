@@ -267,7 +267,12 @@ export class CacheInvalidationService {
 		const nocase = process.platform === "win32";
 
 		return this.config.fullClearPatterns.some((pattern) =>
-			minimatch(filename, pattern, { dot: true, nocase }),
+			minimatch(filename, pattern, {
+				dot: true,
+				nobrace: true,
+				noext: true,
+				nocase,
+			}),
 		);
 	}
 

@@ -1,23 +1,56 @@
 import { execFileSync } from "node:child_process";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { requireApiAuth } from "../authz.js";
-import { respondWithApiError, sendJson } from "../server-utils.js";
+import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
 
 const PREVIEW_TIMEOUT_MS = 1_000;
 const MAX_DIFF_BYTES = 50_000;
 
-function assertPathWithinRepo(filePath: string, repoRoot: string) {
+function assertFileWithinRepo(filePath: string, repoRoot: string) {
 	const normalizedRoot = resolve(repoRoot);
 	const absolute = resolve(normalizedRoot, filePath);
 	const relativePath = relative(normalizedRoot, absolute);
 	if (
+		relativePath === "" ||
+		relativePath === "." ||
 		relativePath === ".." ||
 		relativePath.startsWith(`..${sep}`) ||
 		isAbsolute(relativePath)
 	) {
-		throw new Error("Invalid file path: must stay within repository");
+		throw new ApiError(400, "Invalid file path: must be a file in repository");
 	}
+
+	try {
+		const rootRealPath = realpathSync(normalizedRoot);
+		const targetRealPath = realpathSync(absolute);
+		const realRelative = relative(rootRealPath, targetRealPath);
+		if (
+			realRelative === "" ||
+			realRelative === "." ||
+			realRelative === ".." ||
+			realRelative.startsWith(`..${sep}`) ||
+			isAbsolute(realRelative)
+		) {
+			throw new ApiError(
+				400,
+				"Invalid file path: must be a file in repository",
+			);
+		}
+
+		const lstat = lstatSync(absolute);
+		const stats = lstat.isSymbolicLink() ? statSync(absolute) : lstat;
+		if (!stats.isFile()) {
+			throw new ApiError(
+				400,
+				"Invalid file path: must be a file in repository",
+			);
+		}
+	} catch {
+		throw new ApiError(400, "Invalid file path: must be a file in repository");
+	}
+
 	return absolute;
 }
 
@@ -53,7 +86,7 @@ export async function handlePreview(
 			}
 
 			try {
-				const safePath = assertPathWithinRepo(filePath, process.cwd());
+				const safePath = assertFileWithinRepo(filePath, process.cwd());
 				execFileSync("git", ["ls-files", "--error-unmatch", safePath], {
 					cwd: process.cwd(),
 					stdio: "ignore",

@@ -319,6 +319,8 @@ function matchGlob(path: string, pattern: string): boolean {
 	return minimatch(normalizedPath, normalizedPattern, {
 		dot: true,
 		matchBase: true,
+		nobrace: true,
+		noext: true,
 		nocomment: true,
 		nocase: process.platform === "win32",
 	});
