@@ -162,13 +162,19 @@ export class ComposerManager extends EventEmitter {
 		filePath: string,
 		projectRoot?: string,
 	): LoadedComposer | null {
+		const normalizedPath = filePath.replace(/\\/g, "/");
+		const normalizePattern = (pattern: string) => pattern.replace(/\\/g, "/");
+		const matchOptions = {
+			nocase: process.platform === "win32",
+		};
 		for (const composer of this.state.available) {
 			if (!composer.triggers) continue;
 
 			// Check file triggers
 			if (composer.triggers.files) {
 				for (const pattern of composer.triggers.files) {
-					if (minimatch(filePath, pattern)) {
+					const normalizedPattern = normalizePattern(pattern);
+					if (minimatch(normalizedPath, normalizedPattern, matchOptions)) {
 						return composer;
 					}
 				}
@@ -177,7 +183,11 @@ export class ComposerManager extends EventEmitter {
 			// Check directory triggers
 			if (composer.triggers.directories) {
 				for (const pattern of composer.triggers.directories) {
-					if (filePath.startsWith(pattern) || minimatch(filePath, pattern)) {
+					const normalizedPattern = normalizePattern(pattern);
+					if (
+						normalizedPath.startsWith(normalizedPattern) ||
+						minimatch(normalizedPath, normalizedPattern, matchOptions)
+					) {
 						return composer;
 					}
 				}
