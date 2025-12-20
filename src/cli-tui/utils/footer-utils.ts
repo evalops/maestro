@@ -394,8 +394,12 @@ export function formatPath(path: string, width: number, minWidth = 20): string {
 	);
 	const home = getHomeDir();
 	let pwd = path;
-	if (home && pwd.startsWith(home)) {
-		pwd = `~${pwd.slice(home.length)}`;
+	if (home) {
+		const homeCheck = process.platform === "win32" ? home.toLowerCase() : home;
+		const pwdCheck = process.platform === "win32" ? pwd.toLowerCase() : pwd;
+		if (pwdCheck.startsWith(homeCheck)) {
+			pwd = `~${pwd.slice(home.length)}`;
+		}
 	}
 	const maxPathLength = Math.max(clampedMinWidth, usableWidth - 10);
 	if (visibleWidth(pwd) <= maxPathLength) {
@@ -1132,8 +1136,12 @@ export function formatPathWithBranch(
 ): string {
 	const home = getHomeDir();
 	let pwd = path;
-	if (home && pwd.startsWith(home)) {
-		pwd = `~${pwd.slice(home.length)}`;
+	if (home) {
+		const homeCheck = process.platform === "win32" ? home.toLowerCase() : home;
+		const pwdCheck = process.platform === "win32" ? pwd.toLowerCase() : pwd;
+		if (pwdCheck.startsWith(homeCheck)) {
+			pwd = `~${pwd.slice(home.length)}`;
+		}
 	}
 
 	// Add branch suffix if available
