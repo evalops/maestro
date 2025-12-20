@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { requireApiAuth } from "../authz.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 
@@ -8,9 +8,14 @@ const PREVIEW_TIMEOUT_MS = 1_000;
 const MAX_DIFF_BYTES = 50_000;
 
 function assertPathWithinRepo(filePath: string, repoRoot: string) {
-	const absolute = resolve(repoRoot, filePath);
 	const normalizedRoot = resolve(repoRoot);
-	if (!absolute.startsWith(`${normalizedRoot}/`)) {
+	const absolute = resolve(normalizedRoot, filePath);
+	const relativePath = relative(normalizedRoot, absolute);
+	if (
+		relativePath === ".." ||
+		relativePath.startsWith(`..${sep}`) ||
+		isAbsolute(relativePath)
+	) {
 		throw new Error("Invalid file path: must stay within repository");
 	}
 	return absolute;
@@ -40,7 +45,9 @@ export async function handlePreview(
 				return;
 			}
 
-			if (filePath.includes("..") || filePath.includes("/node_modules/")) {
+			const normalizedPath = filePath.replace(/\\/g, "/");
+			const segments = normalizedPath.split("/").filter(Boolean);
+			if (segments.includes("..") || segments.includes("node_modules")) {
 				sendJson(res, 400, { error: "Invalid file path" }, corsHeaders);
 				return;
 			}
