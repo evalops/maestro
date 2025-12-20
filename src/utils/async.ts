@@ -2,6 +2,7 @@
  * Async utilities for timeouts, debouncing, and concurrency control.
  */
 
+import { type Clock, systemClock } from "./clock.js";
 import { createLogger } from "./logger.js";
 
 const logger = createLogger("async-utils");
@@ -16,8 +17,8 @@ export class TimeoutError extends Error {
 /**
  * Sleep for specified milliseconds
  */
-export function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+export function sleep(ms: number, clock: Clock = systemClock): Promise<void> {
+	return new Promise((resolve) => clock.setTimeout(resolve, ms));
 }
 
 /**
@@ -27,11 +28,12 @@ export async function withTimeout<T>(
 	promise: Promise<T>,
 	timeoutMs: number,
 	errorMessage?: string,
+	clock: Clock = systemClock,
 ): Promise<T> {
 	let timeoutId: NodeJS.Timeout | undefined;
 
 	const timeoutPromise = new Promise<never>((_, reject) => {
-		timeoutId = setTimeout(() => {
+		timeoutId = clock.setTimeout(() => {
 			reject(
 				new TimeoutError(
 					errorMessage || `Operation timed out after ${timeoutMs}ms`,
@@ -44,7 +46,7 @@ export async function withTimeout<T>(
 		return await Promise.race([promise, timeoutPromise]);
 	} finally {
 		if (timeoutId !== undefined) {
-			clearTimeout(timeoutId);
+			clock.clearTimeout(timeoutId);
 		}
 	}
 }
@@ -168,10 +170,13 @@ export async function allSettledWithDetails<T>(
 /**
  * Create an AbortController that auto-aborts after timeout
  */
-export function createTimeoutController(timeoutMs: number): AbortController {
+export function createTimeoutController(
+	timeoutMs: number,
+	clock: Clock = systemClock,
+): AbortController {
 	const controller = new AbortController();
 
-	const timeoutId = setTimeout(() => {
+	const timeoutId = clock.setTimeout(() => {
 		controller.abort();
 	}, timeoutMs);
 
@@ -179,7 +184,7 @@ export function createTimeoutController(timeoutMs: number): AbortController {
 	controller.signal.addEventListener(
 		"abort",
 		() => {
-			clearTimeout(timeoutId);
+			clock.clearTimeout(timeoutId);
 		},
 		{ once: true },
 	);
