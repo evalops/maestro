@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentContextManager } from "../../src/agent/context-manager.js";
 
 const makeSource = (
@@ -37,31 +37,35 @@ describe("AgentContextManager", () => {
 		expect(result).toContain("[truncated ");
 	});
 
-	// Skip: This test is flaky in CI due to timing issues with Promise.race
-	// The context manager timeout works correctly in production, but the test
-	// timing is unreliable due to CI scheduling variability
-	it.skip("times out slow sources and still returns other results", async () => {
-		const manager = new AgentContextManager({ sourceTimeoutMs: 100 });
+	it("times out slow sources and still returns other results", async () => {
+		vi.useFakeTimers();
+		try {
+			const manager = new AgentContextManager({ sourceTimeoutMs: 100 });
 
-		manager.addSource(makeSource("fast", async () => "fast-ok"));
-		manager.addSource(
-			makeSource(
-				"slow",
-				(signal) =>
-					new Promise((resolve, reject) => {
-						const timer = setTimeout(() => resolve("too late"), 5_000);
-						if (signal) {
-							signal.addEventListener("abort", () => {
-								clearTimeout(timer);
-								reject(signal.reason ?? new Error("aborted"));
-							});
-						}
-					}),
-			),
-		);
+			manager.addSource(makeSource("fast", async () => "fast-ok"));
+			manager.addSource(
+				makeSource(
+					"slow",
+					(signal) =>
+						new Promise((resolve, reject) => {
+							const timer = setTimeout(() => resolve("too late"), 5_000);
+							if (signal) {
+								signal.addEventListener("abort", () => {
+									clearTimeout(timer);
+									reject(signal.reason ?? new Error("aborted"));
+								});
+							}
+						}),
+				),
+			);
 
-		const result = await manager.getCombinedSystemPrompt();
+			const resultPromise = manager.getCombinedSystemPrompt();
+			await vi.advanceTimersByTimeAsync(100);
+			const result = await resultPromise;
 
-		expect(result).toBe("fast-ok");
+			expect(result).toBe("fast-ok");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
