@@ -46,6 +46,7 @@
  * @module safety/bash-parser
  */
 
+import { basename } from "node:path";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("safety:bash-parser");
@@ -159,6 +160,11 @@ export interface BashParseResult {
 	hasBackgroundJob: boolean;
 	hasCommandSubstitution: boolean;
 	error?: string;
+}
+
+function resolveProgramName(value: string): string {
+	const name = basename(value);
+	return name || value;
 }
 
 /**
@@ -482,7 +488,7 @@ export function analyzeCommandSafety(command: string): {
 
 	// Analyze each command in the pipeline
 	for (const cmd of parsed.commands) {
-		const program = cmd.program.split("/").pop() || cmd.program;
+		const program = resolveProgramName(cmd.program);
 
 		// Check for sudo prefix
 		if (program === "sudo") {
@@ -533,7 +539,7 @@ export function analyzeCommandSafety(command: string): {
 	// If we have pipes or redirects with non-safe commands, flag it
 	if (parsed.hasPipes || parsed.hasRedirects) {
 		const allSafe = parsed.commands.every((cmd) => {
-			const program = cmd.program.split("/").pop() || cmd.program;
+			const program = resolveProgramName(cmd.program);
 			return SAFE_COMMANDS.has(program) || program === "git";
 		});
 
@@ -566,7 +572,7 @@ export function isKnownSafeCommand(command: string): boolean {
 
 	// Check each command
 	for (const cmd of parsed.commands) {
-		const program = cmd.program.split("/").pop() || cmd.program;
+		const program = resolveProgramName(cmd.program);
 
 		// Check if it's a known safe command
 		if (SAFE_COMMANDS.has(program)) {
@@ -599,7 +605,7 @@ export function unwrapShellCommand(command: string): string | null {
 	}
 
 	const cmd = parsed.commands[0];
-	const program = cmd.program.split("/").pop() || cmd.program;
+	const program = resolveProgramName(cmd.program);
 
 	// Check for bash/sh/zsh with -c flag
 	if (["bash", "sh", "zsh"].includes(program)) {
