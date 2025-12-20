@@ -218,11 +218,7 @@ function buildSessionFileInfo(
 			case "message":
 				if (entry.message) {
 					messageCount++;
-					const normalized = applyAttachmentExtracts(
-						entry.message as AppMessage,
-						extractedById,
-					);
-					appMessages.push(normalized);
+					appMessages.push(entry.message as AppMessage);
 				}
 				break;
 			case "session_meta":
@@ -244,7 +240,13 @@ function buildSessionFileInfo(
 		}
 	}
 
-	const renderables = buildConversationModel(appMessages);
+	const normalizedMessages = extractedById.size
+		? appMessages.map((message) =>
+				applyAttachmentExtracts(message, extractedById),
+			)
+		: appMessages;
+
+	const renderables = buildConversationModel(normalizedMessages);
 	const firstRenderableUser = renderables.find((renderable) =>
 		isRenderableUserMessage(renderable),
 	);
@@ -259,7 +261,7 @@ function buildSessionFileInfo(
 	return {
 		id: sessionId || "unknown",
 		created,
-		messages: appMessages,
+		messages: normalizedMessages,
 		messageCount,
 		summary,
 		title,
@@ -767,12 +769,26 @@ export class SessionManager {
 	loadMessages(): AppMessage[] {
 		this.writer?.flushSync();
 		const entries = safeReadSessionEntries(this.sessionFile);
-		return entries
-			.filter(
-				(entry): entry is SessionMessageEntry =>
-					entry.type === "message" && Boolean(entry.message),
-			)
-			.map((entry) => entry.message as AppMessage);
+		const extractedById = new Map<string, string>();
+		const messages: AppMessage[] = [];
+
+		for (const entry of entries) {
+			if (entry.type === "attachment_extract") {
+				if (entry.attachmentId && entry.extractedText) {
+					extractedById.set(entry.attachmentId, entry.extractedText);
+				}
+				continue;
+			}
+			if (entry.type === "message" && entry.message) {
+				messages.push(entry.message as AppMessage);
+			}
+		}
+
+		if (extractedById.size === 0) return messages;
+
+		return messages.map((message) =>
+			applyAttachmentExtracts(message, extractedById),
+		);
 	}
 
 	loadThinkingLevel(): string {
