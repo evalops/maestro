@@ -12,6 +12,17 @@ let cachedPdfjs: PdfjsModule | null = null;
 let cachedXlsx: XlsxModule | null = null;
 let cachedDocxPreview: DocxPreviewModule | null = null;
 
+function normalizeBase64(input: string): string {
+	return input.replace(/\s+/g, "");
+}
+
+function isValidBase64(input: string): boolean {
+	if (!input) return false;
+	const mod = input.length % 4;
+	if (mod === 1) return false;
+	return /^[A-Za-z0-9+/]*={0,2}$/.test(input);
+}
+
 async function loadPdfjs(): Promise<PdfjsModule> {
 	if (!cachedPdfjs) {
 		cachedPdfjs = await import("pdfjs-dist");
@@ -38,7 +49,11 @@ async function loadDocxPreview(): Promise<DocxPreviewModule> {
 }
 
 function decodeBase64ToBytes(base64: string): Uint8Array {
-	const bin = atob(base64);
+	const normalized = normalizeBase64(base64);
+	if (!isValidBase64(normalized)) {
+		throw new Error("Invalid base64 content");
+	}
+	const bin = atob(normalized);
 	const bytes = new Uint8Array(bin.length);
 	for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
 	return bytes;
@@ -56,7 +71,9 @@ function encodeBytesToBase64(bytes: Uint8Array): string {
 
 function safeDecodeBase64ToText(base64: string): string | null {
 	try {
-		return atob(base64);
+		const normalized = normalizeBase64(base64);
+		if (!isValidBase64(normalized)) return null;
+		return atob(normalized);
 	} catch {
 		return null;
 	}
@@ -474,21 +491,26 @@ export class ComposerAttachmentViewer extends LitElement {
 			typeof att.content === "string" &&
 			att.content.length > 0
 		) {
-			const bytes = decodeBase64ToBytes(att.content);
-			const blob = new Blob([bytes], {
-				type: att.mimeType || "application/octet-stream",
-			});
-			this.cleanupLoaded();
-			this.loadedBytes = bytes;
-			this.blobUrl = URL.createObjectURL(blob);
-			if (opts?.decodeText && this.isTextLike(att)) {
-				try {
-					this.loadedText = new TextDecoder().decode(bytes);
-				} catch {
-					this.loadedText = null;
+			try {
+				const bytes = decodeBase64ToBytes(att.content);
+				const blob = new Blob([bytes], {
+					type: att.mimeType || "application/octet-stream",
+				});
+				this.cleanupLoaded();
+				this.loadedBytes = bytes;
+				this.blobUrl = URL.createObjectURL(blob);
+				if (opts?.decodeText && this.isTextLike(att)) {
+					try {
+						this.loadedText = new TextDecoder().decode(bytes);
+					} catch {
+						this.loadedText = null;
+					}
 				}
+				return;
+			} catch {
+				this.loadError = "Attachment content is not valid base64";
+				return;
 			}
-			return;
 		}
 
 		if (!needsFetch) return;
