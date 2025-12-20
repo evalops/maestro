@@ -17,6 +17,7 @@ import { existsSync, statSync, watch } from "node:fs";
 import type { FSWatcher, WatchEventType } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
+import { minimatch } from "minimatch";
 import { createLogger } from "../utils/logger.js";
 
 const execAsync = promisify(exec);
@@ -105,24 +106,14 @@ const DEFAULT_EXCLUDE_PATTERNS = [
  * Simple glob pattern matching.
  */
 function matchesPattern(path: string, pattern: string): boolean {
-	// Normalize path separators
 	const normalizedPath = path.replace(/\\/g, "/");
-
-	// Convert glob to regex
-	let regexStr = pattern
-		.replace(/\./g, "\\.") // Escape dots
-		.replace(/\*\*/g, "{{GLOBSTAR}}")
-		.replace(/\*/g, "[^/]*")
-		.replace(/\?/g, "[^/]")
-		.replace(/{{GLOBSTAR}}/g, ".*");
-
-	// If pattern starts with **, allow matching anywhere in the path
-	if (pattern.startsWith("**")) {
-		regexStr = `(^|.*/?)${regexStr.slice(4)}`; // Remove leading .* and add optional prefix
-	}
-
-	const regex = new RegExp(`^${regexStr}$`, "i");
-	return regex.test(normalizedPath);
+	const normalizedPattern = pattern.replace(/\\/g, "/");
+	return minimatch(normalizedPath, normalizedPattern, {
+		dot: true,
+		matchBase: false,
+		nocomment: true,
+		nocase: true,
+	});
 }
 
 /**
