@@ -61,9 +61,8 @@ function encodeBytesToBase64(bytes: Uint8Array): string {
 
 function safeDecodeBase64ToText(base64: string): string | null {
 	try {
-		const normalized = normalizeBase64(base64);
-		if (!isValidBase64(normalized)) return null;
-		return atob(normalized);
+		const bytes = decodeBase64ToBytes(base64);
+		return new TextDecoder().decode(bytes);
 	} catch {
 		return null;
 	}
@@ -559,7 +558,7 @@ export class ComposerAttachmentViewer extends LitElement {
 			a.download = att.fileName || "attachment";
 			a.rel = "noopener";
 			a.click();
-			URL.revokeObjectURL(url);
+			setTimeout(() => URL.revokeObjectURL(url), 1000);
 		} catch (error) {
 			if (
 				error instanceof Error &&

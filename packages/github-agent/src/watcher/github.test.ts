@@ -520,5 +520,20 @@ describe("GitHubWatcher", () => {
 
 			watcher.stop();
 		});
+
+		it("should stop tracking PRs that are not found", async () => {
+			mockOctokit.pulls.get.mockRejectedValue({ status: 404 });
+
+			const watcher = new GitHubWatcher("test-token", config, events);
+			watcher.trackPR(100);
+			await watcher.start();
+
+			expect(mockOctokit.pulls.get).toHaveBeenCalledTimes(1);
+
+			await vi.advanceTimersByTimeAsync(config.pollIntervalMs);
+			expect(mockOctokit.pulls.get).toHaveBeenCalledTimes(1);
+
+			watcher.stop();
+		});
 	});
 });
