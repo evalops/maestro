@@ -176,6 +176,7 @@ export class GitHubWatcher {
 		pollStartedAt: string,
 	): Promise<string | null> {
 		let hadError = false;
+		let maxEventAt: string | null = null;
 		for (const prNumber of this.trackedPRs) {
 			const prSince = this.trackedPrPollTimes.get(prNumber) ?? since;
 			try {
@@ -201,6 +202,7 @@ export class GitHubWatcher {
 					const nextCursor =
 						maxIsoTimestamp(pollStartedAt, result.latest) ?? pollStartedAt;
 					this.trackedPrPollTimes.set(prNumber, nextCursor);
+					maxEventAt = maxIsoTimestamp(maxEventAt, nextCursor);
 				}
 			} catch (err) {
 				console.error(`[watcher] Error checking PR #${prNumber}:`, err);
