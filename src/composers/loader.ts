@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { realpathSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { basename, extname, isAbsolute, join, relative, sep } from "node:path";
 import yaml from "js-yaml";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
@@ -105,7 +105,13 @@ function loadFromDirectory(
 			try {
 				const resolvedPath = realpathSync(filePath);
 				const resolvedDir = realpathSync(dir);
-				if (!resolvedPath.startsWith(resolvedDir)) {
+				const relativePath = relative(resolvedDir, resolvedPath);
+				if (
+					relativePath === "" ||
+					relativePath === ".." ||
+					relativePath.startsWith(`..${sep}`) ||
+					isAbsolute(relativePath)
+				) {
 					logger.warn("Rejected path traversal attempt", { file });
 					continue;
 				}
