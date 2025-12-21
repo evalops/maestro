@@ -269,12 +269,14 @@ export function parseRecurringSchedule(
 		const unit = intervalMatch[2];
 
 		if (unit.startsWith("min")) {
-			const nextRun = nowDt.plus({ minutes: amount });
-			return { schedule: `*/${amount} * * * *`, nextRun: nextRun.toJSDate() };
+			const schedule = `*/${amount} * * * *`;
+			const nextRun = getNextRunFromSchedule(schedule, now, timezone);
+			return { schedule, nextRun };
 		}
 		if (unit.startsWith("hour")) {
-			const nextRun = nowDt.plus({ hours: amount });
-			return { schedule: `0 */${amount} * * *`, nextRun: nextRun.toJSDate() };
+			const schedule = `0 */${amount} * * *`;
+			const nextRun = getNextRunFromSchedule(schedule, now, timezone);
+			return { schedule, nextRun };
 		}
 	}
 
