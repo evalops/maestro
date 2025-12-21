@@ -7,7 +7,9 @@
  * Environment variables:
  * - COMPOSER_TOOL_CACHE_ENABLED: Enable/disable tool caching (default: true)
  * - COMPOSER_TOOL_CACHE_TTL: Default TTL in seconds (default: 300)
- * - COMPOSER_TOOL_CACHE_MAX_SIZE: Maximum cache entries (default: 1000)
+ * - COMPOSER_TOOL_CACHE_MAX_ENTRIES: Maximum cache entries (default: 1000)
+ * - COMPOSER_TOOL_CACHE_MAX_BYTES: Maximum cache size in bytes (default: 50MB)
+ * - COMPOSER_TOOL_CACHE_MAX_SIZE: Legacy alias for max entries (default: 1000)
  */
 
 import { createHash } from "node:crypto";
@@ -183,8 +185,16 @@ const DEFAULT_CONFIG: ToolResultCacheConfig = {
 export function getToolResultCacheConfig(): ToolResultCacheConfig {
 	const enabled = process.env.COMPOSER_TOOL_CACHE_ENABLED !== "false";
 	const ttl = Number.parseInt(process.env.COMPOSER_TOOL_CACHE_TTL || "300", 10);
-	const maxSize = Number.parseInt(
-		process.env.COMPOSER_TOOL_CACHE_MAX_SIZE || "1000",
+	const maxEntries = Number.parseInt(
+		process.env.COMPOSER_TOOL_CACHE_MAX_ENTRIES ??
+			process.env.COMPOSER_TOOL_CACHE_MAX_SIZE ??
+			"1000",
+		10,
+	);
+	const maxBytes = Number.parseInt(
+		process.env.COMPOSER_TOOL_CACHE_MAX_BYTES ??
+			process.env.COMPOSER_TOOL_CACHE_MAX_SIZE_BYTES ??
+			`${DEFAULT_CONFIG.maxSizeBytes}`,
 		10,
 	);
 
@@ -194,7 +204,12 @@ export function getToolResultCacheConfig(): ToolResultCacheConfig {
 		defaultTtlSeconds: Number.isNaN(ttl)
 			? DEFAULT_CONFIG.defaultTtlSeconds
 			: ttl,
-		maxEntries: Number.isNaN(maxSize) ? DEFAULT_CONFIG.maxEntries : maxSize,
+		maxEntries: Number.isNaN(maxEntries)
+			? DEFAULT_CONFIG.maxEntries
+			: maxEntries,
+		maxSizeBytes: Number.isNaN(maxBytes)
+			? DEFAULT_CONFIG.maxSizeBytes
+			: maxBytes,
 	};
 }
 
@@ -403,6 +418,15 @@ export class ToolResultCache {
 		const ttl = options?.ttlSeconds ?? toolConfig.ttlSeconds;
 		const now = Date.now();
 		const sizeBytes = estimateSize(result);
+
+		if (sizeBytes > this.config.maxSizeBytes) {
+			logger.debug("Skipping cache entry larger than max size", {
+				tool: toolName,
+				size: sizeBytes,
+				maxSize: this.config.maxSizeBytes,
+			});
+			return;
+		}
 
 		// Check if we need to evict entries
 		this.ensureCapacity(sizeBytes);

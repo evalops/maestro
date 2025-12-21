@@ -168,6 +168,23 @@ describe("ToolResultCache", () => {
 				smallCache.stop();
 			}
 		});
+
+		it("should skip caching entries larger than max size", () => {
+			const smallCache = createToolResultCache({
+				maxEntries: 10,
+				maxSizeBytes: 10,
+				cleanupIntervalMs: 60000,
+			});
+
+			try {
+				smallCache.set("read", { path: "/big.txt" }, "a".repeat(20));
+
+				expect(smallCache.get("read", { path: "/big.txt" }).hit).toBe(false);
+				expect(smallCache.getStats().entryCount).toBe(0);
+			} finally {
+				smallCache.stop();
+			}
+		});
 	});
 
 	describe("invalidation", () => {
@@ -359,12 +376,14 @@ describe("getToolResultCacheConfig", () => {
 		process.env.COMPOSER_TOOL_CACHE_ENABLED = "false";
 		process.env.COMPOSER_TOOL_CACHE_TTL = "600";
 		process.env.COMPOSER_TOOL_CACHE_MAX_SIZE = "500";
+		process.env.COMPOSER_TOOL_CACHE_MAX_BYTES = "1234";
 
 		const config = getToolResultCacheConfig();
 
 		expect(config.enabled).toBe(false);
 		expect(config.defaultTtlSeconds).toBe(600);
 		expect(config.maxEntries).toBe(500);
+		expect(config.maxSizeBytes).toBe(1234);
 	});
 });
 
