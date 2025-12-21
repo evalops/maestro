@@ -366,7 +366,7 @@ impl WasmHookExecutor {
                 if timed_out.load(Ordering::Relaxed) {
                     return Err(anyhow::anyhow!("WASM hook execution timed out"));
                 }
-                return Err(err.into());
+                return Err(err);
             }
         };
 
@@ -566,7 +566,7 @@ impl WasmHookExecutor {
                 if timed_out.load(Ordering::Relaxed) {
                     return Err(anyhow::anyhow!("WASM post-hook execution timed out"));
                 }
-                return Err(err.into());
+                return Err(err);
             }
         }
 
