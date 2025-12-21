@@ -421,6 +421,7 @@ impl NativeAgent {
             compactor,
             retry_policy,
             pending_messages,
+            pending_tool_approvals: HashMap::new(),
         };
 
         // Spawn the background task
@@ -664,6 +665,9 @@ struct NativeAgentRunner {
     /// instead of rejected. After each request completes, pending messages are
     /// automatically processed.
     pending_messages: MessageQueue,
+
+    /// Buffered tool approvals that arrived out of order
+    pending_tool_approvals: HashMap<String, (bool, Option<ToolResult>)>,
 }
 
 impl NativeAgentRunner {
@@ -1031,6 +1035,7 @@ impl NativeAgentRunner {
                             message: format!("Cleared {} pending message(s)", cleared.len()),
                         });
                     }
+                    self.pending_tool_approvals.clear();
                 }
                 AgentCommand::SetModel { model } => match UnifiedClient::from_model(&model) {
                     Ok(client) => {
@@ -1156,7 +1161,8 @@ impl NativeAgentRunner {
             let mut pending_tool_inputs: std::collections::HashMap<usize, String> =
                 std::collections::HashMap::new();
             let mut usage = TokenUsage::default();
-            let mut pending_tool_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
+            let mut pending_tool_calls: Vec<(String, String, serde_json::Value, Option<String>)> =
+                Vec::new();
 
             // Process stream events
             while let Some(event) = rx.recv().await {
@@ -1234,14 +1240,16 @@ impl NativeAgentRunner {
                             if let Some(extra) = pending_tool_inputs.remove(&active_index) {
                                 json.push_str(&extra);
                             }
-                            let input: serde_json::Value =
-                                serde_json::from_str(&json).unwrap_or(serde_json::json!({}));
+                            let (input, parse_error) = match parse_tool_input(&name, &json) {
+                                Ok(value) => (value, None),
+                                Err(message) => (serde_json::json!({}), Some(message)),
+                            };
                             assistant_content.push(ContentBlock::ToolUse {
                                 id: id.clone(),
                                 name: name.clone(),
                                 input: input.clone(),
                             });
-                            pending_tool_calls.push((id, name, input));
+                            pending_tool_calls.push((id, name, input, parse_error));
                         }
                     }
                     StreamEvent::Usage {
@@ -1327,7 +1335,19 @@ impl NativeAgentRunner {
             if !pending_tool_calls.is_empty() {
                 let mut tool_results: Vec<ContentBlock> = Vec::new();
 
-                for (call_id, tool_name, args) in pending_tool_calls {
+                for (call_id, tool_name, args, parse_error) in pending_tool_calls {
+                    if let Some(message) = parse_error {
+                        let _ = self.event_tx.send(FromAgent::Error {
+                            message: message.clone(),
+                            fatal: false,
+                        });
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: call_id.clone(),
+                            content: message,
+                            is_error: Some(true),
+                        });
+                        continue;
+                    }
                     // Validate required fields before surfacing to UI/agent
                     let missing = self.tool_executor.missing_required(&tool_name, &args);
                     if !missing.is_empty() {
@@ -1420,13 +1440,14 @@ impl NativeAgentRunner {
 
                     // If requires approval, wait for response
                     let (approved, result) = if requires_approval {
-                        // Wait for tool response from TUI
-                        match self.tool_response_rx.recv().await {
-                            Some((id, approved, result)) if id == call_id => (approved, result),
-                            Some(_) => {
-                                // Wrong call_id, treat as not approved
-                                (false, None)
-                            }
+                        match wait_for_tool_response(
+                            &call_id,
+                            &mut self.tool_response_rx,
+                            &mut self.pending_tool_approvals,
+                        )
+                        .await
+                        {
+                            Some(result) => result,
                             None => {
                                 // Channel closed
                                 return Ok(());
@@ -1551,6 +1572,37 @@ impl NativeAgentRunner {
             .execute(tool_name, args, Some(&self.event_tx), call_id)
             .await
     }
+}
+
+fn parse_tool_input(tool_name: &str, json: &str) -> Result<serde_json::Value, String> {
+    if json.trim().is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(json).map_err(|err| {
+        format!(
+            "Failed to parse tool input JSON for '{}': {}",
+            tool_name, err
+        )
+    })
+}
+
+async fn wait_for_tool_response(
+    call_id: &str,
+    rx: &mut mpsc::UnboundedReceiver<(String, bool, Option<ToolResult>)>,
+    pending: &mut HashMap<String, (bool, Option<ToolResult>)>,
+) -> Option<(bool, Option<ToolResult>)> {
+    if let Some(result) = pending.remove(call_id) {
+        return Some(result);
+    }
+
+    while let Some((id, approved, result)) = rx.recv().await {
+        if id == call_id {
+            return Some((approved, result));
+        }
+        pending.insert(id, (approved, result));
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -1720,5 +1772,35 @@ mod tests {
         assert!(!error_result.success);
         assert!(error_result.output.is_empty());
         assert!(error_result.error.is_some());
+    }
+
+    #[test]
+    fn test_parse_tool_input_empty_ok() {
+        let parsed = parse_tool_input("noop", "").unwrap();
+        assert_eq!(parsed, serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_parse_tool_input_invalid_json() {
+        let err = parse_tool_input("bash", "{invalid").unwrap_err();
+        assert!(err.contains("bash"));
+        assert!(err.contains("Failed to parse tool input JSON"));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_tool_response_buffers_out_of_order() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut pending = HashMap::new();
+
+        tx.send(("id-2".to_string(), true, None)).unwrap();
+        tx.send(("id-1".to_string(), false, None)).unwrap();
+
+        let result = wait_for_tool_response("id-1", &mut rx, &mut pending).await;
+        assert!(matches!(result, Some((false, None))));
+        assert!(pending.contains_key("id-2"));
+
+        let result = wait_for_tool_response("id-2", &mut rx, &mut pending).await;
+        assert!(matches!(result, Some((true, None))));
+        assert!(pending.is_empty());
     }
 }

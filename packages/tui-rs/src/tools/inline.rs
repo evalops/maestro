@@ -446,6 +446,9 @@ impl InlineToolExecutor {
             }
         };
 
+        // Capture PID for process tree killing on timeout
+        let child_pid = child.id();
+
         // Write args to stdin as JSON
         if let Some(mut stdin) = child.stdin.take() {
             let args_json = serde_json::to_string(&args).unwrap_or_default();
@@ -462,75 +465,114 @@ impl InlineToolExecutor {
         // Wait for completion with timeout
         let timeout_duration = Duration::from_millis(tool.definition.timeout);
 
-        tokio::select! {
-            biased;
+        let result = tokio::time::timeout(timeout_duration, async {
+            let stdout_fut = async {
+                if let Some(mut handle) = stdout_handle {
+                    use tokio::io::AsyncReadExt;
+                    let mut buf = Vec::new();
+                    let read = handle.read_to_end(&mut buf).await;
+                    read.map(|_| buf)
+                } else {
+                    Ok(Vec::new())
+                }
+            };
 
-            status_result = child.wait() => {
-                // Process completed
+            let stderr_fut = async {
+                if let Some(mut handle) = stderr_handle {
+                    use tokio::io::AsyncReadExt;
+                    let mut buf = Vec::new();
+                    let read = handle.read_to_end(&mut buf).await;
+                    read.map(|_| buf)
+                } else {
+                    Ok(Vec::new())
+                }
+            };
+
+            tokio::join!(stdout_fut, stderr_fut, child.wait())
+        })
+        .await;
+
+        match result {
+            Ok((Ok(stdout), Ok(stderr), Ok(status))) => {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
-                let status = match status_result {
-                    Ok(s) => s,
-                    Err(e) => {
-                        details = details.with_duration(duration_ms);
-                        return ToolResult::failure(format!("Command failed: {}", e))
-                            .with_details(details.to_json());
-                    }
-                };
-
-                // Read stdout and stderr
-                let stdout = if let Some(mut handle) = stdout_handle {
-                    use tokio::io::AsyncReadExt;
-                    let mut buf = Vec::new();
-                    let _ = handle.read_to_end(&mut buf).await;
-                    String::from_utf8_lossy(&buf).to_string()
-                } else {
-                    String::new()
-                };
-
-                let stderr = if let Some(mut handle) = stderr_handle {
-                    use tokio::io::AsyncReadExt;
-                    let mut buf = Vec::new();
-                    let _ = handle.read_to_end(&mut buf).await;
-                    String::from_utf8_lossy(&buf).to_string()
-                } else {
-                    String::new()
-                };
+                let stdout_text = String::from_utf8_lossy(&stdout).to_string();
+                let stderr_text = String::from_utf8_lossy(&stderr).to_string();
 
                 // Update details with exit code and duration
                 let exit_code = status.code().unwrap_or(-1);
                 details = details.with_exit_code(exit_code).with_duration(duration_ms);
 
                 if status.success() {
-                    ToolResult::success(stdout.trim()).with_details(details.to_json())
+                    ToolResult::success(stdout_text.trim()).with_details(details.to_json())
                 } else {
-                    let error_msg = if stderr.is_empty() {
+                    let error_msg = if stderr_text.is_empty() {
                         format!("Command exited with status: {}", status)
                     } else {
-                        stderr.trim().to_string()
+                        stderr_text.trim().to_string()
                     };
 
                     ToolResult {
                         success: false,
-                        output: stdout,
+                        output: stdout_text,
                         error: Some(error_msg),
                         details: Some(details.to_json()),
                     }
                 }
             }
+            Ok((Err(e), _, _)) | Ok((_, Err(e), _)) => {
+                let duration_ms = start_time.elapsed().as_millis() as u64;
+                details = details.with_duration(duration_ms);
+                ToolResult::failure(format!("IO error: {}", e)).with_details(details.to_json())
+            }
+            Ok((_, _, Err(e))) => {
+                let duration_ms = start_time.elapsed().as_millis() as u64;
+                details = details.with_duration(duration_ms);
+                ToolResult::failure(format!("Process error: {}", e)).with_details(details.to_json())
+            }
+            Err(_) => {
+                // Timeout - kill the process tree to avoid orphan children
+                if let Some(pid) = child_pid {
+                    kill_process_tree(pid);
+                } else {
+                    let _ = child.kill().await;
+                }
+                // Best-effort reap
+                let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
 
-            _ = tokio::time::sleep(timeout_duration) => {
-                // Timeout - kill the process
-                let _ = child.kill().await;
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 details = details.with_duration(duration_ms).with_timeout();
 
                 ToolResult::failure(format!(
                     "Command timed out after {}ms",
                     tool.definition.timeout
-                )).with_details(details.to_json())
+                ))
+                .with_details(details.to_json())
             }
         }
     }
+}
+
+/// Kill an entire process tree by PID.
+///
+/// Mirrors bash tool behavior to avoid leaving orphaned child processes.
+#[cfg(unix)]
+fn kill_process_tree(pid: u32) {
+    // First, try to kill all child processes using pkill
+    let _ = std::process::Command::new("pkill")
+        .args(["-KILL", "-P", &pid.to_string()])
+        .output();
+
+    // Then kill the process itself using libc
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_tree(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .output();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
