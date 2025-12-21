@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 #[cfg(feature = "wasm")]
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    mpsc, Arc,
 };
 #[cfg(feature = "wasm")]
 use std::time::{Duration, Instant};
@@ -342,14 +342,12 @@ impl WasmHookExecutor {
 
         // Start timeout watchdog for WASM execution
         let timed_out = Arc::new(AtomicBool::new(false));
-        let done = Arc::new(AtomicBool::new(false));
+        let (done_tx, done_rx) = mpsc::channel::<()>();
         let engine = self.engine.clone();
         let timeout = self.timeout;
         let timed_out_clone = timed_out.clone();
-        let done_clone = done.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(timeout);
-            if !done_clone.load(Ordering::Relaxed) {
+        let watchdog_handle = std::thread::spawn(move || {
+            if done_rx.recv_timeout(timeout).is_err() {
                 timed_out_clone.store(true, Ordering::Relaxed);
                 engine.increment_epoch();
             }
@@ -357,18 +355,19 @@ impl WasmHookExecutor {
 
         // Call the hook function
         let result_code = match on_pre_tool_use_fn.call(&mut store, (input_ptr, input_len)) {
-            Ok(code) => {
-                done.store(true, Ordering::Relaxed);
-                code
-            }
+            Ok(code) => code,
             Err(err) => {
-                done.store(true, Ordering::Relaxed);
+                let _ = done_tx.send(());
+                let _ = watchdog_handle.join();
                 if timed_out.load(Ordering::Relaxed) {
                     return Err(anyhow::anyhow!("WASM hook execution timed out"));
                 }
                 return Err(err);
             }
         };
+
+        let _ = done_tx.send(());
+        let _ = watchdog_handle.join();
 
         // Parse result based on code
         match WasmResultCode::from(result_code) {
@@ -557,14 +556,12 @@ impl WasmHookExecutor {
 
         // Start timeout watchdog for WASM execution
         let timed_out = Arc::new(AtomicBool::new(false));
-        let done = Arc::new(AtomicBool::new(false));
+        let (done_tx, done_rx) = mpsc::channel::<()>();
         let engine = self.engine.clone();
         let timeout = self.timeout;
         let timed_out_clone = timed_out.clone();
-        let done_clone = done.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(timeout);
-            if !done_clone.load(Ordering::Relaxed) {
+        let watchdog_handle = std::thread::spawn(move || {
+            if done_rx.recv_timeout(timeout).is_err() {
                 timed_out_clone.store(true, Ordering::Relaxed);
                 engine.increment_epoch();
             }
@@ -572,17 +569,19 @@ impl WasmHookExecutor {
 
         // Call the hook (return value ignored for post hooks)
         match on_post_tool_use_fn.call(&mut store, (input_ptr, input_len)) {
-            Ok(_) => {
-                done.store(true, Ordering::Relaxed);
-            }
+            Ok(_) => {}
             Err(err) => {
-                done.store(true, Ordering::Relaxed);
+                let _ = done_tx.send(());
+                let _ = watchdog_handle.join();
                 if timed_out.load(Ordering::Relaxed) {
                     return Err(anyhow::anyhow!("WASM post-hook execution timed out"));
                 }
                 return Err(err);
             }
         }
+
+        let _ = done_tx.send(());
+        let _ = watchdog_handle.join();
 
         Ok(())
     }

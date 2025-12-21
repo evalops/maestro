@@ -212,7 +212,7 @@ impl ImageTool {
                 dimensions = Some((width, height));
 
                 if width > max_dim || height > max_dim {
-                    let scale = (max_dim as f32 / width as f32).min(max_dim as f32 / height as f32);
+                    let scale = max_dim as f32 / width.max(height) as f32;
                     let new_width = ((width as f32 * scale).round() as u32).max(1);
                     let new_height = ((height as f32 * scale).round() as u32).max(1);
                     let resized_img = img.resize(new_width, new_height, FilterType::Triangle);
