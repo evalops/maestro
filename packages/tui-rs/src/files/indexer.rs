@@ -296,6 +296,9 @@ impl FileIndexer {
 
         // Truncate to max files limit
         files.truncate(self.config.max_files);
+        // Ensure files_found reflects the returned list (especially after truncation).
+        self.files_found
+            .store(files.len().min(self.config.max_files), Ordering::Relaxed);
         files
     }
 
