@@ -585,9 +585,12 @@ impl BashTool {
         cmd.arg("-c")
             .arg(&args.command)
             .current_dir(&self.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(Stdio::null());
+        if args.run_in_background {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        } else {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
 
         // Track execution timing
         let start_time = Instant::now();
@@ -787,6 +790,8 @@ impl BashTool {
                     // Fallback to direct kill if PID not available
                     let _ = child.kill().await;
                 }
+                // Best-effort reap to avoid zombies
+                let _ = timeout(Duration::from_secs(1), child.wait()).await;
                 let mut details = BashDetails::failed(&args.command, 124) // 124 = timeout exit code
                     .with_cwd(cwd_string)
                     .with_duration(timeout_ms); // We know it hit the timeout
