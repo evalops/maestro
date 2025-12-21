@@ -326,8 +326,12 @@ Examples:
 			args.push("--only-matching");
 		}
 
-		const effectiveMaxResults = maxResults ?? DEFAULT_MAX_RESULTS;
-		args.push("-m", String(effectiveMaxResults));
+		const shouldApplyMaxResults =
+			outputMode === "content" || maxResults !== undefined;
+		if (shouldApplyMaxResults) {
+			const effectiveMaxResults = maxResults ?? DEFAULT_MAX_RESULTS;
+			args.push("-m", String(effectiveMaxResults));
+		}
 
 		if (context !== undefined) {
 			args.push(`-C${context}`);
