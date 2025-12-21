@@ -188,9 +188,12 @@ describe("TypedEmitter", () => {
 
 		it("rejects on timeout", async () => {
 			const promise = emitter.waitFor("message", { timeout: 50 });
+			const rejection = expect(promise).rejects.toThrow(
+				"Timeout waiting for event",
+			);
 
 			await vi.advanceTimersByTimeAsync(50);
-			await expect(promise).rejects.toThrow("Timeout waiting for event");
+			await rejection;
 		});
 
 		it("cleans up handler after resolution", async () => {
@@ -254,9 +257,12 @@ describe("TypedEmitter", () => {
 			const promise = freshEmitter.waitForAny(["message", "count"], {
 				timeout: 20,
 			});
+			const rejection = expect(promise).rejects.toThrow(
+				"Timeout waiting for events",
+			);
 
 			await vi.advanceTimersByTimeAsync(20);
-			await expect(promise).rejects.toThrow("Timeout waiting for events");
+			await rejection;
 		});
 	});
 

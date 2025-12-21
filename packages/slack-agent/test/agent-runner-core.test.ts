@@ -616,7 +616,7 @@ describe("status update throttling", () => {
 		vi.setSystemTime(0);
 
 		const STATUS_UPDATE_INTERVAL = 100; // Use short interval for testing
-		let lastStatusUpdate = 0; // Start at 0 so first call always updates
+		let lastStatusUpdate = -STATUS_UPDATE_INTERVAL; // Ensure first call updates
 		let updateCount = 0;
 
 		const maybeUpdateStatus = async () => {
@@ -628,21 +628,23 @@ describe("status update throttling", () => {
 			updateCount++;
 		};
 
-		// First call should update (lastStatusUpdate is 0)
-		await maybeUpdateStatus();
-		expect(updateCount).toBe(1);
+		try {
+			// First call should update
+			await maybeUpdateStatus();
+			expect(updateCount).toBe(1);
 
-		// Immediate second call should be throttled
-		await maybeUpdateStatus();
-		expect(updateCount).toBe(1);
+			// Immediate second call should be throttled
+			await maybeUpdateStatus();
+			expect(updateCount).toBe(1);
 
-		// Wait for interval
-		vi.advanceTimersByTime(STATUS_UPDATE_INTERVAL + 10);
+			// Wait for interval
+			vi.advanceTimersByTime(STATUS_UPDATE_INTERVAL + 10);
 
-		// Now should update
-		await maybeUpdateStatus();
-		expect(updateCount).toBe(2);
-
-		vi.useRealTimers();
+			// Now should update
+			await maybeUpdateStatus();
+			expect(updateCount).toBe(2);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

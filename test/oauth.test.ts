@@ -24,6 +24,7 @@ import {
 
 describe("OAuth Storage", () => {
 	beforeEach(() => {
+		process.env.COMPOSER_AGENT_DIR = join(testDir, "agent");
 		// Create test directory
 		mkdirSync(testDir, { recursive: true });
 	});
@@ -107,6 +108,7 @@ describe("OAuth Storage", () => {
 
 describe("OAuth Index", () => {
 	beforeEach(() => {
+		process.env.COMPOSER_AGENT_DIR = join(testDir, "agent");
 		mkdirSync(testDir, { recursive: true });
 	});
 
@@ -230,6 +232,7 @@ describe("OAuth Index", () => {
 
 describe("GitHub Copilot OAuth", () => {
 	beforeEach(() => {
+		process.env.COMPOSER_AGENT_DIR = join(testDir, "agent");
 		mkdirSync(testDir, { recursive: true });
 	});
 
@@ -272,6 +275,7 @@ describe("GitHub Copilot OAuth", () => {
 
 describe("OpenAI OAuth", () => {
 	beforeEach(() => {
+		process.env.COMPOSER_AGENT_DIR = join(testDir, "agent");
 		mkdirSync(testDir, { recursive: true });
 	});
 
@@ -291,6 +295,7 @@ describe("OpenAI OAuth", () => {
 
 describe("Anthropic OAuth", () => {
 	beforeEach(() => {
+		process.env.COMPOSER_AGENT_DIR = join(testDir, "agent");
 		mkdirSync(testDir, { recursive: true });
 	});
 

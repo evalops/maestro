@@ -148,13 +148,25 @@ function execSimple(cmd: string, args: string[]): Promise<string> {
 		const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
 		let stdout = "";
 		let stderr = "";
+		let settled = false;
 		child.stdout?.on("data", (d) => {
 			stdout += d;
 		});
 		child.stderr?.on("data", (d) => {
 			stderr += d;
 		});
+		child.on("error", (error) => {
+			if (settled) return;
+			settled = true;
+			const message =
+				error instanceof Error
+					? `Failed to start ${cmd}: ${error.message}`
+					: `Failed to start ${cmd}: ${String(error)}`;
+			reject(new Error(message));
+		});
 		child.on("close", (code) => {
+			if (settled) return;
+			settled = true;
 			if (code === 0) resolve(stdout);
 			else reject(new Error(stderr || `Exit code ${code}`));
 		});
@@ -236,6 +248,20 @@ class HostExecutor implements Executor {
 			let stdout = "";
 			let stderr = "";
 			let timedOut = false;
+			let settled = false;
+
+			const settleOnce = (cb: () => void) => {
+				if (settled) return;
+				settled = true;
+				cb();
+			};
+
+			const cleanup = () => {
+				if (timeoutHandle) clearTimeout(timeoutHandle);
+				if (options?.signal) {
+					options.signal.removeEventListener("abort", onAbort);
+				}
+			};
 
 			const timeoutHandle =
 				options?.timeout && options.timeout > 0
@@ -271,27 +297,33 @@ class HostExecutor implements Executor {
 				}
 			});
 
+			child.on("error", (error) => {
+				settleOnce(() => {
+					cleanup();
+					reject(error instanceof Error ? error : new Error(String(error)));
+				});
+			});
+
 			child.on("close", (code) => {
-				if (timeoutHandle) clearTimeout(timeoutHandle);
-				if (options?.signal) {
-					options.signal.removeEventListener("abort", onAbort);
-				}
+				settleOnce(() => {
+					cleanup();
 
-				if (options?.signal?.aborted) {
-					reject(new Error(`${stdout}\n${stderr}\nCommand aborted`.trim()));
-					return;
-				}
+					if (options?.signal?.aborted) {
+						reject(new Error(`${stdout}\n${stderr}\nCommand aborted`.trim()));
+						return;
+					}
 
-				if (timedOut) {
-					reject(
-						new Error(
-							`${stdout}\n${stderr}\nCommand timed out after ${options?.timeout} seconds`.trim(),
-						),
-					);
-					return;
-				}
+					if (timedOut) {
+						reject(
+							new Error(
+								`${stdout}\n${stderr}\nCommand timed out after ${options?.timeout} seconds`.trim(),
+							),
+						);
+						return;
+					}
 
-				resolve({ stdout, stderr, code: code ?? 0 });
+					resolve({ stdout, stderr, code: code ?? 0 });
+				});
 			});
 		});
 	}
@@ -485,10 +517,11 @@ class AutoDockerExecutor implements Executor {
 function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
 		try {
-			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+			const child = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
 				stdio: "ignore",
 				detached: true,
 			});
+			child.on("error", () => {});
 		} catch {
 			// Ignore errors
 		}
