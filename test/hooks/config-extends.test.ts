@@ -8,38 +8,23 @@ import {
 	loadHookConfiguration,
 } from "../../src/hooks/index.js";
 import type { PreToolUseHookInput } from "../../src/hooks/types.js";
+import { withEnv } from "../utils/env.js";
 
 describe("hooks/config extends", () => {
-	const originalHome = process.env.HOME;
 	const originalPreToolUse = process.env.COMPOSER_HOOKS_PRE_TOOL_USE;
 	let homeDir: string;
 	let workspaceDir: string;
 
 	beforeEach(() => {
 		clearHookConfigCache();
-		if (originalPreToolUse === undefined) {
-			// biome-ignore lint/performance/noDelete: Intentional env cleanup in test
-			delete process.env.COMPOSER_HOOKS_PRE_TOOL_USE;
-		} else {
-			process.env.COMPOSER_HOOKS_PRE_TOOL_USE = originalPreToolUse;
-		}
-
 		homeDir = join(tmpdir(), `composer-hooks-home-${Date.now()}`);
 		workspaceDir = join(tmpdir(), `composer-hooks-workspace-${Date.now()}`);
-		process.env.HOME = homeDir;
 		mkdirSync(join(homeDir, ".composer"), { recursive: true });
 		mkdirSync(join(workspaceDir, ".composer"), { recursive: true });
 	});
 
 	afterEach(() => {
 		clearHookConfigCache();
-		process.env.HOME = originalHome;
-		if (originalPreToolUse === undefined) {
-			// biome-ignore lint/performance/noDelete: Intentional env cleanup in test
-			delete process.env.COMPOSER_HOOKS_PRE_TOOL_USE;
-		} else {
-			process.env.COMPOSER_HOOKS_PRE_TOOL_USE = originalPreToolUse;
-		}
 		if (existsSync(homeDir)) rmSync(homeDir, { recursive: true, force: true });
 		if (existsSync(workspaceDir))
 			rmSync(workspaceDir, { recursive: true, force: true });
@@ -60,124 +45,155 @@ describe("hooks/config extends", () => {
 		return path.replace(/^\/private(\/var\/)/, "/var/");
 	}
 
-	it("resolves local extends and allows later overrides by matcher", () => {
-		const projectDir = join(workspaceDir, ".composer");
+	it("resolves local extends and allows later overrides by matcher", () =>
+		withEnv(
+			{
+				HOME: homeDir,
+				COMPOSER_HOOKS_PRE_TOOL_USE: originalPreToolUse,
+			},
+			() => {
+				const projectDir = join(workspaceDir, ".composer");
 
-		writeFileSync(
-			join(projectDir, "preset.json"),
-			JSON.stringify(
-				{
-					hooks: {
-						PreToolUse: [
-							{
-								matcher: "*",
-								hooks: [{ type: "command", command: "./scripts/preset.sh" }],
+				writeFileSync(
+					join(projectDir, "preset.json"),
+					JSON.stringify(
+						{
+							hooks: {
+								PreToolUse: [
+									{
+										matcher: "*",
+										hooks: [
+											{ type: "command", command: "./scripts/preset.sh" },
+										],
+									},
+								],
 							},
-						],
-					},
-				},
-				null,
-				2,
-			),
-		);
+						},
+						null,
+						2,
+					),
+				);
 
-		writeFileSync(
-			join(projectDir, "hooks.json"),
-			JSON.stringify(
-				{
-					extends: ["./preset.json"],
-					hooks: {
-						PreToolUse: [
-							{
-								matcher: "*",
-								hooks: [{ type: "command", command: "./scripts/override.sh" }],
+				writeFileSync(
+					join(projectDir, "hooks.json"),
+					JSON.stringify(
+						{
+							extends: ["./preset.json"],
+							hooks: {
+								PreToolUse: [
+									{
+										matcher: "*",
+										hooks: [
+											{ type: "command", command: "./scripts/override.sh" },
+										],
+									},
+								],
 							},
-						],
-					},
-				},
-				null,
-				2,
-			),
-		);
+						},
+						null,
+						2,
+					),
+				);
 
-		const config = loadHookConfiguration(workspaceDir);
-		const hooks = getMatchingHooks(config, matchInput());
-		expect(hooks).toHaveLength(1);
-		expect(hooks[0].type).toBe("command");
-		expect(hooks[0].command).toBe(resolve(projectDir, "scripts/override.sh"));
-	});
+				const config = loadHookConfiguration(workspaceDir);
+				const hooks = getMatchingHooks(config, matchInput());
+				expect(hooks).toHaveLength(1);
+				expect(hooks[0].type).toBe("command");
+				expect(hooks[0].command).toBe(
+					resolve(projectDir, "scripts/override.sh"),
+				);
+			},
+		));
 
-	it("resolves extends from a node module package (hooks.json in package root)", () => {
-		const nodeModules = join(workspaceDir, "node_modules", "test-hook-preset");
-		mkdirSync(nodeModules, { recursive: true });
+	it("resolves extends from a node module package (hooks.json in package root)", () =>
+		withEnv(
+			{
+				HOME: homeDir,
+				COMPOSER_HOOKS_PRE_TOOL_USE: originalPreToolUse,
+			},
+			() => {
+				const nodeModules = join(
+					workspaceDir,
+					"node_modules",
+					"test-hook-preset",
+				);
+				mkdirSync(nodeModules, { recursive: true });
 
-		writeFileSync(
-			join(nodeModules, "package.json"),
-			JSON.stringify({ name: "test-hook-preset", version: "1.0.0" }),
-		);
-		writeFileSync(
-			join(nodeModules, "hooks.json"),
-			JSON.stringify(
-				{
-					hooks: {
-						PreToolUse: [
-							{
-								matcher: "bash",
-								hooks: [{ type: "command", command: "./scripts/preset.sh" }],
+				writeFileSync(
+					join(nodeModules, "package.json"),
+					JSON.stringify({ name: "test-hook-preset", version: "1.0.0" }),
+				);
+				writeFileSync(
+					join(nodeModules, "hooks.json"),
+					JSON.stringify(
+						{
+							hooks: {
+								PreToolUse: [
+									{
+										matcher: "bash",
+										hooks: [
+											{ type: "command", command: "./scripts/preset.sh" },
+										],
+									},
+								],
 							},
-						],
-					},
-				},
-				null,
-				2,
-			),
-		);
+						},
+						null,
+						2,
+					),
+				);
 
-		writeFileSync(
-			join(workspaceDir, ".composer", "hooks.json"),
-			JSON.stringify(
-				{
-					extends: ["test-hook-preset"],
-				},
-				null,
-				2,
-			),
-		);
+				writeFileSync(
+					join(workspaceDir, ".composer", "hooks.json"),
+					JSON.stringify(
+						{
+							extends: ["test-hook-preset"],
+						},
+						null,
+						2,
+					),
+				);
 
-		const config = loadHookConfiguration(workspaceDir);
-		const hooks = getMatchingHooks(config, matchInput());
-		expect(hooks).toHaveLength(1);
-		expect(hooks[0].type).toBe("command");
-		expect(normalizeDarwinTmpPath(hooks[0].command)).toBe(
-			normalizeDarwinTmpPath(resolve(nodeModules, "scripts/preset.sh")),
-		);
-	});
+				const config = loadHookConfiguration(workspaceDir);
+				const hooks = getMatchingHooks(config, matchInput());
+				expect(hooks).toHaveLength(1);
+				expect(hooks[0].type).toBe("command");
+				expect(normalizeDarwinTmpPath(hooks[0].command)).toBe(
+					normalizeDarwinTmpPath(resolve(nodeModules, "scripts/preset.sh")),
+				);
+			},
+		));
 
-	it("user hooks.json overrides env hooks when matcher collides", () => {
-		process.env.COMPOSER_HOOKS_PRE_TOOL_USE = "env.sh";
-
-		writeFileSync(
-			join(homeDir, ".composer", "hooks.json"),
-			JSON.stringify(
-				{
-					hooks: {
-						PreToolUse: [
-							{
-								matcher: "*",
-								hooks: [{ type: "command", command: "user.sh" }],
+	it("user hooks.json overrides env hooks when matcher collides", () =>
+		withEnv(
+			{
+				HOME: homeDir,
+				COMPOSER_HOOKS_PRE_TOOL_USE: "env.sh",
+			},
+			() => {
+				writeFileSync(
+					join(homeDir, ".composer", "hooks.json"),
+					JSON.stringify(
+						{
+							hooks: {
+								PreToolUse: [
+									{
+										matcher: "*",
+										hooks: [{ type: "command", command: "user.sh" }],
+									},
+								],
 							},
-						],
-					},
-				},
-				null,
-				2,
-			),
-		);
+						},
+						null,
+						2,
+					),
+				);
 
-		const config = loadHookConfiguration(workspaceDir);
-		const hooks = getMatchingHooks(config, matchInput());
-		expect(hooks).toHaveLength(1);
-		expect(hooks[0].type).toBe("command");
-		expect(hooks[0].command).toBe("user.sh");
-	});
+				const config = loadHookConfiguration(workspaceDir);
+				const hooks = getMatchingHooks(config, matchInput());
+				expect(hooks).toHaveLength(1);
+				expect(hooks[0].type).toBe("command");
+				expect(hooks[0].command).toBe("user.sh");
+			},
+		));
 });
