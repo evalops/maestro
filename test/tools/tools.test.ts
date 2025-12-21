@@ -770,9 +770,9 @@ describe("Composer Tools", () => {
 		});
 
 		it("should respect timeout", async () => {
-			const timeoutSeconds = 1;
+			const timeoutSeconds = 0.25;
 			const result = await bashTool.execute("test-call-10", {
-				command: "sleep 5",
+				command: "sleep 1",
 				timeout: timeoutSeconds,
 			});
 
