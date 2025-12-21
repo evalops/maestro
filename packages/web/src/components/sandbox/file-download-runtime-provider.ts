@@ -43,7 +43,16 @@ function downloadInHost(file: DownloadableFile): void {
 	a.download = file.fileName;
 	a.rel = "noopener";
 	a.click();
-	URL.revokeObjectURL(url);
+	// Delay revocation to ensure downloads complete in all browsers.
+	setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function isArrayBuffer(value: unknown): value is ArrayBuffer {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		Object.prototype.toString.call(value) === "[object ArrayBuffer]"
+	);
 }
 
 export class FileDownloadRuntimeProvider implements SandboxRuntimeProvider {
@@ -132,8 +141,10 @@ export class FileDownloadRuntimeProvider implements SandboxRuntimeProvider {
 		const raw = m.content;
 
 		let content: string | Uint8Array;
-		if (raw instanceof Uint8Array) {
-			content = raw;
+		if (ArrayBuffer.isView(raw)) {
+			content = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+		} else if (isArrayBuffer(raw)) {
+			content = new Uint8Array(raw);
 		} else if (typeof raw === "string") {
 			content = raw;
 		} else if (raw && typeof raw === "object") {
