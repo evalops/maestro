@@ -34,6 +34,7 @@ describe("bash tool", () => {
 	let testDir: string;
 
 	beforeEach(() => {
+		vi.useRealTimers();
 		testDir = mkdtempSync(join(tmpdir(), "bash-tool-test-"));
 		vi.clearAllMocks();
 	});
@@ -232,13 +233,21 @@ describe("bash tool", () => {
 
 	describe("timeout handling", () => {
 		it("respects timeout parameter", async () => {
-			const result = await bashTool.execute("bash-18", {
-				command: "sleep 10",
-				timeout: 1,
-			});
+			vi.useFakeTimers();
+			try {
+				const promise = bashTool.execute("bash-18", {
+					command: "sleep 10",
+					timeout: 1,
+				});
 
-			const output = getTextOutput(result);
-			expect(output).toContain("timed out");
+				await vi.advanceTimersByTimeAsync(1000);
+				const result = await promise;
+
+				const output = getTextOutput(result);
+				expect(output).toContain("timed out");
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 
 		it("completes before timeout", async () => {
@@ -276,29 +285,35 @@ describe("bash tool", () => {
 
 	describe("abort signal", () => {
 		it("respects abort signal during execution", async () => {
-			const controller = new AbortController();
+			vi.useFakeTimers();
+			try {
+				const controller = new AbortController();
 
-			// Start a long-running command then abort after a short delay
-			const promise = bashTool.execute(
-				"bash-22",
-				{ command: "sleep 10" },
-				controller.signal,
-			);
+				// Start a long-running command then abort after a short delay
+				const promise = bashTool.execute(
+					"bash-22",
+					{ command: "sleep 10" },
+					controller.signal,
+				);
 
-			// Abort after 100ms
-			setTimeout(() => controller.abort(), 100);
+				// Abort after 100ms (fake timers)
+				setTimeout(() => controller.abort(), 100);
+				await vi.advanceTimersByTimeAsync(100);
 
-			// Should resolve (bash tool returns result even on abort) or may reject
-			// depending on timing - just ensure it doesn't hang for 10 seconds
-			const start = Date.now();
-			await Promise.race([
-				promise,
-				new Promise((resolve) => setTimeout(resolve, 2000)),
-			]);
-			const elapsed = Date.now() - start;
+				// Switch back to real timers so the process can exit promptly
+				vi.useRealTimers();
 
-			// The key test: it shouldn't wait 10 seconds
-			expect(elapsed).toBeLessThan(3000);
+				const race = Promise.race([
+					promise.then(() => "done"),
+					new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000)),
+				]);
+				const outcome = await race;
+
+				// The key test: it shouldn't wait 10 seconds
+				expect(outcome).toBe("done");
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 

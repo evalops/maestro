@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type SandboxConfig,
 	createExecutor,
@@ -109,13 +109,20 @@ describe("slack-agent tools", () => {
 		it("respects timeout parameter", async () => {
 			const tool = createBashTool(executor);
 
-			await expect(
-				tool.execute("test-id", {
+			vi.useFakeTimers();
+			try {
+				const promise = tool.execute("test-id", {
 					label: "Test timeout",
 					command: "sleep 10",
 					timeout: 0.1,
-				}),
-			).rejects.toThrow("timed out");
+				});
+
+				const assertion = expect(promise).rejects.toThrow("timed out");
+				await vi.advanceTimersByTimeAsync(100);
+				await assertion;
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 
 		it("respects abort signal", async () => {

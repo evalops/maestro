@@ -101,7 +101,17 @@ describe("Stream Idle Timeout", () => {
 				timeoutMs: 50, // Short timeout for testing
 			});
 
-			await expect(reader.read()).rejects.toThrow(StreamIdleTimeoutError);
+			vi.useFakeTimers();
+			try {
+				const readPromise = reader.read();
+				const assertion = expect(readPromise).rejects.toThrow(
+					StreamIdleTimeoutError,
+				);
+				await vi.advanceTimersByTimeAsync(50);
+				await assertion;
+			} finally {
+				vi.useRealTimers();
+			}
 		}, 5000);
 
 		it("should respect abort signal", async () => {
@@ -210,14 +220,17 @@ describe("Stream Idle Timeout", () => {
 			expect(first.value).toBe(1);
 
 			// Second call should timeout
-			let errorThrown = false;
+			vi.useFakeTimers();
 			try {
-				await iterator.next();
-			} catch (error) {
-				errorThrown = true;
-				expect(error).toBeInstanceOf(StreamIdleTimeoutError);
+				const nextPromise = iterator.next();
+				const assertion = expect(nextPromise).rejects.toBeInstanceOf(
+					StreamIdleTimeoutError,
+				);
+				await vi.advanceTimersByTimeAsync(50);
+				await assertion;
+			} finally {
+				vi.useRealTimers();
 			}
-			expect(errorThrown).toBe(true);
 		}, 5000);
 	});
 
@@ -280,14 +293,17 @@ describe("Stream Idle Timeout", () => {
 			expect(first.value).toBe("first");
 
 			// Second call should timeout
-			let errorThrown = false;
+			vi.useFakeTimers();
 			try {
-				await iterator.next();
-			} catch (error) {
-				errorThrown = true;
-				expect(error).toBeInstanceOf(StreamIdleTimeoutError);
+				const nextPromise = iterator.next();
+				const assertion = expect(nextPromise).rejects.toBeInstanceOf(
+					StreamIdleTimeoutError,
+				);
+				await vi.advanceTimersByTimeAsync(50);
+				await assertion;
+			} finally {
+				vi.useRealTimers();
 			}
-			expect(errorThrown).toBe(true);
 		}, 5000);
 
 		it("should respect abort signal", async () => {

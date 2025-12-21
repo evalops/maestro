@@ -113,9 +113,21 @@ describe("callExa", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		const telemetry = vi.fn();
-		await expect(
-			callExa("/search", {}, { retries: 1, onTelemetry: telemetry }),
-		).resolves.toMatchObject({ ok: true });
+		vi.useFakeTimers();
+		try {
+			const promise = callExa(
+				"/search",
+				{},
+				{
+					retries: 1,
+					onTelemetry: telemetry,
+				},
+			);
+			await vi.runAllTimersAsync();
+			await expect(promise).resolves.toMatchObject({ ok: true });
+		} finally {
+			vi.useRealTimers();
+		}
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 		expect(telemetry).toHaveBeenCalledWith(
 			expect.objectContaining({ success: false, status: 500 }),

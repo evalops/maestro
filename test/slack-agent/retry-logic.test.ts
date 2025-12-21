@@ -4,7 +4,7 @@
  * Tests the isRetryableError and withRetry functions
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Since these are internal functions, we recreate them here for testing
 // In a real scenario, we'd export them or test through integration
@@ -179,10 +179,20 @@ describe("retry logic", () => {
 	});
 
 	describe("withRetry", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
 		it("returns immediately on success", async () => {
 			const fn = vi.fn().mockResolvedValue("success");
 
-			const result = await withRetry(fn);
+			const promise = withRetry(fn);
+			await vi.runAllTimersAsync();
+			const result = await promise;
 
 			expect(result).toBe("success");
 			expect(fn).toHaveBeenCalledTimes(1);
@@ -191,7 +201,10 @@ describe("retry logic", () => {
 		it("throws immediately for non-retryable errors", async () => {
 			const fn = vi.fn().mockRejectedValue(new Error("Invalid input"));
 
-			await expect(withRetry(fn)).rejects.toThrow("Invalid input");
+			const promise = withRetry(fn);
+			const assertion = expect(promise).rejects.toThrow("Invalid input");
+			await vi.runAllTimersAsync();
+			await assertion;
 			expect(fn).toHaveBeenCalledTimes(1);
 		});
 
@@ -201,11 +214,13 @@ describe("retry logic", () => {
 				.mockRejectedValueOnce(new Error("Connection timeout"))
 				.mockResolvedValue("success");
 
-			const result = await withRetry(fn, {
+			const promise = withRetry(fn, {
 				maxAttempts: 3,
 				baseDelayMs: 10, // Short delay for tests
 				maxDelayMs: 100,
 			});
+			await vi.runAllTimersAsync();
+			const result = await promise;
 
 			expect(result).toBe("success");
 			expect(fn).toHaveBeenCalledTimes(2);
@@ -214,13 +229,14 @@ describe("retry logic", () => {
 		it("respects max attempts", async () => {
 			const fn = vi.fn().mockRejectedValue(new Error("rate limit"));
 
-			await expect(
-				withRetry(fn, {
-					maxAttempts: 3,
-					baseDelayMs: 10,
-					maxDelayMs: 100,
-				}),
-			).rejects.toThrow("rate limit");
+			const promise = withRetry(fn, {
+				maxAttempts: 3,
+				baseDelayMs: 10,
+				maxDelayMs: 100,
+			});
+			const assertion = expect(promise).rejects.toThrow("rate limit");
+			await vi.runAllTimersAsync();
+			await assertion;
 
 			expect(fn).toHaveBeenCalledTimes(3);
 		});
@@ -234,7 +250,7 @@ describe("retry logic", () => {
 
 			const onRetry = vi.fn();
 
-			await withRetry(
+			const promise = withRetry(
 				fn,
 				{
 					maxAttempts: 3,
@@ -243,6 +259,8 @@ describe("retry logic", () => {
 				},
 				onRetry,
 			);
+			await vi.runAllTimersAsync();
+			await promise;
 
 			expect(onRetry).toHaveBeenCalledTimes(2);
 			expect(onRetry).toHaveBeenNthCalledWith(
@@ -271,7 +289,7 @@ describe("retry logic", () => {
 				delays.push(delayMs);
 			});
 
-			await withRetry(
+			const promise = withRetry(
 				fn,
 				{
 					maxAttempts: 3,
@@ -280,6 +298,8 @@ describe("retry logic", () => {
 				},
 				onRetry,
 			);
+			await vi.runAllTimersAsync();
+			await promise;
 
 			// Second delay should be roughly 2x the first (accounting for jitter)
 			// Base: 100, 200
@@ -298,7 +318,7 @@ describe("retry logic", () => {
 				delays.push(delayMs);
 			});
 
-			await withRetry(
+			const promise = withRetry(
 				fn,
 				{
 					maxAttempts: 2,
@@ -307,6 +327,8 @@ describe("retry logic", () => {
 				},
 				onRetry,
 			);
+			await vi.runAllTimersAsync();
+			await promise;
 
 			expect(delays[0]).toBeLessThanOrEqual(100);
 		});
@@ -314,13 +336,14 @@ describe("retry logic", () => {
 		it("converts non-Error to Error", async () => {
 			const fn = vi.fn().mockRejectedValue("string error");
 
-			await expect(
-				withRetry(fn, {
-					maxAttempts: 1,
-					baseDelayMs: 10,
-					maxDelayMs: 100,
-				}),
-			).rejects.toThrow("string error");
+			const promise = withRetry(fn, {
+				maxAttempts: 1,
+				baseDelayMs: 10,
+				maxDelayMs: 100,
+			});
+			const assertion = expect(promise).rejects.toThrow("string error");
+			await vi.runAllTimersAsync();
+			await assertion;
 		});
 	});
 });

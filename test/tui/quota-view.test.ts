@@ -507,43 +507,47 @@ describe("QuotaView", () => {
 
 	describe("session limit with session override", () => {
 		it("shows session override notice in enterprise mode", async () => {
-			process.env.COMPOSER_ENTERPRISE_TOKEN = "test-token";
-			mockIsDatabaseConfigured.mockReturnValue(true);
-			mockVerifyToken.mockReturnValue({
-				userId: "user-123",
-				orgId: "org-456",
-				email: "test@example.com",
-				roleId: "role-789",
-				type: "access",
-			});
-			mockGetUsageQuota.mockResolvedValue({
-				userId: "user-123",
-				orgId: "org-456",
-				tokenQuota: 100000,
-				tokenUsed: 45000,
-				tokenRemaining: 55000,
-				spendLimit: null,
-				spendUsed: 0,
-				spendRemaining: Number.POSITIVE_INFINITY,
-				quotaResetAt: null,
-			});
+			vi.useFakeTimers();
+			try {
+				process.env.COMPOSER_ENTERPRISE_TOKEN = "test-token";
+				mockIsDatabaseConfigured.mockReturnValue(true);
+				mockVerifyToken.mockReturnValue({
+					userId: "user-123",
+					orgId: "org-456",
+					email: "test@example.com",
+					roleId: "role-789",
+					type: "access",
+				});
+				mockGetUsageQuota.mockResolvedValue({
+					userId: "user-123",
+					orgId: "org-456",
+					tokenQuota: 100000,
+					tokenUsed: 45000,
+					tokenRemaining: 55000,
+					spendLimit: null,
+					spendUsed: 0,
+					spendRemaining: Number.POSITIVE_INFINITY,
+					quotaResetAt: null,
+				});
 
-			const { view, container } = createQuotaView();
+				const { view, container } = createQuotaView();
 
-			// Set a local session limit
-			view.handleQuotaCommand(createContext("/quota limit 25000"));
+				// Set a local session limit
+				view.handleQuotaCommand(createContext("/quota limit 25000"));
 
-			container.children.length = 0;
-			view.handleQuotaCommand(createContext("/quota"));
+				container.children.length = 0;
+				view.handleQuotaCommand(createContext("/quota"));
 
-			await new Promise((resolve) => setTimeout(resolve, 10));
+				await vi.advanceTimersByTimeAsync(10);
 
-			const rendered = getRenderedText(container);
-			expect(rendered).toContain("Session Override");
-			expect(rendered).toContain("25.0K");
-
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_ENTERPRISE_TOKEN;
+				const rendered = getRenderedText(container);
+				expect(rendered).toContain("Session Override");
+				expect(rendered).toContain("25.0K");
+			} finally {
+				// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
+				delete process.env.COMPOSER_ENTERPRISE_TOKEN;
+				vi.useRealTimers();
+			}
 		});
 	});
 });

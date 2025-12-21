@@ -204,11 +204,16 @@ describe("MCP client manager", () => {
 	// Track managers for cleanup - McpClientManager has internal reconnect timers
 	const managers: McpClientManager[] = [];
 
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
 	afterEach(async () => {
 		for (const manager of managers) {
 			await manager.disconnectAll();
 		}
 		managers.length = 0;
+		vi.useRealTimers();
 	});
 
 	function createManager(): McpClientManager {
@@ -247,7 +252,7 @@ describe("MCP client manager", () => {
 		});
 
 		// Wait for connection attempt and potential reconnect scheduling
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await vi.advanceTimersByTimeAsync(200);
 
 		await manager.disconnectAll();
 
@@ -295,7 +300,7 @@ describe("MCP client manager", () => {
 		});
 
 		// Wait for connection attempt
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await vi.advanceTimersByTimeAsync(100);
 
 		expect(errorHandler).toHaveBeenCalled();
 		expect(errorHandler.mock.calls[0][0].name).toBe("failing");

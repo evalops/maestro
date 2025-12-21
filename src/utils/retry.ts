@@ -19,8 +19,12 @@ export interface RetryOptions {
 	exponentialBackoff?: boolean;
 	/** Function to determine if error is retryable */
 	shouldRetry?: (error: Error, attempt: number) => boolean;
-	/** Called before each retry */
-	onRetry?: (error: Error, attempt: number, delay: number) => void;
+	/** Called before each retry. Return a number to override the sleep delay. */
+	onRetry?: (
+		error: Error,
+		attempt: number,
+		delay: number,
+	) => number | undefined;
 }
 
 /**
@@ -174,13 +178,21 @@ export async function retry<T>(
 				maxAttempts,
 			});
 
-			// Call retry callback
+			let sleepDelay = delay;
+
+			// Call retry callback and allow override of the sleep delay.
 			if (onRetry) {
-				onRetry(lastError, attempt, delay);
+				const overrideDelay = onRetry(lastError, attempt, delay);
+				if (
+					typeof overrideDelay === "number" &&
+					Number.isFinite(overrideDelay)
+				) {
+					sleepDelay = Math.max(0, Math.trunc(overrideDelay));
+				}
 			}
 
 			// Wait before retrying
-			await sleep(delay);
+			await sleep(sleepDelay);
 		}
 	}
 
@@ -216,6 +228,8 @@ export async function retryWithJitter<T>(
 			if (options.onRetry) {
 				options.onRetry(error, attempt, jitteredDelay);
 			}
+
+			return jitteredDelay;
 		},
 	});
 }

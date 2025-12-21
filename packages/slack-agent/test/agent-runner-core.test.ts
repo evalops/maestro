@@ -612,6 +612,9 @@ describe("agent-runner core logic", () => {
 
 describe("status update throttling", () => {
 	it("throttles status updates to interval", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(0);
+
 		const STATUS_UPDATE_INTERVAL = 100; // Use short interval for testing
 		let lastStatusUpdate = 0; // Start at 0 so first call always updates
 		let updateCount = 0;
@@ -634,10 +637,12 @@ describe("status update throttling", () => {
 		expect(updateCount).toBe(1);
 
 		// Wait for interval
-		await new Promise((r) => setTimeout(r, STATUS_UPDATE_INTERVAL + 10));
+		vi.advanceTimersByTime(STATUS_UPDATE_INTERVAL + 10);
 
 		// Now should update
 		await maybeUpdateStatus();
 		expect(updateCount).toBe(2);
+
+		vi.useRealTimers();
 	});
 });
