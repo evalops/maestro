@@ -2445,7 +2445,7 @@ mod tests {
             .expect("created_at should be restored")
             .elapsed();
         assert!(
-            age >= Duration::from_secs(2),
+            age >= Duration::from_secs(8),
             "expected restored age to reflect persisted timestamp"
         );
 
