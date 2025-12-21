@@ -196,5 +196,15 @@ describe("shell-utils", () => {
 			const args = parseCommandArguments("echo 'hello\\nworld'");
 			expect(args).toEqual(["echo", "hello\\nworld"]);
 		});
+
+		it("preserves empty quoted arguments", () => {
+			const args = parseCommandArguments('echo "" ""');
+			expect(args).toEqual(["echo", "", ""]);
+		});
+
+		it("preserves empty argument at end", () => {
+			const args = parseCommandArguments('node -e ""');
+			expect(args).toEqual(["node", "-e", ""]);
+		});
 	});
 });
