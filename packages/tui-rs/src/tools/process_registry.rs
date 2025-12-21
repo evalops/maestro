@@ -29,6 +29,8 @@ use std::sync::RwLock;
 
 use once_cell::sync::Lazy;
 
+use super::process_utils::kill_process_tree;
+
 /// Global registry of tracked background process IDs
 static PROCESS_REGISTRY: Lazy<RwLock<ProcessRegistry>> =
     Lazy::new(|| RwLock::new(ProcessRegistry::new()));
@@ -116,35 +118,6 @@ pub fn tracked_pids() -> Vec<u32> {
         .read()
         .map(|r| r.pids())
         .unwrap_or_default()
-}
-
-/// Kill a single process tree by PID
-///
-/// Uses platform-specific methods to kill the process and all its children.
-#[cfg(unix)]
-fn kill_process_tree(pid: u32) {
-    use std::process::Command;
-
-    // First, try to kill all child processes using pkill
-    // pkill -P kills processes whose parent PID matches
-    let _ = Command::new("pkill")
-        .args(["-KILL", "-P", &pid.to_string()])
-        .output();
-
-    // Then kill the process itself using libc
-    // SIGKILL (9) ensures immediate termination
-    unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_process_tree(pid: u32) {
-    use std::process::Command;
-    // On Windows, use taskkill /T /F /PID <pid>
-    let _ = Command::new("taskkill")
-        .args(["/T", "/F", "/PID", &pid.to_string()])
-        .output();
 }
 
 /// Check if a process is still running

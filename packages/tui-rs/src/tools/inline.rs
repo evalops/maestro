@@ -64,6 +64,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use super::details::InlineToolDetails;
+use super::process_utils::kill_process_tree;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 
@@ -550,29 +551,6 @@ impl InlineToolExecutor {
             }
         }
     }
-}
-
-/// Kill an entire process tree by PID.
-///
-/// Mirrors bash tool behavior to avoid leaving orphaned child processes.
-#[cfg(unix)]
-fn kill_process_tree(pid: u32) {
-    // First, try to kill all child processes using pkill
-    let _ = std::process::Command::new("pkill")
-        .args(["-KILL", "-P", &pid.to_string()])
-        .output();
-
-    // Then kill the process itself using libc
-    unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_process_tree(pid: u32) {
-    let _ = std::process::Command::new("taskkill")
-        .args(["/T", "/F", "/PID", &pid.to_string()])
-        .output();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

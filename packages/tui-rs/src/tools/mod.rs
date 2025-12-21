@@ -83,6 +83,7 @@ mod history;
 mod image;
 pub mod inline;
 pub mod process_registry;
+mod process_utils;
 mod registry;
 mod web_fetch;
 

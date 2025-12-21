@@ -132,6 +132,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 use super::details::BashDetails;
+use super::process_utils::kill_process_tree;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 
@@ -220,48 +221,6 @@ fn truncate_output_tail(
     );
 
     (truncated, true, Some(stats))
-}
-
-/// Kill an entire process tree by PID.
-///
-/// On Unix systems, this uses SIGKILL to terminate the process and all its descendants.
-/// This is important for commands like `npm run dev` that spawn child processes -
-/// just killing the parent shell would leave orphan processes running.
-///
-/// # Platform Behavior
-///
-/// - **macOS/Linux**: Uses `pkill -KILL -P <pid>` to kill child processes, then kills the parent.
-///   Falls back to direct kill if pkill fails.
-/// - **Other platforms**: Falls back to killing just the process.
-///
-/// # Arguments
-///
-/// * `pid` - Process ID to kill along with its descendants
-#[cfg(unix)]
-fn kill_process_tree(pid: u32) {
-    use std::process::Command as StdCommand;
-
-    // First, try to kill all child processes using pkill
-    // pkill -P kills processes whose parent PID matches
-    let _ = StdCommand::new("pkill")
-        .args(["-KILL", "-P", &pid.to_string()])
-        .output();
-
-    // Then kill the process itself using libc
-    // SIGKILL (9) ensures immediate termination
-    unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_process_tree(pid: u32) {
-    // On non-Unix systems, we can only kill the direct process
-    // Windows would need taskkill /T /F /PID <pid>
-    use std::process::Command as StdCommand;
-    let _ = StdCommand::new("taskkill")
-        .args(["/T", "/F", "/PID", &pid.to_string()])
-        .output();
 }
 
 /// Arguments for bash command execution
