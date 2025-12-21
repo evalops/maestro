@@ -53,6 +53,16 @@ describe("FileStorageBackend", () => {
 			expect(stored).toEqual({ value: 1 });
 		});
 
+		it("treats expired keys as available", async () => {
+			await storage.set("expiring", { value: 1 }, 1);
+			await new Promise((r) => setTimeout(r, 10));
+
+			const result = await storage.setNX("expiring", { value: 2 });
+			expect(result).toBe(true);
+			const stored = await storage.get<{ value: number }>("expiring");
+			expect(stored).toEqual({ value: 2 });
+		});
+
 		it("returns false when key already exists", async () => {
 			await storage.set("existing", { value: 1 });
 			const result = await storage.setNX("existing", { value: 2 });
@@ -111,6 +121,13 @@ describe("FileStorageBackend", () => {
 			expect(result).toBe(true);
 		});
 
+		it("returns false for expired key", async () => {
+			await storage.set("expired", { data: "test" }, 1);
+			await new Promise((r) => setTimeout(r, 10));
+			const result = await storage.exists("expired");
+			expect(result).toBe(false);
+		});
+
 		it("returns false for non-existent key", async () => {
 			const result = await storage.exists("nonexistent");
 			expect(result).toBe(false);
@@ -127,6 +144,16 @@ describe("FileStorageBackend", () => {
 			expect(threadKeys).toHaveLength(2);
 			expect(threadKeys).toContain("thread:C1:T1");
 			expect(threadKeys).toContain("thread:C1:T2");
+		});
+
+		it("omits expired keys", async () => {
+			await storage.set("thread:C1:old", { data: 1 }, 1);
+			await new Promise((r) => setTimeout(r, 10));
+			await storage.set("thread:C1:new", { data: 2 });
+
+			const keys = await storage.keys("thread:*");
+			expect(keys).toContain("thread:C1:new");
+			expect(keys).not.toContain("thread:C1:old");
 		});
 
 		it("returns empty array when no matches", async () => {
