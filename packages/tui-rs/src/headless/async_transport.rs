@@ -143,7 +143,15 @@ impl AsyncAgentTransport {
         // Spawn reader task
         let reader_cancel = cancel_token.clone();
         let reader_handle = tokio::spawn(async move {
-            Self::reader_loop(stdout, child, event_tx, reader_cancel, config.buffer_size).await;
+            Self::reader_loop(
+                stdout,
+                child,
+                event_tx,
+                reader_cancel,
+                config.buffer_size,
+                config.read_timeout,
+            )
+            .await;
         });
 
         Ok(Self {
@@ -206,6 +214,7 @@ impl AsyncAgentTransport {
         tx: mpsc::UnboundedSender<Result<AgentEvent, AsyncTransportError>>,
         cancel: CancellationToken,
         buffer_size: usize,
+        read_timeout: Option<Duration>,
     ) {
         let reader = BufReader::with_capacity(buffer_size, stdout);
         let mut lines = reader.lines();
@@ -214,7 +223,19 @@ impl AsyncAgentTransport {
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => break,
-                line_result = lines.next_line() => {
+                line_result = async {
+                    if let Some(timeout_duration) = read_timeout {
+                        match timeout(timeout_duration, lines.next_line()).await {
+                            Ok(res) => res.map_err(|e| AsyncTransportError::SendFailed(e.to_string())),
+                            Err(_) => Err(AsyncTransportError::Timeout),
+                        }
+                    } else {
+                        lines
+                            .next_line()
+                            .await
+                            .map_err(|e| AsyncTransportError::SendFailed(e.to_string()))
+                    }
+                } => {
                     match line_result {
                         Ok(Some(line)) if line.trim().is_empty() => continue,
                         Ok(Some(line)) => {
@@ -237,7 +258,7 @@ impl AsyncAgentTransport {
                             break;
                         }
                         Err(e) => {
-                            let _ = tx.send(Err(AsyncTransportError::SendFailed(e.to_string())));
+                            let _ = tx.send(Err(e));
                             break;
                         }
                     }

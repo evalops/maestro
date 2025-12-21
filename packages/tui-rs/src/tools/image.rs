@@ -34,10 +34,12 @@
 //! }
 //! ```
 
+use std::io::Cursor;
 use std::path::Path;
 use std::time::Instant;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use image::{imageops::FilterType, GenericImageView, ImageFormat};
 use serde::{Deserialize, Serialize};
 
 use super::details::ImageDetails;
@@ -138,8 +140,10 @@ impl ImageTool {
                 .with_details(details.to_json());
         }
 
-        // Determine MIME type from extension
-        let mime_type = match path.extension().and_then(|e| e.to_str()) {
+        // Determine MIME type from extension (case-insensitive)
+        let extension = path.extension().and_then(|e| e.to_str());
+        let extension_lower = extension.map(|ext| ext.to_ascii_lowercase());
+        let mime_type = match extension_lower.as_deref() {
             Some("png") => "image/png",
             Some("jpg") | Some("jpeg") => "image/jpeg",
             Some("gif") => "image/gif",
@@ -188,37 +192,109 @@ impl ImageTool {
             .with_details(details.to_json());
         }
 
-        // Encode to base64
-        let base64_data = STANDARD.encode(&data);
+        let mut mime_type = mime_type.to_string();
+        let mut data = data;
 
         // Get image dimensions info if possible
-        let dimensions = get_image_dimensions(&data);
+        let mut dimensions = get_image_dimensions(&data);
+        let mut original_dimensions = dimensions;
+        let mut resized = false;
         let max_dim = args.max_dimension.unwrap_or(DEFAULT_MAX_DIMENSION);
-        let dim_info = dimensions
-            .map(|(w, h)| {
+
+        // Resize raster images when they exceed max dimension
+        if matches!(
+            mime_type.as_str(),
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp"
+        ) {
+            if let Ok(img) = image::load_from_memory(&data) {
+                let (width, height) = img.dimensions();
+                original_dimensions = Some((width, height));
+                dimensions = Some((width, height));
+
+                if width > max_dim || height > max_dim {
+                    let scale = max_dim as f32 / width.max(height) as f32;
+                    let new_width = ((width as f32 * scale).round() as u32).max(1);
+                    let new_height = ((height as f32 * scale).round() as u32).max(1);
+                    let resized_img = img.resize(new_width, new_height, FilterType::Triangle);
+
+                    let mut buffer = Vec::new();
+                    let mut encoded = false;
+                    let format = match mime_type.as_str() {
+                        "image/png" => Some(ImageFormat::Png),
+                        "image/jpeg" => Some(ImageFormat::Jpeg),
+                        "image/gif" => Some(ImageFormat::Gif),
+                        "image/webp" => Some(ImageFormat::WebP),
+                        "image/bmp" => Some(ImageFormat::Bmp),
+                        _ => None,
+                    };
+
+                    if let Some(format) = format {
+                        if resized_img
+                            .write_to(&mut Cursor::new(&mut buffer), format)
+                            .is_ok()
+                        {
+                            encoded = true;
+                        }
+                    }
+
+                    if !encoded {
+                        buffer.clear();
+                        if resized_img
+                            .write_to(&mut Cursor::new(&mut buffer), ImageFormat::Png)
+                            .is_ok()
+                        {
+                            encoded = true;
+                            mime_type = "image/png".to_string();
+                        }
+                    }
+
+                    if encoded {
+                        data = buffer;
+                        dimensions = Some((new_width, new_height));
+                        resized = true;
+                    }
+                }
+            }
+        }
+
+        let dim_info = match (original_dimensions, dimensions) {
+            (Some((ow, oh)), Some((w, h))) if resized => {
+                format!(" ({}x{} -> {}x{}, max {})", ow, oh, w, h, max_dim)
+            }
+            (Some((w, h)), _) => {
                 if w > max_dim || h > max_dim {
                     format!(" ({}x{}, exceeds max {})", w, h, max_dim)
                 } else {
                     format!(" ({}x{})", w, h)
                 }
-            })
-            .unwrap_or_default();
+            }
+            _ => String::new(),
+        };
+
+        // Encode to base64 (after optional resize)
+        let base64_data = STANDARD.encode(&data);
 
         // Format as data URI for easy consumption
         let data_uri = format!("data:{};base64,{}", mime_type, base64_data);
 
         // Return structured output
         let output = serde_json::json!({
-            "mime_type": mime_type,
+            "mime_type": mime_type.as_str(),
             "size_bytes": data.len(),
             "dimensions": dimensions.map(|(w, h)| format!("{}x{}", w, h)),
+            "original_dimensions": if resized {
+                original_dimensions.map(|(w, h)| format!("{}x{}", w, h))
+            } else {
+                None
+            },
+            "resized": resized,
             "base64_length": base64_data.len(),
             "data_uri": data_uri,
         });
 
         // Build ImageDetails
         let mut details = ImageDetails::from_file(&args.file_path)
-            .with_mime_type(mime_type)
+            .with_mime_type(mime_type.clone())
             .with_size(data.len() as u64)
             .with_base64_length(base64_data.len())
             .with_duration(start_time.elapsed().as_millis() as u64);

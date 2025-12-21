@@ -37,6 +37,7 @@
 
 use std::time::Instant;
 
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use super::details::WebFetchDetails;
@@ -97,6 +98,19 @@ fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     }
 
     None
+}
+
+/// Truncate a UTF-8 string at a byte boundary safely.
+fn truncate_utf8(input: &str, max_bytes: usize) -> &str {
+    if input.len() <= max_bytes {
+        return input;
+    }
+
+    let mut end = max_bytes;
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    &input[..end]
 }
 
 /// Arguments for web fetch execution
@@ -215,33 +229,53 @@ impl WebFetchTool {
             .unwrap_or("text/html")
             .to_lowercase();
 
-        // Read body with size limit
-        let body_bytes = match response.bytes().await {
-            Ok(b) => {
-                if b.len() > MAX_BODY_SIZE {
-                    let details = WebFetchDetails::new(&url)
-                        .with_status(status.as_u16())
-                        .with_content_type(&content_type)
-                        .with_body_size(b.len())
-                        .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::failure(format!(
-                        "Response too large: {} bytes (max {})",
-                        b.len(),
-                        MAX_BODY_SIZE
-                    ))
-                    .with_details(details.to_json());
-                }
-                b
-            }
-            Err(e) => {
+        // Check content-length before reading (if provided)
+        if let Some(length) = response.content_length() {
+            if length as usize > MAX_BODY_SIZE {
                 let details = WebFetchDetails::new(&url)
                     .with_status(status.as_u16())
                     .with_content_type(&content_type)
+                    .with_body_size(length as usize)
                     .with_duration(start_time.elapsed().as_millis() as u64);
-                return ToolResult::failure(format!("Failed to read response body: {}", e))
-                    .with_details(details.to_json());
+                return ToolResult::failure(format!(
+                    "Response too large: {} bytes (max {})",
+                    length, MAX_BODY_SIZE
+                ))
+                .with_details(details.to_json());
             }
-        };
+        }
+
+        // Read body with size limit (streamed)
+        let mut body_bytes: Vec<u8> = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    let new_size = body_bytes.len() + bytes.len();
+                    if new_size > MAX_BODY_SIZE {
+                        let details = WebFetchDetails::new(&url)
+                            .with_status(status.as_u16())
+                            .with_content_type(&content_type)
+                            .with_body_size(new_size)
+                            .with_duration(start_time.elapsed().as_millis() as u64);
+                        return ToolResult::failure(format!(
+                            "Response too large: {} bytes (max {})",
+                            new_size, MAX_BODY_SIZE
+                        ))
+                        .with_details(details.to_json());
+                    }
+                    body_bytes.extend_from_slice(&bytes);
+                }
+                Err(e) => {
+                    let details = WebFetchDetails::new(&url)
+                        .with_status(status.as_u16())
+                        .with_content_type(&content_type)
+                        .with_duration(start_time.elapsed().as_millis() as u64);
+                    return ToolResult::failure(format!("Failed to read response body: {}", e))
+                        .with_details(details.to_json());
+                }
+            }
+        }
 
         // Convert body to string
         let body = String::from_utf8_lossy(&body_bytes).to_string();
@@ -264,10 +298,11 @@ impl WebFetchTool {
         // Truncate if necessary
         let truncated = content.len() > MAX_OUTPUT_SIZE;
         let output = if truncated {
+            let truncated_content = truncate_utf8(&content, MAX_OUTPUT_SIZE);
             format!(
                 "{}\n\n... (content truncated, {} more bytes)",
-                &content[..MAX_OUTPUT_SIZE],
-                content.len() - MAX_OUTPUT_SIZE
+                truncated_content,
+                content.len() - truncated_content.len()
             )
         } else {
             content
@@ -466,17 +501,21 @@ fn convert_links(html: &str) -> String {
             // Extract href (href= is ASCII, safe to use find_case_insensitive)
             let href = if let Some(href_start) = find_case_insensitive(tag_str, "href=") {
                 let href_content = &tag_str[href_start + 5..];
-                let quote_char = href_content.chars().next().unwrap_or('"');
-                if quote_char == '"' || quote_char == '\'' {
-                    href_content[1..]
-                        .find(quote_char)
-                        .map(|end| &href_content[1..1 + end])
-                        .unwrap_or("")
+                if href_content.is_empty() {
+                    ""
                 } else {
-                    href_content
-                        .find(|c: char| c.is_whitespace() || c == '>')
-                        .map(|end| &href_content[..end])
-                        .unwrap_or("")
+                    let quote_char = href_content.chars().next().unwrap_or('"');
+                    if quote_char == '"' || quote_char == '\'' {
+                        href_content[1..]
+                            .find(quote_char)
+                            .map(|end| &href_content[1..1 + end])
+                            .unwrap_or("")
+                    } else {
+                        href_content
+                            .find(|c: char| c.is_whitespace() || c == '>')
+                            .map(|end| &href_content[..end])
+                            .unwrap_or("")
+                    }
                 }
             } else {
                 ""

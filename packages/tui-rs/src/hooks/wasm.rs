@@ -36,6 +36,11 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "wasm")]
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc,
+};
+#[cfg(feature = "wasm")]
 use std::time::{Duration, Instant};
 
 /// Result codes from WASM plugins
@@ -309,6 +314,9 @@ impl WasmHookExecutor {
         let alloc_fn = instance
             .get_typed_func::<i32, i32>(&mut store, "alloc")
             .with_context(|| "Missing 'alloc' export")?;
+        let dealloc_fn = instance
+            .get_typed_func::<(i32, i32), ()>(&mut store, "dealloc")
+            .ok();
 
         let on_pre_tool_use_fn = instance
             .get_typed_func::<(i32, i32), i32>(&mut store, "on_pre_tool_use")
@@ -332,8 +340,34 @@ impl WasmHookExecutor {
         // Copy input to WASM memory
         memory.write(&mut store, input_ptr as usize, &input_json)?;
 
+        // Start timeout watchdog for WASM execution
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let engine = self.engine.clone();
+        let timeout = self.timeout;
+        let timed_out_clone = timed_out.clone();
+        let watchdog_handle = std::thread::spawn(move || {
+            if done_rx.recv_timeout(timeout).is_err() {
+                timed_out_clone.store(true, Ordering::Relaxed);
+                engine.increment_epoch();
+            }
+        });
+
         // Call the hook function
-        let result_code = on_pre_tool_use_fn.call(&mut store, (input_ptr, input_len))?;
+        let result_code = match on_pre_tool_use_fn.call(&mut store, (input_ptr, input_len)) {
+            Ok(code) => code,
+            Err(err) => {
+                let _ = done_tx.send(());
+                let _ = watchdog_handle.join();
+                if timed_out.load(Ordering::Relaxed) {
+                    return Err(anyhow::anyhow!("WASM hook execution timed out"));
+                }
+                return Err(err);
+            }
+        };
+
+        let _ = done_tx.send(());
+        let _ = watchdog_handle.join();
 
         // Parse result based on code
         match WasmResultCode::from(result_code) {
@@ -345,6 +379,8 @@ impl WasmHookExecutor {
                     .read_result_string(
                         &mut store,
                         memory,
+                        &alloc_fn,
+                        dealloc_fn.as_ref(),
                         get_result_len_fn.as_ref(),
                         get_result_fn.as_ref(),
                     )
@@ -358,6 +394,8 @@ impl WasmHookExecutor {
                 if let Some(json_str) = self.read_result_string(
                     &mut store,
                     memory,
+                    &alloc_fn,
+                    dealloc_fn.as_ref(),
                     get_result_len_fn.as_ref(),
                     get_result_fn.as_ref(),
                 ) {
@@ -373,6 +411,8 @@ impl WasmHookExecutor {
                     .read_result_string(
                         &mut store,
                         memory,
+                        &alloc_fn,
+                        dealloc_fn.as_ref(),
                         get_result_len_fn.as_ref(),
                         get_result_fn.as_ref(),
                     )
@@ -386,6 +426,8 @@ impl WasmHookExecutor {
                     .read_result_string(
                         &mut store,
                         memory,
+                        &alloc_fn,
+                        dealloc_fn.as_ref(),
                         get_result_len_fn.as_ref(),
                         get_result_fn.as_ref(),
                     )
@@ -401,6 +443,8 @@ impl WasmHookExecutor {
         &self,
         store: &mut Store<()>,
         memory: Memory,
+        alloc_fn: &TypedFunc<i32, i32>,
+        dealloc_fn: Option<&TypedFunc<(i32, i32), ()>>,
         get_result_len_fn: Option<&TypedFunc<(), i32>>,
         get_result_fn: Option<&TypedFunc<(i32, i32), i32>>,
     ) -> Option<String> {
@@ -412,21 +456,40 @@ impl WasmHookExecutor {
             return None;
         }
 
-        // Allocate buffer and read result
-        let mut buffer = vec![0u8; len];
-        let written = get_result
-            .call(&mut *store, (buffer.as_ptr() as i32, len as i32))
-            .ok()? as usize;
+        let len_i32 = len as i32;
+        let alloc_ptr = alloc_fn.call(&mut *store, len_i32).ok()?;
+        let dealloc = |store: &mut Store<()>| {
+            if let Some(dealloc_fn) = dealloc_fn {
+                let _ = dealloc_fn.call(store, (alloc_ptr, len_i32));
+            }
+        };
 
-        if written > 0 {
-            // Read from WASM memory at the output location
-            memory
-                .read(&mut *store, buffer.as_ptr() as usize, &mut buffer)
-                .ok()?;
-            String::from_utf8(buffer).ok()
-        } else {
-            None
+        let written = match get_result.call(&mut *store, (alloc_ptr, len_i32)) {
+            Ok(written) => written as usize,
+            Err(_) => {
+                dealloc(&mut *store);
+                return None;
+            }
+        };
+
+        if written == 0 {
+            dealloc(&mut *store);
+            return None;
         }
+
+        // Read from WASM memory at the output location
+        let read_len = written.min(len);
+        let mut buffer = vec![0u8; read_len];
+        if memory
+            .read(&mut *store, alloc_ptr as usize, &mut buffer)
+            .is_err()
+        {
+            dealloc(&mut *store);
+            return None;
+        }
+
+        dealloc(&mut *store);
+        String::from_utf8(buffer).ok()
     }
 
     pub fn execute_post_tool_use(&self, input: &PostToolUseInput) -> HookResult {
@@ -491,8 +554,34 @@ impl WasmHookExecutor {
         // Write input to WASM memory
         memory.write(&mut store, input_ptr as usize, input_bytes)?;
 
+        // Start timeout watchdog for WASM execution
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let engine = self.engine.clone();
+        let timeout = self.timeout;
+        let timed_out_clone = timed_out.clone();
+        let watchdog_handle = std::thread::spawn(move || {
+            if done_rx.recv_timeout(timeout).is_err() {
+                timed_out_clone.store(true, Ordering::Relaxed);
+                engine.increment_epoch();
+            }
+        });
+
         // Call the hook (return value ignored for post hooks)
-        let _ = on_post_tool_use_fn.call(&mut store, (input_ptr, input_len))?;
+        match on_post_tool_use_fn.call(&mut store, (input_ptr, input_len)) {
+            Ok(_) => {}
+            Err(err) => {
+                let _ = done_tx.send(());
+                let _ = watchdog_handle.join();
+                if timed_out.load(Ordering::Relaxed) {
+                    return Err(anyhow::anyhow!("WASM post-hook execution timed out"));
+                }
+                return Err(err);
+            }
+        }
+
+        let _ = done_tx.send(());
+        let _ = watchdog_handle.join();
 
         Ok(())
     }

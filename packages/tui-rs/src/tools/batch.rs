@@ -140,6 +140,66 @@ impl BatchExecutor {
             return Vec::new();
         }
 
+        if !self.config.continue_on_error {
+            if let Some(ref tx) = event_tx {
+                if self.config.emit_events {
+                    let _ = tx.send(FromAgent::BatchStart { total: calls.len() });
+                }
+            }
+
+            let mut results = Vec::with_capacity(calls.len());
+            let mut failed = false;
+
+            for call in calls {
+                if failed {
+                    results.push(BatchToolResult {
+                        call_id: call.call_id,
+                        tool_name: call.tool_name,
+                        result: ToolResult::failure("Skipped due to previous error in batch"),
+                    });
+                    continue;
+                }
+
+                let result = self
+                    .executor
+                    .execute(
+                        &call.tool_name,
+                        &call.args,
+                        if self.config.emit_events {
+                            event_tx.as_ref()
+                        } else {
+                            None
+                        },
+                        &call.call_id,
+                    )
+                    .await;
+
+                if !result.success {
+                    failed = true;
+                }
+
+                results.push(BatchToolResult {
+                    call_id: call.call_id,
+                    tool_name: call.tool_name,
+                    result,
+                });
+            }
+
+            if let Some(ref tx) = event_tx {
+                if self.config.emit_events {
+                    let successes = results.iter().filter(|r| r.result.success).count();
+                    let failures = results.len() - successes;
+                    let _ = tx.send(FromAgent::BatchEnd {
+                        total: results.len(),
+                        successes,
+                        failures,
+                    });
+                }
+            }
+
+            return results;
+        }
+
         // Send batch start event
         if let Some(ref tx) = event_tx {
             if self.config.emit_events {
@@ -228,6 +288,79 @@ impl BatchExecutor {
                 .with_duration(0)
                 .with_concurrency(self.config.max_concurrency);
             return (Vec::new(), details);
+        }
+
+        if !self.config.continue_on_error {
+            if let Some(ref tx) = event_tx {
+                if self.config.emit_events {
+                    let _ = tx.send(FromAgent::BatchStart { total });
+                }
+            }
+
+            let mut results = Vec::with_capacity(total);
+            let mut tool_durations = HashMap::new();
+            let mut failed = false;
+
+            for call in calls {
+                if failed {
+                    tool_durations.insert(call.call_id.clone(), 0);
+                    results.push(BatchToolResult {
+                        call_id: call.call_id,
+                        tool_name: call.tool_name,
+                        result: ToolResult::failure("Skipped due to previous error in batch"),
+                    });
+                    continue;
+                }
+
+                let tool_start = Instant::now();
+                let result = self
+                    .executor
+                    .execute(
+                        &call.tool_name,
+                        &call.args,
+                        if self.config.emit_events {
+                            event_tx.as_ref()
+                        } else {
+                            None
+                        },
+                        &call.call_id,
+                    )
+                    .await;
+                let duration_ms = tool_start.elapsed().as_millis() as u64;
+                tool_durations.insert(call.call_id.clone(), duration_ms);
+
+                if !result.success {
+                    failed = true;
+                }
+
+                results.push(BatchToolResult {
+                    call_id: call.call_id,
+                    tool_name: call.tool_name,
+                    result,
+                });
+            }
+
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+            let successes = results.iter().filter(|r| r.result.success).count();
+            let failures = results.len() - successes;
+
+            let details = BatchDetails::new(total)
+                .with_results(successes, failures)
+                .with_duration(duration_ms)
+                .with_concurrency(self.config.max_concurrency)
+                .with_tool_durations(tool_durations);
+
+            if let Some(ref tx) = event_tx {
+                if self.config.emit_events {
+                    let _ = tx.send(FromAgent::BatchEnd {
+                        total: results.len(),
+                        successes,
+                        failures,
+                    });
+                }
+            }
+
+            return (results, details);
         }
 
         // Send batch start event
@@ -337,8 +470,18 @@ impl BatchExecutor {
         event_tx: Option<mpsc::UnboundedSender<FromAgent>>,
     ) -> Vec<BatchToolResult> {
         let mut results = Vec::with_capacity(calls.len());
+        let mut failed = false;
 
         for call in calls {
+            if failed {
+                results.push(BatchToolResult {
+                    call_id: call.call_id,
+                    tool_name: call.tool_name,
+                    result: ToolResult::failure("Skipped due to previous error in batch"),
+                });
+                continue;
+            }
+
             let result = self
                 .executor
                 .execute(
@@ -358,7 +501,7 @@ impl BatchExecutor {
 
             // Stop on first error if configured
             if !success && !self.config.continue_on_error {
-                break;
+                failed = true;
             }
         }
 
