@@ -44,6 +44,25 @@ export class FileStorageBackend implements StorageBackend {
 		ensureDirSync(baseDir);
 	}
 
+	private readMetadata(
+		path: string,
+	): { key?: string; expiresAt?: number } | null {
+		try {
+			const content = readFileSync(path, "utf-8");
+			return JSON.parse(content) as { key?: string; expiresAt?: number };
+		} catch {
+			return null;
+		}
+	}
+
+	private isExpired(expiresAt: unknown): boolean {
+		return (
+			typeof expiresAt === "number" &&
+			Number.isFinite(expiresAt) &&
+			Date.now() > expiresAt
+		);
+	}
+
 	private getPath(key: string): string {
 		// Safe filename - replace special chars
 		const safeKey = key.replace(/[^a-zA-Z0-9-_]/g, "_");
@@ -100,6 +119,20 @@ export class FileStorageBackend implements StorageBackend {
 		} catch (error) {
 			// EEXIST means file already exists - not an error for setNX
 			if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+				const metadata = this.readMetadata(path);
+				if (metadata && this.isExpired(metadata.expiresAt)) {
+					try {
+						unlinkSync(path);
+					} catch {
+						return false;
+					}
+					try {
+						writeFileSync(path, JSON.stringify(data, null, 2), { flag: "wx" });
+						return true;
+					} catch {
+						return false;
+					}
+				}
 				return false;
 			}
 			throw error;
@@ -116,7 +149,19 @@ export class FileStorageBackend implements StorageBackend {
 	}
 
 	async exists(key: string): Promise<boolean> {
-		return existsSync(this.getPath(key));
+		const path = this.getPath(key);
+		if (!existsSync(path)) return false;
+		const metadata = this.readMetadata(path);
+		if (metadata && this.isExpired(metadata.expiresAt)) {
+			try {
+				unlinkSync(path);
+			} catch {
+				// Ignore cleanup failures; treat as still existing.
+				return true;
+			}
+			return false;
+		}
+		return true;
 	}
 
 	async keys(pattern: string): Promise<string[]> {
@@ -133,9 +178,21 @@ export class FileStorageBackend implements StorageBackend {
 
 		const keys: string[] = [];
 		for (const file of files) {
+			const path = join(this.baseDir, file);
 			try {
-				const content = readFileSync(join(this.baseDir, file), "utf-8");
-				const data = JSON.parse(content) as { key?: string };
+				const content = readFileSync(path, "utf-8");
+				const data = JSON.parse(content) as {
+					key?: string;
+					expiresAt?: number;
+				};
+				if (this.isExpired(data.expiresAt)) {
+					try {
+						unlinkSync(path);
+					} catch {
+						// Best-effort cleanup; skip expired key either way.
+					}
+					continue;
+				}
 				// Use stored key if available, otherwise fallback to filename conversion
 				const key = data.key ?? file.replace(/\.json$/, "").replace(/_/g, ":");
 				if (regex.test(key)) {
