@@ -13,15 +13,17 @@
  */
 
 import { exec } from "node:child_process";
-import { existsSync, statSync, watch } from "node:fs";
-import type { FSWatcher, WatchEventType } from "node:fs";
-import { basename, dirname, join, relative } from "node:path";
+import { existsSync, lstatSync, readdirSync, statSync, watch } from "node:fs";
+import type { Dirent, FSWatcher, WatchEventType } from "node:fs";
+import { join, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import { minimatch } from "minimatch";
 import { createLogger } from "../utils/logger.js";
 
 const execAsync = promisify(exec);
 const logger = createLogger("file-watcher");
+const RECURSIVE_WATCH_SUPPORTED =
+	process.platform === "darwin" || process.platform === "win32";
 
 /**
  * File change event types.
@@ -121,17 +123,25 @@ function matchesPattern(path: string, pattern: string): boolean {
 /**
  * Check if a path should be included based on patterns.
  */
+function isExcluded(relativePath: string, excludePatterns?: string[]): boolean {
+	// Check excludes first
+	const allExcludes = [...DEFAULT_EXCLUDE_PATTERNS, ...(excludePatterns ?? [])];
+	for (const pattern of allExcludes) {
+		if (matchesPattern(relativePath, pattern)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 function shouldInclude(
 	relativePath: string,
 	includePatterns?: string[],
 	excludePatterns?: string[],
 ): boolean {
-	// Check excludes first
-	const allExcludes = [...DEFAULT_EXCLUDE_PATTERNS, ...(excludePatterns ?? [])];
-	for (const pattern of allExcludes) {
-		if (matchesPattern(relativePath, pattern)) {
-			return false;
-		}
+	if (isExcluded(relativePath, excludePatterns)) {
+		return false;
 	}
 
 	// If no include patterns, include everything not excluded
@@ -165,6 +175,7 @@ export class FileWatcher {
 	private gitPollTimer?: NodeJS.Timeout;
 	private gitPollInFlight = false;
 	private isRunning = false;
+	private useNativeRecursive = false;
 
 	constructor(config: FileWatcherConfig) {
 		this.config = {
@@ -194,11 +205,26 @@ export class FileWatcher {
 		}
 
 		this.isRunning = true;
-		logger.info("Starting file watcher", { rootDir, recursive });
+		this.useNativeRecursive = recursive && RECURSIVE_WATCH_SUPPORTED;
+		if (recursive && !this.useNativeRecursive) {
+			logger.info(
+				"Recursive watch not supported on this platform; falling back to manual recursion",
+				{ platform: process.platform },
+			);
+		}
+		logger.info("Starting file watcher", {
+			rootDir,
+			recursive,
+			useNativeRecursive: this.useNativeRecursive,
+		});
 
 		try {
 			// Start watching the root directory
-			this.watchDirectory(rootDir);
+			if (recursive && !this.useNativeRecursive) {
+				this.watchDirectoryTree(rootDir);
+			} else {
+				this.watchDirectory(rootDir, this.useNativeRecursive);
+			}
 
 			// Start git state polling if enabled
 			if (watchGitState) {
@@ -274,21 +300,17 @@ export class FileWatcher {
 	/**
 	 * Watch a directory.
 	 */
-	private watchDirectory(dirPath: string): void {
+	private watchDirectory(dirPath: string, recursive: boolean): void {
 		if (this.watchers.has(dirPath)) {
 			return;
 		}
 
 		try {
-			const watcher = watch(
-				dirPath,
-				{ recursive: this.config.recursive },
-				(eventType, filename) => {
-					if (filename) {
-						this.handleWatchEvent(eventType, dirPath, filename);
-					}
-				},
-			);
+			const watcher = watch(dirPath, { recursive }, (eventType, filename) => {
+				if (filename) {
+					this.handleWatchEvent(eventType, dirPath, filename);
+				}
+			});
 
 			watcher.on("error", (error) => {
 				logger.warn("Watcher error", { dirPath, error });
@@ -297,6 +319,42 @@ export class FileWatcher {
 			this.watchers.set(dirPath, watcher);
 		} catch (error) {
 			logger.warn("Failed to watch directory", { dirPath, error });
+		}
+	}
+
+	private watchDirectoryTree(dirPath: string): void {
+		this.watchDirectory(dirPath, false);
+
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(dirPath, { withFileTypes: true });
+		} catch {
+			return;
+		}
+
+		for (const entry of entries) {
+			if (!entry.isDirectory() || entry.isSymbolicLink()) {
+				continue;
+			}
+			const childPath = join(dirPath, entry.name);
+			const relativePath = relative(this.config.rootDir, childPath);
+			if (isExcluded(relativePath, this.config.excludePatterns)) {
+				continue;
+			}
+			this.watchDirectoryTree(childPath);
+		}
+	}
+
+	private unwatchDirectoryTree(dirPath: string): void {
+		for (const [path, watcher] of this.watchers) {
+			if (path === dirPath || path.startsWith(`${dirPath}${sep}`)) {
+				try {
+					watcher.close();
+				} catch {
+					// Ignore close errors
+				}
+				this.watchers.delete(path);
+			}
 		}
 	}
 
@@ -311,7 +369,26 @@ export class FileWatcher {
 		const fullPath = join(dirPath, filename);
 		const relativePath = relative(this.config.rootDir, fullPath);
 
-		// Check if should include
+		if (isExcluded(relativePath, this.config.excludePatterns)) {
+			return;
+		}
+
+		if (
+			this.config.recursive &&
+			!this.useNativeRecursive &&
+			eventType === "rename"
+		) {
+			try {
+				const stats = lstatSync(fullPath);
+				if (stats.isDirectory() && !stats.isSymbolicLink()) {
+					this.watchDirectoryTree(fullPath);
+				}
+			} catch {
+				this.unwatchDirectoryTree(fullPath);
+			}
+		}
+
+		// Check if should include after recursive handling
 		if (
 			!shouldInclude(
 				relativePath,
@@ -350,7 +427,7 @@ export class FileWatcher {
 		try {
 			const stats = statSync(fullPath);
 			isDirectory = stats.isDirectory();
-			changeType = eventType === "rename" ? "modify" : "modify";
+			changeType = eventType === "rename" ? "rename" : "modify";
 		} catch {
 			// File doesn't exist - it was deleted
 			changeType = "delete";
