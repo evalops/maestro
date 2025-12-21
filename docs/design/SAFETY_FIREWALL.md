@@ -102,14 +102,23 @@ interface ActionApprovalContext {
 Protected paths that should never be modified:
 
 ```typescript
-// src/safety/action-firewall.ts:348-366
-const SYSTEM_PATHS = [
-  // Linux
+// src/safety/path-containment.ts (simplified)
+const LINUX_SYSTEM_PATHS = [
   "/etc", "/usr", "/var", "/boot", "/sys", "/proc",
   "/dev", "/bin", "/sbin", "/lib", "/lib64", "/opt",
-  // Windows
+];
+const MAC_SYSTEM_PATHS = [
+  "/etc", "/usr", "/var", "/System", "/Library",
+  "/private/etc", "/private/var", "/bin", "/sbin", "/dev",
+];
+const WINDOWS_SYSTEM_PATHS = [
   "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)"
 ];
+const SYSTEM_PATHS = process.platform === "darwin"
+  ? MAC_SYSTEM_PATHS
+  : process.platform === "win32"
+    ? WINDOWS_SYSTEM_PATHS
+    : LINUX_SYSTEM_PATHS;
 ```
 
 ```typescript
