@@ -206,6 +206,21 @@ describe("search tool", () => {
 			const output = getTextOutput(result);
 			expect(output).toContain("4");
 		});
+
+		it("does not cap counts by default in count mode", async () => {
+			const lines = Array.from({ length: 600 }, () => "foo").join("\n");
+			writeFileSync(join(testDir, "count-big.txt"), lines);
+
+			const result = await searchTool.execute("search-12b", {
+				pattern: "foo",
+				paths: testDir,
+				outputMode: "count",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Found 600 match(es)");
+			expect(output).toMatch(/: 600$/m);
+		});
 	});
 
 	describe("context lines", () => {
