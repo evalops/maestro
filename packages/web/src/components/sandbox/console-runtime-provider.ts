@@ -14,18 +14,42 @@ export interface SandboxConsoleSnapshot {
 }
 
 const STORE = new Map<string, SandboxConsoleSnapshot>();
+const SNAPSHOT_TTL_MS = 30 * 60 * 1000;
+const MAX_SNAPSHOTS = 200;
+
+function pruneStore(now = Date.now()): void {
+	for (const [key, snap] of STORE.entries()) {
+		if (now - snap.updatedAt > SNAPSHOT_TTL_MS) {
+			STORE.delete(key);
+		}
+	}
+	if (STORE.size <= MAX_SNAPSHOTS) return;
+	const entries = Array.from(STORE.entries()).sort(
+		(a, b) => a[1].updatedAt - b[1].updatedAt,
+	);
+	const excess = STORE.size - MAX_SNAPSHOTS;
+	for (let i = 0; i < excess; i += 1) {
+		const entry = entries[i];
+		if (entry) {
+			STORE.delete(entry[0]);
+		}
+	}
+}
 
 export function clearSandboxConsoleSnapshot(sandboxId: string): void {
 	STORE.set(sandboxId, { logs: [], lastError: null, updatedAt: Date.now() });
+	pruneStore();
 }
 
 export function getSandboxConsoleSnapshot(
 	sandboxId: string,
 ): SandboxConsoleSnapshot | null {
+	pruneStore();
 	return STORE.get(sandboxId) ?? null;
 }
 
 function ensureSnapshot(sandboxId: string): SandboxConsoleSnapshot {
+	pruneStore();
 	const existing = STORE.get(sandboxId);
 	if (existing) return existing;
 	const next: SandboxConsoleSnapshot = {
@@ -187,6 +211,7 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 				args: Array.isArray(m.args) ? (m.args as unknown[]) : undefined,
 			});
 			snap.updatedAt = Date.now();
+			pruneStore();
 			respond({ success: true });
 			return;
 		}
@@ -208,6 +233,7 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 				snap.lastError = { message: "Unknown error", ts: Date.now() };
 			}
 			snap.updatedAt = Date.now();
+			pruneStore();
 			respond({ success: true });
 		}
 	}
