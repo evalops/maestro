@@ -137,43 +137,39 @@ const SYSTEM_PATHS = [
 ### 3. Workspace Containment (Approval Required)
 
 ```typescript
-// src/safety/action-firewall.ts:433-490
-function isContainedInWorkspace(filePath: string): boolean {
-  const resolvedPath = resolve(filePath);
-  const workspaceRoot = process.cwd();
-  const tempDir = tmpdir();
+// src/safety/path-containment.ts (simplified)
+const resolvedPath = resolve(filePath);
+const realFilePath = resolveRealPath(resolvedPath) ?? resolvedPath; // uses nearest existing parent
 
-  // Check 1: Inside current working directory
-  const relToWorkspace = relative(workspaceRoot, resolvedPath);
-  const isInsideWorkspace = !relToWorkspace.startsWith("..")
-                         && !isAbsolute(relToWorkspace);
+const workspaceRoot = resolve(process.cwd());
+const workspaceRootReal = tryRealpath(workspaceRoot);
+const tempDir = tmpdir();
+const tempDirReal = tryRealpath(tempDir);
+const tempRoots = new Set([tempDirReal, tryRealpath("/tmp")].filter(Boolean));
 
-  // Check 2: Inside system temp directory (handles symlinks)
-  let resolvedTemp = tempDir;
-  try { resolvedTemp = realpathSync(tempDir); } catch {}
+const isInsideWorkspace =
+  isWithin(workspaceRoot, resolvedPath) &&
+  isWithin(workspaceRootReal, realFilePath);
 
-  let realFilePath = resolvedPath;
-  try { realFilePath = realpathSync(resolvedPath); } catch {}
+const isInsideTemp =
+  [...tempRoots].some((root) => isWithin(root, realFilePath));
 
-  const relToTemp = relative(resolvedTemp, realFilePath);
-  const isInsideTemp = !relToTemp.startsWith("..") && !isAbsolute(relToTemp);
+if (isInsideWorkspace || isInsideTemp) return true;
 
-  if (isInsideWorkspace || isInsideTemp) return true;
-
-  // Check 3: User-configured trusted paths
-  const config = getFirewallConfig();
-  if (config.containment?.trustedPaths) {
-    for (const trustedPath of config.containment.trustedPaths) {
-      const relToTrusted = relative(resolve(trustedPath), resolvedPath);
-      if (!relToTrusted.startsWith("..") && !isAbsolute(relToTrusted)) {
-        return true;
-      }
-    }
+for (const trustedPath of trustedPaths) {
+  const trustedReal = tryRealpath(trustedPath);
+  if (isWithin(trustedPath, resolvedPath) && isWithin(trustedReal, realFilePath)) {
+    return true;
   }
-
-  return false;
 }
+
+return false;
 ```
+
+Notes:
+- `resolveRealPath` resolves the nearest existing parent to prevent symlink escapes
+  while still supporting new (non-existent) files.
+- Both logical and real paths must be contained in a safe zone.
 
 ### 4. Dangerous Command Patterns
 

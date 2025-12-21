@@ -32,7 +32,11 @@ export function handleAccessCommand(context: CommandExecutionContext): void {
 			const summary = getSafePathSummary();
 			const lines = [
 				"Safe roots (writes within these do not trigger containment approval):",
-				`  Workspace: ${summary.workspaceRoot}`,
+				`  Workspace: ${summary.workspaceRoot}${
+					summary.workspaceRootReal !== summary.workspaceRoot
+						? ` (real: ${summary.workspaceRootReal})`
+						: ""
+				}`,
 				`  Temp: ${summary.tempDir}${
 					summary.tempDirReal !== summary.tempDir
 						? ` (real: ${summary.tempDirReal})`
@@ -41,8 +45,15 @@ export function handleAccessCommand(context: CommandExecutionContext): void {
 			];
 			if (summary.trustedPaths.length > 0) {
 				lines.push("  Trusted:");
-				for (const trusted of summary.trustedPaths) {
-					lines.push(`    - ${trusted}`);
+				for (const [index, trusted] of summary.trustedPaths.entries()) {
+					const trustedReal = summary.trustedPathsReal[index];
+					lines.push(
+						`    - ${trusted}${
+							trustedReal && trustedReal !== trusted
+								? ` (real: ${trustedReal})`
+								: ""
+						}`,
+					);
 				}
 			} else {
 				lines.push("  Trusted: (none configured)");
