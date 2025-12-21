@@ -9,8 +9,7 @@ import { getFirewallConfig } from "../config/firewall-config.js";
  * Note: /var/folders (macOS temp) and /tmp are allowed through containment checks
  * before system path blocking is applied.
  */
-const SYSTEM_PATHS = [
-	// Linux system directories
+const LINUX_SYSTEM_PATHS = [
 	"/etc",
 	"/usr",
 	"/var",
@@ -23,11 +22,37 @@ const SYSTEM_PATHS = [
 	"/lib",
 	"/lib64",
 	"/opt",
-	// Windows system directories
+];
+
+const MAC_SYSTEM_PATHS = [
+	"/etc",
+	"/usr",
+	"/var",
+	"/System",
+	"/Library",
+	"/private/etc",
+	"/private/var",
+	"/bin",
+	"/sbin",
+	"/dev",
+];
+
+const WINDOWS_SYSTEM_PATHS = [
 	"C:\\Windows",
 	"C:\\Program Files",
 	"C:\\Program Files (x86)",
 ];
+
+const SYSTEM_PATHS = (() => {
+	switch (process.platform) {
+		case "darwin":
+			return MAC_SYSTEM_PATHS;
+		case "win32":
+			return WINDOWS_SYSTEM_PATHS;
+		default:
+			return LINUX_SYSTEM_PATHS;
+	}
+})();
 const SYSTEM_PATHS_REAL = SYSTEM_PATHS.map((sysPath) => {
 	if (!isAbsolute(sysPath)) {
 		return sysPath;

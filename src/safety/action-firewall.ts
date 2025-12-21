@@ -388,6 +388,13 @@ const treeSitterCommandRule: ActionFirewallRule = {
  * - /lib, /lib64: Shared libraries
  * - /opt: Optional/third-party software
  *
+ * ## macOS Paths
+ *
+ * - /System: System files
+ * - /Library: System libraries
+ * - /private/etc, /private/var: Private system configuration/data
+ * - /dev: Device files
+ *
  * ## Windows Paths
  *
  * - C:\Windows: Operating system
