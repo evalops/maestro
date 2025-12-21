@@ -150,7 +150,7 @@ impl McpConnection {
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::inherit());
 
         // Set working directory
         if let Some(cwd) = &self.config.cwd {
