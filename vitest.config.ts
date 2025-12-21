@@ -11,7 +11,9 @@ export default defineConfig({
       'test/setup/suppress-warnings.ts',
       'test/setup/todo-store.ts',
       'test/setup/restore-cwd.ts',
+      'test/setup/restore-timers.ts',
       'test/setup/reset-safety-state.ts',
+      'test/setup/restore-env.ts',
     ],
     // Disable file parallelism to reduce memory pressure and prevent test hangs
     // Each test file runs sequentially, reducing concurrent memory usage

@@ -67,6 +67,8 @@ describe("Composer Tools", () => {
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
 		// Clean up test directory
 		rmSync(testDir, { recursive: true, force: true });
 		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
@@ -1936,13 +1938,34 @@ describe("retry utilities", () => {
 		});
 	});
 
+	describe("retry", () => {
+		it("respects maxAttempts with default predicate", async () => {
+			const { retry } = await getRetryUtils();
+
+			let attempts = 0;
+			await expect(
+				retry(
+					async () => {
+						attempts += 1;
+						throw new Error("timeout");
+					},
+					{
+						maxAttempts: 5,
+						initialDelay: 0,
+						exponentialBackoff: false,
+					},
+				),
+			).rejects.toThrow("timeout");
+
+			expect(attempts).toBe(5);
+		});
+	});
+
 	describe("retryWithJitter", () => {
 		it("uses jittered delay for sleep", async () => {
 			const { retryWithJitter } = await getRetryUtils();
-			vi.useFakeTimers();
-
 			const randomSpy = vi.spyOn(Math, "random").mockReturnValue(1);
-			const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+			let observedDelay: number | undefined;
 
 			let attempts = 0;
 			const promise = retryWithJitter(
@@ -1955,20 +1978,20 @@ describe("retry utilities", () => {
 				},
 				{
 					maxAttempts: 2,
-					initialDelay: 100,
+					initialDelay: 4,
 					exponentialBackoff: false,
 					shouldRetry: () => true,
+					onRetry: (_error, _attempt, delay) => {
+						observedDelay = delay;
+					},
 				},
 			);
 
-			await vi.runAllTimersAsync();
 			await expect(promise).resolves.toBe("ok");
 
-			expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 125);
+			expect(observedDelay).toBe(5);
 
 			randomSpy.mockRestore();
-			timeoutSpy.mockRestore();
-			vi.useRealTimers();
 		});
 	});
 });

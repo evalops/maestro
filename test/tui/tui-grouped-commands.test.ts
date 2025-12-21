@@ -17,6 +17,10 @@ function createMockContext(
 }
 
 describe("Grouped Command Handlers", () => {
+	beforeEach(() => {
+		vi.useRealTimers();
+	});
+
 	describe("SessionCommandHandler", () => {
 		it("routes 'new' subcommand to handleNewChat", async () => {
 			const { createSessionCommandHandler } = await import(

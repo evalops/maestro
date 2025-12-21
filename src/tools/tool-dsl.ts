@@ -242,9 +242,26 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 				if (attempt > 0) {
 					// Exponential backoff: delay * 2^(attempt-1)
 					const delay = retryDelayMs * 2 ** (attempt - 1);
-					await new Promise((resolve) => setTimeout(resolve, delay));
-					if (signal?.aborted) {
-						throw new Error("Operation aborted");
+					if (signal) {
+						const activeSignal = signal;
+						await new Promise<void>((resolve, reject) => {
+							if (activeSignal.aborted) {
+								reject(new Error("Operation aborted"));
+								return;
+							}
+							const timeout = setTimeout(() => {
+								activeSignal.removeEventListener("abort", onAbort);
+								resolve();
+							}, delay);
+							function onAbort() {
+								clearTimeout(timeout);
+								activeSignal.removeEventListener("abort", onAbort);
+								reject(new Error("Operation aborted"));
+							}
+							activeSignal.addEventListener("abort", onAbort, { once: true });
+						});
+					} else {
+						await new Promise((resolve) => setTimeout(resolve, delay));
 					}
 				}
 

@@ -1,5 +1,5 @@
 import { Writable } from "node:stream";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	AgentEvent,
 	AssistantMessage,
@@ -62,6 +62,10 @@ describe("JsonlEventWriter adapter", () => {
 		let count = 0;
 		nextTurnId = () => `turn-${++count}`;
 		adapter = createAgentJsonlAdapter(writer, nextTurnId);
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
 	});
 
 	it("emits deltas, completions, tool calls, and tool results", () => {

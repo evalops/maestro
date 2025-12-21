@@ -112,10 +112,7 @@ export class RetryError extends Error {
 /**
  * Default retry predicate - retries on network errors and timeouts
  */
-function defaultShouldRetry(error: Error, attempt: number): boolean {
-	// Don't retry after max attempts
-	if (attempt >= 3) return false;
-
+function defaultShouldRetry(error: Error, _attempt: number): boolean {
 	// Retry on common transient errors
 	const message = error.message.toLowerCase();
 	return (
