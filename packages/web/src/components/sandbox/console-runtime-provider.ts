@@ -54,6 +54,10 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 			type SandboxWindow = Window &
 				typeof globalThis & {
 					__composerOriginalConsole?: OriginalConsole;
+					__composerErrorHandlersAttached?: boolean;
+					__composerErrorHandler?: (event: ErrorEvent) => void;
+					__composerRejectionHandler?: (event: PromiseRejectionEvent) => void;
+					__composerPostRuntimeMessage?: (message: unknown) => void;
 					postRuntimeMessage?: (message: unknown) => void;
 				};
 			const w = window as unknown as SandboxWindow;
@@ -69,15 +73,23 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 
 			const originalConsole = w.__composerOriginalConsole;
 
-			const post =
-				w.postRuntimeMessage ??
-				((message: unknown) => {
-					try {
-						window.parent.postMessage(message, "*");
-					} catch {
-						// ignore
-					}
-				});
+			const defaultPost = (message: unknown) => {
+				try {
+					window.parent.postMessage(message, "*");
+				} catch {
+					// ignore
+				}
+			};
+
+			w.__composerPostRuntimeMessage = w.postRuntimeMessage ?? defaultPost;
+
+			const post = (message: unknown) => {
+				try {
+					(w.__composerPostRuntimeMessage ?? defaultPost)(message);
+				} catch {
+					// ignore
+				}
+			};
 
 			const c = console as unknown as Record<
 				ConsoleMethod,
@@ -129,15 +141,22 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 				});
 			};
 
-			window.addEventListener("error", (e) => {
-				const evt = e as ErrorEvent;
-				postError(evt.error ?? evt.message);
-			});
-
-			window.addEventListener("unhandledrejection", (e) => {
-				const evt = e as PromiseRejectionEvent;
-				postError(evt.reason);
-			});
+			if (!w.__composerErrorHandlersAttached) {
+				w.__composerErrorHandlersAttached = true;
+				w.__composerErrorHandler = (e) => {
+					const evt = e as ErrorEvent;
+					postError(evt.error ?? evt.message);
+				};
+				w.__composerRejectionHandler = (e) => {
+					const evt = e as PromiseRejectionEvent;
+					postError(evt.reason);
+				};
+				window.addEventListener("error", w.__composerErrorHandler);
+				window.addEventListener(
+					"unhandledrejection",
+					w.__composerRejectionHandler,
+				);
+			}
 		};
 	}
 
