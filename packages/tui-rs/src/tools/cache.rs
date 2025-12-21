@@ -103,6 +103,27 @@ impl CachedResult {
             .unwrap_or(0);
         now.saturating_sub(created) > ttl.as_secs()
     }
+
+    /// Restore an approximate Instant from a persisted timestamp.
+    fn restore_created_at_from_timestamp(&mut self) {
+        let Some(created_ts) = self.created_timestamp else {
+            return;
+        };
+
+        let created_system = SystemTime::UNIX_EPOCH + Duration::from_secs(created_ts);
+        match SystemTime::now().duration_since(created_system) {
+            Ok(elapsed) => {
+                self.created_at = Instant::now().checked_sub(elapsed).or_else(|| {
+                    // Fallback if elapsed is larger than the current Instant range.
+                    Some(Instant::now())
+                });
+            }
+            Err(_) => {
+                // Clock skew or future timestamps: keep entry but start freshness window now.
+                self.created_at = Some(Instant::now());
+            }
+        }
+    }
 }
 
 /// A persistable cache entry that combines key and result
@@ -432,9 +453,7 @@ impl ToolResultCache {
             // Convert timestamp back to Instant for runtime use
             let mut result = entry.result;
             if result.created_at.is_none() && result.created_timestamp.is_some() {
-                // We can't directly create a past Instant, so we set Instant::now()
-                // The expiration check uses is_expired_by_timestamp for persisted entries
-                result.created_at = Some(Instant::now());
+                result.restore_created_at_from_timestamp();
             }
 
             self.entries.insert(entry.key.clone(), result);
@@ -2384,6 +2403,52 @@ mod tests {
         assert_eq!(count, 1);
 
         // Cleanup
+        let _ = std::fs::remove_file(&cache_file);
+    }
+
+    #[test]
+    fn test_load_restores_created_at_age() {
+        let temp_dir = std::env::temp_dir();
+        let cache_file = temp_dir.join(format!("load_age_{}.jsonl", std::process::id()));
+
+        // Create an entry with a timestamp 10 seconds in the past.
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let old_timestamp = now_secs.saturating_sub(10);
+
+        let key = CacheKey::new("read", &serde_json::json!({"path": "/age"}));
+        let entry = PersistableCacheEntry {
+            key: key.clone(),
+            result: CachedResult {
+                output: "aged content".to_string(),
+                is_error: false,
+                created_at: None,
+                created_timestamp: Some(old_timestamp),
+            },
+        };
+
+        std::fs::write(&cache_file, serde_json::to_string(&entry).unwrap()).unwrap();
+
+        let config = CacheConfig {
+            ttl: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let mut cache = ToolResultCache::new(config);
+        let count = cache.load_from_file(&cache_file).unwrap();
+
+        assert_eq!(count, 1);
+        let cached = cache.get(&key).expect("entry should be loaded");
+        let age = cached
+            .created_at
+            .expect("created_at should be restored")
+            .elapsed();
+        assert!(
+            age >= Duration::from_secs(8),
+            "expected restored age to reflect persisted timestamp"
+        );
+
         let _ = std::fs::remove_file(&cache_file);
     }
 

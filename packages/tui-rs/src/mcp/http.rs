@@ -292,17 +292,35 @@ impl HttpConnection {
             req = req.header(key, expand_env_vars(value));
         }
 
-        req.send()
-            .await
-            .map_err(|e| McpError::RequestFailed(format!("SSE send failed: {}", e)))?;
+        let response = match req.send().await {
+            Ok(response) => response,
+            Err(e) => {
+                let mut pending = self.pending_sse.lock().await;
+                pending.remove(&id);
+                return Err(McpError::RequestFailed(format!("SSE send failed: {}", e)));
+            }
+        };
+
+        if !response.status().is_success() {
+            let mut pending = self.pending_sse.lock().await;
+            pending.remove(&id);
+            return Err(McpError::RequestFailed(format!(
+                "HTTP error: {}",
+                response.status()
+            )));
+        }
 
         // Wait for response via SSE stream
         let timeout = Duration::from_millis(self.config.timeout.unwrap_or(30_000));
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => Err(McpError::Protocol(
-                "SSE response channel closed".to_string(),
-            )),
+            Ok(Err(_)) => {
+                let mut pending = self.pending_sse.lock().await;
+                pending.remove(&id);
+                Err(McpError::Protocol(
+                    "SSE response channel closed".to_string(),
+                ))
+            }
             Err(_) => {
                 // Remove from pending
                 let mut pending = self.pending_sse.lock().await;
@@ -365,6 +383,8 @@ impl Drop for HttpConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn test_config(transport: McpTransport) -> McpServerConfig {
         McpServerConfig {
@@ -418,5 +438,39 @@ mod tests {
         assert_eq!(conn.next_id(), 1);
         assert_eq!(conn.next_id(), 2);
         assert_eq!(conn.next_id(), 3);
+    }
+
+    async fn start_error_server() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buffer = [0u8; 1024];
+                let _ = socket.read(&mut buffer).await;
+                let response = b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
+                let _ = socket.write_all(response).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        addr
+    }
+
+    #[tokio::test]
+    async fn test_send_sse_request_clears_pending_on_http_error() {
+        let addr = start_error_server().await;
+        let mut config = test_config(McpTransport::Sse);
+        config.url = Some(format!("http://{}", addr));
+        config.timeout = Some(100);
+
+        let mut conn = HttpConnection::new(config).unwrap();
+        let request = McpRequest::list_tools(conn.next_id());
+
+        let result = conn.send_sse_request(request).await;
+        assert!(matches!(result, Err(McpError::RequestFailed(_))));
+
+        let pending_len = conn.pending_sse.lock().await.len();
+        assert_eq!(pending_len, 0);
     }
 }
