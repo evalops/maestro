@@ -391,9 +391,9 @@ export async function processWebhookQueue(batchSize = 10): Promise<number> {
 	if (processorInFlight) {
 		return 0;
 	}
-	processorInFlight = true;
-
 	try {
+		processorInFlight = true;
+
 		// Try to acquire the distributed lock
 		const hasLock = await tryAcquireLock();
 		if (!hasLock) {
