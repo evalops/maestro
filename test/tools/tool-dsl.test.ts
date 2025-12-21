@@ -1,6 +1,6 @@
 import os from "node:os";
 import { Type } from "@sinclair/typebox";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ToolResponseBuilder,
 	createJsonTool,
@@ -122,6 +122,14 @@ describe("createTool DSL", () => {
 });
 
 describe("tool retry logic", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("retries on failure when maxRetries is set", async () => {
 		let attempts = 0;
 		const failingTool = createTool({
@@ -139,7 +147,9 @@ describe("tool retry logic", () => {
 			},
 		});
 
-		const result = await failingTool.execute("retry-1", {});
+		const promise = failingTool.execute("retry-1", {});
+		await vi.runAllTimersAsync();
+		const result = await promise;
 		expect(attempts).toBe(3); // Initial + 2 retries
 		expect(result.content[0]).toMatchObject({ text: "success" });
 	});
@@ -166,9 +176,10 @@ describe("tool retry logic", () => {
 			},
 		});
 
-		await expect(selectiveRetryTool.execute("retry-2", {})).rejects.toThrow(
-			"permanent error",
-		);
+		const promise = selectiveRetryTool.execute("retry-2", {});
+		const assertion = expect(promise).rejects.toThrow("permanent error");
+		await vi.runAllTimersAsync();
+		await assertion;
 		expect(attempts).toBe(2); // Initial + 1 retry (stopped by shouldRetry)
 	});
 
@@ -186,9 +197,10 @@ describe("tool retry logic", () => {
 			},
 		});
 
-		await expect(alwaysFailTool.execute("retry-3", {})).rejects.toThrow(
-			"Persistent failure",
-		);
+		const promise = alwaysFailTool.execute("retry-3", {});
+		const assertion = expect(promise).rejects.toThrow("Persistent failure");
+		await vi.runAllTimersAsync();
+		await assertion;
 		expect(attempts).toBe(3); // Initial + 2 retries
 	});
 
@@ -211,9 +223,10 @@ describe("tool retry logic", () => {
 		// Abort after first attempt
 		setTimeout(() => controller.abort(), 50);
 
-		await expect(
-			abortableTool.execute("abort-1", {}, controller.signal),
-		).rejects.toThrow();
+		const promise = abortableTool.execute("abort-1", {}, controller.signal);
+		const assertion = expect(promise).rejects.toThrow();
+		await vi.runAllTimersAsync();
+		await assertion;
 		expect(attempts).toBeLessThanOrEqual(2); // Should abort before many retries
 	});
 });

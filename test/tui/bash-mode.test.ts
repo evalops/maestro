@@ -619,6 +619,10 @@ describe("BashAutocompleteProvider", () => {
 // =============================================================================
 
 describe("runStreamingShellCommand", () => {
+	beforeEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("executes simple commands", async () => {
 		const result = await runStreamingShellCommand("echo hello");
 
@@ -688,18 +692,25 @@ describe("runStreamingShellCommand", () => {
 	});
 
 	it("can be aborted via signal", async () => {
-		const controller = new AbortController();
+		vi.useFakeTimers();
+		try {
+			const controller = new AbortController();
 
-		const promise = runStreamingShellCommand("sleep 10", {
-			signal: controller.signal,
-		});
+			const promise = runStreamingShellCommand("sleep 10", {
+				signal: controller.signal,
+			});
 
-		// Abort after a short delay
-		setTimeout(() => controller.abort(), 50);
+			// Abort after a short delay
+			setTimeout(() => controller.abort(), 50);
+			await vi.advanceTimersByTimeAsync(50);
+			await vi.advanceTimersByTimeAsync(600);
 
-		const result = await promise;
-		expect(result.success).toBe(false);
-		expect(result.stderr).toContain("aborted");
+			const result = await promise;
+			expect(result.success).toBe(false);
+			expect(result.stderr).toContain("aborted");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("handles already aborted signal", async () => {
@@ -740,6 +751,10 @@ describe("runStreamingShellCommand", () => {
 // =============================================================================
 
 describe("BashShellBlock", () => {
+	beforeEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("creates block with title and initial body", async () => {
 		const { BashShellBlock } = await import(
 			"../../src/cli-tui/bash-shell-block.js"
@@ -792,19 +807,24 @@ describe("BashShellBlock", () => {
 	});
 
 	it("tracks elapsed time", async () => {
-		const { BashShellBlock } = await import(
-			"../../src/cli-tui/bash-shell-block.js"
-		);
+		vi.useFakeTimers();
+		try {
+			const { BashShellBlock } = await import(
+				"../../src/cli-tui/bash-shell-block.js"
+			);
 
-		const block = new BashShellBlock("path", "body");
-		const elapsed1 = block.getElapsedMs();
-		expect(elapsed1).toBeGreaterThanOrEqual(0);
+			const block = new BashShellBlock("path", "body");
+			const elapsed1 = block.getElapsedMs();
+			expect(elapsed1).toBeGreaterThanOrEqual(0);
 
-		// Wait a bit
-		await new Promise((resolve) => setTimeout(resolve, 10));
+			// Wait a bit
+			await vi.advanceTimersByTimeAsync(10);
 
-		const elapsed2 = block.getElapsedMs();
-		expect(elapsed2).toBeGreaterThan(elapsed1);
+			const elapsed2 = block.getElapsedMs();
+			expect(elapsed2).toBeGreaterThan(elapsed1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

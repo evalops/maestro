@@ -1935,4 +1935,40 @@ describe("retry utilities", () => {
 			expect(extractRetryHeaders("string error")).toBeUndefined();
 		});
 	});
+
+	describe("retryWithJitter", () => {
+		it("uses jittered delay for sleep", async () => {
+			const { retryWithJitter } = await getRetryUtils();
+			vi.useFakeTimers();
+
+			const randomSpy = vi.spyOn(Math, "random").mockReturnValue(1);
+			const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
+			let attempts = 0;
+			const promise = retryWithJitter(
+				async () => {
+					attempts += 1;
+					if (attempts === 1) {
+						throw new Error("retry");
+					}
+					return "ok";
+				},
+				{
+					maxAttempts: 2,
+					initialDelay: 100,
+					exponentialBackoff: false,
+					shouldRetry: () => true,
+				},
+			);
+
+			await vi.runAllTimersAsync();
+			await expect(promise).resolves.toBe("ok");
+
+			expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 125);
+
+			randomSpy.mockRestore();
+			timeoutSpy.mockRestore();
+			vi.useRealTimers();
+		});
+	});
 });

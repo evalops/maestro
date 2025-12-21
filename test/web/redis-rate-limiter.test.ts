@@ -14,6 +14,7 @@ import {
 	describe,
 	expect,
 	it,
+	vi,
 } from "vitest";
 
 import {
@@ -179,22 +180,27 @@ describe("Rate Limiter (in-memory only)", () => {
 	});
 
 	it("refills tokens over time", async () => {
-		// Create limiter with fast refill (10 tokens per 100ms)
-		const fastLimiter = new RateLimiter({ windowMs: 100, max: 10 });
+		vi.useFakeTimers();
+		try {
+			// Create limiter with fast refill (10 tokens per 100ms)
+			const fastLimiter = new RateLimiter({ windowMs: 100, max: 10 });
 
-		// Use up all tokens
-		for (let i = 0; i < 10; i++) {
-			fastLimiter.check("10.0.0.4");
+			// Use up all tokens
+			for (let i = 0; i < 10; i++) {
+				fastLimiter.check("10.0.0.4");
+			}
+
+			// Wait for refill
+			await vi.advanceTimersByTimeAsync(20);
+
+			// Should have some tokens back
+			const result = fastLimiter.check("10.0.0.4");
+			expect(result.allowed).toBe(true);
+
+			fastLimiter.stop();
+		} finally {
+			vi.useRealTimers();
 		}
-
-		// Wait for refill
-		await new Promise((resolve) => setTimeout(resolve, 20));
-
-		// Should have some tokens back
-		const result = fastLimiter.check("10.0.0.4");
-		expect(result.allowed).toBe(true);
-
-		fastLimiter.stop();
 	});
 });
 

@@ -165,6 +165,14 @@ describe("TypedEmitter", () => {
 	});
 
 	describe("waitFor", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
 		it("resolves when event is emitted", async () => {
 			const promise = emitter.waitFor("message");
 
@@ -173,6 +181,7 @@ describe("TypedEmitter", () => {
 				emitter.emit("message", { text: "awaited" });
 			}, 10);
 
+			await vi.advanceTimersByTimeAsync(10);
 			const result = await promise;
 			expect(result).toEqual({ text: "awaited" });
 		});
@@ -180,6 +189,7 @@ describe("TypedEmitter", () => {
 		it("rejects on timeout", async () => {
 			const promise = emitter.waitFor("message", { timeout: 50 });
 
+			await vi.advanceTimersByTimeAsync(50);
 			await expect(promise).rejects.toThrow("Timeout waiting for event");
 		});
 
@@ -188,6 +198,7 @@ describe("TypedEmitter", () => {
 
 			setTimeout(() => emitter.emit("count", 42), 5);
 
+			await vi.advanceTimersByTimeAsync(5);
 			await promise;
 
 			// Listener should be removed
@@ -196,11 +207,20 @@ describe("TypedEmitter", () => {
 	});
 
 	describe("waitForAny", () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
 		it("resolves when any event is emitted", async () => {
 			const promise = emitter.waitForAny(["message", "count"]);
 
 			setTimeout(() => emitter.emit("count", 42), 5);
 
+			await vi.advanceTimersByTimeAsync(5);
 			const result = await promise;
 			expect(result).toEqual({ event: "count", data: 42 });
 		});
@@ -211,6 +231,7 @@ describe("TypedEmitter", () => {
 			setTimeout(() => emitter.emit("message", { text: "first" }), 5);
 			setTimeout(() => emitter.emit("count", 1), 10);
 
+			await vi.advanceTimersByTimeAsync(10);
 			const result = await promise;
 			expect(result.event).toBe("message");
 		});
@@ -220,6 +241,7 @@ describe("TypedEmitter", () => {
 
 			setTimeout(() => emitter.emit("count", 42), 5);
 
+			await vi.advanceTimersByTimeAsync(5);
 			await promise;
 
 			expect(emitter.listenerCount("message")).toBe(0);
@@ -233,6 +255,7 @@ describe("TypedEmitter", () => {
 				timeout: 20,
 			});
 
+			await vi.advanceTimersByTimeAsync(20);
 			await expect(promise).rejects.toThrow("Timeout waiting for events");
 		});
 	});
