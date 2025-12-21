@@ -272,7 +272,7 @@ impl FileIndexer {
         self.dirs_scanned.fetch_add(1, Ordering::Relaxed);
 
         // Process directories in parallel
-        let mut files: Vec<WorkspaceFile> = top_level_entries
+        let files: Vec<WorkspaceFile> = top_level_entries
             .par_iter()
             .flat_map(|entry| {
                 let path = entry.path();
@@ -283,8 +283,11 @@ impl FileIndexer {
                     self.traverse_dir(&root, &path, 1)
                 } else if path.is_file() {
                     if self.should_include(&path) {
-                        self.files_found.fetch_add(1, Ordering::Relaxed);
-                        vec![WorkspaceFile::from_path(&root, path)]
+                        if self.try_reserve_file_slot() {
+                            vec![WorkspaceFile::from_path(&root, path)]
+                        } else {
+                            Vec::new()
+                        }
                     } else {
                         Vec::new()
                     }
@@ -294,11 +297,6 @@ impl FileIndexer {
             })
             .collect();
 
-        // Truncate to max files limit
-        files.truncate(self.config.max_files);
-        // Ensure files_found reflects the returned list (especially after truncation).
-        self.files_found
-            .store(files.len().min(self.config.max_files), Ordering::Relaxed);
         files
     }
 
@@ -354,8 +352,11 @@ impl FileIndexer {
             self.traverse_dir(root, &path, depth + 1)
         } else if path.is_file() {
             if self.should_include(&path) {
-                self.files_found.fetch_add(1, Ordering::Relaxed);
-                vec![WorkspaceFile::from_path(root, path)]
+                if self.try_reserve_file_slot() {
+                    vec![WorkspaceFile::from_path(root, path)]
+                } else {
+                    Vec::new()
+                }
             } else {
                 Vec::new()
             }
@@ -400,6 +401,23 @@ impl FileIndexer {
         std::fs::symlink_metadata(path)
             .map(|meta| meta.file_type().is_symlink())
             .unwrap_or(false)
+    }
+
+    fn try_reserve_file_slot(&self) -> bool {
+        let max_files = self.config.max_files;
+        loop {
+            let current = self.files_found.load(Ordering::Relaxed);
+            if current >= max_files {
+                return false;
+            }
+            if self
+                .files_found
+                .compare_exchange_weak(current, current + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return true;
+            }
+        }
     }
 }
 
