@@ -21,6 +21,7 @@ expect before opening a PR.
    bunx biome check .                            # Biome + eval verifier
    npx nx run composer:test --skip-nx-cache      # Builds TUI/Web then runs tests (CI-equivalent)
    npx nx run composer:evals --skip-nx-cache     # Optional eval scenarios
+   bun run bun:test:fast                         # Fast local Vitest (no Nx build; VITEST_FAST=1)
    # If you touched specific packages, build them too:
    bun run --filter @evalops/tui build
    bun run --filter @evalops/composer-web build
