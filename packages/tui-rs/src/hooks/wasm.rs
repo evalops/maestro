@@ -457,26 +457,40 @@ impl WasmHookExecutor {
             return None;
         }
 
-        let alloc_ptr = alloc_fn.call(&mut *store, len as i32).ok()?;
-        let written = get_result.call(&mut *store, (alloc_ptr, len as i32)).ok()? as usize;
+        let len_i32 = len as i32;
+        let alloc_ptr = alloc_fn.call(&mut *store, len_i32).ok()?;
+        let mut dealloc = |store: &mut Store<()>| {
+            if let Some(dealloc_fn) = dealloc_fn {
+                let _ = dealloc_fn.call(store, (alloc_ptr, len_i32));
+            }
+        };
 
-        if written > 0 {
-            // Read from WASM memory at the output location
-            let read_len = written.min(len);
-            let mut buffer = vec![0u8; read_len];
-            memory
-                .read(&mut *store, alloc_ptr as usize, &mut buffer)
-                .ok()?;
-            if let Some(dealloc) = dealloc_fn {
-                let _ = dealloc.call(&mut *store, (alloc_ptr, len as i32));
+        let written = match get_result.call(&mut *store, (alloc_ptr, len_i32)) {
+            Ok(written) => written as usize,
+            Err(_) => {
+                dealloc(&mut *store);
+                return None;
             }
-            String::from_utf8(buffer).ok()
-        } else {
-            if let Some(dealloc) = dealloc_fn {
-                let _ = dealloc.call(&mut *store, (alloc_ptr, len as i32));
-            }
-            None
+        };
+
+        if written == 0 {
+            dealloc(&mut *store);
+            return None;
         }
+
+        // Read from WASM memory at the output location
+        let read_len = written.min(len);
+        let mut buffer = vec![0u8; read_len];
+        if memory
+            .read(&mut *store, alloc_ptr as usize, &mut buffer)
+            .is_err()
+        {
+            dealloc(&mut *store);
+            return None;
+        }
+
+        dealloc(&mut *store);
+        String::from_utf8(buffer).ok()
     }
 
     pub fn execute_post_tool_use(&self, input: &PostToolUseInput) -> HookResult {
