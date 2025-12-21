@@ -39,6 +39,7 @@ async function httpGet(
 		body: string;
 	}>((resolve, reject) => {
 		const u = new URL(url);
+		const headers = { Connection: "close", ...(opts?.headers ?? {}) };
 		const req = request(
 			{
 				method: "GET",
@@ -46,12 +47,13 @@ async function httpGet(
 				port: Number(u.port),
 				pathname: u.pathname,
 				path: `${u.pathname}${u.search}`,
-				headers: opts?.headers,
+				headers,
 			},
 			(res) => {
 				const chunks: Buffer[] = [];
 				res.on("data", (c) => chunks.push(Buffer.from(c)));
 				res.on("end", () => {
+					res.socket?.destroy();
 					resolve({
 						status: res.statusCode || 0,
 						headers: res.headers,
