@@ -24,6 +24,27 @@ function getTextOutput(result: AgentToolResult<unknown>): string {
 	);
 }
 
+async function withImmediateTimeouts<T>(fn: () => Promise<T>): Promise<T> {
+	const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+		...args: Parameters<typeof setTimeout>
+	) => {
+		const [handler, _delay, ...rest] = args;
+		if (typeof handler === "function") {
+			handler(...(rest as unknown[]));
+		}
+		return 0 as ReturnType<typeof setTimeout>;
+	}) as typeof setTimeout);
+	const clearTimeoutSpy = vi
+		.spyOn(globalThis, "clearTimeout")
+		.mockImplementation(() => {});
+	try {
+		return await fn();
+	} finally {
+		setTimeoutSpy.mockRestore();
+		clearTimeoutSpy.mockRestore();
+	}
+}
+
 describe("webfetch tool", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -117,20 +138,15 @@ describe("webfetch tool", () => {
 
 		it("handles network errors", async () => {
 			// Use mockRejectedValue (not Once) to cover all retry attempts
-			// Fast-forward retry delays to keep test runtime low.
-			vi.useFakeTimers();
-			try {
+			await withImmediateTimeouts(async () => {
 				mockCallExa.mockRejectedValue(new Error("Network timeout"));
 
-				const promise = webfetchTool.execute("wf-4", {
-					urls: "https://example.com",
-				});
-				const rejection = expect(promise).rejects.toThrow("Network timeout");
-				await vi.runAllTimersAsync();
-				await rejection;
-			} finally {
-				vi.useRealTimers();
-			}
+				await expect(
+					webfetchTool.execute("wf-4", {
+						urls: "https://example.com",
+					}),
+				).rejects.toThrow("Network timeout");
+			});
 		});
 	});
 
@@ -243,8 +259,7 @@ describe("webfetch tool", () => {
 
 	describe("retry behavior", () => {
 		it("retries on network errors", async () => {
-			vi.useFakeTimers();
-			try {
+			await withImmediateTimeouts(async () => {
 				mockCallExa
 					.mockRejectedValueOnce(new Error("fetch failed"))
 					.mockResolvedValueOnce({
@@ -257,19 +272,12 @@ describe("webfetch tool", () => {
 						],
 					});
 
-				const promise = webfetchTool.execute("wf-10", {
+				const result = await webfetchTool.execute("wf-10", {
 					urls: "https://example.com",
 				});
-				const resolved = promise.then((result) => {
-					expect(result.isError).toBeFalsy();
-					expect(mockCallExa).toHaveBeenCalledTimes(2);
-				});
-
-				await vi.runAllTimersAsync();
-				await resolved;
-			} finally {
-				vi.useRealTimers();
-			}
+				expect(result.isError).toBeFalsy();
+				expect(mockCallExa).toHaveBeenCalledTimes(2);
+			});
 		});
 	});
 });

@@ -305,7 +305,7 @@ describe("bash tool", () => {
 
 				const race = Promise.race([
 					promise.then(() => "done"),
-					new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000)),
+					new Promise((resolve) => setTimeout(() => resolve("timeout"), 500)),
 				]);
 				const outcome = await race;
 

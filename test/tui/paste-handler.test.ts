@@ -78,10 +78,12 @@ describe("PasteHandler", () => {
 
 		it("ignores duplicate paste events", async () => {
 			const agent = createMockAgent();
-			// Make generateSummary hang to test duplicate detection
-			agent.generateSummary.mockImplementation(
-				() => new Promise((resolve) => setTimeout(resolve, 1000)),
-			);
+			let resolveSummary!: (value: { content: string }) => void;
+			const summaryPromise = new Promise<{ content: string }>((resolve) => {
+				resolveSummary = resolve;
+			});
+			// Keep the first summary pending to test duplicate detection.
+			agent.generateSummary.mockImplementation(() => summaryPromise);
 
 			const handler = new PasteHandler({
 				agent: agent as unknown as PasteHandlerOptions["agent"],
@@ -107,6 +109,9 @@ describe("PasteHandler", () => {
 
 			// Only one call to generateSummary
 			expect(agent.generateSummary).toHaveBeenCalledTimes(1);
+
+			resolveSummary({ content: "Summary of the pasted content" });
+			await first;
 		});
 
 		it("shows info notification on start", async () => {
