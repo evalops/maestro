@@ -117,13 +117,20 @@ describe("webfetch tool", () => {
 
 		it("handles network errors", async () => {
 			// Use mockRejectedValue (not Once) to cover all retry attempts
-			mockCallExa.mockRejectedValue(new Error("Network timeout"));
+			// Fast-forward retry delays to keep test runtime low.
+			vi.useFakeTimers();
+			try {
+				mockCallExa.mockRejectedValue(new Error("Network timeout"));
 
-			await expect(
-				webfetchTool.execute("wf-4", {
+				const promise = webfetchTool.execute("wf-4", {
 					urls: "https://example.com",
-				}),
-			).rejects.toThrow("Network timeout");
+				});
+				const rejection = expect(promise).rejects.toThrow("Network timeout");
+				await vi.runAllTimersAsync();
+				await rejection;
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 
@@ -236,24 +243,33 @@ describe("webfetch tool", () => {
 
 	describe("retry behavior", () => {
 		it("retries on network errors", async () => {
-			mockCallExa
-				.mockRejectedValueOnce(new Error("fetch failed"))
-				.mockResolvedValueOnce({
-					results: [
-						{
-							url: "https://example.com",
-							title: "Example",
-							text: "Content",
-						},
-					],
+			vi.useFakeTimers();
+			try {
+				mockCallExa
+					.mockRejectedValueOnce(new Error("fetch failed"))
+					.mockResolvedValueOnce({
+						results: [
+							{
+								url: "https://example.com",
+								title: "Example",
+								text: "Content",
+							},
+						],
+					});
+
+				const promise = webfetchTool.execute("wf-10", {
+					urls: "https://example.com",
+				});
+				const resolved = promise.then((result) => {
+					expect(result.isError).toBeFalsy();
+					expect(mockCallExa).toHaveBeenCalledTimes(2);
 				});
 
-			const result = await webfetchTool.execute("wf-10", {
-				urls: "https://example.com",
-			});
-
-			expect(result.isError).toBeFalsy();
-			expect(mockCallExa).toHaveBeenCalledTimes(2);
+				await vi.runAllTimersAsync();
+				await resolved;
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 });

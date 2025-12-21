@@ -39,6 +39,7 @@ const previousUnsafe = process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE;
 process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE = "1";
 overrideBackgroundTaskSettingsPath(settingsPath);
 resetBackgroundTaskSettings();
+const TASK_HOLD_MS = 1000;
 
 afterAll(() => {
 	process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE = previousUnsafe;
@@ -125,7 +126,7 @@ describe("backgroundTasksTool", () => {
 	it("starts tasks and lists them", async () => {
 		const startResult = await backgroundTasksTool.execute("bg-start", {
 			action: "start",
-			command: "node -e \"console.log('ready'); setTimeout(() => {}, 2000)\"",
+			command: `node -e "console.log('ready'); setTimeout(() => {}, ${TASK_HOLD_MS})"`,
 		});
 
 		expect(startResult.details).toMatchObject({ status: "running" });
@@ -141,12 +142,10 @@ describe("backgroundTasksTool", () => {
 	it("retrieves logs and stops a running task", async () => {
 		const startResult = await backgroundTasksTool.execute("bg-start-stop", {
 			action: "start",
-			command:
-				"node -e \"console.log('log-line'); setTimeout(() => {}, 2000)\"",
+			command: `node -e "console.log('log-line'); setTimeout(() => {}, ${TASK_HOLD_MS})"`,
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;
 
-		await sleep(200);
 		const logText = await waitForLogEntry(taskId, "log-line");
 		expect(logText).toContain("log-line");
 
@@ -167,7 +166,7 @@ describe("backgroundTasksTool", () => {
 		backgroundTaskManager.configureLimits({ maxTasks: 1 });
 		const startResult = await backgroundTasksTool.execute("bg-start-limit", {
 			action: "start",
-			command: 'node -e "setTimeout(() => {}, 2000)"',
+			command: `node -e "setTimeout(() => {}, ${TASK_HOLD_MS})"`,
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;
 
@@ -185,9 +184,10 @@ describe("backgroundTasksTool", () => {
 	});
 
 	it("records resource usage for completed tasks", async () => {
+		const usageHoldMs = Math.max(200, Math.floor(TASK_HOLD_MS / 2));
 		const startResult = await backgroundTasksTool.execute("bg-usage", {
 			action: "start",
-			command: "node -e \"console.log('usage'); setTimeout(() => {}, 1000)\"",
+			command: `node -e "console.log('usage'); setTimeout(() => {}, ${usageHoldMs})"`,
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;
 		const supportsUsage = ["linux", "darwin"].includes(process.platform);
@@ -219,7 +219,7 @@ describe("backgroundTasksTool", () => {
 			"bg-settings-toggle",
 			{
 				action: "start",
-				command: 'node -e "setTimeout(() => {}, 2000)"',
+				command: `node -e "setTimeout(() => {}, ${TASK_HOLD_MS})"`,
 			},
 		);
 		const taskId = (startResult.details as TaskDetails)?.id as string;
@@ -289,7 +289,7 @@ describe("backgroundTasksTool", () => {
 	it("restarts failing tasks when restart policy is configured", async () => {
 		const flagPath = join(logDir, "restart-flag.txt");
 		const flagLiteral = JSON.stringify(flagPath).replace(/"/g, '\\"');
-		const command = `node -e "const fs = require('node:fs'); const flag = ${flagLiteral}; if (!fs.existsSync(flag)) { fs.writeFileSync(flag, '1'); process.exit(1); } else { fs.unlinkSync(flag); setTimeout(() => {}, 2000); }"`;
+		const command = `node -e "const fs = require('node:fs'); const flag = ${flagLiteral}; if (!fs.existsSync(flag)) { fs.writeFileSync(flag, '1'); process.exit(1); } else { fs.unlinkSync(flag); setTimeout(() => {}, ${TASK_HOLD_MS}); }"`;
 		const startResult = await backgroundTasksTool.execute("bg-restart", {
 			action: "start",
 			command,
@@ -319,7 +319,7 @@ describe("backgroundTasksTool", () => {
 	it("preserves resource usage across restarts", async () => {
 		const flagPath = join(logDir, "restart-usage-flag.txt");
 		const flagLiteral = JSON.stringify(flagPath).replace(/"/g, '\\"');
-		const command = `node -e "const fs = require('node:fs'); const flag = ${flagLiteral}; if (!fs.existsSync(flag)) { fs.writeFileSync(flag, '1'); process.exit(1); } else { fs.unlinkSync(flag); setTimeout(() => {}, 2000); }"`;
+		const command = `node -e "const fs = require('node:fs'); const flag = ${flagLiteral}; if (!fs.existsSync(flag)) { fs.writeFileSync(flag, '1'); process.exit(1); } else { fs.unlinkSync(flag); setTimeout(() => {}, ${TASK_HOLD_MS}); }"`;
 		const startResult = await backgroundTasksTool.execute("bg-restart-usage", {
 			action: "start",
 			command,
@@ -355,7 +355,7 @@ describe("backgroundTasksTool", () => {
 	it("caps log file size across restarts", async () => {
 		const flagPath = join(logDir, "restart-log-flag.txt");
 		const flagLiteral = JSON.stringify(flagPath).replace(/"/g, '\\"');
-		const command = `node -e "const fs = require('node:fs'); const flag = ${flagLiteral}; const chunk = 'B'.repeat(4096); process.stdout.write(chunk); if (!fs.existsSync(flag)) { fs.writeFileSync(flag, '1'); process.exit(1); } else { fs.unlinkSync(flag); setTimeout(() => {}, 2000); }"`;
+		const command = `node -e "const fs = require('node:fs'); const flag = ${flagLiteral}; const chunk = 'B'.repeat(4096); process.stdout.write(chunk); if (!fs.existsSync(flag)) { fs.writeFileSync(flag, '1'); process.exit(1); } else { fs.unlinkSync(flag); setTimeout(() => {}, ${TASK_HOLD_MS}); }"`;
 		const startResult = await backgroundTasksTool.execute("bg-restart-log", {
 			action: "start",
 			command,
@@ -380,7 +380,13 @@ describe("backgroundTasksTool", () => {
 				200,
 				50,
 			);
-			await sleep(100);
+			await waitForCondition(() => {
+				const task = backgroundTaskManager.getTask(taskId);
+				if (!task?.logPath) {
+					return false;
+				}
+				return existsSync(task.logPath) && statSync(task.logPath).size > 0;
+			});
 			const task = backgroundTaskManager.getTask(taskId);
 			expect(task?.logPath).toBeTruthy();
 			if (task?.logPath) {
@@ -396,8 +402,7 @@ describe("backgroundTasksTool", () => {
 	it("handles zero log size limit without hanging", async () => {
 		const startResult = await backgroundTasksTool.execute("bg-zero-limit", {
 			action: "start",
-			command:
-				"node -e \"process.stdout.write('hello world'); setTimeout(() => {}, 1000);\"",
+			command: `node -e "process.stdout.write('hello world'); setTimeout(() => {}, ${TASK_HOLD_MS});"`,
 			limits: { logSizeLimit: 0 },
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;
@@ -416,7 +421,7 @@ describe("backgroundTasksTool", () => {
 	it("honors per-task retention overrides", async () => {
 		const startResult = await backgroundTasksTool.execute("bg-retention", {
 			action: "start",
-			command: 'node -e "setTimeout(() => {}, 2000)"',
+			command: `node -e "setTimeout(() => {}, ${TASK_HOLD_MS})"`,
 			limits: { retentionMs: 1_000 },
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;
@@ -534,8 +539,7 @@ describe("backgroundTasksTool", () => {
 	it("provides task health snapshots with log previews", async () => {
 		const startResult = await backgroundTasksTool.execute("bg-health", {
 			action: "start",
-			command:
-				"node -e \"console.log('health-check'); setTimeout(() => {}, 2000)\"",
+			command: `node -e "console.log('health-check'); setTimeout(() => {}, ${TASK_HOLD_MS})"`,
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;
 		await waitForCondition(
@@ -560,8 +564,7 @@ describe("backgroundTasksTool", () => {
 	it("redacts sensitive tokens in log previews", async () => {
 		const startResult = await backgroundTasksTool.execute("bg-redact", {
 			action: "start",
-			command:
-				"node -e \"console.log('sk-secret-1234567890abcdef1234567890'); setTimeout(() => {}, 2000)\"",
+			command: `node -e "console.log('sk-secret-1234567890abcdef1234567890'); setTimeout(() => {}, ${TASK_HOLD_MS})"`,
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;
 		await waitForCondition(() => {
@@ -585,7 +588,7 @@ describe("backgroundTasksTool", () => {
 		updateBackgroundTaskSettings({ statusDetailsEnabled: false });
 		const startResult = await backgroundTasksTool.execute("bg-redacted", {
 			action: "start",
-			command: "node -e \"console.log('one'); setTimeout(() => {}, 2000)\"",
+			command: `node -e "console.log('one'); setTimeout(() => {}, ${TASK_HOLD_MS})"`,
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;
 		await waitForCondition(() => {
