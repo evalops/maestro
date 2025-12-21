@@ -51,6 +51,7 @@ import { type ToolHookService, createToolHookService } from "../hooks/index.js";
 import { envApiKeyMap } from "../providers/api-keys.js";
 import { getProviderNetworkConfig } from "../providers/network-config.js";
 import { isStreamIdleTimeoutError } from "../providers/stream-idle-timeout.js";
+import { type Clock, systemClock } from "../utils/clock.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("transport");
@@ -156,6 +157,8 @@ export interface ProviderTransportOptions {
 	hookService?: ToolHookService;
 	/** Current working directory for hook execution (required if hookService not provided) */
 	cwd?: string;
+	/** Clock for timestamps and rate limiting (default: system clock) */
+	clock?: Clock;
 }
 
 function resolveEnvCredential(provider: string): AuthCredential | undefined {
@@ -372,6 +375,7 @@ function formatPendingPii(snapshot: WorkflowStateSnapshot): string {
 function buildPiiPolicyResult(
 	toolCall: ToolCall,
 	snapshot: WorkflowStateSnapshot,
+	clock: Clock,
 ): ToolResultMessage {
 	const artifactSummary = formatPendingPii(snapshot);
 	const orphanedSummary = snapshot.orphanedRedactions.length
@@ -384,7 +388,7 @@ function buildPiiPolicyResult(
 		toolName: toolCall.name,
 		content: [{ type: "text", text: guidanceText }],
 		isError: true,
-		timestamp: Date.now(),
+		timestamp: clock.now(),
 	};
 }
 
@@ -427,6 +431,7 @@ export class ProviderTransport implements AgentTransport {
 	private recentToolCalls: Array<{ name: string; signature: string }> = [];
 	/** Per-tool timestamp arrays for rate limiting enforcement */
 	private recentToolTimestamps = new Map<string, number[]>();
+	private readonly clock: Clock;
 
 	/**
 	 * Doom Loop Threshold - consecutive identical calls before blocking
@@ -446,7 +451,9 @@ export class ProviderTransport implements AgentTransport {
 	 */
 	private static readonly TOOL_RATE_LIMIT = 5;
 
-	constructor(private options: ProviderTransportOptions = {}) {}
+	constructor(private options: ProviderTransportOptions = {}) {
+		this.clock = options.clock ?? systemClock;
+	}
 
 	/**
 	 * Continue from current context without a new user message.
@@ -474,7 +481,7 @@ export class ProviderTransport implements AgentTransport {
 			content: [
 				{ type: "text", text: "[System: Continuing from previous context]" },
 			],
-			timestamp: Date.now(),
+			timestamp: this.clock.now(),
 		};
 
 		// Delegate to run() - the continuation message is used internally
@@ -885,7 +892,7 @@ export class ProviderTransport implements AgentTransport {
 								toolName: toolCall.name,
 								content: [{ type: "text", text: error.message }],
 								isError: true,
-								timestamp: Date.now(),
+								timestamp: this.clock.now(),
 							};
 							toolResults.push(workflowErrorResult);
 							return buildExecutionEvents(toolCall, workflowErrorResult, true);
@@ -930,14 +937,14 @@ export class ProviderTransport implements AgentTransport {
 								},
 							],
 							isError: true,
-							timestamp: Date.now(),
+							timestamp: this.clock.now(),
 						};
 						for (const evt of emitToolResult(doomMessage, toolCall, true)) {
 							yield evt;
 						}
 						continue;
 					}
-					const now = Date.now();
+					const now = this.clock.now();
 					const timestamps = this.recentToolTimestamps.get(toolCall.name) ?? [];
 					const recent = timestamps.filter(
 						(ts) => now - ts < ProviderTransport.TOOL_RATE_WINDOW_MS,
@@ -999,7 +1006,7 @@ export class ProviderTransport implements AgentTransport {
 									},
 								],
 								isError: true,
-								timestamp: Date.now(),
+								timestamp: this.clock.now(),
 							};
 							await logToolExecutionAudit(
 								toolCall.name,
@@ -1066,7 +1073,7 @@ export class ProviderTransport implements AgentTransport {
 								},
 							],
 							isError: true,
-							timestamp: Date.now(),
+							timestamp: this.clock.now(),
 						};
 
 						// Log denied tool execution for audit
@@ -1091,6 +1098,7 @@ export class ProviderTransport implements AgentTransport {
 						const policyResult = buildPiiPolicyResult(
 							toolCall,
 							workflowSnapshot,
+							this.clock,
 						);
 						for (const event of emitToolResult(policyResult, toolCall, true)) {
 							yield event;
@@ -1149,7 +1157,7 @@ export class ProviderTransport implements AgentTransport {
 								{ type: "text", text: approvalReason ?? "Action denied" },
 							],
 							isError: true,
-							timestamp: Date.now(),
+							timestamp: this.clock.now(),
 						};
 						for (const event of emitToolResult(deniedResult, toolCall, true)) {
 							yield event;
@@ -1170,7 +1178,7 @@ export class ProviderTransport implements AgentTransport {
 								},
 							],
 							isError: true,
-							timestamp: Date.now(),
+							timestamp: this.clock.now(),
 						};
 						for (const event of emitToolResult(errorResult, toolCall, true)) {
 							yield event;
@@ -1195,7 +1203,7 @@ export class ProviderTransport implements AgentTransport {
 								},
 							],
 							isError: true,
-							timestamp: Date.now(),
+							timestamp: this.clock.now(),
 						};
 						for (const event of emitToolResult(
 							validationErrorResult,
@@ -1232,7 +1240,7 @@ export class ProviderTransport implements AgentTransport {
 						};
 					}
 
-					const startTime = Date.now();
+					const startTime = this.clock.now();
 					const executionPromise: Promise<ToolExecutionOutcome> =
 						Promise.resolve()
 							.then(() => {
@@ -1268,7 +1276,7 @@ export class ProviderTransport implements AgentTransport {
 									toolCall.name,
 									validatedArgs,
 									result.isError ? "failure" : "success",
-									Date.now() - startTime,
+									this.clock.now() - startTime,
 								);
 
 								const toolResultMsg: ToolResultMessage = {
@@ -1278,7 +1286,7 @@ export class ProviderTransport implements AgentTransport {
 									content: result.content,
 									details: result.details,
 									isError: result.isError || false,
-									timestamp: Date.now(),
+									timestamp: this.clock.now(),
 								};
 
 								// Run PostToolUse hooks for successful execution
@@ -1411,7 +1419,7 @@ export class ProviderTransport implements AgentTransport {
 									toolCall.name,
 									validatedArgs,
 									"failure",
-									Date.now() - startTime,
+									this.clock.now() - startTime,
 									errorMessage,
 								);
 
@@ -1428,7 +1436,7 @@ export class ProviderTransport implements AgentTransport {
 									details:
 										error instanceof ToolError ? error.details : undefined,
 									isError: true,
-									timestamp: Date.now(),
+									timestamp: this.clock.now(),
 								};
 
 								// Run PostToolUseFailure hooks
@@ -1515,7 +1523,7 @@ export class ProviderTransport implements AgentTransport {
 							},
 						},
 						stopReason: "error",
-						timestamp: Date.now(),
+						timestamp: this.clock.now(),
 					},
 				toolResults,
 			};

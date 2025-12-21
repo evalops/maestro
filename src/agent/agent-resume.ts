@@ -8,7 +8,6 @@
  * - Maintaining context across sessions
  */
 
-import { randomUUID } from "node:crypto";
 import {
 	constants,
 	access,
@@ -17,6 +16,8 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { type Clock, systemClock } from "../utils/clock.js";
+import { type IdGenerator, systemIdGenerator } from "../utils/ids.js";
 import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 import type { AppMessage, Message } from "./types.js";
 
@@ -64,6 +65,11 @@ export interface TranscriptStore {
 	>;
 	/** Delete a transcript */
 	delete(id: string): Promise<void>;
+}
+
+export interface TranscriptFactoryOptions {
+	clock?: Clock;
+	idGenerator?: IdGenerator;
 }
 
 /**
@@ -192,10 +198,13 @@ export function createTranscript(
 	systemPrompt: string,
 	model: string,
 	metadata?: Record<string, unknown>,
+	options?: TranscriptFactoryOptions,
 ): AgentTranscript {
-	const now = Date.now();
+	const clock = options?.clock ?? systemClock;
+	const idGenerator = options?.idGenerator ?? systemIdGenerator;
+	const now = clock.now();
 	return {
-		id: randomUUID(),
+		id: idGenerator.uuid(),
 		agentType,
 		startedAt: now,
 		updatedAt: now,
@@ -214,11 +223,12 @@ export function createTranscript(
 export function updateTranscript(
 	transcript: AgentTranscript,
 	messages: AppMessage[],
+	options?: Pick<TranscriptFactoryOptions, "clock">,
 ): AgentTranscript {
 	return {
 		...transcript,
 		messages,
-		updatedAt: Date.now(),
+		updatedAt: (options?.clock ?? systemClock).now(),
 	};
 }
 
@@ -228,12 +238,13 @@ export function updateTranscript(
 export function completeTranscript(
 	transcript: AgentTranscript,
 	result: string,
+	options?: Pick<TranscriptFactoryOptions, "clock">,
 ): AgentTranscript {
 	return {
 		...transcript,
 		completed: true,
 		result,
-		updatedAt: Date.now(),
+		updatedAt: (options?.clock ?? systemClock).now(),
 	};
 }
 
@@ -243,12 +254,13 @@ export function completeTranscript(
 export function failTranscript(
 	transcript: AgentTranscript,
 	error: string,
+	options?: Pick<TranscriptFactoryOptions, "clock">,
 ): AgentTranscript {
 	return {
 		...transcript,
 		completed: true,
 		error,
-		updatedAt: Date.now(),
+		updatedAt: (options?.clock ?? systemClock).now(),
 	};
 }
 
