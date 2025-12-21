@@ -473,21 +473,58 @@ export async function handleSessionArtifactsEvents(
 			...cors,
 		});
 
-		res.write(": ok\n\n");
+		let closed = false;
+		const canWrite = () =>
+			res.writable !== false && !res.writableEnded && !res.destroyed;
+		const safeWrite = (payload: string) => {
+			if (!canWrite()) return false;
+			try {
+				res.write(payload);
+				return true;
+			} catch {
+				return false;
+			}
+		};
 
-		const unsubscribe = subscribeArtifactUpdates(sessionId, (event) => {
+		let heartbeat: ReturnType<typeof setInterval> | null = null;
+		let unsubscribe: () => void = () => {};
+
+		const cleanup = () => {
+			if (closed) return;
+			closed = true;
+			if (heartbeat) {
+				clearInterval(heartbeat);
+				heartbeat = null;
+			}
+			unsubscribe();
+			req.off("close", cleanup);
+			res.off("close", cleanup);
+		};
+
+		unsubscribe = subscribeArtifactUpdates(sessionId, (event) => {
 			if (filenameFilter && event.filename !== filenameFilter) return;
-			res.write(`data: ${JSON.stringify(event)}\n\n`);
+			if (!safeWrite(`data: ${JSON.stringify(event)}\n\n`)) {
+				cleanup();
+			}
 		});
 
-		const heartbeat = setInterval(() => {
-			res.write(": ping\n\n");
+		heartbeat = setInterval(() => {
+			if (!safeWrite(": ping\n\n")) {
+				cleanup();
+			}
 		}, 15_000);
 
-		req.on("close", () => {
-			clearInterval(heartbeat);
-			unsubscribe();
-		});
+		if (heartbeat.unref) {
+			heartbeat.unref();
+		}
+
+		if (!safeWrite(": ok\n\n")) {
+			cleanup();
+			return;
+		}
+
+		req.on("close", cleanup);
+		res.on("close", cleanup);
 	} catch (err) {
 		const error =
 			err instanceof ApiError ? err : new ApiError(500, "Internal error");
