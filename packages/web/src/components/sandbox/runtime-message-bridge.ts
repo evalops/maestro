@@ -17,6 +17,7 @@ export function generateSandboxBridgeCode(sandboxId: string): string {
 
     return new Promise((resolve, reject) => {
       let done = false;
+      let timeoutId;
       const handler = (e) => {
         if (!e || !e.data) return;
         if (e.data.type !== "runtime-response") return;
@@ -24,6 +25,9 @@ export function generateSandboxBridgeCode(sandboxId: string): string {
         if (e.data.messageId !== messageId) return;
         if (done) return;
         done = true;
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
         window.removeEventListener("message", handler);
         resolve(e.data);
       };
@@ -34,12 +38,15 @@ export function generateSandboxBridgeCode(sandboxId: string): string {
         window.parent.postMessage({ ...message, sandboxId: __sandboxId, messageId }, "*");
       } catch (err) {
         done = true;
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
         window.removeEventListener("message", handler);
         reject(err instanceof Error ? err : new Error(String(err)));
         return;
       }
 
-      setTimeout(() => {
+      timeoutId = setTimeout(() => {
         if (done) return;
         done = true;
         window.removeEventListener("message", handler);
