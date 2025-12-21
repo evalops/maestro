@@ -554,6 +554,7 @@ Notes:
 | `bun install` | Install dependencies |
 | `bun run bun:lint` | Lint + eval verifier |
 | `npx nx run composer:test --skip-nx-cache` | Full test suite (builds TUI/Web) |
+| `bun run bun:test:fast` | Fast local test run (parallel, opt-in via VITEST_FAST) |
 | `npx nx run composer:evals --skip-nx-cache` | Run eval scenarios |
 | `bun run --filter @evalops/tui build` | Build TUI package |
 | `bun run --filter @evalops/composer-web build` | Build Web package |
