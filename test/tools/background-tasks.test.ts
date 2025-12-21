@@ -39,7 +39,7 @@ const previousUnsafe = process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE;
 process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE = "1";
 overrideBackgroundTaskSettingsPath(settingsPath);
 resetBackgroundTaskSettings();
-const TASK_HOLD_MS = 1000;
+const TASK_HOLD_MS = 500;
 
 afterAll(() => {
 	process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE = previousUnsafe;

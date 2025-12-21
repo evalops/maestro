@@ -171,7 +171,7 @@ echo '{"continue": true, "hookSpecificOutput": {"hookEventName": "PreToolUse", "
 			writeFileSync(
 				scriptPath,
 				`#!/bin/bash
-sleep 10
+sleep 1
 echo '{"continue": true}'
 `,
 				{ mode: 0o755 },
@@ -181,7 +181,7 @@ echo '{"continue": true}'
 				{
 					type: "command",
 					command: scriptPath,
-					timeout: 1, // 1 second timeout
+					timeout: 0.25, // 250ms timeout
 				},
 				{
 					hook_event_name: "PreToolUse",
@@ -771,7 +771,7 @@ echo '{"continue": true, "decision": "approve"}'
 			writeFileSync(
 				scriptPath,
 				`#!/bin/bash
-sleep 5
+sleep 1
 echo '{"continue": true}'
 `,
 				{ mode: 0o755 },
@@ -781,7 +781,7 @@ echo '{"continue": true}'
 				{
 					type: "command",
 					command: scriptPath,
-					timeout: 1, // 1 second timeout - will trigger before sleep completes
+					timeout: 0.25, // 250ms timeout - will trigger before sleep completes
 				},
 				{
 					hook_event_name: "PreToolUse",
