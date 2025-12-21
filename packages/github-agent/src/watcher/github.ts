@@ -42,6 +42,8 @@ export class GitHubWatcher {
 	private lastTrackedPrPollTime: string;
 	private trackedPRs: Set<number> = new Set();
 	private trackedPrPollTimes: Map<number, string> = new Map();
+	private notifiedIssues: Set<number> = new Set();
+	private issueLabelSnapshots: Map<number, Set<string>> = new Map();
 
 	constructor(token: string, config: AgentConfig, events: WatcherEvents) {
 		this.octokit = new Octokit({ auth: token });
@@ -120,7 +122,7 @@ export class GitHubWatcher {
 				{
 					owner: this.config.owner,
 					repo: this.config.repo,
-					state: "open",
+					state: "all",
 					since,
 					per_page: 100,
 				},
@@ -133,6 +135,12 @@ export class GitHubWatcher {
 				// Skip PRs (they show up in issues API too)
 				if (issue.pull_request) continue;
 
+				if (issue.state !== "open") {
+					this.notifiedIssues.delete(issue.number);
+					this.issueLabelSnapshots.delete(issue.number);
+					continue;
+				}
+
 				// Check if issue has any of our target labels
 				const labels = issue.labels.map((l) =>
 					typeof l === "string" ? l : l.name || "",
@@ -141,15 +149,26 @@ export class GitHubWatcher {
 					this.config.issueLabels.includes(l),
 				);
 
-				if (!hasTargetLabel) continue;
+				const labelSnapshot = new Set(labels.filter((l) => l.length > 0));
+				const previousLabels = this.issueLabelSnapshots.get(issue.number);
+				const hadTargetLabel = previousLabels
+					? Array.from(previousLabels).some((l) =>
+							this.config.issueLabels.includes(l),
+						)
+					: false;
 
 				// Check if this is a new issue (created since last poll)
 				const createdAt = new Date(issue.created_at);
 				const sinceTime = new Date(since);
 				const isNew = createdAt > sinceTime;
 
-				if (isNew) {
-					console.log(`[watcher] New issue #${issue.number}: ${issue.title}`);
+				if (
+					hasTargetLabel &&
+					!this.notifiedIssues.has(issue.number) &&
+					(isNew || !hadTargetLabel)
+				) {
+					const reason = isNew ? "New issue" : "Issue labeled";
+					console.log(`[watcher] ${reason} #${issue.number}: ${issue.title}`);
 					await this.events.onNewIssue({
 						number: issue.number,
 						title: issue.title,
@@ -162,7 +181,10 @@ export class GitHubWatcher {
 						url: issue.html_url,
 						comments: issue.comments,
 					});
+					this.notifiedIssues.add(issue.number);
 				}
+
+				this.issueLabelSnapshots.set(issue.number, labelSnapshot);
 			}
 			return maxIsoTimestamp(pollStartedAt, maxUpdatedAt);
 		} catch (err) {

@@ -191,6 +191,64 @@ describe("GitHubWatcher", () => {
 			watcher.stop();
 		});
 
+		it("should call onNewIssue when a target label is added after creation", async () => {
+			const baseTime = Date.now();
+			const createdAt = new Date(baseTime - 60_000).toISOString();
+			const firstUpdate = new Date(baseTime + 1000).toISOString();
+			const secondUpdate = new Date(baseTime + 2000).toISOString();
+
+			mockOctokit.issues.listForRepo
+				.mockResolvedValueOnce({
+					data: [
+						{
+							number: 42,
+							title: "Label later",
+							body: "Test body",
+							labels: [],
+							state: "open",
+							user: { login: "testuser" },
+							created_at: createdAt,
+							updated_at: firstUpdate,
+							html_url: "https://github.com/test/repo/issues/42",
+							comments: 0,
+						},
+					],
+				})
+				.mockResolvedValueOnce({
+					data: [
+						{
+							number: 42,
+							title: "Label later",
+							body: "Test body",
+							labels: [{ name: "composer-task" }],
+							state: "open",
+							user: { login: "testuser" },
+							created_at: createdAt,
+							updated_at: secondUpdate,
+							html_url: "https://github.com/test/repo/issues/42",
+							comments: 0,
+						},
+					],
+				});
+
+			const watcher = new GitHubWatcher("test-token", config, events);
+			await watcher.start();
+
+			expect(events.onNewIssue).not.toHaveBeenCalled();
+
+			await vi.advanceTimersByTimeAsync(config.pollIntervalMs);
+
+			expect(events.onNewIssue).toHaveBeenCalledWith(
+				expect.objectContaining({
+					number: 42,
+					title: "Label later",
+					labels: ["composer-task"],
+				}),
+			);
+
+			watcher.stop();
+		});
+
 		it("should skip issues without target labels", async () => {
 			const futureDate = new Date(Date.now() + 1000).toISOString();
 			mockOctokit.issues.listForRepo.mockResolvedValue({
