@@ -393,15 +393,14 @@ export async function processWebhookQueue(batchSize = 10): Promise<number> {
 	}
 	processorInFlight = true;
 
-	// Try to acquire the distributed lock
-	const hasLock = await tryAcquireLock();
-	if (!hasLock) {
-		processorInFlight = false;
-		logger.debug("Another instance holds the webhook processor lock");
-		return 0;
-	}
-
 	try {
+		// Try to acquire the distributed lock
+		const hasLock = await tryAcquireLock();
+		if (!hasLock) {
+			logger.debug("Another instance holds the webhook processor lock");
+			return 0;
+		}
+
 		const db = getDb();
 		const now = new Date();
 
