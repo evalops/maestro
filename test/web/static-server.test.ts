@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { serveStatic } from "../../src/server/static-server.js";
@@ -92,6 +92,27 @@ describe("serveStatic", () => {
 		const req: MockRequest = { headers: {} };
 		serveStatic(
 			"/../secret.txt",
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			{
+				webRoot: root,
+			},
+		);
+		expect(res.statusCode).toBe(403);
+	});
+
+	it("blocks sibling traversal with shared prefix", () => {
+		const root = createTempDir();
+		const sibling = `${root}-evil`;
+		mkdirSync(sibling, { recursive: true });
+		const secret = join(sibling, "secret.txt");
+		writeFileSync(secret, "nope", { flag: "w" });
+
+		const res = makeRes();
+		const req: MockRequest = { headers: {} };
+		const siblingName = basename(sibling);
+		serveStatic(
+			`/../${siblingName}/secret.txt`,
 			req as unknown as IncomingMessage,
 			res as unknown as ServerResponse,
 			{
