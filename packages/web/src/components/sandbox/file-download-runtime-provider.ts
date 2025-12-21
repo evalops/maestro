@@ -13,8 +13,30 @@ export interface SandboxDownloadsSnapshot {
 }
 
 const STORE = new Map<string, SandboxDownloadsSnapshot>();
+const SNAPSHOT_TTL_MS = 30 * 60 * 1000;
+const MAX_SNAPSHOTS = 200;
+
+function pruneStore(now = Date.now()): void {
+	for (const [key, snap] of STORE.entries()) {
+		if (now - snap.updatedAt > SNAPSHOT_TTL_MS) {
+			STORE.delete(key);
+		}
+	}
+	if (STORE.size <= MAX_SNAPSHOTS) return;
+	const entries = Array.from(STORE.entries()).sort(
+		(a, b) => a[1].updatedAt - b[1].updatedAt,
+	);
+	const excess = STORE.size - MAX_SNAPSHOTS;
+	for (let i = 0; i < excess; i += 1) {
+		const entry = entries[i];
+		if (entry) {
+			STORE.delete(entry[0]);
+		}
+	}
+}
 
 function ensureSnapshot(sandboxId: string): SandboxDownloadsSnapshot {
+	pruneStore();
 	const existing = STORE.get(sandboxId);
 	if (existing) return existing;
 	const next: SandboxDownloadsSnapshot = { files: [], updatedAt: Date.now() };
@@ -24,11 +46,13 @@ function ensureSnapshot(sandboxId: string): SandboxDownloadsSnapshot {
 
 export function clearSandboxDownloadsSnapshot(sandboxId: string): void {
 	STORE.set(sandboxId, { files: [], updatedAt: Date.now() });
+	pruneStore();
 }
 
 export function getSandboxDownloadsSnapshot(
 	sandboxId: string,
 ): SandboxDownloadsSnapshot | null {
+	pruneStore();
 	return STORE.get(sandboxId) ?? null;
 }
 
@@ -141,7 +165,10 @@ export class FileDownloadRuntimeProvider implements SandboxRuntimeProvider {
 		const raw = m.content;
 
 		let content: string | Uint8Array;
-		if (ArrayBuffer.isView(raw)) {
+		if (typeof Blob !== "undefined" && raw instanceof Blob) {
+			const ab = await raw.arrayBuffer();
+			content = new Uint8Array(ab);
+		} else if (ArrayBuffer.isView(raw)) {
 			content = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
 		} else if (isArrayBuffer(raw)) {
 			content = new Uint8Array(raw);
@@ -164,6 +191,7 @@ export class FileDownloadRuntimeProvider implements SandboxRuntimeProvider {
 		const snap = ensureSnapshot(sandboxId);
 		snap.files.push(file);
 		snap.updatedAt = Date.now();
+		pruneStore();
 
 		// Trigger download in host (more reliable than sandboxed iframe downloads).
 		try {
