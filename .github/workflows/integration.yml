@@ -9,6 +9,7 @@ on:
       - "test/web/**"
       - "docker-compose.yml"
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - "src/server/**"
       - "src/db/**"
@@ -24,6 +25,7 @@ concurrency:
 
 jobs:
   integration-tests:
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-integration') }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 45
     services:
