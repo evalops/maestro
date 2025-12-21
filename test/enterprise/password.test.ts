@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
 	hashPassword,
 	validatePasswordStrength,
@@ -6,6 +6,13 @@ import {
 } from "../../src/auth/password.js";
 
 describe("Password Security", () => {
+	const password = "SecurePass123!";
+	let sharedHash = "";
+
+	beforeAll(async () => {
+		sharedHash = await hashPassword(password);
+	});
+
 	describe("validatePasswordStrength", () => {
 		it("rejects passwords shorter than 8 characters", () => {
 			const result = validatePasswordStrength("Abc123!");
@@ -62,16 +69,12 @@ describe("Password Security", () => {
 
 	describe("hashPassword and verifyPassword", () => {
 		it("hashes password correctly", async () => {
-			const password = "SecurePass123!";
-			const hash = await hashPassword(password);
-
-			expect(hash).toBeDefined();
-			expect(hash).not.toBe(password);
-			expect(hash.startsWith("$2")).toBe(true); // bcrypt hash prefix
+			expect(sharedHash).toBeDefined();
+			expect(sharedHash).not.toBe(password);
+			expect(sharedHash.startsWith("$2")).toBe(true); // bcrypt hash prefix
 		});
 
 		it("generates different hashes for same password", async () => {
-			const password = "SecurePass123!";
 			const hash1 = await hashPassword(password);
 			const hash2 = await hashPassword(password);
 
@@ -79,24 +82,19 @@ describe("Password Security", () => {
 		});
 
 		it("verifies correct password", async () => {
-			const password = "SecurePass123!";
-			const hash = await hashPassword(password);
-			const isValid = await verifyPassword(password, hash);
+			const isValid = await verifyPassword(password, sharedHash);
 
 			expect(isValid).toBe(true);
 		});
 
 		it("rejects incorrect password", async () => {
-			const password = "SecurePass123!";
-			const hash = await hashPassword(password);
-			const isValid = await verifyPassword("WrongPassword!", hash);
+			const isValid = await verifyPassword("WrongPassword!", sharedHash);
 
 			expect(isValid).toBe(false);
 		});
 
 		it("rejects empty password", async () => {
-			const hash = await hashPassword("SecurePass123!");
-			const isValid = await verifyPassword("", hash);
+			const isValid = await verifyPassword("", sharedHash);
 
 			expect(isValid).toBe(false);
 		});
