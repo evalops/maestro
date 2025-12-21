@@ -1,6 +1,6 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { join, normalize, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("web:static");
@@ -27,11 +27,11 @@ export function serveStatic(
 	if (pathname === "/" || pathname === "") {
 		filePath = join(safeRoot, "index.html");
 	} else {
-		filePath = join(safeRoot, pathname);
+		filePath = resolve(safeRoot, `.${pathname}`);
 	}
 
-	const normalizedPath = normalize(filePath);
-	if (!normalizedPath.startsWith(safeRoot)) {
+	const relativePath = relative(safeRoot, filePath);
+	if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
 		res.writeHead(403, { "Content-Type": "text/plain" });
 		res.end("Forbidden");
 		return;
