@@ -10,6 +10,10 @@ import {
 } from "../../packages/slack-agent/src/sandbox.js";
 
 describe("sandbox", () => {
+	beforeEach(() => {
+		vi.useRealTimers();
+	});
+
 	describe("parseSandboxArg", () => {
 		// Save original process.exit to restore later
 		const originalExit = process.exit;
