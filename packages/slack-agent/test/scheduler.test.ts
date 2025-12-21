@@ -41,6 +41,14 @@ describe("parseRecurringSchedule", () => {
 			expect(result?.nextRun.toISOString()).toBe("2025-01-01T12:15:00.000Z");
 		});
 
+		it("aligns 'every N minutes' to cron boundaries", () => {
+			const now = new Date("2025-01-01T12:03:00.000Z");
+			const result = parseRecurringSchedule("every 10 minutes", now, "UTC");
+
+			expect(result?.schedule).toBe("*/10 * * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T12:10:00.000Z");
+		});
+
 		it("parses 'every N mins'", () => {
 			const now = new Date("2025-01-01T12:00:00.000Z");
 			const result = parseRecurringSchedule("every 30 mins", now, "UTC");
@@ -51,6 +59,14 @@ describe("parseRecurringSchedule", () => {
 
 		it("parses 'every N hours'", () => {
 			const now = new Date("2025-01-01T12:00:00.000Z");
+			const result = parseRecurringSchedule("every 2 hours", now, "UTC");
+
+			expect(result?.schedule).toBe("0 */2 * * *");
+			expect(result?.nextRun.toISOString()).toBe("2025-01-01T14:00:00.000Z");
+		});
+
+		it("aligns 'every N hours' to top-of-hour boundaries", () => {
+			const now = new Date("2025-01-01T12:37:00.000Z");
 			const result = parseRecurringSchedule("every 2 hours", now, "UTC");
 
 			expect(result?.schedule).toBe("0 */2 * * *");
