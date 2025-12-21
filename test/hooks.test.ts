@@ -197,6 +197,11 @@ describe("Hook System", () => {
 			expect(output).toEqual({ continue: false });
 		});
 
+		it("should ignore non-JSON braces before hook output", () => {
+			const output = parseHookOutput('Log {info: true}\n{"continue": false}\n');
+			expect(output).toEqual({ continue: false });
+		});
+
 		it("should return null for invalid JSON", () => {
 			expect(parseHookOutput("not json")).toBeNull();
 		});

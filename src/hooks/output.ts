@@ -50,20 +50,68 @@ export function parseHookOutput(stdout: string): unknown | null {
 	try {
 		return JSON.parse(trimmed);
 	} catch {
-		// Try to extract JSON from output that might have other content
-		const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
-		if (jsonMatch) {
-			try {
-				return JSON.parse(jsonMatch[0]);
-			} catch {
-				logger.debug("Failed to parse JSON from hook output", {
-					output: trimmed.slice(0, 200),
-				});
-				return null;
-			}
+		const extracted = extractLastJsonObject(trimmed);
+		if (extracted !== null) {
+			return extracted;
 		}
+		logger.debug("Failed to parse JSON from hook output", {
+			output: trimmed.slice(0, 200),
+		});
 		return null;
 	}
+}
+
+function extractLastJsonObject(output: string): unknown | null {
+	let inString = false;
+	let escaped = false;
+	let depth = 0;
+	let startIndex: number | null = null;
+	let lastParsed: unknown | null = null;
+
+	for (let i = 0; i < output.length; i += 1) {
+		const char = output[i];
+
+		if (inString) {
+			if (escaped) {
+				escaped = false;
+			} else if (char === "\\") {
+				escaped = true;
+			} else if (char === '"') {
+				inString = false;
+			}
+			continue;
+		}
+
+		if (char === '"') {
+			inString = true;
+			continue;
+		}
+
+		if (char === "{") {
+			if (depth === 0) {
+				startIndex = i;
+			}
+			depth += 1;
+			continue;
+		}
+
+		if (char === "}") {
+			if (depth > 0) {
+				depth -= 1;
+				if (depth === 0 && startIndex !== null) {
+					const candidate = output.slice(startIndex, i + 1);
+					try {
+						lastParsed = JSON.parse(candidate);
+					} catch {
+						// Ignore invalid JSON segments; continue scanning.
+					}
+					startIndex = null;
+				}
+			}
+		}
+	}
+
+	return lastParsed;
 }
 
 /**
