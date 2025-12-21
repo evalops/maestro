@@ -44,7 +44,7 @@ function downloadInHost(file: DownloadableFile): void {
 	a.rel = "noopener";
 	a.click();
 	// Delay revocation to ensure downloads complete in all browsers.
-	setTimeout(() => URL.revokeObjectURL(url), 1000);
+	setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
 function isArrayBuffer(value: unknown): value is ArrayBuffer {
