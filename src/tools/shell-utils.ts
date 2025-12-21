@@ -164,11 +164,13 @@ export function parseCommandArguments(command: string): string[] {
 	let inSingle = false;
 	let inDouble = false;
 	let escaping = false;
+	let argStarted = false;
 
 	for (let i = 0; i < command.length; i += 1) {
 		const char = command[i];
 		if (escaping) {
 			current += char;
+			argStarted = true;
 			escaping = false;
 			continue;
 		}
@@ -180,23 +182,27 @@ export function parseCommandArguments(command: string): string[] {
 
 		if (char === "'" && !inDouble) {
 			inSingle = !inSingle;
+			argStarted = true;
 			continue;
 		}
 
 		if (char === '"' && !inSingle) {
 			inDouble = !inDouble;
+			argStarted = true;
 			continue;
 		}
 
 		if (!inSingle && !inDouble && /\s/.test(char)) {
-			if (current) {
+			if (current || argStarted) {
 				args.push(current);
 				current = "";
+				argStarted = false;
 			}
 			continue;
 		}
 
 		current += char;
+		argStarted = true;
 	}
 
 	if (escaping) {
@@ -205,7 +211,7 @@ export function parseCommandArguments(command: string): string[] {
 	if (inSingle || inDouble) {
 		throw new Error("Command contains unterminated quotes");
 	}
-	if (current) {
+	if (current || argStarted) {
 		args.push(current);
 	}
 	return args;
