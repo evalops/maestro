@@ -459,7 +459,7 @@ impl WasmHookExecutor {
 
         let len_i32 = len as i32;
         let alloc_ptr = alloc_fn.call(&mut *store, len_i32).ok()?;
-        let mut dealloc = |store: &mut Store<()>| {
+        let dealloc = |store: &mut Store<()>| {
             if let Some(dealloc_fn) = dealloc_fn {
                 let _ = dealloc_fn.call(store, (alloc_ptr, len_i32));
             }
