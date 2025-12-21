@@ -1531,23 +1531,20 @@ mod tests {
 
     #[test]
     fn test_entry_expires_exactly_at_ttl() {
-        // This is a timing test - may be flaky
         let config = CacheConfig {
             ttl: Duration::from_millis(100),
             ..Default::default()
         };
-        let mut cache = ToolResultCache::new(config);
-
         let key = CacheKey::new("read", &serde_json::json!({"path": "/test"}));
-        cache.put(key.clone(), CachedResult::new("content", false));
 
-        // Should be valid immediately
+        let mut cache = ToolResultCache::new(config.clone());
+        cache.put(key.clone(), CachedResult::new("content", false));
         assert!(cache.get(&key).is_some());
 
-        // Wait past TTL
-        std::thread::sleep(Duration::from_millis(150));
-
-        // Should be expired
+        let mut cache = ToolResultCache::new(config);
+        let mut expired = CachedResult::new("content", false);
+        expired.created_at = Some(Instant::now() - Duration::from_millis(150));
+        cache.put(key.clone(), expired);
         assert!(cache.get(&key).is_none());
     }
 
