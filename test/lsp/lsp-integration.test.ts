@@ -20,6 +20,21 @@ const FAKE_LSP_PATH = join(
 	"fixture",
 	"fake-lsp-server.cjs",
 );
+const DEFAULT_WAIT_MS = 1000;
+const POLL_INTERVAL_MS = 25;
+
+async function waitFor(
+	condition: () => boolean | Promise<boolean>,
+	timeoutMs = DEFAULT_WAIT_MS,
+	intervalMs = POLL_INTERVAL_MS,
+): Promise<void> {
+	const start = Date.now();
+	while (Date.now() - start < timeoutMs) {
+		if (await condition()) return;
+		await new Promise((resolve) => setTimeout(resolve, intervalMs));
+	}
+	throw new Error("Condition not met within timeout");
+}
 
 describe("LSP Integration Tests", () => {
 	beforeEach(async () => {
@@ -31,10 +46,7 @@ describe("LSP Integration Tests", () => {
 	afterEach(async () => {
 		// Reset configuration which triggers shutdownAll internally
 		await configureServers([]);
-
-		// Allow cleanup time for processes to fully exit
-		// Use longer timeout to ensure child processes have time to terminate
-		await new Promise((resolve) => setTimeout(resolve, 500));
+		await waitFor(async () => (await getClients()).length === 0, 500);
 	});
 
 	it("should spawn LSP server and initialize", async () => {
@@ -54,8 +66,10 @@ describe("LSP Integration Tests", () => {
 		// Touch file to trigger LSP spawn and initialization
 		await touchFile(testFile);
 
-		// Wait for initialization
-		await new Promise((resolve) => setTimeout(resolve, 300));
+		await waitFor(async () => {
+			const clients = await getClients();
+			return clients.length === 1 && clients[0].initialized;
+		});
 
 		const clients = await getClients();
 		expect(clients.length).toBe(1);
@@ -80,8 +94,10 @@ describe("LSP Integration Tests", () => {
 
 		await touchFile(testFile);
 
-		// Wait for diagnostics to arrive
-		await new Promise((resolve) => setTimeout(resolve, 300));
+		await waitFor(async () => {
+			const diagnostics = await collectDiagnostics();
+			return Object.values(diagnostics).flat().length > 0;
+		});
 
 		const diagnostics = await collectDiagnostics();
 		const allDiags = Object.values(diagnostics).flat();
@@ -107,7 +123,10 @@ describe("LSP Integration Tests", () => {
 
 		// Open file
 		await touchFile(testFile);
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await waitFor(async () => {
+			const diagnostics = await collectDiagnostics();
+			return Object.values(diagnostics).flat().length === 0;
+		});
 
 		// Initially no errors
 		let diagnostics = await collectDiagnostics();
@@ -116,7 +135,10 @@ describe("LSP Integration Tests", () => {
 
 		// Change to include error
 		await changeFile(testFile, "const x = error;");
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await waitFor(async () => {
+			const next = await collectDiagnostics();
+			return Object.values(next).flat().length > 0;
+		});
 
 		// Should now have diagnostics
 		diagnostics = await collectDiagnostics();
@@ -125,7 +147,10 @@ describe("LSP Integration Tests", () => {
 
 		// Change back to valid
 		await changeFile(testFile, "const x = 2;");
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await waitFor(async () => {
+			const next = await collectDiagnostics();
+			return Object.values(next).flat().length === 0;
+		});
 
 		// Diagnostics should clear
 		diagnostics = await collectDiagnostics();
@@ -149,7 +174,7 @@ describe("LSP Integration Tests", () => {
 		configureServers([config]);
 
 		await touchFile(testFile);
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await waitFor(async () => (await workspaceSymbol("MyClass")).length > 0);
 
 		const symbols = await workspaceSymbol("MyClass");
 		expect(symbols.length).toBeGreaterThan(0);
@@ -173,7 +198,13 @@ describe("LSP Integration Tests", () => {
 		configureServers([config]);
 
 		await touchFile(testFile);
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await waitFor(async () => {
+			const symbols = await documentSymbol(testFile);
+			return (
+				symbols.some((s) => s.name === "testFunction") &&
+				symbols.some((s) => s.name === "TestClass")
+			);
+		});
 
 		const symbols = await documentSymbol(testFile);
 		expect(symbols.length).toBeGreaterThan(0);
@@ -202,14 +233,20 @@ describe("LSP Integration Tests", () => {
 		configureServers([config]);
 
 		await touchFile(testFile);
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await waitFor(async () => {
+			const clients = await getClients();
+			return clients.length === 1 && clients[0].openFiles.has(testFile);
+		});
 
 		const clientsBefore = await getClients();
 		expect(clientsBefore.length).toBe(1);
 		expect(clientsBefore[0].openFiles.has(testFile)).toBe(true);
 
 		await closeFile(testFile);
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await waitFor(async () => {
+			const clients = await getClients();
+			return clients.length === 1 && !clients[0].openFiles.has(testFile);
+		});
 
 		const clientsAfter = await getClients();
 		expect(clientsAfter[0].openFiles.has(testFile)).toBe(false);
@@ -232,13 +269,19 @@ describe("LSP Integration Tests", () => {
 		configureServers([config]);
 
 		await touchFile(file1);
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await waitFor(async () => {
+			const clients = await getClients();
+			return clients.length === 1;
+		});
 
 		const clientsAfter1 = await getClients();
 		expect(clientsAfter1.length).toBe(1);
 
 		await touchFile(file2);
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await waitFor(async () => {
+			const clients = await getClients();
+			return clients.length === 1 && clients[0].openFiles.size === 2;
+		});
 
 		const clientsAfter2 = await getClients();
 		expect(clientsAfter2.length).toBe(1); // Still only 1 client
@@ -263,7 +306,10 @@ describe("LSP Integration Tests", () => {
 
 		await touchFile(tsFile);
 		await touchFile(jsFile);
-		await new Promise((resolve) => setTimeout(resolve, 200));
+		await waitFor(async () => {
+			const clients = await getClients();
+			return clients.length === 1 && clients[0].openFiles.size === 2;
+		});
 
 		const clients = await getClients();
 		expect(clients.length).toBe(1);
