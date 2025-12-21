@@ -314,9 +314,13 @@ impl HttpConnection {
         let timeout = Duration::from_millis(self.config.timeout.unwrap_or(30_000));
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => Err(McpError::Protocol(
-                "SSE response channel closed".to_string(),
-            )),
+            Ok(Err(_)) => {
+                let mut pending = self.pending_sse.lock().await;
+                pending.remove(&id);
+                Err(McpError::Protocol(
+                    "SSE response channel closed".to_string(),
+                ))
+            }
             Err(_) => {
                 // Remove from pending
                 let mut pending = self.pending_sse.lock().await;
