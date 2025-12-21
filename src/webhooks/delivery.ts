@@ -200,6 +200,7 @@ async function deliverHttp(
 const LOCK_ID = "webhook_processor";
 const LOCK_DURATION_MS = 60_000; // 1 minute lock duration
 const LOCK_RENEWAL_MS = 30_000; // Renew every 30 seconds
+let processorInFlight = false;
 
 async function tryAcquireLock(): Promise<boolean> {
 	if (!isDbAvailable()) {
@@ -387,10 +388,15 @@ export async function processWebhookQueue(batchSize = 10): Promise<number> {
 	if (!isDbAvailable()) {
 		return 0;
 	}
+	if (processorInFlight) {
+		return 0;
+	}
+	processorInFlight = true;
 
 	// Try to acquire the distributed lock
 	const hasLock = await tryAcquireLock();
 	if (!hasLock) {
+		processorInFlight = false;
 		logger.debug("Another instance holds the webhook processor lock");
 		return 0;
 	}
@@ -527,6 +533,8 @@ export async function processWebhookQueue(batchSize = 10): Promise<number> {
 			error instanceof Error ? error : undefined,
 		);
 		return 0;
+	} finally {
+		processorInFlight = false;
 	}
 }
 
