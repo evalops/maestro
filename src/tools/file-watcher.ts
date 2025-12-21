@@ -163,6 +163,7 @@ export class FileWatcher {
 	> = new Map();
 	private currentGitSha?: string;
 	private gitPollTimer?: NodeJS.Timeout;
+	private gitPollInFlight = false;
 	private isRunning = false;
 
 	constructor(config: FileWatcherConfig) {
@@ -388,6 +389,10 @@ export class FileWatcher {
 		this.currentGitSha = await this.getGitSha();
 
 		this.gitPollTimer = setInterval(async () => {
+			if (this.gitPollInFlight) {
+				return;
+			}
+			this.gitPollInFlight = true;
 			try {
 				const newSha = await this.getGitSha();
 				if (newSha && newSha !== this.currentGitSha) {
@@ -418,13 +423,10 @@ export class FileWatcher {
 				}
 			} catch {
 				// Git command failed - not a git repo or other issue
+			} finally {
+				this.gitPollInFlight = false;
 			}
 		}, this.config.gitPollIntervalMs);
-
-		// Don't keep process alive
-		if (this.gitPollTimer.unref) {
-			this.gitPollTimer.unref();
-		}
 
 		// Don't keep process alive
 		if (this.gitPollTimer.unref) {
