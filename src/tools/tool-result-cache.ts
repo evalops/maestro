@@ -9,6 +9,7 @@
  * - COMPOSER_TOOL_CACHE_TTL: Default TTL in seconds (default: 300)
  * - COMPOSER_TOOL_CACHE_MAX_ENTRIES: Maximum cache entries (default: 1000)
  * - COMPOSER_TOOL_CACHE_MAX_BYTES: Maximum cache size in bytes (default: 50MB)
+ * - COMPOSER_TOOL_CACHE_MAX_SIZE_BYTES: Legacy alias for max cache bytes (default: 50MB)
  * - COMPOSER_TOOL_CACHE_MAX_SIZE: Legacy alias for max entries (default: 1000)
  */
 
