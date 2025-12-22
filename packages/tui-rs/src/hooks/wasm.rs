@@ -198,7 +198,8 @@ use wasmtime::*;
 
 #[cfg(feature = "wasm")]
 pub struct WasmHookExecutor {
-    engine: Engine,
+    engine: Option<Engine>,
+    init_error: Option<String>,
     plugins: Vec<CompiledPlugin>,
     timeout: Duration,
 }
@@ -218,12 +219,21 @@ impl WasmHookExecutor {
         config.wasm_backtrace_details(WasmBacktraceDetails::Enable);
         config.epoch_interruption(true);
 
-        let engine = Engine::new(&config).expect("Failed to create WASM engine");
+        let engine = Engine::new(&config);
 
-        Self {
-            engine,
-            plugins: Vec::new(),
-            timeout: Duration::from_secs(30),
+        match engine {
+            Ok(engine) => Self {
+                engine: Some(engine),
+                init_error: None,
+                plugins: Vec::new(),
+                timeout: Duration::from_secs(30),
+            },
+            Err(err) => Self {
+                engine: None,
+                init_error: Some(err.to_string()),
+                plugins: Vec::new(),
+                timeout: Duration::from_secs(30),
+            },
         }
     }
 
@@ -232,12 +242,24 @@ impl WasmHookExecutor {
         self
     }
 
+    fn engine(&self) -> Result<&Engine> {
+        self.engine.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "WASM engine unavailable: {}",
+                self.init_error
+                    .as_deref()
+                    .unwrap_or("initialization failed")
+            )
+        })
+    }
+
     pub fn load_plugin(
         &mut self,
         path: &Path,
         event: HookEventType,
         tools: Vec<String>,
     ) -> Result<()> {
+        let engine = self.engine()?;
         let bytes = std::fs::read(path)
             .with_context(|| format!("Failed to read WASM plugin: {}", path.display()))?;
 
@@ -247,7 +269,7 @@ impl WasmHookExecutor {
         }
 
         // Compile the module
-        let module = Module::new(&self.engine, &bytes)
+        let module = Module::new(engine, &bytes)
             .with_context(|| format!("Failed to compile WASM module: {}", path.display()))?;
 
         self.plugins.push(CompiledPlugin {
@@ -296,7 +318,8 @@ impl WasmHookExecutor {
         plugin: &CompiledPlugin,
         input: &PreToolUseInput,
     ) -> Result<HookResult> {
-        let mut store = Store::new(&self.engine, ());
+        let engine = self.engine()?;
+        let mut store = Store::new(engine, ());
 
         // Set epoch deadline for timeout
         store.set_epoch_deadline(1);
@@ -343,7 +366,7 @@ impl WasmHookExecutor {
         // Start timeout watchdog for WASM execution
         let timed_out = Arc::new(AtomicBool::new(false));
         let (done_tx, done_rx) = mpsc::channel::<()>();
-        let engine = self.engine.clone();
+        let engine = engine.clone();
         let timeout = self.timeout;
         let timed_out_clone = timed_out.clone();
         let watchdog_handle = std::thread::spawn(move || {
@@ -521,7 +544,8 @@ impl WasmHookExecutor {
     }
 
     fn execute_post_plugin(&self, plugin: &CompiledPlugin, input: &PostToolUseInput) -> Result<()> {
-        let mut store = Store::new(&self.engine, ());
+        let engine = self.engine()?;
+        let mut store = Store::new(engine, ());
         store.set_epoch_deadline(1);
 
         let instance = Instance::new(&mut store, &plugin.module, &[])
@@ -557,7 +581,7 @@ impl WasmHookExecutor {
         // Start timeout watchdog for WASM execution
         let timed_out = Arc::new(AtomicBool::new(false));
         let (done_tx, done_rx) = mpsc::channel::<()>();
-        let engine = self.engine.clone();
+        let engine = engine.clone();
         let timeout = self.timeout;
         let timed_out_clone = timed_out.clone();
         let watchdog_handle = std::thread::spawn(move || {
@@ -599,6 +623,7 @@ impl WasmHookExecutor {
     }
 
     pub fn reload(&mut self) -> Result<usize> {
+        let engine = self.engine()?;
         let mut reloaded = 0;
         let mut new_plugins = Vec::new();
 
@@ -606,7 +631,7 @@ impl WasmHookExecutor {
             if plugin.path.exists() {
                 if let Ok(bytes) = std::fs::read(&plugin.path) {
                     if bytes.len() >= 8 && &bytes[0..4] == b"\0asm" {
-                        if let Ok(module) = Module::new(&self.engine, &bytes) {
+                        if let Ok(module) = Module::new(engine, &bytes) {
                             new_plugins.push(CompiledPlugin {
                                 path: plugin.path.clone(),
                                 event: plugin.event,

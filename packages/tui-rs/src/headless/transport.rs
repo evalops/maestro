@@ -233,8 +233,18 @@ impl AgentTransport {
 
         let mut child = cmd.spawn().map_err(TransportError::SpawnFailed)?;
 
-        let stdin = child.stdin.take().expect("Failed to get stdin");
-        let stdout = child.stdout.take().expect("Failed to get stdout");
+        let stdin = child.stdin.take().ok_or_else(|| {
+            TransportError::SpawnFailed(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to get stdin",
+            ))
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            TransportError::SpawnFailed(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to get stdout",
+            ))
+        })?;
 
         // Channel for sending messages to agent
         let (to_agent_tx, to_agent_rx) = mpsc::channel::<ToAgentMessage>();
