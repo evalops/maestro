@@ -110,6 +110,9 @@ use crate::ai::Tool;
 use crate::safety::{ActionFirewall, FirewallVerdict};
 
 const MAX_READ_SIZE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_GREP_LINES: usize = 100;
+const MAX_LIST_LINES: usize = 200;
+const MAX_DIFF_LINES: usize = 400;
 
 fn shell_escape(arg: &str) -> String {
     if arg.is_empty() {
@@ -865,11 +868,12 @@ impl ToolExecutor {
                     .bash
                     .execute(BashArgs {
                         command: format!(
-                            "rg --no-heading -n -- {} {} 2>/dev/null || grep -rn -- {} {} 2>/dev/null | head -100",
+                            "(rg --no-heading -n -- {} {} 2>/dev/null || grep -rn -- {} {} 2>/dev/null) | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ] || [ $status -eq 1 ]; then exit 0; else exit $status; fi",
                             shell_escape(pattern),
                             shell_escape(path),
                             shell_escape(pattern),
-                            shell_escape(path)
+                            shell_escape(path),
+                            MAX_GREP_LINES
                         ),
                         timeout: Some(30000),
                         description: Some("Search for pattern".to_string()),
@@ -886,7 +890,7 @@ impl ToolExecutor {
                     .filter_map(|line| line.split(':').next())
                     .collect::<std::collections::HashSet<_>>()
                     .len();
-                let truncated = matches_count >= 100; // We use head -100
+                let truncated = matches_count >= MAX_GREP_LINES;
 
                 let details = GrepDetails::new(pattern)
                     .with_path(path)
@@ -1044,8 +1048,17 @@ impl ToolExecutor {
 
                 // Build git diff command
                 let cmd = match path {
-                    Some(p) => format!("git diff {} -- {}", shell_escape(target), shell_escape(p)),
-                    None => format!("git diff {}", shell_escape(target)),
+                    Some(p) => format!(
+                        "git diff {} -- {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
+                        shell_escape(target),
+                        shell_escape(p),
+                        MAX_DIFF_LINES
+                    ),
+                    None => format!(
+                        "git diff {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
+                        shell_escape(target),
+                        MAX_DIFF_LINES
+                    ),
                 };
 
                 let result = self
@@ -1087,6 +1100,11 @@ impl ToolExecutor {
                     details = details.with_stats(files_changed, insertions, deletions);
                 }
 
+                let truncated = result.output.lines().count() >= MAX_DIFF_LINES;
+                if truncated {
+                    details = details.with_truncation();
+                }
+
                 if result.success {
                     ToolResult::success(result.output).with_details(details.to_json())
                 } else {
@@ -1108,9 +1126,17 @@ impl ToolExecutor {
                     .unwrap_or(false);
 
                 let cmd = if recursive {
-                    format!("find -- {} -type f | head -200", shell_escape(path))
+                    format!(
+                        "find -- {} -type f | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
+                        shell_escape(path),
+                        MAX_LIST_LINES
+                    )
                 } else {
-                    format!("ls -la -- {}", shell_escape(path))
+                    format!(
+                        "ls -la -- {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
+                        shell_escape(path),
+                        MAX_LIST_LINES
+                    )
                 };
 
                 let result = self
@@ -1126,7 +1152,7 @@ impl ToolExecutor {
                 // Build list details
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 let entries_count = result.output.lines().count();
-                let truncated = recursive && entries_count >= 200;
+                let truncated = entries_count >= MAX_LIST_LINES;
 
                 let mut details = ListDetails::new(path)
                     .with_entries(entries_count)

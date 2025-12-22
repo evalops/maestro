@@ -606,6 +606,10 @@ pub struct DiffDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deletions: Option<usize>,
 
+    /// Whether results were truncated
+    #[serde(default)]
+    pub truncated: bool,
+
     /// Diff duration in milliseconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
@@ -628,6 +632,11 @@ impl DiffDetails {
         self.files_changed = Some(files);
         self.insertions = Some(insertions);
         self.deletions = Some(deletions);
+        self
+    }
+
+    pub fn with_truncation(mut self) -> Self {
+        self.truncated = true;
         self
     }
 
