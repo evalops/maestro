@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { getSystemPaths } from "../../src/safety/path-containment.js";
+import {
+	getSystemPaths,
+	isSystemPath,
+} from "../../src/safety/path-containment.js";
 
 describe("System paths list", () => {
 	it("includes platform-specific entries", () => {
@@ -11,6 +14,7 @@ describe("System paths list", () => {
 		}
 		if (process.platform === "win32") {
 			expect(paths).toContain("C:\\Windows");
+			expect(isSystemPath("c:\\windows\\system32")).toBe(true);
 			return;
 		}
 		expect(paths).toContain("/proc");
