@@ -60,7 +60,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use super::details::InlineToolDetails;
@@ -159,6 +159,63 @@ pub struct ToolAnnotations {
 
 fn default_timeout() -> u64 {
     120_000 // 2 minutes
+}
+
+/// Maximum output size to capture from inline tools (40KB).
+const MAX_OUTPUT_SIZE: usize = 40_000;
+
+async fn read_stream_with_limit<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut buf = [0u8; 8192];
+    let mut output = Vec::new();
+    let mut truncated = false;
+
+    loop {
+        let read = reader.read(&mut buf).await?;
+        if read == 0 {
+            break;
+        }
+
+        if output.len() < MAX_OUTPUT_SIZE {
+            let remaining = MAX_OUTPUT_SIZE.saturating_sub(output.len());
+            if read <= remaining {
+                output.extend_from_slice(&buf[..read]);
+            } else {
+                output.extend_from_slice(&buf[..remaining]);
+                truncated = true;
+            }
+        } else {
+            truncated = true;
+        }
+    }
+
+    Ok((output, truncated))
+}
+
+fn build_truncation_notice(stdout_truncated: bool, stderr_truncated: bool) -> Option<String> {
+    let mut messages = Vec::new();
+    if stdout_truncated {
+        messages.push(format!(
+            "stdout exceeded {}KB limit and was truncated",
+            MAX_OUTPUT_SIZE / 1024
+        ));
+    }
+    if stderr_truncated {
+        messages.push(format!(
+            "stderr exceeded {}KB limit and was truncated",
+            MAX_OUTPUT_SIZE / 1024
+        ));
+    }
+
+    if messages.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Warning: Output truncated: {}. Consider piping output to a file or using head/tail.",
+            messages.join("; ")
+        ))
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -476,24 +533,18 @@ impl InlineToolExecutor {
 
         let result = tokio::time::timeout(timeout_duration, async {
             let stdout_fut = async {
-                if let Some(mut handle) = stdout_handle {
-                    use tokio::io::AsyncReadExt;
-                    let mut buf = Vec::new();
-                    let read = handle.read_to_end(&mut buf).await;
-                    read.map(|_| buf)
+                if let Some(handle) = stdout_handle {
+                    read_stream_with_limit(handle).await
                 } else {
-                    Ok(Vec::new())
+                    Ok((Vec::new(), false))
                 }
             };
 
             let stderr_fut = async {
-                if let Some(mut handle) = stderr_handle {
-                    use tokio::io::AsyncReadExt;
-                    let mut buf = Vec::new();
-                    let read = handle.read_to_end(&mut buf).await;
-                    read.map(|_| buf)
+                if let Some(handle) = stderr_handle {
+                    read_stream_with_limit(handle).await
                 } else {
-                    Ok(Vec::new())
+                    Ok((Vec::new(), false))
                 }
             };
 
@@ -502,23 +553,43 @@ impl InlineToolExecutor {
         .await;
 
         match result {
-            Ok((Ok(stdout), Ok(stderr), Ok(status))) => {
+            Ok((Ok((stdout, stdout_truncated)), Ok((stderr, stderr_truncated)), Ok(status))) => {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 let stdout_text = String::from_utf8_lossy(&stdout).to_string();
                 let stderr_text = String::from_utf8_lossy(&stderr).to_string();
+                let truncation_notice = build_truncation_notice(stdout_truncated, stderr_truncated);
 
                 // Update details with exit code and duration
                 let exit_code = status.code().unwrap_or(-1);
                 details = details.with_exit_code(exit_code).with_duration(duration_ms);
 
                 if status.success() {
-                    ToolResult::success(stdout_text.trim()).with_details(details.to_json())
+                    let mut output = stdout_text.trim().to_string();
+                    let stderr_trimmed = stderr_text.trim();
+                    if !stderr_trimmed.is_empty() {
+                        if output.is_empty() {
+                            output = format!("[stderr]: {}", stderr_trimmed);
+                        } else {
+                            output = format!("{}\n\n[stderr]: {}", output, stderr_trimmed);
+                        }
+                    }
+                    if let Some(notice) = truncation_notice {
+                        if output.is_empty() {
+                            output = notice;
+                        } else {
+                            output = format!("{}\n\n{}", output, notice);
+                        }
+                    }
+                    ToolResult::success(output).with_details(details.to_json())
                 } else {
-                    let error_msg = if stderr_text.is_empty() {
+                    let mut error_msg = if stderr_text.is_empty() {
                         format!("Command exited with status: {}", status)
                     } else {
                         stderr_text.trim().to_string()
                     };
+                    if let Some(notice) = truncation_notice {
+                        error_msg = format!("{}\n\n{}", error_msg, notice);
+                    }
 
                     ToolResult {
                         success: false,
@@ -893,6 +964,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_execute_includes_stderr_on_success() {
+        let temp = TempDir::new().unwrap();
+        let executor = InlineToolExecutor::new(temp.path());
+
+        let def = InlineToolDef {
+            name: "stderr_test".to_string(),
+            description: "Stderr test".to_string(),
+            command: "echo out; echo err 1>&2".to_string(),
+            parameters: HashMap::new(),
+            timeout: 5000,
+            cwd: None,
+            env: HashMap::new(),
+            annotations: ToolAnnotations::default(),
+        };
+
+        let tool = InlineTool {
+            definition: def,
+            source_path: PathBuf::new(),
+            source: InlineToolSource::Project,
+        };
+
+        let result = executor.execute(&tool, serde_json::json!({})).await;
+        assert!(result.success);
+        assert!(result.output.contains("out"));
+        assert!(result.output.contains("[stderr]: err"));
+    }
+
+    #[tokio::test]
     async fn test_execute_with_stdin() {
         let temp = TempDir::new().unwrap();
         let executor = InlineToolExecutor::new(temp.path());
@@ -1035,5 +1134,21 @@ mod tests {
         let result = executor.execute(&tool, serde_json::json!({})).await;
         assert!(result.success);
         assert_eq!(result.output, "test_value");
+    }
+
+    #[tokio::test]
+    async fn test_read_stream_with_limit_truncates() {
+        let payload = vec![b'a'; MAX_OUTPUT_SIZE + 128];
+        let (mut writer, reader) = tokio::io::duplex(1024);
+
+        let write_task = tokio::spawn(async move {
+            writer.write_all(&payload).await.unwrap();
+        });
+
+        let (captured, truncated) = read_stream_with_limit(reader).await.unwrap();
+        write_task.await.unwrap();
+
+        assert!(truncated);
+        assert_eq!(captured.len(), MAX_OUTPUT_SIZE);
     }
 }

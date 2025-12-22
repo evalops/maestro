@@ -46,6 +46,9 @@ import { createTool } from "./tool-dsl.js";
 
 const logger = createLogger("inline-tools");
 
+// Output buffer limit (40KB) to prevent memory exhaustion from verbose inline tools.
+const MAX_INLINE_BUFFER = 40 * 1024;
+
 /**
  * JSON Schema parameter definition (simplified subset)
  */
@@ -159,7 +162,13 @@ async function executeCommand(
 		timeout?: number;
 		signal?: AbortSignal;
 	},
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+): Promise<{
+	stdout: string;
+	stderr: string;
+	exitCode: number;
+	stdoutTruncated: boolean;
+	stderrTruncated: boolean;
+}> {
 	return new Promise((resolvePromise, rejectPromise) => {
 		const cwd = options.cwd ? resolve(options.cwd) : process.cwd();
 		const timeout = options.timeout ?? 120000; // 2 minute default
@@ -180,6 +189,8 @@ async function executeCommand(
 
 		let stdout = "";
 		let stderr = "";
+		let stdoutTruncated = false;
+		let stderrTruncated = false;
 		let killed = false;
 		let settled = false;
 
@@ -187,6 +198,8 @@ async function executeCommand(
 			stdout: string;
 			stderr: string;
 			exitCode: number;
+			stdoutTruncated: boolean;
+			stderrTruncated: boolean;
 		}) => {
 			if (settled) {
 				return;
@@ -221,11 +234,27 @@ async function executeCommand(
 		}
 
 		child.stdout?.on("data", (data) => {
-			stdout += data.toString();
+			if (stdout.length < MAX_INLINE_BUFFER) {
+				stdout += data.toString();
+				if (stdout.length > MAX_INLINE_BUFFER) {
+					stdout = stdout.slice(0, MAX_INLINE_BUFFER);
+					stdoutTruncated = true;
+				}
+			} else {
+				stdoutTruncated = true;
+			}
 		});
 
 		child.stderr?.on("data", (data) => {
-			stderr += data.toString();
+			if (stderr.length < MAX_INLINE_BUFFER) {
+				stderr += data.toString();
+				if (stderr.length > MAX_INLINE_BUFFER) {
+					stderr = stderr.slice(0, MAX_INLINE_BUFFER);
+					stderrTruncated = true;
+				}
+			} else {
+				stderrTruncated = true;
+			}
 		});
 
 		child.on("error", (error) => {
@@ -240,6 +269,8 @@ async function executeCommand(
 					stdout,
 					stderr,
 					exitCode: code ?? 0,
+					stdoutTruncated,
+					stderrTruncated,
 				});
 			}
 		});
@@ -316,9 +347,32 @@ function createInlineTool(def: InlineToolDef): AgentTool {
 					},
 				);
 
+				const truncationMessages: string[] = [];
+				if (result.stdoutTruncated) {
+					const displayedKB = Math.round(MAX_INLINE_BUFFER / 1024);
+					truncationMessages.push(
+						`stdout exceeded ${displayedKB}KB limit and was truncated`,
+					);
+				}
+				if (result.stderrTruncated) {
+					const displayedKB = Math.round(MAX_INLINE_BUFFER / 1024);
+					truncationMessages.push(
+						`stderr exceeded ${displayedKB}KB limit and was truncated`,
+					);
+				}
+				const truncationNotice =
+					truncationMessages.length > 0
+						? `Warning: Output truncated: ${truncationMessages.join(
+								"; ",
+							)}. Consider piping output to a file or using head/tail.`
+						: "";
+
 				if (result.exitCode !== 0) {
-					const errorMsg =
+					const baseError =
 						result.stderr.trim() || `Exit code: ${result.exitCode}`;
+					const errorMsg = truncationNotice
+						? `${baseError}\n\n${truncationNotice}`
+						: baseError;
 					return context.respond.error(
 						`Command failed: ${errorMsg}\n\nStdout:\n${result.stdout}`,
 					);
@@ -327,9 +381,18 @@ function createInlineTool(def: InlineToolDef): AgentTool {
 				// Return stdout as the result
 				const output = result.stdout.trim();
 				if (result.stderr.trim()) {
+					const combined = output
+						? `${output}\n\n[stderr]: ${result.stderr.trim()}`
+						: `[stderr]: ${result.stderr.trim()}`;
 					return context.respond.text(
-						`${output}\n\n[stderr]: ${result.stderr.trim()}`,
+						truncationNotice ? `${combined}\n\n${truncationNotice}` : combined,
 					);
+				}
+				if (truncationNotice) {
+					const text = output
+						? `${output}\n\n${truncationNotice}`
+						: truncationNotice;
+					return context.respond.text(text);
 				}
 				return context.respond.text(output || "(no output)");
 			} catch (error) {
