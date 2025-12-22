@@ -837,8 +837,10 @@ export class ProviderTransport implements AgentTransport {
 			if (toolCallsToExecute.length > 0) {
 				toolResults = [];
 				const pendingExecutions: PendingExecution[] = [];
-				const configuredConcurrency =
-					this.options.maxConcurrentToolExecutions ?? 2;
+				const rawConcurrency = this.options.maxConcurrentToolExecutions ?? 2;
+				const configuredConcurrency = Number.isFinite(rawConcurrency)
+					? Math.max(1, Math.floor(rawConcurrency))
+					: 2;
 				const hasWorkflowTrackedTool = toolCallsToExecute.some((call) =>
 					isWorkflowTrackedTool(call.name),
 				);

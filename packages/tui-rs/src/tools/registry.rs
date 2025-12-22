@@ -109,6 +109,25 @@ use crate::agent::{FromAgent, ToolDefinition, ToolResult};
 use crate::ai::Tool;
 use crate::safety::{ActionFirewall, FirewallVerdict};
 
+const MAX_READ_SIZE_BYTES: u64 = 10 * 1024 * 1024;
+
+fn shell_escape(arg: &str) -> String {
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+    let mut escaped = String::with_capacity(arg.len() + 2);
+    escaped.push('\'');
+    for ch in arg.chars() {
+        if ch == '\'' {
+            escaped.push_str("'\\''");
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped.push('\'');
+    escaped
+}
+
 /// Tool executor that dispatches and runs agent tools
 ///
 /// The executor is the primary interface for tool execution. It maintains instances
@@ -650,6 +669,24 @@ impl ToolExecutor {
                     return ToolResult::failure("Missing file_path argument");
                 }
 
+                if let Ok(metadata) = tokio::fs::metadata(path).await {
+                    let size_bytes = metadata.len();
+                    if size_bytes > MAX_READ_SIZE_BYTES {
+                        let size_mb = (size_bytes as f64) / (1024.0 * 1024.0);
+                        let details = ReadDetails {
+                            path: path.to_string(),
+                            size_bytes: Some(size_bytes),
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                            ..Default::default()
+                        };
+                        return ToolResult::failure(format!(
+                            "File is too large ({:.2}MB). Maximum size is 10MB. Use offset/limit or bash head/tail for large files.",
+                            size_mb
+                        ))
+                        .with_details(details.to_json());
+                    }
+                }
+
                 match tokio::fs::read_to_string(path).await {
                     Ok(content) => {
                         // Add line numbers with offset/limit support
@@ -828,8 +865,11 @@ impl ToolExecutor {
                     .bash
                     .execute(BashArgs {
                         command: format!(
-                            "rg --no-heading -n '{}' {} 2>/dev/null || grep -rn '{}' {} 2>/dev/null | head -100",
-                            pattern, path, pattern, path
+                            "rg --no-heading -n -- {} {} 2>/dev/null || grep -rn -- {} {} 2>/dev/null | head -100",
+                            shell_escape(pattern),
+                            shell_escape(path),
+                            shell_escape(pattern),
+                            shell_escape(path)
                         ),
                         timeout: Some(30000),
                         description: Some("Search for pattern".to_string()),
@@ -1004,8 +1044,8 @@ impl ToolExecutor {
 
                 // Build git diff command
                 let cmd = match path {
-                    Some(p) => format!("git diff {} -- {}", target, p),
-                    None => format!("git diff {}", target),
+                    Some(p) => format!("git diff {} -- {}", shell_escape(target), shell_escape(p)),
+                    None => format!("git diff {}", shell_escape(target)),
                 };
 
                 let result = self
@@ -1068,9 +1108,9 @@ impl ToolExecutor {
                     .unwrap_or(false);
 
                 let cmd = if recursive {
-                    format!("find {} -type f | head -200", path)
+                    format!("find -- {} -type f | head -200", shell_escape(path))
                 } else {
-                    format!("ls -la {}", path)
+                    format!("ls -la -- {}", shell_escape(path))
                 };
 
                 let result = self
@@ -1894,6 +1934,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_executor_read_file_too_large() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("large.txt");
+        let data = vec![b'a'; (MAX_READ_SIZE_BYTES + 1) as usize];
+        std::fs::write(&file_path, data).unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({"file_path": file_path.to_str().unwrap()});
+        let result = executor.execute("read", &args, None, "test-call").await;
+
+        assert!(!result.success);
+        assert!(result
+            .error
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("too large"));
+    }
+
+    #[tokio::test]
     async fn test_executor_write_file() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("output.txt");
@@ -2006,6 +2065,14 @@ mod tests {
             "new_string": "bar"
         });
         assert!(registry.requires_approval("edit", &args));
+    }
+
+    #[test]
+    fn test_shell_escape() {
+        assert_eq!(shell_escape(""), "''");
+        assert_eq!(shell_escape("simple"), "'simple'");
+        assert_eq!(shell_escape("with space"), "'with space'");
+        assert_eq!(shell_escape("a'b"), "'a'\\''b'");
     }
 
     // ========== Cache Integration Tests ==========

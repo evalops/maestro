@@ -301,7 +301,7 @@ pub fn is_system_path(path: &Path) -> bool {
 
     SYSTEM_PATHS.iter().any(|sys| {
         let sys_path = Path::new(sys);
-        path_starts_with(path, sys_path)
+        path_starts_with(&resolved, sys_path)
     })
 }
 
@@ -377,6 +377,19 @@ mod tests {
                 result
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_system_path_detection_follows_symlinks() {
+        let workspace = PathBuf::from("/home/user/project");
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let link_path = temp_dir.path().join("etc-link");
+        std::os::unix::fs::symlink("/etc", &link_path).unwrap();
+        let target = link_path.join("passwd");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::SystemProtected { .. }));
     }
 
     // ========================================================================
