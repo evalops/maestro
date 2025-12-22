@@ -219,6 +219,7 @@ impl AsyncAgentTransport {
         let reader = BufReader::with_capacity(buffer_size, stdout);
         let mut lines = reader.lines();
         let mut state = AgentState::default();
+        let mut should_kill = false;
 
         loop {
             tokio::select! {
@@ -258,7 +259,11 @@ impl AsyncAgentTransport {
                             break;
                         }
                         Err(e) => {
+                            let is_timeout = matches!(e, AsyncTransportError::Timeout);
                             let _ = tx.send(Err(e));
+                            if is_timeout {
+                                should_kill = true;
+                            }
                             break;
                         }
                     }
@@ -266,8 +271,15 @@ impl AsyncAgentTransport {
             }
         }
 
-        // Process ended, get exit code
-        let code = child.wait().await.ok().and_then(|s| s.code());
+        if should_kill {
+            let _ = child.kill().await;
+        }
+
+        // Process ended, get exit code (avoid hanging if child is stuck)
+        let code = match timeout(Duration::from_secs(1), child.wait()).await {
+            Ok(Ok(status)) => status.code(),
+            _ => None,
+        };
         let _ = tx.send(Err(AsyncTransportError::ProcessExited(code)));
     }
 
