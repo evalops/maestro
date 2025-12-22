@@ -338,7 +338,28 @@ impl ActionFirewall {
                     }
                 }
             }
-            "glob" | "grep" | "list" => {
+            "glob" => {
+                // Read-only, but ensure provided paths/patterns don't escape safety checks.
+                if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                    let verdict = self.check_file_read(path);
+                    if !verdict.is_allowed() {
+                        return verdict;
+                    }
+                }
+
+                if let Some(pattern) = args.get("pattern").and_then(|v| v.as_str()) {
+                    let pattern_path = Path::new(pattern);
+                    if pattern_path.is_absolute() || has_path_traversal(pattern) {
+                        let verdict = self.check_file_read(pattern);
+                        if !verdict.is_allowed() {
+                            return verdict;
+                        }
+                    }
+                }
+
+                FirewallVerdict::Allow
+            }
+            "grep" | "list" => {
                 // These are read-only, check path if provided
                 if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
                     self.check_file_read(path)
@@ -750,6 +771,20 @@ mod tests {
         assert!(fw
             .check_tool("list", &json!({ "path": "/home/user/project" }))
             .is_allowed());
+    }
+
+    #[test]
+    fn test_check_tool_glob_absolute_pattern_requires_approval() {
+        let fw = test_firewall();
+        let verdict = fw.check_tool("glob", &json!({ "pattern": "/etc/*.conf" }));
+        assert!(verdict.requires_approval());
+    }
+
+    #[test]
+    fn test_check_tool_glob_traversal_pattern_blocked() {
+        let fw = test_firewall();
+        let verdict = fw.check_tool("glob", &json!({ "pattern": "../secrets/*" }));
+        assert!(verdict.is_blocked());
     }
 
     #[test]
