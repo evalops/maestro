@@ -1880,6 +1880,12 @@ describe("retry utilities", () => {
 			expect(parseRetryAfter({ "retry-after": "1.5" })).toBe(1500);
 		});
 
+		it("normalizes retry-after header casing", async () => {
+			const { parseRetryAfter } = await getRetryUtils();
+			expect(parseRetryAfter({ "Retry-After": "2" })).toBe(2000);
+			expect(parseRetryAfter({ "RETRY-AFTER-MS": "750" })).toBe(750);
+		});
+
 		it("parses retry-after header (HTTP date)", async () => {
 			const { parseRetryAfter } = await getRetryUtils();
 			const futureDate = new Date(Date.now() + 10000).toUTCString();
@@ -1928,6 +1934,13 @@ describe("retry utilities", () => {
 			const { extractRetryHeaders } = await getRetryUtils();
 			const error = { response: { headers: { "retry-after": "10" } } };
 			expect(extractRetryHeaders(error)).toEqual({ "retry-after": "10" });
+		});
+
+		it("extracts Headers instances", async () => {
+			const { extractRetryHeaders } = await getRetryUtils();
+			const headers = new Headers({ "Retry-After": "15" });
+			const error = { response: { headers } };
+			expect(extractRetryHeaders(error)).toEqual({ "retry-after": "15" });
 		});
 
 		it("returns undefined for errors without headers", async () => {
