@@ -44,4 +44,12 @@ describe("System paths list", () => {
 					: systemPathsConfig.linux;
 		expect(paths).toEqual(expected.slice().sort());
 	});
+
+	it("normalizes Windows paths in shared config", () => {
+		for (const path of systemPathsConfig.windows) {
+			expect(path).toMatch(/^[A-Za-z]:\\/);
+			expect(path).not.toMatch(/\\\\/);
+			expect(path).not.toMatch(/\//);
+		}
+	});
 });
