@@ -381,10 +381,20 @@ impl BashTool {
                 return false;
             }
 
-            let lower = cmd_trimmed.to_lowercase();
-            [" -exec", " -execdir", " -ok", " -okdir", " -delete"]
-                .iter()
-                .any(|needle| lower.contains(needle))
+            cmd_trimmed
+                .split_whitespace()
+                .map(|token| {
+                    token
+                        .to_lowercase()
+                        .trim_end_matches(|c: char| c == ';' || c == '+' || c == '\\')
+                        .to_string()
+                })
+                .any(|token| {
+                    matches!(
+                        token.as_str(),
+                        "-exec" | "-execdir" | "-ok" | "-okdir" | "-delete"
+                    )
+                })
         }
 
         fn is_safe_segment(cmd_trimmed: &str) -> bool {
@@ -453,7 +463,11 @@ impl BashTool {
 
         let analysis = analyze_bash_command(cmd_trimmed);
 
-        if analysis.has_command_substitution || analysis.has_redirects || analysis.has_background {
+        if analysis.has_command_substitution || analysis.has_background {
+            return true;
+        }
+
+        if analysis.has_redirects && cmd_trimmed.contains('>') {
             return true;
         }
 
@@ -1260,6 +1274,7 @@ mod tests {
         assert!(BashTool::requires_approval("echo hello > out.txt"));
         assert!(BashTool::requires_approval("ls | tee out.txt"));
         assert!(BashTool::requires_approval("find . -exec rm -rf {} +"));
+        assert!(!BashTool::requires_approval("cat < input.txt"));
         assert!(!BashTool::requires_approval("cat file.txt | grep pattern"));
         assert!(!BashTool::requires_approval("ls && pwd"));
     }
