@@ -272,16 +272,22 @@ impl FileIndexer {
         self.dirs_scanned.fetch_add(1, Ordering::Relaxed);
 
         // Process directories in parallel
-        let mut files: Vec<WorkspaceFile> = top_level_entries
+        let files: Vec<WorkspaceFile> = top_level_entries
             .par_iter()
             .flat_map(|entry| {
                 let path = entry.path();
+                if !self.config.follow_symlinks && self.is_symlink(&path) {
+                    return Vec::new();
+                }
                 if path.is_dir() {
                     self.traverse_dir(&root, &path, 1)
                 } else if path.is_file() {
-                    self.files_found.fetch_add(1, Ordering::Relaxed);
                     if self.should_include(&path) {
-                        vec![WorkspaceFile::from_path(&root, path)]
+                        if self.try_reserve_file_slot() {
+                            vec![WorkspaceFile::from_path(&root, path)]
+                        } else {
+                            Vec::new()
+                        }
                     } else {
                         Vec::new()
                     }
@@ -291,8 +297,6 @@ impl FileIndexer {
             })
             .collect();
 
-        // Truncate to max files limit
-        files.truncate(self.config.max_files);
         files
     }
 
@@ -337,15 +341,22 @@ impl FileIndexer {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
 
+        if !self.config.follow_symlinks && self.is_symlink(&path) {
+            return Vec::new();
+        }
+
         if path.is_dir() {
             if self.config.skip_dirs.contains(&name) || name.starts_with('.') {
                 return Vec::new();
             }
             self.traverse_dir(root, &path, depth + 1)
         } else if path.is_file() {
-            self.files_found.fetch_add(1, Ordering::Relaxed);
             if self.should_include(&path) {
-                vec![WorkspaceFile::from_path(root, path)]
+                if self.try_reserve_file_slot() {
+                    vec![WorkspaceFile::from_path(root, path)]
+                } else {
+                    Vec::new()
+                }
             } else {
                 Vec::new()
             }
@@ -384,6 +395,29 @@ impl FileIndexer {
             }
         }
         false
+    }
+
+    fn is_symlink(&self, path: &Path) -> bool {
+        std::fs::symlink_metadata(path)
+            .map(|meta| meta.file_type().is_symlink())
+            .unwrap_or(false)
+    }
+
+    fn try_reserve_file_slot(&self) -> bool {
+        let max_files = self.config.max_files;
+        loop {
+            let current = self.files_found.load(Ordering::Relaxed);
+            if current >= max_files {
+                return false;
+            }
+            if self
+                .files_found
+                .compare_exchange_weak(current, current + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return true;
+            }
+        }
     }
 }
 
@@ -489,6 +523,62 @@ mod tests {
         let files = indexer.get_files(dir.path());
 
         assert!(files.len() <= 5);
+    }
+
+    #[test]
+    fn test_indexer_files_found_matches_results() {
+        let dir = TempDir::new().unwrap();
+        File::create(dir.path().join("a.rs")).unwrap();
+        File::create(dir.path().join("b.rs")).unwrap();
+        File::create(dir.path().join("c.txt")).unwrap();
+
+        let config = IndexerConfig::default().include_only(&["rs"]);
+        let indexer = FileIndexer::new(config);
+        let files = indexer.get_files(dir.path());
+
+        let status = indexer.status();
+        assert_eq!(status.files_found, files.len());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_indexer_skips_symlink_dirs_by_default() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let target = TempDir::new().unwrap();
+        File::create(target.path().join("linked.rs")).unwrap();
+
+        let link_path = root.path().join("link");
+        symlink(target.path(), &link_path).unwrap();
+
+        let indexer = FileIndexer::default();
+        let files = indexer.get_files(root.path());
+
+        assert!(files.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_indexer_follows_symlink_dirs_when_enabled() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let target = TempDir::new().unwrap();
+        File::create(target.path().join("linked.rs")).unwrap();
+
+        let link_path = root.path().join("link");
+        symlink(target.path(), &link_path).unwrap();
+
+        let config = IndexerConfig::default();
+        let indexer = FileIndexer::new(IndexerConfig {
+            follow_symlinks: true,
+            ..config
+        });
+        let files = indexer.get_files(root.path());
+
+        assert_eq!(files.len(), 1);
+        assert!(files[0].name.ends_with(".rs"));
     }
 
     #[tokio::test]
