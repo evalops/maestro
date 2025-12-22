@@ -28,8 +28,8 @@ pub enum PathContainment {
 /// Critical system paths that should never be written to
 #[cfg(target_os = "linux")]
 const SYSTEM_PATHS: &[&str] = &[
-    "/etc", "/usr", "/var", "/boot", "/sys", "/proc", "/dev", "/bin", "/sbin", "/lib", "/lib64",
-    "/opt",
+    "/etc", "/usr", "/var", "/run", "/boot", "/sys", "/proc", "/dev", "/bin", "/sbin", "/lib",
+    "/lib64", "/opt",
 ];
 
 #[cfg(target_os = "macos")]
