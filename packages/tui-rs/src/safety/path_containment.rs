@@ -28,8 +28,8 @@ pub enum PathContainment {
 /// Critical system paths that should never be written to
 #[cfg(target_os = "linux")]
 const SYSTEM_PATHS: &[&str] = &[
-    "/etc", "/usr", "/var", "/boot", "/sys", "/proc", "/dev", "/bin", "/sbin", "/lib", "/lib64",
-    "/opt",
+    "/etc", "/usr", "/var", "/run", "/boot", "/sys", "/proc", "/dev", "/bin", "/sbin", "/lib",
+    "/lib64", "/opt",
 ];
 
 #[cfg(target_os = "macos")]
@@ -104,7 +104,7 @@ pub fn is_path_contained(
     let temp_dir = std::env::temp_dir();
 
     // Check raw temp_dir (e.g., /var/folders/...)
-    if path_starts_with(&resolved, &temp_dir) || path_starts_with(target, &temp_dir) {
+    if path_starts_with(&resolved, &temp_dir) {
         return PathContainment::Contained {
             zone: "temp".to_string(),
         };
@@ -123,7 +123,7 @@ pub fn is_path_contained(
     #[cfg(unix)]
     {
         let tmp = std::path::Path::new("/tmp");
-        if path_starts_with(&resolved, tmp) || path_starts_with(target, tmp) {
+        if path_starts_with(&resolved, tmp) {
             return PathContainment::Contained {
                 zone: "temp".to_string(),
             };
@@ -275,13 +275,13 @@ pub fn is_system_path(path: &Path) -> bool {
     let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
     // Check raw temp path (e.g., /var/folders/...)
-    if path_starts_with(&resolved, &temp_dir) || path_starts_with(path, &temp_dir) {
+    if path_starts_with(&resolved, &temp_dir) {
         return false;
     }
 
     // Check canonicalized temp path (e.g., /private/var/folders/...)
     if let Ok(temp_canonical) = temp_dir.canonicalize() {
-        if path_starts_with(&resolved, &temp_canonical) || path_starts_with(path, &temp_canonical) {
+        if path_starts_with(&resolved, &temp_canonical) {
             return false;
         }
     }
@@ -290,7 +290,7 @@ pub fn is_system_path(path: &Path) -> bool {
     #[cfg(unix)]
     {
         let tmp = Path::new("/tmp");
-        if path_starts_with(&resolved, tmp) || path_starts_with(path, tmp) {
+        if path_starts_with(&resolved, tmp) {
             return false;
         }
         let private_tmp = Path::new("/private/tmp");
@@ -301,7 +301,7 @@ pub fn is_system_path(path: &Path) -> bool {
 
     SYSTEM_PATHS.iter().any(|sys| {
         let sys_path = Path::new(sys);
-        path_starts_with(path, sys_path)
+        path_starts_with(&resolved, sys_path)
     })
 }
 
@@ -377,6 +377,19 @@ mod tests {
                 result
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_system_path_detection_follows_symlinks() {
+        let workspace = PathBuf::from("/home/user/project");
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let link_path = temp_dir.path().join("etc-link");
+        std::os::unix::fs::symlink("/etc", &link_path).unwrap();
+        let target = link_path.join("passwd");
+
+        let result = is_path_contained(&target, &workspace, &[]);
+        assert!(matches!(result, PathContainment::SystemProtected { .. }));
     }
 
     // ========================================================================
