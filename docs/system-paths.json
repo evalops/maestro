@@ -26,9 +26,5 @@
 		"/bin",
 		"/sbin"
 	],
-	"windows": [
-		"C:\\\\Windows",
-		"C:\\\\Program Files",
-		"C:\\\\Program Files (x86)"
-	]
+	"windows": ["C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)"]
 }
