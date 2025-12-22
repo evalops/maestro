@@ -388,8 +388,10 @@ async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -
     );
 
     let mut saved_path = None;
+    let mut combined_cleanup = None;
     if stdout.has_full_output() && stderr.has_full_output() {
         let combined_path = get_temp_file_path();
+        combined_cleanup = Some(combined_path.clone());
         let mut combined_file = match tokio::fs::File::create(&combined_path).await {
             Ok(file) => Some(file),
             Err(e) => {
@@ -416,11 +418,15 @@ async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -
                 if append_stream(file, stderr_source).await.is_ok() {
                     let _ = file.flush().await;
                     saved_path = Some(combined_path.display().to_string());
+                    combined_cleanup = None;
                 }
             }
         }
     }
 
+    if let Some(path) = combined_cleanup {
+        let _ = tokio::fs::remove_file(path).await;
+    }
     if let Some(path) = &stdout.temp_path {
         let _ = tokio::fs::remove_file(path).await;
     }
