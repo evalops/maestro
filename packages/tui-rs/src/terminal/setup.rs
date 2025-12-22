@@ -258,11 +258,25 @@ pub fn init_fallback() -> io::Result<(Terminal, TerminalCapabilities)> {
         .read(true)
         .write(true)
         .open(fallback_path)?;
-    let backend = CrosstermBackend::new(file);
-    let terminal = ratatui::Terminal::new(backend)?;
-
     let (_width, height) = crossterm::terminal::size().unwrap_or((80, 24));
     let (viewport_top, viewport_height) = calculate_viewport(height);
+
+    let original_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        let _ = restore_impl();
+        original_hook(panic_info);
+    }));
+
+    *TTY.lock().unwrap_or_else(|e| e.into_inner()) = Some(file.try_clone()?);
+
+    let backend = CrosstermBackend::new(file);
+    let terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(viewport_height),
+        },
+    )?;
+
     let capabilities = TerminalCapabilities {
         enhanced_keys: false,
         viewport_top,
