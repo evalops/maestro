@@ -386,7 +386,7 @@ impl BashTool {
                 .map(|token| {
                     token
                         .to_lowercase()
-                        .trim_end_matches(|c: char| c == ';' || c == '+' || c == '\\')
+                        .trim_end_matches([';', '+', '\\'])
                         .to_string()
                 })
                 .any(|token| {
