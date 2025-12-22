@@ -31,8 +31,6 @@ pub(crate) fn kill_process_tree(pid: u32) {
 
 #[cfg(unix)]
 pub(crate) fn set_new_process_group(cmd: &mut tokio::process::Command) {
-    use std::os::unix::process::CommandExt;
-
     unsafe {
         cmd.pre_exec(|| {
             let _ = libc::setpgid(0, 0);
