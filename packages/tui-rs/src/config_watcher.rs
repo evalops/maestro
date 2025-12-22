@@ -273,7 +273,22 @@ impl ConfigWatcher {
 
 impl Default for ConfigWatcher {
     fn default() -> Self {
-        Self::new().expect("Failed to create config watcher")
+        Self::new().unwrap_or_else(|err| {
+            let (event_tx, event_rx) = mpsc::channel();
+            let _ = event_tx.send(ConfigEvent::Error(format!(
+                "Failed to initialize config watcher: {}",
+                err
+            )));
+            Self {
+                watched_paths: HashSet::new(),
+                event_rx,
+                event_tx,
+                debounce_duration: Duration::from_millis(500),
+                debounce_states: std::collections::HashMap::new(),
+                #[cfg(feature = "hot-reload")]
+                _watcher: None,
+            }
+        })
     }
 }
 

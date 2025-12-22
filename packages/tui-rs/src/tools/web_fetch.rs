@@ -126,7 +126,9 @@ pub struct WebFetchArgs {
 /// Web fetch tool for retrieving and processing web content
 pub struct WebFetchTool {
     /// HTTP client with redirect handling
-    client: reqwest::Client,
+    client: Option<reqwest::Client>,
+    /// Initialization error for the HTTP client
+    init_error: Option<String>,
 }
 
 impl WebFetchTool {
@@ -136,10 +138,18 @@ impl WebFetchTool {
             .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
             .redirect(reqwest::redirect::Policy::limited(10))
             .user_agent("Mozilla/5.0 (compatible; ComposerAgent/1.0)")
-            .build()
-            .expect("Failed to create HTTP client");
+            .build();
 
-        Self { client }
+        match client {
+            Ok(client) => Self {
+                client: Some(client),
+                init_error: None,
+            },
+            Err(err) => Self {
+                client: None,
+                init_error: Some(err.to_string()),
+            },
+        }
     }
 
     /// Get the tool definition for registration
@@ -174,6 +184,20 @@ impl WebFetchTool {
             return ToolResult::failure("URL is required");
         }
 
+        let client = match &self.client {
+            Some(client) => client,
+            None => {
+                let details = WebFetchDetails::new(url)
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                let error = self
+                    .init_error
+                    .as_deref()
+                    .unwrap_or("HTTP client unavailable");
+                return ToolResult::failure(format!("Web fetch unavailable: {}", error))
+                    .with_details(details.to_json());
+            }
+        };
+
         // Ensure URL has a scheme
         let url = if !url.starts_with("http://") && !url.starts_with("https://") {
             format!("https://{}", url)
@@ -193,7 +217,7 @@ impl WebFetchTool {
         };
 
         // Fetch the URL
-        let response = match self.client.get(parsed_url.clone()).send().await {
+        let response = match client.get(parsed_url.clone()).send().await {
             Ok(r) => r,
             Err(e) => {
                 let details = WebFetchDetails::new(&url)
@@ -710,6 +734,22 @@ mod tests {
             })
             .await;
         assert!(!result.success);
+    }
+
+    #[tokio::test]
+    async fn test_execute_without_http_client() {
+        let tool = WebFetchTool {
+            client: None,
+            init_error: Some("init failed".to_string()),
+        };
+        let result = tool
+            .execute(WebFetchArgs {
+                url: "https://example.com".to_string(),
+                prompt: None,
+            })
+            .await;
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("Web fetch unavailable"));
     }
 
     // ─────────────────────────────────────────────────────────────────────────
