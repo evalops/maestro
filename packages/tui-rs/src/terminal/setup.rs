@@ -249,6 +249,43 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
     Ok((terminal, capabilities))
 }
 
+/// Initialize a fallback terminal for non-interactive contexts.
+///
+/// This avoids raw mode and `/dev/tty` usage, falling back to a null sink.
+pub fn init_fallback() -> io::Result<(Terminal, TerminalCapabilities)> {
+    let fallback_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fallback_path)?;
+    let (_width, height) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (viewport_top, viewport_height) = calculate_viewport(height);
+
+    let original_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        let _ = restore_impl();
+        original_hook(panic_info);
+    }));
+
+    *TTY.lock().unwrap_or_else(|e| e.into_inner()) = Some(file.try_clone()?);
+
+    let backend = CrosstermBackend::new(file);
+    let terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Inline(viewport_height),
+        },
+    )?;
+
+    let capabilities = TerminalCapabilities {
+        enhanced_keys: false,
+        viewport_top,
+        viewport_height,
+    };
+
+    Ok((terminal, capabilities))
+}
+
 /// Restore the terminal to its original state.
 pub fn restore() -> io::Result<()> {
     restore_impl()
