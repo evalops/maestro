@@ -3,6 +3,7 @@
 //! Ensures file operations stay within safe directories (workspace, temp).
 //! Prevents path traversal attacks and access to system directories.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 /// Result of a path containment check
@@ -41,6 +42,7 @@ const SYSTEM_PATHS: &[&str] = &[
     "/Library",
     "/private/etc",
     "/private/var",
+    "/dev",
     "/bin",
     "/sbin",
 ];
@@ -252,11 +254,11 @@ fn normalize_path(path: &Path) -> PathBuf {
 /// Check if `path` starts with `base` (is contained within)
 fn path_starts_with(path: &Path, base: &Path) -> bool {
     // Normalize both paths for comparison
-    let path_str = path.to_string_lossy();
-    let base_str = base.to_string_lossy();
+    let path_str = normalize_path_for_compare(path);
+    let base_str = normalize_path_for_compare(base);
 
     // Handle trailing slashes
-    let base_normalized = base_str.trim_end_matches('/');
+    let base_normalized = base_str.trim_end_matches(|c| c == '/' || c == '\\');
 
     path_str.starts_with(base_normalized)
         && (path_str.len() == base_normalized.len()
@@ -265,6 +267,28 @@ fn path_starts_with(path: &Path, base: &Path) -> bool {
                 .nth(base_normalized.len())
                 .map(|c| c == '/' || c == '\\')
                 .unwrap_or(false))
+}
+
+#[cfg(windows)]
+fn normalize_path_for_compare(path: &Path) -> Cow<'_, str> {
+    let mut normalized = path.to_string_lossy().replace('/', "\\");
+
+    if let Some(stripped) = normalized.strip_prefix(r"\\?\UNC\") {
+        let mut unc_path = String::from(r"\\");
+        unc_path.push_str(stripped);
+        return Cow::Owned(unc_path.to_lowercase());
+    }
+
+    if let Some(stripped) = normalized.strip_prefix(r"\\?\") {
+        normalized = stripped.to_string();
+    }
+
+    Cow::Owned(normalized.to_lowercase())
+}
+
+#[cfg(not(windows))]
+fn normalize_path_for_compare(path: &Path) -> Cow<'_, str> {
+    path.to_string_lossy()
 }
 
 /// Check if a path is in a system-protected directory
@@ -379,6 +403,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_system_paths_match_shared_config() {
+        let raw = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/system-paths.json"
+        ));
+        let value: serde_json::Value =
+            serde_json::from_str(raw).expect("system-paths.json should be valid JSON");
+
+        let expected_key = if cfg!(target_os = "macos") {
+            "macos"
+        } else if cfg!(target_os = "windows") {
+            "windows"
+        } else {
+            "linux"
+        };
+
+        let expected_list = value
+            .get(expected_key)
+            .and_then(|v| v.as_array())
+            .expect("system-paths.json missing expected list");
+
+        let mut expected: Vec<String> = expected_list
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        let mut actual: Vec<String> = SYSTEM_PATHS.iter().map(|s| s.to_string()).collect();
+
+        expected.sort();
+        actual.sort();
+
+        assert_eq!(actual, expected);
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_system_path_detection_follows_symlinks() {
@@ -390,6 +448,13 @@ mod tests {
 
         let result = is_path_contained(&target, &workspace, &[]);
         assert!(matches!(result, PathContainment::SystemProtected { .. }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_system_path_detection_windows_case_insensitive() {
+        assert!(is_system_path(Path::new(r"c:\windows\system32")));
+        assert!(is_system_path(Path::new(r"\\?\C:\Windows\System32")));
     }
 
     // ========================================================================
