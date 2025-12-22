@@ -187,14 +187,7 @@ impl WebFetchTool {
         let client = match &self.client {
             Some(client) => client,
             None => {
-                let details = WebFetchDetails::new(url)
-                    .with_duration(start_time.elapsed().as_millis() as u64);
-                let error = self
-                    .init_error
-                    .as_deref()
-                    .unwrap_or("HTTP client unavailable");
-                return ToolResult::failure(format!("Web fetch unavailable: {}", error))
-                    .with_details(details.to_json());
+                return self.build_init_error(url, start_time);
             }
         };
 
@@ -356,6 +349,17 @@ impl WebFetchTool {
         result.push_str(&output);
 
         ToolResult::success(result).with_details(details.to_json())
+    }
+
+    fn build_init_error(&self, url: &str, start_time: Instant) -> ToolResult {
+        let details =
+            WebFetchDetails::new(url).with_duration(start_time.elapsed().as_millis() as u64);
+        let error = self
+            .init_error
+            .as_deref()
+            .unwrap_or("HTTP client unavailable");
+        ToolResult::failure(format!("Web fetch unavailable: {}", error))
+            .with_details(details.to_json())
     }
 }
 
