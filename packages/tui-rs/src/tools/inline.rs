@@ -64,7 +64,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use super::details::InlineToolDetails;
-use super::process_utils::kill_process_tree;
+use super::process_utils::{kill_process_tree, set_new_process_group};
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 
@@ -431,6 +431,7 @@ impl InlineToolExecutor {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        set_new_process_group(&mut cmd);
 
         // Set environment variables
         for (key, value) in &tool.definition.env {

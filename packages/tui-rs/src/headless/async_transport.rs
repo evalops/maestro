@@ -63,6 +63,8 @@ pub enum AsyncTransportError {
     Cancelled,
 }
 
+const MAX_CONSECUTIVE_PARSE_ERRORS: usize = 5;
+
 impl std::fmt::Display for AsyncTransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -219,6 +221,7 @@ impl AsyncAgentTransport {
         let reader = BufReader::with_capacity(buffer_size, stdout);
         let mut lines = reader.lines();
         let mut state = AgentState::default();
+        let mut parse_error_streak = 0;
         let mut should_kill = false;
 
         loop {
@@ -242,6 +245,7 @@ impl AsyncAgentTransport {
                         Ok(Some(line)) => {
                             match serde_json::from_str::<FromAgentMessage>(&line) {
                                 Ok(msg) => {
+                                    parse_error_streak = 0;
                                     if let Some(event) = state.handle_message(msg) {
                                         if tx.send(Ok(event)).is_err() {
                                             break;
@@ -251,6 +255,13 @@ impl AsyncAgentTransport {
                                 Err(e) => {
                                     // Log but continue - don't break on parse errors
                                     eprintln!("Parse error: {} - {}", e, &line[..line.len().min(100)]);
+                                    parse_error_streak += 1;
+                                    if parse_error_streak >= MAX_CONSECUTIVE_PARSE_ERRORS {
+                                        let _ = tx.send(Err(AsyncTransportError::ParseFailed(
+                                            e.to_string(),
+                                        )));
+                                        break;
+                                    }
                                 }
                             }
                         }

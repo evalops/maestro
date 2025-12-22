@@ -133,7 +133,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 use super::details::BashDetails;
-use super::process_utils::kill_process_tree;
+use super::process_utils::{kill_process_tree, set_new_process_group};
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 use crate::safety::analyze_bash_command;
@@ -868,6 +868,7 @@ impl BashTool {
             .arg(&args.command)
             .current_dir(&self.cwd)
             .stdin(Stdio::null());
+        set_new_process_group(&mut cmd);
         if args.run_in_background {
             cmd.stdout(Stdio::null()).stderr(Stdio::null());
         } else {
