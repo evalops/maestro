@@ -282,7 +282,13 @@ pub fn is_system_path(path: &Path) -> bool {
 
 /// Check for path traversal attempts in a path string
 pub fn has_path_traversal(path: &str) -> bool {
-    path.contains("..") || path.contains("//") || path.starts_with('~')
+    if path.starts_with('~') || path.contains("//") {
+        return true;
+    }
+
+    Path::new(path)
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
 }
 
 #[cfg(test)]
@@ -491,6 +497,8 @@ mod tests {
         assert!(!has_path_traversal("/absolute/path/to/file"));
         // Single dots are OK (current directory)
         assert!(!has_path_traversal("/home/user/./file"));
+        // ".." in file names should not be treated as traversal
+        assert!(!has_path_traversal("/home/user/file..backup"));
     }
 
     // ========================================================================
