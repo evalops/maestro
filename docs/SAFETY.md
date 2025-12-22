@@ -151,6 +151,9 @@ If Docker is unavailable, Composer falls back to local mode with a warning.
   disabling the rule. If you need a custom rule, submit a PR so others benefit.
 - Document approvals in team workflows: "Composer asked to run `rm -rf`.
   Approved because we're deleting `tmp/`."
+- When adjusting system-protected paths, update `docs/system-paths.json` and
+  run `node scripts/validate-system-paths.js` (or `bun run bun:lint`) to catch
+  Windows backslash escaping issues.
 
 ## Hardened “prod” profile
 
