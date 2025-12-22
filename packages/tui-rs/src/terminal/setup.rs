@@ -249,6 +249,29 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
     Ok((terminal, capabilities))
 }
 
+/// Initialize a fallback terminal for non-interactive contexts.
+///
+/// This avoids raw mode and `/dev/tty` usage, falling back to a null sink.
+pub fn init_fallback() -> io::Result<(Terminal, TerminalCapabilities)> {
+    let fallback_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fallback_path)?;
+    let backend = CrosstermBackend::new(file);
+    let terminal = ratatui::Terminal::new(backend)?;
+
+    let (_width, height) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (viewport_top, viewport_height) = calculate_viewport(height);
+    let capabilities = TerminalCapabilities {
+        enhanced_keys: false,
+        viewport_top,
+        viewport_height,
+    };
+
+    Ok((terminal, capabilities))
+}
+
 /// Restore the terminal to its original state.
 pub fn restore() -> io::Result<()> {
     restore_impl()

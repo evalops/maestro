@@ -232,7 +232,10 @@ impl App {
         // Initialize the terminal (enters raw mode, sets up alternate screen).
         // This is a tuple destructuring - we get both values at once.
         let (terminal, capabilities) = terminal::init().context("Failed to initialize terminal")?;
+        Ok(Self::new_with_terminal(terminal, capabilities))
+    }
 
+    fn new_with_terminal(terminal: terminal::Terminal, capabilities: TerminalCapabilities) -> Self {
         // Build the command registry and wrap it in Arc for shared ownership.
         // Arc::new() moves the registry into the Arc.
         let command_registry = Arc::new(build_command_registry());
@@ -249,7 +252,7 @@ impl App {
 
         // Construct the App with all fields initialized.
         // `Self` is an alias for the type we're implementing (App).
-        Ok(Self {
+        Self {
             state: AppState::new(),
             native_agent: None,     // Agent spawned later in run()
             native_event_rx: None,  // Channel created when agent spawns
@@ -274,7 +277,7 @@ impl App {
             prompt_history: crate::history::PromptHistory::load_or_create()
                 .unwrap_or_else(|_| crate::history::PromptHistory::default()),
             tool_history: crate::tools::ToolHistory::default(),
-        })
+        }
     }
 
     /// Get the current viewport top position (for history push).
@@ -2223,7 +2226,20 @@ Slash Commands:
 
 impl Default for App {
     fn default() -> Self {
-        Self::new().expect("Failed to create App")
+        match Self::new() {
+            Ok(app) => app,
+            Err(err) => {
+                eprintln!("[app] Warning: Failed to initialize terminal: {}", err);
+                let (terminal, capabilities) =
+                    terminal::init_fallback().unwrap_or_else(|fallback_err| {
+                        panic!(
+                            "Failed to create App: {}; fallback failed: {}",
+                            err, fallback_err
+                        );
+                    });
+                Self::new_with_terminal(terminal, capabilities)
+            }
+        }
     }
 }
 
