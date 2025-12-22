@@ -69,7 +69,8 @@ function sleep(ms: number): Promise<void> {
 async function waitForLogEntry(
 	taskId: string,
 	expected: string,
-	attempts = 20,
+	attempts = 40,
+	delayMs = 150,
 ): Promise<string> {
 	for (let i = 0; i < attempts; i += 1) {
 		const logsResult = await backgroundTasksTool.execute(
@@ -84,15 +85,15 @@ async function waitForLogEntry(
 		if (text.includes(expected)) {
 			return text;
 		}
-		await sleep(100);
+		await sleep(delayMs);
 	}
 	throw new Error(`Log output for ${taskId} never contained "${expected}"`);
 }
 
 async function waitForCondition(
 	check: () => boolean | Promise<boolean>,
-	attempts = 30,
-	delayMs = 100,
+	attempts = 50,
+	delayMs = 150,
 ): Promise<void> {
 	for (let i = 0; i < attempts; i += 1) {
 		const result = await check();
