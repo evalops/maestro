@@ -27,6 +27,43 @@ export interface RetryOptions {
 	) => number | undefined;
 }
 
+type HeaderRecord = Record<string, string>;
+
+function normalizeHeaderRecord(headers: HeaderRecord): HeaderRecord {
+	const normalized: HeaderRecord = {};
+	for (const [key, value] of Object.entries(headers)) {
+		normalized[key.toLowerCase()] = String(value);
+	}
+	return normalized;
+}
+
+function coerceHeaderRecord(headers: unknown): HeaderRecord | undefined {
+	if (!headers || typeof headers !== "object") return undefined;
+
+	if (headers instanceof Map) {
+		return normalizeHeaderRecord(Object.fromEntries(headers.entries()));
+	}
+
+	const entries = (headers as { entries?: unknown }).entries;
+	if (typeof entries === "function") {
+		try {
+			return normalizeHeaderRecord(
+				Object.fromEntries(
+					Array.from(
+						(
+							headers as { entries: () => Iterable<[string, string]> }
+						).entries(),
+					),
+				),
+			);
+		} catch {
+			// Fall through to object normalization
+		}
+	}
+
+	return normalizeHeaderRecord(headers as HeaderRecord);
+}
+
 /**
  * Parse retry-after header value to milliseconds.
  * Supports: seconds (number), milliseconds header, or HTTP date format.
@@ -36,8 +73,10 @@ export function parseRetryAfter(
 ): number | null {
 	if (!headers) return null;
 
+	const normalized = normalizeHeaderRecord(headers);
+
 	// Check retry-after-ms first (milliseconds)
-	const retryAfterMs = headers["retry-after-ms"];
+	const retryAfterMs = normalized["retry-after-ms"];
 	if (retryAfterMs) {
 		const ms = Number.parseFloat(retryAfterMs);
 		if (!Number.isNaN(ms) && ms > 0) {
@@ -46,7 +85,7 @@ export function parseRetryAfter(
 	}
 
 	// Check retry-after (seconds or HTTP date)
-	const retryAfter = headers["retry-after"];
+	const retryAfter = normalized["retry-after"];
 	if (retryAfter) {
 		// Try parsing as seconds
 		const seconds = Number.parseFloat(retryAfter);
@@ -79,19 +118,19 @@ export function extractRetryHeaders(
 	// Check for responseHeaders property (common pattern)
 	const errObj = error as Record<string, unknown>;
 	if (errObj.responseHeaders && typeof errObj.responseHeaders === "object") {
-		return errObj.responseHeaders as Record<string, string>;
+		return coerceHeaderRecord(errObj.responseHeaders);
 	}
 
 	// Check for headers property
 	if (errObj.headers && typeof errObj.headers === "object") {
-		return errObj.headers as Record<string, string>;
+		return coerceHeaderRecord(errObj.headers);
 	}
 
 	// Check for response.headers (fetch-like errors)
 	if (errObj.response && typeof errObj.response === "object") {
 		const response = errObj.response as Record<string, unknown>;
 		if (response.headers && typeof response.headers === "object") {
-			return response.headers as Record<string, string>;
+			return coerceHeaderRecord(response.headers);
 		}
 	}
 

@@ -20,6 +20,7 @@ import { join } from "node:path";
 import type { Provider } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { parseRetryAfter } from "../utils/retry.js";
 
 const logger = createLogger("providers:network");
 
@@ -354,10 +355,10 @@ export async function fetchWithRetry(
 
 				// Retryable status code
 				if (attempt < config.maxRetries) {
-					const retryAfter = response.headers.get("retry-after");
-					const delay = retryAfter
-						? Number.parseInt(retryAfter, 10) * 1000
-						: calculateBackoff(attempt, config);
+					const retryAfterDelay = parseRetryAfter(
+						Object.fromEntries(response.headers.entries()),
+					);
+					const delay = retryAfterDelay ?? calculateBackoff(attempt, config);
 
 					logger.debug("Retrying request after status", {
 						status: response.status,

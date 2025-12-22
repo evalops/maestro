@@ -15,5 +15,6 @@ describe("System paths list", () => {
 		}
 		expect(paths).toContain("/proc");
 		expect(paths).toContain("/sys");
+		expect(paths).toContain("/run");
 	});
 });

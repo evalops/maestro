@@ -13,6 +13,7 @@ const LINUX_SYSTEM_PATHS = [
 	"/etc",
 	"/usr",
 	"/var",
+	"/run",
 	"/boot",
 	"/sys",
 	"/proc",
