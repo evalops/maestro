@@ -192,7 +192,7 @@ fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
     #[cfg(not(windows))]
     {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        return Ok((shell, vec!["-c".to_string()]));
+        Ok((shell, vec!["-c".to_string()]))
     }
 }
 
