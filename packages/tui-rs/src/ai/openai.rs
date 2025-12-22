@@ -228,6 +228,20 @@ fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, se
     let call_id = item.get("call_id")?.as_str()?.to_string();
     let name = item.get("name")?.as_str()?.to_string();
     let arguments = item.get("arguments")?;
+    if !matches!(arguments, serde_json::Value::String(_)) {
+        let kind = match arguments {
+            serde_json::Value::Null => "null",
+            serde_json::Value::Bool(_) => "bool",
+            serde_json::Value::Number(_) => "number",
+            serde_json::Value::String(_) => "string",
+            serde_json::Value::Array(_) => "array",
+            serde_json::Value::Object(_) => "object",
+        };
+        eprintln!(
+            "[openai] function_call.arguments was {}; expected string (call_id={}, name={})",
+            kind, call_id, name
+        );
+    }
     let arguments_value = match arguments {
         serde_json::Value::String(raw) => {
             serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}))
