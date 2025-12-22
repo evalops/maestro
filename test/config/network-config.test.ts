@@ -178,11 +178,15 @@ describe("Provider Network Config", () => {
 				"../../src/providers/network-config.js"
 			);
 
+			const abortError = new Error("request aborted");
+			abortError.name = "AbortError";
+
 			expect(isRetryableError(new Error("network error"))).toBe(true);
 			expect(isRetryableError(new Error("ECONNRESET"))).toBe(true);
 			expect(isRetryableError(new Error("ETIMEDOUT"))).toBe(true);
 			expect(isRetryableError(new Error("socket hang up"))).toBe(true);
 			expect(isRetryableError(new Error("fetch failed"))).toBe(true);
+			expect(isRetryableError(abortError)).toBe(true);
 		});
 
 		it("should return false for non-network errors", async () => {

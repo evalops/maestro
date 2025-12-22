@@ -285,6 +285,9 @@ export function calculateBackoff(
  */
 export function isRetryableError(error: unknown): boolean {
 	if (error instanceof Error) {
+		if (error.name === "AbortError") {
+			return true;
+		}
 		const message = error.message.toLowerCase();
 		// Network errors
 		if (
