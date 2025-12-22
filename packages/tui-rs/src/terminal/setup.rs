@@ -53,7 +53,7 @@
 //! state (raw mode, hidden cursor, etc.) which would require manual reset.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, Write};
 use std::panic;
 use std::sync::Mutex;
 
@@ -70,10 +70,11 @@ use once_cell::sync::Lazy;
 use ratatui::backend::CrosstermBackend;
 use ratatui::{TerminalOptions, Viewport};
 
-/// Global TTY file handle for terminal output.
+/// Global terminal device handle for terminal output.
 ///
-/// This static mutex stores the `/dev/tty` file handle after initialization,
-/// making it available for cleanup in the panic hook and restore functions.
+/// This static mutex stores the terminal device handle after initialization
+/// (e.g. `/dev/tty` or `CONOUT$`), making it available for cleanup in the
+/// panic hook and restore functions.
 ///
 /// We use `Lazy` from `once_cell` to ensure thread-safe lazy initialization,
 /// and `Mutex` to provide interior mutability for the restore operation.
@@ -87,8 +88,8 @@ const TERMINAL_DEVICE: &str = "/dev/tty";
 /// Type alias for our terminal backend.
 ///
 /// Uses `CrosstermBackend<File>` instead of the typical `CrosstermBackend<Stdout>`
-/// because we write to `/dev/tty` rather than stdout. This allows stdin/stdout
-/// to be used for IPC communication with the TypeScript backend.
+/// because we write to the terminal device rather than stdout. This allows
+/// stdin/stdout to be used for IPC communication with the TypeScript backend.
 pub type Terminal = ratatui::Terminal<CrosstermBackend<File>>;
 
 /// Terminal capabilities detected during initialization.
@@ -125,15 +126,11 @@ pub struct TerminalCapabilities {
 /// This is a quick availability check that discards error details. For detailed
 /// error reporting, use [`check_tty()`] instead.
 pub fn is_tty_available() -> bool {
-    if cfg!(windows) {
-        std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
-    } else {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(TERMINAL_DEVICE)
-            .is_ok()
-    }
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(TERMINAL_DEVICE)
+        .is_ok()
 }
 
 /// Check if a terminal device is available, returning detailed errors.
@@ -158,22 +155,11 @@ pub fn is_tty_available() -> bool {
 /// }
 /// ```
 pub fn check_tty() -> io::Result<()> {
-    if cfg!(windows) {
-        if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "No console TTY available",
-            ))
-        }
-    } else {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(TERMINAL_DEVICE)
-            .map(|_| ())
-    }
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(TERMINAL_DEVICE)
+        .map(|_| ())
 }
 
 /// Initialize the terminal for TUI rendering.
