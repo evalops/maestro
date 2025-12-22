@@ -122,12 +122,13 @@
 //! # }
 //! ```
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -164,6 +165,123 @@ fn get_temp_file_path() -> PathBuf {
     let pid = std::process::id();
 
     std::env::temp_dir().join(format!("composer-bash-{}-{}.log", pid, timestamp))
+}
+
+struct StreamCapture {
+    buffer: Vec<u8>,
+    tail: VecDeque<u8>,
+    total_bytes: usize,
+    total_lines: usize,
+    last_byte: Option<u8>,
+    temp_path: Option<PathBuf>,
+    temp_file: Option<tokio::fs::File>,
+}
+
+impl StreamCapture {
+    fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            tail: VecDeque::new(),
+            total_bytes: 0,
+            total_lines: 0,
+            last_byte: None,
+            temp_path: None,
+            temp_file: None,
+        }
+    }
+
+    async fn append_chunk(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+        self.total_bytes += chunk.len();
+        self.total_lines += chunk.iter().filter(|b| **b == b'\n').count();
+        self.last_byte = chunk.last().copied();
+
+        if let Some(file) = &mut self.temp_file {
+            file.write_all(chunk).await?;
+        } else {
+            self.buffer.extend_from_slice(chunk);
+        }
+
+        self.tail.extend(chunk.iter().copied());
+        while self.tail.len() > MAX_OUTPUT_SIZE {
+            self.tail.pop_front();
+        }
+
+        if self.temp_file.is_none()
+            && (self.total_bytes > MAX_OUTPUT_SIZE || self.total_lines > MAX_OUTPUT_LINES)
+        {
+            let temp_path = get_temp_file_path();
+            match tokio::fs::File::create(&temp_path).await {
+                Ok(mut file) => {
+                    file.write_all(&self.buffer).await?;
+                    self.buffer.clear();
+                    self.temp_path = Some(temp_path);
+                    self.temp_file = Some(file);
+                }
+                Err(e) => {
+                    eprintln!("Failed to write temp output file: {}", e);
+                    self.buffer.clear();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        if self.total_bytes > 0 && self.last_byte != Some(b'\n') {
+            self.total_lines += 1;
+        }
+        if let Some(file) = &mut self.temp_file {
+            file.flush().await?;
+        }
+        Ok(())
+    }
+
+    fn tail_string(&self) -> String {
+        let bytes: Vec<u8> = self.tail.iter().copied().collect();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    fn has_full_output(&self) -> bool {
+        self.total_bytes == 0 || self.temp_path.is_some() || !self.buffer.is_empty()
+    }
+}
+
+async fn read_stream_with_limits<R: AsyncRead + Unpin>(
+    mut reader: R,
+) -> std::io::Result<StreamCapture> {
+    let mut capture = StreamCapture::new();
+    let mut buf = [0u8; 8_192];
+
+    loop {
+        let read = reader.read(&mut buf).await?;
+        if read == 0 {
+            break;
+        }
+        capture.append_chunk(&buf[..read]).await?;
+    }
+
+    capture.flush().await?;
+    Ok(capture)
+}
+
+enum StreamSource<'a> {
+    Memory(&'a [u8]),
+    File(&'a PathBuf),
+}
+
+async fn append_stream(
+    dest: &mut tokio::fs::File,
+    source: StreamSource<'_>,
+) -> std::io::Result<()> {
+    match source {
+        StreamSource::Memory(bytes) => dest.write_all(bytes).await,
+        StreamSource::File(path) => {
+            let mut file = tokio::fs::File::open(path).await?;
+            tokio::io::copy(&mut file, dest).await?;
+            Ok(())
+        }
+    }
 }
 
 /// Truncate output from the tail (keep last N lines/bytes).
@@ -222,6 +340,106 @@ fn truncate_output_tail(
     );
 
     (truncated, true, Some(stats))
+}
+
+struct CombinedOutput {
+    output: String,
+    was_truncated: bool,
+    temp_path: Option<String>,
+}
+
+async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -> CombinedOutput {
+    let mut output = stdout.tail_string();
+
+    let stderr_has_output = stderr.total_bytes > 0;
+    let stdout_has_output = !output.is_empty();
+    let (separator_bytes, separator_lines) = if stderr_has_output && stdout_has_output {
+        const STDERR_SEPARATOR: &str = "\n--- stderr ---\n";
+        (STDERR_SEPARATOR.len(), STDERR_SEPARATOR.lines().count())
+    } else {
+        (0, 0)
+    };
+    let total_bytes = stdout.total_bytes + stderr.total_bytes + separator_bytes;
+    let total_lines = stdout.total_lines + stderr.total_lines + separator_lines;
+
+    if stderr_has_output {
+        if stdout_has_output {
+            const STDERR_SEPARATOR: &str = "\n--- stderr ---\n";
+            output.push_str(STDERR_SEPARATOR);
+        }
+        output.push_str(&stderr.tail_string());
+    }
+
+    let was_truncated = total_bytes > MAX_OUTPUT_SIZE || total_lines > MAX_OUTPUT_LINES;
+    if !was_truncated {
+        return CombinedOutput {
+            output,
+            was_truncated: false,
+            temp_path: None,
+        };
+    }
+
+    let (trimmed_output, _, _) = truncate_output_tail(&output, MAX_OUTPUT_SIZE, MAX_OUTPUT_LINES);
+    let lines_kept = trimmed_output.lines().count();
+    let bytes_kept = trimmed_output.len();
+    let stats = format!(
+        "[Showing last {} lines ({} bytes) of {} lines ({} bytes total)]",
+        lines_kept, bytes_kept, total_lines, total_bytes
+    );
+
+    let mut saved_path = None;
+    if stdout.has_full_output() && stderr.has_full_output() {
+        let combined_path = get_temp_file_path();
+        let mut combined_file = match tokio::fs::File::create(&combined_path).await {
+            Ok(file) => Some(file),
+            Err(e) => {
+                eprintln!("Failed to write temp output file: {}", e);
+                None
+            }
+        };
+
+        if let Some(file) = &mut combined_file {
+            let stdout_source = stdout
+                .temp_path
+                .as_ref()
+                .map(StreamSource::File)
+                .unwrap_or_else(|| StreamSource::Memory(&stdout.buffer));
+            if append_stream(file, stdout_source).await.is_ok() {
+                if stderr_has_output && stdout_has_output {
+                    let _ = file.write_all(b"\n--- stderr ---\n").await;
+                }
+                let stderr_source = stderr
+                    .temp_path
+                    .as_ref()
+                    .map(StreamSource::File)
+                    .unwrap_or_else(|| StreamSource::Memory(&stderr.buffer));
+                if append_stream(file, stderr_source).await.is_ok() {
+                    let _ = file.flush().await;
+                    saved_path = Some(combined_path.display().to_string());
+                }
+            }
+        }
+    }
+
+    if saved_path.is_some() {
+        if let Some(path) = &stdout.temp_path {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        if let Some(path) = &stderr.temp_path {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+
+    let notice = match saved_path.as_ref() {
+        Some(path) => format!("{}\nFull output saved to: {}", stats, path),
+        None => stats,
+    };
+
+    CombinedOutput {
+        output: format!("{}\n\n{}", notice, trimmed_output),
+        was_truncated: true,
+        temp_path: saved_path,
+    }
 }
 
 /// Arguments for bash command execution
@@ -682,6 +900,15 @@ impl BashTool {
                 super::process_registry::register(pid);
             }
 
+            let pid_for_wait = child_pid;
+            let mut child_for_wait = child;
+            tokio::spawn(async move {
+                let _ = child_for_wait.wait().await;
+                if let Some(pid) = pid_for_wait {
+                    super::process_registry::unregister(pid);
+                }
+            });
+
             let mut details = BashDetails::background(&args.command, child_pid.unwrap_or(0))
                 .with_cwd(cwd_string.clone())
                 .with_duration(start_time.elapsed().as_millis() as u64);
@@ -697,7 +924,7 @@ impl BashTool {
 
         // Wait for completion with timeout
         let result = timeout(Duration::from_millis(timeout_ms), async {
-            let mut stdout = match child.stdout.take() {
+            let stdout = match child.stdout.take() {
                 Some(s) => s,
                 None => {
                     return (
@@ -707,7 +934,7 @@ impl BashTool {
                     );
                 }
             };
-            let mut stderr = match child.stderr.take() {
+            let stderr = match child.stderr.take() {
                 Some(s) => s,
                 None => {
                     return (
@@ -718,80 +945,20 @@ impl BashTool {
                 }
             };
 
-            let mut stdout_buf = Vec::new();
-            let mut stderr_buf = Vec::new();
-
-            // Read stdout and stderr concurrently
+            // Read stdout and stderr concurrently with streaming limits
             let (stdout_result, stderr_result, status) = tokio::join!(
-                stdout.read_to_end(&mut stdout_buf),
-                stderr.read_to_end(&mut stderr_buf),
+                read_stream_with_limits(stdout),
+                read_stream_with_limits(stderr),
                 child.wait()
             );
 
-            (
-                stdout_result.map(|_| stdout_buf),
-                stderr_result.map(|_| stderr_buf),
-                status,
-            )
+            (stdout_result, stderr_result, status)
         })
         .await;
 
         match result {
             Ok((Ok(stdout), Ok(stderr), Ok(status))) => {
-                let mut output = String::from_utf8_lossy(&stdout).to_string();
-
-                // Append stderr if present
-                let stderr_str = String::from_utf8_lossy(&stderr);
-                if !stderr_str.is_empty() {
-                    if !output.is_empty() {
-                        output.push_str("\n--- stderr ---\n");
-                    }
-                    output.push_str(&stderr_str);
-                }
-
-                // Handle large output: write to temp file and tail-truncate
-                let (final_output, truncation_notice, was_truncated, temp_file_path) = if output
-                    .len()
-                    > MAX_OUTPUT_SIZE
-                    || output.lines().count() > MAX_OUTPUT_LINES
-                {
-                    // Write full output to temp file for agent access
-                    let temp_path = get_temp_file_path();
-                    let (temp_file_notice, saved_path) = match std::fs::write(&temp_path, &output) {
-                        Ok(()) => (
-                            Some(format!("Full output saved to: {}", temp_path.display())),
-                            Some(temp_path.display().to_string()),
-                        ),
-                        Err(e) => {
-                            // Log but don't fail the command
-                            eprintln!("Failed to write temp output file: {}", e);
-                            (None, None)
-                        }
-                    };
-
-                    // Tail-truncate: keep the most recent output
-                    let (truncated, truncated_flag, stats) =
-                        truncate_output_tail(&output, MAX_OUTPUT_SIZE, MAX_OUTPUT_LINES);
-
-                    let notice = match (truncated_flag, stats, temp_file_notice) {
-                        (true, Some(stats), Some(temp_notice)) => {
-                            Some(format!("{}\n{}", stats, temp_notice))
-                        }
-                        (true, Some(stats), None) => Some(stats),
-                        (_, _, Some(temp_notice)) => Some(temp_notice),
-                        _ => None,
-                    };
-
-                    (truncated, notice, truncated_flag, saved_path)
-                } else {
-                    (output, None, false, None)
-                };
-
-                // Build final output with truncation notice
-                let output_with_notice = match truncation_notice {
-                    Some(notice) => format!("{}\n\n{}", notice, final_output),
-                    None => final_output,
-                };
+                let combined = build_combined_output(&stdout, &stderr).await;
 
                 let exit_code = status.code().unwrap_or(-1);
                 let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -805,8 +972,8 @@ impl BashTool {
                 details = details
                     .with_cwd(cwd_string.clone())
                     .with_duration(duration_ms);
-                if was_truncated {
-                    details = details.with_truncation(temp_file_path);
+                if combined.was_truncated {
+                    details = details.with_truncation(combined.temp_path.clone());
                 }
                 if let Some(ref desc) = args.description {
                     details = details.with_description(desc);
@@ -814,7 +981,7 @@ impl BashTool {
 
                 ToolResult {
                     success: status.success(),
-                    output: output_with_notice,
+                    output: combined.output,
                     error: if status.success() {
                         None
                     } else {
