@@ -147,6 +147,55 @@ const MAX_OUTPUT_SIZE: usize = 30_000;
 /// Maximum lines to show in truncated output
 const MAX_OUTPUT_LINES: usize = 500;
 
+fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
+    #[cfg(windows)]
+    {
+        let mut paths: Vec<PathBuf> = Vec::new();
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            paths.push(
+                PathBuf::from(program_files)
+                    .join("Git")
+                    .join("bin")
+                    .join("bash.exe"),
+            );
+        }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            paths.push(
+                PathBuf::from(program_files_x86)
+                    .join("Git")
+                    .join("bin")
+                    .join("bash.exe"),
+            );
+        }
+
+        for path in &paths {
+            if path.exists() {
+                return Ok((path.to_string_lossy().to_string(), vec!["-c".to_string()]));
+            }
+        }
+
+        let searched = if paths.is_empty() {
+            "  (none - ProgramFiles not set)".to_string()
+        } else {
+            paths
+                .iter()
+                .map(|p| format!("  {}", p.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        return Err(format!(
+            "Git Bash not found. Please install Git for Windows from https://git-scm.com/download/win\nSearched in:\n{}",
+            searched
+        ));
+    }
+
+    #[cfg(not(windows))]
+    {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        return Ok((shell, vec!["-c".to_string()]));
+    }
+}
+
 /// Generate a unique temp file path for storing large bash output.
 ///
 /// Creates a path in the system temp directory with a random ID to avoid conflicts.
@@ -466,6 +515,7 @@ pub struct BashArgs {
     /// The shell command to execute (required)
     ///
     /// This is passed to the shell specified by $SHELL (or /bin/bash) via the -c flag.
+    /// On Windows, Git Bash is required and invoked via `bash -c`.
     /// Complex commands with pipes, redirects, and environment variables are supported.
     pub command: String,
 
@@ -519,14 +569,24 @@ pub struct BashTool {
     /// Defaults to the $SHELL environment variable, falling back to /bin/bash if unset.
     /// The shell is invoked with `shell -c "command"` for all executions.
     shell: String,
+    /// Arguments passed to the shell executable (e.g., -c, /C).
+    shell_args: Vec<String>,
+    /// Error message if no compatible shell could be resolved (Windows Git Bash missing).
+    shell_error: Option<String>,
 }
 
 impl BashTool {
     /// Create a new bash tool
     pub fn new(cwd: impl Into<String>) -> Self {
+        let (shell, shell_args, shell_error) = match resolve_shell_config() {
+            Ok((shell, shell_args)) => (shell, shell_args, None),
+            Err(message) => (String::new(), Vec::new(), Some(message)),
+        };
         Self {
             cwd: cwd.into(),
-            shell: std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
+            shell,
+            shell_args,
+            shell_error,
         }
     }
 
@@ -535,7 +595,8 @@ impl BashTool {
         Tool::new(
             "bash",
             "Execute a bash command in the shell. Use for git, npm, cargo, and other CLI tools. \
-             DO NOT use for file operations - use dedicated tools instead.",
+             DO NOT use for file operations - use dedicated tools instead. \
+             On Windows, Git Bash is required.",
         )
         .with_schema(serde_json::json!({
             "type": "object",
@@ -846,6 +907,10 @@ impl BashTool {
     /// # }
     /// ```rust,ignore
     pub async fn execute(&self, args: BashArgs) -> ToolResult {
+        if let Some(message) = &self.shell_error {
+            return ToolResult::failure(message.clone());
+        }
+
         // Reject empty commands early to avoid no-op approvals
         if args.command.trim().is_empty() {
             return ToolResult::failure("Empty bash command");
@@ -864,7 +929,7 @@ impl BashTool {
 
         // Build command
         let mut cmd = Command::new(&self.shell);
-        cmd.arg("-c")
+        cmd.args(&self.shell_args)
             .arg(&args.command)
             .current_dir(&self.cwd)
             .stdin(Stdio::null());
