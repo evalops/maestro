@@ -775,14 +775,23 @@ impl ToolExecutor {
                 // Use native glob crate
                 match glob::glob(&full_pattern) {
                     Ok(paths) => {
-                        let all_matches: Vec<String> = paths
-                            .filter_map(|p| p.ok())
-                            .map(|p| p.display().to_string())
-                            .collect();
+                        const MAX_GLOB_RESULTS: usize = 100;
+                        let mut matches: Vec<String> = Vec::new();
+                        let mut total_count = 0;
+                        let mut truncated = false;
 
-                        let total_count = all_matches.len();
-                        let truncated = total_count > 100;
-                        let matches: Vec<String> = all_matches.into_iter().take(100).collect();
+                        for entry in paths {
+                            let Ok(path) = entry else {
+                                continue;
+                            };
+                            total_count += 1;
+                            if matches.len() < MAX_GLOB_RESULTS {
+                                matches.push(path.display().to_string());
+                            } else {
+                                truncated = true;
+                                break;
+                            }
+                        }
 
                         let details = GlobDetails::new(pattern)
                             .with_base_path(base_path)

@@ -44,11 +44,34 @@ pub struct CacheKey {
     pub args_hash: u64,
 }
 
+fn canonicalize_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let mut normalized = serde_json::Map::new();
+            for key in keys {
+                if let Some(val) = map.get(key) {
+                    normalized.insert(key.clone(), canonicalize_json(val));
+                }
+            }
+            serde_json::Value::Object(normalized)
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(canonicalize_json).collect::<Vec<_>>())
+        }
+        _ => value.clone(),
+    }
+}
+
 impl CacheKey {
     /// Create a new cache key
     pub fn new(tool_name: impl Into<String>, args: &serde_json::Value) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        args.to_string().hash(&mut hasher);
+        let normalized_args = canonicalize_json(args);
+        serde_json::to_string(&normalized_args)
+            .unwrap_or_default()
+            .hash(&mut hasher);
         Self {
             tool_name: tool_name.into().to_lowercase(),
             args_hash: hasher.finish(),
@@ -1875,6 +1898,17 @@ mod tests {
     fn test_cache_key_normalizes_tool_name() {
         let key = CacheKey::new("Bash", &serde_json::json!({}));
         assert_eq!(key.tool_name, "bash");
+    }
+
+    #[test]
+    fn test_cache_key_canonicalizes_args() {
+        let args_a = serde_json::json!({"b": 2, "a": 1, "nested": {"y": 2, "x": 1}});
+        let args_b = serde_json::json!({"nested": {"x": 1, "y": 2}, "a": 1, "b": 2});
+
+        let key_a = CacheKey::new("read", &args_a);
+        let key_b = CacheKey::new("read", &args_b);
+
+        assert_eq!(key_a.args_hash, key_b.args_hash);
     }
 
     #[test]

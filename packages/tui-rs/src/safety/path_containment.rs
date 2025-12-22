@@ -192,6 +192,12 @@ pub fn is_path_contained(
 
 /// Resolve a path, handling relative paths and symlinks
 fn resolve_path(path: &Path, base: &Path) -> std::io::Result<PathBuf> {
+    if let Some(expanded) = expand_tilde(path) {
+        return expanded
+            .canonicalize()
+            .or_else(|_| Ok(normalize_path(&expanded)));
+    }
+
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -203,6 +209,17 @@ fn resolve_path(path: &Path, base: &Path) -> std::io::Result<PathBuf> {
         // If file doesn't exist, normalize the path manually
         Ok(normalize_path(&absolute))
     })
+}
+
+fn expand_tilde(path: &Path) -> Option<PathBuf> {
+    let path_str = path.to_str()?;
+    if path_str == "~" {
+        return dirs::home_dir();
+    }
+    if let Some(stripped) = path_str.strip_prefix("~/") {
+        return dirs::home_dir().map(|home| home.join(stripped));
+    }
+    None
 }
 
 /// Normalize a path without requiring it to exist
@@ -282,10 +299,6 @@ pub fn is_system_path(path: &Path) -> bool {
 
 /// Check for path traversal attempts in a path string
 pub fn has_path_traversal(path: &str) -> bool {
-    if path.starts_with('~') || path.contains("//") {
-        return true;
-    }
-
     Path::new(path)
         .components()
         .any(|component| matches!(component, std::path::Component::ParentDir))
@@ -466,8 +479,6 @@ mod tests {
     fn test_has_path_traversal() {
         assert!(has_path_traversal("../etc/passwd"));
         assert!(has_path_traversal("/foo/../etc/passwd"));
-        assert!(has_path_traversal("//etc/passwd"));
-        assert!(has_path_traversal("~/secret"));
         assert!(!has_path_traversal("/home/user/file.txt"));
     }
 
@@ -479,14 +490,6 @@ mod tests {
 
         // Traversal in the middle
         assert!(has_path_traversal("/home/../root/.ssh"));
-
-        // Double slashes
-        assert!(has_path_traversal("//root//file"));
-        assert!(has_path_traversal("/home//user"));
-
-        // Tilde expansion
-        assert!(has_path_traversal("~root/.ssh"));
-        assert!(has_path_traversal("~/.ssh/id_rsa"));
     }
 
     #[test]
@@ -495,10 +498,23 @@ mod tests {
         assert!(!has_path_traversal("/home/user/project/src/main.rs"));
         assert!(!has_path_traversal("relative/path/file.txt"));
         assert!(!has_path_traversal("/absolute/path/to/file"));
+        assert!(!has_path_traversal("//root//file"));
+        assert!(!has_path_traversal("/home//user"));
+        assert!(!has_path_traversal("~/secret"));
+        assert!(!has_path_traversal("~root/.ssh"));
         // Single dots are OK (current directory)
         assert!(!has_path_traversal("/home/user/./file"));
         // ".." in file names should not be treated as traversal
         assert!(!has_path_traversal("/home/user/file..backup"));
+    }
+
+    #[test]
+    fn test_resolve_path_expands_tilde() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let resolved = resolve_path(Path::new("~/composer-test"), Path::new("/tmp")).unwrap();
+        assert!(resolved.starts_with(&home));
     }
 
     // ========================================================================

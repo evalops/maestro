@@ -8,6 +8,14 @@
 pub(crate) fn kill_process_tree(pid: u32) {
     use std::process::Command;
 
+    // If the process is the leader of its own group, kill the group first.
+    let pgid = unsafe { libc::getpgid(pid as i32) };
+    if pgid == pid as i32 {
+        unsafe {
+            let _ = libc::kill(-pgid, libc::SIGKILL);
+        }
+    }
+
     // First, try to kill all child processes using pkill
     // pkill -P kills processes whose parent PID matches
     let _ = Command::new("pkill")
@@ -21,6 +29,18 @@ pub(crate) fn kill_process_tree(pid: u32) {
     }
 }
 
+#[cfg(unix)]
+pub(crate) fn set_new_process_group(cmd: &mut tokio::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        cmd.pre_exec(|| {
+            let _ = libc::setpgid(0, 0);
+            Ok(())
+        });
+    }
+}
+
 #[cfg(not(unix))]
 pub(crate) fn kill_process_tree(pid: u32) {
     use std::process::Command;
@@ -30,3 +50,6 @@ pub(crate) fn kill_process_tree(pid: u32) {
         .args(["/T", "/F", "/PID", &pid.to_string()])
         .output();
 }
+
+#[cfg(not(unix))]
+pub(crate) fn set_new_process_group(_cmd: &mut tokio::process::Command) {}
