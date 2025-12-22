@@ -75,6 +75,7 @@ use crate::components::{
 };
 use crate::files::get_workspace_files;
 use crate::git;
+use crate::safety::FirewallVerdict;
 use crate::session::{AppMessage, SessionManager, ThinkingLevel};
 use crate::state::{AppState, ApprovalMode, Message, MessageRole};
 use crate::terminal::{self, TerminalCapabilities};
@@ -547,20 +548,40 @@ Add the required fields and retry.",
                     return Ok(());
                 }
 
+                let firewall_verdict = self.tool_executor.firewall_verdict(tool, args);
+                if let FirewallVerdict::Block { reason } = &firewall_verdict {
+                    let note = format!("Blocked tool '{tool}' by action firewall: {reason}");
+                    self.state.add_system_message(note);
+                    self.state.handle_agent_message(msg.clone());
+                    self.state
+                        .fail_tool_call(call_id, "Blocked by action firewall");
+                    self.handle_tool_approval(call_id.clone(), tool.clone(), args.clone(), false)
+                        .await?;
+                    return Ok(());
+                }
+
                 // Check approval requirement based on mode and registry
-                let needs_approval = match self.state.approval_mode {
+                let mut needs_approval = match self.state.approval_mode {
                     ApprovalMode::Yolo => false,
                     ApprovalMode::Safe => true,
                     ApprovalMode::Selective => self.tool_executor.requires_approval(tool, args),
                 };
 
+                if matches!(&firewall_verdict, FirewallVerdict::RequireApproval { .. })
+                    && self.state.approval_mode != ApprovalMode::Yolo
+                {
+                    needs_approval = true;
+                }
+
                 if needs_approval {
+                    let mut request =
+                        ApprovalRequest::new(call_id.clone(), tool.clone(), args.clone());
+                    if let FirewallVerdict::RequireApproval { reason } = &firewall_verdict {
+                        request = request.with_reason(reason.clone());
+                    }
+
                     // Queue approval
-                    self.approval_controller.enqueue(ApprovalRequest::new(
-                        call_id.clone(),
-                        tool.clone(),
-                        args.clone(),
-                    ));
+                    self.approval_controller.enqueue(request);
                     // Show approval modal
                     self.active_modal = ActiveModal::Approval;
                 } else {

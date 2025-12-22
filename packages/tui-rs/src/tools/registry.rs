@@ -107,6 +107,7 @@ use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
 use crate::agent::{FromAgent, ToolDefinition, ToolResult};
 use crate::ai::Tool;
+use crate::safety::{ActionFirewall, FirewallVerdict};
 
 /// Tool executor that dispatches and runs agent tools
 ///
@@ -415,6 +416,13 @@ impl ToolExecutor {
         self.registry.requires_approval(name, args)
     }
 
+    /// Check a tool call against the action firewall.
+    pub fn firewall_verdict(&self, name: &str, args: &serde_json::Value) -> FirewallVerdict {
+        let firewall = ActionFirewall::new(&self.cwd);
+        let tool_name = name.to_lowercase();
+        firewall.check_tool(&tool_name, args)
+    }
+
     /// Execute a tool by name with the given arguments
     ///
     /// This is the main entry point for tool execution. It dispatches to the appropriate
@@ -503,6 +511,10 @@ impl ToolExecutor {
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
     ) -> ToolResult {
+        if let FirewallVerdict::Block { reason } = self.firewall_verdict(tool_name, args) {
+            return ToolResult::failure(format!("Blocked by action firewall: {}", reason));
+        }
+
         // Check cache for cacheable tools
         let cache_key = CacheKey::new(tool_name, args);
         let is_cacheable = self

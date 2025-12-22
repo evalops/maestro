@@ -1334,6 +1334,7 @@ impl NativeAgentRunner {
             // If there are tool calls, handle them
             if !pending_tool_calls.is_empty() {
                 let mut tool_results: Vec<ContentBlock> = Vec::new();
+                let firewall = ActionFirewall::new(&self.config.cwd);
 
                 for (call_id, tool_name, args, parse_error) in pending_tool_calls {
                     if let Some(message) = parse_error {
@@ -1427,8 +1428,25 @@ impl NativeAgentRunner {
                         }
                     };
 
+                    let tool_key = tool_name.to_lowercase();
+                    let firewall_verdict = firewall.check_tool(&tool_key, &args);
+                    if let FirewallVerdict::Block { reason } = &firewall_verdict {
+                        let _ = self.event_tx.send(FromAgent::Error {
+                            message: reason.clone(),
+                            fatal: false,
+                        });
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: call_id,
+                            content: format!("Tool blocked by action firewall: {}", reason),
+                            is_error: Some(true),
+                        });
+                        continue;
+                    }
+
                     // Check if this tool requires approval (dynamic bash logic)
-                    let requires_approval = self.tool_executor.requires_approval(&tool_name, &args);
+                    let requires_approval =
+                        matches!(&firewall_verdict, FirewallVerdict::RequireApproval { .. })
+                            || self.tool_executor.requires_approval(&tool_name, &args);
 
                     // Send tool call event
                     let _ = self.event_tx.send(FromAgent::ToolCall {
