@@ -258,14 +258,14 @@ fn path_starts_with(path: &Path, base: &Path) -> bool {
     let base_str = normalize_path_for_compare(base);
 
     // Handle trailing slashes
-    let base_normalized = base_str.trim_end_matches(|c| c == '/' || c == '\\');
+    let base_normalized = base_str.trim_end_matches(['/', '\\']);
 
     path_str.starts_with(base_normalized)
         && (path_str.len() == base_normalized.len()
             || path_str
                 .chars()
                 .nth(base_normalized.len())
-                .map(|c| c == '/' || c == '\\')
+                .map(|c| matches!(c, '/' | '\\'))
                 .unwrap_or(false))
 }
 
