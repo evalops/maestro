@@ -293,6 +293,27 @@ echo "Received: $input"
 		expect(result.isError).toBe(true);
 	});
 
+	it("truncates large output", async () => {
+		const quotedNode = JSON.stringify(process.execPath);
+		const config = {
+			tools: [
+				{
+					name: "large_output",
+					description: "Large output",
+					command: `${quotedNode} -e "process.stdout.write('x'.repeat(50000))"`,
+				},
+			],
+		};
+		writeFileSync(join(composerDir, "tools.json"), JSON.stringify(config));
+
+		const tools = loadInlineTools(testDir);
+		const result = await tools[0].execute("test-call", {});
+
+		expect(result.isError).toBeFalsy();
+		const text = (result.content[0] as { type: "text"; text: string }).text;
+		expect(text).toContain("Warning: Output truncated");
+	});
+
 	it("respects timeout", async () => {
 		const config = {
 			tools: [
