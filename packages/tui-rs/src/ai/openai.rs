@@ -219,7 +219,7 @@ pub enum ApiError {
 ///
 /// `Some((call_id, name, arguments))` if this is a function_call item,
 /// `None` otherwise.
-fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, String)> {
+fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, serde_json::Value)> {
     let item_type = item.get("type")?.as_str()?;
     if item_type != "function_call" {
         return None;
@@ -227,9 +227,16 @@ fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, St
 
     let call_id = item.get("call_id")?.as_str()?.to_string();
     let name = item.get("name")?.as_str()?.to_string();
-    let arguments = item.get("arguments")?.as_str()?.to_string();
+    let arguments = item.get("arguments")?;
+    let arguments_value = match arguments {
+        serde_json::Value::String(raw) => {
+            serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}))
+        }
+        serde_json::Value::Null => serde_json::json!({}),
+        other => other.clone(),
+    };
 
-    Some((call_id, name, arguments))
+    Some((call_id, name, arguments_value))
 }
 
 /// Check if an error message indicates context window overflow.
@@ -1179,11 +1186,6 @@ impl AiClient for OpenAiClient {
                                         if let Some((call_id, name, arguments)) =
                                             extract_function_call(item)
                                         {
-                                            // Parse arguments JSON
-                                            let input: serde_json::Value =
-                                                serde_json::from_str(&arguments)
-                                                    .unwrap_or(serde_json::json!({}));
-
                                             // Emit tool use block
                                             let tool_index = tool_call_index;
                                             tool_call_index += 1;
@@ -1193,7 +1195,7 @@ impl AiClient for OpenAiClient {
                                                 block: ContentBlock::ToolUse {
                                                     id: call_id.clone(),
                                                     name: name.clone(),
-                                                    input: input.clone(),
+                                                    input: arguments.clone(),
                                                 },
                                             });
 
@@ -1877,7 +1879,43 @@ mod tests {
         let (call_id, name, args) = result.unwrap();
         assert_eq!(call_id, "call_123");
         assert_eq!(name, "read");
-        assert_eq!(args, "{\"path\": \"/tmp/test.txt\"}");
+        assert_eq!(args, serde_json::json!({ "path": "/tmp/test.txt" }));
+
+        // Arguments can arrive as an object
+        let object_args = serde_json::json!({
+            "type": "function_call",
+            "call_id": "call_456",
+            "name": "read",
+            "arguments": { "path": "/tmp/other.txt" }
+        });
+        let result = extract_function_call(&object_args);
+        assert!(result.is_some());
+        let (_, _, args) = result.unwrap();
+        assert_eq!(args, serde_json::json!({ "path": "/tmp/other.txt" }));
+
+        // Invalid JSON strings fall back to empty object
+        let invalid_args = serde_json::json!({
+            "type": "function_call",
+            "call_id": "call_789",
+            "name": "read",
+            "arguments": "{not-json}"
+        });
+        let result = extract_function_call(&invalid_args);
+        assert!(result.is_some());
+        let (_, _, args) = result.unwrap();
+        assert_eq!(args, serde_json::json!({}));
+
+        // Null arguments are treated as empty object
+        let null_args = serde_json::json!({
+            "type": "function_call",
+            "call_id": "call_999",
+            "name": "read",
+            "arguments": null
+        });
+        let result = extract_function_call(&null_args);
+        assert!(result.is_some());
+        let (_, _, args) = result.unwrap();
+        assert_eq!(args, serde_json::json!({}));
 
         // Not a function call
         let message = serde_json::json!({
