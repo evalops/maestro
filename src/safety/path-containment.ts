@@ -67,6 +67,10 @@ const SYSTEM_PATHS_REAL = SYSTEM_PATHS.map((sysPath) => {
 const SYSTEM_PATHS_ALL = Array.from(
 	new Set([...SYSTEM_PATHS, ...SYSTEM_PATHS_REAL]),
 );
+const SYSTEM_PATHS_ALL_NORMALIZED =
+	process.platform === "win32"
+		? SYSTEM_PATHS_ALL.map((sysPath) => sysPath.toLowerCase())
+		: SYSTEM_PATHS_ALL;
 
 export interface SafePathSummary {
 	workspaceRoot: string;
@@ -84,14 +88,18 @@ export function getSystemPaths(): string[] {
 export function isSystemPath(filePath: string): boolean {
 	const normalized = resolve(filePath);
 	const realPath = resolveRealPath(normalized) ?? normalized;
-	return SYSTEM_PATHS_ALL.some((sysPath) => {
+	const normalizedPath =
+		process.platform === "win32" ? normalized.toLowerCase() : normalized;
+	const realPathNormalized =
+		process.platform === "win32" ? realPath.toLowerCase() : realPath;
+	return SYSTEM_PATHS_ALL_NORMALIZED.some((sysPath) => {
 		return (
-			normalized === sysPath ||
-			normalized.startsWith(`${sysPath}/`) ||
-			normalized.startsWith(`${sysPath}\\`) ||
-			realPath === sysPath ||
-			realPath.startsWith(`${sysPath}/`) ||
-			realPath.startsWith(`${sysPath}\\`)
+			normalizedPath === sysPath ||
+			normalizedPath.startsWith(`${sysPath}/`) ||
+			normalizedPath.startsWith(`${sysPath}\\`) ||
+			realPathNormalized === sysPath ||
+			realPathNormalized.startsWith(`${sysPath}/`) ||
+			realPathNormalized.startsWith(`${sysPath}\\`)
 		);
 	});
 }
@@ -159,7 +167,10 @@ function resolveRealPath(filePath: string): string | null {
 }
 
 function isWithin(root: string, target: string): boolean {
-	const rel = relative(root, target);
+	const isWindows = process.platform === "win32";
+	const rootPath = isWindows ? root.toLowerCase() : root;
+	const targetPath = isWindows ? target.toLowerCase() : target;
+	const rel = relative(rootPath, targetPath);
 	return !rel.startsWith("..") && !isAbsolute(rel);
 }
 
