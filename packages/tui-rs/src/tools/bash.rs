@@ -135,6 +135,7 @@ use super::details::BashDetails;
 use super::process_utils::kill_process_tree;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
+use crate::safety::analyze_bash_command;
 
 /// Default timeout for bash commands (2 minutes)
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
@@ -375,52 +376,97 @@ impl BashTool {
     /// assert!(BashTool::requires_approval("git commit -m 'test'"));
     /// ```rust,ignore
     pub fn requires_approval(command: &str) -> bool {
-        // Commands that are always safe (read-only)
-        let safe_prefixes = [
-            "ls ",
-            "ls\n",
-            "cat ",
-            "head ",
-            "tail ",
-            "grep ",
-            "find ",
-            "pwd",
-            "echo ",
-            "which ",
-            "type ",
-            "file ",
-            "stat ",
-            "wc ",
-            "du ",
-            "df ",
-            "env",
-            "printenv",
-            "date",
-            "whoami",
-            "hostname",
-            "uname",
-            "git status",
-            "git log",
-            "git diff",
-            "git branch",
-            "git remote",
-            "git show",
-            "cargo --version",
-            "cargo check",
-            "rustc --version",
-            "node --version",
-            "npm --version",
-            "bun --version",
-            "python --version",
-        ];
-
-        let cmd_trimmed = command.trim();
-
-        // Check for safe prefixes
-        for prefix in safe_prefixes {
-            if cmd_trimmed.starts_with(prefix) || cmd_trimmed == prefix.trim() {
+        fn is_find_with_exec(cmd_trimmed: &str) -> bool {
+            if !cmd_trimmed.starts_with("find ") && cmd_trimmed != "find" {
                 return false;
             }
+
+            let lower = cmd_trimmed.to_lowercase();
+            [" -exec", " -execdir", " -ok", " -okdir", " -delete"]
+                .iter()
+                .any(|needle| lower.contains(needle))
+        }
+
+        fn is_safe_segment(cmd_trimmed: &str) -> bool {
+            if cmd_trimmed.is_empty() {
+                return false;
+            }
+
+            if is_find_with_exec(cmd_trimmed) {
+                return false;
+            }
+
+            // Commands that are always safe (read-only)
+            let safe_prefixes = [
+                "ls ",
+                "ls\n",
+                "cat ",
+                "head ",
+                "tail ",
+                "grep ",
+                "find ",
+                "pwd",
+                "echo ",
+                "which ",
+                "type ",
+                "file ",
+                "stat ",
+                "wc ",
+                "du ",
+                "df ",
+                "env",
+                "printenv",
+                "date",
+                "whoami",
+                "hostname",
+                "uname",
+                "git status",
+                "git log",
+                "git diff",
+                "git branch",
+                "git remote",
+                "git show",
+                "cargo --version",
+                "cargo check",
+                "rustc --version",
+                "node --version",
+                "npm --version",
+                "bun --version",
+                "python --version",
+            ];
+
+            for prefix in safe_prefixes {
+                if cmd_trimmed.starts_with(prefix) || cmd_trimmed == prefix.trim() {
+                    return true;
+                }
+            }
+
+            false
+        }
+
+        // Commands that are always safe (read-only)
+        let cmd_trimmed = command.trim();
+
+        if cmd_trimmed.is_empty() {
+            return true;
+        }
+
+        let analysis = analyze_bash_command(cmd_trimmed);
+
+        if analysis.has_command_substitution || analysis.has_redirects || analysis.has_background {
+            return true;
+        }
+
+        if analysis.commands.is_empty() {
+            return true;
+        }
+
+        if analysis
+            .commands
+            .iter()
+            .all(|cmd| is_safe_segment(cmd.raw.trim()))
+        {
+            return false;
         }
 
         // Everything else requires approval
@@ -1204,6 +1250,18 @@ mod tests {
     #[test]
     fn test_requires_approval_cargo_check() {
         assert!(!BashTool::requires_approval("cargo check"));
+    }
+
+    #[test]
+    fn test_requires_approval_compound_commands() {
+        assert!(BashTool::requires_approval("ls && touch file.txt"));
+        assert!(BashTool::requires_approval("ls; touch file.txt"));
+        assert!(BashTool::requires_approval("echo $(touch file.txt)"));
+        assert!(BashTool::requires_approval("echo hello > out.txt"));
+        assert!(BashTool::requires_approval("ls | tee out.txt"));
+        assert!(BashTool::requires_approval("find . -exec rm -rf {} +"));
+        assert!(!BashTool::requires_approval("cat file.txt | grep pattern"));
+        assert!(!BashTool::requires_approval("ls && pwd"));
     }
 
     #[test]
