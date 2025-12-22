@@ -50,7 +50,7 @@ impl CacheKey {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         args.to_string().hash(&mut hasher);
         Self {
-            tool_name: tool_name.into(),
+            tool_name: tool_name.into().to_lowercase(),
             args_hash: hasher.finish(),
         }
     }
@@ -160,7 +160,13 @@ impl Default for ToolResultCache {
 
 impl ToolResultCache {
     /// Create a new cache with the given configuration
-    pub fn new(config: CacheConfig) -> Self {
+    pub fn new(mut config: CacheConfig) -> Self {
+        // Normalize tool names for case-insensitive matching.
+        config.excluded_tools = config
+            .excluded_tools
+            .into_iter()
+            .map(|tool| tool.to_lowercase())
+            .collect();
         Self {
             config,
             entries: HashMap::new(),
@@ -173,7 +179,8 @@ impl ToolResultCache {
 
     /// Check if caching is enabled for a tool
     pub fn is_cacheable(&self, tool_name: &str) -> bool {
-        self.config.enabled && !self.config.excluded_tools.contains(&tool_name.to_string())
+        let tool_name = tool_name.to_lowercase();
+        self.config.enabled && !self.config.excluded_tools.contains(&tool_name)
     }
 
     /// Get a cached result
@@ -1865,12 +1872,18 @@ mod tests {
     }
 
     #[test]
-    fn test_is_cacheable_case_sensitive() {
+    fn test_cache_key_normalizes_tool_name() {
+        let key = CacheKey::new("Bash", &serde_json::json!({}));
+        assert_eq!(key.tool_name, "bash");
+    }
+
+    #[test]
+    fn test_is_cacheable_case_insensitive() {
         let cache = ToolResultCache::default();
 
         assert!(!cache.is_cacheable("bash"));
-        assert!(cache.is_cacheable("BASH")); // Default exclusion is lowercase
-        assert!(cache.is_cacheable("Bash"));
+        assert!(!cache.is_cacheable("BASH"));
+        assert!(!cache.is_cacheable("Bash"));
     }
 
     // ============================================================
