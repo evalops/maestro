@@ -424,8 +424,15 @@ impl InlineToolExecutor {
             });
 
         // Build the command
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c")
+        let (shell, shell_arg) = if cfg!(windows) {
+            let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd".to_string());
+            (shell, "/C")
+        } else {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+            (shell, "-c")
+        };
+        let mut cmd = Command::new(shell);
+        cmd.arg(shell_arg)
             .arg(&tool.definition.command)
             .current_dir(&cwd)
             .stdin(Stdio::piped())
