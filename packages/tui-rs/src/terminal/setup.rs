@@ -5,10 +5,13 @@
 //!
 //! # Platform-Specific Design
 //!
-//! We use `/dev/tty` for terminal I/O instead of stdin/stdout. This allows the
-//! application to reserve stdin/stdout for IPC communication with the TypeScript
-//! backend while maintaining full terminal control. This is a Unix-specific approach
-//! that works on Linux, macOS, and BSD systems.
+//! We use a dedicated terminal device for output instead of stdin/stdout:
+//!
+//! - **Unix:** `/dev/tty`
+//! - **Windows:** `CONOUT$`
+//!
+//! This allows the application to reserve stdin/stdout for IPC communication with
+//! the TypeScript backend while maintaining terminal control across platforms.
 //!
 //! # Raw Mode Configuration
 //!
@@ -67,20 +70,26 @@ use once_cell::sync::Lazy;
 use ratatui::backend::CrosstermBackend;
 use ratatui::{TerminalOptions, Viewport};
 
-/// Global TTY file handle for terminal output.
+/// Global terminal device handle for terminal output.
 ///
-/// This static mutex stores the `/dev/tty` file handle after initialization,
-/// making it available for cleanup in the panic hook and restore functions.
+/// This static mutex stores the terminal device handle after initialization
+/// (e.g. `/dev/tty` or `CONOUT$`), making it available for cleanup in the
+/// panic hook and restore functions.
 ///
 /// We use `Lazy` from `once_cell` to ensure thread-safe lazy initialization,
 /// and `Mutex` to provide interior mutability for the restore operation.
 static TTY: Lazy<Mutex<Option<File>>> = Lazy::new(|| Mutex::new(None));
 
+#[cfg(windows)]
+const TERMINAL_DEVICE: &str = "CONOUT$";
+#[cfg(not(windows))]
+const TERMINAL_DEVICE: &str = "/dev/tty";
+
 /// Type alias for our terminal backend.
 ///
 /// Uses `CrosstermBackend<File>` instead of the typical `CrosstermBackend<Stdout>`
-/// because we write to `/dev/tty` rather than stdout. This allows stdin/stdout
-/// to be used for IPC communication with the TypeScript backend.
+/// because we write to the terminal device rather than stdout. This allows
+/// stdin/stdout to be used for IPC communication with the TypeScript backend.
 pub type Terminal = ratatui::Terminal<CrosstermBackend<File>>;
 
 /// Terminal capabilities detected during initialization.
@@ -108,9 +117,9 @@ pub struct TerminalCapabilities {
     pub viewport_height: u16,
 }
 
-/// Check if `/dev/tty` is available.
+/// Check if a terminal device is available.
 ///
-/// Returns `true` if the application can open `/dev/tty` for read/write,
+/// Returns `true` if the application can open the terminal device for read/write,
 /// indicating that we're running in a terminal environment. Returns `false`
 /// if running in a non-interactive context (e.g., piped input, systemd service).
 ///
@@ -120,19 +129,19 @@ pub fn is_tty_available() -> bool {
     OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/dev/tty")
+        .open(TERMINAL_DEVICE)
         .is_ok()
 }
 
-/// Check if `/dev/tty` is available, returning detailed errors.
+/// Check if a terminal device is available, returning detailed errors.
 ///
-/// This function attempts to open `/dev/tty` for read/write access and returns
+/// This function attempts to open the terminal device for read/write access and returns
 /// an `io::Result` that can be used to diagnose why TTY access failed.
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - `/dev/tty` doesn't exist (not a Unix system)
+/// - terminal device doesn't exist (not a Unix system)
 /// - No controlling terminal (running as a daemon, via SSH without TTY allocation)
 /// - Permission denied (rare, but possible in restricted environments)
 ///
@@ -149,7 +158,7 @@ pub fn check_tty() -> io::Result<()> {
     OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/dev/tty")
+        .open(TERMINAL_DEVICE)
         .map(|_| ())
 }
 
@@ -163,18 +172,19 @@ pub fn check_tty() -> io::Result<()> {
 /// - Focus change events
 /// - Panic hook to restore terminal on crash
 ///
-/// Uses /dev/tty for terminal I/O so that stdin/stdout can be used for IPC.
+/// Uses a platform-specific terminal device (`/dev/tty` on Unix, `CONOUT$` on Windows)
+/// so that stdin/stdout can be used for IPC.
 pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
-    // Open /dev/tty for terminal I/O
+    // Open terminal device for I/O
     // This allows us to use stdin/stdout for IPC with TypeScript
     let mut tty = OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/dev/tty")
+        .open(TERMINAL_DEVICE)
         .map_err(|e| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("Cannot open /dev/tty: {}", e),
+                format!("Cannot open {}: {}", TERMINAL_DEVICE, e),
             )
         })?;
 
