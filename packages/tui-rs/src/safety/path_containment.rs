@@ -192,14 +192,15 @@ pub fn is_path_contained(
 
 /// Resolve a path, handling relative paths and symlinks
 fn resolve_path(path: &Path, base: &Path) -> std::io::Result<PathBuf> {
-    if let Some(expanded) = expand_tilde(path) {
-        return expanded
-            .canonicalize()
-            .or_else(|_| Ok(normalize_path(&expanded)));
-    }
-
     let absolute = if path.is_absolute() {
         path.to_path_buf()
+    } else if is_tilde_path(path) {
+        expand_tilde(path).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Home directory unavailable for ~ expansion",
+            )
+        })?
     } else {
         base.join(path)
     };
@@ -209,6 +210,13 @@ fn resolve_path(path: &Path, base: &Path) -> std::io::Result<PathBuf> {
         // If file doesn't exist, normalize the path manually
         Ok(normalize_path(&absolute))
     })
+}
+
+fn is_tilde_path(path: &Path) -> bool {
+    let Some(path_str) = path.to_str() else {
+        return false;
+    };
+    path_str == "~" || path_str.starts_with("~/")
 }
 
 fn expand_tilde(path: &Path) -> Option<PathBuf> {

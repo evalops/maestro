@@ -777,25 +777,22 @@ impl ToolExecutor {
                     Ok(paths) => {
                         const MAX_GLOB_RESULTS: usize = 100;
                         let mut matches: Vec<String> = Vec::new();
-                        let mut total_count = 0;
                         let mut truncated = false;
 
                         for entry in paths {
                             let Ok(path) = entry else {
                                 continue;
                             };
-                            total_count += 1;
-                            if matches.len() < MAX_GLOB_RESULTS {
-                                matches.push(path.display().to_string());
-                            } else {
+                            if matches.len() >= MAX_GLOB_RESULTS {
                                 truncated = true;
                                 break;
                             }
+                            matches.push(path.display().to_string());
                         }
 
                         let details = GlobDetails::new(pattern)
                             .with_base_path(base_path)
-                            .with_matches(total_count)
+                            .with_matches(matches.len())
                             .with_duration(start_time.elapsed().as_millis() as u64);
                         let details = if truncated {
                             details.with_truncation()

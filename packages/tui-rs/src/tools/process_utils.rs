@@ -8,11 +8,14 @@
 pub(crate) fn kill_process_tree(pid: u32) {
     use std::process::Command;
 
-    // If the process is the leader of its own group, kill the group first.
-    let pgid = unsafe { libc::getpgid(pid as i32) };
-    if pgid == pid as i32 {
-        unsafe {
-            let _ = libc::kill(-pgid, libc::SIGKILL);
+    let pid_i32 = i32::try_from(pid).ok();
+    if let Some(pid_i32) = pid_i32 {
+        // If the process is the leader of its own group, kill the group first.
+        let pgid = unsafe { libc::getpgid(pid_i32) };
+        if pgid > 0 && pgid == pid_i32 {
+            unsafe {
+                let _ = libc::kill(-pgid, libc::SIGKILL);
+            }
         }
     }
 
@@ -24,8 +27,10 @@ pub(crate) fn kill_process_tree(pid: u32) {
 
     // Then kill the process itself using libc
     // SIGKILL (9) ensures immediate termination
-    unsafe {
-        libc::kill(pid as i32, libc::SIGKILL);
+    if let Some(pid_i32) = pid_i32 {
+        unsafe {
+            libc::kill(pid_i32, libc::SIGKILL);
+        }
     }
 }
 
