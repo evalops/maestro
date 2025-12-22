@@ -1,0 +1,34 @@
+{
+	"linux": [
+		"/etc",
+		"/usr",
+		"/var",
+		"/run",
+		"/boot",
+		"/sys",
+		"/proc",
+		"/dev",
+		"/bin",
+		"/sbin",
+		"/lib",
+		"/lib64",
+		"/opt"
+	],
+	"macos": [
+		"/etc",
+		"/usr",
+		"/var",
+		"/System",
+		"/Library",
+		"/private/etc",
+		"/private/var",
+		"/dev",
+		"/bin",
+		"/sbin"
+	],
+	"windows": [
+		"C:\\\\Windows",
+		"C:\\\\Program Files",
+		"C:\\\\Program Files (x86)"
+	]
+}
