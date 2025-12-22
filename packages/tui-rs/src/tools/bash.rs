@@ -350,18 +350,22 @@ struct CombinedOutput {
 
 async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -> CombinedOutput {
     let mut output = stdout.tail_string();
-    let mut total_bytes = stdout.total_bytes + stderr.total_bytes;
-    let mut total_lines = stdout.total_lines + stderr.total_lines;
 
     let stderr_has_output = stderr.total_bytes > 0;
     let stdout_has_output = !output.is_empty();
+    let (separator_bytes, separator_lines) = if stderr_has_output && stdout_has_output {
+        const STDERR_SEPARATOR: &str = "\n--- stderr ---\n";
+        (STDERR_SEPARATOR.len(), STDERR_SEPARATOR.lines().count())
+    } else {
+        (0, 0)
+    };
+    let total_bytes = stdout.total_bytes + stderr.total_bytes + separator_bytes;
+    let total_lines = stdout.total_lines + stderr.total_lines + separator_lines;
 
     if stderr_has_output {
         if stdout_has_output {
             const STDERR_SEPARATOR: &str = "\n--- stderr ---\n";
             output.push_str(STDERR_SEPARATOR);
-            total_bytes += STDERR_SEPARATOR.len();
-            total_lines += STDERR_SEPARATOR.lines().count();
         }
         output.push_str(&stderr.tail_string());
     }
