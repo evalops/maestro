@@ -352,7 +352,7 @@ async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -
     let mut output = stdout.tail_string();
 
     let stderr_has_output = stderr.total_bytes > 0;
-    let stdout_has_output = !output.is_empty();
+    let stdout_has_output = stdout.total_bytes > 0;
     let (separator_bytes, separator_lines) = if stderr_has_output && stdout_has_output {
         const STDERR_SEPARATOR: &str = "\n--- stderr ---\n";
         (STDERR_SEPARATOR.len(), STDERR_SEPARATOR.lines().count())
@@ -421,13 +421,11 @@ async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -
         }
     }
 
-    if saved_path.is_some() {
-        if let Some(path) = &stdout.temp_path {
-            let _ = tokio::fs::remove_file(path).await;
-        }
-        if let Some(path) = &stderr.temp_path {
-            let _ = tokio::fs::remove_file(path).await;
-        }
+    if let Some(path) = &stdout.temp_path {
+        let _ = tokio::fs::remove_file(path).await;
+    }
+    if let Some(path) = &stderr.temp_path {
+        let _ = tokio::fs::remove_file(path).await;
     }
 
     let notice = match saved_path.as_ref() {
