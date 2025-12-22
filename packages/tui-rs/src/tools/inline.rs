@@ -562,6 +562,9 @@ impl InlineToolExecutor {
                 // Update details with exit code and duration
                 let exit_code = status.code().unwrap_or(-1);
                 details = details.with_exit_code(exit_code).with_duration(duration_ms);
+                if stdout_truncated || stderr_truncated {
+                    details = details.with_truncation();
+                }
 
                 if status.success() {
                     let mut output = stdout_text.trim().to_string();

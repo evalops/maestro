@@ -739,6 +739,10 @@ pub struct InlineToolDetails {
     #[serde(default)]
     pub timed_out: bool,
 
+    /// Whether output was truncated
+    #[serde(default)]
+    pub truncated: bool,
+
     /// Source of the tool definition
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -774,6 +778,11 @@ impl InlineToolDetails {
 
     pub fn with_timeout(mut self) -> Self {
         self.timed_out = true;
+        self
+    }
+
+    pub fn with_truncation(mut self) -> Self {
+        self.truncated = true;
         self
     }
 
@@ -1369,6 +1378,7 @@ mod tests {
         assert_eq!(details.source, Some("project".to_string()));
         assert_eq!(details.timeout_ms, Some(60000));
         assert!(!details.timed_out);
+        assert!(!details.truncated);
     }
 
     #[test]
@@ -1379,8 +1389,15 @@ mod tests {
             .with_timeout_config(120000);
 
         assert!(details.timed_out);
+        assert!(!details.truncated);
         assert_eq!(details.duration_ms, Some(120000));
         assert_eq!(details.timeout_ms, Some(120000));
+    }
+
+    #[test]
+    fn test_inline_tool_details_truncated() {
+        let details = InlineToolDetails::new("large_output", "cat big.txt").with_truncation();
+        assert!(details.truncated);
     }
 
     #[test]

@@ -125,8 +125,12 @@ impl AsyncAgentTransport {
 
         let mut child = cmd.spawn().map_err(AsyncTransportError::SpawnFailed)?;
 
-        let stdin = child.stdin.take().expect("Failed to get stdin");
-        let stdout = child.stdout.take().expect("Failed to get stdout");
+        let stdin = child.stdin.take().ok_or_else(|| {
+            AsyncTransportError::SpawnFailed(std::io::Error::other("Failed to get stdin"))
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            AsyncTransportError::SpawnFailed(std::io::Error::other("Failed to get stdout"))
+        })?;
 
         // Channels
         let (message_tx, message_rx) = mpsc::unbounded_channel::<ToAgentMessage>();
