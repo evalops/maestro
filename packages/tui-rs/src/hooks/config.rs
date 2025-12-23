@@ -271,7 +271,12 @@ fn determine_hook_source(def: &HookDefinition, cwd: &Path) -> Option<HookSource>
 
 /// Resolve a path, expanding ~ to home directory
 fn resolve_path(path: &str, cwd: &Path) -> PathBuf {
-    if let Some(stripped) = path.strip_prefix("~/") {
+    if path == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
+    if let Some(stripped) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
         if let Some(home) = dirs::home_dir() {
             return home.join(stripped);
         }
@@ -324,5 +329,25 @@ end
 
         let config: HookConfig = toml::from_str(toml).unwrap();
         assert!(config.hooks[0].lua.is_some());
+    }
+
+    #[test]
+    fn test_resolve_path_expands_tilde() {
+        let cwd = Path::new("/tmp");
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let resolved = resolve_path("~", cwd);
+        assert_eq!(resolved, home);
+    }
+
+    #[test]
+    fn test_resolve_path_expands_tilde_backslash() {
+        let cwd = Path::new("/tmp");
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let resolved = resolve_path("~\\composer-test", cwd);
+        assert_eq!(resolved, home.join("composer-test"));
     }
 }
