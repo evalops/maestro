@@ -9,7 +9,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
@@ -183,7 +183,8 @@ impl FileIndexer {
         self.files_found.store(0, Ordering::Relaxed);
         self.dirs_scanned.store(0, Ordering::Relaxed);
 
-        let files = self.parallel_traverse(root);
+        let visited = self.init_visited(root);
+        let files = self.parallel_traverse(root, &visited);
 
         // Update cache
         if let Ok(mut cache) = self.cache.write() {
@@ -205,6 +206,7 @@ impl FileIndexer {
         progress_tx: Option<mpsc::UnboundedSender<IndexStatus>>,
     ) -> Vec<WorkspaceFile> {
         let indexer = self.clone_for_task();
+        let visited = indexer.init_visited(&root);
 
         // Run in blocking task pool
         tokio::task::spawn_blocking(move || {
@@ -212,7 +214,7 @@ impl FileIndexer {
             indexer.files_found.store(0, Ordering::Relaxed);
             indexer.dirs_scanned.store(0, Ordering::Relaxed);
 
-            let files = indexer.parallel_traverse(&root);
+            let files = indexer.parallel_traverse(&root, &visited);
 
             // Update cache
             if let Ok(mut cache) = indexer.cache.write() {
@@ -254,7 +256,11 @@ impl FileIndexer {
     }
 
     /// Parallel directory traversal using rayon
-    fn parallel_traverse(&self, root: &Path) -> Vec<WorkspaceFile> {
+    fn parallel_traverse(
+        &self,
+        root: &Path,
+        visited: &Option<Arc<Mutex<HashSet<PathBuf>>>>,
+    ) -> Vec<WorkspaceFile> {
         let root = root.to_path_buf();
 
         // Collect top-level directories first
@@ -280,7 +286,10 @@ impl FileIndexer {
                     return Vec::new();
                 }
                 if path.is_dir() {
-                    self.traverse_dir(&root, &path, 1)
+                    if self.config.follow_symlinks && !self.should_visit_dir(&path, visited) {
+                        return Vec::new();
+                    }
+                    self.traverse_dir(&root, &path, 1, visited)
                 } else if path.is_file() {
                     if self.should_include(&path) {
                         if self.try_reserve_file_slot() {
@@ -301,7 +310,13 @@ impl FileIndexer {
     }
 
     /// Recursively traverse a directory
-    fn traverse_dir(&self, root: &Path, dir: &Path, depth: usize) -> Vec<WorkspaceFile> {
+    fn traverse_dir(
+        &self,
+        root: &Path,
+        dir: &Path,
+        depth: usize,
+        visited: &Option<Arc<Mutex<HashSet<PathBuf>>>>,
+    ) -> Vec<WorkspaceFile> {
         if depth > self.config.max_depth {
             return Vec::new();
         }
@@ -321,12 +336,12 @@ impl FileIndexer {
         if entries.len() > 100 {
             entries
                 .par_iter()
-                .flat_map(|entry| self.process_entry(root, entry, depth))
+                .flat_map(|entry| self.process_entry(root, entry, depth, visited))
                 .collect()
         } else {
             entries
                 .iter()
-                .flat_map(|entry| self.process_entry(root, entry, depth))
+                .flat_map(|entry| self.process_entry(root, entry, depth, visited))
                 .collect()
         }
     }
@@ -337,6 +352,7 @@ impl FileIndexer {
         root: &Path,
         entry: &std::fs::DirEntry,
         depth: usize,
+        visited: &Option<Arc<Mutex<HashSet<PathBuf>>>>,
     ) -> Vec<WorkspaceFile> {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
@@ -349,7 +365,10 @@ impl FileIndexer {
             if self.config.skip_dirs.contains(&name) || name.starts_with('.') {
                 return Vec::new();
             }
-            self.traverse_dir(root, &path, depth + 1)
+            if self.config.follow_symlinks && !self.should_visit_dir(&path, visited) {
+                return Vec::new();
+            }
+            self.traverse_dir(root, &path, depth + 1, visited)
         } else if path.is_file() {
             if self.should_include(&path) {
                 if self.try_reserve_file_slot() {
@@ -363,6 +382,48 @@ impl FileIndexer {
         } else {
             Vec::new()
         }
+    }
+
+    fn init_visited(&self, root: &Path) -> Option<Arc<Mutex<HashSet<PathBuf>>>> {
+        if !self.config.follow_symlinks {
+            return None;
+        }
+
+        let canonical = match root.canonicalize() {
+            Ok(path) => path,
+            Err(_) => return None,
+        };
+
+        let mut set = HashSet::new();
+        set.insert(canonical);
+        Some(Arc::new(Mutex::new(set)))
+    }
+
+    fn should_visit_dir(
+        &self,
+        path: &Path,
+        visited: &Option<Arc<Mutex<HashSet<PathBuf>>>>,
+    ) -> bool {
+        let Some(visited) = visited else {
+            return true;
+        };
+
+        let canonical = match path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+
+        let mut guard = match visited.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        if guard.contains(&canonical) {
+            return false;
+        }
+
+        guard.insert(canonical);
+        true
     }
 
     /// Check if a file should be included based on extension filters
@@ -579,6 +640,34 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert!(files[0].name.ends_with(".rs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_indexer_dedupes_symlink_loops_when_following() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let real_dir = root.path().join("real");
+        std::fs::create_dir(&real_dir).unwrap();
+        File::create(real_dir.join("file.rs")).unwrap();
+
+        let link_path = root.path().join("link");
+        symlink(&real_dir, &link_path).unwrap();
+
+        let loop_path = real_dir.join("loop");
+        symlink(root.path(), &loop_path).unwrap();
+
+        let config = IndexerConfig::default();
+        let indexer = FileIndexer::new(IndexerConfig {
+            follow_symlinks: true,
+            max_depth: 10,
+            ..config
+        });
+
+        let files = indexer.get_files(root.path());
+        let count = files.iter().filter(|file| file.name == "file.rs").count();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]
