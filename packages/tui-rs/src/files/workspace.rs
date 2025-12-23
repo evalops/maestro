@@ -102,6 +102,7 @@ pub fn get_workspace_files(root: &Path, max_files: usize) -> Vec<WorkspaceFile> 
 
 /// Try to list files using ripgrep
 fn try_ripgrep(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
+    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let output = Command::new("rg")
         .args(["--files", "--hidden", "--follow"])
         .args(["--glob", "!.git"])
@@ -119,14 +120,21 @@ fn try_ripgrep(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let files: Vec<WorkspaceFile> = stdout
-        .lines()
-        .take(max_files)
-        .map(|line| {
-            let path = root.join(line);
-            WorkspaceFile::from_path(root, path)
-        })
-        .collect();
+    let mut files = Vec::new();
+    for line in stdout.lines() {
+        if files.len() >= max_files {
+            break;
+        }
+        let path = root.join(line);
+        let canonical = match path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        if !canonical.starts_with(&root_canonical) {
+            continue;
+        }
+        files.push(WorkspaceFile::from_path(root, path));
+    }
 
     Some(files)
 }
@@ -222,6 +230,15 @@ fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
                     }
                 }
             } else if file_type.is_file() || file_type.is_symlink() {
+                if file_type.is_symlink() {
+                    let canonical = match path.canonicalize() {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+                    if !canonical.starts_with(&root_canonical) {
+                        continue;
+                    }
+                }
                 files.push(WorkspaceFile::from_path(root, path));
             }
         }
@@ -331,5 +348,40 @@ mod tests {
             has_real ^ has_link,
             "expected only one path via real or link, got real={has_real} link={has_link}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_traverse_skips_symlinked_files_outside_root() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let outside_file = outside.path().join("outside.txt");
+        File::create(&outside_file).unwrap();
+
+        let link_path = dir.path().join("outside_file.txt");
+        symlink(&outside_file, &link_path).unwrap();
+
+        let files = manual_traverse(dir.path(), 100);
+        assert!(!files
+            .iter()
+            .any(|file| file.relative_path.contains("outside_file.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn try_ripgrep_skips_symlinked_files_outside_root() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let outside_file = outside.path().join("outside.txt");
+        File::create(&outside_file).unwrap();
+
+        let link_path = dir.path().join("outside_file.txt");
+        symlink(&outside_file, &link_path).unwrap();
+
+        if let Some(files) = try_ripgrep(dir.path(), 100) {
+            assert!(!files
+                .iter()
+                .any(|file| file.relative_path.contains("outside_file.txt")));
+        }
     }
 }
