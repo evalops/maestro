@@ -442,9 +442,9 @@ function validateToolDef(def: InlineToolDef, source: string): string[] {
 
 	if (!def.name || typeof def.name !== "string") {
 		errors.push(`Tool missing required 'name' field in ${source}`);
-	} else if (!/^[a-z][a-z0-9_]*$/i.test(def.name)) {
+	} else if (!/^[a-z][a-z0-9_-]*$/i.test(def.name)) {
 		errors.push(
-			`Invalid tool name '${def.name}' in ${source}: must start with letter and contain only letters, numbers, underscores`,
+			`Invalid tool name '${def.name}' in ${source}: must start with letter and contain only letters, numbers, underscores, hyphens`,
 		);
 	}
 

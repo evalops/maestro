@@ -166,13 +166,21 @@ describe("loadInlineTools", () => {
 					description: "Valid name",
 					command: "echo",
 				},
+				{
+					name: "valid-name",
+					description: "Valid name with hyphen",
+					command: "echo",
+				},
 			],
 		};
 		writeFileSync(join(composerDir, "tools.json"), JSON.stringify(config));
 
 		const tools = loadInlineTools(testDir);
-		expect(tools).toHaveLength(1);
-		expect(tools[0].name).toBe("valid_name");
+		expect(tools).toHaveLength(2);
+		expect(tools.map((tool) => tool.name).sort()).toEqual([
+			"valid-name",
+			"valid_name",
+		]);
 	});
 
 	it("handles malformed JSON gracefully", () => {

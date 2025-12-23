@@ -395,7 +395,7 @@ fn load_tools_from_file(path: &Path, source: InlineToolSource) -> Option<Vec<Inl
 
 /// Validate a tool definition
 fn validate_tool_def(def: &InlineToolDef) -> bool {
-    // Name must start with letter and contain only alphanumeric + underscore
+    // Name must start with letter and contain only alphanumeric, underscore, or hyphen
     if def.name.is_empty() {
         eprintln!("Warning: Skipping tool with empty name");
         return false;
@@ -416,7 +416,7 @@ fn validate_tool_def(def: &InlineToolDef) -> bool {
         .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
     {
         eprintln!(
-            "Warning: Skipping tool '{}': name contains invalid characters",
+            "Warning: Skipping tool '{}': name contains invalid characters (allowed: letters, numbers, '_' and '-')",
             def.name
         );
         return false;
