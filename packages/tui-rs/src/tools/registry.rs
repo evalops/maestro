@@ -183,6 +183,86 @@ fn expand_tilde(path: &Path) -> Option<PathBuf> {
     None
 }
 
+fn to_shell_path(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        let normalized = path.replace('\\', "/");
+        if normalized.starts_with("//") {
+            return normalized;
+        }
+        if normalized.len() >= 2 && normalized.as_bytes().get(1) == Some(&b':') {
+            let drive = normalized[0..1].to_ascii_lowercase();
+            let rest = normalized[2..].trim_start_matches('/');
+            if rest.is_empty() {
+                return format!("/{}", drive);
+            }
+            return format!("/{}/{}", drive, rest);
+        }
+        normalized
+    }
+
+    #[cfg(not(windows))]
+    {
+        path.to_string()
+    }
+}
+
+fn normalize_shell_path(input: &str) -> Result<(String, String), String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Missing path argument".to_string());
+    }
+    let path = Path::new(trimmed);
+    if is_tilde_path(path) {
+        let expanded = expand_tilde(path)
+            .ok_or_else(|| "Home directory unavailable for ~ expansion".to_string())?;
+        let display = expanded.to_string_lossy().to_string();
+        let shell_path = to_shell_path(&display);
+        return Ok((display, shell_path));
+    }
+
+    let display = trimmed.to_string();
+    let shell_path = to_shell_path(trimmed);
+    Ok((display, shell_path))
+}
+
+fn normalize_git_path(cwd: &str, input: &str) -> Result<(String, String), String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Missing path argument".to_string());
+    }
+
+    let path = Path::new(trimmed);
+    let mut resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else if is_tilde_path(path) {
+        expand_tilde(path)
+            .ok_or_else(|| "Home directory unavailable for ~ expansion".to_string())?
+    } else {
+        path.to_path_buf()
+    };
+
+    let cwd_path = Path::new(cwd);
+    let relative = cwd_path
+        .canonicalize()
+        .ok()
+        .and_then(|cwd_canon| {
+            resolved
+                .canonicalize()
+                .ok()
+                .and_then(|path_canon| path_canon.strip_prefix(&cwd_canon).ok().map(PathBuf::from))
+        })
+        .or_else(|| resolved.strip_prefix(cwd_path).ok().map(PathBuf::from));
+
+    if let Some(rel) = relative {
+        resolved = rel;
+    }
+
+    let display = resolved.to_string_lossy().to_string();
+    let shell_path = to_shell_path(&display);
+    Ok((display, shell_path))
+}
+
 fn extract_grep_path(line: &str) -> Option<&str> {
     let mut parts = line.rsplitn(3, ':');
     let _match_text = parts.next()?;
@@ -913,7 +993,13 @@ impl ToolExecutor {
             "grep" | "Grep" => {
                 let start_time = Instant::now();
                 let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let (display_path, shell_path) = match normalize_shell_path(raw_path) {
+                    Ok(result) => result,
+                    Err(message) => {
+                        return ToolResult::failure(message);
+                    }
+                };
 
                 if pattern.is_empty() {
                     let details =
@@ -929,9 +1015,9 @@ impl ToolExecutor {
                         command: format!(
                             "(rg --no-heading -n -- {} {} 2>/dev/null || grep -rn -- {} {} 2>/dev/null) | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ] || [ $status -eq 1 ]; then exit 0; else exit $status; fi",
                             shell_escape(pattern),
-                            shell_escape(path),
+                            shell_escape(&shell_path),
                             shell_escape(pattern),
-                            shell_escape(path),
+                            shell_escape(&shell_path),
                             MAX_GREP_LINES
                         ),
                         timeout: Some(30000),
@@ -952,7 +1038,7 @@ impl ToolExecutor {
                 let truncated = matches_count >= MAX_GREP_LINES;
 
                 let details = GrepDetails::new(pattern)
-                    .with_path(path)
+                    .with_path(&display_path)
                     .with_matches(matches_count)
                     .with_files_matched(files_matched)
                     .with_duration(duration_ms);
@@ -1104,9 +1190,19 @@ impl ToolExecutor {
                     .unwrap_or("HEAD");
 
                 let path = args.get("path").and_then(|v| v.as_str());
+                let normalized_path = match path {
+                    Some(raw_path) => Some(normalize_git_path(&self.cwd, raw_path)),
+                    None => None,
+                };
+                let (display_path, shell_path) = match normalized_path.transpose() {
+                    Ok(value) => value.map(|(display, shell)| (display, shell)),
+                    Err(message) => {
+                        return ToolResult::failure(message);
+                    }
+                };
 
                 // Build git diff command
-                let cmd = match path {
+                let cmd = match shell_path.as_ref() {
                     Some(p) => format!(
                         "git diff {} -- {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
                         shell_escape(target),
@@ -1134,7 +1230,7 @@ impl ToolExecutor {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 let mut details = DiffDetails::new(target).with_duration(duration_ms);
 
-                if let Some(p) = path {
+                if let Some(p) = display_path.as_ref() {
                     details = details.with_path(p);
                 }
 
@@ -1174,10 +1270,16 @@ impl ToolExecutor {
             "list" | "List" | "ls" => {
                 let start_time = Instant::now();
                 // Directory listing tool
-                let path = args
+                let raw_path = args
                     .get("path")
                     .and_then(|v| v.as_str())
                     .unwrap_or(&self.cwd);
+                let (display_path, shell_path) = match normalize_shell_path(raw_path) {
+                    Ok(result) => result,
+                    Err(message) => {
+                        return ToolResult::failure(message);
+                    }
+                };
 
                 let recursive = args
                     .get("recursive")
@@ -1187,13 +1289,13 @@ impl ToolExecutor {
                 let cmd = if recursive {
                     format!(
                         "find -- {} -type f | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(path),
+                        shell_escape(&shell_path),
                         MAX_LIST_LINES
                     )
                 } else {
                     format!(
                         "ls -la -- {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(path),
+                        shell_escape(&shell_path),
                         MAX_LIST_LINES
                     )
                 };
@@ -1213,7 +1315,7 @@ impl ToolExecutor {
                 let entries_count = result.output.lines().count();
                 let truncated = entries_count >= MAX_LIST_LINES;
 
-                let mut details = ListDetails::new(path)
+                let mut details = ListDetails::new(&display_path)
                     .with_entries(entries_count)
                     .with_duration(duration_ms);
 
@@ -2229,6 +2331,32 @@ mod tests {
             extract_grep_path(r"C:\repo\main.rs:12:fn main()"),
             Some(r"C:\repo\main.rs")
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_to_shell_path_drive_letter() {
+        assert_eq!(to_shell_path(r"C:\repo\file.txt"), "/c/repo/file.txt");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_to_shell_path_passthrough() {
+        assert_eq!(to_shell_path("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_normalize_git_path_strips_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("foo.txt");
+        std::fs::write(&file_path, "data").unwrap();
+
+        let (display, shell) =
+            normalize_git_path(dir.path().to_str().unwrap(), file_path.to_str().unwrap()).unwrap();
+
+        assert_eq!(display, "foo.txt");
+        assert_eq!(shell, "foo.txt");
     }
 
     // ========== Cache Integration Tests ==========
