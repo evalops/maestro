@@ -834,7 +834,7 @@ impl ToolExecutor {
 
                 let language = args.get("language").and_then(|v| v.as_str());
 
-                if let Ok(metadata) = tokio::fs::metadata(path).await {
+                if let Ok(metadata) = tokio::fs::metadata(&path).await {
                     let size_bytes = metadata.len();
                     if size_bytes > MAX_READ_SIZE_BYTES {
                         let size_mb = (size_bytes as f64) / (1024.0 * 1024.0);
@@ -852,7 +852,7 @@ impl ToolExecutor {
                     }
                 }
 
-                let bytes = match tokio::fs::read(path).await {
+                let bytes = match tokio::fs::read(&path).await {
                     Ok(data) => data,
                     Err(e) => {
                         let details = ReadDetails {
@@ -1170,7 +1170,7 @@ impl ToolExecutor {
                 }
 
                 // Read file content
-                let content = match tokio::fs::read_to_string(path).await {
+                let content = match tokio::fs::read_to_string(&path).await {
                     Ok(c) => c,
                     Err(e) => {
                         let details = EditDetails {
