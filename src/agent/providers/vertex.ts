@@ -42,10 +42,79 @@ import type {
 	ThinkingContent,
 	ToolCall,
 } from "../types.js";
+import { parseStreamingJson } from "./json-parse.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { transformMessages } from "./transform-messages.js";
 
 const logger = createLogger("agent:providers:vertex");
+const warnedToolArgumentKeys = new Set<string>();
+
+function warnToolArgumentsOnce(
+	key: string,
+	message: string,
+	details: Record<string, unknown>,
+): void {
+	if (warnedToolArgumentKeys.has(key)) return;
+	warnedToolArgumentKeys.add(key);
+	logger.warn(message, details);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function describeValueType(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "array";
+	return typeof value;
+}
+
+function parseToolArgumentsFromString(
+	raw: string,
+	context: { toolId: string; name: string },
+): Record<string, unknown> {
+	const parsed = parseStreamingJson<unknown>(raw);
+	if (isRecord(parsed)) {
+		return parsed;
+	}
+	const parsedType = describeValueType(parsed);
+	warnToolArgumentsOnce(
+		`parsed:${parsedType}`,
+		"Vertex tool call args parsed to non-object",
+		{
+			toolId: context.toolId,
+			name: context.name,
+			parsedType,
+		},
+	);
+	return {};
+}
+
+function normalizeToolArguments(
+	raw: unknown,
+	context: { toolId: string; name: string },
+): Record<string, unknown> {
+	if (isRecord(raw)) {
+		return raw;
+	}
+	if (typeof raw === "string") {
+		return parseToolArgumentsFromString(raw, context);
+	}
+	if (raw === null || raw === undefined) {
+		return {};
+	}
+	const rawType = describeValueType(raw);
+	warnToolArgumentsOnce(
+		`raw:${rawType}`,
+		"Vertex tool call args had unexpected type",
+		{
+			toolId: context.toolId,
+			name: context.name,
+			rawType,
+		},
+	);
+	return {};
+}
 
 export interface VertexOptions extends StreamOptions {
 	/** GCP project ID override */
@@ -367,6 +436,195 @@ export async function* streamVertex(
 		let toolCallCounter = 0;
 
 		const blockIndex = () => partial.content.length - 1;
+		function* handleChunk(chunk: {
+			candidates?: Array<{
+				content?: { parts?: Array<Record<string, unknown>> };
+				finishReason?: string;
+			}>;
+			usageMetadata?: {
+				promptTokenCount?: number;
+				candidatesTokenCount?: number;
+				thoughtsTokenCount?: number;
+				cachedContentTokenCount?: number;
+			};
+		}): Generator<AssistantMessageEvent, void, unknown> {
+			const candidate = chunk.candidates?.[0];
+
+			if (candidate?.content?.parts) {
+				for (const part of candidate.content.parts) {
+					if (typeof part.text === "string") {
+						const isThinking = part.thought === true;
+
+						if (
+							!currentBlock ||
+							(isThinking && currentBlock.type !== "thinking") ||
+							(!isThinking && currentBlock.type !== "text")
+						) {
+							// Finish previous block
+							if (currentBlock) {
+								if (currentBlock.type === "text") {
+									yield {
+										type: "text_end",
+										contentIndex: blockIndex(),
+										content: currentBlock.text,
+										partial,
+									};
+								} else {
+									yield {
+										type: "thinking_end",
+										contentIndex: blockIndex(),
+										content: currentBlock.thinking,
+										partial,
+									};
+								}
+							}
+
+							// Start new block
+							if (isThinking) {
+								currentBlock = { type: "thinking", thinking: "" };
+								partial.content.push(currentBlock);
+								yield {
+									type: "thinking_start",
+									contentIndex: blockIndex(),
+									partial,
+								};
+							} else {
+								currentBlock = { type: "text", text: "" };
+								partial.content.push(currentBlock);
+								yield {
+									type: "text_start",
+									contentIndex: blockIndex(),
+									partial,
+								};
+							}
+						}
+
+						// Accumulate delta
+						if (currentBlock.type === "thinking") {
+							currentBlock.thinking += part.text;
+							yield {
+								type: "thinking_delta",
+								contentIndex: blockIndex(),
+								delta: part.text,
+								partial,
+							};
+						} else {
+							currentBlock.text += part.text;
+							yield {
+								type: "text_delta",
+								contentIndex: blockIndex(),
+								delta: part.text,
+								partial,
+							};
+						}
+					}
+
+					const functionCall =
+						typeof part.functionCall === "object" && part.functionCall !== null
+							? (part.functionCall as { name?: unknown; args?: unknown })
+							: null;
+					if (functionCall) {
+						// Finish current block if any
+						if (currentBlock) {
+							if (currentBlock.type === "text") {
+								yield {
+									type: "text_end",
+									contentIndex: blockIndex(),
+									content: currentBlock.text,
+									partial,
+								};
+							} else {
+								yield {
+									type: "thinking_end",
+									contentIndex: blockIndex(),
+									content: currentBlock.thinking,
+									partial,
+								};
+							}
+							currentBlock = null;
+						}
+
+						const toolName =
+							typeof functionCall.name === "string" ? functionCall.name : "";
+						const toolCallId = `${toolName}_${Date.now()}_${++toolCallCounter}`;
+						const toolCall: ToolCall = {
+							type: "toolCall",
+							id: toolCallId,
+							name: toolName,
+							arguments: normalizeToolArguments(functionCall.args, {
+								toolId: toolCallId,
+								name: toolName,
+							}),
+						};
+
+						partial.content.push(toolCall);
+						yield {
+							type: "toolcall_start",
+							contentIndex: blockIndex(),
+							partial,
+						};
+						yield {
+							type: "toolcall_delta",
+							contentIndex: blockIndex(),
+							delta: JSON.stringify(toolCall.arguments),
+							partial,
+						};
+						yield {
+							type: "toolcall_end",
+							contentIndex: blockIndex(),
+							toolCall,
+							partial,
+						};
+					}
+				}
+			}
+
+			if (candidate?.finishReason) {
+				partial.stopReason = mapStopReason(candidate.finishReason);
+			}
+
+			if (chunk.usageMetadata) {
+				partial.usage = {
+					input: chunk.usageMetadata.promptTokenCount || 0,
+					output:
+						(chunk.usageMetadata.candidatesTokenCount || 0) +
+						(chunk.usageMetadata.thoughtsTokenCount || 0),
+					cacheRead: chunk.usageMetadata.cachedContentTokenCount || 0,
+					cacheWrite: 0,
+					cost: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						total: 0,
+					},
+				};
+
+				// Calculate costs
+				partial.usage.cost = {
+					input: (partial.usage.input * model.cost.input) / 1_000_000,
+					output: (partial.usage.output * model.cost.output) / 1_000_000,
+					cacheRead:
+						(partial.usage.cacheRead * model.cost.cacheRead) / 1_000_000,
+					cacheWrite: 0,
+					total: 0,
+				};
+				partial.usage.cost.total =
+					partial.usage.cost.input +
+					partial.usage.cost.output +
+					partial.usage.cost.cacheRead;
+			}
+		}
+
+		function* parseChunkString(
+			jsonStr: string,
+		): Generator<AssistantMessageEvent, void, unknown> {
+			try {
+				yield* handleChunk(JSON.parse(jsonStr));
+			} catch {
+				// Incomplete JSON, continue buffering
+			}
+		}
 
 		while (true) {
 			const { done, value } = await reader.read();
@@ -384,167 +642,7 @@ export async function* streamVertex(
 				if (!jsonStr.startsWith("{")) jsonStr = `{${jsonStr}`;
 				if (!jsonStr.endsWith("}")) jsonStr = `${jsonStr}}`;
 
-				try {
-					const chunk = JSON.parse(jsonStr);
-					const candidate = chunk.candidates?.[0];
-
-					if (candidate?.content?.parts) {
-						for (const part of candidate.content.parts) {
-							if (part.text !== undefined) {
-								const isThinking = part.thought === true;
-
-								if (
-									!currentBlock ||
-									(isThinking && currentBlock.type !== "thinking") ||
-									(!isThinking && currentBlock.type !== "text")
-								) {
-									// Finish previous block
-									if (currentBlock) {
-										if (currentBlock.type === "text") {
-											yield {
-												type: "text_end",
-												contentIndex: blockIndex(),
-												content: currentBlock.text,
-												partial,
-											};
-										} else {
-											yield {
-												type: "thinking_end",
-												contentIndex: blockIndex(),
-												content: currentBlock.thinking,
-												partial,
-											};
-										}
-									}
-
-									// Start new block
-									if (isThinking) {
-										currentBlock = { type: "thinking", thinking: "" };
-										partial.content.push(currentBlock);
-										yield {
-											type: "thinking_start",
-											contentIndex: blockIndex(),
-											partial,
-										};
-									} else {
-										currentBlock = { type: "text", text: "" };
-										partial.content.push(currentBlock);
-										yield {
-											type: "text_start",
-											contentIndex: blockIndex(),
-											partial,
-										};
-									}
-								}
-
-								// Accumulate delta
-								if (currentBlock.type === "thinking") {
-									currentBlock.thinking += part.text;
-									yield {
-										type: "thinking_delta",
-										contentIndex: blockIndex(),
-										delta: part.text,
-										partial,
-									};
-								} else {
-									currentBlock.text += part.text;
-									yield {
-										type: "text_delta",
-										contentIndex: blockIndex(),
-										delta: part.text,
-										partial,
-									};
-								}
-							}
-
-							if (part.functionCall) {
-								// Finish current block if any
-								if (currentBlock) {
-									if (currentBlock.type === "text") {
-										yield {
-											type: "text_end",
-											contentIndex: blockIndex(),
-											content: currentBlock.text,
-											partial,
-										};
-									} else {
-										yield {
-											type: "thinking_end",
-											contentIndex: blockIndex(),
-											content: currentBlock.thinking,
-											partial,
-										};
-									}
-									currentBlock = null;
-								}
-
-								const toolCall: ToolCall = {
-									type: "toolCall",
-									id: `${part.functionCall.name}_${Date.now()}_${++toolCallCounter}`,
-									name: part.functionCall.name || "",
-									arguments: part.functionCall.args || {},
-								};
-
-								partial.content.push(toolCall);
-								yield {
-									type: "toolcall_start",
-									contentIndex: blockIndex(),
-									partial,
-								};
-								yield {
-									type: "toolcall_delta",
-									contentIndex: blockIndex(),
-									delta: JSON.stringify(toolCall.arguments),
-									partial,
-								};
-								yield {
-									type: "toolcall_end",
-									contentIndex: blockIndex(),
-									toolCall,
-									partial,
-								};
-							}
-						}
-					}
-
-					if (candidate?.finishReason) {
-						partial.stopReason = mapStopReason(candidate.finishReason);
-					}
-
-					if (chunk.usageMetadata) {
-						partial.usage = {
-							input: chunk.usageMetadata.promptTokenCount || 0,
-							output:
-								(chunk.usageMetadata.candidatesTokenCount || 0) +
-								(chunk.usageMetadata.thoughtsTokenCount || 0),
-							cacheRead: chunk.usageMetadata.cachedContentTokenCount || 0,
-							cacheWrite: 0,
-							cost: {
-								input: 0,
-								output: 0,
-								cacheRead: 0,
-								cacheWrite: 0,
-								total: 0,
-							},
-						};
-
-						// Calculate costs
-						partial.usage.cost = {
-							input: (partial.usage.input * model.cost.input) / 1_000_000,
-							output: (partial.usage.output * model.cost.output) / 1_000_000,
-							cacheRead:
-								(partial.usage.cacheRead * model.cost.cacheRead) / 1_000_000,
-							cacheWrite: 0,
-							total: 0,
-						};
-						partial.usage.cost.total =
-							partial.usage.cost.input +
-							partial.usage.cost.output +
-							partial.usage.cost.cacheRead;
-					}
-				} catch {
-					// Incomplete JSON, continue buffering
-				}
+				yield* parseChunkString(jsonStr);
 			}
 
 			// Keep last incomplete chunk in buffer
@@ -553,20 +651,32 @@ export async function* streamVertex(
 			}
 		}
 
+		const remaining = buffer.replace(/^\[/, "").replace(/\]$/, "");
+		if (remaining.trim()) {
+			const trailingLines = remaining.split(/\}\s*,\s*\{/);
+			for (const line of trailingLines) {
+				let jsonStr = line;
+				if (!jsonStr.startsWith("{")) jsonStr = `{${jsonStr}`;
+				if (!jsonStr.endsWith("}")) jsonStr = `${jsonStr}}`;
+				yield* parseChunkString(jsonStr);
+			}
+		}
+
 		// Finish any remaining block
-		if (currentBlock) {
-			if (currentBlock.type === "text") {
+		const finalBlock = currentBlock as TextContent | ThinkingContent | null;
+		if (finalBlock) {
+			if (finalBlock.type === "text") {
 				yield {
 					type: "text_end",
 					contentIndex: blockIndex(),
-					content: currentBlock.text,
+					content: finalBlock.text,
 					partial,
 				};
 			} else {
 				yield {
 					type: "thinking_end",
 					contentIndex: blockIndex(),
-					content: currentBlock.thinking,
+					content: finalBlock.thinking,
 					partial,
 				};
 			}
