@@ -675,7 +675,13 @@ impl NativeAgentRunner {
     const MAX_TEXT_ATTACHMENT_CHARS: usize = 100_000;
 
     fn resolve_attachment_path(&self, raw: &str) -> PathBuf {
-        if let Some(stripped) = raw.strip_prefix("~/") {
+        if raw == "~" {
+            if let Some(home) = dirs::home_dir() {
+                return home;
+            }
+        }
+
+        if let Some(stripped) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
             if let Some(home) = dirs::home_dir() {
                 return home.join(stripped);
             }
