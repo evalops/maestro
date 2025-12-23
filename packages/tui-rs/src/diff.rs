@@ -299,15 +299,6 @@ pub fn render_diff_summary(diff: &Diff, path: &str) -> Line<'static> {
     Line::from(spans)
 }
 
-// Add dirs to Cargo.toml or use std::env::var("HOME")
-mod dirs {
-    use std::path::PathBuf;
-
-    pub fn home_dir() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // WRAPPED DIFF LINE RENDERING
 // ─────────────────────────────────────────────────────────────────────────────

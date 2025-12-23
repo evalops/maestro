@@ -163,10 +163,11 @@ pub fn sanitize_path_for_dirname(path: &str) -> String {
 
 /// Get the sessions directory for a working directory
 pub fn sessions_dir(cwd: &str) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let home = dirs::home_dir()
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir);
     let sanitized = sanitize_path_for_dirname(cwd);
-    PathBuf::from(home)
-        .join(".composer")
+    home.join(".composer")
         .join("agent")
         .join("sessions")
         .join(format!("--{}--", sanitized))
@@ -175,6 +176,7 @@ pub fn sessions_dir(cwd: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[test]
@@ -254,5 +256,24 @@ mod tests {
     fn generate_filename() {
         let filename = generate_session_filename("abc123");
         assert!(filename.ends_with("_abc123.jsonl"));
+    }
+
+    #[test]
+    fn sessions_dir_uses_home_or_temp_dir() {
+        let cwd = "/Users/john/projects/myapp";
+        let dir = sessions_dir(cwd);
+        let sanitized = sanitize_path_for_dirname(cwd);
+        let suffix = PathBuf::from(".composer")
+            .join("agent")
+            .join("sessions")
+            .join(format!("--{}--", sanitized));
+
+        assert!(dir.ends_with(&suffix));
+
+        if let Some(home) = dirs::home_dir() {
+            assert!(dir.starts_with(&home));
+        } else {
+            assert!(dir.starts_with(std::env::temp_dir()));
+        }
     }
 }

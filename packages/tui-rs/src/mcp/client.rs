@@ -164,9 +164,29 @@ impl McpConnection {
 
         // Don't inherit all env vars for security (only essential ones)
         cmd.env_clear();
-        for key in ["PATH", "HOME", "USER", "SHELL", "TERM"] {
+        for key in [
+            "PATH",
+            "HOME",
+            "USER",
+            "SHELL",
+            "TERM",
+            "USERPROFILE",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "TEMP",
+            "TMP",
+            "COMSPEC",
+            "PATHEXT",
+        ] {
             if let Ok(value) = std::env::var(key) {
                 cmd.env(key, value);
+            }
+        }
+        if std::env::var("HOME").is_err() {
+            if let Some(home) =
+                dirs::home_dir().and_then(|path| path.to_str().map(|p| p.to_string()))
+            {
+                cmd.env("HOME", home);
             }
         }
         // Re-add configured env vars after clearing

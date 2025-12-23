@@ -129,6 +129,52 @@ import type {
 } from "../types.js";
 
 const logger = createLogger("agent:providers:anthropic");
+const warnedToolArgumentKeys = new Set<string>();
+
+function warnToolArgumentsOnce(
+	key: string,
+	message: string,
+	details: Record<string, unknown>,
+): void {
+	if (warnedToolArgumentKeys.has(key)) return;
+	warnedToolArgumentKeys.add(key);
+	logger.warn(message, details);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function describeValueType(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "array";
+	return typeof value;
+}
+
+function parseToolArgumentsFromString(
+	raw: string,
+	context: { toolId: string; name: string; stage: "delta" | "done" },
+	logInvalid: boolean,
+): Record<string, unknown> {
+	const parsed = parseStreamingJson<unknown>(raw);
+	if (isRecord(parsed)) {
+		return parsed;
+	}
+	if (logInvalid) {
+		const parsedType = describeValueType(parsed);
+		warnToolArgumentsOnce(
+			`parsed:${context.stage}:${parsedType}`,
+			"Anthropic tool_use input parsed to non-object",
+			{
+				toolId: context.toolId,
+				name: context.name,
+				stage: context.stage,
+				parsedType,
+			},
+		);
+	}
+	return {};
+}
 import { parseStreamingJson } from "./json-parse.js";
 import { transformMessages } from "./transform-messages.js";
 
@@ -612,6 +658,7 @@ export async function* streamAnthropic(
 	const decoder = new TextDecoder();
 	let buffer = "";
 	const toolArgBuffers = new Map<number, string>();
+	const toolArgOverrides = new Map<number, Record<string, unknown>>();
 	const appendDelta = (
 		existing: string,
 		delta: string,
@@ -675,11 +722,36 @@ export async function* streamAnthropic(
 								continue;
 							}
 							const idx = partial.content.length;
+							let initialArguments: Record<string, unknown> = {};
+							if ("input" in block && block.input !== undefined) {
+								if (isRecord(block.input)) {
+									initialArguments = block.input;
+									toolArgOverrides.set(idx, block.input);
+								} else if (typeof block.input === "string") {
+									toolArgBuffers.set(idx, block.input);
+									initialArguments = parseToolArgumentsFromString(
+										block.input,
+										{ toolId: block.id, name: block.name, stage: "delta" },
+										false,
+									);
+								} else if (block.input !== null) {
+									const rawType = describeValueType(block.input);
+									warnToolArgumentsOnce(
+										`raw:${rawType}`,
+										"Anthropic tool_use input had unexpected type",
+										{
+											toolId: block.id,
+											name: block.name,
+											rawType,
+										},
+									);
+								}
+							}
 							const toolCall: ToolCall = {
 								type: "toolCall",
 								id: block.id,
 								name: block.name,
-								arguments: {},
+								arguments: initialArguments,
 							};
 							partial.content.push(toolCall);
 							yield { type: "toolcall_start", contentIndex: idx, partial };
@@ -721,11 +793,16 @@ export async function* streamAnthropic(
 							block?.type === "toolCall"
 						) {
 							const partialJson = delta.partial_json || "";
+							toolArgOverrides.delete(idx);
 							const existing = toolArgBuffers.get(idx) ?? "";
 							const combined = existing + partialJson;
 							toolArgBuffers.set(idx, combined);
 
-							block.arguments = parseStreamingJson(combined);
+							block.arguments = parseToolArgumentsFromString(
+								combined,
+								{ toolId: block.id, name: block.name, stage: "delta" },
+								false,
+							);
 
 							yield {
 								type: "toolcall_delta",
@@ -753,15 +830,25 @@ export async function* streamAnthropic(
 								partial,
 							};
 						} else if (block?.type === "toolCall") {
-							const buf = toolArgBuffers.get(idx) ?? "";
-							if (buf.length > 0) {
-								try {
-									block.arguments = JSON.parse(buf);
-								} catch {
-									block.arguments = parseStreamingJson(buf);
+							const overrideArgs = toolArgOverrides.get(idx);
+							if (overrideArgs) {
+								block.arguments = overrideArgs;
+							} else {
+								const buf = toolArgBuffers.get(idx) ?? "";
+								if (buf.length > 0) {
+									block.arguments = parseToolArgumentsFromString(
+										buf,
+										{ toolId: block.id, name: block.name, stage: "done" },
+										true,
+									);
+								} else {
+									block.arguments = isRecord(block.arguments)
+										? block.arguments
+										: {};
 								}
 							}
 							toolArgBuffers.delete(idx);
+							toolArgOverrides.delete(idx);
 
 							yield {
 								type: "toolcall_end",
@@ -843,6 +930,7 @@ export async function* streamAnthropic(
 		}
 	} finally {
 		toolArgBuffers.clear();
+		toolArgOverrides.clear();
 	}
 }
 

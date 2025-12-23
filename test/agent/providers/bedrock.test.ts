@@ -650,6 +650,51 @@ describe("Bedrock Provider", () => {
 			);
 		});
 
+		it("handles toolcall input object deltas", async () => {
+			mockSend.mockResolvedValue({
+				stream: createMockStream([
+					{ messageStart: { role: "assistant" } },
+					{
+						contentBlockStart: {
+							contentBlockIndex: 0,
+							start: {
+								toolUse: { toolUseId: "tool-456", name: "read_file" },
+							},
+						},
+					},
+					{
+						contentBlockDelta: {
+							contentBlockIndex: 0,
+							delta: { toolUse: { input: { path: "/object.txt" } } },
+						},
+					},
+					{ contentBlockStop: { contentBlockIndex: 0 } },
+					{ messageStop: { stopReason: "tool_use" } },
+					{ metadata: { usage: { inputTokens: 10, outputTokens: 15 } } },
+				]),
+			});
+
+			const model = createModel();
+			const context = createContext();
+
+			const events = [];
+			for await (const event of streamBedrock(model, context, {})) {
+				events.push(event);
+			}
+
+			expect(events).toContainEqual(
+				expect.objectContaining({
+					type: "toolcall_end",
+					contentIndex: 0,
+					toolCall: expect.objectContaining({
+						id: "tool-456",
+						name: "read_file",
+						arguments: { path: "/object.txt" },
+					}),
+				}),
+			);
+		});
+
 		it("yields done event with usage", async () => {
 			mockSend.mockResolvedValue({
 				stream: createMockStream([

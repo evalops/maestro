@@ -521,15 +521,6 @@ pub fn current_theme_name() -> String {
     current_theme().name
 }
 
-// Helper module for home directory
-mod dirs {
-    use std::path::PathBuf;
-
-    pub fn home_dir() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
