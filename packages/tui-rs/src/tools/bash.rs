@@ -123,6 +123,8 @@
 //! ```
 
 use std::collections::VecDeque;
+#[cfg(windows)]
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -150,42 +152,82 @@ const MAX_OUTPUT_LINES: usize = 500;
 fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
     #[cfg(windows)]
     {
-        let mut paths: Vec<PathBuf> = Vec::new();
-        if let Ok(program_files) = std::env::var("ProgramFiles") {
-            paths.push(
-                PathBuf::from(program_files)
-                    .join("Git")
-                    .join("bin")
-                    .join("bash.exe"),
+        let mut direct_candidates: Vec<PathBuf> = Vec::new();
+        let mut path_candidates: Vec<PathBuf> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        let mut push_candidate = |list: &mut Vec<PathBuf>, path: PathBuf| {
+            let key = path.to_string_lossy().replace('/', "\\").to_lowercase();
+            if seen.insert(key) {
+                list.push(path);
+            }
+        };
+
+        let mut add_git_candidates = |root: &Path| {
+            let git_root = root.join("Git");
+            push_candidate(
+                &mut direct_candidates,
+                git_root.join("bin").join("bash.exe"),
             );
-        }
-        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
-            paths.push(
-                PathBuf::from(program_files_x86)
-                    .join("Git")
-                    .join("bin")
-                    .join("bash.exe"),
+            push_candidate(
+                &mut direct_candidates,
+                git_root.join("usr").join("bin").join("bash.exe"),
             );
+        };
+
+        if let Ok(custom) = std::env::var("COMPOSER_BASH_PATH") {
+            let custom_path = PathBuf::from(&custom);
+            if custom_path.is_dir() {
+                push_candidate(&mut direct_candidates, custom_path.join("bash.exe"));
+                add_git_candidates(&custom_path);
+            } else {
+                push_candidate(&mut direct_candidates, custom_path);
+            }
         }
 
-        for path in &paths {
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            add_git_candidates(Path::new(&program_files));
+        }
+        if let Ok(program_w6432) = std::env::var("ProgramW6432") {
+            add_git_candidates(Path::new(&program_w6432));
+        }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            add_git_candidates(Path::new(&program_files_x86));
+        }
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let programs = PathBuf::from(local_app_data).join("Programs");
+            add_git_candidates(&programs);
+        }
+
+        if let Some(path_var) = std::env::var_os("PATH") {
+            for entry in std::env::split_paths(&path_var) {
+                push_candidate(&mut path_candidates, entry.join("bash.exe"));
+            }
+        }
+
+        for path in direct_candidates.iter().chain(path_candidates.iter()) {
             if path.exists() {
                 return Ok((path.to_string_lossy().to_string(), vec!["-c".to_string()]));
             }
         }
 
-        let searched = if paths.is_empty() {
-            "  (none - ProgramFiles not set)".to_string()
+        let searched = if direct_candidates.is_empty() {
+            "  (none - Git Bash candidates not found)".to_string()
         } else {
-            paths
+            direct_candidates
                 .iter()
                 .map(|p| format!("  {}", p.display()))
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        let path_note = if path_candidates.is_empty() {
+            "".to_string()
+        } else {
+            "\nAlso searched PATH for bash.exe".to_string()
+        };
         return Err(format!(
-            "Git Bash not found. Please install Git for Windows from https://git-scm.com/download/win\nSearched in:\n{}",
-            searched
+            "Git Bash not found. Please install Git for Windows from https://git-scm.com/download/win\nSet COMPOSER_BASH_PATH to override.\nSearched in:\n{}{}",
+            searched, path_note
         ));
     }
 
