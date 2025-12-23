@@ -309,10 +309,7 @@ impl InlineTool {
 
 /// Get the paths to check for inline tools configuration
 pub fn get_config_paths(workspace_dir: &Path) -> InlineToolsPaths {
-    let user_path = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".composer")
-        .join("tools.json");
+    let user_path = dirs::home_dir().map(|home| home.join(".composer").join("tools.json"));
 
     let project_path = workspace_dir.join(".composer").join("tools.json");
 
@@ -326,7 +323,7 @@ pub fn get_config_paths(workspace_dir: &Path) -> InlineToolsPaths {
 #[derive(Debug, Clone)]
 pub struct InlineToolsPaths {
     /// User-level config: ~/.composer/tools.json
-    pub user: PathBuf,
+    pub user: Option<PathBuf>,
     /// Project-level config: .composer/tools.json
     pub project: PathBuf,
 }
@@ -339,9 +336,11 @@ pub fn load_inline_tools(workspace_dir: &Path) -> Vec<InlineTool> {
     let mut tools_by_name: HashMap<String, InlineTool> = HashMap::new();
 
     // Load user-level tools first
-    if let Some(user_tools) = load_tools_from_file(&paths.user, InlineToolSource::User) {
-        for tool in user_tools {
-            tools_by_name.insert(tool.definition.name.to_lowercase(), tool);
+    if let Some(user_path) = &paths.user {
+        if let Some(user_tools) = load_tools_from_file(user_path, InlineToolSource::User) {
+            for tool in user_tools {
+                tools_by_name.insert(tool.definition.name.to_lowercase(), tool);
+            }
         }
     }
 
@@ -931,8 +930,8 @@ mod tests {
     #[test]
     fn test_get_config_paths() {
         let paths = get_config_paths(Path::new("/workspace"));
-        assert!(paths.user.to_string_lossy().contains(".composer"));
-        assert!(paths.user.to_string_lossy().contains("tools.json"));
+        let expected_user = dirs::home_dir().map(|home| home.join(".composer").join("tools.json"));
+        assert_eq!(paths.user, expected_user);
         assert_eq!(
             paths.project,
             PathBuf::from("/workspace/.composer/tools.json")
