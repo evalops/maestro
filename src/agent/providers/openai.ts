@@ -115,6 +115,18 @@ import { streamResponsesApiSdk } from "./openai-responses-sdk.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { transformMessages } from "./transform-messages.js";
 
+const warnedToolArgumentKeys = new Set<string>();
+
+function warnToolArgumentsOnce(
+	key: string,
+	message: string,
+	details: Record<string, unknown>,
+): void {
+	if (warnedToolArgumentKeys.has(key)) return;
+	warnedToolArgumentKeys.add(key);
+	logger.warn(message, details);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -135,12 +147,17 @@ function parseToolArgumentsFromString(
 		return parsed;
 	}
 	if (logInvalid) {
-		logger.warn("OpenAI tool call arguments parsed to non-object", {
-			callId: context.callId,
-			name: context.name,
-			stage: context.stage,
-			parsedType: describeValueType(parsed),
-		});
+		const parsedType = describeValueType(parsed);
+		warnToolArgumentsOnce(
+			`parsed:${context.stage}:${parsedType}`,
+			"OpenAI tool call arguments parsed to non-object",
+			{
+				callId: context.callId,
+				name: context.name,
+				stage: context.stage,
+				parsedType,
+			},
+		);
 	}
 	return {};
 }
@@ -918,10 +935,14 @@ export async function* streamOpenAI(
 										partial,
 									};
 								} else if (isRecord(argsDelta)) {
-									logger.warn("OpenAI tool call arguments delta was object", {
-										callId: block.id,
-										name: block.name,
-									});
+									warnToolArgumentsOnce(
+										"delta:object",
+										"OpenAI tool call arguments delta was object",
+										{
+											callId: block.id,
+											name: block.name,
+										},
+									);
 									toolArgOverrides.set(idx, argsDelta);
 									toolArgBuffers.delete(idx);
 									block.arguments = argsDelta;
@@ -932,12 +953,14 @@ export async function* streamOpenAI(
 										partial,
 									};
 								} else if (argsDelta !== null && argsDelta !== undefined) {
-									logger.warn(
+									const rawType = describeValueType(argsDelta);
+									warnToolArgumentsOnce(
+										`delta:${rawType}`,
 										"OpenAI tool call arguments delta was non-string",
 										{
 											callId: block.id,
 											name: block.name,
-											rawType: describeValueType(argsDelta),
+											rawType,
 										},
 									);
 								}

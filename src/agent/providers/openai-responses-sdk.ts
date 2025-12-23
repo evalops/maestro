@@ -31,6 +31,17 @@ import { filterResponsesApiTools } from "./openai.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 
 const logger = createLogger("agent:providers:openai-responses");
+const warnedToolArgumentKeys = new Set<string>();
+
+function warnToolArgumentsOnce(
+	key: string,
+	message: string,
+	details: Record<string, unknown>,
+): void {
+	if (warnedToolArgumentKeys.has(key)) return;
+	warnedToolArgumentKeys.add(key);
+	logger.warn(message, details);
+}
 
 type ToolArguments = Record<string, unknown>;
 
@@ -54,13 +65,15 @@ function parseToolArgumentsFromString(
 		return parsed;
 	}
 	if (logInvalid) {
-		logger.warn(
+		const parsedType = describeValueType(parsed);
+		warnToolArgumentsOnce(
+			`parsed:${context.stage}:${parsedType}`,
 			"OpenAI Responses function_call.arguments parsed to non-object",
 			{
 				callId: context.callId,
 				name: context.name,
 				stage: context.stage,
-				parsedType: describeValueType(parsed),
+				parsedType,
 			},
 		);
 	}
@@ -79,7 +92,8 @@ function normalizeToolArguments(
 	}
 
 	if (isRecord(raw)) {
-		logger.warn(
+		warnToolArgumentsOnce(
+			"raw:object",
 			"OpenAI Responses function_call.arguments was object, expected string",
 			{
 				callId: context.callId,
@@ -91,20 +105,29 @@ function normalizeToolArguments(
 	}
 
 	if (raw === null || raw === undefined) {
-		logger.warn("OpenAI Responses function_call.arguments was null/undefined", {
-			callId: context.callId,
-			name: context.name,
-			stage: context.stage,
-		});
+		warnToolArgumentsOnce(
+			"raw:nullish",
+			"OpenAI Responses function_call.arguments was null/undefined",
+			{
+				callId: context.callId,
+				name: context.name,
+				stage: context.stage,
+			},
+		);
 		return { arguments: {}, partialJson: "" };
 	}
 
-	logger.warn("OpenAI Responses function_call.arguments had unexpected type", {
-		callId: context.callId,
-		name: context.name,
-		stage: context.stage,
-		rawType: describeValueType(raw),
-	});
+	const rawType = describeValueType(raw);
+	warnToolArgumentsOnce(
+		`raw:${rawType}`,
+		"OpenAI Responses function_call.arguments had unexpected type",
+		{
+			callId: context.callId,
+			name: context.name,
+			stage: context.stage,
+			rawType,
+		},
+	);
 	return { arguments: {}, partialJson: "" };
 }
 

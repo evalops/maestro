@@ -63,6 +63,52 @@ import { parseStreamingJson } from "./json-parse.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 
 const logger = createLogger("agent:providers:bedrock");
+const warnedToolArgumentKeys = new Set<string>();
+
+function warnToolArgumentsOnce(
+	key: string,
+	message: string,
+	details: Record<string, unknown>,
+): void {
+	if (warnedToolArgumentKeys.has(key)) return;
+	warnedToolArgumentKeys.add(key);
+	logger.warn(message, details);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function describeValueType(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "array";
+	return typeof value;
+}
+
+function parseToolArgumentsFromString(
+	raw: string,
+	context: { toolId: string; name: string; stage: "delta" | "done" },
+	logInvalid: boolean,
+): Record<string, unknown> {
+	const parsed = parseStreamingJson<unknown>(raw);
+	if (isRecord(parsed)) {
+		return parsed;
+	}
+	if (logInvalid) {
+		const parsedType = describeValueType(parsed);
+		warnToolArgumentsOnce(
+			`parsed:${context.stage}:${parsedType}`,
+			"Bedrock tool_use input parsed to non-object",
+			{
+				toolId: context.toolId,
+				name: context.name,
+				stage: context.stage,
+				parsedType,
+			},
+		);
+	}
+	return {};
+}
 
 /**
  * Guardrail configuration for Bedrock requests
@@ -309,6 +355,7 @@ export async function* streamBedrock(
 	yield { type: "start", partial };
 
 	const toolArgBuffers = new Map<number, string>();
+	const toolArgOverrides = new Map<number, Record<string, unknown>>();
 	const contentBlockTypes = new Map<number, "text" | "toolCall" | "thinking">();
 
 	try {
@@ -381,20 +428,46 @@ export async function* streamBedrock(
 						partial,
 					};
 				} else if (delta?.toolUse?.input && block?.type === "toolCall") {
-					const inputChunk =
-						typeof delta.toolUse.input === "string"
-							? delta.toolUse.input
-							: JSON.stringify(delta.toolUse.input);
-					const existing = toolArgBuffers.get(idx) ?? "";
-					const combined = existing + inputChunk;
-					toolArgBuffers.set(idx, combined);
-					block.arguments = parseStreamingJson(combined);
-					yield {
-						type: "toolcall_delta",
-						contentIndex: idx,
-						delta: inputChunk,
-						partial,
-					};
+					const input = delta.toolUse.input;
+					if (typeof input === "string") {
+						toolArgOverrides.delete(idx);
+						const existing = toolArgBuffers.get(idx) ?? "";
+						const combined = existing + input;
+						toolArgBuffers.set(idx, combined);
+						block.arguments = parseToolArgumentsFromString(
+							combined,
+							{ toolId: block.id, name: block.name, stage: "delta" },
+							false,
+						);
+						yield {
+							type: "toolcall_delta",
+							contentIndex: idx,
+							delta: input,
+							partial,
+						};
+					} else if (isRecord(input)) {
+						warnToolArgumentsOnce(
+							"delta:object",
+							"Bedrock tool_use input delta was object",
+							{ toolId: block.id, name: block.name },
+						);
+						toolArgOverrides.set(idx, input);
+						toolArgBuffers.delete(idx);
+						block.arguments = input;
+						yield {
+							type: "toolcall_delta",
+							contentIndex: idx,
+							delta: JSON.stringify(input),
+							partial,
+						};
+					} else if (input !== null && input !== undefined) {
+						const rawType = describeValueType(input);
+						warnToolArgumentsOnce(
+							`delta:${rawType}`,
+							"Bedrock tool_use input delta was non-string",
+							{ toolId: block.id, name: block.name, rawType },
+						);
+					}
 				} else if (delta?.reasoningContent?.text) {
 					// Reasoning/thinking content (for models that support it)
 					// Use Bedrock's contentBlockIndex to maintain consistency with contentBlockStop
@@ -438,13 +511,25 @@ export async function* streamBedrock(
 					};
 				} else if (blockType === "toolCall" && block?.type === "toolCall") {
 					// Final parse of tool arguments
-					const buf = toolArgBuffers.get(idx) ?? "{}";
-					try {
-						block.arguments = JSON.parse(buf);
-					} catch {
-						block.arguments = parseStreamingJson(buf);
+					const overrideArgs = toolArgOverrides.get(idx);
+					if (overrideArgs) {
+						block.arguments = overrideArgs;
+					} else {
+						const buf = toolArgBuffers.get(idx);
+						if (buf !== undefined) {
+							block.arguments = parseToolArgumentsFromString(
+								buf,
+								{ toolId: block.id, name: block.name, stage: "done" },
+								true,
+							);
+						} else {
+							block.arguments = isRecord(block.arguments)
+								? block.arguments
+								: {};
+						}
 					}
 					toolArgBuffers.delete(idx);
+					toolArgOverrides.delete(idx);
 					yield {
 						type: "toolcall_end",
 						contentIndex: idx,
