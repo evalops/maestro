@@ -49,8 +49,9 @@ impl WorkspaceFile {
 
     /// Get a display path (shortened if in home directory)
     pub fn display_path(&self) -> String {
-        if let Some(home) = std::env::var_os("HOME") {
-            let home = PathBuf::from(home);
+        if let Some(home) =
+            dirs::home_dir().or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        {
             if let Ok(rel) = self.path.strip_prefix(&home) {
                 return format!("~/{}", rel.display());
             }
