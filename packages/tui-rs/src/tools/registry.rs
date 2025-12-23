@@ -92,7 +92,7 @@
 //! 3. Adding a match arm in `ToolExecutor::execute()`
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Instant;
 
@@ -141,6 +141,27 @@ fn build_glob_pattern(base_path: &str, pattern: &str) -> String {
         .join(pattern)
         .to_string_lossy()
         .to_string()
+}
+
+fn resolve_tool_path(raw: &str, cwd: &str) -> PathBuf {
+    if raw == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
+
+    if let Some(stripped) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(stripped);
+        }
+    }
+
+    let path = Path::new(raw);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        Path::new(cwd).join(path)
+    }
 }
 
 /// Tool executor that dispatches and runs agent tools
@@ -684,12 +705,14 @@ impl ToolExecutor {
                     return ToolResult::failure("Missing file_path argument");
                 }
 
-                if let Ok(metadata) = tokio::fs::metadata(path).await {
+                let resolved = resolve_tool_path(path, &self.cwd);
+
+                if let Ok(metadata) = tokio::fs::metadata(&resolved).await {
                     let size_bytes = metadata.len();
                     if size_bytes > MAX_READ_SIZE_BYTES {
                         let size_mb = (size_bytes as f64) / (1024.0 * 1024.0);
                         let details = ReadDetails {
-                            path: path.to_string(),
+                            path: resolved.display().to_string(),
                             size_bytes: Some(size_bytes),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
@@ -702,7 +725,7 @@ impl ToolExecutor {
                     }
                 }
 
-                match tokio::fs::read_to_string(path).await {
+                match tokio::fs::read_to_string(&resolved).await {
                     Ok(content) => {
                         // Add line numbers with offset/limit support
                         let lines: Vec<&str> = content.lines().collect();
@@ -729,7 +752,7 @@ impl ToolExecutor {
 
                         // Build ReadDetails
                         let details = ReadDetails {
-                            path: path.to_string(),
+                            path: resolved.display().to_string(),
                             size_bytes: Some(content.len() as u64),
                             lines_read: Some(lines_read),
                             truncated,
@@ -743,7 +766,7 @@ impl ToolExecutor {
                     }
                     Err(e) => {
                         let details = ReadDetails {
-                            path: path.to_string(),
+                            path: resolved.display().to_string(),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
                         };
@@ -766,14 +789,16 @@ impl ToolExecutor {
                     return ToolResult::failure("Missing file_path argument");
                 }
 
+                let resolved = resolve_tool_path(path, &self.cwd);
+
                 // Check if file exists (to determine if it's a create or overwrite)
-                let file_existed = std::path::Path::new(path).exists();
+                let file_existed = resolved.exists();
 
                 // Create parent directories if needed
-                if let Some(parent) = std::path::Path::new(path).parent() {
+                if let Some(parent) = resolved.parent() {
                     if let Err(e) = tokio::fs::create_dir_all(parent).await {
                         let details = WriteDetails {
-                            path: path.to_string(),
+                            path: resolved.display().to_string(),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
                         };
@@ -782,24 +807,27 @@ impl ToolExecutor {
                     }
                 }
 
-                match tokio::fs::write(path, content).await {
+                match tokio::fs::write(&resolved, content).await {
                     Ok(_) => {
                         // Invalidate cache since file was modified
                         self.invalidate_file_cache(path);
 
                         let details = WriteDetails {
-                            path: path.to_string(),
+                            path: resolved.display().to_string(),
                             bytes_written: Some(content.len() as u64),
                             created: !file_existed,
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                         };
 
-                        ToolResult::success(format!("File written successfully: {}", path))
-                            .with_details(details.to_json())
+                        ToolResult::success(format!(
+                            "File written successfully: {}",
+                            resolved.display()
+                        ))
+                        .with_details(details.to_json())
                     }
                     Err(e) => {
                         let details = WriteDetails {
-                            path: path.to_string(),
+                            path: resolved.display().to_string(),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
                         };
@@ -947,12 +975,14 @@ impl ToolExecutor {
                     return ToolResult::failure("Missing old_string argument");
                 }
 
+                let resolved = resolve_tool_path(path, &self.cwd);
+
                 // Read file content
-                let content = match tokio::fs::read_to_string(path).await {
+                let content = match tokio::fs::read_to_string(&resolved).await {
                     Ok(c) => c,
                     Err(e) => {
                         let details = EditDetails {
-                            path: path.to_string(),
+                            path: resolved.display().to_string(),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
                         };
@@ -965,7 +995,7 @@ impl ToolExecutor {
                 let occurrences = content.matches(old_string).count();
                 if occurrences == 0 {
                     let details = EditDetails {
-                        path: path.to_string(),
+                        path: resolved.display().to_string(),
                         replacements: Some(0),
                         duration_ms: Some(start_time.elapsed().as_millis() as u64),
                         ..Default::default()
@@ -979,7 +1009,7 @@ impl ToolExecutor {
                 // Check for uniqueness if not replace_all
                 if !replace_all && occurrences > 1 {
                     let details = EditDetails {
-                        path: path.to_string(),
+                        path: resolved.display().to_string(),
                         replacements: Some(0),
                         duration_ms: Some(start_time.elapsed().as_millis() as u64),
                         ..Default::default()
@@ -1005,13 +1035,13 @@ impl ToolExecutor {
                 };
 
                 // Write back
-                match tokio::fs::write(path, &new_content).await {
+                match tokio::fs::write(&resolved, &new_content).await {
                     Ok(_) => {
                         // Invalidate cache since file was modified
                         self.invalidate_file_cache(path);
 
                         let details = EditDetails {
-                            path: path.to_string(),
+                            path: resolved.display().to_string(),
                             replacements: Some(replacements),
                             lines_added: if total_lines_diff > 0 {
                                 Some(total_lines_diff)
@@ -1028,13 +1058,14 @@ impl ToolExecutor {
 
                         ToolResult::success(format!(
                             "Successfully replaced {} occurrence(s) in {}",
-                            replacements, path
+                            replacements,
+                            resolved.display()
                         ))
                         .with_details(details.to_json())
                     }
                     Err(e) => {
                         let details = EditDetails {
-                            path: path.to_string(),
+                            path: resolved.display().to_string(),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
                         };
@@ -1991,6 +2022,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_executor_read_file_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("relative.txt");
+        std::fs::write(&file_path, "relative content").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({"file_path": "relative.txt"});
+        let result = executor.execute("read", &args, None, "test-call").await;
+
+        assert!(result.success);
+        assert!(result.output.contains("relative content"));
+    }
+
+    #[tokio::test]
     async fn test_executor_read_file_too_large() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("large.txt");
@@ -2024,6 +2069,21 @@ mod tests {
         assert!(result.success);
         let content = std::fs::read_to_string(&file_path).unwrap();
         assert_eq!(content, "test content");
+    }
+
+    #[tokio::test]
+    async fn test_executor_write_file_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": "nested/output.txt",
+            "content": "relative write"
+        });
+        let result = executor.execute("write", &args, None, "test-call").await;
+
+        assert!(result.success);
+        let content = std::fs::read_to_string(dir.path().join("nested/output.txt")).unwrap();
+        assert_eq!(content, "relative write");
     }
 
     #[tokio::test]
