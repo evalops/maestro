@@ -92,6 +92,7 @@
 //! 3. Adding a match arm in `ToolExecutor::execute()`
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::RwLock;
 use std::time::Instant;
 
@@ -129,6 +130,17 @@ fn shell_escape(arg: &str) -> String {
     }
     escaped.push('\'');
     escaped
+}
+
+fn build_glob_pattern(base_path: &str, pattern: &str) -> String {
+    if Path::new(pattern).is_absolute() {
+        return pattern.to_string();
+    }
+
+    Path::new(base_path)
+        .join(pattern)
+        .to_string_lossy()
+        .to_string()
 }
 
 /// Tool executor that dispatches and runs agent tools
@@ -805,12 +817,7 @@ impl ToolExecutor {
                     .and_then(|v| v.as_str())
                     .unwrap_or(&self.cwd);
 
-                // Build full glob pattern
-                let full_pattern = if pattern.starts_with('/') {
-                    pattern.to_string()
-                } else {
-                    format!("{}/{}", base_path, pattern)
-                };
+                let full_pattern = build_glob_pattern(base_path, pattern);
 
                 // Use native glob crate
                 match glob::glob(&full_pattern) {
@@ -1881,6 +1888,30 @@ mod tests {
         let registry = ToolRegistry::new();
         let count = registry.tools().count();
         assert_eq!(count, 11); // bash, read, write, glob, grep, edit, diff, list, web_fetch, read_image, screenshot
+    }
+
+    #[test]
+    fn test_build_glob_pattern_relative() {
+        let base = "/tmp/root";
+        let pattern = "**/*.rs";
+        let expected = Path::new(base).join(pattern).to_string_lossy().to_string();
+        assert_eq!(build_glob_pattern(base, pattern), expected);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_build_glob_pattern_absolute_unix() {
+        let base = "/tmp/root";
+        let pattern = "/tmp/root/**/*.rs";
+        assert_eq!(build_glob_pattern(base, pattern), pattern);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_build_glob_pattern_absolute_windows() {
+        let base = r"C:\root";
+        let pattern = r"C:\root\**\*.rs";
+        assert_eq!(build_glob_pattern(base, pattern), pattern);
     }
 
     #[test]
