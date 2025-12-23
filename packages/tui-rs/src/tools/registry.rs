@@ -1023,7 +1023,7 @@ impl ToolExecutor {
                         };
 
                         ToolResult::success(format!("File written successfully: {}", path))
-                        .with_details(details.to_json())
+                            .with_details(details.to_json())
                     }
                     Err(e) => {
                         let details = WriteDetails {
