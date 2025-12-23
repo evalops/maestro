@@ -157,7 +157,11 @@ describe("backgroundTasksTool", () => {
 
 		const details = stopResult.details as TaskDetails;
 		expect(details.id).toBe(taskId);
-		expect(["stopped", "exited"]).toContain(details.status);
+
+		await waitForCondition(() => {
+			const task = backgroundTaskManager.getTask(taskId);
+			return task?.status === "stopped" || task?.status === "exited";
+		});
 
 		const task = backgroundTaskManager.getTask(taskId);
 		expect(task?.status === "stopped" || task?.status === "exited").toBe(true);
