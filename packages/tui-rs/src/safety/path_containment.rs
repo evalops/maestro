@@ -242,9 +242,32 @@ fn resolve_path(path: &Path, base: &Path) -> std::io::Result<PathBuf> {
 
     // Try to canonicalize (follows symlinks, fails if doesn't exist)
     absolute.canonicalize().or_else(|_| {
+        if let Some(resolved) = resolve_existing_parent(&absolute) {
+            return Ok(resolved);
+        }
         // If file doesn't exist, normalize the path manually
         Ok(normalize_path(&absolute))
     })
+}
+
+fn resolve_existing_parent(path: &Path) -> Option<PathBuf> {
+    let mut current = path;
+    let mut remainder: Vec<std::ffi::OsString> = Vec::new();
+
+    loop {
+        if current.exists() {
+            let resolved_parent = current.canonicalize().ok()?;
+            let mut resolved = resolved_parent;
+            for component in remainder.iter().rev() {
+                resolved.push(component);
+            }
+            return Some(normalize_path(&resolved));
+        }
+
+        let name = current.file_name()?.to_os_string();
+        remainder.push(name);
+        current = current.parent()?;
+    }
 }
 
 fn is_tilde_path(path: &Path) -> bool {
@@ -690,6 +713,19 @@ mod tests {
         };
         let resolved = resolve_path(Path::new("~/composer-test"), &std::env::temp_dir()).unwrap();
         assert!(resolved.starts_with(&home));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_path_symlink_parent_missing_leaf() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let link_path = workspace.path().join("outside-link");
+        std::os::unix::fs::symlink(outside.path(), &link_path).unwrap();
+
+        let target = link_path.join("missing.txt");
+        let resolved = resolve_path(&target, workspace.path()).unwrap();
+        assert!(resolved.starts_with(outside.path()));
     }
 
     // ========================================================================
