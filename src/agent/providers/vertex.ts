@@ -42,79 +42,15 @@ import type {
 	ThinkingContent,
 	ToolCall,
 } from "../types.js";
-import { parseStreamingJson } from "./json-parse.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
+import { createToolArgumentNormalizer } from "./tool-arguments.js";
 import { transformMessages } from "./transform-messages.js";
 
 const logger = createLogger("agent:providers:vertex");
-const warnedToolArgumentKeys = new Set<string>();
-
-function warnToolArgumentsOnce(
-	key: string,
-	message: string,
-	details: Record<string, unknown>,
-): void {
-	if (warnedToolArgumentKeys.has(key)) return;
-	warnedToolArgumentKeys.add(key);
-	logger.warn(message, details);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function describeValueType(value: unknown): string {
-	if (value === null) return "null";
-	if (Array.isArray(value)) return "array";
-	return typeof value;
-}
-
-function parseToolArgumentsFromString(
-	raw: string,
-	context: { toolId: string; name: string },
-): Record<string, unknown> {
-	const parsed = parseStreamingJson<unknown>(raw);
-	if (isRecord(parsed)) {
-		return parsed;
-	}
-	const parsedType = describeValueType(parsed);
-	warnToolArgumentsOnce(
-		`parsed:${parsedType}`,
-		"Vertex tool call args parsed to non-object",
-		{
-			toolId: context.toolId,
-			name: context.name,
-			parsedType,
-		},
-	);
-	return {};
-}
-
-function normalizeToolArguments(
-	raw: unknown,
-	context: { toolId: string; name: string },
-): Record<string, unknown> {
-	if (isRecord(raw)) {
-		return raw;
-	}
-	if (typeof raw === "string") {
-		return parseToolArgumentsFromString(raw, context);
-	}
-	if (raw === null || raw === undefined) {
-		return {};
-	}
-	const rawType = describeValueType(raw);
-	warnToolArgumentsOnce(
-		`raw:${rawType}`,
-		"Vertex tool call args had unexpected type",
-		{
-			toolId: context.toolId,
-			name: context.name,
-			rawType,
-		},
-	);
-	return {};
-}
+const toolArgumentNormalizer = createToolArgumentNormalizer({
+	logger,
+	providerLabel: "Vertex",
+});
 
 export interface VertexOptions extends StreamOptions {
 	/** GCP project ID override */
@@ -551,7 +487,7 @@ export async function* streamVertex(
 							type: "toolCall",
 							id: toolCallId,
 							name: toolName,
-							arguments: normalizeToolArguments(functionCall.args, {
+							arguments: toolArgumentNormalizer.normalize(functionCall.args, {
 								toolId: toolCallId,
 								name: toolName,
 							}),

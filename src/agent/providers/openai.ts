@@ -110,57 +110,19 @@ import type {
 } from "../types.js";
 
 const logger = createLogger("agent:providers:openai");
-import { parseStreamingJson } from "./json-parse.js";
 import { streamResponsesApiSdk } from "./openai-responses-sdk.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
+import {
+	createToolArgumentNormalizer,
+	describeValueType,
+	isRecord,
+} from "./tool-arguments.js";
 import { transformMessages } from "./transform-messages.js";
 
-const warnedToolArgumentKeys = new Set<string>();
-
-function warnToolArgumentsOnce(
-	key: string,
-	message: string,
-	details: Record<string, unknown>,
-): void {
-	if (warnedToolArgumentKeys.has(key)) return;
-	warnedToolArgumentKeys.add(key);
-	logger.warn(message, details);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function describeValueType(value: unknown): string {
-	if (value === null) return "null";
-	if (Array.isArray(value)) return "array";
-	return typeof value;
-}
-
-function parseToolArgumentsFromString(
-	raw: string,
-	context: { callId?: string; name?: string; stage: "delta" | "done" },
-	logInvalid: boolean,
-): Record<string, unknown> {
-	const parsed = parseStreamingJson<unknown>(raw);
-	if (isRecord(parsed)) {
-		return parsed;
-	}
-	if (logInvalid) {
-		const parsedType = describeValueType(parsed);
-		warnToolArgumentsOnce(
-			`parsed:${context.stage}:${parsedType}`,
-			"OpenAI tool call arguments parsed to non-object",
-			{
-				callId: context.callId,
-				name: context.name,
-				stage: context.stage,
-				parsedType,
-			},
-		);
-	}
-	return {};
-}
+const toolArgumentNormalizer = createToolArgumentNormalizer({
+	logger,
+	providerLabel: "OpenAI",
+});
 
 /**
  * Normalize tool call IDs for Mistral.
@@ -922,10 +884,10 @@ export async function* streamOpenAI(
 									// Parse streaming JSON progressively
 									// This allows UI to show partial arguments like file paths
 									// before the complete JSON arrives
-									block.arguments = parseToolArgumentsFromString(
+									block.arguments = toolArgumentNormalizer.parseFromString(
 										combined,
 										{ callId: block.id, name: block.name, stage: "delta" },
-										false,
+										{ logInvalid: false },
 									);
 
 									yield {
@@ -935,7 +897,7 @@ export async function* streamOpenAI(
 										partial,
 									};
 								} else if (isRecord(argsDelta)) {
-									warnToolArgumentsOnce(
+									toolArgumentNormalizer.warnOnce(
 										"delta:object",
 										"OpenAI tool call arguments delta was object",
 										{
@@ -954,7 +916,7 @@ export async function* streamOpenAI(
 									};
 								} else if (argsDelta !== null && argsDelta !== undefined) {
 									const rawType = describeValueType(argsDelta);
-									warnToolArgumentsOnce(
+									toolArgumentNormalizer.warnOnce(
 										`delta:${rawType}`,
 										"OpenAI tool call arguments delta was non-string",
 										{
@@ -989,10 +951,10 @@ export async function* streamOpenAI(
 									// Final parse of accumulated JSON
 									const partialArgs = toolArgBuffers.get(i);
 									if (partialArgs !== undefined) {
-										block.arguments = parseToolArgumentsFromString(
+										block.arguments = toolArgumentNormalizer.parseFromString(
 											partialArgs,
 											{ callId: block.id, name: block.name, stage: "done" },
-											true,
+											{ logInvalid: true },
 										);
 									} else {
 										block.arguments = isRecord(block.arguments)
