@@ -6,6 +6,9 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
+use std::collections::HashSet;
+
 /// Result of a path containment check
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathContainment {
@@ -56,6 +59,36 @@ const SYSTEM_PATHS: &[&str] = &[
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 const SYSTEM_PATHS: &[&str] = &["/etc", "/usr", "/var", "/bin", "/sbin"];
+
+fn system_paths() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        let mut paths: Vec<PathBuf> = SYSTEM_PATHS.iter().map(PathBuf::from).collect();
+
+        if let Ok(system_root) = std::env::var("SystemRoot") {
+            paths.push(PathBuf::from(system_root));
+        }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            paths.push(PathBuf::from(program_files));
+        }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            paths.push(PathBuf::from(program_files_x86));
+        }
+
+        let mut seen = HashSet::new();
+        paths.retain(|path| {
+            let key = normalize_path_for_compare(path).to_string();
+            seen.insert(key)
+        });
+
+        return paths;
+    }
+
+    #[cfg(not(windows))]
+    {
+        SYSTEM_PATHS.iter().map(PathBuf::from).collect()
+    }
+}
 
 /// Check if a path is contained within safe zones
 ///
@@ -140,9 +173,8 @@ pub fn is_path_contained(
     }
 
     // Check against system-protected paths
-    for sys_path in SYSTEM_PATHS {
-        let sys_path = Path::new(sys_path);
-        if path_starts_with(&resolved, sys_path) {
+    for sys_path in system_paths() {
+        if path_starts_with(&resolved, &sys_path) {
             return PathContainment::SystemProtected {
                 protected_path: sys_path.display().to_string(),
             };
@@ -323,10 +355,9 @@ pub fn is_system_path(path: &Path) -> bool {
         }
     }
 
-    SYSTEM_PATHS.iter().any(|sys| {
-        let sys_path = Path::new(sys);
-        path_starts_with(&resolved, sys_path)
-    })
+    system_paths()
+        .iter()
+        .any(|sys_path| path_starts_with(&resolved, sys_path))
 }
 
 /// Check for path traversal attempts in a path string
@@ -341,14 +372,39 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    fn workspace_root() -> PathBuf {
+        std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir().join("composer-workspace"))
+    }
+
+    fn system_path_sample() -> PathBuf {
+        system_paths().into_iter().next().unwrap_or_else(|| {
+            if cfg!(windows) {
+                PathBuf::from(r"C:\Windows")
+            } else {
+                PathBuf::from("/etc")
+            }
+        })
+    }
+
+    fn sibling_path_not_under(system_path: &Path) -> PathBuf {
+        let name = system_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("system");
+        let parent = system_path
+            .parent()
+            .unwrap_or_else(|| Path::new(std::path::MAIN_SEPARATOR_STR));
+        parent.join(format!("{name}data"))
+    }
+
     // ========================================================================
     // Basic Containment Tests
     // ========================================================================
 
     #[test]
     fn test_workspace_containment() {
-        let workspace = PathBuf::from("/home/user/project");
-        let target = PathBuf::from("/home/user/project/src/file.rs");
+        let workspace = workspace_root();
+        let target = workspace.join("src/file.rs");
 
         let result = is_path_contained(&target, &workspace, &[]);
         assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
@@ -356,8 +412,8 @@ mod tests {
 
     #[test]
     fn test_workspace_root_file() {
-        let workspace = PathBuf::from("/home/user/project");
-        let target = PathBuf::from("/home/user/project/README.md");
+        let workspace = workspace_root();
+        let target = workspace.join("README.md");
 
         let result = is_path_contained(&target, &workspace, &[]);
         assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
@@ -365,8 +421,8 @@ mod tests {
 
     #[test]
     fn test_workspace_deeply_nested() {
-        let workspace = PathBuf::from("/home/user/project");
-        let target = PathBuf::from("/home/user/project/a/b/c/d/e/f/file.rs");
+        let workspace = workspace_root();
+        let target = workspace.join("a/b/c/d/e/f/file.rs");
 
         let result = is_path_contained(&target, &workspace, &[]);
         assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
@@ -378,8 +434,8 @@ mod tests {
 
     #[test]
     fn test_system_path_protection() {
-        let workspace = PathBuf::from("/home/user/project");
-        let target = PathBuf::from("/etc/passwd");
+        let workspace = workspace_root();
+        let target = system_path_sample().join("passwd");
 
         let result = is_path_contained(&target, &workspace, &[]);
         assert!(matches!(result, PathContainment::SystemProtected { .. }));
@@ -387,16 +443,16 @@ mod tests {
 
     #[test]
     fn test_all_system_paths_protected() {
-        let workspace = PathBuf::from("/home/user/project");
+        let workspace = workspace_root();
 
         // Test paths under each SYSTEM_PATH - this is cross-platform
         // (uses the platform-specific SYSTEM_PATHS constant)
-        for sys_path in SYSTEM_PATHS {
-            let test_path = format!("{}/test_file", sys_path);
-            let result = is_path_contained(Path::new(&test_path), &workspace, &[]);
+        for sys_path in system_paths() {
+            let test_path = sys_path.join("test_file");
+            let result = is_path_contained(&test_path, &workspace, &[]);
             assert!(
                 matches!(result, PathContainment::SystemProtected { .. }),
-                "Expected {} to be system protected, got {:?}",
+                "Expected {:?} to be system protected, got {:?}",
                 test_path,
                 result
             );
@@ -453,8 +509,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_system_path_detection_windows_case_insensitive() {
-        assert!(is_system_path(Path::new(r"c:\windows\system32")));
-        assert!(is_system_path(Path::new(r"\\?\C:\Windows\System32")));
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let lower = system_root.to_lowercase();
+        assert!(is_system_path(Path::new(&system_root)));
+        assert!(is_system_path(Path::new(&lower)));
     }
 
     // ========================================================================
@@ -463,9 +521,13 @@ mod tests {
 
     #[test]
     fn test_escaped_path_outside_all_zones() {
-        let workspace = PathBuf::from("/workspace/project");
+        let workspace = workspace_root();
         // Use a path that's definitely not in workspace, home, temp, or system
-        let target = PathBuf::from("/mnt/external/data/file.txt");
+        let target = if cfg!(windows) {
+            PathBuf::from(r"Z:\external\data\file.txt")
+        } else {
+            PathBuf::from("/mnt/external/data/file.txt")
+        };
 
         let result = is_path_contained(&target, &workspace, &[]);
         // Should be Escaped (not in any safe zone) or possibly home if /mnt is under home
@@ -497,7 +559,7 @@ mod tests {
     #[test]
     fn test_additional_safe_zone_logic() {
         // Test the logic using temp directory which definitely exists
-        let workspace = PathBuf::from("/nonexistent/workspace");
+        let workspace = workspace_root().join("nonexistent");
         let temp_dir = std::env::temp_dir();
         let target = temp_dir.join("test_file.txt");
 
@@ -513,7 +575,7 @@ mod tests {
     #[test]
     fn test_safe_zone_takes_precedence() {
         // If we add a safe zone that's a parent of the target, it should be allowed
-        let workspace = PathBuf::from("/workspace");
+        let workspace = workspace_root();
         let temp_dir = std::env::temp_dir();
         let target = temp_dir.join("subdir/file.txt");
         let safe_zones = vec![temp_dir.clone()];
@@ -533,28 +595,40 @@ mod tests {
 
     #[test]
     fn test_is_system_path() {
-        assert!(is_system_path(Path::new("/etc/passwd")));
-        assert!(is_system_path(Path::new("/usr/bin/ls")));
-        assert!(is_system_path(Path::new("/var/log/messages")));
-        assert!(!is_system_path(Path::new("/home/user/file")));
-        assert!(!is_system_path(Path::new("/tmp/file")));
+        let sys_path = system_path_sample();
+        assert!(is_system_path(&sys_path.join("passwd")));
+        assert!(is_system_path(&sys_path.join("bin/ls")));
+        assert!(is_system_path(&sys_path.join("log/messages")));
+
+        if let Some(home) = dirs::home_dir() {
+            assert!(!is_system_path(&home.join("file")));
+        }
+        assert!(!is_system_path(&std::env::temp_dir().join("file")));
     }
 
     #[test]
     fn test_is_system_path_nested() {
         // Deeply nested system paths should still be detected
-        assert!(is_system_path(Path::new("/etc/ssh/sshd_config")));
-        assert!(is_system_path(Path::new("/usr/local/bin/custom")));
-        assert!(is_system_path(Path::new("/var/lib/docker/overlay")));
+        let sys_path = system_path_sample();
+        assert!(is_system_path(&sys_path.join("ssh/sshd_config")));
+        assert!(is_system_path(&sys_path.join("local/bin/custom")));
+        assert!(is_system_path(&sys_path.join("lib/docker/overlay")));
     }
 
     #[test]
     fn test_is_system_path_edge_cases() {
         // Root is not a system path (it's the parent of them)
-        assert!(!is_system_path(Path::new("/")));
+        assert!(!is_system_path(Path::new(std::path::MAIN_SEPARATOR_STR)));
         // Paths that start with system path names but aren't under them
-        assert!(!is_system_path(Path::new("/etcdata/file")));
-        assert!(!is_system_path(Path::new("/users/name"))); // not /usr
+        let sys_path = system_path_sample();
+        let sibling = sibling_path_not_under(&sys_path).join("file");
+        assert!(!is_system_path(&sibling));
+        let not_sys = sys_path
+            .parent()
+            .unwrap_or_else(|| Path::new(std::path::MAIN_SEPARATOR_STR))
+            .join("users")
+            .join("name");
+        assert!(!is_system_path(&not_sys));
     }
 
     // ========================================================================
@@ -599,7 +673,7 @@ mod tests {
         let Some(home) = dirs::home_dir() else {
             return;
         };
-        let resolved = resolve_path(Path::new("~/composer-test"), Path::new("/tmp")).unwrap();
+        let resolved = resolve_path(Path::new("~/composer-test"), &std::env::temp_dir()).unwrap();
         assert!(resolved.starts_with(&home));
     }
 
@@ -609,39 +683,36 @@ mod tests {
 
     #[test]
     fn test_path_starts_with() {
-        assert!(path_starts_with(
-            Path::new("/home/user/project/src"),
-            Path::new("/home/user/project")
-        ));
+        let workspace = workspace_root();
+        assert!(path_starts_with(&workspace.join("src"), &workspace));
         assert!(!path_starts_with(
-            Path::new("/home/user/project2"),
-            Path::new("/home/user/project")
+            Path::new(&format!("{}2", workspace.display())),
+            &workspace
         ));
-        assert!(path_starts_with(
-            Path::new("/home/user/project"),
-            Path::new("/home/user/project")
-        ));
+        assert!(path_starts_with(&workspace, &workspace));
     }
 
     #[test]
     fn test_path_starts_with_edge_cases() {
+        let workspace = workspace_root();
+        let workspace_with_sep = PathBuf::from(format!(
+            "{}{}",
+            workspace.display(),
+            std::path::MAIN_SEPARATOR
+        ));
         // Trailing slash handling
-        assert!(path_starts_with(
-            Path::new("/home/user/project/"),
-            Path::new("/home/user/project")
-        ));
-        assert!(path_starts_with(
-            Path::new("/home/user/project"),
-            Path::new("/home/user/project/")
-        ));
+        assert!(path_starts_with(&workspace_with_sep, &workspace));
+        assert!(path_starts_with(&workspace, &workspace_with_sep));
 
         // Root path
-        assert!(path_starts_with(Path::new("/etc"), Path::new("/")));
+        let root = Path::new(std::path::MAIN_SEPARATOR_STR);
+        let sys_path = system_path_sample();
+        assert!(path_starts_with(&sys_path, root));
 
         // Prefix that's not a path boundary
         assert!(!path_starts_with(
-            Path::new("/home/username"),
-            Path::new("/home/user")
+            Path::new(&format!("{}name", workspace.display())),
+            &workspace
         ));
     }
 
@@ -679,6 +750,7 @@ mod tests {
     // Path Traversal Attack Simulation Tests
     // ========================================================================
 
+    #[cfg(not(windows))]
     #[test]
     fn test_path_traversal_attack_normalized() {
         let workspace = PathBuf::from("/home/user/project");
@@ -688,6 +760,25 @@ mod tests {
         let normalized = normalize_path(malicious);
 
         // The normalized path should be detected as system protected
+        let result = is_path_contained(&normalized, &workspace, &[]);
+        assert!(
+            matches!(result, PathContainment::SystemProtected { .. }),
+            "Traversal attack should be blocked: {:?} -> {:?}",
+            malicious,
+            result
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_path_traversal_attack_normalized_windows() {
+        let workspace = PathBuf::from(r"C:\Users\user\project");
+
+        // Attempt to escape via traversal - normalize_path should handle this
+        let malicious =
+            Path::new(r"C:\Users\user\project\..\..\Windows\System32\drivers\etc\hosts");
+        let normalized = normalize_path(malicious);
+
         let result = is_path_contained(&normalized, &workspace, &[]);
         assert!(
             matches!(result, PathContainment::SystemProtected { .. }),

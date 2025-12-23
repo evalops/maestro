@@ -25,8 +25,9 @@ describe("System paths list", () => {
 			return;
 		}
 		if (process.platform === "win32") {
-			expect(paths).toContain("C:\\Windows");
-			expect(isSystemPath("c:\\windows\\system32")).toBe(true);
+			const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+			expect(paths).toContain(systemRoot);
+			expect(isSystemPath(`${systemRoot}\\System32`)).toBe(true);
 			return;
 		}
 		expect(paths).toContain("/proc");
@@ -40,7 +41,11 @@ describe("System paths list", () => {
 			process.platform === "darwin"
 				? systemPathsConfig.macos
 				: process.platform === "win32"
-					? systemPathsConfig.windows
+					? [
+							process.env.SystemRoot ?? "C:\\Windows",
+							process.env.ProgramFiles ?? "C:\\Program Files",
+							process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)",
+						]
 					: systemPathsConfig.linux;
 		expect(paths).toEqual(expected.slice().sort());
 	});

@@ -39,9 +39,9 @@ const MAC_SYSTEM_PATHS = [
 ];
 
 const WINDOWS_SYSTEM_PATHS = [
-	"C:\\Windows",
-	"C:\\Program Files",
-	"C:\\Program Files (x86)",
+	process.env.SystemRoot ?? "C:\\Windows",
+	process.env.ProgramFiles ?? "C:\\Program Files",
+	process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)",
 ];
 
 const SYSTEM_PATHS = (() => {
