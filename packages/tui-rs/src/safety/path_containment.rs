@@ -304,7 +304,7 @@ fn path_starts_with(path: &Path, base: &Path) -> bool {
         // Handle trailing slashes
         let base_normalized = base_str.trim_end_matches(['/', '\\']);
 
-        return path_str.starts_with(base_normalized)
+        path_str.starts_with(base_normalized)
             && (path_str.len() == base_normalized.len()
                 || path_str
                     .chars()
@@ -317,7 +317,7 @@ fn path_starts_with(path: &Path, base: &Path) -> bool {
     {
         let path_normalized = normalize_path(path);
         let base_normalized = normalize_path(base);
-        return path_normalized == base_normalized || path_normalized.starts_with(&base_normalized);
+        path_normalized == base_normalized || path_normalized.starts_with(&base_normalized)
     }
 }
 
