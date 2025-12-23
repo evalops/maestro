@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentToolResult } from "../../src/agent/types.js";
 import { bashTool } from "../../src/tools/bash.js";
+import { toolRegistry } from "../../src/tools/index.js";
 
 // Mock the safe-mode and guardian modules
 vi.mock("../../src/safety/safe-mode.js", () => ({
@@ -52,6 +53,16 @@ describe("bash tool", () => {
 			expect(result.isError).toBeFalsy();
 			const output = getTextOutput(result);
 			expect(output).toContain("Hello World");
+		});
+
+		it("executes via tool registry", async () => {
+			const result = await toolRegistry.bash.execute("bash-registry", {
+				command: "echo 'Registry OK'",
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("Registry OK");
 		});
 
 		it("executes pwd command", async () => {

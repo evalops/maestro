@@ -42,6 +42,7 @@ import { type TSchema, Type } from "@sinclair/typebox";
 import type { AgentTool, ToolAnnotations } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { expandTildePath } from "../utils/path-expansion.js";
 import { createTool } from "./tool-dsl.js";
 
 const logger = createLogger("inline-tools");
@@ -170,7 +171,9 @@ async function executeCommand(
 	stderrTruncated: boolean;
 }> {
 	return new Promise((resolvePromise, rejectPromise) => {
-		const cwd = options.cwd ? resolve(options.cwd) : process.cwd();
+		const cwd = options.cwd
+			? resolve(expandTildePath(options.cwd))
+			: process.cwd();
 		const timeout = options.timeout ?? 120000; // 2 minute default
 
 		// Merge environment: inherit from process, overlay tool-specific env
