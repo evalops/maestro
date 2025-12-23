@@ -115,6 +115,36 @@ import { streamResponsesApiSdk } from "./openai-responses-sdk.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { transformMessages } from "./transform-messages.js";
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function describeValueType(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "array";
+	return typeof value;
+}
+
+function parseToolArgumentsFromString(
+	raw: string,
+	context: { callId?: string; name?: string; stage: "delta" | "done" },
+	logInvalid: boolean,
+): Record<string, unknown> {
+	const parsed = parseStreamingJson<unknown>(raw);
+	if (isRecord(parsed)) {
+		return parsed;
+	}
+	if (logInvalid) {
+		logger.warn("OpenAI tool call arguments parsed to non-object", {
+			callId: context.callId,
+			name: context.name,
+			stage: context.stage,
+			parsedType: describeValueType(parsed),
+		});
+	}
+	return {};
+}
+
 /**
  * Normalize tool call IDs for Mistral.
  * Mistral requires tool IDs to be exactly 9 alphanumeric characters (a-z, A-Z, 0-9).
@@ -412,7 +442,7 @@ interface OpenAICompletionsDelta {
 		id?: string;
 		function?: {
 			name?: string;
-			arguments?: string;
+			arguments?: string | Record<string, unknown> | null;
 		};
 	}>;
 }
@@ -690,6 +720,7 @@ export async function* streamOpenAI(
 	const decoder = new TextDecoder();
 	let buffer = "";
 	const toolArgBuffers = new Map<number, string>();
+	const toolArgOverrides = new Map<number, Record<string, unknown>>();
 	let cacheAdjusted = false;
 	const textEnded = new Set<number>();
 	const toolEnded = new Set<number>();
@@ -863,23 +894,53 @@ export async function* streamOpenAI(
 								yield { type: "toolcall_start", contentIndex: idx, partial };
 							}
 
-							if (toolCall.function?.arguments) {
+							if (toolCall.function && "arguments" in toolCall.function) {
 								const argsDelta = toolCall.function.arguments;
-								const existing = toolArgBuffers.get(idx) ?? "";
-								const combined = existing + argsDelta;
-								toolArgBuffers.set(idx, combined);
+								if (typeof argsDelta === "string") {
+									toolArgOverrides.delete(idx);
+									const existing = toolArgBuffers.get(idx) ?? "";
+									const combined = existing + argsDelta;
+									toolArgBuffers.set(idx, combined);
 
-								// Parse streaming JSON progressively
-								// This allows UI to show partial arguments like file paths
-								// before the complete JSON arrives
-								block.arguments = parseStreamingJson(combined);
+									// Parse streaming JSON progressively
+									// This allows UI to show partial arguments like file paths
+									// before the complete JSON arrives
+									block.arguments = parseToolArgumentsFromString(
+										combined,
+										{ callId: block.id, name: block.name, stage: "delta" },
+										false,
+									);
 
-								yield {
-									type: "toolcall_delta",
-									contentIndex: idx,
-									delta: argsDelta,
-									partial,
-								};
+									yield {
+										type: "toolcall_delta",
+										contentIndex: idx,
+										delta: argsDelta,
+										partial,
+									};
+								} else if (isRecord(argsDelta)) {
+									logger.warn("OpenAI tool call arguments delta was object", {
+										callId: block.id,
+										name: block.name,
+									});
+									toolArgOverrides.set(idx, argsDelta);
+									toolArgBuffers.delete(idx);
+									block.arguments = argsDelta;
+									yield {
+										type: "toolcall_delta",
+										contentIndex: idx,
+										delta: JSON.stringify(argsDelta),
+										partial,
+									};
+								} else if (argsDelta !== null && argsDelta !== undefined) {
+									logger.warn(
+										"OpenAI tool call arguments delta was non-string",
+										{
+											callId: block.id,
+											name: block.name,
+											rawType: describeValueType(argsDelta),
+										},
+									);
+								}
 							}
 						}
 					}
@@ -898,15 +959,26 @@ export async function* streamOpenAI(
 						for (let i = 0; i < partial.content.length; i++) {
 							const block = partial.content[i];
 							if (block.type === "toolCall" && !toolEnded.has(i)) {
-								// Final parse of accumulated JSON
-								const partialArgs = toolArgBuffers.get(i) || "{}";
-								try {
-									block.arguments = JSON.parse(partialArgs);
-								} catch {
-									// Fall back to partial parse result
-									block.arguments = parseStreamingJson(partialArgs);
+								const overrideArgs = toolArgOverrides.get(i);
+								if (overrideArgs) {
+									block.arguments = overrideArgs;
+								} else {
+									// Final parse of accumulated JSON
+									const partialArgs = toolArgBuffers.get(i);
+									if (partialArgs !== undefined) {
+										block.arguments = parseToolArgumentsFromString(
+											partialArgs,
+											{ callId: block.id, name: block.name, stage: "done" },
+											true,
+										);
+									} else {
+										block.arguments = isRecord(block.arguments)
+											? block.arguments
+											: {};
+									}
 								}
 								toolArgBuffers.delete(i);
+								toolArgOverrides.delete(i);
 
 								yield {
 									type: "toolcall_end",

@@ -32,6 +32,82 @@ import { sanitizeSurrogates } from "./sanitize-unicode.js";
 
 const logger = createLogger("agent:providers:openai-responses");
 
+type ToolArguments = Record<string, unknown>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function describeValueType(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "array";
+	return typeof value;
+}
+
+function parseToolArgumentsFromString(
+	raw: string,
+	context: { callId: string; name: string; stage: "start" | "delta" | "done" },
+	logInvalid: boolean,
+): ToolArguments {
+	const parsed = parseStreamingJson<unknown>(raw);
+	if (isRecord(parsed)) {
+		return parsed;
+	}
+	if (logInvalid) {
+		logger.warn(
+			"OpenAI Responses function_call.arguments parsed to non-object",
+			{
+				callId: context.callId,
+				name: context.name,
+				stage: context.stage,
+				parsedType: describeValueType(parsed),
+			},
+		);
+	}
+	return {};
+}
+
+function normalizeToolArguments(
+	raw: unknown,
+	context: { callId: string; name: string; stage: "start" | "done" },
+): { arguments: ToolArguments; partialJson: string } {
+	if (typeof raw === "string") {
+		return {
+			arguments: parseToolArgumentsFromString(raw, context, false),
+			partialJson: raw,
+		};
+	}
+
+	if (isRecord(raw)) {
+		logger.warn(
+			"OpenAI Responses function_call.arguments was object, expected string",
+			{
+				callId: context.callId,
+				name: context.name,
+				stage: context.stage,
+			},
+		);
+		return { arguments: raw, partialJson: "" };
+	}
+
+	if (raw === null || raw === undefined) {
+		logger.warn("OpenAI Responses function_call.arguments was null/undefined", {
+			callId: context.callId,
+			name: context.name,
+			stage: context.stage,
+		});
+		return { arguments: {}, partialJson: "" };
+	}
+
+	logger.warn("OpenAI Responses function_call.arguments had unexpected type", {
+		callId: context.callId,
+		name: context.name,
+		stage: context.stage,
+		rawType: describeValueType(raw),
+	});
+	return { arguments: {}, partialJson: "" };
+}
+
 /**
  * Stream responses from OpenAI Responses API using the official SDK
  */
@@ -206,12 +282,17 @@ export async function* streamResponsesApiSdk(
 					};
 				} else if (item.type === "function_call") {
 					currentItem = item;
+					const normalized = normalizeToolArguments(item.arguments, {
+						callId: item.call_id,
+						name: item.name,
+						stage: "start",
+					});
 					currentBlock = {
 						type: "toolCall",
 						id: `${item.call_id}|${item.id}`,
 						name: item.name,
-						arguments: {},
-						partialJson: item.arguments || "",
+						arguments: normalized.arguments,
+						partialJson: normalized.partialJson,
 					};
 					output.content.push(currentBlock);
 					yield {
@@ -247,7 +328,15 @@ export async function* streamResponsesApiSdk(
 					currentBlock.type === "toolCall"
 				) {
 					currentBlock.partialJson += event.delta;
-					currentBlock.arguments = parseStreamingJson(currentBlock.partialJson);
+					currentBlock.arguments = parseToolArgumentsFromString(
+						currentBlock.partialJson,
+						{
+							callId: currentItem.call_id,
+							name: currentItem.name,
+							stage: "delta",
+						},
+						false,
+					);
 					yield {
 						type: "toolcall_delta",
 						contentIndex: blockIndex(),
@@ -297,11 +386,25 @@ export async function* streamResponsesApiSdk(
 					};
 					currentBlock = null;
 				} else if (item.type === "function_call") {
+					const finalArguments =
+						typeof item.arguments === "string"
+							? parseToolArgumentsFromString(
+									item.arguments,
+									{
+										callId: item.call_id,
+										name: item.name,
+										stage: "done",
+									},
+									true,
+								)
+							: isRecord(item.arguments)
+								? item.arguments
+								: {};
 					const toolCall: ToolCall = {
 						type: "toolCall",
 						id: `${item.call_id}|${item.id}`,
 						name: item.name,
-						arguments: JSON.parse(item.arguments),
+						arguments: finalArguments,
 					};
 					yield {
 						type: "toolcall_end",

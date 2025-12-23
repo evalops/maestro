@@ -84,6 +84,30 @@ describe("OpenAI streaming", () => {
 
 		expect(messageText).toBe("Hello");
 	});
+
+	it("handles tool call arguments as objects (Completions API)", async () => {
+		const lines = [
+			'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":{"path":"/tmp/test.txt"}}}]}}]}\n',
+			'data: {"choices":[{"finish_reason":"tool_calls"}]}\n',
+			"data: [DONE]\n",
+		];
+
+		const mockResponse = new Response(makeStream(lines), { status: 200 });
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const events: AssistantMessageEvent[] = [];
+		for await (const ev of streamOpenAI(completionsModel, baseContext, {
+			apiKey: "k",
+		})) {
+			events.push(ev);
+		}
+
+		const toolEnd = events.find((ev) => ev.type === "toolcall_end") as Extract<
+			AssistantMessageEvent,
+			{ type: "toolcall_end" }
+		>;
+		expect(toolEnd.toolCall.arguments).toEqual({ path: "/tmp/test.txt" });
+	});
 });
 
 // Note: Responses API SDK tests are integration tests that require actual API calls
