@@ -266,13 +266,22 @@ fn expand_tilde(path: &Path) -> Option<PathBuf> {
 
 /// Normalize a path without requiring it to exist
 fn normalize_path(path: &Path) -> PathBuf {
-    let mut components = Vec::new();
+    let mut components: Vec<std::path::Component<'_>> = Vec::new();
 
     for component in path.components() {
         match component {
-            std::path::Component::ParentDir => {
-                components.pop();
-            }
+            std::path::Component::ParentDir => match components.last() {
+                Some(std::path::Component::Normal(_)) | Some(std::path::Component::CurDir) => {
+                    components.pop();
+                }
+                Some(std::path::Component::RootDir) | Some(std::path::Component::Prefix(_)) => {
+                    // Don't traverse above root/prefix.
+                }
+                Some(std::path::Component::ParentDir) | None => {
+                    // Preserve leading ".." for relative paths.
+                    components.push(component);
+                }
+            },
             std::path::Component::CurDir => {}
             _ => {
                 components.push(component);
@@ -737,13 +746,28 @@ mod tests {
         // Can't go above root
         let path = normalize_path(Path::new("/home/../../../etc"));
         // This should normalize to /etc (can't go above root)
-        assert!(path.to_string_lossy().ends_with("etc"));
+        assert_eq!(path, PathBuf::from("/etc"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn test_normalize_path_above_root() {
+        // Parent traversal above root should stay rooted
+        let path = normalize_path(Path::new("/../etc"));
+        assert_eq!(path, PathBuf::from("/etc"));
     }
 
     #[test]
     fn test_normalize_path_current_dir() {
         let path = normalize_path(Path::new("/home/./user/./project/./"));
         assert_eq!(path, PathBuf::from("/home/user/project"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_normalize_path_above_root_windows() {
+        let path = normalize_path(Path::new(r"C:\..\Windows"));
+        assert_eq!(path, PathBuf::from(r"C:\Windows"));
     }
 
     // ========================================================================
