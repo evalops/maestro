@@ -274,11 +274,23 @@ export async function handleChat(
 			return raw?.trim() === "1";
 		})();
 
+		const clientHeader = (() => {
+			const header = req.headers["x-composer-client"];
+			const raw = Array.isArray(header) ? header[0] : header;
+			return raw?.trim().toLowerCase();
+		})();
+
 		const agent = await createAgent(
 			registeredModel,
 			chatReq.thinkingLevel || "off",
 			effectiveApproval,
-			clientToolsHeader ? { enableClientTools: true } : undefined,
+			clientToolsHeader
+				? {
+						enableClientTools: true,
+						includeVscodeTools: clientHeader === "vscode",
+						includeJetBrainsTools: clientHeader === "jetbrains",
+					}
+				: undefined,
 		);
 
 		// Hydrate conversation history (all messages except the current user input)

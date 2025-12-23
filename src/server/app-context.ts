@@ -18,7 +18,11 @@ export interface WebServerServices {
 		model: RegisteredModel,
 		thinking: ThinkingLevel,
 		approval: ApprovalMode,
-		options?: { enableClientTools?: boolean; includeVscodeTools?: boolean },
+		options?: {
+			enableClientTools?: boolean;
+			includeVscodeTools?: boolean;
+			includeJetBrainsTools?: boolean;
+		},
 	) => Promise<Agent>;
 	getRegisteredModel: (
 		input: string | null | undefined,

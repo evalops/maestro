@@ -23,7 +23,7 @@ import {
 	TodoContextSource,
 } from "./agent/context-providers.js";
 import { Agent, ProviderTransport } from "./agent/index.js";
-import type { ThinkingLevel } from "./agent/types.js";
+import type { AgentTool, ThinkingLevel } from "./agent/types.js";
 import {
 	disposeCheckpointService,
 	initCheckpointService,
@@ -52,7 +52,7 @@ import { configureSafeMode } from "./safety/safe-mode.js";
 import type { WebServerContext } from "./server/app-context.js";
 import { recordApiRequest } from "./telemetry.js";
 import { artifactsClientTool } from "./tools/artifacts-client.js";
-import { codingTools, vscodeTools } from "./tools/index.js";
+import { codingTools, jetbrainsTools, vscodeTools } from "./tools/index.js";
 import { javascriptReplClientTool } from "./tools/javascript-repl-client.js";
 import { createLogger } from "./utils/logger.js";
 
@@ -354,7 +354,11 @@ async function createAgent(
 	registeredModel: RegisteredModel,
 	thinkingLevel: ThinkingLevel = "off",
 	approvalMode: ApprovalMode = DEFAULT_APPROVAL_MODE,
-	options?: { enableClientTools?: boolean; includeVscodeTools?: boolean },
+	options?: {
+		enableClientTools?: boolean;
+		includeVscodeTools?: boolean;
+		includeJetBrainsTools?: boolean;
+	},
 ): Promise<Agent> {
 	const transport = new ProviderTransport({
 		getAuthContext: async (provider: string) => authResolver(provider),
@@ -366,12 +370,16 @@ async function createAgent(
 
 	const systemPrompt = buildSystemPrompt();
 
-	// Only include vscodeTools if a client is connected (indicated by includeClientTools)
-	// Without a connected VS Code client, these tools will hang waiting for responses
+	// Only include IDE client tools when a compatible client is connected.
+	// Without a connected client, these tools will hang waiting for responses.
 	const mcpTools = getAllMcpTools();
-	const tools = options?.includeVscodeTools
-		? [...codingTools, ...vscodeTools, ...mcpTools]
-		: [...codingTools, ...mcpTools];
+	const tools: AgentTool[] = [...codingTools, ...mcpTools];
+	if (options?.includeVscodeTools) {
+		tools.push(...vscodeTools);
+	}
+	if (options?.includeJetBrainsTools) {
+		tools.push(...jetbrainsTools);
+	}
 	if (options?.enableClientTools) {
 		tools.push(artifactsClientTool);
 		tools.push(javascriptReplClientTool);

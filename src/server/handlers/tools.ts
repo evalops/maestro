@@ -1,7 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { mcpManager } from "../../mcp/index.js";
 import { getAllMcpTools } from "../../mcp/tool-bridge.js";
-import { codingTools, toolRegistry, vscodeTools } from "../../tools/index.js";
+import {
+	codingTools,
+	jetbrainsTools,
+	toolRegistry,
+	vscodeTools,
+} from "../../tools/index.js";
 import { sendJson } from "../server-utils.js";
 
 export async function handleTools(
@@ -29,6 +34,11 @@ export async function handleTools(
 				description: tool.description,
 				category: "vscode",
 			})),
+			...jetbrainsTools.map((tool) => ({
+				name: tool.name,
+				description: tool.description,
+				category: "jetbrains",
+			})),
 			...getAllMcpTools().map((tool) => ({
 				name: tool.name,
 				description: tool.description,
@@ -45,6 +55,7 @@ export async function handleTools(
 				byCategory: {
 					coding: codingTools.length,
 					vscode: vscodeTools.length,
+					jetbrains: jetbrainsTools.length,
 					mcp: getAllMcpTools().length,
 				},
 			},

@@ -1,0 +1,110 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>com.evalops.composer</id>
+    <name>Composer</name>
+    <vendor email="support@evalops.ai" url="https://evalops.ai">EvalOps</vendor>
+
+    <description><![CDATA[
+    <p>Composer - Deterministic AI coding assistant for JetBrains IDEs.</p>
+    <p>Use Claude, GPT-4, Gemini, and other AI models with full transparency and control.</p>
+    <h3>Features</h3>
+    <ul>
+        <li>AI-powered code assistance with streaming responses</li>
+        <li>Multi-model support (Anthropic, OpenAI, Google, and more)</li>
+        <li>IDE-aware context (diagnostics, go-to-definition, find references)</li>
+        <li>File pinning and context management</li>
+        <li>Session management and conversation history</li>
+        <li>Tool execution with optional approval workflows</li>
+    </ul>
+    <h3>Getting Started</h3>
+    <ol>
+        <li>Install the Composer CLI: <code>npm install -g @evalops/composer</code></li>
+        <li>Start the web server: <code>composer web</code></li>
+        <li>Open the Composer tool window in your IDE</li>
+    </ol>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends optional="true" config-file="java-features.xml">com.intellij.modules.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Tool Window -->
+        <toolWindow
+                id="Composer"
+                secondary="true"
+                icon="/icons/composer.svg"
+                anchor="right"
+                factoryClass="com.evalops.composer.toolwindow.ComposerToolWindowFactory"/>
+
+        <!-- Application-level Settings -->
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.evalops.composer.settings.ComposerSettingsConfigurable"
+                id="com.evalops.composer.settings"
+                displayName="Composer"/>
+
+        <!-- Persistent State for Settings -->
+        <applicationService
+                serviceImplementation="com.evalops.composer.settings.ComposerSettings"/>
+
+        <!-- Application-level Service -->
+        <applicationService
+                serviceImplementation="com.evalops.composer.services.ComposerApplicationService"/>
+
+        <!-- Project-level Service -->
+        <projectService
+                serviceImplementation="com.evalops.composer.services.ComposerProjectService"/>
+
+        <!-- Notification Group -->
+        <notificationGroup
+                id="Composer Notifications"
+                displayType="BALLOON"
+                toolWindowId="Composer"/>
+    </extensions>
+
+    <actions>
+        <!-- Main Menu Group -->
+        <group id="Composer.MainMenu" text="Composer" popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </group>
+
+        <!-- Add to Context Action -->
+        <action id="Composer.AddToContext"
+                class="com.evalops.composer.actions.AddToContextAction"
+                text="Add File to Composer Context"
+                description="Add the current file to Composer's context"
+                icon="AllIcons.General.Pin_tab">
+            <add-to-group group-id="Composer.MainMenu" anchor="first"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt C"/>
+        </action>
+
+        <!-- Clear Chat Action -->
+        <action id="Composer.ClearChat"
+                class="com.evalops.composer.actions.ClearChatAction"
+                text="Clear Chat"
+                description="Clear the current Composer chat session"
+                icon="AllIcons.Actions.GC">
+            <add-to-group group-id="Composer.MainMenu" anchor="after" relative-to-action="Composer.AddToContext"/>
+        </action>
+
+        <!-- Open Settings Action -->
+        <action id="Composer.OpenSettings"
+                class="com.evalops.composer.actions.OpenSettingsAction"
+                text="Composer Settings..."
+                description="Open Composer settings"
+                icon="AllIcons.General.Settings">
+            <add-to-group group-id="Composer.MainMenu" anchor="last"/>
+        </action>
+
+        <!-- Focus Composer Action -->
+        <action id="Composer.Focus"
+                class="com.evalops.composer.actions.FocusComposerAction"
+                text="Focus Composer"
+                description="Open and focus the Composer tool window"
+                icon="AllIcons.Toolwindows.ToolWindowMessages">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift C"/>
+        </action>
+    </actions>
+</idea-plugin>

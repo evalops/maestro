@@ -1,0 +1,23 @@
+# Gradle
+.gradle/
+build/
+out/
+
+# IntelliJ Platform cache
+.intellijPlatform/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Plugin
+*.zip
+
+# Gradle wrapper jar must be tracked (override global ignores)
+!gradle/wrapper/gradle-wrapper.jar

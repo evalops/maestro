@@ -87,6 +87,15 @@ import {
 	vscodeReadFileRangeTool,
 } from "./vscode.js";
 
+// JetBrains IDE integration
+import {
+	jetbrainsFindReferencesTool,
+	jetbrainsGetDefinitionTool,
+	jetbrainsGetDiagnosticsTool,
+	jetbrainsReadFileRangeTool,
+	jetbrainsTools as jetbrainsToolDefinitions,
+} from "./jetbrains.js";
+
 // Web tools (optional - requires EXA_API_KEY)
 import { webfetchTool } from "./webfetch.js";
 import { websearchTool } from "./websearch.js";
@@ -252,6 +261,19 @@ export const vscodeTools = [
 	vscodeFindReferencesTool,
 	vscodeReadFileRangeTool,
 ];
+
+/**
+ * JetBrains-specific tools for IDE integration.
+ *
+ * These tools provide IDE features when running in JetBrains context:
+ * - PSI-based diagnostics
+ * - Go-to-definition via reference resolution
+ * - Find references via ReferencesSearch
+ * - Document-aware file range reading
+ *
+ * Only included when a JetBrains plugin client is connected.
+ */
+export const jetbrainsTools = jetbrainsToolDefinitions;
 
 // =============================================================================
 // Performance Infrastructure
