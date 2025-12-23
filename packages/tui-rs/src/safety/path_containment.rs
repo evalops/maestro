@@ -3,6 +3,7 @@
 //! Ensures file operations stay within safe directories (workspace, temp).
 //! Prevents path traversal attacks and access to system directories.
 
+#[cfg(windows)]
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
@@ -294,20 +295,30 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 /// Check if `path` starts with `base` (is contained within)
 fn path_starts_with(path: &Path, base: &Path) -> bool {
-    // Normalize both paths for comparison
-    let path_str = normalize_path_for_compare(path);
-    let base_str = normalize_path_for_compare(base);
+    #[cfg(windows)]
+    {
+        // Normalize both paths for comparison
+        let path_str = normalize_path_for_compare(path);
+        let base_str = normalize_path_for_compare(base);
 
-    // Handle trailing slashes
-    let base_normalized = base_str.trim_end_matches(['/', '\\']);
+        // Handle trailing slashes
+        let base_normalized = base_str.trim_end_matches(['/', '\\']);
 
-    path_str.starts_with(base_normalized)
-        && (path_str.len() == base_normalized.len()
-            || path_str
-                .chars()
-                .nth(base_normalized.len())
-                .map(|c| matches!(c, '/' | '\\'))
-                .unwrap_or(false))
+        return path_str.starts_with(base_normalized)
+            && (path_str.len() == base_normalized.len()
+                || path_str
+                    .chars()
+                    .nth(base_normalized.len())
+                    .map(|c| matches!(c, '/' | '\\'))
+                    .unwrap_or(false));
+    }
+
+    #[cfg(not(windows))]
+    {
+        let path_normalized = normalize_path(path);
+        let base_normalized = normalize_path(base);
+        return path_normalized == base_normalized || path_normalized.starts_with(&base_normalized);
+    }
 }
 
 #[cfg(windows)]
@@ -325,11 +336,6 @@ fn normalize_path_for_compare(path: &Path) -> Cow<'_, str> {
     }
 
     Cow::Owned(normalized.to_lowercase())
-}
-
-#[cfg(not(windows))]
-fn normalize_path_for_compare(path: &Path) -> Cow<'_, str> {
-    path.to_string_lossy()
 }
 
 /// Check if a path is in a system-protected directory
