@@ -96,6 +96,7 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Instant;
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use tokio::sync::mpsc;
 
 use super::bash::{BashArgs, BashTool};
@@ -143,25 +144,140 @@ fn build_glob_pattern(base_path: &str, pattern: &str) -> String {
         .to_string()
 }
 
-fn resolve_tool_path(raw: &str, cwd: &str) -> PathBuf {
-    if raw == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
+fn resolve_tool_path(cwd: &str, input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Missing file_path argument".to_string());
     }
 
-    if let Some(stripped) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(stripped);
-        }
-    }
-
-    let path = Path::new(raw);
-    if path.is_absolute() {
+    let path = Path::new(trimmed);
+    let resolved = if path.is_absolute() {
         path.to_path_buf()
+    } else if is_tilde_path(path) {
+        expand_tilde(path)
+            .ok_or_else(|| "Home directory unavailable for ~ expansion".to_string())?
     } else {
         Path::new(cwd).join(path)
+    };
+
+    Ok(resolved.to_string_lossy().to_string())
+}
+
+fn is_tilde_path(path: &Path) -> bool {
+    let Some(path_str) = path.to_str() else {
+        return false;
+    };
+    path_str == "~" || path_str.starts_with("~/") || path_str.starts_with("~\\")
+}
+
+fn expand_tilde(path: &Path) -> Option<PathBuf> {
+    let path_str = path.to_str()?;
+    if path_str == "~" {
+        return dirs::home_dir();
     }
+    if let Some(stripped) = path_str
+        .strip_prefix("~/")
+        .or_else(|| path_str.strip_prefix("~\\"))
+    {
+        return dirs::home_dir().map(|home| home.join(stripped));
+    }
+    None
+}
+
+fn to_shell_path(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        let normalized = path.replace('\\', "/");
+        if normalized.starts_with("//") {
+            return normalized;
+        }
+        if normalized.len() >= 2 && normalized.as_bytes().get(1) == Some(&b':') {
+            let drive = normalized[0..1].to_ascii_lowercase();
+            let rest = normalized[2..].trim_start_matches('/');
+            if rest.is_empty() {
+                return format!("/{}", drive);
+            }
+            return format!("/{}/{}", drive, rest);
+        }
+        normalized
+    }
+
+    #[cfg(not(windows))]
+    {
+        path.to_string()
+    }
+}
+
+fn normalize_shell_path(input: &str) -> Result<(String, String), String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Missing path argument".to_string());
+    }
+    let path = Path::new(trimmed);
+    if is_tilde_path(path) {
+        let expanded = expand_tilde(path)
+            .ok_or_else(|| "Home directory unavailable for ~ expansion".to_string())?;
+        let display = expanded.to_string_lossy().to_string();
+        let shell_path = to_shell_path(&display);
+        return Ok((display, shell_path));
+    }
+
+    let display = trimmed.to_string();
+    let shell_path = to_shell_path(trimmed);
+    Ok((display, shell_path))
+}
+
+fn normalize_git_path(cwd: &str, input: &str) -> Result<(String, String), String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Missing path argument".to_string());
+    }
+
+    let path = Path::new(trimmed);
+    let mut resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else if is_tilde_path(path) {
+        expand_tilde(path)
+            .ok_or_else(|| "Home directory unavailable for ~ expansion".to_string())?
+    } else {
+        path.to_path_buf()
+    };
+
+    let cwd_path = Path::new(cwd);
+    let relative = cwd_path
+        .canonicalize()
+        .ok()
+        .and_then(|cwd_canon| {
+            resolved
+                .canonicalize()
+                .ok()
+                .and_then(|path_canon| path_canon.strip_prefix(&cwd_canon).ok().map(PathBuf::from))
+        })
+        .or_else(|| resolved.strip_prefix(cwd_path).ok().map(PathBuf::from));
+
+    if let Some(rel) = relative {
+        resolved = rel;
+    }
+
+    let display = resolved.to_string_lossy().to_string();
+    let shell_path = to_shell_path(&display);
+    Ok((display, shell_path))
+}
+
+fn extract_grep_path(line: &str) -> Option<&str> {
+    let mut parts = line.rsplitn(3, ':');
+    let _match_text = parts.next()?;
+    let _line_number = parts.next()?;
+    let path = parts.next()?;
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
+}
+
+fn is_probably_binary(data: &[u8]) -> bool {
+    data.iter().take(2048).any(|byte| *byte == 0)
 }
 
 /// Tool executor that dispatches and runs agent tools
@@ -682,11 +798,15 @@ impl ToolExecutor {
             "read" | "Read" => {
                 // File reading tool with optional offset/limit
                 let start_time = Instant::now();
-                let path = args
+                let raw_path = args
                     .get("file_path")
                     .or_else(|| args.get("path"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let path = match resolve_tool_path(&self.cwd, raw_path) {
+                    Ok(resolved) => resolved,
+                    Err(message) => return ToolResult::failure(message),
+                };
 
                 // Optional line offset (1-indexed, defaults to 1)
                 let offset = args
@@ -701,18 +821,37 @@ impl ToolExecutor {
                     .and_then(|v| v.as_u64())
                     .map(|v| v as usize);
 
-                if path.is_empty() {
-                    return ToolResult::failure("Missing file_path argument");
-                }
+                let mode = args
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("normal");
 
-                let resolved = resolve_tool_path(path, &self.cwd);
+                let line_numbers = args
+                    .get("line_numbers")
+                    .or_else(|| args.get("lineNumbers"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
 
-                if let Ok(metadata) = tokio::fs::metadata(&resolved).await {
+                let wrap_in_code_fence = args
+                    .get("wrap_in_code_fence")
+                    .or_else(|| args.get("wrapInCodeFence"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
+                let as_base64 = args
+                    .get("as_base64")
+                    .or_else(|| args.get("asBase64"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let language = args.get("language").and_then(|v| v.as_str());
+
+                if let Ok(metadata) = tokio::fs::metadata(path).await {
                     let size_bytes = metadata.len();
                     if size_bytes > MAX_READ_SIZE_BYTES {
                         let size_mb = (size_bytes as f64) / (1024.0 * 1024.0);
                         let details = ReadDetails {
-                            path: resolved.display().to_string(),
+                            path: path.to_string(),
                             size_bytes: Some(size_bytes),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
@@ -725,80 +864,144 @@ impl ToolExecutor {
                     }
                 }
 
-                match tokio::fs::read_to_string(&resolved).await {
-                    Ok(content) => {
-                        // Add line numbers with offset/limit support
-                        let lines: Vec<&str> = content.lines().collect();
-                        let total_lines = lines.len();
-
-                        // Apply offset (convert to 0-indexed)
-                        let start_idx = (offset - 1).min(total_lines);
-
-                        // Apply limit
-                        let end_idx = match limit {
-                            Some(lim) => (start_idx + lim).min(total_lines),
-                            None => total_lines,
-                        };
-
-                        let lines_read = end_idx - start_idx;
-                        let truncated = limit.is_some() && end_idx < total_lines;
-
-                        let numbered: String = lines[start_idx..end_idx]
-                            .iter()
-                            .enumerate()
-                            .map(|(i, line)| format!("{:>6}\t{}", start_idx + i + 1, line))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-
-                        // Build ReadDetails
-                        let details = ReadDetails {
-                            path: resolved.display().to_string(),
-                            size_bytes: Some(content.len() as u64),
-                            lines_read: Some(lines_read),
-                            truncated,
-                            offset: if offset > 1 { Some(offset) } else { None },
-                            limit,
-                            mime_type: None,
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                        };
-
-                        ToolResult::success(numbered).with_details(details.to_json())
-                    }
+                let bytes = match tokio::fs::read(path).await {
+                    Ok(data) => data,
                     Err(e) => {
                         let details = ReadDetails {
-                            path: resolved.display().to_string(),
+                            path: path.to_string(),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
                         };
-                        ToolResult::failure(format!("Failed to read file: {}", e))
-                            .with_details(details.to_json())
+                        return ToolResult::failure(format!("Failed to read file: {}", e))
+                            .with_details(details.to_json());
+                    }
+                };
+
+                if is_probably_binary(&bytes) && !as_base64 {
+                    let details = ReadDetails {
+                        path: path.to_string(),
+                        size_bytes: Some(bytes.len() as u64),
+                        duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                        ..Default::default()
+                    };
+                    return ToolResult::failure(
+                        "Binary file detected. Re-run with as_base64=true or use the bash tool.",
+                    )
+                    .with_details(details.to_json());
+                }
+
+                if as_base64 {
+                    let encoded = STANDARD.encode(&bytes);
+                    let details = ReadDetails {
+                        path: path.to_string(),
+                        size_bytes: Some(bytes.len() as u64),
+                        duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                        ..Default::default()
+                    };
+                    return ToolResult::success(encoded).with_details(details.to_json());
+                }
+
+                let content = match String::from_utf8(bytes) {
+                    Ok(text) => text,
+                    Err(_) => {
+                        let details = ReadDetails {
+                            path: path.to_string(),
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                            ..Default::default()
+                        };
+                        return ToolResult::failure(
+                            "File is not valid UTF-8. Re-run with as_base64=true or use the bash tool.",
+                        )
+                        .with_details(details.to_json());
+                    }
+                };
+
+                // Add line numbers with offset/limit support
+                let lines: Vec<&str> = content.lines().collect();
+                let total_lines = lines.len();
+
+                let mut start_idx = (offset - 1).min(total_lines);
+                let mut max_lines = limit.unwrap_or(total_lines);
+
+                match mode {
+                    "head" => {
+                        start_idx = 0;
+                        max_lines = limit.unwrap_or(total_lines);
+                    }
+                    "tail" => {
+                        max_lines = limit.unwrap_or(total_lines);
+                        start_idx = total_lines.saturating_sub(max_lines);
+                    }
+                    "normal" => {}
+                    _ => {
+                        let details = ReadDetails {
+                            path: path.to_string(),
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                            ..Default::default()
+                        };
+                        return ToolResult::failure("Invalid mode. Use normal, head, or tail.")
+                            .with_details(details.to_json());
                     }
                 }
+
+                let end_idx = (start_idx + max_lines).min(total_lines);
+                let lines_read = end_idx.saturating_sub(start_idx);
+                let truncated = limit.is_some() && end_idx < total_lines;
+
+                let mut output: String = lines[start_idx..end_idx]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| {
+                        if line_numbers {
+                            format!("{:>6}\t{}", start_idx + i + 1, line)
+                        } else {
+                            (*line).to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                if wrap_in_code_fence {
+                    let fence_language = language.unwrap_or("");
+                    output = format!("```{}\n{}\n```", fence_language, output);
+                }
+
+                // Build ReadDetails
+                let details = ReadDetails {
+                    path: path.to_string(),
+                    size_bytes: Some(content.len() as u64),
+                    lines_read: Some(lines_read),
+                    truncated,
+                    offset: if offset > 1 { Some(offset) } else { None },
+                    limit,
+                    mime_type: None,
+                    duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                };
+
+                ToolResult::success(output).with_details(details.to_json())
             }
             "write" | "Write" => {
                 let start_time = Instant::now();
-                let path = args
+                let raw_path = args
                     .get("file_path")
                     .or_else(|| args.get("path"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let path = match resolve_tool_path(&self.cwd, raw_path) {
+                    Ok(resolved) => resolved,
+                    Err(message) => return ToolResult::failure(message),
+                };
 
                 let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
-                if path.is_empty() {
-                    return ToolResult::failure("Missing file_path argument");
-                }
-
-                let resolved = resolve_tool_path(path, &self.cwd);
-
                 // Check if file exists (to determine if it's a create or overwrite)
-                let file_existed = resolved.exists();
+                let file_existed = std::path::Path::new(path).exists();
 
                 // Create parent directories if needed
-                if let Some(parent) = resolved.parent() {
+                if let Some(parent) = std::path::Path::new(path).parent() {
                     if let Err(e) = tokio::fs::create_dir_all(parent).await {
                         let details = WriteDetails {
-                            path: resolved.display().to_string(),
+                            path: path.to_string(),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
                         };
@@ -807,27 +1010,24 @@ impl ToolExecutor {
                     }
                 }
 
-                match tokio::fs::write(&resolved, content).await {
+                match tokio::fs::write(path, content).await {
                     Ok(_) => {
                         // Invalidate cache since file was modified
                         self.invalidate_file_cache(path);
 
                         let details = WriteDetails {
-                            path: resolved.display().to_string(),
+                            path: path.to_string(),
                             bytes_written: Some(content.len() as u64),
                             created: !file_existed,
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                         };
 
-                        ToolResult::success(format!(
-                            "File written successfully: {}",
-                            resolved.display()
-                        ))
+                        ToolResult::success(format!("File written successfully: {}", path))
                         .with_details(details.to_json())
                     }
                     Err(e) => {
                         let details = WriteDetails {
-                            path: resolved.display().to_string(),
+                            path: path.to_string(),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
                         };
@@ -889,7 +1089,13 @@ impl ToolExecutor {
             "grep" | "Grep" => {
                 let start_time = Instant::now();
                 let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-                let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let (display_path, shell_path) = match normalize_shell_path(raw_path) {
+                    Ok(result) => result,
+                    Err(message) => {
+                        return ToolResult::failure(message);
+                    }
+                };
 
                 if pattern.is_empty() {
                     let details =
@@ -905,9 +1111,9 @@ impl ToolExecutor {
                         command: format!(
                             "(rg --no-heading -n -- {} {} 2>/dev/null || grep -rn -- {} {} 2>/dev/null) | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ] || [ $status -eq 1 ]; then exit 0; else exit $status; fi",
                             shell_escape(pattern),
-                            shell_escape(path),
+                            shell_escape(&shell_path),
                             shell_escape(pattern),
-                            shell_escape(path),
+                            shell_escape(&shell_path),
                             MAX_GREP_LINES
                         ),
                         timeout: Some(30000),
@@ -922,13 +1128,13 @@ impl ToolExecutor {
                 let files_matched = result
                     .output
                     .lines()
-                    .filter_map(|line| line.split(':').next())
+                    .filter_map(extract_grep_path)
                     .collect::<std::collections::HashSet<_>>()
                     .len();
                 let truncated = matches_count >= MAX_GREP_LINES;
 
                 let details = GrepDetails::new(pattern)
-                    .with_path(path)
+                    .with_path(&display_path)
                     .with_matches(matches_count)
                     .with_files_matched(files_matched)
                     .with_duration(duration_ms);
@@ -948,11 +1154,15 @@ impl ToolExecutor {
             }
             "edit" | "Edit" => {
                 let start_time = Instant::now();
-                let path = args
+                let raw_path = args
                     .get("file_path")
                     .or_else(|| args.get("path"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let path = match resolve_tool_path(&self.cwd, raw_path) {
+                    Ok(resolved) => resolved,
+                    Err(message) => return ToolResult::failure(message),
+                };
 
                 let old_string = args
                     .get("old_string")
@@ -967,22 +1177,16 @@ impl ToolExecutor {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                if path.is_empty() {
-                    return ToolResult::failure("Missing file_path argument");
-                }
-
                 if old_string.is_empty() {
                     return ToolResult::failure("Missing old_string argument");
                 }
 
-                let resolved = resolve_tool_path(path, &self.cwd);
-
                 // Read file content
-                let content = match tokio::fs::read_to_string(&resolved).await {
+                let content = match tokio::fs::read_to_string(path).await {
                     Ok(c) => c,
                     Err(e) => {
                         let details = EditDetails {
-                            path: resolved.display().to_string(),
+                            path: path.to_string(),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
                         };
@@ -995,7 +1199,7 @@ impl ToolExecutor {
                 let occurrences = content.matches(old_string).count();
                 if occurrences == 0 {
                     let details = EditDetails {
-                        path: resolved.display().to_string(),
+                        path: path.to_string(),
                         replacements: Some(0),
                         duration_ms: Some(start_time.elapsed().as_millis() as u64),
                         ..Default::default()
@@ -1009,7 +1213,7 @@ impl ToolExecutor {
                 // Check for uniqueness if not replace_all
                 if !replace_all && occurrences > 1 {
                     let details = EditDetails {
-                        path: resolved.display().to_string(),
+                        path: path.to_string(),
                         replacements: Some(0),
                         duration_ms: Some(start_time.elapsed().as_millis() as u64),
                         ..Default::default()
@@ -1035,13 +1239,13 @@ impl ToolExecutor {
                 };
 
                 // Write back
-                match tokio::fs::write(&resolved, &new_content).await {
+                match tokio::fs::write(path, &new_content).await {
                     Ok(_) => {
                         // Invalidate cache since file was modified
                         self.invalidate_file_cache(path);
 
                         let details = EditDetails {
-                            path: resolved.display().to_string(),
+                            path: path.to_string(),
                             replacements: Some(replacements),
                             lines_added: if total_lines_diff > 0 {
                                 Some(total_lines_diff)
@@ -1058,14 +1262,13 @@ impl ToolExecutor {
 
                         ToolResult::success(format!(
                             "Successfully replaced {} occurrence(s) in {}",
-                            replacements,
-                            resolved.display()
+                            replacements, path
                         ))
                         .with_details(details.to_json())
                     }
                     Err(e) => {
                         let details = EditDetails {
-                            path: resolved.display().to_string(),
+                            path: path.to_string(),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
                         };
@@ -1083,9 +1286,19 @@ impl ToolExecutor {
                     .unwrap_or("HEAD");
 
                 let path = args.get("path").and_then(|v| v.as_str());
+                let normalized_path = match path {
+                    Some(raw_path) => Some(normalize_git_path(&self.cwd, raw_path)),
+                    None => None,
+                };
+                let (display_path, shell_path) = match normalized_path.transpose() {
+                    Ok(value) => value.map(|(display, shell)| (display, shell)),
+                    Err(message) => {
+                        return ToolResult::failure(message);
+                    }
+                };
 
                 // Build git diff command
-                let cmd = match path {
+                let cmd = match shell_path.as_ref() {
                     Some(p) => format!(
                         "git diff {} -- {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
                         shell_escape(target),
@@ -1113,7 +1326,7 @@ impl ToolExecutor {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 let mut details = DiffDetails::new(target).with_duration(duration_ms);
 
-                if let Some(p) = path {
+                if let Some(p) = display_path.as_ref() {
                     details = details.with_path(p);
                 }
 
@@ -1153,10 +1366,16 @@ impl ToolExecutor {
             "list" | "List" | "ls" => {
                 let start_time = Instant::now();
                 // Directory listing tool
-                let path = args
+                let raw_path = args
                     .get("path")
                     .and_then(|v| v.as_str())
                     .unwrap_or(&self.cwd);
+                let (display_path, shell_path) = match normalize_shell_path(raw_path) {
+                    Ok(result) => result,
+                    Err(message) => {
+                        return ToolResult::failure(message);
+                    }
+                };
 
                 let recursive = args
                     .get("recursive")
@@ -1166,13 +1385,13 @@ impl ToolExecutor {
                 let cmd = if recursive {
                     format!(
                         "find -- {} -type f | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(path),
+                        shell_escape(&shell_path),
                         MAX_LIST_LINES
                     )
                 } else {
                     format!(
                         "ls -la -- {} | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                        shell_escape(path),
+                        shell_escape(&shell_path),
                         MAX_LIST_LINES
                     )
                 };
@@ -1192,7 +1411,7 @@ impl ToolExecutor {
                 let entries_count = result.output.lines().count();
                 let truncated = entries_count >= MAX_LIST_LINES;
 
-                let mut details = ListDetails::new(path)
+                let mut details = ListDetails::new(&display_path)
                     .with_entries(entries_count)
                     .with_duration(duration_ms);
 
@@ -1440,7 +1659,7 @@ impl ToolRegistry {
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "The absolute path to the text file to read"
+                            "description": "Path to the text file to read (relative or absolute)"
                         },
                         "offset": {
                             "type": "number",
@@ -1449,6 +1668,26 @@ impl ToolRegistry {
                         "limit": {
                             "type": "number",
                             "description": "Number of lines to read (optional)"
+                        },
+                        "mode": {
+                            "type": "string",
+                            "description": "Reading mode: normal, head, or tail (default: normal)"
+                        },
+                        "line_numbers": {
+                            "type": "boolean",
+                            "description": "Prefix output lines with line numbers (default: true)"
+                        },
+                        "wrap_in_code_fence": {
+                            "type": "boolean",
+                            "description": "Wrap output in a Markdown code fence (default: true)"
+                        },
+                        "as_base64": {
+                            "type": "boolean",
+                            "description": "Return base64-encoded content instead of text (default: false)"
+                        },
+                        "language": {
+                            "type": "string",
+                            "description": "Language identifier for code fence syntax highlighting (optional)"
                         }
                     },
                     "required": ["file_path"]
@@ -1470,7 +1709,7 @@ impl ToolRegistry {
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "The absolute path to the file to write"
+                            "description": "Path to the file to write (relative or absolute)"
                         },
                         "content": {
                             "type": "string",
@@ -1545,7 +1784,7 @@ impl ToolRegistry {
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "The absolute path to the file to edit"
+                            "description": "Path to the file to edit (relative or absolute)"
                         },
                         "old_string": {
                             "type": "string",
@@ -1718,7 +1957,20 @@ impl ToolRegistry {
                             .and_then(|v| v.as_str())
                             .map(|s| s.trim().is_empty())
                             .unwrap_or(false);
-                    if !present {
+                    let alias_present = match field {
+                        "file_path" => args
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| !s.trim().is_empty())
+                            .unwrap_or(false),
+                        "path" => args
+                            .get("file_path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| !s.trim().is_empty())
+                            .unwrap_or(false),
+                        _ => false,
+                    };
+                    if !present && !alias_present {
                         missing.push(field.to_string());
                     }
                 }
@@ -2022,17 +2274,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_executor_read_file_as_base64() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("binary.bin");
+        let bytes = [0_u8, 1, 2, 3, 4, 5];
+        std::fs::write(&file_path, &bytes).unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap(),
+            "as_base64": true
+        });
+        let result = executor.execute("read", &args, None, "test-call").await;
+
+        assert!(result.success);
+        let expected = STANDARD.encode(bytes);
+        assert_eq!(result.output, expected);
+    }
+
+    #[tokio::test]
+    async fn test_executor_read_file_binary_requires_base64() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("binary.bin");
+        let bytes = [0_u8, 1, 2, 3, 4, 5];
+        std::fs::write(&file_path, &bytes).unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap()
+        });
+        let result = executor.execute("read", &args, None, "test-call").await;
+
+        assert!(!result.success);
+        assert!(result
+            .error
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("binary file detected"));
+    }
+
+    #[tokio::test]
+    async fn test_executor_read_file_no_line_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("plain.txt");
+        std::fs::write(&file_path, "alpha\nbeta").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap(),
+            "line_numbers": false,
+            "wrap_in_code_fence": false
+        });
+        let result = executor.execute("read", &args, None, "test-call").await;
+
+        assert!(result.success);
+        assert!(result.output.contains("alpha\nbeta"));
+        assert!(!result.output.contains('\t'));
+    }
+
+    #[tokio::test]
     async fn test_executor_read_file_relative_path() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("relative.txt");
-        std::fs::write(&file_path, "relative content").unwrap();
+        std::fs::write(&file_path, "hello from relative").unwrap();
 
         let executor = ToolExecutor::new(dir.path().to_str().unwrap());
         let args = serde_json::json!({"file_path": "relative.txt"});
         let result = executor.execute("read", &args, None, "test-call").await;
 
         assert!(result.success);
-        assert!(result.output.contains("relative content"));
+        assert!(result.output.contains("hello from relative"));
     }
 
     #[tokio::test]
@@ -2190,6 +2501,48 @@ mod tests {
         assert_eq!(shell_escape("simple"), "'simple'");
         assert_eq!(shell_escape("with space"), "'with space'");
         assert_eq!(shell_escape("a'b"), "'a'\\''b'");
+    }
+
+    #[test]
+    fn test_extract_grep_path_unix() {
+        assert_eq!(
+            extract_grep_path("src/main.rs:12:fn main()"),
+            Some("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn test_extract_grep_path_windows() {
+        assert_eq!(
+            extract_grep_path(r"C:\repo\main.rs:12:fn main()"),
+            Some(r"C:\repo\main.rs")
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_to_shell_path_drive_letter() {
+        assert_eq!(to_shell_path(r"C:\repo\file.txt"), "/c/repo/file.txt");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_to_shell_path_passthrough() {
+        assert_eq!(to_shell_path("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn test_normalize_git_path_strips_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("foo.txt");
+        std::fs::write(&file_path, "data").unwrap();
+
+        let (display, shell) =
+            normalize_git_path(dir.path().to_str().unwrap(), file_path.to_str().unwrap()).unwrap();
+
+        assert_eq!(display, "foo.txt");
+        assert_eq!(shell, "foo.txt");
     }
 
     // ========== Cache Integration Tests ==========
