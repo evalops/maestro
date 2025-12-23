@@ -96,6 +96,7 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Instant;
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use tokio::sync::mpsc;
 
 use super::bash::{BashArgs, BashTool};
@@ -273,6 +274,10 @@ fn extract_grep_path(line: &str) -> Option<&str> {
     } else {
         Some(path)
     }
+}
+
+fn is_probably_binary(data: &[u8]) -> bool {
+    data.iter().take(2048).any(|byte| *byte == 0)
 }
 
 /// Tool executor that dispatches and runs agent tools
@@ -816,6 +821,31 @@ impl ToolExecutor {
                     .and_then(|v| v.as_u64())
                     .map(|v| v as usize);
 
+                let mode = args
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("normal");
+
+                let line_numbers = args
+                    .get("line_numbers")
+                    .or_else(|| args.get("lineNumbers"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
+                let wrap_in_code_fence = args
+                    .get("wrap_in_code_fence")
+                    .or_else(|| args.get("wrapInCodeFence"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
+                let as_base64 = args
+                    .get("as_base64")
+                    .or_else(|| args.get("asBase64"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let language = args.get("language").and_then(|v| v.as_str());
+
                 if let Ok(metadata) = tokio::fs::metadata(path).await {
                     let size_bytes = metadata.len();
                     if size_bytes > MAX_READ_SIZE_BYTES {
@@ -834,55 +864,121 @@ impl ToolExecutor {
                     }
                 }
 
-                match tokio::fs::read_to_string(path).await {
-                    Ok(content) => {
-                        // Add line numbers with offset/limit support
-                        let lines: Vec<&str> = content.lines().collect();
-                        let total_lines = lines.len();
-
-                        // Apply offset (convert to 0-indexed)
-                        let start_idx = (offset - 1).min(total_lines);
-
-                        // Apply limit
-                        let end_idx = match limit {
-                            Some(lim) => (start_idx + lim).min(total_lines),
-                            None => total_lines,
-                        };
-
-                        let lines_read = end_idx - start_idx;
-                        let truncated = limit.is_some() && end_idx < total_lines;
-
-                        let numbered: String = lines[start_idx..end_idx]
-                            .iter()
-                            .enumerate()
-                            .map(|(i, line)| format!("{:>6}\t{}", start_idx + i + 1, line))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-
-                        // Build ReadDetails
-                        let details = ReadDetails {
-                            path: path.to_string(),
-                            size_bytes: Some(content.len() as u64),
-                            lines_read: Some(lines_read),
-                            truncated,
-                            offset: if offset > 1 { Some(offset) } else { None },
-                            limit,
-                            mime_type: None,
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                        };
-
-                        ToolResult::success(numbered).with_details(details.to_json())
-                    }
+                let bytes = match tokio::fs::read(path).await {
+                    Ok(data) => data,
                     Err(e) => {
                         let details = ReadDetails {
                             path: path.to_string(),
                             duration_ms: Some(start_time.elapsed().as_millis() as u64),
                             ..Default::default()
                         };
-                        ToolResult::failure(format!("Failed to read file: {}", e))
-                            .with_details(details.to_json())
+                        return ToolResult::failure(format!("Failed to read file: {}", e))
+                            .with_details(details.to_json());
+                    }
+                };
+
+                if is_probably_binary(&bytes) && !as_base64 {
+                    let details = ReadDetails {
+                        path: path.to_string(),
+                        size_bytes: Some(bytes.len() as u64),
+                        duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                        ..Default::default()
+                    };
+                    return ToolResult::failure(
+                        "Binary file detected. Re-run with as_base64=true or use the bash tool.",
+                    )
+                    .with_details(details.to_json());
+                }
+
+                if as_base64 {
+                    let encoded = STANDARD.encode(&bytes);
+                    let details = ReadDetails {
+                        path: path.to_string(),
+                        size_bytes: Some(bytes.len() as u64),
+                        duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                        ..Default::default()
+                    };
+                    return ToolResult::success(encoded).with_details(details.to_json());
+                }
+
+                let content = match String::from_utf8(bytes) {
+                    Ok(text) => text,
+                    Err(_) => {
+                        let details = ReadDetails {
+                            path: path.to_string(),
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                            ..Default::default()
+                        };
+                        return ToolResult::failure(
+                            "File is not valid UTF-8. Re-run with as_base64=true or use the bash tool.",
+                        )
+                        .with_details(details.to_json());
+                    }
+                };
+
+                // Add line numbers with offset/limit support
+                let lines: Vec<&str> = content.lines().collect();
+                let total_lines = lines.len();
+
+                let mut start_idx = (offset - 1).min(total_lines);
+                let mut max_lines = limit.unwrap_or(total_lines);
+
+                match mode {
+                    "head" => {
+                        start_idx = 0;
+                        max_lines = limit.unwrap_or(total_lines);
+                    }
+                    "tail" => {
+                        max_lines = limit.unwrap_or(total_lines);
+                        start_idx = total_lines.saturating_sub(max_lines);
+                    }
+                    "normal" => {}
+                    _ => {
+                        let details = ReadDetails {
+                            path: path.to_string(),
+                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                            ..Default::default()
+                        };
+                        return ToolResult::failure("Invalid mode. Use normal, head, or tail.")
+                            .with_details(details.to_json());
                     }
                 }
+
+                let end_idx = (start_idx + max_lines).min(total_lines);
+                let lines_read = end_idx.saturating_sub(start_idx);
+                let truncated = limit.is_some() && end_idx < total_lines;
+
+                let mut output: String = lines[start_idx..end_idx]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| {
+                        if line_numbers {
+                            format!("{:>6}\t{}", start_idx + i + 1, line)
+                        } else {
+                            (*line).to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                if wrap_in_code_fence {
+                    let fence_language = language.unwrap_or("");
+                    output = format!("```{}\n{}\n```", fence_language, output);
+                }
+
+                // Build ReadDetails
+                let details = ReadDetails {
+                    path: path.to_string(),
+                    size_bytes: Some(content.len() as u64),
+                    lines_read: Some(lines_read),
+                    truncated,
+                    offset: if offset > 1 { Some(offset) } else { None },
+                    limit,
+                    mime_type: None,
+                    duration_ms: Some(start_time.elapsed().as_millis() as u64),
+                };
+
+                ToolResult::success(output).with_details(details.to_json())
             }
             "write" | "Write" => {
                 let start_time = Instant::now();
@@ -1572,6 +1668,26 @@ impl ToolRegistry {
                         "limit": {
                             "type": "number",
                             "description": "Number of lines to read (optional)"
+                        },
+                        "mode": {
+                            "type": "string",
+                            "description": "Reading mode: normal, head, or tail (default: normal)"
+                        },
+                        "line_numbers": {
+                            "type": "boolean",
+                            "description": "Prefix output lines with line numbers (default: true)"
+                        },
+                        "wrap_in_code_fence": {
+                            "type": "boolean",
+                            "description": "Wrap output in a Markdown code fence (default: true)"
+                        },
+                        "as_base64": {
+                            "type": "boolean",
+                            "description": "Return base64-encoded content instead of text (default: false)"
+                        },
+                        "language": {
+                            "type": "string",
+                            "description": "Language identifier for code fence syntax highlighting (optional)"
                         }
                     },
                     "required": ["file_path"]
@@ -1841,7 +1957,20 @@ impl ToolRegistry {
                             .and_then(|v| v.as_str())
                             .map(|s| s.trim().is_empty())
                             .unwrap_or(false);
-                    if !present {
+                    let alias_present = match field {
+                        "file_path" => args
+                            .get("path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| !s.trim().is_empty())
+                            .unwrap_or(false),
+                        "path" => args
+                            .get("file_path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| !s.trim().is_empty())
+                            .unwrap_or(false),
+                        _ => false,
+                    };
+                    if !present && !alias_present {
                         missing.push(field.to_string());
                     }
                 }
@@ -2142,6 +2271,65 @@ mod tests {
         assert!(result.output.contains("line 1"));
         assert!(result.output.contains("line 2"));
         assert!(result.output.contains("line 3"));
+    }
+
+    #[tokio::test]
+    async fn test_executor_read_file_as_base64() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("binary.bin");
+        let bytes = [0_u8, 1, 2, 3, 4, 5];
+        std::fs::write(&file_path, &bytes).unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap(),
+            "as_base64": true
+        });
+        let result = executor.execute("read", &args, None, "test-call").await;
+
+        assert!(result.success);
+        let expected = STANDARD.encode(bytes);
+        assert_eq!(result.output, expected);
+    }
+
+    #[tokio::test]
+    async fn test_executor_read_file_binary_requires_base64() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("binary.bin");
+        let bytes = [0_u8, 1, 2, 3, 4, 5];
+        std::fs::write(&file_path, &bytes).unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap()
+        });
+        let result = executor.execute("read", &args, None, "test-call").await;
+
+        assert!(!result.success);
+        assert!(result
+            .error
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("binary file detected"));
+    }
+
+    #[tokio::test]
+    async fn test_executor_read_file_no_line_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("plain.txt");
+        std::fs::write(&file_path, "alpha\nbeta").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": file_path.to_str().unwrap(),
+            "line_numbers": false,
+            "wrap_in_code_fence": false
+        });
+        let result = executor.execute("read", &args, None, "test-call").await;
+
+        assert!(result.success);
+        assert!(result.output.contains("alpha\nbeta"));
+        assert!(!result.output.contains('\t'));
     }
 
     #[tokio::test]
