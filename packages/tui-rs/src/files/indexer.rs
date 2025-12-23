@@ -389,10 +389,13 @@ impl FileIndexer {
             return None;
         }
 
+        let canonical = match root.canonicalize() {
+            Ok(path) => path,
+            Err(_) => return None,
+        };
+
         let mut set = HashSet::new();
-        if let Ok(canonical) = root.canonicalize() {
-            set.insert(canonical);
-        }
+        set.insert(canonical);
         Some(Arc::new(Mutex::new(set)))
     }
 
