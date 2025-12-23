@@ -92,7 +92,7 @@
 //! 3. Adding a match arm in `ToolExecutor::execute()`
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Instant;
 
@@ -141,6 +141,58 @@ fn build_glob_pattern(base_path: &str, pattern: &str) -> String {
         .join(pattern)
         .to_string_lossy()
         .to_string()
+}
+
+fn resolve_tool_path(cwd: &str, input: &str) -> Result<String, String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err("Missing file_path argument".to_string());
+    }
+
+    let path = Path::new(trimmed);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else if is_tilde_path(path) {
+        expand_tilde(path)
+            .ok_or_else(|| "Home directory unavailable for ~ expansion".to_string())?
+    } else {
+        Path::new(cwd).join(path)
+    };
+
+    Ok(resolved.to_string_lossy().to_string())
+}
+
+fn is_tilde_path(path: &Path) -> bool {
+    let Some(path_str) = path.to_str() else {
+        return false;
+    };
+    path_str == "~" || path_str.starts_with("~/") || path_str.starts_with("~\\")
+}
+
+fn expand_tilde(path: &Path) -> Option<PathBuf> {
+    let path_str = path.to_str()?;
+    if path_str == "~" {
+        return dirs::home_dir();
+    }
+    if let Some(stripped) = path_str
+        .strip_prefix("~/")
+        .or_else(|| path_str.strip_prefix("~\\"))
+    {
+        return dirs::home_dir().map(|home| home.join(stripped));
+    }
+    None
+}
+
+fn extract_grep_path(line: &str) -> Option<&str> {
+    let mut parts = line.rsplitn(3, ':');
+    let _match_text = parts.next()?;
+    let _line_number = parts.next()?;
+    let path = parts.next()?;
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
 }
 
 /// Tool executor that dispatches and runs agent tools
@@ -661,11 +713,15 @@ impl ToolExecutor {
             "read" | "Read" => {
                 // File reading tool with optional offset/limit
                 let start_time = Instant::now();
-                let path = args
+                let raw_path = args
                     .get("file_path")
                     .or_else(|| args.get("path"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let path = match resolve_tool_path(&self.cwd, raw_path) {
+                    Ok(resolved) => resolved,
+                    Err(message) => return ToolResult::failure(message),
+                };
 
                 // Optional line offset (1-indexed, defaults to 1)
                 let offset = args
@@ -679,10 +735,6 @@ impl ToolExecutor {
                     .get("limit")
                     .and_then(|v| v.as_u64())
                     .map(|v| v as usize);
-
-                if path.is_empty() {
-                    return ToolResult::failure("Missing file_path argument");
-                }
 
                 if let Ok(metadata) = tokio::fs::metadata(path).await {
                     let size_bytes = metadata.len();
@@ -754,17 +806,17 @@ impl ToolExecutor {
             }
             "write" | "Write" => {
                 let start_time = Instant::now();
-                let path = args
+                let raw_path = args
                     .get("file_path")
                     .or_else(|| args.get("path"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let path = match resolve_tool_path(&self.cwd, raw_path) {
+                    Ok(resolved) => resolved,
+                    Err(message) => return ToolResult::failure(message),
+                };
 
                 let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
-
-                if path.is_empty() {
-                    return ToolResult::failure("Missing file_path argument");
-                }
 
                 // Check if file exists (to determine if it's a create or overwrite)
                 let file_existed = std::path::Path::new(path).exists();
@@ -894,7 +946,7 @@ impl ToolExecutor {
                 let files_matched = result
                     .output
                     .lines()
-                    .filter_map(|line| line.split(':').next())
+                    .filter_map(extract_grep_path)
                     .collect::<std::collections::HashSet<_>>()
                     .len();
                 let truncated = matches_count >= MAX_GREP_LINES;
@@ -920,11 +972,15 @@ impl ToolExecutor {
             }
             "edit" | "Edit" => {
                 let start_time = Instant::now();
-                let path = args
+                let raw_path = args
                     .get("file_path")
                     .or_else(|| args.get("path"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let path = match resolve_tool_path(&self.cwd, raw_path) {
+                    Ok(resolved) => resolved,
+                    Err(message) => return ToolResult::failure(message),
+                };
 
                 let old_string = args
                     .get("old_string")
@@ -938,10 +994,6 @@ impl ToolExecutor {
                     .get("replace_all")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-
-                if path.is_empty() {
-                    return ToolResult::failure("Missing file_path argument");
-                }
 
                 if old_string.is_empty() {
                     return ToolResult::failure("Missing old_string argument");
@@ -1409,7 +1461,7 @@ impl ToolRegistry {
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "The absolute path to the text file to read"
+                            "description": "Path to the text file to read (relative or absolute)"
                         },
                         "offset": {
                             "type": "number",
@@ -1439,7 +1491,7 @@ impl ToolRegistry {
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "The absolute path to the file to write"
+                            "description": "Path to the file to write (relative or absolute)"
                         },
                         "content": {
                             "type": "string",
@@ -1514,7 +1566,7 @@ impl ToolRegistry {
                     "properties": {
                         "file_path": {
                             "type": "string",
-                            "description": "The absolute path to the file to edit"
+                            "description": "Path to the file to edit (relative or absolute)"
                         },
                         "old_string": {
                             "type": "string",
@@ -2027,6 +2079,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_executor_read_file_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("relative.txt");
+        std::fs::write(&file_path, "hello from relative").unwrap();
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({"file_path": "relative.txt"});
+        let result = executor.execute("read", &args, None, "test-call").await;
+
+        assert!(result.success);
+        assert!(result.output.contains("hello from relative"));
+    }
+
+    #[tokio::test]
+    async fn test_executor_write_file_relative_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("relative-write.txt");
+
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let args = serde_json::json!({
+            "file_path": "relative-write.txt",
+            "content": "relative write"
+        });
+        let result = executor.execute("write", &args, None, "test-call").await;
+
+        assert!(result.success);
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "relative write");
+    }
+
+    #[tokio::test]
     async fn test_executor_unknown_tool() {
         let executor = ToolExecutor::new(".");
         let args = serde_json::json!({});
@@ -2130,6 +2213,22 @@ mod tests {
         assert_eq!(shell_escape("simple"), "'simple'");
         assert_eq!(shell_escape("with space"), "'with space'");
         assert_eq!(shell_escape("a'b"), "'a'\\''b'");
+    }
+
+    #[test]
+    fn test_extract_grep_path_unix() {
+        assert_eq!(
+            extract_grep_path("src/main.rs:12:fn main()"),
+            Some("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn test_extract_grep_path_windows() {
+        assert_eq!(
+            extract_grep_path(r"C:\repo\main.rs:12:fn main()"),
+            Some(r"C:\repo\main.rs")
+        );
     }
 
     // ========== Cache Integration Tests ==========
