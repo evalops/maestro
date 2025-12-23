@@ -274,7 +274,7 @@ fn is_tilde_path(path: &Path) -> bool {
     let Some(path_str) = path.to_str() else {
         return false;
     };
-    path_str == "~" || path_str.starts_with("~/")
+    path_str == "~" || path_str.starts_with("~/") || path_str.starts_with("~\\")
 }
 
 fn expand_tilde(path: &Path) -> Option<PathBuf> {
@@ -282,7 +282,10 @@ fn expand_tilde(path: &Path) -> Option<PathBuf> {
     if path_str == "~" {
         return dirs::home_dir();
     }
-    if let Some(stripped) = path_str.strip_prefix("~/") {
+    if let Some(stripped) = path_str
+        .strip_prefix("~/")
+        .or_else(|| path_str.strip_prefix("~\\"))
+    {
         return dirs::home_dir().map(|home| home.join(stripped));
     }
     None
@@ -712,6 +715,15 @@ mod tests {
             return;
         };
         let resolved = resolve_path(Path::new("~/composer-test"), &std::env::temp_dir()).unwrap();
+        assert!(resolved.starts_with(&home));
+    }
+
+    #[test]
+    fn test_resolve_path_expands_tilde_backslash() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let resolved = resolve_path(Path::new("~\\composer-test"), &std::env::temp_dir()).unwrap();
         assert!(resolved.starts_with(&home));
     }
 
