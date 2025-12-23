@@ -1,7 +1,13 @@
 /**
  * Tests for inline tool definitions from .composer/tools.json
  */
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -344,12 +350,13 @@ echo "Received: $input"
 	});
 
 	it("uses custom working directory", async () => {
+		const quotedNode = JSON.stringify(process.execPath);
 		const config = {
 			tools: [
 				{
 					name: "cwd_test",
 					description: "Test cwd",
-					command: "pwd",
+					command: `${quotedNode} -e "console.log(process.cwd())"`,
 					cwd: scriptsDir,
 				},
 			],
@@ -362,5 +369,42 @@ echo "Received: $input"
 		expect(result.isError).toBeFalsy();
 		const text = (result.content[0] as { type: "text"; text: string }).text;
 		expect(text).toContain("scripts");
+	});
+
+	it("expands tilde in working directory", async () => {
+		const originalHome = process.env.HOME;
+		const originalUserProfile = process.env.USERPROFILE;
+		const homeDir = mkdtempSync(join(tmpdir(), "inline-tools-home-"));
+		process.env.HOME = homeDir;
+		process.env.USERPROFILE = homeDir;
+
+		const tildeDir = join(homeDir, "tilde-cwd");
+		mkdirSync(tildeDir, { recursive: true });
+
+		const quotedNode = JSON.stringify(process.execPath);
+		const config = {
+			tools: [
+				{
+					name: "tilde_cwd",
+					description: "Tilde cwd",
+					command: `${quotedNode} -e "console.log(process.cwd())"`,
+					cwd: "~/tilde-cwd",
+				},
+			],
+		};
+		writeFileSync(join(composerDir, "tools.json"), JSON.stringify(config));
+
+		try {
+			const tools = loadInlineTools(testDir);
+			const result = await tools[0].execute("test-call", {});
+
+			expect(result.isError).toBeFalsy();
+			const text = (result.content[0] as { type: "text"; text: string }).text;
+			expect(text).toContain("tilde-cwd");
+		} finally {
+			process.env.HOME = originalHome;
+			process.env.USERPROFILE = originalUserProfile;
+			rmSync(homeDir, { recursive: true, force: true });
+		}
 	});
 });

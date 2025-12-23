@@ -445,6 +445,20 @@ pub struct InlineToolExecutor {
     workspace_dir: PathBuf,
 }
 
+fn expand_tilde_path(path: &Path) -> Option<PathBuf> {
+    let path_str = path.to_str()?;
+    if path_str == "~" {
+        return dirs::home_dir();
+    }
+    if let Some(stripped) = path_str
+        .strip_prefix("~/")
+        .or_else(|| path_str.strip_prefix("~\\"))
+    {
+        return dirs::home_dir().map(|home| home.join(stripped));
+    }
+    None
+}
+
 impl InlineToolExecutor {
     /// Create a new inline tool executor
     pub fn new(workspace_dir: impl Into<PathBuf>) -> Self {
@@ -461,7 +475,9 @@ impl InlineToolExecutor {
         let cwd = match &tool.definition.cwd {
             Some(dir) => {
                 let path = Path::new(dir);
-                if path.is_absolute() {
+                if let Some(expanded) = expand_tilde_path(path) {
+                    expanded
+                } else if path.is_absolute() {
                     path.to_path_buf()
                 } else {
                     self.workspace_dir.join(path)
@@ -1085,11 +1101,12 @@ mod tests {
         fs::create_dir(&subdir).unwrap();
 
         let executor = InlineToolExecutor::new(temp.path());
+        let command = if cfg!(windows) { "cd" } else { "pwd" };
 
         let def = InlineToolDef {
             name: "cwd_test".to_string(),
             description: "Cwd test".to_string(),
-            command: "pwd".to_string(),
+            command: command.to_string(),
             parameters: HashMap::new(),
             timeout: 5000,
             cwd: Some("subdir".to_string()),
@@ -1106,6 +1123,44 @@ mod tests {
         let result = executor.execute(&tool, serde_json::json!({})).await;
         assert!(result.success);
         assert!(result.output.contains("subdir"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_tilde_cwd() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let temp = TempDir::new_in(&home).unwrap();
+        let name = temp
+            .path()
+            .file_name()
+            .map(|v| v.to_string_lossy().to_string())
+            .unwrap_or_else(|| "tilde-cwd".to_string());
+        let tilde_path = format!("~/{}", name);
+
+        let executor = InlineToolExecutor::new(temp.path());
+        let command = if cfg!(windows) { "cd" } else { "pwd" };
+
+        let def = InlineToolDef {
+            name: "tilde_cwd".to_string(),
+            description: "Tilde cwd test".to_string(),
+            command: command.to_string(),
+            parameters: HashMap::new(),
+            timeout: 5000,
+            cwd: Some(tilde_path),
+            env: HashMap::new(),
+            annotations: ToolAnnotations::default(),
+        };
+
+        let tool = InlineTool {
+            definition: def,
+            source_path: PathBuf::new(),
+            source: InlineToolSource::Project,
+        };
+
+        let result = executor.execute(&tool, serde_json::json!({})).await;
+        assert!(result.success);
+        assert!(result.output.contains(&name));
     }
 
     #[tokio::test]
