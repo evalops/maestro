@@ -83,7 +83,7 @@ pub struct InlineToolsConfig {
 /// A single inline tool definition from the config file
 #[derive(Debug, Clone, Deserialize)]
 pub struct InlineToolDef {
-    /// Unique tool name (must match pattern: starts with letter, alphanumeric + underscore)
+    /// Unique tool name (must match pattern: starts with letter, alphanumeric + underscore + hyphen)
     pub name: String,
 
     /// Human-readable description shown to the AI
