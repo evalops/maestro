@@ -67,6 +67,7 @@ use super::details::InlineToolDetails;
 use super::process_utils::{kill_process_tree, set_new_process_group};
 use crate::agent::ToolResult;
 use crate::ai::Tool;
+use crate::safety::expand_tilde;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration Types
@@ -445,20 +446,6 @@ pub struct InlineToolExecutor {
     workspace_dir: PathBuf,
 }
 
-fn expand_tilde_path(path: &Path) -> Option<PathBuf> {
-    let path_str = path.to_str()?;
-    if path_str == "~" {
-        return dirs::home_dir();
-    }
-    if let Some(stripped) = path_str
-        .strip_prefix("~/")
-        .or_else(|| path_str.strip_prefix("~\\"))
-    {
-        return dirs::home_dir().map(|home| home.join(stripped));
-    }
-    None
-}
-
 impl InlineToolExecutor {
     /// Create a new inline tool executor
     pub fn new(workspace_dir: impl Into<PathBuf>) -> Self {
@@ -475,7 +462,7 @@ impl InlineToolExecutor {
         let cwd = match &tool.definition.cwd {
             Some(dir) => {
                 let path = Path::new(dir);
-                if let Some(expanded) = expand_tilde_path(path) {
+                if let Some(expanded) = expand_tilde(path) {
                     expanded
                 } else if path.is_absolute() {
                     path.to_path_buf()

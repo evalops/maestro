@@ -109,7 +109,7 @@ use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
 use crate::agent::{FromAgent, ToolDefinition, ToolResult};
 use crate::ai::Tool;
-use crate::safety::{ActionFirewall, FirewallVerdict};
+use crate::safety::{expand_tilde, is_tilde_path, ActionFirewall, FirewallVerdict};
 
 const MAX_READ_SIZE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_GREP_LINES: usize = 100;
@@ -161,27 +161,6 @@ fn resolve_tool_path(cwd: &str, input: &str) -> Result<String, String> {
     };
 
     Ok(resolved.to_string_lossy().to_string())
-}
-
-fn is_tilde_path(path: &Path) -> bool {
-    let Some(path_str) = path.to_str() else {
-        return false;
-    };
-    path_str == "~" || path_str.starts_with("~/") || path_str.starts_with("~\\")
-}
-
-fn expand_tilde(path: &Path) -> Option<PathBuf> {
-    let path_str = path.to_str()?;
-    if path_str == "~" {
-        return dirs::home_dir();
-    }
-    if let Some(stripped) = path_str
-        .strip_prefix("~/")
-        .or_else(|| path_str.strip_prefix("~\\"))
-    {
-        return dirs::home_dir().map(|home| home.join(stripped));
-    }
-    None
 }
 
 fn to_shell_path(path: &str) -> String {
@@ -265,15 +244,24 @@ fn normalize_git_path(cwd: &str, input: &str) -> Result<(String, String), String
 }
 
 fn extract_grep_path(line: &str) -> Option<&str> {
-    let mut parts = line.rsplitn(3, ':');
-    let _match_text = parts.next()?;
-    let _line_number = parts.next()?;
-    let path = parts.next()?;
-    if path.is_empty() {
-        None
-    } else {
-        Some(path)
+    let bytes = line.as_bytes();
+    let mut idx = 0;
+    while idx < bytes.len() {
+        if bytes[idx] == b':' {
+            let mut digit_idx = idx + 1;
+            if digit_idx < bytes.len() && bytes[digit_idx].is_ascii_digit() {
+                while digit_idx < bytes.len() && bytes[digit_idx].is_ascii_digit() {
+                    digit_idx += 1;
+                }
+                if digit_idx < bytes.len() && bytes[digit_idx] == b':' {
+                    let path = &line[..idx];
+                    return if path.is_empty() { None } else { Some(path) };
+                }
+            }
+        }
+        idx += 1;
     }
+    None
 }
 
 fn is_probably_binary(data: &[u8]) -> bool {
@@ -995,10 +983,10 @@ impl ToolExecutor {
                 let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
                 // Check if file exists (to determine if it's a create or overwrite)
-                let file_existed = std::path::Path::new(path).exists();
+                let file_existed = std::path::Path::new(&path).exists();
 
                 // Create parent directories if needed
-                if let Some(parent) = std::path::Path::new(path).parent() {
+                if let Some(parent) = std::path::Path::new(&path).parent() {
                     if let Err(e) = tokio::fs::create_dir_all(parent).await {
                         let details = WriteDetails {
                             path: path.to_string(),
@@ -1010,10 +998,10 @@ impl ToolExecutor {
                     }
                 }
 
-                match tokio::fs::write(path, content).await {
+                match tokio::fs::write(&path, content).await {
                     Ok(_) => {
                         // Invalidate cache since file was modified
-                        self.invalidate_file_cache(path);
+                        self.invalidate_file_cache(&path);
 
                         let details = WriteDetails {
                             path: path.to_string(),
@@ -1239,10 +1227,10 @@ impl ToolExecutor {
                 };
 
                 // Write back
-                match tokio::fs::write(path, &new_content).await {
+                match tokio::fs::write(&path, &new_content).await {
                     Ok(_) => {
                         // Invalidate cache since file was modified
-                        self.invalidate_file_cache(path);
+                        self.invalidate_file_cache(&path);
 
                         let details = EditDetails {
                             path: path.to_string(),
@@ -1291,7 +1279,8 @@ impl ToolExecutor {
                     None => None,
                 };
                 let (display_path, shell_path) = match normalized_path.transpose() {
-                    Ok(value) => value.map(|(display, shell)| (display, shell)),
+                    Ok(Some((display, shell))) => (Some(display), Some(shell)),
+                    Ok(None) => (None, None),
                     Err(message) => {
                         return ToolResult::failure(message);
                     }
@@ -2508,6 +2497,14 @@ mod tests {
         assert_eq!(
             extract_grep_path("src/main.rs:12:fn main()"),
             Some("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn test_extract_grep_path_colon_in_match() {
+        assert_eq!(
+            extract_grep_path("src/lib.rs:5:let x: i32 = 5;"),
+            Some("src/lib.rs")
         );
     }
 

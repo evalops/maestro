@@ -67,6 +67,7 @@ pub use dangerous_patterns::{
     PatternMatch, Severity,
 };
 pub use firewall::{ActionFirewall, FirewallVerdict};
+pub(crate) use path_containment::{expand_tilde, is_tilde_path};
 pub use path_containment::{
     has_path_traversal, is_path_contained, is_system_path, PathContainment,
 };

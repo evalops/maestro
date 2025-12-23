@@ -270,14 +270,14 @@ fn resolve_existing_parent(path: &Path) -> Option<PathBuf> {
     }
 }
 
-fn is_tilde_path(path: &Path) -> bool {
+pub(crate) fn is_tilde_path(path: &Path) -> bool {
     let Some(path_str) = path.to_str() else {
         return false;
     };
     path_str == "~" || path_str.starts_with("~/") || path_str.starts_with("~\\")
 }
 
-fn expand_tilde(path: &Path) -> Option<PathBuf> {
+pub(crate) fn expand_tilde(path: &Path) -> Option<PathBuf> {
     let path_str = path.to_str()?;
     if path_str == "~" {
         return dirs::home_dir();
