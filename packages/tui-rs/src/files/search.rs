@@ -84,12 +84,18 @@ impl FileSearch {
 
         if query.is_empty() {
             // Return all files sorted by name
-            let matches: Vec<FileMatch> = self
+            let mut matches: Vec<FileMatch> = self
                 .files
                 .iter()
-                .take(self.max_results)
                 .map(|f| FileMatch::new(f.clone(), 0, vec![]))
                 .collect();
+            matches.sort_by(|a, b| {
+                a.file
+                    .name
+                    .cmp(&b.file.name)
+                    .then_with(|| a.file.relative_path.cmp(&b.file.relative_path))
+            });
+            matches.truncate(self.max_results);
 
             return FileSearchResult {
                 matches,
@@ -295,6 +301,9 @@ mod tests {
 
         let result = search.search("");
         assert_eq!(result.matches.len(), 3);
+        assert_eq!(result.matches[0].file.name, "a.rs");
+        assert_eq!(result.matches[1].file.name, "b.rs");
+        assert_eq!(result.matches[2].file.name, "c.rs");
     }
 
     #[test]
