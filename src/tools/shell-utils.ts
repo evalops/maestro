@@ -10,8 +10,8 @@
  * | Platform | Shell          | Notes                              |
  * |----------|----------------|-------------------------------------|
  * | Windows  | Git Bash       | Requires Git for Windows installed |
- * | Linux    | sh             | POSIX-compliant shell              |
- * | macOS    | sh             | POSIX-compliant shell              |
+ * | Linux    | $SHELL         | Defaults to /bin/bash (fallback: sh) |
+ * | macOS    | $SHELL         | Defaults to /bin/bash (fallback: sh) |
  *
  * ## Key Functions
  *
@@ -74,6 +74,15 @@ export function getShellConfig(): { shell: string; args: string[] } {
 				.map((p) => `  ${p}`)
 				.join("\n")}`,
 		);
+	}
+
+	const envShell = process.env.SHELL?.trim();
+	if (envShell && existsSync(envShell)) {
+		return { shell: envShell, args: ["-c"] };
+	}
+
+	if (existsSync("/bin/bash")) {
+		return { shell: "/bin/bash", args: ["-c"] };
 	}
 
 	return { shell: "sh", args: ["-c"] };

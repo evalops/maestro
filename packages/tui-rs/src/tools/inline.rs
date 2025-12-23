@@ -495,6 +495,15 @@ impl InlineToolExecutor {
                 InlineToolSource::Project => "project",
             });
 
+        let args_json = match serde_json::to_string(&args) {
+            Ok(json) => json,
+            Err(e) => {
+                details = details.with_duration(start_time.elapsed().as_millis() as u64);
+                return ToolResult::failure(format!("Failed to serialize arguments: {}", e))
+                    .with_details(details.to_json());
+            }
+        };
+
         // Build the command
         let (shell, shell_arg) = if cfg!(windows) {
             let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd".to_string());
@@ -532,7 +541,6 @@ impl InlineToolExecutor {
 
         // Write args to stdin as JSON
         if let Some(mut stdin) = child.stdin.take() {
-            let args_json = serde_json::to_string(&args).unwrap_or_default();
             if let Err(e) = stdin.write_all(args_json.as_bytes()).await {
                 eprintln!("Warning: Failed to write to stdin: {}", e);
             }

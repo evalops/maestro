@@ -2,6 +2,7 @@
 //!
 //! Lists files in the workspace using ripgrep or find.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -170,6 +171,9 @@ fn try_find(root: &Path, max_files: usize) -> Option<Vec<WorkspaceFile>> {
 fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
+    let root_canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    visited.insert(root_canonical.clone());
 
     // Directories to skip
     let skip_dirs = [".git", "node_modules", "target", ".next", "dist", "build"];
@@ -191,12 +195,33 @@ fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
 
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
+            let file_type = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
 
-            if path.is_dir() {
-                if !skip_dirs.contains(&name.as_str()) && !name.starts_with('.') {
-                    stack.push(path);
-                }
+            let is_dir = if file_type.is_dir() {
+                true
+            } else if file_type.is_symlink() {
+                path.is_dir()
             } else {
+                false
+            };
+
+            if is_dir {
+                if !skip_dirs.contains(&name.as_str()) && !name.starts_with('.') {
+                    let canonical = match path.canonicalize() {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+                    if !canonical.starts_with(&root_canonical) {
+                        continue;
+                    }
+                    if visited.insert(canonical) {
+                        stack.push(path);
+                    }
+                }
+            } else if file_type.is_file() || file_type.is_symlink() {
                 files.push(WorkspaceFile::from_path(root, path));
             }
         }
@@ -227,6 +252,8 @@ pub mod patterns {
 mod tests {
     use super::*;
     use std::fs::File;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
     use tempfile::TempDir;
 
     #[test]
@@ -262,5 +289,42 @@ mod tests {
 
         let files = get_workspace_files(dir.path(), 100);
         assert!(files.len() >= 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_traverse_skips_symlinked_dirs_outside_root() {
+        let dir = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        File::create(outside.path().join("outside.txt")).unwrap();
+
+        let link_path = dir.path().join("outside_link");
+        symlink(outside.path(), &link_path).unwrap();
+
+        let files = manual_traverse(dir.path(), 100);
+        assert!(!files
+            .iter()
+            .any(|file| file.relative_path.starts_with("outside_link")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manual_traverse_dedupes_symlinked_dirs() {
+        let dir = TempDir::new().unwrap();
+        let real_dir = dir.path().join("real");
+        let nested_dir = real_dir.join("nested");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        File::create(nested_dir.join("file.txt")).unwrap();
+
+        let link_path = dir.path().join("link");
+        symlink(&real_dir, &link_path).unwrap();
+
+        let files = manual_traverse(dir.path(), 100);
+        assert!(files
+            .iter()
+            .any(|file| file.relative_path.contains("real/nested/file.txt")));
+        assert!(!files
+            .iter()
+            .any(|file| file.relative_path.starts_with("link/")));
     }
 }

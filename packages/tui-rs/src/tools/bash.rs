@@ -123,9 +123,7 @@
 //! ```
 
 use std::collections::VecDeque;
-#[cfg(windows)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -233,8 +231,22 @@ fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
 
     #[cfg(not(windows))]
     {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        Ok((shell, vec!["-c".to_string()]))
+        let shell_env = std::env::var("SHELL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        if let Some(shell) = shell_env {
+            if Path::new(&shell).exists() {
+                return Ok((shell, vec!["-c".to_string()]));
+            }
+        }
+
+        if Path::new("/bin/bash").exists() {
+            return Ok(("/bin/bash".to_string(), vec!["-c".to_string()]));
+        }
+
+        Ok(("/bin/sh".to_string(), vec!["-c".to_string()]))
     }
 }
 
@@ -556,7 +568,7 @@ async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -
 pub struct BashArgs {
     /// The shell command to execute (required)
     ///
-    /// This is passed to the shell specified by $SHELL (or /bin/bash) via the -c flag.
+    /// This is passed to the shell specified by $SHELL (or /bin/bash, falling back to /bin/sh) via the -c flag.
     /// On Windows, Git Bash is required and invoked via `bash -c`.
     /// Complex commands with pipes, redirects, and environment variables are supported.
     pub command: String,
@@ -608,7 +620,7 @@ pub struct BashTool {
 
     /// Path to the shell executable (e.g., /bin/bash, /bin/zsh)
     ///
-    /// Defaults to the $SHELL environment variable, falling back to /bin/bash if unset.
+    /// Defaults to the $SHELL environment variable, falling back to /bin/bash or /bin/sh if unset or missing.
     /// The shell is invoked with `shell -c "command"` for all executions.
     shell: String,
     /// Arguments passed to the shell executable (e.g., -c, /C).

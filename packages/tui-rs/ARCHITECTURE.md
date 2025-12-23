@@ -1184,7 +1184,7 @@ Write operations are checked against workspace boundaries (future enhancement).
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `COMPOSER_MODEL` | Override default model |
-| `SHELL` | Shell for bash tool (default: `/bin/bash`) |
+| `SHELL` | Shell for bash tool (default: `/bin/bash`, fallback: `/bin/sh`) |
 
 ### Runtime Configuration
 

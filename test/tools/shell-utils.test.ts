@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,13 +18,25 @@ describe("shell-utils", () => {
 
 	afterEach(() => {
 		rmSync(testDir, { recursive: true, force: true });
+		vi.unstubAllEnvs();
 	});
 
 	describe("getShellConfig", () => {
-		it("returns sh on unix platforms", () => {
+		it("uses SHELL on unix platforms when set", () => {
 			if (process.platform !== "win32") {
+				vi.stubEnv("SHELL", "/bin/sh");
 				const config = getShellConfig();
-				expect(config.shell).toBe("sh");
+				expect(config.shell).toBe("/bin/sh");
+				expect(config.args).toEqual(["-c"]);
+			}
+		});
+
+		it("falls back to /bin/bash or sh when SHELL is missing", () => {
+			if (process.platform !== "win32") {
+				vi.stubEnv("SHELL", "");
+				const config = getShellConfig();
+				const expected = existsSync("/bin/bash") ? "/bin/bash" : "sh";
+				expect(config.shell).toBe(expected);
 				expect(config.args).toEqual(["-c"]);
 			}
 		});
