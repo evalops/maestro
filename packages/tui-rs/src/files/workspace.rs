@@ -320,11 +320,16 @@ mod tests {
         symlink(&real_dir, &link_path).unwrap();
 
         let files = manual_traverse(dir.path(), 100);
-        assert!(files
+        let has_real = files
             .iter()
-            .any(|file| file.relative_path.contains("real/nested/file.txt")));
-        assert!(!files
+            .any(|file| file.relative_path.contains("real/nested/file.txt"));
+        let has_link = files
             .iter()
-            .any(|file| file.relative_path.starts_with("link/")));
+            .any(|file| file.relative_path.contains("link/nested/file.txt"));
+
+        assert!(
+            has_real ^ has_link,
+            "expected only one path via real or link, got real={has_real} link={has_link}"
+        );
     }
 }
