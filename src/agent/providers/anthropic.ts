@@ -127,56 +127,18 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types.js";
+import {
+	createToolArgumentNormalizer,
+	describeValueType,
+	isRecord,
+} from "./tool-arguments.js";
+import { transformMessages } from "./transform-messages.js";
 
 const logger = createLogger("agent:providers:anthropic");
-const warnedToolArgumentKeys = new Set<string>();
-
-function warnToolArgumentsOnce(
-	key: string,
-	message: string,
-	details: Record<string, unknown>,
-): void {
-	if (warnedToolArgumentKeys.has(key)) return;
-	warnedToolArgumentKeys.add(key);
-	logger.warn(message, details);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function describeValueType(value: unknown): string {
-	if (value === null) return "null";
-	if (Array.isArray(value)) return "array";
-	return typeof value;
-}
-
-function parseToolArgumentsFromString(
-	raw: string,
-	context: { toolId: string; name: string; stage: "delta" | "done" },
-	logInvalid: boolean,
-): Record<string, unknown> {
-	const parsed = parseStreamingJson<unknown>(raw);
-	if (isRecord(parsed)) {
-		return parsed;
-	}
-	if (logInvalid) {
-		const parsedType = describeValueType(parsed);
-		warnToolArgumentsOnce(
-			`parsed:${context.stage}:${parsedType}`,
-			"Anthropic tool_use input parsed to non-object",
-			{
-				toolId: context.toolId,
-				name: context.name,
-				stage: context.stage,
-				parsedType,
-			},
-		);
-	}
-	return {};
-}
-import { parseStreamingJson } from "./json-parse.js";
-import { transformMessages } from "./transform-messages.js";
+const toolArgumentNormalizer = createToolArgumentNormalizer({
+	logger,
+	providerLabel: "Anthropic",
+});
 
 export interface AnthropicOptions extends StreamOptions {
 	thinking?: ReasoningEffort;
@@ -729,14 +691,14 @@ export async function* streamAnthropic(
 									toolArgOverrides.set(idx, block.input);
 								} else if (typeof block.input === "string") {
 									toolArgBuffers.set(idx, block.input);
-									initialArguments = parseToolArgumentsFromString(
+									initialArguments = toolArgumentNormalizer.parseFromString(
 										block.input,
 										{ toolId: block.id, name: block.name, stage: "delta" },
-										false,
+										{ logInvalid: false },
 									);
 								} else if (block.input !== null) {
 									const rawType = describeValueType(block.input);
-									warnToolArgumentsOnce(
+									toolArgumentNormalizer.warnOnce(
 										`raw:${rawType}`,
 										"Anthropic tool_use input had unexpected type",
 										{
@@ -798,10 +760,10 @@ export async function* streamAnthropic(
 							const combined = existing + partialJson;
 							toolArgBuffers.set(idx, combined);
 
-							block.arguments = parseToolArgumentsFromString(
+							block.arguments = toolArgumentNormalizer.parseFromString(
 								combined,
 								{ toolId: block.id, name: block.name, stage: "delta" },
-								false,
+								{ logInvalid: false },
 							);
 
 							yield {
@@ -836,10 +798,10 @@ export async function* streamAnthropic(
 							} else {
 								const buf = toolArgBuffers.get(idx) ?? "";
 								if (buf.length > 0) {
-									block.arguments = parseToolArgumentsFromString(
+									block.arguments = toolArgumentNormalizer.parseFromString(
 										buf,
 										{ toolId: block.id, name: block.name, stage: "done" },
-										true,
+										{ logInvalid: true },
 									);
 								} else {
 									block.arguments = isRecord(block.arguments)
