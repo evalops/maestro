@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
 	getDefaultRestrictedDirectories,
@@ -6,14 +7,17 @@ import {
 
 describe("Directory Access Control", () => {
 	describe("getDefaultSafeDirectories", () => {
-		it("includes /tmp", () => {
+		it("includes tmpdir()", () => {
 			const dirs = getDefaultSafeDirectories();
-			expect(dirs).toContain("/tmp");
+			expect(dirs).toContain(tmpdir());
 		});
 
-		it("includes /var/tmp", () => {
+		it("includes /tmp and /var/tmp on non-Windows", () => {
 			const dirs = getDefaultSafeDirectories();
-			expect(dirs).toContain("/var/tmp");
+			if (process.platform !== "win32") {
+				expect(dirs).toContain("/tmp");
+				expect(dirs).toContain("/var/tmp");
+			}
 		});
 
 		it("includes composer config directory", () => {
@@ -23,19 +27,17 @@ describe("Directory Access Control", () => {
 	});
 
 	describe("getDefaultRestrictedDirectories", () => {
-		it("includes /etc", () => {
+		it("includes platform system directories", () => {
 			const dirs = getDefaultRestrictedDirectories();
-			expect(dirs).toContain("/etc");
-		});
-
-		it("includes /sys", () => {
-			const dirs = getDefaultRestrictedDirectories();
-			expect(dirs).toContain("/sys");
-		});
-
-		it("includes /proc", () => {
-			const dirs = getDefaultRestrictedDirectories();
-			expect(dirs).toContain("/proc");
+			if (process.platform === "win32") {
+				expect(dirs.some((dir) => dir.toLowerCase().includes("windows"))).toBe(
+					true,
+				);
+			} else {
+				expect(dirs).toContain("/etc");
+				expect(dirs).toContain("/sys");
+				expect(dirs).toContain("/proc");
+			}
 		});
 
 		it("includes node_modules pattern", () => {
