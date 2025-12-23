@@ -3,6 +3,7 @@ package com.evalops.composer.toolwindow
 import com.evalops.composer.api.AgentEvent
 import com.evalops.composer.api.ComposerMessage
 import com.evalops.composer.api.MessageRole
+import com.evalops.composer.api.ToolCallStatus
 import com.evalops.composer.services.ComposerApplicationService
 import com.evalops.composer.services.ComposerProjectService
 import com.evalops.composer.settings.ComposerSettings
@@ -193,11 +194,11 @@ class ComposerPanel(private val project: Project) : SimpleToolWindowPanel(true, 
         if (settings.showToolDetails) {
             message.tools?.forEach { tool ->
                 val toolLabel = JBLabel("${tool.name}: ${tool.status}")
-                toolLabel.icon = when (tool.status.name) {
-                    "COMPLETED" -> AllIcons.Actions.Commit
-                    "ERROR" -> AllIcons.General.Error
-                    "RUNNING" -> AllIcons.Process.Step_1
-                    else -> AllIcons.Actions.Execute
+                toolLabel.icon = when (tool.status) {
+                    ToolCallStatus.COMPLETED -> AllIcons.Actions.Commit
+                    ToolCallStatus.ERROR -> AllIcons.General.Error
+                    ToolCallStatus.RUNNING -> AllIcons.Process.Step_1
+                    ToolCallStatus.PENDING -> AllIcons.Actions.Execute
                 }
                 toolLabel.font = toolLabel.font.deriveFont(11f)
                 toolsPanel.add(toolLabel)

@@ -14,6 +14,7 @@ import kotlinx.coroutines.*
 import okhttp3.sse.EventSource
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Project-level service for Composer.
@@ -33,7 +34,7 @@ class ComposerProjectService(private val project: Project) : Disposable {
     private val messagesLock = Any()
     private var _messages: MutableList<ComposerMessage> = mutableListOf()
     private var _pinnedFiles: MutableSet<String> = CopyOnWriteArraySet()
-    private var _isProcessing: Boolean = false
+    private val isProcessingFlag = AtomicBoolean(false)
     private var _currentEventSource: EventSource? = null
 
     private val messageListeners = CopyOnWriteArrayList<(List<ComposerMessage>) -> Unit>()
@@ -64,7 +65,7 @@ class ComposerProjectService(private val project: Project) : Disposable {
      * Whether a request is currently being processed.
      */
     val isProcessing: Boolean
-        get() = _isProcessing
+        get() = isProcessingFlag.get()
 
     /**
      * Add a listener for message updates.
@@ -112,15 +113,14 @@ class ComposerProjectService(private val project: Project) : Disposable {
      * Send a user message and stream the response.
      */
     fun sendMessage(text: String, activeFile: VirtualFile? = null) {
-        if (_isProcessing) {
+        if (!tryStartProcessing()) {
             logger.warn("Cannot send message while processing")
             return
         }
 
         scope.launch {
+            var eventSourceStarted = false
             try {
-                setProcessing(true)
-
                 // Ensure we have a session
                 if (_currentSessionId == null) {
                     val session = appService.apiClient.createSession("JetBrains Chat")
@@ -182,7 +182,13 @@ class ComposerProjectService(private val project: Project) : Disposable {
                     onError = { error -> handleError(error) },
                     onComplete = { handleComplete() }
                 )
+                eventSourceStarted = true
 
+            } catch (e: CancellationException) {
+                if (!eventSourceStarted) {
+                    setProcessing(false)
+                }
+                throw e
             } catch (e: Exception) {
                 logger.error("Failed to send message", e)
                 handleError(e)
@@ -399,8 +405,23 @@ class ComposerProjectService(private val project: Project) : Disposable {
         setProcessing(false)
     }
 
+    private fun tryStartProcessing(): Boolean {
+        if (!isProcessingFlag.compareAndSet(false, true)) {
+            return false
+        }
+        notifyProcessingListeners(true)
+        return true
+    }
+
     private fun setProcessing(processing: Boolean) {
-        _isProcessing = processing
+        val previous = isProcessingFlag.getAndSet(processing)
+        if (previous == processing) {
+            return
+        }
+        notifyProcessingListeners(processing)
+    }
+
+    private fun notifyProcessingListeners(processing: Boolean) {
         processingListeners.forEach { listener ->
             try {
                 listener(processing)

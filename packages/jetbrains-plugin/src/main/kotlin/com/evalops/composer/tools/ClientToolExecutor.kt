@@ -5,8 +5,6 @@ import com.evalops.composer.api.DiagnosticPosition
 import com.evalops.composer.api.DiagnosticRange
 import com.evalops.composer.api.LocationInfo
 import com.google.gson.Gson
-import com.intellij.codeInsight.daemon.impl.DaemonCodeAnalyzerImpl
-import com.intellij.codeInsight.daemon.impl.HighlightInfo
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.Logger
@@ -18,7 +16,6 @@ import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiElement
-import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiNamedElement
 import com.intellij.psi.search.searches.ReferencesSearch
@@ -31,6 +28,7 @@ class ClientToolExecutor(private val project: Project) {
 
     private val logger = Logger.getInstance(ClientToolExecutor::class.java)
     private val gson = Gson()
+    private val diagnosticsUnavailableLogged = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /**
      * Execute a client tool by name.
@@ -78,32 +76,12 @@ class ClientToolExecutor(private val project: Project) {
                 val psiFile = psiManager.findFile(file) ?: continue
                 val document = documentManager.getDocument(file) ?: continue
 
-                // Get highlights from the daemon code analyzer
-                val highlights = DaemonCodeAnalyzerImpl.getHighlights(
-                    document,
-                    HighlightSeverity.INFORMATION, // Include INFO and above
-                    project
-                )
-
+                // Use reflection to avoid direct dependency on internal daemon APIs.
+                val highlights = getDaemonHighlights(document)
                 for (info in highlights) {
-                    if (info.severity.myVal >= HighlightSeverity.WARNING.myVal) {
-                        val startLine = document.getLineNumber(info.startOffset)
-                        val endLine = document.getLineNumber(info.endOffset)
-                        val startChar = info.startOffset - document.getLineStartOffset(startLine)
-                        val endChar = info.endOffset - document.getLineStartOffset(endLine)
-
-                        diagnostics.add(
-                            DiagnosticInfo(
-                                message = info.description ?: "Unknown issue",
-                                severity = info.severity.myVal,
-                                range = DiagnosticRange(
-                                    start = DiagnosticPosition(startLine, startChar),
-                                    end = DiagnosticPosition(endLine, endChar)
-                                ),
-                                source = info.inspectionToolId,
-                                code = info.type.toString()
-                            )
-                        )
+                    val diagnostic = toDiagnostic(info, document)
+                    if (diagnostic != null) {
+                        diagnostics.add(diagnostic)
                     }
                 }
             }
@@ -245,6 +223,112 @@ class ClientToolExecutor(private val project: Project) {
         }
 
         return vf
+    }
+
+    private fun getDaemonHighlights(document: Document): List<Any> {
+        val daemonClass = runCatching {
+            Class.forName("com.intellij.codeInsight.daemon.impl.DaemonCodeAnalyzerImpl")
+        }.getOrElse { error ->
+            logDiagnosticsUnavailable("DaemonCodeAnalyzerImpl unavailable for diagnostics.", error)
+            return emptyList()
+        }
+
+        val method = daemonClass.methods.firstOrNull { method ->
+            method.name == "getHighlights" &&
+                method.parameterTypes.size == 3 &&
+                Document::class.java.isAssignableFrom(method.parameterTypes[0]) &&
+                HighlightSeverity::class.java.isAssignableFrom(method.parameterTypes[1]) &&
+                Project::class.java.isAssignableFrom(method.parameterTypes[2])
+        } ?: run {
+            logDiagnosticsUnavailable("DaemonCodeAnalyzerImpl.getHighlights signature not found.")
+            return emptyList()
+        }
+
+        val result = runCatching {
+            method.invoke(null, document, HighlightSeverity.INFORMATION, project)
+        }.getOrElse { error ->
+            logDiagnosticsUnavailable("Failed to invoke daemon highlights for diagnostics.", error)
+            return emptyList()
+        }
+
+        return (result as? List<*>)?.filterNotNull() ?: emptyList()
+    }
+
+    private fun toDiagnostic(info: Any, document: Document): DiagnosticInfo? {
+        val severity = getHighlightSeverity(info) ?: return null
+        if (severity.myVal < HighlightSeverity.WARNING.myVal) {
+            return null
+        }
+
+        val startOffset = getIntProperty(info, "getStartOffset", "startOffset") ?: return null
+        val endOffset = getIntProperty(info, "getEndOffset", "endOffset") ?: return null
+        val textLength = document.textLength
+        val safeStart = startOffset.coerceIn(0, textLength)
+        val safeEnd = endOffset.coerceIn(safeStart, textLength)
+
+        val startLine = document.getLineNumber(safeStart)
+        val endLine = document.getLineNumber(safeEnd)
+        val startChar = safeStart - document.getLineStartOffset(startLine)
+        val endChar = safeEnd - document.getLineStartOffset(endLine)
+
+        val message = getStringProperty(info, "getDescription", "description") ?: "Unknown issue"
+        val source = getStringProperty(info, "getInspectionToolId", "inspectionToolId")
+        val code = getAnyProperty(info, "getType", "type")?.toString()
+
+        return DiagnosticInfo(
+            message = message,
+            severity = severity.myVal,
+            range = DiagnosticRange(
+                start = DiagnosticPosition(startLine, startChar),
+                end = DiagnosticPosition(endLine, endChar)
+            ),
+            source = source,
+            code = code
+        )
+    }
+
+    private fun getHighlightSeverity(info: Any): HighlightSeverity? {
+        val value = getAnyProperty(info, "getSeverity", "severity")
+        return value as? HighlightSeverity
+    }
+
+    private fun getIntProperty(target: Any, vararg names: String): Int? {
+        val value = getAnyProperty(target, *names) ?: return null
+        return when (value) {
+            is Int -> value
+            is Number -> value.toInt()
+            else -> null
+        }
+    }
+
+    private fun getStringProperty(target: Any, vararg names: String): String? {
+        val value = getAnyProperty(target, *names) ?: return null
+        return value as? String
+    }
+
+    private fun getAnyProperty(target: Any, vararg names: String): Any? {
+        val clazz = target.javaClass
+        for (name in names) {
+            runCatching {
+                return clazz.getMethod(name).invoke(target)
+            }
+            runCatching {
+                val field = clazz.getDeclaredField(name)
+                field.isAccessible = true
+                return field.get(target)
+            }
+        }
+        return null
+    }
+
+    private fun logDiagnosticsUnavailable(message: String, error: Throwable? = null) {
+        if (diagnosticsUnavailableLogged.compareAndSet(false, true)) {
+            if (error == null) {
+                logger.warn(message)
+            } else {
+                logger.warn(message, error)
+            }
+        }
     }
 
     /**
