@@ -39,7 +39,10 @@ Composer exposes every capability through slash commands and git-aware helpers s
 Choose your interface:
 - **Terminal (TUI/CLI)**: Rich interactive terminal interface with keyboard shortcuts, file search, and command palette
 - **Web UI**: Modern browser-based interface for those who prefer a graphical environment (core parity; see parity appendix in `docs/WEB_UI.md`)
+- **VS Code**: Native extension with inline chat, diagnostics integration, and go-to-definition ([VS Code Extension](packages/vscode-extension/README.md))
+- **JetBrains IDEs**: Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs ([JetBrains Plugin](packages/jetbrains-plugin/README.md))
 - **Slack Bot**: Deploy as a Slack bot with Docker sandbox isolation ([`@evalops/slack-agent`](packages/slack-agent/README.md))
+- **GitHub Agent**: Autonomous agent that watches repos, implements issues, and creates PRs ([`@evalops/github-agent`](packages/github-agent/README.md))
 - **Headless**: Scriptable automation for CI/CD and evaluation pipelines
 
 ### Why Multiple Interfaces?
@@ -48,7 +51,11 @@ The terminal is home for many developers—fast, scriptable, distraction-free. B
 
 **Web UI** lets you access Composer from any browser. Share a session link with a colleague. Demo a feature without screen-sharing your terminal. Work from a tablet when you're not at your desk.
 
+**IDE extensions** (VS Code, JetBrains) integrate Composer directly into your editor. Get IDE-aware context—diagnostics, go-to-definition, find references—fed automatically to the agent. No copy-paste, no context switching.
+
 **Slack** meets teams where they already communicate. Deploy a shared coding agent that your whole team can @mention. Queue up tasks asynchronously—ask the bot to run tests while you're in a meeting, check results when you're back. Scheduled tasks, approval workflows, and persistent memory mean the agent can operate as a background teammate rather than a tool you have to babysit.
+
+**GitHub Agent** runs autonomously. Label an issue with `composer-task` and walk away—it'll implement the feature, run tests, and open a PR. Useful for self-improvement pipelines, batch refactoring, or delegating routine tasks.
 
 Same agent, same tools, same deterministic behavior—just different surfaces optimized for different contexts.
 
@@ -812,7 +819,9 @@ Sessions are JSONL in `~/.composer/agent/sessions/`. Use:
 | [`@evalops/composer-web`](packages/web/README.md) | Web interface for Composer |
 | [`@evalops/contracts`](packages/contracts/README.md) | Shared TypeScript definitions |
 | [`@evalops/slack-agent`](packages/slack-agent/README.md) | Slack bot with Docker sandbox isolation |
-| [Composer for VS Code](packages/vscode-extension/README.md) | VS Code extension |
+| [`@evalops/github-agent`](packages/github-agent/README.md) | Autonomous GitHub agent for self-improvement pipelines |
+| [Composer for VS Code](packages/vscode-extension/README.md) | VS Code extension with inline chat and IDE integration |
+| [Composer for JetBrains](packages/jetbrains-plugin/README.md) | Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs |
 
 Doc map (start here): [docs/README.md](docs/README.md) → Quickstart → Feature Guide → Tools Reference → Safety. Web/TUI differences: parity appendix in [docs/WEB_UI.md](docs/WEB_UI.md).
 
