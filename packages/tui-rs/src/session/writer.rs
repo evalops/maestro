@@ -273,7 +273,7 @@ mod tests {
         if let Some(home) = dirs::home_dir() {
             assert!(dir.starts_with(&home));
         } else {
-            assert!(dir.starts_with(&std::env::temp_dir()));
+            assert!(dir.starts_with(std::env::temp_dir()));
         }
     }
 }
