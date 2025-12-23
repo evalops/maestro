@@ -15,6 +15,7 @@ import {
 	readFile,
 	writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type Clock, systemClock } from "../utils/clock.js";
 import { type IdGenerator, systemIdGenerator } from "../utils/ids.js";
@@ -84,7 +85,7 @@ export class FileTranscriptStore implements TranscriptStore {
 			join(
 				resolveEnvPath(process.env.COMPOSER_DATA_DIR) ??
 					resolveEnvPath(getHomeDir()) ??
-					"/tmp",
+					tmpdir(),
 				".composer",
 				"transcripts",
 			);

@@ -251,7 +251,11 @@ export function clearDirectoryRulesCache(orgId?: string): void {
  */
 export function getDefaultSafeDirectories(): string[] {
 	const homeDir = getHomeDir();
-	const candidates = ["/tmp", "/var/tmp", tmpdir(), join(homeDir, ".composer")];
+	const candidates = [
+		...(process.platform === "win32" ? [] : ["/tmp", "/var/tmp"]),
+		tmpdir(),
+		join(homeDir, ".composer"),
+	];
 	const seen = new Set<string>();
 	return candidates.filter((dir) => {
 		if (seen.has(dir)) return false;
@@ -264,6 +268,18 @@ export function getDefaultSafeDirectories(): string[] {
  * Get default restricted directories (always denied regardless of rules)
  */
 export function getDefaultRestrictedDirectories(): string[] {
+	if (process.platform === "win32") {
+		const windowsDirs = new Set<string>();
+		if (process.env.SystemRoot) windowsDirs.add(process.env.SystemRoot);
+		if (process.env.ProgramFiles) windowsDirs.add(process.env.ProgramFiles);
+		const programFilesX86 = process.env["ProgramFiles(x86)"];
+		if (programFilesX86) windowsDirs.add(programFilesX86);
+		windowsDirs.add("C:\\Windows");
+		windowsDirs.add("C:\\Program Files");
+		windowsDirs.add("C:\\Program Files (x86)");
+		return [...windowsDirs, "**/node_modules/**", "**/.git/**"];
+	}
+
 	return [
 		"/etc",
 		"/sys",
@@ -346,6 +362,36 @@ export async function seedDefaultDirectoryRules(
 		);
 	}
 
+	const tempDirs = new Set<string>();
+	if (process.platform !== "win32") {
+		tempDirs.add("/tmp");
+		tempDirs.add("/var/tmp");
+	}
+	tempDirs.add(tmpdir());
+
+	const tempRules: Array<Omit<CreateDirectoryRuleInput, "orgId">> = Array.from(
+		tempDirs,
+	).map((tempPath) => ({
+		pattern: `${tempPath.replace(/\\/g, "/")}/**`,
+		isAllowed: true,
+		priority: 90,
+		description: "Allow access to temporary directory",
+	}));
+
+	const windowsRestricted: Array<Omit<CreateDirectoryRuleInput, "orgId">> =
+		process.platform === "win32"
+			? [
+					process.env.SystemRoot ?? "C:\\Windows",
+					process.env.ProgramFiles ?? "C:\\Program Files",
+					process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)",
+				].map((path) => ({
+					pattern: `${path.replace(/\\/g, "/")}/**`,
+					isAllowed: false,
+					priority: 200,
+					description: "Deny access to system directories",
+				}))
+			: [];
+
 	const defaultRules: Array<Omit<CreateDirectoryRuleInput, "orgId">> = [
 		...(homeDir
 			? [
@@ -357,30 +403,29 @@ export async function seedDefaultDirectoryRules(
 					},
 				]
 			: []),
-		{
-			pattern: "/tmp/**",
-			isAllowed: true,
-			priority: 90,
-			description: "Allow access to temporary directory",
-		},
-		{
-			pattern: "/etc/**",
-			isAllowed: false,
-			priority: 200,
-			description: "Deny access to system configuration",
-		},
-		{
-			pattern: "/sys/**",
-			isAllowed: false,
-			priority: 200,
-			description: "Deny access to system files",
-		},
-		{
-			pattern: "/proc/**",
-			isAllowed: false,
-			priority: 200,
-			description: "Deny access to process information",
-		},
+		...tempRules,
+		...(process.platform === "win32"
+			? windowsRestricted
+			: [
+					{
+						pattern: "/etc/**",
+						isAllowed: false,
+						priority: 200,
+						description: "Deny access to system configuration",
+					},
+					{
+						pattern: "/sys/**",
+						isAllowed: false,
+						priority: 200,
+						description: "Deny access to system files",
+					},
+					{
+						pattern: "/proc/**",
+						isAllowed: false,
+						priority: 200,
+						description: "Deny access to process information",
+					},
+				]),
 		{
 			pattern: "**/node_modules/**",
 			isAllowed: false,
