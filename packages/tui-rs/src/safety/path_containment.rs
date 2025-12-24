@@ -737,7 +737,11 @@ mod tests {
 
         let target = link_path.join("missing.txt");
         let resolved = resolve_path(&target, workspace.path()).unwrap();
-        assert!(resolved.starts_with(outside.path()));
+        let expected = outside
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| outside.path().to_path_buf());
+        assert!(path_starts_with(&resolved, &expected));
     }
 
     // ========================================================================
@@ -834,7 +838,12 @@ mod tests {
         let workspace = workspace_root();
 
         // Attempt to escape via traversal - normalize_path should handle this
-        let malicious = workspace.join("../../../etc/passwd");
+        let mut malicious = workspace.clone();
+        for _ in workspace.components() {
+            malicious.push("..");
+        }
+        malicious.push("etc");
+        malicious.push("passwd");
         let normalized = normalize_path(&malicious);
 
         // The normalized path should be detected as system protected
