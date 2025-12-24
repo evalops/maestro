@@ -291,9 +291,15 @@ pub fn looks_like_egress(tool_name: &str) -> bool {
         || lower.contains("escalate")
 }
 
+/// Check if a tool requires PII gating before execution.
+/// Returns true for tools with Human or External egress, as both can leak PII.
 pub fn is_human_facing_tool(tool_name: &str) -> bool {
     if let Some(tag) = TOOL_TAGS.get(tool_name) {
-        return matches!(tag.egress, Some(ToolEgress::Human));
+        // Both Human and External egress tools must be gated for PII
+        return matches!(
+            tag.egress,
+            Some(ToolEgress::Human) | Some(ToolEgress::External)
+        );
     }
     if looks_like_egress(tool_name) {
         if let Ok(mut seen) = UNTAGGED_EGRESS_WARNINGS.lock() {
@@ -311,4 +317,80 @@ pub fn is_human_facing_tool(tool_name: &str) -> bool {
 
 pub fn has_tool_tags(tool_name: &str) -> bool {
     TOOL_TAGS.contains_key(tool_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_human_facing_tool_with_human_egress() {
+        // Tools tagged with Human egress should be gated
+        assert!(is_human_facing_tool("handoff_to_human"));
+        assert!(is_human_facing_tool("notify_account_team"));
+    }
+
+    #[test]
+    fn test_is_human_facing_tool_with_external_egress() {
+        // Tools tagged with External egress should also be gated (PII leak risk)
+        assert!(is_human_facing_tool("send_email_update"));
+        assert!(is_human_facing_tool("post_customer_update"));
+    }
+
+    #[test]
+    fn test_is_human_facing_tool_untagged_egress_like() {
+        // Untagged tools that look like egress should be treated as human-facing
+        assert!(is_human_facing_tool("send_notification"));
+        assert!(is_human_facing_tool("email_customer"));
+        assert!(is_human_facing_tool("escalate_issue"));
+    }
+
+    #[test]
+    fn test_is_human_facing_tool_safe_tools() {
+        // Regular tools should not be gated
+        assert!(!is_human_facing_tool("read"));
+        assert!(!is_human_facing_tool("write"));
+        assert!(!is_human_facing_tool("bash"));
+    }
+
+    #[test]
+    fn test_tool_egress_types_in_registry() {
+        // Verify the registry has correct egress types
+        let handoff = TOOL_TAGS.get("handoff_to_human").unwrap();
+        assert_eq!(handoff.egress, Some(ToolEgress::Human));
+
+        let email = TOOL_TAGS.get("send_email_update").unwrap();
+        assert_eq!(email.egress, Some(ToolEgress::External));
+
+        let post = TOOL_TAGS.get("post_customer_update").unwrap();
+        assert_eq!(post.egress, Some(ToolEgress::External));
+    }
+
+    #[test]
+    fn test_workflow_state_tracker_basic() {
+        let mut tracker = WorkflowStateTracker::default();
+
+        // Capture PII
+        tracker.note_pii_capture(PiiCaptureParams {
+            artifact_id: "artifact-1".to_string(),
+            label: "customer_data".to_string(),
+            source_tool_call_id: "call-1".to_string(),
+            parents: None,
+        });
+
+        let snapshot = tracker.snapshot();
+        assert_eq!(snapshot.pending_pii.len(), 1);
+        assert_eq!(snapshot.pending_pii[0].id, "artifact-1");
+
+        // Redact PII
+        let result = tracker.note_redaction(RedactionParams {
+            artifact_id: "artifact-1".to_string(),
+            allow_missing: false,
+        });
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+
+        let snapshot = tracker.snapshot();
+        assert!(snapshot.pending_pii.is_empty());
+    }
 }
