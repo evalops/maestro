@@ -434,9 +434,14 @@ impl ActionFirewall {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
+
+    fn workspace_root() -> PathBuf {
+        std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir().join("composer-workspace"))
+    }
 
     fn test_firewall() -> ActionFirewall {
-        ActionFirewall::new("/home/user/project")
+        ActionFirewall::new(workspace_root())
     }
 
     // ========================================================================
@@ -563,18 +568,20 @@ mod tests {
     #[test]
     fn test_write_to_workspace() {
         let fw = test_firewall();
+        let workspace = fw.workspace().to_path_buf();
         let allowed_paths = [
-            "/home/user/project/src/main.rs",
-            "/home/user/project/README.md",
-            "/home/user/project/deep/nested/path/file.txt",
-            "/home/user/project/.gitignore",
+            workspace.join("src/main.rs"),
+            workspace.join("README.md"),
+            workspace.join("deep/nested/path/file.txt"),
+            workspace.join(".gitignore"),
         ];
         for path in allowed_paths {
-            let verdict = fw.check_file_write(path, "content");
+            let path_str = path.to_string_lossy();
+            let verdict = fw.check_file_write(path_str.as_ref(), "content");
             assert!(
                 verdict.is_allowed(),
                 "Expected write to '{}' to be allowed, got {:?}",
-                path,
+                path.display(),
                 verdict
             );
         }
@@ -635,17 +642,19 @@ mod tests {
     #[test]
     fn test_read_normal_file() {
         let fw = test_firewall();
+        let workspace = fw.workspace().to_path_buf();
         let normal_files = [
-            "/home/user/project/README.md",
-            "/home/user/project/src/lib.rs",
-            "/home/user/project/Cargo.toml",
+            workspace.join("README.md"),
+            workspace.join("src/lib.rs"),
+            workspace.join("Cargo.toml"),
         ];
         for path in normal_files {
-            let verdict = fw.check_file_read(path);
+            let path_str = path.to_string_lossy();
+            let verdict = fw.check_file_read(path_str.as_ref());
             assert!(
                 verdict.is_allowed(),
                 "Expected read of '{}' to be allowed, got {:?}",
-                path,
+                path.display(),
                 verdict
             );
         }
@@ -654,22 +663,28 @@ mod tests {
     #[test]
     fn test_read_sensitive_files() {
         let fw = test_firewall();
-        let sensitive = [
-            ("/home/user/project/.env", "environment file"),
-            ("/home/user/project/.env.local", "local env"),
-            ("/home/user/.ssh/id_rsa", "SSH private key"),
-            ("/home/user/.ssh/id_ed25519", "SSH private key"),
-            ("/home/user/.aws/credentials", "AWS credentials"),
-            ("/home/user/.npmrc", "NPM credentials"),
-            ("/home/user/project/secrets.json", "secrets file"),
-            ("/home/user/project/credentials.yaml", "credentials"),
+        let workspace = fw.workspace().to_path_buf();
+        let mut sensitive = vec![
+            (workspace.join(".env"), "environment file"),
+            (workspace.join(".env.local"), "local env"),
+            (workspace.join("secrets.json"), "secrets file"),
+            (workspace.join("credentials.yaml"), "credentials"),
         ];
+        if let Some(home) = dirs::home_dir() {
+            sensitive.extend([
+                (home.join(".ssh/id_rsa"), "SSH private key"),
+                (home.join(".ssh/id_ed25519"), "SSH private key"),
+                (home.join(".aws/credentials"), "AWS credentials"),
+                (home.join(".npmrc"), "NPM credentials"),
+            ]);
+        }
         for (path, desc) in sensitive {
-            let verdict = fw.check_file_read(path);
+            let path_str = path.to_string_lossy();
+            let verdict = fw.check_file_read(path_str.as_ref());
             assert!(
                 verdict.requires_approval(),
                 "Expected read of '{}' ({}) to require approval, got {:?}",
-                path,
+                path.display(),
                 desc,
                 verdict
             );
@@ -715,21 +730,24 @@ mod tests {
     #[test]
     fn test_check_tool_write_with_path_variants() {
         let fw = test_firewall();
+        let workspace = fw.workspace().to_path_buf();
+        let file_path = workspace.join("test.txt").to_string_lossy().to_string();
         // Test with file_path
         let v1 = fw.check_tool(
             "write",
             &json!({
-                "file_path": "/home/user/project/test.txt",
+                "file_path": file_path,
                 "content": "hello"
             }),
         );
         assert!(v1.is_allowed());
 
         // Test with path (alternate key)
+        let path = workspace.join("test.txt").to_string_lossy().to_string();
         let v2 = fw.check_tool(
             "write",
             &json!({
-                "path": "/home/user/project/test.txt",
+                "path": path,
                 "content": "hello"
             }),
         );
@@ -739,10 +757,12 @@ mod tests {
     #[test]
     fn test_check_tool_edit() {
         let fw = test_firewall();
+        let workspace = fw.workspace().to_path_buf();
+        let file_path = workspace.join("src/main.rs").to_string_lossy().to_string();
         let allowed = fw.check_tool(
             "edit",
             &json!({
-                "file_path": "/home/user/project/src/main.rs",
+                "file_path": file_path,
                 "content": "fn main() {}"
             }),
         );
@@ -761,6 +781,8 @@ mod tests {
     #[test]
     fn test_check_tool_glob_grep_list() {
         let fw = test_firewall();
+        let workspace = fw.workspace().to_path_buf();
+        let list_path = workspace.to_string_lossy().to_string();
         // These are read-only, should be allowed or check path
         assert!(fw
             .check_tool("glob", &json!({ "pattern": "*.rs" }))
@@ -769,7 +791,7 @@ mod tests {
             .check_tool("grep", &json!({ "pattern": "TODO" }))
             .is_allowed());
         assert!(fw
-            .check_tool("list", &json!({ "path": "/home/user/project" }))
+            .check_tool("list", &json!({ "path": list_path }))
             .is_allowed());
     }
 
@@ -998,13 +1020,15 @@ mod tests {
     fn test_path_traversal_attacks() {
         let fw = test_firewall();
 
+        let workspace = fw.workspace().to_path_buf();
+        let base = workspace.to_string_lossy();
         let traversals = [
-            "/home/user/project/../../../etc/passwd",
-            "/home/user/project/../../root/.ssh/id_rsa",
-            "/home/user/project/../../../var/log/auth.log",
+            format!("{}/../../../etc/passwd", base),
+            format!("{}/../../root/.ssh/id_rsa", base),
+            format!("{}/../../../var/log/auth.log", base),
         ];
         for path in traversals {
-            let verdict = fw.check_file_write(path, "malicious");
+            let verdict = fw.check_file_write(&path, "malicious");
             assert!(
                 verdict.is_blocked(),
                 "Traversal attack '{}' should be blocked, got {:?}",
@@ -1017,14 +1041,24 @@ mod tests {
     #[test]
     fn test_special_characters_in_path() {
         let fw = test_firewall();
+        let workspace = fw.workspace().to_path_buf();
 
-        let verdict = fw.check_file_write("/home/user/project/file with spaces.txt", "content");
+        let with_spaces = workspace
+            .join("file with spaces.txt")
+            .to_string_lossy()
+            .to_string();
+        let verdict = fw.check_file_write(&with_spaces, "content");
         assert!(verdict.is_allowed());
 
-        let verdict = fw.check_file_write("/home/user/project/文件.txt", "content");
+        let with_unicode = workspace.join("文件.txt").to_string_lossy().to_string();
+        let verdict = fw.check_file_write(&with_unicode, "content");
         assert!(verdict.is_allowed());
 
-        let verdict = fw.check_file_write("/home/user/project/file\ttab.txt", "content");
+        let with_tab = workspace
+            .join("file\ttab.txt")
+            .to_string_lossy()
+            .to_string();
+        let verdict = fw.check_file_write(&with_tab, "content");
         assert!(verdict.is_allowed());
     }
 
@@ -1088,21 +1122,23 @@ mod tests {
     #[test]
     fn test_non_sensitive_files() {
         let fw = test_firewall();
+        let workspace = fw.workspace().to_path_buf();
 
         // These files should NOT be flagged as sensitive
         let normal_files = [
-            "/home/user/project/environment.rs", // contains "env" but not .env pattern
-            "/home/user/project/ssh_client.py",  // contains "ssh" but not .ssh path
-            "/home/user/project/parser.js",      // normal file
-            "/home/user/project/README.md",
+            workspace.join("environment.rs"), // contains "env" but not .env pattern
+            workspace.join("ssh_client.py"),  // contains "ssh" but not .ssh path
+            workspace.join("parser.js"),      // normal file
+            workspace.join("README.md"),
         ];
 
         for path in normal_files {
-            let verdict = fw.check_file_read(path);
+            let path_str = path.to_string_lossy();
+            let verdict = fw.check_file_read(path_str.as_ref());
             assert!(
                 verdict.is_allowed(),
                 "Expected '{}' to be allowed, got {:?}",
-                path,
+                path.display(),
                 verdict
             );
         }
@@ -1111,21 +1147,23 @@ mod tests {
     #[test]
     fn test_files_with_sensitive_substrings() {
         let fw = test_firewall();
+        let workspace = fw.workspace().to_path_buf();
 
         // Files containing sensitive keywords in the path/name
         // are flagged even if they're normal code files - this is intentional
         // to prevent accidental credential exposure
         let sensitive_by_name = [
-            "/home/user/project/token_parser.js",   // contains "token"
-            "/home/user/project/password_utils.py", // contains "password"
+            workspace.join("token_parser.js"),   // contains "token"
+            workspace.join("password_utils.py"), // contains "password"
         ];
 
         for path in sensitive_by_name {
-            let verdict = fw.check_file_read(path);
+            let path_str = path.to_string_lossy();
+            let verdict = fw.check_file_read(path_str.as_ref());
             assert!(
                 verdict.requires_approval(),
                 "Expected '{}' to require approval due to sensitive keyword, got {:?}",
-                path,
+                path.display(),
                 verdict
             );
         }

@@ -1274,10 +1274,7 @@ impl ToolExecutor {
                     .unwrap_or("HEAD");
 
                 let path = args.get("path").and_then(|v| v.as_str());
-                let normalized_path = match path {
-                    Some(raw_path) => Some(normalize_git_path(&self.cwd, raw_path)),
-                    None => None,
-                };
+                let normalized_path = path.map(|raw_path| normalize_git_path(&self.cwd, raw_path));
                 let (display_path, shell_path) = match normalized_path.transpose() {
                     Ok(Some((display, shell))) => (Some(display), Some(shell)),
                     Ok(None) => (None, None),
@@ -2267,7 +2264,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("binary.bin");
         let bytes = [0_u8, 1, 2, 3, 4, 5];
-        std::fs::write(&file_path, &bytes).unwrap();
+        std::fs::write(&file_path, bytes).unwrap();
 
         let executor = ToolExecutor::new(dir.path().to_str().unwrap());
         let args = serde_json::json!({
@@ -2286,7 +2283,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("binary.bin");
         let bytes = [0_u8, 1, 2, 3, 4, 5];
-        std::fs::write(&file_path, &bytes).unwrap();
+        std::fs::write(&file_path, bytes).unwrap();
 
         let executor = ToolExecutor::new(dir.path().to_str().unwrap());
         let args = serde_json::json!({

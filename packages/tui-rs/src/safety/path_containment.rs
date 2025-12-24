@@ -537,7 +537,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_system_path_detection_follows_symlinks() {
-        let workspace = PathBuf::from("/home/user/project");
+        let workspace = workspace_root();
         let temp_dir = tempfile::TempDir::new().unwrap();
         let link_path = temp_dir.path().join("etc-link");
         std::os::unix::fs::symlink("/etc", &link_path).unwrap();
@@ -831,11 +831,11 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn test_path_traversal_attack_normalized() {
-        let workspace = PathBuf::from("/home/user/project");
+        let workspace = workspace_root();
 
         // Attempt to escape via traversal - normalize_path should handle this
-        let malicious = Path::new("/home/user/project/../../../etc/passwd");
-        let normalized = normalize_path(malicious);
+        let malicious = workspace.join("../../../etc/passwd");
+        let normalized = normalize_path(&malicious);
 
         // The normalized path should be detected as system protected
         let result = is_path_contained(&normalized, &workspace, &[]);
@@ -868,11 +868,11 @@ mod tests {
 
     #[test]
     fn test_resolve_path_relative() {
-        let base = PathBuf::from("/home/user/project");
+        let base = workspace_root();
         let relative = Path::new("src/main.rs");
 
         let resolved = resolve_path(relative, &base).unwrap();
-        assert!(resolved.starts_with("/home/user/project"));
+        assert!(resolved.starts_with(&base));
         assert!(resolved.to_string_lossy().contains("src"));
     }
 
@@ -882,7 +882,7 @@ mod tests {
 
     #[test]
     fn test_empty_path() {
-        let workspace = PathBuf::from("/home/user/project");
+        let workspace = workspace_root();
         let target = PathBuf::from("");
 
         let result = is_path_contained(&target, &workspace, &[]);
@@ -899,7 +899,7 @@ mod tests {
 
     #[test]
     fn test_root_path() {
-        let workspace = PathBuf::from("/home/user/project");
+        let workspace = workspace_root();
         let target = PathBuf::from("/");
 
         let result = is_path_contained(&target, &workspace, &[]);
@@ -912,8 +912,8 @@ mod tests {
 
     #[test]
     fn test_workspace_itself() {
-        let workspace = PathBuf::from("/home/user/project");
-        let target = PathBuf::from("/home/user/project");
+        let workspace = workspace_root();
+        let target = workspace.clone();
 
         let result = is_path_contained(&target, &workspace, &[]);
         assert!(
@@ -924,8 +924,8 @@ mod tests {
 
     #[test]
     fn test_path_with_special_characters() {
-        let workspace = PathBuf::from("/home/user/project");
-        let target = PathBuf::from("/home/user/project/file with spaces.txt");
+        let workspace = workspace_root();
+        let target = workspace.join("file with spaces.txt");
 
         let result = is_path_contained(&target, &workspace, &[]);
         assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
@@ -933,8 +933,8 @@ mod tests {
 
     #[test]
     fn test_path_with_unicode() {
-        let workspace = PathBuf::from("/home/user/project");
-        let target = PathBuf::from("/home/user/project/文件.txt");
+        let workspace = workspace_root();
+        let target = workspace.join("文件.txt");
 
         let result = is_path_contained(&target, &workspace, &[]);
         assert!(matches!(result, PathContainment::Contained { zone } if zone == "workspace"));
