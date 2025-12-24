@@ -106,7 +106,10 @@ use crate::ai::{
     StreamEvent, ThinkingConfig, Tool, UnifiedClient,
 };
 use crate::hooks::{HookResult, IntegratedHookSystem};
-use crate::safety::{ActionFirewall, FirewallVerdict};
+use crate::safety::{
+    apply_workflow_state_hooks, ActionFirewall, FirewallContext, FirewallVerdict,
+    WorkflowStateTracker,
+};
 use crate::tools::{ToolExecutor, ToolRegistry};
 
 /// Configuration for the native agent
@@ -418,6 +421,7 @@ impl NativeAgent {
             cancel_token: None,
             hooks,
             safety,
+            workflow_state: WorkflowStateTracker::default(),
             compactor,
             retry_policy,
             pending_messages,
@@ -648,6 +652,9 @@ struct NativeAgentRunner {
     /// and excessive tool invocations within a time window.
     safety: SafetyController,
 
+    /// Workflow state tracker for PII redaction enforcement
+    workflow_state: WorkflowStateTracker,
+
     /// Context compactor for handling long conversations
     ///
     /// Summarizes older messages when the context grows too large to fit
@@ -850,6 +857,7 @@ impl NativeAgentRunner {
                     }
 
                     self.busy = true;
+                    self.workflow_state.reset();
 
                     // Create cancellation token for this request
                     let cancel_token = CancellationToken::new();
@@ -1435,7 +1443,18 @@ impl NativeAgentRunner {
                     };
 
                     let tool_key = tool_name.to_lowercase();
-                    let firewall_verdict = firewall.check_tool(&tool_key, &args);
+                    let workflow_snapshot = self.workflow_state.snapshot();
+                    // Ensure MCP annotations are loaded before firewall check
+                    if crate::mcp::McpClient::is_mcp_tool(&tool_key) {
+                        let _ = self.tool_executor.ensure_mcp_annotations().await;
+                    }
+                    let annotations = self.tool_executor.tool_annotations(&tool_key);
+                    let firewall_verdict = firewall.check_tool_with_context(FirewallContext {
+                        tool_name: &tool_key,
+                        args: &args,
+                        workflow_state: Some(&workflow_snapshot),
+                        annotations: annotations.as_ref(),
+                    });
                     if let FirewallVerdict::Block { reason } = &firewall_verdict {
                         let _ = self.event_tx.send(FromAgent::Error {
                             message: reason.clone(),
@@ -1493,6 +1512,7 @@ impl NativeAgentRunner {
                             } else {
                                 format!("Error: {}", res.error.clone().unwrap_or_default())
                             };
+                            let is_error = !res.success;
 
                             // Execute PostToolUse hooks
                             let _post_result = self.hooks.execute_post_tool_use(
@@ -1504,13 +1524,28 @@ impl NativeAgentRunner {
                             );
 
                             // Append injected context if any
-                            let final_content = if let Some(ref ctx) = extra_context {
+                            let mut final_content = if let Some(ref ctx) = extra_context {
                                 format!("{}\n\n{}", content, ctx)
                             } else {
                                 content
                             };
 
-                            (final_content, !res.success)
+                            if let Err(err) = apply_workflow_state_hooks(
+                                &tool_name,
+                                &call_id,
+                                &args,
+                                &mut self.workflow_state,
+                                is_error,
+                            ) {
+                                // Append workflow hook error to content instead of replacing it
+                                // to preserve successful tool output
+                                final_content = format!(
+                                    "{}\n\n[Workflow error: {}]",
+                                    final_content, err.message
+                                );
+                            }
+
+                            (final_content, is_error)
                         } else {
                             ("Tool executed successfully".to_string(), false)
                         }

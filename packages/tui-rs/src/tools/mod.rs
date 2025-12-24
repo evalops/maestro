@@ -75,18 +75,27 @@
 //! # }
 //! ```
 
+mod ask_user;
+mod background_tasks;
 mod bash;
 mod batch;
 mod cache;
 pub mod details;
+mod exa;
+mod extract_document;
+mod gh;
 mod history;
 mod image;
 pub mod inline;
+mod notebook_edit;
 pub mod process_registry;
 mod process_utils;
 mod registry;
+mod status;
+mod todo;
 mod web_fetch;
 
+pub(crate) use bash::resolve_shell_config;
 pub use bash::BashTool;
 pub use batch::{BatchConfig, BatchExecutor, BatchToolCall, BatchToolResult};
 pub use cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};

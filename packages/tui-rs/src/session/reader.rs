@@ -244,11 +244,62 @@
 //! ## Iterator Adapters
 //! `lines().enumerate()` demonstrates iterator composition for line numbers.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use super::entries::{AppMessage, SessionEntry, SessionHeader, SessionMeta, SessionStats};
+
+fn apply_attachment_extracts(
+    message: AppMessage,
+    extracted_by_id: &HashMap<String, String>,
+) -> AppMessage {
+    let AppMessage::User {
+        content,
+        attachments,
+        timestamp,
+    } = message
+    else {
+        return message;
+    };
+
+    let Some(attachments) = attachments else {
+        return AppMessage::User {
+            content,
+            attachments: None,
+            timestamp,
+        };
+    };
+
+    let mut changed = false;
+    let next_attachments = attachments
+        .into_iter()
+        .map(|mut attachment| {
+            if let Some(extracted) = extracted_by_id.get(&attachment.id) {
+                if attachment.extracted_text.as_deref() != Some(extracted) {
+                    attachment.extracted_text = Some(extracted.clone());
+                    changed = true;
+                }
+            }
+            attachment
+        })
+        .collect::<Vec<_>>();
+
+    if !changed {
+        return AppMessage::User {
+            content,
+            attachments: Some(next_attachments),
+            timestamp,
+        };
+    }
+
+    AppMessage::User {
+        content,
+        attachments: Some(next_attachments),
+        timestamp,
+    }
+}
 
 /// Errors that can occur during session file reading.
 ///
@@ -416,6 +467,7 @@ impl SessionReader {
         let mut messages: Vec<AppMessage> = Vec::new();
         let mut meta: Option<SessionMeta> = None;
         let mut stats = SessionStats::default();
+        let mut extracted_by_id: HashMap<String, String> = HashMap::new();
 
         for (line_num, line) in reader.lines().enumerate() {
             let line = line?;
@@ -458,6 +510,11 @@ impl SessionReader {
                     }
                     messages.push(m.message);
                 }
+                SessionEntry::AttachmentExtract(extract) => {
+                    if !extract.attachment_id.is_empty() && !extract.extracted_text.is_empty() {
+                        extracted_by_id.insert(extract.attachment_id, extract.extracted_text);
+                    }
+                }
                 SessionEntry::SessionMeta(m) => {
                     meta = Some(m);
                 }
@@ -467,6 +524,13 @@ impl SessionReader {
                     // Track but don't store for now
                 }
             }
+        }
+
+        if !extracted_by_id.is_empty() {
+            messages = messages
+                .into_iter()
+                .map(|message| apply_attachment_extracts(message, &extracted_by_id))
+                .collect();
         }
 
         let header = header

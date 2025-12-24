@@ -66,4 +66,6 @@ pub mod protocol;
 
 pub use client::{McpClient, McpConnection, McpError};
 pub use config::{load_mcp_config, McpConfig, McpServerConfig, McpTransport};
-pub use protocol::{McpContent, McpRequest, McpResponse, McpTool, McpToolResult};
+pub use protocol::{
+    McpContent, McpRequest, McpResponse, McpTool, McpToolAnnotations, McpToolResult,
+};

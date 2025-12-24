@@ -767,7 +767,7 @@ Configure MCP servers in `~/.composer/mcp.json`:
 }
 ```
 
-Tools appear as `mcp_<server>_<tool>`. Use `/mcp` to view status.
+Tools appear as `mcp__<server>__<tool>`. Use `/mcp` to view status.
 
 ## Contributing
 

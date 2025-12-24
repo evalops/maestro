@@ -55,6 +55,9 @@ mod bash_analyzer;
 mod dangerous_patterns;
 mod firewall;
 mod path_containment;
+mod policy;
+mod safe_mode;
+mod workflow_state;
 
 #[cfg(test)]
 mod integration_tests;
@@ -66,8 +69,16 @@ pub use dangerous_patterns::{
     check_dangerous_patterns, has_high_severity_pattern, most_severe_match, DangerousPattern,
     PatternMatch, Severity,
 };
-pub use firewall::{ActionFirewall, FirewallVerdict};
+pub use firewall::{ActionFirewall, FirewallContext, FirewallVerdict};
 pub(crate) use path_containment::{expand_tilde, is_tilde_path};
 pub use path_containment::{
     has_path_traversal, is_path_contained, is_system_path, PathContainment,
+};
+pub use safe_mode::{
+    is_safe_mode_enabled, require_plan, run_validators, run_validators_with_diagnostics,
+    set_plan_satisfied, ValidatorResult,
+};
+pub use workflow_state::{
+    apply_workflow_state_hooks, has_tool_tags, is_human_facing_tool, is_workflow_tracked_tool,
+    looks_like_egress, ToolEgress, ToolTag, WorkflowStateSnapshot, WorkflowStateTracker,
 };

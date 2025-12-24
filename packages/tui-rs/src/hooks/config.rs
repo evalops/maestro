@@ -36,6 +36,7 @@
 use super::types::*;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Hook configuration file structure
@@ -132,6 +133,41 @@ pub struct HookDefinition {
     pub description: Option<String>,
 }
 
+/// Raw JSON hooks configuration (TS schema)
+#[derive(Debug, Clone, Default, Deserialize)]
+struct RawHooksConfig {
+    #[serde(default)]
+    extends: Option<RawExtends>,
+    #[serde(default)]
+    hooks: Option<HashMap<String, Vec<RawHookMatcher>>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum RawExtends {
+    One(String),
+    Many(Vec<String>),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawHookMatcher {
+    #[serde(default)]
+    matcher: Option<String>,
+    hooks: Vec<RawHookDef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RawHookDef {
+    #[serde(rename = "type", default)]
+    hook_type: Option<String>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    timeout: Option<u64>,
+}
+
 /// Loaded and validated hook configuration
 #[derive(Debug)]
 pub struct LoadedHookConfig {
@@ -166,6 +202,23 @@ pub enum HookSource {
 pub fn load_hook_config(cwd: &Path) -> Result<LoadedHookConfig> {
     let mut config = HookConfig::default();
     let mut source_paths = Vec::new();
+
+    // Load JSON config files (TS schema)
+    if let Some(home) = dirs::home_dir() {
+        let global_json = home.join(".composer").join("hooks.json");
+        if global_json.exists() {
+            let json_config = load_json_config_file(&global_json)?;
+            merge_config(&mut config, json_config);
+            source_paths.push(global_json);
+        }
+    }
+
+    let local_json = cwd.join(".composer").join("hooks.json");
+    if local_json.exists() {
+        let json_config = load_json_config_file(&local_json)?;
+        merge_config(&mut config, json_config);
+        source_paths.push(local_json);
+    }
 
     // Load global config
     if let Some(home) = dirs::home_dir() {
@@ -233,6 +286,122 @@ fn merge_config(base: &mut HookConfig, other: HookConfig) {
 
     // Append hooks
     base.hooks.extend(other.hooks);
+}
+
+fn load_json_config_file(path: &Path) -> Result<HookConfig> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read hook config: {}", path.display()))?;
+    let raw: RawHooksConfig = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse hook config: {}", path.display()))?;
+    let base_dir = path.parent().unwrap_or(Path::new("."));
+    parse_raw_hooks_config(raw, base_dir)
+}
+
+fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookConfig> {
+    let mut config = HookConfig::default();
+
+    if let Some(extends) = raw.extends {
+        let paths = match extends {
+            RawExtends::One(value) => vec![value],
+            RawExtends::Many(values) => values,
+        };
+        for entry in paths {
+            let resolved = if entry.starts_with("~/") {
+                if let Some(home) = dirs::home_dir() {
+                    home.join(entry.trim_start_matches("~/"))
+                } else {
+                    PathBuf::from(entry)
+                }
+            } else if Path::new(&entry).is_absolute() {
+                PathBuf::from(entry)
+            } else {
+                base_dir.join(entry)
+            };
+            if resolved.exists() {
+                let extended = load_json_config_file(&resolved)?;
+                merge_config(&mut config, extended);
+            }
+        }
+    }
+
+    if let Some(hooks) = raw.hooks {
+        for (event_name, matchers) in hooks {
+            let Some(event) = parse_event_type(&event_name) else {
+                eprintln!("[hooks] Unknown event type: {}", event_name);
+                continue;
+            };
+
+            for matcher in matchers {
+                let tools = parse_matcher_tools(matcher.matcher.as_deref());
+                for hook in matcher.hooks {
+                    if hook.hook_type.as_deref() == Some("prompt") || hook.prompt.is_some() {
+                        eprintln!("[hooks] Prompt hooks are not supported in Rust TUI config");
+                        continue;
+                    }
+                    if hook.hook_type.as_deref() == Some("agent") {
+                        continue;
+                    }
+                    let command = match hook.command {
+                        Some(cmd) => cmd,
+                        None => {
+                            eprintln!("[hooks] Command hook missing command field");
+                            continue;
+                        }
+                    };
+                    config.hooks.push(HookDefinition {
+                        event,
+                        tools: tools.clone(),
+                        command: Some(command),
+                        lua: None,
+                        lua_file: None,
+                        wasm: None,
+                        typescript: None,
+                        timeout_ms: hook.timeout,
+                        enabled: true,
+                        description: None,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(config)
+}
+
+fn parse_matcher_tools(matcher: Option<&str>) -> Vec<String> {
+    match matcher {
+        None => Vec::new(),
+        Some("*") => Vec::new(),
+        Some(value) => value
+            .split('|')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+    }
+}
+
+fn parse_event_type(name: &str) -> Option<HookEventType> {
+    match name {
+        "PreToolUse" => Some(HookEventType::PreToolUse),
+        "PostToolUse" => Some(HookEventType::PostToolUse),
+        "PostToolUseFailure" => Some(HookEventType::PostToolUseFailure),
+        "SessionStart" => Some(HookEventType::SessionStart),
+        "SessionEnd" => Some(HookEventType::SessionEnd),
+        "SessionSwitch" => Some(HookEventType::SessionSwitch),
+        "UserPromptSubmit" => Some(HookEventType::UserPromptSubmit),
+        "PreCompact" => Some(HookEventType::PreCompact),
+        "Notification" => Some(HookEventType::Notification),
+        "Overflow" => Some(HookEventType::Overflow),
+        "PreMessage" => Some(HookEventType::PreMessage),
+        "PostMessage" => Some(HookEventType::PostMessage),
+        "OnError" => Some(HookEventType::OnError),
+        "EvalGate" => Some(HookEventType::EvalGate),
+        "SubagentStart" => Some(HookEventType::SubagentStart),
+        "SubagentStop" => Some(HookEventType::SubagentStop),
+        "PermissionRequest" => Some(HookEventType::PermissionRequest),
+        "Branch" => Some(HookEventType::Branch),
+        _ => None,
+    }
 }
 
 /// Determine the source type for a hook definition

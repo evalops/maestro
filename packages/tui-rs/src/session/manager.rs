@@ -292,7 +292,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::entries::{SessionHeader, SessionMeta, SessionStats, ThinkingLevel};
+use super::entries::{
+    AttachmentExtract, SessionEntry, SessionHeader, SessionMeta, SessionStats, ThinkingLevel,
+};
 use super::reader::{ParsedSession, SessionReadError, SessionReader};
 use super::writer::{sessions_dir, SessionWriter};
 
@@ -606,6 +608,29 @@ impl SessionManager {
 
         self.writer = Some(SessionWriter::create(path, header)?);
         Ok(())
+    }
+
+    /// Save an attachment extraction entry for the active session.
+    pub fn save_attachment_extract(
+        &mut self,
+        attachment_id: impl Into<String>,
+        extracted_text: impl Into<String>,
+    ) -> Result<(), super::writer::SessionWriteError> {
+        let attachment_id = attachment_id.into();
+        let extracted_text = extracted_text.into();
+        if attachment_id.is_empty() || extracted_text.is_empty() {
+            return Ok(());
+        }
+        let Some(writer) = self.writer.as_mut() else {
+            return Ok(());
+        };
+
+        let entry = SessionEntry::AttachmentExtract(AttachmentExtract {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            attachment_id,
+            extracted_text,
+        });
+        writer.write_entry(entry)
     }
 
     /// Get the current session writer

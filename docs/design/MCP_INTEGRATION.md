@@ -342,7 +342,7 @@ class McpClient {
 ```typescript
 // src/mcp/bridge.ts
 function bridgeTool(serverName: string, mcpTool: McpToolDefinition): AgentTool {
-  const toolName = `mcp_${serverName}_${mcpTool.name}`;
+  const toolName = `mcp__${serverName}__${mcpTool.name}`;
 
   return createTool({
     name: toolName,

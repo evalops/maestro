@@ -49,6 +49,9 @@ dirs = "6"
 toml = "0.8"
 libc = "0.2"
 rayon = "1.10"
+zip = "2"
+pdf-extract = "0.7"
+urlencoding = "2"
 
 # Markdown parsing
 pulldown-cmark = "0.12"

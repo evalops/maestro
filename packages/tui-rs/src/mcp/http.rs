@@ -16,7 +16,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use super::client::McpError;
 use super::config::{expand_env_vars, McpServerConfig, McpTransport};
 use super::protocol::{
-    ClientInfo, InitializeResult, McpRequest, McpResponse, McpTool, McpToolResult, ToolsListResult,
+    ClientInfo, InitializeResult, McpRequest, McpResource, McpResponse, McpTool, McpToolResult,
+    ResourceReadResult, ResourcesListResult, ToolsListResult,
 };
 
 /// HTTP-based MCP connection
@@ -33,6 +34,8 @@ pub struct HttpConnection {
     next_id: AtomicU64,
     /// Available tools
     tools: Vec<McpTool>,
+    /// Available resources
+    resources: Vec<McpResource>,
     /// Whether initialized
     initialized: bool,
     /// SSE event receiver (for SSE transport)
@@ -63,6 +66,7 @@ impl HttpConnection {
             base_url,
             next_id: AtomicU64::new(1),
             tools: Vec::new(),
+            resources: Vec::new(),
             initialized: false,
             sse_rx: None,
             pending_sse: Arc::new(Mutex::new(HashMap::new())),
@@ -168,6 +172,8 @@ impl HttpConnection {
 
         // List available tools
         self.refresh_tools().await?;
+        // List resources (best effort)
+        let _ = self.refresh_resources().await;
 
         self.initialized = true;
         Ok(())
@@ -186,9 +192,27 @@ impl HttpConnection {
         Ok(())
     }
 
+    /// Refresh the list of available resources
+    pub async fn refresh_resources(&mut self) -> Result<(), McpError> {
+        let request = McpRequest::list_resources(self.next_id());
+        let response = self.send_request(request).await?;
+
+        let resources_result: ResourcesListResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid resources/list response: {}", e)))?;
+
+        self.resources = resources_result.resources;
+        Ok(())
+    }
+
     /// Get available tools
     pub fn tools(&self) -> &[McpTool] {
         &self.tools
+    }
+
+    /// Get available resources
+    pub fn resources(&self) -> &[McpResource] {
+        &self.resources
     }
 
     /// Get server name
@@ -217,6 +241,22 @@ impl HttpConnection {
         let result: McpToolResult = response
             .result_as()
             .map_err(|e| McpError::Protocol(format!("Invalid tool result: {}", e)))?;
+
+        Ok(result)
+    }
+
+    /// Read a resource by URI
+    pub async fn read_resource(&mut self, uri: &str) -> Result<ResourceReadResult, McpError> {
+        let request = McpRequest::read_resource(self.next_id(), uri);
+        let response = self.send_request(request).await?;
+
+        if let Some(error) = response.error {
+            return Err(McpError::RequestFailed(error.message));
+        }
+
+        let result: ResourceReadResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid resource read result: {}", e)))?;
 
         Ok(result)
     }

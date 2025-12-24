@@ -348,9 +348,9 @@ MCP (Model Context Protocol) tools are dynamically loaded from external servers:
 
 ```typescript
 // MCP tool naming convention
-const mcpToolName = `mcp_${serverName}_${toolName}`;
+const mcpToolName = `mcp__${serverName}__${toolName}`;
 
-// Example: mcp_filesystem_read_file
+// Example: mcp__filesystem__read_file
 ```
 
 ## Tool Annotations

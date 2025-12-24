@@ -204,6 +204,41 @@ impl ReadDetails {
         }
     }
 
+    pub fn with_size(mut self, size_bytes: u64) -> Self {
+        self.size_bytes = Some(size_bytes);
+        self
+    }
+
+    pub fn with_lines(mut self, lines_read: usize) -> Self {
+        self.lines_read = Some(lines_read);
+        self
+    }
+
+    pub fn with_truncated(mut self, truncated: bool) -> Self {
+        self.truncated = truncated;
+        self
+    }
+
+    pub fn with_offset(mut self, offset: Option<usize>) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    pub fn with_limit(mut self, limit: Option<usize>) -> Self {
+        self.limit = limit;
+        self
+    }
+
+    pub fn with_mime_type(mut self, mime_type: impl Into<String>) -> Self {
+        self.mime_type = Some(mime_type.into());
+        self
+    }
+
+    pub fn with_duration(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
@@ -226,6 +261,18 @@ pub struct WriteDetails {
     /// Write duration in milliseconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+
+    /// Optional diff preview
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+
+    /// Backup path (if created)
+    #[serde(skip_serializing_if = "Option::is_none", rename = "backupPath")]
+    pub backup_path: Option<String>,
+
+    /// Validator summaries
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validators: Option<Vec<crate::safety::ValidatorResult>>,
 }
 
 impl WriteDetails {
@@ -234,6 +281,38 @@ impl WriteDetails {
             path: path.into(),
             ..Default::default()
         }
+    }
+
+    pub fn with_bytes(mut self, bytes: u64) -> Self {
+        self.bytes_written = Some(bytes);
+        self
+    }
+
+    pub fn with_created(mut self, created: bool) -> Self {
+        self.created = created;
+        self
+    }
+
+    pub fn with_duration(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    pub fn with_diff(mut self, diff: String) -> Self {
+        self.diff = Some(diff);
+        self
+    }
+
+    pub fn with_backup(mut self, path: String) -> Self {
+        self.backup_path = Some(path);
+        self
+    }
+
+    pub fn with_validators(mut self, validators: Vec<crate::safety::ValidatorResult>) -> Self {
+        if !validators.is_empty() {
+            self.validators = Some(validators);
+        }
+        self
     }
 
     pub fn to_json(&self) -> serde_json::Value {
@@ -262,6 +341,14 @@ pub struct EditDetails {
     /// Edit duration in milliseconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+
+    /// Diff preview
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+
+    /// Validator summaries
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validators: Option<Vec<crate::safety::ValidatorResult>>,
 }
 
 impl EditDetails {
@@ -270,6 +357,41 @@ impl EditDetails {
             path: path.into(),
             ..Default::default()
         }
+    }
+
+    pub fn with_replacements(mut self, replacements: usize) -> Self {
+        self.replacements = Some(replacements);
+        self
+    }
+
+    pub fn with_diff(mut self, diff: String) -> Self {
+        self.diff = Some(diff);
+        self
+    }
+
+    pub fn with_validators(mut self, validators: Vec<crate::safety::ValidatorResult>) -> Self {
+        if !validators.is_empty() {
+            self.validators = Some(validators);
+        }
+        self
+    }
+
+    pub fn with_duration(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    /// Set line change counts based on old and new strings.
+    pub fn with_line_changes(mut self, old_string: &str, new_string: &str) -> Self {
+        let old_lines = old_string.lines().count() as i32;
+        let new_lines = new_string.lines().count() as i32;
+        let diff = new_lines - old_lines;
+        if diff > 0 {
+            self.lines_added = Some(diff);
+        } else if diff < 0 {
+            self.lines_removed = Some(-diff);
+        }
+        self
     }
 
     pub fn to_json(&self) -> serde_json::Value {

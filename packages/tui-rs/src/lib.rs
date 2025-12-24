@@ -1,6 +1,7 @@
 //! # Composer TUI - Native Terminal Interface Library
 //!
-//! This crate provides the primary terminal UI and native agent for Composer.
+//! This crate provides the primary terminal UI and native agent for Composer,
+//! including LSP diagnostics, workflow gating, and MCP annotations support.
 //! The Rust binary is the user entry point: it owns terminal rendering, AI
 //! calls, tool execution, and safety enforcement without any Node.js
 //! subprocess.
@@ -180,6 +181,9 @@ pub mod wrapping;
 /// Model Context Protocol (MCP) client.
 /// Connects to external MCP servers for additional tools and capabilities.
 pub mod mcp;
+
+/// LSP diagnostics bridge (optional Node-based CLI integration).
+pub mod lsp;
 
 /// Telemetry and wide events.
 /// Canonical turn events with tail sampling for observability.

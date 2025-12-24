@@ -678,6 +678,7 @@ mod tests {
             AppMessage::User {
                 content: MessageContent::Text("Hello!".to_string()),
                 timestamp: 1705318201000,
+                attachments: None,
             },
             AppMessage::Assistant {
                 content: vec![ContentBlock::Text {

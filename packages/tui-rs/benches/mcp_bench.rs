@@ -158,6 +158,7 @@ fn bench_mcp_tool_conversion(c: &mut Criterion) {
             },
             "required": ["arg1"]
         })),
+        annotations: None,
     };
 
     c.bench_function("mcp_tool_to_tool", |b| {

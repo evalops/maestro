@@ -122,6 +122,10 @@ const ALLOWED_FIELDS: &[&str] = &[
     "compatibility",
     "allowed-tools",
     "metadata",
+    "tags",
+    "author",
+    "version",
+    "triggers",
 ];
 
 /// YAML frontmatter structure for skill files (per Agent Skills spec)
@@ -146,6 +150,22 @@ struct SkillFrontmatter {
     /// Additional metadata key-value pairs (optional)
     #[serde(default)]
     metadata: HashMap<String, serde_json::Value>,
+
+    /// Legacy tags (optional)
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+
+    /// Legacy author (optional)
+    #[serde(default)]
+    author: Option<String>,
+
+    /// Legacy version (optional)
+    #[serde(default)]
+    version: Option<String>,
+
+    /// Legacy triggers (optional)
+    #[serde(default)]
+    triggers: Option<Vec<String>>,
 }
 
 /// Result of loading a skill file
@@ -570,6 +590,22 @@ impl SkillLoader {
             skill
                 .metadata
                 .insert("compatibility".to_string(), serde_json::json!(compat));
+        }
+
+        // Legacy fields (tags/author/version/triggers)
+        if let Some(tags) = frontmatter.tags {
+            skill
+                .metadata
+                .insert("tags".to_string(), serde_json::json!(tags));
+        }
+        if let Some(author) = frontmatter.author {
+            skill.author = Some(author);
+        }
+        if let Some(version) = frontmatter.version {
+            skill.version = Some(version);
+        }
+        if let Some(triggers) = frontmatter.triggers {
+            skill = skill.with_triggers(triggers);
         }
 
         // Set system prompt from body (if not empty)

@@ -61,6 +61,22 @@ impl McpRequest {
             })),
         )
     }
+
+    /// Create a resources/list request
+    pub fn list_resources(id: u64) -> Self {
+        Self::new(id, "resources/list", None)
+    }
+
+    /// Create a resources/read request
+    pub fn read_resource(id: u64, uri: &str) -> Self {
+        Self::new(
+            id,
+            "resources/read",
+            Some(serde_json::json!({
+                "uri": uri
+            })),
+        )
+    }
 }
 
 /// JSON-RPC response message
@@ -183,12 +199,29 @@ pub struct McpTool {
     /// Input schema (JSON Schema)
     #[serde(default)]
     pub input_schema: Option<Value>,
+    /// Optional tool annotations (read-only, destructive, etc.)
+    #[serde(default)]
+    pub annotations: Option<McpToolAnnotations>,
+}
+
+/// MCP tool annotations
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolAnnotations {
+    #[serde(default, rename = "readOnlyHint")]
+    pub read_only_hint: Option<bool>,
+    #[serde(default)]
+    pub destructive_hint: Option<bool>,
+    #[serde(default)]
+    pub idempotent_hint: Option<bool>,
+    #[serde(default)]
+    pub open_world_hint: Option<bool>,
 }
 
 impl McpTool {
     /// Convert to our internal Tool type
     pub fn to_tool(&self, server_name: &str) -> crate::ai::Tool {
-        let prefixed_name = format!("mcp_{}_{}", server_name, self.name);
+        let prefixed_name = format!("mcp__{}__{}", sanitize_mcp_name(server_name), self.name);
         let description = self.description.clone().unwrap_or_default();
 
         let mut tool = crate::ai::Tool::new(&prefixed_name, &description);
@@ -199,11 +232,60 @@ impl McpTool {
     }
 }
 
+fn sanitize_mcp_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// Tools list response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolsListResult {
     /// Available tools
     pub tools: Vec<McpTool>,
+}
+
+/// MCP resource definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpResource {
+    pub uri: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default, rename = "mimeType")]
+    pub mime_type: Option<String>,
+}
+
+/// Resources list response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourcesListResult {
+    pub resources: Vec<McpResource>,
+}
+
+/// Resource content
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpResourceContent {
+    pub uri: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default, rename = "mimeType")]
+    pub mime_type: Option<String>,
+}
+
+/// Resource read response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceReadResult {
+    pub contents: Vec<McpResourceContent>,
 }
 
 /// Tool call result
@@ -330,9 +412,10 @@ mod tests {
             name: "test_tool".to_string(),
             description: Some("A test tool".to_string()),
             input_schema: Some(serde_json::json!({"type": "object"})),
+            annotations: None,
         };
         let tool = mcp_tool.to_tool("myserver");
-        assert_eq!(tool.name, "mcp_myserver_test_tool");
+        assert_eq!(tool.name, "mcp__myserver__test_tool");
         assert_eq!(tool.description, "A test tool");
     }
 

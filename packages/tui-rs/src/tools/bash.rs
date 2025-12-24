@@ -147,7 +147,7 @@ const MAX_OUTPUT_SIZE: usize = 30_000;
 /// Maximum lines to show in truncated output
 const MAX_OUTPUT_LINES: usize = 500;
 
-fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
+pub(crate) fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
     #[cfg(windows)]
     {
         let mut direct_candidates: Vec<PathBuf> = Vec::new();

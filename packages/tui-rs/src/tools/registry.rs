@@ -97,19 +97,33 @@ use std::sync::RwLock;
 use std::time::Instant;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use serde_json::Value;
 use tokio::sync::mpsc;
 
+use super::ask_user;
+use super::background_tasks;
 use super::bash::{BashArgs, BashTool};
 use super::cache::{CacheConfig, CacheKey, CacheStats, CachedResult, ToolResultCache};
 use super::details::{
     DiffDetails, EditDetails, GlobDetails, GrepDetails, ListDetails, ReadDetails, WriteDetails,
 };
+use super::exa;
+use super::extract_document;
+use super::gh;
 use super::image::{ImageTool, ReadImageArgs, ScreenshotArgs};
 use super::inline::{load_inline_tools, InlineTool, InlineToolExecutor};
+use super::notebook_edit;
+use super::status;
+use super::todo;
 use super::web_fetch::{WebFetchArgs, WebFetchTool};
 use crate::agent::{FromAgent, ToolDefinition, ToolResult};
 use crate::ai::Tool;
-use crate::safety::{expand_tilde, is_tilde_path, ActionFirewall, FirewallVerdict};
+use crate::lsp;
+use crate::mcp::{load_mcp_config, McpClient, McpContent};
+use crate::safety::{
+    expand_tilde, is_tilde_path, require_plan, run_validators_with_diagnostics, ActionFirewall,
+    FirewallVerdict,
+};
 
 const MAX_READ_SIZE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_GREP_LINES: usize = 100;
@@ -243,6 +257,26 @@ fn normalize_git_path(cwd: &str, input: &str) -> Result<(String, String), String
     Ok((display, shell_path))
 }
 
+fn parse_mcp_tool_name(prefixed_name: &str) -> Option<(String, String)> {
+    if prefixed_name.starts_with("mcp__") {
+        let parts: Vec<&str> = prefixed_name.split("__").collect();
+        if parts.len() < 3 || parts[0] != "mcp" {
+            return None;
+        }
+        return Some((parts[1].to_string(), parts[2..].join("__")));
+    }
+
+    if prefixed_name.starts_with("mcp_") {
+        let parts: Vec<&str> = prefixed_name.splitn(3, '_').collect();
+        if parts.len() != 3 || parts[0] != "mcp" {
+            return None;
+        }
+        return Some((parts[1].to_string(), parts[2].to_string()));
+    }
+
+    None
+}
+
 fn extract_grep_path(line: &str) -> Option<&str> {
     let bytes = line.as_bytes();
     let mut idx = 0;
@@ -337,6 +371,12 @@ pub struct ToolExecutor {
     /// Caches results from read-only tools (read, glob, grep) to avoid redundant
     /// operations. Uses RwLock for thread-safe access across async tasks.
     cache: RwLock<ToolResultCache>,
+
+    /// MCP client for resource tools (lazy-initialized)
+    mcp_client: tokio::sync::Mutex<Option<crate::mcp::McpClient>>,
+
+    /// MCP tool annotations for approval hints
+    mcp_tool_annotations: RwLock<HashMap<String, crate::mcp::McpToolAnnotations>>,
 }
 
 impl ToolExecutor {
@@ -395,6 +435,8 @@ impl ToolExecutor {
             cwd,
             registry,
             cache: RwLock::new(ToolResultCache::default()),
+            mcp_client: tokio::sync::Mutex::new(None),
+            mcp_tool_annotations: RwLock::new(HashMap::new()),
         }
     }
 
@@ -435,6 +477,8 @@ impl ToolExecutor {
             cwd,
             registry,
             cache: RwLock::new(ToolResultCache::new(cache_config)),
+            mcp_client: tokio::sync::Mutex::new(None),
+            mcp_tool_annotations: RwLock::new(HashMap::new()),
         }
     }
 
@@ -462,6 +506,31 @@ impl ToolExecutor {
         if let Ok(mut cache) = self.cache.write() {
             cache.clear();
         }
+    }
+
+    async fn ensure_mcp_client(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<McpClient>>, String> {
+        let mut guard = self.mcp_client.lock().await;
+        if guard.is_none() {
+            let config = load_mcp_config(Some(Path::new(&self.cwd)));
+            let client = McpClient::new();
+            let servers: Vec<_> = config.enabled_servers().cloned().collect();
+            for server in servers {
+                if let Err(err) = client.connect(server.clone()).await {
+                    eprintln!("[mcp] Failed to connect to server {}: {}", server.name, err);
+                }
+            }
+            let annotations = client.list_tool_annotations().await;
+            if let Ok(mut map) = self.mcp_tool_annotations.write() {
+                map.clear();
+                for (name, meta) in annotations {
+                    map.insert(name.to_lowercase(), meta);
+                }
+            }
+            *guard = Some(client);
+        }
+        Ok(guard)
     }
 
     /// Invalidate cache entries for a specific file path
@@ -494,6 +563,22 @@ impl ToolExecutor {
     /// ```
     pub fn has_tool(&self, name: &str) -> bool {
         self.registry.get(name).is_some()
+    }
+
+    /// Ensure MCP client is initialized and annotations are cached.
+    /// Call this before checking annotations for MCP tools.
+    pub async fn ensure_mcp_annotations(&self) -> Result<(), String> {
+        let _ = self.ensure_mcp_client().await?;
+        Ok(())
+    }
+
+    /// Get MCP tool annotations if available
+    pub fn tool_annotations(&self, name: &str) -> Option<crate::mcp::McpToolAnnotations> {
+        let key = name.to_lowercase();
+        self.mcp_tool_annotations
+            .read()
+            .ok()
+            .and_then(|map| map.get(&key).cloned())
     }
 
     /// Return missing required fields for a tool given its arguments
@@ -740,6 +825,145 @@ impl ToolExecutor {
         result
     }
 
+    async fn execute_search(&self, args: &serde_json::Value) -> ToolResult {
+        let start_time = Instant::now();
+        let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+        if pattern.is_empty() {
+            return ToolResult::failure("Missing pattern argument".to_string());
+        }
+
+        let paths: Vec<String> = match args.get("paths") {
+            Some(Value::String(path)) => vec![path.clone()],
+            Some(Value::Array(arr)) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect(),
+            _ => Vec::new(),
+        };
+
+        let mut cmd = String::from("rg --color=never --no-heading -n");
+        let output_mode = args
+            .get("outputMode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("content");
+        if output_mode == "files" {
+            cmd.push_str(" -l");
+        } else if output_mode == "count" {
+            cmd.push_str(" --count-matches");
+        }
+        if args
+            .get("ignoreCase")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            cmd.push_str(" -i");
+        }
+        if args
+            .get("literal")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            cmd.push_str(" -F");
+        }
+        if args.get("word").and_then(|v| v.as_bool()).unwrap_or(false) {
+            cmd.push_str(" -w");
+        }
+        if args
+            .get("multiline")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            cmd.push_str(" --multiline");
+        }
+        if let Some(max_results) = args.get("maxResults").and_then(|v| v.as_u64()) {
+            cmd.push_str(&format!(" -m {}", max_results));
+        }
+        if let Some(context) = args.get("context").and_then(|v| v.as_u64()) {
+            cmd.push_str(&format!(" -C {}", context));
+        } else {
+            if let Some(before) = args.get("beforeContext").and_then(|v| v.as_u64()) {
+                cmd.push_str(&format!(" -B {}", before));
+            }
+            if let Some(after) = args.get("afterContext").and_then(|v| v.as_u64()) {
+                cmd.push_str(&format!(" -A {}", after));
+            }
+        }
+        if let Some(glob) = args.get("glob").and_then(|v| v.as_str()) {
+            cmd.push_str(&format!(" -g {}", shell_escape(glob)));
+        }
+        if args
+            .get("includeHidden")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            cmd.push_str(" --hidden");
+        }
+        if args
+            .get("useGitIgnore")
+            .and_then(|v| v.as_bool())
+            .map(|v| !v)
+            .unwrap_or(false)
+        {
+            cmd.push_str(" --no-ignore");
+        }
+        if args
+            .get("invertMatch")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            cmd.push_str(" --invert-match");
+        }
+        if args
+            .get("onlyMatching")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            cmd.push_str(" --only-matching");
+        }
+
+        cmd.push_str(&format!(" -- {}", shell_escape(pattern)));
+        for path in &paths {
+            cmd.push_str(&format!(" {}", shell_escape(path)));
+        }
+
+        let head_limit = args
+            .get("headLimit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(MAX_GREP_LINES as u64) as usize;
+        cmd.push_str(&format!(
+            " | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ] || [ $status -eq 1 ]; then exit 0; else exit $status; fi",
+            head_limit
+        ));
+
+        let result = self
+            .bash
+            .execute(BashArgs {
+                command: cmd,
+                timeout: Some(30000),
+                description: Some("Search for pattern".to_string()),
+                run_in_background: false,
+            })
+            .await;
+
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let matches_count = result.output.lines().count();
+        let truncated = matches_count >= head_limit;
+
+        let mut details = GrepDetails::new(pattern)
+            .with_path(paths.join(", "))
+            .with_matches(matches_count)
+            .with_duration(duration_ms);
+        if truncated {
+            details = details.with_truncation();
+        }
+
+        if result.success {
+            ToolResult::success(result.output).with_details(details.to_json())
+        } else {
+            ToolResult::failure(result.error.unwrap_or_default()).with_details(details.to_json())
+        }
+    }
+
     /// Internal implementation of tool execution (without caching)
     async fn execute_impl(
         &self,
@@ -748,6 +972,57 @@ impl ToolExecutor {
         event_tx: Option<&mpsc::UnboundedSender<FromAgent>>,
         call_id: &str,
     ) -> ToolResult {
+        if McpClient::is_mcp_tool(tool_name) {
+            let guard = match self.ensure_mcp_client().await {
+                Ok(guard) => guard,
+                Err(err) => return ToolResult::failure(err),
+            };
+            let client = match guard.as_ref() {
+                Some(client) => client,
+                None => return ToolResult::failure("No MCP servers configured".to_string()),
+            };
+
+            let (server_name, tool_label) = match parse_mcp_tool_name(tool_name) {
+                Some((server, tool)) => (server, tool),
+                None => {
+                    return ToolResult::failure(format!(
+                        "Invalid MCP tool name format: {}",
+                        tool_name
+                    ))
+                }
+            };
+
+            match client.call_tool(tool_name, args.clone()).await {
+                Ok(result) => {
+                    let text_output = result
+                        .content
+                        .iter()
+                        .filter_map(|content| match content {
+                            McpContent::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let output = if !text_output.is_empty() {
+                        text_output
+                    } else {
+                        serde_json::to_string_pretty(&result.content)
+                            .unwrap_or_else(|_| "MCP tool returned non-text content".to_string())
+                    };
+                    let details = serde_json::json!({
+                        "server": server_name,
+                        "tool": tool_label,
+                        "content": result.content,
+                        "isError": result.is_error
+                    });
+                    return ToolResult::success(output).with_details(details);
+                }
+                Err(err) => {
+                    return ToolResult::failure(format!("MCP tool error: {}", err));
+                }
+            }
+        }
+
         match tool_name {
             "bash" | "Bash" => {
                 let bash_args: BashArgs = match serde_json::from_value(args.clone()) {
@@ -756,6 +1031,10 @@ impl ToolExecutor {
                         return ToolResult::failure(format!("Invalid bash arguments: {}", e));
                     }
                 };
+
+                if let Err(err) = require_plan("bash") {
+                    return ToolResult::failure(err);
+                }
 
                 // Send tool start event
                 if let Some(tx) = event_tx {
@@ -784,17 +1063,22 @@ impl ToolExecutor {
                 result
             }
             "read" | "Read" => {
-                // File reading tool with optional offset/limit
                 let start_time = Instant::now();
                 let raw_path = args
-                    .get("file_path")
-                    .or_else(|| args.get("path"))
+                    .get("path")
+                    .or_else(|| args.get("file_path"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let path = match resolve_tool_path(&self.cwd, raw_path) {
                     Ok(resolved) => resolved,
                     Err(message) => return ToolResult::failure(message),
                 };
+
+                let path_buf = std::path::Path::new(&path);
+                let extension = path_buf
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|s| s.to_ascii_lowercase());
 
                 // Optional line offset (1-indexed, defaults to 1)
                 let offset = args
@@ -815,35 +1099,169 @@ impl ToolExecutor {
                     .unwrap_or("normal");
 
                 let line_numbers = args
-                    .get("line_numbers")
-                    .or_else(|| args.get("lineNumbers"))
+                    .get("lineNumbers")
+                    .or_else(|| args.get("line_numbers"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
 
                 let wrap_in_code_fence = args
-                    .get("wrap_in_code_fence")
-                    .or_else(|| args.get("wrapInCodeFence"))
+                    .get("wrapInCodeFence")
+                    .or_else(|| args.get("wrap_in_code_fence"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
 
                 let as_base64 = args
-                    .get("as_base64")
-                    .or_else(|| args.get("asBase64"))
+                    .get("asBase64")
+                    .or_else(|| args.get("as_base64"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
+                let with_diagnostics = args
+                    .get("withDiagnostics")
+                    .or_else(|| args.get("diagnostics"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
                 let language = args.get("language").and_then(|v| v.as_str());
+
+                if let Some(ext) = extension.as_deref() {
+                    let is_image =
+                        matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg");
+                    if is_image {
+                        let image_args = ReadImageArgs {
+                            file_path: path.clone(),
+                            max_dimension: None,
+                        };
+                        return self.image.read_image(image_args).await;
+                    }
+                }
+
+                if let Some(ext) = extension.as_deref() {
+                    if ext == "pdf" {
+                        let bytes = match tokio::fs::read(&path).await {
+                            Ok(data) => data,
+                            Err(err) => {
+                                let details = ReadDetails::new(path.clone())
+                                    .with_duration(start_time.elapsed().as_millis() as u64);
+                                return ToolResult::failure(format!("Failed to read PDF: {}", err))
+                                    .with_details(details.to_json());
+                            }
+                        };
+                        let text = match pdf_extract::extract_text_from_mem(&bytes) {
+                            Ok(text) => text,
+                            Err(err) => {
+                                let details = ReadDetails::new(path.clone())
+                                    .with_duration(start_time.elapsed().as_millis() as u64)
+                                    .with_mime_type("application/pdf");
+                                return ToolResult::failure(format!(
+                                    "Failed to extract PDF: {}",
+                                    err
+                                ))
+                                .with_details(details.to_json());
+                            }
+                        };
+                        let mut output = text;
+                        if wrap_in_code_fence {
+                            let fence_language = language.unwrap_or("");
+                            output = format!("```{}\n{}\n```", fence_language, output);
+                        }
+                        let details = ReadDetails::new(path.clone())
+                            .with_size(bytes.len() as u64)
+                            .with_mime_type("application/pdf")
+                            .with_duration(start_time.elapsed().as_millis() as u64);
+                        return ToolResult::success(output).with_details(details.to_json());
+                    }
+                }
+
+                if let Some(ext) = extension.as_deref() {
+                    if ext == "ipynb" {
+                        let content = match tokio::fs::read_to_string(&path).await {
+                            Ok(text) => text,
+                            Err(err) => {
+                                let details = ReadDetails::new(path.clone())
+                                    .with_duration(start_time.elapsed().as_millis() as u64);
+                                return ToolResult::failure(format!(
+                                    "Failed to read notebook: {}",
+                                    err
+                                ))
+                                .with_details(details.to_json());
+                            }
+                        };
+                        let notebook: serde_json::Value = match serde_json::from_str(&content) {
+                            Ok(val) => val,
+                            Err(err) => {
+                                let details = ReadDetails::new(path.clone())
+                                    .with_duration(start_time.elapsed().as_millis() as u64);
+                                return ToolResult::failure(format!(
+                                    "Failed to parse notebook: {}",
+                                    err
+                                ))
+                                .with_details(details.to_json());
+                            }
+                        };
+                        let cells = notebook.get("cells").and_then(|v| v.as_array()).cloned();
+                        let cells = match cells {
+                            Some(val) => val,
+                            None => {
+                                return ToolResult::failure(
+                                    "Invalid notebook format: missing cells".to_string(),
+                                );
+                            }
+                        };
+                        let mut lines = Vec::new();
+                        for (idx, cell) in cells.iter().enumerate() {
+                            let cell_type = cell
+                                .get("cell_type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("code");
+                            let cell_id = cell.get("id").and_then(|v| v.as_str());
+                            let source = cell.get("source").map(|v| {
+                                if v.is_array() {
+                                    v.as_array()
+                                        .unwrap_or(&Vec::new())
+                                        .iter()
+                                        .filter_map(|line| line.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join("")
+                                } else {
+                                    v.as_str().unwrap_or("").to_string()
+                                }
+                            });
+                            let preview = source.unwrap_or_default();
+                            let preview_lines: Vec<&str> = preview.lines().take(3).collect();
+                            let truncated = if preview.lines().count() > 3 {
+                                "..."
+                            } else {
+                                ""
+                            };
+                            let id_suffix = cell_id
+                                .map(|id| format!(" (id: {})", id))
+                                .unwrap_or_default();
+                            lines.push(format!(
+                                "[{}] {}{}:\n{}{}",
+                                idx,
+                                cell_type,
+                                id_suffix,
+                                preview_lines.join("\n"),
+                                truncated
+                            ));
+                            lines.push(String::new());
+                        }
+                        let output = lines.join("\n");
+                        let details = ReadDetails::new(path.clone())
+                            .with_size(content.len() as u64)
+                            .with_duration(start_time.elapsed().as_millis() as u64);
+                        return ToolResult::success(output).with_details(details.to_json());
+                    }
+                }
 
                 if let Ok(metadata) = tokio::fs::metadata(&path).await {
                     let size_bytes = metadata.len();
                     if size_bytes > MAX_READ_SIZE_BYTES {
                         let size_mb = (size_bytes as f64) / (1024.0 * 1024.0);
-                        let details = ReadDetails {
-                            path: path.to_string(),
-                            size_bytes: Some(size_bytes),
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                            ..Default::default()
-                        };
+                        let details = ReadDetails::new(path.clone())
+                            .with_size(size_bytes)
+                            .with_duration(start_time.elapsed().as_millis() as u64);
                         return ToolResult::failure(format!(
                             "File is too large ({:.2}MB). Maximum size is 10MB. Use offset/limit or bash head/tail for large files.",
                             size_mb
@@ -855,56 +1273,43 @@ impl ToolExecutor {
                 let bytes = match tokio::fs::read(&path).await {
                     Ok(data) => data,
                     Err(e) => {
-                        let details = ReadDetails {
-                            path: path.to_string(),
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                            ..Default::default()
-                        };
+                        let details = ReadDetails::new(path.clone())
+                            .with_duration(start_time.elapsed().as_millis() as u64);
                         return ToolResult::failure(format!("Failed to read file: {}", e))
                             .with_details(details.to_json());
                     }
                 };
 
                 if is_probably_binary(&bytes) && !as_base64 {
-                    let details = ReadDetails {
-                        path: path.to_string(),
-                        size_bytes: Some(bytes.len() as u64),
-                        duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                        ..Default::default()
-                    };
+                    let details = ReadDetails::new(path.clone())
+                        .with_size(bytes.len() as u64)
+                        .with_duration(start_time.elapsed().as_millis() as u64);
                     return ToolResult::failure(
-                        "Binary file detected. Re-run with as_base64=true or use the bash tool.",
+                        "Binary file detected. Re-run with asBase64=true or use the bash tool.",
                     )
                     .with_details(details.to_json());
                 }
 
                 if as_base64 {
                     let encoded = STANDARD.encode(&bytes);
-                    let details = ReadDetails {
-                        path: path.to_string(),
-                        size_bytes: Some(bytes.len() as u64),
-                        duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                        ..Default::default()
-                    };
+                    let details = ReadDetails::new(path.clone())
+                        .with_size(bytes.len() as u64)
+                        .with_duration(start_time.elapsed().as_millis() as u64);
                     return ToolResult::success(encoded).with_details(details.to_json());
                 }
 
                 let content = match String::from_utf8(bytes) {
                     Ok(text) => text,
                     Err(_) => {
-                        let details = ReadDetails {
-                            path: path.to_string(),
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                            ..Default::default()
-                        };
+                        let details = ReadDetails::new(path.clone())
+                            .with_duration(start_time.elapsed().as_millis() as u64);
                         return ToolResult::failure(
-                            "File is not valid UTF-8. Re-run with as_base64=true or use the bash tool.",
+                            "File is not valid UTF-8. Re-run with asBase64=true or use the bash tool.",
                         )
                         .with_details(details.to_json());
                     }
                 };
 
-                // Add line numbers with offset/limit support
                 let lines: Vec<&str> = content.lines().collect();
                 let total_lines = lines.len();
 
@@ -922,11 +1327,8 @@ impl ToolExecutor {
                     }
                     "normal" => {}
                     _ => {
-                        let details = ReadDetails {
-                            path: path.to_string(),
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                            ..Default::default()
-                        };
+                        let details = ReadDetails::new(path.clone())
+                            .with_duration(start_time.elapsed().as_millis() as u64);
                         return ToolResult::failure("Invalid mode. Use normal, head, or tail.")
                             .with_details(details.to_json());
                     }
@@ -954,17 +1356,73 @@ impl ToolExecutor {
                     output = format!("```{}\n{}\n```", fence_language, output);
                 }
 
-                // Build ReadDetails
-                let details = ReadDetails {
-                    path: path.to_string(),
-                    size_bytes: Some(content.len() as u64),
-                    lines_read: Some(lines_read),
-                    truncated,
-                    offset: if offset > 1 { Some(offset) } else { None },
-                    limit,
-                    mime_type: None,
-                    duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                };
+                if with_diagnostics {
+                    if let Ok(diagnostics) = lsp::diagnostics_for_file(&self.cwd, &path).await {
+                        if !diagnostics.is_empty() {
+                            let errors: Vec<_> = diagnostics
+                                .iter()
+                                .filter(|d| d.severity == Some(1) || d.severity.is_none())
+                                .collect();
+                            let warnings: Vec<_> = diagnostics
+                                .iter()
+                                .filter(|d| d.severity == Some(2))
+                                .collect();
+
+                            if !errors.is_empty() || !warnings.is_empty() {
+                                output.push_str("\n\n--- LSP Diagnostics ---\n");
+                                let max_diagnostics = lsp::max_diagnostics_per_file();
+                                let mut count = 0usize;
+
+                                for diag in &errors {
+                                    if count >= max_diagnostics {
+                                        break;
+                                    }
+                                    let message = lsp::sanitize_diagnostic_message(&diag.message);
+                                    output.push_str(&format!(
+                                        "ERROR (line {}): {}\n",
+                                        diag.range.start.line + 1,
+                                        message
+                                    ));
+                                    count += 1;
+                                }
+
+                                for diag in &warnings {
+                                    if count >= max_diagnostics {
+                                        break;
+                                    }
+                                    let message = lsp::sanitize_diagnostic_message(&diag.message);
+                                    output.push_str(&format!(
+                                        "WARN (line {}): {}\n",
+                                        diag.range.start.line + 1,
+                                        message
+                                    ));
+                                    count += 1;
+                                }
+
+                                if errors.len() + warnings.len() > max_diagnostics {
+                                    let remaining = errors.len() + warnings.len() - max_diagnostics;
+                                    output.push_str(&format!(
+                                        "...and {} more {} hidden.\n",
+                                        remaining,
+                                        if remaining == 1 {
+                                            "diagnostic"
+                                        } else {
+                                            "diagnostics"
+                                        }
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let details = ReadDetails::new(path.clone())
+                    .with_size(content.len() as u64)
+                    .with_lines(lines_read)
+                    .with_truncated(truncated)
+                    .with_offset(if offset > 1 { Some(offset) } else { None })
+                    .with_limit(limit)
+                    .with_duration(start_time.elapsed().as_millis() as u64);
 
                 ToolResult::success(output).with_details(details.to_json())
             }
@@ -980,49 +1438,137 @@ impl ToolExecutor {
                     Err(message) => return ToolResult::failure(message),
                 };
 
-                let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                if let Err(err) = require_plan("write") {
+                    return ToolResult::failure(err);
+                }
 
-                // Check if file exists (to determine if it's a create or overwrite)
+                let content = args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let preview_diff = args
+                    .get("previewDiff")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let backup = args.get("backup").and_then(|v| v.as_bool()).unwrap_or(true);
+
                 let file_existed = std::path::Path::new(&path).exists();
+                let mut previous_content: Option<String> = None;
+                if file_existed {
+                    if let Ok(text) = tokio::fs::read_to_string(&path).await {
+                        previous_content = Some(text);
+                    }
+                }
 
-                // Create parent directories if needed
                 if let Some(parent) = std::path::Path::new(&path).parent() {
                     if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                        let details = WriteDetails {
-                            path: path.to_string(),
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                            ..Default::default()
-                        };
+                        let details = WriteDetails::new(path.clone())
+                            .with_duration(start_time.elapsed().as_millis() as u64);
                         return ToolResult::failure(format!("Failed to create directory: {}", e))
                             .with_details(details.to_json());
                     }
                 }
 
-                match tokio::fs::write(&path, content).await {
-                    Ok(_) => {
-                        // Invalidate cache since file was modified
-                        self.invalidate_file_cache(&path);
-
-                        let details = WriteDetails {
-                            path: path.to_string(),
-                            bytes_written: Some(content.len() as u64),
-                            created: !file_existed,
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                        };
-
-                        ToolResult::success(format!("File written successfully: {}", path))
-                            .with_details(details.to_json())
+                let mut backup_path: Option<String> = None;
+                let mut backup_renamed = false;
+                if file_existed && backup {
+                    let backup_target = format!("{}.bak", path);
+                    if tokio::fs::rename(&path, &backup_target).await.is_ok() {
+                        backup_renamed = true;
+                    } else if let Some(prev) = &previous_content {
+                        let _ = tokio::fs::write(&backup_target, prev).await;
                     }
-                    Err(e) => {
-                        let details = WriteDetails {
-                            path: path.to_string(),
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                            ..Default::default()
-                        };
-                        ToolResult::failure(format!("Failed to write file: {}", e))
-                            .with_details(details.to_json())
-                    }
+                    backup_path = Some(backup_target);
                 }
+
+                let tmp_path = format!("{}.{}.tmp", path, uuid::Uuid::new_v4());
+                let write_result = async {
+                    tokio::fs::write(&tmp_path, &content).await?;
+                    tokio::fs::rename(&tmp_path, &path).await?;
+                    Ok::<(), std::io::Error>(())
+                }
+                .await;
+
+                if let Err(e) = write_result {
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    if backup_renamed {
+                        let _ = tokio::fs::rename(format!("{}.bak", path), &path).await;
+                    } else if let Some(prev) = &previous_content {
+                        let _ = tokio::fs::write(&path, prev).await;
+                    }
+                    let details = WriteDetails::new(path.clone())
+                        .with_duration(start_time.elapsed().as_millis() as u64);
+                    return ToolResult::failure(format!("Failed to write file: {}", e))
+                        .with_details(details.to_json());
+                }
+
+                let diff = if preview_diff {
+                    previous_content.as_ref().map(|old| {
+                        let diff = similar::TextDiff::from_lines(old, &content);
+                        diff.unified_diff().to_string()
+                    })
+                } else {
+                    None
+                };
+
+                let display_path = if raw_path.is_empty() { &path } else { raw_path };
+                let mut linter_output = String::new();
+                let lsp_diagnostics = match lsp::collect_diagnostics_for_paths(
+                    &self.cwd,
+                    std::slice::from_ref(&path),
+                )
+                .await
+                {
+                    Ok(map) => {
+                        if let Some(file_diags) = map.get(&path).or_else(|| map.get(display_path)) {
+                            linter_output =
+                                lsp::format_lsp_summary(display_path, file_diags.as_slice());
+                        }
+                        Some(map)
+                    }
+                    Err(_) => None,
+                };
+
+                let validators = match run_validators_with_diagnostics(
+                    std::slice::from_ref(&path),
+                    lsp_diagnostics.as_ref(),
+                )
+                .await
+                {
+                    Ok(results) => Some(results),
+                    Err(err) => {
+                        if backup_renamed {
+                            let _ = tokio::fs::rename(format!("{}.bak", path), &path).await;
+                        } else if let Some(prev) = &previous_content {
+                            let _ = tokio::fs::write(&path, prev).await;
+                        }
+                        return ToolResult::failure(err);
+                    }
+                };
+
+                self.invalidate_file_cache(&path);
+
+                let mut details = WriteDetails::new(path.clone())
+                    .with_bytes(content.len() as u64)
+                    .with_created(!file_existed)
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                if let Some(diff) = diff {
+                    details = details.with_diff(diff);
+                }
+                if let Some(backup_path) = backup_path {
+                    details = details.with_backup(backup_path);
+                }
+                if let Some(validators) = validators {
+                    details = details.with_validators(validators);
+                }
+
+                let mut summary = format!("File written successfully: {}", path);
+                if !linter_output.is_empty() {
+                    summary.push_str(&linter_output);
+                }
+
+                ToolResult::success(summary).with_details(details.to_json())
             }
             "glob" | "Glob" => {
                 let start_time = Instant::now();
@@ -1152,118 +1698,200 @@ impl ToolExecutor {
                     Err(message) => return ToolResult::failure(message),
                 };
 
-                let old_string = args
-                    .get("old_string")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let new_string = args
-                    .get("new_string")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                if let Err(err) = require_plan("edit") {
+                    return ToolResult::failure(err);
+                }
+
                 let replace_all = args
-                    .get("replace_all")
+                    .get("replaceAll")
+                    .or_else(|| args.get("replace_all"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let occurrence =
+                    args.get("occurrence").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+                let dry_run = args
+                    .get("dryRun")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                if old_string.is_empty() {
-                    return ToolResult::failure("Missing old_string argument");
+                let edits_value = args.get("edits").and_then(|v| v.as_array());
+                let mut edits: Vec<(String, String)> = Vec::new();
+
+                if let Some(edits_array) = edits_value {
+                    if replace_all || occurrence != 1 {
+                        return ToolResult::failure(
+                            "Cannot use replaceAll or occurrence with edits array".to_string(),
+                        );
+                    }
+                    for edit in edits_array {
+                        let old = edit
+                            .get("oldText")
+                            .or_else(|| edit.get("old_string"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if old.is_empty() {
+                            return ToolResult::failure("Edit entry missing oldText".to_string());
+                        }
+                        let new = edit
+                            .get("newText")
+                            .or_else(|| edit.get("new_string"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        edits.push((old, new));
+                    }
+                } else {
+                    let old = args
+                        .get("oldText")
+                        .or_else(|| args.get("old_string"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if old.is_empty() {
+                        return ToolResult::failure("Missing oldText argument".to_string());
+                    }
+                    let new = args
+                        .get("newText")
+                        .or_else(|| args.get("new_string"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    edits.push((old, new));
                 }
 
                 // Read file content
                 let content = match tokio::fs::read_to_string(&path).await {
                     Ok(c) => c,
                     Err(e) => {
-                        let details = EditDetails {
-                            path: path.to_string(),
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                            ..Default::default()
-                        };
+                        let details = EditDetails::new(path.clone())
+                            .with_duration(start_time.elapsed().as_millis() as u64);
                         return ToolResult::failure(format!("Failed to read file: {}", e))
                             .with_details(details.to_json());
                     }
                 };
 
-                // Check if old_string exists in file
-                let occurrences = content.matches(old_string).count();
-                if occurrences == 0 {
-                    let details = EditDetails {
-                        path: path.to_string(),
-                        replacements: Some(0),
-                        duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                        ..Default::default()
-                    };
-                    return ToolResult::failure(
-                        "old_string not found in file. Make sure the string matches exactly.",
+                let mut new_content = content.clone();
+                let mut replacements_total = 0;
+                for (old_text, new_text) in edits.iter() {
+                    let positions: Vec<usize> = new_content
+                        .match_indices(old_text)
+                        .map(|(i, _)| i)
+                        .collect();
+                    if positions.is_empty() {
+                        let details = EditDetails::new(path.clone())
+                            .with_replacements(replacements_total)
+                            .with_duration(start_time.elapsed().as_millis() as u64);
+                        return ToolResult::failure(
+                            "oldText not found in file. Make sure the string matches exactly."
+                                .to_string(),
+                        )
+                        .with_details(details.to_json());
+                    }
+                    if replace_all && edits.len() == 1 {
+                        replacements_total += positions.len();
+                        new_content = new_content.replace(old_text, new_text);
+                        continue;
+                    }
+                    let idx = occurrence.saturating_sub(1);
+                    if idx >= positions.len() {
+                        return ToolResult::failure(format!(
+                            "Occurrence {} out of range ({} matches)",
+                            occurrence,
+                            positions.len()
+                        ));
+                    }
+                    let pos = positions[idx];
+                    let mut updated = String::new();
+                    updated.push_str(&new_content[..pos]);
+                    updated.push_str(new_text);
+                    updated.push_str(&new_content[pos + old_text.len()..]);
+                    new_content = updated;
+                    replacements_total += 1;
+                }
+
+                let diff = similar::TextDiff::from_lines(&content, &new_content)
+                    .unified_diff()
+                    .to_string();
+
+                if dry_run {
+                    let details = EditDetails::new(path.clone())
+                        .with_replacements(replacements_total)
+                        .with_diff(diff)
+                        .with_duration(start_time.elapsed().as_millis() as u64);
+                    return ToolResult::success(
+                        "Dry run complete (no changes written)".to_string(),
                     )
                     .with_details(details.to_json());
                 }
 
-                // Check for uniqueness if not replace_all
-                if !replace_all && occurrences > 1 {
-                    let details = EditDetails {
-                        path: path.to_string(),
-                        replacements: Some(0),
-                        duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                        ..Default::default()
-                    };
-                    return ToolResult::failure(format!(
-                        "old_string found {} times. Use replace_all: true or provide more context to make it unique.",
-                        occurrences
-                    )).with_details(details.to_json());
+                let tmp_path = format!("{}.{}.tmp", path, uuid::Uuid::new_v4());
+                let write_result = async {
+                    tokio::fs::write(&tmp_path, &new_content).await?;
+                    tokio::fs::rename(&tmp_path, &path).await?;
+                    Ok::<(), std::io::Error>(())
+                }
+                .await;
+
+                if let Err(e) = write_result {
+                    let _ = tokio::fs::remove_file(&tmp_path).await;
+                    let details = EditDetails::new(path.clone())
+                        .with_duration(start_time.elapsed().as_millis() as u64);
+                    return ToolResult::failure(format!("Failed to write file: {}", e))
+                        .with_details(details.to_json());
                 }
 
-                // Calculate line diff
-                let old_lines = old_string.lines().count() as i32;
-                let new_lines = new_string.lines().count() as i32;
-                let lines_added = new_lines - old_lines;
-                let replacements = if replace_all { occurrences } else { 1 };
-                let total_lines_diff = lines_added * (replacements as i32);
-
-                // Perform replacement
-                let new_content = if replace_all {
-                    content.replace(old_string, new_string)
-                } else {
-                    content.replacen(old_string, new_string, 1)
+                let display_path = if raw_path.is_empty() { &path } else { raw_path };
+                let mut linter_output = String::new();
+                let lsp_diagnostics = match lsp::collect_diagnostics_for_paths(
+                    &self.cwd,
+                    std::slice::from_ref(&path),
+                )
+                .await
+                {
+                    Ok(map) => {
+                        if let Some(file_diags) = map.get(&path).or_else(|| map.get(display_path)) {
+                            linter_output =
+                                lsp::format_lsp_summary(display_path, file_diags.as_slice());
+                        }
+                        Some(map)
+                    }
+                    Err(_) => None,
                 };
 
-                // Write back
-                match tokio::fs::write(&path, &new_content).await {
-                    Ok(_) => {
-                        // Invalidate cache since file was modified
-                        self.invalidate_file_cache(&path);
-
-                        let details = EditDetails {
-                            path: path.to_string(),
-                            replacements: Some(replacements),
-                            lines_added: if total_lines_diff > 0 {
-                                Some(total_lines_diff)
-                            } else {
-                                None
-                            },
-                            lines_removed: if total_lines_diff < 0 {
-                                Some(-total_lines_diff)
-                            } else {
-                                None
-                            },
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                        };
-
-                        ToolResult::success(format!(
-                            "Successfully replaced {} occurrence(s) in {}",
-                            replacements, path
-                        ))
-                        .with_details(details.to_json())
+                let validators = match run_validators_with_diagnostics(
+                    std::slice::from_ref(&path),
+                    lsp_diagnostics.as_ref(),
+                )
+                .await
+                {
+                    Ok(results) => Some(results),
+                    Err(err) => {
+                        let _ = tokio::fs::write(&path, &content).await;
+                        return ToolResult::failure(err);
                     }
-                    Err(e) => {
-                        let details = EditDetails {
-                            path: path.to_string(),
-                            duration_ms: Some(start_time.elapsed().as_millis() as u64),
-                            ..Default::default()
-                        };
-                        ToolResult::failure(format!("Failed to write file: {}", e))
-                            .with_details(details.to_json())
-                    }
+                };
+
+                self.invalidate_file_cache(&path);
+
+                let mut details = EditDetails::new(path.clone())
+                    .with_replacements(replacements_total)
+                    .with_diff(diff)
+                    .with_duration(start_time.elapsed().as_millis() as u64)
+                    .with_line_changes(&content, &new_content);
+                if let Some(validators) = validators {
+                    details = details.with_validators(validators);
                 }
+
+                let mut summary = format!(
+                    "Successfully replaced {} occurrence(s) in {}",
+                    replacements_total, path
+                );
+                if !linter_output.is_empty() {
+                    summary.push_str(&linter_output);
+                }
+
+                ToolResult::success(summary).with_details(details.to_json())
             }
             "diff" | "Diff" => {
                 let start_time = Instant::now();
@@ -1416,6 +2044,325 @@ impl ToolExecutor {
                         .with_details(details.to_json())
                 }
             }
+            "find" | "Find" => {
+                let start_time = Instant::now();
+                let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+                if pattern.is_empty() {
+                    return ToolResult::failure("Missing pattern argument".to_string());
+                }
+                let raw_path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&self.cwd);
+                let (display_path, shell_path) = match normalize_shell_path(raw_path) {
+                    Ok(result) => result,
+                    Err(message) => return ToolResult::failure(message),
+                };
+                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
+                let include_hidden = args
+                    .get("includeHidden")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
+                let mut cmd = String::from("rg --files --color=never");
+                if include_hidden {
+                    cmd.push_str(" --hidden");
+                }
+                cmd.push_str(&format!(
+                    " -g {} -- {}",
+                    shell_escape(pattern),
+                    shell_escape(&shell_path)
+                ));
+                cmd.push_str(&format!(
+                    " | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
+                    limit
+                ));
+
+                let result = self
+                    .bash
+                    .execute(BashArgs {
+                        command: cmd,
+                        timeout: Some(20000),
+                        description: Some("Find files".to_string()),
+                        run_in_background: false,
+                    })
+                    .await;
+
+                let duration_ms = start_time.elapsed().as_millis() as u64;
+                let count = result.output.lines().count();
+                let truncated = count >= limit;
+                let mut details = ListDetails::new(&display_path)
+                    .with_entries(count)
+                    .with_duration(duration_ms);
+                if truncated {
+                    details = details.with_truncation();
+                }
+
+                if result.success {
+                    ToolResult::success(result.output).with_details(details.to_json())
+                } else {
+                    ToolResult::failure(result.error.unwrap_or_default())
+                        .with_details(details.to_json())
+                }
+            }
+            "search" | "Search" => self.execute_search(args).await,
+            "parallel_ripgrep" | "ParallelRipgrep" => {
+                let patterns = args.get("patterns").and_then(|v| v.as_array()).cloned();
+                let patterns = match patterns {
+                    Some(p) if !p.is_empty() => p,
+                    _ => return ToolResult::failure("patterns array required".to_string()),
+                };
+
+                let mut combined = Vec::new();
+                let mut commands = Vec::new();
+                let mut total_matches = 0usize;
+                for pattern_value in patterns {
+                    let pattern = match pattern_value.as_str() {
+                        Some(p) => p.to_string(),
+                        None => continue,
+                    };
+                    let mut search_args = args.clone();
+                    if let Some(obj) = search_args.as_object_mut() {
+                        obj.insert("pattern".to_string(), Value::String(pattern.clone()));
+                        obj.remove("patterns");
+                    }
+                    let result = self.execute_search(&search_args).await;
+                    commands.push(pattern);
+                    if result.success {
+                        let line_count = result.output.lines().count();
+                        total_matches += line_count;
+                        combined.push(result.output);
+                    } else {
+                        combined.push(result.error.unwrap_or_default());
+                    }
+                }
+                let details = serde_json::json!({
+                    "commands": commands,
+                    "matchCount": total_matches
+                });
+                ToolResult::success(combined.join("\n\n")).with_details(details)
+            }
+            "status" | "Status" => status::git_status(args.clone(), &self.cwd).await,
+            "background_tasks" => {
+                let action = args
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("list");
+                match action {
+                    "start" => {
+                        if let Err(err) = require_plan("background_tasks") {
+                            return ToolResult::failure(err);
+                        }
+                        let command = match args.get("command").and_then(|v| v.as_str()) {
+                            Some(cmd) => cmd.to_string(),
+                            None => {
+                                return ToolResult::failure(
+                                    "command required for start".to_string(),
+                                )
+                            }
+                        };
+                        let cwd = args
+                            .get("cwd")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&self.cwd)
+                            .to_string();
+                        let shell = args.get("shell").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let env = args.get("env").and_then(|v| v.as_object()).map(|map| {
+                            map.iter()
+                                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                                .collect::<std::collections::HashMap<_, _>>()
+                        });
+                        match background_tasks::start(command, cwd, shell, env).await {
+                            Ok(task) => {
+                                let details = serde_json::json!({
+                                    "id": task.id,
+                                    "pid": task.pid,
+                                    "status": "running",
+                                    "logPath": task.log_path
+                                });
+                                ToolResult::success(format!("Started task {}", task.id))
+                                    .with_details(details)
+                            }
+                            Err(err) => ToolResult::failure(err),
+                        }
+                    }
+                    "stop" => {
+                        let id = match args.get("taskId").and_then(|v| v.as_str()) {
+                            Some(id) => id,
+                            None => {
+                                return ToolResult::failure("taskId required for stop".to_string())
+                            }
+                        };
+                        match background_tasks::stop(id) {
+                            Ok(task) => ToolResult::success(format!("Stopped task {}", task.id)),
+                            Err(err) => ToolResult::failure(err),
+                        }
+                    }
+                    "logs" => {
+                        let id = match args.get("taskId").and_then(|v| v.as_str()) {
+                            Some(id) => id,
+                            None => {
+                                return ToolResult::failure("taskId required for logs".to_string())
+                            }
+                        };
+                        let lines =
+                            args.get("lines").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
+                        match background_tasks::logs(id, lines) {
+                            Ok(logs) => ToolResult::success(logs),
+                            Err(err) => ToolResult::failure(err),
+                        }
+                    }
+                    _ => {
+                        let tasks = background_tasks::list();
+                        let summary = tasks
+                            .iter()
+                            .map(|t| format!("{} {:?} {}", t.id, t.status, t.command))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let details = serde_json::json!({ "count": tasks.len() });
+                        ToolResult::success(if summary.is_empty() {
+                            "No background tasks".to_string()
+                        } else {
+                            summary
+                        })
+                        .with_details(details)
+                    }
+                }
+            }
+            "todo" => todo::todo(args.clone()).await,
+            "ask_user" => ask_user::ask_user(args.clone()),
+            "extract_document" => extract_document::extract_document(args.clone()).await,
+            "notebook_edit" => notebook_edit::notebook_edit(args.clone(), &self.cwd).await,
+            "websearch" => exa::websearch(args.clone()).await,
+            "codesearch" => exa::codesearch(args.clone()).await,
+            "gh_pr" => gh::gh_pr(args.clone(), &self.cwd).await,
+            "gh_issue" => gh::gh_issue(args.clone()).await,
+            "gh_repo" => gh::gh_repo(args.clone(), &self.cwd).await,
+            "mcp_list_resources" => {
+                let server_filter = args.get("server").and_then(|v| v.as_str());
+                let guard = match self.ensure_mcp_client().await {
+                    Ok(guard) => guard,
+                    Err(err) => return ToolResult::failure(err),
+                };
+                let client = match guard.as_ref() {
+                    Some(client) => client,
+                    None => {
+                        return ToolResult::success(
+                            "No MCP resources available. Either no servers are connected or they don't expose resources.".to_string(),
+                        )
+                        .with_details(serde_json::json!({ "servers": [] }));
+                    }
+                };
+
+                let mut resources = client.list_all_resources().await;
+                if let Some(filter) = server_filter {
+                    resources.retain(|(name, _)| name == filter);
+                }
+
+                let mut servers = Vec::new();
+                for (name, uris) in resources {
+                    if uris.is_empty() {
+                        continue;
+                    }
+                    servers.push(serde_json::json!({
+                        "name": name,
+                        "resources": uris
+                    }));
+                }
+
+                if servers.is_empty() {
+                    return ToolResult::success(
+                        "No MCP resources available. Either no servers are connected or they don't expose resources.".to_string(),
+                    )
+                    .with_details(serde_json::json!({ "servers": [] }));
+                }
+
+                let mut lines = Vec::new();
+                lines.push("# Available MCP Resources".to_string());
+                lines.push(String::new());
+                for server in &servers {
+                    let name = server
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    lines.push(format!("## {}", name));
+                    if let Some(resources) = server.get("resources").and_then(|v| v.as_array()) {
+                        for uri in resources {
+                            if let Some(uri_str) = uri.as_str() {
+                                lines.push(format!("- {}", uri_str));
+                            }
+                        }
+                    }
+                    lines.push(String::new());
+                }
+
+                ToolResult::success(lines.join("\n"))
+                    .with_details(serde_json::json!({ "servers": servers }))
+            }
+            "mcp_read_resource" => {
+                let server = args.get("server").and_then(|v| v.as_str()).unwrap_or("");
+                let uri = args.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+                if server.is_empty() || uri.is_empty() {
+                    return ToolResult::failure("server and uri are required".to_string());
+                }
+
+                let guard = match self.ensure_mcp_client().await {
+                    Ok(guard) => guard,
+                    Err(err) => return ToolResult::failure(err),
+                };
+                let client = match guard.as_ref() {
+                    Some(client) => client,
+                    None => {
+                        return ToolResult::failure("No MCP servers configured".to_string());
+                    }
+                };
+
+                match client.read_resource(server, uri).await {
+                    Ok(result) => {
+                        if result.contents.is_empty() {
+                            return ToolResult::success(format!("Resource '{}' is empty.", uri))
+                                .with_details(serde_json::json!({
+                                    "server": server,
+                                    "uri": uri,
+                                    "contents": []
+                                }));
+                        }
+
+                        let text_output = result
+                            .contents
+                            .iter()
+                            .filter_map(|content| content.text.clone())
+                            .collect::<Vec<_>>()
+                            .join("\n---\n");
+                        let output = if !text_output.is_empty() {
+                            text_output
+                        } else {
+                            serde_json::to_string_pretty(&result.contents).unwrap_or_else(|_| {
+                                "MCP resource returned non-text content".to_string()
+                            })
+                        };
+
+                        ToolResult::success(output).with_details(serde_json::json!({
+                            "server": server,
+                            "uri": uri,
+                            "contents": result.contents
+                        }))
+                    }
+                    Err(err) => {
+                        ToolResult::failure(format!("Failed to read MCP resource: {}", err))
+                    }
+                }
+            }
+            "vscode_get_diagnostics"
+            | "vscode_get_definition"
+            | "vscode_find_references"
+            | "vscode_read_file_range"
+            | "jetbrains_get_diagnostics"
+            | "jetbrains_get_definition"
+            | "jetbrains_find_references"
+            | "jetbrains_read_file_range" => ToolResult::failure(
+                "IDE integration is only available in the TypeScript CLI".to_string(),
+            ),
             "web_fetch" | "WebFetch" | "webfetch" => {
                 let fetch_args: WebFetchArgs = match serde_json::from_value(args.clone()) {
                     Ok(a) => a,
@@ -1586,8 +2533,8 @@ impl ToolExecutor {
 ///
 /// # Default Tools
 ///
-/// The registry is pre-populated with built-in tools via `new()`:
-/// - bash, read, write, edit, glob, grep
+/// The registry is pre-populated with built-in tools via `new()`, including
+/// core file/shell tools plus search, web, GitHub, MCP resource, and IDE stubs.
 ///
 /// # Examples
 ///
@@ -1638,14 +2585,18 @@ impl ToolRegistry {
             ToolDefinition {
                 tool: Tool::new(
                     "read",
-                    "Read a TEXT file from the filesystem. Use this for ALL text files: .txt, .md, .rs, .py, .js, .ts, .json, .toml, .yaml, .xml, .html, .css, .sh, source code, configs, docs, etc. Returns file contents with line numbers. Do NOT use read_image for text files - only use read_image for actual images (PNG/JPEG/GIF/WebP).",
+                    "Read a file (text, notebook, PDF, or image). Use for text files, configs, and docs. Supports images and .ipynb with automatic formatting.",
                 )
                 .with_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file to read (relative or absolute)"
+                        },
                         "file_path": {
                             "type": "string",
-                            "description": "Path to the text file to read (relative or absolute)"
+                            "description": "Legacy alias for path"
                         },
                         "offset": {
                             "type": "number",
@@ -1659,24 +2610,44 @@ impl ToolRegistry {
                             "type": "string",
                             "description": "Reading mode: normal, head, or tail (default: normal)"
                         },
-                        "line_numbers": {
+                        "lineNumbers": {
                             "type": "boolean",
                             "description": "Prefix output lines with line numbers (default: true)"
                         },
-                        "wrap_in_code_fence": {
+                        "line_numbers": {
+                            "type": "boolean",
+                            "description": "Legacy alias for lineNumbers"
+                        },
+                        "wrapInCodeFence": {
                             "type": "boolean",
                             "description": "Wrap output in a Markdown code fence (default: true)"
                         },
-                        "as_base64": {
+                        "wrap_in_code_fence": {
+                            "type": "boolean",
+                            "description": "Legacy alias for wrapInCodeFence"
+                        },
+                        "asBase64": {
                             "type": "boolean",
                             "description": "Return base64-encoded content instead of text (default: false)"
+                        },
+                        "as_base64": {
+                            "type": "boolean",
+                            "description": "Legacy alias for asBase64"
                         },
                         "language": {
                             "type": "string",
                             "description": "Language identifier for code fence syntax highlighting (optional)"
+                        },
+                        "diagnostics": {
+                            "type": "boolean",
+                            "description": "Include diagnostics if available (optional)"
+                        },
+                        "withDiagnostics": {
+                            "type": "boolean",
+                            "description": "Include LSP diagnostics if available (optional)"
                         }
                     },
-                    "required": ["file_path"]
+                    "required": ["path"]
                 })),
                 requires_approval: false,
             },
@@ -1693,16 +2664,28 @@ impl ToolRegistry {
                 .with_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "file_path": {
+                        "path": {
                             "type": "string",
                             "description": "Path to the file to write (relative or absolute)"
                         },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Legacy alias for path"
+                        },
                         "content": {
                             "type": "string",
-                            "description": "The content to write to the file"
+                            "description": "The content to write to the file (default: empty string)"
+                        },
+                        "previewDiff": {
+                            "type": "boolean",
+                            "description": "Return a diff preview (default: true)"
+                        },
+                        "backup": {
+                            "type": "boolean",
+                            "description": "Write a .bak copy before overwriting (default: true)"
                         }
                     },
-                    "required": ["file_path", "content"]
+                    "required": ["path"]
                 })),
                 requires_approval: true,
             },
@@ -1763,29 +2746,67 @@ impl ToolRegistry {
             ToolDefinition {
                 tool: Tool::new(
                     "edit",
-                    "Perform exact string replacement in a file. The old_string must be unique unless replace_all is true.",
+                    "Edit files with find-and-replace. Supports single edit, multi-edit, replace-all, and dry-run.",
                 )
                 .with_schema(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "file_path": {
+                        "path": {
                             "type": "string",
                             "description": "Path to the file to edit (relative or absolute)"
                         },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Legacy alias for path"
+                        },
+                        "oldText": {
+                            "type": "string",
+                            "description": "Exact text to find and replace"
+                        },
+                        "newText": {
+                            "type": "string",
+                            "description": "Replacement text (omit or empty string to delete)"
+                        },
                         "old_string": {
                             "type": "string",
-                            "description": "The exact text to find and replace"
+                            "description": "Legacy alias for oldText"
                         },
                         "new_string": {
                             "type": "string",
-                            "description": "The text to replace old_string with"
+                            "description": "Legacy alias for newText"
+                        },
+                        "edits": {
+                            "type": "array",
+                            "description": "Multiple edits to apply sequentially",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "oldText": {"type": "string"},
+                                    "newText": {"type": "string"},
+                                    "old_string": {"type": "string"},
+                                    "new_string": {"type": "string"}
+                                },
+                                "required": ["oldText"]
+                            }
+                        },
+                        "replaceAll": {
+                            "type": "boolean",
+                            "description": "Replace all occurrences (default: false)"
                         },
                         "replace_all": {
                             "type": "boolean",
-                            "description": "Replace all occurrences instead of requiring uniqueness (default: false)"
+                            "description": "Legacy alias for replaceAll"
+                        },
+                        "occurrence": {
+                            "type": "number",
+                            "description": "Which occurrence to replace (default: 1)"
+                        },
+                        "dryRun": {
+                            "type": "boolean",
+                            "description": "Preview diff without writing"
                         }
                     },
-                    "required": ["file_path", "old_string", "new_string"]
+                    "required": ["path"]
                 })),
                 requires_approval: true,
             },
@@ -1841,12 +2862,366 @@ impl ToolRegistry {
             },
         );
 
+        // Find tool
+        tools.insert(
+            "find".to_string(),
+            ToolDefinition {
+                tool: Tool::new("find", "Search for files by glob pattern.")
+                    .with_schema(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "pattern": {"type": "string", "description": "Glob pattern to match files"},
+                            "path": {"type": "string", "description": "Directory to search (default: cwd)"},
+                            "limit": {"type": "number", "description": "Maximum number of results (default: 1000)"},
+                            "includeHidden": {"type": "boolean", "description": "Include hidden files (default: true)"}
+                        },
+                        "required": ["pattern"]
+                    })),
+                requires_approval: false,
+            },
+        );
+
+        // Search tool
+        tools.insert(
+            "search".to_string(),
+            ToolDefinition {
+                tool: Tool::new("search", "Search file contents using ripgrep.")
+                    .with_schema(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "pattern": {"type": "string", "description": "Regex or literal pattern"},
+                            "paths": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "array", "items": {"type": "string"}}
+                                ]
+                            },
+                            "glob": {"type": "string", "description": "Glob filter"},
+                            "ignoreCase": {"type": "boolean", "description": "Case-insensitive search"},
+                            "literal": {"type": "boolean", "description": "Treat pattern as literal"},
+                            "word": {"type": "boolean", "description": "Match whole words only"},
+                            "multiline": {"type": "boolean", "description": "Enable multiline"},
+                            "maxResults": {"type": "number", "description": "Maximum matches"},
+                            "context": {"type": "number", "description": "Lines of context (before/after)"},
+                            "beforeContext": {"type": "number", "description": "Lines of context before"},
+                            "afterContext": {"type": "number", "description": "Lines of context after"},
+                            "cwd": {"type": "string", "description": "Working directory"},
+                            "includeHidden": {"type": "boolean", "description": "Include hidden files"},
+                            "useGitIgnore": {"type": "boolean", "description": "Respect .gitignore"},
+                            "outputMode": {"type": "string", "description": "content | files | count"},
+                            "format": {"type": "string", "description": "text | json"},
+                            "invertMatch": {"type": "boolean", "description": "Invert match"},
+                            "onlyMatching": {"type": "boolean", "description": "Only matching text"},
+                            "headLimit": {"type": "number", "description": "Limit output lines"}
+                        },
+                        "required": ["pattern"]
+                    })),
+                requires_approval: false,
+            },
+        );
+
+        // Parallel ripgrep tool
+        tools.insert(
+            "parallel_ripgrep".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "parallel_ripgrep",
+                    "Run multiple ripgrep patterns in parallel and merge results.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "patterns": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                        "paths": {
+                            "anyOf": [
+                                {"type": "string"},
+                                {"type": "array", "items": {"type": "string"}}
+                            ]
+                        },
+                        "glob": {"type": "string"},
+                        "ignoreCase": {"type": "boolean"},
+                        "literal": {"type": "boolean"},
+                        "word": {"type": "boolean"},
+                        "multiline": {"type": "boolean"},
+                        "maxResults": {"type": "number"},
+                        "context": {"type": "number"},
+                        "beforeContext": {"type": "number"},
+                        "afterContext": {"type": "number"},
+                        "cwd": {"type": "string"},
+                        "includeHidden": {"type": "boolean"},
+                        "useGitIgnore": {"type": "boolean"},
+                        "headLimit": {"type": "number"}
+                    },
+                    "required": ["patterns"]
+                })),
+                requires_approval: false,
+            },
+        );
+
+        // Web search tool (Exa)
+        tools.insert(
+            "websearch".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "websearch",
+                    "Search the web for current information via Exa.",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "numResults": {"type": "number"},
+                        "type": {"type": "string"},
+                        "category": {"type": "string"},
+                        "includeDomains": {"type": "array", "items": {"type": "string"}},
+                        "excludeDomains": {"type": "array", "items": {"type": "string"}},
+                        "text": {},
+                        "summary": {},
+                        "highlights": {},
+                        "context": {},
+                        "startPublishedDate": {"type": "string"},
+                        "endPublishedDate": {"type": "string"},
+                        "livecrawl": {"type": "string"},
+                        "subpages": {"type": "object"}
+                    },
+                    "required": ["query"]
+                })),
+                requires_approval: false,
+            },
+        );
+
+        // Code search tool (Exa)
+        tools.insert(
+            "codesearch".to_string(),
+            ToolDefinition {
+                tool: Tool::new("codesearch", "Search code examples and docs via Exa.")
+                    .with_schema(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "tokensNum": {}
+                        },
+                        "required": ["query"]
+                    })),
+                requires_approval: false,
+            },
+        );
+
+        // Background tasks tool
+        tools.insert(
+            "background_tasks".to_string(),
+            ToolDefinition {
+                tool: Tool::new("background_tasks", "Manage long-running background tasks.")
+                    .with_schema(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "description": "start | stop | list | logs"},
+                            "command": {"type": "string"},
+                            "cwd": {"type": "string"},
+                            "env": {"type": "object"},
+                            "shell": {"type": "boolean"},
+                            "taskId": {"type": "string"},
+                            "lines": {"type": "number"},
+                            "restart": {"type": "object"}
+                        },
+                        "required": ["action"]
+                    })),
+                requires_approval: true,
+            },
+        );
+
+        // Status tool
+        tools.insert(
+            "status".to_string(),
+            ToolDefinition {
+                tool: Tool::new("status", "Show git status (porcelain v2).").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "branchSummary": {"type": "boolean"},
+                            "includeIgnored": {"type": "boolean"},
+                            "paths": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "array", "items": {"type": "string"}}
+                                ]
+                            }
+                        },
+                        "required": []
+                    }),
+                ),
+                requires_approval: false,
+            },
+        );
+
+        // Todo tool
+        tools.insert(
+            "todo".to_string(),
+            ToolDefinition {
+                tool: Tool::new("todo", "Create or update a todo checklist.").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "goal": {"type": "string"},
+                            "items": {},
+                            "updates": {"type": "array"},
+                            "includeSummary": {"type": "boolean"}
+                        },
+                        "required": ["goal"]
+                    }),
+                ),
+                requires_approval: false,
+            },
+        );
+
+        // Ask user tool
+        tools.insert(
+            "ask_user".to_string(),
+            ToolDefinition {
+                tool: Tool::new("ask_user", "Ask structured questions to the user.").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "questions": {"type": "array"}
+                        },
+                        "required": ["questions"]
+                    }),
+                ),
+                requires_approval: false,
+            },
+        );
+
+        // Extract document tool
+        tools.insert(
+            "extract_document".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "extract_document",
+                    "Download a document and extract its text (PDF, DOCX, XLSX, PPTX).",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "maxChars": {"type": "number"}
+                    },
+                    "required": ["url"]
+                })),
+                requires_approval: false,
+            },
+        );
+
+        // Notebook edit tool
+        tools.insert(
+            "notebook_edit".to_string(),
+            ToolDefinition {
+                tool: Tool::new("notebook_edit", "Edit Jupyter notebook (.ipynb) files.")
+                    .with_schema(serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "cell_id": {"type": "string"},
+                            "cell_index": {"type": "number"},
+                            "new_source": {"type": "string"},
+                            "cell_type": {"type": "string"},
+                            "edit_mode": {"type": "string"}
+                        },
+                        "required": ["path", "new_source"]
+                    })),
+                requires_approval: true,
+            },
+        );
+
+        // GitHub CLI tools (gh api)
+        tools.insert(
+            "gh_pr".to_string(),
+            ToolDefinition {
+                tool: Tool::new("gh_pr", "GitHub pull request operations via gh api.").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string"},
+                            "number": {"type": "number"},
+                            "title": {"type": "string"},
+                            "body": {"type": "string"},
+                            "branch": {"type": "string"},
+                            "base": {"type": "string"},
+                            "draft": {"type": "boolean"},
+                            "state": {"type": "string"},
+                            "author": {"type": "string"},
+                            "label": {"type": "array", "items": {"type": "string"}},
+                            "milestone": {"type": "string"},
+                            "limit": {"type": "number"},
+                            "json": {"type": "boolean"},
+                            "nameOnly": {"type": "boolean"},
+                            "repository": {"type": "string"}
+                        },
+                        "required": ["action"]
+                    }),
+                ),
+                requires_approval: true,
+            },
+        );
+
+        tools.insert(
+            "gh_issue".to_string(),
+            ToolDefinition {
+                tool: Tool::new("gh_issue", "GitHub issue operations via gh api.").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string"},
+                            "number": {"type": "number"},
+                            "title": {"type": "string"},
+                            "body": {"type": "string"},
+                            "labels": {"type": "array", "items": {"type": "string"}},
+                            "state": {"type": "string"},
+                            "author": {"type": "string"},
+                            "limit": {"type": "number"},
+                            "json": {"type": "boolean"},
+                            "repository": {"type": "string"}
+                        },
+                        "required": ["action"]
+                    }),
+                ),
+                requires_approval: true,
+            },
+        );
+
+        tools.insert(
+            "gh_repo".to_string(),
+            ToolDefinition {
+                tool: Tool::new("gh_repo", "GitHub repository operations via gh api.").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string"},
+                            "repository": {"type": "string"},
+                            "directory": {"type": "string"},
+                            "json": {"type": "boolean"}
+                        },
+                        "required": ["action"]
+                    }),
+                ),
+                requires_approval: true,
+            },
+        );
+
         // Web fetch tool - retrieve web content
+        let webfetch_definition = WebFetchTool::definition();
         tools.insert(
             "web_fetch".to_string(),
             ToolDefinition {
-                tool: WebFetchTool::definition(),
+                tool: webfetch_definition.clone(),
                 requires_approval: false, // Safe read-only operation
+            },
+        );
+        tools.insert(
+            "webfetch".to_string(),
+            ToolDefinition {
+                tool: Tool::new("webfetch", webfetch_definition.description.clone())
+                    .with_schema(webfetch_definition.input_schema.clone()),
+                requires_approval: false,
             },
         );
 
@@ -1867,6 +3242,71 @@ impl ToolRegistry {
                 requires_approval: true, // Captures screen content - needs approval
             },
         );
+
+        // MCP resource tools
+        tools.insert(
+            "mcp_list_resources".to_string(),
+            ToolDefinition {
+                tool: Tool::new("mcp_list_resources", "List available MCP resources.").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "server": {"type": "string"}
+                        },
+                        "required": []
+                    }),
+                ),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "mcp_read_resource".to_string(),
+            ToolDefinition {
+                tool: Tool::new("mcp_read_resource", "Read an MCP resource by URI.").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "server": {"type": "string"},
+                            "uri": {"type": "string"}
+                        },
+                        "required": ["server", "uri"]
+                    }),
+                ),
+                requires_approval: false,
+            },
+        );
+
+        // IDE tools (stubs for parity)
+        for name in [
+            "vscode_get_diagnostics",
+            "vscode_get_definition",
+            "vscode_find_references",
+            "vscode_read_file_range",
+            "jetbrains_get_diagnostics",
+            "jetbrains_get_definition",
+            "jetbrains_find_references",
+            "jetbrains_read_file_range",
+        ] {
+            tools.insert(
+                name.to_string(),
+                ToolDefinition {
+                    tool: Tool::new(name, "IDE integration tool (client-side).").with_schema(
+                        serde_json::json!({
+                            "type": "object",
+                            "properties": {
+                                "uri": {"type": "string"},
+                                "line": {"type": "number"},
+                                "character": {"type": "number"},
+                                "startLine": {"type": "number"},
+                                "endLine": {"type": "number"}
+                            },
+                            "required": []
+                        }),
+                    ),
+                    requires_approval: false,
+                },
+            );
+        }
 
         Self { tools }
     }
@@ -1920,11 +3360,10 @@ impl ToolRegistry {
     /// let missing = registry.missing_required("bash", &args);
     /// assert!(missing.is_empty());
     ///
-    /// // Edit tool requires multiple fields
+    /// // Edit tool requires a path (edit params are validated at runtime)
     /// let args = json!({"file_path": "/tmp/file.txt"});
     /// let missing = registry.missing_required("edit", &args);
-    /// assert!(missing.contains(&"old_string".to_string()));
-    /// assert!(missing.contains(&"new_string".to_string()));
+    /// assert!(missing.is_empty());
     /// ```
     pub fn missing_required(&self, name: &str, args: &serde_json::Value) -> Vec<String> {
         let mut missing = Vec::new();
@@ -1979,7 +3418,7 @@ impl ToolRegistry {
     ///
     /// // Count tools
     /// let count = registry.tools().count();
-    /// assert_eq!(count, 11);  // bash, read, write, edit, glob, grep, diff, list, web_fetch, read_image, screenshot
+    /// assert_eq!(count, 36);  // includes search/parity tools + IDE stubs
     ///
     /// // List tool names
     /// for tool_def in registry.tools() {
@@ -2156,7 +3595,7 @@ mod tests {
     fn test_registry_tool_count() {
         let registry = ToolRegistry::new();
         let count = registry.tools().count();
-        assert_eq!(count, 11); // bash, read, write, glob, grep, edit, diff, list, web_fetch, read_image, screenshot
+        assert_eq!(count, 36); // includes parity tools + IDE stubs
     }
 
     #[test]
@@ -2203,9 +3642,9 @@ mod tests {
     #[test]
     fn test_registry_missing_required_fields() {
         let registry = ToolRegistry::new();
-        // read requires file_path
+        // read requires path (file_path is accepted as alias)
         let missing = registry.missing_required("read", &serde_json::json!({}));
-        assert_eq!(missing, vec!["file_path".to_string()]);
+        assert_eq!(missing, vec!["path".to_string()]);
 
         // present field -> no missing
         let ok =
@@ -2446,8 +3885,9 @@ mod tests {
         });
         let result = executor.execute("edit", &args, None, "test-call").await;
 
-        assert!(!result.success);
-        assert!(result.error.unwrap().contains("2 times"));
+        assert!(result.success);
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "baz bar foo");
     }
 
     #[tokio::test]

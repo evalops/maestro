@@ -194,6 +194,7 @@ use serde::{Deserialize, Serialize};
 /// ```json
 /// {"type":"session","id":"abc123",...}        // SessionEntry::Session
 /// {"type":"message","timestamp":"...",...}     // SessionEntry::Message
+/// {"type":"attachment_extract","timestamp":"...",...} // SessionEntry::AttachmentExtract
 /// {"type":"thinking_level_change",...}        // SessionEntry::ThinkingLevelChange
 /// {"type":"model_change",...}                 // SessionEntry::ModelChange
 /// {"type":"session_meta",...}                 // SessionEntry::SessionMeta
@@ -212,6 +213,11 @@ pub enum SessionEntry {
     ///
     /// Wraps a timestamped message from user, assistant, or tool execution.
     Message(MessageEntry),
+
+    /// Attachment extraction cache entry.
+    ///
+    /// Stores extracted text for attachments in append-only fashion.
+    AttachmentExtract(AttachmentExtract),
 
     /// Thinking level configuration change.
     ///
@@ -424,6 +430,16 @@ pub struct MessageEntry {
     pub message: AppMessage,
 }
 
+/// Attachment extraction entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentExtract {
+    pub timestamp: String,
+    #[serde(rename = "attachmentId")]
+    pub attachment_id: String,
+    #[serde(rename = "extractedText")]
+    pub extracted_text: String,
+}
+
 /// Conversation message with role-based discrimination.
 ///
 /// Messages are serialized with a `"role"` field that determines the variant, matching
@@ -446,6 +462,10 @@ pub enum AppMessage {
     User {
         /// Message content (either a simple string or structured blocks).
         content: MessageContent,
+
+        /// Optional file attachments.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        attachments: Option<Vec<Attachment>>,
 
         /// Unix timestamp in milliseconds.
         ///
@@ -589,6 +609,25 @@ impl AppMessage {
             AppMessage::ToolResult { content, .. } => content.clone(),
         }
     }
+}
+
+/// File attachment metadata for user messages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub attachment_type: String,
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    pub size: u64,
+    pub content: String,
+    #[serde(rename = "extractedText", skip_serializing_if = "Option::is_none")]
+    pub extracted_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
 }
 
 /// Message content (can be string or blocks)

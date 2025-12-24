@@ -405,7 +405,7 @@ function isHumanFacingTool(toolName: string): boolean {
   description: "MCP tools marked as destructive require approval",
   action: "require_approval",
   match: (ctx) => {
-    if (!ctx.toolName.startsWith("mcp_")) return false;
+    if (!ctx.toolName.startsWith("mcp__")) return false;
     const annotations = ctx.metadata?.annotations;
     return annotations?.destructiveHint === true
         && !annotations?.readOnlyHint;

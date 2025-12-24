@@ -35,6 +35,9 @@ use super::dangerous_patterns::{check_dangerous_patterns, Severity};
 use super::path_containment::{
     has_path_traversal, is_path_contained, is_system_path, PathContainment,
 };
+use super::policy::{check_path_allowed, check_tool_allowed, check_url_allowed};
+use super::workflow_state::{has_tool_tags, is_human_facing_tool, WorkflowStateSnapshot};
+use crate::mcp::McpToolAnnotations;
 
 /// Result of a firewall check
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +54,13 @@ pub enum FirewallVerdict {
         /// Reason for blocking
         reason: String,
     },
+}
+
+pub struct FirewallContext<'a> {
+    pub tool_name: &'a str,
+    pub args: &'a serde_json::Value,
+    pub workflow_state: Option<&'a WorkflowStateSnapshot>,
+    pub annotations: Option<&'a McpToolAnnotations>,
 }
 
 impl FirewallVerdict {
@@ -115,7 +125,7 @@ pub struct ActionFirewall {
     config: FirewallConfig,
 }
 
-/// Tools that are always safe (read-only)
+/// Tools that are always safe (read-only, no network)
 static SAFE_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
         "read",
@@ -124,9 +134,27 @@ static SAFE_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         "list",
         "diff",
         "search",
-        "web_search",
+        "find",
+        "parallel_ripgrep",
+        "status",
+        "todo",
+        "ask_user",
+        "read_image",
+        "mcp_list_resources",
+        "mcp_read_resource",
+    ]
+    .into_iter()
+    .collect()
+});
+
+/// Network tools that need URL policy checks before being allowed
+static NETWORK_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    [
+        "websearch",
+        "codesearch",
+        "webfetch",
         "web_fetch",
-        "mcp_list",
+        "extract_document",
     ]
     .into_iter()
     .collect()
@@ -134,10 +162,36 @@ static SAFE_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 
 /// Tools that require path checking
 static PATH_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    ["write", "edit", "read", "list", "glob", "grep"]
-        .into_iter()
-        .collect()
+    [
+        "write",
+        "edit",
+        "notebook_edit",
+        "read",
+        "read_image",
+        "list",
+        "glob",
+        "grep",
+        "search",
+        "find",
+        "parallel_ripgrep",
+    ]
+    .into_iter()
+    .collect()
 });
+
+fn has_egress_primitives(command: &str) -> bool {
+    let lowered = command.to_lowercase();
+    ["curl", "wget", "ssh", "scp", "nc", "netcat", "/dev/tcp"]
+        .iter()
+        .any(|token| lowered.contains(token))
+}
+
+fn is_mcp_tool_name(tool_name: &str) -> bool {
+    if tool_name == "mcp_list_resources" || tool_name == "mcp_read_resource" {
+        return false;
+    }
+    tool_name.starts_with("mcp__") || tool_name.starts_with("mcp_")
+}
 
 impl ActionFirewall {
     /// Create a new firewall with the given workspace
@@ -182,6 +236,15 @@ impl ActionFirewall {
             }
         }
 
+        // Enterprise egress gating (safe mode + explicit flag)
+        if std::env::var("COMPOSER_NO_EGRESS_SHELL").ok().as_deref() == Some("1")
+            && has_egress_primitives(command)
+        {
+            return FirewallVerdict::RequireApproval {
+                reason: "Shell egress requires approval (COMPOSER_NO_EGRESS_SHELL=1)".to_string(),
+            };
+        }
+
         // Check if command is pre-approved
         if self.is_command_approved(command) {
             return FirewallVerdict::Allow;
@@ -211,6 +274,10 @@ impl ActionFirewall {
         }
 
         let path = Path::new(path);
+
+        if let Some(reason) = check_path_allowed(path) {
+            return FirewallVerdict::Block { reason };
+        }
 
         // Check if path is in a system-protected directory
         if is_system_path(path) {
@@ -295,8 +362,100 @@ impl ActionFirewall {
 
     /// Check a tool call
     pub fn check_tool(&self, tool_name: &str, args: &serde_json::Value) -> FirewallVerdict {
+        self.check_tool_with_context(FirewallContext {
+            tool_name,
+            args,
+            workflow_state: None,
+            annotations: None,
+        })
+    }
+
+    /// Check a tool call with additional workflow context
+    pub fn check_tool_with_context(&self, context: FirewallContext<'_>) -> FirewallVerdict {
+        let tool_name = context.tool_name;
+        let args = context.args;
+        if let Some(reason) = check_tool_allowed(tool_name) {
+            return FirewallVerdict::Block { reason };
+        }
+
+        if std::env::var("COMPOSER_FAIL_UNTAGGED_EGRESS")
+            .ok()
+            .as_deref()
+            == Some("1")
+            && is_human_facing_tool(tool_name)
+            && !has_tool_tags(tool_name)
+        {
+            return FirewallVerdict::Block {
+                reason: "Human-facing tool is missing TOOL_TAGS; annotate the tool or disable strict mode via COMPOSER_FAIL_UNTAGGED_EGRESS=0.".to_string(),
+            };
+        }
+
+        if is_human_facing_tool(tool_name) {
+            if let Some(snapshot) = context.workflow_state {
+                let pending: Vec<_> = snapshot
+                    .pending_pii
+                    .iter()
+                    .filter(|entry| !entry.redacted)
+                    .collect();
+                if !pending.is_empty() {
+                    let offenders = pending
+                        .iter()
+                        .map(|entry| {
+                            format!(
+                                "{} (artifact: {}, source: {})",
+                                entry.label, entry.id, entry.source_tool_call_id
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    return FirewallVerdict::RequireApproval {
+                        reason: format!(
+                            "Unredacted PII ({}) detected before executing human-facing tool \"{}\". Run your redaction tool on the listed artifacts, then retry.",
+                            offenders, tool_name
+                        ),
+                    };
+                }
+            }
+        }
+
+        // Network tools need URL policy checks before being allowed
+        if NETWORK_TOOLS.contains(tool_name) {
+            match tool_name {
+                "web_fetch" | "webfetch" | "extract_document" => {
+                    if let Some(url) = args.get("url").and_then(|v| v.as_str()) {
+                        if let Some(reason) = check_url_allowed(url) {
+                            return FirewallVerdict::Block { reason };
+                        }
+                    }
+                }
+                "websearch" | "codesearch" => {
+                    if let Some(reason) = check_url_allowed("https://api.exa.ai") {
+                        return FirewallVerdict::Block { reason };
+                    }
+                }
+                _ => {}
+            }
+            return FirewallVerdict::Allow;
+        }
+
         // Safe tools are always allowed
         if SAFE_TOOLS.contains(tool_name) && !PATH_TOOLS.contains(tool_name) {
+            return FirewallVerdict::Allow;
+        }
+
+        if is_mcp_tool_name(tool_name) {
+            if let Some(annotations) = context.annotations {
+                if annotations.destructive_hint == Some(true)
+                    && annotations.read_only_hint != Some(true)
+                {
+                    return FirewallVerdict::RequireApproval {
+                        reason: format!(
+                            "MCP tool \"{}\" is marked as destructive and requires approval",
+                            tool_name
+                        ),
+                    };
+                }
+            }
             return FirewallVerdict::Allow;
         }
 
@@ -325,6 +484,29 @@ impl ActionFirewall {
                     }
                 }
             }
+            "background_tasks" => {
+                let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
+                if action == "start" {
+                    let shell = args.get("shell").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if shell
+                        && std::env::var("COMPOSER_BACKGROUND_SHELL_DISABLE")
+                            .ok()
+                            .as_deref()
+                            == Some("1")
+                    {
+                        return FirewallVerdict::Block {
+                            reason: "Background shell tasks are disabled by COMPOSER_BACKGROUND_SHELL_DISABLE"
+                                .to_string(),
+                        };
+                    }
+                    if shell {
+                        return FirewallVerdict::RequireApproval {
+                            reason: "Background tasks with shell=true require approval".to_string(),
+                        };
+                    }
+                }
+                FirewallVerdict::Allow
+            }
             "read" => {
                 if let Some(path) = args
                     .get("file_path")
@@ -335,6 +517,19 @@ impl ActionFirewall {
                 } else {
                     FirewallVerdict::Block {
                         reason: "Read tool missing path argument".to_string(),
+                    }
+                }
+            }
+            "read_image" => {
+                if let Some(path) = args
+                    .get("file_path")
+                    .or(args.get("path"))
+                    .and_then(|v| v.as_str())
+                {
+                    self.check_file_read(path)
+                } else {
+                    FirewallVerdict::Block {
+                        reason: "read_image tool missing file_path argument".to_string(),
                     }
                 }
             }
@@ -367,6 +562,47 @@ impl ActionFirewall {
                     FirewallVerdict::Allow
                 }
             }
+            "search" | "find" | "parallel_ripgrep" => {
+                if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
+                    let verdict = self.check_file_read(path);
+                    if !verdict.is_allowed() {
+                        return verdict;
+                    }
+                }
+                if let Some(paths) = args.get("paths") {
+                    let paths = match paths {
+                        serde_json::Value::String(path) => vec![path.clone()],
+                        serde_json::Value::Array(values) => values
+                            .iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect(),
+                        _ => Vec::new(),
+                    };
+                    for path in paths {
+                        let verdict = self.check_file_read(&path);
+                        if !verdict.is_allowed() {
+                            return verdict;
+                        }
+                    }
+                }
+                FirewallVerdict::Allow
+            }
+            "notebook_edit" => {
+                if let Some(path) = args
+                    .get("path")
+                    .or(args.get("file_path"))
+                    .and_then(|v| v.as_str())
+                {
+                    self.check_file_write(path, "")
+                } else {
+                    FirewallVerdict::Block {
+                        reason: "notebook_edit tool missing path argument".to_string(),
+                    }
+                }
+            }
+            // Network tools (web_fetch, webfetch, extract_document, websearch, codesearch)
+            // are handled earlier in the NETWORK_TOOLS check with URL policy validation
+            "gh_pr" | "gh_issue" | "gh_repo" => FirewallVerdict::Allow,
             _ => {
                 // Unknown tools require approval
                 FirewallVerdict::RequireApproval {

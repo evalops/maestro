@@ -612,6 +612,19 @@ Add the required fields and retry.",
             .execute(&tool, &args, None, &call_id)
             .await;
 
+        if tool.eq_ignore_ascii_case("extract_document") && result.success {
+            let attachment_id = result
+                .details
+                .as_ref()
+                .and_then(|details| details.get("url"))
+                .and_then(|value| value.as_str())
+                .unwrap_or(&call_id)
+                .to_string();
+            let _ = self
+                .session_manager
+                .save_attachment_extract(attachment_id, result.output.clone());
+        }
+
         // Send response back to native agent
         if let Some(tx) = &self.tool_response_tx {
             let _ = tx.send((call_id, true, Some(result)));

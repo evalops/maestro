@@ -15,7 +15,8 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use super::config::{expand_env_vars, McpServerConfig, McpTransport};
 use super::http::HttpConnection;
 use super::protocol::{
-    ClientInfo, InitializeResult, McpRequest, McpResponse, McpTool, McpToolResult, ToolsListResult,
+    ClientInfo, InitializeResult, McpRequest, McpResource, McpResponse, McpTool,
+    McpToolAnnotations, McpToolResult, ResourceReadResult, ResourcesListResult, ToolsListResult,
 };
 
 /// Error type for MCP operations
@@ -80,6 +81,8 @@ pub struct McpConnection {
     pending: Arc<Mutex<HashMap<u64, tokio::sync::oneshot::Sender<McpResponse>>>>,
     /// Available tools
     tools: Vec<McpTool>,
+    /// Available resources
+    resources: Vec<McpResource>,
     /// Whether initialized
     initialized: bool,
 
@@ -99,6 +102,7 @@ impl McpConnection {
             next_id: AtomicU64::new(1),
             pending: Arc::new(Mutex::new(HashMap::new())),
             tools: Vec::new(),
+            resources: Vec::new(),
             initialized: false,
             reconnecting: false,
         }
@@ -124,6 +128,7 @@ impl McpConnection {
 
         // Copy tools from HTTP connection
         self.tools = http_conn.tools().to_vec();
+        self.resources = http_conn.resources().to_vec();
         self.initialized = true;
         self.backend = Some(ConnectionBackend::Http(http_conn));
 
@@ -271,6 +276,8 @@ impl McpConnection {
 
         // List available tools
         self.refresh_tools().await?;
+        // List resources (best effort)
+        let _ = self.refresh_resources().await;
 
         self.initialized = true;
         Ok(())
@@ -289,9 +296,27 @@ impl McpConnection {
         Ok(())
     }
 
+    /// Refresh the list of available resources
+    pub async fn refresh_resources(&mut self) -> Result<(), McpError> {
+        let request = McpRequest::list_resources(self.next_id());
+        let response = self.send_request(request).await?;
+
+        let resources_result: ResourcesListResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid resources/list response: {}", e)))?;
+
+        self.resources = resources_result.resources;
+        Ok(())
+    }
+
     /// Get available tools
     pub fn tools(&self) -> &[McpTool] {
         &self.tools
+    }
+
+    /// Get available resources
+    pub fn resources(&self) -> &[McpResource] {
+        &self.resources
     }
 
     /// Call a tool
@@ -323,6 +348,28 @@ impl McpConnection {
         let result: McpToolResult = response
             .result_as()
             .map_err(|e| McpError::Protocol(format!("Invalid tool result: {}", e)))?;
+
+        Ok(result)
+    }
+
+    /// Read a resource by URI
+    pub async fn read_resource(&mut self, uri: &str) -> Result<ResourceReadResult, McpError> {
+        self.ensure_stdio_connected().await?;
+
+        if let Some(ConnectionBackend::Http(ref mut http)) = self.backend {
+            return http.read_resource(uri).await;
+        }
+
+        let request = McpRequest::read_resource(self.next_id(), uri);
+        let response = self.send_request(request).await?;
+
+        if let Some(error) = response.error {
+            return Err(McpError::RequestFailed(error.message));
+        }
+
+        let result: ResourceReadResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid resource read result: {}", e)))?;
 
         Ok(result)
     }
@@ -545,23 +592,72 @@ impl McpClient {
         tools
     }
 
+    /// Get tool annotations for all connected servers
+    pub async fn list_tool_annotations(&self) -> HashMap<String, McpToolAnnotations> {
+        let connections = self.connections.read().await;
+        let mut annotations = HashMap::new();
+
+        for (name, conn) in connections.iter() {
+            let conn = conn.lock().await;
+            for tool in conn.tools() {
+                if let Some(meta) = tool.annotations.clone() {
+                    let prefixed = tool.to_tool(name).name;
+                    annotations.insert(prefixed, meta);
+                }
+            }
+        }
+
+        annotations
+    }
+
+    /// Get available resources from all connected servers
+    pub async fn list_all_resources(&self) -> Vec<(String, Vec<String>)> {
+        let connections = self.connections.read().await;
+        let mut results = Vec::new();
+
+        for (name, conn) in connections.iter() {
+            let conn = conn.lock().await;
+            let resources = conn
+                .resources()
+                .iter()
+                .map(|r| r.uri.clone())
+                .collect::<Vec<_>>();
+            results.push((name.clone(), resources));
+        }
+
+        results
+    }
+
     /// Call a tool (parses server name from prefixed tool name)
     pub async fn call_tool(
         &self,
         prefixed_name: &str,
         arguments: serde_json::Value,
     ) -> Result<McpToolResult, McpError> {
-        // Parse mcp_servername_toolname
-        let parts: Vec<&str> = prefixed_name.splitn(3, '_').collect();
-        if parts.len() != 3 || parts[0] != "mcp" {
+        let (server_name, tool_name) = if prefixed_name.starts_with("mcp__") {
+            let parts: Vec<&str> = prefixed_name.split("__").collect();
+            if parts.len() < 3 || parts[0] != "mcp" {
+                return Err(McpError::ToolNotFound(format!(
+                    "Invalid MCP tool name format: {}",
+                    prefixed_name
+                )));
+            }
+            (parts[1], parts[2..].join("__"))
+        } else if prefixed_name.starts_with("mcp_") {
+            let parts: Vec<&str> = prefixed_name.splitn(3, '_').collect();
+            if parts.len() != 3 || parts[0] != "mcp" {
+                return Err(McpError::ToolNotFound(format!(
+                    "Invalid MCP tool name format: {}",
+                    prefixed_name
+                )));
+            }
+            (parts[1], parts[2].to_string())
+        } else {
             return Err(McpError::ToolNotFound(format!(
                 "Invalid MCP tool name format: {}",
                 prefixed_name
             )));
-        }
-
-        let server_name = parts[1];
-        let tool_name = parts[2];
+        };
 
         let connections = self.connections.read().await;
         let conn = connections
@@ -569,12 +665,29 @@ impl McpClient {
             .ok_or_else(|| McpError::ServerNotFound(server_name.to_string()))?;
 
         let mut conn = conn.lock().await;
-        conn.call_tool(tool_name, arguments).await
+        conn.call_tool(&tool_name, arguments).await
     }
 
     /// Check if a tool name is an MCP tool
     pub fn is_mcp_tool(name: &str) -> bool {
-        name.starts_with("mcp_")
+        if name == "mcp_list_resources" || name == "mcp_read_resource" {
+            return false;
+        }
+        name.starts_with("mcp__") || name.starts_with("mcp_")
+    }
+
+    /// Read a resource from a connected server
+    pub async fn read_resource(
+        &self,
+        server_name: &str,
+        uri: &str,
+    ) -> Result<ResourceReadResult, McpError> {
+        let connections = self.connections.read().await;
+        let conn = connections
+            .get(server_name)
+            .ok_or_else(|| McpError::ServerNotFound(server_name.to_string()))?;
+        let mut conn = conn.lock().await;
+        conn.read_resource(uri).await
     }
 
     /// Get connected server names
@@ -596,7 +709,10 @@ mod tests {
 
     #[test]
     fn test_is_mcp_tool() {
+        assert!(McpClient::is_mcp_tool("mcp__server__tool"));
         assert!(McpClient::is_mcp_tool("mcp_server_tool"));
+        assert!(!McpClient::is_mcp_tool("mcp_list_resources"));
+        assert!(!McpClient::is_mcp_tool("mcp_read_resource"));
         assert!(!McpClient::is_mcp_tool("bash"));
         assert!(!McpClient::is_mcp_tool("read"));
     }
