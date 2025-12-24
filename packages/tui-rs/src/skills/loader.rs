@@ -709,6 +709,14 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    fn is_case_sensitive_fs() -> bool {
+        let temp_dir = TempDir::new().unwrap();
+        let lower = temp_dir.path().join("skill.md");
+        fs::write(&lower, "test").unwrap();
+        let upper = temp_dir.path().join("SKILL.md");
+        !upper.exists()
+    }
+
     #[test]
     fn test_loader_new() {
         let loader = SkillLoader::new();
@@ -1633,6 +1641,7 @@ Content.
         let temp_dir = TempDir::new().unwrap();
         let skill_dir = temp_dir.path().join("prefer-skill");
         fs::create_dir(&skill_dir).unwrap();
+        let case_sensitive = is_case_sensitive_fs();
 
         // Create both uppercase and lowercase - uppercase should be preferred
         fs::write(
@@ -1660,7 +1669,11 @@ description: From lowercase skill.md
             .load_skill_file(&skill_dir.join("SKILL.md"), SkillSource::User)
             .unwrap();
 
-        assert!(skill.definition.description.contains("uppercase"));
+        if case_sensitive {
+            assert!(skill.definition.description.contains("uppercase"));
+        } else {
+            assert!(skill.definition.description.contains("lowercase"));
+        }
     }
 
     #[test]
@@ -1732,7 +1745,17 @@ Content.
 
         let result = SkillLoader::find_skill_md(temp_dir.path());
         assert!(result.is_some());
-        assert!(result.unwrap().ends_with("skill.md"));
+        let path = result.unwrap();
+        let file_name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if is_case_sensitive_fs() {
+            assert_eq!(file_name, "skill.md");
+        } else {
+            assert_eq!(file_name, "SKILL.md");
+        }
     }
 
     #[test]
