@@ -144,6 +144,19 @@ export interface SandboxViolationTelemetry extends BaseTelemetryEvent {
 	};
 }
 
+/**
+ * Canonical Turn Event - Wide event emitted once per agent turn.
+ * Re-exported from telemetry/wide-events.ts for type union.
+ */
+export interface CanonicalTurnEventBase {
+	type: "canonical-turn";
+	timestamp: string;
+	sessionId: string;
+	turnId: string;
+	turnNumber: number;
+	[key: string]: unknown;
+}
+
 type TelemetryEvent =
 	| ToolExecutionTelemetry
 	| EvaluationTelemetry
@@ -152,7 +165,8 @@ type TelemetryEvent =
 	| BackgroundTaskTelemetry
 	| ApiRequestTelemetry
 	| BusinessMetricTelemetry
-	| SandboxViolationTelemetry;
+	| SandboxViolationTelemetry
+	| CanonicalTurnEventBase;
 
 const telemetryFlag =
 	process.env.COMPOSER_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
@@ -382,6 +396,34 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 					span.setStatus({
 						code:
 							event.event === "blocked"
+								? SpanStatusCode.ERROR
+								: SpanStatusCode.OK,
+					});
+					break;
+				case "canonical-turn":
+					span.setAttributes({
+						"composer.turn.id": event.turnId,
+						"composer.turn.number": event.turnNumber,
+						"composer.turn.session_id": event.sessionId,
+						"composer.turn.status": String(
+							"status" in event ? event.status : "unknown",
+						),
+						"composer.turn.tool_count": Number(
+							"toolCount" in event ? event.toolCount : 0,
+						),
+						"composer.turn.total_duration_ms": Number(
+							"totalDurationMs" in event ? event.totalDurationMs : 0,
+						),
+						"composer.turn.cost_usd": Number(
+							"costUsd" in event ? event.costUsd : 0,
+						),
+						"composer.turn.sampled": Boolean(
+							"sampled" in event ? event.sampled : true,
+						),
+					});
+					span.setStatus({
+						code:
+							"status" in event && event.status === "error"
 								? SpanStatusCode.ERROR
 								: SpanStatusCode.OK,
 					});

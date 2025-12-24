@@ -181,6 +181,10 @@ pub mod wrapping;
 /// Connects to external MCP servers for additional tools and capabilities.
 pub mod mcp;
 
+/// Telemetry and wide events.
+/// Canonical turn events with tail sampling for observability.
+pub mod telemetry;
+
 /// Usage and cost tracking.
 /// Tracks token consumption and estimates costs across sessions.
 pub mod usage;
@@ -363,6 +367,16 @@ mod app;
 
 // Agent types - for spawning and communicating with AI agents
 pub use agent::{NativeAgent, NativeAgentConfig, ToolDefinition};
+
+// Telemetry types - for wide events tracking
+pub use telemetry::{
+    CanonicalTurnEvent, // The wide event emitted per turn
+    TailSamplingConfig, // Sampling configuration
+    TurnCollector,      // Accumulates context during a turn
+    TurnTracker,        // Integrates with agent events
+    TurnTrackerConfig,  // Configuration for turn tracking
+    TurnTrackerContext, // Context that can be updated
+};
 
 // AI client types - for making API calls to different providers
 pub use ai::{

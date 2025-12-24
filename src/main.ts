@@ -177,6 +177,10 @@ import {
 } from "./sandbox/index.js";
 import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
 import {
+	type TurnTracker,
+	createTurnTracker,
+} from "./telemetry/turn-tracker.js";
+import {
 	codingTools,
 	filterTools,
 	readOnlyToolNames,
@@ -196,6 +200,7 @@ import {
 } from "./update/changelog.js";
 import { type UpdateCheckResult, checkForUpdate } from "./update/check.js";
 import { isInsideGitRepository } from "./utils/git.js";
+import { createLogger } from "./utils/logger.js";
 
 /**
  * Load version from package.json at runtime.
@@ -206,6 +211,7 @@ const packageJson = createRequire(import.meta.url)("../package.json") as {
 	version?: string;
 };
 const VERSION = packageJson.version ?? "unknown";
+const logger = createLogger("main");
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
 let sandboxCleanupRegistered = false;
@@ -1727,6 +1733,71 @@ export async function main(args: string[]) {
 			updateNotice = null;
 		}
 	}
+
+	// ─────────────────────────────────────────────────────────────────────────────
+	// PHASE 14.5: Wide Events Telemetry Setup
+	// ─────────────────────────────────────────────────────────────────────────────
+
+	// Initialize turn tracker for canonical wide events telemetry
+	// This emits one comprehensive event per turn for analytics-style querying
+	const turnTracker = createTurnTracker(agent, {
+		sessionId: sessionManager.getSessionId(),
+		onTurnComplete: (event) => {
+			// Log sampled events at debug level
+			if (event.sampled) {
+				logger.debug("Wide event emitted", {
+					turnId: event.turnId,
+					status: event.status,
+					toolCount: event.toolCount,
+					durationMs: event.totalDurationMs,
+					sampleReason: event.sampleReason,
+				});
+			}
+		},
+	});
+
+	// Set initial context for turn tracking
+	// Map sandboxMode to tracker's expected values
+	const trackerSandboxMode =
+		sandboxMode === "docker"
+			? "docker"
+			: sandboxMode === "local" || sandboxMode === "native"
+				? "local"
+				: "none";
+	turnTracker.updateContext({
+		sandboxMode: trackerSandboxMode,
+		approvalMode: approvalModeOverride ?? "prompt",
+		mcpServers: mcpManager
+			.getStatus()
+			.servers.filter((s) => s.connected)
+			.map((s) => s.name),
+		contextSourceCount: 5, // TodoContext, BackgroundTask, LSP, Framework, IDE
+		features: {
+			safeMode: Boolean(process.env.COMPOSER_SAFE_MODE),
+			guardianEnabled: process.env.COMPOSER_GUARDIAN !== "0",
+			compactionEnabled: true,
+			hookCount: tsHooks.length,
+		},
+	});
+
+	// Update MCP server list when servers connect/disconnect
+	// Filter by connected status in both handlers for consistency
+	mcpManager.on("connected", () => {
+		turnTracker.updateContext({
+			mcpServers: mcpManager
+				.getStatus()
+				.servers.filter((s) => s.connected)
+				.map((s) => s.name),
+		});
+	});
+	mcpManager.on("disconnected", () => {
+		turnTracker.updateContext({
+			mcpServers: mcpManager
+				.getStatus()
+				.servers.filter((s) => s.connected)
+				.map((s) => s.name),
+		});
+	});
 
 	// Subscribe to agent events to save messages and handle overflow
 	agent.subscribe(async (event) => {
