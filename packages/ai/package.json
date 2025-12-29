@@ -11,24 +11,24 @@
 			"default": "./dist/packages/ai/src/index.js"
 		},
 		"./agent": {
-			"types": "./dist/src/agent/index.d.ts",
-			"default": "./dist/src/agent/index.js"
+			"types": "./dist/packages/ai/src/agent/index.d.ts",
+			"default": "./dist/packages/ai/src/agent/index.js"
 		},
 		"./agent/*": {
 			"types": "./dist/src/agent/*.d.ts",
 			"default": "./dist/src/agent/*.js"
 		},
 		"./transport": {
-			"types": "./dist/src/agent/transport.d.ts",
-			"default": "./dist/src/agent/transport.js"
+			"types": "./dist/packages/ai/src/transport.d.ts",
+			"default": "./dist/packages/ai/src/transport.js"
 		},
 		"./types": {
-			"types": "./dist/src/agent/types.d.ts",
-			"default": "./dist/src/agent/types.js"
+			"types": "./dist/packages/ai/src/types.d.ts",
+			"default": "./dist/packages/ai/src/types.js"
 		},
 		"./models": {
-			"types": "./dist/src/models/builtin.d.ts",
-			"default": "./dist/src/models/builtin.js"
+			"types": "./dist/packages/ai/src/models.d.ts",
+			"default": "./dist/packages/ai/src/models.js"
 		},
 		"./models/*": {
 			"types": "./dist/src/models/*.d.ts",
@@ -39,16 +39,16 @@
 			"default": "./dist/src/providers/*.js"
 		},
 		"./tools": {
-			"types": "./dist/src/tools/index.d.ts",
-			"default": "./dist/src/tools/index.js"
+			"types": "./dist/packages/ai/src/tools/index.d.ts",
+			"default": "./dist/packages/ai/src/tools/index.js"
 		},
 		"./tools/*": {
 			"types": "./dist/src/tools/*.d.ts",
 			"default": "./dist/src/tools/*.js"
 		},
 		"./tools/background": {
-			"types": "./dist/src/tools/background/index.d.ts",
-			"default": "./dist/src/tools/background/index.js"
+			"types": "./dist/packages/ai/src/tools/background/index.d.ts",
+			"default": "./dist/packages/ai/src/tools/background/index.js"
 		},
 		"./tools/background/*": {
 			"types": "./dist/src/tools/background/*.d.ts",
@@ -59,8 +59,8 @@
 			"default": "./dist/src/safety/*.js"
 		},
 		"./hooks": {
-			"types": "./dist/src/hooks/index.d.ts",
-			"default": "./dist/src/hooks/index.js"
+			"types": "./dist/packages/ai/src/hooks/index.d.ts",
+			"default": "./dist/packages/ai/src/hooks/index.js"
 		},
 		"./hooks/*": {
 			"types": "./dist/src/hooks/*.d.ts",
@@ -71,8 +71,8 @@
 			"default": "./dist/src/tracking/*.js"
 		},
 		"./sandbox": {
-			"types": "./dist/src/sandbox/index.d.ts",
-			"default": "./dist/src/sandbox/index.js"
+			"types": "./dist/packages/ai/src/sandbox/index.d.ts",
+			"default": "./dist/packages/ai/src/sandbox/index.js"
 		},
 		"./sandbox/*": {
 			"types": "./dist/src/sandbox/*.d.ts",
@@ -83,12 +83,12 @@
 			"default": "./dist/src/session/*.js"
 		},
 		"./runtime/background-settings": {
-			"types": "./dist/src/runtime/background-settings.d.ts",
-			"default": "./dist/src/runtime/background-settings.js"
+			"types": "./dist/packages/ai/src/runtime/background-settings.d.ts",
+			"default": "./dist/packages/ai/src/runtime/background-settings.js"
 		},
 		"./telemetry": {
-			"types": "./dist/src/telemetry/index.d.ts",
-			"default": "./dist/src/telemetry/index.js"
+			"types": "./dist/packages/ai/src/telemetry/index.d.ts",
+			"default": "./dist/packages/ai/src/telemetry/index.js"
 		},
 		"./telemetry/*": {
 			"types": "./dist/src/telemetry/*.d.ts",
@@ -99,8 +99,8 @@
 			"default": "./dist/src/auth/*.js"
 		},
 		"./oauth": {
-			"types": "./dist/src/oauth/index.d.ts",
-			"default": "./dist/src/oauth/index.js"
+			"types": "./dist/packages/ai/src/oauth/index.d.ts",
+			"default": "./dist/packages/ai/src/oauth/index.js"
 		},
 		"./oauth/*": {
 			"types": "./dist/src/oauth/*.d.ts",
@@ -139,56 +139,56 @@
 			"default": "./dist/src/conversation/*.js"
 		},
 		"./guardian": {
-			"types": "./dist/src/guardian/index.d.ts",
-			"default": "./dist/src/guardian/index.js"
+			"types": "./dist/packages/ai/src/guardian/index.d.ts",
+			"default": "./dist/packages/ai/src/guardian/index.js"
 		},
 		"./guardian/*": {
 			"types": "./dist/src/guardian/*.d.ts",
 			"default": "./dist/src/guardian/*.js"
 		},
 		"./config": {
-			"types": "./dist/src/config/index.d.ts",
-			"default": "./dist/src/config/index.js"
+			"types": "./dist/packages/ai/src/config/index.d.ts",
+			"default": "./dist/packages/ai/src/config/index.js"
 		},
 		"./config/constants": {
-			"types": "./dist/src/config/constants.d.ts",
-			"default": "./dist/src/config/constants.js"
+			"types": "./dist/packages/ai/src/config/constants.d.ts",
+			"default": "./dist/packages/ai/src/config/constants.js"
 		},
 		"./config/framework": {
-			"types": "./dist/src/config/framework.d.ts",
-			"default": "./dist/src/config/framework.js"
+			"types": "./dist/packages/ai/src/config/framework.d.ts",
+			"default": "./dist/packages/ai/src/config/framework.js"
 		},
 		"./config/lsp-config": {
-			"types": "./dist/src/config/lsp-config.d.ts",
-			"default": "./dist/src/config/lsp-config.js"
+			"types": "./dist/packages/ai/src/config/lsp-config.d.ts",
+			"default": "./dist/packages/ai/src/config/lsp-config.js"
 		},
 		"./config/firewall-config": {
-			"types": "./dist/src/config/firewall-config.d.ts",
-			"default": "./dist/src/config/firewall-config.js"
+			"types": "./dist/packages/ai/src/config/firewall-config.d.ts",
+			"default": "./dist/packages/ai/src/config/firewall-config.js"
 		},
 		"./config/toml-config": {
-			"types": "./dist/src/config/toml-config.d.ts",
-			"default": "./dist/src/config/toml-config.js"
+			"types": "./dist/packages/ai/src/config/toml-config.d.ts",
+			"default": "./dist/packages/ai/src/config/toml-config.js"
 		},
 		"./errors": {
-			"types": "./dist/src/errors/index.d.ts",
-			"default": "./dist/src/errors/index.js"
+			"types": "./dist/packages/ai/src/errors/index.d.ts",
+			"default": "./dist/packages/ai/src/errors/index.js"
 		},
 		"./errors/*": {
 			"types": "./dist/src/errors/*.d.ts",
 			"default": "./dist/src/errors/*.js"
 		},
 		"./lsp": {
-			"types": "./dist/src/lsp/index.d.ts",
-			"default": "./dist/src/lsp/index.js"
+			"types": "./dist/packages/ai/src/lsp/index.d.ts",
+			"default": "./dist/packages/ai/src/lsp/index.js"
 		},
 		"./lsp/*": {
 			"types": "./dist/src/lsp/*.d.ts",
 			"default": "./dist/src/lsp/*.js"
 		},
 		"./ide": {
-			"types": "./dist/src/ide/index.d.ts",
-			"default": "./dist/src/ide/index.js"
+			"types": "./dist/packages/ai/src/ide/index.d.ts",
+			"default": "./dist/packages/ai/src/ide/index.js"
 		},
 		"./ide/*": {
 			"types": "./dist/src/ide/*.d.ts",
@@ -199,8 +199,8 @@
 			"default": "./dist/src/utils/*.js"
 		},
 		"./training": {
-			"types": "./dist/src/training.d.ts",
-			"default": "./dist/src/training.js"
+			"types": "./dist/packages/ai/src/training.d.ts",
+			"default": "./dist/packages/ai/src/training.js"
 		}
 	},
 	"files": ["dist", "README.md"],
