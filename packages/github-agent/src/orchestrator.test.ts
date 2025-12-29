@@ -6,6 +6,7 @@ import type {
 	AgentStats,
 	GitHubIssue,
 	GitHubPR,
+	IssueComment,
 	Outcome,
 	PRComment,
 	PRReview,
@@ -32,11 +33,30 @@ vi.mock("./worker/executor.js", () => ({
 	TaskExecutor: vi.fn(),
 }));
 
+vi.mock("./github/auth.js", () => ({
+	GitHubAuth: vi.fn(),
+}));
+
+vi.mock("./github/client.js", () => ({
+	GitHubApiClient: vi.fn(),
+}));
+
+vi.mock("./github/reporter.js", () => ({
+	GitHubReporter: vi.fn().mockImplementation(() => ({
+		upsertIssueComment: vi.fn(),
+	})),
+}));
+
+vi.mock("./webhooks/server.js", () => ({
+	GitHubWebhookServer: vi.fn(),
+}));
+
 type MockMemoryStore = {
 	[K in keyof Pick<
 		MemoryStore,
 		| "addTask"
 		| "getTask"
+		| "updateTask"
 		| "updateTaskStatus"
 		| "updateOutcome"
 		| "recordOutcome"
@@ -148,6 +168,10 @@ describe("Orchestrator", () => {
 	let mockExecutor: MockExecutor;
 	let watcherCallbacks: {
 		onNewIssue?: (issue: GitHubIssue) => Promise<void>;
+		onIssueComment?: (
+			issue: GitHubIssue,
+			comment: IssueComment,
+		) => Promise<void>;
 		onPRMerged?: (pr: GitHubPR) => Promise<void>;
 		onPRClosed?: (pr: GitHubPR) => Promise<void>;
 		onPRReview?: (pr: GitHubPR, review: PRReview) => Promise<void>;
@@ -163,6 +187,7 @@ describe("Orchestrator", () => {
 		mockMemory = {
 			addTask: vi.fn(),
 			getTask: vi.fn(),
+			updateTask: vi.fn(),
 			updateTaskStatus: vi.fn(),
 			updateOutcome: vi.fn(),
 			recordOutcome: vi.fn(),
@@ -227,7 +252,7 @@ describe("Orchestrator", () => {
 		const { GitHubWatcher } = await import("./watcher/github.js");
 		(GitHubWatcher as unknown as ReturnType<typeof vi.fn>).mockImplementation(
 			(
-				_token: string,
+				_client: unknown,
 				_config: unknown,
 				callbacks: typeof watcherCallbacks,
 			) => {
@@ -283,6 +308,26 @@ describe("Orchestrator", () => {
 				expect(mockPrioritizer.triage).toHaveBeenCalledWith(issue);
 				expect(mockPrioritizer.createTask).not.toHaveBeenCalled();
 				expect(mockMemory.addTask).not.toHaveBeenCalled();
+			});
+		});
+
+		describe("handleIssueComment", () => {
+			it("should create task when comment contains trigger", async () => {
+				new Orchestrator(config);
+				const issue = createMockIssue();
+				const comment: IssueComment = {
+					id: 99,
+					issueNumber: issue.number,
+					author: "alice",
+					body: "@composer please handle",
+					createdAt: new Date().toISOString(),
+					url: issue.url,
+				};
+
+				await watcherCallbacks.onIssueComment?.(issue, comment);
+
+				expect(mockPrioritizer.triage).toHaveBeenCalledWith(issue);
+				expect(mockMemory.addTask).toHaveBeenCalled();
 			});
 		});
 
@@ -595,6 +640,8 @@ describe("Orchestrator", () => {
 
 			expect(mockWatcher.stop).toHaveBeenCalled();
 			expect(mockMemory.save).toHaveBeenCalled();
+
+			await startPromise.catch(() => {});
 		});
 	});
 });

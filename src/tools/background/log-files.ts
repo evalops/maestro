@@ -110,10 +110,36 @@ export function previewLastLine(
 	lines: number,
 	sanitize: (value: string) => string,
 ): string | undefined {
-	const text = tailLogs(logPath, logSegments, tailBytes, lines).trim();
+	const previewLines = Math.max(lines, 5);
+	const text = tailLogs(logPath, logSegments, tailBytes, previewLines).trim();
 	if (!text || text === "No logs available.") {
 		return undefined;
 	}
 	const entries = text.split(/\r?\n/).filter(Boolean);
-	return sanitize(entries[entries.length - 1]);
+	for (let i = entries.length - 1; i >= 0; i -= 1) {
+		const entry = entries[i].trim();
+		if (!entry) {
+			continue;
+		}
+		if (isNoiseLine(entry)) {
+			continue;
+		}
+		return sanitize(entry);
+	}
+	const last = entries[entries.length - 1];
+	return last ? sanitize(last) : undefined;
+}
+
+function isNoiseLine(line: string): boolean {
+	if (!line) return true;
+	if (line.startsWith("(Use `node --trace-warnings")) {
+		return true;
+	}
+	if (line.startsWith("(node:")) {
+		return true;
+	}
+	if (line.startsWith("Warning: The 'NO_COLOR' env is ignored")) {
+		return true;
+	}
+	return false;
 }

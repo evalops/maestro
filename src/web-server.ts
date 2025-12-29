@@ -507,16 +507,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	// Set a hard timeout for processing
 	// Skip for SSE endpoints which are meant to be long-lived
 	if (!pathname.startsWith("/api/chat")) {
-		// biome-ignore lint/style/useConst: needed for closure reference before assignment
-		let timeout: NodeJS.Timeout;
-		const cleanup = () => {
-			if (timeout) clearTimeout(timeout);
-		};
-
-		res.on("finish", cleanup);
-		res.on("close", cleanup);
-
-		timeout = setTimeout(() => {
+		const timeout = setTimeout(() => {
 			if (!res.headersSent && !res.writableEnded) {
 				requestContextStorage.run(context, () => {
 					logError(`Request timeout for ${pathname} [${requestId}]`);
@@ -534,6 +525,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 				res.end(JSON.stringify({ error: "Gateway Timeout" }));
 			}
 		}, REQUEST_TIMEOUT_MS);
+
+		const cleanup = () => {
+			clearTimeout(timeout);
+		};
+
+		res.on("finish", cleanup);
+		res.on("close", cleanup);
 	}
 
 	// Track request for introspection (Channelz) and graceful shutdown

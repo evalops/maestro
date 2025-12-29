@@ -1,20 +1,16 @@
 import { Text, visibleWidth } from "@evalops/tui";
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: required to match ANSI CSI sequences
-const CSI_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: required to match ANSI OSC sequences
-const OSC_PATTERN = /\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: required to match ANSI DCS/SOS control sequences
-const SS3_PATTERN = /\x1B[PX^_].*?\x1B\\/gs;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: required to match ANSI escape sequences
-const ESC_PATTERN = /\x1B[@-Z\\-_]/g;
+const ANSI_STRING_TERMINATORS = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
+const ANSI_OSC_SEQUENCE = `(?:\\u001B\\][\\s\\S]*?${ANSI_STRING_TERMINATORS})`;
+const ANSI_CSI_SEQUENCE =
+	"[\\u001B\\u009B][[\\]()#;?]*(?:\\d{1,4}(?:[;:]\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]";
+const ANSI_ESCAPE_SEQUENCE = new RegExp(
+	`${ANSI_OSC_SEQUENCE}|${ANSI_CSI_SEQUENCE}`,
+	"g",
+);
 
 export function stripAnsiSequences(text: string): string {
-	return text
-		.replace(CSI_PATTERN, "")
-		.replace(OSC_PATTERN, "")
-		.replace(SS3_PATTERN, "")
-		.replace(ESC_PATTERN, "");
+	return text.replace(ANSI_ESCAPE_SEQUENCE, "");
 }
 
 function consumeAnsiSequence(text: string, index: number): number {

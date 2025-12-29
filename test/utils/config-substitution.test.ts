@@ -13,13 +13,13 @@ describe("substituteEnvVars", () => {
 	const TEST_VAR2 = "TEST_CONFIG_VAR2";
 
 	beforeEach(() => {
-		delete process.env[TEST_VAR];
-		delete process.env[TEST_VAR2];
+		Reflect.deleteProperty(process.env, TEST_VAR);
+		Reflect.deleteProperty(process.env, TEST_VAR2);
 	});
 
 	afterEach(() => {
-		delete process.env[TEST_VAR];
-		delete process.env[TEST_VAR2];
+		Reflect.deleteProperty(process.env, TEST_VAR);
+		Reflect.deleteProperty(process.env, TEST_VAR2);
 	});
 
 	it("substitutes single environment variable", () => {

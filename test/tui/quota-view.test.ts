@@ -328,8 +328,7 @@ describe("QuotaView", () => {
 
 		it("shows not authenticated message when no token", async () => {
 			const { view, container } = createQuotaView();
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_ENTERPRISE_TOKEN;
+			Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_TOKEN");
 
 			await view.handleQuotaCommand(createContext("/quota"));
 
@@ -366,9 +365,7 @@ describe("QuotaView", () => {
 			expect(rendered).toContain("Token Quota Status");
 			expect(rendered).toContain("45.0K");
 			expect(rendered).toContain("100.0K");
-
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_ENTERPRISE_TOKEN;
+			Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_TOKEN");
 		});
 
 		it("shows unlimited quota status", async () => {
@@ -398,9 +395,7 @@ describe("QuotaView", () => {
 
 			const rendered = getRenderedText(container);
 			expect(rendered).toContain("Unlimited");
-
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_ENTERPRISE_TOKEN;
+			Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_TOKEN");
 		});
 
 		it("handles zero quota as unlimited (prevents division by zero)", async () => {
@@ -431,9 +426,7 @@ describe("QuotaView", () => {
 			const rendered = getRenderedText(container);
 			expect(rendered).toContain("Unlimited");
 			expect(rendered).not.toContain("Infinity");
-
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_ENTERPRISE_TOKEN;
+			Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_TOKEN");
 		});
 
 		it("shows error for enterprise commands without database", () => {
@@ -544,8 +537,7 @@ describe("QuotaView", () => {
 				expect(rendered).toContain("Session Override");
 				expect(rendered).toContain("25.0K");
 			} finally {
-				// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-				delete process.env.COMPOSER_ENTERPRISE_TOKEN;
+				Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_TOKEN");
 				vi.useRealTimers();
 			}
 		});

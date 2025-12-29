@@ -134,8 +134,7 @@ describe("Sandbox", () => {
 		beforeEach(() => {
 			// Ensure web-server mode is disabled for these tests
 			originalWebServer = process.env.COMPOSER_WEB_SERVER;
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
-			delete process.env.COMPOSER_WEB_SERVER;
+			Reflect.deleteProperty(process.env, "COMPOSER_WEB_SERVER");
 		});
 
 		afterEach(() => {
@@ -143,8 +142,7 @@ describe("Sandbox", () => {
 			if (originalWebServer !== undefined) {
 				process.env.COMPOSER_WEB_SERVER = originalWebServer;
 			} else {
-				// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
-				delete process.env.COMPOSER_WEB_SERVER;
+				Reflect.deleteProperty(process.env, "COMPOSER_WEB_SERVER");
 			}
 		});
 
@@ -168,8 +166,7 @@ describe("Sandbox", () => {
 				await sandbox?.dispose();
 			} finally {
 				if (originalEnv === undefined) {
-					// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
-					delete process.env.COMPOSER_SANDBOX_MODE;
+					Reflect.deleteProperty(process.env, "COMPOSER_SANDBOX_MODE");
 				} else {
 					process.env.COMPOSER_SANDBOX_MODE = originalEnv;
 				}
@@ -184,8 +181,7 @@ describe("Sandbox", () => {
 
 			// Save and clear env var to ensure config is used
 			const originalEnv = process.env.COMPOSER_SANDBOX_MODE;
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
-			delete process.env.COMPOSER_SANDBOX_MODE;
+			Reflect.deleteProperty(process.env, "COMPOSER_SANDBOX_MODE");
 
 			try {
 				const sandbox = await createSandbox({ cwd: testDir });

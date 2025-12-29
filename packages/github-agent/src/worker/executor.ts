@@ -12,6 +12,8 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import type { GitHubApiClient } from "../github/client.js";
+import type { GitHubReporter, TaskProgress } from "../github/reporter.js";
 import type { MemoryStore } from "../memory/store.js";
 import type { AgentConfig, Task, TaskResult } from "../types.js";
 
@@ -19,17 +21,23 @@ export interface ExecutorOptions {
 	config: AgentConfig;
 	memory: MemoryStore;
 	onLog?: (message: string) => void;
+	githubClient?: GitHubApiClient;
+	reporter?: GitHubReporter;
 }
 
 export class TaskExecutor {
 	private config: AgentConfig;
 	private memory: MemoryStore;
 	private log: (message: string) => void;
+	private githubClient?: GitHubApiClient;
+	private reporter?: GitHubReporter;
 
 	constructor(options: ExecutorOptions) {
 		this.config = options.config;
 		this.memory = options.memory;
 		this.log = options.onLog || console.log;
+		this.githubClient = options.githubClient;
+		this.reporter = options.reporter;
 	}
 
 	/**
@@ -37,6 +45,8 @@ export class TaskExecutor {
 	 */
 	async execute(task: Task): Promise<TaskResult> {
 		const startTime = Date.now();
+		const progress = this.buildInitialProgress(task, startTime);
+		await this.reportProgress(task, progress);
 
 		try {
 			// Ensure working directory exists
@@ -44,36 +54,60 @@ export class TaskExecutor {
 
 			// Generate branch name
 			const branchName = this.generateBranchName(task);
+			progress.branch = branchName;
 			this.log(`[executor] Starting task ${task.id}`);
 			this.log(`[executor] Branch: ${branchName}`);
 
 			// Step 1: Create feature branch
-			await this.createBranch(branchName);
+			await this.runStep(task, progress, "branch", async () => {
+				await this.createBranch(branchName);
+			});
 
 			// Step 2: Build the prompt
 			const prompt = this.buildPrompt(task);
 
 			// Step 3: Run composer exec
-			this.log("[executor] Running composer...");
-			const composerResult = await this.runComposer(prompt);
+			let composerResult: Awaited<ReturnType<typeof this.runComposer>> | null =
+				null;
+			await this.runStep(task, progress, "composer", async () => {
+				this.log("[executor] Running composer...");
+				composerResult = await this.runComposer(prompt);
 
-			if (!composerResult.success) {
-				throw new Error(`Composer failed: ${composerResult.error}`);
+				if (!composerResult.success) {
+					throw new Error(`Composer failed: ${composerResult.error}`);
+				}
+			});
+			if (!composerResult) {
+				throw new Error("Composer did not return a result");
 			}
+			progress.tokensUsed = composerResult.tokensUsed;
+			progress.cost = composerResult.cost;
 
 			// Step 4: Run quality gates
 			this.log("[executor] Running quality gates...");
-			await this.runQualityGates();
+			await this.runQualityGates(task, progress);
 
 			// Step 5: Optional self-review
 			if (this.config.selfReview) {
-				this.log("[executor] Running self-review...");
-				await this.runSelfReview();
+				await this.runStep(task, progress, "selfReview", async () => {
+					this.log("[executor] Running self-review...");
+					await this.runSelfReview();
+				});
 			}
 
 			// Step 6: Create PR
-			this.log("[executor] Creating PR...");
-			const pr = await this.createPR(task, branchName);
+			let pr: { number: number; url: string };
+			await this.runStep(task, progress, "pr", async () => {
+				this.log("[executor] Creating PR...");
+				pr = await this.createPR(task, branchName);
+			});
+			progress.prUrl = pr.url;
+
+			await this.publishCheckRun(task, progress, branchName, pr);
+
+			progress.status = "completed";
+			progress.durationMs = Date.now() - startTime;
+			await this.reportProgress(task, progress);
 
 			return {
 				success: true,
@@ -86,6 +120,10 @@ export class TaskExecutor {
 		} catch (err) {
 			const error = err instanceof Error ? err.message : String(err);
 			this.log(`[executor] Task failed: ${error}`);
+			progress.status = "failed";
+			progress.error = error;
+			progress.durationMs = Date.now() - startTime;
+			await this.reportProgress(task, progress);
 
 			// Clean up: switch back to base branch
 			await this.runCommand("git", ["checkout", this.config.baseBranch]).catch(
@@ -221,30 +259,48 @@ export class TaskExecutor {
 		});
 	}
 
-	private async runQualityGates(): Promise<void> {
+	private async runQualityGates(
+		task: Task,
+		progress: TaskProgress,
+	): Promise<void> {
 		if (this.config.requireTypeCheck) {
-			this.log("[executor] Type checking...");
-			await this.runCommand("npx", [
-				"nx",
-				"run",
-				"composer:build:all",
-				"--skip-nx-cache",
-			]);
+			await this.runStep(task, progress, "typecheck", async () => {
+				this.log("[executor] Type checking...");
+				await this.runCommand("npx", [
+					"nx",
+					"run",
+					"composer:build:all",
+					"--skip-nx-cache",
+				]);
+			});
+		} else {
+			progress.steps.typecheck = "skipped";
+			await this.reportProgress(task, progress);
 		}
 
 		if (this.config.requireLint) {
-			this.log("[executor] Linting...");
-			await this.runCommand("bun", ["run", "bun:lint"]);
+			await this.runStep(task, progress, "lint", async () => {
+				this.log("[executor] Linting...");
+				await this.runCommand("bun", ["run", "bun:lint"]);
+			});
+		} else {
+			progress.steps.lint = "skipped";
+			await this.reportProgress(task, progress);
 		}
 
 		if (this.config.requireTests) {
-			this.log("[executor] Running tests...");
-			await this.runCommand("npx", [
-				"nx",
-				"run",
-				"composer:test",
-				"--skip-nx-cache",
-			]);
+			await this.runStep(task, progress, "tests", async () => {
+				this.log("[executor] Running tests...");
+				await this.runCommand("npx", [
+					"nx",
+					"run",
+					"composer:test",
+					"--skip-nx-cache",
+				]);
+			});
+		} else {
+			progress.steps.tests = "skipped";
+			await this.reportProgress(task, progress);
 		}
 	}
 
@@ -294,13 +350,34 @@ ${diff}
 			.slice(0, 200) // Leave room for prefix and suffix
 			.trim();
 
-		// Create PR using gh CLI
 		const title = task.sourceIssue
 			? `[composer] ${sanitizedTaskTitle} (fixes #${task.sourceIssue})`
 			: `[composer] ${sanitizedTaskTitle}`;
 
 		const body = this.buildPRBody(task);
 
+		if (this.githubClient) {
+			try {
+				return await this.githubClient.createPullRequest({
+					title,
+					head: branchName,
+					base: this.config.baseBranch,
+					body,
+				});
+			} catch (err) {
+				this.log(
+					`[executor] GitHub API PR creation failed, falling back to gh: ${err instanceof Error ? err.message : err}`,
+				);
+			}
+		}
+
+		return this.createPrViaGh(title, body);
+	}
+
+	private async createPrViaGh(
+		title: string,
+		body: string,
+	): Promise<{ number: number; url: string }> {
 		const output = await this.runCommand("gh", [
 			"pr",
 			"create",
@@ -354,6 +431,133 @@ ${diff}
 			"_This PR was generated autonomously by the GitHub Agent (Composer building Composer)._",
 		);
 
+		return lines.join("\n");
+	}
+
+	private buildInitialProgress(task: Task, startTime: number): TaskProgress {
+		const steps: TaskProgress["steps"] = {
+			queued: "done",
+			branch: "pending",
+			composer: "pending",
+			pr: "pending",
+		};
+		steps.typecheck = this.config.requireTypeCheck ? "pending" : "skipped";
+		steps.lint = this.config.requireLint ? "pending" : "skipped";
+		steps.tests = this.config.requireTests ? "pending" : "skipped";
+		steps.selfReview = this.config.selfReview ? "pending" : "skipped";
+
+		return {
+			status: "in_progress",
+			steps,
+			attempt: task.attempts,
+			maxAttempts: this.config.maxAttemptsPerTask,
+			startedAt: new Date(startTime).toISOString(),
+			updatedAt: new Date().toISOString(),
+		};
+	}
+
+	private async reportProgress(
+		task: Task,
+		progress: TaskProgress,
+	): Promise<void> {
+		if (!this.reporter || !task.sourceIssue) return;
+		try {
+			progress.updatedAt = new Date().toISOString();
+			const commentId = await this.reporter.upsertIssueComment(task, progress);
+			if (commentId && commentId !== task.reportCommentId) {
+				this.memory.updateTask(task.id, { reportCommentId: commentId });
+				task.reportCommentId = commentId;
+			}
+		} catch (err) {
+			this.log(
+				`[executor] Failed to update issue comment: ${err instanceof Error ? err.message : err}`,
+			);
+		}
+	}
+
+	private async runStep(
+		task: Task,
+		progress: TaskProgress,
+		step: keyof TaskProgress["steps"],
+		action: () => Promise<void>,
+	): Promise<void> {
+		progress.steps[step] = "running";
+		await this.reportProgress(task, progress);
+		try {
+			await action();
+			progress.steps[step] = "done";
+			await this.reportProgress(task, progress);
+		} catch (err) {
+			progress.steps[step] = "failed";
+			progress.status = "failed";
+			progress.error = err instanceof Error ? err.message : String(err);
+			await this.reportProgress(task, progress);
+			throw err;
+		}
+	}
+
+	private async publishCheckRun(
+		task: Task,
+		progress: TaskProgress,
+		branchName: string,
+		pr: { number: number; url: string },
+	): Promise<void> {
+		if (!this.githubClient) return;
+		try {
+			const headSha = await this.githubClient.getBranchHeadSha(branchName);
+			const summary = this.buildCheckRunSummary(task, progress, pr);
+			const text = progress.error ? `Error: ${progress.error}` : undefined;
+			const checkRun = await this.githubClient.createCheckRun({
+				name: "Composer Agent",
+				headSha,
+				status: "completed",
+				conclusion: "success",
+				detailsUrl: pr.url,
+				summary,
+				text,
+			});
+			this.memory.updateTask(task.id, { checkRunId: checkRun.id });
+			task.checkRunId = checkRun.id;
+		} catch (err) {
+			this.log(
+				`[executor] Failed to create check run: ${err instanceof Error ? err.message : err}`,
+			);
+		}
+	}
+
+	private buildCheckRunSummary(
+		task: Task,
+		progress: TaskProgress,
+		pr: { number: number; url: string },
+	): string {
+		const lines: string[] = [`Task: ${task.title}`, `PR: ${pr.url}`];
+		if (progress.branch) {
+			lines.push(`Branch: ${progress.branch}`);
+		}
+		if (progress.attempt && progress.maxAttempts) {
+			lines.push(`Attempt: ${progress.attempt}/${progress.maxAttempts}`);
+		}
+		for (const [label, key] of [
+			["Composer", "composer"],
+			["Type check", "typecheck"],
+			["Lint", "lint"],
+			["Tests", "tests"],
+			["Self-review", "selfReview"],
+		] as const) {
+			const status = progress.steps[key];
+			if (status && status !== "skipped") {
+				lines.push(`${label}: ${status}`);
+			}
+		}
+		if (typeof progress.tokensUsed === "number") {
+			lines.push(`Tokens: ${progress.tokensUsed.toLocaleString()}`);
+		}
+		if (typeof progress.cost === "number") {
+			lines.push(`Cost: $${progress.cost.toFixed(2)}`);
+		}
+		if (progress.durationMs) {
+			lines.push(`Duration: ${Math.round(progress.durationMs / 1000)}s`);
+		}
 		return lines.join("\n");
 	}
 

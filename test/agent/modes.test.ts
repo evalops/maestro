@@ -133,16 +133,14 @@ describe("agent/modes", () => {
 
 		afterEach(() => {
 			if (originalEnv === undefined) {
-				// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-				delete process.env.COMPOSER_MODE;
+				Reflect.deleteProperty(process.env, "COMPOSER_MODE");
 			} else {
 				process.env.COMPOSER_MODE = originalEnv;
 			}
 		});
 
 		it("returns smart by default", () => {
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_MODE;
+			Reflect.deleteProperty(process.env, "COMPOSER_MODE");
 			expect(getModeFromEnv()).toBe("smart");
 		});
 

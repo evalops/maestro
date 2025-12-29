@@ -44,8 +44,7 @@ describe("todo tool", () => {
 		if (originalStorePath !== undefined) {
 			process.env.COMPOSER_TODO_FILE = originalStorePath;
 		} else {
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_TODO_FILE;
+			Reflect.deleteProperty(process.env, "COMPOSER_TODO_FILE");
 		}
 		rmSync(testDir, { recursive: true, force: true });
 	});

@@ -64,7 +64,6 @@ const buildView = (overrides: Partial<SessionManager> = {}) => {
 };
 
 describe("ImportExportView.handleExportCommand", () => {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const spies: Array<{ mockRestore: () => void }> = [];
 
 	beforeEach(() => {

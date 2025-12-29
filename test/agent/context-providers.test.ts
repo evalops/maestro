@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { TodoContextSource } from "../../src/agent/context-providers.js";
+import type { TodoStore } from "../../src/tools/todo.js";
 import * as todoTool from "../../src/tools/todo.js";
 
 // Mock the todo tool
@@ -13,10 +14,9 @@ vi.mock("../../src/tools/todo.js", async () => {
 
 describe("TodoContextSource", () => {
 	it("formats context with correct double-newline spacing between sections", async () => {
-		const mockStore = {
+		const mockStore: TodoStore = {
 			"goal-1": {
 				goal: "Build a rocket",
-				createdAt: new Date().toISOString(),
 				updatedAt: new Date().toISOString(),
 				items: [
 					{ id: "1", content: "Buy fuel", status: "pending" },
@@ -25,7 +25,6 @@ describe("TodoContextSource", () => {
 			},
 		};
 
-		// @ts-expect-error - mocking
 		vi.mocked(todoTool.loadStore).mockResolvedValue(mockStore);
 
 		const source = new TodoContextSource();

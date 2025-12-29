@@ -236,8 +236,7 @@ describe("createConcurrencyManagerFromEnv", () => {
 	});
 
 	it("uses fallback when env var not set", () => {
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.TEST_CONCURRENCY;
+		Reflect.deleteProperty(process.env, "TEST_CONCURRENCY");
 		const slots = createConcurrencyManagerFromEnv("TEST_CONCURRENCY", 3);
 		expect(slots.getSnapshot().max).toBe(3);
 	});
@@ -255,8 +254,7 @@ describe("createConcurrencyManagerFromEnv", () => {
 	});
 
 	it("uses default fallback of 0 (unlimited)", () => {
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.TEST_CONCURRENCY;
+		Reflect.deleteProperty(process.env, "TEST_CONCURRENCY");
 		const slots = createConcurrencyManagerFromEnv("TEST_CONCURRENCY");
 		expect(slots.getSnapshot().max).toBe(0);
 		expect(slots.isEnabled()).toBe(false);

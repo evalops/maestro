@@ -370,7 +370,6 @@ export class ApiClient {
 		}
 		// Vite env override
 		if (!resolved && typeof import.meta !== "undefined") {
-			// @ts-ignore Vite injects env at build time
 			resolved = import.meta.env?.VITE_API_ENDPOINT || undefined;
 		}
 		// Final fallback
@@ -404,7 +403,6 @@ export class ApiClient {
 				return await safeJson(res);
 			} catch (e) {
 				lastError = e;
-				// eslint-disable-next-line no-console
 				console.warn("API fallback failed", {
 					base,
 					path,
@@ -435,7 +433,6 @@ export class ApiClient {
 				return res;
 			} catch (e) {
 				lastError = e;
-				// eslint-disable-next-line no-console
 				console.warn("API fallback failed", {
 					base,
 					path,

@@ -405,7 +405,68 @@ describe("MemoryStore", () => {
 			}
 
 			const context = store.getContextForPrompt();
-			expect(context).toContain("Learned from past PR reviews");
+			expect(context).toContain("Learned from past PR reviews and failures");
+		});
+
+		it("should learn successful patterns from merged outcomes", () => {
+			const store = new MemoryStore(TEST_DIR);
+			const taskId = "task-success";
+			store.addTask({
+				id: taskId,
+				type: "issue",
+				sourceIssue: 42,
+				labels: ["bug", "urgent"],
+				title: "Fix crash on startup",
+				description: "Issue #42: Fix crash\nLabels: bug, urgent",
+				priority: 70,
+				createdAt: new Date().toISOString(),
+				status: "pending",
+				attempts: 1,
+			});
+
+			store.updateTaskStatus(taskId, "completed", {
+				success: true,
+				prNumber: 123,
+				prUrl: "https://github.com/test/repo/pull/123",
+				duration: 1000,
+			});
+
+			store.recordOutcome(taskId, 123);
+			store.updateOutcome(taskId, "merged");
+
+			const context = store.getContextForPrompt();
+			expect(context).toContain("Successful patterns by label");
+			expect(context).toContain("bug");
+			expect(context).toContain("Fix crash on startup");
+		});
+
+		it("should learn from failures and flag problematic files", () => {
+			const store = new MemoryStore(TEST_DIR);
+			const taskId = "task-failure";
+			store.addTask({
+				id: taskId,
+				type: "issue",
+				sourceIssue: 99,
+				title: "Handle edge case",
+				description: "Issue #99: Handle edge case",
+				priority: 50,
+				createdAt: new Date().toISOString(),
+				status: "pending",
+				attempts: 1,
+			});
+
+			store.updateTaskStatus(taskId, "failed", {
+				success: false,
+				duration: 500,
+				error: "lint failed in src/problematic.ts",
+			});
+
+			store.recordOutcome(taskId, 456);
+			store.updateOutcome(taskId, "closed");
+
+			const context = store.getContextForPrompt();
+			expect(context).toContain("Run the linter");
+			expect(context).toContain("src/problematic.ts");
 		});
 	});
 });

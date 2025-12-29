@@ -62,14 +62,12 @@ describe("Enterprise Policy Enforcement", () => {
 	});
 	afterEach(() => {
 		if (originalHome === undefined) {
-			// biome-ignore lint/performance/noDelete: required for process.env cleanup
-			delete process.env.HOME;
+			Reflect.deleteProperty(process.env, "HOME");
 		} else {
 			process.env.HOME = originalHome;
 		}
 		if (originalUserProfile === undefined) {
-			// biome-ignore lint/performance/noDelete: required for process.env cleanup
-			delete process.env.USERPROFILE;
+			Reflect.deleteProperty(process.env, "USERPROFILE");
 		} else {
 			process.env.USERPROFILE = originalUserProfile;
 		}

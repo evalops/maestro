@@ -235,17 +235,14 @@ describe("detectColorMode", () => {
 	});
 
 	it("returns 256color when TERM contains 256color", () => {
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.COLORTERM;
+		Reflect.deleteProperty(process.env, "COLORTERM");
 		process.env.TERM = "xterm-256color";
 		expect(detectColorMode()).toBe("256color");
 	});
 
 	it("defaults to 256color when no color info", () => {
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.COLORTERM;
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.TERM;
+		Reflect.deleteProperty(process.env, "COLORTERM");
+		Reflect.deleteProperty(process.env, "TERM");
 		expect(detectColorMode()).toBe("256color");
 	});
 });

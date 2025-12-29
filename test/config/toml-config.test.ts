@@ -32,16 +32,11 @@ describe("toml-config", () => {
 		rmSync(testDir, { recursive: true, force: true });
 		// Clean up env vars - must use delete because assignment to undefined
 		// sets the value to the string "undefined" instead of removing it
-		// biome-ignore lint/performance/noDelete: required for process.env cleanup
-		delete process.env.COMPOSER_MODEL;
-		// biome-ignore lint/performance/noDelete: required for process.env cleanup
-		delete process.env.COMPOSER_MODEL_PROVIDER;
-		// biome-ignore lint/performance/noDelete: required for process.env cleanup
-		delete process.env.COMPOSER_APPROVAL_POLICY;
-		// biome-ignore lint/performance/noDelete: required for process.env cleanup
-		delete process.env.COMPOSER_SANDBOX_MODE;
-		// biome-ignore lint/performance/noDelete: required for process.env cleanup
-		delete process.env.COMPOSER_PROFILE;
+		Reflect.deleteProperty(process.env, "COMPOSER_MODEL");
+		Reflect.deleteProperty(process.env, "COMPOSER_MODEL_PROVIDER");
+		Reflect.deleteProperty(process.env, "COMPOSER_APPROVAL_POLICY");
+		Reflect.deleteProperty(process.env, "COMPOSER_SANDBOX_MODE");
+		Reflect.deleteProperty(process.env, "COMPOSER_PROFILE");
 	});
 
 	describe("DEFAULT_CONFIG", () => {

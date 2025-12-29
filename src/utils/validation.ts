@@ -73,8 +73,19 @@ export function sanitizeString(
 	const { maxLength = 10000 } = options;
 
 	// Remove null bytes and control characters (0x00-0x1F, 0x7F)
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally removing control chars for security
-	let sanitized = input.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+	let sanitized = "";
+	for (const char of input) {
+		const code = char.charCodeAt(0);
+		const isControl =
+			code <= 0x08 ||
+			code === 0x0b ||
+			code === 0x0c ||
+			(code >= 0x0e && code <= 0x1f) ||
+			code === 0x7f;
+		if (!isControl) {
+			sanitized += char;
+		}
+	}
 
 	// Truncate if too long
 	if (sanitized.length > maxLength) {

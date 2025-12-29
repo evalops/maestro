@@ -6,6 +6,13 @@ Autonomous GitHub agent for self-improvement. **Composer building Composer.**
 
 This agent watches a GitHub repository for issues with specific labels, implements them, runs quality gates, and creates PRs - all autonomously.
 
+**Deep GitHub integration includes:**
+- REST + GraphQL usage with rate-limit awareness, pagination, and conditional requests
+- GitHub App auth (JWT + installation tokens) or PAT auth
+- Issue comment progress reporting with step-by-step status
+- Check runs on the PR head SHA summarizing tests/lint/typecheck results
+- Webhook support for low-latency issue/comment/review handling
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     GitHub (source of truth)                     │
@@ -78,6 +85,11 @@ jobs:
       (github.event_name == 'issues' && github.event.label.name == 'composer-task') ||
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@composer'))
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v1
@@ -109,12 +121,30 @@ jobs:
 | `--no-lint` | Skip lint requirement | |
 | `--no-self-review` | Skip self-review step | |
 | `--issue` | Process specific issue and exit | |
+| `--github-api-url` | Override GitHub API base URL (GHES) | |
+| `--github-app-id` | GitHub App ID (App auth) | |
+| `--github-app-private-key` | GitHub App private key (PEM or base64) | |
+| `--github-app-private-key-file` | GitHub App private key path | |
+| `--github-app-installation-id` | GitHub App installation id | |
+| `--webhook-secret` | Webhook secret for verification | |
+| `--webhook-port` | Webhook port | 8787 |
+| `--webhook-path` | Webhook path | `/github/webhooks` |
+| `--webhook-mode` | `poll` / `webhook` / `hybrid` | `poll` |
 
 ### Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GITHUB_TOKEN` | Yes | GitHub personal access token |
+| `GITHUB_TOKEN` | Optional | GitHub personal access token |
+| `GITHUB_APP_ID` | Optional | GitHub App ID |
+| `GITHUB_APP_PRIVATE_KEY` | Optional | GitHub App private key (PEM or base64) |
+| `GITHUB_APP_PRIVATE_KEY_PATH` | Optional | GitHub App private key path |
+| `GITHUB_APP_INSTALLATION_ID` | Optional | GitHub App installation id |
+| `GITHUB_API_URL` | Optional | GitHub API base URL (GHES) |
+| `GITHUB_WEBHOOK_SECRET` | Optional | Webhook secret |
+| `GITHUB_WEBHOOK_PORT` | Optional | Webhook port |
+| `GITHUB_WEBHOOK_PATH` | Optional | Webhook path |
+| `GITHUB_WEBHOOK_MODE` | Optional | `poll` / `webhook` / `hybrid` |
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Composer |
 
 ## How It Works
@@ -136,6 +166,7 @@ For each task:
 3. **Quality gates**: Tests, lint, and type checking must pass
 4. **Self-review**: Optional second pass to catch issues
 5. **PR creation**: Opens a PR with proper formatting
+6. **Progress reporting**: Updates the issue with a live status checklist and publishes a check run (if permissions allow)
 
 ### 3. Feedback Loop
 
@@ -173,6 +204,49 @@ This context is injected into future prompts to improve success rate.
 - **Self-review**: Optional second pass catches mistakes
 - **No force push**: Never rewrites history
 - **Branch protection**: Works with protected branches
+
+## GitHub API Integration
+
+The agent uses a hybrid REST + GraphQL client for richer metadata (review decision), with:
+
+- **ETag-based conditional requests** to reduce rate limit usage
+- **Retry/backoff** for secondary rate limits
+- **GraphQL rate-limit tracking** to prevent exhaustion
+- **Check runs** for per-task summaries
+
+### Recommended GitHub App Permissions
+
+For GitHub App auth, grant:
+
+- **Issues**: Read & Write (status comments)
+- **Pull requests**: Read & Write (create PRs)
+- **Checks**: Read & Write (check runs)
+- **Contents**: Read & Write (branch push)
+- **Metadata**: Read-only
+
+## Webhook Mode
+
+For near-real-time responses without heavy polling, run in webhook or hybrid mode:
+
+```bash
+github-agent evalops/composer \\
+  --webhook-secret $GITHUB_WEBHOOK_SECRET \\
+  --webhook-mode hybrid \\
+  --webhook-port 8787 \\
+  --webhook-path /github/webhooks
+```
+
+Use `hybrid` to keep polling as a fallback when GitHub events are delayed.
+
+## GitHub App Auth
+
+For higher rate limits and org-wide installs, run with a GitHub App:
+
+```bash
+export GITHUB_APP_ID=12345
+export GITHUB_APP_PRIVATE_KEY_PATH=/path/to/private-key.pem
+github-agent evalops/composer --webhook-mode hybrid
+```
 
 ## Development
 

@@ -19,9 +19,10 @@ import {
 	vi,
 } from "vitest";
 
-let runGuardian: typeof import("../../src/guardian/runner.js").runGuardian;
-// biome-ignore format: keep single-line import to avoid esbuild trailing-comma parse error
-let shouldGuardCommand: typeof import("../../src/guardian/runner.js")["shouldGuardCommand"];
+type GuardianRunnerModule = typeof import("../../src/guardian/runner.js");
+
+let runGuardian: GuardianRunnerModule["runGuardian"];
+let shouldGuardCommand: GuardianRunnerModule["shouldGuardCommand"];
 
 const tempDir = mkdtempSync(path.join(os.tmpdir(), "guardian-test-"));
 const tempState = path.join(tempDir, "guardian-state.json");
@@ -34,8 +35,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-	// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-	delete process.env.COMPOSER_GUARDIAN_STATE;
+	Reflect.deleteProperty(process.env, "COMPOSER_GUARDIAN_STATE");
 	rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -64,8 +64,7 @@ describe("guardian runner", () => {
 
 	afterEach(() => {
 		mockSpawn.mockReset();
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.COMPOSER_GUARDIAN;
+		Reflect.deleteProperty(process.env, "COMPOSER_GUARDIAN");
 	});
 
 	it("respects inline disable flag for commit/push detection", () => {

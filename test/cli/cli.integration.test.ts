@@ -190,10 +190,8 @@ describe("CLI integration", () => {
 			"anthropic-oauth.json",
 		);
 		process.env.ANTHROPIC_API_KEY = "test-key";
-		// biome-ignore lint/performance/noDelete: ensure env var absence for tests
-		delete process.env.OPENAI_API_KEY;
-		// biome-ignore lint/performance/noDelete: ensure env var absence for tests
-		delete process.env.CLAUDE_CODE_TOKEN;
+		Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
+		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
 		output = [];
 		console.log = (...args: unknown[]) => {
 			output.push(args.map((arg) => String(arg)).join(" "));
@@ -213,32 +211,27 @@ describe("CLI integration", () => {
 		console.error = originalError;
 		process.stdout.write = originalStdoutWrite;
 		if (originalEnv === undefined) {
-			// biome-ignore lint/performance/noDelete: restoring env var state
-			delete process.env.ANTHROPIC_API_KEY;
+			Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
 		} else {
 			process.env.ANTHROPIC_API_KEY = originalEnv;
 		}
 		if (originalOpenAI === undefined) {
-			// biome-ignore lint/performance/noDelete: restoring env var state
-			delete process.env.OPENAI_API_KEY;
+			Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
 		} else {
 			process.env.OPENAI_API_KEY = originalOpenAI;
 		}
 		if (originalClaude === undefined) {
-			// biome-ignore lint/performance/noDelete: restoring env var state
-			delete process.env.CLAUDE_CODE_TOKEN;
+			Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
 		} else {
 			process.env.CLAUDE_CODE_TOKEN = originalClaude;
 		}
 		if (originalAnthropicOAuthFile === undefined) {
-			// biome-ignore lint/performance/noDelete: restoring env var state
-			delete process.env.ANTHROPIC_OAUTH_FILE;
+			Reflect.deleteProperty(process.env, "ANTHROPIC_OAUTH_FILE");
 		} else {
 			process.env.ANTHROPIC_OAUTH_FILE = originalAnthropicOAuthFile;
 		}
 		if (originalAgentDir === undefined) {
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined (which sets to string "undefined")
-			delete process.env.COMPOSER_AGENT_DIR;
+			Reflect.deleteProperty(process.env, "COMPOSER_AGENT_DIR");
 		} else {
 			process.env.COMPOSER_AGENT_DIR = originalAgentDir;
 		}
@@ -385,8 +378,7 @@ describe("CLI integration", () => {
 			"hello",
 		]);
 		expect(output.join("\n")).toContain("Echo: hello");
-		// biome-ignore lint/performance/noDelete: resetting test env var
-		delete process.env.CLAUDE_CODE_TOKEN;
+		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
 	});
 
 	it("fails when claude auth mode lacks OAuth tokens", async () => {

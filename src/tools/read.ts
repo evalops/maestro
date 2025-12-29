@@ -664,12 +664,16 @@ Emit multiple read tool calls in one turn when you need parallel reads; the runt
 						// - Control character exploits
 						// - Overly long messages consuming context
 						const sanitizeMessage = (msg: string): string => {
-							// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally removing control chars for security
-							const controlChars = /[\x00-\x1F\x7F]/g;
-							return msg
-								.replace(/[`\n\r]/g, " ") // Remove backticks and newlines
-								.replace(controlChars, "") // Remove control characters
-								.slice(0, 500); // Limit length
+							const stripped = msg.replace(/[`\n\r]/g, " ");
+							let sanitized = "";
+							for (const char of stripped) {
+								const code = char.charCodeAt(0);
+								const isControl = code <= 0x1f || code === 0x7f;
+								if (!isControl) {
+									sanitized += char;
+								}
+							}
+							return sanitized.slice(0, 500); // Limit length
 						};
 
 						// Output errors first (higher priority)

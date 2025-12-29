@@ -20,6 +20,35 @@ import type {
 	TaskResult,
 } from "../types.js";
 
+const FEEDBACK_PATTERNS = [
+	{
+		regex: /missing test|test coverage/i,
+		suggestion: "Always add tests for new functionality",
+	},
+	{
+		regex: /type error|typescript|tsc/i,
+		suggestion: "Run type checking before submitting",
+	},
+	{
+		regex: /lint|formatting|biome|prettier/i,
+		suggestion: "Run the linter and fix formatting issues before submitting",
+	},
+	{
+		regex: /break.*backward|breaking change/i,
+		suggestion: "Consider backward compatibility",
+	},
+	{
+		regex: /security|vulnerab/i,
+		suggestion: "Review for security implications",
+	},
+];
+
+const MAX_SUCCESS_PATTERNS_PER_LABEL = 5;
+const SUCCESS_LABELS_TO_SHOW = 3;
+const SUCCESS_PATTERNS_PER_LABEL_TO_SHOW = 2;
+const FILE_PATH_REGEX =
+	/(?:^|\s)([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)(?=$|[\s),:;])/g;
+
 export class MemoryStore {
 	private memory: Memory;
 	private outcomes: Map<string, Outcome> = new Map();
@@ -156,6 +185,14 @@ export class MemoryStore {
 		return this.tasks.get(id);
 	}
 
+	updateTask(id: string, update: Partial<Task>): Task | undefined {
+		const task = this.tasks.get(id);
+		if (!task) return undefined;
+		Object.assign(task, update);
+		this.save();
+		return task;
+	}
+
 	getPendingTasks(): Task[] {
 		return Array.from(this.tasks.values())
 			.filter((t) => t.status === "pending")
@@ -283,48 +320,99 @@ export class MemoryStore {
 			averageAttemptsToMerge * (mergedPRs - 1) + task.attempts;
 		this.memory.stats.averageAttemptsToMerge = totalAttempts / mergedPRs;
 
-		// TODO: Extract and store successful patterns based on issue labels
+		const labels = this.getTaskLabels(task);
+		if (labels.length === 0) return;
+
+		const summary = this.buildSuccessSummary(task);
+		if (!summary) return;
+
+		for (const label of labels) {
+			this.addSuccessfulPattern(label, summary);
+		}
 	}
 
 	private learnFromFailure(taskId: string): void {
 		const task = this.tasks.get(taskId);
 		if (!task) return;
 
-		// TODO: Analyze what went wrong and store patterns to avoid
+		const error = task.result?.error;
+		if (!error) return;
+
+		this.applyReviewPatterns(error);
+
+		const paths = this.extractFilePaths(error);
+		for (const path of paths) {
+			this.incrementProblematicFile(path);
+		}
 	}
 
 	private learnFromFeedback(feedback: ReviewFeedback): void {
 		// Extract patterns from review comments
 		for (const comment of feedback.comments) {
-			// Look for common feedback patterns
-			const patterns = [
-				{
-					regex: /missing test/i,
-					suggestion: "Always add tests for new functionality",
-				},
-				{
-					regex: /type error|typescript/i,
-					suggestion: "Run type checking before submitting",
-				},
-				{
-					regex: /lint|formatting/i,
-					suggestion: "Run linter before submitting",
-				},
-				{
-					regex: /break.*backward/i,
-					suggestion: "Consider backward compatibility",
-				},
-				{
-					regex: /security|vulnerab/i,
-					suggestion: "Review for security implications",
-				},
-			];
+			this.applyReviewPatterns(comment);
+		}
+	}
 
-			for (const { regex, suggestion } of patterns) {
-				if (regex.test(comment)) {
-					this.addReviewPattern(regex.source, suggestion);
-				}
+	private applyReviewPatterns(text: string): void {
+		for (const { regex, suggestion } of FEEDBACK_PATTERNS) {
+			if (regex.test(text)) {
+				this.addReviewPattern(regex.source, suggestion);
 			}
+		}
+	}
+
+	private getTaskLabels(task: Task): string[] {
+		const rawLabels =
+			task.labels && task.labels.length > 0
+				? task.labels
+				: this.parseLabelsFromDescription(task.description);
+		const normalized = rawLabels
+			.map((label) => label.trim())
+			.filter(Boolean)
+			.map((label) => label.toLowerCase())
+			.filter((label) => label !== "none");
+		return Array.from(new Set(normalized));
+	}
+
+	private parseLabelsFromDescription(description: string): string[] {
+		const match = description.match(/^Labels:\s*(.+)$/im);
+		if (!match) return [];
+		return match[1]
+			.split(",")
+			.map((label) => label.trim())
+			.filter(Boolean);
+	}
+
+	private buildSuccessSummary(task: Task): string | null {
+		const parts = [];
+		if (task.sourceIssue) {
+			parts.push(`#${task.sourceIssue}`);
+		}
+		if (task.title) {
+			parts.push(task.title.trim());
+		} else if (task.description) {
+			const firstLine = task.description.split("\n")[0]?.trim();
+			if (firstLine) {
+				parts.push(firstLine);
+			}
+		}
+		if (task.result?.prNumber) {
+			parts.push(`PR #${task.result.prNumber}`);
+		}
+		if (parts.length === 0) return null;
+		const summary = parts.join(" — ");
+		return summary.length > 140 ? `${summary.slice(0, 137)}...` : summary;
+	}
+
+	private addSuccessfulPattern(label: string, summary: string): void {
+		const key = label.toLowerCase();
+		const existing = this.memory.successfulPatterns.get(key) || [];
+		if (!existing.includes(summary)) {
+			existing.unshift(summary);
+			if (existing.length > MAX_SUCCESS_PATTERNS_PER_LABEL) {
+				existing.pop();
+			}
+			this.memory.successfulPatterns.set(key, existing);
 		}
 	}
 
@@ -339,9 +427,25 @@ export class MemoryStore {
 		}
 	}
 
-	recordFileFailure(path: string): void {
+	private incrementProblematicFile(path: string): void {
 		const current = this.memory.problematicFiles.get(path) || 0;
 		this.memory.problematicFiles.set(path, current + 1);
+	}
+
+	private extractFilePaths(text: string): string[] {
+		if (!text) return [];
+		const matches = text.matchAll(FILE_PATH_REGEX);
+		const paths = new Set<string>();
+		for (const match of matches) {
+			const candidate = match[1];
+			if (!candidate.includes("/") || candidate.includes("://")) continue;
+			paths.add(candidate);
+		}
+		return Array.from(paths);
+	}
+
+	recordFileFailure(path: string): void {
+		this.incrementProblematicFile(path);
 		this.save();
 	}
 
@@ -357,7 +461,7 @@ export class MemoryStore {
 
 		// Add review patterns to avoid
 		if (this.memory.reviewPatterns.length > 0) {
-			lines.push("## Learned from past PR reviews:");
+			lines.push("## Learned from past PR reviews and failures:");
 			const sorted = [...this.memory.reviewPatterns].sort(
 				(a, b) => b.frequency - a.frequency,
 			);
@@ -367,9 +471,24 @@ export class MemoryStore {
 			lines.push("");
 		}
 
+		// Add successful patterns by label
+		if (this.memory.successfulPatterns.size > 0) {
+			lines.push("## Successful patterns by label:");
+			const sorted = Array.from(this.memory.successfulPatterns.entries())
+				.map(([label, patterns]) => ({ label, patterns }))
+				.sort((a, b) => b.patterns.length - a.patterns.length);
+			for (const entry of sorted.slice(0, SUCCESS_LABELS_TO_SHOW)) {
+				const examples = entry.patterns
+					.slice(0, SUCCESS_PATTERNS_PER_LABEL_TO_SHOW)
+					.join("; ");
+				lines.push(`- ${entry.label}: ${examples}`);
+			}
+			lines.push("");
+		}
+
 		// Add problematic files warning
 		const problematic = Array.from(this.memory.problematicFiles.entries())
-			.filter(([_, count]) => count >= 2)
+			.filter(([_, count]) => count >= 1)
 			.sort((a, b) => b[1] - a[1]);
 
 		if (problematic.length > 0) {

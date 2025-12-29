@@ -23,12 +23,9 @@ describe("Auto-Compaction", () => {
 
 	describe("getAutoCompactionConfig", () => {
 		it("returns default configuration", () => {
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_AUTOCOMPACT_ENABLED;
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_AUTOCOMPACT_PCT;
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_AUTOCOMPACT_MIN_MESSAGES;
+			Reflect.deleteProperty(process.env, "COMPOSER_AUTOCOMPACT_ENABLED");
+			Reflect.deleteProperty(process.env, "COMPOSER_AUTOCOMPACT_PCT");
+			Reflect.deleteProperty(process.env, "COMPOSER_AUTOCOMPACT_MIN_MESSAGES");
 
 			const config = getAutoCompactionConfig();
 

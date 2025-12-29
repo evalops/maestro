@@ -8,23 +8,31 @@
  * - Learning from outcomes
  */
 
+import { GitHubAuth } from "./github/auth.js";
+import { GitHubApiClient } from "./github/client.js";
+import { GitHubReporter, type TaskProgress } from "./github/reporter.js";
 import { MemoryStore } from "./memory/store.js";
 import { IssuePrioritizer } from "./triage/prioritizer.js";
 import type {
 	AgentConfig,
-	DEFAULT_CONFIG,
 	GitHubIssue,
 	GitHubPR,
+	IssueComment,
 	PRComment,
 	PRReview,
 	Task,
 } from "./types.js";
 import { GitHubWatcher } from "./watcher/github.js";
+import { GitHubWebhookServer } from "./webhooks/server.js";
 import { TaskExecutor } from "./worker/executor.js";
 
 export interface OrchestratorConfig extends AgentConfig {
-	githubToken: string;
+	githubToken?: string;
 }
+
+const COMMENT_TRIGGER_PATTERN = /(^|\s)(@composer|\/composer)\b/i;
+const MAX_PROCESSED_COMMENTS = 5000;
+const PROCESSED_COMMENT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 
 export class Orchestrator {
 	private config: OrchestratorConfig;
@@ -32,8 +40,11 @@ export class Orchestrator {
 	private watcher: GitHubWatcher;
 	private prioritizer: IssuePrioritizer;
 	private executor: TaskExecutor;
+	private webhookServer?: GitHubWebhookServer;
+	private reporter: GitHubReporter;
 	private isRunning = false;
 	private processingLock = false;
+	private processedIssueComments = new Map<number, number>();
 
 	constructor(config: OrchestratorConfig) {
 		this.config = config;
@@ -41,8 +52,30 @@ export class Orchestrator {
 		// Initialize components
 		this.memory = new MemoryStore(config.memoryDir);
 
-		this.watcher = new GitHubWatcher(config.githubToken, config, {
+		const auth = new GitHubAuth({
+			token: config.githubToken,
+			appId: config.githubAppId,
+			appPrivateKey: config.githubAppPrivateKey,
+			appPrivateKeyPath: config.githubAppPrivateKeyPath,
+			appInstallationId: config.githubAppInstallationId,
+			apiUrl: config.githubApiUrl,
+			owner: config.owner,
+			repo: config.repo,
+			userAgent: "evalops-github-agent",
+		});
+		const client = new GitHubApiClient({
+			owner: config.owner,
+			repo: config.repo,
+			auth,
+			apiUrl: config.githubApiUrl,
+			userAgent: "evalops-github-agent",
+		});
+		this.reporter = new GitHubReporter(client, config);
+
+		this.watcher = new GitHubWatcher(client, config, {
 			onNewIssue: (issue) => this.handleNewIssue(issue),
+			onIssueComment: (issue, comment) =>
+				this.handleIssueComment(issue, comment),
 			onPRMerged: (pr) => this.handlePRMerged(pr),
 			onPRClosed: (pr) => this.handlePRClosed(pr),
 			onPRReview: (pr, review) => this.handlePRReview(pr, review),
@@ -55,7 +88,31 @@ export class Orchestrator {
 			config,
 			memory: this.memory,
 			onLog: (msg) => console.log(msg),
+			githubClient: client,
+			reporter: this.reporter,
 		});
+
+		const shouldUseWebhooks =
+			config.webhookMode && config.webhookMode !== "poll";
+		if (shouldUseWebhooks && config.webhookSecret) {
+			const port = config.webhookPort ?? 8787;
+			const path = config.webhookPath ?? "/github/webhooks";
+			this.webhookServer = new GitHubWebhookServer({
+				config,
+				handlers: {
+					onNewIssue: (issue) => this.handleNewIssue(issue),
+					onIssueComment: (issue, comment) =>
+						this.handleIssueComment(issue, comment),
+					onPRMerged: (pr) => this.handlePRMerged(pr),
+					onPRClosed: (pr) => this.handlePRClosed(pr),
+					onPRReview: (pr, review) => this.handlePRReview(pr, review),
+					onPRComment: (pr, comment) => this.handlePRComment(pr, comment),
+				},
+				secret: config.webhookSecret,
+				port,
+				path,
+			});
+		}
 	}
 
 	async start(): Promise<void> {
@@ -68,8 +125,15 @@ export class Orchestrator {
 
 		this.isRunning = true;
 
-		// Start watching GitHub
-		await this.watcher.start();
+		// Start webhook server if configured
+		if (this.webhookServer) {
+			await this.webhookServer.start();
+		}
+
+		// Start watching GitHub unless webhook-only mode
+		if (this.config.webhookMode !== "webhook") {
+			await this.watcher.start();
+		}
 
 		// Resume any pending work
 		await this.resumePendingWork();
@@ -84,6 +148,9 @@ export class Orchestrator {
 		console.log("[orchestrator] Stopping...");
 		this.isRunning = false;
 		this.watcher.stop();
+		if (this.webhookServer) {
+			await this.webhookServer.stop();
+		}
 		this.memory.save();
 		console.log("[orchestrator] Stopped");
 	}
@@ -112,6 +179,53 @@ export class Orchestrator {
 		console.log(
 			`[orchestrator] Task created: ${task.id} (priority: ${task.priority})`,
 		);
+		await this.updateTaskReport(task, {
+			status: "queued",
+			steps: { queued: "done" },
+			updatedAt: new Date().toISOString(),
+			attempt: task.attempts,
+			maxAttempts: this.config.maxAttemptsPerTask,
+		});
+	}
+
+	private async handleIssueComment(
+		issue: GitHubIssue,
+		comment: IssueComment,
+	): Promise<void> {
+		if (!COMMENT_TRIGGER_PATTERN.test(comment.body)) {
+			return;
+		}
+		if (this.processedIssueComments.has(comment.id)) {
+			return;
+		}
+		this.processedIssueComments.set(comment.id, Date.now());
+		this.pruneProcessedIssueComments();
+		console.log(
+			`[orchestrator] Issue comment trigger on #${issue.number} by ${comment.author}`,
+		);
+
+		const triage = this.prioritizer.triage(issue);
+		if (!triage.shouldProcess) {
+			console.log(
+				`[orchestrator] Skipping comment-triggered task: ${triage.reason}`,
+			);
+			return;
+		}
+
+		const task = this.prioritizer.createTask(issue, triage);
+		task.description = `${task.description}\n\nTrigger comment by ${comment.author}:\n${comment.body}`;
+		this.memory.addTask(task);
+
+		console.log(
+			`[orchestrator] Task created from comment: ${task.id} (priority: ${task.priority})`,
+		);
+		await this.updateTaskReport(task, {
+			status: "queued",
+			steps: { queued: "done" },
+			updatedAt: new Date().toISOString(),
+			attempt: task.attempts,
+			maxAttempts: this.config.maxAttemptsPerTask,
+		});
 	}
 
 	private async handlePRMerged(pr: GitHubPR): Promise<void> {
@@ -265,6 +379,13 @@ export class Orchestrator {
 			console.log(`[orchestrator] Processing task: ${task.id}`);
 			this.memory.updateTaskStatus(task.id, "in_progress");
 			this.memory.incrementAttempts(task.id);
+			await this.updateTaskReport(task, {
+				status: "in_progress",
+				steps: { queued: "done" },
+				updatedAt: new Date().toISOString(),
+				attempt: task.attempts,
+				maxAttempts: this.config.maxAttemptsPerTask,
+			});
 
 			const result = await this.executor.execute(task);
 
@@ -272,6 +393,17 @@ export class Orchestrator {
 				this.memory.updateTaskStatus(task.id, "completed", result);
 				this.memory.recordOutcome(task.id, result.prNumber);
 				this.watcher.trackPR(result.prNumber);
+				await this.updateTaskReport(task, {
+					status: "completed",
+					steps: { queued: "done", pr: "done" },
+					prUrl: result.prUrl,
+					updatedAt: new Date().toISOString(),
+					attempt: task.attempts,
+					maxAttempts: this.config.maxAttemptsPerTask,
+					cost: result.cost,
+					tokensUsed: result.tokensUsed,
+					durationMs: result.duration,
+				});
 				console.log(
 					`[orchestrator] Task completed: ${task.id} -> PR #${result.prNumber}`,
 				);
@@ -279,11 +411,27 @@ export class Orchestrator {
 				// Don't mark as failed yet if we have retries left
 				if (task.attempts < this.config.maxAttemptsPerTask) {
 					this.memory.updateTaskStatus(task.id, "pending", result);
+					await this.updateTaskReport(task, {
+						status: "queued",
+						steps: { queued: "done" },
+						error: result.error,
+						updatedAt: new Date().toISOString(),
+						attempt: task.attempts,
+						maxAttempts: this.config.maxAttemptsPerTask,
+					});
 					console.log(
 						`[orchestrator] Task failed, will retry: ${task.id} (attempt ${task.attempts}/${this.config.maxAttemptsPerTask})`,
 					);
 				} else {
 					this.memory.updateTaskStatus(task.id, "failed", result);
+					await this.updateTaskReport(task, {
+						status: "failed",
+						steps: { queued: "done" },
+						error: result.error,
+						updatedAt: new Date().toISOString(),
+						attempt: task.attempts,
+						maxAttempts: this.config.maxAttemptsPerTask,
+					});
 					console.log(`[orchestrator] Task failed permanently: ${task.id}`);
 				}
 			}
@@ -298,11 +446,27 @@ export class Orchestrator {
 					error,
 					duration: 0,
 				});
+				await this.updateTaskReport(task, {
+					status: "queued",
+					steps: { queued: "done" },
+					error,
+					updatedAt: new Date().toISOString(),
+					attempt: task.attempts,
+					maxAttempts: this.config.maxAttemptsPerTask,
+				});
 			} else {
 				this.memory.updateTaskStatus(task.id, "failed", {
 					success: false,
 					error,
 					duration: 0,
+				});
+				await this.updateTaskReport(task, {
+					status: "failed",
+					steps: { queued: "done" },
+					error,
+					updatedAt: new Date().toISOString(),
+					attempt: task.attempts,
+					maxAttempts: this.config.maxAttemptsPerTask,
 				});
 			}
 		} finally {
@@ -335,6 +499,25 @@ export class Orchestrator {
 			}
 		}
 		return undefined;
+	}
+
+	private async updateTaskReport(
+		task: Task,
+		progress: TaskProgress,
+	): Promise<void> {
+		if (!task.sourceIssue) return;
+		try {
+			const commentId = await this.reporter.upsertIssueComment(task, progress);
+			if (commentId && commentId !== task.reportCommentId) {
+				this.memory.updateTask(task.id, { reportCommentId: commentId });
+				task.reportCommentId = commentId;
+			}
+		} catch (err) {
+			console.warn(
+				`[orchestrator] Failed to update issue comment for task ${task.id}:`,
+				err instanceof Error ? err.message : err,
+			);
+		}
 	}
 
 	private sleep(ms: number): Promise<void> {
@@ -377,10 +560,24 @@ export class Orchestrator {
 		// Create and immediately execute the task (don't just queue it)
 		const task = this.prioritizer.createTask(issue, triage);
 		this.memory.addTask(task);
+		await this.updateTaskReport(task, {
+			status: "queued",
+			steps: { queued: "done" },
+			updatedAt: new Date().toISOString(),
+			attempt: task.attempts,
+			maxAttempts: this.config.maxAttemptsPerTask,
+		});
 
 		console.log(`[orchestrator] Executing task: ${task.id}`);
 		this.memory.updateTaskStatus(task.id, "in_progress");
 		this.memory.incrementAttempts(task.id);
+		await this.updateTaskReport(task, {
+			status: "in_progress",
+			steps: { queued: "done" },
+			updatedAt: new Date().toISOString(),
+			attempt: task.attempts,
+			maxAttempts: this.config.maxAttemptsPerTask,
+		});
 
 		try {
 			const result = await this.executor.execute(task);
@@ -388,6 +585,17 @@ export class Orchestrator {
 			if (result.success && result.prNumber) {
 				this.memory.updateTaskStatus(task.id, "completed", result);
 				this.memory.recordOutcome(task.id, result.prNumber);
+				await this.updateTaskReport(task, {
+					status: "completed",
+					steps: { queued: "done", pr: "done" },
+					prUrl: result.prUrl,
+					updatedAt: new Date().toISOString(),
+					attempt: task.attempts,
+					maxAttempts: this.config.maxAttemptsPerTask,
+					cost: result.cost,
+					tokensUsed: result.tokensUsed,
+					durationMs: result.duration,
+				});
 				console.log(
 					`[orchestrator] Task completed: ${task.id} -> PR #${result.prNumber}`,
 				);
@@ -396,11 +604,27 @@ export class Orchestrator {
 				// Match processNextTask behavior: allow retries if attempts remain
 				if (task.attempts < this.config.maxAttemptsPerTask) {
 					this.memory.updateTaskStatus(task.id, "pending", result);
+					await this.updateTaskReport(task, {
+						status: "queued",
+						steps: { queued: "done" },
+						error: result.error,
+						updatedAt: new Date().toISOString(),
+						attempt: task.attempts,
+						maxAttempts: this.config.maxAttemptsPerTask,
+					});
 					console.log(
 						`[orchestrator] Task failed, will retry on next run (attempt ${task.attempts}/${this.config.maxAttemptsPerTask}): ${result.error}`,
 					);
 				} else {
 					this.memory.updateTaskStatus(task.id, "failed", result);
+					await this.updateTaskReport(task, {
+						status: "failed",
+						steps: { queued: "done" },
+						error: result.error,
+						updatedAt: new Date().toISOString(),
+						attempt: task.attempts,
+						maxAttempts: this.config.maxAttemptsPerTask,
+					});
 					console.log(
 						`[orchestrator] Task failed permanently: ${result.error}`,
 					);
@@ -418,6 +642,14 @@ export class Orchestrator {
 					error,
 					duration: 0,
 				});
+				await this.updateTaskReport(task, {
+					status: "queued",
+					steps: { queued: "done" },
+					error,
+					updatedAt: new Date().toISOString(),
+					attempt: task.attempts,
+					maxAttempts: this.config.maxAttemptsPerTask,
+				});
 				console.log(
 					`[orchestrator] Task will retry on next run (attempt ${task.attempts}/${this.config.maxAttemptsPerTask})`,
 				);
@@ -427,7 +659,36 @@ export class Orchestrator {
 					error,
 					duration: 0,
 				});
+				await this.updateTaskReport(task, {
+					status: "failed",
+					steps: { queued: "done" },
+					error,
+					updatedAt: new Date().toISOString(),
+					attempt: task.attempts,
+					maxAttempts: this.config.maxAttemptsPerTask,
+				});
 			}
+		}
+	}
+
+	private pruneProcessedIssueComments(): void {
+		const now = Date.now();
+
+		for (const [id, timestamp] of this.processedIssueComments) {
+			if (now - timestamp <= PROCESSED_COMMENT_TTL_MS) {
+				break;
+			}
+			this.processedIssueComments.delete(id);
+		}
+
+		while (this.processedIssueComments.size > MAX_PROCESSED_COMMENTS) {
+			const oldest = this.processedIssueComments.keys().next().value as
+				| number
+				| undefined;
+			if (oldest === undefined) {
+				break;
+			}
+			this.processedIssueComments.delete(oldest);
 		}
 	}
 
