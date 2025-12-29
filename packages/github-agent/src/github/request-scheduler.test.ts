@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { RequestScheduler } from "./request-scheduler.js";
 
 describe("RequestScheduler", () => {
@@ -27,10 +27,9 @@ describe("RequestScheduler", () => {
 	});
 
 	it("enforces minimum delay between mutating requests", async () => {
-		vi.useFakeTimers();
 		const scheduler = new RequestScheduler({
 			serialize: true,
-			minMutationDelayMs: 1000,
+			minMutationDelayMs: 20,
 		});
 		const startTimes: number[] = [];
 
@@ -47,10 +46,8 @@ describe("RequestScheduler", () => {
 			{ mutating: true },
 		);
 
-		await vi.runAllTimersAsync();
 		await Promise.all([first, second]);
 		expect(startTimes.length).toBe(2);
-		expect(startTimes[1] - startTimes[0]).toBeGreaterThanOrEqual(1000);
-		vi.useRealTimers();
+		expect(startTimes[1] - startTimes[0]).toBeGreaterThanOrEqual(20);
 	});
 });
