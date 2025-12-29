@@ -1,10 +1,12 @@
 name: slack-agent
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
       - "packages/slack-agent/**"
+      - "packages/ai/**"
       - ".github/workflows/slack-agent.yml"
 
 permissions:
