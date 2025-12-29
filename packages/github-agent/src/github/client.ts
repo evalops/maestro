@@ -253,14 +253,25 @@ export class GitHubApiClient {
 		}
 
 		if (missingIssues.size > 0) {
-			const fetched = await Promise.all(
-				Array.from(missingIssues).map((issueNumber) =>
-					this.getIssue(issueNumber).catch(() => null),
-				),
-			);
+			const missing = Array.from(missingIssues);
+			const fetched = await this.fetchIssuesByNumber(missing);
 			for (const issue of fetched) {
-				if (issue) {
-					issueByNumber.set(issue.number, issue);
+				issueByNumber.set(issue.number, issue);
+			}
+
+			const unresolved = missing.filter(
+				(issueNumber) => !issueByNumber.has(issueNumber),
+			);
+			if (unresolved.length > 0) {
+				const fallback = await Promise.all(
+					unresolved.map((issueNumber) =>
+						this.getIssue(issueNumber).catch(() => null),
+					),
+				);
+				for (const issue of fallback) {
+					if (issue) {
+						issueByNumber.set(issue.number, issue);
+					}
 				}
 			}
 		}
@@ -270,6 +281,116 @@ export class GitHubApiClient {
 			if (!issue) continue;
 			results.push({ issue, comment: entry.comment });
 		}
+		return results;
+	}
+
+	private async fetchIssuesByNumber(
+		issueNumbers: number[],
+	): Promise<GitHubIssue[]> {
+		const unique = Array.from(new Set(issueNumbers)).filter(
+			(number) => Number.isFinite(number) && number > 0,
+		);
+		if (unique.length === 0) return [];
+
+		const results: GitHubIssue[] = [];
+		for (const batch of chunkArray(unique, 40)) {
+			const queryParts: string[] = [];
+			const variableDefs: string[] = ["$owner: String!", "$repo: String!"];
+			const variables: Record<string, unknown> = {
+				owner: this.owner,
+				repo: this.repo,
+			};
+
+			batch.forEach((issueNumber, index) => {
+				const alias = `issue${index}`;
+				const variableName = `n${index}`;
+				queryParts.push(
+					`${alias}: issue(number: $${variableName}) { number title body state url createdAt updatedAt author { login } labels(first: 100) { nodes { name } } comments { totalCount } }`,
+				);
+				variableDefs.push(`$${variableName}: Int!`);
+				variables[variableName] = issueNumber;
+			});
+
+			const query = `
+        query(${variableDefs.join(", ")}) {
+          repository(owner: $owner, name: $repo) {
+            ${queryParts.join("\n")}
+          }
+          rateLimit {
+            remaining
+            resetAt
+          }
+        }
+      `;
+
+			type GraphqlIssue = {
+				number: number;
+				title: string;
+				body: string | null;
+				state: "OPEN" | "CLOSED";
+				url: string;
+				createdAt: string;
+				updatedAt: string;
+				author: { login: string } | null;
+				labels: { nodes: Array<{ name: string } | null> } | null;
+				comments: { totalCount: number } | null;
+			};
+
+			try {
+				const token = await this.auth.getToken();
+				const data = await this.octokit.graphql<
+					GraphqlResponse<{
+						repository: Record<string, GraphqlIssue | null>;
+						rateLimit?: { remaining: number; resetAt: string };
+					}>
+				>(query, {
+					...variables,
+					headers: {
+						Authorization:
+							token.type === "app"
+								? `Bearer ${token.token}`
+								: `token ${token.token}`,
+						"User-Agent": this.userAgent,
+						Accept: "application/vnd.github+json",
+						"X-GitHub-Api-Version": "2022-11-28",
+					},
+					uri: this.graphqlUrl,
+				});
+
+				if (data.rateLimit) {
+					this.rateLimit = {
+						remaining: data.rateLimit.remaining,
+						resetAt: Date.parse(data.rateLimit.resetAt),
+					};
+				}
+
+				for (const issue of Object.values(data.repository)) {
+					if (!issue) continue;
+					const labels =
+						issue.labels?.nodes
+							?.map((label) => label?.name)
+							.filter((label): label is string => Boolean(label)) ?? [];
+					results.push({
+						number: issue.number,
+						title: issue.title,
+						body: issue.body,
+						labels,
+						state: issue.state === "OPEN" ? "open" : "closed",
+						author: issue.author?.login || "unknown",
+						createdAt: issue.createdAt,
+						updatedAt: issue.updatedAt,
+						url: issue.url,
+						comments: issue.comments?.totalCount ?? 0,
+					});
+				}
+			} catch (error) {
+				console.warn(
+					"[github-client] GraphQL batch fetch failed; continuing with next batch and REST fallback.",
+					error,
+				);
+			}
+		}
+
 		return results;
 	}
 
@@ -673,7 +794,23 @@ export class GitHubApiClient {
 					}
 					continue;
 				}
-				return results;
+				const fallback = await this.request<T[]>(endpoint, requestParams, {
+					...options,
+					useEtag: false,
+				});
+				if (fallback.notModified) {
+					return results;
+				}
+				const fallbackData = fallback.data ?? [];
+				results.push(...fallbackData);
+				if (fallback.headers?.etag) {
+					this.etags.set(cacheKey, fallback.headers.etag);
+				}
+				this.responseCache.set(cacheKey, fallbackData);
+				if (fallbackData.length < perPage) {
+					break;
+				}
+				continue;
 			}
 			const data = response.data ?? [];
 			results.push(...data);
@@ -846,6 +983,15 @@ export class GitHubApiClient {
 		}
 		return `${endpoint}:${JSON.stringify(stableParams)}`;
 	}
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+	if (items.length === 0 || size <= 0) return [];
+	const chunks: T[][] = [];
+	for (let i = 0; i < items.length; i += size) {
+		chunks.push(items.slice(i, i + size));
+	}
+	return chunks;
 }
 
 function extractIssueNumber(issueUrl: string): number | null {

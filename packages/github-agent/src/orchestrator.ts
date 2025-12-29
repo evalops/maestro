@@ -94,6 +94,13 @@ export class Orchestrator {
 
 		const shouldUseWebhooks =
 			config.webhookMode && config.webhookMode !== "poll";
+		if (shouldUseWebhooks && !config.webhookSecret) {
+			const modeLabel =
+				config.webhookMode === "webhook" ? "webhook-only" : "hybrid";
+			console.warn(
+				`[orchestrator] Webhook ${modeLabel} mode requires a secret; falling back to polling.`,
+			);
+		}
 		if (shouldUseWebhooks && config.webhookSecret) {
 			const port = config.webhookPort ?? 8787;
 			const path = config.webhookPath ?? "/github/webhooks";
@@ -130,8 +137,10 @@ export class Orchestrator {
 			await this.webhookServer.start();
 		}
 
-		// Start watching GitHub unless webhook-only mode
-		if (this.config.webhookMode !== "webhook") {
+		// Start watching GitHub unless webhook-only mode with an active server
+		const webhookOnly =
+			this.config.webhookMode === "webhook" && Boolean(this.webhookServer);
+		if (!webhookOnly) {
 			await this.watcher.start();
 		}
 
