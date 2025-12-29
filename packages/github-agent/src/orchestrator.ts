@@ -31,6 +31,8 @@ export interface OrchestratorConfig extends AgentConfig {
 }
 
 const COMMENT_TRIGGER_PATTERN = /(^|\s)(@composer|\/composer)\b/i;
+const MAX_PROCESSED_COMMENTS = 5000;
+const PROCESSED_COMMENT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 
 export class Orchestrator {
 	private config: OrchestratorConfig;
@@ -42,7 +44,7 @@ export class Orchestrator {
 	private reporter: GitHubReporter;
 	private isRunning = false;
 	private processingLock = false;
-	private processedIssueComments = new Set<number>();
+	private processedIssueComments = new Map<number, number>();
 
 	constructor(config: OrchestratorConfig) {
 		this.config = config;
@@ -196,7 +198,8 @@ export class Orchestrator {
 		if (this.processedIssueComments.has(comment.id)) {
 			return;
 		}
-		this.processedIssueComments.add(comment.id);
+		this.processedIssueComments.set(comment.id, Date.now());
+		this.pruneProcessedIssueComments();
 		console.log(
 			`[orchestrator] Issue comment trigger on #${issue.number} by ${comment.author}`,
 		);
@@ -665,6 +668,27 @@ export class Orchestrator {
 					maxAttempts: this.config.maxAttemptsPerTask,
 				});
 			}
+		}
+	}
+
+	private pruneProcessedIssueComments(): void {
+		const now = Date.now();
+
+		for (const [id, timestamp] of this.processedIssueComments) {
+			if (now - timestamp <= PROCESSED_COMMENT_TTL_MS) {
+				break;
+			}
+			this.processedIssueComments.delete(id);
+		}
+
+		while (this.processedIssueComments.size > MAX_PROCESSED_COMMENTS) {
+			const oldest = this.processedIssueComments.keys().next().value as
+				| number
+				| undefined;
+			if (oldest === undefined) {
+				break;
+			}
+			this.processedIssueComments.delete(oldest);
 		}
 	}
 
