@@ -6,6 +6,7 @@ import {
 import { Webhooks } from "@octokit/webhooks";
 import type {
 	AgentConfig,
+	CheckRunEvent,
 	GitHubIssue,
 	GitHubPR,
 	IssueComment,
@@ -20,6 +21,7 @@ export interface WebhookHandlers {
 	onPRClosed: (pr: GitHubPR) => Promise<void>;
 	onPRReview: (pr: GitHubPR, review: PRReview) => Promise<void>;
 	onPRComment: (pr: GitHubPR, comment: PRComment) => Promise<void>;
+	onCheckRunRerequested?: (checkRun: CheckRunEvent) => Promise<void>;
 }
 
 export interface WebhookServerOptions {
@@ -177,6 +179,20 @@ export class GitHubWebhookServer {
 				});
 			},
 		);
+
+		this.webhooks.on("check_run.rerequested", async ({ payload }) => {
+			if (!this.handlers.onCheckRunRerequested) return;
+			const pullRequests = payload.check_run.pull_requests ?? [];
+			const event: CheckRunEvent = {
+				id: payload.check_run.id,
+				name: payload.check_run.name,
+				headSha: payload.check_run.head_sha,
+				pullRequests: pullRequests
+					.map((pr) => pr.number)
+					.filter((number): number => typeof number === "number"),
+			};
+			await this.handlers.onCheckRunRerequested(event);
+		});
 	}
 }
 

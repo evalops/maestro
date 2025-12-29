@@ -15,6 +15,7 @@ import { MemoryStore } from "./memory/store.js";
 import { IssuePrioritizer } from "./triage/prioritizer.js";
 import type {
 	AgentConfig,
+	CheckRunEvent,
 	GitHubIssue,
 	GitHubPR,
 	IssueComment,
@@ -114,6 +115,8 @@ export class Orchestrator {
 					onPRClosed: (pr) => this.handlePRClosed(pr),
 					onPRReview: (pr, review) => this.handlePRReview(pr, review),
 					onPRComment: (pr, comment) => this.handlePRComment(pr, comment),
+					onCheckRunRerequested: (checkRun) =>
+						this.handleCheckRunRerequested(checkRun),
 				},
 				secret: config.webhookSecret,
 				port,
@@ -316,6 +319,47 @@ export class Orchestrator {
 		}
 	}
 
+	private async handleCheckRunRerequested(
+		checkRun: CheckRunEvent,
+	): Promise<void> {
+		if (checkRun.name !== "Composer Agent") {
+			return;
+		}
+		console.log(
+			`[orchestrator] Check run re-requested: ${checkRun.id} (${checkRun.headSha})`,
+		);
+
+		const task =
+			this.memory.findTaskByCheckRunId(checkRun.id) ??
+			this.findTaskByPRs(checkRun.pullRequests);
+		if (!task) {
+			console.warn(`[orchestrator] No task found for check run ${checkRun.id}`);
+			return;
+		}
+		if (task.status === "in_progress") {
+			console.log(
+				`[orchestrator] Task already in progress for check run ${checkRun.id}`,
+			);
+			return;
+		}
+		if (task.attempts >= this.config.maxAttemptsPerTask) {
+			console.warn(
+				`[orchestrator] Max attempts reached for task ${task.id}; cannot rerun`,
+			);
+			return;
+		}
+
+		this.memory.updateTaskStatus(task.id, "pending");
+		await this.updateTaskReport(task, {
+			status: "queued",
+			steps: { queued: "done" },
+			updatedAt: new Date().toISOString(),
+			attempt: task.attempts,
+			maxAttempts: this.config.maxAttemptsPerTask,
+		});
+		console.log(`[orchestrator] Re-queued task ${task.id}`);
+	}
+
 	// =========================================================================
 	// Processing loop
 	// =========================================================================
@@ -506,6 +550,14 @@ export class Orchestrator {
 			if (outcome.prNumber === prNumber) {
 				return this.memory.getTask(outcome.taskId);
 			}
+		}
+		return undefined;
+	}
+
+	private findTaskByPRs(prNumbers: number[]): Task | undefined {
+		for (const prNumber of prNumbers) {
+			const task = this.findTaskByPR(prNumber);
+			if (task) return task;
 		}
 		return undefined;
 	}

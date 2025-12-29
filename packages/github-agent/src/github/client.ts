@@ -623,6 +623,26 @@ export class GitHubApiClient {
 		return { number: data.number, url: data.html_url };
 	}
 
+	async requestReviewers(input: {
+		pullNumber: number;
+		reviewers?: string[];
+		teamReviewers?: string[];
+	}): Promise<void> {
+		if (!input.reviewers?.length && !input.teamReviewers?.length) {
+			return;
+		}
+		await this.request(
+			"POST /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers",
+			{
+				owner: this.owner,
+				repo: this.repo,
+				pull_number: input.pullNumber,
+				reviewers: input.reviewers,
+				team_reviewers: input.teamReviewers,
+			},
+		);
+	}
+
 	async getBranchHeadSha(branch: string): Promise<string> {
 		const { data } = await this.request<{
 			object: { sha: string };
@@ -701,6 +721,7 @@ export class GitHubApiClient {
 			| "cancelled"
 			| "timed_out"
 			| "action_required";
+		detailsUrl?: string;
 		summary?: string;
 		text?: string;
 	}): Promise<void> {
@@ -712,6 +733,7 @@ export class GitHubApiClient {
 				check_run_id: input.id,
 				status: input.status,
 				conclusion: input.conclusion,
+				details_url: input.detailsUrl,
 				output: input.summary
 					? { title: "GitHub Agent", summary: input.summary, text: input.text }
 					: undefined,

@@ -185,6 +185,15 @@ export class MemoryStore {
 		return this.tasks.get(id);
 	}
 
+	findTaskByCheckRunId(checkRunId: number): Task | undefined {
+		for (const task of this.tasks.values()) {
+			if (task.checkRunId === checkRunId) {
+				return task;
+			}
+		}
+		return undefined;
+	}
+
 	updateTask(id: string, update: Partial<Task>): Task | undefined {
 		const task = this.tasks.get(id);
 		if (!task) return undefined;

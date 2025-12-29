@@ -106,6 +106,7 @@ export class TaskExecutor {
 			}
 			progress.prUrl = pr.url;
 
+			await this.applyPrMetadata(pr.number);
 			await this.publishCheckRun(task, progress, branchName, pr);
 
 			progress.status = "completed";
@@ -366,6 +367,7 @@ ${diff}
 					head: branchName,
 					base: this.config.baseBranch,
 					body,
+					draft: this.config.draftPullRequests,
 				});
 			} catch (err) {
 				this.log(
@@ -381,6 +383,7 @@ ${diff}
 		title: string,
 		body: string,
 	): Promise<{ number: number; url: string }> {
+		const draftFlag = this.config.draftPullRequests ? ["--draft"] : [];
 		const output = await this.runCommand("gh", [
 			"pr",
 			"create",
@@ -390,6 +393,7 @@ ${diff}
 			body,
 			"--base",
 			this.config.baseBranch,
+			...draftFlag,
 		]);
 
 		// Parse PR URL from output
@@ -406,6 +410,38 @@ ${diff}
 		}
 
 		return { number: prNumber, url: prUrl };
+	}
+
+	private async applyPrMetadata(prNumber: number): Promise<void> {
+		if (!this.githubClient) return;
+		const labels = this.config.prLabels?.filter(Boolean) ?? [];
+		const reviewers = this.config.requestReviewers?.filter(Boolean) ?? [];
+		const teamReviewers =
+			this.config.requestTeamReviewers?.filter(Boolean) ?? [];
+
+		if (labels.length) {
+			try {
+				await this.githubClient.addIssueLabels(prNumber, labels);
+			} catch (err) {
+				this.log(
+					`[executor] Failed to apply PR labels: ${err instanceof Error ? err.message : err}`,
+				);
+			}
+		}
+
+		if (reviewers.length || teamReviewers.length) {
+			try {
+				await this.githubClient.requestReviewers({
+					pullNumber: prNumber,
+					reviewers,
+					teamReviewers,
+				});
+			} catch (err) {
+				this.log(
+					`[executor] Failed to request reviewers: ${err instanceof Error ? err.message : err}`,
+				);
+			}
+		}
 	}
 
 	private buildPRBody(task: Task): string {
@@ -510,20 +546,33 @@ ${diff}
 			const headSha = await this.githubClient.getBranchHeadSha(branchName);
 			const summary = this.buildCheckRunSummary(task, progress, pr);
 			const text = progress.error ? `Error: ${progress.error}` : undefined;
+			const conclusion =
+				progress.status === "failed" || progress.error ? "failure" : "success";
 			const supportsCheckRuns = await this.githubClient.supportsCheckRuns();
 			if (supportsCheckRuns) {
 				try {
-					const checkRun = await this.githubClient.createCheckRun({
-						name: "Composer Agent",
-						headSha,
-						status: "completed",
-						conclusion: "success",
-						detailsUrl: pr.url,
-						summary,
-						text,
-					});
-					this.memory.updateTask(task.id, { checkRunId: checkRun.id });
-					task.checkRunId = checkRun.id;
+					if (task.checkRunId) {
+						await this.githubClient.updateCheckRun({
+							id: task.checkRunId,
+							status: "completed",
+							conclusion,
+							detailsUrl: pr.url,
+							summary,
+							text,
+						});
+					} else {
+						const checkRun = await this.githubClient.createCheckRun({
+							name: "Composer Agent",
+							headSha,
+							status: "completed",
+							conclusion,
+							detailsUrl: pr.url,
+							summary,
+							text,
+						});
+						this.memory.updateTask(task.id, { checkRunId: checkRun.id });
+						task.checkRunId = checkRun.id;
+					}
 					return;
 				} catch (err) {
 					this.log(
@@ -534,8 +583,11 @@ ${diff}
 
 			await this.githubClient.createCommitStatus({
 				sha: headSha,
-				state: "success",
-				description: "Composer Agent completed successfully",
+				state: conclusion === "success" ? "success" : "failure",
+				description:
+					conclusion === "success"
+						? "Composer Agent completed successfully"
+						: "Composer Agent reported failures",
 				context: "Composer Agent",
 				targetUrl: pr.url,
 			});
