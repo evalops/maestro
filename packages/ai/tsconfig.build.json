@@ -21,6 +21,7 @@
 		"../../src/config/constants.ts",
 		"../../src/config/firewall-config.ts",
 		"../../src/config/framework.ts",
+		"../../src/config/index.ts",
 		"../../src/config/lsp-config.ts",
 		"../../src/config/toml-config.ts",
 		"../../src/oauth/**/*.ts",
