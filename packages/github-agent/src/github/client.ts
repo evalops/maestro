@@ -598,6 +598,29 @@ export class GitHubApiClient {
 		);
 	}
 
+	async findOpenPullRequestByBranch(
+		branch: string,
+	): Promise<{ number: number; url: string } | null> {
+		const head = `${this.owner}:${branch}`;
+		const { data } = await this.request<
+			{
+				number: number;
+				html_url: string;
+				state: string;
+			}[]
+		>("GET /repos/{owner}/{repo}/pulls", {
+			owner: this.owner,
+			repo: this.repo,
+			state: "open",
+			head,
+		});
+		if (!data || data.length === 0) {
+			return null;
+		}
+		const pr = data[0];
+		return { number: pr.number, url: pr.html_url };
+	}
+
 	async createPullRequest(input: {
 		title: string;
 		head: string;
@@ -720,7 +743,8 @@ export class GitHubApiClient {
 			| "neutral"
 			| "cancelled"
 			| "timed_out"
-			| "action_required";
+			| "action_required"
+			| null;
 		detailsUrl?: string;
 		summary?: string;
 		text?: string;

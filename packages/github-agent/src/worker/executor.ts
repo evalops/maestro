@@ -361,6 +361,13 @@ ${diff}
 		const body = this.buildPRBody(task);
 
 		if (this.githubClient) {
+			const existing = await this.findExistingPr(branchName);
+			if (existing) {
+				this.log(
+					`[executor] Reusing existing PR #${existing.number} for ${branchName}`,
+				);
+				return existing;
+			}
 			try {
 				return await this.githubClient.createPullRequest({
 					title,
@@ -370,19 +377,34 @@ ${diff}
 					draft: this.config.draftPullRequests,
 				});
 			} catch (err) {
+				const existingAfterError = await this.findExistingPr(branchName);
+				if (existingAfterError) {
+					this.log(
+						`[executor] Found existing PR #${existingAfterError.number} after create failure`,
+					);
+					return existingAfterError;
+				}
 				this.log(
 					`[executor] GitHub API PR creation failed, falling back to gh: ${err instanceof Error ? err.message : err}`,
 				);
 			}
 		}
 
-		return this.createPrViaGh(title, body);
+		return this.createPrViaGh(title, body, branchName);
 	}
 
 	private async createPrViaGh(
 		title: string,
 		body: string,
+		branchName: string,
 	): Promise<{ number: number; url: string }> {
+		const existing = await this.findExistingPrViaGh(branchName);
+		if (existing) {
+			this.log(
+				`[executor] Reusing existing PR #${existing.number} for ${branchName}`,
+			);
+			return existing;
+		}
 		const draftFlag = this.config.draftPullRequests ? ["--draft"] : [];
 		const output = await this.runCommand("gh", [
 			"pr",
@@ -410,6 +432,42 @@ ${diff}
 		}
 
 		return { number: prNumber, url: prUrl };
+	}
+
+	private async findExistingPr(
+		branchName: string,
+	): Promise<{ number: number; url: string } | null> {
+		if (!this.githubClient) return null;
+		try {
+			return await this.githubClient.findOpenPullRequestByBranch(branchName);
+		} catch (err) {
+			this.log(
+				`[executor] Failed to lookup existing PR: ${err instanceof Error ? err.message : err}`,
+			);
+			return null;
+		}
+	}
+
+	private async findExistingPrViaGh(
+		branchName: string,
+	): Promise<{ number: number; url: string } | null> {
+		try {
+			const output = await this.runCommand("gh", [
+				"pr",
+				"view",
+				"--json",
+				"number,url",
+				"--head",
+				branchName,
+			]);
+			const data = JSON.parse(output) as { number?: number; url?: string };
+			if (!data?.number || !data?.url) {
+				return null;
+			}
+			return { number: data.number, url: data.url };
+		} catch {
+			return null;
+		}
 	}
 
 	private async applyPrMetadata(prNumber: number): Promise<void> {

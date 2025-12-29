@@ -38,6 +38,7 @@ const PROCESSED_COMMENT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 export class Orchestrator {
 	private config: OrchestratorConfig;
 	private memory: MemoryStore;
+	private githubClient: GitHubApiClient;
 	private watcher: GitHubWatcher;
 	private prioritizer: IssuePrioritizer;
 	private executor: TaskExecutor;
@@ -71,6 +72,7 @@ export class Orchestrator {
 			apiUrl: config.githubApiUrl,
 			userAgent: "evalops-github-agent",
 		});
+		this.githubClient = client;
 		this.reporter = new GitHubReporter(client, config);
 
 		this.watcher = new GitHubWatcher(client, config, {
@@ -350,6 +352,13 @@ export class Orchestrator {
 			console.log(
 				`[orchestrator] Task already in progress for check run ${checkRun.id}`,
 			);
+			await this.publishCheckRunStatus(checkRun, task, "in_progress").catch(
+				(err) => {
+					console.warn(
+						`[orchestrator] Failed to update check run ${checkRun.id} to in_progress: ${err instanceof Error ? err.message : err}`,
+					);
+				},
+			);
 			return;
 		}
 		if (task.attempts >= this.config.maxAttemptsPerTask) {
@@ -359,15 +368,48 @@ export class Orchestrator {
 			return;
 		}
 
+		const nextAttempt = task.attempts + 1;
 		this.memory.updateTaskStatus(task.id, "pending");
+		await this.publishCheckRunStatus(checkRun, task, "queued").catch((err) => {
+			console.warn(
+				`[orchestrator] Failed to update check run ${checkRun.id} to queued: ${err instanceof Error ? err.message : err}`,
+			);
+		});
 		await this.updateTaskReport(task, {
 			status: "queued",
 			steps: { queued: "done" },
 			updatedAt: new Date().toISOString(),
-			attempt: task.attempts,
+			attempt: nextAttempt,
 			maxAttempts: this.config.maxAttemptsPerTask,
 		});
 		console.log(`[orchestrator] Re-queued task ${task.id}`);
+	}
+
+	private async publishCheckRunStatus(
+		checkRun: CheckRunEvent,
+		task: Task,
+		status: "queued" | "in_progress",
+	): Promise<void> {
+		const supportsCheckRuns = await this.githubClient.supportsCheckRuns();
+		if (supportsCheckRuns) {
+			await this.githubClient.updateCheckRun({
+				id: checkRun.id,
+				status,
+				conclusion: null,
+			});
+			return;
+		}
+
+		await this.githubClient.createCommitStatus({
+			sha: checkRun.headSha,
+			state: "pending",
+			description:
+				status === "in_progress"
+					? "Composer Agent rerun in progress"
+					: "Composer Agent queued for rerun",
+			context: "Composer Agent",
+			targetUrl: task.result?.prUrl,
+		});
 	}
 
 	// =========================================================================
