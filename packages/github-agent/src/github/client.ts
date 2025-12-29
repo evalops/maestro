@@ -77,10 +77,9 @@ class EtagCache {
 	private prune() {
 		const now = Date.now();
 		for (const [cacheKey, entry] of this.store) {
-			if (now - entry.updatedAt <= this.ttlMs) {
-				break;
+			if (now - entry.updatedAt > this.ttlMs) {
+				this.store.delete(cacheKey);
 			}
-			this.store.delete(cacheKey);
 		}
 
 		while (this.store.size > this.maxEntries) {
