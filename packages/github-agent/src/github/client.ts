@@ -48,13 +48,15 @@ type GraphqlResponse<T> = {
 
 class EtagCache {
 	private readonly ttlMs: number;
+	private readonly maxEntries: number;
 	private readonly store = new Map<
 		string,
 		{ etag: string; updatedAt: number }
 	>();
 
-	constructor(ttlMs = 5 * 60 * 1000) {
+	constructor(ttlMs = 5 * 60 * 1000, maxEntries = 1000) {
 		this.ttlMs = ttlMs;
+		this.maxEntries = maxEntries;
 	}
 
 	get(key: string): string | undefined {
@@ -69,6 +71,22 @@ class EtagCache {
 
 	set(key: string, etag: string) {
 		this.store.set(key, { etag, updatedAt: Date.now() });
+		this.prune();
+	}
+
+	private prune() {
+		const now = Date.now();
+		for (const [cacheKey, entry] of this.store) {
+			if (now - entry.updatedAt > this.ttlMs) {
+				this.store.delete(cacheKey);
+			}
+		}
+
+		while (this.store.size > this.maxEntries) {
+			const oldest = this.store.keys().next().value as string | undefined;
+			if (!oldest) break;
+			this.store.delete(oldest);
+		}
 	}
 }
 
