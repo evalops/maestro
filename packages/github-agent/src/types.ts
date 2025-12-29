@@ -47,6 +47,13 @@ export interface PRComment {
 	createdAt: string;
 }
 
+export interface CheckRunEvent {
+	id: number;
+	name: string;
+	headSha: string;
+	pullRequests: number[];
+}
+
 export interface IssueComment {
 	id: number;
 	issueNumber: number;
@@ -75,6 +82,7 @@ export interface Task {
 	result?: TaskResult;
 	reportCommentId?: number;
 	checkRunId?: number;
+	queuedAttempt?: number;
 }
 
 export interface TaskResult {
@@ -184,6 +192,12 @@ export interface AgentConfig {
 	webhookPort?: number;
 	webhookPath?: string;
 	webhookMode?: "poll" | "webhook" | "hybrid";
+
+	// PR customization
+	draftPullRequests?: boolean;
+	prLabels?: string[];
+	requestReviewers?: string[];
+	requestTeamReviewers?: string[];
 }
 
 export const DEFAULT_CONFIG: Partial<AgentConfig> = {
@@ -199,4 +213,5 @@ export const DEFAULT_CONFIG: Partial<AgentConfig> = {
 	maxTokensPerTask: 500_000,
 	dailyBudget: 50,
 	webhookMode: "poll",
+	draftPullRequests: false,
 };

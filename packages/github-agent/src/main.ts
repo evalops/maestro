@@ -36,6 +36,16 @@ function printUsage(): void {
 	console.error("  --no-tests              Skip test requirement");
 	console.error("  --no-lint               Skip lint requirement");
 	console.error("  --no-self-review        Skip self-review step");
+	console.error("  --draft-pr              Create pull requests as drafts");
+	console.error(
+		"  --pr-labels <labels>    Comma-separated labels to apply to PRs",
+	);
+	console.error(
+		"  --reviewers <users>     Comma-separated GitHub usernames to request review",
+	);
+	console.error(
+		"  --team-reviewers <teams> Comma-separated team slugs to request review",
+	);
 	console.error(
 		"  --issue <number>        Process a specific issue immediately and exit",
 	);
@@ -144,6 +154,26 @@ function parseArgs(): {
 			config.requireLint = false;
 		} else if (arg === "--no-self-review") {
 			config.selfReview = false;
+		} else if (arg === "--draft-pr") {
+			config.draftPullRequests = true;
+		} else if (arg === "--pr-labels") {
+			config.prLabels = requireArg(arg, i)
+				.split(",")
+				.map((label) => label.trim())
+				.filter(Boolean);
+			i++;
+		} else if (arg === "--reviewers") {
+			config.requestReviewers = requireArg(arg, i)
+				.split(",")
+				.map((reviewer) => reviewer.trim())
+				.filter(Boolean);
+			i++;
+		} else if (arg === "--team-reviewers") {
+			config.requestTeamReviewers = requireArg(arg, i)
+				.split(",")
+				.map((reviewer) => reviewer.trim())
+				.filter(Boolean);
+			i++;
 		} else if (arg === "--issue") {
 			singleIssue = Number.parseInt(requireArg(arg, i), 10);
 			i++;

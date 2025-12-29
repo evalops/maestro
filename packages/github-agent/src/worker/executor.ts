@@ -106,6 +106,7 @@ export class TaskExecutor {
 			}
 			progress.prUrl = pr.url;
 
+			await this.applyPrMetadata(pr.number);
 			await this.publishCheckRun(task, progress, branchName, pr);
 
 			progress.status = "completed";
@@ -360,27 +361,51 @@ ${diff}
 		const body = this.buildPRBody(task);
 
 		if (this.githubClient) {
+			const existing = await this.findExistingPr(branchName);
+			if (existing) {
+				this.log(
+					`[executor] Reusing existing PR #${existing.number} for ${branchName}`,
+				);
+				return existing;
+			}
 			try {
 				return await this.githubClient.createPullRequest({
 					title,
 					head: branchName,
 					base: this.config.baseBranch,
 					body,
+					draft: this.config.draftPullRequests,
 				});
 			} catch (err) {
+				const existingAfterError = await this.findExistingPr(branchName);
+				if (existingAfterError) {
+					this.log(
+						`[executor] Found existing PR #${existingAfterError.number} after create failure`,
+					);
+					return existingAfterError;
+				}
 				this.log(
 					`[executor] GitHub API PR creation failed, falling back to gh: ${err instanceof Error ? err.message : err}`,
 				);
 			}
 		}
 
-		return this.createPrViaGh(title, body);
+		return this.createPrViaGh(title, body, branchName);
 	}
 
 	private async createPrViaGh(
 		title: string,
 		body: string,
+		branchName: string,
 	): Promise<{ number: number; url: string }> {
+		const existing = await this.findExistingPrViaGh(branchName);
+		if (existing) {
+			this.log(
+				`[executor] Reusing existing PR #${existing.number} for ${branchName}`,
+			);
+			return existing;
+		}
+		const draftFlag = this.config.draftPullRequests ? ["--draft"] : [];
 		const output = await this.runCommand("gh", [
 			"pr",
 			"create",
@@ -390,6 +415,7 @@ ${diff}
 			body,
 			"--base",
 			this.config.baseBranch,
+			...draftFlag,
 		]);
 
 		// Parse PR URL from output
@@ -406,6 +432,79 @@ ${diff}
 		}
 
 		return { number: prNumber, url: prUrl };
+	}
+
+	private async findExistingPr(
+		branchName: string,
+	): Promise<{ number: number; url: string } | null> {
+		if (!this.githubClient) return null;
+		try {
+			return await this.githubClient.findOpenPullRequestByBranch(branchName);
+		} catch (err) {
+			this.log(
+				`[executor] Failed to lookup existing PR: ${err instanceof Error ? err.message : err}`,
+			);
+			return null;
+		}
+	}
+
+	private async findExistingPrViaGh(
+		branchName: string,
+	): Promise<{ number: number; url: string } | null> {
+		try {
+			const output = await this.runCommand("gh", [
+				"pr",
+				"list",
+				"--state",
+				"open",
+				"--json",
+				"number,url",
+				"--head",
+				branchName,
+				"--limit",
+				"1",
+			]);
+			const data = JSON.parse(output) as { number?: number; url?: string }[];
+			const pr = data?.[0];
+			if (!pr?.number || !pr?.url) {
+				return null;
+			}
+			return { number: pr.number, url: pr.url };
+		} catch {
+			return null;
+		}
+	}
+
+	private async applyPrMetadata(prNumber: number): Promise<void> {
+		if (!this.githubClient) return;
+		const labels = this.config.prLabels?.filter(Boolean) ?? [];
+		const reviewers = this.config.requestReviewers?.filter(Boolean) ?? [];
+		const teamReviewers =
+			this.config.requestTeamReviewers?.filter(Boolean) ?? [];
+
+		if (labels.length) {
+			try {
+				await this.githubClient.addIssueLabels(prNumber, labels);
+			} catch (err) {
+				this.log(
+					`[executor] Failed to apply PR labels: ${err instanceof Error ? err.message : err}`,
+				);
+			}
+		}
+
+		if (reviewers.length || teamReviewers.length) {
+			try {
+				await this.githubClient.requestReviewers({
+					pullNumber: prNumber,
+					reviewers,
+					teamReviewers,
+				});
+			} catch (err) {
+				this.log(
+					`[executor] Failed to request reviewers: ${err instanceof Error ? err.message : err}`,
+				);
+			}
+		}
 	}
 
 	private buildPRBody(task: Task): string {
@@ -510,20 +609,33 @@ ${diff}
 			const headSha = await this.githubClient.getBranchHeadSha(branchName);
 			const summary = this.buildCheckRunSummary(task, progress, pr);
 			const text = progress.error ? `Error: ${progress.error}` : undefined;
+			const conclusion =
+				progress.status === "failed" || progress.error ? "failure" : "success";
 			const supportsCheckRuns = await this.githubClient.supportsCheckRuns();
 			if (supportsCheckRuns) {
 				try {
-					const checkRun = await this.githubClient.createCheckRun({
-						name: "Composer Agent",
-						headSha,
-						status: "completed",
-						conclusion: "success",
-						detailsUrl: pr.url,
-						summary,
-						text,
-					});
-					this.memory.updateTask(task.id, { checkRunId: checkRun.id });
-					task.checkRunId = checkRun.id;
+					if (task.checkRunId) {
+						await this.githubClient.updateCheckRun({
+							id: task.checkRunId,
+							status: "completed",
+							conclusion,
+							detailsUrl: pr.url,
+							summary,
+							text,
+						});
+					} else {
+						const checkRun = await this.githubClient.createCheckRun({
+							name: "Composer Agent",
+							headSha,
+							status: "completed",
+							conclusion,
+							detailsUrl: pr.url,
+							summary,
+							text,
+						});
+						this.memory.updateTask(task.id, { checkRunId: checkRun.id });
+						task.checkRunId = checkRun.id;
+					}
 					return;
 				} catch (err) {
 					this.log(
@@ -534,8 +646,11 @@ ${diff}
 
 			await this.githubClient.createCommitStatus({
 				sha: headSha,
-				state: "success",
-				description: "Composer Agent completed successfully",
+				state: conclusion === "success" ? "success" : "failure",
+				description:
+					conclusion === "success"
+						? "Composer Agent completed successfully"
+						: "Composer Agent reported failures",
 				context: "Composer Agent",
 				targetUrl: pr.url,
 			});

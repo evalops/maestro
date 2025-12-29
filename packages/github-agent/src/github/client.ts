@@ -598,6 +598,29 @@ export class GitHubApiClient {
 		);
 	}
 
+	async findOpenPullRequestByBranch(
+		branch: string,
+	): Promise<{ number: number; url: string } | null> {
+		const head = `${this.owner}:${branch}`;
+		const { data } = await this.request<
+			{
+				number: number;
+				html_url: string;
+				state: string;
+			}[]
+		>("GET /repos/{owner}/{repo}/pulls", {
+			owner: this.owner,
+			repo: this.repo,
+			state: "open",
+			head,
+		});
+		if (!data || data.length === 0) {
+			return null;
+		}
+		const pr = data[0];
+		return { number: pr.number, url: pr.html_url };
+	}
+
 	async createPullRequest(input: {
 		title: string;
 		head: string;
@@ -621,6 +644,26 @@ export class GitHubApiClient {
 			throw new Error("Failed to create pull request");
 		}
 		return { number: data.number, url: data.html_url };
+	}
+
+	async requestReviewers(input: {
+		pullNumber: number;
+		reviewers?: string[];
+		teamReviewers?: string[];
+	}): Promise<void> {
+		if (!input.reviewers?.length && !input.teamReviewers?.length) {
+			return;
+		}
+		await this.request(
+			"POST /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers",
+			{
+				owner: this.owner,
+				repo: this.repo,
+				pull_number: input.pullNumber,
+				reviewers: input.reviewers,
+				team_reviewers: input.teamReviewers,
+			},
+		);
 	}
 
 	async getBranchHeadSha(branch: string): Promise<string> {
@@ -700,7 +743,9 @@ export class GitHubApiClient {
 			| "neutral"
 			| "cancelled"
 			| "timed_out"
-			| "action_required";
+			| "action_required"
+			| null;
+		detailsUrl?: string;
 		summary?: string;
 		text?: string;
 	}): Promise<void> {
@@ -712,6 +757,7 @@ export class GitHubApiClient {
 				check_run_id: input.id,
 				status: input.status,
 				conclusion: input.conclusion,
+				details_url: input.detailsUrl,
 				output: input.summary
 					? { title: "GitHub Agent", summary: input.summary, text: input.text }
 					: undefined,

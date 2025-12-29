@@ -15,6 +15,7 @@ import { MemoryStore } from "./memory/store.js";
 import { IssuePrioritizer } from "./triage/prioritizer.js";
 import type {
 	AgentConfig,
+	CheckRunEvent,
 	GitHubIssue,
 	GitHubPR,
 	IssueComment,
@@ -37,6 +38,7 @@ const PROCESSED_COMMENT_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 export class Orchestrator {
 	private config: OrchestratorConfig;
 	private memory: MemoryStore;
+	private githubClient: GitHubApiClient;
 	private watcher: GitHubWatcher;
 	private prioritizer: IssuePrioritizer;
 	private executor: TaskExecutor;
@@ -70,6 +72,7 @@ export class Orchestrator {
 			apiUrl: config.githubApiUrl,
 			userAgent: "evalops-github-agent",
 		});
+		this.githubClient = client;
 		this.reporter = new GitHubReporter(client, config);
 
 		this.watcher = new GitHubWatcher(client, config, {
@@ -114,6 +117,8 @@ export class Orchestrator {
 					onPRClosed: (pr) => this.handlePRClosed(pr),
 					onPRReview: (pr, review) => this.handlePRReview(pr, review),
 					onPRComment: (pr, comment) => this.handlePRComment(pr, comment),
+					onCheckRunRerequested: (checkRun) =>
+						this.handleCheckRunRerequested(checkRun),
 				},
 				secret: config.webhookSecret,
 				port,
@@ -316,6 +321,101 @@ export class Orchestrator {
 		}
 	}
 
+	private async handleCheckRunRerequested(
+		checkRun: CheckRunEvent,
+	): Promise<void> {
+		if (checkRun.name !== "Composer Agent") {
+			return;
+		}
+		console.log(
+			`[orchestrator] Check run re-requested: ${checkRun.id} (${checkRun.headSha})`,
+		);
+
+		const task =
+			this.memory.findTaskByCheckRunId(checkRun.id) ??
+			this.findTaskByPRs(checkRun.pullRequests);
+		if (!task) {
+			console.warn(`[orchestrator] No task found for check run ${checkRun.id}`);
+			return;
+		}
+		if (task.checkRunId && task.checkRunId !== checkRun.id) {
+			console.warn(
+				`[orchestrator] Check run ${checkRun.id} does not match task ${task.id} check run ${task.checkRunId}`,
+			);
+			return;
+		}
+		if (!task.checkRunId) {
+			this.memory.updateTask(task.id, { checkRunId: checkRun.id });
+			task.checkRunId = checkRun.id;
+		}
+		if (task.status === "in_progress") {
+			console.log(
+				`[orchestrator] Task already in progress for check run ${checkRun.id}`,
+			);
+			await this.publishCheckRunStatus(checkRun, task, "in_progress").catch(
+				(err) => {
+					console.warn(
+						`[orchestrator] Failed to update check run ${checkRun.id} to in_progress: ${err instanceof Error ? err.message : err}`,
+					);
+				},
+			);
+			return;
+		}
+		const nextAttempt = task.queuedAttempt ?? task.attempts + 1;
+		if (nextAttempt > this.config.maxAttemptsPerTask) {
+			console.warn(
+				`[orchestrator] Max attempts reached for task ${task.id}; cannot rerun`,
+			);
+			return;
+		}
+
+		this.memory.updateTaskStatus(task.id, "pending");
+		if (!task.queuedAttempt) {
+			this.memory.updateTask(task.id, { queuedAttempt: nextAttempt });
+			task.queuedAttempt = nextAttempt;
+		}
+		await this.publishCheckRunStatus(checkRun, task, "queued").catch((err) => {
+			console.warn(
+				`[orchestrator] Failed to update check run ${checkRun.id} to queued: ${err instanceof Error ? err.message : err}`,
+			);
+		});
+		await this.updateTaskReport(task, {
+			status: "queued",
+			steps: { queued: "done" },
+			updatedAt: new Date().toISOString(),
+			attempt: nextAttempt,
+			maxAttempts: this.config.maxAttemptsPerTask,
+		});
+		console.log(`[orchestrator] Re-queued task ${task.id}`);
+	}
+
+	private async publishCheckRunStatus(
+		checkRun: CheckRunEvent,
+		task: Task,
+		status: "queued" | "in_progress",
+	): Promise<void> {
+		const supportsCheckRuns = await this.githubClient.supportsCheckRuns();
+		if (supportsCheckRuns) {
+			await this.githubClient.updateCheckRun({
+				id: checkRun.id,
+				status,
+				conclusion: null,
+			});
+			return;
+		}
+
+		await this.githubClient.createCommitStatus({
+			sha: checkRun.headSha,
+			state: "pending",
+			description:
+				status === "in_progress"
+					? "Composer Agent rerun in progress"
+					: "Composer Agent queued for rerun",
+			context: "Composer Agent",
+			targetUrl: task.result?.prUrl,
+		});
+	}
+
 	// =========================================================================
 	// Processing loop
 	// =========================================================================
@@ -387,7 +487,16 @@ export class Orchestrator {
 		try {
 			console.log(`[orchestrator] Processing task: ${task.id}`);
 			this.memory.updateTaskStatus(task.id, "in_progress");
-			this.memory.incrementAttempts(task.id);
+			if (task.queuedAttempt && task.queuedAttempt > task.attempts) {
+				this.memory.updateTask(task.id, {
+					attempts: task.queuedAttempt,
+					queuedAttempt: undefined,
+				});
+				task.attempts = task.queuedAttempt;
+				task.queuedAttempt = undefined;
+			} else {
+				this.memory.incrementAttempts(task.id);
+			}
 			await this.updateTaskReport(task, {
 				status: "in_progress",
 				steps: { queued: "done" },
@@ -506,6 +615,14 @@ export class Orchestrator {
 			if (outcome.prNumber === prNumber) {
 				return this.memory.getTask(outcome.taskId);
 			}
+		}
+		return undefined;
+	}
+
+	private findTaskByPRs(prNumbers: number[]): Task | undefined {
+		for (const prNumber of prNumbers) {
+			const task = this.findTaskByPR(prNumber);
+			if (task) return task;
 		}
 		return undefined;
 	}

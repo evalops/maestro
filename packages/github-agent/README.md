@@ -120,6 +120,10 @@ jobs:
 | `--no-tests` | Skip test requirement | |
 | `--no-lint` | Skip lint requirement | |
 | `--no-self-review` | Skip self-review step | |
+| `--draft-pr` | Create pull requests as drafts | |
+| `--pr-labels` | Apply labels to the PR (comma-separated) | |
+| `--reviewers` | Request reviewers by username (comma-separated) | |
+| `--team-reviewers` | Request team reviewers by slug (comma-separated) | |
 | `--issue` | Process specific issue and exit | |
 | `--github-api-url` | Override GitHub API base URL (GHES) | |
 | `--github-app-id` | GitHub App ID (App auth) | |
