@@ -9,6 +9,9 @@ import {
 	unlinkSync,
 } from "node:fs";
 import { gunzipSync } from "node:zlib";
+import { createLogger } from "../../utils/logger.js";
+
+const logger = createLogger("background:log-files");
 
 export function archivedLogPath(logPath: string, index: number): string {
 	return `${logPath}.${index}.gz`;
@@ -23,12 +26,23 @@ export function rotateArchives(logPath: string, maxSegments: number): void {
 		if (index === maxSegments) {
 			try {
 				unlinkSync(currentPath);
-			} catch {}
+			} catch (error) {
+				logger.debug("Failed to remove archived log segment", {
+					path: currentPath,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 		} else {
 			const nextPath = archivedLogPath(logPath, index + 1);
 			try {
 				renameSync(currentPath, nextPath);
-			} catch {}
+			} catch (error) {
+				logger.debug("Failed to rotate archived log segment", {
+					from: currentPath,
+					to: nextPath,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 		}
 	}
 }
@@ -40,7 +54,12 @@ export function deleteArchives(logPath: string, maxSegments: number): void {
 		if (existsSync(archived)) {
 			try {
 				unlinkSync(archived);
-			} catch {}
+			} catch (error) {
+				logger.debug("Failed to delete archived log segment", {
+					path: archived,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 		}
 	}
 }
@@ -52,7 +71,11 @@ export function readLogSegment(logPath: string): string {
 			return gunzipSync(data).toString("utf8");
 		}
 		return data.toString("utf8");
-	} catch {
+	} catch (error) {
+		logger.debug("Failed to read log segment", {
+			path: logPath,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return "";
 	}
 }

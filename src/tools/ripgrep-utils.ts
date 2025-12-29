@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { Type } from "@sinclair/typebox";
+import { safeJsonParse } from "../utils/json.js";
 
 export const pathSchema = Type.Optional(
 	Type.Union([
@@ -115,21 +116,35 @@ export function parseRipgrepJson(output: string): RipgrepMatch[] {
 	const matches: RipgrepMatch[] = [];
 	for (const line of output.split(/\r?\n/)) {
 		if (!line.trim()) continue;
-		try {
-			const event = JSON.parse(line);
-			if (event.type === "match") {
-				const pathText = event.data?.path?.text ?? "";
-				for (const submatch of event.data?.submatches ?? []) {
-					matches.push({
-						file: pathText,
-						line: event.data?.line_number ?? 0,
-						column: submatch.start ?? 0,
-						match: submatch.match?.text ?? "",
-						lines: event.data?.lines?.text ?? "",
-					});
-				}
-			}
-		} catch {}
+		const parsed = safeJsonParse<unknown>(line, "ripgrep output");
+		if (!parsed.success) {
+			continue;
+		}
+		const event = parsed.data as {
+			type?: string;
+			data?: {
+				path?: { text?: string };
+				line_number?: number;
+				lines?: { text?: string };
+				submatches?: Array<{
+					start?: number;
+					match?: { text?: string };
+				}>;
+			};
+		};
+		if (event.type !== "match") {
+			continue;
+		}
+		const pathText = event.data?.path?.text ?? "";
+		for (const submatch of event.data?.submatches ?? []) {
+			matches.push({
+				file: pathText,
+				line: event.data?.line_number ?? 0,
+				column: submatch.start ?? 0,
+				match: submatch.match?.text ?? "",
+				lines: event.data?.lines?.text ?? "",
+			});
+		}
 	}
 	return matches;
 }

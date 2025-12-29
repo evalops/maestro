@@ -318,12 +318,19 @@ export function getStatsSummary(): string {
 }
 
 // CLFK: Capture call site location
+function isCallSiteArray(value: unknown): value is NodeJS.CallSite[] {
+	return Array.isArray(value);
+}
+
 function getCallSite() {
 	const oldPrepareStackTrace = Error.prepareStackTrace;
 	try {
 		Error.prepareStackTrace = (_, stack) => stack;
 		const err = new Error();
-		const stack = err.stack as unknown as NodeJS.CallSite[];
+		const stack = err.stack;
+		if (!isCallSiteArray(stack)) {
+			return undefined;
+		}
 
 		// Walk up the stack to find the caller outside of this file
 		for (const frame of stack) {

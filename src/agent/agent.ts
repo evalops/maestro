@@ -407,6 +407,15 @@ export class Agent {
 	}
 
 	/**
+	 * Optionally probes the underlying transport for connectivity checks.
+	 */
+	async probeTransport(): Promise<void> {
+		if (this.transport.ping) {
+			await this.transport.ping();
+		}
+	}
+
+	/**
 	 * Subscribes to agent events (streaming deltas, tool calls, errors, etc.).
 	 *
 	 * @param fn - Event listener function to be called on each event

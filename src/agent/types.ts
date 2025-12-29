@@ -1131,6 +1131,11 @@ export interface AgentTransport {
 		config: AgentRunConfig,
 		signal?: AbortSignal,
 	): AsyncIterable<AgentEvent>;
+
+	/**
+	 * Optional lightweight connectivity probe for UI health checks.
+	 */
+	ping?: () => Promise<void>;
 }
 
 /**

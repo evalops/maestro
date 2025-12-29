@@ -3,20 +3,15 @@ import { interpolateGradient } from "../welcome-colors.js";
 
 const shimmerEpoch = Date.now();
 // Force colors for shimmer output regardless of NO_COLOR leakage in tests/env.
-const colorChalk: ChalkInstance =
-	// Chalk v5 exposes ChalkInstance directly; no public constructor is exported in some builds.
-	// Fall back to the default singleton when custom instances aren't supported.
-	(
-		chalk as unknown as {
-			Instance?: new (opts: { level: number }) => ChalkInstance;
-		}
-	).Instance
-		? new (
-				chalk as unknown as {
-					Instance: new (opts: { level: number }) => ChalkInstance;
-				}
-			).Instance({ level: 3 })
-		: chalk;
+// Chalk v5 exposes ChalkInstance directly; no public constructor is exported in some builds.
+// Fall back to the default singleton when custom instances aren't supported.
+type ChalkWithInstance = {
+	Instance?: new (opts: { level: number }) => ChalkInstance;
+};
+const chalkWithInstance = chalk as ChalkWithInstance;
+const colorChalk: ChalkInstance = chalkWithInstance.Instance
+	? new chalkWithInstance.Instance({ level: 3 })
+	: chalk;
 
 export interface ShimmerOptions {
 	padding?: number;

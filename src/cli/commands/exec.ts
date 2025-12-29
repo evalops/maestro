@@ -50,11 +50,16 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import AjvModule, { type ValidateFunction } from "ajv";
+import AjvModule, {
+	Ajv as AjvClass,
+	type AnySchema,
+	type ValidateFunction,
+} from "ajv";
 import chalk from "chalk";
 import type { Agent } from "../../agent/agent.js";
 import type { AgentEvent } from "../../agent/types.js";
 import type { SessionManager } from "../../session/manager.js";
+import { resolveDefaultExport } from "../../utils/module-interop.js";
 import {
 	JsonlEventWriter,
 	createAgentJsonlAdapter,
@@ -141,16 +146,12 @@ export async function runExecCommand(
 				return null;
 			}
 			const { schema, label } = resolveSchemaSource(options.outputSchema);
-			const AjvCtor: new (opts?: unknown) => unknown =
-				(
-					AjvModule as unknown as {
-						default?: new (opts?: unknown) => unknown;
-					}
-				).default ?? (AjvModule as unknown as new (opts?: unknown) => unknown);
-			const ajv = new AjvCtor({ allErrors: true, strict: false }) as {
-				compile: (schema: unknown) => ValidateFunction;
-			};
-			const validate = ajv.compile(schema);
+			const AjvCtor = resolveDefaultExport<typeof AjvClass>(
+				AjvModule,
+				AjvClass,
+			);
+			const ajv = new AjvCtor({ allErrors: true, strict: false });
+			const validate = ajv.compile(schema as AnySchema);
 			return { validate, label };
 		})();
 

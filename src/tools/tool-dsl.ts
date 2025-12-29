@@ -69,11 +69,10 @@ import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
 import addFormatsModule, { type FormatsPlugin } from "ajv-formats";
 import type { AgentToolResult, ToolAnnotations } from "../agent/types.js";
 import type { Sandbox } from "../sandbox/types.js";
+import { resolveDefaultExport } from "../utils/module-interop.js";
 
 // ESM/CJS interop: ajv-formats default may be nested under .default in some loaders
-const addFormats: FormatsPlugin =
-	(addFormatsModule as unknown as { default?: FormatsPlugin }).default ??
-	(addFormatsModule as unknown as FormatsPlugin);
+const addFormats = resolveDefaultExport<FormatsPlugin>(addFormatsModule);
 
 // Create a singleton AJV instance for schema validation
 let ajv: Ajv | null = null;

@@ -6,14 +6,13 @@ import {
 } from "ajv";
 import addFormatsModule, { type FormatsPlugin } from "ajv-formats";
 import { createLogger } from "../../utils/logger.js";
+import { resolveDefaultExport } from "../../utils/module-interop.js";
 import type { AgentTool, ToolCall } from "../types.js";
 
 const logger = createLogger("agent:providers:validation");
 
 // ESM/CJS interop: ajv-formats default may be nested under .default in some loaders
-const addFormats: FormatsPlugin =
-	(addFormatsModule as unknown as { default?: FormatsPlugin }).default ??
-	(addFormatsModule as unknown as FormatsPlugin);
+const addFormats = resolveDefaultExport<FormatsPlugin>(addFormatsModule);
 
 // Detect if we're in a browser extension environment with strict CSP
 // Chrome extensions with Manifest V3 don't allow eval/Function constructor
