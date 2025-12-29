@@ -225,8 +225,9 @@ fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
                     if !canonical.starts_with(&root_canonical) {
                         continue;
                     }
-                    if visited.insert(canonical) {
-                        stack.push(path);
+                    if visited.insert(canonical.clone()) {
+                        // Prefer canonical paths to avoid nondeterministic symlink ordering.
+                        stack.push(canonical);
                     }
                 }
             } else if file_type.is_file() || file_type.is_symlink() {
@@ -239,7 +240,14 @@ fn manual_traverse(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
                         continue;
                     }
                 }
-                files.push(WorkspaceFile::from_path(root, path));
+                let root_for_relative = if path.starts_with(root) {
+                    root
+                } else if path.starts_with(&root_canonical) {
+                    root_canonical.as_path()
+                } else {
+                    root
+                };
+                files.push(WorkspaceFile::from_path(root_for_relative, path));
             }
         }
     }
