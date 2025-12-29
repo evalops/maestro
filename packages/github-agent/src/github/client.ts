@@ -1,11 +1,12 @@
-import { setTimeout as sleep } from "node:timers/promises";
 import { Octokit } from "@octokit/rest";
 import type { GitHubIssue, GitHubPR, PRComment, PRReview } from "../types.js";
 import {
 	type GitHubAuth,
+	type GitHubToken,
 	resolveGitHubApiUrl,
 	resolveGitHubGraphqlUrl,
 } from "./auth.js";
+import { RequestScheduler } from "./request-scheduler.js";
 
 export interface GitHubClientOptions {
 	owner: string;
@@ -14,6 +15,8 @@ export interface GitHubClientOptions {
 	apiUrl?: string;
 	userAgent?: string;
 	timeoutMs?: number;
+	serializeRequests?: boolean;
+	minMutationDelayMs?: number;
 }
 
 export interface GitHubRateLimitSnapshot {
@@ -143,6 +146,8 @@ export class GitHubApiClient {
 	private readonly userAgent: string;
 	private readonly etags = new EtagCache();
 	private readonly responseCache = new ResponseCache();
+	private readonly scheduler: RequestScheduler;
+	private cachedTokenType?: GitHubToken["type"];
 	private rateLimit: GitHubRateLimitSnapshot = { remaining: 0 };
 
 	constructor(options: GitHubClientOptions) {
@@ -152,6 +157,10 @@ export class GitHubApiClient {
 		const apiUrl = resolveGitHubApiUrl(options.apiUrl);
 		this.graphqlUrl = resolveGitHubGraphqlUrl(apiUrl);
 		this.userAgent = options.userAgent ?? "evalops-github-agent";
+		this.scheduler = new RequestScheduler({
+			serialize: options.serializeRequests ?? true,
+			minMutationDelayMs: options.minMutationDelayMs ?? 1000,
+		});
 		this.octokit = new Octokit({
 			baseUrl: apiUrl,
 			userAgent: this.userAgent,
@@ -161,6 +170,15 @@ export class GitHubApiClient {
 
 	getRateLimitSnapshot(): GitHubRateLimitSnapshot {
 		return { ...this.rateLimit };
+	}
+
+	async supportsCheckRuns(): Promise<boolean> {
+		if (this.cachedTokenType) {
+			return this.cachedTokenType === "app";
+		}
+		const token = await this.auth.getToken();
+		this.cachedTokenType = token.type;
+		return token.type === "app";
 	}
 
 	async listIssuesUpdatedSince(since: string): Promise<GitHubIssue[]> {
@@ -707,6 +725,20 @@ export class GitHubApiClient {
 		options: RequestOptions = {},
 		attempt = 0,
 	): Promise<GitHubResponse<T>> {
+		const method = endpoint.split(" ")[0]?.toUpperCase() ?? "GET";
+		const isMutation = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
+		return this.scheduler.schedule(
+			() => this.performRequest(endpoint, params, options, attempt),
+			{ mutating: isMutation },
+		);
+	}
+
+	private async performRequest<T>(
+		endpoint: string,
+		params: Record<string, unknown>,
+		options: RequestOptions,
+		attempt: number,
+	): Promise<GitHubResponse<T>> {
 		const token = await this.auth.getToken();
 		const headers: Record<string, string> = {
 			Accept: "application/vnd.github+json",
@@ -759,10 +791,15 @@ export class GitHubApiClient {
 				};
 			}
 			this.captureRateLimit(responseHeaders);
-			const retryDelay = this.getRetryDelayMs(error, status, responseHeaders);
+			const retryDelay = this.getRetryDelayMs(
+				error,
+				status,
+				responseHeaders,
+				attempt,
+			);
 			if (retryDelay !== null && attempt < 5) {
-				await sleep(retryDelay);
-				return this.request<T>(endpoint, params, options, attempt + 1);
+				await wait(retryDelay);
+				return this.performRequest<T>(endpoint, params, options, attempt + 1);
 			}
 			throw error;
 		}
@@ -948,7 +985,8 @@ export class GitHubApiClient {
 	private getRetryDelayMs(
 		error: unknown,
 		status: number | undefined,
-		headers?: Record<string, string> | null,
+		headers: Record<string, string> | null | undefined,
+		attempt: number,
 	): number | null {
 		if (!status) return null;
 		if (status === 403 || status === 429) {
@@ -963,7 +1001,7 @@ export class GitHubApiClient {
 				return waitMs;
 			}
 			if (isSecondaryRateLimit(error)) {
-				return jitterDelay(5_000);
+				return jitterDelay(Math.min(60_000 * 2 ** attempt, 15 * 60_000));
 			}
 		}
 		if (status >= 500 && status < 600) {
@@ -1058,4 +1096,11 @@ function isSecondaryRateLimit(error: unknown): boolean {
 function jitterDelay(baseMs: number): number {
 	const jitter = Math.floor(Math.random() * 500);
 	return baseMs + jitter;
+}
+
+function wait(ms: number): Promise<void> {
+	if (ms <= 0) return Promise.resolve();
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms);
+	});
 }
