@@ -5,12 +5,145 @@ import yaml from "js-yaml";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { getBuiltinAgents } from "./builtin.js";
-import type { ComposerConfig, LoadedComposer } from "./types.js";
+import type {
+	AgentMode,
+	ComposerConfig,
+	ComposerTrigger,
+	LoadedComposer,
+	PermissionLevel,
+	ToolPermissions,
+} from "./types.js";
 
 const logger = createLogger("composers:loader");
 
 const PERSONAL_DIR = join(PATHS.COMPOSER_HOME, "composers");
 const PROJECT_DIR_NAME = ".composer/composers";
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return value && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function asString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+function asStringArray(value: unknown): string[] | undefined {
+	if (Array.isArray(value) && value.every((item) => typeof item === "string")) {
+		return value;
+	}
+	if (typeof value === "string") {
+		const tokens = value.split(/[\s,]+/).filter(Boolean);
+		return tokens.length ? tokens : undefined;
+	}
+	return undefined;
+}
+
+function isPromptMode(value: unknown): value is ComposerConfig["promptMode"] {
+	return value === "prepend" || value === "append" || value === "replace";
+}
+
+function isAgentMode(value: unknown): value is AgentMode {
+	return value === "primary" || value === "subagent" || value === "all";
+}
+
+function isThinkingLevel(
+	value: unknown,
+): value is ComposerConfig["thinkingLevel"] {
+	return (
+		value === "off" ||
+		value === "minimal" ||
+		value === "low" ||
+		value === "medium" ||
+		value === "high" ||
+		value === "max"
+	);
+}
+
+function isPermissionLevel(value: unknown): value is PermissionLevel {
+	return value === "allow" || value === "ask" || value === "deny";
+}
+
+function normalizePermissionMap(
+	record: Record<string, unknown> | undefined,
+): Record<string, PermissionLevel> | undefined {
+	if (!record) return undefined;
+	const entries: Array<[string, PermissionLevel]> = [];
+	for (const [key, val] of Object.entries(record)) {
+		if (isPermissionLevel(val)) {
+			entries.push([key, val]);
+		}
+	}
+	return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
+function normalizePermissions(
+	record: Record<string, unknown> | undefined,
+): ToolPermissions | undefined {
+	if (!record) return undefined;
+	const defaultPermission = isPermissionLevel(record.default)
+		? record.default
+		: undefined;
+	const tools = normalizePermissionMap(asRecord(record.tools));
+	const bash = normalizePermissionMap(asRecord(record.bash));
+	if (!defaultPermission && !tools && !bash) {
+		return undefined;
+	}
+	return {
+		default: defaultPermission,
+		tools,
+		bash,
+	};
+}
+
+function normalizeTriggers(
+	record: Record<string, unknown> | undefined,
+): ComposerTrigger | undefined {
+	if (!record) return undefined;
+	const files = asStringArray(record.files);
+	const directories = asStringArray(record.directories);
+	const keywords = asStringArray(record.keywords);
+	if (!files && !directories && !keywords) {
+		return undefined;
+	}
+	return {
+		files,
+		directories,
+		keywords,
+	};
+}
+
+function normalizeComposerConfig(
+	parsed: Record<string, unknown>,
+	filePath: string,
+): ComposerConfig {
+	const name = asString(parsed.name) ?? basename(filePath, extname(filePath));
+	const description =
+		asString(parsed.description) ?? `Custom composer: ${name}`;
+
+	return {
+		name,
+		description,
+		systemPrompt: asString(parsed.systemPrompt),
+		promptMode: isPromptMode(parsed.promptMode) ? parsed.promptMode : undefined,
+		tools: asStringArray(parsed.tools),
+		denyTools: asStringArray(parsed.denyTools),
+		model: asString(parsed.model),
+		triggers: normalizeTriggers(asRecord(parsed.triggers)),
+		enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : undefined,
+		permissions: normalizePermissions(asRecord(parsed.permissions)),
+		mode: isAgentMode(parsed.mode) ? parsed.mode : undefined,
+		temperature:
+			typeof parsed.temperature === "number" ? parsed.temperature : undefined,
+		topP: typeof parsed.topP === "number" ? parsed.topP : undefined,
+		thinkingLevel: isThinkingLevel(parsed.thinkingLevel)
+			? parsed.thinkingLevel
+			: undefined,
+		color: asString(parsed.color),
+		builtIn: typeof parsed.builtIn === "boolean" ? parsed.builtIn : undefined,
+	};
+}
 
 function parseYaml(content: string): Record<string, unknown> | null {
 	try {
@@ -47,25 +180,7 @@ function parseComposerFile(
 			return null;
 		}
 
-		const config = parsed as unknown as ComposerConfig;
-		if (!config.name || typeof config.name !== "string") {
-			// Use filename as name if not specified
-			config.name = basename(filePath, extname(filePath));
-		}
-
-		if (!config.description) {
-			config.description = `Custom composer: ${config.name}`;
-		}
-
-		// Validate and normalize tools field
-		if (config.tools !== undefined && !Array.isArray(config.tools)) {
-			// Convert string to array (e.g., "read search" -> ["read", "search"])
-			if (typeof config.tools === "string") {
-				config.tools = (config.tools as string).split(/[\s,]+/).filter(Boolean);
-			} else {
-				config.tools = undefined;
-			}
-		}
+		const config = normalizeComposerConfig(parsed, filePath);
 
 		return {
 			...config,

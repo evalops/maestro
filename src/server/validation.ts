@@ -2,12 +2,11 @@ import type { IncomingMessage } from "node:http";
 import { type Static, Type } from "@sinclair/typebox";
 import { Ajv, type AnySchema, type ErrorObject } from "ajv";
 import addFormatsModule, { type FormatsPlugin } from "ajv-formats";
+import { resolveDefaultExport } from "../utils/module-interop.js";
 import { ApiError, readRequestBody } from "./server-utils.js";
 
 // ESM/CJS interop: ajv-formats default may be nested under .default in some loaders
-const addFormats: FormatsPlugin =
-	(addFormatsModule as unknown as { default?: FormatsPlugin }).default ??
-	(addFormatsModule as unknown as FormatsPlugin);
+const addFormats = resolveDefaultExport<FormatsPlugin>(addFormatsModule);
 
 const ajvInstance = new Ajv({
 	allErrors: true,

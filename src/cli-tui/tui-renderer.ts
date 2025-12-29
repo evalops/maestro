@@ -2788,18 +2788,13 @@ export class TuiRenderer {
 		if (!state?.model) {
 			throw new Error("No default model configured. Use /model to select one.");
 		}
-		// If transport exposes a light ping, use it without sending user content
-		const transport = (
-			this.agent as unknown as { transport?: { ping?: () => Promise<void> } }
-		).transport;
-		if (transport?.ping) {
-			await transport.ping().catch((error: unknown) => {
-				const message =
-					error instanceof Error
-						? error.message
-						: "Model connectivity probe failed. Check API key and network.";
-				throw new Error(message);
-			});
-		}
+		// If transport exposes a light ping, use it without sending user content.
+		await this.agent.probeTransport().catch((error: unknown) => {
+			const message =
+				error instanceof Error
+					? error.message
+					: "Model connectivity probe failed. Check API key and network.";
+			throw new Error(message);
+		});
 	}
 }

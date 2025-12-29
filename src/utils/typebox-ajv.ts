@@ -5,10 +5,10 @@ import {
 	Type,
 } from "@sinclair/typebox";
 import AjvModule, { Ajv as AjvClass, type AnySchema } from "ajv";
+import { resolveDefaultExport } from "./module-interop.js";
 
 // ESM/CJS interop: extract constructor from module (may be nested under .default)
-const Ajv =
-	(AjvModule as unknown as { default?: typeof AjvClass }).default ?? AjvClass;
+const Ajv = resolveDefaultExport<typeof AjvClass>(AjvModule, AjvClass);
 
 const ajv = new Ajv({
 	allErrors: true,
@@ -40,9 +40,10 @@ export function StringEnum<T extends readonly string[]>(
 	values: T,
 	options?: { description?: string; default?: T[number] },
 ): TUnsafe<T[number]> {
+	const enumValues = Array.from(values);
 	return Type.Unsafe<T[number]>({
 		type: "string",
-		enum: values as unknown as string[],
+		enum: enumValues,
 		...(options?.description && { description: options.description }),
 		...(options?.default && { default: options.default }),
 	});

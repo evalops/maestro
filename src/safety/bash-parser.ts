@@ -104,9 +104,7 @@ async function initParser(): Promise<boolean> {
 		]);
 		parser = new Parser();
 		// Type cast needed because tree-sitter-bash types don't perfectly align
-		parser.setLanguage(
-			BashLanguage as unknown as import("tree-sitter").Language,
-		);
+		parser.setLanguage(BashLanguage as import("tree-sitter").Language);
 		parserAvailable = true;
 		logger.debug("Tree-sitter bash parser initialized successfully");
 	} catch (error) {
