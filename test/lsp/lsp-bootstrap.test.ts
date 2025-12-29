@@ -98,8 +98,7 @@ describe("LSP Bootstrap Tests", () => {
 		if (originalEnv !== undefined) {
 			process.env.COMPOSER_SAFE_LSP_SEVERITY = originalEnv;
 		} else {
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_SAFE_LSP_SEVERITY;
+			Reflect.deleteProperty(process.env, "COMPOSER_SAFE_LSP_SEVERITY");
 		}
 	});
 });

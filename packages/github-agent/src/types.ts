@@ -47,6 +47,15 @@ export interface PRComment {
 	createdAt: string;
 }
 
+export interface IssueComment {
+	id: number;
+	issueNumber: number;
+	author: string;
+	body: string;
+	createdAt: string;
+	url: string;
+}
+
 /**
  * Task represents work the agent should do
  */
@@ -55,6 +64,7 @@ export interface Task {
 	type: "issue" | "pr-review" | "pr-feedback" | "self-improvement";
 	sourceIssue?: number;
 	sourcePR?: number;
+	labels?: string[];
 	title: string;
 	description: string;
 	priority: number; // 0-100, higher = more urgent
@@ -63,6 +73,8 @@ export interface Task {
 	attempts: number;
 	lastAttemptAt?: string;
 	result?: TaskResult;
+	reportCommentId?: number;
+	checkRunId?: number;
 }
 
 export interface TaskResult {
@@ -161,6 +173,17 @@ export interface AgentConfig {
 	// Paths
 	workingDir: string;
 	memoryDir: string;
+
+	// GitHub API / App / Webhooks
+	githubApiUrl?: string;
+	githubAppId?: string;
+	githubAppPrivateKey?: string;
+	githubAppPrivateKeyPath?: string;
+	githubAppInstallationId?: number;
+	webhookSecret?: string;
+	webhookPort?: number;
+	webhookPath?: string;
+	webhookMode?: "poll" | "webhook" | "hybrid";
 }
 
 export const DEFAULT_CONFIG: Partial<AgentConfig> = {
@@ -175,4 +198,5 @@ export const DEFAULT_CONFIG: Partial<AgentConfig> = {
 	maxAttemptsPerTask: 3,
 	maxTokensPerTask: 500_000,
 	dailyBudget: 50,
+	webhookMode: "poll",
 };

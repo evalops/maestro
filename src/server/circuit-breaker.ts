@@ -215,13 +215,14 @@ export function getCircuitBreaker(
 	name: string,
 	options?: CircuitBreakerOptions,
 ): CircuitBreaker {
-	if (!circuitBreakers.has(name)) {
-		circuitBreakers.set(name, new CircuitBreaker(name, options));
+	let breaker = circuitBreakers.get(name);
+	if (!breaker) {
+		breaker = new CircuitBreaker(name, options);
+		circuitBreakers.set(name, breaker);
 	} else if (options) {
-		circuitBreakers.get(name)?.updateOptions(options);
+		breaker.updateOptions(options);
 	}
-	// biome-ignore lint/style/noNonNullAssertion: we just set it
-	return circuitBreakers.get(name)!;
+	return breaker;
 }
 
 const AGENT_BREAKER_OPTIONS: CircuitBreakerOptions = {

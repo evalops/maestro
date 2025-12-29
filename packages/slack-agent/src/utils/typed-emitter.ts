@@ -43,8 +43,7 @@ export type AsyncEventHandler<T> = T extends undefined
 /**
  * A typed event emitter that provides type safety for events.
  */
-// biome-ignore lint/suspicious/noExplicitAny: Event maps need flexible typing
-export class TypedEmitter<TEvents extends Record<string, any>> {
+export class TypedEmitter<TEvents extends Record<string, unknown>> {
 	private emitter: EventEmitter;
 	private handlers: Map<
 		string,
@@ -254,8 +253,7 @@ export class TypedEmitter<TEvents extends Record<string, any>> {
  * Create a new typed event emitter.
  */
 export function createTypedEmitter<
-	// biome-ignore lint/suspicious/noExplicitAny: Event maps need flexible typing
-	TEvents extends Record<string, any>,
+	TEvents extends Record<string, unknown>,
 >(): TypedEmitter<TEvents> {
 	return new TypedEmitter<TEvents>();
 }

@@ -7,11 +7,12 @@
  * - Mentions in comments
  */
 
-import { Octokit } from "@octokit/rest";
+import type { GitHubApiClient } from "../github/client.js";
 import type {
 	AgentConfig,
 	GitHubIssue,
 	GitHubPR,
+	IssueComment,
 	PRComment,
 	PRReview,
 } from "../types.js";
@@ -22,6 +23,7 @@ export interface WatcherEvents {
 	onPRClosed: (pr: GitHubPR) => Promise<void>;
 	onPRReview: (pr: GitHubPR, review: PRReview) => Promise<void>;
 	onPRComment: (pr: GitHubPR, comment: PRComment) => Promise<void>;
+	onIssueComment?: (issue: GitHubIssue, comment: IssueComment) => Promise<void>;
 }
 
 function maxIsoTimestamp(
@@ -34,25 +36,31 @@ function maxIsoTimestamp(
 }
 
 export class GitHubWatcher {
-	private octokit: Octokit;
+	private client: GitHubApiClient;
 	private config: AgentConfig;
 	private events: WatcherEvents;
 	private pollTimer: ReturnType<typeof setInterval> | null = null;
 	private lastIssuePollTime: string;
 	private lastTrackedPrPollTime: string;
+	private lastIssueCommentPollTime: string;
 	private trackedPRs: Set<number> = new Set();
 	private trackedPrPollTimes: Map<number, string> = new Map();
 	private notifiedIssues: Set<number> = new Set();
 	private issueLabelSnapshots: Map<number, Set<string>> = new Map();
 
-	constructor(token: string, config: AgentConfig, events: WatcherEvents) {
-		this.octokit = new Octokit({ auth: token });
+	constructor(
+		client: GitHubApiClient,
+		config: AgentConfig,
+		events: WatcherEvents,
+	) {
+		this.client = client;
 		this.config = config;
 		this.events = events;
 		// Start from now - don't process historical issues
 		const now = new Date().toISOString();
 		this.lastIssuePollTime = now;
 		this.lastTrackedPrPollTime = now;
+		this.lastIssueCommentPollTime = now;
 	}
 
 	async start(): Promise<void> {
@@ -97,10 +105,12 @@ export class GitHubWatcher {
 		const pollStartedAt = new Date().toISOString();
 		const issuesSince = this.lastIssuePollTime;
 		const prsSince = this.lastTrackedPrPollTime;
+		const commentsSince = this.lastIssueCommentPollTime;
 
-		const [issuesCursor, prsCursor] = await Promise.all([
+		const [issuesCursor, prsCursor, commentsCursor] = await Promise.all([
 			this.pollIssues(issuesSince, pollStartedAt),
 			this.pollTrackedPRs(prsSince, pollStartedAt),
+			this.pollIssueComments(commentsSince, pollStartedAt),
 		]);
 
 		if (issuesCursor) {
@@ -108,6 +118,9 @@ export class GitHubWatcher {
 		}
 		if (prsCursor) {
 			this.lastTrackedPrPollTime = prsCursor;
+		}
+		if (commentsCursor) {
+			this.lastIssueCommentPollTime = commentsCursor;
 		}
 	}
 
@@ -117,23 +130,11 @@ export class GitHubWatcher {
 	): Promise<string | null> {
 		try {
 			// Fetch issues updated since last poll
-			const issues = await this.octokit.paginate(
-				this.octokit.issues.listForRepo,
-				{
-					owner: this.config.owner,
-					repo: this.config.repo,
-					state: "all",
-					since,
-					per_page: 100,
-				},
-			);
+			const issues = await this.client.listIssuesUpdatedSince(since);
 
 			let maxUpdatedAt: string | null = null;
 			for (const issue of issues) {
-				maxUpdatedAt = maxIsoTimestamp(maxUpdatedAt, issue.updated_at);
-
-				// Skip PRs (they show up in issues API too)
-				if (issue.pull_request) continue;
+				maxUpdatedAt = maxIsoTimestamp(maxUpdatedAt, issue.updatedAt);
 
 				if (issue.state !== "open") {
 					this.notifiedIssues.delete(issue.number);
@@ -142,9 +143,7 @@ export class GitHubWatcher {
 				}
 
 				// Check if issue has any of our target labels
-				const labels = issue.labels.map((l) =>
-					typeof l === "string" ? l : l.name || "",
-				);
+				const labels = issue.labels;
 				const hasTargetLabel = labels.some((l) =>
 					this.config.issueLabels.includes(l),
 				);
@@ -158,7 +157,7 @@ export class GitHubWatcher {
 					: false;
 
 				// Check if this is a new issue (created since last poll)
-				const createdAt = new Date(issue.created_at);
+				const createdAt = new Date(issue.createdAt);
 				const sinceTime = new Date(since);
 				const isNew = createdAt > sinceTime;
 
@@ -169,18 +168,7 @@ export class GitHubWatcher {
 				) {
 					const reason = isNew ? "New issue" : "Issue labeled";
 					console.log(`[watcher] ${reason} #${issue.number}: ${issue.title}`);
-					await this.events.onNewIssue({
-						number: issue.number,
-						title: issue.title,
-						body: issue.body ?? null,
-						labels,
-						state: issue.state as "open" | "closed",
-						author: issue.user?.login || "unknown",
-						createdAt: issue.created_at,
-						updatedAt: issue.updated_at,
-						url: issue.html_url,
-						comments: issue.comments,
-					});
+					await this.events.onNewIssue(issue);
 					this.notifiedIssues.add(issue.number);
 				}
 
@@ -202,7 +190,7 @@ export class GitHubWatcher {
 		for (const prNumber of this.trackedPRs) {
 			const prSince = this.trackedPrPollTimes.get(prNumber) ?? since;
 			try {
-				const pr = await this.fetchPR(prNumber);
+				const pr = await this.client.getPullRequest(prNumber);
 
 				if (pr.state === "merged") {
 					console.log(`[watcher] PR #${prNumber} merged`);
@@ -250,99 +238,57 @@ export class GitHubWatcher {
 		return maxIsoTimestamp(pollStartedAt, maxEventAt);
 	}
 
-	private async fetchPR(prNumber: number): Promise<GitHubPR> {
-		const { data: pr } = await this.octokit.pulls.get({
-			owner: this.config.owner,
-			repo: this.config.repo,
-			pull_number: prNumber,
-		});
-
-		let state: "open" | "closed" | "merged" = pr.state as "open" | "closed";
-		if (pr.merged) {
-			state = "merged";
-		}
-
-		return {
-			number: pr.number,
-			title: pr.title,
-			body: pr.body,
-			state,
-			author: pr.user?.login || "unknown",
-			branch: pr.head.ref,
-			base: pr.base.ref,
-			createdAt: pr.created_at,
-			updatedAt: pr.updated_at,
-			mergedAt: pr.merged_at,
-			url: pr.html_url,
-			reviewDecision: null, // Would need GraphQL for this
-		};
-	}
-
 	private async pollPRReviews(
 		prNumber: number,
 		pr: GitHubPR,
 		since: string,
 	): Promise<{ latest: string | null; ok: boolean }> {
 		try {
-			const reviews = await this.octokit.paginate(
-				this.octokit.pulls.listReviews,
-				{
-					owner: this.config.owner,
-					repo: this.config.repo,
-					pull_number: prNumber,
-					per_page: 100,
-				},
-			);
+			const reviews = await this.client.listPullRequestReviews(prNumber);
 
 			// Check for reviews submitted since last poll
 			const sinceTime = new Date(since);
 			let maxEventAt: string | null = null;
 			for (const review of reviews) {
-				if (!review.submitted_at) continue;
-				const submittedAt = new Date(review.submitted_at);
+				if (!review.submittedAt) continue;
+				const submittedAt = new Date(review.submittedAt);
 				// Use < (not <=) so reviews at the exact poll time are included.
 				if (submittedAt < sinceTime) continue;
-				maxEventAt = maxIsoTimestamp(maxEventAt, review.submitted_at);
+				maxEventAt = maxIsoTimestamp(maxEventAt, review.submittedAt);
 
 				const reviewState = review.state as PRReview["state"];
 				if (reviewState === "APPROVED" || reviewState === "CHANGES_REQUESTED") {
 					console.log(
-						`[watcher] PR #${prNumber} received ${reviewState} from ${review.user?.login}`,
+						`[watcher] PR #${prNumber} received ${reviewState} from ${review.author}`,
 					);
 					await this.events.onPRReview(pr, {
 						id: review.id,
-						author: review.user?.login || "unknown",
+						author: review.author || "unknown",
 						state: reviewState,
 						body: review.body,
-						submittedAt: review.submitted_at,
+						submittedAt: review.submittedAt,
 					});
 				}
 			}
 
 			// Check for new comments
-			const comments = await this.octokit.paginate(
-				this.octokit.pulls.listReviewComments,
-				{
-					owner: this.config.owner,
-					repo: this.config.repo,
-					pull_number: prNumber,
-					since,
-					per_page: 100,
-				},
+			const comments = await this.client.listPullRequestReviewComments(
+				prNumber,
+				since,
 			);
 
 			for (const comment of comments) {
-				maxEventAt = maxIsoTimestamp(maxEventAt, comment.created_at);
+				maxEventAt = maxIsoTimestamp(maxEventAt, comment.createdAt);
 				console.log(
-					`[watcher] PR #${prNumber} new comment from ${comment.user?.login}`,
+					`[watcher] PR #${prNumber} new comment from ${comment.author}`,
 				);
 				await this.events.onPRComment(pr, {
 					id: comment.id,
-					author: comment.user?.login || "unknown",
+					author: comment.author || "unknown",
 					body: comment.body,
 					path: comment.path ?? null,
 					line: comment.line ?? null,
-					createdAt: comment.created_at,
+					createdAt: comment.createdAt,
 				});
 			}
 			return { latest: maxEventAt, ok: true };
@@ -352,31 +298,39 @@ export class GitHubWatcher {
 		}
 	}
 
+	private async pollIssueComments(
+		since: string,
+		pollStartedAt: string,
+	): Promise<string | null> {
+		if (!this.events.onIssueComment) {
+			return pollStartedAt;
+		}
+		try {
+			const comments = await this.client.listIssueCommentsSince(since);
+			let maxUpdatedAt: string | null = null;
+			for (const { issue, comment } of comments) {
+				maxUpdatedAt = maxIsoTimestamp(maxUpdatedAt, comment.createdAt);
+				if (issue.state !== "open") continue;
+				await this.events.onIssueComment(issue, {
+					id: comment.id,
+					issueNumber: issue.number,
+					author: comment.author,
+					body: comment.body,
+					createdAt: comment.createdAt,
+					url: issue.url,
+				});
+			}
+			return maxIsoTimestamp(pollStartedAt, maxUpdatedAt);
+		} catch (err) {
+			console.error("[watcher] Error polling issue comments:", err);
+			return null;
+		}
+	}
+
 	/**
 	 * Fetch a specific issue
 	 */
 	async getIssue(issueNumber: number): Promise<GitHubIssue> {
-		const { data: issue } = await this.octokit.issues.get({
-			owner: this.config.owner,
-			repo: this.config.repo,
-			issue_number: issueNumber,
-		});
-
-		const labels = issue.labels.map((l) =>
-			typeof l === "string" ? l : l.name || "",
-		);
-
-		return {
-			number: issue.number,
-			title: issue.title,
-			body: issue.body ?? null,
-			labels,
-			state: issue.state as "open" | "closed",
-			author: issue.user?.login || "unknown",
-			createdAt: issue.created_at,
-			updatedAt: issue.updated_at,
-			url: issue.html_url,
-			comments: issue.comments,
-		};
+		return this.client.getIssue(issueNumber);
 	}
 }

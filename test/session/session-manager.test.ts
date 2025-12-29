@@ -163,8 +163,7 @@ describe("SessionManager - Deferred Session Creation", () => {
 		// Restore original state
 		process.chdir(originalCwd);
 		if (originalEnv === undefined) {
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_AGENT_DIR;
+			Reflect.deleteProperty(process.env, "COMPOSER_AGENT_DIR");
 		} else {
 			process.env.COMPOSER_AGENT_DIR = originalEnv;
 		}

@@ -2,9 +2,11 @@
 
 // Suppress punycode deprecation warning from dependencies
 // This warning comes from old dependencies still using the deprecated punycode module
-const originalEmit = process.emit;
-// @ts-expect-error - Monkey-patch emit to filter warnings
-process.emit = (event, ...args) => {
+const originalEmit = process.emit.bind(process) as (
+	event: string | symbol,
+	...args: unknown[]
+) => boolean;
+process.emit = ((event: string | symbol, ...args: unknown[]) => {
 	if (event === "warning") {
 		const [firstArg] = args;
 		if (
@@ -19,9 +21,8 @@ process.emit = (event, ...args) => {
 			return false; // Suppress punycode deprecation
 		}
 	}
-	// @ts-expect-error - Call original with event and args
-	return originalEmit.apply(process, [event, ...args]);
-};
+	return originalEmit(event, ...args);
+}) as typeof process.emit;
 
 const run = async () => {
 	try {

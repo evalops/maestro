@@ -13,10 +13,8 @@ describe("MCP multi-scope precedence and env expansion", () => {
 		baseDir = join(tmpdir(), `mcp-merge-${Date.now()}`);
 		projectDir = baseDir;
 		mkdirSync(projectDir, { recursive: true });
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.COMPOSER_ENTERPRISE_MCP_PATH;
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.COMPOSER_USER_MCP_PATH;
+		Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_MCP_PATH");
+		Reflect.deleteProperty(process.env, "COMPOSER_USER_MCP_PATH");
 	});
 
 	afterEach(() => {

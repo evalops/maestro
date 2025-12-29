@@ -50,8 +50,7 @@ describe("Enhanced Cost Tracking", () => {
 		if (originalEnv !== undefined) {
 			process.env.COMPOSER_USAGE_FILE = originalEnv;
 		} else {
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_USAGE_FILE;
+			Reflect.deleteProperty(process.env, "COMPOSER_USAGE_FILE");
 		}
 
 		// Clean up temp directory

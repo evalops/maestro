@@ -40,12 +40,9 @@ describe("Auto-Verify Service", () => {
 		});
 
 		it("returns default configuration", () => {
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_AUTO_TEST;
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_AUTO_TEST_DELAY;
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_AUTO_TEST_TIMEOUT;
+			Reflect.deleteProperty(process.env, "COMPOSER_AUTO_TEST");
+			Reflect.deleteProperty(process.env, "COMPOSER_AUTO_TEST_DELAY");
+			Reflect.deleteProperty(process.env, "COMPOSER_AUTO_TEST_TIMEOUT");
 
 			const config = getAutoVerifyConfig();
 

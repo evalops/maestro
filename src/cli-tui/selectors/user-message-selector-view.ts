@@ -4,6 +4,7 @@ import type { SessionManager } from "../../session/manager.js";
 import type { CustomEditor } from "../custom-editor.js";
 import type { ModalManager } from "../modal-manager.js";
 import type { NotificationView } from "../notification-view.js";
+import { stripAnsiSequences } from "../utils/text-formatting.js";
 import {
 	type UserMessageItem,
 	UserMessageSelectorComponent,
@@ -44,15 +45,12 @@ export class UserMessageSelectorView {
 					const textBlocks = message.content.filter(
 						(c): c is { type: "text"; text: string } => c.type === "text",
 					);
-					text = textBlocks
-						.map((c) => c.text)
-						.join(" ")
-						.replace(/\n/g, " ")
-						// biome-ignore lint/suspicious/noControlCharactersInRegex: Need to strip ANSI escape sequences
-						.replace(/\x1b\[[0-9;]*m/g, "") // Strip ANSI color codes
-						// biome-ignore lint/suspicious/noControlCharactersInRegex: Need to strip ANSI escape sequences
-						.replace(/\x1b\[.*?[@-~]/g, "") // Strip other ANSI sequences
-						.trim();
+					text = stripAnsiSequences(
+						textBlocks
+							.map((c) => c.text)
+							.join(" ")
+							.replace(/\n/g, " "),
+					).trim();
 				}
 
 				// Include all user messages, even those with no text content

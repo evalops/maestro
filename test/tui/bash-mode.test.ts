@@ -50,8 +50,7 @@ describe("bash-history", () => {
 		if (originalEnv !== undefined) {
 			process.env.COMPOSER_BASH_HISTORY = originalEnv;
 		} else {
-			// biome-ignore lint/performance/noDelete: Required for proper env var cleanup
-			delete process.env.COMPOSER_BASH_HISTORY;
+			Reflect.deleteProperty(process.env, "COMPOSER_BASH_HISTORY");
 		}
 		// Clean up temp directory
 		rmSync(tempDir, { recursive: true, force: true });
@@ -65,8 +64,7 @@ describe("bash-history", () => {
 		});
 
 		it("returns default path when env var not set", () => {
-			// biome-ignore lint/performance/noDelete: Required for proper env var cleanup
-			delete process.env.COMPOSER_BASH_HISTORY;
+			Reflect.deleteProperty(process.env, "COMPOSER_BASH_HISTORY");
 			const path = getHistoryFilePath();
 			expect(path).toContain(".composer");
 			expect(path).toContain("bash-history.json");

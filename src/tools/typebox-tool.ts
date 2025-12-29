@@ -36,8 +36,7 @@ interface CreateTypeboxToolOptions<Schema extends TSchema, Details> {
 
 export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 	options: CreateTypeboxToolOptions<Schema, Details>,
-	// biome-ignore lint/suspicious/noExplicitAny: Generic tool return type requires any for flexibility
-): AgentTool<any, Details> {
+): AgentTool<Schema, Details> {
 	const schema = Type.Strict(options.schema) as Schema;
 	const parameters = schema;
 	const validate = compileTypeboxSchema(schema);
@@ -52,7 +51,7 @@ export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 		inputExamples: options.inputExamples,
 		allowedCallers: options.allowedCallers,
 		deferApiDefinition: options.deferApiDefinition,
-		execute: async (toolCallId, params, signal) => {
+		execute: async (toolCallId, params: Record<string, unknown>, signal) => {
 			let parsedParams: Static<Schema>;
 			const input =
 				params && typeof params === "object"

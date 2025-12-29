@@ -49,8 +49,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should pass through settings unchanged when encryption is disabled", async () => {
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_DB_ENCRYPTION_KEY;
+			Reflect.deleteProperty(process.env, "COMPOSER_DB_ENCRYPTION_KEY");
 
 			const { encryptOrgSettings } = await import(
 				"../src/db/settings-encryption.js"
@@ -167,8 +166,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should pass through user settings unchanged when encryption is disabled", async () => {
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_DB_ENCRYPTION_KEY;
+			Reflect.deleteProperty(process.env, "COMPOSER_DB_ENCRYPTION_KEY");
 
 			const { encryptUserSettings } = await import(
 				"../src/db/settings-encryption.js"

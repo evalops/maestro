@@ -71,6 +71,20 @@ const SYSTEM_PATHS_ALL_NORMALIZED =
 	process.platform === "win32"
 		? SYSTEM_PATHS_ALL.map((sysPath) => sysPath.toLowerCase())
 		: SYSTEM_PATHS_ALL;
+const MAC_USER_PATHS = [
+	"/Users",
+	"/home",
+	"/System/Volumes/Data/Users",
+	"/System/Volumes/Data/home",
+];
+
+function isPathInside(root: string, target: string): boolean {
+	return (
+		target === root ||
+		target.startsWith(`${root}/`) ||
+		target.startsWith(`${root}\\`)
+	);
+}
 
 export interface SafePathSummary {
 	workspaceRoot: string;
@@ -92,14 +106,20 @@ export function isSystemPath(filePath: string): boolean {
 		process.platform === "win32" ? normalized.toLowerCase() : normalized;
 	const realPathNormalized =
 		process.platform === "win32" ? realPath.toLowerCase() : realPath;
+	if (process.platform === "darwin") {
+		for (const root of MAC_USER_PATHS) {
+			if (
+				isPathInside(root, normalizedPath) ||
+				isPathInside(root, realPathNormalized)
+			) {
+				return false;
+			}
+		}
+	}
 	return SYSTEM_PATHS_ALL_NORMALIZED.some((sysPath) => {
 		return (
-			normalizedPath === sysPath ||
-			normalizedPath.startsWith(`${sysPath}/`) ||
-			normalizedPath.startsWith(`${sysPath}\\`) ||
-			realPathNormalized === sysPath ||
-			realPathNormalized.startsWith(`${sysPath}/`) ||
-			realPathNormalized.startsWith(`${sysPath}\\`)
+			isPathInside(sysPath, normalizedPath) ||
+			isPathInside(sysPath, realPathNormalized)
 		);
 	});
 }

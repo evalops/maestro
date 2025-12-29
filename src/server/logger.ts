@@ -136,11 +136,12 @@ export function registerGauge(
 }
 
 function getCounter(name: string, help: string): Counter {
-	if (!registry.counters.has(name)) {
-		registry.counters.set(name, { name, help, values: new Map() });
+	let counter = registry.counters.get(name);
+	if (!counter) {
+		counter = { name, help, values: new Map() };
+		registry.counters.set(name, counter);
 	}
-	// biome-ignore lint/style/noNonNullAssertion: we just set it if it was missing
-	return registry.counters.get(name)!;
+	return counter;
 }
 
 function incCounter(name: string, labels: Record<string, string>, value = 1) {

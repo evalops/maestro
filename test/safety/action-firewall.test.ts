@@ -15,8 +15,7 @@ const withPlanMode = async (fn: () => Promise<void>) => {
 		await fn();
 	} finally {
 		if (prev === undefined) {
-			// biome-ignore lint/performance/noDelete: need to fully unset env var
-			delete process.env.COMPOSER_PLAN_MODE;
+			Reflect.deleteProperty(process.env, "COMPOSER_PLAN_MODE");
 		} else {
 			process.env.COMPOSER_PLAN_MODE = prev;
 		}
@@ -37,7 +36,7 @@ const withEnv = async (
 ) => {
 	const prev = process.env[key];
 	if (value === undefined) {
-		delete process.env[key];
+		Reflect.deleteProperty(process.env, key);
 	} else {
 		process.env[key] = value;
 	}
@@ -45,7 +44,7 @@ const withEnv = async (
 		await fn();
 	} finally {
 		if (prev === undefined) {
-			delete process.env[key];
+			Reflect.deleteProperty(process.env, key);
 		} else {
 			process.env[key] = prev;
 		}

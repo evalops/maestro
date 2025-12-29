@@ -29,10 +29,8 @@ describe("footer stage shimmer", () => {
 
 	it("adds more ANSI escapes when shimmer is on", () => {
 		process.env.COMPOSER_TUI_SHIMMER = "on";
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.NO_COLOR;
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.COMPOSER_NO_COLOR;
+		Reflect.deleteProperty(process.env, "NO_COLOR");
+		Reflect.deleteProperty(process.env, "COMPOSER_NO_COLOR");
 		process.env.FORCE_COLOR = "1";
 		const shimmering = renderStaticStageBadge("Responding");
 		process.env.COMPOSER_TUI_SHIMMER = "off";

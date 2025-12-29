@@ -18,36 +18,29 @@ describe("auth resolver", () => {
 	const originalCodex = process.env.CODEX_API_KEY;
 
 	beforeEach(() => {
-		// biome-ignore lint/performance/noDelete: resetting env vars for isolated tests
-		delete process.env.ANTHROPIC_API_KEY;
-		// biome-ignore lint/performance/noDelete: resetting env vars for isolated tests
-		delete process.env.OPENAI_API_KEY;
-		// biome-ignore lint/performance/noDelete: resetting env vars for isolated tests
-		delete process.env.CLAUDE_CODE_TOKEN;
+		Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
+		Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
+		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
 	});
 
 	afterEach(() => {
 		if (originalAnthropic === undefined) {
-			// biome-ignore lint/performance/noDelete: restoring env var state
-			delete process.env.ANTHROPIC_API_KEY;
+			Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
 		} else {
 			process.env.ANTHROPIC_API_KEY = originalAnthropic;
 		}
 		if (originalOpenAI === undefined) {
-			// biome-ignore lint/performance/noDelete: restoring env var state
-			delete process.env.OPENAI_API_KEY;
+			Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
 		} else {
 			process.env.OPENAI_API_KEY = originalOpenAI;
 		}
 		if (originalClaude === undefined) {
-			// biome-ignore lint/performance/noDelete: restoring env var state
-			delete process.env.CLAUDE_CODE_TOKEN;
+			Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
 		} else {
 			process.env.CLAUDE_CODE_TOKEN = originalClaude;
 		}
 		if (originalCodex === undefined) {
-			// biome-ignore lint/performance/noDelete: restoring env var state
-			delete process.env.CODEX_API_KEY;
+			Reflect.deleteProperty(process.env, "CODEX_API_KEY");
 		} else {
 			process.env.CODEX_API_KEY = originalCodex;
 		}
@@ -80,8 +73,7 @@ describe("auth resolver", () => {
 		const resolver = createAuthResolver({ mode: "auto" });
 		const credential = await resolver("openai");
 		expect(credential).toBeUndefined();
-		// biome-ignore lint/performance/noDelete: resetting env var state
-		delete process.env.CODEX_API_KEY;
+		Reflect.deleteProperty(process.env, "CODEX_API_KEY");
 	});
 
 	it("returns undefined when credentials are missing", async () => {
@@ -113,8 +105,7 @@ describe("auth resolver", () => {
 		expect(credential).toBeDefined();
 		expect(credential?.token).toBe("env-token");
 		expect(credential?.type).toBe("anthropic-oauth");
-		// biome-ignore lint/performance/noDelete: resetting env var state
-		delete process.env.CLAUDE_CODE_TOKEN;
+		Reflect.deleteProperty(process.env, "CLAUDE_CODE_TOKEN");
 	});
 
 	it("fails when claude mode lacks oauth tokens", async () => {

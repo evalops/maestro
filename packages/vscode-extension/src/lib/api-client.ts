@@ -1,8 +1,7 @@
 /**
  * API Client for Composer Backend (VS Code Extension Version)
  */
-// @ts-ignore TS1541: type-only import from ESM inside CJS
-import type * as Contracts from "@evalops/contracts";
+type Contracts = typeof import("@evalops/contracts");
 
 export type Message = Contracts.ComposerMessage;
 export type ComposerToolCall = Contracts.ComposerToolCall;

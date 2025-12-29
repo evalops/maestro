@@ -123,6 +123,7 @@ export class IssuePrioritizer {
 			id: `issue-${issue.number}-${Date.now().toString(36)}`,
 			type: "issue",
 			sourceIssue: issue.number,
+			labels: issue.labels,
 			title: issue.title,
 			description: this.formatDescription(issue),
 			priority: triage.priority,

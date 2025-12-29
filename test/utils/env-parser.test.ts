@@ -10,11 +10,11 @@ describe("readBooleanEnv", () => {
 	const TEST_VAR = "TEST_BOOL_VAR";
 
 	beforeEach(() => {
-		delete process.env[TEST_VAR];
+		Reflect.deleteProperty(process.env, TEST_VAR);
 	});
 
 	afterEach(() => {
-		delete process.env[TEST_VAR];
+		Reflect.deleteProperty(process.env, TEST_VAR);
 	});
 
 	it("returns fallback when env var is not set", () => {
@@ -66,11 +66,11 @@ describe("readNonNegativeInt", () => {
 	const TEST_VAR = "TEST_NON_NEG_INT";
 
 	beforeEach(() => {
-		delete process.env[TEST_VAR];
+		Reflect.deleteProperty(process.env, TEST_VAR);
 	});
 
 	afterEach(() => {
-		delete process.env[TEST_VAR];
+		Reflect.deleteProperty(process.env, TEST_VAR);
 	});
 
 	it("returns fallback when env var is not set", () => {
@@ -119,11 +119,11 @@ describe("readThresholdEnv", () => {
 	const TEST_VAR = "TEST_THRESHOLD";
 
 	beforeEach(() => {
-		delete process.env[TEST_VAR];
+		Reflect.deleteProperty(process.env, TEST_VAR);
 	});
 
 	afterEach(() => {
-		delete process.env[TEST_VAR];
+		Reflect.deleteProperty(process.env, TEST_VAR);
 	});
 
 	it("returns fallback when env var is not set", () => {
@@ -166,11 +166,11 @@ describe("readPositiveInt", () => {
 	const TEST_VAR = "TEST_POSITIVE_INT";
 
 	beforeEach(() => {
-		delete process.env[TEST_VAR];
+		Reflect.deleteProperty(process.env, TEST_VAR);
 	});
 
 	afterEach(() => {
-		delete process.env[TEST_VAR];
+		Reflect.deleteProperty(process.env, TEST_VAR);
 	});
 
 	it("returns fallback when env var is not set", () => {

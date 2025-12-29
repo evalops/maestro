@@ -3,13 +3,13 @@ export type EnvOverrides = Record<string, string | undefined>;
 function restoreEnv(snapshot: EnvOverrides): void {
 	for (const key of Object.keys(process.env)) {
 		if (!(key in snapshot)) {
-			delete process.env[key];
+			Reflect.deleteProperty(process.env, key);
 		}
 	}
 
 	for (const [key, value] of Object.entries(snapshot)) {
 		if (value === undefined) {
-			delete process.env[key];
+			Reflect.deleteProperty(process.env, key);
 		} else {
 			process.env[key] = value;
 		}
@@ -19,7 +19,7 @@ function restoreEnv(snapshot: EnvOverrides): void {
 export function applyEnv(overrides: EnvOverrides): void {
 	for (const [key, value] of Object.entries(overrides)) {
 		if (value === undefined) {
-			delete process.env[key];
+			Reflect.deleteProperty(process.env, key);
 		} else {
 			process.env[key] = value;
 		}

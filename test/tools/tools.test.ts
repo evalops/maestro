@@ -71,8 +71,7 @@ describe("Composer Tools", () => {
 		vi.restoreAllMocks();
 		// Clean up test directory
 		rmSync(testDir, { recursive: true, force: true });
-		// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-		delete process.env.COMPOSER_TODO_FILE;
+		Reflect.deleteProperty(process.env, "COMPOSER_TODO_FILE");
 	});
 
 	describe("list tool", () => {
@@ -823,8 +822,7 @@ describe("Composer Tools", () => {
 			});
 
 			expect(getTextOutput(result)).toContain("interpolated-value");
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.BASH_INTERPOLATE_TEST;
+			Reflect.deleteProperty(process.env, "BASH_INTERPOLATE_TEST");
 		});
 
 		it("requires a plan for mutating commands when safe mode is enabled", async () => {
@@ -841,11 +839,8 @@ describe("Composer Tools", () => {
 					command: "rm -rf file.txt",
 				}),
 			).rejects.toThrow(/requires a plan/);
-
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_SAFE_MODE;
-			// biome-ignore lint/performance/noDelete: Must use delete, not = undefined
-			delete process.env.COMPOSER_SAFE_REQUIRE_PLAN;
+			Reflect.deleteProperty(process.env, "COMPOSER_SAFE_MODE");
+			Reflect.deleteProperty(process.env, "COMPOSER_SAFE_REQUIRE_PLAN");
 		});
 	});
 

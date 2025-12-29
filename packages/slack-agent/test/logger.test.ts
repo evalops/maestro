@@ -29,6 +29,22 @@ import {
 	withContextAsync,
 } from "../src/logger.js";
 
+function stripAnsi(input: string): string {
+	let output = "";
+	for (let i = 0; i < input.length; i++) {
+		const char = input[i];
+		if (char === "\u001b" && input[i + 1] === "[") {
+			i += 2;
+			while (i < input.length && input[i] !== "m") {
+				i++;
+			}
+			continue;
+		}
+		output += char;
+	}
+	return output;
+}
+
 describe("logger", () => {
 	let consoleLogSpy: ReturnType<typeof vi.spyOn>;
 
@@ -46,8 +62,7 @@ describe("logger", () => {
 
 	function getStrippedOutput(): string[] {
 		// Strip ANSI codes for easier assertions
-		// biome-ignore lint/suspicious/noControlCharactersInRegex: needed for ANSI strip
-		return getLogOutput().map((s) => s.replace(/\x1b\[[0-9;]*m/g, ""));
+		return getLogOutput().map((s) => stripAnsi(s));
 	}
 
 	describe("logUserMessage", () => {
