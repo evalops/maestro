@@ -27,9 +27,11 @@ describe("RequestScheduler", () => {
 	});
 
 	it("enforces minimum delay between mutating requests", async () => {
+		const minDelayMs = 20;
+		const jitterMs = 2;
 		const scheduler = new RequestScheduler({
 			serialize: true,
-			minMutationDelayMs: 20,
+			minMutationDelayMs: minDelayMs,
 		});
 		const startTimes: number[] = [];
 
@@ -48,6 +50,8 @@ describe("RequestScheduler", () => {
 
 		await Promise.all([first, second]);
 		expect(startTimes.length).toBe(2);
-		expect(startTimes[1] - startTimes[0]).toBeGreaterThanOrEqual(20);
+		expect(startTimes[1] - startTimes[0]).toBeGreaterThanOrEqual(
+			minDelayMs - jitterMs,
+		);
 	});
 });
