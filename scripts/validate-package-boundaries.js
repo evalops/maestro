@@ -29,6 +29,29 @@ function isAllowedOutside(filePath, resolvedPath) {
 	});
 }
 
+function resolveImportPath(fromFile, specifier) {
+	let resolved = resolve(dirname(fromFile), specifier);
+	if (existsSync(resolved)) {
+		return resolved;
+	}
+
+	for (const ext of sourceExtensions) {
+		const withExt = resolved + ext;
+		if (existsSync(withExt)) {
+			return withExt;
+		}
+	}
+
+	for (const ext of sourceExtensions) {
+		const indexPath = join(resolved, `index${ext}`);
+		if (existsSync(indexPath)) {
+			return indexPath;
+		}
+	}
+
+	return resolved;
+}
+
 function walk(dir, files = []) {
 	if (!existsSync(dir)) {
 		return files;
@@ -136,7 +159,7 @@ for (const packageRoot of packageRoots) {
 		);
 		for (const specifier of specifiers) {
 			if (specifier.startsWith(".")) {
-				const resolved = resolve(dirname(filePath), specifier);
+				const resolved = resolveImportPath(filePath, specifier);
 				if (isSubpath(packageRoot, resolved)) {
 					continue;
 				}
@@ -152,7 +175,7 @@ for (const packageRoot of packageRoots) {
 				continue;
 			}
 
-			if (/^@evalops\/.+\/(src|dist)\//.test(specifier)) {
+			if (/^@evalops\/.+\/(src|dist)(\/|$)/.test(specifier)) {
 				errors.push(
 					`${relative(repoRoot, filePath)} imports ${specifier}; use package entrypoints instead of /src or /dist`,
 				);
