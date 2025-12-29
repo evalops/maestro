@@ -22,20 +22,20 @@ import { MessageQueue } from "./utils/message-queue.js";
 import { createTimestampGenerator } from "./utils/slack-timestamp.js";
 import { splitForSlack } from "./utils/split-for-slack.js";
 
-// Import from main composer source
-import { Agent } from "../../../src/agent/agent.js";
-import { ProviderTransport } from "../../../src/agent/transport.js";
-import type {
-	AgentEvent,
-	AgentTool,
-	Api,
-	AssistantMessage,
-	Message,
-	Model,
-	TextContent,
-	ThinkingContent,
-} from "../../../src/agent/types.js";
-import { getModel } from "../../../src/models/builtin.js";
+// Import from shared AI SDK
+import {
+	Agent,
+	type AgentEvent,
+	type AgentTool,
+	type Api,
+	type AssistantMessage,
+	type Message,
+	type Model,
+	ProviderTransport,
+	type TextContent,
+	type ThinkingContent,
+	getModel,
+} from "@evalops/ai";
 
 // Re-export for backwards compatibility
 export { isRetryableError } from "./errors.js";

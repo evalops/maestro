@@ -289,8 +289,9 @@ export class ApiQueue {
 					| { get?: (name: string) => string | null };
 				const retryAfter =
 					typeof headers.get === "function"
-						? headers.get("retry-after")
-						: headers["retry-after"] || headers["Retry-After"];
+						? (headers.get("retry-after") ?? headers.get("Retry-After"))
+						: ((headers as Record<string, string>)["retry-after"] ??
+							(headers as Record<string, string>)["Retry-After"]);
 				if (retryAfter) {
 					const parsed = Number.parseFloat(retryAfter);
 					if (Number.isFinite(parsed)) {
