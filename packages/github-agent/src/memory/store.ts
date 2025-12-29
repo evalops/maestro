@@ -488,7 +488,7 @@ export class MemoryStore {
 
 		// Add problematic files warning
 		const problematic = Array.from(this.memory.problematicFiles.entries())
-			.filter(([_, count]) => count >= 2)
+			.filter(([_, count]) => count >= 1)
 			.sort((a, b) => b[1] - a[1]);
 
 		if (problematic.length > 0) {
