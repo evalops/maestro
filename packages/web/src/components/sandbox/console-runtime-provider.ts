@@ -84,7 +84,7 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 					__composerPostRuntimeMessage?: (message: unknown) => void;
 					postRuntimeMessage?: (message: unknown) => void;
 				};
-			const w = window as unknown as SandboxWindow;
+			const w = window as SandboxWindow;
 
 			if (!w.__composerOriginalConsole) {
 				w.__composerOriginalConsole = {
@@ -115,10 +115,7 @@ export class ConsoleRuntimeProvider implements SandboxRuntimeProvider {
 				}
 			};
 
-			const c = console as unknown as Record<
-				ConsoleMethod,
-				(...args: unknown[]) => void
-			>;
+			const c = console as Record<ConsoleMethod, (...args: unknown[]) => void>;
 			const methods: ConsoleMethod[] = ["log", "warn", "error", "info"];
 			for (const method of methods) {
 				c[method] = (...args: unknown[]) => {

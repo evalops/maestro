@@ -51,7 +51,7 @@ function ensureHljsLoaded(): void {
 
 	hljsLoadPromise = (async () => {
 		const mod = await import("highlight.js");
-		return (mod.default ?? mod) as unknown as HljsApi;
+		return (mod.default ?? mod) as HljsApi;
 	})();
 
 	void hljsLoadPromise

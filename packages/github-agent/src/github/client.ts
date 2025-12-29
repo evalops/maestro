@@ -90,6 +90,50 @@ class EtagCache {
 	}
 }
 
+class ResponseCache {
+	private readonly ttlMs: number;
+	private readonly maxEntries: number;
+	private readonly store = new Map<
+		string,
+		{ data: unknown; updatedAt: number }
+	>();
+
+	constructor(ttlMs = 5 * 60 * 1000, maxEntries = 200) {
+		this.ttlMs = ttlMs;
+		this.maxEntries = maxEntries;
+	}
+
+	get<T>(key: string): T | undefined {
+		const entry = this.store.get(key);
+		if (!entry) return undefined;
+		if (Date.now() - entry.updatedAt > this.ttlMs) {
+			this.store.delete(key);
+			return undefined;
+		}
+		return entry.data as T;
+	}
+
+	set<T>(key: string, data: T) {
+		this.store.set(key, { data, updatedAt: Date.now() });
+		this.prune();
+	}
+
+	private prune() {
+		const now = Date.now();
+		for (const [cacheKey, entry] of this.store) {
+			if (now - entry.updatedAt > this.ttlMs) {
+				this.store.delete(cacheKey);
+			}
+		}
+
+		while (this.store.size > this.maxEntries) {
+			const oldest = this.store.keys().next().value as string | undefined;
+			if (!oldest) break;
+			this.store.delete(oldest);
+		}
+	}
+}
+
 export class GitHubApiClient {
 	private readonly owner: string;
 	private readonly repo: string;
@@ -98,6 +142,7 @@ export class GitHubApiClient {
 	private readonly graphqlUrl: string;
 	private readonly userAgent: string;
 	private readonly etags = new EtagCache();
+	private readonly responseCache = new ResponseCache();
 	private rateLimit: GitHubRateLimitSnapshot = { remaining: 0 };
 
 	constructor(options: GitHubClientOptions) {
@@ -180,13 +225,19 @@ export class GitHubApiClient {
 			{ useEtag: true },
 		);
 
+		const issueByNumber = new Map<number, GitHubIssue>();
+		for (const issue of await this.listIssuesUpdatedSince(since)) {
+			issueByNumber.set(issue.number, issue);
+		}
+
 		const results: Array<{ issue: GitHubIssue; comment: PRComment }> = [];
+		const missingIssues = new Set<number>();
+		const entries: Array<{ issueNumber: number; comment: PRComment }> = [];
 		for (const comment of comments) {
 			const issueNumber = extractIssueNumber(comment.issue_url);
 			if (!issueNumber) continue;
-			const issue = await this.getIssue(issueNumber);
-			results.push({
-				issue,
+			entries.push({
+				issueNumber,
 				comment: {
 					id: comment.id,
 					author: comment.user?.login || "unknown",
@@ -196,6 +247,28 @@ export class GitHubApiClient {
 					createdAt: comment.created_at,
 				},
 			});
+			if (!issueByNumber.has(issueNumber)) {
+				missingIssues.add(issueNumber);
+			}
+		}
+
+		if (missingIssues.size > 0) {
+			const fetched = await Promise.all(
+				Array.from(missingIssues).map((issueNumber) =>
+					this.getIssue(issueNumber).catch(() => null),
+				),
+			);
+			for (const issue of fetched) {
+				if (issue) {
+					issueByNumber.set(issue.number, issue);
+				}
+			}
+		}
+
+		for (const entry of entries) {
+			const issue = issueByNumber.get(entry.issueNumber);
+			if (!issue) continue;
+			results.push({ issue, comment: entry.comment });
 		}
 		return results;
 	}
@@ -542,6 +615,9 @@ export class GitHubApiClient {
 			if (etagKey && response.headers.etag) {
 				this.etags.set(etagKey, response.headers.etag);
 			}
+			if (etagKey && response.data !== null) {
+				this.responseCache.set(etagKey, response.data);
+			}
 			return {
 				data: response.data ?? null,
 				status: response.status,
@@ -579,13 +655,25 @@ export class GitHubApiClient {
 		const perPage = options.perPage ?? 100;
 		const results: T[] = [];
 		for (let page = 1; page <= 50; page += 1) {
+			const requestParams = { ...params, per_page: perPage, page };
+			const cacheKey = options.useEtag
+				? this.buildEtagKey(endpoint, requestParams)
+				: null;
 			const response = await this.request<T[]>(
 				endpoint,
-				{ ...params, per_page: perPage, page },
+				requestParams,
 				options,
 			);
-			if (response.notModified) {
-				return [];
+			if (response.notModified && cacheKey) {
+				const cached = this.responseCache.get<T[]>(cacheKey);
+				if (cached) {
+					results.push(...cached);
+					if (cached.length < perPage) {
+						break;
+					}
+					continue;
+				}
+				return results;
 			}
 			const data = response.data ?? [];
 			results.push(...data);

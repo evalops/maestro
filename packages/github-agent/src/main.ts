@@ -258,6 +258,18 @@ async function main(): Promise<void> {
 	config.webhookPort = config.webhookPort ?? 8787;
 	config.webhookPath = config.webhookPath ?? "/github/webhooks";
 	config.webhookMode = config.webhookMode ?? "poll";
+	if (config.webhookMode !== "poll" && !config.webhookSecret) {
+		if (config.webhookMode === "webhook") {
+			console.error(
+				"Error: --webhook-mode=webhook requires --webhook-secret or GITHUB_WEBHOOK_SECRET",
+			);
+			process.exit(1);
+		}
+		console.warn(
+			"[github-agent] Webhook mode requires a secret; falling back to polling.",
+		);
+		config.webhookMode = "poll";
+	}
 
 	// Create and start orchestrator
 	const orchestrator = new Orchestrator(config as OrchestratorConfig);

@@ -400,10 +400,7 @@ export class TurnCollector {
 
 		// Only persist if sampled
 		if (sampled) {
-			// Cast to base type for telemetry union compatibility
-			void recordTelemetry(
-				event as unknown as Parameters<typeof recordTelemetry>[0],
-			);
+			void recordTelemetry(event);
 		}
 
 		return event;

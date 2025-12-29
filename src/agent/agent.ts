@@ -457,10 +457,10 @@ export class Agent {
 		}
 		if (this.queueMode === "one") {
 			const next = this.messageQueue.shift();
-			return next ? ([next] as unknown as QueuedMessage<T>[]) : [];
+			return next ? [next as QueuedMessage<T>] : [];
 		}
-		const queued = this.messageQueue.splice(0);
-		return queued as unknown as QueuedMessage<T>[];
+		const queued = this.messageQueue.splice(0) as QueuedMessage<T>[];
+		return queued;
 	}
 
 	/**

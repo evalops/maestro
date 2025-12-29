@@ -2158,7 +2158,7 @@ export class ComposerChat extends LitElement {
 
 		const el = document.createElement(
 			"composer-sandboxed-iframe",
-		) as unknown as HTMLElement & {
+		) as HTMLElement & {
 			sandboxId: string;
 			htmlContent: string;
 			providers: unknown[];

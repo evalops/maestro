@@ -80,7 +80,12 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { v4 as uuidv4 } from "uuid";
-import type { AgentState, AppMessage } from "../agent/types.js";
+import type {
+	AgentState,
+	AppMessage,
+	Attachment,
+	UserMessageWithAttachments,
+} from "../agent/types.js";
 import { getAgentDir } from "../config/constants.js";
 import {
 	buildConversationModel,
@@ -124,33 +129,40 @@ interface SessionFileInfo {
 	allMessagesText: string;
 }
 
+function isMessageWithAttachments(
+	message: AppMessage,
+): message is UserMessageWithAttachments & { attachments: Attachment[] } {
+	return (
+		typeof message === "object" &&
+		message !== null &&
+		"attachments" in message &&
+		Array.isArray((message as { attachments?: unknown }).attachments)
+	);
+}
+
 function applyAttachmentExtracts(
 	message: AppMessage,
 	extractedById: Map<string, string>,
 ): AppMessage {
-	const attachments = (message as { attachments?: unknown }).attachments;
-	if (!Array.isArray(attachments) || attachments.length === 0) {
+	if (!isMessageWithAttachments(message) || message.attachments.length === 0) {
 		return message;
 	}
+	const attachments = message.attachments;
 
 	let changed = false;
 	const nextAttachments = attachments.map((att) => {
 		if (!att || typeof att !== "object") return att;
-		const record = att as Record<string, unknown>;
-		const id = typeof record.id === "string" ? record.id : "";
+		const id = typeof att.id === "string" ? att.id : "";
 		if (!id) return att;
 		const extracted = extractedById.get(id);
 		if (!extracted) return att;
-		if (record.extractedText === extracted) return att;
+		if (att.extractedText === extracted) return att;
 		changed = true;
-		return { ...record, extractedText: extracted };
+		return { ...att, extractedText: extracted };
 	});
 
 	if (!changed) return message;
-	return {
-		...(message as unknown as Record<string, unknown>),
-		attachments: nextAttachments,
-	} as AppMessage;
+	return { ...message, attachments: nextAttachments };
 }
 
 function readSessionEntries(filePath: string): SessionEntry[] {

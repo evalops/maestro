@@ -99,7 +99,7 @@ export class FileDownloadRuntimeProvider implements SandboxRuntimeProvider {
 						mimeType?: string,
 					) => Promise<void>;
 				};
-			const w = window as unknown as SandboxWindow;
+			const w = window as SandboxWindow;
 
 			const post =
 				w.postRuntimeMessage ??

@@ -238,7 +238,8 @@ export class ComposerArtifactsPanel extends LitElement {
 
 		try {
 			const mod = await loadHljs();
-			const hljs = (mod as unknown as { default?: unknown }).default ?? mod;
+			const moduleWithDefault = mod as { default?: unknown };
+			const hljs = moduleWithDefault.default ?? mod;
 			const lang = languageFromFilename(active.filename);
 			const highlighted = (
 				hljs as {

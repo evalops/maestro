@@ -96,11 +96,14 @@ export class TaskExecutor {
 			}
 
 			// Step 6: Create PR
-			let pr: { number: number; url: string };
+			let pr: { number: number; url: string } | null = null;
 			await this.runStep(task, progress, "pr", async () => {
 				this.log("[executor] Creating PR...");
 				pr = await this.createPR(task, branchName);
 			});
+			if (!pr) {
+				throw new Error("PR creation did not return a result");
+			}
 			progress.prUrl = pr.url;
 
 			await this.publishCheckRun(task, progress, branchName, pr);
