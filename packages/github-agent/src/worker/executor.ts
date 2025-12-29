@@ -510,17 +510,35 @@ ${diff}
 			const headSha = await this.githubClient.getBranchHeadSha(branchName);
 			const summary = this.buildCheckRunSummary(task, progress, pr);
 			const text = progress.error ? `Error: ${progress.error}` : undefined;
-			const checkRun = await this.githubClient.createCheckRun({
-				name: "Composer Agent",
-				headSha,
-				status: "completed",
-				conclusion: "success",
-				detailsUrl: pr.url,
-				summary,
-				text,
+			const supportsCheckRuns = await this.githubClient.supportsCheckRuns();
+			if (supportsCheckRuns) {
+				try {
+					const checkRun = await this.githubClient.createCheckRun({
+						name: "Composer Agent",
+						headSha,
+						status: "completed",
+						conclusion: "success",
+						detailsUrl: pr.url,
+						summary,
+						text,
+					});
+					this.memory.updateTask(task.id, { checkRunId: checkRun.id });
+					task.checkRunId = checkRun.id;
+					return;
+				} catch (err) {
+					this.log(
+						`[executor] Check run creation failed, falling back to commit status: ${err instanceof Error ? err.message : err}`,
+					);
+				}
+			}
+
+			await this.githubClient.createCommitStatus({
+				sha: headSha,
+				state: "success",
+				description: "Composer Agent completed successfully",
+				context: "Composer Agent",
+				targetUrl: pr.url,
 			});
-			this.memory.updateTask(task.id, { checkRunId: checkRun.id });
-			task.checkRunId = checkRun.id;
 		} catch (err) {
 			this.log(
 				`[executor] Failed to create check run: ${err instanceof Error ? err.message : err}`,
