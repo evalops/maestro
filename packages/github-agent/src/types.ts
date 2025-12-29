@@ -82,6 +82,7 @@ export interface Task {
 	result?: TaskResult;
 	reportCommentId?: number;
 	checkRunId?: number;
+	queuedAttempt?: number;
 }
 
 export interface TaskResult {

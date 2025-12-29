@@ -361,15 +361,19 @@ export class Orchestrator {
 			);
 			return;
 		}
-		if (task.attempts >= this.config.maxAttemptsPerTask) {
+		const nextAttempt = task.queuedAttempt ?? task.attempts + 1;
+		if (nextAttempt > this.config.maxAttemptsPerTask) {
 			console.warn(
 				`[orchestrator] Max attempts reached for task ${task.id}; cannot rerun`,
 			);
 			return;
 		}
 
-		const nextAttempt = task.attempts + 1;
 		this.memory.updateTaskStatus(task.id, "pending");
+		if (!task.queuedAttempt) {
+			this.memory.updateTask(task.id, { queuedAttempt: nextAttempt });
+			task.queuedAttempt = nextAttempt;
+		}
 		await this.publishCheckRunStatus(checkRun, task, "queued").catch((err) => {
 			console.warn(
 				`[orchestrator] Failed to update check run ${checkRun.id} to queued: ${err instanceof Error ? err.message : err}`,
@@ -483,7 +487,16 @@ export class Orchestrator {
 		try {
 			console.log(`[orchestrator] Processing task: ${task.id}`);
 			this.memory.updateTaskStatus(task.id, "in_progress");
-			this.memory.incrementAttempts(task.id);
+			if (task.queuedAttempt && task.queuedAttempt > task.attempts) {
+				this.memory.updateTask(task.id, {
+					attempts: task.queuedAttempt,
+					queuedAttempt: undefined,
+				});
+				task.attempts = task.queuedAttempt;
+				task.queuedAttempt = undefined;
+			} else {
+				this.memory.incrementAttempts(task.id);
+			}
 			await this.updateTaskReport(task, {
 				status: "in_progress",
 				steps: { queued: "done" },

@@ -454,17 +454,22 @@ ${diff}
 		try {
 			const output = await this.runCommand("gh", [
 				"pr",
-				"view",
+				"list",
+				"--state",
+				"open",
 				"--json",
 				"number,url",
 				"--head",
 				branchName,
+				"--limit",
+				"1",
 			]);
-			const data = JSON.parse(output) as { number?: number; url?: string };
-			if (!data?.number || !data?.url) {
+			const data = JSON.parse(output) as { number?: number; url?: string }[];
+			const pr = data?.[0];
+			if (!pr?.number || !pr?.url) {
 				return null;
 			}
-			return { number: data.number, url: data.url };
+			return { number: pr.number, url: pr.url };
 		} catch {
 			return null;
 		}
