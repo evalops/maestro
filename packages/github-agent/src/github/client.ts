@@ -723,86 +723,82 @@ export class GitHubApiClient {
 		endpoint: string,
 		params: Record<string, unknown>,
 		options: RequestOptions = {},
-		attempt = 0,
 	): Promise<GitHubResponse<T>> {
 		const method = endpoint.split(" ")[0]?.toUpperCase() ?? "GET";
 		const isMutation = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
-		return this.scheduler.schedule(
-			() => this.performRequest(endpoint, params, options, attempt),
-			{ mutating: isMutation },
-		);
-	}
-
-	private async performRequest<T>(
-		endpoint: string,
-		params: Record<string, unknown>,
-		options: RequestOptions,
-		attempt: number,
-	): Promise<GitHubResponse<T>> {
-		const token = await this.auth.getToken();
-		const headers: Record<string, string> = {
-			Accept: "application/vnd.github+json",
-			"X-GitHub-Api-Version": "2022-11-28",
-			"User-Agent": this.userAgent,
-			Authorization:
-				token.type === "app" ? `Bearer ${token.token}` : `token ${token.token}`,
-		};
-
-		const method = endpoint.split(" ")[0]?.toUpperCase() ?? "GET";
 		const etagKey = options.useEtag
 			? this.buildEtagKey(endpoint, params)
 			: null;
-		if (etagKey) {
-			const etag = this.etags.get(etagKey);
-			if (etag) {
-				headers["If-None-Match"] = etag;
+
+		for (let attempt = 0; attempt <= 5; attempt += 1) {
+			const token = await this.auth.getToken();
+			const headers: Record<string, string> = {
+				Accept: "application/vnd.github+json",
+				"X-GitHub-Api-Version": "2022-11-28",
+				"User-Agent": this.userAgent,
+				Authorization:
+					token.type === "app"
+						? `Bearer ${token.token}`
+						: `token ${token.token}`,
+			};
+
+			if (etagKey) {
+				const etag = this.etags.get(etagKey);
+				if (etag) {
+					headers["If-None-Match"] = etag;
+				}
+			}
+
+			try {
+				const response = await this.scheduler.schedule(
+					() =>
+						this.octokit.request<T>(endpoint, {
+							...params,
+							headers,
+						}),
+					{ mutating: isMutation },
+				);
+				this.captureRateLimit(response.headers);
+				if (etagKey && response.headers.etag) {
+					this.etags.set(etagKey, response.headers.etag);
+				}
+				if (etagKey && response.data !== null) {
+					this.responseCache.set(etagKey, response.data);
+				}
+				return {
+					data: response.data ?? null,
+					status: response.status,
+					headers: response.headers as Record<string, string>,
+				};
+			} catch (error) {
+				const status = getStatus(error);
+				const responseHeaders = getHeaders(error);
+				if (status === 304) {
+					if (etagKey && responseHeaders?.etag) {
+						this.etags.set(etagKey, responseHeaders.etag);
+					}
+					return {
+						data: null,
+						status,
+						headers: responseHeaders ?? {},
+						notModified: true,
+					};
+				}
+				this.captureRateLimit(responseHeaders);
+				const retryDelay = this.getRetryDelayMs(
+					error,
+					status,
+					responseHeaders,
+					attempt,
+				);
+				if (retryDelay === null || attempt >= 5) {
+					throw error;
+				}
+				await wait(retryDelay);
 			}
 		}
 
-		try {
-			const response = await this.octokit.request<T>(endpoint, {
-				...params,
-				headers,
-			});
-			this.captureRateLimit(response.headers);
-			if (etagKey && response.headers.etag) {
-				this.etags.set(etagKey, response.headers.etag);
-			}
-			if (etagKey && response.data !== null) {
-				this.responseCache.set(etagKey, response.data);
-			}
-			return {
-				data: response.data ?? null,
-				status: response.status,
-				headers: response.headers as Record<string, string>,
-			};
-		} catch (error) {
-			const status = getStatus(error);
-			const responseHeaders = getHeaders(error);
-			if (status === 304) {
-				if (etagKey && responseHeaders?.etag) {
-					this.etags.set(etagKey, responseHeaders.etag);
-				}
-				return {
-					data: null,
-					status,
-					headers: responseHeaders ?? {},
-					notModified: true,
-				};
-			}
-			this.captureRateLimit(responseHeaders);
-			const retryDelay = this.getRetryDelayMs(
-				error,
-				status,
-				responseHeaders,
-				attempt,
-			);
-			if (retryDelay !== null && attempt < 5) {
-				await wait(retryDelay);
-				return this.performRequest<T>(endpoint, params, options, attempt + 1);
-			}
-			throw error;
-		}
+		throw new Error("GitHub request failed after retries");
 	}
 
 	private async paginate<T>(
