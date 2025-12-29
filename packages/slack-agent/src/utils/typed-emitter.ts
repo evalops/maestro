@@ -261,7 +261,7 @@ export function createTypedEmitter<
 /**
  * Pre-defined events for Slack agent lifecycle.
  */
-export interface SlackAgentEvents {
+export interface SlackAgentEvents extends Record<string, unknown> {
 	/** Agent connected to Slack */
 	connected: undefined;
 	/** Agent disconnected from Slack */

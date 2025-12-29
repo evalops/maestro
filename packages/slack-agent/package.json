@@ -29,6 +29,7 @@
 		"node": ">=20.0.0"
 	},
 	"dependencies": {
+		"@evalops/ai": "^0.10.0",
 		"@sinclair/typebox": "^0.34.0",
 		"@slack/socket-mode": "^2.0.0",
 		"@slack/web-api": "^7.0.0",
