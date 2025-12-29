@@ -69,7 +69,7 @@
  * Handles conversation state, tool execution, and streaming responses.
  * @see {@link AgentOptions} for configuration
  */
-export { Agent, type AgentOptions } from "../../../src/agent/agent.js";
+export { Agent, type AgentOptions } from "./agent/index.js";
 
 /**
  * Transport layer for LLM provider communication.
@@ -79,7 +79,7 @@ export { Agent, type AgentOptions } from "../../../src/agent/agent.js";
 export {
 	ProviderTransport,
 	type ProviderTransportOptions,
-} from "../../../src/agent/transport.js";
+} from "./transport.js";
 
 /**
  * Model registry functions for discovering available LLM models.
@@ -96,17 +96,13 @@ export {
  * const claude = getModel('anthropic', 'claude-sonnet-4-5-20250929');
  * ```
  */
-export {
-	getProviders,
-	getModels,
-	getModel,
-} from "../../../src/models/builtin.js";
+export { getProviders, getModels, getModel } from "./models.js";
 
 /**
  * Agent state interface representing the current state of an agent instance.
  * Includes messages, model configuration, tools, and streaming status.
  */
-export type { AgentState } from "../../../src/agent/types.js";
+export type { AgentState } from "./types.js";
 
 /**
  * Core type definitions for the AI SDK.
@@ -191,4 +187,4 @@ export type {
 	UserMessage,
 	/** User message with file attachments */
 	UserMessageWithAttachments,
-} from "../../../src/agent/types.js";
+} from "./types.js";

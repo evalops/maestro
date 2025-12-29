@@ -68,9 +68,9 @@ await agent.prompt("Hello, world!");
 
 ## Subpath Entry Points
 
-`@evalops/ai` is the unified SDK surface for all Composer interfaces. For
-advanced use cases, you can import stable subpaths instead of reaching into
-root `src` files:
+`@evalops/ai` is the unified SDK surface for all Composer interfaces. Prefer the
+stable subpath entry points (kept inside this package) instead of reaching into
+monorepo `src` files:
 
 ```typescript
 import { Agent } from "@evalops/ai/agent";
@@ -82,8 +82,9 @@ import { getModel, getModels } from "@evalops/ai/models";
 Additional namespaces are available for power users, for example:
 `@evalops/ai/tools/*`, `@evalops/ai/providers/*`, `@evalops/ai/safety/*`,
 `@evalops/ai/hooks/*`, `@evalops/ai/tracking/*`, `@evalops/ai/sandbox/*`,
-`@evalops/ai/config/*`, and more. This keeps interface code on a single,
-versioned SDK surface without direct imports from the monorepo root.
+`@evalops/ai/config/*`, and more. Prefer the stable entry points above unless
+you need something specific; wildcard subpaths are intentionally broader and may
+shift as the SDK evolves.
 
 ## Streaming Events
 
