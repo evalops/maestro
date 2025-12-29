@@ -1,4 +1,4 @@
-type Contracts = typeof import("@evalops/contracts");
+import type * as Contracts from "@evalops/contracts";
 import type { Message } from "./api-client.js";
 
 interface ContentPart {

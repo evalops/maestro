@@ -1,7 +1,7 @@
 /**
  * API Client for Composer Backend (VS Code Extension Version)
  */
-type Contracts = typeof import("@evalops/contracts");
+import type * as Contracts from "@evalops/contracts";
 
 export type Message = Contracts.ComposerMessage;
 export type ComposerToolCall = Contracts.ComposerToolCall;
