@@ -336,6 +336,16 @@ export class Orchestrator {
 			console.warn(`[orchestrator] No task found for check run ${checkRun.id}`);
 			return;
 		}
+		if (task.checkRunId && task.checkRunId !== checkRun.id) {
+			console.warn(
+				`[orchestrator] Check run ${checkRun.id} does not match task ${task.id} check run ${task.checkRunId}`,
+			);
+			return;
+		}
+		if (!task.checkRunId) {
+			this.memory.updateTask(task.id, { checkRunId: checkRun.id });
+			task.checkRunId = checkRun.id;
+		}
 		if (task.status === "in_progress") {
 			console.log(
 				`[orchestrator] Task already in progress for check run ${checkRun.id}`,

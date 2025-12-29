@@ -189,7 +189,7 @@ export class GitHubWebhookServer {
 				headSha: payload.check_run.head_sha,
 				pullRequests: pullRequests
 					.map((pr) => pr.number)
-					.filter((number): number => typeof number === "number"),
+					.filter((number): number is number => typeof number === "number"),
 			};
 			await this.handlers.onCheckRunRerequested(event);
 		});
