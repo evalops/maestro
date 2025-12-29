@@ -8,6 +8,5 @@
 		"emitDeclarationOnly": true
 	},
 	"include": ["src/**/*"],
-	"exclude": ["node_modules", "dist", "test"],
-	"references": [{ "path": "../ai/tsconfig.build.json" }]
+	"exclude": ["node_modules", "dist", "test"]
 }
