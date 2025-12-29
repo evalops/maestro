@@ -66,6 +66,25 @@ agent.subscribe((event) => {
 await agent.prompt("Hello, world!");
 ```
 
+## Subpath Entry Points
+
+`@evalops/ai` is the unified SDK surface for all Composer interfaces. For
+advanced use cases, you can import stable subpaths instead of reaching into
+root `src` files:
+
+```typescript
+import { Agent } from "@evalops/ai/agent";
+import { ProviderTransport } from "@evalops/ai/transport";
+import type { AgentEvent, Message } from "@evalops/ai/types";
+import { getModel, getModels } from "@evalops/ai/models";
+```
+
+Additional namespaces are available for power users, for example:
+`@evalops/ai/tools/*`, `@evalops/ai/providers/*`, `@evalops/ai/safety/*`,
+`@evalops/ai/hooks/*`, `@evalops/ai/tracking/*`, `@evalops/ai/sandbox/*`,
+`@evalops/ai/config/*`, and more. This keeps interface code on a single,
+versioned SDK surface without direct imports from the monorepo root.
+
 ## Streaming Events
 
 The agent emits events during execution that you can subscribe to:
