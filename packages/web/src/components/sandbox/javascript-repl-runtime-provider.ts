@@ -27,7 +27,7 @@ export class JavascriptReplRuntimeProvider implements SandboxRuntimeProvider {
 					__composerReplTimeoutMs?: unknown;
 					postRuntimeMessage?: (message: unknown) => void;
 				};
-			const w = window as unknown as SandboxWindow;
+			const w = window as SandboxWindow;
 
 			const post =
 				w.postRuntimeMessage ??

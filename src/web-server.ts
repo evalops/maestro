@@ -493,7 +493,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 	res.setHeader("server-timing", `traceparent;desc="${responseTraceParent}"`);
 
 	// Attach request to response for easy access in helpers
-	(res as unknown as { req: IncomingMessage }).req = req;
+	(res as ServerResponse & { req?: IncomingMessage }).req = req;
 
 	const context: RequestContext = {
 		requestId,

@@ -103,8 +103,12 @@ async function getAppliedMigrations(): Promise<Set<string>> {
 		`);
 
 		const tags = new Set<string>();
-		for (const row of results as unknown as Array<{ tag: string }>) {
-			tags.add(row.tag);
+		const rows = Array.from(results) as Array<Record<string, unknown>>;
+		for (const row of rows) {
+			const tag = row.tag;
+			if (typeof tag === "string") {
+				tags.add(tag);
+			}
 		}
 		return tags;
 	} catch {

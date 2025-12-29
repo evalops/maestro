@@ -35,6 +35,9 @@ function maxIsoTimestamp(
 	return Date.parse(candidate) > Date.parse(current) ? candidate : current;
 }
 
+const ISSUE_TRACK_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const MAX_TRACKED_ISSUES = 5000;
+
 export class GitHubWatcher {
 	private client: GitHubApiClient;
 	private config: AgentConfig;
@@ -47,6 +50,7 @@ export class GitHubWatcher {
 	private trackedPrPollTimes: Map<number, string> = new Map();
 	private notifiedIssues: Set<number> = new Set();
 	private issueLabelSnapshots: Map<number, Set<string>> = new Map();
+	private issueLastSeen: Map<number, number> = new Map();
 
 	constructor(
 		client: GitHubApiClient,
@@ -139,8 +143,15 @@ export class GitHubWatcher {
 				if (issue.state !== "open") {
 					this.notifiedIssues.delete(issue.number);
 					this.issueLabelSnapshots.delete(issue.number);
+					this.issueLastSeen.delete(issue.number);
 					continue;
 				}
+
+				const now = Date.now();
+				if (this.issueLastSeen.has(issue.number)) {
+					this.issueLastSeen.delete(issue.number);
+				}
+				this.issueLastSeen.set(issue.number, now);
 
 				// Check if issue has any of our target labels
 				const labels = issue.labels;
@@ -174,10 +185,32 @@ export class GitHubWatcher {
 
 				this.issueLabelSnapshots.set(issue.number, labelSnapshot);
 			}
+			this.pruneIssueTracking();
 			return maxIsoTimestamp(pollStartedAt, maxUpdatedAt);
 		} catch (err) {
 			console.error("[watcher] Error polling issues:", err);
 			return null;
+		}
+	}
+
+	private pruneIssueTracking(): void {
+		const now = Date.now();
+		for (const [issueNumber, lastSeen] of this.issueLastSeen) {
+			if (now - lastSeen > ISSUE_TRACK_TTL_MS) {
+				this.issueLastSeen.delete(issueNumber);
+				this.notifiedIssues.delete(issueNumber);
+				this.issueLabelSnapshots.delete(issueNumber);
+			}
+		}
+
+		while (this.issueLastSeen.size > MAX_TRACKED_ISSUES) {
+			const oldest = this.issueLastSeen.keys().next().value as
+				| number
+				| undefined;
+			if (oldest === undefined) break;
+			this.issueLastSeen.delete(oldest);
+			this.notifiedIssues.delete(oldest);
+			this.issueLabelSnapshots.delete(oldest);
 		}
 	}
 

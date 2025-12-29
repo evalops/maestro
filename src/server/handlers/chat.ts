@@ -143,23 +143,26 @@ export async function handleChat(
 
 			for (const item of raw) {
 				if (!item || typeof item !== "object") continue;
-				const a = item as unknown as Record<string, unknown>;
-
-				const id = typeof a.id === "string" ? a.id : "";
+				const id = typeof item.id === "string" ? item.id : "";
 				const type =
-					a.type === "image" || a.type === "document" ? a.type : null;
+					item.type === "image" || item.type === "document" ? item.type : null;
 				const fileName =
-					typeof a.fileName === "string" ? a.fileName : "attachment";
+					typeof item.fileName === "string" ? item.fileName : "attachment";
 				const mimeType =
-					typeof a.mimeType === "string"
-						? a.mimeType
+					typeof item.mimeType === "string"
+						? item.mimeType
 						: "application/octet-stream";
 				const size =
-					typeof a.size === "number" && Number.isFinite(a.size) ? a.size : 0;
-				const content = typeof a.content === "string" ? a.content : "";
+					typeof item.size === "number" && Number.isFinite(item.size)
+						? item.size
+						: 0;
+				const content = typeof item.content === "string" ? item.content : "";
 				const extractedText =
-					typeof a.extractedText === "string" ? a.extractedText : undefined;
-				const preview = typeof a.preview === "string" ? a.preview : undefined;
+					typeof item.extractedText === "string"
+						? item.extractedText
+						: undefined;
+				const preview =
+					typeof item.preview === "string" ? item.preview : undefined;
 
 				if (!id || !type) continue;
 				if (!content) {

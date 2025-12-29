@@ -57,7 +57,7 @@ export class ArtifactsRuntimeProvider implements SandboxRuntimeProvider {
 					deleteArtifact?: (filename: string) => Promise<void>;
 				};
 
-			const w = window as unknown as SandboxWindow;
+			const w = window as SandboxWindow;
 			const isJsonFile = (filename: string) => filename.endsWith(".json");
 
 			w.listArtifacts = async (): Promise<string[]> => {

@@ -25,8 +25,10 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Type } from "@sinclair/typebox";
 import { parse as parseTOML } from "smol-toml";
 import { createLogger } from "../utils/logger.js";
+import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
 import { PATHS } from "./constants.js";
 
 const logger = createLogger("config:toml");
@@ -211,6 +213,268 @@ export interface ComposerConfig {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Validation Schema (loose, allows extra keys)
+// ─────────────────────────────────────────────────────────────
+
+const ApprovalPolicySchema = Type.Union([
+	Type.Literal("untrusted"),
+	Type.Literal("on-failure"),
+	Type.Literal("on-request"),
+	Type.Literal("never"),
+]);
+
+const SandboxModeSchema = Type.Union([
+	Type.Literal("read-only"),
+	Type.Literal("workspace-write"),
+	Type.Literal("danger-full-access"),
+]);
+
+const ReasoningEffortSchema = Type.Union([
+	Type.Literal("minimal"),
+	Type.Literal("low"),
+	Type.Literal("medium"),
+	Type.Literal("high"),
+]);
+
+const ModelReasoningSummarySchema = Type.Union([
+	Type.Literal("auto"),
+	Type.Literal("concise"),
+	Type.Literal("detailed"),
+	Type.Literal("none"),
+]);
+
+const ModelVerbositySchema = Type.Union([
+	Type.Literal("low"),
+	Type.Literal("medium"),
+	Type.Literal("high"),
+]);
+
+const ModelProviderConfigSchema = Type.Object(
+	{
+		name: Type.Optional(Type.String()),
+		base_url: Type.Optional(Type.String()),
+		env_key: Type.Optional(Type.String()),
+		wire_api: Type.Optional(
+			Type.Union([Type.Literal("chat"), Type.Literal("responses")]),
+		),
+		query_params: Type.Optional(Type.Record(Type.String(), Type.String())),
+		http_headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+		env_http_headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+		request_max_retries: Type.Optional(Type.Number({ minimum: 0 })),
+		stream_max_retries: Type.Optional(Type.Number({ minimum: 0 })),
+		stream_idle_timeout_ms: Type.Optional(Type.Number({ minimum: 0 })),
+	},
+	{ additionalProperties: true },
+);
+
+const McpServerConfigSchema = Type.Object(
+	{
+		command: Type.Optional(Type.String()),
+		args: Type.Optional(Type.Array(Type.String())),
+		env: Type.Optional(Type.Record(Type.String(), Type.String())),
+		cwd: Type.Optional(Type.String()),
+		url: Type.Optional(Type.String()),
+		bearer_token_env_var: Type.Optional(Type.String()),
+		http_headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+		env_http_headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+		enabled: Type.Optional(Type.Boolean()),
+		startup_timeout_sec: Type.Optional(Type.Number({ minimum: 0 })),
+		tool_timeout_sec: Type.Optional(Type.Number({ minimum: 0 })),
+		enabled_tools: Type.Optional(Type.Array(Type.String())),
+		disabled_tools: Type.Optional(Type.Array(Type.String())),
+	},
+	{ additionalProperties: true },
+);
+
+const FeaturesConfigSchema = Type.Object(
+	{
+		web_search_request: Type.Optional(Type.Boolean()),
+		view_image_tool: Type.Optional(Type.Boolean()),
+		ghost_commit: Type.Optional(Type.Boolean()),
+	},
+	{ additionalProperties: Type.Boolean() },
+);
+
+const ToolsConfigSchema = Type.Object(
+	{
+		web_search: Type.Optional(Type.Boolean()),
+		view_image: Type.Optional(Type.Boolean()),
+	},
+	{ additionalProperties: Type.Boolean() },
+);
+
+const OtlpHttpConfigSchema = Type.Object(
+	{
+		endpoint: Type.String(),
+		protocol: Type.Optional(
+			Type.Union([Type.Literal("binary"), Type.Literal("json")]),
+		),
+		headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+	},
+	{ additionalProperties: true },
+);
+
+const OtlpGrpcConfigSchema = Type.Object(
+	{
+		endpoint: Type.String(),
+		headers: Type.Optional(Type.Record(Type.String(), Type.String())),
+	},
+	{ additionalProperties: true },
+);
+
+const OtelExporterSchema = Type.Union([
+	Type.Literal("none"),
+	Type.Object(
+		{ "otlp-http": OtlpHttpConfigSchema },
+		{ additionalProperties: false },
+	),
+	Type.Object(
+		{ "otlp-grpc": OtlpGrpcConfigSchema },
+		{ additionalProperties: false },
+	),
+]);
+
+const OtelConfigSchema = Type.Object(
+	{
+		environment: Type.Optional(Type.String()),
+		exporter: Type.Optional(OtelExporterSchema),
+		log_user_prompt: Type.Optional(Type.Boolean()),
+	},
+	{ additionalProperties: true },
+);
+
+const RetryConfigSchema = Type.Object(
+	{
+		enabled: Type.Optional(Type.Boolean()),
+		max_retries: Type.Optional(Type.Number({ minimum: 0 })),
+		base_delay_ms: Type.Optional(Type.Number({ minimum: 0 })),
+	},
+	{ additionalProperties: true },
+);
+
+const HistoryConfigSchema = Type.Object(
+	{
+		persistence: Type.Optional(
+			Type.Union([Type.Literal("save-all"), Type.Literal("none")]),
+		),
+		max_bytes: Type.Optional(Type.Number({ minimum: 0 })),
+	},
+	{ additionalProperties: true },
+);
+
+const TuiConfigSchema = Type.Object(
+	{
+		notifications: Type.Optional(
+			Type.Union([Type.Boolean(), Type.Array(Type.String())]),
+		),
+		animations: Type.Optional(Type.Boolean()),
+	},
+	{ additionalProperties: true },
+);
+
+const ShellEnvironmentPolicySchema = Type.Object(
+	{
+		inherit: Type.Optional(
+			Type.Union([
+				Type.Literal("all"),
+				Type.Literal("core"),
+				Type.Literal("none"),
+			]),
+		),
+		ignore_default_excludes: Type.Optional(Type.Boolean()),
+		exclude: Type.Optional(Type.Array(Type.String())),
+		set: Type.Optional(Type.Record(Type.String(), Type.String())),
+		include_only: Type.Optional(Type.Array(Type.String())),
+	},
+	{ additionalProperties: true },
+);
+
+const SandboxWorkspaceWriteConfigSchema = Type.Object(
+	{
+		writable_roots: Type.Optional(Type.Array(Type.String())),
+		network_access: Type.Optional(Type.Boolean()),
+		exclude_tmpdir_env_var: Type.Optional(Type.Boolean()),
+		exclude_slash_tmp: Type.Optional(Type.Boolean()),
+	},
+	{ additionalProperties: true },
+);
+
+const ProfileConfigSchema = Type.Object(
+	{
+		model: Type.Optional(Type.String()),
+		model_provider: Type.Optional(Type.String()),
+		approval_policy: Type.Optional(ApprovalPolicySchema),
+		sandbox_mode: Type.Optional(SandboxModeSchema),
+		model_reasoning_effort: Type.Optional(ReasoningEffortSchema),
+		model_reasoning_summary: Type.Optional(ModelReasoningSummarySchema),
+		model_verbosity: Type.Optional(ModelVerbositySchema),
+	},
+	{ additionalProperties: true },
+);
+
+const ComposerConfigSchema = Type.Object(
+	{
+		model: Type.Optional(Type.String()),
+		model_provider: Type.Optional(Type.String()),
+		model_context_window: Type.Optional(Type.Number({ minimum: 0 })),
+		model_reasoning_effort: Type.Optional(ReasoningEffortSchema),
+		model_reasoning_summary: Type.Optional(ModelReasoningSummarySchema),
+		model_verbosity: Type.Optional(ModelVerbositySchema),
+		model_supports_reasoning_summaries: Type.Optional(Type.Boolean()),
+		approval_policy: Type.Optional(ApprovalPolicySchema),
+		sandbox_mode: Type.Optional(SandboxModeSchema),
+		sandbox_workspace_write: Type.Optional(SandboxWorkspaceWriteConfigSchema),
+		shell_environment_policy: Type.Optional(ShellEnvironmentPolicySchema),
+		model_providers: Type.Optional(
+			Type.Record(Type.String(), ModelProviderConfigSchema),
+		),
+		mcp_servers: Type.Optional(
+			Type.Record(Type.String(), McpServerConfigSchema),
+		),
+		features: Type.Optional(FeaturesConfigSchema),
+		tools: Type.Optional(ToolsConfigSchema),
+		otel: Type.Optional(OtelConfigSchema),
+		notify: Type.Optional(Type.Array(Type.String())),
+		hide_agent_reasoning: Type.Optional(Type.Boolean()),
+		show_raw_agent_reasoning: Type.Optional(Type.Boolean()),
+		history: Type.Optional(HistoryConfigSchema),
+		retry: Type.Optional(RetryConfigSchema),
+		tui: Type.Optional(TuiConfigSchema),
+		project_doc_max_bytes: Type.Optional(Type.Number({ minimum: 0 })),
+		project_doc_fallback_filenames: Type.Optional(Type.Array(Type.String())),
+		profile: Type.Optional(Type.String()),
+		profiles: Type.Optional(Type.Record(Type.String(), ProfileConfigSchema)),
+		file_opener: Type.Optional(
+			Type.Union([
+				Type.Literal("vscode"),
+				Type.Literal("vscode-insiders"),
+				Type.Literal("windsurf"),
+				Type.Literal("cursor"),
+				Type.Literal("none"),
+			]),
+		),
+		instructions: Type.Optional(Type.String()),
+		experimental_instructions_file: Type.Optional(Type.String()),
+		projects: Type.Optional(
+			Type.Record(
+				Type.String(),
+				Type.Object(
+					{
+						trust_level: Type.Optional(
+							Type.Union([Type.Literal("trusted"), Type.Literal("untrusted")]),
+						),
+					},
+					{ additionalProperties: true },
+				),
+			),
+		),
+	},
+	{ additionalProperties: true },
+);
+
+const validateConfig = compileTypeboxSchema(ComposerConfigSchema);
+
+// ─────────────────────────────────────────────────────────────
 // Default Configuration
 // ─────────────────────────────────────────────────────────────
 
@@ -289,9 +553,19 @@ function parseConfigFile(path: string): ComposerConfig | null {
 
 	try {
 		const content = readFileSync(path, "utf-8");
-		const parsed = parseTOML(content) as unknown as ComposerConfig;
+		const parsed = parseTOML(content);
+		if (!validateConfig(parsed)) {
+			const message =
+				validateConfig.errors
+					?.map(
+						(err) => `${err.instancePath || "/"} ${err.message ?? "invalid"}`,
+					)
+					.join("; ") ?? "Invalid config";
+			logger.warn("Invalid config file", { path, error: message });
+			return null;
+		}
 		logger.debug("Parsed config file", { path });
-		return parsed;
+		return parsed as ComposerConfig;
 	} catch (error) {
 		logger.warn("Failed to parse config file", {
 			path,

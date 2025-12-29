@@ -48,6 +48,8 @@ const STEP_LABELS: Record<ProgressStepId, string> = {
 };
 
 export class GitHubReporter {
+	private readonly progressCache = new Map<string, TaskProgress>();
+
 	constructor(
 		private readonly client: GitHubApiClient,
 		private readonly config: AgentConfig,
@@ -58,7 +60,9 @@ export class GitHubReporter {
 		progress: TaskProgress,
 	): Promise<number | undefined> {
 		if (!task.sourceIssue) return undefined;
-		const body = renderTaskStatus(task, progress, this.config);
+		const merged = this.mergeProgress(task, progress);
+		this.progressCache.set(task.id, merged);
+		const body = renderTaskStatus(task, merged, this.config);
 		if (task.reportCommentId) {
 			await this.client.updateIssueComment(task.reportCommentId, body);
 			return task.reportCommentId;
@@ -68,6 +72,18 @@ export class GitHubReporter {
 			body,
 		);
 		return created.id;
+	}
+
+	private mergeProgress(task: Task, progress: TaskProgress): TaskProgress {
+		const cached = this.progressCache.get(task.id);
+		if (!cached) {
+			return { ...progress, steps: { ...progress.steps } };
+		}
+		return {
+			...cached,
+			...progress,
+			steps: { ...cached.steps, ...progress.steps },
+		};
 	}
 }
 

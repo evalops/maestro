@@ -47,7 +47,7 @@ export class AttachmentsRuntimeProvider implements SandboxRuntimeProvider {
 					readBinaryAttachment?: (id: string) => Uint8Array;
 				};
 
-			const w = window as unknown as SandboxWindow;
+			const w = window as SandboxWindow;
 
 			w.listAttachments = () =>
 				(w.attachments || []).map((a) => ({

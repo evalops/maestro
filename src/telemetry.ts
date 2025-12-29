@@ -8,6 +8,7 @@ import {
 	initOpenTelemetry,
 	isOpenTelemetryEnabled,
 } from "./opentelemetry.js";
+import type { CanonicalTurnEvent } from "./telemetry/wide-events.js";
 import { resolveEnvPath } from "./utils/path-expansion.js";
 import {
 	sanitizeOptionalWithStaticMask,
@@ -166,7 +167,8 @@ type TelemetryEvent =
 	| ApiRequestTelemetry
 	| BusinessMetricTelemetry
 	| SandboxViolationTelemetry
-	| CanonicalTurnEventBase;
+	| CanonicalTurnEventBase
+	| CanonicalTurnEvent;
 
 const telemetryFlag =
 	process.env.COMPOSER_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
