@@ -1,3 +1,4 @@
+import type { RenderStats } from "@evalops/tui";
 import chalk from "chalk";
 import type { AgentState } from "../../agent/types.js";
 import type { LspDiagnostic } from "../../lsp/index.js";
@@ -31,6 +32,7 @@ export interface DiagnosticsInput {
 	attachments?: string[];
 	context?: string | null;
 	runtime?: Record<string, unknown> | null;
+	tuiStats?: RenderStats | null;
 }
 
 function formatProviderSection(
@@ -224,6 +226,28 @@ function formatAttachmentsSection(attachments?: string[]): string | null {
 	return `${chalk.bold("Attachments")}\n${items}`;
 }
 
+function formatTuiStatsSection(stats?: RenderStats | null): string | null {
+	if (!stats) return null;
+	const avgMs = stats.avgRenderMs.toFixed(2);
+	const lastMs = stats.lastRenderMs.toFixed(2);
+	const lastLineInfo = `${stats.lastLinesWritten}/${stats.lastLinesRendered}`;
+	const lastBytes = stats.lastBytesWritten.toLocaleString();
+	const totalBytes = stats.totalBytesWritten.toLocaleString();
+	const totalLines = stats.totalLinesWritten.toLocaleString();
+	const totalLookups = stats.wrapCacheHits + stats.wrapCacheMisses;
+	const hitRate = `${(stats.wrapCacheHitRate * 100).toFixed(1)}%`;
+	const lookupInfo = totalLookups
+		? `${stats.wrapCacheHits}/${totalLookups}`
+		: "0/0";
+	return [
+		chalk.bold("TUI Render"),
+		`${chalk.dim("Last")}: ${stats.lastRenderType} ${lastMs}ms, lines ${lastLineInfo}, bytes ${lastBytes}`,
+		`${chalk.dim("Avg")}: ${avgMs}ms over ${stats.totalRenders} renders (full ${stats.totalFullRenders}, diff ${stats.totalDiffRenders})`,
+		`${chalk.dim("Totals")}: ${totalLines} lines, ${totalBytes} bytes`,
+		`${chalk.dim("Wrap cache")}: ${hitRate} hit (${lookupInfo})`,
+	].join("\n");
+}
+
 function formatHealthSection(
 	health?: DiagnosticsInput["health"],
 ): string | null {
@@ -339,6 +363,11 @@ export function formatDiagnosticsReport(input: DiagnosticsInput): string {
 	const attachmentsSection = formatAttachmentsSection(input.attachments);
 	if (attachmentsSection) {
 		sections.push(attachmentsSection);
+		sections.push("");
+	}
+	const tuiSection = formatTuiStatsSection(input.tuiStats);
+	if (tuiSection) {
+		sections.push(tuiSection);
 		sections.push("");
 	}
 	sections.push(formatPendingToolsSection(input.pendingTools));

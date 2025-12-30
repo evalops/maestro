@@ -82,6 +82,10 @@ export class Editor implements Component {
 	private largePasteMode: "placeholder" | "verbatim" = "placeholder";
 	private burstPasteTimer: NodeJS.Timeout | null = null;
 	private burstPasteBuffer = "";
+	private graphemeSegmenter: Intl.Segmenter | null =
+		typeof Intl !== "undefined" && "Segmenter" in Intl
+			? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+			: null;
 
 	// Undo/redo history
 	private undoStack: HistoryEntry[] = [];
@@ -857,13 +861,15 @@ export class Editor implements Component {
 	private handleBackspace(): void {
 		this.promptHistoryIndex = -1; // Exit history browsing mode
 		this.saveToHistory();
+		const line = this.state.lines[this.state.cursorLine] || "";
+		this.state.cursorCol = this.normalizeCursorCol(line, this.state.cursorCol);
 		if (this.state.cursorCol > 0) {
-			// Delete character in current line
-			const line = this.state.lines[this.state.cursorLine] || "";
-			const before = line.slice(0, this.state.cursorCol - 1);
+			// Delete previous grapheme in current line
+			const prevCol = this.previousGraphemeIndex(line, this.state.cursorCol);
+			const before = line.slice(0, prevCol);
 			const after = line.slice(this.state.cursorCol);
 			this.state.lines[this.state.cursorLine] = before + after;
-			this.state.cursorCol--;
+			this.state.cursorCol = prevCol;
 		} else if (this.state.cursorLine > 0) {
 			// Merge with previous line
 			const currentLine = this.state.lines[this.state.cursorLine] || "";
@@ -905,10 +911,15 @@ export class Editor implements Component {
 	private handleForwardDelete(): void {
 		this.saveToHistory();
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
+		this.state.cursorCol = this.normalizeCursorCol(
+			currentLine,
+			this.state.cursorCol,
+		);
 		if (this.state.cursorCol < currentLine.length) {
 			// Delete character at cursor position (forward delete)
+			const nextCol = this.nextGraphemeIndex(currentLine, this.state.cursorCol);
 			const before = currentLine.slice(0, this.state.cursorCol);
-			const after = currentLine.slice(this.state.cursorCol + 1);
+			const after = currentLine.slice(nextCol);
 			this.state.lines[this.state.cursorLine] = before + after;
 		} else if (this.state.cursorLine < this.state.lines.length - 1) {
 			// At end of line - merge with next line
@@ -1208,17 +1219,87 @@ export class Editor implements Component {
 				// Clamp cursor column to new line length
 				const line = this.state.lines[this.state.cursorLine] || "";
 				const targetCol = this.preferredCol ?? this.state.cursorCol;
-				this.state.cursorCol = Math.min(targetCol, line.length);
+				this.state.cursorCol = this.normalizeCursorCol(
+					line,
+					Math.min(targetCol, line.length),
+				);
 			}
 		}
 		if (deltaCol !== 0) {
 			// Move column
-			const newCol = this.state.cursorCol + deltaCol;
 			const currentLine = this.state.lines[this.state.cursorLine] || "";
-			const maxCol = currentLine.length;
-			this.state.cursorCol = Math.max(0, Math.min(maxCol, newCol));
+			this.state.cursorCol = this.normalizeCursorCol(
+				currentLine,
+				this.state.cursorCol,
+			);
+			if (deltaCol === 1) {
+				this.state.cursorCol = this.nextGraphemeIndex(
+					currentLine,
+					this.state.cursorCol,
+				);
+			} else if (deltaCol === -1) {
+				this.state.cursorCol = this.previousGraphemeIndex(
+					currentLine,
+					this.state.cursorCol,
+				);
+			} else {
+				const newCol = this.state.cursorCol + deltaCol;
+				const maxCol = currentLine.length;
+				this.state.cursorCol = this.normalizeCursorCol(
+					currentLine,
+					Math.max(0, Math.min(maxCol, newCol)),
+				);
+			}
 			this.preferredCol = this.state.cursorCol;
 		}
+	}
+
+	private normalizeCursorCol(line: string, col: number): number {
+		if (!this.graphemeSegmenter || line.length === 0) {
+			return Math.max(0, Math.min(line.length, col));
+		}
+		const clamped = Math.max(0, Math.min(line.length, col));
+		if (clamped === line.length) {
+			return clamped;
+		}
+		let candidate = 0;
+		for (const segment of this.graphemeSegmenter.segment(line)) {
+			if (segment.index > clamped) {
+				break;
+			}
+			candidate = segment.index;
+		}
+		if (candidate === clamped) {
+			return clamped;
+		}
+		// Move to the boundary at or before the requested column.
+		return candidate;
+	}
+
+	private previousGraphemeIndex(line: string, col: number): number {
+		if (!this.graphemeSegmenter) {
+			return Math.max(0, col - 1);
+		}
+		const clamped = this.normalizeCursorCol(line, col);
+		let prev = 0;
+		for (const segment of this.graphemeSegmenter.segment(line)) {
+			if (segment.index >= clamped) break;
+			prev = segment.index;
+		}
+		return prev;
+	}
+
+	private nextGraphemeIndex(line: string, col: number): number {
+		if (!this.graphemeSegmenter) {
+			return Math.min(line.length, col + 1);
+		}
+		const clamped = this.normalizeCursorCol(line, col);
+		for (const segment of this.graphemeSegmenter.segment(line)) {
+			if (segment.index > clamped) {
+				return segment.index;
+			}
+		}
+		return line.length;
 	}
 	// Helper method to check if cursor is at start of message (for slash command detection)
 	private isAtStartOfMessage(): boolean {

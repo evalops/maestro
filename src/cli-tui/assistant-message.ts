@@ -126,9 +126,13 @@ export class AssistantMessageComponent extends Container {
 		return theme.fg("muted", `${dots}`);
 	}
 
-	updateContent(message: RenderableAssistantMessage): void {
+	updateContent(
+		message: RenderableAssistantMessage,
+		options?: { streaming?: boolean },
+	): void {
 		this.stopTypingIndicator();
 		this.headerText.setText(this.buildHeader(message.cleaned));
+		const streaming = Boolean(options?.streaming);
 
 		const hasPrimaryContent =
 			message.textBlocks.length > 0 || message.thinkingBlocks.length > 0;
@@ -143,24 +147,31 @@ export class AssistantMessageComponent extends Container {
 		}
 
 		// Update thinking blocks - reuse existing components where possible
-		this.updateThinkingBlocks(message.thinkingBlocks);
+		this.updateThinkingBlocks(message.thinkingBlocks, streaming);
 
 		// Update text blocks - reuse existing Markdown components where possible
-		this.updateTextBlocks(message.textBlocks);
+		this.updateTextBlocks(message.textBlocks, streaming);
 
 		// Handle status text (aborted/error messages)
 		this.updateStatusText(message);
 	}
 
-	private updateThinkingBlocks(thinkingBlocks: string[]): void {
+	private updateThinkingBlocks(
+		thinkingBlocks: string[],
+		streaming: boolean,
+	): void {
 		// Update existing thinking blocks
 		for (let i = 0; i < thinkingBlocks.length; i++) {
 			if (i < this.thinkingMarkdowns.length) {
 				// Reuse existing markdown component
+				this.thinkingMarkdowns[i].setStreaming(streaming);
 				this.thinkingMarkdowns[i].setText(thinkingBlocks[i]);
 			} else {
 				// Create new thinking block
-				const container = this.createThinkingBlock(thinkingBlocks[i]);
+				const container = this.createThinkingBlock(
+					thinkingBlocks[i],
+					streaming,
+				);
 				this.thinkingContainers.push(container);
 				// Extract the Markdown component from the container (it's the second child)
 				const markdown = container.children[1] as Markdown;
@@ -190,11 +201,12 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	private updateTextBlocks(textBlocks: string[]): void {
+	private updateTextBlocks(textBlocks: string[], streaming: boolean): void {
 		// Update existing text markdown components
 		for (let i = 0; i < textBlocks.length; i++) {
 			if (i < this.textMarkdowns.length) {
 				// Reuse existing markdown component
+				this.textMarkdowns[i].setStreaming(streaming);
 				this.textMarkdowns[i].setText(textBlocks[i]);
 			} else {
 				// Create new markdown component
@@ -207,6 +219,7 @@ export class AssistantMessageComponent extends Container {
 					0,
 					getMarkdownTheme(),
 				);
+				markdown.setStreaming(streaming);
 				this.textMarkdowns.push(markdown);
 				// Insert before status text if it exists, otherwise at end
 				if (this.statusText) {
@@ -255,7 +268,7 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	private createThinkingBlock(text: string): Container {
+	private createThinkingBlock(text: string, streaming: boolean): Container {
 		const container = new Container();
 
 		// Dashed header line
@@ -263,17 +276,17 @@ export class AssistantMessageComponent extends Container {
 		container.addChild(new Text(headerLine, 1, 0));
 
 		// Thinking content (dimmed, indented)
-		container.addChild(
-			new Markdown(
-				text,
-				undefined,
-				undefined,
-				undefined,
-				2, // Indent
-				0,
-				getMarkdownTheme(),
-			),
+		const markdown = new Markdown(
+			text,
+			undefined,
+			undefined,
+			undefined,
+			2, // Indent
+			0,
+			getMarkdownTheme(),
 		);
+		markdown.setStreaming(streaming);
+		container.addChild(markdown);
 
 		// Dashed footer line
 		const footerLine = theme.fg("dim", "-".repeat(53));

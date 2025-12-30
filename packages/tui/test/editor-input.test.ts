@@ -23,4 +23,26 @@ describe("Editor input handling", () => {
 
 		expect(editor.getText()).toBe("");
 	});
+
+	it("moves and deletes grapheme clusters safely", () => {
+		const editor = new Editor();
+		editor.setText("a🙂b");
+
+		// Move left to just before "b", then backspace removes the emoji.
+		editor.handleInput("\x1b[D");
+		editor.handleInput("\x7f");
+		expect(editor.getText()).toBe("ab");
+
+		// Reset and delete forward from after "a".
+		editor.setText("a🙂b");
+		editor.handleInput("\x1b[D"); // before "b"
+		editor.handleInput("\x1b[D"); // after "a"
+		editor.handleInput("\x1b[3~"); // forward delete
+		expect(editor.getText()).toBe("ab");
+
+		const state = editor as unknown as {
+			state: { cursorCol: number };
+		};
+		expect(state.state.cursorCol).toBe(1);
+	});
 });

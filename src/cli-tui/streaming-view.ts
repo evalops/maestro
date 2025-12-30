@@ -35,7 +35,9 @@ export class StreamingView {
 			disableAnimations: this.options.disableAnimations,
 		});
 		this.options.chatContainer.addChild(this.streamingComponent);
-		this.streamingComponent.updateContent(this.renderStreaming(message));
+		this.streamingComponent.updateContent(this.renderStreaming(message), {
+			streaming: true,
+		});
 	}
 
 	updateAssistantMessage(message: AssistantMessage): void {
@@ -75,7 +77,7 @@ export class StreamingView {
 		if (this.options.getHideThinkingBlocks?.()) {
 			renderable = { ...renderable, thinkingBlocks: [] };
 		}
-		this.streamingComponent.updateContent(renderable);
+		this.streamingComponent.updateContent(renderable, { streaming: false });
 		if (message.stopReason === "aborted" || message.stopReason === "error") {
 			const errorMessage =
 				message.stopReason === "aborted"
@@ -154,7 +156,9 @@ export class StreamingView {
 
 	private applyUpdate(message: AssistantMessage): void {
 		if (!this.streamingComponent) return;
-		this.streamingComponent.updateContent(this.renderStreaming(message));
+		this.streamingComponent.updateContent(this.renderStreaming(message), {
+			streaming: true,
+		});
 	}
 
 	private trimScrollback(): void {

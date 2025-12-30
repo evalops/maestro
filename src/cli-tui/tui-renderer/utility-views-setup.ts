@@ -82,6 +82,7 @@ export function createUtilityViews(params: {
 		todoStorePath,
 		getApprovalMode,
 		getAlertCount,
+		getRenderStats: () => ui.getRenderStats(),
 	});
 
 	const fileSearchView = new FileSearchView({

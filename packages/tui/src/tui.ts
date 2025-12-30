@@ -1,6 +1,7 @@
 /**
  * Minimal TUI implementation with differential rendering
  */
+import { performance } from "node:perf_hooks";
 import type { Terminal } from "./terminal.js";
 import { truncateToWidth, visibleWidth, wrapAnsiLines } from "./utils.js";
 import {
@@ -59,6 +60,27 @@ export interface LifecycleComponent extends Component {
 }
 
 export { visibleWidth };
+
+export type RenderPath = "first" | "full" | "diff";
+
+export interface RenderStats {
+	totalRenders: number;
+	totalFullRenders: number;
+	totalDiffRenders: number;
+	totalRenderMs: number;
+	totalBytesWritten: number;
+	totalLinesWritten: number;
+	lastRenderMs: number;
+	lastRenderAt: number;
+	lastRenderType: RenderPath;
+	lastLinesRendered: number;
+	lastLinesWritten: number;
+	lastBytesWritten: number;
+	wrapCacheHits: number;
+	wrapCacheMisses: number;
+	avgRenderMs: number;
+	wrapCacheHitRate: number;
+}
 
 /**
  * Container - a component that contains other components
@@ -189,6 +211,23 @@ export class TUI extends Container {
 	/** Maximum entries per width in the wrap cache to prevent unbounded growth. */
 	private static readonly MAX_WRAP_CACHE_ENTRIES = 500;
 
+	private renderStats: Omit<RenderStats, "avgRenderMs" | "wrapCacheHitRate"> = {
+		totalRenders: 0,
+		totalFullRenders: 0,
+		totalDiffRenders: 0,
+		totalRenderMs: 0,
+		totalBytesWritten: 0,
+		totalLinesWritten: 0,
+		lastRenderMs: 0,
+		lastRenderAt: 0,
+		lastRenderType: "first",
+		lastLinesRendered: 0,
+		lastLinesWritten: 0,
+		lastBytesWritten: 0,
+		wrapCacheHits: 0,
+		wrapCacheMisses: 0,
+	};
+
 	/**
 	 * When true, disables automatic overflow clipping.
 	 * Use this when a ScrollContainer handles viewport clipping.
@@ -252,6 +291,40 @@ export class TUI extends Container {
 			columns: this.terminal.columns,
 			rows: this.terminal.rows,
 		};
+	}
+
+	getRenderStats(): RenderStats {
+		const totalRenders = this.renderStats.totalRenders;
+		const avgRenderMs =
+			totalRenders > 0 ? this.renderStats.totalRenderMs / totalRenders : 0;
+		const totalCacheLookups =
+			this.renderStats.wrapCacheHits + this.renderStats.wrapCacheMisses;
+		const wrapCacheHitRate =
+			totalCacheLookups > 0
+				? this.renderStats.wrapCacheHits / totalCacheLookups
+				: 0;
+		return {
+			...this.renderStats,
+			avgRenderMs,
+			wrapCacheHitRate,
+		};
+	}
+
+	resetRenderStats(): void {
+		this.renderStats.totalRenders = 0;
+		this.renderStats.totalFullRenders = 0;
+		this.renderStats.totalDiffRenders = 0;
+		this.renderStats.totalRenderMs = 0;
+		this.renderStats.totalBytesWritten = 0;
+		this.renderStats.totalLinesWritten = 0;
+		this.renderStats.lastRenderMs = 0;
+		this.renderStats.lastRenderAt = 0;
+		this.renderStats.lastRenderType = "first";
+		this.renderStats.lastLinesRendered = 0;
+		this.renderStats.lastLinesWritten = 0;
+		this.renderStats.lastBytesWritten = 0;
+		this.renderStats.wrapCacheHits = 0;
+		this.renderStats.wrapCacheMisses = 0;
 	}
 
 	setFocus(component: Component | null): void {
@@ -419,6 +492,31 @@ export class TUI extends Container {
 		const height = Math.max(1, this.terminal.rows);
 		this.lastRenderTs = Date.now();
 		const now = this.lastRenderTs;
+		const renderStart = performance.now();
+		const finalizeRender = (
+			renderType: RenderPath,
+			buffer: string,
+			linesRendered: number,
+			linesWritten: number,
+		): void => {
+			const durationMs = performance.now() - renderStart;
+			const bytesWritten = Buffer.byteLength(buffer);
+			this.renderStats.totalRenders += 1;
+			if (renderType === "full" || renderType === "first") {
+				this.renderStats.totalFullRenders += 1;
+			} else if (renderType === "diff") {
+				this.renderStats.totalDiffRenders += 1;
+			}
+			this.renderStats.totalRenderMs += durationMs;
+			this.renderStats.totalBytesWritten += bytesWritten;
+			this.renderStats.totalLinesWritten += linesWritten;
+			this.renderStats.lastRenderMs = durationMs;
+			this.renderStats.lastRenderAt = now;
+			this.renderStats.lastRenderType = renderType;
+			this.renderStats.lastLinesRendered = linesRendered;
+			this.renderStats.lastLinesWritten = linesWritten;
+			this.renderStats.lastBytesWritten = bytesWritten;
+		};
 
 		// ─────────────────────────────────────────────────────────────────────────
 		// STEP 1: Render components to lines and wrap to terminal width
@@ -478,6 +576,7 @@ export class TUI extends Container {
 			}
 			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
+			finalizeRender("first", buffer, newLines.length, newLines.length);
 
 			// After rendering N lines, cursor is at end of last line (line N-1)
 			this.cursorRow = Math.max(0, newLines.length - 1);
@@ -507,6 +606,7 @@ export class TUI extends Container {
 			buffer += "\x1b[J";
 			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
+			finalizeRender("full", buffer, newLines.length, newLines.length);
 
 			this.cursorRow = Math.max(0, newLines.length - 1);
 			this.previousLines = newLines;
@@ -559,6 +659,7 @@ export class TUI extends Container {
 			buffer += "\x1b[J";
 			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
 			this.terminal.write(buffer);
+			finalizeRender("full", buffer, newLines.length, newLines.length);
 
 			this.cursorRow = Math.max(0, newLines.length - 1);
 			this.previousLines = newLines;
@@ -618,6 +719,8 @@ export class TUI extends Container {
 		// Step C7: Flush the buffer and update state
 		// Write entire buffer atomically to minimize visual artifacts
 		this.terminal.write(buffer);
+		const linesWritten = renderEnd - firstChanged;
+		finalizeRender("diff", buffer, newLines.length, linesWritten);
 
 		// Update cursor tracking - cursor ends at the last line of content (or row 0 if empty)
 		this.cursorRow = Math.max(0, newLines.length - 1);
@@ -638,9 +741,11 @@ export class TUI extends Container {
 			const key = line ?? "";
 			const cached = cache.get(key);
 			if (cached) {
+				this.renderStats.wrapCacheHits += 1;
 				wrapped.push(...cached);
 				continue;
 			}
+			this.renderStats.wrapCacheMisses += 1;
 			const result = wrapAnsiLines([key], width);
 			cache.set(key, result);
 

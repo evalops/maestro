@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import type { Container, TUI } from "@evalops/tui";
+import type { Container, RenderStats, TUI } from "@evalops/tui";
 import { Spacer, Text } from "@evalops/tui";
 import clipboard from "clipboardy";
 import type { Agent } from "../../agent/agent.js";
@@ -51,6 +51,7 @@ interface DiagnosticsViewOptions {
 	getOtelStatus?: () => ReturnType<
 		typeof import("../../opentelemetry.js").getOpenTelemetryStatus
 	>;
+	getRenderStats?: () => RenderStats;
 }
 
 export class DiagnosticsView {
@@ -193,6 +194,7 @@ ${copyNote}`;
 			otel: this.options.getOtelStatus?.(),
 			training: this.trainingStatus,
 			exaUsage: getExaUsageSummary(),
+			tuiStats: this.options.getRenderStats?.(),
 			pendingTools: Array.from(this.options.getPendingTools().entries()).map(
 				([id, component]) => ({ id, name: component.getToolName() }),
 			),

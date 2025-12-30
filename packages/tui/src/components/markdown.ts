@@ -68,6 +68,7 @@ export class Markdown implements Component {
 	private cachedText?: string;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
+	private streaming = false;
 
 	private theme?: MarkdownTheme;
 	private applyTheme<K extends keyof MarkdownTheme>(
@@ -114,6 +115,13 @@ export class Markdown implements Component {
 		this.paddingX = paddingX;
 		this.paddingY = paddingY;
 		this.theme = theme;
+	}
+	setStreaming(streaming: boolean): void {
+		if (this.streaming === streaming) return;
+		this.streaming = streaming;
+		this.cachedText = undefined;
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
 	}
 	setText(text: string): void {
 		this.text = text;
@@ -165,15 +173,23 @@ export class Markdown implements Component {
 		}
 		// Replace tabs with 3 spaces for consistent rendering
 		const normalizedText = this.text.replace(/\t/g, "   ");
-		// Parse markdown to HTML-like tokens
-		const tokens = marked.lexer(normalizedText);
-		// Convert tokens to styled terminal output
 		const renderedLines = [];
-		for (let i = 0; i < tokens.length; i++) {
-			const token = tokens[i];
-			const nextToken = tokens[i + 1];
-			const tokenLines = this.renderToken(token, contentWidth, nextToken?.type);
-			renderedLines.push(...tokenLines);
+		if (this.streaming) {
+			renderedLines.push(...normalizedText.split("\n"));
+		} else {
+			// Parse markdown to HTML-like tokens
+			const tokens = marked.lexer(normalizedText);
+			// Convert tokens to styled terminal output
+			for (let i = 0; i < tokens.length; i++) {
+				const token = tokens[i];
+				const nextToken = tokens[i + 1];
+				const tokenLines = this.renderToken(
+					token,
+					contentWidth,
+					nextToken?.type,
+				);
+				renderedLines.push(...tokenLines);
+			}
 		}
 		// Wrap lines to fit content width (ANSI-aware shared helper)
 		const wrappedLines = wrapAnsiLines(renderedLines, contentWidth);

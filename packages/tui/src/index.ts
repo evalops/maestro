@@ -104,6 +104,8 @@ export { ProcessTerminal, type Terminal } from "./terminal.js";
 export {
 	type Component,
 	type LifecycleComponent,
+	type RenderPath,
+	type RenderStats,
 	Container,
 	TUI,
 } from "./tui.js";
