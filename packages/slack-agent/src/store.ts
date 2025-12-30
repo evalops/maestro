@@ -38,6 +38,8 @@ interface PendingDownload {
 	channelId: string;
 	localPath: string;
 	url: string;
+	size?: number;
+	original?: string;
 }
 
 export class ChannelStore {
@@ -49,6 +51,9 @@ export class ChannelStore {
 	private lastRecentlyLoggedCleanupMs = 0;
 	private readonly recentlyLoggedTtlMs = 60 * 1000;
 	private readonly recentlyLoggedCleanupIntervalMs = 15 * 1000;
+	private static readonly MAX_ATTACHMENT_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+	private static readonly DOWNLOAD_TIMEOUT_MS = 15_000;
+	private static readonly DOWNLOAD_MAX_ATTEMPTS = 3;
 
 	constructor(config: ChannelStoreConfig) {
 		this.workingDir = config.workingDir;
@@ -90,6 +95,15 @@ export class ChannelStore {
 				continue;
 			}
 
+			if (file.size && file.size > ChannelStore.MAX_ATTACHMENT_DOWNLOAD_BYTES) {
+				const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+				logger.logWarning(
+					"Attachment too large, skipping download",
+					`${file.name} (${sizeMb}MB)`,
+				);
+				continue;
+			}
+
 			const filename = this.generateLocalFilename(file.name, timestamp);
 			const localPath = `${channelId}/attachments/${filename}`;
 
@@ -101,7 +115,13 @@ export class ChannelStore {
 				size: file.size,
 			});
 
-			this.pendingDownloads.push({ channelId, localPath, url });
+			this.pendingDownloads.push({
+				channelId,
+				localPath,
+				url,
+				size: file.size,
+				original: file.name,
+			});
 		}
 
 		this.processDownloadQueue();
@@ -345,7 +365,7 @@ export class ChannelStore {
 			if (!item) break;
 
 			try {
-				await this.downloadAttachment(item.localPath, item.url);
+				await this.downloadAttachment(item);
 			} catch (error) {
 				const errorMsg = error instanceof Error ? error.message : String(error);
 				logger.logWarning(
@@ -358,10 +378,8 @@ export class ChannelStore {
 		this.isDownloading = false;
 	}
 
-	private async downloadAttachment(
-		localPath: string,
-		url: string,
-	): Promise<void> {
+	private async downloadAttachment(item: PendingDownload): Promise<void> {
+		const { localPath, url, size, original } = item;
 		const filePath = join(this.workingDir, localPath);
 
 		const dir = join(
@@ -370,18 +388,109 @@ export class ChannelStore {
 		);
 		ensureDirSync(dir);
 
-		const response = await fetch(url, {
-			headers: {
-				Authorization: `Bearer ${this.botToken}`,
-			},
-		});
-
-		if (!response.ok) {
-			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		if (size && size > ChannelStore.MAX_ATTACHMENT_DOWNLOAD_BYTES) {
+			const sizeMb = (size / (1024 * 1024)).toFixed(1);
+			throw new Error(`Attachment exceeds max size (${sizeMb}MB)`);
 		}
 
-		const buffer = await response.arrayBuffer();
+		const buffer = await this.downloadBufferWithRetry(url);
+
 		await writeFile(filePath, Buffer.from(buffer));
+
+		if (original) {
+			logger.logInfo(`Downloaded attachment ${original} → ${localPath}`);
+		} else {
+			logger.logInfo(`Downloaded attachment ${localPath}`);
+		}
+	}
+
+	private async downloadBufferWithRetry(url: string): Promise<ArrayBuffer> {
+		let lastError: unknown;
+		for (
+			let attempt = 1;
+			attempt <= ChannelStore.DOWNLOAD_MAX_ATTEMPTS;
+			attempt += 1
+		) {
+			const controller = new AbortController();
+			const timeoutId = setTimeout(
+				() => controller.abort(),
+				ChannelStore.DOWNLOAD_TIMEOUT_MS,
+			);
+			try {
+				const response = await fetch(url, {
+					headers: {
+						Authorization: `Bearer ${this.botToken}`,
+					},
+					signal: controller.signal,
+				});
+
+				if (!response.ok) {
+					const error = markNonRetryable(
+						new Error(`HTTP ${response.status}: ${response.statusText}`),
+					);
+					if (
+						shouldRetryStatus(response.status) &&
+						attempt < ChannelStore.DOWNLOAD_MAX_ATTEMPTS
+					) {
+						(error as RetryableError).retryable = true;
+					}
+					if ((error as RetryableError).retryable !== true) {
+						throw error;
+					}
+					const retryAfter = parseRetryAfter(
+						response.headers.get("retry-after"),
+					);
+					const delayMs =
+						retryAfter ?? jitterDelay(Math.min(1000 * 2 ** attempt, 8000), 250);
+					await wait(delayMs);
+					lastError = error;
+					continue;
+				}
+
+				const contentLength = response.headers.get("content-length");
+				if (contentLength) {
+					const parsed = Number.parseInt(contentLength, 10);
+					if (
+						Number.isFinite(parsed) &&
+						parsed > ChannelStore.MAX_ATTACHMENT_DOWNLOAD_BYTES
+					) {
+						const sizeMb = (parsed / (1024 * 1024)).toFixed(1);
+						throw markNonRetryable(
+							new Error(`Attachment exceeds max size (${sizeMb}MB)`),
+						);
+					}
+				}
+
+				const buffer = await response.arrayBuffer();
+				if (buffer.byteLength > ChannelStore.MAX_ATTACHMENT_DOWNLOAD_BYTES) {
+					const sizeMb = (buffer.byteLength / (1024 * 1024)).toFixed(1);
+					throw markNonRetryable(
+						new Error(`Attachment exceeds max size (${sizeMb}MB)`),
+					);
+				}
+				return buffer;
+			} catch (error) {
+				if (
+					error instanceof Error &&
+					(error as RetryableError).retryable === false
+				) {
+					throw error;
+				}
+				lastError = error;
+				if (attempt >= ChannelStore.DOWNLOAD_MAX_ATTEMPTS) {
+					break;
+				}
+				const delayMs = jitterDelay(Math.min(1000 * 2 ** attempt, 8000), 250);
+				await wait(delayMs);
+			} finally {
+				clearTimeout(timeoutId);
+			}
+		}
+
+		if (lastError instanceof Error) {
+			throw lastError;
+		}
+		throw new Error("Failed to download attachment");
 	}
 
 	/**
@@ -409,4 +518,43 @@ export class ChannelStore {
 			}
 		}
 	}
+}
+
+function shouldRetryStatus(status: number): boolean {
+	return (
+		status === 408 ||
+		status === 425 ||
+		status === 429 ||
+		(status >= 500 && status < 600)
+	);
+}
+
+type RetryableError = Error & { retryable?: boolean };
+
+function markNonRetryable(error: Error): Error {
+	(error as RetryableError).retryable = false;
+	return error;
+}
+
+function parseRetryAfter(value: string | null): number | null {
+	if (!value) return null;
+	const seconds = Number.parseInt(value, 10);
+	if (!Number.isNaN(seconds)) {
+		return seconds * 1000;
+	}
+	const date = Date.parse(value);
+	if (!Number.isNaN(date)) {
+		return Math.max(date - Date.now(), 0);
+	}
+	return null;
+}
+
+function jitterDelay(baseMs: number, jitterMs: number): number {
+	const jitter = Math.floor(Math.random() * jitterMs);
+	return baseMs + jitter;
+}
+
+function wait(ms: number): Promise<void> {
+	if (ms <= 0) return Promise.resolve();
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }

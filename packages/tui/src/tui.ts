@@ -73,6 +73,10 @@ export interface RenderStats {
 	lastRenderMs: number;
 	lastRenderAt: number;
 	lastRenderType: RenderPath;
+	lastRenderComputeMs: number;
+	lastRenderWrapMs: number;
+	lastRenderBufferMs: number;
+	lastRenderWriteMs: number;
 	lastLinesRendered: number;
 	lastLinesWritten: number;
 	lastBytesWritten: number;
@@ -189,6 +193,7 @@ export class TUI extends Container {
 
 	/** Max adaptive delay to avoid stalls. */
 	private static readonly MAX_ADAPTIVE_INTERVAL_MS = 200;
+	private static readonly MAX_DIFF_LINES = 2000;
 
 	/** Timestamp of the last render (for throttling). */
 	private lastRenderTs = 0;
@@ -233,6 +238,10 @@ export class TUI extends Container {
 		lastRenderMs: 0,
 		lastRenderAt: 0,
 		lastRenderType: "first",
+		lastRenderComputeMs: 0,
+		lastRenderWrapMs: 0,
+		lastRenderBufferMs: 0,
+		lastRenderWriteMs: 0,
 		lastLinesRendered: 0,
 		lastLinesWritten: 0,
 		lastBytesWritten: 0,
@@ -344,6 +353,10 @@ export class TUI extends Container {
 		this.renderStats.lastRenderMs = 0;
 		this.renderStats.lastRenderAt = 0;
 		this.renderStats.lastRenderType = "first";
+		this.renderStats.lastRenderComputeMs = 0;
+		this.renderStats.lastRenderWrapMs = 0;
+		this.renderStats.lastRenderBufferMs = 0;
+		this.renderStats.lastRenderWriteMs = 0;
 		this.renderStats.lastLinesRendered = 0;
 		this.renderStats.lastLinesWritten = 0;
 		this.renderStats.lastBytesWritten = 0;
@@ -517,6 +530,10 @@ export class TUI extends Container {
 		this.lastRenderTs = Date.now();
 		const now = this.lastRenderTs;
 		const renderStart = performance.now();
+		let renderComputeMs = 0;
+		let renderWrapMs = 0;
+		let renderBufferMs = 0;
+		let renderWriteMs = 0;
 		const finalizeRender = (
 			renderType: RenderPath,
 			buffer: string,
@@ -537,6 +554,10 @@ export class TUI extends Container {
 			this.renderStats.lastRenderMs = durationMs;
 			this.renderStats.lastRenderAt = now;
 			this.renderStats.lastRenderType = renderType;
+			this.renderStats.lastRenderComputeMs = renderComputeMs;
+			this.renderStats.lastRenderWrapMs = renderWrapMs;
+			this.renderStats.lastRenderBufferMs = renderBufferMs;
+			this.renderStats.lastRenderWriteMs = renderWriteMs;
 			this.renderStats.lastLinesRendered = linesRendered;
 			this.renderStats.lastLinesWritten = linesWritten;
 			this.renderStats.lastBytesWritten = bytesWritten;
@@ -546,7 +567,12 @@ export class TUI extends Container {
 		// ─────────────────────────────────────────────────────────────────────────
 		// STEP 1: Render components to lines and wrap to terminal width
 		// ─────────────────────────────────────────────────────────────────────────
-		let newLines = this.wrapWithCache(this.render(width), width);
+		const renderComputeStart = performance.now();
+		const rawLines = this.render(width);
+		renderComputeMs = performance.now() - renderComputeStart;
+		const wrapStart = performance.now();
+		let newLines = this.wrapWithCache(rawLines, width);
+		renderWrapMs = performance.now() - wrapStart;
 
 		// ─────────────────────────────────────────────────────────────────────────
 		// OPTIONAL: Forward to external renderer (native TUI)
@@ -583,7 +609,9 @@ export class TUI extends Container {
 
 		// Shrinking content can be handled in the differential path (we clear stale
 		// lines there). Avoid full clears unless layout invariants break.
-		const shouldFullRender = widthChanged || overflowChanged;
+		const maxLines = Math.max(newLines.length, this.previousLines.length);
+		const largeDiff = maxLines > TUI.MAX_DIFF_LINES;
+		const shouldFullRender = widthChanged || overflowChanged || largeDiff;
 
 		// Never throttle when overflow changes - the index mismatch makes
 		// differential rendering produce garbled output (see class docstring).
@@ -594,13 +622,17 @@ export class TUI extends Container {
 		// RENDER PATH A: First render (no previous state)
 		// ─────────────────────────────────────────────────────────────────────────
 		if (this.previousLines.length === 0) {
+			const bufferStart = performance.now();
 			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";
 				buffer += newLines[i];
 			}
 			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
+			renderBufferMs = performance.now() - bufferStart;
+			const writeStart = performance.now();
 			this.terminal.write(buffer);
+			renderWriteMs = performance.now() - writeStart;
 			finalizeRender("first", buffer, newLines.length, newLines.length);
 
 			// After rendering N lines, cursor is at end of last line (line N-1)
@@ -618,6 +650,7 @@ export class TUI extends Container {
 		// Redraw the full viewport from home (without clearing scrollback).
 		// Required when: width changed or overflow state changed.
 		if (shouldFullRender && !overflowRerenderThrottled) {
+			const bufferStart = performance.now();
 			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 			// Home, clear+rewrite each line, then clear the remainder.
 			// This avoids nuking scrollback and reduces blank-frame flashes when
@@ -630,7 +663,10 @@ export class TUI extends Container {
 			}
 			buffer += "\x1b[J";
 			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
+			renderBufferMs = performance.now() - bufferStart;
+			const writeStart = performance.now();
 			this.terminal.write(buffer);
+			renderWriteMs = performance.now() - writeStart;
 			finalizeRender("full", buffer, newLines.length, newLines.length);
 
 			this.cursorRow = Math.max(0, newLines.length - 1);
@@ -650,8 +686,6 @@ export class TUI extends Container {
 		// Step C1: Find first and last changed line indices
 		let firstChanged = -1;
 		let lastChanged = -1;
-		const maxLines = Math.max(newLines.length, this.previousLines.length);
-
 		for (let i = 0; i < maxLines; i++) {
 			const oldLine =
 				i < this.previousLines.length ? this.previousLines[i] : "";
@@ -674,6 +708,7 @@ export class TUI extends Container {
 		const viewportTop = this.cursorRow - height + 1;
 		if (firstChanged < viewportTop) {
 			// First change is above viewport - fall back to full re-render
+			const bufferStart = performance.now();
 			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 			buffer += "\x1b[H";
 			for (let i = 0; i < newLines.length; i++) {
@@ -683,7 +718,10 @@ export class TUI extends Container {
 			}
 			buffer += "\x1b[J";
 			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
+			renderBufferMs = performance.now() - bufferStart;
+			const writeStart = performance.now();
 			this.terminal.write(buffer);
+			renderWriteMs = performance.now() - writeStart;
 			finalizeRender("full", buffer, newLines.length, newLines.length);
 
 			this.cursorRow = Math.max(0, newLines.length - 1);
@@ -694,6 +732,7 @@ export class TUI extends Container {
 		}
 
 		// Step C4: Differential update - only redraw changed lines
+		const bufferStart = performance.now();
 		let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
 
 		// Move cursor from current position to the first changed line.
@@ -743,7 +782,10 @@ export class TUI extends Container {
 
 		// Step C7: Flush the buffer and update state
 		// Write entire buffer atomically to minimize visual artifacts
+		renderBufferMs = performance.now() - bufferStart;
+		const writeStart = performance.now();
 		this.terminal.write(buffer);
+		renderWriteMs = performance.now() - writeStart;
 		const linesWritten = renderEnd - firstChanged;
 		finalizeRender("diff", buffer, newLines.length, linesWritten);
 

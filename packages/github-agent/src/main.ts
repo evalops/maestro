@@ -84,6 +84,9 @@ function printUsage(): void {
 	console.error(
 		"  --webhook-mode <mode>    poll | webhook | hybrid (default: poll)",
 	);
+	console.error(
+		"  --webhook-backfill-interval <ms>  Backfill poll interval in hybrid mode (default: 600000)",
+	);
 	console.error("  --help                  Show this help");
 	console.error("");
 	console.error("Environment variables:");
@@ -135,6 +138,22 @@ function parseArgs(): {
 		}
 		return args[nextIndex];
 	};
+	const parsePositiveIntArg = (
+		flag: string,
+		index: number,
+		options?: { min?: number },
+	): number => {
+		const raw = requireArg(flag, index);
+		const parsed = Number.parseInt(raw, 10);
+		const min = options?.min ?? 1;
+		if (!Number.isFinite(parsed) || parsed < min) {
+			console.error(
+				`Error: ${flag} expects an integer >= ${min}. Received: ${raw}`,
+			);
+			process.exit(1);
+		}
+		return parsed;
+	};
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -154,10 +173,10 @@ function parseArgs(): {
 				.map((l) => l.trim());
 			i++;
 		} else if (arg === "--poll-interval") {
-			config.pollIntervalMs = Number.parseInt(requireArg(arg, i), 10);
+			config.pollIntervalMs = parsePositiveIntArg(arg, i, { min: 1 });
 			i++;
 		} else if (arg === "--max-attempts") {
-			config.maxAttemptsPerTask = Number.parseInt(requireArg(arg, i), 10);
+			config.maxAttemptsPerTask = parsePositiveIntArg(arg, i, { min: 1 });
 			i++;
 		} else if (arg === "--daily-budget") {
 			config.dailyBudget = Number.parseFloat(requireArg(arg, i));
@@ -212,7 +231,7 @@ function parseArgs(): {
 				.filter(Boolean);
 			i++;
 		} else if (arg === "--issue") {
-			singleIssue = Number.parseInt(requireArg(arg, i), 10);
+			singleIssue = parsePositiveIntArg(arg, i, { min: 1 });
 			i++;
 		} else if (arg === "--github-api-url") {
 			config.githubApiUrl = requireArg(arg, i);
@@ -227,13 +246,13 @@ function parseArgs(): {
 			config.githubAppPrivateKeyPath = requireArg(arg, i);
 			i++;
 		} else if (arg === "--github-app-installation-id") {
-			config.githubAppInstallationId = Number.parseInt(requireArg(arg, i), 10);
+			config.githubAppInstallationId = parsePositiveIntArg(arg, i, { min: 1 });
 			i++;
 		} else if (arg === "--webhook-secret") {
 			config.webhookSecret = requireArg(arg, i);
 			i++;
 		} else if (arg === "--webhook-port") {
-			config.webhookPort = Number.parseInt(requireArg(arg, i), 10);
+			config.webhookPort = parsePositiveIntArg(arg, i, { min: 1 });
 			i++;
 		} else if (arg === "--webhook-path") {
 			config.webhookPath = requireArg(arg, i);
@@ -243,6 +262,11 @@ function parseArgs(): {
 				arg,
 				i,
 			) as OrchestratorConfig["webhookMode"];
+			i++;
+		} else if (arg === "--webhook-backfill-interval") {
+			config.webhookBackfillIntervalMs = parsePositiveIntArg(arg, i, {
+				min: 1,
+			});
 			i++;
 		} else if (!arg.startsWith("-") && !config.owner) {
 			// Parse owner/repo
@@ -261,6 +285,23 @@ function parseArgs(): {
 	}
 
 	return { config, singleIssue };
+}
+
+function parseOptionalInt(
+	value: string | undefined,
+	label: string,
+	options?: { min?: number },
+): number | undefined {
+	if (!value) return undefined;
+	const parsed = Number.parseInt(value, 10);
+	const min = options?.min ?? 1;
+	if (!Number.isFinite(parsed) || parsed < min) {
+		console.error(
+			`Error: ${label} expects an integer >= ${min}. Received: ${value}`,
+		);
+		process.exit(1);
+	}
+	return parsed;
 }
 
 async function main(): Promise<void> {
@@ -290,12 +331,14 @@ async function main(): Promise<void> {
 	config.githubAppPrivateKeyPath = config.githubAppPrivateKeyPath ?? appKeyPath;
 	config.githubAppInstallationId =
 		config.githubAppInstallationId ??
-		(appInstallationId ? Number.parseInt(appInstallationId, 10) : undefined);
+		parseOptionalInt(appInstallationId, "GITHUB_APP_INSTALLATION_ID", {
+			min: 1,
+		});
 	config.githubApiUrl = config.githubApiUrl ?? apiUrl;
 	config.webhookSecret = config.webhookSecret ?? webhookSecret;
 	config.webhookPort =
 		config.webhookPort ??
-		(webhookPort ? Number.parseInt(webhookPort, 10) : undefined);
+		parseOptionalInt(webhookPort, "GITHUB_WEBHOOK_PORT", { min: 1 });
 	config.webhookPath = config.webhookPath ?? webhookPath;
 	config.webhookMode =
 		config.webhookMode ?? (webhookMode as OrchestratorConfig["webhookMode"]);

@@ -141,6 +141,7 @@ jobs:
 | `--webhook-port` | Webhook port | 8787 |
 | `--webhook-path` | Webhook path | `/github/webhooks` |
 | `--webhook-mode` | `poll` / `webhook` / `hybrid` | `poll` |
+| `--webhook-backfill-interval` | Backfill poll interval in hybrid mode (ms) | `600000` |
 
 ### Environment Variables
 

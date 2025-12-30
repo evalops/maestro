@@ -230,6 +230,7 @@ export interface AgentConfig {
 	webhookPort?: number;
 	webhookPath?: string;
 	webhookMode?: "poll" | "webhook" | "hybrid";
+	webhookBackfillIntervalMs?: number;
 
 	// PR customization
 	draftPullRequests?: boolean;
@@ -257,6 +258,7 @@ export const DEFAULT_CONFIG: Partial<AgentConfig> = {
 	maxTokensPerTask: 500_000,
 	dailyBudget: 50,
 	webhookMode: "poll",
+	webhookBackfillIntervalMs: 10 * 60_000,
 	draftPullRequests: false,
 	autoMerge: false,
 	autoMergeMethod: "squash",

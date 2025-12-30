@@ -77,7 +77,16 @@ export class Orchestrator {
 		this.githubClient = client;
 		this.reporter = new GitHubReporter(client, config);
 
-		this.watcher = new GitHubWatcher(client, config, {
+		const watcherConfig =
+			config.webhookMode === "hybrid"
+				? {
+						...config,
+						pollIntervalMs:
+							config.webhookBackfillIntervalMs ?? config.pollIntervalMs,
+					}
+				: config;
+
+		this.watcher = new GitHubWatcher(client, watcherConfig, {
 			onNewIssue: (issue) => this.handleNewIssue(issue),
 			onIssueComment: (issue, comment) =>
 				this.handleIssueComment(issue, comment),

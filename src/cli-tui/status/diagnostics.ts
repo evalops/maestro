@@ -230,6 +230,10 @@ function formatTuiStatsSection(stats?: RenderStats | null): string | null {
 	if (!stats) return null;
 	const avgMs = stats.avgRenderMs.toFixed(2);
 	const lastMs = stats.lastRenderMs.toFixed(2);
+	const computeMs = stats.lastRenderComputeMs.toFixed(2);
+	const wrapMs = stats.lastRenderWrapMs.toFixed(2);
+	const bufferMs = stats.lastRenderBufferMs.toFixed(2);
+	const writeMs = stats.lastRenderWriteMs.toFixed(2);
 	const lastLineInfo = `${stats.lastLinesWritten}/${stats.lastLinesRendered}`;
 	const lastBytes = stats.lastBytesWritten.toLocaleString();
 	const totalBytes = stats.totalBytesWritten.toLocaleString();
@@ -242,6 +246,7 @@ function formatTuiStatsSection(stats?: RenderStats | null): string | null {
 	return [
 		chalk.bold("TUI Render"),
 		`${chalk.dim("Last")}: ${stats.lastRenderType} ${lastMs}ms, lines ${lastLineInfo}, bytes ${lastBytes}`,
+		`${chalk.dim("Last breakdown")}: ${computeMs}ms render, ${wrapMs}ms wrap, ${bufferMs}ms buffer, ${writeMs}ms write`,
 		`${chalk.dim("Avg")}: ${avgMs}ms over ${stats.totalRenders} renders (full ${stats.totalFullRenders}, diff ${stats.totalDiffRenders})`,
 		`${chalk.dim("Totals")}: ${totalLines} lines, ${totalBytes} bytes`,
 		`${chalk.dim("Wrap cache")}: ${hitRate} hit (${lookupInfo})`,
