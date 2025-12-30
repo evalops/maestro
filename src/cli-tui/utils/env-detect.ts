@@ -40,6 +40,38 @@ export function isJetBrainsTerminal(): boolean {
 	return false;
 }
 
+export function isPodmanEnv(): boolean {
+	if (process.env.CONTAINER_RUNTIME?.toLowerCase() === "podman") return true;
+	if (process.env.CONTAINER?.toLowerCase() === "podman") return true;
+	if (existsSync("/.containerenv")) return true;
+	const cgroupPath = "/proc/1/cgroup";
+	if (existsSync(cgroupPath)) {
+		try {
+			const contents = readFileSync(cgroupPath, "utf8");
+			if (contents.includes("libpod")) {
+				return true;
+			}
+		} catch {
+			// ignore
+		}
+	}
+	return false;
+}
+
+export function isSshEnv(): boolean {
+	return Boolean(
+		process.env.SSH_CONNECTION || process.env.SSH_TTY || process.env.SSH_CLIENT,
+	);
+}
+
+export function isTmuxEnv(): boolean {
+	return Boolean(process.env.TMUX);
+}
+
+export function isScreenEnv(): boolean {
+	return Boolean(process.env.STY);
+}
+
 export function isFlatpakEnv(): boolean {
 	if (process.env.FLATPAK_ID || process.env.FLATPAK_SANDBOX_DIR) return true;
 	return existsSync("/.flatpak-info");

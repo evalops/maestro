@@ -6,6 +6,7 @@ import { WriteRenderer } from "./render-write.js";
 import type { ToolRenderer } from "./types.js";
 
 const RENDERERS: Record<string, new () => ToolRenderer> = {
+	batch: BatchRenderer,
 	bash: BashRenderer,
 	read: ReadRenderer,
 	write: WriteRenderer,
@@ -19,3 +20,4 @@ export function createToolRenderer(toolName: string): ToolRenderer {
 	const RendererClass = RENDERERS[key] ?? GenericRenderer;
 	return new RendererClass();
 }
+import { BatchRenderer } from "./render-batch.js";

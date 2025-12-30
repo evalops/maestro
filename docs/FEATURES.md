@@ -30,6 +30,12 @@ See [Tools Reference](TOOLS_REFERENCE.md) for every command and flag. Availabili
 - Footer shows cwd, token usage, prompt queue depth, plan hints, and bash mode state.
 - Use `/files` or `@` search to jump to files without leaving the chat.
 
+### Footer badges
+Runtime badges condense environment + agent state into quick signals:
+- `approvals:auto|prompt|fail`, `sandbox:default|danger-full-access`, `queue:all(2)`, `alerts:3`
+- `think:medium`, `mcp:2(14)`, `bg:1!1`, `motion:reduced`, `compact:auto`
+- `env:docker|podman|wsl|ssh|flatpak|musl`, `term:tmux|screen|jetbrains`
+
 ### Accessibility / reduced motion
 - Set `COMPOSER_REDUCED_MOTION=1` to reduce animated UI elements (auto-enabled by default on SSH/tmux/screen).
 - Set `COMPOSER_DISABLE_ANIMATIONS=1` to hard-disable all TUI animations (spinners, typing dots, shimmer effects).

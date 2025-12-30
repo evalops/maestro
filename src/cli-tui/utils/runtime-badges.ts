@@ -9,6 +9,10 @@ import {
 	isFlatpakEnv,
 	isJetBrainsTerminal,
 	isMuslEnv,
+	isPodmanEnv,
+	isScreenEnv,
+	isSshEnv,
+	isTmuxEnv,
 	isWslEnv,
 } from "./env-detect.js";
 
@@ -92,16 +96,26 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 	}
 
 	// Environment hints
-	if (isDockerEnv()) {
+	if (isPodmanEnv()) {
+		badges.push("env:podman");
+	} else if (isDockerEnv()) {
 		badges.push("env:docker");
 	} else if (isWslEnv()) {
 		badges.push("env:wsl");
+	}
+	if (isSshEnv()) {
+		badges.push("env:ssh");
 	}
 	if (isFlatpakEnv()) {
 		badges.push("env:flatpak");
 	}
 	if (isMuslEnv()) {
 		badges.push("env:musl");
+	}
+	if (isTmuxEnv()) {
+		badges.push("term:tmux");
+	} else if (isScreenEnv()) {
+		badges.push("term:screen");
 	}
 	if (isJetBrainsTerminal()) {
 		badges.push("term:jetbrains");
