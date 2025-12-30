@@ -222,6 +222,7 @@ export class TaskExecutor {
 			let tokensUsed = 0;
 			let cost = 0;
 			const maxStdoutSize = 2 * 1024 * 1024;
+			let stdoutTruncated = false;
 			let jsonBuffer = "";
 			let jsonError: string | null = null;
 
@@ -279,6 +280,7 @@ export class TaskExecutor {
 				if (stdout.length < maxStdoutSize) {
 					stdout += chunk;
 					if (stdout.length > maxStdoutSize) {
+						stdoutTruncated = true;
 						stdout = stdout.slice(0, maxStdoutSize);
 					}
 				}
@@ -292,6 +294,9 @@ export class TaskExecutor {
 			proc.on("close", (code) => {
 				if (jsonBuffer.trim()) {
 					handleJsonLine(jsonBuffer);
+				}
+				if (stdoutTruncated) {
+					stdout = `${stdout}\n... (output truncated at 2MB)`;
 				}
 				if (code === 0) {
 					resolve({ success: true, tokensUsed, cost });
