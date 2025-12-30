@@ -134,6 +134,9 @@ export class ScrollContainer implements Component {
 	/** Track last child render to detect changes */
 	private lastChildRenderHash = "";
 
+	/** Last rendered lines from the child component (for diffing/streaming updates). */
+	private lastRenderedLines: string[] = [];
+
 	/** Maximum history lines to prevent unbounded memory growth */
 	private maxHistoryLines: number;
 
@@ -194,6 +197,7 @@ export class ScrollContainer implements Component {
 		this.scrollOffset = 0;
 		this.userScrolledUp = false;
 		this.lastChildRenderHash = "";
+		this.lastRenderedLines = [];
 	}
 
 	/**
@@ -444,11 +448,18 @@ export class ScrollContainer implements Component {
 	 * Simple hash of lines for change detection.
 	 */
 	private hashLines(lines: string[]): string {
-		// Use length + first/last line content as a quick hash
 		if (lines.length === 0) return "empty";
-		const first = lines[0]?.slice(0, 50) ?? "";
-		const last = lines[lines.length - 1]?.slice(0, 50) ?? "";
-		return `${lines.length}:${first}:${last}`;
+		let hash = 2166136261;
+		for (const line of lines) {
+			for (let i = 0; i < line.length; i++) {
+				hash ^= line.charCodeAt(i);
+				hash = Math.imul(hash, 16777619);
+			}
+			// Add a separator to reduce collisions across line boundaries.
+			hash ^= 10;
+			hash = Math.imul(hash, 16777619);
+		}
+		return `${lines.length}:${hash >>> 0}`;
 	}
 
 	/**
@@ -456,48 +467,130 @@ export class ScrollContainer implements Component {
 	 * Appends new content while preserving old history.
 	 */
 	private updateHistory(currentLines: string[]): void {
-		// Strategy: Replace history with current content, but this loses old content
-		// Better strategy: Append only NEW lines at the end
+		// Strategy:
+		// - Preserve historical lines even if the child clears.
+		// - Avoid duplicating lines for streaming updates (last line mutates).
+		// - Append only truly new lines when the child grows.
 
-		// For now, simple approach: if current content is longer than what we had
-		// at the end of history, append the new lines
-		// If current content is completely different (e.g., after clear),
-		// we keep the old history and append new content after a separator
-
-		if (this.contentHistory.length === 0) {
-			// First render - just use current content
-			this.contentHistory = [...currentLines];
-		} else {
-			// Check if current content looks like a continuation or a reset
-			// If the child was cleared, currentLines will be short/empty
-			// In that case, we keep history and might add a separator
-
-			if (currentLines.length === 0) {
-				// Child was cleared, keep history as-is
-				return;
-			}
-
-			// Check if current content overlaps with end of history
-			const overlap = this.findOverlap(this.contentHistory, currentLines);
-
-			if (overlap > 0) {
-				// Content overlaps - append only the new part
-				const newLines = currentLines.slice(overlap);
-				this.contentHistory.push(...newLines);
-			} else if (currentLines.length > 0) {
-				// No overlap - this is new content, append it
-				// (This happens after chatContainer.clear())
-				this.contentHistory.push(...currentLines);
-			}
+		if (currentLines.length === 0) {
+			// Child was cleared; keep history but reset streaming baseline.
+			this.lastRenderedLines = [];
+			return;
 		}
 
-		// Trim history if too long
+		if (this.lastRenderedLines.length === 0) {
+			if (this.contentHistory.length === 0) {
+				this.contentHistory = [...currentLines];
+			} else {
+				this.contentHistory.push(...currentLines);
+			}
+			this.lastRenderedLines = [...currentLines];
+			this.trimHistory();
+			return;
+		}
+
+		if (this.linesEqual(this.lastRenderedLines, currentLines)) {
+			return;
+		}
+
+		const lastCount = this.lastRenderedLines.length;
+		const prefixLen = this.commonPrefixLength(
+			this.lastRenderedLines,
+			currentLines,
+		);
+		const minLen = Math.min(lastCount, currentLines.length);
+		const nearContinuous = minLen > 0 && prefixLen >= minLen - 1;
+
+		// Streaming update: replace the tail segment in place to avoid duplicates.
+		if (nearContinuous && currentLines.length >= lastCount) {
+			const removeCount = Math.min(lastCount, this.contentHistory.length);
+			if (removeCount === 0) {
+				this.contentHistory.push(...currentLines);
+			} else {
+				const start = this.contentHistory.length - removeCount;
+				const expectedTail = this.lastRenderedLines.slice(-removeCount);
+				if (this.endsWithLines(this.contentHistory, expectedTail)) {
+					this.contentHistory.splice(start, removeCount, ...currentLines);
+				} else {
+					const overlap = this.findOverlap(this.contentHistory, currentLines);
+					if (overlap > 0) {
+						this.contentHistory.push(...currentLines.slice(overlap));
+					} else {
+						this.contentHistory.push(...currentLines);
+					}
+				}
+			}
+			this.lastRenderedLines = [...currentLines];
+			this.trimHistory();
+			return;
+		}
+
+		// Child trimmed the tail of its output; keep history but advance baseline.
+		if (this.startsWithLines(this.lastRenderedLines, currentLines)) {
+			this.lastRenderedLines = [...currentLines];
+			return;
+		}
+
+		// If the current lines already match the tail of history, keep history as-is.
+		if (this.endsWithLines(this.contentHistory, currentLines)) {
+			this.lastRenderedLines = [...currentLines];
+			return;
+		}
+
+		// Fallback: overlap detection to append only new content when possible.
+		const overlap = this.findOverlap(this.contentHistory, currentLines);
+		if (overlap > 0) {
+			this.contentHistory.push(...currentLines.slice(overlap));
+		} else {
+			this.contentHistory.push(...currentLines);
+		}
+
+		this.lastRenderedLines = [...currentLines];
+		this.trimHistory();
+	}
+
+	private trimHistory(): void {
 		if (this.contentHistory.length > this.maxHistoryLines) {
 			const removeCount = this.contentHistory.length - this.maxHistoryLines;
 			this.contentHistory.splice(0, removeCount);
-			// Adjust scroll offset if we removed lines above it
 			this.scrollOffset = Math.max(0, this.scrollOffset - removeCount);
 		}
+	}
+
+	private linesEqual(a: string[], b: string[]): boolean {
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			if (a[i] !== b[i]) return false;
+		}
+		return true;
+	}
+
+	private commonPrefixLength(a: string[], b: string[]): number {
+		const max = Math.min(a.length, b.length);
+		let idx = 0;
+		while (idx < max && a[idx] === b[idx]) {
+			idx += 1;
+		}
+		return idx;
+	}
+
+	private endsWithLines(history: string[], current: string[]): boolean {
+		if (current.length === 0) return true;
+		if (current.length > history.length) return false;
+		const start = history.length - current.length;
+		for (let i = 0; i < current.length; i++) {
+			if (history[start + i] !== current[i]) return false;
+		}
+		return true;
+	}
+
+	private startsWithLines(history: string[], current: string[]): boolean {
+		if (current.length === 0) return true;
+		if (current.length > history.length) return false;
+		for (let i = 0; i < current.length; i++) {
+			if (history[i] !== current[i]) return false;
+		}
+		return true;
 	}
 
 	/**
