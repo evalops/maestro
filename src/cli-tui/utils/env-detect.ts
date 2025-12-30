@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 
 export function isDockerEnv(): boolean {
 	if (process.env.DOCKER_CONTAINER === "1") return true;
@@ -37,5 +37,30 @@ export function isJetBrainsTerminal(): boolean {
 	const term = process.env.TERMINAL_EMULATOR ?? "";
 	if (term.toLowerCase().includes("jediterm")) return true;
 	if (process.env.JEDITERM_LOG_DIR) return true;
+	return false;
+}
+
+export function isFlatpakEnv(): boolean {
+	if (process.env.FLATPAK_ID || process.env.FLATPAK_SANDBOX_DIR) return true;
+	return existsSync("/.flatpak-info");
+}
+
+export function isMuslEnv(): boolean {
+	if (process.platform !== "linux") return false;
+	const report = process.report?.getReport?.() as
+		| { header?: { glibcVersionRuntime?: string } }
+		| undefined;
+	const glibcVersion = report?.header?.glibcVersionRuntime;
+	if (glibcVersion) return false;
+	for (const dir of ["/lib", "/usr/lib", "/lib64", "/usr/lib64"]) {
+		try {
+			const entries = readdirSync(dir);
+			if (entries.some((entry) => entry.startsWith("ld-musl-"))) {
+				return true;
+			}
+		} catch {
+			// ignore missing directories
+		}
+	}
 	return false;
 }

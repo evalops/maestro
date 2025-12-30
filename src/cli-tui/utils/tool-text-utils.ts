@@ -3,6 +3,7 @@ import chalk from "chalk";
 import * as Diff from "diff";
 import { highlightCodeLines } from "../../style/code-highlighter.js";
 import { getHomeDir } from "../../utils/path-expansion.js";
+import { stripAnsiSequences, truncateText } from "./text-formatting.js";
 
 const normalizeForCompare = (value: string): string =>
 	process.platform === "win32" ? value.toLowerCase() : value;
@@ -17,6 +18,13 @@ export type ToolOutputLimits = {
 
 export type ToolOutputClampResult = {
 	text: string;
+	truncated: boolean;
+	omittedChars: number;
+	omittedLines: number;
+};
+
+export type ToolOutputClampLinesResult = {
+	lines: string[];
 	truncated: boolean;
 	omittedChars: number;
 	omittedLines: number;
@@ -68,6 +76,53 @@ export function clampToolOutput(
 
 	const truncated = omittedLines > 0 || omittedChars > 0;
 	return { text, truncated, omittedChars, omittedLines };
+}
+
+export function clampToolOutputLines(
+	lines: string[],
+	limits: ToolOutputLimits = getToolOutputLimits(),
+): ToolOutputClampLinesResult {
+	if (lines.length === 0) {
+		return { lines: [], truncated: false, omittedChars: 0, omittedLines: 0 };
+	}
+
+	let outputLines = lines;
+	let omittedLines = 0;
+	const maxLines = limits.maxLines;
+	if (maxLines > 0 && outputLines.length > maxLines) {
+		omittedLines = outputLines.length - maxLines;
+		outputLines = outputLines.slice(0, maxLines);
+	}
+
+	let omittedChars = 0;
+	const maxChars = limits.maxChars;
+	if (maxChars > 0) {
+		const rawLines = outputLines.map((line) => stripAnsiSequences(line));
+		const rawText = rawLines.join("\n");
+		if (rawText.length > maxChars) {
+			omittedChars = rawText.length - maxChars;
+			const clampedLines: string[] = [];
+			let remaining = maxChars;
+			for (let i = 0; i < outputLines.length && remaining > 0; i += 1) {
+				const rawLine = rawLines[i] ?? "";
+				if (i > 0) {
+					remaining -= 1; // newline separator
+					if (remaining <= 0) break;
+				}
+				if (rawLine.length <= remaining) {
+					clampedLines.push(outputLines[i] ?? "");
+					remaining -= rawLine.length;
+				} else {
+					clampedLines.push(truncateText(outputLines[i] ?? "", remaining));
+					remaining = 0;
+				}
+			}
+			outputLines = clampedLines;
+		}
+	}
+
+	const truncated = omittedLines > 0 || omittedChars > 0;
+	return { lines: outputLines, truncated, omittedChars, omittedLines };
 }
 
 export function formatToolOutputTruncation(
@@ -265,7 +320,17 @@ export function formatDetailSections(
 		if (exclude.has(rawKey.toLowerCase())) continue;
 		const lines = formatDetailValueLines(value);
 		if (!lines.length) continue;
-		sections.push(formatSection(humanizeDetailKey(rawKey), lines));
+		const clamped = clampToolOutputLines(lines);
+		const banner = formatToolOutputTruncation({
+			text: "",
+			truncated: clamped.truncated,
+			omittedChars: clamped.omittedChars,
+			omittedLines: clamped.omittedLines,
+		});
+		const sectionLines = banner
+			? clamped.lines.concat(chalk.dim(banner))
+			: clamped.lines;
+		sections.push(formatSection(humanizeDetailKey(rawKey), sectionLines));
 	}
 	return sections;
 }

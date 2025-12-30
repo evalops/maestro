@@ -4,7 +4,13 @@ import { composerManager } from "../../composers/index.js";
 import { mcpManager } from "../../mcp/index.js";
 import { isSafeModeEnabled } from "../../safety/safe-mode.js";
 import { backgroundTaskManager } from "../../tools/background-tasks.js";
-import { isDockerEnv, isJetBrainsTerminal, isWslEnv } from "./env-detect.js";
+import {
+	isDockerEnv,
+	isFlatpakEnv,
+	isJetBrainsTerminal,
+	isMuslEnv,
+	isWslEnv,
+} from "./env-detect.js";
 
 export interface RuntimeBadgeParams {
 	approvalMode: ApprovalMode | null | undefined;
@@ -90,6 +96,12 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 		badges.push("env:docker");
 	} else if (isWslEnv()) {
 		badges.push("env:wsl");
+	}
+	if (isFlatpakEnv()) {
+		badges.push("env:flatpak");
+	}
+	if (isMuslEnv()) {
+		badges.push("env:musl");
 	}
 	if (isJetBrainsTerminal()) {
 		badges.push("term:jetbrains");
