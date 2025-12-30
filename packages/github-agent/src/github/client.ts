@@ -92,9 +92,17 @@ class EtagCache {
 			}
 		}
 
-		while (this.store.size > this.maxEntries) {
-			const oldest = this.store.keys().next().value as string | undefined;
-			if (!oldest) break;
+		if (this.store.size <= this.maxEntries) {
+			return;
+		}
+
+		const entries = Array.from(this.store.entries()).sort(
+			(a, b) => a[1].updatedAt - b[1].updatedAt,
+		);
+		for (const [oldest] of entries) {
+			if (this.store.size <= this.maxEntries) {
+				break;
+			}
 			this.store.delete(oldest);
 		}
 	}
@@ -136,9 +144,17 @@ class ResponseCache {
 			}
 		}
 
-		while (this.store.size > this.maxEntries) {
-			const oldest = this.store.keys().next().value as string | undefined;
-			if (!oldest) break;
+		if (this.store.size <= this.maxEntries) {
+			return;
+		}
+
+		const entries = Array.from(this.store.entries()).sort(
+			(a, b) => a[1].updatedAt - b[1].updatedAt,
+		);
+		for (const [oldest] of entries) {
+			if (this.store.size <= this.maxEntries) {
+				break;
+			}
 			this.store.delete(oldest);
 		}
 	}
