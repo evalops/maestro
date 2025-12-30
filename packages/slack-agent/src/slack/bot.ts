@@ -325,13 +325,25 @@ export class SlackBot {
 		try {
 			await handler();
 			if (eventId) {
-				await this.idempotency.markComplete(eventId);
+				try {
+					await this.idempotency.markComplete(eventId);
+				} catch (markError) {
+					const details =
+						markError instanceof Error ? markError.message : String(markError);
+					logger.logWarning("Failed to record idempotency completion", details);
+				}
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			logger.logWarning("Slack event handler failed", message);
 			if (eventId) {
-				await this.idempotency.markFailed(eventId, message);
+				try {
+					await this.idempotency.markFailed(eventId, message);
+				} catch (markError) {
+					const details =
+						markError instanceof Error ? markError.message : String(markError);
+					logger.logWarning("Failed to record idempotency failure", details);
+				}
 			}
 		}
 	}

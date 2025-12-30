@@ -235,6 +235,7 @@ export function createResponseHandlers(
 					"Content-Length": size.toString(),
 				},
 				body: createReadStream(filePath),
+				duplex: "half",
 			});
 			if (!response.ok) {
 				throw new Error(
