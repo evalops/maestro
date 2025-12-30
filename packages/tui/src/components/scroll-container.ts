@@ -507,7 +507,16 @@ export class ScrollContainer implements Component {
 			if (this.contentHistory.length === 0) {
 				this.contentHistory = [...currentLines];
 			} else {
-				this.contentHistory.push(...currentLines);
+				if (this.endsWithLines(this.contentHistory, currentLines)) {
+					this.lastRenderedLines = [...currentLines];
+					return;
+				}
+				const overlap = this.findOverlap(this.contentHistory, currentLines);
+				if (overlap > 0) {
+					this.contentHistory.push(...currentLines.slice(overlap));
+				} else {
+					this.contentHistory.push(...currentLines);
+				}
 			}
 			this.lastRenderedLines = [...currentLines];
 			this.trimHistory();
@@ -582,6 +591,12 @@ export class ScrollContainer implements Component {
 			this.truncatedLines += removeCount;
 			this.applyTruncationMarker();
 		}
+		if (this.lastRenderedLines.length > this.contentHistory.length) {
+			this.lastRenderedLines =
+				this.contentHistory.length === 0
+					? []
+					: this.lastRenderedLines.slice(-this.contentHistory.length);
+		}
 	}
 
 	private applyTruncationMarker(): void {
@@ -597,9 +612,6 @@ export class ScrollContainer implements Component {
 			this.contentHistory[0] = marker;
 		} else {
 			this.contentHistory.unshift(marker);
-			if (this.scrollOffset > 0) {
-				offsetDelta += 1;
-			}
 		}
 		if (this.contentHistory.length > this.maxHistoryLines) {
 			const overflow = this.contentHistory.length - this.maxHistoryLines;
@@ -607,9 +619,10 @@ export class ScrollContainer implements Component {
 			this.truncatedLines += overflow;
 			marker = this.formatTruncationMarker();
 			this.contentHistory[0] = marker;
-			if (this.scrollOffset > 0) {
-				offsetDelta -= overflow;
-			}
+			offsetDelta -= overflow;
+		}
+		if (!hadMarker) {
+			offsetDelta += 1;
 		}
 		if (offsetDelta !== 0 && this.scrollOffset > 0) {
 			this.scrollOffset = Math.max(0, this.scrollOffset + offsetDelta);

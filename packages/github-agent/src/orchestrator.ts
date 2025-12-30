@@ -404,9 +404,14 @@ export class Orchestrator {
 			`[orchestrator] Check run re-requested: ${checkRun.id} (${checkRun.headSha})`,
 		);
 
-		const task =
-			this.memory.findTaskByCheckRunId(checkRun.id) ??
-			this.findTaskByPRs(checkRun.pullRequests);
+		const taskByCheckRun = this.memory.findTaskByCheckRunId(checkRun.id);
+		if (!taskByCheckRun && checkRun.pullRequests.length > 1) {
+			console.warn(
+				`[orchestrator] Multiple PRs associated with check run ${checkRun.id}; skipping ambiguous rerun`,
+			);
+			return;
+		}
+		const task = taskByCheckRun ?? this.findTaskByPRs(checkRun.pullRequests);
 		if (!task) {
 			console.warn(`[orchestrator] No task found for check run ${checkRun.id}`);
 			return;
@@ -434,7 +439,8 @@ export class Orchestrator {
 			);
 			return;
 		}
-		const nextAttempt = task.queuedAttempt ?? task.attempts + 1;
+		const baseAttempt = Math.max(task.attempts, task.queuedAttempt ?? 0);
+		const nextAttempt = baseAttempt + 1;
 		if (nextAttempt > this.config.maxAttemptsPerTask) {
 			console.warn(
 				`[orchestrator] Max attempts reached for task ${task.id}; cannot rerun`,
@@ -443,10 +449,8 @@ export class Orchestrator {
 		}
 
 		this.memory.updateTaskStatus(task.id, "pending");
-		if (!task.queuedAttempt) {
-			this.memory.updateTask(task.id, { queuedAttempt: nextAttempt });
-			task.queuedAttempt = nextAttempt;
-		}
+		this.memory.updateTask(task.id, { queuedAttempt: nextAttempt });
+		task.queuedAttempt = nextAttempt;
 		await this.publishCheckRunStatus(checkRun, task, "queued").catch((err) => {
 			console.warn(
 				`[orchestrator] Failed to update check run ${checkRun.id} to queued: ${err instanceof Error ? err.message : err}`,
@@ -602,6 +606,7 @@ export class Orchestrator {
 
 		// Execute the task
 		this.processingLock = true;
+		let failureRecorded = false;
 		try {
 			console.log(`[orchestrator] Processing task: ${task.id}`);
 			this.memory.updateTaskStatus(task.id, "in_progress");
@@ -646,6 +651,7 @@ export class Orchestrator {
 			} else {
 				if (result.error) {
 					this.memory.recordTaskFailure(result.error);
+					failureRecorded = true;
 				}
 				// Don't mark as failed yet if we have retries left
 				if (task.attempts < this.config.maxAttemptsPerTask) {
@@ -678,7 +684,9 @@ export class Orchestrator {
 			// Handle unexpected exceptions - don't leave task stuck in_progress
 			const error = err instanceof Error ? err.message : String(err);
 			console.error(`[orchestrator] Task threw exception: ${task.id}`, error);
-			this.memory.recordTaskFailure(error);
+			if (!failureRecorded) {
+				this.memory.recordTaskFailure(error);
+			}
 
 			if (task.attempts < this.config.maxAttemptsPerTask) {
 				this.memory.updateTaskStatus(task.id, "pending", {

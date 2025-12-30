@@ -47,13 +47,13 @@ export class TaskExecutor {
 		const startTime = Date.now();
 		const progress = this.buildInitialProgress(task, startTime);
 		await this.reportProgress(task, progress);
+		const branchName = this.generateBranchName(task);
 
 		try {
 			// Ensure working directory exists
 			mkdirSync(this.config.workingDir, { recursive: true });
 
 			// Generate branch name
-			const branchName = this.generateBranchName(task);
 			progress.branch = branchName;
 			this.log(`[executor] Starting task ${task.id}`);
 			this.log(`[executor] Branch: ${branchName}`);
@@ -128,6 +128,7 @@ export class TaskExecutor {
 			progress.error = error;
 			progress.durationMs = Date.now() - startTime;
 			await this.reportProgress(task, progress);
+			await this.publishFailureCheckRun(task, progress, branchName);
 
 			// Clean up: switch back to base branch
 			await this.runCommand("git", ["checkout", this.config.baseBranch]).catch(
@@ -283,6 +284,8 @@ export class TaskExecutor {
 						stdoutTruncated = true;
 						stdout = stdout.slice(0, maxStdoutSize);
 					}
+				} else {
+					stdoutTruncated = true;
 				}
 				handleJsonChunk(chunk);
 			});
@@ -697,21 +700,112 @@ ${diff}
 				}
 			}
 
+			try {
+				await this.githubClient.createCommitStatus({
+					sha: headSha,
+					state: conclusion === "success" ? "success" : "failure",
+					description:
+						conclusion === "success"
+							? "Composer Agent completed successfully"
+							: "Composer Agent reported failures",
+					context: "Composer Agent",
+					targetUrl: pr.url,
+				});
+			} catch (err) {
+				this.log(
+					`[executor] Failed to create commit status: ${err instanceof Error ? err.message : err}`,
+				);
+			}
+		} catch (err) {
+			this.log(
+				`[executor] Failed to publish check run: ${err instanceof Error ? err.message : err}`,
+			);
+		}
+	}
+
+	private async publishFailureCheckRun(
+		task: Task,
+		progress: TaskProgress,
+		branchName: string,
+	): Promise<void> {
+		if (!this.githubClient) return;
+		const summary = this.buildFailureSummary(task, progress);
+		const text = progress.error ? `Error: ${progress.error}` : undefined;
+		try {
+			const supportsCheckRuns = await this.githubClient.supportsCheckRuns();
+			if (supportsCheckRuns) {
+				try {
+					if (task.checkRunId) {
+						await this.githubClient.updateCheckRun({
+							id: task.checkRunId,
+							status: "completed",
+							conclusion: "failure",
+							summary,
+							text,
+						});
+						return;
+					}
+					const headSha = await this.githubClient.getBranchHeadSha(branchName);
+					const checkRun = await this.githubClient.createCheckRun({
+						name: "Composer Agent",
+						headSha,
+						status: "completed",
+						conclusion: "failure",
+						summary,
+						text,
+					});
+					this.memory.updateTask(task.id, { checkRunId: checkRun.id });
+					task.checkRunId = checkRun.id;
+					return;
+				} catch (err) {
+					this.log(
+						`[executor] Failed to update failure check run: ${err instanceof Error ? err.message : err}`,
+					);
+				}
+			}
+
+			const headSha = await this.githubClient.getBranchHeadSha(branchName);
 			await this.githubClient.createCommitStatus({
 				sha: headSha,
-				state: conclusion === "success" ? "success" : "failure",
-				description:
-					conclusion === "success"
-						? "Composer Agent completed successfully"
-						: "Composer Agent reported failures",
+				state: "failure",
+				description: "Composer Agent reported failures",
 				context: "Composer Agent",
-				targetUrl: pr.url,
+				targetUrl: task.result?.prUrl,
 			});
 		} catch (err) {
 			this.log(
-				`[executor] Failed to create check run: ${err instanceof Error ? err.message : err}`,
+				`[executor] Failed to publish failure status: ${err instanceof Error ? err.message : err}`,
 			);
 		}
+	}
+
+	private buildFailureSummary(task: Task, progress: TaskProgress): string {
+		const lines: string[] = [`Task: ${task.title}`, "PR: not created"];
+		if (progress.branch) {
+			lines.push(`Branch: ${progress.branch}`);
+		}
+		if (progress.attempt && progress.maxAttempts) {
+			lines.push(`Attempt: ${progress.attempt}/${progress.maxAttempts}`);
+		}
+		for (const [label, key] of [
+			["Composer", "composer"],
+			["Type check", "typecheck"],
+			["Lint", "lint"],
+			["Tests", "tests"],
+			["Self-review", "selfReview"],
+		] as const) {
+			const status = progress.steps[key];
+			if (status && status !== "skipped") {
+				lines.push(`${label}: ${status}`);
+			}
+		}
+		if (progress.error) {
+			lines.push(`Error: ${progress.error}`);
+		}
+		if (typeof progress.durationMs === "number") {
+			lines.push(`Duration: ${Math.round(progress.durationMs / 1000)}s`);
+		}
+		return lines.join("\n");
 	}
 
 	private buildCheckRunSummary(

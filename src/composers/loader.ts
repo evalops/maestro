@@ -118,7 +118,11 @@ function normalizeComposerConfig(
 	parsed: Record<string, unknown>,
 	filePath: string,
 ): ComposerConfig {
-	const name = asString(parsed.name) ?? basename(filePath, extname(filePath));
+	const rawName = asString(parsed.name);
+	const name =
+		rawName && rawName.trim().length > 0
+			? rawName
+			: basename(filePath, extname(filePath));
 	const description =
 		asString(parsed.description) ?? `Custom composer: ${name}`;
 

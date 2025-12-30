@@ -72,10 +72,14 @@ describe("ScrollContainer history", () => {
 			maxHistoryLines: 2,
 		});
 
-		expect(scroll.render(20)).toEqual(["two", "three"]);
+		const firstTrim = scroll.render(20);
+		expect(firstTrim[0]).toContain("... scrollback truncated");
+		expect(firstTrim.slice(-1)).toEqual(["three"]);
 
 		content.setLines(["one", "two", "three", "four"]);
-		expect(scroll.render(20)).toEqual(["three", "four"]);
+		const secondTrim = scroll.render(20);
+		expect(secondTrim[0]).toContain("... scrollback truncated");
+		expect(secondTrim.slice(-1)).toEqual(["four"]);
 	});
 
 	it("adds a truncation marker when scrollback is trimmed", () => {

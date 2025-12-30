@@ -98,26 +98,36 @@ export function clampToolOutputLines(
 	const maxChars = limits.maxChars;
 	if (maxChars > 0) {
 		const rawLines = outputLines.map((line) => stripAnsiSequences(line));
-		const rawText = rawLines.join("\n");
-		if (rawText.length > maxChars) {
-			omittedChars = rawText.length - maxChars;
+		const rawLineWidths = rawLines.map((line) => visibleWidth(line));
+		const rawTextWidth = rawLineWidths.reduce(
+			(sum, width, idx) => sum + width + (idx > 0 ? 1 : 0),
+			0,
+		);
+		if (rawTextWidth > maxChars) {
 			const clampedLines: string[] = [];
 			let remaining = maxChars;
 			for (let i = 0; i < outputLines.length && remaining > 0; i += 1) {
 				const rawLine = rawLines[i] ?? "";
+				const rawLineWidth = rawLineWidths[i] ?? 0;
 				if (i > 0) {
 					remaining -= 1; // newline separator
 					if (remaining <= 0) break;
 				}
-				if (rawLine.length <= remaining) {
+				if (rawLineWidth <= remaining) {
 					clampedLines.push(outputLines[i] ?? "");
-					remaining -= rawLine.length;
+					remaining -= rawLineWidth;
 				} else {
 					clampedLines.push(truncateText(outputLines[i] ?? "", remaining));
 					remaining = 0;
 				}
 			}
 			outputLines = clampedLines;
+			const clampedWidth = outputLines.reduce(
+				(sum, line, idx) =>
+					sum + visibleWidth(stripAnsiSequences(line)) + (idx > 0 ? 1 : 0),
+				0,
+			);
+			omittedChars = Math.max(0, rawTextWidth - clampedWidth);
 		}
 	}
 

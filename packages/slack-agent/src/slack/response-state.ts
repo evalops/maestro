@@ -225,10 +225,12 @@ export function createResponseHandlers(
 			const uploadUrl = uploadUrlResult.upload_url as string | undefined;
 			const fileId = uploadUrlResult.file_id as string | undefined;
 			if (!uploadUrl || !fileId) {
-				throw new Error("Slack external upload did not return upload_url");
+				throw new Error(
+					"Slack external upload did not return upload_url or file_id",
+				);
 			}
 
-			const response = await fetch(uploadUrl, {
+			const requestOptions: RequestInit & { duplex?: "half" } = {
 				method: "PUT",
 				headers: {
 					"Content-Type": "application/octet-stream",
@@ -236,7 +238,8 @@ export function createResponseHandlers(
 				},
 				body: createReadStream(filePath),
 				duplex: "half",
-			});
+			};
+			const response = await fetch(uploadUrl, requestOptions);
 			if (!response.ok) {
 				throw new Error(
 					`Slack external upload failed: ${response.status} ${response.statusText}`,

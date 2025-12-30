@@ -116,7 +116,7 @@ function collectSpecifiers(filePath, sourceText) {
 			}
 			if (
 				node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-				node.arguments.length === 1 &&
+				node.arguments.length >= 1 &&
 				ts.isStringLiteral(node.arguments[0])
 			) {
 				specifiers.push(node.arguments[0].text);
