@@ -49,6 +49,8 @@ export const METHOD_TIERS: Record<string, RateLimitTier> = {
 	"reactions.remove": "tier3",
 	"files.upload": "tier3",
 	"files.uploadV2": "tier3",
+	"files.getUploadURLExternal": "tier3",
+	"files.completeUploadExternal": "tier3",
 
 	// Tier 4 methods (high volume)
 	"auth.test": "tier4",
@@ -76,6 +78,15 @@ export interface ApiQueueOptions {
 	maxDelayMs?: number;
 	/** Enable debug logging */
 	debug?: boolean;
+	/** Callback when a request is rate limited */
+	onRateLimit?: (method: string, retryAfterSeconds: number) => void;
+	/** Callback when a request is retried */
+	onRetry?: (
+		method: string,
+		attempt: number,
+		delayMs: number,
+		error: unknown,
+	) => void;
 }
 
 /**
@@ -96,6 +107,8 @@ export class ApiQueue {
 	private readonly baseDelayMs: number;
 	private readonly maxDelayMs: number;
 	private readonly debug: boolean;
+	private readonly onRateLimit?: ApiQueueOptions["onRateLimit"];
+	private readonly onRetry?: ApiQueueOptions["onRetry"];
 
 	constructor(options: ApiQueueOptions = {}) {
 		this.defaultTier = options.defaultTier ?? "tier3";
@@ -103,6 +116,8 @@ export class ApiQueue {
 		this.baseDelayMs = options.baseDelayMs ?? 1000;
 		this.maxDelayMs = options.maxDelayMs ?? 30000;
 		this.debug = options.debug ?? false;
+		this.onRateLimit = options.onRateLimit;
+		this.onRetry = options.onRetry;
 	}
 
 	/**
@@ -209,6 +224,8 @@ export class ApiQueue {
 			const retryAfter = this.getRetryAfter(error);
 			const retryMs = retryAfter * 1000;
 
+			this.onRateLimit?.(request.method, retryAfter);
+
 			logger.logWarning(
 				`Rate limited on ${request.method}`,
 				`Pausing queue for ${retryAfter}s`,
@@ -227,6 +244,8 @@ export class ApiQueue {
 				this.baseDelayMs * 2 ** (request.retries - 1),
 				this.maxDelayMs,
 			);
+
+			this.onRetry?.(request.method, request.retries, backoffMs, error);
 
 			logger.logWarning(
 				`Retrying ${request.method} (attempt ${request.retries}/${request.maxRetries})`,

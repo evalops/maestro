@@ -241,6 +241,7 @@ export {
 	type HistogramSummary,
 	type MetricSummary,
 	type MetricsCollectorConfig,
+	type SlackMetrics,
 } from "./utils/metrics.js";
 
 export {

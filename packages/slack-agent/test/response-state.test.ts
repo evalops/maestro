@@ -279,6 +279,7 @@ describe("createResponseHandlers", () => {
 			// Mock readFile
 			vi.mock("node:fs/promises", () => ({
 				readFile: vi.fn().mockResolvedValue(Buffer.from("file content")),
+				stat: vi.fn().mockResolvedValue({ size: 1024 }),
 			}));
 
 			await handlers.uploadFile("/path/to/file.txt", "My File");

@@ -5,7 +5,8 @@
  * including text accumulation, working indicators, and message updates.
  */
 
-import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import type {
 	ChatPostMessageArguments,
@@ -37,6 +38,8 @@ export interface ResponseHandlers {
 }
 
 const WORKING_INDICATOR = " ...";
+const UPDATE_MIN_INTERVAL_MS = 1000;
+const EXTERNAL_UPLOAD_THRESHOLD_BYTES = 10 * 1024 * 1024;
 
 /**
  * Creates response handlers for a Slack context.
@@ -63,6 +66,17 @@ export function createResponseHandlers(
 	let isThinking = true;
 	let isWorking = true;
 	let updatePromise: Promise<void> = Promise.resolve();
+	let lastUpdateAt = 0;
+
+	const throttleUpdate = async (fn: () => Promise<void>): Promise<void> => {
+		const now = Date.now();
+		const waitMs = Math.max(0, lastUpdateAt + UPDATE_MIN_INTERVAL_MS - now);
+		if (waitMs > 0) {
+			await new Promise((resolve) => setTimeout(resolve, waitMs));
+		}
+		await fn();
+		lastUpdateAt = Date.now();
+	};
 
 	const respond = async (responseText: string, log = true): Promise<void> => {
 		updatePromise = updatePromise.then(async () => {
@@ -77,30 +91,32 @@ export function createResponseHandlers(
 				? accumulatedText + WORKING_INDICATOR
 				: accumulatedText;
 
-			if (messageTs) {
-				const currentMessageTs = messageTs;
-				await callSlack(
-					() =>
-						webClient.chat.update({
-							channel: channelId,
-							ts: currentMessageTs,
-							text: displayText,
-						}),
-					"chat.update",
-				);
-			} else {
-				const postArgs = {
-					channel: channelId,
-					text: displayText,
-					thread_ts: threadTs,
-					reply_broadcast: replyBroadcast,
-				} as ChatPostMessageArguments;
-				const result = await callSlack(
-					() => webClient.chat.postMessage(postArgs),
-					"chat.postMessage",
-				);
-				messageTs = result.ts as string;
-			}
+			await throttleUpdate(async () => {
+				if (messageTs) {
+					const currentMessageTs = messageTs;
+					await callSlack(
+						() =>
+							webClient.chat.update({
+								channel: channelId,
+								ts: currentMessageTs,
+								text: displayText,
+							}),
+						"chat.update",
+					);
+				} else {
+					const postArgs = {
+						channel: channelId,
+						text: displayText,
+						thread_ts: threadTs,
+						reply_broadcast: replyBroadcast,
+					} as ChatPostMessageArguments;
+					const result = await callSlack(
+						() => webClient.chat.postMessage(postArgs),
+						"chat.postMessage",
+					);
+					messageTs = result.ts as string;
+				}
+			});
 
 			if (log && messageTs) {
 				await store.logBotResponse(channelId, responseText, messageTs);
@@ -118,30 +134,32 @@ export function createResponseHandlers(
 				? accumulatedText + WORKING_INDICATOR
 				: accumulatedText;
 
-			if (messageTs) {
-				const currentMessageTs = messageTs;
-				await callSlack(
-					() =>
-						webClient.chat.update({
-							channel: channelId,
-							ts: currentMessageTs,
-							text: displayText,
-						}),
-					"chat.update",
-				);
-			} else {
-				const postArgs = {
-					channel: channelId,
-					text: displayText,
-					thread_ts: threadTs,
-					reply_broadcast: replyBroadcast,
-				} as ChatPostMessageArguments;
-				const result = await callSlack(
-					() => webClient.chat.postMessage(postArgs),
-					"chat.postMessage",
-				);
-				messageTs = result.ts as string;
-			}
+			await throttleUpdate(async () => {
+				if (messageTs) {
+					const currentMessageTs = messageTs;
+					await callSlack(
+						() =>
+							webClient.chat.update({
+								channel: channelId,
+								ts: currentMessageTs,
+								text: displayText,
+							}),
+						"chat.update",
+					);
+				} else {
+					const postArgs = {
+						channel: channelId,
+						text: displayText,
+						thread_ts: threadTs,
+						reply_broadcast: replyBroadcast,
+					} as ChatPostMessageArguments;
+					const result = await callSlack(
+						() => webClient.chat.postMessage(postArgs),
+						"chat.postMessage",
+					);
+					messageTs = result.ts as string;
+				}
+			});
 		});
 
 		await updatePromise;
@@ -154,15 +172,17 @@ export function createResponseHandlers(
 			}
 			const currentMessageTs = messageTs;
 			const obfuscatedText = obfuscateUsernames(threadText);
-			await callSlack(
-				() =>
-					webClient.chat.postMessage({
-						channel: channelId,
-						thread_ts: currentMessageTs,
-						text: obfuscatedText,
-					}),
-				"chat.postMessage",
-			);
+			await throttleUpdate(async () => {
+				await callSlack(
+					() =>
+						webClient.chat.postMessage({
+							channel: channelId,
+							thread_ts: currentMessageTs,
+							text: obfuscatedText,
+						}),
+					"chat.postMessage",
+				);
+			});
 		});
 
 		await updatePromise;
@@ -190,8 +210,51 @@ export function createResponseHandlers(
 		title?: string,
 	): Promise<void> => {
 		const fileName = title || basename(filePath);
-		const fileContent = await readFile(filePath);
+		const { size } = await stat(filePath);
 
+		if (size >= EXTERNAL_UPLOAD_THRESHOLD_BYTES) {
+			const uploadUrlResult = await callSlack(
+				() =>
+					webClient.files.getUploadURLExternal({
+						filename: fileName,
+						length: size,
+					}),
+				"files.getUploadURLExternal",
+			);
+
+			const uploadUrl = uploadUrlResult.upload_url as string | undefined;
+			const fileId = uploadUrlResult.file_id as string | undefined;
+			if (!uploadUrl || !fileId) {
+				throw new Error("Slack external upload did not return upload_url");
+			}
+
+			const response = await fetch(uploadUrl, {
+				method: "PUT",
+				headers: {
+					"Content-Type": "application/octet-stream",
+					"Content-Length": size.toString(),
+				},
+				body: createReadStream(filePath),
+			});
+			if (!response.ok) {
+				throw new Error(
+					`Slack external upload failed: ${response.status} ${response.statusText}`,
+				);
+			}
+
+			await callSlack(
+				() =>
+					webClient.files.completeUploadExternal({
+						files: [{ id: fileId, title: fileName }],
+						channel_id: channelId,
+						...(threadTs && { thread_ts: threadTs }),
+					}),
+				"files.completeUploadExternal",
+			);
+			return;
+		}
+
+		const fileContent = await readFile(filePath);
 		const uploadArgs = {
 			channel_id: channelId,
 			file: fileContent,
@@ -214,15 +277,17 @@ export function createResponseHandlers(
 				const displayText = isWorking
 					? accumulatedText + WORKING_INDICATOR
 					: accumulatedText;
-				await callSlack(
-					() =>
-						webClient.chat.update({
-							channel: channelId,
-							ts: currentMessageTs,
-							text: displayText,
-						}),
-					"chat.update",
-				);
+				await throttleUpdate(async () => {
+					await callSlack(
+						() =>
+							webClient.chat.update({
+								channel: channelId,
+								ts: currentMessageTs,
+								text: displayText,
+							}),
+						"chat.update",
+					);
+				});
 			}
 		});
 
@@ -234,15 +299,17 @@ export function createResponseHandlers(
 			if (messageTs && isWorking) {
 				const currentMessageTs = messageTs;
 				const displayText = `${accumulatedText}\n_${status}_${WORKING_INDICATOR}`;
-				await callSlack(
-					() =>
-						webClient.chat.update({
-							channel: channelId,
-							ts: currentMessageTs,
-							text: displayText,
-						}),
-					"chat.update",
-				);
+				await throttleUpdate(async () => {
+					await callSlack(
+						() =>
+							webClient.chat.update({
+								channel: channelId,
+								ts: currentMessageTs,
+								text: displayText,
+							}),
+						"chat.update",
+					);
+				});
 			}
 		});
 
