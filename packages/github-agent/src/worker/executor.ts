@@ -107,6 +107,7 @@ export class TaskExecutor {
 			progress.prUrl = pr.url;
 
 			await this.applyPrMetadata(pr.number);
+			await this.applyMergePolicy(pr.number, branchName);
 			await this.publishCheckRun(task, progress, branchName, pr);
 
 			progress.status = "completed";
@@ -560,6 +561,65 @@ ${diff}
 					`[executor] Failed to request reviewers: ${err instanceof Error ? err.message : err}`,
 				);
 			}
+		}
+	}
+
+	private async applyMergePolicy(
+		prNumber: number,
+		branchName: string,
+	): Promise<void> {
+		if (!this.githubClient) return;
+		const wantsMergeQueue = Boolean(this.config.mergeQueue);
+		const wantsAutoMerge = Boolean(this.config.autoMerge);
+		if (!wantsMergeQueue && !wantsAutoMerge) {
+			return;
+		}
+
+		try {
+			const pr = await this.githubClient.getPullRequest(prNumber);
+			const nodeId = pr.nodeId;
+			if (!nodeId) {
+				this.log(
+					`[executor] Unable to resolve pull request node id for #${prNumber}; skipping merge policy`,
+				);
+				return;
+			}
+			const expectedHeadOid =
+				pr.headSha || (await this.githubClient.getBranchHeadSha(branchName));
+
+			if (wantsMergeQueue) {
+				try {
+					await this.githubClient.enqueuePullRequest({
+						pullRequestId: nodeId,
+						expectedHeadOid,
+						jump: this.config.mergeQueueJump ?? false,
+					});
+					this.log(`[executor] Enqueued PR #${prNumber} into merge queue`);
+					return;
+				} catch (err) {
+					this.log(
+						`[executor] Merge queue enqueue failed: ${err instanceof Error ? err.message : err}`,
+					);
+					if (!wantsAutoMerge) {
+						return;
+					}
+				}
+			}
+
+			if (wantsAutoMerge) {
+				await this.githubClient.enableAutoMerge({
+					pullRequestId: nodeId,
+					mergeMethod: this.config.autoMergeMethod ?? "squash",
+					commitHeadline: this.config.autoMergeCommitHeadline,
+					commitBody: this.config.autoMergeCommitBody,
+					expectedHeadOid,
+				});
+				this.log(`[executor] Auto-merge enabled for PR #${prNumber}`);
+			}
+		} catch (err) {
+			this.log(
+				`[executor] Failed to apply merge policy: ${err instanceof Error ? err.message : err}`,
+			);
 		}
 	}
 

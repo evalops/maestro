@@ -47,6 +47,20 @@ function printUsage(): void {
 		"  --team-reviewers <teams> Comma-separated team slugs to request review",
 	);
 	console.error(
+		"  --auto-merge            Enable GitHub auto-merge on created PRs",
+	);
+	console.error(
+		"  --auto-merge-method <method>  merge | squash | rebase (default: squash)",
+	);
+	console.error("  --auto-merge-headline <text>  Custom auto-merge headline");
+	console.error("  --auto-merge-body <text>      Custom auto-merge body");
+	console.error(
+		"  --merge-queue            Enqueue PR into merge queue if enabled",
+	);
+	console.error(
+		"  --merge-queue-jump       Jump to the front of the merge queue",
+	);
+	console.error(
 		"  --issue <number>        Process a specific issue immediately and exit",
 	);
 	console.error("  --github-api-url <url>  Override GitHub API base URL");
@@ -156,6 +170,29 @@ function parseArgs(): {
 			config.selfReview = false;
 		} else if (arg === "--draft-pr") {
 			config.draftPullRequests = true;
+		} else if (arg === "--auto-merge") {
+			config.autoMerge = true;
+		} else if (arg === "--auto-merge-method") {
+			const method = requireArg(arg, i);
+			if (!["merge", "squash", "rebase"].includes(method)) {
+				console.error(
+					`Invalid auto-merge method: ${method}. Expected merge, squash, or rebase.`,
+				);
+				process.exit(1);
+			}
+			config.autoMergeMethod = method as OrchestratorConfig["autoMergeMethod"];
+			i++;
+		} else if (arg === "--auto-merge-headline") {
+			config.autoMergeCommitHeadline = requireArg(arg, i);
+			i++;
+		} else if (arg === "--auto-merge-body") {
+			config.autoMergeCommitBody = requireArg(arg, i);
+			i++;
+		} else if (arg === "--merge-queue") {
+			config.mergeQueue = true;
+		} else if (arg === "--merge-queue-jump") {
+			config.mergeQueue = true;
+			config.mergeQueueJump = true;
 		} else if (arg === "--pr-labels") {
 			config.prLabels = requireArg(arg, i)
 				.split(",")

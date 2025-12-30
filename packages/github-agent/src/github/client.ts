@@ -13,6 +13,7 @@ import {
 	resolveGitHubApiUrl,
 	resolveGitHubGraphqlUrl,
 } from "./auth.js";
+import { getNextPageFromLink } from "./pagination.js";
 import { RequestScheduler } from "./request-scheduler.js";
 
 export interface GitHubClientOptions {
@@ -42,26 +43,27 @@ type GitHubResponse<T> = {
 
 type RequestOptions = {
 	useEtag?: boolean;
+	useConditional?: boolean;
 };
 
 type PaginateOptions = RequestOptions & {
 	perPage?: number;
+	maxPages?: number;
 };
 
-type GraphqlResponse<T> = {
-	data: T;
+type GraphqlResponse<T> = T & {
 	rateLimit?: {
 		remaining: number;
 		resetAt?: string;
 	};
 };
 
-class EtagCache {
+class ConditionalCache {
 	private readonly ttlMs: number;
 	private readonly maxEntries: number;
 	private readonly store = new Map<
 		string,
-		{ etag: string; updatedAt: number }
+		{ etag?: string; lastModified?: string; updatedAt: number }
 	>();
 
 	constructor(ttlMs = 5 * 60 * 1000, maxEntries = 1000) {
@@ -69,18 +71,22 @@ class EtagCache {
 		this.maxEntries = maxEntries;
 	}
 
-	get(key: string): string | undefined {
+	get(key: string): { etag?: string; lastModified?: string } | undefined {
 		const entry = this.store.get(key);
 		if (!entry) return undefined;
 		if (Date.now() - entry.updatedAt > this.ttlMs) {
 			this.store.delete(key);
 			return undefined;
 		}
-		return entry.etag;
+		return { etag: entry.etag, lastModified: entry.lastModified };
 	}
 
-	set(key: string, etag: string) {
-		this.store.set(key, { etag, updatedAt: Date.now() });
+	set(key: string, value: { etag?: string; lastModified?: string }) {
+		this.store.set(key, {
+			etag: value.etag,
+			lastModified: value.lastModified,
+			updatedAt: Date.now(),
+		});
 		this.prune();
 	}
 
@@ -167,7 +173,7 @@ export class GitHubApiClient {
 	private readonly octokit: Octokit;
 	private readonly graphqlUrl: string;
 	private readonly userAgent: string;
-	private readonly etags = new EtagCache();
+	private readonly conditionalCache = new ConditionalCache();
 	private readonly responseCache = new ResponseCache();
 	private readonly scheduler: RequestScheduler;
 	private cachedTokenType?: GitHubToken["type"];
@@ -214,8 +220,10 @@ export class GitHubApiClient {
 			user: { login: string } | null;
 			created_at: string;
 			updated_at: string;
+			url: string;
 			html_url: string;
 			comments: number;
+			node_id?: string;
 			pull_request?: unknown;
 		}>(
 			"GET /repos/{owner}/{repo}/issues",
@@ -241,6 +249,8 @@ export class GitHubApiClient {
 				createdAt: issue.created_at,
 				updatedAt: issue.updated_at,
 				url: issue.html_url,
+				apiUrl: issue.url,
+				nodeId: issue.node_id,
 				comments: issue.comments,
 			}));
 	}
@@ -267,15 +277,21 @@ export class GitHubApiClient {
 		);
 
 		const issueByNumber = new Map<number, GitHubIssue>();
+		const issueByApiUrl = new Map<string, GitHubIssue>();
 		for (const issue of await this.listIssuesUpdatedSince(since)) {
 			issueByNumber.set(issue.number, issue);
+			if (issue.apiUrl) {
+				issueByApiUrl.set(issue.apiUrl, issue);
+			}
 		}
 
 		const results: Array<{ issue: GitHubIssue; comment: PRComment }> = [];
 		const missingIssues = new Set<number>();
 		const entries: Array<{ issueNumber: number; comment: PRComment }> = [];
 		for (const comment of comments) {
-			const issueNumber = extractIssueNumber(comment.issue_url);
+			const issueFromUrl = issueByApiUrl.get(comment.issue_url);
+			const issueNumber =
+				issueFromUrl?.number ?? extractIssueNumber(comment.issue_url);
 			if (!issueNumber) continue;
 			entries.push({
 				issueNumber,
@@ -346,7 +362,7 @@ export class GitHubApiClient {
 				const alias = `issue${index}`;
 				const variableName = `n${index}`;
 				queryParts.push(
-					`${alias}: issue(number: $${variableName}) { number title body state url createdAt updatedAt author { login } labels(first: 100) { nodes { name } } comments { totalCount } }`,
+					`${alias}: issue(number: $${variableName}) { id number title body state url createdAt updatedAt author { login } labels(first: 100) { nodes { name } } comments { totalCount } }`,
 				);
 				variableDefs.push(`$${variableName}: Int!`);
 				variables[variableName] = issueNumber;
@@ -365,6 +381,7 @@ export class GitHubApiClient {
       `;
 
 			type GraphqlIssue = {
+				id: string;
 				number: number;
 				title: string;
 				body: string | null;
@@ -412,6 +429,7 @@ export class GitHubApiClient {
 							?.map((label) => label?.name)
 							.filter((label): label is string => Boolean(label)) ?? [];
 					results.push({
+						nodeId: issue.id,
 						number: issue.number,
 						title: issue.title,
 						body: issue.body,
@@ -445,8 +463,10 @@ export class GitHubApiClient {
 			user: { login: string } | null;
 			created_at: string;
 			updated_at: string;
+			url: string;
 			html_url: string;
 			comments: number;
+			node_id?: string;
 		}>("GET /repos/{owner}/{repo}/issues/{issue_number}", {
 			owner: this.owner,
 			repo: this.repo,
@@ -467,6 +487,8 @@ export class GitHubApiClient {
 			createdAt: data.created_at,
 			updatedAt: data.updated_at,
 			url: data.html_url,
+			apiUrl: data.url,
+			nodeId: data.node_id,
 			comments: data.comments,
 		};
 	}
@@ -489,6 +511,7 @@ export class GitHubApiClient {
 			updated_at: string;
 			merged_at: string | null;
 			html_url: string;
+			node_id?: string;
 		}>("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
 			owner: this.owner,
 			repo: this.repo,
@@ -513,6 +536,7 @@ export class GitHubApiClient {
 			mergedAt: data.merged_at,
 			url: data.html_url,
 			reviewDecision: null,
+			nodeId: data.node_id ?? null,
 		};
 	}
 
@@ -842,6 +866,113 @@ export class GitHubApiClient {
 		);
 	}
 
+	async enableAutoMerge(input: {
+		pullRequestId: string;
+		mergeMethod?: MergeMethod;
+		commitHeadline?: string;
+		commitBody?: string;
+		expectedHeadOid?: string;
+	}): Promise<void> {
+		const token = await this.auth.getToken();
+		const mergeMethod = toGraphqlMergeMethod(input.mergeMethod ?? "squash");
+		const data = await this.octokit.graphql<
+			GraphqlResponse<{
+				enablePullRequestAutoMerge: {
+					pullRequest: { id: string } | null;
+				} | null;
+				rateLimit?: { remaining: number; resetAt: string };
+			}>
+		>(
+			`
+        mutation($input: EnablePullRequestAutoMergeInput!) {
+          enablePullRequestAutoMerge(input: $input) {
+            pullRequest { id }
+          }
+          rateLimit {
+            remaining
+            resetAt
+          }
+        }
+      `,
+			{
+				input: {
+					pullRequestId: input.pullRequestId,
+					mergeMethod,
+					commitHeadline: input.commitHeadline,
+					commitBody: input.commitBody,
+					expectedHeadOid: input.expectedHeadOid,
+				},
+				headers: {
+					Authorization:
+						token.type === "app"
+							? `Bearer ${token.token}`
+							: `token ${token.token}`,
+					"User-Agent": this.userAgent,
+					Accept: "application/vnd.github+json",
+					"X-GitHub-Api-Version": "2022-11-28",
+				},
+				uri: this.graphqlUrl,
+			},
+		);
+		if (data.rateLimit) {
+			this.rateLimit = {
+				remaining: data.rateLimit.remaining,
+				resetAt: Date.parse(data.rateLimit.resetAt),
+			};
+		}
+	}
+
+	async enqueuePullRequest(input: {
+		pullRequestId: string;
+		expectedHeadOid?: string;
+		jump?: boolean;
+	}): Promise<void> {
+		const token = await this.auth.getToken();
+		const data = await this.octokit.graphql<
+			GraphqlResponse<{
+				enqueuePullRequest: {
+					mergeQueueEntry: { id: string } | null;
+				} | null;
+				rateLimit?: { remaining: number; resetAt: string };
+			}>
+		>(
+			`
+        mutation($input: EnqueuePullRequestInput!) {
+          enqueuePullRequest(input: $input) {
+            mergeQueueEntry { id }
+          }
+          rateLimit {
+            remaining
+            resetAt
+          }
+        }
+      `,
+			{
+				input: {
+					pullRequestId: input.pullRequestId,
+					expectedHeadOid: input.expectedHeadOid,
+					jump: input.jump,
+				},
+				headers: {
+					Authorization:
+						token.type === "app"
+							? `Bearer ${token.token}`
+							: `token ${token.token}`,
+					"User-Agent": this.userAgent,
+					Accept: "application/vnd.github+json",
+					"X-GitHub-Api-Version": "2022-11-28",
+				},
+				uri: this.graphqlUrl,
+			},
+		);
+		if (data.rateLimit) {
+			this.rateLimit = {
+				remaining: data.rateLimit.remaining,
+				resetAt: Date.parse(data.rateLimit.resetAt),
+			};
+		}
+	}
+
 	async getBranchHeadSha(branch: string): Promise<string> {
 		const { data } = await this.request<{
 			object: { sha: string };
@@ -980,7 +1111,8 @@ export class GitHubApiClient {
 	): Promise<GitHubResponse<T>> {
 		const method = endpoint.split(" ")[0]?.toUpperCase() ?? "GET";
 		const isMutation = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
-		const etagKey = options.useEtag
+		const useConditional = options.useConditional ?? options.useEtag ?? false;
+		const cacheKey = useConditional
 			? this.buildEtagKey(endpoint, params)
 			: null;
 
@@ -996,10 +1128,13 @@ export class GitHubApiClient {
 						: `token ${token.token}`,
 			};
 
-			if (etagKey) {
-				const etag = this.etags.get(etagKey);
-				if (etag) {
-					headers["If-None-Match"] = etag;
+			if (cacheKey) {
+				const conditional = this.conditionalCache.get(cacheKey);
+				if (conditional?.etag) {
+					headers["If-None-Match"] = conditional.etag;
+				}
+				if (conditional?.lastModified) {
+					headers["If-Modified-Since"] = conditional.lastModified;
 				}
 			}
 
@@ -1013,11 +1148,18 @@ export class GitHubApiClient {
 					{ mutating: isMutation },
 				);
 				this.captureRateLimit(response.headers);
-				if (etagKey && response.headers.etag) {
-					this.etags.set(etagKey, response.headers.etag);
-				}
-				if (etagKey && response.data !== null) {
-					this.responseCache.set(etagKey, response.data);
+				if (cacheKey) {
+					const etag = response.headers.etag;
+					const lastModified = response.headers["last-modified"];
+					if (etag || lastModified) {
+						this.conditionalCache.set(cacheKey, {
+							etag,
+							lastModified,
+						});
+					}
+					if (response.data !== null) {
+						this.responseCache.set(cacheKey, response.data);
+					}
 				}
 				return {
 					data: response.data ?? null,
@@ -1028,8 +1170,17 @@ export class GitHubApiClient {
 				const status = getStatus(error);
 				const responseHeaders = getHeaders(error);
 				if (status === 304) {
-					if (etagKey && responseHeaders?.etag) {
-						this.etags.set(etagKey, responseHeaders.etag);
+					if (cacheKey) {
+						const cached = this.conditionalCache.get(cacheKey);
+						const etag = responseHeaders?.etag ?? cached?.etag;
+						const lastModified =
+							responseHeaders?.["last-modified"] ?? cached?.lastModified;
+						if (etag || lastModified) {
+							this.conditionalCache.set(cacheKey, {
+								etag,
+								lastModified,
+							});
+						}
 					}
 					return {
 						data: null,
@@ -1061,10 +1212,13 @@ export class GitHubApiClient {
 		options: PaginateOptions = {},
 	): Promise<T[]> {
 		const perPage = options.perPage ?? 100;
+		const maxPages = options.maxPages ?? 200;
+		const useConditional = options.useConditional ?? options.useEtag ?? false;
 		const results: T[] = [];
-		for (let page = 1; page <= 50; page += 1) {
+		let page = 1;
+		for (let pagesFetched = 0; pagesFetched < maxPages; pagesFetched += 1) {
 			const requestParams = { ...params, per_page: perPage, page };
-			const cacheKey = options.useEtag
+			const cacheKey = useConditional
 				? this.buildEtagKey(endpoint, requestParams)
 				: null;
 			const response = await this.request<T[]>(
@@ -1076,34 +1230,66 @@ export class GitHubApiClient {
 				const cached = this.responseCache.get<T[]>(cacheKey);
 				if (cached) {
 					results.push(...cached);
+					const nextPage = getNextPageFromLink(
+						response.headers?.link ?? response.headers?.Link,
+					);
+					if (nextPage) {
+						page = nextPage;
+						continue;
+					}
 					if (cached.length < perPage) {
 						break;
 					}
+					page += 1;
 					continue;
 				}
 				const fallback = await this.request<T[]>(endpoint, requestParams, {
 					...options,
 					useEtag: false,
+					useConditional: false,
 				});
 				if (fallback.notModified) {
 					return results;
 				}
 				const fallbackData = fallback.data ?? [];
 				results.push(...fallbackData);
-				if (fallback.headers?.etag) {
-					this.etags.set(cacheKey, fallback.headers.etag);
+				const nextPage = getNextPageFromLink(
+					fallback.headers?.link ?? fallback.headers?.Link,
+				);
+				if (cacheKey) {
+					const etag = fallback.headers?.etag;
+					const lastModified = fallback.headers?.["last-modified"];
+					if (etag || lastModified) {
+						this.conditionalCache.set(cacheKey, {
+							etag,
+							lastModified,
+						});
+					}
+					this.responseCache.set(cacheKey, fallbackData);
 				}
-				this.responseCache.set(cacheKey, fallbackData);
+				if (nextPage) {
+					page = nextPage;
+					continue;
+				}
 				if (fallbackData.length < perPage) {
 					break;
 				}
+				page += 1;
 				continue;
 			}
 			const data = response.data ?? [];
 			results.push(...data);
+			const nextPage = getNextPageFromLink(
+				response.headers?.link ?? response.headers?.Link,
+			);
+			if (nextPage) {
+				page = nextPage;
+				continue;
+			}
 			if (data.length < perPage) {
 				break;
 			}
+			page += 1;
 		}
 		return results;
 	}
@@ -1117,6 +1303,7 @@ export class GitHubApiClient {
 				GraphqlResponse<{
 					repository: {
 						pullRequest: {
+							id: string;
 							number: number;
 							title: string;
 							body: string | null;
@@ -1147,6 +1334,7 @@ export class GitHubApiClient {
         query($owner: String!, $repo: String!, $number: Int!) {
           repository(owner: $owner, name: $repo) {
             pullRequest(number: $number) {
+              id
               number
               title
               body
@@ -1213,6 +1401,7 @@ export class GitHubApiClient {
 				mergedAt: pr.mergedAt,
 				url: pr.url,
 				reviewDecision: pr.reviewDecision,
+				nodeId: pr.id,
 			};
 		} catch {
 			return null;
@@ -1254,7 +1443,8 @@ export class GitHubApiClient {
 				return waitMs;
 			}
 			if (isSecondaryRateLimit(error)) {
-				return jitterDelay(Math.min(60_000 * 2 ** attempt, 15 * 60_000));
+				const baseDelay = Math.max(60_000, 60_000 * 2 ** attempt);
+				return jitterDelay(Math.min(baseDelay, 15 * 60_000));
 			}
 		}
 		if (status >= 500 && status < 600) {
@@ -1273,6 +1463,20 @@ export class GitHubApiClient {
 			stableParams[key] = params[key];
 		}
 		return `${endpoint}:${JSON.stringify(stableParams)}`;
+	}
+}
+
+type MergeMethod = "merge" | "squash" | "rebase";
+type GraphqlMergeMethod = "MERGE" | "SQUASH" | "REBASE";
+
+function toGraphqlMergeMethod(method: MergeMethod): GraphqlMergeMethod {
+	switch (method) {
+		case "merge":
+			return "MERGE";
+		case "rebase":
+			return "REBASE";
+		default:
+			return "SQUASH";
 	}
 }
 
@@ -1327,9 +1531,11 @@ function isSecondaryRateLimit(error: unknown): boolean {
 		"message" in error &&
 		typeof (error as { message?: string }).message === "string"
 	) {
-		return (error as { message: string }).message
-			.toLowerCase()
-			.includes("secondary rate limit");
+		const message = (error as { message: string }).message.toLowerCase();
+		return (
+			message.includes("secondary rate limit") ||
+			message.includes("abuse detection")
+		);
 	}
 	if (
 		typeof error === "object" &&
@@ -1340,7 +1546,11 @@ function isSecondaryRateLimit(error: unknown): boolean {
 		const data = (error as { response?: { data?: { message?: string } } })
 			.response?.data;
 		if (data?.message) {
-			return data.message.toLowerCase().includes("secondary rate limit");
+			const message = data.message.toLowerCase();
+			return (
+				message.includes("secondary rate limit") ||
+				message.includes("abuse detection")
+			);
 		}
 	}
 	return false;

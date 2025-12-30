@@ -221,6 +221,7 @@ function toIssue(issue: {
 	user: { login?: string | null } | null;
 	created_at: string;
 	updated_at: string;
+	url?: string;
 	html_url: string;
 	comments: number;
 }): GitHubIssue {
@@ -234,6 +235,7 @@ function toIssue(issue: {
 		createdAt: issue.created_at,
 		updatedAt: issue.updated_at,
 		url: issue.html_url,
+		apiUrl: issue.url,
 		comments: issue.comments,
 	};
 }

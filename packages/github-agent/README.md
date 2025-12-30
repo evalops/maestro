@@ -125,6 +125,12 @@ jobs:
 | `--pr-labels` | Apply labels to the PR (comma-separated) | |
 | `--reviewers` | Request reviewers by username (comma-separated) | |
 | `--team-reviewers` | Request team reviewers by slug (comma-separated) | |
+| `--auto-merge` | Enable auto-merge on created PRs | |
+| `--auto-merge-method` | Auto-merge method (`merge`, `squash`, `rebase`) | `squash` |
+| `--auto-merge-headline` | Custom auto-merge headline | |
+| `--auto-merge-body` | Custom auto-merge body | |
+| `--merge-queue` | Enqueue PR into merge queue if enabled | |
+| `--merge-queue-jump` | Jump to the front of the merge queue | |
 | `--issue` | Process specific issue and exit | |
 | `--github-api-url` | Override GitHub API base URL (GHES) | |
 | `--github-app-id` | GitHub App ID (App auth) | |
@@ -214,11 +220,13 @@ This context is injected into future prompts to improve success rate.
 
 The agent uses a hybrid REST + GraphQL client for richer metadata (review decision), with:
 
-- **ETag-based conditional requests** to reduce rate limit usage
+- **ETag + Last-Modified conditional requests** to reduce rate limit usage
+- **Link header pagination** to avoid redundant API calls
 - **Retry/backoff** for secondary rate limits
 - **GraphQL rate-limit tracking** to prevent exhaustion
 - **Check runs** for per-task summaries
 - **Review thread ingestion** to map feedback to specific files
+- **Auto-merge / merge queue support** via GraphQL mutations
 
 ### Recommended GitHub App Permissions
 

@@ -12,6 +12,8 @@ export interface GitHubIssue {
 	createdAt: string;
 	updatedAt: string;
 	url: string;
+	apiUrl?: string;
+	nodeId?: string;
 	comments: number;
 }
 
@@ -29,6 +31,7 @@ export interface GitHubPR {
 	mergedAt: string | null;
 	url: string;
 	reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
+	nodeId?: string | null;
 }
 
 export interface PRReview {
@@ -233,6 +236,12 @@ export interface AgentConfig {
 	prLabels?: string[];
 	requestReviewers?: string[];
 	requestTeamReviewers?: string[];
+	autoMerge?: boolean;
+	autoMergeMethod?: "merge" | "squash" | "rebase";
+	autoMergeCommitHeadline?: string;
+	autoMergeCommitBody?: string;
+	mergeQueue?: boolean;
+	mergeQueueJump?: boolean;
 }
 
 export const DEFAULT_CONFIG: Partial<AgentConfig> = {
@@ -249,4 +258,8 @@ export const DEFAULT_CONFIG: Partial<AgentConfig> = {
 	dailyBudget: 50,
 	webhookMode: "poll",
 	draftPullRequests: false,
+	autoMerge: false,
+	autoMergeMethod: "squash",
+	mergeQueue: false,
+	mergeQueueJump: false,
 };
