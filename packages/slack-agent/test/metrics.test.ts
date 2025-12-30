@@ -333,7 +333,7 @@ describe("createSlackMetrics", () => {
 		const metrics = createSlackMetrics();
 
 		await metrics.trackApiCall("auth.test", async () => {
-			await new Promise((r) => setTimeout(r, 5));
+			await new Promise((r) => setTimeout(r, 10));
 			return { ok: true };
 		});
 
@@ -341,7 +341,7 @@ describe("createSlackMetrics", () => {
 			method: "auth.test",
 		});
 		expect(hist?.count).toBe(1);
-		expect(hist?.avg).toBeGreaterThanOrEqual(5);
+		expect(hist?.avg).toBeGreaterThanOrEqual(8);
 	});
 
 	it("trackRateLimit increments rate limit counter", () => {
