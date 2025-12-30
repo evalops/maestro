@@ -79,12 +79,14 @@ import type { AgentEvent, Message } from "@evalops/ai/types";
 import { getModel, getModels } from "@evalops/ai/models";
 ```
 
-Additional namespaces are available for power users, for example:
-`@evalops/ai/tools/*`, `@evalops/ai/providers/*`, `@evalops/ai/safety/*`,
-`@evalops/ai/hooks/*`, `@evalops/ai/tracking/*`, `@evalops/ai/sandbox/*`,
-`@evalops/ai/config/*`, and more. Prefer the stable entry points above unless
-you need something specific; wildcard subpaths are intentionally broader and may
-shift as the SDK evolves.
+Additional stable namespaces are available for power users, for example:
+`@evalops/ai/tools`, `@evalops/ai/hooks`, `@evalops/ai/sandbox`,
+`@evalops/ai/telemetry`, `@evalops/ai/oauth`, `@evalops/ai/guardian`,
+`@evalops/ai/config`, `@evalops/ai/errors`, `@evalops/ai/lsp`,
+`@evalops/ai/ide`, and `@evalops/ai/training`.
+Prefer the stable entry points above unless you need something specific; deep
+wildcard subpaths are intentionally not exported to keep the SDK surface
+predictable.
 
 ## Streaming Events
 

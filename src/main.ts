@@ -212,6 +212,39 @@ const packageJson = createRequire(import.meta.url)("../package.json") as {
 };
 const VERSION = packageJson.version ?? "unknown";
 const logger = createLogger("main");
+
+const getAuditModule = (() => {
+	let promise: Promise<
+		typeof import("./enterprise/audit-integration.js")
+	> | null = null;
+	return () => {
+		if (!promise) {
+			promise = import("./enterprise/audit-integration.js");
+		}
+		return promise;
+	};
+})();
+
+const getBillingModule = (() => {
+	let promise: Promise<typeof import("./billing/token-tracker.js")> | null =
+		null;
+	return () => {
+		if (!promise) {
+			promise = import("./billing/token-tracker.js");
+		}
+		return promise;
+	};
+})();
+
+const getDbModule = (() => {
+	let promise: Promise<typeof import("./db/client.js")> | null = null;
+	return () => {
+		if (!promise) {
+			promise = import("./db/client.js");
+		}
+		return promise;
+	};
+})();
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
 let sandboxCleanupRegistered = false;
@@ -1432,6 +1465,44 @@ export async function main(args: string[]) {
 	// - Streaming response handling
 	// - Tool execution orchestration
 	// - Context injection from various sources
+	const sessionTokenCounter = async (sessionId: string) => {
+		try {
+			const { isDatabaseConfigured } = await getDbModule();
+			if (!isDatabaseConfigured()) return null;
+			const { getSessionTokenCount } = await getBillingModule();
+			return await getSessionTokenCount(sessionId);
+		} catch (error) {
+			logger.warn("Failed to get session token count", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		}
+	};
+
+	const auditLogger = async (entry: {
+		toolName: string;
+		args: Record<string, unknown>;
+		status: "success" | "failure" | "denied";
+		durationMs: number;
+		error?: string;
+	}) => {
+		try {
+			const { logSensitiveToolExecution } = await getAuditModule();
+			await logSensitiveToolExecution(
+				entry.toolName,
+				entry.args,
+				entry.status,
+				entry.durationMs,
+				entry.error,
+			);
+		} catch (error) {
+			logger.warn("Failed to log tool execution", {
+				error: error instanceof Error ? error.message : String(error),
+				toolName: entry.toolName,
+			});
+		}
+	};
+
 	const agent = new Agent({
 		initialState: {
 			systemPrompt,
@@ -1451,6 +1522,8 @@ export async function main(args: string[]) {
 		transport: new ProviderTransport({
 			getAuthContext: (providerName) => requireCredential(providerName, false),
 			approvalService,
+			sessionTokenCounter,
+			auditLogger,
 		}),
 		// Context sources inject dynamic information into the system prompt
 		// These provide real-time context like todos, background tasks, LSP state, etc.

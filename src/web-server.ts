@@ -57,6 +57,39 @@ import { javascriptReplClientTool } from "./tools/javascript-repl-client.js";
 import { createLogger } from "./utils/logger.js";
 
 const logger = createLogger("web-server");
+
+const getAuditModule = (() => {
+	let promise: Promise<
+		typeof import("./enterprise/audit-integration.js")
+	> | null = null;
+	return () => {
+		if (!promise) {
+			promise = import("./enterprise/audit-integration.js");
+		}
+		return promise;
+	};
+})();
+
+const getBillingModule = (() => {
+	let promise: Promise<typeof import("./billing/token-tracker.js")> | null =
+		null;
+	return () => {
+		if (!promise) {
+			promise = import("./billing/token-tracker.js");
+		}
+		return promise;
+	};
+})();
+
+const getDbModule = (() => {
+	let promise: Promise<typeof import("./db/client.js")> | null = null;
+	return () => {
+		if (!promise) {
+			promise = import("./db/client.js");
+		}
+		return promise;
+	};
+})();
 import { WebActionApprovalService } from "./server/approval-service.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import {
@@ -360,12 +393,52 @@ async function createAgent(
 		includeJetBrainsTools?: boolean;
 	},
 ): Promise<Agent> {
+	const sessionTokenCounter = async (sessionId: string) => {
+		try {
+			const { isDatabaseConfigured } = await getDbModule();
+			if (!isDatabaseConfigured()) return null;
+			const { getSessionTokenCount } = await getBillingModule();
+			return await getSessionTokenCount(sessionId);
+		} catch (error) {
+			logger.warn("Failed to get session token count", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		}
+	};
+
+	const auditLogger = async (entry: {
+		toolName: string;
+		args: Record<string, unknown>;
+		status: "success" | "failure" | "denied";
+		durationMs: number;
+		error?: string;
+	}) => {
+		try {
+			const { logSensitiveToolExecution } = await getAuditModule();
+			await logSensitiveToolExecution(
+				entry.toolName,
+				entry.args,
+				entry.status,
+				entry.durationMs,
+				entry.error,
+			);
+		} catch (error) {
+			logger.warn("Failed to log tool execution", {
+				error: error instanceof Error ? error.message : String(error),
+				toolName: entry.toolName,
+			});
+		}
+	};
+
 	const transport = new ProviderTransport({
 		getAuthContext: async (provider: string) => authResolver(provider),
 		approvalService: new WebActionApprovalService(approvalMode),
 		clientToolService: options?.enableClientTools
 			? clientToolService
 			: undefined,
+		sessionTokenCounter,
+		auditLogger,
 	});
 
 	const systemPrompt = buildSystemPrompt();

@@ -45,8 +45,6 @@
  * @module agent/transport
  */
 
-import { TokenTracker } from "../billing/token-tracker.js";
-import { isDatabaseConfigured } from "../db/client.js";
 import { type ToolHookService, createToolHookService } from "../hooks/index.js";
 import { envApiKeyMap } from "../providers/api-keys.js";
 import { getProviderNetworkConfig } from "../providers/network-config.js";
@@ -68,7 +66,6 @@ import {
 	applyWorkflowStateHooks,
 	isWorkflowTrackedTool,
 } from "../safety/workflow-state.js";
-import type { ClientToolService } from "../server/client-tools-service.js";
 import { ToolError } from "../tools/tool-dsl.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import { getTrainingHeaders } from "../training.js";
@@ -99,6 +96,25 @@ import type {
 interface ToolExecutionOutcome {
 	message: ToolResultMessage;
 	isError: boolean;
+}
+
+export type SessionTokenCounter = (sessionId: string) => Promise<number | null>;
+
+export type ToolAuditLogger = (entry: {
+	toolName: string;
+	args: Record<string, unknown>;
+	status: "success" | "failure" | "denied";
+	durationMs: number;
+	error?: string;
+}) => Promise<void>;
+
+export interface ClientToolExecutionService {
+	requestExecution: (
+		id: string,
+		toolName: string,
+		args: Record<string, unknown>,
+		signal?: AbortSignal,
+	) => Promise<{ content: AgentToolResult["content"]; isError: boolean }>;
 }
 
 /**
@@ -151,7 +167,7 @@ export interface ProviderTransportOptions {
 	) => AuthCredential | undefined | Promise<AuthCredential | undefined>;
 	corsProxyUrl?: string;
 	approvalService?: ActionApprovalService;
-	clientToolService?: ClientToolService;
+	clientToolService?: ClientToolExecutionService;
 	maxConcurrentToolExecutions?: number;
 	/** Hook service for tool lifecycle hooks (PreToolUse, PostToolUse, etc.) */
 	hookService?: ToolHookService;
@@ -159,6 +175,10 @@ export interface ProviderTransportOptions {
 	cwd?: string;
 	/** Clock for timestamps and rate limiting (default: system clock) */
 	clock?: Clock;
+	/** Session token counter used for enforcing policy session limits */
+	sessionTokenCounter?: SessionTokenCounter;
+	/** Audit logger for sensitive tool execution events */
+	auditLogger?: ToolAuditLogger;
 }
 
 function resolveEnvCredential(provider: string): AuthCredential | undefined {
@@ -193,6 +213,7 @@ const SENSITIVE_TOOLS = new Set([
 ]);
 
 async function logToolExecutionAudit(
+	auditLogger: ToolAuditLogger | undefined,
 	toolName: string,
 	args: Record<string, unknown>,
 	status: "success" | "failure" | "denied",
@@ -200,15 +221,12 @@ async function logToolExecutionAudit(
 	error?: string,
 ): Promise<void> {
 	// Only log sensitive tools and only if enterprise features are available
-	if (!SENSITIVE_TOOLS.has(toolName) || !isDatabaseConfigured()) {
+	if (!SENSITIVE_TOOLS.has(toolName) || !auditLogger) {
 		return;
 	}
 
 	try {
-		const { logSensitiveToolExecution } = await import(
-			"../enterprise/audit-integration.js"
-		);
-		await logSensitiveToolExecution(toolName, args, status, durationMs, error);
+		await auditLogger({ toolName, args, status, durationMs, error });
 	} catch (err) {
 		// Log audit failures but fail open (allow legitimate use) per user feedback
 		logger.error(
@@ -432,6 +450,8 @@ export class ProviderTransport implements AgentTransport {
 	/** Per-tool timestamp arrays for rate limiting enforcement */
 	private recentToolTimestamps = new Map<string, number[]>();
 	private readonly clock: Clock;
+	private readonly sessionTokenCounter?: SessionTokenCounter;
+	private readonly auditLogger?: ToolAuditLogger;
 
 	/**
 	 * Doom Loop Threshold - consecutive identical calls before blocking
@@ -453,6 +473,8 @@ export class ProviderTransport implements AgentTransport {
 
 	constructor(private options: ProviderTransportOptions = {}) {
 		this.clock = options.clock ?? systemClock;
+		this.sessionTokenCounter = options.sessionTokenCounter;
+		this.auditLogger = options.auditLogger;
 	}
 
 	/**
@@ -593,11 +615,9 @@ export class ProviderTransport implements AgentTransport {
 			// Enforce session limits before every turn (duration + tokens)
 			if (cfg.session) {
 				let tokenCount: number | undefined;
-				if (isDatabaseConfigured()) {
+				if (this.sessionTokenCounter) {
 					try {
-						const count = await TokenTracker.getSessionTokenCount(
-							cfg.session.id,
-						);
+						const count = await this.sessionTokenCounter(cfg.session.id);
 						if (count !== null) {
 							tokenCount = count;
 						}
@@ -1011,6 +1031,7 @@ export class ProviderTransport implements AgentTransport {
 								timestamp: this.clock.now(),
 							};
 							await logToolExecutionAudit(
+								this.auditLogger,
 								toolCall.name,
 								toolCall.arguments as Record<string, unknown>,
 								"denied",
@@ -1080,6 +1101,7 @@ export class ProviderTransport implements AgentTransport {
 
 						// Log denied tool execution for audit
 						await logToolExecutionAudit(
+							this.auditLogger,
 							toolCall.name,
 							toolCall.arguments as Record<string, unknown>,
 							"denied",
@@ -1144,6 +1166,7 @@ export class ProviderTransport implements AgentTransport {
 					if (!approvalAllowed) {
 						// Log denied tool execution for audit
 						await logToolExecutionAudit(
+							this.auditLogger,
 							toolCall.name,
 							toolCall.arguments as Record<string, unknown>,
 							"denied",
@@ -1220,7 +1243,7 @@ export class ProviderTransport implements AgentTransport {
 					// For client tools, set up the execution promise first, then emit event
 					// This prevents race conditions where the client responds before we're listening
 					let clientToolExecPromise:
-						| ReturnType<ClientToolService["requestExecution"]>
+						| ReturnType<ClientToolExecutionService["requestExecution"]>
 						| undefined;
 					if (
 						tool.executionLocation === "client" &&
@@ -1275,6 +1298,7 @@ export class ProviderTransport implements AgentTransport {
 							.then(async (result) => {
 								// Log tool execution - check isError flag for correct status
 								await logToolExecutionAudit(
+									this.auditLogger,
 									toolCall.name,
 									validatedArgs,
 									result.isError ? "failure" : "success",
@@ -1418,6 +1442,7 @@ export class ProviderTransport implements AgentTransport {
 
 								// Log failed tool execution
 								await logToolExecutionAudit(
+									this.auditLogger,
 									toolCall.name,
 									validatedArgs,
 									"failure",
