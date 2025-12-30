@@ -37,4 +37,17 @@ describe("Editor word navigation across lines", () => {
 		expect(editor.state.cursorLine).toBe(1);
 		expect(editor.state.cursorCol).toBe(5); // end of "world"
 	});
+
+	it("respects grapheme boundaries when moving by word", () => {
+		const editor = new Editor() as unknown as EditorPrivate;
+		editor.state.lines = ["hi 🙂 there"];
+		editor.state.cursorLine = 0;
+		editor.state.cursorCol = editor.state.lines[0].length;
+
+		editor.moveWordBackwards();
+		expect(editor.state.lines[0]?.slice(editor.state.cursorCol)).toBe("there");
+
+		editor.moveWordBackwards();
+		expect(editor.state.cursorCol).toBe(editor.state.lines[0].indexOf("🙂"));
+	});
 });

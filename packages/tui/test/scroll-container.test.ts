@@ -77,4 +77,16 @@ describe("ScrollContainer history", () => {
 		content.setLines(["one", "two", "three", "four"]);
 		expect(scroll.render(20)).toEqual(["three", "four"]);
 	});
+
+	it("adds a truncation marker when scrollback is trimmed", () => {
+		const content = new StaticComponent(["a", "b", "c", "d"]);
+		const scroll = new ScrollContainer(content, {
+			viewportHeight: 10,
+			maxHistoryLines: 3,
+		});
+
+		const lines = scroll.render(20);
+		expect(lines[0]).toContain("... scrollback truncated");
+		expect(lines.slice(-2)).toEqual(["c", "d"]);
+	});
 });

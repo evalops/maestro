@@ -77,6 +77,18 @@ export interface ScrollContainerOptions {
 	 * @default 10000
 	 */
 	maxHistoryLines?: number;
+
+	/**
+	 * Show a marker when older scrollback is truncated.
+	 * @default true
+	 */
+	showTruncationMarker?: boolean;
+
+	/**
+	 * Base label used for truncation markers.
+	 * @default "... scrollback truncated"
+	 */
+	truncationMarker?: string;
 }
 
 /**
@@ -140,6 +152,15 @@ export class ScrollContainer implements Component {
 	/** Maximum history lines to prevent unbounded memory growth */
 	private maxHistoryLines: number;
 
+	/** Whether to show a truncation marker line */
+	private showTruncationMarker: boolean;
+
+	/** Marker label used when scrollback is truncated */
+	private truncationMarker: string;
+
+	/** Total number of truncated lines */
+	private truncatedLines = 0;
+
 	/** The child component to scroll */
 	private content: Component;
 
@@ -153,6 +174,9 @@ export class ScrollContainer implements Component {
 		this.reservedLines = options.reservedLines ?? 0;
 		// Keep up to 10000 lines of history (~5MB at 500 chars/line)
 		this.maxHistoryLines = options.maxHistoryLines ?? 10000;
+		this.showTruncationMarker = options.showTruncationMarker ?? true;
+		this.truncationMarker =
+			options.truncationMarker ?? "... scrollback truncated";
 	}
 
 	/**
@@ -198,6 +222,7 @@ export class ScrollContainer implements Component {
 		this.userScrolledUp = false;
 		this.lastChildRenderHash = "";
 		this.lastRenderedLines = [];
+		this.truncatedLines = 0;
 	}
 
 	/**
@@ -554,7 +579,50 @@ export class ScrollContainer implements Component {
 			const removeCount = this.contentHistory.length - this.maxHistoryLines;
 			this.contentHistory.splice(0, removeCount);
 			this.scrollOffset = Math.max(0, this.scrollOffset - removeCount);
+			this.truncatedLines += removeCount;
+			this.applyTruncationMarker();
 		}
+	}
+
+	private applyTruncationMarker(): void {
+		if (!this.showTruncationMarker || this.truncatedLines === 0) return;
+		let marker = this.formatTruncationMarker();
+		let offsetDelta = 0;
+		if (this.contentHistory.length === 0) {
+			this.contentHistory.push(marker);
+			return;
+		}
+		const hadMarker = this.isTruncationMarker(this.contentHistory[0]);
+		if (hadMarker) {
+			this.contentHistory[0] = marker;
+		} else {
+			this.contentHistory.unshift(marker);
+			if (this.scrollOffset > 0) {
+				offsetDelta += 1;
+			}
+		}
+		if (this.contentHistory.length > this.maxHistoryLines) {
+			const overflow = this.contentHistory.length - this.maxHistoryLines;
+			this.contentHistory.splice(1, overflow);
+			this.truncatedLines += overflow;
+			marker = this.formatTruncationMarker();
+			this.contentHistory[0] = marker;
+			if (this.scrollOffset > 0) {
+				offsetDelta -= overflow;
+			}
+		}
+		if (offsetDelta !== 0 && this.scrollOffset > 0) {
+			this.scrollOffset = Math.max(0, this.scrollOffset + offsetDelta);
+		}
+	}
+
+	private formatTruncationMarker(): string {
+		const count = this.truncatedLines.toLocaleString();
+		return `${this.truncationMarker} (${count} lines)`;
+	}
+
+	private isTruncationMarker(line: string): boolean {
+		return line.startsWith(this.truncationMarker);
 	}
 
 	private linesEqual(a: string[], b: string[]): boolean {

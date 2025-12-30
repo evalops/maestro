@@ -1041,6 +1041,10 @@ export class Editor implements Component {
 		this.saveToHistory();
 		const currentLine = this.state.lines[this.state.cursorLine] || "";
 		// If at start of line, behave like backspace at column 0 (merge with previous line)
+		this.state.cursorCol = this.normalizeCursorCol(
+			currentLine,
+			this.state.cursorCol,
+		);
 		if (this.state.cursorCol === 0) {
 			if (this.state.cursorLine > 0) {
 				const previousLine = this.state.lines[this.state.cursorLine - 1] || "";
@@ -1052,35 +1056,20 @@ export class Editor implements Component {
 				this.recordKill("\n");
 			}
 		} else {
-			const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
-			const isWhitespace = (char: string): boolean => /\s/.test(char);
-			const isPunctuation = (char: string): boolean => {
-				// Treat obvious code punctuation as boundaries
-				return WORD_BOUNDARY.test(char);
-			};
+			const segments = this.getSegments(currentLine);
+			let segIdx = this.segmentIndexBefore(segments, this.state.cursorCol);
 			let deleteFrom = this.state.cursorCol;
 
 			// Match standard bash/zsh behavior:
 			// 1. Skip all trailing whitespace/punctuation
 			// 2. Then delete the entire word
-
-			// First, skip backwards over any trailing whitespace/punctuation
-			while (deleteFrom > 0) {
-				const ch = textBeforeCursor[deleteFrom - 1] ?? "";
-				if (!isWhitespace(ch) && !isPunctuation(ch)) {
-					break;
-				}
-				deleteFrom -= 1;
+			while (segIdx >= 0 && this.isBoundarySegment(segments[segIdx].segment)) {
+				segIdx -= 1;
 			}
-
-			// Then delete the word (run of non-boundary characters)
-			while (deleteFrom > 0) {
-				const ch = textBeforeCursor[deleteFrom - 1] ?? "";
-				if (isWhitespace(ch) || isPunctuation(ch)) {
-					break;
-				}
-				deleteFrom -= 1;
+			while (segIdx >= 0 && !this.isBoundarySegment(segments[segIdx].segment)) {
+				segIdx -= 1;
 			}
+			deleteFrom = segIdx >= 0 ? segments[segIdx + 1].index : 0;
 			this.state.lines[this.state.cursorLine] =
 				currentLine.slice(0, deleteFrom) +
 				currentLine.slice(this.state.cursorCol);
@@ -1093,14 +1082,12 @@ export class Editor implements Component {
 	}
 
 	private moveWordBackwards(): void {
-		const isBoundary = (ch: string): boolean =>
-			/\s/.test(ch) || WORD_BOUNDARY.test(ch);
-
 		let lineIdx = this.state.cursorLine;
 		let colIdx = this.state.cursorCol;
 
 		while (true) {
 			const line = this.state.lines[lineIdx] || "";
+			colIdx = this.normalizeCursorCol(line, colIdx);
 
 			if (colIdx === 0) {
 				// Hop to end of previous line unless we're at absolute file start
@@ -1121,12 +1108,15 @@ export class Editor implements Component {
 				break;
 			}
 
-			while (colIdx > 0 && isBoundary(line[colIdx - 1] ?? "")) {
-				colIdx--;
+			const segments = this.getSegments(line);
+			let segIdx = this.segmentIndexBefore(segments, colIdx);
+			while (segIdx >= 0 && this.isBoundarySegment(segments[segIdx].segment)) {
+				segIdx -= 1;
 			}
-			while (colIdx > 0 && !isBoundary(line[colIdx - 1] ?? "")) {
-				colIdx--;
+			while (segIdx >= 0 && !this.isBoundarySegment(segments[segIdx].segment)) {
+				segIdx -= 1;
 			}
+			colIdx = segIdx >= 0 ? segments[segIdx + 1].index : 0;
 
 			this.state.cursorLine = lineIdx;
 			this.state.cursorCol = colIdx;
@@ -1137,32 +1127,44 @@ export class Editor implements Component {
 	}
 
 	private moveWordForwards(): void {
-		const isBoundary = (ch: string): boolean =>
-			/\s/.test(ch) || WORD_BOUNDARY.test(ch);
-
 		let lineIdx = this.state.cursorLine;
 		let colIdx = this.state.cursorCol;
 
 		while (true) {
 			const line = this.state.lines[lineIdx] || "";
+			colIdx = this.normalizeCursorCol(line, colIdx);
+			const segments = this.getSegments(line);
+			let segIdx = this.segmentIndexAtOrAfter(segments, colIdx);
 
-			while (colIdx < line.length && !isBoundary(line[colIdx] ?? "")) {
-				colIdx++;
+			while (
+				segIdx < segments.length &&
+				!this.isBoundarySegment(segments[segIdx].segment)
+			) {
+				segIdx += 1;
 			}
-			while (colIdx < line.length && isBoundary(line[colIdx] ?? "")) {
-				colIdx++;
+			while (
+				segIdx < segments.length &&
+				this.isBoundarySegment(segments[segIdx].segment)
+			) {
+				segIdx += 1;
 			}
 
 			// Stop only at absolute file end; otherwise continue to next line
-			if (colIdx >= line.length && lineIdx >= this.state.lines.length - 1) {
+			if (segIdx >= segments.length && lineIdx >= this.state.lines.length - 1) {
 				this.state.cursorLine = lineIdx;
-				this.state.cursorCol = Math.min(colIdx, line.length);
+				this.state.cursorCol = line.length;
 				break;
 			}
 
 			// Move to next line and continue searching
-			lineIdx += 1;
-			colIdx = 0;
+			if (segIdx >= segments.length) {
+				lineIdx += 1;
+				colIdx = 0;
+				continue;
+			}
+			this.state.cursorLine = lineIdx;
+			this.state.cursorCol = segments[segIdx].index;
+			break;
 		}
 
 		this.preferredCol = this.state.cursorCol;
@@ -1300,6 +1302,47 @@ export class Editor implements Component {
 			}
 		}
 		return line.length;
+	}
+
+	private getSegments(line: string): Array<{ index: number; segment: string }> {
+		if (!this.graphemeSegmenter) {
+			const segments: Array<{ index: number; segment: string }> = [];
+			for (let i = 0; i < line.length; i++) {
+				segments.push({ index: i, segment: line[i] ?? "" });
+			}
+			return segments;
+		}
+		const segments: Array<{ index: number; segment: string }> = [];
+		for (const segment of this.graphemeSegmenter.segment(line)) {
+			segments.push({ index: segment.index, segment: segment.segment });
+		}
+		return segments;
+	}
+
+	private segmentIndexBefore(
+		segments: Array<{ index: number; segment: string }>,
+		col: number,
+	): number {
+		let idx = -1;
+		for (let i = 0; i < segments.length; i++) {
+			if (segments[i].index >= col) break;
+			idx = i;
+		}
+		return idx;
+	}
+
+	private segmentIndexAtOrAfter(
+		segments: Array<{ index: number; segment: string }>,
+		col: number,
+	): number {
+		for (let i = 0; i < segments.length; i++) {
+			if (segments[i].index >= col) return i;
+		}
+		return segments.length;
+	}
+
+	private isBoundarySegment(segment: string): boolean {
+		return /\s/.test(segment) || WORD_BOUNDARY.test(segment);
 	}
 	// Helper method to check if cursor is at start of message (for slash command detection)
 	private isAtStartOfMessage(): boolean {

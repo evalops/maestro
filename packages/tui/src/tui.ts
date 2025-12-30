@@ -178,6 +178,18 @@ export class TUI extends Container {
 	/** Minimum milliseconds between renders. Higher over SSH to reduce "repaint storms". */
 	private minRenderIntervalMs = 0;
 
+	/** Baseline throttle interval (set by SSH detection or user override). */
+	private baseRenderIntervalMs = 0;
+
+	/** Extra interval computed from recent render cost. */
+	private adaptiveRenderIntervalMs = 0;
+
+	/** Whether to adapt throttle based on render cost. */
+	private adaptiveThrottle = true;
+
+	/** Max adaptive delay to avoid stalls. */
+	private static readonly MAX_ADAPTIVE_INTERVAL_MS = 200;
+
 	/** Timestamp of the last render (for throttling). */
 	private lastRenderTs = 0;
 
@@ -243,7 +255,8 @@ export class TUI extends Container {
 		this.syncOutput = this.features.supportsSyncOutput;
 		if (this.features.overSsh) {
 			// Avoid repaint storms on high-latency links (SSH/tmux/mosh).
-			this.minRenderIntervalMs = 48;
+			this.baseRenderIntervalMs = 48;
+			this.minRenderIntervalMs = this.baseRenderIntervalMs;
 		}
 	}
 
@@ -260,7 +273,18 @@ export class TUI extends Container {
 	}
 
 	setMinRenderInterval(ms: number): void {
-		this.minRenderIntervalMs = Math.max(0, ms);
+		this.baseRenderIntervalMs = Math.max(0, ms);
+		this.minRenderIntervalMs =
+			this.baseRenderIntervalMs + this.adaptiveRenderIntervalMs;
+	}
+
+	setAdaptiveThrottle(enabled: boolean): void {
+		this.adaptiveThrottle = enabled;
+		if (!enabled) {
+			this.adaptiveRenderIntervalMs = 0;
+		}
+		this.minRenderIntervalMs =
+			this.baseRenderIntervalMs + this.adaptiveRenderIntervalMs;
 	}
 
 	/**
@@ -516,6 +540,7 @@ export class TUI extends Container {
 			this.renderStats.lastLinesRendered = linesRendered;
 			this.renderStats.lastLinesWritten = linesWritten;
 			this.renderStats.lastBytesWritten = bytesWritten;
+			this.updateAdaptiveInterval(durationMs, bytesWritten);
 		};
 
 		// ─────────────────────────────────────────────────────────────────────────
@@ -764,5 +789,28 @@ export class TUI extends Container {
 			}
 		}
 		return wrapped;
+	}
+
+	private updateAdaptiveInterval(
+		durationMs: number,
+		bytesWritten: number,
+	): void {
+		if (!this.adaptiveThrottle || !this.features.overSsh) {
+			return;
+		}
+		const byteCostMs = bytesWritten / 8000;
+		const costMs = Math.max(durationMs, byteCostMs);
+		const targetExtra =
+			costMs > 12
+				? Math.min(TUI.MAX_ADAPTIVE_INTERVAL_MS, Math.round(costMs * 1.5))
+				: 0;
+		const next =
+			this.adaptiveRenderIntervalMs * 0.7 +
+			Math.min(targetExtra, TUI.MAX_ADAPTIVE_INTERVAL_MS) * 0.3;
+		this.adaptiveRenderIntervalMs = Math.round(
+			Math.min(TUI.MAX_ADAPTIVE_INTERVAL_MS, Math.max(0, next)),
+		);
+		this.minRenderIntervalMs =
+			this.baseRenderIntervalMs + this.adaptiveRenderIntervalMs;
 	}
 }
