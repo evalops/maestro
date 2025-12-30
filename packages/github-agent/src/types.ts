@@ -23,6 +23,7 @@ export interface GitHubPR {
 	author: string;
 	branch: string;
 	base: string;
+	headSha: string;
 	createdAt: string;
 	updatedAt: string;
 	mergedAt: string | null;
@@ -47,11 +48,45 @@ export interface PRComment {
 	createdAt: string;
 }
 
+export interface PRReviewThreadComment {
+	id: string;
+	author: string;
+	body: string;
+	createdAt: string;
+}
+
+export interface PRReviewThread {
+	id: string;
+	path: string;
+	line: number | null;
+	isResolved: boolean;
+	comments: PRReviewThreadComment[];
+}
+
 export interface CheckRunEvent {
 	id: number;
 	name: string;
 	headSha: string;
 	pullRequests: number[];
+}
+
+export interface CheckRunSummary {
+	id: number;
+	name: string;
+	status: "queued" | "in_progress" | "completed";
+	conclusion:
+		| "success"
+		| "failure"
+		| "neutral"
+		| "cancelled"
+		| "timed_out"
+		| "action_required"
+		| "skipped"
+		| "stale"
+		| null;
+	startedAt?: string | null;
+	completedAt?: string | null;
+	detailsUrl?: string | null;
 }
 
 export interface IssueComment {

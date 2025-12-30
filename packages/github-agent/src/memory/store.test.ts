@@ -360,6 +360,13 @@ describe("MemoryStore", () => {
 				"Please add tests",
 			);
 		});
+
+		it("should return outcomes by id", () => {
+			const store = new MemoryStore(TEST_DIR);
+			store.recordOutcome("task-1", 123);
+			const outcome = store.getOutcome("task-1");
+			expect(outcome?.prNumber).toBe(123);
+		});
 	});
 
 	describe("learning", () => {
@@ -387,6 +394,18 @@ describe("MemoryStore", () => {
 			store.recordFileFailure("src/problematic.ts");
 
 			const context = store.getContextForPrompt();
+			expect(context).toContain("problematic.ts");
+		});
+
+		it("should learn from task failures", () => {
+			const store = new MemoryStore(TEST_DIR);
+
+			store.recordTaskFailure(
+				"Missing test coverage in src/problematic.ts and formatting errors",
+			);
+
+			const context = store.getContextForPrompt();
+			expect(context).toContain("tests");
 			expect(context).toContain("problematic.ts");
 		});
 

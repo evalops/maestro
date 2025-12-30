@@ -97,6 +97,8 @@ export function printHelp(version: string) {
   COMPOSER_SANDBOX_MODE   - Sandbox mode: docker, local, none (default: none)
   COMPOSER_CHANGELOG      - Set to off/false/hide/hidden/skip/0 to hide startup changelog banner
   COMPOSER_TUI_MINIMAL    - Set to 1/true to disable animations and reduce TUI effects (SSH-friendly)
+  COMPOSER_TUI_TOOL_MAX_CHARS - Max chars shown per tool output panel (0 = unlimited)
+  COMPOSER_TUI_TOOL_MAX_LINES - Max lines shown per tool output panel (0 = unlimited)
   CODING_AGENT_DIR        - Legacy session directory override (fallback)`,
 	)}`;
 	const execSection = `${sectionHeading("composer exec")}${muted(

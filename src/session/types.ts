@@ -4,7 +4,7 @@
  */
 
 import type { AppMessage } from "../agent/types.js";
-import type { SessionModelMetadata } from "./manager.js";
+import type { SessionModelMetadata } from "./metadata-cache.js";
 
 /**
  * Base session entry

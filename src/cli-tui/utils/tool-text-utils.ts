@@ -7,6 +7,84 @@ import { getHomeDir } from "../../utils/path-expansion.js";
 const normalizeForCompare = (value: string): string =>
 	process.platform === "win32" ? value.toLowerCase() : value;
 
+const DEFAULT_TOOL_MAX_CHARS = 12000;
+const DEFAULT_TOOL_MAX_LINES = 200;
+
+export type ToolOutputLimits = {
+	maxChars: number;
+	maxLines: number;
+};
+
+export type ToolOutputClampResult = {
+	text: string;
+	truncated: boolean;
+	omittedChars: number;
+	omittedLines: number;
+};
+
+function parseLimit(raw: string | undefined, fallback: number): number {
+	const parsed = Number.parseInt(raw ?? "", 10);
+	if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+	return fallback;
+}
+
+export function getToolOutputLimits(): ToolOutputLimits {
+	return {
+		maxChars: parseLimit(
+			process.env.COMPOSER_TUI_TOOL_MAX_CHARS,
+			DEFAULT_TOOL_MAX_CHARS,
+		),
+		maxLines: parseLimit(
+			process.env.COMPOSER_TUI_TOOL_MAX_LINES,
+			DEFAULT_TOOL_MAX_LINES,
+		),
+	};
+}
+
+export function clampToolOutput(
+	output: string,
+	limits: ToolOutputLimits = getToolOutputLimits(),
+): ToolOutputClampResult {
+	if (!output) {
+		return { text: "", truncated: false, omittedChars: 0, omittedLines: 0 };
+	}
+
+	const maxLines = limits.maxLines;
+	const maxChars = limits.maxChars;
+	const lines = output.split("\n");
+
+	let text = output;
+	let omittedLines = 0;
+	if (maxLines > 0 && lines.length > maxLines) {
+		text = lines.slice(0, maxLines).join("\n");
+		omittedLines = lines.length - maxLines;
+	}
+
+	let omittedChars = 0;
+	if (maxChars > 0 && text.length > maxChars) {
+		omittedChars = text.length - maxChars;
+		text = text.slice(0, maxChars);
+	}
+
+	const truncated = omittedLines > 0 || omittedChars > 0;
+	return { text, truncated, omittedChars, omittedLines };
+}
+
+export function formatToolOutputTruncation(
+	result: ToolOutputClampResult,
+): string | null {
+	if (!result.truncated) return null;
+	const parts: string[] = [];
+	if (result.omittedLines > 0) {
+		parts.push(`${result.omittedLines.toLocaleString()} lines`);
+	}
+	if (result.omittedChars > 0) {
+		parts.push(`${result.omittedChars.toLocaleString()} chars`);
+	}
+	const detail = parts.join(", ");
+	return detail ? `[output truncated: ${detail} omitted]` : null;
+}
+
 export function shortenPath(path: string): string {
 	const home = getHomeDir();
 	const normalizedPath = path.replace(/\\/g, "/");

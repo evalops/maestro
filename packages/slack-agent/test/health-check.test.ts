@@ -106,7 +106,7 @@ describe("HealthChecker", () => {
 			const checker = new HealthChecker();
 
 			checker.register("slow", async () => {
-				await new Promise((r) => setTimeout(r, 50));
+				await new Promise((r) => setTimeout(r, 60));
 				return true;
 			});
 

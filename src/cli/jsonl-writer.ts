@@ -1,5 +1,10 @@
 import type { Writable } from "node:stream";
-import type { AgentEvent, AppMessage, TextContent } from "../agent/types.js";
+import type {
+	AgentEvent,
+	AppMessage,
+	AssistantMessage,
+	TextContent,
+} from "../agent/types.js";
 
 export type JsonlEvent =
 	| {
@@ -84,6 +89,9 @@ const extractText = (message: AppMessage | undefined): string => {
 	return "";
 };
 
+const isAssistantMessage = (message: AppMessage): message is AssistantMessage =>
+	(message as { role?: unknown }).role === "assistant";
+
 export interface AgentJsonlAdapter {
 	handle(event: AgentEvent): void;
 	getLastAssistantText(): string;
@@ -131,14 +139,26 @@ export function createAgentJsonlAdapter(
 					break;
 				}
 				case "message_end": {
-					lastAssistantText = extractText(event.message);
+					if (isAssistantMessage(event.message)) {
+						lastAssistantText = extractText(event.message);
+					}
 					const turnId = currentAssistantTurn ?? nextTurnId();
+					const data: Record<string, unknown> = {
+						text: extractText(event.message),
+					};
+					if (isAssistantMessage(event.message)) {
+						data.usage = event.message.usage;
+						data.stopReason = event.message.stopReason;
+						data.model = event.message.model;
+						data.provider = event.message.provider;
+						data.api = event.message.api;
+					}
 					writer.emit({
 						type: "item",
 						subtype: "message_complete",
 						turnId,
 						timestamp: now(),
-						data: { text: lastAssistantText },
+						data,
 					});
 					writer.emit({
 						type: "turn",

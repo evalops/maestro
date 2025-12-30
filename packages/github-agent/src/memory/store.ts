@@ -309,10 +309,24 @@ export class MemoryStore {
 		this.save();
 	}
 
+	getOutcome(taskId: string): Outcome | undefined {
+		return this.outcomes.get(taskId);
+	}
+
 	getPendingOutcomes(): Outcome[] {
 		return Array.from(this.outcomes.values()).filter(
 			(o) => o.status === "pending" || o.status === "changes_requested",
 		);
+	}
+
+	recordTaskFailure(error: string): void {
+		if (!error) return;
+		this.applyReviewPatterns(error);
+		const paths = this.extractFilePaths(error);
+		for (const path of paths) {
+			this.incrementProblematicFile(path);
+		}
+		this.save();
 	}
 
 	// =========================================================================

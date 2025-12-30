@@ -1,5 +1,12 @@
 import { Octokit } from "@octokit/rest";
-import type { GitHubIssue, GitHubPR, PRComment, PRReview } from "../types.js";
+import type {
+	CheckRunSummary,
+	GitHubIssue,
+	GitHubPR,
+	PRComment,
+	PRReview,
+	PRReviewThread,
+} from "../types.js";
 import {
 	type GitHubAuth,
 	type GitHubToken,
@@ -460,7 +467,7 @@ export class GitHubApiClient {
 			state: string;
 			merged: boolean;
 			user: { login: string } | null;
-			head: { ref: string };
+			head: { ref: string; sha: string };
 			base: { ref: string };
 			created_at: string;
 			updated_at: string;
@@ -484,6 +491,7 @@ export class GitHubApiClient {
 			author: data.user?.login || "unknown",
 			branch: data.head.ref,
 			base: data.base.ref,
+			headSha: data.head.sha,
 			createdAt: data.created_at,
 			updatedAt: data.updated_at,
 			mergedAt: data.merged_at,
@@ -540,6 +548,158 @@ export class GitHubApiClient {
 			line: comment.line ?? null,
 			createdAt: comment.created_at,
 		}));
+	}
+
+	async listPullRequestReviewThreads(
+		prNumber: number,
+		options: { maxThreads?: number; maxCommentsPerThread?: number } = {},
+	): Promise<PRReviewThread[]> {
+		const maxThreads = options.maxThreads ?? 50;
+		const maxCommentsPerThread = options.maxCommentsPerThread ?? 50;
+		const results: PRReviewThread[] = [];
+		let cursor: string | null = null;
+		let remaining = maxThreads;
+
+		while (remaining > 0) {
+			const pageSize = Math.min(remaining, 50);
+			try {
+				const token = await this.auth.getToken();
+				const data = await this.octokit.graphql<
+					GraphqlResponse<{
+						repository: {
+							pullRequest: {
+								reviewThreads: {
+									nodes: Array<{
+										id: string;
+										isResolved: boolean;
+										path: string;
+										line: number | null;
+										comments: {
+											nodes: Array<{
+												id: string;
+												body: string;
+												createdAt: string;
+												author: { login: string } | null;
+											} | null>;
+										};
+									} | null>;
+									pageInfo: {
+										hasNextPage: boolean;
+										endCursor: string | null;
+									};
+								};
+							} | null;
+						};
+						rateLimit?: { remaining: number; resetAt: string };
+					}>
+				>(
+					`
+          query($owner: String!, $repo: String!, $number: Int!, $threads: Int!, $comments: Int!, $after: String) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $number) {
+                reviewThreads(first: $threads, after: $after) {
+                  nodes {
+                    id
+                    isResolved
+                    path
+                    line
+                    comments(first: $comments) {
+                      nodes {
+                        id
+                        body
+                        createdAt
+                        author { login }
+                      }
+                    }
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                }
+              }
+            }
+            rateLimit {
+              remaining
+              resetAt
+            }
+          }
+        `,
+					{
+						owner: this.owner,
+						repo: this.repo,
+						number: prNumber,
+						threads: pageSize,
+						comments: maxCommentsPerThread,
+						after: cursor,
+						headers: {
+							Authorization:
+								token.type === "app"
+									? `Bearer ${token.token}`
+									: `token ${token.token}`,
+							"User-Agent": this.userAgent,
+							Accept: "application/vnd.github+json",
+							"X-GitHub-Api-Version": "2022-11-28",
+						},
+						uri: this.graphqlUrl,
+					},
+				);
+
+				if (data.rateLimit) {
+					this.rateLimit = {
+						remaining: data.rateLimit.remaining,
+						resetAt: Date.parse(data.rateLimit.resetAt),
+					};
+				}
+
+				const threads = data.repository.pullRequest?.reviewThreads;
+				if (!threads) {
+					return results;
+				}
+				for (const thread of threads.nodes ?? []) {
+					if (!thread?.path) continue;
+					results.push({
+						id: thread.id,
+						isResolved: thread.isResolved,
+						path: thread.path,
+						line: thread.line ?? null,
+						comments:
+							thread.comments.nodes
+								?.filter(
+									(
+										comment,
+									): comment is NonNullable<
+										(typeof thread.comments.nodes)[number]
+									> => Boolean(comment),
+								)
+								.map((comment) => ({
+									id: comment.id,
+									body: comment.body,
+									createdAt: comment.createdAt,
+									author: comment.author?.login || "unknown",
+								})) ?? [],
+					});
+				}
+
+				const nodeCount = threads.nodes?.length ?? 0;
+				remaining -= nodeCount;
+				if (!threads.pageInfo.hasNextPage) {
+					break;
+				}
+				if (nodeCount === 0 && !threads.pageInfo.endCursor) {
+					break;
+				}
+				cursor = threads.pageInfo.endCursor;
+			} catch (error) {
+				console.warn(
+					"[github-client] GraphQL review thread fetch failed; returning partial results.",
+					error,
+				);
+				break;
+			}
+		}
+
+		return results;
 	}
 
 	async createIssueComment(
@@ -696,6 +856,38 @@ export class GitHubApiClient {
 			context: input.context ?? "Composer Agent",
 			target_url: input.targetUrl,
 		});
+	}
+
+	async listCheckRunsForRef(ref: string): Promise<CheckRunSummary[]> {
+		const { data } = await this.request<{
+			check_runs: Array<{
+				id: number;
+				name: string;
+				status: CheckRunSummary["status"];
+				conclusion: CheckRunSummary["conclusion"];
+				details_url: string | null;
+				started_at: string | null;
+				completed_at: string | null;
+			}>;
+		}>("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
+			owner: this.owner,
+			repo: this.repo,
+			ref,
+			per_page: 100,
+			filter: "latest",
+		});
+		if (!data?.check_runs?.length) {
+			return [];
+		}
+		return data.check_runs.map((run) => ({
+			id: run.id,
+			name: run.name,
+			status: run.status,
+			conclusion: run.conclusion ?? null,
+			detailsUrl: run.details_url ?? null,
+			startedAt: run.started_at ?? null,
+			completedAt: run.completed_at ?? null,
+		}));
 	}
 
 	async createCheckRun(input: {
@@ -919,6 +1111,7 @@ export class GitHubApiClient {
 							createdAt: string;
 							updatedAt: string;
 							headRefName: string;
+							headRefOid: string;
 							baseRefName: string;
 							author: { login: string } | null;
 							reviewDecision:
@@ -948,6 +1141,7 @@ export class GitHubApiClient {
               createdAt
               updatedAt
               headRefName
+              headRefOid
               baseRefName
               reviewDecision
               author { login }
@@ -997,6 +1191,7 @@ export class GitHubApiClient {
 				author: pr.author?.login ?? "unknown",
 				branch: pr.headRefName,
 				base: pr.baseRefName,
+				headSha: pr.headRefOid,
 				createdAt: pr.createdAt,
 				updatedAt: pr.updatedAt,
 				mergedAt: pr.mergedAt,

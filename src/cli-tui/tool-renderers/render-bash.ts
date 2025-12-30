@@ -2,15 +2,15 @@ import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,
 	clampAnsiLines,
+	clampToolOutput,
 	formatDetailSections,
 	formatSection,
 	formatShellSnippet,
+	formatToolOutputTruncation,
 	summarizeLines,
 } from "../utils/tool-text-utils.js";
 import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
-
-const OUTPUT_TRUNCATION_CHARS = 12000;
 
 export class BashRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
@@ -48,14 +48,10 @@ export class BashRenderer implements ToolRenderer {
 		}
 
 		if (context.result) {
-			let output = this.getTextOutput(context).trim();
-			if (output.length > OUTPUT_TRUNCATION_CHARS) {
-				const omitted = output.length - OUTPUT_TRUNCATION_CHARS;
-				output = `${output.slice(
-					0,
-					OUTPUT_TRUNCATION_CHARS,
-				)}\n[output truncated, ${omitted.toLocaleString()} chars omitted]`;
-			}
+			const rawOutput = this.getTextOutput(context).trim();
+			const clamped = clampToolOutput(rawOutput);
+			const output = clamped.text;
+			const banner = formatToolOutputTruncation(clamped);
 			if (output) {
 				const { lines, remaining } = summarizeLines(output, 5);
 				const terminalWidth = process.stdout.columns ?? 80;
@@ -68,6 +64,11 @@ export class BashRenderer implements ToolRenderer {
 				if (remaining > 0) {
 					sections.push(theme.fg("dim", `... (${remaining} more lines)`));
 				}
+				if (banner) {
+					sections.push(theme.fg("dim", banner));
+				}
+			} else if (banner) {
+				sections.push(theme.fg("dim", banner));
 			}
 		}
 

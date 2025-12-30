@@ -206,12 +206,14 @@ export class TaskExecutor {
 			const args = ["exec", "--full-auto", "--json", prompt];
 			const composerBin = process.env.COMPOSER_BIN || "composer";
 
+			const env = { ...process.env };
+			if (this.config.maxTokensPerTask && !env.COMPOSER_MAX_OUTPUT_TOKENS) {
+				env.COMPOSER_MAX_OUTPUT_TOKENS = String(this.config.maxTokensPerTask);
+			}
+
 			const proc = spawn(composerBin, args, {
 				cwd: this.config.workingDir,
-				env: {
-					...process.env,
-					// Inherit API keys from environment
-				},
+				env,
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 
@@ -219,25 +221,70 @@ export class TaskExecutor {
 			let stderr = "";
 			let tokensUsed = 0;
 			let cost = 0;
+			const maxStdoutSize = 2 * 1024 * 1024;
+			let stdoutTruncated = false;
+			let jsonBuffer = "";
+			let jsonError: string | null = null;
+
+			const handleJsonLine = (line: string) => {
+				if (!line.trim()) return;
+				try {
+					const event = JSON.parse(line) as {
+						type?: string;
+						subtype?: string;
+						data?: {
+							usage?: {
+								input?: number;
+								output?: number;
+								cacheRead?: number;
+								cacheWrite?: number;
+								cost?: { total?: number };
+							};
+						};
+						message?: string;
+					};
+					if (event.type === "item" && event.subtype === "message_complete") {
+						const usage = event.data?.usage;
+						if (usage) {
+							tokensUsed +=
+								(usage.input ?? 0) +
+								(usage.output ?? 0) +
+								(usage.cacheRead ?? 0) +
+								(usage.cacheWrite ?? 0);
+							if (typeof usage.cost?.total === "number") {
+								cost += usage.cost.total;
+							}
+						}
+					}
+					if (event.type === "error" && event.message) {
+						jsonError = event.message;
+					}
+				} catch {
+					// Not JSONL we understand - ignore
+				}
+			};
+
+			const handleJsonChunk = (chunk: string) => {
+				jsonBuffer += chunk;
+				let newlineIndex = jsonBuffer.indexOf("\n");
+				while (newlineIndex !== -1) {
+					const line = jsonBuffer.slice(0, newlineIndex);
+					jsonBuffer = jsonBuffer.slice(newlineIndex + 1);
+					handleJsonLine(line);
+					newlineIndex = jsonBuffer.indexOf("\n");
+				}
+			};
 
 			proc.stdout.on("data", (data) => {
 				const chunk = data.toString();
-				stdout += chunk;
-
-				// Parse JSONL events for token usage
-				for (const line of chunk.split("\n")) {
-					if (!line.trim()) continue;
-					try {
-						const event = JSON.parse(line);
-						if (event.type === "assistant_turn_end" && event.usage) {
-							tokensUsed += event.usage.input_tokens || 0;
-							tokensUsed += event.usage.output_tokens || 0;
-							cost += event.usage.cost || 0;
-						}
-					} catch {
-						// Not JSON, skip
+				if (stdout.length < maxStdoutSize) {
+					stdout += chunk;
+					if (stdout.length > maxStdoutSize) {
+						stdoutTruncated = true;
+						stdout = stdout.slice(0, maxStdoutSize);
 					}
 				}
+				handleJsonChunk(chunk);
 			});
 
 			proc.stderr.on("data", (data) => {
@@ -245,12 +292,18 @@ export class TaskExecutor {
 			});
 
 			proc.on("close", (code) => {
+				if (jsonBuffer.trim()) {
+					handleJsonLine(jsonBuffer);
+				}
+				if (stdoutTruncated) {
+					stdout = `${stdout}\n... (output truncated at 2MB)`;
+				}
 				if (code === 0) {
 					resolve({ success: true, tokensUsed, cost });
 				} else {
 					resolve({
 						success: false,
-						error: stderr || `Exit code ${code}`,
+						error: stderr || jsonError || stdout || `Exit code ${code}`,
 						tokensUsed,
 						cost,
 					});

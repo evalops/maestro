@@ -31,18 +31,17 @@
  *
  * ## JSONL Event Types
  *
- * When `--json` is specified, the following events are streamed to stdout:
+ * When `--json` is specified, structured JSONL events are streamed to stdout:
  *
  * | Event Type | Description |
  * |------------|-------------|
- * | `thread_start` | Execution begins with metadata |
- * | `user_turn` | User prompt submitted |
- * | `assistant_turn_start` | Assistant begins responding |
- * | `text_delta` | Streaming text chunk |
- * | `tool_use` | Tool invocation |
- * | `tool_result` | Tool execution result |
- * | `assistant_turn_end` | Assistant turn complete |
- * | `thread_end` | Execution complete |
+ * | `thread` (phase=`start`/`end`) | Execution begins/ends with metadata |
+ * | `turn` (phase=`start`/`end`) | User or assistant turn lifecycle |
+ * | `item` (subtype=`message_delta`) | Streaming text chunk |
+ * | `item` (subtype=`message_complete`) | Final message text + metadata (usage, stopReason, model) |
+ * | `item` (subtype=`tool_call`) | Tool invocation |
+ * | `item` (subtype=`tool_result`) | Tool execution result |
+ * | `item` (subtype=`approval`) | Approval request/decision |
  * | `error` | Error occurred |
  * | `done` | Final status event |
  *
