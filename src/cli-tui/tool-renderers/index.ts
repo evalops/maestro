@@ -1,4 +1,5 @@
 import { BashRenderer } from "./render-bash.js";
+import { BatchRenderer } from "./render-batch.js";
 import { EditRenderer } from "./render-edit.js";
 import { GenericRenderer } from "./render-generic.js";
 import { ReadRenderer } from "./render-read.js";
@@ -20,4 +21,3 @@ export function createToolRenderer(toolName: string): ToolRenderer {
 	const RendererClass = RENDERERS[key] ?? GenericRenderer;
 	return new RendererClass();
 }
-import { BatchRenderer } from "./render-batch.js";
