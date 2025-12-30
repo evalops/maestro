@@ -2,16 +2,16 @@ import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,
 	clampAnsiLines,
+	clampToolOutput,
 	formatDetailSections,
 	formatSection,
+	formatToolOutputTruncation,
 	replaceTabs,
 	shortenPath,
 	summarizeLines,
 } from "../utils/tool-text-utils.js";
 import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
-
-const OUTPUT_TRUNCATION_CHARS = 12000;
 
 export class ReadRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
@@ -50,15 +50,10 @@ export class ReadRenderer implements ToolRenderer {
 		const sections: string[] = [pathLine];
 
 		if (context.result) {
-			let output = this.getTextOutput(context);
-			if (output.length > OUTPUT_TRUNCATION_CHARS) {
-				const omitted = output.length - OUTPUT_TRUNCATION_CHARS;
-				output = `${output.slice(
-					0,
-					OUTPUT_TRUNCATION_CHARS,
-				)}\n[output truncated, ${omitted.toLocaleString()} chars omitted]`;
-			}
-			const { lines, remaining } = summarizeLines(output, 10);
+			const rawOutput = this.getTextOutput(context);
+			const clamped = clampToolOutput(rawOutput);
+			const banner = formatToolOutputTruncation(clamped);
+			const { lines, remaining } = summarizeLines(clamped.text, 10);
 			const terminalWidth = process.stdout.columns ?? 80;
 			const maxWidth = Math.max(48, Math.min(120, terminalWidth - 8));
 			const displayLines = clampAnsiLines(
@@ -70,6 +65,9 @@ export class ReadRenderer implements ToolRenderer {
 			}
 			if (remaining > 0) {
 				sections.push(theme.fg("dim", `... (${remaining} more lines)`));
+			}
+			if (banner) {
+				sections.push(theme.fg("dim", banner));
 			}
 
 			const detailSections = formatDetailSections(context.result.details, {

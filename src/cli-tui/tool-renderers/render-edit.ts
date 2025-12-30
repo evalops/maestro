@@ -3,15 +3,15 @@ import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,
 	clampAnsiLines,
+	clampToolOutput,
 	formatDetailSections,
 	formatSection,
+	formatToolOutputTruncation,
 	generateDiff,
 	shortenPath,
 } from "../utils/tool-text-utils.js";
 import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
-
-const OUTPUT_TRUNCATION_CHARS = 12000;
 
 /** Count additions and deletions in a unified diff string */
 function countDiffChanges(diffStr: string): { added: number; removed: number } {
@@ -122,14 +122,15 @@ export class EditRenderer implements ToolRenderer {
 
 		const message = this.getTextOutput(context).trim();
 		if (message) {
-			const bounded =
-				message.length > OUTPUT_TRUNCATION_CHARS
-					? `${message.slice(0, OUTPUT_TRUNCATION_CHARS)}\n[output truncated, ${(message.length - OUTPUT_TRUNCATION_CHARS).toLocaleString()} chars omitted]`
-					: message;
-			const messageLines = bounded
+			const clamped = clampToolOutput(message);
+			const banner = formatToolOutputTruncation(clamped);
+			const messageLines = clamped.text
 				.split("\n")
 				.map((line) => theme.fg("dim", line));
 			sections.push(messageLines.join("\n"));
+			if (banner) {
+				sections.push(theme.fg("dim", banner));
+			}
 		}
 
 		const detailSections = formatDetailSections(context.result?.details, {

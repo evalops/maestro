@@ -1,13 +1,13 @@
 import chalk from "chalk";
 import {
 	buildCollapsedSummary,
+	clampToolOutput,
 	formatDetailSections,
 	formatJsonSnippet,
+	formatToolOutputTruncation,
 } from "../utils/tool-text-utils.js";
 import { formatHeadline, renderCard, statusGlyph } from "./render-style.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
-
-const OUTPUT_TRUNCATION_CHARS = 12000;
 
 export class GenericRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
@@ -40,13 +40,14 @@ export class GenericRenderer implements ToolRenderer {
 
 		const output = this.getTextOutput(context);
 		if (output) {
-			const bounded =
-				output.length > OUTPUT_TRUNCATION_CHARS
-					? `${output.slice(0, OUTPUT_TRUNCATION_CHARS)}\n[output truncated, ${(output.length - OUTPUT_TRUNCATION_CHARS).toLocaleString()} chars omitted]`
-					: output;
-			const lines = bounded.split("\n").map((line) => chalk.dim(line));
+			const clamped = clampToolOutput(output);
+			const banner = formatToolOutputTruncation(clamped);
+			const lines = clamped.text.split("\n").map((line) => chalk.dim(line));
 			if (lines.length) {
 				sections.push(lines.join("\n"));
+			}
+			if (banner) {
+				sections.push(chalk.dim(banner));
 			}
 		}
 

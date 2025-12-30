@@ -2,15 +2,15 @@ import { theme } from "../../theme/theme.js";
 import {
 	buildCollapsedSummary,
 	clampAnsiLines,
+	clampToolOutput,
 	formatDetailSections,
 	formatSection,
+	formatToolOutputTruncation,
 	replaceTabs,
 	shortenPath,
 	summarizeLines,
 } from "../utils/tool-text-utils.js";
 import type { ToolRenderArgs, ToolRenderer } from "./types.js";
-
-const OUTPUT_TRUNCATION_CHARS = 12000;
 
 export class WriteRenderer implements ToolRenderer {
 	render(context: ToolRenderArgs): string {
@@ -28,10 +28,9 @@ export class WriteRenderer implements ToolRenderer {
 			typeof args?.content === "string"
 				? args.content
 				: String(args?.content ?? "");
-		const boundedContent =
-			fileContent.length > OUTPUT_TRUNCATION_CHARS
-				? `${fileContent.slice(0, OUTPUT_TRUNCATION_CHARS)}\n[output truncated, ${(fileContent.length - OUTPUT_TRUNCATION_CHARS).toLocaleString()} chars omitted]`
-				: fileContent;
+		const clamped = clampToolOutput(fileContent);
+		const boundedContent = clamped.text;
+		const banner = formatToolOutputTruncation(clamped);
 		const contentLines = fileContent ? fileContent.split("\n") : [];
 		const totalLines = contentLines.length;
 
@@ -61,6 +60,11 @@ export class WriteRenderer implements ToolRenderer {
 			if (remaining > 0) {
 				sections.push(theme.fg("dim", `... (${remaining} more lines)`));
 			}
+			if (banner) {
+				sections.push(theme.fg("dim", banner));
+			}
+		} else if (banner) {
+			sections.push(theme.fg("dim", banner));
 		}
 
 		if (context.result?.details) {
