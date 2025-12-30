@@ -10,6 +10,7 @@
 import type { GitHubApiClient } from "../github/client.js";
 import type {
 	AgentConfig,
+	CheckRunSummary,
 	GitHubIssue,
 	GitHubPR,
 	IssueComment,
@@ -23,6 +24,7 @@ export interface WatcherEvents {
 	onPRClosed: (pr: GitHubPR) => Promise<void>;
 	onPRReview: (pr: GitHubPR, review: PRReview) => Promise<void>;
 	onPRComment: (pr: GitHubPR, comment: PRComment) => Promise<void>;
+	onPRCheckRuns?: (pr: GitHubPR, checkRuns: CheckRunSummary[]) => Promise<void>;
 	onIssueComment?: (issue: GitHubIssue, comment: IssueComment) => Promise<void>;
 }
 
@@ -33,6 +35,13 @@ function maxIsoTimestamp(
 	if (!candidate) return current;
 	if (!current) return candidate;
 	return Date.parse(candidate) > Date.parse(current) ? candidate : current;
+}
+
+function isFailureConclusion(
+	conclusion: CheckRunSummary["conclusion"],
+): boolean {
+	if (!conclusion) return false;
+	return !["success", "neutral", "skipped"].includes(conclusion);
 }
 
 const ISSUE_TRACK_TTL_MS = 1000 * 60 * 60 * 24 * 30;
@@ -48,6 +57,7 @@ export class GitHubWatcher {
 	private lastIssueCommentPollTime: string;
 	private trackedPRs: Set<number> = new Set();
 	private trackedPrPollTimes: Map<number, string> = new Map();
+	private trackedPrCheckRunTimes: Map<number, string> = new Map();
 	private notifiedIssues: Set<number> = new Set();
 	private issueLabelSnapshots: Map<number, Set<string>> = new Map();
 	private issueLastSeen: Map<number, number> = new Map();
@@ -103,6 +113,9 @@ export class GitHubWatcher {
 		this.trackedPRs.add(prNumber);
 		if (!this.trackedPrPollTimes.has(prNumber)) {
 			this.trackedPrPollTimes.set(prNumber, new Date().toISOString());
+		}
+		if (!this.trackedPrCheckRunTimes.has(prNumber)) {
+			this.trackedPrCheckRunTimes.set(prNumber, new Date().toISOString());
 		}
 	}
 
@@ -239,11 +252,13 @@ export class GitHubWatcher {
 					await this.events.onPRMerged(pr);
 					this.trackedPRs.delete(prNumber);
 					this.trackedPrPollTimes.delete(prNumber);
+					this.trackedPrCheckRunTimes.delete(prNumber);
 				} else if (pr.state === "closed") {
 					console.log(`[watcher] PR #${prNumber} closed without merge`);
 					await this.events.onPRClosed(pr);
 					this.trackedPRs.delete(prNumber);
 					this.trackedPrPollTimes.delete(prNumber);
+					this.trackedPrCheckRunTimes.delete(prNumber);
 				} else {
 					// Check for new reviews
 					const result = await this.pollPRReviews(prNumber, pr, prSince);
@@ -255,6 +270,29 @@ export class GitHubWatcher {
 						maxIsoTimestamp(pollStartedAt, result.latest) ?? pollStartedAt;
 					this.trackedPrPollTimes.set(prNumber, nextCursor);
 					maxEventAt = maxIsoTimestamp(maxEventAt, nextCursor);
+
+					const checkSince =
+						this.trackedPrCheckRunTimes.get(prNumber) ?? prSince;
+					const checkResult = await this.pollPRCheckRuns(
+						prNumber,
+						pr,
+						checkSince,
+					);
+					if (!checkResult.ok) {
+						hadError = true;
+						continue;
+					}
+					if (checkResult.latest) {
+						this.trackedPrCheckRunTimes.set(
+							prNumber,
+							maxIsoTimestamp(pollStartedAt, checkResult.latest) ??
+								pollStartedAt,
+						);
+						maxEventAt = maxIsoTimestamp(maxEventAt, checkResult.latest);
+					}
+					if (checkResult.failures.length > 0 && this.events.onPRCheckRuns) {
+						await this.events.onPRCheckRuns(pr, checkResult.failures);
+					}
 				}
 			} catch (err) {
 				const status =
@@ -270,6 +308,7 @@ export class GitHubWatcher {
 					);
 					this.trackedPRs.delete(prNumber);
 					this.trackedPrPollTimes.delete(prNumber);
+					this.trackedPrCheckRunTimes.delete(prNumber);
 					continue;
 				}
 				console.error(`[watcher] Error checking PR #${prNumber}:`, err);
@@ -337,6 +376,54 @@ export class GitHubWatcher {
 		} catch (err) {
 			console.error(`[watcher] Error polling PR #${prNumber} reviews:`, err);
 			return { latest: null, ok: false };
+		}
+	}
+
+	private async pollPRCheckRuns(
+		prNumber: number,
+		pr: GitHubPR,
+		since: string,
+	): Promise<{
+		latest: string | null;
+		ok: boolean;
+		failures: CheckRunSummary[];
+	}> {
+		if (!pr.headSha) {
+			return { latest: null, ok: true, failures: [] };
+		}
+		try {
+			const checkRuns = await this.client.listCheckRunsForRef(pr.headSha);
+			const sinceTime = new Date(since);
+			let maxEventAt: string | null = null;
+			const failures: CheckRunSummary[] = [];
+
+			for (const run of checkRuns) {
+				const eventAt = run.completedAt ?? run.startedAt ?? null;
+				if (eventAt) {
+					const eventDate = new Date(eventAt);
+					if (eventDate < sinceTime) {
+						continue;
+					}
+					maxEventAt = maxIsoTimestamp(maxEventAt, eventAt);
+				}
+
+				if (run.status === "completed" && isFailureConclusion(run.conclusion)) {
+					failures.push(run);
+				}
+			}
+
+			if (failures.length > 0) {
+				console.log(
+					`[watcher] PR #${prNumber} check run failures: ${failures
+						.map((run) => run.name)
+						.join(", ")}`,
+				);
+			}
+
+			return { latest: maxEventAt, ok: true, failures };
+		} catch (err) {
+			console.error(`[watcher] Error polling PR #${prNumber} check runs:`, err);
+			return { latest: null, ok: false, failures: [] };
 		}
 	}
 

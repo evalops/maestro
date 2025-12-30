@@ -49,6 +49,7 @@ const createMockPR = (overrides: Partial<GitHubPR> = {}): GitHubPR => ({
 	author: "bot",
 	branch: "fix/test-42",
 	base: "main",
+	headSha: "abc123",
 	createdAt: new Date().toISOString(),
 	updatedAt: new Date().toISOString(),
 	mergedAt: null,
@@ -63,6 +64,7 @@ const createMockEvents = (): WatcherEvents => ({
 	onPRClosed: vi.fn().mockResolvedValue(undefined),
 	onPRReview: vi.fn().mockResolvedValue(undefined),
 	onPRComment: vi.fn().mockResolvedValue(undefined),
+	onPRCheckRuns: vi.fn().mockResolvedValue(undefined),
 	onIssueComment: vi.fn().mockResolvedValue(undefined),
 });
 
@@ -71,6 +73,7 @@ type MockClient = {
 	getPullRequest: ReturnType<typeof vi.fn>;
 	listPullRequestReviews: ReturnType<typeof vi.fn>;
 	listPullRequestReviewComments: ReturnType<typeof vi.fn>;
+	listCheckRunsForRef: ReturnType<typeof vi.fn>;
 	getIssue: ReturnType<typeof vi.fn>;
 	listIssueCommentsSince: ReturnType<typeof vi.fn>;
 };
@@ -90,6 +93,7 @@ describe("GitHubWatcher", () => {
 			getPullRequest: vi.fn(),
 			listPullRequestReviews: vi.fn().mockResolvedValue([]),
 			listPullRequestReviewComments: vi.fn().mockResolvedValue([]),
+			listCheckRunsForRef: vi.fn().mockResolvedValue([]),
 			getIssue: vi.fn(),
 			listIssueCommentsSince: vi.fn().mockResolvedValue([]),
 		};

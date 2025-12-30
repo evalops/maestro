@@ -1,5 +1,6 @@
 import { Octokit } from "@octokit/rest";
 import type {
+	CheckRunSummary,
 	GitHubIssue,
 	GitHubPR,
 	PRComment,
@@ -466,7 +467,7 @@ export class GitHubApiClient {
 			state: string;
 			merged: boolean;
 			user: { login: string } | null;
-			head: { ref: string };
+			head: { ref: string; sha: string };
 			base: { ref: string };
 			created_at: string;
 			updated_at: string;
@@ -490,6 +491,7 @@ export class GitHubApiClient {
 			author: data.user?.login || "unknown",
 			branch: data.head.ref,
 			base: data.base.ref,
+			headSha: data.head.sha,
 			createdAt: data.created_at,
 			updatedAt: data.updated_at,
 			mergedAt: data.merged_at,
@@ -856,6 +858,38 @@ export class GitHubApiClient {
 		});
 	}
 
+	async listCheckRunsForRef(ref: string): Promise<CheckRunSummary[]> {
+		const { data } = await this.request<{
+			check_runs: Array<{
+				id: number;
+				name: string;
+				status: CheckRunSummary["status"];
+				conclusion: CheckRunSummary["conclusion"];
+				details_url: string | null;
+				started_at: string | null;
+				completed_at: string | null;
+			}>;
+		}>("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
+			owner: this.owner,
+			repo: this.repo,
+			ref,
+			per_page: 100,
+			filter: "latest",
+		});
+		if (!data?.check_runs?.length) {
+			return [];
+		}
+		return data.check_runs.map((run) => ({
+			id: run.id,
+			name: run.name,
+			status: run.status,
+			conclusion: run.conclusion ?? null,
+			detailsUrl: run.details_url ?? null,
+			startedAt: run.started_at ?? null,
+			completedAt: run.completed_at ?? null,
+		}));
+	}
+
 	async createCheckRun(input: {
 		name: string;
 		headSha: string;
@@ -1077,6 +1111,7 @@ export class GitHubApiClient {
 							createdAt: string;
 							updatedAt: string;
 							headRefName: string;
+							headRefOid: string;
 							baseRefName: string;
 							author: { login: string } | null;
 							reviewDecision:
@@ -1106,6 +1141,7 @@ export class GitHubApiClient {
               createdAt
               updatedAt
               headRefName
+              headRefOid
               baseRefName
               reviewDecision
               author { login }
@@ -1155,6 +1191,7 @@ export class GitHubApiClient {
 				author: pr.author?.login ?? "unknown",
 				branch: pr.headRefName,
 				base: pr.baseRefName,
+				headSha: pr.headRefOid,
 				createdAt: pr.createdAt,
 				updatedAt: pr.updatedAt,
 				mergedAt: pr.mergedAt,

@@ -4,6 +4,7 @@ import { Orchestrator, type OrchestratorConfig } from "./orchestrator.js";
 import type { IssuePrioritizer } from "./triage/prioritizer.js";
 import type {
 	AgentStats,
+	CheckRunSummary,
 	GitHubIssue,
 	GitHubPR,
 	IssueComment,
@@ -150,6 +151,7 @@ const createMockPR = (overrides: Partial<GitHubPR> = {}): GitHubPR => ({
 	author: "bot",
 	branch: "fix/test-42",
 	base: "main",
+	headSha: "abc123",
 	createdAt: new Date().toISOString(),
 	updatedAt: new Date().toISOString(),
 	mergedAt: null,
@@ -183,6 +185,7 @@ describe("Orchestrator", () => {
 		onPRClosed?: (pr: GitHubPR) => Promise<void>;
 		onPRReview?: (pr: GitHubPR, review: PRReview) => Promise<void>;
 		onPRComment?: (pr: GitHubPR, comment: PRComment) => Promise<void>;
+		onPRCheckRuns?: (pr: GitHubPR, runs: CheckRunSummary[]) => Promise<void>;
 	};
 
 	beforeEach(async () => {
@@ -501,6 +504,84 @@ describe("Orchestrator", () => {
 						comments: ["Nice work!"],
 					}),
 				);
+			});
+		});
+
+		describe("handlePRCheckRuns", () => {
+			it("should record check run failures and retry", async () => {
+				const task = createMockTask({ attempts: 1 });
+				const outcome = createMockOutcome({ taskId: task.id, prNumber: 100 });
+				mockMemory.getPendingOutcomes.mockReturnValue([outcome]);
+				mockMemory.getTask.mockReturnValue(task);
+				mockMemory.getOutcome.mockReturnValue(outcome);
+
+				new Orchestrator(config);
+				const pr = createMockPR({ number: 100 });
+				const checkRuns: CheckRunSummary[] = [
+					{
+						id: 1,
+						name: "CI",
+						status: "completed",
+						conclusion: "failure",
+						detailsUrl: "https://github.com/test/repo/actions/runs/1",
+						startedAt: new Date().toISOString(),
+						completedAt: new Date().toISOString(),
+					},
+				];
+
+				await watcherCallbacks.onPRCheckRuns?.(pr, checkRuns);
+
+				expect(mockMemory.updateOutcome).toHaveBeenCalledWith(
+					task.id,
+					"changes_requested",
+					expect.objectContaining({
+						reviewer: "github-checks",
+						decision: "changes_requested",
+					}),
+				);
+				expect(mockMemory.updateTaskStatus).toHaveBeenCalledWith(
+					task.id,
+					"pending",
+				);
+			});
+
+			it("should avoid duplicate check run feedback", async () => {
+				const task = createMockTask();
+				const outcome = createMockOutcome({
+					taskId: task.id,
+					prNumber: 100,
+					reviewFeedback: [
+						{
+							reviewer: "github-checks",
+							decision: "changes_requested",
+							comments: [
+								'Check run "CI" concluded failure. Details: https://github.com/test/repo/actions/runs/1',
+							],
+							timestamp: new Date().toISOString(),
+						},
+					],
+				});
+				mockMemory.getPendingOutcomes.mockReturnValue([outcome]);
+				mockMemory.getTask.mockReturnValue(task);
+				mockMemory.getOutcome.mockReturnValue(outcome);
+
+				new Orchestrator(config);
+				const pr = createMockPR({ number: 100 });
+				const checkRuns: CheckRunSummary[] = [
+					{
+						id: 1,
+						name: "CI",
+						status: "completed",
+						conclusion: "failure",
+						detailsUrl: "https://github.com/test/repo/actions/runs/1",
+						startedAt: new Date().toISOString(),
+						completedAt: new Date().toISOString(),
+					},
+				];
+
+				await watcherCallbacks.onPRCheckRuns?.(pr, checkRuns);
+
+				expect(mockMemory.updateOutcome).not.toHaveBeenCalled();
 			});
 		});
 	});

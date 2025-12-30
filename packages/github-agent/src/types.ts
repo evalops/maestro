@@ -23,6 +23,7 @@ export interface GitHubPR {
 	author: string;
 	branch: string;
 	base: string;
+	headSha: string;
 	createdAt: string;
 	updatedAt: string;
 	mergedAt: string | null;
@@ -67,6 +68,25 @@ export interface CheckRunEvent {
 	name: string;
 	headSha: string;
 	pullRequests: number[];
+}
+
+export interface CheckRunSummary {
+	id: number;
+	name: string;
+	status: "queued" | "in_progress" | "completed";
+	conclusion:
+		| "success"
+		| "failure"
+		| "neutral"
+		| "cancelled"
+		| "timed_out"
+		| "action_required"
+		| "skipped"
+		| "stale"
+		| null;
+	startedAt?: string | null;
+	completedAt?: string | null;
+	detailsUrl?: string | null;
 }
 
 export interface IssueComment {

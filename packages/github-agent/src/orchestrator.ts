@@ -16,6 +16,7 @@ import { IssuePrioritizer } from "./triage/prioritizer.js";
 import type {
 	AgentConfig,
 	CheckRunEvent,
+	CheckRunSummary,
 	GitHubIssue,
 	GitHubPR,
 	IssueComment,
@@ -84,6 +85,7 @@ export class Orchestrator {
 			onPRClosed: (pr) => this.handlePRClosed(pr),
 			onPRReview: (pr, review) => this.handlePRReview(pr, review),
 			onPRComment: (pr, comment) => this.handlePRComment(pr, comment),
+			onPRCheckRuns: (pr, runs) => this.handlePRCheckRuns(pr, runs),
 		});
 
 		this.prioritizer = new IssuePrioritizer(this.memory);
@@ -338,6 +340,57 @@ export class Orchestrator {
 				},
 				comment.path ? [comment.path] : [],
 			);
+		}
+	}
+
+	private async handlePRCheckRuns(
+		pr: GitHubPR,
+		checkRuns: CheckRunSummary[],
+	): Promise<void> {
+		if (checkRuns.length === 0) return;
+		console.log(`[orchestrator] PR #${pr.number} check run failures detected`);
+
+		const task = this.findTaskByPR(pr.number);
+		if (!task) return;
+
+		const formatted = checkRuns.map((run) => {
+			const conclusion = run.conclusion ?? "unknown";
+			const details = run.detailsUrl ? ` Details: ${run.detailsUrl}` : "";
+			return `Check run "${run.name}" concluded ${conclusion}.${details}`;
+		});
+
+		const outcome = this.memory.getOutcome(task.id);
+		const existingComments = new Set(
+			outcome?.reviewFeedback.flatMap((feedback) => feedback.comments) ?? [],
+		);
+		const newComments = formatted.filter(
+			(comment) => !existingComments.has(comment),
+		);
+		if (newComments.length === 0) {
+			return;
+		}
+
+		await this.captureReviewFeedback(
+			task,
+			pr.number,
+			"changes_requested",
+			{
+				reviewer: "github-checks",
+				decision: "changes_requested",
+				comments: newComments,
+				timestamp: new Date().toISOString(),
+			},
+			[],
+		);
+
+		if (
+			task.attempts < this.config.maxAttemptsPerTask &&
+			task.status !== "in_progress"
+		) {
+			console.log(
+				`[orchestrator] Check runs failed - retrying task ${task.id}`,
+			);
+			this.memory.updateTaskStatus(task.id, "pending");
 		}
 	}
 
@@ -625,7 +678,6 @@ export class Orchestrator {
 			// Handle unexpected exceptions - don't leave task stuck in_progress
 			const error = err instanceof Error ? err.message : String(err);
 			console.error(`[orchestrator] Task threw exception: ${task.id}`, error);
-			this.memory.recordTaskFailure(error);
 			this.memory.recordTaskFailure(error);
 
 			if (task.attempts < this.config.maxAttemptsPerTask) {

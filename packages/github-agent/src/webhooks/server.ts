@@ -245,7 +245,7 @@ function toPullRequest(pr: {
 	state: "open" | "closed";
 	merged: boolean;
 	user: { login?: string | null } | null;
-	head: { ref: string };
+	head: { ref: string; sha: string };
 	base: { ref: string };
 	created_at: string;
 	updated_at: string;
@@ -261,6 +261,7 @@ function toPullRequest(pr: {
 		author: pr.user?.login ?? "unknown",
 		branch: pr.head.ref,
 		base: pr.base.ref,
+		headSha: pr.head.sha,
 		createdAt: pr.created_at,
 		updatedAt: pr.updated_at,
 		mergedAt: pr.merged_at,
