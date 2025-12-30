@@ -8,8 +8,15 @@ import {
 	type ConversationsHistoryResponse,
 	WebClient,
 } from "@slack/web-api";
+import { type IdempotencyConfig, IdempotencyManager } from "../idempotency.js";
 import * as logger from "../logger.js";
 import { type Attachment, ChannelStore } from "../store.js";
+import {
+	type ApiQueue,
+	type ApiQueueOptions,
+	createApiQueue,
+} from "../utils/api-queue.js";
+import { type SlackMetrics, createSlackMetrics } from "../utils/metrics.js";
 import { TtlCache } from "../utils/ttl-cache.js";
 import { createResponseHandlers } from "./response-state.js";
 
@@ -74,6 +81,9 @@ export interface SlackBotConfig {
 	appToken: string;
 	botToken: string;
 	workingDir: string;
+	apiQueue?: ApiQueueOptions;
+	idempotency?: IdempotencyConfig;
+	metrics?: SlackMetrics;
 }
 
 export interface ChannelInfo {
@@ -87,46 +97,13 @@ export interface UserInfo {
 	displayName: string;
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function getRetryAfterMs(error: unknown): number | null {
-	const err = error as {
-		statusCode?: number;
-		code?: string;
-		retryAfter?: number | string;
-		data?: { error?: string; retry_after?: number | string };
-	};
-
-	const isRateLimited =
-		err?.statusCode === 429 ||
-		err?.code === "slack_webapi_rate_limited" ||
-		err?.data?.error === "ratelimited";
-	if (!isRateLimited) return null;
-
-	const retryAfterSeconds =
-		typeof err.retryAfter === "number"
-			? err.retryAfter
-			: typeof err.retryAfter === "string"
-				? Number(err.retryAfter)
-				: typeof err.data?.retry_after === "number"
-					? err.data.retry_after
-					: typeof err.data?.retry_after === "string"
-						? Number(err.data.retry_after)
-						: undefined;
-
-	if (retryAfterSeconds && Number.isFinite(retryAfterSeconds)) {
-		return Math.max(0, retryAfterSeconds) * 1000;
-	}
-
-	return 0;
-}
-
 export class SlackBot {
 	private socketClient: SocketModeClient;
 	private webClient: WebClient;
 	private handler: SlackAgentHandler;
 	private botUserId: string | null = null;
 	public readonly store: ChannelStore;
+	public readonly metrics: SlackMetrics;
 	// Caches with 1-hour TTL to prevent unbounded memory growth
 	private userCache = new TtlCache<
 		string,
@@ -141,6 +118,8 @@ export class SlackBot {
 	private readonly eventDedupeMs = 5 * 60 * 1000;
 	private lastEventCleanupMs = 0;
 	private readonly eventCleanupIntervalMs = 60 * 1000;
+	private readonly apiQueue: ApiQueue;
+	private readonly idempotency: IdempotencyManager;
 
 	constructor(handler: SlackAgentHandler, config: SlackBotConfig) {
 		this.handler = handler;
@@ -151,36 +130,31 @@ export class SlackBot {
 			botToken: config.botToken,
 		});
 
+		this.metrics = config.metrics ?? createSlackMetrics();
+		this.apiQueue = createApiQueue({
+			...config.apiQueue,
+			onRateLimit: (method, retryAfterSeconds) => {
+				this.metrics.trackRateLimit(method);
+				config.apiQueue?.onRateLimit?.(method, retryAfterSeconds);
+			},
+			onRetry: (method, attempt, delayMs, error) => {
+				const errorType = error instanceof Error ? error.name : "unknown";
+				this.metrics.trackError(method, errorType);
+				config.apiQueue?.onRetry?.(method, attempt, delayMs, error);
+			},
+		});
+		this.idempotency = new IdempotencyManager(
+			config.workingDir,
+			config.idempotency,
+		);
+
 		this.setupEventHandlers();
 	}
 
-	private async callSlack<T>(
-		fn: () => Promise<T>,
-		context: string,
-		maxAttempts = 3,
-	): Promise<T> {
-		let attempt = 0;
-		while (true) {
-			try {
-				return await fn();
-			} catch (error) {
-				attempt++;
-				const retryAfterMs = getRetryAfterMs(error);
-				if (retryAfterMs !== null && attempt < maxAttempts) {
-					const delayMs =
-						retryAfterMs > 0
-							? retryAfterMs
-							: Math.min(1000 * 2 ** (attempt - 1), 10000);
-					logger.logWarning(
-						`Slack rate limited during ${context}; retrying`,
-						`${delayMs}ms`,
-					);
-					await sleep(delayMs);
-					continue;
-				}
-				throw error;
-			}
-		}
+	private async callSlack<T>(fn: () => Promise<T>, method: string): Promise<T> {
+		return this.apiQueue.enqueue(method, () =>
+			this.metrics.trackApiCall(method, fn),
+		);
 	}
 
 	private async fetchChannels(): Promise<void> {
@@ -315,7 +289,10 @@ export class SlackBot {
 		}
 	}
 
-	private shouldProcessEvent(key: string): boolean {
+	private async shouldProcessEvent(
+		key: string,
+		eventId?: string,
+	): Promise<boolean> {
 		const now = Date.now();
 		if (now - this.lastEventCleanupMs > this.eventCleanupIntervalMs) {
 			const cutoff = now - this.eventDedupeMs;
@@ -324,17 +301,58 @@ export class SlackBot {
 			}
 			this.lastEventCleanupMs = now;
 		}
-		if (this.recentEvents.has(key)) {
+
+		if (eventId) {
+			const check = await this.idempotency.checkAndLock(eventId, key);
+			if (!check.shouldProcess) {
+				return false;
+			}
+		} else if (this.recentEvents.has(key)) {
 			return false;
 		}
+
 		this.recentEvents.set(key, now);
 		return true;
 	}
 
+	private async processEvent(
+		key: string,
+		eventId: string | undefined,
+		handler: () => Promise<void>,
+	): Promise<void> {
+		if (!(await this.shouldProcessEvent(key, eventId))) return;
+
+		try {
+			await handler();
+			if (eventId) {
+				try {
+					await this.idempotency.markComplete(eventId);
+				} catch (markError) {
+					const details =
+						markError instanceof Error ? markError.message : String(markError);
+					logger.logWarning("Failed to record idempotency completion", details);
+				}
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			logger.logWarning("Slack event handler failed", message);
+			if (eventId) {
+				try {
+					await this.idempotency.markFailed(eventId, message);
+				} catch (markError) {
+					const details =
+						markError instanceof Error ? markError.message : String(markError);
+					logger.logWarning("Failed to record idempotency failure", details);
+				}
+			}
+		}
+	}
+
 	private setupEventHandlers(): void {
-		this.socketClient.on("app_mention", async ({ event, ack }) => {
+		this.socketClient.on("app_mention", async ({ event, ack, body }) => {
 			await ack();
 
+			const envelope = body as { event_id?: string };
 			const slackEvent = event as {
 				text: string;
 				channel: string;
@@ -352,21 +370,21 @@ export class SlackBot {
 			};
 
 			const dedupeKey = `app_mention:${slackEvent.channel}:${slackEvent.ts}`;
-			if (!this.shouldProcessEvent(dedupeKey)) return;
+			await this.processEvent(dedupeKey, envelope.event_id, async () => {
+				await this.logMessage({
+					text: slackEvent.text,
+					channel: slackEvent.channel,
+					user: slackEvent.user,
+					ts: slackEvent.ts,
+					threadTs: slackEvent.thread_ts,
+					files: slackEvent.files,
+				});
 
-			await this.logMessage({
-				text: slackEvent.text,
-				channel: slackEvent.channel,
-				user: slackEvent.user,
-				ts: slackEvent.ts,
-				threadTs: slackEvent.thread_ts,
-				files: slackEvent.files,
+				// For channel mentions, always use thread mode
+				// Use existing thread if mentioned in a thread, otherwise create new thread
+				const ctx = await this.createContext(slackEvent, { useThread: true });
+				await this.handler.onChannelMention(ctx);
 			});
-
-			// For channel mentions, always use thread mode
-			// Use existing thread if mentioned in a thread, otherwise create new thread
-			const ctx = await this.createContext(slackEvent, { useThread: true });
-			await this.handler.onChannelMention(ctx);
 		});
 
 		// Handle real Slack slash commands via Socket Mode (envelope type: slash_commands)
@@ -384,6 +402,7 @@ export class SlackBot {
 					user_id: string;
 					trigger_id?: string;
 					response_url?: string;
+					event_id?: string;
 				};
 
 				if (
@@ -397,20 +416,22 @@ export class SlackBot {
 				const key = `slash:${slackCommand.channel_id}:${
 					slackCommand.trigger_id || envelope_id
 				}`;
-				if (!this.shouldProcessEvent(key)) return;
-
-				const ctx = await this.createSlashContext(slackCommand);
-				await this.handler.onSlashCommand(
-					ctx,
-					slackCommand.command,
-					slackCommand.text || "",
-				);
+				const eventId = slackCommand.event_id ?? slackCommand.trigger_id;
+				await this.processEvent(key, eventId, async () => {
+					const ctx = await this.createSlashContext(slackCommand);
+					await this.handler.onSlashCommand(
+						ctx,
+						slackCommand.command,
+						slackCommand.text || "",
+					);
+				});
 			},
 		);
 
-		this.socketClient.on("message", async ({ event, ack }) => {
+		this.socketClient.on("message", async ({ event, ack, body }) => {
 			await ack();
 
+			const envelope = body as { event_id?: string };
 			const slackEvent = event as {
 				text?: string;
 				channel: string;
@@ -445,40 +466,41 @@ export class SlackBot {
 				return;
 
 			const dedupeKey = `message:${slackEvent.channel}:${slackEvent.ts}`;
-			if (!this.shouldProcessEvent(dedupeKey)) return;
+			await this.processEvent(dedupeKey, envelope.event_id, async () => {
+				await this.logMessage({
+					text: slackEvent.text || "",
+					channel: slackEvent.channel,
+					user: slackEvent.user,
+					ts: slackEvent.ts,
+					threadTs: slackEvent.thread_ts,
+					files: slackEvent.files,
+				});
 
-			await this.logMessage({
-				text: slackEvent.text || "",
-				channel: slackEvent.channel,
-				user: slackEvent.user,
-				ts: slackEvent.ts,
-				threadTs: slackEvent.thread_ts,
-				files: slackEvent.files,
+				if (slackEvent.channel_type === "im") {
+					// DMs don't use thread mode by default (more conversational)
+					const ctx = await this.createContext(
+						{
+							text: slackEvent.text || "",
+							channel: slackEvent.channel,
+							user: slackEvent.user,
+							ts: slackEvent.ts,
+							thread_ts: slackEvent.thread_ts,
+							files: slackEvent.files,
+						},
+						{ useThread: false },
+					);
+					await this.handler.onDirectMessage(ctx);
+				}
 			});
-
-			if (slackEvent.channel_type === "im") {
-				// DMs don't use thread mode by default (more conversational)
-				const ctx = await this.createContext(
-					{
-						text: slackEvent.text || "",
-						channel: slackEvent.channel,
-						user: slackEvent.user,
-						ts: slackEvent.ts,
-						thread_ts: slackEvent.thread_ts,
-						files: slackEvent.files,
-					},
-					{ useThread: false },
-				);
-				await this.handler.onDirectMessage(ctx);
-			}
 		});
 
 		// Handle reaction events
-		this.socketClient.on("reaction_added", async ({ event, ack }) => {
+		this.socketClient.on("reaction_added", async ({ event, ack, body }) => {
 			await ack();
 
 			if (!this.handler.onReaction) return;
 
+			const envelope = body as { event_id?: string };
 			const reactionEvent = event as {
 				reaction: string;
 				user: string;
@@ -495,32 +517,35 @@ export class SlackBot {
 			// Ignore bot's own reactions
 			if (reactionEvent.user === this.botUserId) return;
 
-			await this.handler.onReaction({
-				reaction: reactionEvent.reaction,
-				user: reactionEvent.user,
-				channel: reactionEvent.item.channel,
-				messageTs: reactionEvent.item.ts,
-				addReaction: async (emoji: string, channel: string, ts: string) => {
-					try {
+			const dedupeKey = `reaction:${reactionEvent.item.channel}:${reactionEvent.item.ts}:${reactionEvent.reaction}:${reactionEvent.user}`;
+			await this.processEvent(dedupeKey, envelope.event_id, async () => {
+				await this.handler.onReaction({
+					reaction: reactionEvent.reaction,
+					user: reactionEvent.user,
+					channel: reactionEvent.item.channel,
+					messageTs: reactionEvent.item.ts,
+					addReaction: async (emoji: string, channel: string, ts: string) => {
+						try {
+							await this.callSlack(
+								() =>
+									this.webClient.reactions.add({
+										name: emoji,
+										channel,
+										timestamp: ts,
+									}),
+								"reactions.add",
+							);
+						} catch {
+							// Ignore errors (e.g., already reacted)
+						}
+					},
+					postMessage: async (channel: string, text: string) => {
 						await this.callSlack(
-							() =>
-								this.webClient.reactions.add({
-									name: emoji,
-									channel,
-									timestamp: ts,
-								}),
-							"reactions.add",
+							() => this.webClient.chat.postMessage({ channel, text }),
+							"chat.postMessage",
 						);
-					} catch {
-						// Ignore errors (e.g., already reacted)
-					}
-				},
-				postMessage: async (channel: string, text: string) => {
-					await this.callSlack(
-						() => this.webClient.chat.postMessage({ channel, text }),
-						"chat.postMessage",
-					);
-				},
+					},
+				});
 			});
 		});
 	}

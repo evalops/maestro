@@ -371,3 +371,5 @@ export function createSlackMetrics(prefix = "slack"): {
 		},
 	};
 }
+
+export type SlackMetrics = ReturnType<typeof createSlackMetrics>;
