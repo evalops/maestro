@@ -636,7 +636,7 @@ export class Orchestrator {
 				this.watcher.trackPR(result.prNumber);
 				await this.updateTaskReport(task, {
 					status: "completed",
-					steps: { queued: "done", pr: "done" },
+					steps: this.buildCompletionSteps(),
 					prUrl: result.prUrl,
 					updatedAt: new Date().toISOString(),
 					attempt: task.attempts,
@@ -776,6 +776,20 @@ export class Orchestrator {
 		}
 	}
 
+	private buildCompletionSteps(): TaskProgress["steps"] {
+		const steps: TaskProgress["steps"] = {
+			queued: "done",
+			branch: "done",
+			composer: "done",
+			pr: "done",
+		};
+		steps.typecheck = this.config.requireTypeCheck ? "done" : "skipped";
+		steps.lint = this.config.requireLint ? "done" : "skipped";
+		steps.tests = this.config.requireTests ? "done" : "skipped";
+		steps.selfReview = this.config.selfReview ? "done" : "skipped";
+		return steps;
+	}
+
 	private sleep(ms: number): Promise<void> {
 		return new Promise((resolve) => setTimeout(resolve, ms));
 	}
@@ -843,7 +857,7 @@ export class Orchestrator {
 				this.memory.recordOutcome(task.id, result.prNumber);
 				await this.updateTaskReport(task, {
 					status: "completed",
-					steps: { queued: "done", pr: "done" },
+					steps: this.buildCompletionSteps(),
 					prUrl: result.prUrl,
 					updatedAt: new Date().toISOString(),
 					attempt: task.attempts,
