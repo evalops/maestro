@@ -11,6 +11,7 @@ This agent watches a GitHub repository for issues with specific labels, implemen
 - GitHub App auth (JWT + installation tokens) or PAT auth
 - Issue comment progress reporting with step-by-step status
 - Check runs on the PR head SHA summarizing tests/lint/typecheck results
+- GraphQL review threads to capture file-level feedback for future prompts
 - Webhook support for low-latency issue/comment/review handling
 
 ```
@@ -217,6 +218,7 @@ The agent uses a hybrid REST + GraphQL client for richer metadata (review decisi
 - **Retry/backoff** for secondary rate limits
 - **GraphQL rate-limit tracking** to prevent exhaustion
 - **Check runs** for per-task summaries
+- **Review thread ingestion** to map feedback to specific files
 
 ### Recommended GitHub App Permissions
 

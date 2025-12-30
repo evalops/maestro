@@ -21,6 +21,7 @@ import type {
 	IssueComment,
 	PRComment,
 	PRReview,
+	ReviewFeedback,
 	Task,
 } from "./types.js";
 import { GitHubWatcher } from "./watcher/github.js";
@@ -277,15 +278,24 @@ export class Orchestrator {
 						? "changes_requested"
 						: "commented";
 
-			this.memory.updateOutcome(
-				task.id,
-				review.state === "CHANGES_REQUESTED" ? "changes_requested" : "pending",
+			const existingStatus = this.memory.getOutcome(task.id)?.status;
+			const nextStatus =
+				review.state === "CHANGES_REQUESTED"
+					? "changes_requested"
+					: existingStatus === "changes_requested"
+						? "changes_requested"
+						: "pending";
+			await this.captureReviewFeedback(
+				task,
+				pr.number,
+				nextStatus,
 				{
 					reviewer: review.author,
 					decision,
 					comments: review.body ? [review.body] : [],
 					timestamp: review.submittedAt,
 				},
+				[],
 			);
 
 			// If changes requested, we might want to retry the task
@@ -311,13 +321,23 @@ export class Orchestrator {
 
 		const task = this.findTaskByPR(pr.number);
 		if (task) {
-			// Store the comment as feedback
-			this.memory.updateOutcome(task.id, "pending", {
-				reviewer: comment.author,
-				decision: "commented",
-				comments: [comment.body],
-				timestamp: comment.createdAt,
-			});
+			const existingStatus = this.memory.getOutcome(task.id)?.status;
+			const nextStatus =
+				existingStatus === "changes_requested"
+					? "changes_requested"
+					: "pending";
+			await this.captureReviewFeedback(
+				task,
+				pr.number,
+				nextStatus,
+				{
+					reviewer: comment.author,
+					decision: "commented",
+					comments: [comment.body],
+					timestamp: comment.createdAt,
+				},
+				comment.path ? [comment.path] : [],
+			);
 		}
 	}
 
@@ -414,6 +434,51 @@ export class Orchestrator {
 			context: "Composer Agent",
 			targetUrl: task.result?.prUrl,
 		});
+	}
+
+	private async captureReviewFeedback(
+		task: Task,
+		prNumber: number,
+		status: "pending" | "changes_requested" | "merged" | "closed",
+		feedback: ReviewFeedback,
+		seedPaths: string[],
+	): Promise<void> {
+		const comments = new Set(feedback.comments);
+		const filePaths = new Set<string>(seedPaths);
+
+		const shouldFetchThreads =
+			status === "changes_requested" || seedPaths.length === 0;
+		if (this.githubClient && shouldFetchThreads) {
+			try {
+				const threads =
+					await this.githubClient.listPullRequestReviewThreads(prNumber);
+				for (const thread of threads) {
+					if (!thread.path) continue;
+					filePaths.add(thread.path);
+					for (const comment of thread.comments) {
+						if (comment.body) {
+							comments.add(comment.body);
+						}
+					}
+				}
+			} catch (err) {
+				console.warn(
+					`[orchestrator] Failed to fetch review threads for PR #${prNumber}:`,
+					err instanceof Error ? err.message : err,
+				);
+			}
+		}
+
+		this.memory.updateOutcome(task.id, status, {
+			...feedback,
+			comments: Array.from(comments),
+		});
+
+		if (status === "changes_requested") {
+			for (const path of filePaths) {
+				this.memory.recordFileFailure(path);
+			}
+		}
 	}
 
 	// =========================================================================
@@ -526,6 +591,9 @@ export class Orchestrator {
 					`[orchestrator] Task completed: ${task.id} -> PR #${result.prNumber}`,
 				);
 			} else {
+				if (result.error) {
+					this.memory.recordTaskFailure(result.error);
+				}
 				// Don't mark as failed yet if we have retries left
 				if (task.attempts < this.config.maxAttemptsPerTask) {
 					this.memory.updateTaskStatus(task.id, "pending", result);
@@ -557,6 +625,8 @@ export class Orchestrator {
 			// Handle unexpected exceptions - don't leave task stuck in_progress
 			const error = err instanceof Error ? err.message : String(err);
 			console.error(`[orchestrator] Task threw exception: ${task.id}`, error);
+			this.memory.recordTaskFailure(error);
+			this.memory.recordTaskFailure(error);
 
 			if (task.attempts < this.config.maxAttemptsPerTask) {
 				this.memory.updateTaskStatus(task.id, "pending", {

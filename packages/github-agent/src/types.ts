@@ -47,6 +47,21 @@ export interface PRComment {
 	createdAt: string;
 }
 
+export interface PRReviewThreadComment {
+	id: string;
+	author: string;
+	body: string;
+	createdAt: string;
+}
+
+export interface PRReviewThread {
+	id: string;
+	path: string;
+	line: number | null;
+	isResolved: boolean;
+	comments: PRReviewThreadComment[];
+}
+
 export interface CheckRunEvent {
 	id: number;
 	name: string;

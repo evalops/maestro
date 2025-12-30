@@ -1,5 +1,11 @@
 import { Octokit } from "@octokit/rest";
-import type { GitHubIssue, GitHubPR, PRComment, PRReview } from "../types.js";
+import type {
+	GitHubIssue,
+	GitHubPR,
+	PRComment,
+	PRReview,
+	PRReviewThread,
+} from "../types.js";
 import {
 	type GitHubAuth,
 	type GitHubToken,
@@ -540,6 +546,158 @@ export class GitHubApiClient {
 			line: comment.line ?? null,
 			createdAt: comment.created_at,
 		}));
+	}
+
+	async listPullRequestReviewThreads(
+		prNumber: number,
+		options: { maxThreads?: number; maxCommentsPerThread?: number } = {},
+	): Promise<PRReviewThread[]> {
+		const maxThreads = options.maxThreads ?? 50;
+		const maxCommentsPerThread = options.maxCommentsPerThread ?? 50;
+		const results: PRReviewThread[] = [];
+		let cursor: string | null = null;
+		let remaining = maxThreads;
+
+		while (remaining > 0) {
+			const pageSize = Math.min(remaining, 50);
+			try {
+				const token = await this.auth.getToken();
+				const data = await this.octokit.graphql<
+					GraphqlResponse<{
+						repository: {
+							pullRequest: {
+								reviewThreads: {
+									nodes: Array<{
+										id: string;
+										isResolved: boolean;
+										path: string;
+										line: number | null;
+										comments: {
+											nodes: Array<{
+												id: string;
+												body: string;
+												createdAt: string;
+												author: { login: string } | null;
+											} | null>;
+										};
+									} | null>;
+									pageInfo: {
+										hasNextPage: boolean;
+										endCursor: string | null;
+									};
+								};
+							} | null;
+						};
+						rateLimit?: { remaining: number; resetAt: string };
+					}>
+				>(
+					`
+          query($owner: String!, $repo: String!, $number: Int!, $threads: Int!, $comments: Int!, $after: String) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $number) {
+                reviewThreads(first: $threads, after: $after) {
+                  nodes {
+                    id
+                    isResolved
+                    path
+                    line
+                    comments(first: $comments) {
+                      nodes {
+                        id
+                        body
+                        createdAt
+                        author { login }
+                      }
+                    }
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                }
+              }
+            }
+            rateLimit {
+              remaining
+              resetAt
+            }
+          }
+        `,
+					{
+						owner: this.owner,
+						repo: this.repo,
+						number: prNumber,
+						threads: pageSize,
+						comments: maxCommentsPerThread,
+						after: cursor,
+						headers: {
+							Authorization:
+								token.type === "app"
+									? `Bearer ${token.token}`
+									: `token ${token.token}`,
+							"User-Agent": this.userAgent,
+							Accept: "application/vnd.github+json",
+							"X-GitHub-Api-Version": "2022-11-28",
+						},
+						uri: this.graphqlUrl,
+					},
+				);
+
+				if (data.rateLimit) {
+					this.rateLimit = {
+						remaining: data.rateLimit.remaining,
+						resetAt: Date.parse(data.rateLimit.resetAt),
+					};
+				}
+
+				const threads = data.repository.pullRequest?.reviewThreads;
+				if (!threads) {
+					return results;
+				}
+				for (const thread of threads.nodes ?? []) {
+					if (!thread?.path) continue;
+					results.push({
+						id: thread.id,
+						isResolved: thread.isResolved,
+						path: thread.path,
+						line: thread.line ?? null,
+						comments:
+							thread.comments.nodes
+								?.filter(
+									(
+										comment,
+									): comment is NonNullable<
+										(typeof thread.comments.nodes)[number]
+									> => Boolean(comment),
+								)
+								.map((comment) => ({
+									id: comment.id,
+									body: comment.body,
+									createdAt: comment.createdAt,
+									author: comment.author?.login || "unknown",
+								})) ?? [],
+					});
+				}
+
+				const nodeCount = threads.nodes?.length ?? 0;
+				remaining -= nodeCount;
+				if (!threads.pageInfo.hasNextPage) {
+					break;
+				}
+				if (nodeCount === 0 && !threads.pageInfo.endCursor) {
+					break;
+				}
+				cursor = threads.pageInfo.endCursor;
+			} catch (error) {
+				console.warn(
+					"[github-client] GraphQL review thread fetch failed; returning partial results.",
+					error,
+				);
+				break;
+			}
+		}
+
+		return results;
 	}
 
 	async createIssueComment(

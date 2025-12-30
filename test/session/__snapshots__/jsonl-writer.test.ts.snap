@@ -5,7 +5,7 @@ exports[`JsonlEventWriter adapter > emits deltas, completions, tool calls, and t
 {"type":"item","subtype":"message_delta","turnId":"turn-1","timestamp":"2025-01-01T00:00:00.000Z","data":{"text":"he"}}
 {"type":"item","subtype":"tool_call","timestamp":"2025-01-01T00:00:00.000Z","data":{"toolCallId":"call-1","toolName":"write_file","args":{"path":"a.ts"}}}
 {"type":"item","subtype":"tool_result","timestamp":"2025-01-01T00:00:00.000Z","data":{"toolCallId":"call-1","toolName":"write_file","result":{"role":"toolResult","toolCallId":"call-1","toolName":"write_file","content":[{"type":"text","text":"ok"}],"isError":false,"timestamp":1733000000000},"isError":false}}
-{"type":"item","subtype":"message_complete","turnId":"turn-1","timestamp":"2025-01-01T00:00:00.000Z","data":{"text":"hello"}}
+{"type":"item","subtype":"message_complete","turnId":"turn-1","timestamp":"2025-01-01T00:00:00.000Z","data":{"text":"hello","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","model":"gpt-4o-mini","provider":"openai","api":"openai-completions"}}
 {"type":"turn","phase":"end","turnId":"turn-1","role":"assistant","timestamp":"2025-01-01T00:00:00.000Z"}
 "
 `;

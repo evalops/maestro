@@ -51,6 +51,7 @@ export class GitHubWatcher {
 	private notifiedIssues: Set<number> = new Set();
 	private issueLabelSnapshots: Map<number, Set<string>> = new Map();
 	private issueLastSeen: Map<number, number> = new Map();
+	private pollInProgress = false;
 
 	constructor(
 		client: GitHubApiClient,
@@ -106,25 +107,33 @@ export class GitHubWatcher {
 	}
 
 	private async poll(): Promise<void> {
+		if (this.pollInProgress) {
+			return;
+		}
+		this.pollInProgress = true;
 		const pollStartedAt = new Date().toISOString();
 		const issuesSince = this.lastIssuePollTime;
 		const prsSince = this.lastTrackedPrPollTime;
 		const commentsSince = this.lastIssueCommentPollTime;
 
-		const [issuesCursor, prsCursor, commentsCursor] = await Promise.all([
-			this.pollIssues(issuesSince, pollStartedAt),
-			this.pollTrackedPRs(prsSince, pollStartedAt),
-			this.pollIssueComments(commentsSince, pollStartedAt),
-		]);
+		try {
+			const [issuesCursor, prsCursor, commentsCursor] = await Promise.all([
+				this.pollIssues(issuesSince, pollStartedAt),
+				this.pollTrackedPRs(prsSince, pollStartedAt),
+				this.pollIssueComments(commentsSince, pollStartedAt),
+			]);
 
-		if (issuesCursor) {
-			this.lastIssuePollTime = issuesCursor;
-		}
-		if (prsCursor) {
-			this.lastTrackedPrPollTime = prsCursor;
-		}
-		if (commentsCursor) {
-			this.lastIssueCommentPollTime = commentsCursor;
+			if (issuesCursor) {
+				this.lastIssuePollTime = issuesCursor;
+			}
+			if (prsCursor) {
+				this.lastTrackedPrPollTime = prsCursor;
+			}
+			if (commentsCursor) {
+				this.lastIssueCommentPollTime = commentsCursor;
+			}
+		} finally {
+			this.pollInProgress = false;
 		}
 	}
 

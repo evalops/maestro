@@ -10,6 +10,8 @@ export type {
 	GitHubPR,
 	PRReview,
 	PRComment,
+	PRReviewThread,
+	PRReviewThreadComment,
 	Task,
 	TaskResult,
 	Outcome,

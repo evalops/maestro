@@ -38,7 +38,12 @@ vi.mock("./github/auth.js", () => ({
 }));
 
 vi.mock("./github/client.js", () => ({
-	GitHubApiClient: vi.fn(),
+	GitHubApiClient: vi.fn().mockImplementation(() => ({
+		listPullRequestReviewThreads: vi.fn().mockResolvedValue([]),
+		supportsCheckRuns: vi.fn().mockResolvedValue(false),
+		updateCheckRun: vi.fn().mockResolvedValue(undefined),
+		createCommitStatus: vi.fn().mockResolvedValue(undefined),
+	})),
 }));
 
 vi.mock("./github/reporter.js", () => ({
@@ -60,6 +65,8 @@ type MockMemoryStore = {
 		| "updateTaskStatus"
 		| "updateOutcome"
 		| "recordOutcome"
+		| "getOutcome"
+		| "recordTaskFailure"
 		| "incrementAttempts"
 		| "getDailyCost"
 		| "getInProgressTasks"
@@ -191,6 +198,8 @@ describe("Orchestrator", () => {
 			updateTaskStatus: vi.fn(),
 			updateOutcome: vi.fn(),
 			recordOutcome: vi.fn(),
+			getOutcome: vi.fn(),
+			recordTaskFailure: vi.fn(),
 			incrementAttempts: vi.fn(),
 			getDailyCost: vi.fn().mockReturnValue(0),
 			getInProgressTasks: vi.fn().mockReturnValue([]),
