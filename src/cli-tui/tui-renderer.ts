@@ -202,6 +202,10 @@ import {
 } from "./tui-renderer/custom-commands-controller.js";
 import { attachEditorBindings } from "./tui-renderer/editor-bindings.js";
 import { loadInitialTuiRendererPreferences } from "./tui-renderer/initial-preferences.js";
+import {
+	type InputController,
+	createInputController,
+} from "./tui-renderer/input-controller.js";
 import { createInterruptController } from "./tui-renderer/interrupt-setup.js";
 import {
 	type McpEventsController,
@@ -283,9 +287,8 @@ export class TuiRenderer {
 	private sessionManager: SessionManager;
 	private version: string;
 	private isInitialized = false;
-	private onInputCallback?: (text: string) => void;
 	private loaderView: LoaderView;
-	private onInterruptCallback?: (options?: { keepPartial?: boolean }) => void;
+	private inputController!: InputController;
 
 	// Tool execution tracking: toolCallId -> component
 	private pendingTools = new Map<string, ToolExecutionComponent>();
@@ -611,10 +614,25 @@ export class TuiRenderer {
 			clearEditor: () => this.clearEditor(),
 		});
 
+		this.inputController = createInputController({
+			deps: {
+				editor: this.editor,
+				getPasteHandler: () => this.pasteHandler,
+				getBashModeView: () => this.bashModeView,
+				getInterruptController: () => this.interruptController,
+				autoRetryController: this.autoRetryController,
+			},
+			callbacks: {
+				showInfo: (message) => this.notificationView.showInfo(message),
+				stopRenderer: () => this.stop(),
+				exitProcess: (code) => process.exit(code ?? 0),
+			},
+		});
+
 		this.interruptController = createInterruptController({
 			footer: this.footer,
 			notificationView: this.notificationView,
-			onInterrupt: (options) => this.onInterruptCallback?.(options),
+			onInterrupt: (options) => this.inputController.notifyInterrupt(options),
 			restoreQueuedPrompts: () => this.queueController.restoreQueuedPrompts(),
 			getWorkingHint: () => this.workingFooterHint,
 			isMinimalMode: () => this.isMinimalMode(),
@@ -1359,14 +1377,14 @@ export class TuiRenderer {
 			onCommandExecuted: (name) =>
 				this.slashHintController.recordCommandUsage(name),
 			onSubmit: (text) => {
-				void this.handleTextSubmit(text);
+				void this.inputController.handleTextSubmit(text);
 			},
 			shouldInterrupt: () =>
 				this.isAgentRunning || this.interruptController.isArmed(),
-			onInterrupt: () => this.handleInterruptRequest(),
-			onKeepPartial: () => this.handleKeepPartialRequest(),
+			onInterrupt: () => this.inputController.handleInterruptRequest(),
+			onKeepPartial: () => this.inputController.handleKeepPartialRequest(),
 			onCtrlC: () => this.runController.handleCtrlC(),
-			onCtrlD: () => this.handleCtrlDExit(),
+			onCtrlD: () => this.inputController.handleCtrlDExit(),
 			showCommandPalette: () => this.commandPaletteView.showCommandPalette(),
 			showFileSearch: () => this.fileSearchView.showFileSearch(),
 		});
@@ -1655,63 +1673,13 @@ export class TuiRenderer {
 	}
 
 	async getUserInput(): Promise<string> {
-		return new Promise((resolve) => {
-			this.onInputCallback = (text: string) => {
-				this.onInputCallback = undefined;
-				resolve(text);
-			};
-		});
-	}
-
-	private async handleTextSubmit(text: string): Promise<void> {
-		if (this.pasteHandler.hasPending()) {
-			this.notificationView.showInfo(
-				"Still summarizing pasted content — please wait a moment.",
-			);
-			return;
-		}
-		if (await this.bashModeView.tryHandleInput(text)) {
-			return;
-		}
-		// Add to prompt history for Up/Down navigation
-		if (text.trim()) {
-			this.editor.addToHistory(text);
-		}
-		if (this.onInputCallback) {
-			this.onInputCallback(text);
-		}
+		return this.inputController.getUserInput();
 	}
 
 	setInterruptCallback(
 		callback: (options?: { keepPartial?: boolean }) => void,
 	): void {
-		this.onInterruptCallback = callback;
-	}
-
-	private handleInterruptRequest(): void {
-		// Also abort any in-progress retry
-		if (this.autoRetryController.isRetrying()) {
-			this.autoRetryController.abortRetry();
-		}
-		this.interruptController.handleInterruptRequest();
-	}
-
-	/**
-	 * Handle 'k' key press to keep partial response during interrupt.
-	 * Only works when interrupt is armed.
-	 * @returns true if the key was handled (interrupt was armed), false otherwise
-	 */
-	handleKeepPartialRequest(): boolean {
-		return this.interruptController.handleKeepPartialRequest();
-	}
-
-	/**
-	 * Handle Ctrl+D with empty editor - graceful exit.
-	 * Standard Unix behavior: Ctrl+D on empty input means end of input/exit.
-	 */
-	private handleCtrlDExit(): void {
-		this.stop();
-		process.exit(0);
+		this.inputController.setInterruptCallback(callback);
 	}
 
 	private renderHeader(): void {
