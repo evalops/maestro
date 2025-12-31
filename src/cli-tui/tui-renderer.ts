@@ -17,12 +17,7 @@ import type {
 	ApprovalMode,
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/agent.js";
-import type {
-	AgentEvent,
-	AgentState,
-	AppMessage,
-	ThinkingLevel,
-} from "../agent/types.js";
+import type { AgentEvent, AgentState, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
 import type { RegisteredModel } from "../models/registry.js";
@@ -34,11 +29,7 @@ import {
 	toSessionModelMetadata,
 } from "../session/manager.js";
 import type { SessionManager } from "../session/manager.js";
-import {
-	getTelemetryStatus,
-	recordSessionStart,
-	recordTokenUsage,
-} from "../telemetry.js";
+import { getTelemetryStatus } from "../telemetry.js";
 import { getCurrentThemeName, setTheme } from "../theme/theme.js";
 import { getTrainingStatus } from "../training.js";
 
@@ -47,10 +38,7 @@ import {
 	type AutoRetryController,
 	createAutoRetryController,
 } from "../agent/auto-retry.js";
-import {
-	SessionRecoveryManager,
-	listSessionBackups,
-} from "../agent/session-recovery.js";
+import { SessionRecoveryManager } from "../agent/session-recovery.js";
 import {
 	type AutoVerifyService,
 	type TestResult,
@@ -103,7 +91,7 @@ import { ImportExportView } from "./import-view.js";
 import { InfoView } from "./info-view.js";
 import { InstructionPanelComponent } from "./instruction-panel.js";
 import type { InterruptController } from "./interrupt-controller.js";
-import { LoaderView } from "./loader/loader-view.js";
+import type { LoaderView } from "./loader/loader-view.js";
 import { LspView } from "./lsp-view.js";
 import type { MessageView } from "./message-view.js";
 import { NotificationView } from "./notification-view.js";
@@ -143,6 +131,10 @@ import type { StreamingView } from "./streaming-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import type { ToolOutputView } from "./tool-output-view.js";
 import { ToolStatusView } from "./tool-status-view.js";
+import {
+	type AgentEventBridge,
+	createAgentEventBridge,
+} from "./tui-renderer/agent-event-bridge.js";
 import { buildTuiCommandRegistry } from "./tui-renderer/command-registry.js";
 import {
 	type UiState,
@@ -207,6 +199,7 @@ import {
 	createInputController,
 } from "./tui-renderer/input-controller.js";
 import { createInterruptController } from "./tui-renderer/interrupt-setup.js";
+import { createLoaderView } from "./tui-renderer/loader-setup.js";
 import {
 	type McpEventsController,
 	createMcpEventsController,
@@ -219,6 +212,10 @@ import {
 	createQuickSettingsController,
 } from "./tui-renderer/quick-settings-controller.js";
 import { createSessionSubsystem } from "./tui-renderer/session-setup.js";
+import {
+	type SessionStateController,
+	createSessionStateController,
+} from "./tui-renderer/session-state-controller.js";
 import {
 	type SlashHintController,
 	createSlashHintController,
@@ -308,8 +305,6 @@ export class TuiRenderer {
 	private autoRetryController: AutoRetryController;
 	private sessionRecoveryManager: SessionRecoveryManager;
 	private testVerificationService: AutoVerifyService | null = null;
-	private sessionStartTime: number | null = null;
-	private sessionTelemetryRecorded = false;
 	private planHint: string | null = null;
 	private toolOutputView: ToolOutputView;
 	private commandPaletteView: CommandPaletteView;
@@ -326,6 +321,7 @@ export class TuiRenderer {
 	private sessionDataProvider: SessionDataProvider;
 	private sessionSummaryController!: SessionSummaryController;
 	private sessionSwitcherView!: SessionSwitcherView;
+	private sessionStateController!: SessionStateController;
 	private importExportView: ImportExportView;
 	private runCommandView: RunCommandView;
 	private bashModeView: BashModeView;
@@ -362,6 +358,7 @@ export class TuiRenderer {
 	private costView: CostView;
 	private quotaView: QuotaView;
 	private runController: RunController;
+	private agentEventBridge!: AgentEventBridge;
 	private readonly focusEditor = (): void => {
 		this.ui.setFocus(this.editor);
 	};
@@ -655,7 +652,7 @@ export class TuiRenderer {
 			notificationView: this.notificationView,
 		});
 		this.approvalService = approvalService;
-		this.loaderView = new LoaderView({
+		this.loaderView = createLoaderView({
 			ui: this.ui,
 			statusContainer: this.statusContainer,
 			footer: this.footer,
@@ -805,6 +802,58 @@ export class TuiRenderer {
 		this.messageView = toolingViews.messageView;
 		this.streamingView = toolingViews.streamingView;
 		this.agentEventRouter = toolingViews.agentEventRouter;
+		this.sessionStateController = createSessionStateController({
+			deps: {
+				agent: this.agent,
+				sessionManager: this.sessionManager,
+				sessionContext: this.sessionContext,
+				sessionRecoveryManager: this.sessionRecoveryManager,
+				editor: this.editor,
+				messageView: this.messageView,
+				toolOutputView: this.toolOutputView,
+				chatContainer: this.chatContainer,
+				scrollContainer: this.scrollContainer,
+				startupContainer: this.startupContainer,
+				planView: this.planView,
+				footer: this.footer,
+				notificationView: this.notificationView,
+			},
+			callbacks: {
+				refreshFooterHint: () => this.refreshFooterHint(),
+				requestRender: () => this.ui.requestRender(),
+				clearEditor: () => this.clearEditor(),
+				setPlanHint: (hint) => {
+					this.planHint = hint;
+				},
+				isAgentRunning: () => this.isAgentRunning,
+			},
+		});
+
+		this.agentEventBridge = createAgentEventBridge({
+			deps: {
+				agent: this.agent,
+				sessionManager: this.sessionManager,
+				sessionRecoveryManager: this.sessionRecoveryManager,
+				autoRetryController: this.autoRetryController,
+				interruptController: this.interruptController,
+				footer: this.footer,
+				agentEventRouter: this.agentEventRouter,
+			},
+			callbacks: {
+				ensureInitialized: () => this.init(),
+				handleApprovalRequired: (request) =>
+					this.handleApprovalRequired(request),
+				handleApprovalResolved: (request, decision) =>
+					this.handleApprovalResolved(request, decision),
+				setAgentRunning: (running) => {
+					this.isAgentRunning = running;
+				},
+				maybeShowContextWarning: (stats) => this.maybeShowContextWarning(stats),
+				setCurrentModelMetadata: (metadata) => {
+					this.currentModelMetadata = metadata;
+				},
+			},
+		});
 
 		// Initialize quick settings controller for keyboard shortcuts
 		this.quickSettingsController = createQuickSettingsController({
@@ -1401,33 +1450,7 @@ export class TuiRenderer {
 	}
 
 	private handleSessionRecoverCommand(context: CommandExecutionContext): void {
-		const backups = listSessionBackups();
-		if (!backups.length) {
-			context.showInfo("No session backups available to recover.");
-			return;
-		}
-
-		// Prefer backup for current cwd, fall back to most recent overall
-		const cwd = process.cwd();
-		const backup =
-			backups.find((b) => b.cwd === cwd) ??
-			backups.sort(
-				(a, b) =>
-					new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-			)[0];
-
-		if (!backup) {
-			context.showInfo("No session backups available to recover.");
-			return;
-		}
-
-		this.resetConversation(
-			backup.messages,
-			undefined,
-			`Recovered session ${backup.sessionId.slice(0, 8)} from backup.`,
-			{ persistMessages: true },
-		);
-		this.sessionRecoveryManager.markRecovered("manual_recovery");
+		this.sessionStateController.handleSessionRecoverCommand(context);
 	}
 
 	public async ensureContextBudgetBeforePrompt(): Promise<void> {
@@ -1487,34 +1510,6 @@ export class TuiRenderer {
 					failedTests: result.failedTests,
 					failures: failureSummary,
 				});
-			}
-		}
-	}
-
-	/**
-	 * Record token usage telemetry from the latest assistant messages.
-	 */
-	private recordTokenUsageFromMessages(state: AgentState): void {
-		// Find the most recent assistant message with usage info
-		for (let i = state.messages.length - 1; i >= 0; i--) {
-			const message = state.messages[i];
-			if (message.role === "assistant" && message.usage) {
-				recordTokenUsage(
-					this.sessionManager.getSessionId(),
-					{
-						input: message.usage.input,
-						output: message.usage.output,
-						cacheRead: message.usage.cacheRead,
-						cacheWrite: message.usage.cacheWrite,
-					},
-					{
-						model: state.model
-							? `${state.model.provider}/${state.model.id}`
-							: undefined,
-						provider: state.model?.provider,
-					},
-				);
-				break;
 			}
 		}
 	}
@@ -1582,94 +1577,15 @@ export class TuiRenderer {
 	}
 
 	async handleEvent(event: AgentEvent, state: AgentState): Promise<void> {
-		if (!this.isInitialized) {
-			await this.init();
-		}
-		if (event.type === "action_approval_required") {
-			this.handleApprovalRequired(event.request);
-			return;
-		}
-		if (event.type === "action_approval_resolved") {
-			this.handleApprovalResolved(event.request, event.decision);
-			return;
-		}
-		if (event.type === "agent_start") {
-			this.isAgentRunning = true;
-			// Start session recovery tracking if not already started
-			if (!this.sessionRecoveryManager.getCurrentBackup()) {
-				this.sessionRecoveryManager.startSession({
-					sessionId: this.sessionManager.getSessionId(),
-					systemPrompt: state.systemPrompt,
-					modelId: state.model
-						? `${state.model.provider}/${state.model.id}`
-						: undefined,
-					cwd: process.cwd(),
-				});
-			}
-			// Record session start telemetry (once per session)
-			if (!this.sessionTelemetryRecorded) {
-				this.sessionStartTime = Date.now();
-				this.sessionTelemetryRecorded = true;
-				recordSessionStart(this.sessionManager.getSessionId(), {
-					model: state.model
-						? `${state.model.provider}/${state.model.id}`
-						: undefined,
-					provider: state.model?.provider,
-				});
-			}
-		} else if (event.type === "agent_end") {
-			this.isAgentRunning = false;
-			this.interruptController.clear();
-			// Update session recovery with latest messages
-			this.sessionRecoveryManager.updateMessages([...state.messages]);
-			// Record token usage from the latest assistant message
-			this.recordTokenUsageFromMessages(state);
-			// Check for retryable errors (async, fire and forget)
-			const contextWindow = state.model?.contextWindow;
-			this.autoRetryController.checkAndRetry(this.agent, contextWindow);
-		}
-
-		// Update footer with current stats
-		this.footer.updateState(state);
-		const stats = calculateFooterStats(state);
-		this.maybeShowContextWarning(stats);
-		this.currentModelMetadata = toSessionModelMetadata(
-			state.model as RegisteredModel,
-		);
-
-		this.agentEventRouter.handle(event);
+		await this.agentEventBridge.handleEvent(event, state);
 	}
 
 	renderInitialMessages(state: AgentState): void {
-		this.footer.updateState(state);
-		this.messageView.renderInitialMessages(state);
-
-		// Populate editor history with user messages from the session (oldest first so newest is at index 0)
-		for (const message of state.messages) {
-			if (message.role === "user") {
-				const textBlocks =
-					typeof message.content === "string"
-						? [{ type: "text" as const, text: message.content }]
-						: message.content.filter(
-								(c): c is { type: "text"; text: string } => c.type === "text",
-							);
-				const textContent = textBlocks.map((c) => c.text).join("");
-				// Skip compaction summary messages (they start with special prefix)
-				if (textContent && !textContent.startsWith("[Context compaction:")) {
-					this.editor.addToHistory(textContent);
-				}
-			}
-		}
-
-		this.ui.requestRender();
+		this.sessionStateController.renderInitialMessages(state);
 	}
 
 	private renderConversationView(): void {
-		// Clear and re-render conversation with current settings (e.g., after toggling thinking blocks)
-		this.chatContainer.clear();
-		this.scrollContainer.clearHistory();
-		this.toolOutputView.clearTrackedComponents();
-		this.messageView.renderInitialMessages(this.agent.state);
+		this.sessionStateController.renderConversationView();
 	}
 
 	async getUserInput(): Promise<string> {
@@ -2005,13 +1921,7 @@ export class TuiRenderer {
 	}
 
 	private handleNewChatCommand(context: CommandExecutionContext): void {
-		if (this.isAgentRunning) {
-			context.showError(
-				"Wait for the current run to finish before starting a new chat.",
-			);
-			return;
-		}
-		this.resetConversation([], undefined, "Started a new chat session.");
+		this.sessionStateController.handleNewChatCommand(context);
 	}
 
 	private resetConversation(
@@ -2020,34 +1930,12 @@ export class TuiRenderer {
 		toastMessage?: string,
 		options?: { preserveSession?: boolean; persistMessages?: boolean },
 	): void {
-		if (!options?.preserveSession) {
-			this.sessionManager.startFreshSession();
-		}
-		this.agent.clearMessages();
-		this.sessionContext.resetArtifacts();
-		this.toolOutputView.clearTrackedComponents();
-		this.chatContainer.clear();
-		this.scrollContainer.clearHistory();
-		this.startupContainer.clear();
-		this.planView.syncHintWithStore();
-		this.planHint = null;
-		for (const message of messages) {
-			this.agent.appendMessage(message);
-			if (options?.persistMessages) {
-				this.sessionManager.saveMessage(message);
-			}
-		}
-		this.footer.updateState(this.agent.state);
-		this.refreshFooterHint();
-		this.renderInitialMessages(this.agent.state);
-		if (editorSeed !== undefined) {
-			this.editor.setText(editorSeed);
-		} else {
-			this.clearEditor();
-		}
-		if (toastMessage) {
-			this.notificationView.showToast(toastMessage, "success");
-		}
+		this.sessionStateController.resetConversation(
+			messages,
+			editorSeed,
+			toastMessage,
+			options,
+		);
 	}
 
 	private handleMcpCommand(context: CommandExecutionContext): void {
@@ -2358,23 +2246,7 @@ export class TuiRenderer {
 	}
 
 	private applyLoadedSessionContext(): void {
-		this.sessionContext.resetArtifacts();
-		const thinking = this.sessionManager.loadThinkingLevel();
-		if (thinking) {
-			this.agent.setThinkingLevel(thinking as ThinkingLevel);
-		}
-		const modelKey = this.sessionManager.loadModel();
-		if (modelKey) {
-			const [provider, modelId] = modelKey.split("/");
-			if (provider && modelId) {
-				const nextModel = getRegisteredModels().find(
-					(entry) => entry.provider === provider && entry.id === modelId,
-				);
-				if (nextModel) {
-					this.agent.setModel(nextModel);
-				}
-			}
-		}
+		this.sessionStateController.applyLoadedSessionContext();
 	}
 
 	private isMinimalMode(): boolean {
