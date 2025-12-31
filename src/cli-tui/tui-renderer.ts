@@ -226,6 +226,10 @@ import {
 	createUiStateController,
 } from "./tui-renderer/ui-state-setup.js";
 import { createUtilityViews } from "./tui-renderer/utility-views-setup.js";
+import {
+	type ViewportController,
+	createViewportController,
+} from "./tui-renderer/viewport-controller.js";
 import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
 const logger = createLogger("tui:renderer");
@@ -386,22 +390,7 @@ export class TuiRenderer {
 	private updateNotice?: UpdateCheckResult | null;
 	private startupWarnings: FooterHint[] = [];
 	private modalManager: ModalManager;
-	private readonly viewportLayout = {
-		columns: 0,
-		header: 0,
-		startup: 0,
-		status: 0,
-		editor: 0,
-		footer: 0,
-	};
-	private readonly viewportDirty = {
-		header: true,
-		startup: true,
-		status: true,
-		editor: true,
-		footer: true,
-	};
-	private appliedChatViewportHeight = 0;
+	private viewportController!: ViewportController;
 	private terminalCapabilities: TerminalCapabilities =
 		getTerminalCapabilities();
 	private terminalFeatures = detectTerminalFeatures();
@@ -472,8 +461,8 @@ export class TuiRenderer {
 							this.footer?.setMode(this.footerMode);
 						}
 					}
-					this.viewportDirty.header = true;
-					this.viewportDirty.footer = true;
+					this.viewportController.markHeaderDirty();
+					this.viewportController.markFooterDirty();
 					this.updateScrollViewport();
 				},
 				onFooterModeChange: (mode) => {
@@ -482,7 +471,7 @@ export class TuiRenderer {
 					if (!this.isAgentRunning) {
 						this.refreshFooterHint();
 					}
-					this.viewportDirty.footer = true;
+					this.viewportController.markFooterDirty();
 					this.updateScrollViewport();
 				},
 				onHideThinkingBlocksChange: (hidden) => {
@@ -571,13 +560,25 @@ export class TuiRenderer {
 			this.editor,
 			{
 				onLayoutChange: () => {
-					this.viewportDirty.editor = true;
+					this.viewportController.markEditorDirty();
 					this.updateScrollViewport();
 				},
 			},
 		);
 		this.footer = new FooterComponent(agent.state, this.footerMode);
 		this.footer.startBranchTracking(() => this.ui.requestRender());
+		this.viewportController = createViewportController({
+			deps: {
+				headerContainer: this.headerContainer,
+				startupContainer: this.startupContainer,
+				statusContainer: this.statusContainer,
+				editorContainer: this.editorContainer,
+				footer: this.footer,
+				scrollContainer: this.scrollContainer,
+				getColumns: () => process.stdout.columns ?? 80,
+				getRows: () => process.stdout.rows ?? 24,
+			},
+		});
 		this.notificationView = new NotificationView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -660,7 +661,7 @@ export class TuiRenderer {
 			lowUnicode: this.terminalFeatures.lowUnicode,
 			disableAnimations: this.shouldDisableAnimations(),
 			onLayoutChange: () => {
-				this.viewportDirty.status = true;
+				this.viewportController.markStatusDirty();
 				this.updateScrollViewport();
 			},
 		});
@@ -1374,7 +1375,7 @@ export class TuiRenderer {
 				requestRender: () => {
 					// Slash hint updates can change editorContainer height (0 ↔ 1–2 lines).
 					// Keep the scroll viewport sized so we never spill into scrollback.
-					this.viewportDirty.editor = true;
+					this.viewportController.markEditorDirty();
 					this.updateScrollViewport({ fast: true });
 					this.ui.requestRender();
 				},
@@ -1415,7 +1416,7 @@ export class TuiRenderer {
 		const previousOnChange = this.editor.onChange;
 		this.editor.onChange = (text) => {
 			previousOnChange?.(text);
-			this.viewportDirty.editor = true;
+			this.viewportController.markEditorDirty();
 			this.updateScrollViewport({ fast: true });
 		};
 
@@ -1567,7 +1568,7 @@ export class TuiRenderer {
 			startupChangelogSummary: this.startupChangelogSummary,
 			modelScope: this.modelScope,
 			onLayoutChange: () => {
-				this.viewportDirty.startup = true;
+				this.viewportController.markStartupDirty();
 				this.updateScrollViewport();
 			},
 		});
@@ -1600,7 +1601,7 @@ export class TuiRenderer {
 
 	private renderHeader(): void {
 		this.headerContainer.clear();
-		this.viewportDirty.header = true;
+		this.viewportController.markHeaderDirty();
 
 		// The full instruction panel is helpful but very tall; when it pushes the UI
 		// into scrollback it becomes a major source of flicker (terminals can't update
@@ -2511,77 +2512,7 @@ export class TuiRenderer {
 	 * Called on init and resize.
 	 */
 	private updateScrollViewport(options: { fast?: boolean } = {}): void {
-		// Guard: scrollContainer may not be initialized yet during constructor
-		if (!this.scrollContainer) return;
-		const rows = process.stdout.rows ?? 24;
-		const columns = process.stdout.columns ?? 80;
-
-		// Heights depend on terminal width due to wrapping.
-		if (columns !== this.viewportLayout.columns) {
-			this.viewportLayout.columns = columns;
-			this.viewportDirty.header = true;
-			this.viewportDirty.startup = true;
-			this.viewportDirty.status = true;
-			this.viewportDirty.editor = true;
-			this.viewportDirty.footer = true;
-		}
-
-		// Fast path (typing): only re-measure editorContainer unless other layout
-		// regions are dirty. This avoids re-rendering the whole UI just to compute
-		// reserved height on every keystroke.
-		const shouldMeasureAll =
-			!options.fast ||
-			this.viewportDirty.header ||
-			this.viewportDirty.startup ||
-			this.viewportDirty.status ||
-			this.viewportDirty.footer;
-
-		if (shouldMeasureAll) {
-			if (this.viewportDirty.header) {
-				this.viewportLayout.header =
-					this.headerContainer.render(columns).length;
-				this.viewportDirty.header = false;
-			}
-			if (this.viewportDirty.startup) {
-				this.viewportLayout.startup =
-					this.startupContainer.render(columns).length;
-				this.viewportDirty.startup = false;
-			}
-			if (this.viewportDirty.status) {
-				this.viewportLayout.status =
-					this.statusContainer.render(columns).length;
-				this.viewportDirty.status = false;
-			}
-			if (this.viewportDirty.editor) {
-				this.viewportLayout.editor =
-					this.editorContainer.render(columns).length;
-				this.viewportDirty.editor = false;
-			}
-			if (this.viewportDirty.footer) {
-				this.viewportLayout.footer = this.footer.render(columns).length;
-				this.viewportDirty.footer = false;
-			}
-		} else if (this.viewportDirty.editor) {
-			this.viewportLayout.editor = this.editorContainer.render(columns).length;
-			this.viewportDirty.editor = false;
-		}
-
-		// Compute how many rows are taken by non-chat UI elements so the scroll
-		// viewport never forces the terminal into scrollback (a major cause of flicker).
-		const reserved =
-			this.viewportLayout.header +
-			this.viewportLayout.startup +
-			this.viewportLayout.status +
-			1 + // spacer between status + editor
-			this.viewportLayout.editor +
-			this.viewportLayout.footer;
-
-		const available = Math.max(1, rows - reserved);
-		if (available === this.appliedChatViewportHeight) {
-			return;
-		}
-		this.scrollContainer.setViewportHeight(available);
-		this.appliedChatViewportHeight = available;
+		this.viewportController.updateScrollViewport(options);
 	}
 
 	/**
