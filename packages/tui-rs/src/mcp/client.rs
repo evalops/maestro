@@ -634,38 +634,90 @@ impl McpClient {
         prefixed_name: &str,
         arguments: serde_json::Value,
     ) -> Result<McpToolResult, McpError> {
-        let (server_name, tool_name) = if prefixed_name.starts_with("mcp__") {
-            let parts: Vec<&str> = prefixed_name.split("__").collect();
-            if parts.len() < 3 || parts[0] != "mcp" {
-                return Err(McpError::ToolNotFound(format!(
-                    "Invalid MCP tool name format: {}",
-                    prefixed_name
-                )));
-            }
-            (parts[1], parts[2..].join("__"))
-        } else if prefixed_name.starts_with("mcp_") {
-            let parts: Vec<&str> = prefixed_name.splitn(3, '_').collect();
-            if parts.len() != 3 || parts[0] != "mcp" {
-                return Err(McpError::ToolNotFound(format!(
-                    "Invalid MCP tool name format: {}",
-                    prefixed_name
-                )));
-            }
-            (parts[1], parts[2].to_string())
-        } else {
-            return Err(McpError::ToolNotFound(format!(
-                "Invalid MCP tool name format: {}",
-                prefixed_name
-            )));
-        };
-
         let connections = self.connections.read().await;
-        let conn = connections
-            .get(server_name)
-            .ok_or_else(|| McpError::ServerNotFound(server_name.to_string()))?;
-
+        let (_, tool_name, conn) =
+            Self::resolve_prefixed_tool_with_connections(prefixed_name, &connections)?;
         let mut conn = conn.lock().await;
         conn.call_tool(&tool_name, arguments).await
+    }
+
+    /// Call a tool and return resolved server/tool metadata for the same parse.
+    pub async fn call_tool_with_metadata(
+        &self,
+        prefixed_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<(String, String, McpToolResult), McpError> {
+        let connections = self.connections.read().await;
+        let (server_name, tool_name, conn) =
+            Self::resolve_prefixed_tool_with_connections(prefixed_name, &connections)?;
+        let mut conn = conn.lock().await;
+        let result = conn.call_tool(&tool_name, arguments).await?;
+        Ok((server_name, tool_name, result))
+    }
+
+    /// Parse a prefixed MCP tool name into (server, tool) using known connections
+    pub async fn parse_prefixed_name(
+        &self,
+        prefixed_name: &str,
+    ) -> Result<(String, String), McpError> {
+        let connections = self.connections.read().await;
+        Self::parse_prefixed_name_with_connections(prefixed_name, &connections)
+    }
+
+    fn parse_prefixed_name_with_connections(
+        prefixed_name: &str,
+        connections: &HashMap<String, Arc<Mutex<McpConnection>>>,
+    ) -> Result<(String, String), McpError> {
+        if let Some(rest) = prefixed_name.strip_prefix("mcp__") {
+            let parts: Vec<&str> = rest.split("__").collect();
+            if parts.len() < 2 {
+                return Err(McpError::ToolNotFound(format!(
+                    "Invalid MCP tool name format: {}",
+                    prefixed_name
+                )));
+            }
+            for idx in (1..parts.len()).rev() {
+                let candidate = parts[..idx].join("__");
+                if connections.contains_key(&candidate) {
+                    return Ok((candidate, parts[idx..].join("__")));
+                }
+            }
+            return Ok((parts[0].to_string(), parts[1..].join("__")));
+        }
+
+        if let Some(rest) = prefixed_name.strip_prefix("mcp_") {
+            let parts: Vec<&str> = rest.split('_').collect();
+            if parts.len() < 2 {
+                return Err(McpError::ToolNotFound(format!(
+                    "Invalid MCP tool name format: {}",
+                    prefixed_name
+                )));
+            }
+            for idx in (1..parts.len()).rev() {
+                let candidate = parts[..idx].join("_");
+                if connections.contains_key(&candidate) {
+                    return Ok((candidate, parts[idx..].join("_")));
+                }
+            }
+            return Ok((parts[0].to_string(), parts[1..].join("_")));
+        }
+
+        Err(McpError::ToolNotFound(format!(
+            "Invalid MCP tool name format: {}",
+            prefixed_name
+        )))
+    }
+
+    fn resolve_prefixed_tool_with_connections(
+        prefixed_name: &str,
+        connections: &HashMap<String, Arc<Mutex<McpConnection>>>,
+    ) -> Result<(String, String, Arc<Mutex<McpConnection>>), McpError> {
+        let (server_name, tool_name) =
+            Self::parse_prefixed_name_with_connections(prefixed_name, connections)?;
+        let conn = connections
+            .get(&server_name)
+            .ok_or_else(|| McpError::ServerNotFound(server_name.clone()))?;
+        Ok((server_name, tool_name, Arc::clone(conn)))
     }
 
     /// Check if a tool name is an MCP tool
@@ -706,6 +758,23 @@ impl Default for McpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::config::McpServerConfig;
+
+    fn stub_config(name: &str) -> McpServerConfig {
+        McpServerConfig {
+            name: name.to_string(),
+            transport: McpTransport::Stdio,
+            command: Some("echo".to_string()),
+            args: Vec::new(),
+            env: HashMap::new(),
+            cwd: None,
+            url: None,
+            headers: HashMap::new(),
+            timeout: None,
+            enabled: true,
+            disabled: false,
+        }
+    }
 
     #[test]
     fn test_is_mcp_tool() {
@@ -736,5 +805,19 @@ mod tests {
         let client = McpClient::new();
         let tools = client.list_all_tools().await;
         assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn parse_prefixed_name_with_double_underscore_server() {
+        let mut connections = HashMap::new();
+        let conn = McpConnection::new(stub_config("my__local"));
+        connections.insert("my__local".to_string(), Arc::new(Mutex::new(conn)));
+
+        let (server, tool) =
+            McpClient::parse_prefixed_name_with_connections("mcp__my__local__tool", &connections)
+                .expect("parse prefixed name");
+
+        assert_eq!(server, "my__local");
+        assert_eq!(tool, "tool");
     }
 }

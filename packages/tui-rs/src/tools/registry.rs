@@ -257,26 +257,6 @@ fn normalize_git_path(cwd: &str, input: &str) -> Result<(String, String), String
     Ok((display, shell_path))
 }
 
-fn parse_mcp_tool_name(prefixed_name: &str) -> Option<(String, String)> {
-    if prefixed_name.starts_with("mcp__") {
-        let parts: Vec<&str> = prefixed_name.split("__").collect();
-        if parts.len() < 3 || parts[0] != "mcp" {
-            return None;
-        }
-        return Some((parts[1].to_string(), parts[2..].join("__")));
-    }
-
-    if prefixed_name.starts_with("mcp_") {
-        let parts: Vec<&str> = prefixed_name.splitn(3, '_').collect();
-        if parts.len() != 3 || parts[0] != "mcp" {
-            return None;
-        }
-        return Some((parts[1].to_string(), parts[2].to_string()));
-    }
-
-    None
-}
-
 fn extract_grep_path(line: &str) -> Option<&str> {
     let bytes = line.as_bytes();
     let mut idx = 0;
@@ -982,18 +962,11 @@ impl ToolExecutor {
                 None => return ToolResult::failure("No MCP servers configured".to_string()),
             };
 
-            let (server_name, tool_label) = match parse_mcp_tool_name(tool_name) {
-                Some((server, tool)) => (server, tool),
-                None => {
-                    return ToolResult::failure(format!(
-                        "Invalid MCP tool name format: {}",
-                        tool_name
-                    ))
-                }
-            };
-
-            match client.call_tool(tool_name, args.clone()).await {
-                Ok(result) => {
+            match client
+                .call_tool_with_metadata(tool_name, args.clone())
+                .await
+            {
+                Ok((server_name, tool_label, result)) => {
                     let text_output = result
                         .content
                         .iter()
