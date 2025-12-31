@@ -194,6 +194,8 @@ export class TUI extends Container {
 	/** Max adaptive delay to avoid stalls. */
 	private static readonly MAX_ADAPTIVE_INTERVAL_MS = 200;
 	private static readonly MAX_DIFF_LINES = 2000;
+	private static readonly MAX_DIFF_CHANGED_LINES = 1200;
+	private static readonly MAX_DIFF_CHANGE_RATIO = 0.6;
 
 	/** Timestamp of the last render (for throttling). */
 	private lastRenderTs = 0;
@@ -618,6 +620,33 @@ export class TUI extends Container {
 		// This was previously a bug where throttling caused duplicate content.
 		const overflowRerenderThrottled = false;
 
+		const renderFull = () => {
+			const bufferStart = performance.now();
+			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
+			// Home, clear+rewrite each line, then clear the remainder.
+			// This avoids nuking scrollback and reduces blank-frame flashes when
+			// synchronized output is unavailable.
+			buffer += "\x1b[H";
+			for (let i = 0; i < newLines.length; i++) {
+				if (i > 0) buffer += "\r\n";
+				buffer += "\x1b[2K";
+				buffer += newLines[i];
+			}
+			buffer += "\x1b[J";
+			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
+			renderBufferMs = performance.now() - bufferStart;
+			const writeStart = performance.now();
+			this.terminal.write(buffer);
+			renderWriteMs = performance.now() - writeStart;
+			finalizeRender("full", buffer, newLines.length, newLines.length);
+
+			this.cursorRow = Math.max(0, newLines.length - 1);
+			this.previousLines = newLines;
+			this.previousWidth = width;
+			this.overflowedLastRender = isOverflowing;
+			this.lastFullRenderTs = now;
+		};
+
 		// ─────────────────────────────────────────────────────────────────────────
 		// RENDER PATH A: First render (no previous state)
 		// ─────────────────────────────────────────────────────────────────────────
@@ -650,30 +679,7 @@ export class TUI extends Container {
 		// Redraw the full viewport from home (without clearing scrollback).
 		// Required when: width changed or overflow state changed.
 		if (shouldFullRender && !overflowRerenderThrottled) {
-			const bufferStart = performance.now();
-			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
-			// Home, clear+rewrite each line, then clear the remainder.
-			// This avoids nuking scrollback and reduces blank-frame flashes when
-			// synchronized output is unavailable.
-			buffer += "\x1b[H";
-			for (let i = 0; i < newLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
-				buffer += "\x1b[2K";
-				buffer += newLines[i];
-			}
-			buffer += "\x1b[J";
-			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
-			renderBufferMs = performance.now() - bufferStart;
-			const writeStart = performance.now();
-			this.terminal.write(buffer);
-			renderWriteMs = performance.now() - writeStart;
-			finalizeRender("full", buffer, newLines.length, newLines.length);
-
-			this.cursorRow = Math.max(0, newLines.length - 1);
-			this.previousLines = newLines;
-			this.previousWidth = width;
-			this.overflowedLastRender = isOverflowing;
-			this.lastFullRenderTs = now;
+			renderFull();
 			return;
 		}
 
@@ -686,6 +692,7 @@ export class TUI extends Container {
 		// Step C1: Find first and last changed line indices
 		let firstChanged = -1;
 		let lastChanged = -1;
+		let changedCount = 0;
 		for (let i = 0; i < maxLines; i++) {
 			const oldLine =
 				i < this.previousLines.length ? this.previousLines[i] : "";
@@ -695,6 +702,7 @@ export class TUI extends Container {
 					firstChanged = i;
 				}
 				lastChanged = i;
+				changedCount += 1;
 			}
 		}
 
@@ -708,26 +716,16 @@ export class TUI extends Container {
 		const viewportTop = this.cursorRow - height + 1;
 		if (firstChanged < viewportTop) {
 			// First change is above viewport - fall back to full re-render
-			const bufferStart = performance.now();
-			let buffer = this.syncOutput ? "\x1b[?2026h" : ""; // Begin synchronized output
-			buffer += "\x1b[H";
-			for (let i = 0; i < newLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
-				buffer += "\x1b[2K";
-				buffer += newLines[i];
-			}
-			buffer += "\x1b[J";
-			if (this.syncOutput) buffer += "\x1b[?2026l"; // End synchronized output
-			renderBufferMs = performance.now() - bufferStart;
-			const writeStart = performance.now();
-			this.terminal.write(buffer);
-			renderWriteMs = performance.now() - writeStart;
-			finalizeRender("full", buffer, newLines.length, newLines.length);
+			renderFull();
+			return;
+		}
 
-			this.cursorRow = Math.max(0, newLines.length - 1);
-			this.previousLines = newLines;
-			this.previousWidth = width;
-			this.overflowedLastRender = isOverflowing;
+		const changeRatio = maxLines > 0 ? changedCount / maxLines : 0;
+		const heavyDiff =
+			changedCount > TUI.MAX_DIFF_CHANGED_LINES ||
+			changeRatio > TUI.MAX_DIFF_CHANGE_RATIO;
+		if (heavyDiff) {
+			renderFull();
 			return;
 		}
 

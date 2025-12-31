@@ -76,6 +76,7 @@ export class ChannelStore {
 	processAttachments(
 		channelId: string,
 		files: Array<{
+			id?: string;
 			name?: string;
 			url_private_download?: string;
 			url_private?: string;
@@ -89,8 +90,15 @@ export class ChannelStore {
 
 		for (const file of files) {
 			const url = file.url_private_download || file.url_private;
-			if (!url) continue;
-			if (!file.name) {
+			if (!url) {
+				logger.logWarning(
+					"Attachment missing download URL, skipping",
+					file.id ?? file.name ?? "unknown",
+				);
+				continue;
+			}
+			const name = file.name ?? (file.id ? `file_${file.id}` : undefined);
+			if (!name) {
 				logger.logWarning("Attachment missing name, skipping", url);
 				continue;
 			}
@@ -99,16 +107,16 @@ export class ChannelStore {
 				const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
 				logger.logWarning(
 					"Attachment too large, skipping download",
-					`${file.name} (${sizeMb}MB)`,
+					`${name} (${sizeMb}MB)`,
 				);
 				continue;
 			}
 
-			const filename = this.generateLocalFilename(file.name, timestamp);
+			const filename = this.generateLocalFilename(name, timestamp);
 			const localPath = `${channelId}/attachments/${filename}`;
 
 			attachments.push({
-				original: file.name,
+				original: name,
 				local: localPath,
 				mimetype: file.mimetype,
 				filetype: file.filetype,
@@ -120,7 +128,7 @@ export class ChannelStore {
 				localPath,
 				url,
 				size: file.size,
-				original: file.name,
+				original: name,
 			});
 		}
 

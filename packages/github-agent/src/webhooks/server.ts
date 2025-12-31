@@ -38,6 +38,22 @@ export class GitHubWebhookServer {
 	private readonly webhooks: Webhooks;
 	private readonly port: number;
 	private readonly path: string;
+	private readonly maxPayloadBytes = 5 * 1024 * 1024;
+	private readonly deliveryTtlMs = 10 * 60 * 1000;
+	private readonly deliveryCleanupIntervalMs = 60 * 1000;
+	private readonly maxDeliveryCacheSize = 5000;
+	private readonly maxEventAttempts = 3;
+	private readonly eventRetryBaseDelayMs = 1000;
+	private readonly eventRetryMaxDelayMs = 10_000;
+	private lastDeliveryCleanupMs = 0;
+	private readonly deliveryCache = new Map<string, number>();
+	private readonly pendingEvents: Array<{
+		id: string;
+		name: string;
+		payload: unknown;
+		attempt: number;
+	}> = [];
+	private processingEvents = false;
 	private server?: ReturnType<typeof createServer>;
 
 	constructor(options: WebhookServerOptions) {
@@ -107,12 +123,55 @@ export class GitHubWebhookServer {
 			return;
 		}
 
-		const payload = await readRequestBody(req);
-		await this.webhooks.verifyAndReceive({
-			id: Array.isArray(delivery) ? delivery[0] : delivery,
+		const contentLength = req.headers["content-length"];
+		if (contentLength && typeof contentLength === "string") {
+			const parsed = Number.parseInt(contentLength, 10);
+			if (Number.isFinite(parsed) && parsed > this.maxPayloadBytes) {
+				res.statusCode = 413;
+				res.end("payload too large");
+				return;
+			}
+		}
+
+		let payload: string;
+		try {
+			payload = await readRequestBody(req, this.maxPayloadBytes);
+		} catch (error) {
+			const status = error instanceof PayloadTooLargeError ? 413 : 400;
+			res.statusCode = status;
+			res.end(error instanceof Error ? error.message : "invalid request");
+			return;
+		}
+
+		const signatureValue = Array.isArray(signature) ? signature[0] : signature;
+		const verified = await this.webhooks.verify(payload, signatureValue);
+		if (!verified) {
+			res.statusCode = 401;
+			res.end("invalid signature");
+			return;
+		}
+
+		let parsedPayload: unknown;
+		try {
+			parsedPayload = JSON.parse(payload);
+		} catch {
+			res.statusCode = 400;
+			res.end("invalid json");
+			return;
+		}
+
+		const deliveryId = Array.isArray(delivery) ? delivery[0] : delivery;
+		if (deliveryId && this.isDuplicateDelivery(deliveryId)) {
+			res.statusCode = 202;
+			res.end("duplicate");
+			return;
+		}
+
+		this.enqueueEvent({
+			id: deliveryId || "",
 			name: event,
-			signature,
-			payload,
+			payload: parsedPayload,
+			attempt: 0,
 		});
 		res.statusCode = 202;
 		res.end("ok");
@@ -194,17 +253,128 @@ export class GitHubWebhookServer {
 			await this.handlers.onCheckRunRerequested(event);
 		});
 	}
+
+	private enqueueEvent(event: {
+		id: string;
+		name: string;
+		payload: unknown;
+		attempt: number;
+	}) {
+		this.pendingEvents.push(event);
+		void this.processEvents();
+	}
+
+	private async processEvents(): Promise<void> {
+		if (this.processingEvents) return;
+		this.processingEvents = true;
+		while (this.pendingEvents.length > 0) {
+			const event = this.pendingEvents.shift();
+			if (!event) continue;
+			try {
+				await this.webhooks.receive({
+					id: event.id,
+					name: event.name,
+					payload: event.payload,
+				});
+			} catch (error) {
+				this.handleEventError(event, error);
+			}
+		}
+		this.processingEvents = false;
+	}
+
+	private handleEventError(
+		event: { id: string; name: string; payload: unknown; attempt: number },
+		error: unknown,
+	): void {
+		const attempt = event.attempt + 1;
+		if (attempt >= this.maxEventAttempts) {
+			console.error(
+				`[webhook] event failed after ${attempt} attempts (${event.name}:${event.id})`,
+				error,
+			);
+			return;
+		}
+		const delayMs = jitterDelay(
+			Math.min(
+				this.eventRetryBaseDelayMs * 2 ** (attempt - 1),
+				this.eventRetryMaxDelayMs,
+			),
+			250,
+		);
+		console.warn(
+			`[webhook] retrying event ${event.name}:${event.id} in ${delayMs}ms (attempt ${attempt})`,
+		);
+		setTimeout(() => {
+			this.pendingEvents.push({ ...event, attempt });
+			void this.processEvents();
+		}, delayMs);
+	}
+
+	private isDuplicateDelivery(deliveryId: string): boolean {
+		const now = Date.now();
+		if (now - this.lastDeliveryCleanupMs > this.deliveryCleanupIntervalMs) {
+			this.pruneDeliveryCache(now);
+		}
+		const seenAt = this.deliveryCache.get(deliveryId);
+		if (seenAt && now - seenAt < this.deliveryTtlMs) {
+			return true;
+		}
+		this.deliveryCache.set(deliveryId, now);
+		if (this.deliveryCache.size > this.maxDeliveryCacheSize) {
+			const overflow = this.deliveryCache.size - this.maxDeliveryCacheSize;
+			let removed = 0;
+			for (const key of this.deliveryCache.keys()) {
+				this.deliveryCache.delete(key);
+				removed += 1;
+				if (removed >= overflow) break;
+			}
+		}
+		return false;
+	}
+
+	private pruneDeliveryCache(now: number): void {
+		for (const [key, timestamp] of this.deliveryCache) {
+			if (now - timestamp > this.deliveryTtlMs) {
+				this.deliveryCache.delete(key);
+			}
+		}
+		this.lastDeliveryCleanupMs = now;
+	}
 }
 
-async function readRequestBody(req: IncomingMessage): Promise<string> {
+class PayloadTooLargeError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "PayloadTooLargeError";
+	}
+}
+
+async function readRequestBody(
+	req: IncomingMessage,
+	maxBytes: number,
+): Promise<string> {
 	return new Promise((resolve, reject) => {
 		let data = "";
+		let size = 0;
 		req.on("data", (chunk) => {
+			size += chunk.length;
+			if (size > maxBytes) {
+				req.destroy();
+				reject(new PayloadTooLargeError("payload too large"));
+				return;
+			}
 			data += chunk.toString("utf8");
 		});
 		req.on("end", () => resolve(data));
 		req.on("error", (err) => reject(err));
 	});
+}
+
+function jitterDelay(baseMs: number, jitterMs: number): number {
+	if (baseMs <= 0) return 0;
+	const jitter = Math.floor(Math.random() * jitterMs);
+	return baseMs + jitter;
 }
 
 function matchesAnyLabel(labels: string[], targets: string[]): boolean {

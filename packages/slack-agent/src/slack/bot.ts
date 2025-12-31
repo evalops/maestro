@@ -9,6 +9,11 @@ import {
 	WebClient,
 } from "@slack/web-api";
 import { type IdempotencyConfig, IdempotencyManager } from "../idempotency.js";
+import {
+	type ValidationConfig,
+	createValidator,
+	sanitizeForLogging,
+} from "../input-validation.js";
 import * as logger from "../logger.js";
 import { type Attachment, ChannelStore } from "../store.js";
 import {
@@ -29,6 +34,24 @@ export interface SlackMessage {
 	ts: string;
 	threadTs?: string; // Parent thread timestamp (if this is a thread reply)
 	attachments: Attachment[];
+}
+
+export interface SlackFile {
+	id?: string;
+	name?: string;
+	url_private_download?: string;
+	url_private?: string;
+	mimetype?: string;
+	filetype?: string;
+	size?: number;
+}
+
+interface PreparedMessage {
+	text: string;
+	rawText: string;
+	attachments: Attachment[];
+	userName?: string;
+	displayName?: string;
 }
 
 export interface SlackContext {
@@ -84,6 +107,7 @@ export interface SlackBotConfig {
 	apiQueue?: ApiQueueOptions;
 	idempotency?: IdempotencyConfig;
 	metrics?: SlackMetrics;
+	validation?: Partial<ValidationConfig>;
 }
 
 export interface ChannelInfo {
@@ -120,6 +144,7 @@ export class SlackBot {
 	private readonly eventCleanupIntervalMs = 60 * 1000;
 	private readonly apiQueue: ApiQueue;
 	private readonly idempotency: IdempotencyManager;
+	private readonly validator: ReturnType<typeof createValidator>;
 
 	constructor(handler: SlackAgentHandler, config: SlackBotConfig) {
 		this.handler = handler;
@@ -131,6 +156,7 @@ export class SlackBot {
 		});
 
 		this.metrics = config.metrics ?? createSlackMetrics();
+		this.validator = createValidator(config.validation);
 		this.apiQueue = createApiQueue({
 			...config.apiQueue,
 			onRateLimit: (method, retryAfterSeconds) => {
@@ -359,19 +385,12 @@ export class SlackBot {
 				user: string;
 				ts: string;
 				thread_ts?: string; // Present if mention is in a thread
-				files?: Array<{
-					name: string;
-					url_private_download?: string;
-					url_private?: string;
-					mimetype?: string;
-					filetype?: string;
-					size?: number;
-				}>;
+				files?: SlackFile[];
 			};
 
 			const dedupeKey = `app_mention:${slackEvent.channel}:${slackEvent.ts}`;
 			await this.processEvent(dedupeKey, envelope.event_id, async () => {
-				await this.logMessage({
+				const prepared = await this.logMessage({
 					text: slackEvent.text,
 					channel: slackEvent.channel,
 					user: slackEvent.user,
@@ -382,7 +401,11 @@ export class SlackBot {
 
 				// For channel mentions, always use thread mode
 				// Use existing thread if mentioned in a thread, otherwise create new thread
-				const ctx = await this.createContext(slackEvent, { useThread: true });
+				const ctx = await this.createContext(
+					slackEvent,
+					{ useThread: true },
+					prepared,
+				);
 				await this.handler.onChannelMention(ctx);
 			});
 		});
@@ -441,14 +464,7 @@ export class SlackBot {
 				channel_type?: string;
 				subtype?: string;
 				bot_id?: string;
-				files?: Array<{
-					name: string;
-					url_private_download?: string;
-					url_private?: string;
-					mimetype?: string;
-					filetype?: string;
-					size?: number;
-				}>;
+				files?: SlackFile[];
 			};
 
 			if (slackEvent.bot_id) return;
@@ -467,7 +483,7 @@ export class SlackBot {
 
 			const dedupeKey = `message:${slackEvent.channel}:${slackEvent.ts}`;
 			await this.processEvent(dedupeKey, envelope.event_id, async () => {
-				await this.logMessage({
+				const prepared = await this.logMessage({
 					text: slackEvent.text || "",
 					channel: slackEvent.channel,
 					user: slackEvent.user,
@@ -488,6 +504,7 @@ export class SlackBot {
 							files: slackEvent.files,
 						},
 						{ useThread: false },
+						prepared,
 					);
 					await this.handler.onDirectMessage(ctx);
 				}
@@ -550,37 +567,167 @@ export class SlackBot {
 		});
 	}
 
+	private truncateRawText(text: string): string {
+		const raw = text ?? "";
+		const maxLen = this.validator.config.maxMessageLength;
+		if (raw.length > maxLen) {
+			logger.logWarning(
+				"Message truncated",
+				sanitizeForLogging(
+					`Truncated from ${raw.length} to ${maxLen} characters`,
+				),
+			);
+			return raw.slice(0, maxLen);
+		}
+		return raw;
+	}
+
+	private normalizeText(
+		rawText: string,
+		hasAttachments: boolean,
+	): { text: string; rawText: string } {
+		const truncatedRaw = this.truncateRawText(rawText);
+		const cleaned = truncatedRaw.replace(/<@[A-Z0-9]+>/gi, "").trim();
+		if (!cleaned) {
+			if (!hasAttachments) {
+				logger.logWarning(
+					"Empty message text",
+					sanitizeForLogging(truncatedRaw),
+				);
+			}
+			return { text: "", rawText: truncatedRaw };
+		}
+
+		const validation = this.validator.validateMessage(cleaned);
+		if (!validation.valid) {
+			logger.logWarning(
+				"Invalid message text",
+				sanitizeForLogging(validation.error ?? "Invalid message"),
+			);
+			return { text: cleaned, rawText: truncatedRaw };
+		}
+		if (validation.truncatedText) {
+			logger.logWarning(
+				"Message truncated",
+				sanitizeForLogging(validation.error ?? "Message truncated"),
+			);
+			return { text: validation.truncatedText, rawText: truncatedRaw };
+		}
+		return { text: cleaned, rawText: truncatedRaw };
+	}
+
+	private filterFiles(files: SlackFile[]): SlackFile[] {
+		const { maxAttachments, maxFileSize } = this.validator.config;
+		let filtered = files;
+		if (files.length > maxAttachments) {
+			logger.logWarning(
+				"Too many attachments",
+				`Received ${files.length} (max ${maxAttachments}); keeping first ${maxAttachments}`,
+			);
+			filtered = files.slice(0, maxAttachments);
+		}
+
+		const oversized = filtered.filter(
+			(file) => file.size && file.size > maxFileSize,
+		);
+		if (oversized.length > 0) {
+			const names = oversized
+				.map((file) => file.name ?? file.id ?? "file")
+				.join(", ");
+			logger.logWarning(
+				"Skipping oversized attachments",
+				sanitizeForLogging(names),
+			);
+			filtered = filtered.filter(
+				(file) => !(file.size && file.size > maxFileSize),
+			);
+		}
+
+		return filtered;
+	}
+
+	private async resolveFiles(files: SlackFile[]): Promise<SlackFile[]> {
+		const resolved: SlackFile[] = [];
+		for (const file of files) {
+			if (file.url_private_download || file.url_private || !file.id) {
+				resolved.push(file);
+				continue;
+			}
+
+			try {
+				const result = await this.callSlack(
+					() => this.webClient.files.info({ file: file.id }),
+					"files.info",
+				);
+				const info = result.file as SlackFile | undefined;
+				resolved.push(info ? { ...file, ...info } : file);
+			} catch (error) {
+				logger.logWarning(
+					"Failed to fetch file info",
+					sanitizeForLogging(String(error)),
+				);
+				resolved.push(file);
+			}
+		}
+
+		return resolved;
+	}
+
+	private async buildAttachments(
+		channelId: string,
+		files: SlackFile[] | undefined,
+		ts: string,
+	): Promise<Attachment[]> {
+		if (!files || files.length === 0) return [];
+		const filtered = this.filterFiles(files);
+		if (filtered.length === 0) return [];
+		const resolved = await this.resolveFiles(filtered);
+		return this.store.processAttachments(channelId, resolved, ts);
+	}
+
+	private async prepareMessage(event: {
+		text?: string;
+		channel: string;
+		user: string;
+		ts: string;
+		threadTs?: string;
+		files?: SlackFile[];
+	}): Promise<PreparedMessage> {
+		const attachments = await this.buildAttachments(
+			event.channel,
+			event.files,
+			event.ts,
+		);
+		const { text, rawText } = this.normalizeText(
+			event.text ?? "",
+			attachments.length > 0,
+		);
+		const { userName, displayName } = await this.getUserInfo(event.user);
+		return { text, rawText, attachments, userName, displayName };
+	}
+
 	private async logMessage(event: {
 		text: string;
 		channel: string;
 		user: string;
 		ts: string;
 		threadTs?: string;
-		files?: Array<{
-			name: string;
-			url_private_download?: string;
-			url_private?: string;
-			mimetype?: string;
-			filetype?: string;
-			size?: number;
-		}>;
-	}): Promise<void> {
-		const attachments = event.files
-			? this.store.processAttachments(event.channel, event.files, event.ts)
-			: [];
-		const { userName, displayName } = await this.getUserInfo(event.user);
+		files?: SlackFile[];
+	}): Promise<PreparedMessage> {
+		const prepared = await this.prepareMessage(event);
 
 		await this.store.logMessage(event.channel, {
 			date: new Date(Number.parseFloat(event.ts) * 1000).toISOString(),
 			ts: event.ts,
 			threadTs: event.threadTs,
 			user: event.user,
-			userName,
-			displayName,
-			text: event.text,
-			attachments,
+			userName: prepared.userName,
+			displayName: prepared.displayName,
+			text: prepared.rawText,
+			attachments: prepared.attachments,
 			isBot: false,
 		});
+		return prepared;
 	}
 
 	private async createContext(
@@ -590,21 +737,15 @@ export class SlackBot {
 			user: string;
 			ts: string;
 			thread_ts?: string;
-			files?: Array<{
-				name: string;
-				url_private_download?: string;
-				url_private?: string;
-				mimetype?: string;
-				filetype?: string;
-				size?: number;
-			}>;
+			files?: SlackFile[];
 		},
 		options: { useThread: boolean } = { useThread: false },
+		prepared?: PreparedMessage,
 	): Promise<SlackContext> {
-		const rawText = event.text;
-		const text = rawText.replace(/<@[A-Z0-9]+>/gi, "").trim();
-
-		const { userName } = await this.getUserInfo(event.user);
+		const preparedMessage = prepared ?? (await this.prepareMessage(event));
+		const { text, rawText, attachments } = preparedMessage;
+		const userName =
+			preparedMessage.userName ?? (await this.getUserInfo(event.user)).userName;
 
 		let channelName: string | undefined;
 		try {
@@ -623,10 +764,6 @@ export class SlackBot {
 		} catch {
 			// Ignore
 		}
-
-		const attachments = event.files
-			? this.store.processAttachments(event.channel, event.files, event.ts)
-			: [];
 
 		// Determine the thread to use for responses:
 		// - If user message is in a thread, reply in that thread
@@ -717,15 +854,20 @@ export class SlackBot {
 			const msgTs = msg.ts || "";
 			const isBotMessage = msg.user === this.botUserId;
 			const attachments = msg.files
-				? this.store.processAttachments(channelId, msg.files, msgTs)
+				? await this.buildAttachments(
+						channelId,
+						msg.files as SlackFile[],
+						msgTs,
+					)
 				: [];
+			const rawText = this.truncateRawText(msg.text || "");
 
 			if (isBotMessage) {
 				await this.store.logMessage(channelId, {
 					date: new Date(Number.parseFloat(msgTs) * 1000).toISOString(),
 					ts: msgTs,
 					user: "bot",
-					text: msg.text || "",
+					text: rawText,
 					attachments,
 					isBot: true,
 				});
@@ -739,7 +881,7 @@ export class SlackBot {
 					user: msg.user || "",
 					userName,
 					displayName,
-					text: msg.text || "",
+					text: rawText,
 					attachments,
 					isBot: false,
 				});
@@ -833,7 +975,9 @@ export class SlackBot {
 		const now = Date.now();
 		const ts = `${Math.floor(now / 1000)}.${(now % 1000) * 1000}`;
 
-		const rawText = `${command.command} ${command.text || ""}`.trim();
+		const rawText = this.truncateRawText(
+			`${command.command} ${command.text || ""}`.trim(),
+		);
 		const { userName } = await this.getUserInfo(command.user_id);
 
 		const responseHandlers = createResponseHandlers({
@@ -882,10 +1026,11 @@ export class SlackBot {
 			obfuscateUsernames: this.obfuscateUsernames.bind(this),
 		});
 
+		const safePrompt = this.truncateRawText(prompt);
 		return {
 			message: {
-				text: prompt,
-				rawText: prompt,
+				text: safePrompt,
+				rawText: safePrompt,
 				user: "scheduled",
 				userName: "Scheduled Task",
 				channel: channelId,

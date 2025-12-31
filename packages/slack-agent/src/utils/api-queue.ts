@@ -40,6 +40,7 @@ export const METHOD_TIERS: Record<string, RateLimitTier> = {
 	"conversations.members": "tier2",
 	"users.info": "tier2",
 	"conversations.info": "tier2",
+	"files.info": "tier2",
 
 	// Tier 3 methods (write)
 	"chat.postMessage": "tier3",
