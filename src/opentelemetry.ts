@@ -21,14 +21,24 @@ let configuredServiceName: string | null = null;
 let configuredSampler: string | null = null;
 let sdkInstance: NodeSDK | null = null;
 
-const packageJson = createRequire(import.meta.url)("../package.json") as {
-	version?: string;
-};
-
-const packageVersion = (): string => {
-	const version = packageJson.version;
-	return typeof version === "string" ? version : "unknown";
-};
+const packageVersion = (() => {
+	let cached: string | null = null;
+	return (): string => {
+		if (cached) {
+			return cached;
+		}
+		try {
+			const packageJson = createRequire(import.meta.url)("../package.json") as {
+				version?: string;
+			};
+			const version = packageJson.version;
+			cached = typeof version === "string" ? version : "unknown";
+		} catch (error) {
+			cached = process.env.COMPOSER_VERSION ?? "unknown";
+		}
+		return cached;
+	};
+})();
 
 export const isOpenTelemetryEnabled = (): boolean => {
 	if (process.env.COMPOSER_OTEL === "0") {

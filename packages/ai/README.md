@@ -88,6 +88,18 @@ Prefer the stable entry points above unless you need something specific; deep
 wildcard subpaths are intentionally not exported to keep the SDK surface
 predictable.
 
+You can also access these namespaces from the root entry point when you want a
+single import surface:
+
+```typescript
+import { tools, hooks, config, sandbox } from "@evalops/ai";
+
+const toolList = tools.codingTools;
+const hookConfig = hooks.loadHookConfiguration();
+const configStore = config.loadConfig();
+const sandboxInstance = await sandbox.createSandbox();
+```
+
 ## Streaming Events
 
 The agent emits events during execution that you can subscribe to:

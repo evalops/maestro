@@ -188,3 +188,20 @@ export type {
 	/** User message with file attachments */
 	UserMessageWithAttachments,
 } from "./types.js";
+
+/**
+ * Namespaced module exports for the broader Composer surface area.
+ * Use these when you want a single import point with explicit groupings.
+ */
+export * as tools from "./tools/index.js";
+export * as hooks from "./hooks/index.js";
+export * as sandbox from "./sandbox/index.js";
+export * as telemetry from "./telemetry/index.js";
+export * as oauth from "./oauth/index.js";
+export * as guardian from "./guardian/index.js";
+export * as config from "./config/index.js";
+export * as errors from "./errors/index.js";
+export * as lsp from "./lsp/index.js";
+export * as ide from "./ide/index.js";
+export * as runtime from "./runtime/index.js";
+export * as training from "./training.js";

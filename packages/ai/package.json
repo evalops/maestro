@@ -42,6 +42,10 @@
 			"types": "./dist/packages/ai/src/sandbox/index.d.ts",
 			"default": "./dist/packages/ai/src/sandbox/index.js"
 		},
+		"./runtime": {
+			"types": "./dist/packages/ai/src/runtime/index.d.ts",
+			"default": "./dist/packages/ai/src/runtime/index.js"
+		},
 		"./runtime/background-settings": {
 			"types": "./dist/packages/ai/src/runtime/background-settings.d.ts",
 			"default": "./dist/packages/ai/src/runtime/background-settings.js"
