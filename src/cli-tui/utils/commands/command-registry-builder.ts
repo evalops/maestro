@@ -6,7 +6,7 @@ import type {
 	RunScriptCompletionProvider,
 } from "../../commands/types.js";
 
-interface CommandRegistryOptions {
+export interface CommandRegistryOptions {
 	getRunScriptCompletions: RunScriptCompletionProvider;
 	createContext: (input: {
 		command: SlashCommand;

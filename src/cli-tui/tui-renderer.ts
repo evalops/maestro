@@ -52,7 +52,6 @@ import type { ApprovalController } from "./approval/approval-controller.js";
 import type { BackgroundTasksController } from "./background/background-tasks-controller.js";
 import { BashModeView } from "./bash-mode-view.js";
 import { ChangelogView } from "./changelog-view.js";
-import { handleAccessCommand } from "./commands/access-command.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
 import {
 	type ComposerRenderContext,
@@ -74,11 +73,7 @@ import type {
 	CommandEntry,
 	CommandExecutionContext,
 } from "./commands/types.js";
-import {
-	handleCopyCommand,
-	handleInitCommand,
-	handleReportCommand,
-} from "./commands/utility-handlers.js";
+import { handleInitCommand } from "./commands/utility-handlers.js";
 import { ConfigView } from "./config-view.js";
 import { ContextView } from "./context-view.js";
 import { CustomEditor } from "./custom-editor.js";
@@ -135,6 +130,7 @@ import {
 	type AgentEventBridge,
 	createAgentEventBridge,
 } from "./tui-renderer/agent-event-bridge.js";
+import { buildTuiCommandRegistryOptions } from "./tui-renderer/command-registry-options.js";
 import { buildTuiCommandRegistry } from "./tui-renderer/command-registry.js";
 import {
 	type UiState,
@@ -1151,199 +1147,88 @@ export class TuiRenderer {
 			showInfo: (message) => this.notificationView.showInfo(message),
 			showError: (message) => this.notificationView.showError(message),
 		});
+		this.customCommandsController = createCustomCommandsController({
+			cwd: process.cwd(),
+			callbacks: {
+				addContent: (text) => {
+					this.chatContainer.addChild(new Spacer(1));
+					this.chatContainer.addChild(new Text(text, 1, 0));
+				},
+				setEditorText: (text) => this.editor.setText(text),
+				showToast: (msg, type) => this.notificationView.showToast(msg, type),
+				requestRender: () => this.ui.requestRender(),
+			},
+		});
 
 		const registry = buildTuiCommandRegistry({
 			cwd: process.cwd(),
-			registryOptions: {
-				getRunScriptCompletions: (prefix: string) =>
-					this.runCommandView.getRunScriptCompletions(prefix),
-				createContext: (ctx) => this.createCommandContext(ctx),
-				showThinkingSelector: (_context) => this.thinkingSelectorView.show(),
-				showModelSelector: (_context) => this.modelSelectorView.show(),
-				showThemeSelector: (_context) => this.themeSelectorView.show(),
-				handleExportSession: async (context) =>
-					this.importExportView.handleExportCommand(context.rawInput),
-				handleShareSession: async (context) =>
-					this.importExportView.handleShareCommand(context.rawInput),
-				handleTools: (context) =>
-					this.toolStatusView.handleToolsCommand(context.rawInput),
-				handleImportConfig: (context) =>
-					this.importExportView.handleImportCommand(context.rawInput),
-				handleSession: (context) =>
-					this.sessionView.handleSessionCommand(context.rawInput),
-				handleSessions: (context) =>
-					this.sessionView.handleSessionsCommand(context.rawInput),
-				handleReport: (context) =>
-					handleReportCommand(context, {
-						showBugReport: () => this.feedbackView.handleBugCommand(),
-						showFeedback: () => this.feedbackView.handleFeedbackCommand(),
-						showReportSelector: () => this.reportSelectorView.show(),
-					}),
-				handleAbout: (_context) => this.aboutView.handleAboutCommand(),
-				handleClear: async (_context) =>
-					await this.clearController.handleClearCommand(),
-				showStatus: (_context) => this.diagnosticsView.handleStatusCommand(),
-				handleReview: (context) => this.handleReviewCommand(context),
-				handleUndo: (context) => this.handleEnhancedUndoCommand(context),
-				handleMention: (context) =>
-					this.fileSearchView.handleMentionCommand(context.rawInput),
-				handleAccess: (context) => handleAccessCommand(context),
-				showHelp: (_context) => this.infoView.showHelp(),
-				handleUpdate: (_context) => this.updateView.handleUpdateCommand(),
-				handleChangelog: (_context) =>
-					this.changelogView.handleChangelogCommand(),
-				handleHotkeys: (_context) => this.hotkeysView.handleHotkeysCommand(),
-				handleConfig: (context) => this.configView.handleConfigCommand(context),
-				handleCost: (context) => this.costView.handleCostCommand(context),
-				handleQuota: (context) => this.quotaView.handleQuotaCommand(context),
-				handleTelemetry: (context) =>
-					this.telemetryView.handleTelemetryCommand(context),
-				handleOtel: (_context) =>
-					otelHandler({
-						showInfo: (msg) => this.notificationView.showInfo(msg),
-					}),
-				handleTraining: (context) =>
-					this.trainingView.handleTrainingCommand(context),
-				handleStats: (context) => this.handleStatsCommand(context),
-				handlePlan: (context) => {
-					if (this.planController) {
-						this.planController.handlePlanCommand(context);
-						return;
-					}
-					context.showInfo("Plan panel is not available.");
-				},
-				handlePreview: (context) =>
-					this.gitView.handlePreviewCommand(context.rawInput),
-				handleRun: (context) =>
-					this.runCommandView.handleRunCommand(context.rawInput),
-				handleOllama: (context) =>
-					this.ollamaView.handleOllamaCommand(context.rawInput),
-				handleDiagnostics: (context) =>
-					this.diagnosticsView.handleDiagnosticsCommand(context.rawInput),
-				handleBackground: (context) =>
-					this.backgroundTasksController.handleBackgroundCommand(context),
-				handleCompact: (context) => {
-					// Extract custom instructions from rawInput (e.g., "/compact Focus on API changes")
-					const customInstructions = context.rawInput
-						.replace(/^\/compact\s*/i, "")
-						.trim();
-					return this.compactionController.handleCompactCommand(
-						customInstructions || undefined,
-					);
-				},
-				handleAutocompact: (context) =>
-					this.compactionController.handleAutocompactCommand(context.rawInput),
-				handleFooter: (context) => this.handleFooterCommand(context),
-				handleCompactTools: (context) =>
-					this.handleCompactToolsCommand(context.rawInput),
-				handleCommands: (context) =>
-					this.customCommandsController.handleCommandsCommand(context),
-				handleQueue: (context) => {
-					if (this.queuePanelController) {
-						this.queuePanelController.handleQueueCommand(context);
-						return;
-					}
-					context.showInfo("Prompt queue is not available.");
-				},
-				handleBranch: (context) =>
-					this.branchController.handleBranchCommand(context),
-				handleLogin: (context) =>
-					this.oauthFlowController.handleLoginCommand(
-						context.argumentText,
-						(msg) => context.showError(msg),
-					),
-				handleLogout: (context) =>
-					this.oauthFlowController.handleLogoutCommand(
-						context.argumentText,
-						(msg) => context.showError(msg),
-						(msg) => context.showInfo(msg),
-					),
-				handleQuit: (_context) => {
+			registryOptions: buildTuiCommandRegistryOptions({
+				runCommandView: this.runCommandView,
+				importExportView: this.importExportView,
+				toolStatusView: this.toolStatusView,
+				sessionView: this.sessionView,
+				reportSelectorView: this.reportSelectorView,
+				feedbackView: this.feedbackView,
+				aboutView: this.aboutView,
+				clearController: this.clearController,
+				diagnosticsView: this.diagnosticsView,
+				fileSearchView: this.fileSearchView,
+				infoView: this.infoView,
+				updateView: this.updateView,
+				changelogView: this.changelogView,
+				hotkeysView: this.hotkeysView,
+				configView: this.configView,
+				costView: this.costView,
+				quotaView: this.quotaView,
+				telemetryView: this.telemetryView,
+				trainingView: this.trainingView,
+				planController: this.planController,
+				gitView: this.gitView,
+				ollamaView: this.ollamaView,
+				backgroundTasksController: this.backgroundTasksController,
+				compactionController: this.compactionController,
+				customCommandsController: this.customCommandsController,
+				queuePanelController: this.queuePanelController,
+				branchController: this.branchController,
+				oauthFlowController: this.oauthFlowController,
+				approvalService: this.approvalService,
+				notificationView: this.notificationView,
+				chatContainer: this.chatContainer,
+				ui: this.ui,
+				thinkingSelectorView: this.thinkingSelectorView,
+				modelSelectorView: this.modelSelectorView,
+				themeSelectorView: this.themeSelectorView,
+				uiStateController: this.uiStateController,
+				lspView: this.lspView,
+				getMessages: () => this.agent.state.messages,
+				createCommandContext: (ctx) => this.createCommandContext(ctx),
+				handleReviewCommand: (context) => this.handleReviewCommand(context),
+				handleEnhancedUndoCommand: (context) =>
+					this.handleEnhancedUndoCommand(context),
+				handleFooterCommand: (context) => this.handleFooterCommand(context),
+				handleCompactToolsCommand: (rawInput) =>
+					this.handleCompactToolsCommand(rawInput),
+				handleStatsCommand: (context) => this.handleStatsCommand(context),
+				handleNewChatCommand: (context) => this.handleNewChatCommand(context),
+				handleMcpCommand: (context) => this.handleMcpCommand(context),
+				handleComposerCommand: (context) => this.handleComposerCommand(context),
+				handleContextCommand: (context) => this.handleContextCommand(context),
+				handleFrameworkCommand: (context) =>
+					this.handleFrameworkCommand(context),
+				handleGuardianCommand: (context) => this.handleGuardianCommand(context),
+				handleWorkflowCommand: (context) => this.handleWorkflowCommand(context),
+				handleChangesCommand: (context) => this.handleChangesCommand(context),
+				handleCheckpointCommand: (context) =>
+					this.handleCheckpointCommand(context),
+				handleMemoryCommand: (context) => this.handleMemoryCommand(context),
+				handleModeCommand: (context) => this.handleModeCommand(context),
+				getGroupedHandlers: () => this.getGroupedHandlers(),
+				refreshFooterHint: () => this.refreshFooterHint(),
+				onQuit: () => {
 					this.stop();
 					process.exit(0);
 				},
-				handleApprovals: (context) =>
-					handleApprovalsCommand(context, this.approvalService, {
-						showToast: (msg, type) =>
-							this.notificationView.showToast(msg, type),
-						refreshFooterHint: () => this.refreshFooterHint(),
-						addContent: (text) => {
-							this.chatContainer.addChild(new Spacer(1));
-							this.chatContainer.addChild(new Text(text, 1, 0));
-						},
-						requestRender: () => this.ui.requestRender(),
-					}),
-				handlePlanMode: (context) =>
-					handlePlanModeCommand(context, {
-						showToast: (msg, type) =>
-							this.notificationView.showToast(msg, type),
-						refreshFooterHint: () => this.refreshFooterHint(),
-						addContent: (text) => {
-							this.chatContainer.addChild(new Spacer(1));
-							this.chatContainer.addChild(new Text(text, 1, 0));
-						},
-						requestRender: () => this.ui.requestRender(),
-					}),
-				handleNewChat: (context) => this.handleNewChatCommand(context),
-				handleInitAgents: (context) =>
-					handleInitCommand(context, {
-						showSuccess: (msg) =>
-							this.notificationView.showToast(msg, "success"),
-						showError: (msg) => context.showError(msg),
-						addContent: (text) => {
-							this.chatContainer.addChild(new Spacer(1));
-							this.chatContainer.addChild(new Text(text, 1, 0));
-						},
-						requestRender: () => this.ui.requestRender(),
-					}),
-				handleMcp: (context) => this.handleMcpCommand(context),
-				handleComposer: (context) => this.handleComposerCommand(context),
-				handleZen: (context) =>
-					this.uiStateController.handleZenCommand(context),
-				handleContext: (context) => this.handleContextCommand(context),
-				handleLsp: (context) => this.lspView.handleLspCommand(context.rawInput),
-				handleFramework: (context) => this.handleFrameworkCommand(context),
-				handleClean: (context) =>
-					this.uiStateController.handleCleanCommand(context),
-				handleGuardian: (context) => this.handleGuardianCommand(context),
-				handleWorkflow: (context) => this.handleWorkflowCommand(context),
-				handleChanges: (context) => this.handleChangesCommand(context),
-				handleCheckpoint: (context) => this.handleCheckpointCommand(context),
-				handleMemory: (context) => this.handleMemoryCommand(context),
-				handleMode: (context) => this.handleModeCommand(context),
-				handlePrompts: (context) =>
-					this.customCommandsController.handlePromptsCommand(context),
-				handleCopy: (context) =>
-					handleCopyCommand(
-						context,
-						{ getMessages: () => this.agent.state.messages },
-						{
-							showInfo: (msg) => context.showInfo(msg),
-							showError: (msg) => context.showError(msg),
-						},
-					),
-				// Grouped command handlers - delegate directly to lazy-initialized handlers
-				handleSessionCommand: (context) =>
-					this.getGroupedHandlers().handleSession(context),
-				handleDiagCommand: (context) =>
-					this.getGroupedHandlers().handleDiag(context),
-				handleUiCommand: (context) =>
-					this.getGroupedHandlers().handleUi(context),
-				handleSafetyCommand: (context) =>
-					this.getGroupedHandlers().handleSafety(context),
-				handleGitCommand: (context) =>
-					this.getGroupedHandlers().handleGit(context),
-				handleAuthCommand: (context) =>
-					this.getGroupedHandlers().handleAuth(context),
-				handleUsageCommand: (context) =>
-					this.getGroupedHandlers().handleUsage(context),
-				handleUndoCommand: (context) =>
-					this.getGroupedHandlers().handleUndo(context),
-				handleConfigCommand: (context) =>
-					this.getGroupedHandlers().handleConfig(context),
-				handleToolsCommand: (context) =>
-					this.getGroupedHandlers().handleTools(context),
-			},
+			}),
 			executePromptTemplate: (promptName, userArgumentText, context) => {
 				const combined = [promptName, userArgumentText]
 					.filter(Boolean)
@@ -1382,18 +1267,6 @@ export class TuiRenderer {
 			},
 			initialRecentCommands: this.recentCommands,
 			initialFavoriteCommands: this.favoriteCommands,
-		});
-		this.customCommandsController = createCustomCommandsController({
-			cwd: process.cwd(),
-			callbacks: {
-				addContent: (text) => {
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text(text, 1, 0));
-				},
-				setEditorText: (text) => this.editor.setText(text),
-				showToast: (msg, type) => this.notificationView.showToast(msg, type),
-				requestRender: () => this.ui.requestRender(),
-			},
 		});
 
 		const autocompleteProvider = new SmartAutocompleteProvider(
