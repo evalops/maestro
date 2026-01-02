@@ -32,6 +32,51 @@ export interface AutoRetryConfig {
 	baseDelayMs: number;
 }
 
+function extractRetryDelayMs(errorMessage?: string): number | undefined {
+	if (!errorMessage) return undefined;
+
+	// Pattern 1: "Your quota will reset after 18h31m10s" / "10m15s" / "39s"
+	const resetMatch = errorMessage.match(
+		/reset after (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i,
+	);
+	if (resetMatch) {
+		const hours = resetMatch[1] ? Number.parseInt(resetMatch[1], 10) : 0;
+		const minutes = resetMatch[2] ? Number.parseInt(resetMatch[2], 10) : 0;
+		const seconds = Number.parseFloat(resetMatch[3]);
+		if (!Number.isNaN(seconds)) {
+			const totalMs = ((hours * 60 + minutes) * 60 + seconds) * 1000;
+			if (totalMs > 0) {
+				return Math.ceil(totalMs + 1000);
+			}
+		}
+	}
+
+	// Pattern 2: "Please retry in X[ms|s]"
+	const retryInMatch = errorMessage.match(/Please retry in ([0-9.]+)(ms|s)/i);
+	if (retryInMatch?.[1]) {
+		const value = Number.parseFloat(retryInMatch[1]);
+		if (!Number.isNaN(value) && value > 0) {
+			const ms = retryInMatch[2].toLowerCase() === "ms" ? value : value * 1000;
+			return Math.ceil(ms + 1000);
+		}
+	}
+
+	// Pattern 3: "retryDelay": "34.074824224s"
+	const retryDelayMatch = errorMessage.match(
+		/"retryDelay":\s*"([0-9.]+)(ms|s)"/i,
+	);
+	if (retryDelayMatch?.[1]) {
+		const value = Number.parseFloat(retryDelayMatch[1]);
+		if (!Number.isNaN(value) && value > 0) {
+			const ms =
+				retryDelayMatch[2].toLowerCase() === "ms" ? value : value * 1000;
+			return Math.ceil(ms + 1000);
+		}
+	}
+
+	return undefined;
+}
+
 export type AutoRetryEventListener = (event: AgentEvent) => void;
 
 /**
@@ -188,13 +233,18 @@ export class AutoRetryController {
 			return false;
 		}
 
-		// Calculate delay with exponential backoff
-		const delayMs = this.config.baseDelayMs * 2 ** (this.retryAttempt - 1);
+		// Calculate delay with exponential backoff, honoring server-provided retry windows.
+		const backoffMs = this.config.baseDelayMs * 2 ** (this.retryAttempt - 1);
+		const serverDelayMs = extractRetryDelayMs(message.errorMessage);
+		const delayMs = serverDelayMs
+			? Math.max(serverDelayMs, backoffMs)
+			: backoffMs;
 
 		logger.info("Auto-retry starting", {
 			attempt: this.retryAttempt,
 			maxAttempts: this.config.maxRetries,
 			delayMs,
+			serverDelayMs,
 			errorMessage: message.errorMessage,
 		});
 
