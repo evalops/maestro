@@ -146,4 +146,37 @@ describe("WebhookRedeliveryManager", () => {
 		};
 		expect(resolver.resolveHookId()).toBe(99);
 	});
+
+	it("skips irrelevant events", async () => {
+		const deliveries: WebhookDelivery[] = [
+			{
+				id: 200,
+				guid: "guid-ping",
+				deliveredAt: new Date().toISOString(),
+				status: "failed",
+				statusCode: 500,
+				redelivery: false,
+				event: "ping",
+				action: null,
+			},
+		];
+
+		const client: MockClient = {
+			listWebhookDeliveries: vi.fn().mockResolvedValue({
+				deliveries,
+				nextCursor: null,
+			}),
+			redeliverWebhookDelivery: vi.fn().mockResolvedValue(undefined),
+		};
+
+		const manager = new WebhookRedeliveryManager({
+			config: baseConfig(tempDir),
+			client: client as unknown as GitHubApiClient,
+			hookId: 42,
+		});
+
+		await runManager(manager);
+
+		expect(client.redeliverWebhookDelivery).not.toHaveBeenCalled();
+	});
 });

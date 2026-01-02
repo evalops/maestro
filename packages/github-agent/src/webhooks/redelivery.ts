@@ -9,6 +9,14 @@ const DEFAULT_MAX_PAGES = 3;
 const MAX_REDELIVERIES_PER_RUN = 5;
 const RECENT_REDELIVERY_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_RECENT_REDELIVERIES = 5000;
+const DEFAULT_ALLOWED_EVENTS = new Set([
+	"issues",
+	"issue_comment",
+	"pull_request",
+	"pull_request_review",
+	"pull_request_review_comment",
+	"check_run",
+]);
 
 type RedeliveryState = {
 	hookId?: number;
@@ -86,7 +94,9 @@ export class WebhookRedeliveryManager {
 				return;
 			}
 
-			const deliveries = await this.listRecentDeliveries(hookId);
+			const deliveries = (await this.listRecentDeliveries(hookId)).filter(
+				isRelevantDelivery,
+			);
 			if (!deliveries.length) {
 				return;
 			}
@@ -264,4 +274,9 @@ function isSuccessfulDelivery(delivery: WebhookDelivery): boolean {
 	}
 	const status = delivery.status?.toLowerCase();
 	return status === "ok" || status === "success";
+}
+
+function isRelevantDelivery(delivery: WebhookDelivery): boolean {
+	if (!delivery.event) return true;
+	return DEFAULT_ALLOWED_EVENTS.has(delivery.event);
 }
