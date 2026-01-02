@@ -953,17 +953,23 @@ export class SlackBot {
 
 		let channelName: string | undefined;
 		try {
-			if (event.channel.startsWith("C")) {
-				const result = await this.callSlack(
-					() =>
-						this.webClient.conversations.info({
-							channel: event.channel,
-						}),
-					"conversations.info",
-				);
-				channelName = result.channel?.name
-					? `#${result.channel.name}`
-					: undefined;
+			if (event.channel.startsWith("C") || event.channel.startsWith("G")) {
+				const cached = this.channelCache.get(event.channel);
+				if (cached) {
+					channelName = `#${cached}`;
+				} else {
+					const result = await this.callSlack(
+						() =>
+							this.webClient.conversations.info({
+								channel: event.channel,
+							}),
+						"conversations.info",
+					);
+					if (result.channel?.name) {
+						this.channelCache.set(event.channel, result.channel.name);
+						channelName = `#${result.channel.name}`;
+					}
+				}
 			}
 		} catch {
 			// Ignore
