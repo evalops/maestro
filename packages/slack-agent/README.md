@@ -214,6 +214,7 @@ Invite the bot to channels where you want it to operate:
 | `SLACK_AGENT_BACKFILL_ON_STARTUP` | No | true | Toggle history backfill on startup |
 | `SLACK_AGENT_BACKFILL_CHANNELS` | No | - | Comma-separated channel IDs or names to include in backfill |
 | `SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS` | No | - | Comma-separated channel IDs or names to exclude from backfill |
+| `SLACK_AGENT_BACKFILL_CONCURRENCY` | No | 1 | Number of concurrent channel backfills |
 | `SLACK_RATE_LIMIT_USER` | No | 10 | Max requests per user per minute |
 | `SLACK_RATE_LIMIT_CHANNEL` | No | 30 | Max requests per channel per minute |
 | `SLACK_RATE_LIMIT_WINDOW_MS` | No | 60000 | Rate limit window in milliseconds |
@@ -469,6 +470,7 @@ Register these Slack slash commands to control the bot without reactions:
 | `/status` | Show current status and rate limit usage |
 | `/cost` | View usage/cost summary |
 | `/memory` | Show saved memory for the channel |
+| `/backfill` | Backfill message history for this channel (use `/backfill all` for all channels) |
 | `/clear` | Clear conversation history for the channel |
 
 ### Extended Thinking Mode

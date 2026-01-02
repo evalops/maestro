@@ -50,6 +50,7 @@ const ROLE_PERMISSIONS: Record<SlackRole, string[]> = {
 		"schedule_task",
 		"cancel_task",
 		"cancel_own_task",
+		"backfill_history",
 		"clear_context",
 		"toggle_thinking",
 		"manage_memory",
