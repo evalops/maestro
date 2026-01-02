@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { type Static, Type } from "@sinclair/typebox";
+import type { UserMessageWithAttachments } from "../../agent/types.js";
 import { SessionManager } from "../../session/manager.js";
 import { getAuthSubject, requireApiAuth, requireCsrf } from "../authz.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
@@ -105,7 +106,12 @@ export async function handleBranch(
 
 				const userMessages = session.messages
 					.map((msg, index) => ({ msg, index }))
-					.filter(({ msg }) => msg.role === "user");
+					.filter(
+						(
+							entry,
+						): entry is { msg: UserMessageWithAttachments; index: number } =>
+							entry.msg.role === "user",
+					);
 
 				sendJson(
 					res,

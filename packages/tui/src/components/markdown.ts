@@ -370,7 +370,12 @@ export class Markdown implements Component {
 				lines.push(""); // Add spacing after horizontal rules
 				break;
 			case "html":
-				// Skip HTML for terminal output
+				// Render HTML as plain text
+				if ("text" in token && typeof token.text === "string") {
+					lines.push(...token.text.split("\n"));
+				} else if ("raw" in token && typeof token.raw === "string") {
+					lines.push(...token.raw.split("\n"));
+				}
 				break;
 			case "space":
 				// Space tokens represent blank lines in markdown

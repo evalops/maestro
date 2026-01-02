@@ -134,8 +134,10 @@ import {
 } from "./hooks/notification-hooks.js";
 import {
 	discoverAndLoadTypeScriptHooks,
+	setGlobalAppendEntryHandler,
 	setGlobalCwd,
 	setGlobalSendHandler,
+	setGlobalSendMessageHandler,
 } from "./hooks/typescript-loader.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
@@ -1596,6 +1598,53 @@ export async function main(args: string[]) {
 		} else {
 			// Start new turn immediately
 			void agent.prompt(text, attachments);
+		}
+	});
+	setGlobalSendMessageHandler((message, triggerTurn) => {
+		const hookMessage = {
+			role: "hookMessage" as const,
+			customType: message.customType,
+			content: message.content,
+			display: message.display,
+			details: message.details,
+			timestamp: Date.now(),
+		};
+		const manager = sessionManager as SessionManager & {
+			appendCustomMessageEntry?: (
+				customType: string,
+				content:
+					| string
+					| { type: string; text?: string; data?: string; mimeType?: string }[],
+				display: boolean,
+				details?: unknown,
+			) => void;
+		};
+		manager.appendCustomMessageEntry?.(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+		);
+		if (agent.state.isStreaming) {
+			// Queue for next turn; triggerTurn is ignored while streaming
+			void agent.queueMessage(hookMessage);
+			return;
+		}
+		agent.injectMessage(hookMessage);
+		if (triggerTurn) {
+			void agent.continue();
+		}
+	});
+	setGlobalAppendEntryHandler((customType, data) => {
+		const manager = sessionManager as SessionManager & {
+			appendCustomEntry?: (type: string, payload?: unknown) => void;
+		};
+		if (manager.appendCustomEntry) {
+			manager.appendCustomEntry(customType, data);
+		} else {
+			console.warn(
+				`[hooks] appendEntry(${customType}) ignored (session manager does not support custom entries yet)`,
+			);
 		}
 	});
 

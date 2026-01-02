@@ -11,6 +11,7 @@
  */
 
 import { createLogger } from "../utils/logger.js";
+import { convertAppMessageToLlm } from "./custom-messages.js";
 import type { AppMessage, Model } from "./types.js";
 
 const logger = createLogger("auto-compaction");
@@ -88,11 +89,15 @@ export function getAutoCompactionConfig(): AutoCompactionConfig {
  */
 function estimateMessageTokens(message: AppMessage): number {
 	let charCount = 0;
+	const llmMessage = convertAppMessageToLlm(message);
+	if (!llmMessage) {
+		return 0;
+	}
 
-	if (typeof message.content === "string") {
-		charCount = message.content.length;
-	} else if (Array.isArray(message.content)) {
-		for (const part of message.content) {
+	if (typeof llmMessage.content === "string") {
+		charCount = llmMessage.content.length;
+	} else if (Array.isArray(llmMessage.content)) {
+		for (const part of llmMessage.content) {
 			if (part.type === "text") {
 				charCount += part.text.length;
 			} else if (part.type === "thinking") {

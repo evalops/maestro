@@ -357,6 +357,17 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "tree",
+				description: "Navigate the session tree and switch branches",
+				usage: "/tree",
+				tags: ["session"],
+			},
+			equals("tree"),
+			handlers.tree,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "queue",
 				description: "List, cancel, or change queue mode",
 				usage: "/queue [list|cancel <id>|mode <one|all>]",
@@ -992,9 +1003,9 @@ export function createCommandRegistry({
 			{
 				name: "ss",
 				description:
-					"Session management: new, clear, list, load, branch, export, share",
+					"Session management: new, clear, list, load, branch, tree, export, share",
 				usage:
-					"/ss [new|clear|list|load <id>|branch <n>|export|share|queue|info]",
+					"/ss [new|clear|list|load <id>|branch <n>|tree|export|share|queue|info]",
 				tags: ["session"],
 				examples: [
 					"/ss",

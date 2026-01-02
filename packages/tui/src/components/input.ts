@@ -24,8 +24,33 @@
  * @module components/input
  */
 
+import {
+	AnsiKeys,
+	isAltBackspace,
+	isAltLeft,
+	isAltRight,
+	isArrowLeft,
+	isArrowRight,
+	isBackspace,
+	isCtrlA,
+	isCtrlE,
+	isCtrlK,
+	isCtrlLeft,
+	isCtrlRight,
+	isCtrlU,
+	isCtrlW,
+	isDelete,
+	isEnter,
+} from "../keymap.js";
 import type { Component } from "../tui.js";
-import { visibleWidth } from "../utils.js";
+import {
+	getSegmenter,
+	isPunctuationChar,
+	isWhitespaceChar,
+	visibleWidth,
+} from "../utils.js";
+
+const segmenter = getSegmenter();
 
 /**
  * Single-line text input component with horizontal scrolling.
@@ -65,6 +90,10 @@ export class Input implements Component {
 
 	/** Cursor position within the value */
 	private cursor = 0;
+
+	// Bracketed paste mode buffering
+	private pasteBuffer = "";
+	private isInPaste = false;
 
 	/**
 	 * Callback fired when user presses Enter.
@@ -106,61 +135,260 @@ export class Input implements Component {
 	 * @param data - Raw key data from terminal
 	 */
 	handleInput(data: string): void {
+		let input = data;
+		if (input.includes(AnsiKeys.PASTE_START)) {
+			this.isInPaste = true;
+			this.pasteBuffer = "";
+			input = input.replace(AnsiKeys.PASTE_START, "");
+		}
+
+		if (this.isInPaste) {
+			this.pasteBuffer += input;
+			const endIndex = this.pasteBuffer.indexOf(AnsiKeys.PASTE_END);
+			if (endIndex !== -1) {
+				const pasteContent = this.pasteBuffer.substring(0, endIndex);
+				this.handlePaste(pasteContent);
+				this.isInPaste = false;
+
+				const remaining = this.pasteBuffer.substring(
+					endIndex + AnsiKeys.PASTE_END.length,
+				);
+				this.pasteBuffer = "";
+				if (remaining) {
+					this.handleInput(remaining);
+				}
+			}
+			return;
+		}
+
 		// Handle special keys
-		if (data === "\r" || data === "\n") {
+		if (isEnter(input) || input === "\n") {
 			// Enter - submit
 			if (this.onSubmit) {
 				this.onSubmit(this.value);
 			}
 			return;
 		}
-		if (data === "\x7f" || data === "\x08") {
-			// Backspace
+
+		if (isBackspace(input)) {
+			// Backspace - delete grapheme before cursor
 			if (this.cursor > 0) {
+				const beforeCursor = this.value.slice(0, this.cursor);
+				const graphemes = [...segmenter.segment(beforeCursor)];
+				const lastGrapheme = graphemes[graphemes.length - 1];
+				const graphemeLength = lastGrapheme ? lastGrapheme.segment.length : 1;
 				this.value =
-					this.value.slice(0, this.cursor - 1) + this.value.slice(this.cursor);
-				this.cursor--;
+					this.value.slice(0, this.cursor - graphemeLength) +
+					this.value.slice(this.cursor);
+				this.cursor -= graphemeLength;
 			}
 			return;
 		}
-		if (data === "\x1b[D") {
-			// Left arrow
+
+		if (isArrowLeft(input)) {
+			// Left arrow - move by one grapheme
 			if (this.cursor > 0) {
-				this.cursor--;
+				const beforeCursor = this.value.slice(0, this.cursor);
+				const graphemes = [...segmenter.segment(beforeCursor)];
+				const lastGrapheme = graphemes[graphemes.length - 1];
+				this.cursor -= lastGrapheme ? lastGrapheme.segment.length : 1;
 			}
 			return;
 		}
-		if (data === "\x1b[C") {
-			// Right arrow
+
+		if (isArrowRight(input)) {
+			// Right arrow - move by one grapheme
 			if (this.cursor < this.value.length) {
-				this.cursor++;
+				const afterCursor = this.value.slice(this.cursor);
+				const graphemes = [...segmenter.segment(afterCursor)];
+				const firstGrapheme = graphemes[0];
+				this.cursor += firstGrapheme ? firstGrapheme.segment.length : 1;
 			}
 			return;
 		}
-		if (data === "\x1b[3~") {
-			// Delete
+
+		if (isDelete(input)) {
+			// Delete - delete grapheme at cursor
 			if (this.cursor < this.value.length) {
+				const afterCursor = this.value.slice(this.cursor);
+				const graphemes = [...segmenter.segment(afterCursor)];
+				const firstGrapheme = graphemes[0];
+				const graphemeLength = firstGrapheme ? firstGrapheme.segment.length : 1;
 				this.value =
-					this.value.slice(0, this.cursor) + this.value.slice(this.cursor + 1);
+					this.value.slice(0, this.cursor) +
+					this.value.slice(this.cursor + graphemeLength);
 			}
 			return;
 		}
-		if (data === "\x01") {
+
+		if (isCtrlA(input)) {
 			// Ctrl+A - beginning of line
 			this.cursor = 0;
 			return;
 		}
-		if (data === "\x05") {
+
+		if (isCtrlE(input)) {
 			// Ctrl+E - end of line
 			this.cursor = this.value.length;
 			return;
 		}
-		// Regular character input
-		if (data.length === 1 && data >= " " && data <= "~") {
-			this.value =
-				this.value.slice(0, this.cursor) + data + this.value.slice(this.cursor);
-			this.cursor++;
+
+		if (isCtrlW(input)) {
+			// Ctrl+W - delete word backwards
+			this.deleteWordBackwards();
+			return;
 		}
+
+		if (isAltBackspace(input)) {
+			// Option/Alt+Backspace - delete word backwards
+			this.deleteWordBackwards();
+			return;
+		}
+
+		if (isCtrlU(input)) {
+			// Ctrl+U - delete from cursor to start of line
+			this.value = this.value.slice(this.cursor);
+			this.cursor = 0;
+			return;
+		}
+
+		if (isCtrlK(input)) {
+			// Ctrl+K - delete from cursor to end of line
+			this.value = this.value.slice(0, this.cursor);
+			return;
+		}
+
+		if (isCtrlLeft(input) || isAltLeft(input)) {
+			this.moveWordBackwards();
+			return;
+		}
+
+		if (isCtrlRight(input) || isAltRight(input)) {
+			this.moveWordForwards();
+			return;
+		}
+
+		// Regular character input
+		const hasControlChars = [...input].some((ch) => {
+			const code = ch.charCodeAt(0);
+			return code < 32 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
+		});
+		if (!hasControlChars) {
+			this.value =
+				this.value.slice(0, this.cursor) +
+				input +
+				this.value.slice(this.cursor);
+			this.cursor += input.length;
+		}
+	}
+
+	private deleteWordBackwards(): void {
+		if (this.cursor === 0) {
+			return;
+		}
+
+		const oldCursor = this.cursor;
+		this.moveWordBackwards();
+		const deleteFrom = this.cursor;
+		this.cursor = oldCursor;
+
+		this.value =
+			this.value.slice(0, deleteFrom) + this.value.slice(this.cursor);
+		this.cursor = deleteFrom;
+	}
+
+	private moveWordBackwards(): void {
+		if (this.cursor === 0) {
+			return;
+		}
+
+		const textBeforeCursor = this.value.slice(0, this.cursor);
+		const graphemes = [...segmenter.segment(textBeforeCursor)];
+
+		while (
+			graphemes.length > 0 &&
+			isWhitespaceChar(graphemes[graphemes.length - 1]?.segment || "")
+		) {
+			this.cursor -= graphemes.pop()?.segment.length || 0;
+		}
+
+		if (graphemes.length > 0) {
+			const lastGrapheme = graphemes[graphemes.length - 1]?.segment || "";
+			if (isPunctuationChar(lastGrapheme)) {
+				while (
+					graphemes.length > 0 &&
+					isPunctuationChar(graphemes[graphemes.length - 1]?.segment || "")
+				) {
+					this.cursor -= graphemes.pop()?.segment.length || 0;
+				}
+			} else {
+				while (
+					graphemes.length > 0 &&
+					!isWhitespaceChar(graphemes[graphemes.length - 1]?.segment || "") &&
+					!isPunctuationChar(graphemes[graphemes.length - 1]?.segment || "")
+				) {
+					this.cursor -= graphemes.pop()?.segment.length || 0;
+				}
+			}
+		}
+	}
+
+	private moveWordForwards(): void {
+		if (this.cursor >= this.value.length) {
+			return;
+		}
+
+		const textAfterCursor = this.value.slice(this.cursor);
+		const segments = segmenter.segment(textAfterCursor);
+		const iterator = segments[Symbol.iterator]();
+		let next = iterator.next();
+
+		while (!next.done && isWhitespaceChar(next.value.segment)) {
+			this.cursor += next.value.segment.length;
+			next = iterator.next();
+		}
+
+		if (!next.done) {
+			const firstGrapheme = next.value.segment;
+			if (isPunctuationChar(firstGrapheme)) {
+				while (!next.done && isPunctuationChar(next.value.segment)) {
+					this.cursor += next.value.segment.length;
+					next = iterator.next();
+				}
+			} else {
+				while (
+					!next.done &&
+					!isWhitespaceChar(next.value.segment) &&
+					!isPunctuationChar(next.value.segment)
+				) {
+					this.cursor += next.value.segment.length;
+					next = iterator.next();
+				}
+			}
+		}
+	}
+
+	private handlePaste(pastedText: string): void {
+		const cleanText = pastedText
+			.replace(/\r\n/g, "")
+			.replace(/\r/g, "")
+			.replace(/\n/g, "");
+		if (!cleanText) return;
+
+		const prevChar = this.cursor > 0 ? this.value[this.cursor - 1] : "";
+		const needsSpace =
+			prevChar &&
+			/\w/.test(prevChar) &&
+			(cleanText.startsWith("/") ||
+				cleanText.startsWith("~") ||
+				cleanText.startsWith("."));
+		const insertText = needsSpace ? ` ${cleanText}` : cleanText;
+
+		this.value =
+			this.value.slice(0, this.cursor) +
+			insertText +
+			this.value.slice(this.cursor);
+		this.cursor += insertText.length;
 	}
 
 	/**

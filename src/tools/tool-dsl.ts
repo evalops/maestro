@@ -67,7 +67,11 @@
 import type { Static, TSchema } from "@sinclair/typebox";
 import { Ajv, type ErrorObject, type ValidateFunction } from "ajv";
 import addFormatsModule, { type FormatsPlugin } from "ajv-formats";
-import type { AgentToolResult, ToolAnnotations } from "../agent/types.js";
+import type {
+	AgentToolResult,
+	AgentToolUpdateCallback,
+	ToolAnnotations,
+} from "../agent/types.js";
 import type { Sandbox } from "../sandbox/types.js";
 import { resolveDefaultExport } from "../utils/module-interop.js";
 
@@ -146,6 +150,7 @@ export interface ToolRunContext<Details> {
 	signal?: AbortSignal;
 	respond: ToolResponseBuilder<Details>;
 	sandbox?: Sandbox;
+	onUpdate?: AgentToolUpdateCallback<Details>;
 }
 
 export interface CreateToolOptions<Schema extends TSchema, Details> {
@@ -207,6 +212,7 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 			params: Record<string, unknown>,
 			signal?: AbortSignal,
 			context?: { sandbox?: Sandbox },
+			onUpdate?: AgentToolUpdateCallback<Details>,
 		) => {
 			// Validate params against schema using cached validator
 			if (options.schema) {
@@ -271,6 +277,7 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 						signal,
 						respond: builder,
 						sandbox: context?.sandbox,
+						onUpdate,
 					});
 					if (result instanceof ToolResponseBuilder) {
 						return result.build();

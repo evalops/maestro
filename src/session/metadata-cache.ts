@@ -12,7 +12,8 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { type SessionEntry, tryParseSessionEntry } from "./types.js";
+import type { SessionEntry, SessionModelMetadata } from "./types.js";
+import { tryParseSessionEntry } from "./types.js";
 
 /**
  * Reads session entries from a file, returning empty array on error
@@ -39,20 +40,7 @@ function safeReadSessionEntries(filePath: string): SessionEntry[] {
 	}
 }
 
-/**
- * Metadata about the current model, persisted in session files
- */
-export interface SessionModelMetadata {
-	provider: string;
-	modelId: string;
-	providerName?: string;
-	name?: string;
-	baseUrl?: string;
-	reasoning?: boolean;
-	contextWindow?: number;
-	maxTokens?: number;
-	source?: "builtin" | "custom";
-}
+export type { SessionModelMetadata } from "./types.js";
 
 export class SessionMetadataCache {
 	/** Current thinking level: "off", "minimal", "low", "medium", "high", "max" */

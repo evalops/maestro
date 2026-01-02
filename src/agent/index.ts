@@ -141,6 +141,7 @@ export type {
 	AgentState,
 	AgentTool,
 	AgentToolResult,
+	AgentToolUpdateCallback,
 	AgentTransport,
 	Api,
 	AppMessage,

@@ -32,6 +32,7 @@ export type JsonlEvent =
 				| "message_complete"
 				| "tool_call"
 				| "tool_result"
+				| "tool_update"
 				| "approval";
 			turnId?: string;
 			timestamp: string;
@@ -193,6 +194,19 @@ export function createAgentJsonlAdapter(
 							toolName: event.toolName,
 							result: event.result,
 							isError: event.isError,
+						},
+					});
+					break;
+				}
+				case "tool_execution_update": {
+					writer.emit({
+						type: "item",
+						subtype: "tool_update",
+						timestamp: now(),
+						data: {
+							toolCallId: event.toolCallId,
+							toolName: event.toolName,
+							partialResult: event.partialResult,
 						},
 					});
 					break;

@@ -12,11 +12,13 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { theme } from "../theme/theme.js";
 import { createLogger } from "../utils/logger.js";
 import { expandTildePath } from "../utils/path-expansion.js";
 import type {
 	ExecResult,
 	HookAPI,
+	HookAppendEntryHandler,
 	HookAttachment,
 	HookEventContext,
 	HookEventType,
@@ -24,9 +26,12 @@ import type {
 	HookHandler,
 	HookInput,
 	HookJsonOutput,
+	HookMessageRenderer,
 	HookSendHandler,
+	HookSendMessageHandler,
 	HookUIContext,
 	LoadedTypeScriptHook,
+	RegisteredCommand,
 } from "./types.js";
 
 const logger = createLogger("hooks:typescript-loader");
@@ -46,6 +51,8 @@ function normalizeUnicodeSpaces(str: string): string {
  * Global send handler - set by the session/mode that enables message injection.
  */
 let globalSendHandler: HookSendHandler | null = null;
+let globalSendMessageHandler: HookSendMessageHandler | null = null;
+let globalAppendEntryHandler: HookAppendEntryHandler | null = null;
 
 /**
  * Global UI context - set by the mode (TUI, RPC, etc.)
@@ -155,6 +162,32 @@ function createNoOpUIContext(): HookUIContext {
 		notify(_message: string, _type?: "info" | "warning" | "error"): void {
 			// No-op in non-interactive modes
 		},
+		setStatus(_key: string, _text: string | undefined): void {
+			// No-op
+		},
+		async custom<T>(
+			_factory: (
+				tui: import("@evalops/tui").TUI,
+				theme: import("../theme/theme.js").Theme,
+				done: (result: T) => void,
+			) =>
+				| import("@evalops/tui").Component
+				| Promise<import("@evalops/tui").Component>,
+		): Promise<T> {
+			return undefined as T;
+		},
+		setEditorText(_text: string): void {
+			// No-op
+		},
+		getEditorText(): string {
+			return "";
+		},
+		async editor(_title: string, _prefill?: string): Promise<string | null> {
+			return null;
+		},
+		get theme() {
+			return theme;
+		},
 	};
 }
 
@@ -207,6 +240,10 @@ async function loadTypeScriptHook(
 			Array<HookHandler<HookInput, HookJsonOutput | undefined>>
 		>();
 		let localSendHandler: HookSendHandler | null = null;
+		let localSendMessageHandler: HookSendMessageHandler | null = null;
+		let localAppendEntryHandler: HookAppendEntryHandler | null = null;
+		const messageRenderers = new Map<string, HookMessageRenderer>();
+		const commands = new Map<string, RegisteredCommand>();
 
 		const api: HookAPI = {
 			on<E extends HookEventType>(
@@ -226,6 +263,32 @@ async function loadTypeScriptHook(
 					logger.warn("Hook called send() but no send handler is configured");
 				}
 			},
+			sendMessage(message, triggerTurn): void {
+				const handler = localSendMessageHandler ?? globalSendMessageHandler;
+				if (handler) {
+					handler(message, triggerTurn);
+				} else {
+					logger.warn(
+						"Hook called sendMessage() but no send handler is configured",
+					);
+				}
+			},
+			appendEntry(customType, data): void {
+				const handler = localAppendEntryHandler ?? globalAppendEntryHandler;
+				if (handler) {
+					handler(customType, data);
+				} else {
+					logger.warn(
+						"Hook called appendEntry() but no append handler is configured",
+					);
+				}
+			},
+			registerMessageRenderer(customType, renderer): void {
+				messageRenderers.set(customType, renderer as HookMessageRenderer);
+			},
+			registerCommand(name, options): void {
+				commands.set(name, { name, ...options });
+			},
 		};
 
 		// Call the factory to register handlers
@@ -235,8 +298,16 @@ async function loadTypeScriptHook(
 			path: hookPath,
 			resolvedPath,
 			handlers,
+			messageRenderers,
+			commands,
 			setSendHandler: (handler: HookSendHandler) => {
 				localSendHandler = handler;
+			},
+			setSendMessageHandler: (handler: HookSendMessageHandler) => {
+				localSendMessageHandler = handler;
+			},
+			setAppendEntryHandler: (handler: HookAppendEntryHandler) => {
+				localAppendEntryHandler = handler;
 			},
 		};
 
@@ -324,6 +395,49 @@ export function getLoadedTypeScriptHooks(): LoadedTypeScriptHook[] {
 }
 
 /**
+ * Get a hook message renderer for a customType (first match wins).
+ */
+export function getTypeScriptHookMessageRenderer(
+	customType: string,
+): HookMessageRenderer | undefined {
+	for (const hook of loadedHooks) {
+		const renderer = hook.messageRenderers.get(customType);
+		if (renderer) {
+			return renderer;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Get all registered hook commands.
+ */
+export function getTypeScriptHookCommands(): RegisteredCommand[] {
+	const commands: RegisteredCommand[] = [];
+	for (const hook of loadedHooks) {
+		for (const command of hook.commands.values()) {
+			commands.push(command);
+		}
+	}
+	return commands;
+}
+
+/**
+ * Get a registered hook command by name (first match wins).
+ */
+export function getTypeScriptHookCommand(
+	name: string,
+): RegisteredCommand | undefined {
+	for (const hook of loadedHooks) {
+		const command = hook.commands.get(name);
+		if (command) {
+			return command;
+		}
+	}
+	return undefined;
+}
+
+/**
  * Check if any TypeScript hooks have handlers for a specific event.
  */
 export function hasTypeScriptHookHandlers(event: HookEventType): boolean {
@@ -390,6 +504,24 @@ export function setGlobalSendHandler(handler: HookSendHandler | null): void {
  */
 export function getGlobalSendHandler(): HookSendHandler | null {
 	return globalSendHandler;
+}
+
+/**
+ * Set the global sendMessage handler for hook message injection.
+ */
+export function setGlobalSendMessageHandler(
+	handler: HookSendMessageHandler | null,
+): void {
+	globalSendMessageHandler = handler;
+}
+
+/**
+ * Set the global appendEntry handler for hook state persistence.
+ */
+export function setGlobalAppendEntryHandler(
+	handler: HookAppendEntryHandler | null,
+): void {
+	globalAppendEntryHandler = handler;
 }
 
 /**

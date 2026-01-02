@@ -1,5 +1,6 @@
 import type { TUI } from "@evalops/tui";
 import type { Agent } from "../../agent/agent.js";
+import type { TextContent } from "../../agent/types.js";
 import type { SessionManager } from "../../session/manager.js";
 import type { CustomEditor } from "../custom-editor.js";
 import type { ModalManager } from "../modal-manager.js";
@@ -92,17 +93,19 @@ export class UserMessageSelectorView {
 		// Get the selected user message text to put in the editor
 		const selectedMessage = this.options.agent.state.messages[messageIndex];
 		let selectedText = "";
-		if (typeof selectedMessage.content === "string") {
-			selectedText = selectedMessage.content;
-		} else if (Array.isArray(selectedMessage.content)) {
-			const textBlocks = selectedMessage.content.filter(
-				(c): c is { type: "text"; text: string } => c.type === "text",
-			);
-			// Preserve newlines when placing in editor (join with newline, not space)
-			selectedText = textBlocks
-				.map((c) => c.text)
-				.join("\n")
-				.trim();
+		if (selectedMessage.role === "user") {
+			if (typeof selectedMessage.content === "string") {
+				selectedText = selectedMessage.content;
+			} else if (Array.isArray(selectedMessage.content)) {
+				const textBlocks = selectedMessage.content.filter(
+					(c): c is TextContent => c.type === "text",
+				);
+				// Preserve newlines when placing in editor (join with newline, not space)
+				selectedText = textBlocks
+					.map((c) => c.text)
+					.join("\n")
+					.trim();
+			}
 		}
 
 		// Create a branched session with messages UP TO (but not including) the selected message

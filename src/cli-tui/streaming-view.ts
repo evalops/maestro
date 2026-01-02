@@ -129,6 +129,15 @@ export class StreamingView {
 		this.options.pendingTools.delete(toolCallId);
 	}
 
+	updateToolPartialResult(
+		toolCallId: string,
+		partial: Parameters<ToolExecutionComponent["updatePartialResult"]>[0],
+	): void {
+		const component = this.options.pendingTools.get(toolCallId);
+		if (!component) return;
+		component.updatePartialResult(partial);
+	}
+
 	forceStopStreaming(): void {
 		if (!this.streamingComponent) return;
 		// Remove the in-progress assistant block to avoid stale content when force-stopping.

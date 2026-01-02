@@ -5,7 +5,13 @@
  * at various points in the execution lifecycle.
  */
 
-import type { ToolCall, ToolResultMessage } from "../agent/types.js";
+import type { Component, TUI } from "@evalops/tui";
+import type {
+	HookMessage,
+	ToolCall,
+	ToolResultMessage,
+} from "../agent/types.js";
+import type { Theme } from "../theme/theme.js";
 
 /**
  * All supported hook event types.
@@ -892,6 +898,25 @@ export type HookSendHandler = (
 ) => void;
 
 /**
+ * Handler for sending hook messages into the conversation.
+ */
+export type HookSendMessageHandler = <T = unknown>(
+	message: Pick<
+		HookMessage<T>,
+		"customType" | "content" | "display" | "details"
+	>,
+	triggerTurn?: boolean,
+) => void;
+
+/**
+ * Handler for appending custom entries to the session.
+ */
+export type HookAppendEntryHandler = <T = unknown>(
+	customType: string,
+	data?: T,
+) => void;
+
+/**
  * UI context available to hooks for interactive prompts.
  */
 export interface HookUIContext {
@@ -917,6 +942,44 @@ export interface HookUIContext {
 	 * Show a notification message.
 	 */
 	notify(message: string, type?: "info" | "warning" | "error"): void;
+
+	/**
+	 * Set status text in the footer/status bar.
+	 * Pass undefined as text to clear the status for this key.
+	 */
+	setStatus(key: string, text: string | undefined): void;
+
+	/**
+	 * Show a custom component with keyboard focus.
+	 */
+	custom<T>(
+		factory: (
+			tui: TUI,
+			theme: Theme,
+			done: (result: T) => void,
+		) => Component | Promise<Component>,
+	): Promise<T>;
+
+	/**
+	 * Set the text in the core input editor.
+	 */
+	setEditorText(text: string): void;
+
+	/**
+	 * Get the current text from the core input editor.
+	 */
+	getEditorText(): string;
+
+	/**
+	 * Show a multi-line editor for text editing.
+	 * Returns null if cancelled.
+	 */
+	editor(title: string, prefill?: string): Promise<string | null>;
+
+	/**
+	 * Current theme for styling with ANSI codes.
+	 */
+	readonly theme: Theme;
 }
 
 /**
@@ -936,6 +999,33 @@ export interface HookEventContext {
 }
 
 /**
+ * Context passed to hook command handlers.
+ * Mirrors HookEventContext and is extended in interactive modes.
+ */
+export interface HookCommandContext extends HookEventContext {
+	/** Whether the agent is idle (not streaming) */
+	isIdle(): boolean;
+	/** Abort the current agent operation */
+	abort(): void;
+	/** Whether there are queued messages waiting to be processed */
+	hasQueuedMessages(): boolean;
+	/** Wait for the agent to finish streaming */
+	waitForIdle(): Promise<void>;
+	/** Start a new session (if supported by the mode) */
+	newSession?: (options?: {
+		parentSession?: string;
+		setup?: (sessionManager: unknown) => Promise<void>;
+	}) => Promise<{ cancelled: boolean }>;
+	/** Branch from a specific entry (if supported by the mode) */
+	branch?: (entryId: string) => Promise<{ cancelled: boolean }>;
+	/** Navigate within the session tree (if supported by the mode) */
+	navigateTree?: (
+		targetId: string,
+		options?: { summarize?: boolean },
+	) => Promise<{ cancelled: boolean }>;
+}
+
+/**
  * Result of executing a command.
  */
 export interface ExecResult {
@@ -952,6 +1042,28 @@ export type HookHandler<E, R = void> = (
 	ctx: HookEventContext,
 ) => Promise<R>;
 
+export interface HookMessageRenderOptions {
+	expanded: boolean;
+}
+
+/**
+ * Renderer for hook messages.
+ */
+export type HookMessageRenderer<T = unknown> = (
+	message: HookMessage<T>,
+	options: HookMessageRenderOptions,
+	theme: Theme,
+) => Component | undefined;
+
+/**
+ * Command registration options.
+ */
+export interface RegisteredCommand {
+	name: string;
+	description?: string;
+	handler: (args: string, ctx: HookCommandContext) => Promise<void>;
+}
+
 /**
  * API provided to TypeScript hooks.
  * This is the "pi" object in pi-mono style hooks.
@@ -966,11 +1078,43 @@ export interface HookAPI {
 	): void;
 
 	/**
-	 * Send a message to the agent.
+	 * Send a message to the agent. (Legacy)
 	 * If the agent is streaming, the message is queued.
 	 * If the agent is idle, a new prompt cycle is started.
 	 */
 	send(text: string, attachments?: HookAttachment[]): void;
+
+	/**
+	 * Send a custom hook message to the session (LLM-visible).
+	 */
+	sendMessage<T = unknown>(
+		message: Pick<
+			HookMessage<T>,
+			"customType" | "content" | "display" | "details"
+		>,
+		triggerTurn?: boolean,
+	): void;
+
+	/**
+	 * Append a custom entry for hook state persistence (not LLM-visible).
+	 */
+	appendEntry<T = unknown>(customType: string, data?: T): void;
+
+	/**
+	 * Register a custom renderer for hook messages.
+	 */
+	registerMessageRenderer<T = unknown>(
+		customType: string,
+		renderer: HookMessageRenderer<T>,
+	): void;
+
+	/**
+	 * Register a custom slash command.
+	 */
+	registerCommand(
+		name: string,
+		options: { description?: string; handler: RegisteredCommand["handler"] },
+	): void;
 }
 
 /**
@@ -991,6 +1135,14 @@ export interface LoadedTypeScriptHook {
 		HookEventType,
 		Array<HookHandler<HookInput, HookJsonOutput | undefined>>
 	>;
+	/** Custom message renderers */
+	messageRenderers: Map<string, HookMessageRenderer>;
+	/** Registered commands */
+	commands: Map<string, RegisteredCommand>;
 	/** Send handler setter */
 	setSendHandler: (handler: HookSendHandler) => void;
+	/** Send message handler setter */
+	setSendMessageHandler: (handler: HookSendMessageHandler) => void;
+	/** Append entry handler setter */
+	setAppendEntryHandler: (handler: HookAppendEntryHandler) => void;
 }

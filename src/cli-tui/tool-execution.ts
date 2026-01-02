@@ -60,6 +60,16 @@ export class ToolExecutionComponent extends Container {
 		isError: boolean;
 		details?: unknown;
 	};
+	private partialResult?: {
+		content: Array<{
+			type: string;
+			text?: string;
+			data?: string;
+			mimeType?: string;
+		}>;
+		isError: boolean;
+		details?: unknown;
+	};
 
 	private renderer: ToolRenderer;
 
@@ -224,6 +234,7 @@ export class ToolExecutionComponent extends Container {
 	}): void {
 		const wasRunning = !this.result;
 		this.result = result;
+		this.partialResult = undefined;
 
 		// Stop skeleton animation once we have a result
 		this.stopSkeletonAnimation();
@@ -241,6 +252,25 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	updatePartialResult(partial: {
+		content: Array<{
+			type: string;
+			text?: string;
+			data?: string;
+			mimeType?: string;
+		}>;
+		details?: unknown;
+		isError?: boolean;
+	}): void {
+		this.partialResult = {
+			content: partial.content,
+			details: partial.details,
+			isError: partial.isError ?? false,
+		};
+		this.stopSkeletonAnimation();
+		this.updateDisplay();
+	}
+
 	private updateDisplay(): void {
 		// Refresh borders so they adapt to current terminal width.
 		this.topLine.setText(this.buildTopLine());
@@ -252,7 +282,7 @@ export class ToolExecutionComponent extends Container {
 
 	private formatToolExecution(): string {
 		// Show skeleton shimmer while waiting for result
-		if (!this.result && !this.pendingStatus) {
+		if (!this.result && !this.pendingStatus && !this.partialResult) {
 			const skeleton = this.buildSkeletonLine(this.panelWidth() - 4);
 			return `${skeleton}\n${skeleton}`;
 		}
@@ -261,7 +291,7 @@ export class ToolExecutionComponent extends Container {
 			toolName: this.toolName,
 			args: this.args,
 			partialArgs: this.partialArgs,
-			result: this.result,
+			result: this.result ?? this.partialResult,
 			collapsed: this.collapsed,
 		});
 		if (!this.pendingStatus) {

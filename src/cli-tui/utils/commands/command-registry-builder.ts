@@ -62,6 +62,7 @@ export interface CommandRegistryOptions {
 	) => void | Promise<void>;
 	handleQueue: (context: CommandExecutionContext) => void | Promise<void>;
 	handleBranch: (context: CommandExecutionContext) => void | Promise<void>;
+	handleTree: (context: CommandExecutionContext) => void | Promise<void>;
 	handleCommands: (context: CommandExecutionContext) => void | Promise<void>;
 	handleQuit: (context: CommandExecutionContext) => void;
 	handleApprovals: (context: CommandExecutionContext) => void;
@@ -156,6 +157,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			commands: opts.handleCommands,
 			queue: opts.handleQueue,
 			branch: opts.handleBranch,
+			tree: opts.handleTree,
 			quit: opts.handleQuit,
 			approvals: opts.handleApprovals,
 			newChat: opts.handleNewChat,

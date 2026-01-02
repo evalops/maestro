@@ -856,6 +856,7 @@ export class ProviderTransport implements AgentTransport {
 
 			if (toolCallsToExecute.length > 0) {
 				toolResults = [];
+				const toolUpdateQueue = createToolUpdateQueue();
 				const pendingExecutions: PendingExecution[] = [];
 				const rawConcurrency = this.options.maxConcurrentToolExecutions ?? 2;
 				const configuredConcurrency = Number.isFinite(rawConcurrency)
@@ -927,13 +928,27 @@ export class ProviderTransport implements AgentTransport {
 					if (pendingExecutions.length < concurrencyLimit) {
 						return [];
 					}
-					const resolved = await waitForNextExecution(pendingExecutions);
-					const outcome = resolved.outcome;
-					return emitToolResult(
-						outcome.message,
-						resolved.execution.toolCall,
-						outcome.isError,
-					);
+					const events: AgentEvent[] = [];
+					while (pendingExecutions.length >= concurrencyLimit) {
+						const next = await waitForNextExecutionOrUpdate(
+							pendingExecutions,
+							toolUpdateQueue,
+						);
+						if (next.kind === "update") {
+							events.push(next.event);
+							continue;
+						}
+						const outcome = next.outcome;
+						events.push(
+							...emitToolResult(
+								outcome.message,
+								next.execution.toolCall,
+								outcome.isError,
+							),
+						);
+						break;
+					}
+					return events;
 				};
 
 				for (const toolCall of toolCallsToExecute) {
@@ -1287,11 +1302,21 @@ export class ProviderTransport implements AgentTransport {
 								const context = cfg.sandbox
 									? { sandbox: cfg.sandbox }
 									: undefined;
+								const onUpdate = (partialResult: AgentToolResult) => {
+									toolUpdateQueue.push({
+										type: "tool_execution_update",
+										toolCallId: toolCall.id,
+										toolName: toolCall.name,
+										args: validatedArgs,
+										partialResult,
+									});
+								};
 								return tool.execute(
 									toolCall.id,
 									validatedArgs,
 									signal,
 									context,
+									onUpdate,
 								);
 							})
 
@@ -1503,11 +1528,18 @@ export class ProviderTransport implements AgentTransport {
 				}
 
 				while (pendingExecutions.length > 0) {
-					const resolved = await waitForNextExecution(pendingExecutions);
-					const outcome = resolved.outcome;
+					const next = await waitForNextExecutionOrUpdate(
+						pendingExecutions,
+						toolUpdateQueue,
+					);
+					if (next.kind === "update") {
+						yield next.event;
+						continue;
+					}
+					const outcome = next.outcome;
 					for (const event of emitToolResult(
 						outcome.message,
-						resolved.execution.toolCall,
+						next.execution.toolCall,
 						outcome.isError,
 					)) {
 						yield event;
@@ -1588,4 +1620,89 @@ async function waitForNextExecution(
 		execution: race.entry,
 		outcome: race.outcome,
 	};
+}
+
+type ToolUpdateEvent = Extract<AgentEvent, { type: "tool_execution_update" }>;
+
+class ToolUpdateQueue {
+	private updates: ToolUpdateEvent[] = [];
+	private resolve?: (event: ToolUpdateEvent) => void;
+	private pending?: Promise<ToolUpdateEvent>;
+
+	push(event: ToolUpdateEvent): void {
+		if (this.resolve) {
+			const resolve = this.resolve;
+			this.resolve = undefined;
+			this.pending = undefined;
+			resolve(event);
+			return;
+		}
+		this.updates.push(event);
+	}
+
+	hasPending(): boolean {
+		return this.updates.length > 0;
+	}
+
+	shift(): ToolUpdateEvent | undefined {
+		return this.updates.shift();
+	}
+
+	next(): Promise<ToolUpdateEvent> {
+		const queued = this.shift();
+		if (queued) {
+			return Promise.resolve(queued);
+		}
+		if (!this.pending) {
+			this.pending = new Promise<ToolUpdateEvent>((resolve) => {
+				this.resolve = resolve;
+			});
+		}
+		return this.pending;
+	}
+}
+
+function createToolUpdateQueue(): ToolUpdateQueue {
+	return new ToolUpdateQueue();
+}
+
+async function waitForNextExecutionOrUpdate(
+	pendingExecutions: PendingExecution[],
+	updateQueue: ToolUpdateQueue,
+): Promise<
+	| { kind: "update"; event: ToolUpdateEvent }
+	| {
+			kind: "execution";
+			execution: PendingExecution;
+			outcome: ToolExecutionOutcome;
+	  }
+> {
+	const queued = updateQueue.shift();
+	if (queued) {
+		return { kind: "update", event: queued };
+	}
+
+	const executionPromise = Promise.race(
+		pendingExecutions.map((entry) =>
+			entry.promise.then((outcome) => ({ entry, outcome })),
+		),
+	).then((race) => ({
+		kind: "execution" as const,
+		execution: race.entry,
+		outcome: race.outcome,
+	}));
+
+	const updatePromise = updateQueue.next().then((event) => ({
+		kind: "update" as const,
+		event,
+	}));
+
+	const next = await Promise.race([executionPromise, updatePromise]);
+	if (next.kind === "execution") {
+		const index = pendingExecutions.indexOf(next.execution);
+		if (index >= 0) {
+			pendingExecutions.splice(index, 1);
+		}
+	}
+	return next;
 }

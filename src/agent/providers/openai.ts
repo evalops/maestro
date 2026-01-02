@@ -533,7 +533,11 @@ export async function* streamOpenAI(
 
 			for (const c of msg.content) {
 				if (c.type === "text") {
-					textContent.push({ type: "text", text: sanitizeSurrogates(c.text) });
+					const text = sanitizeSurrogates(c.text);
+					if (text.length === 0) {
+						continue;
+					}
+					textContent.push({ type: "text", text });
 				} else if (c.type === "toolCall") {
 					toolCalls.push({
 						id: normalizeToolId(c.id),
