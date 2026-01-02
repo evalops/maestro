@@ -99,7 +99,7 @@ export class TaskExecutor {
 			let pr: { number: number; url: string } | null = null;
 			await this.runStep(task, progress, "pr", async () => {
 				this.log("[executor] Creating PR...");
-				pr = await this.createPR(task, branchName);
+				pr = await this.createPR(task, progress, branchName);
 			});
 			if (!pr) {
 				throw new Error("PR creation did not return a result");
@@ -400,10 +400,12 @@ ${diff}
 
 	private async createPR(
 		task: Task,
+		progress: TaskProgress,
 		branchName: string,
 	): Promise<{ number: number; url: string }> {
 		// Push the branch
 		await this.runCommand("git", ["push", "-u", "origin", branchName]);
+		await this.ensureCheckRun(task, progress, branchName);
 
 		// Sanitize title: remove special chars, limit length (GitHub max is 256)
 		const sanitizedTaskTitle = task.title
@@ -678,19 +680,24 @@ ${diff}
 		task: Task,
 		progress: TaskProgress,
 	): Promise<void> {
-		if (!this.reporter || !task.sourceIssue) return;
-		try {
-			progress.updatedAt = new Date().toISOString();
-			const commentId = await this.reporter.upsertIssueComment(task, progress);
-			if (commentId && commentId !== task.reportCommentId) {
-				this.memory.updateTask(task.id, { reportCommentId: commentId });
-				task.reportCommentId = commentId;
+		progress.updatedAt = new Date().toISOString();
+		if (this.reporter && task.sourceIssue) {
+			try {
+				const commentId = await this.reporter.upsertIssueComment(
+					task,
+					progress,
+				);
+				if (commentId && commentId !== task.reportCommentId) {
+					this.memory.updateTask(task.id, { reportCommentId: commentId });
+					task.reportCommentId = commentId;
+				}
+			} catch (err) {
+				this.log(
+					`[executor] Failed to update issue comment: ${err instanceof Error ? err.message : err}`,
+				);
 			}
-		} catch (err) {
-			this.log(
-				`[executor] Failed to update issue comment: ${err instanceof Error ? err.message : err}`,
-			);
 		}
+		await this.updateCheckRunProgress(task, progress);
 	}
 
 	private async runStep(
@@ -711,6 +718,58 @@ ${diff}
 			progress.error = err instanceof Error ? err.message : String(err);
 			await this.reportProgress(task, progress);
 			throw err;
+		}
+	}
+
+	private async ensureCheckRun(
+		task: Task,
+		progress: TaskProgress,
+		branchName: string,
+	): Promise<void> {
+		if (!this.githubClient || task.checkRunId) return;
+		try {
+			const supportsCheckRuns = await this.githubClient.supportsCheckRuns();
+			if (!supportsCheckRuns) return;
+			const headSha = await this.githubClient.getBranchHeadSha(branchName);
+			const summary = this.buildProgressSummary(task, progress);
+			const checkRun = await this.githubClient.createCheckRun({
+				name: "Composer Agent",
+				headSha,
+				status: "in_progress",
+				summary,
+			});
+			this.memory.updateTask(task.id, { checkRunId: checkRun.id });
+			task.checkRunId = checkRun.id;
+		} catch (err) {
+			this.log(
+				`[executor] Failed to initialize check run: ${err instanceof Error ? err.message : err}`,
+			);
+		}
+	}
+
+	private async updateCheckRunProgress(
+		task: Task,
+		progress: TaskProgress,
+	): Promise<void> {
+		if (!this.githubClient || !task.checkRunId) return;
+		if (progress.status !== "in_progress") return;
+		try {
+			const summary = this.buildProgressSummary(
+				task,
+				progress,
+				progress.prUrl ?? task.result?.prUrl,
+			);
+			await this.githubClient.updateCheckRun({
+				id: task.checkRunId,
+				status: "in_progress",
+				conclusion: null,
+				detailsUrl: progress.prUrl ?? task.result?.prUrl,
+				summary,
+			});
+		} catch (err) {
+			this.log(
+				`[executor] Failed to update check run progress: ${err instanceof Error ? err.message : err}`,
+			);
 		}
 	}
 
@@ -868,12 +927,15 @@ ${diff}
 		return lines.join("\n");
 	}
 
-	private buildCheckRunSummary(
+	private buildProgressSummary(
 		task: Task,
 		progress: TaskProgress,
-		pr: { number: number; url: string },
+		prUrl?: string | null,
 	): string {
-		const lines: string[] = [`Task: ${task.title}`, `PR: ${pr.url}`];
+		const lines: string[] = [
+			`Task: ${task.title}`,
+			`PR: ${prUrl ?? "pending"}`,
+		];
 		if (progress.branch) {
 			lines.push(`Branch: ${progress.branch}`);
 		}
@@ -892,6 +954,15 @@ ${diff}
 				lines.push(`${label}: ${status}`);
 			}
 		}
+		return lines.join("\n");
+	}
+
+	private buildCheckRunSummary(
+		task: Task,
+		progress: TaskProgress,
+		pr: { number: number; url: string },
+	): string {
+		const lines = this.buildProgressSummary(task, progress, pr.url).split("\n");
 		if (typeof progress.tokensUsed === "number") {
 			lines.push(`Tokens: ${progress.tokensUsed.toLocaleString()}`);
 		}

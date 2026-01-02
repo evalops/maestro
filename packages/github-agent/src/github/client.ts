@@ -52,10 +52,14 @@ type PaginateOptions = RequestOptions & {
 };
 
 type GraphqlResponse<T> = T & {
-	rateLimit?: {
-		remaining: number;
-		resetAt?: string;
-	};
+	rateLimit?: GraphqlRateLimit;
+};
+
+type GraphqlRateLimit = {
+	remaining: number;
+	resetAt?: string;
+	limit?: number;
+	cost?: number;
 };
 
 class ConditionalCache {
@@ -374,6 +378,8 @@ export class GitHubApiClient {
             ${queryParts.join("\n")}
           }
           rateLimit {
+            limit
+            cost
             remaining
             resetAt
           }
@@ -395,31 +401,20 @@ export class GitHubApiClient {
 			};
 
 			try {
-				const token = await this.auth.getToken();
-				const data = await this.octokit.graphql<
+				const data = await this.graphqlRequest<
 					GraphqlResponse<{
 						repository: Record<string, GraphqlIssue | null>;
-						rateLimit?: { remaining: number; resetAt: string };
+						rateLimit?: {
+							remaining: number;
+							resetAt: string;
+							limit?: number;
+							cost?: number;
+						};
 					}>
-				>(query, {
-					...variables,
-					headers: {
-						Authorization:
-							token.type === "app"
-								? `Bearer ${token.token}`
-								: `token ${token.token}`,
-						"User-Agent": this.userAgent,
-						Accept: "application/vnd.github+json",
-						"X-GitHub-Api-Version": "2022-11-28",
-					},
-					uri: this.graphqlUrl,
-				});
+				>(query, variables, { mutating: false });
 
 				if (data.rateLimit) {
-					this.rateLimit = {
-						remaining: data.rateLimit.remaining,
-						resetAt: Date.parse(data.rateLimit.resetAt),
-					};
+					this.captureGraphqlRateLimit(data.rateLimit);
 				}
 
 				for (const issue of Object.values(data.repository)) {
@@ -467,11 +462,15 @@ export class GitHubApiClient {
 			html_url: string;
 			comments: number;
 			node_id?: string;
-		}>("GET /repos/{owner}/{repo}/issues/{issue_number}", {
-			owner: this.owner,
-			repo: this.repo,
-			issue_number: issueNumber,
-		});
+		}>(
+			"GET /repos/{owner}/{repo}/issues/{issue_number}",
+			{
+				owner: this.owner,
+				repo: this.repo,
+				issue_number: issueNumber,
+			},
+			{ useEtag: true },
+		);
 		if (!data) {
 			throw new Error(`Issue ${issueNumber} not found`);
 		}
@@ -512,11 +511,15 @@ export class GitHubApiClient {
 			merged_at: string | null;
 			html_url: string;
 			node_id?: string;
-		}>("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
-			owner: this.owner,
-			repo: this.repo,
-			pull_number: prNumber,
-		});
+		}>(
+			"GET /repos/{owner}/{repo}/pulls/{pull_number}",
+			{
+				owner: this.owner,
+				repo: this.repo,
+				pull_number: prNumber,
+			},
+			{ useEtag: true },
+		);
 		if (!data) {
 			throw new Error(`Pull request ${prNumber} not found`);
 		}
@@ -547,11 +550,15 @@ export class GitHubApiClient {
 			state: PRReview["state"];
 			body: string | null;
 			submitted_at: string | null;
-		}>("GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
-			owner: this.owner,
-			repo: this.repo,
-			pull_number: prNumber,
-		});
+		}>(
+			"GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews",
+			{
+				owner: this.owner,
+				repo: this.repo,
+				pull_number: prNumber,
+			},
+			{ useEtag: true },
+		);
 		return reviews
 			.filter((review) => Boolean(review.submitted_at))
 			.map((review) => ({
@@ -574,12 +581,16 @@ export class GitHubApiClient {
 			path: string | null;
 			line: number | null;
 			created_at: string;
-		}>("GET /repos/{owner}/{repo}/pulls/{pull_number}/comments", {
-			owner: this.owner,
-			repo: this.repo,
-			pull_number: prNumber,
-			since,
-		});
+		}>(
+			"GET /repos/{owner}/{repo}/pulls/{pull_number}/comments",
+			{
+				owner: this.owner,
+				repo: this.repo,
+				pull_number: prNumber,
+				since,
+			},
+			{ useEtag: true },
+		);
 		return comments.map((comment) => ({
 			id: comment.id,
 			author: comment.user?.login || "unknown",
@@ -603,8 +614,7 @@ export class GitHubApiClient {
 		while (remaining > 0) {
 			const pageSize = Math.min(remaining, 50);
 			try {
-				const token = await this.auth.getToken();
-				const data = await this.octokit.graphql<
+				const data = await this.graphqlRequest<
 					GraphqlResponse<{
 						repository: {
 							pullRequest: {
@@ -630,7 +640,12 @@ export class GitHubApiClient {
 								};
 							} | null;
 						};
-						rateLimit?: { remaining: number; resetAt: string };
+						rateLimit?: {
+							remaining: number;
+							resetAt: string;
+							limit?: number;
+							cost?: number;
+						};
 					}>
 				>(
 					`
@@ -660,6 +675,8 @@ export class GitHubApiClient {
               }
             }
             rateLimit {
+              limit
+              cost
               remaining
               resetAt
             }
@@ -672,24 +689,12 @@ export class GitHubApiClient {
 						threads: pageSize,
 						comments: maxCommentsPerThread,
 						after: cursor,
-						headers: {
-							Authorization:
-								token.type === "app"
-									? `Bearer ${token.token}`
-									: `token ${token.token}`,
-							"User-Agent": this.userAgent,
-							Accept: "application/vnd.github+json",
-							"X-GitHub-Api-Version": "2022-11-28",
-						},
-						uri: this.graphqlUrl,
 					},
+					{ mutating: false },
 				);
 
 				if (data.rateLimit) {
-					this.rateLimit = {
-						remaining: data.rateLimit.remaining,
-						resetAt: Date.parse(data.rateLimit.resetAt),
-					};
+					this.captureGraphqlRateLimit(data.rateLimit);
 				}
 
 				const threads = data.repository.pullRequest?.reviewThreads;
@@ -808,12 +813,16 @@ export class GitHubApiClient {
 				html_url: string;
 				state: string;
 			}[]
-		>("GET /repos/{owner}/{repo}/pulls", {
-			owner: this.owner,
-			repo: this.repo,
-			state: "open",
-			head,
-		});
+		>(
+			"GET /repos/{owner}/{repo}/pulls",
+			{
+				owner: this.owner,
+				repo: this.repo,
+				state: "open",
+				head,
+			},
+			{ useEtag: true },
+		);
 		if (!data || data.length === 0) {
 			return null;
 		}
@@ -873,14 +882,18 @@ export class GitHubApiClient {
 		commitBody?: string;
 		expectedHeadOid?: string;
 	}): Promise<void> {
-		const token = await this.auth.getToken();
 		const mergeMethod = toGraphqlMergeMethod(input.mergeMethod ?? "squash");
-		const data = await this.octokit.graphql<
+		const data = await this.graphqlRequest<
 			GraphqlResponse<{
 				enablePullRequestAutoMerge: {
 					pullRequest: { id: string } | null;
 				} | null;
-				rateLimit?: { remaining: number; resetAt: string };
+				rateLimit?: {
+					remaining: number;
+					resetAt: string;
+					limit?: number;
+					cost?: number;
+				};
 			}>
 		>(
 			`
@@ -889,6 +902,8 @@ export class GitHubApiClient {
             pullRequest { id }
           }
           rateLimit {
+            limit
+            cost
             remaining
             resetAt
           }
@@ -902,23 +917,11 @@ export class GitHubApiClient {
 					commitBody: input.commitBody,
 					expectedHeadOid: input.expectedHeadOid,
 				},
-				headers: {
-					Authorization:
-						token.type === "app"
-							? `Bearer ${token.token}`
-							: `token ${token.token}`,
-					"User-Agent": this.userAgent,
-					Accept: "application/vnd.github+json",
-					"X-GitHub-Api-Version": "2022-11-28",
-				},
-				uri: this.graphqlUrl,
 			},
+			{ mutating: true },
 		);
 		if (data.rateLimit) {
-			this.rateLimit = {
-				remaining: data.rateLimit.remaining,
-				resetAt: Date.parse(data.rateLimit.resetAt),
-			};
+			this.captureGraphqlRateLimit(data.rateLimit);
 		}
 	}
 
@@ -927,13 +930,17 @@ export class GitHubApiClient {
 		expectedHeadOid?: string;
 		jump?: boolean;
 	}): Promise<void> {
-		const token = await this.auth.getToken();
-		const data = await this.octokit.graphql<
+		const data = await this.graphqlRequest<
 			GraphqlResponse<{
 				enqueuePullRequest: {
 					mergeQueueEntry: { id: string } | null;
 				} | null;
-				rateLimit?: { remaining: number; resetAt: string };
+				rateLimit?: {
+					remaining: number;
+					resetAt: string;
+					limit?: number;
+					cost?: number;
+				};
 			}>
 		>(
 			`
@@ -942,6 +949,8 @@ export class GitHubApiClient {
             mergeQueueEntry { id }
           }
           rateLimit {
+            limit
+            cost
             remaining
             resetAt
           }
@@ -953,23 +962,11 @@ export class GitHubApiClient {
 					expectedHeadOid: input.expectedHeadOid,
 					jump: input.jump,
 				},
-				headers: {
-					Authorization:
-						token.type === "app"
-							? `Bearer ${token.token}`
-							: `token ${token.token}`,
-					"User-Agent": this.userAgent,
-					Accept: "application/vnd.github+json",
-					"X-GitHub-Api-Version": "2022-11-28",
-				},
-				uri: this.graphqlUrl,
 			},
+			{ mutating: true },
 		);
 		if (data.rateLimit) {
-			this.rateLimit = {
-				remaining: data.rateLimit.remaining,
-				resetAt: Date.parse(data.rateLimit.resetAt),
-			};
+			this.captureGraphqlRateLimit(data.rateLimit);
 		}
 	}
 
@@ -1016,13 +1013,17 @@ export class GitHubApiClient {
 				started_at: string | null;
 				completed_at: string | null;
 			}>;
-		}>("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", {
-			owner: this.owner,
-			repo: this.repo,
-			ref,
-			per_page: 100,
-			filter: "latest",
-		});
+		}>(
+			"GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+			{
+				owner: this.owner,
+				repo: this.repo,
+				ref,
+				per_page: 100,
+				filter: "latest",
+			},
+			{ useEtag: true },
+		);
 		if (!data?.check_runs?.length) {
 			return [];
 		}
@@ -1111,10 +1112,12 @@ export class GitHubApiClient {
 	): Promise<GitHubResponse<T>> {
 		const method = endpoint.split(" ")[0]?.toUpperCase() ?? "GET";
 		const isMutation = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
-		const useConditional = options.useConditional ?? options.useEtag ?? false;
-		const cacheKey = useConditional
+		const shouldUseConditional =
+			options.useConditional ?? options.useEtag ?? false;
+		const cacheKey = shouldUseConditional
 			? this.buildEtagKey(endpoint, params)
 			: null;
+		let bypassConditional = false;
 
 		for (let attempt = 0; attempt <= 5; attempt += 1) {
 			const token = await this.auth.getToken();
@@ -1128,7 +1131,7 @@ export class GitHubApiClient {
 						: `token ${token.token}`,
 			};
 
-			if (cacheKey) {
+			if (cacheKey && !bypassConditional) {
 				const conditional = this.conditionalCache.get(cacheKey);
 				if (conditional?.etag) {
 					headers["If-None-Match"] = conditional.etag;
@@ -1170,6 +1173,7 @@ export class GitHubApiClient {
 				const status = getStatus(error);
 				const responseHeaders = getHeaders(error);
 				if (status === 304) {
+					let cachedData: T | null = null;
 					if (cacheKey) {
 						const cached = this.conditionalCache.get(cacheKey);
 						const etag = responseHeaders?.etag ?? cached?.etag;
@@ -1181,9 +1185,18 @@ export class GitHubApiClient {
 								lastModified,
 							});
 						}
+						const cachedResponse = this.responseCache.get<T>(cacheKey);
+						if (cachedResponse) {
+							cachedData = cachedResponse;
+							this.responseCache.set(cacheKey, cachedResponse);
+						} else if (!bypassConditional) {
+							// Retry once without conditional headers to repopulate cache.
+							bypassConditional = true;
+							continue;
+						}
 					}
 					return {
-						data: null,
+						data: cachedData,
 						status,
 						headers: responseHeaders ?? {},
 						notModified: true,
@@ -1294,12 +1307,57 @@ export class GitHubApiClient {
 		return results;
 	}
 
+	private async graphqlRequest<T>(
+		query: string,
+		variables: Record<string, unknown>,
+		options: { mutating?: boolean } = {},
+	): Promise<T> {
+		for (let attempt = 0; attempt <= 5; attempt += 1) {
+			const token = await this.auth.getToken();
+			const headers = {
+				Authorization:
+					token.type === "app"
+						? `Bearer ${token.token}`
+						: `token ${token.token}`,
+				"User-Agent": this.userAgent,
+				Accept: "application/vnd.github+json",
+				"X-GitHub-Api-Version": "2022-11-28",
+			};
+			try {
+				return await this.scheduler.schedule(
+					() =>
+						this.octokit.graphql<T>(query, {
+							...variables,
+							headers,
+							uri: this.graphqlUrl,
+						}),
+					{ mutating: options.mutating ?? false },
+				);
+			} catch (error) {
+				const status = getStatus(error);
+				const responseHeaders = getHeaders(error);
+				this.captureRateLimit(responseHeaders);
+				const retryDelay = this.getRetryDelayMs(
+					error,
+					status,
+					responseHeaders,
+					attempt,
+				);
+				if (retryDelay === null || attempt >= 5) {
+					throw error;
+				}
+				await wait(retryDelay);
+			}
+		}
+
+		throw new Error("GitHub GraphQL request failed after retries");
+	}
+
 	private async queryPullRequestGraphql(
 		prNumber: number,
 	): Promise<GitHubPR | null> {
 		try {
-			const token = await this.auth.getToken();
-			const data = await this.octokit.graphql<
+			const data = await this.graphqlRequest<
 				GraphqlResponse<{
 					repository: {
 						pullRequest: {
@@ -1327,6 +1385,8 @@ export class GitHubApiClient {
 					rateLimit?: {
 						remaining: number;
 						resetAt: string;
+						limit?: number;
+						cost?: number;
 					};
 				}>
 			>(
@@ -1352,6 +1412,8 @@ export class GitHubApiClient {
             }
           }
           rateLimit {
+            limit
+            cost
             remaining
             resetAt
           }
@@ -1361,25 +1423,13 @@ export class GitHubApiClient {
 					owner: this.owner,
 					repo: this.repo,
 					number: prNumber,
-					headers: {
-						Authorization:
-							token.type === "app"
-								? `Bearer ${token.token}`
-								: `token ${token.token}`,
-						"User-Agent": this.userAgent,
-						Accept: "application/vnd.github+json",
-						"X-GitHub-Api-Version": "2022-11-28",
-					},
-					uri: this.graphqlUrl,
 				},
+				{ mutating: false },
 			);
 			const pr = data.repository.pullRequest;
 			if (!pr) return null;
 			if (data.rateLimit) {
-				this.rateLimit = {
-					remaining: data.rateLimit.remaining,
-					resetAt: Date.parse(data.rateLimit.resetAt),
-				};
+				this.captureGraphqlRateLimit(data.rateLimit);
 			}
 			const state =
 				pr.state === "MERGED"
@@ -1406,6 +1456,16 @@ export class GitHubApiClient {
 		} catch {
 			return null;
 		}
+	}
+
+	private captureGraphqlRateLimit(rateLimit?: GraphqlRateLimit): void {
+		if (!rateLimit) return;
+		this.rateLimit = {
+			remaining: rateLimit.remaining,
+			limit: rateLimit.limit ?? undefined,
+			resetAt: rateLimit.resetAt ? Date.parse(rateLimit.resetAt) : undefined,
+			resource: "graphql",
+		};
 	}
 
 	private captureRateLimit(headers?: Record<string, string> | null): void {
