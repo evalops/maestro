@@ -292,7 +292,7 @@ async function maybeSummarizeWithModel(options: {
 	turns: ConversationTurn[];
 	channelDir: string;
 	transport: ProviderTransport;
-	model: Model;
+	model: Model<Api>;
 	maxSummaryChars: number;
 }): Promise<string | null> {
 	const summaryEnabled = process.env.SLACK_AGENT_LLM_SUMMARY === "1";
@@ -367,7 +367,7 @@ async function getRecentMessages(options: {
 	turnCount: number;
 	threadTurns?: ConversationTurn[];
 	transport?: ProviderTransport;
-	model?: Model;
+	model?: Model<Api>;
 }): Promise<string> {
 	const { channelDir, turnCount, threadTurns, transport, model } = options;
 	const turns = threadTurns ?? parseLogMessages(channelDir);
