@@ -2,7 +2,7 @@
  * Channel Store - Message logging and attachment management
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { appendFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as logger from "./logger.js";
@@ -27,6 +27,8 @@ export interface LoggedMessage {
 	text: string;
 	attachments: Attachment[];
 	isBot: boolean;
+	editedAt?: string;
+	isDeleted?: boolean;
 }
 
 export interface ChannelStoreConfig {
@@ -52,8 +54,14 @@ export class ChannelStore {
 	private readonly recentlyLoggedTtlMs = 60 * 1000;
 	private readonly recentlyLoggedCleanupIntervalMs = 15 * 1000;
 	private static readonly MAX_ATTACHMENT_DOWNLOAD_BYTES = 25 * 1024 * 1024;
+	private static readonly MAX_TOTAL_ATTACHMENT_BYTES = 200 * 1024 * 1024;
 	private static readonly DOWNLOAD_TIMEOUT_MS = 15_000;
 	private static readonly DOWNLOAD_MAX_ATTEMPTS = 3;
+	private attachmentUsageCache = new Map<
+		string,
+		{ bytes: number; updatedAt: number }
+	>();
+	private readonly attachmentUsageCacheMs = 10 * 1000;
 
 	constructor(config: ChannelStoreConfig) {
 		this.workingDir = config.workingDir;
@@ -386,6 +394,34 @@ export class ChannelStore {
 		this.isDownloading = false;
 	}
 
+	private getAttachmentUsageBytes(channelId: string): number {
+		const cached = this.attachmentUsageCache.get(channelId);
+		const now = Date.now();
+		if (cached && now - cached.updatedAt < this.attachmentUsageCacheMs) {
+			return cached.bytes;
+		}
+
+		const attachmentsDir = join(this.workingDir, channelId, "attachments");
+		let total = 0;
+		try {
+			const entries = readdirSync(attachmentsDir, { withFileTypes: true });
+			for (const entry of entries) {
+				if (!entry.isFile()) continue;
+				const filePath = join(attachmentsDir, entry.name);
+				try {
+					total += statSync(filePath).size;
+				} catch {
+					// ignore individual stat errors
+				}
+			}
+		} catch {
+			// directory missing or unreadable
+		}
+
+		this.attachmentUsageCache.set(channelId, { bytes: total, updatedAt: now });
+		return total;
+	}
+
 	private async downloadAttachment(item: PendingDownload): Promise<void> {
 		const { localPath, url, size, original } = item;
 		const filePath = join(this.workingDir, localPath);
@@ -401,9 +437,37 @@ export class ChannelStore {
 			throw new Error(`Attachment exceeds max size (${sizeMb}MB)`);
 		}
 
+		const channelId = item.channelId;
+		const existingBytes = this.getAttachmentUsageBytes(channelId);
+		if (
+			size &&
+			existingBytes + size > ChannelStore.MAX_TOTAL_ATTACHMENT_BYTES
+		) {
+			const limitMb = (
+				ChannelStore.MAX_TOTAL_ATTACHMENT_BYTES /
+				(1024 * 1024)
+			).toFixed(0);
+			throw new Error(`Attachment storage limit exceeded (${limitMb}MB)`);
+		}
+
 		const buffer = await this.downloadBufferWithRetry(url);
 
+		if (
+			existingBytes + buffer.byteLength >
+			ChannelStore.MAX_TOTAL_ATTACHMENT_BYTES
+		) {
+			const limitMb = (
+				ChannelStore.MAX_TOTAL_ATTACHMENT_BYTES /
+				(1024 * 1024)
+			).toFixed(0);
+			throw new Error(`Attachment storage limit exceeded (${limitMb}MB)`);
+		}
+
 		await writeFile(filePath, Buffer.from(buffer));
+		this.attachmentUsageCache.set(channelId, {
+			bytes: existingBytes + buffer.byteLength,
+			updatedAt: Date.now(),
+		});
 
 		if (original) {
 			logger.logInfo(`Downloaded attachment ${original} → ${localPath}`);
@@ -499,6 +563,100 @@ export class ChannelStore {
 			throw lastError;
 		}
 		throw new Error("Failed to download attachment");
+	}
+
+	/**
+	 * Update a logged message (for edits)
+	 */
+	async updateMessage(
+		channelId: string,
+		ts: string,
+		updates: {
+			text?: string;
+			attachments?: Attachment[];
+			editedAt?: string;
+		},
+	): Promise<void> {
+		const dir = this.getChannelDir(channelId);
+		const logPath = join(dir, "log.jsonl");
+		if (!existsSync(logPath)) return;
+
+		try {
+			const content = readFileSync(logPath, "utf-8");
+			const lines = content.split("\n");
+			let updated = false;
+			const updatedLines = lines.map((line) => {
+				if (!line.trim()) {
+					return line;
+				}
+				try {
+					const msg = JSON.parse(line) as LoggedMessage;
+					if (msg.ts === ts) {
+						if (typeof updates.text === "string") {
+							msg.text = updates.text;
+						}
+						if (updates.attachments) {
+							msg.attachments = updates.attachments;
+						}
+						msg.editedAt = updates.editedAt ?? new Date().toISOString();
+						msg.isDeleted = false;
+						updated = true;
+						return JSON.stringify(msg);
+					}
+					return line;
+				} catch {
+					return line;
+				}
+			});
+
+			if (updated) {
+				const nextContent = updatedLines.join("\n");
+				await writeFile(logPath, nextContent);
+			}
+		} catch (error) {
+			logger.logWarning("Failed to update logged message", String(error));
+		}
+	}
+
+	/**
+	 * Mark a logged message as deleted
+	 */
+	async deleteMessage(channelId: string, ts: string): Promise<void> {
+		const dir = this.getChannelDir(channelId);
+		const logPath = join(dir, "log.jsonl");
+		if (!existsSync(logPath)) return;
+
+		try {
+			const content = readFileSync(logPath, "utf-8");
+			const lines = content.split("\n");
+			let updated = false;
+			const updatedLines = lines.map((line) => {
+				if (!line.trim()) {
+					return line;
+				}
+				try {
+					const msg = JSON.parse(line) as LoggedMessage;
+					if (msg.ts === ts) {
+						msg.text = "";
+						msg.attachments = [];
+						msg.isDeleted = true;
+						msg.editedAt = msg.editedAt ?? new Date().toISOString();
+						updated = true;
+						return JSON.stringify(msg);
+					}
+					return line;
+				} catch {
+					return line;
+				}
+			});
+
+			if (updated) {
+				const nextContent = updatedLines.join("\n");
+				await writeFile(logPath, nextContent);
+			}
+		} catch (error) {
+			logger.logWarning("Failed to delete logged message", String(error));
+		}
 	}
 
 	/**

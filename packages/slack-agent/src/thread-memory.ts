@@ -33,6 +33,10 @@ export interface ThreadMessage {
 		model?: string;
 		isEdited?: boolean;
 		isSummary?: boolean;
+		userName?: string;
+		displayName?: string;
+		attachments?: string[];
+		isDeleted?: boolean;
 	};
 	createdAt: string;
 }
@@ -162,11 +166,68 @@ export class ThreadMemoryManager {
 		const context = await this.getContext(channelId, threadTs);
 
 		return context.messages
-			.filter((m) => m.role === "user" || m.role === "assistant")
+			.filter(
+				(m) =>
+					(m.role === "user" || m.role === "assistant") &&
+					m.metadata?.isDeleted !== true,
+			)
 			.map((m) => ({
 				role: m.role as "user" | "assistant",
 				content: m.content,
 			}));
+	}
+
+	/**
+	 * Update a message by its Slack timestamp
+	 */
+	async updateMessageByTs(
+		channelId: string,
+		threadTs: string,
+		messageTs: string,
+		update: {
+			content?: string;
+			isEdited?: boolean;
+			isDeleted?: boolean;
+			userId?: string;
+		},
+	): Promise<void> {
+		const context = await this.getContext(channelId, threadTs);
+		const target = context.messages.find(
+			(m) => m.messageTs === messageTs && m.metadata?.isDeleted !== true,
+		);
+		if (!target) return;
+
+		if (typeof update.content === "string") {
+			const previousTokens =
+				target.tokenCount ?? estimateTokens(target.content);
+			target.content = update.content;
+			target.tokenCount = estimateTokens(target.content);
+			context.totalTokens += (target.tokenCount ?? 0) - previousTokens;
+		}
+		if (update.userId) {
+			target.userId = update.userId;
+		}
+		target.metadata = {
+			...(target.metadata ?? {}),
+			isEdited: update.isEdited ?? target.metadata?.isEdited,
+			isDeleted: update.isDeleted ?? target.metadata?.isDeleted,
+		};
+		context.updatedAt = new Date().toISOString();
+		await this.save(context);
+	}
+
+	/**
+	 * Mark a message as deleted by Slack timestamp
+	 */
+	async deleteMessageByTs(
+		channelId: string,
+		threadTs: string,
+		messageTs: string,
+	): Promise<void> {
+		await this.updateMessageByTs(channelId, threadTs, messageTs, {
+			isDeleted: true,
+			content: "",
+		});
 	}
 
 	/**
@@ -175,6 +236,21 @@ export class ThreadMemoryManager {
 	async clearThread(channelId: string, threadTs: string): Promise<void> {
 		const key = this.getKey(channelId, threadTs);
 		await this.storage.delete(key);
+	}
+
+	/**
+	 * Clear all threads for a channel
+	 */
+	async clearChannel(channelId: string): Promise<void> {
+		try {
+			const keys = await this.storage.keys(`thread:${channelId}:*`);
+			await Promise.all(keys.map((key) => this.storage.delete(key)));
+		} catch (error) {
+			logger.logWarning(
+				"Failed to clear thread memory for channel",
+				String(error),
+			);
+		}
 	}
 
 	/**

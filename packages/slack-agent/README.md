@@ -208,6 +208,7 @@ Invite the bot to channels where you want it to operate:
 | `ANTHROPIC_API_KEY` | Yes* | - | Anthropic API key |
 | `ANTHROPIC_OAUTH_TOKEN` | Yes* | - | Alternative: Anthropic OAuth token |
 | `SLACK_AGENT_DEFAULT_TIMEZONE` | No | UTC | Default timezone for scheduled tasks (IANA name) |
+| `SLACK_AGENT_DEFAULT_ROLE` | No | user | Default role for new users (admin, power_user, user, viewer) |
 | `SLACK_RATE_LIMIT_USER` | No | 10 | Max requests per user per minute |
 | `SLACK_RATE_LIMIT_CHANNEL` | No | 30 | Max requests per channel per minute |
 | `SLACK_RATE_LIMIT_WINDOW_MS` | No | 60000 | Rate limit window in milliseconds |
@@ -450,6 +451,18 @@ Control the bot with reactions on any message:
 | 👍 | `:thumbsup:` | Approve pending operation |
 | ❌ | `:x:` | Reject pending operation |
 | 👎 | `:thumbsdown:` | Reject pending operation |
+
+### Slash Commands
+
+Register these Slack slash commands to control the bot without reactions:
+
+| Command | Action |
+|---------|--------|
+| `/tasks` | List, pause, resume, cancel, or run scheduled tasks |
+| `/status` | Show current status and rate limit usage |
+| `/cost` | View usage/cost summary |
+| `/memory` | Show saved memory for the channel |
+| `/clear` | Clear conversation history for the channel |
 
 ### Extended Thinking Mode
 

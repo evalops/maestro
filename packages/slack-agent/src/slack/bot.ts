@@ -2,6 +2,7 @@
  * Slack Bot - Socket Mode integration
  */
 
+import { join } from "node:path";
 import { SocketModeClient } from "@slack/socket-mode";
 import {
 	type ChatPostMessageArguments,
@@ -17,12 +18,16 @@ import {
 import * as logger from "../logger.js";
 import { type Attachment, ChannelStore } from "../store.js";
 import {
+	type ThreadMemoryConfig,
+	ThreadMemoryManager,
+} from "../thread-memory.js";
+import {
 	type ApiQueue,
 	type ApiQueueOptions,
 	createApiQueue,
 } from "../utils/api-queue.js";
 import { type SlackMetrics, createSlackMetrics } from "../utils/metrics.js";
-import { TtlCache } from "../utils/ttl-cache.js";
+import { PersistentTtlCache } from "../utils/persistent-ttl-cache.js";
 import { createResponseHandlers } from "./response-state.js";
 
 export interface SlackMessage {
@@ -60,6 +65,8 @@ export interface SlackContext {
 	store: ChannelStore;
 	channels: ChannelInfo[];
 	users: UserInfo[];
+	/** Thread identifier for per-thread memory (channel ID for DMs) */
+	threadKey: string;
 	/** Whether responses should go in a thread (true for channel mentions) */
 	useThread: boolean;
 	/** Per-run ID for observability (set by main.ts). */
@@ -108,6 +115,10 @@ export interface SlackBotConfig {
 	idempotency?: IdempotencyConfig;
 	metrics?: SlackMetrics;
 	validation?: Partial<ValidationConfig>;
+	/** Optional cache directory for persistent caches */
+	cacheDir?: string;
+	/** Thread memory configuration (per-thread context) */
+	threadMemory?: ThreadMemoryConfig;
 }
 
 export interface ChannelInfo {
@@ -128,16 +139,13 @@ export class SlackBot {
 	private botUserId: string | null = null;
 	public readonly store: ChannelStore;
 	public readonly metrics: SlackMetrics;
+	private readonly threadMemory: ThreadMemoryManager;
 	// Caches with 1-hour TTL to prevent unbounded memory growth
-	private userCache = new TtlCache<
+	private userCache: PersistentTtlCache<
 		string,
 		{ userName: string; displayName: string }
-	>({
-		defaultTtlMs: 60 * 60 * 1000, // 1 hour
-	});
-	private channelCache = new TtlCache<string, string>({
-		defaultTtlMs: 60 * 60 * 1000, // 1 hour
-	});
+	>;
+	private channelCache: PersistentTtlCache<string, string>;
 	private recentEvents: Map<string, number> = new Map();
 	private readonly eventDedupeMs = 5 * 60 * 1000;
 	private lastEventCleanupMs = 0;
@@ -154,6 +162,22 @@ export class SlackBot {
 			workingDir: config.workingDir,
 			botToken: config.botToken,
 		});
+
+		const cacheDir = config.cacheDir ?? join(config.workingDir, "cache");
+		this.userCache = new PersistentTtlCache({
+			persistPath: join(cacheDir, "users.json"),
+			defaultTtlMs: 60 * 60 * 1000, // 1 hour
+			persistIntervalMs: 30 * 1000,
+		});
+		this.channelCache = new PersistentTtlCache({
+			persistPath: join(cacheDir, "channels.json"),
+			defaultTtlMs: 60 * 60 * 1000, // 1 hour
+			persistIntervalMs: 30 * 1000,
+		});
+		this.threadMemory = new ThreadMemoryManager(
+			config.workingDir,
+			config.threadMemory,
+		);
 
 		this.metrics = config.metrics ?? createSlackMetrics();
 		this.validator = createValidator(config.validation);
@@ -466,9 +490,25 @@ export class SlackBot {
 				subtype?: string;
 				bot_id?: string;
 				files?: SlackFile[];
+				message?: {
+					ts?: string;
+					text?: string;
+					user?: string;
+					thread_ts?: string;
+				};
+				previous_message?: { ts?: string; user?: string };
+				deleted_ts?: string;
 			};
 
 			if (slackEvent.bot_id) return;
+			if (slackEvent.subtype === "message_changed") {
+				await this.handleMessageChanged(slackEvent);
+				return;
+			}
+			if (slackEvent.subtype === "message_deleted") {
+				await this.handleMessageDeleted(slackEvent);
+				return;
+			}
 			if (
 				slackEvent.subtype !== undefined &&
 				slackEvent.subtype !== "file_share"
@@ -731,7 +771,111 @@ export class SlackBot {
 			attachments: prepared.attachments,
 			isBot: false,
 		});
+
+		const threadKey = this.getThreadKey(
+			event.channel,
+			event.ts,
+			event.threadTs,
+		);
+		try {
+			await this.threadMemory.addMessage(event.channel, threadKey, {
+				role: "user",
+				content: prepared.rawText,
+				userId: event.user,
+				messageTs: event.ts,
+				metadata: {
+					userName: prepared.userName,
+					displayName: prepared.displayName,
+					attachments: prepared.attachments.map((a) => a.local),
+				},
+			});
+		} catch (error) {
+			logger.logWarning(
+				"Failed to append user message to thread memory",
+				String(error),
+			);
+		}
 		return prepared;
+	}
+
+	private async handleMessageChanged(event: {
+		channel: string;
+		channel_type?: string;
+		message?: { ts?: string; text?: string; user?: string; thread_ts?: string };
+	}): Promise<void> {
+		const message = event.message;
+		if (!message?.ts) return;
+
+		const rawText = this.truncateRawText(message.text ?? "");
+		const editedAt = new Date().toISOString();
+		await this.store.updateMessage(event.channel, message.ts, {
+			text: rawText,
+			editedAt,
+		});
+
+		const threadKey = this.getThreadKey(
+			event.channel,
+			message.ts,
+			message.thread_ts,
+		);
+		try {
+			await this.threadMemory.updateMessageByTs(
+				event.channel,
+				threadKey,
+				message.ts,
+				{
+					content: rawText,
+					isEdited: true,
+					userId: message.user,
+				},
+			);
+		} catch (error) {
+			logger.logWarning(
+				"Failed to update thread memory for edited message",
+				String(error),
+			);
+		}
+	}
+
+	private async handleMessageDeleted(event: {
+		channel: string;
+		channel_type?: string;
+		deleted_ts?: string;
+		previous_message?: { ts?: string; thread_ts?: string };
+	}): Promise<void> {
+		const deletedTs = event.deleted_ts ?? event.previous_message?.ts;
+		if (!deletedTs) return;
+
+		await this.store.deleteMessage(event.channel, deletedTs);
+
+		const threadKey = this.getThreadKey(
+			event.channel,
+			deletedTs,
+			event.previous_message?.thread_ts,
+		);
+		try {
+			await this.threadMemory.deleteMessageByTs(
+				event.channel,
+				threadKey,
+				deletedTs,
+			);
+		} catch (error) {
+			logger.logWarning(
+				"Failed to delete message from thread memory",
+				String(error),
+			);
+		}
+	}
+
+	private getThreadKey(
+		channelId: string,
+		messageTs: string,
+		threadTs?: string,
+	): string {
+		if (channelId.startsWith("D")) {
+			return channelId;
+		}
+		return threadTs ?? messageTs;
 	}
 
 	private async createContext(
@@ -777,6 +921,7 @@ export class SlackBot {
 		const parentThreadTs = event.thread_ts; // Existing thread the user messaged in
 		const userMessageTs = event.ts; // The user's message timestamp
 		const threadTs = parentThreadTs || (useThread ? userMessageTs : undefined);
+		const threadKey = this.getThreadKey(event.channel, userMessageTs, threadTs);
 
 		const responseHandlers = createResponseHandlers({
 			channelId: event.channel,
@@ -797,13 +942,14 @@ export class SlackBot {
 				userName,
 				channel: event.channel,
 				ts: event.ts,
-				threadTs: event.thread_ts,
+				threadTs,
 				attachments,
 			},
 			channelName,
 			store: this.store,
 			channels: this.getChannels(),
 			users: this.getUsers(),
+			threadKey,
 			useThread,
 			...responseHandlers,
 		};
@@ -870,11 +1016,29 @@ export class SlackBot {
 				await this.store.logMessage(channelId, {
 					date: new Date(Number.parseFloat(msgTs) * 1000).toISOString(),
 					ts: msgTs,
+					threadTs: msg.thread_ts,
 					user: "bot",
 					text: rawText,
 					attachments,
 					isBot: true,
 				});
+				const threadKey = this.getThreadKey(channelId, msgTs, msg.thread_ts);
+				try {
+					await this.threadMemory.addMessage(channelId, threadKey, {
+						role: "assistant",
+						content: rawText,
+						messageTs: msgTs,
+						metadata: {
+							userName: "bot",
+							attachments: attachments.map((a) => a.local),
+						},
+					});
+				} catch (error) {
+					logger.logWarning(
+						"Failed to backfill bot message into thread memory",
+						String(error),
+					);
+				}
 			} else {
 				const { userName, displayName } = await this.getUserInfo(
 					msg.user || "",
@@ -882,6 +1046,7 @@ export class SlackBot {
 				await this.store.logMessage(channelId, {
 					date: new Date(Number.parseFloat(msgTs) * 1000).toISOString(),
 					ts: msgTs,
+					threadTs: msg.thread_ts,
 					user: msg.user || "",
 					userName,
 					displayName,
@@ -889,6 +1054,25 @@ export class SlackBot {
 					attachments,
 					isBot: false,
 				});
+				const threadKey = this.getThreadKey(channelId, msgTs, msg.thread_ts);
+				try {
+					await this.threadMemory.addMessage(channelId, threadKey, {
+						role: "user",
+						content: rawText,
+						userId: msg.user || "",
+						messageTs: msgTs,
+						metadata: {
+							userName,
+							displayName,
+							attachments: attachments.map((a) => a.local),
+						},
+					});
+				} catch (error) {
+					logger.logWarning(
+						"Failed to backfill user message into thread memory",
+						String(error),
+					);
+				}
 			}
 		}
 
@@ -992,6 +1176,8 @@ export class SlackBot {
 			obfuscateUsernames: this.obfuscateUsernames.bind(this),
 		});
 
+		const threadKey = this.getThreadKey(command.channel_id, ts);
+
 		return {
 			message: {
 				text: rawText,
@@ -1006,6 +1192,7 @@ export class SlackBot {
 			store: this.store,
 			channels: this.getChannels(),
 			users: this.getUsers(),
+			threadKey,
 			useThread: false,
 			source: "slash",
 			...responseHandlers,
@@ -1031,6 +1218,7 @@ export class SlackBot {
 		});
 
 		const safePrompt = this.truncateRawText(prompt);
+		const threadKey = this.getThreadKey(channelId, ts);
 		return {
 			message: {
 				text: safePrompt,
@@ -1045,6 +1233,7 @@ export class SlackBot {
 			store: this.store,
 			channels: this.getChannels(),
 			users: this.getUsers(),
+			threadKey,
 			useThread: false,
 			...responseHandlers,
 		};
