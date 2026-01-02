@@ -49,6 +49,8 @@ const SLACK_AGENT_BACKFILL_ON_STARTUP =
 const SLACK_AGENT_BACKFILL_CHANNELS = process.env.SLACK_AGENT_BACKFILL_CHANNELS;
 const SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS =
 	process.env.SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS;
+const SLACK_AGENT_BACKFILL_CONCURRENCY =
+	process.env.SLACK_AGENT_BACKFILL_CONCURRENCY;
 
 function formatNextRun(
 	task: Pick<ScheduledTask, "nextRun" | "timezone">,
@@ -196,6 +198,9 @@ function printUsage(): void {
 	);
 	console.error(
 		"  SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS Comma-separated channel IDs or names to exclude",
+	);
+	console.error(
+		"  SLACK_AGENT_BACKFILL_CONCURRENCY Number of concurrent channel backfills (default: 1)",
 	);
 }
 
@@ -1000,6 +1005,35 @@ async function handleMemoryRequest(ctx: SlackContext): Promise<void> {
 	await ctx.respond(sections.join("\n\n"));
 }
 
+async function handleBackfillCommand(
+	ctx: SlackContext,
+	text: string,
+): Promise<void> {
+	const userId = ctx.message.user;
+	if (!(await requirePermission(userId, "backfill_history", ctx.respond))) {
+		return;
+	}
+
+	const trimmed = text.trim().toLowerCase();
+	const backfillAll =
+		trimmed === "all" || trimmed === "everything" || trimmed === "channels";
+	const targetLabel = backfillAll
+		? "all channels"
+		: (ctx.channelName ?? ctx.message.channel);
+
+	await ctx.respond(`_Starting backfill for ${targetLabel}..._`);
+
+	void bot
+		.backfill(backfillAll ? undefined : [ctx.message.channel])
+		.then(async () => {
+			await ctx.respond("_Backfill complete._");
+		})
+		.catch(async (error) => {
+			logger.logWarning("Backfill failed", String(error));
+			await ctx.respond("_Backfill failed. Check logs for details._");
+		});
+}
+
 // Reaction command handlers
 // 🛑 octagonal_sign - Stop current run
 // 👀 eyes - Check status
@@ -1232,6 +1266,9 @@ const bot = new SlackBot(
 				case "/memory":
 					await handleMemoryRequest(ctx);
 					return;
+				case "/backfill":
+					await handleBackfillCommand(ctx, text);
+					return;
 				case "/clear":
 					await handleClearRequest(
 						ctx.message.channel,
@@ -1259,6 +1296,7 @@ const bot = new SlackBot(
 		backfillOnStartup: parseBoolean(SLACK_AGENT_BACKFILL_ON_STARTUP),
 		backfillInclude: parseCommaList(SLACK_AGENT_BACKFILL_CHANNELS),
 		backfillExclude: parseCommaList(SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS),
+		backfillConcurrency: parsePositiveInt(SLACK_AGENT_BACKFILL_CONCURRENCY),
 	},
 );
 

@@ -123,6 +123,8 @@ export interface SlackBotConfig {
 	historyLimit?: number;
 	/** Max pages to backfill per channel */
 	historyMaxPages?: number;
+	/** Number of concurrent channel backfills */
+	backfillConcurrency?: number;
 	/** Toggle backfill on startup */
 	backfillOnStartup?: boolean;
 	/** Only backfill matching channel IDs or names */
@@ -165,6 +167,7 @@ export class SlackBot {
 	private readonly validator: ReturnType<typeof createValidator>;
 	private readonly historyLimit: number;
 	private readonly historyMaxPages: number;
+	private readonly backfillConcurrency: number;
 	private readonly backfillOnStartup: boolean;
 	private readonly backfillInclude: Set<string> | null;
 	private readonly backfillExclude: Set<string>;
@@ -198,6 +201,7 @@ export class SlackBot {
 		this.validator = createValidator(config.validation);
 		this.historyLimit = Math.max(1, Math.min(config.historyLimit ?? 15, 1000));
 		this.historyMaxPages = Math.max(1, config.historyMaxPages ?? 3);
+		this.backfillConcurrency = Math.max(1, config.backfillConcurrency ?? 1);
 		this.backfillOnStartup = config.backfillOnStartup ?? true;
 		const include = this.normalizeBackfillSelectors(config.backfillInclude);
 		this.backfillInclude = include.size > 0 ? include : null;
@@ -1141,50 +1145,78 @@ export class SlackBot {
 		return relevantMessages.length;
 	}
 
-	private async backfillAllChannels(): Promise<void> {
-		if (!this.backfillOnStartup) {
+	private resolveBackfillTargets(
+		channelIds?: string[],
+	): Array<{ id: string; name: string }> {
+		if (channelIds && channelIds.length > 0) {
+			return channelIds.map((id) => ({
+				id,
+				name: this.channelCache.get(id) ?? id,
+			}));
+		}
+
+		const allChannels = Array.from(this.channelCache.entries());
+		const filtered = allChannels.filter(([channelId, channelName]) =>
+			this.shouldBackfillChannel(channelId, channelName),
+		);
+		if (this.backfillInclude || this.backfillExclude.size > 0) {
+			logger.logInfo(
+				`Backfill filtered to ${filtered.length} of ${allChannels.length} channels.`,
+			);
+		}
+		return filtered.map(([id, name]) => ({ id, name }));
+	}
+
+	private async runBackfill(options: {
+		channelIds?: string[];
+		source: "startup" | "manual";
+	}): Promise<void> {
+		const { channelIds, source } = options;
+		if (source === "startup" && !this.backfillOnStartup) {
 			logger.logInfo("Backfill disabled on startup.");
 			return;
 		}
 
-		const allChannels = Array.from(this.channelCache.entries());
-		const channelsToBackfill = allChannels.filter(([channelId, channelName]) =>
-			this.shouldBackfillChannel(channelId, channelName),
-		);
-
-		if (this.backfillInclude || this.backfillExclude.size > 0) {
-			logger.logInfo(
-				`Backfill filtered to ${channelsToBackfill.length} of ${allChannels.length} channels.`,
-			);
-		}
-
-		if (channelsToBackfill.length === 0) {
+		const targets = this.resolveBackfillTargets(channelIds);
+		if (targets.length === 0) {
 			logger.logInfo("Backfill skipped: no matching channels.");
 			return;
 		}
 
 		const startTime = Date.now();
-		logger.logBackfillStart(channelsToBackfill.length);
+		logger.logBackfillStart(targets.length);
 
 		let totalMessages = 0;
+		let index = 0;
+		const concurrency = Math.min(this.backfillConcurrency, targets.length);
 
-		for (const [channelId, channelName] of channelsToBackfill) {
-			try {
-				const count = await this.backfillChannel(channelId);
-				if (count > 0) {
-					logger.logBackfillChannel(channelName, count);
+		const worker = async (): Promise<void> => {
+			while (index < targets.length) {
+				const current = targets[index];
+				index += 1;
+				try {
+					const count = await this.backfillChannel(current.id);
+					if (count > 0) {
+						logger.logBackfillChannel(current.name, count);
+					}
+					totalMessages += count;
+				} catch (error) {
+					logger.logWarning(
+						`Failed to backfill channel #${current.name}`,
+						String(error),
+					);
 				}
-				totalMessages += count;
-			} catch (error) {
-				logger.logWarning(
-					`Failed to backfill channel #${channelName}`,
-					String(error),
-				);
 			}
-		}
+		};
+
+		await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
 		const durationMs = Date.now() - startTime;
 		logger.logBackfillComplete(totalMessages, durationMs);
+	}
+
+	async backfill(channelIds?: string[]): Promise<void> {
+		await this.runBackfill({ channelIds, source: "manual" });
 	}
 
 	async start(): Promise<void> {
@@ -1199,7 +1231,7 @@ export class SlackBot {
 			`Loaded ${this.channelCache.size} channels, ${this.userCache.size} users`,
 		);
 
-		await this.backfillAllChannels();
+		await this.runBackfill({ source: "startup" });
 
 		await this.socketClient.start();
 		logger.logConnected();
