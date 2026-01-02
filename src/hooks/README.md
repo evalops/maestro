@@ -48,6 +48,8 @@ export default (pi: HookAPI) => {
 | `PostToolUseFailure` | After tool failure | No | No |
 | `SessionStart` | Session begins | No | No |
 | `SessionEnd` | Session ends | No | No |
+| `SessionBeforeTree` | Before /tree navigation | Yes | Yes (summary) |
+| `SessionTree` | After /tree navigation | No | No |
 | `UserPromptSubmit` | User sends prompt | Yes | Yes |
 | `PreCompact` | Before compaction | Yes | No |
 | `Notification` | Various events | No | No |

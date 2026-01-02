@@ -57,7 +57,7 @@ export class MessageView {
 			const hookMessage = {
 				role: "hookMessage" as const,
 				customType: "branchSummary",
-				content: `Branch summary:\\n\\n${message.summary}`,
+				content: `Branch summary:\n\n${message.summary}`,
 				display: true,
 				details: { fromId: message.fromId },
 				timestamp: message.timestamp,
@@ -75,7 +75,7 @@ export class MessageView {
 			const hookMessage = {
 				role: "hookMessage" as const,
 				customType: "compactionSummary",
-				content: `Compaction summary:\\n\\n${message.summary}`,
+				content: `Compaction summary:\n\n${message.summary}`,
 				display: true,
 				details: { tokensBefore: message.tokensBefore },
 				timestamp: message.timestamp,

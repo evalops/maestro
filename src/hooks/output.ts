@@ -19,6 +19,8 @@ const VALID_HOOK_EVENT_NAMES = new Set([
 	"EvalGate",
 	"SessionStart",
 	"SessionEnd",
+	"SessionBeforeTree",
+	"SessionTree",
 	"SubagentStart",
 	"SubagentStop",
 	"UserPromptSubmit",
@@ -230,6 +232,8 @@ function validateHookSpecificOutput(
 		case "SessionStart":
 		case "SubagentStart":
 			return validateContextOutput(obj);
+		case "SessionBeforeTree":
+			return validateSessionBeforeTreeOutput(obj);
 		case "UserPromptSubmit":
 			return validateUserPromptSubmitOutput(obj);
 		case "PermissionRequest":
@@ -535,6 +539,35 @@ function validateAssertions(
 	return { valid: true };
 }
 
+function validateSessionBeforeTreeOutput(
+	obj: Record<string, unknown>,
+): { valid: true } | { valid: false; error: string } {
+	if ("cancel" in obj && typeof obj.cancel !== "boolean") {
+		return {
+			valid: false,
+			error: "hookSpecificOutput.cancel must be a boolean",
+		};
+	}
+
+	if ("summary" in obj) {
+		if (typeof obj.summary !== "object" || obj.summary === null) {
+			return {
+				valid: false,
+				error: "hookSpecificOutput.summary must be an object",
+			};
+		}
+		const summary = obj.summary as Record<string, unknown>;
+		if (typeof summary.summary !== "string") {
+			return {
+				valid: false,
+				error: "hookSpecificOutput.summary.summary must be a string",
+			};
+		}
+	}
+
+	return { valid: true };
+}
+
 /**
  * Safely parse and validate hook output.
  */
@@ -598,6 +631,14 @@ export function getHookOutputSchema(): string {
 					decision: {
 						behavior: '"allow" | "deny"',
 						updatedInput: "object (optional)",
+					},
+				},
+				"for SessionBeforeTree": {
+					hookEventName: '"SessionBeforeTree"',
+					cancel: "boolean (optional)",
+					summary: {
+						summary: "string (required)",
+						details: "any (optional)",
 					},
 				},
 			},

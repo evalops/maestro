@@ -1069,6 +1069,7 @@ export class Agent {
 		prompt: string,
 		systemPrompt = "",
 		modelOverride?: Model<Api>,
+		signal?: AbortSignal,
 	): Promise<AssistantMessage> {
 		const summaryModel = modelOverride ?? this._state.model;
 		if (!summaryModel) {
@@ -1091,6 +1092,19 @@ export class Agent {
 		};
 
 		const controller = new AbortController();
+		if (signal) {
+			if (signal.aborted) {
+				controller.abort(signal.reason);
+			} else {
+				signal.addEventListener(
+					"abort",
+					() => {
+						controller.abort(signal.reason);
+					},
+					{ once: true },
+				);
+			}
+		}
 		let finalMessage: AssistantMessage | null = null;
 
 		try {

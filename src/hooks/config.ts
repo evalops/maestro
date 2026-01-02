@@ -398,6 +398,8 @@ function loadHooksFromEnv(): HookConfiguration {
 		EVAL_GATE: "EvalGate",
 		SESSION_START: "SessionStart",
 		SESSION_END: "SessionEnd",
+		SESSION_BEFORE_TREE: "SessionBeforeTree",
+		SESSION_TREE: "SessionTree",
 		SUBAGENT_START: "SubagentStart",
 		USER_PROMPT_SUBMIT: "UserPromptSubmit",
 		NOTIFICATION: "Notification",

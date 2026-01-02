@@ -445,6 +445,7 @@ function parseStructuredHookOutput(
 	// Handle hook-specific output
 	if (json.hookSpecificOutput) {
 		const specific = json.hookSpecificOutput;
+		result.hookSpecificOutput = specific;
 
 		switch (specific.hookEventName) {
 			case "PreToolUse":

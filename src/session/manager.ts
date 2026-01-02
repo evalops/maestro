@@ -198,6 +198,7 @@ function safeReadSessionEntries(
 	}
 }
 
+// Mutates entries in place to upgrade legacy session files.
 function migrateV1ToV2(entries: SessionEntry[]): void {
 	const ids = new Set<string>();
 	let prevId: string | null = null;

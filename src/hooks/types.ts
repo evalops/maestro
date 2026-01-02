@@ -11,6 +11,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../agent/types.js";
+import type { BranchSummaryEntry, SessionTreeEntry } from "../session/types.js";
 import type { Theme } from "../theme/theme.js";
 
 /**
@@ -24,6 +25,8 @@ export type HookEventType =
 	| "SessionStart"
 	| "SessionEnd"
 	| "SessionSwitch"
+	| "SessionBeforeTree"
+	| "SessionTree"
 	| "SubagentStart"
 	| "SubagentStop"
 	| "UserPromptSubmit"
@@ -151,6 +154,40 @@ export interface SessionSwitchHookInput extends HookInputBase {
 	message_count: number;
 	/** Whether this is a resume operation */
 	is_resume: boolean;
+}
+
+/**
+ * Input for SessionBeforeTree hooks - called before navigating session tree.
+ */
+export interface SessionBeforeTreeHookInput extends HookInputBase {
+	hook_event_name: "SessionBeforeTree";
+	preparation: {
+		/** Target entry ID selected in the tree */
+		target_id: string;
+		/** Current leaf ID (null if root) */
+		old_leaf_id: string | null;
+		/** Common ancestor between old leaf and target */
+		common_ancestor_id: string | null;
+		/** Entries that would be summarized */
+		entries_to_summarize: SessionTreeEntry[];
+		/** Whether the user opted into summarization */
+		user_wants_summary: boolean;
+	};
+}
+
+/**
+ * Input for SessionTree hooks - called after navigating session tree.
+ */
+export interface SessionTreeHookInput extends HookInputBase {
+	hook_event_name: "SessionTree";
+	/** New leaf ID after navigation */
+	new_leaf_id: string | null;
+	/** Previous leaf ID */
+	old_leaf_id: string | null;
+	/** Branch summary entry if one was created */
+	summary_entry?: BranchSummaryEntry;
+	/** Whether the summary came from a hook */
+	from_hook?: boolean;
 }
 
 /**
@@ -323,6 +360,8 @@ export type HookInput =
 	| SessionStartHookInput
 	| SessionEndHookInput
 	| SessionSwitchHookInput
+	| SessionBeforeTreeHookInput
+	| SessionTreeHookInput
 	| SubagentStartHookInput
 	| SubagentStopHookInput
 	| UserPromptSubmitHookInput
@@ -613,6 +652,20 @@ export interface SessionSwitchHookOutput {
 }
 
 /**
+ * Hook-specific output for SessionBeforeTree events.
+ */
+export interface SessionBeforeTreeHookOutput {
+	hookEventName: "SessionBeforeTree";
+	/** If true, cancel tree navigation */
+	cancel?: boolean;
+	/** Custom summary to use instead of default summarizer */
+	summary?: {
+		summary: string;
+		details?: unknown;
+	};
+}
+
+/**
  * Hook-specific output for UserPromptSubmit events.
  */
 export interface UserPromptSubmitHookOutput {
@@ -658,6 +711,7 @@ export type HookSpecificOutput =
 	| SubagentStartHookOutput
 	| SubagentStopHookOutput
 	| SessionSwitchHookOutput
+	| SessionBeforeTreeHookOutput
 	| UserPromptSubmitHookOutput
 	| PermissionRequestHookOutput
 	| BranchHookOutput;
@@ -709,6 +763,8 @@ export interface HookExecutionResult {
 	updatedInput?: Record<string, unknown>;
 	/** Updated MCP tool output */
 	updatedMCPToolOutput?: unknown;
+	/** Hook-specific output payload */
+	hookSpecificOutput?: HookSpecificOutput;
 	/** Evaluation assertions */
 	assertions?: EvalAssertion[];
 	/** Evaluation summary */
