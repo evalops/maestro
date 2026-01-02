@@ -142,6 +142,8 @@ jobs:
 | `--webhook-path` | Webhook path | `/github/webhooks` |
 | `--webhook-mode` | `poll` / `webhook` / `hybrid` | `poll` |
 | `--webhook-backfill-interval` | Backfill poll interval in hybrid mode (ms) | `600000` |
+| `--webhook-id` | Webhook ID (for redelivery) | |
+| `--webhook-redelivery-interval` | Webhook redelivery poll interval (ms) | `600000` |
 
 ### Environment Variables
 
@@ -157,6 +159,8 @@ jobs:
 | `GITHUB_WEBHOOK_PORT` | Optional | Webhook port |
 | `GITHUB_WEBHOOK_PATH` | Optional | Webhook path |
 | `GITHUB_WEBHOOK_MODE` | Optional | `poll` / `webhook` / `hybrid` |
+| `GITHUB_WEBHOOK_ID` | Optional | Webhook ID (for redelivery) |
+| `GITHUB_WEBHOOK_REDELIVERY_INTERVAL` | Optional | Webhook redelivery interval in ms |
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Composer |
 
 ## How It Works

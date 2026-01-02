@@ -30,3 +30,16 @@ export function getNextPageFromLink(header?: string | null): number | null {
 		return null;
 	}
 }
+
+export function getNextCursorFromLink(header?: string | null): string | null {
+	const links = parseLinkHeader(header);
+	const next = links.next;
+	if (!next) return null;
+	try {
+		const url = new URL(next, "https://api.github.com");
+		const cursor = url.searchParams.get("cursor");
+		return cursor ?? null;
+	} catch {
+		return null;
+	}
+}

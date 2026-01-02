@@ -42,6 +42,8 @@ const ANTHROPIC_OAUTH_TOKEN = process.env.ANTHROPIC_OAUTH_TOKEN;
 const SLACK_AGENT_DEFAULT_TIMEZONE =
 	process.env.SLACK_AGENT_DEFAULT_TIMEZONE || "UTC";
 const SLACK_AGENT_DEFAULT_ROLE = process.env.SLACK_AGENT_DEFAULT_ROLE;
+const SLACK_AGENT_HISTORY_LIMIT = process.env.SLACK_AGENT_HISTORY_LIMIT;
+const SLACK_AGENT_HISTORY_PAGES = process.env.SLACK_AGENT_HISTORY_PAGES;
 
 function formatNextRun(
 	task: Pick<ScheduledTask, "nextRun" | "timezone">,
@@ -76,6 +78,15 @@ function parseDefaultRole(value?: string): SlackRole | undefined {
 	}
 	logger.logWarning("Invalid SLACK_AGENT_DEFAULT_ROLE", value);
 	return undefined;
+}
+
+function parsePositiveInt(value?: string): number | undefined {
+	if (!value) return undefined;
+	const parsed = Number.parseInt(value, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) {
+		return undefined;
+	}
+	return parsed;
 }
 
 function parseArgs(): { workingDir: string; sandbox: SandboxConfig } {
@@ -144,6 +155,15 @@ function printUsage(): void {
 	console.error("  ANTHROPIC_OAUTH_TOKEN Anthropic OAuth token (alternative)");
 	console.error(
 		"  SLACK_AGENT_DEFAULT_TIMEZONE Default timezone for schedules (IANA name, default: UTC)",
+	);
+	console.error(
+		"  SLACK_AGENT_DEFAULT_ROLE Default role for new users (admin, power_user, user, viewer)",
+	);
+	console.error(
+		"  SLACK_AGENT_HISTORY_LIMIT Max messages per conversations.history request (default: 15)",
+	);
+	console.error(
+		"  SLACK_AGENT_HISTORY_PAGES Max backfill pages per channel (default: 3)",
 	);
 }
 
@@ -1202,6 +1222,8 @@ const bot = new SlackBot(
 		appToken: SLACK_APP_TOKEN,
 		botToken: SLACK_BOT_TOKEN,
 		workingDir,
+		historyLimit: parsePositiveInt(SLACK_AGENT_HISTORY_LIMIT),
+		historyMaxPages: parsePositiveInt(SLACK_AGENT_HISTORY_PAGES),
 	},
 );
 

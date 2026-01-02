@@ -87,6 +87,10 @@ function printUsage(): void {
 	console.error(
 		"  --webhook-backfill-interval <ms>  Backfill poll interval in hybrid mode (default: 600000)",
 	);
+	console.error("  --webhook-id <id>       Webhook ID (for redelivery)");
+	console.error(
+		"  --webhook-redelivery-interval <ms>  Webhook redelivery poll interval (default: 600000)",
+	);
 	console.error("  --help                  Show this help");
 	console.error("");
 	console.error("Environment variables:");
@@ -106,6 +110,10 @@ function printUsage(): void {
 	console.error("  GITHUB_WEBHOOK_PORT     Webhook port");
 	console.error("  GITHUB_WEBHOOK_PATH     Webhook path");
 	console.error("  GITHUB_WEBHOOK_MODE     poll | webhook | hybrid");
+	console.error("  GITHUB_WEBHOOK_ID       Webhook ID (for redelivery)");
+	console.error(
+		"  GITHUB_WEBHOOK_REDELIVERY_INTERVAL  Webhook redelivery interval in ms",
+	);
 	console.error(
 		"  ANTHROPIC_API_KEY       Anthropic API key (required for composer)",
 	);
@@ -268,6 +276,14 @@ function parseArgs(): {
 				min: 1,
 			});
 			i++;
+		} else if (arg === "--webhook-id") {
+			config.webhookId = parsePositiveIntArg(arg, i, { min: 1 });
+			i++;
+		} else if (arg === "--webhook-redelivery-interval") {
+			config.webhookRedeliveryIntervalMs = parsePositiveIntArg(arg, i, {
+				min: 1,
+			});
+			i++;
 		} else if (!arg.startsWith("-") && !config.owner) {
 			// Parse owner/repo
 			const [owner, repo] = arg.split("/");
@@ -324,6 +340,9 @@ async function main(): Promise<void> {
 	const webhookPort = process.env.GITHUB_WEBHOOK_PORT;
 	const webhookPath = process.env.GITHUB_WEBHOOK_PATH;
 	const webhookMode = process.env.GITHUB_WEBHOOK_MODE;
+	const webhookId = process.env.GITHUB_WEBHOOK_ID;
+	const webhookRedeliveryInterval =
+		process.env.GITHUB_WEBHOOK_REDELIVERY_INTERVAL;
 
 	config.githubToken = config.githubToken ?? githubToken;
 	config.githubAppId = config.githubAppId ?? appId;
@@ -342,6 +361,16 @@ async function main(): Promise<void> {
 	config.webhookPath = config.webhookPath ?? webhookPath;
 	config.webhookMode =
 		config.webhookMode ?? (webhookMode as OrchestratorConfig["webhookMode"]);
+	config.webhookId =
+		config.webhookId ??
+		parseOptionalInt(webhookId, "GITHUB_WEBHOOK_ID", { min: 1 });
+	config.webhookRedeliveryIntervalMs =
+		config.webhookRedeliveryIntervalMs ??
+		parseOptionalInt(
+			webhookRedeliveryInterval,
+			"GITHUB_WEBHOOK_REDELIVERY_INTERVAL",
+			{ min: 1 },
+		);
 
 	if (
 		!config.githubToken &&

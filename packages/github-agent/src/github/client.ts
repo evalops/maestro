@@ -13,7 +13,7 @@ import {
 	resolveGitHubApiUrl,
 	resolveGitHubGraphqlUrl,
 } from "./auth.js";
-import { getNextPageFromLink } from "./pagination.js";
+import { getNextCursorFromLink, getNextPageFromLink } from "./pagination.js";
 import { RequestScheduler } from "./request-scheduler.js";
 
 export interface GitHubClientOptions {
@@ -32,6 +32,17 @@ export interface GitHubRateLimitSnapshot {
 	resetAt?: number;
 	limit?: number;
 	resource?: string;
+}
+
+export interface WebhookDelivery {
+	id: number;
+	guid: string;
+	deliveredAt: string | null;
+	status: string | null;
+	statusCode: number | null;
+	redelivery?: boolean;
+	event?: string | null;
+	action?: string | null;
 }
 
 type GitHubResponse<T> = {
@@ -1101,6 +1112,63 @@ export class GitHubApiClient {
 				output: input.summary
 					? { title: "GitHub Agent", summary: input.summary, text: input.text }
 					: undefined,
+			},
+		);
+	}
+
+	async listWebhookDeliveries(input: {
+		hookId: number;
+		cursor?: string;
+		perPage?: number;
+	}): Promise<{ deliveries: WebhookDelivery[]; nextCursor?: string | null }> {
+		type DeliveryResponse = {
+			id: number;
+			guid: string;
+			delivered_at: string | null;
+			status?: string | null;
+			status_code?: number | null;
+			redelivery?: boolean;
+			event?: string | null;
+			action?: string | null;
+		};
+		const { data, headers } = await this.request<DeliveryResponse[]>(
+			"GET /repos/{owner}/{repo}/hooks/{hook_id}/deliveries",
+			{
+				owner: this.owner,
+				repo: this.repo,
+				hook_id: input.hookId,
+				per_page: input.perPage ?? 50,
+				cursor: input.cursor,
+			},
+		);
+		const deliveries =
+			data?.map((delivery) => ({
+				id: delivery.id,
+				guid: delivery.guid,
+				deliveredAt: delivery.delivered_at ?? null,
+				status: delivery.status ?? null,
+				statusCode: delivery.status_code ?? null,
+				redelivery: delivery.redelivery,
+				event: delivery.event ?? null,
+				action: delivery.action ?? null,
+			})) ?? [];
+		const nextCursor = getNextCursorFromLink(
+			headers?.link ?? headers?.Link ?? null,
+		);
+		return { deliveries, nextCursor };
+	}
+
+	async redeliverWebhookDelivery(
+		hookId: number,
+		deliveryId: number,
+	): Promise<void> {
+		await this.request(
+			"POST /repos/{owner}/{repo}/hooks/{hook_id}/deliveries/{delivery_id}/attempts",
+			{
+				owner: this.owner,
+				repo: this.repo,
+				hook_id: hookId,
+				delivery_id: deliveryId,
 			},
 		);
 	}

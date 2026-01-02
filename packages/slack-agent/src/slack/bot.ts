@@ -119,6 +119,10 @@ export interface SlackBotConfig {
 	cacheDir?: string;
 	/** Thread memory configuration (per-thread context) */
 	threadMemory?: ThreadMemoryConfig;
+	/** Max messages per conversations.history request */
+	historyLimit?: number;
+	/** Max pages to backfill per channel */
+	historyMaxPages?: number;
 }
 
 export interface ChannelInfo {
@@ -153,6 +157,8 @@ export class SlackBot {
 	private readonly apiQueue: ApiQueue;
 	private readonly idempotency: IdempotencyManager;
 	private readonly validator: ReturnType<typeof createValidator>;
+	private readonly historyLimit: number;
+	private readonly historyMaxPages: number;
 
 	constructor(handler: SlackAgentHandler, config: SlackBotConfig) {
 		this.handler = handler;
@@ -181,6 +187,8 @@ export class SlackBot {
 
 		this.metrics = config.metrics ?? createSlackMetrics();
 		this.validator = createValidator(config.validation);
+		this.historyLimit = Math.max(1, Math.min(config.historyLimit ?? 15, 1000));
+		this.historyMaxPages = Math.max(1, config.historyMaxPages ?? 3);
 		this.apiQueue = createApiQueue({
 			...config.apiQueue,
 			onRateLimit: (method, retryAfterSeconds) => {
@@ -965,7 +973,7 @@ export class SlackBot {
 
 		let cursor: string | undefined;
 		let pageCount = 0;
-		const maxPages = 3;
+		const maxPages = this.historyMaxPages;
 
 		do {
 			const result = await this.callSlack(
@@ -974,7 +982,7 @@ export class SlackBot {
 						channel: channelId,
 						oldest: lastTs ?? undefined,
 						inclusive: false,
-						limit: 1000,
+						limit: this.historyLimit,
 						cursor,
 					}),
 				"conversations.history",

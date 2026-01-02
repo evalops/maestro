@@ -54,6 +54,7 @@ export class GitHubWebhookServer {
 		attempt: number;
 	}> = [];
 	private processingEvents = false;
+	private hookId?: number;
 	private server?: ReturnType<typeof createServer>;
 
 	constructor(options: WebhookServerOptions) {
@@ -94,6 +95,10 @@ export class GitHubWebhookServer {
 		console.log("[webhook] Stopped");
 	}
 
+	getHookId(): number | undefined {
+		return this.hookId;
+	}
+
 	private async handleRequest(
 		req: IncomingMessage,
 		res: ServerResponse,
@@ -112,6 +117,7 @@ export class GitHubWebhookServer {
 			req.headers["x-hub-signature-256"] ?? req.headers["x-hub-signature"];
 		const event = req.headers["x-github-event"];
 		const delivery = req.headers["x-github-delivery"] ?? "";
+		const hookIdHeader = req.headers["x-github-hook-id"];
 		if (!signature || typeof signature !== "string") {
 			res.statusCode = 400;
 			res.end("missing signature");
@@ -149,6 +155,16 @@ export class GitHubWebhookServer {
 			res.statusCode = 401;
 			res.end("invalid signature");
 			return;
+		}
+
+		const hookIdValue = Array.isArray(hookIdHeader)
+			? hookIdHeader[0]
+			: hookIdHeader;
+		if (hookIdValue && typeof hookIdValue === "string") {
+			const parsedHookId = Number.parseInt(hookIdValue, 10);
+			if (Number.isFinite(parsedHookId)) {
+				this.hookId = parsedHookId;
+			}
 		}
 
 		let parsedPayload: unknown;

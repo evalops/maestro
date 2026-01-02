@@ -26,6 +26,7 @@ import type {
 	Task,
 } from "./types.js";
 import { GitHubWatcher } from "./watcher/github.js";
+import { WebhookRedeliveryManager } from "./webhooks/redelivery.js";
 import { GitHubWebhookServer } from "./webhooks/server.js";
 import { TaskExecutor } from "./worker/executor.js";
 
@@ -45,6 +46,7 @@ export class Orchestrator {
 	private prioritizer: IssuePrioritizer;
 	private executor: TaskExecutor;
 	private webhookServer?: GitHubWebhookServer;
+	private webhookRedeliveryManager?: WebhookRedeliveryManager;
 	private reporter: GitHubReporter;
 	private isRunning = false;
 	private processingLock = false;
@@ -137,6 +139,21 @@ export class Orchestrator {
 				path,
 			});
 		}
+
+		if (shouldUseWebhooks) {
+			const hookId = config.webhookId;
+			const getHookId = this.webhookServer
+				? () => this.webhookServer?.getHookId()
+				: undefined;
+			if (hookId || this.webhookServer) {
+				this.webhookRedeliveryManager = new WebhookRedeliveryManager({
+					config,
+					client,
+					hookId,
+					getHookId,
+				});
+			}
+		}
 	}
 
 	async start(): Promise<void> {
@@ -153,6 +170,7 @@ export class Orchestrator {
 		if (this.webhookServer) {
 			await this.webhookServer.start();
 		}
+		this.webhookRedeliveryManager?.start();
 
 		// Start watching GitHub unless webhook-only mode with an active server
 		const webhookOnly =
@@ -174,6 +192,7 @@ export class Orchestrator {
 		console.log("[orchestrator] Stopping...");
 		this.isRunning = false;
 		this.watcher.stop();
+		this.webhookRedeliveryManager?.stop();
 		if (this.webhookServer) {
 			await this.webhookServer.stop();
 		}
