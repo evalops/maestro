@@ -28,6 +28,7 @@ const HOTKEYS_MARKDOWN = `
 | \`Ctrl+W\` / \`Option+Backspace\` | Delete word backwards |
 | \`Ctrl+U\` | Delete to start of line |
 | \`Ctrl+K\` | Delete to end of line / Command palette |
+| \`Ctrl+G\` | Edit message in external editor |
 
 **Model & Thinking**
 | Key | Action |
@@ -47,6 +48,7 @@ const HOTKEYS_MARKDOWN = `
 |-----|--------|
 | \`Escape\` | Cancel autocomplete / abort streaming |
 | \`Ctrl+C\` | Clear editor (first) / exit (second) |
+| \`Ctrl+Z\` | Suspend to background |
 | \`/\` | Slash commands |
 | \`@\` | File search / mention |
 | \`!\` | Run bash command |

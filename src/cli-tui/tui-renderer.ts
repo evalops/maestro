@@ -157,6 +157,7 @@ import { UpdateView } from "./update-view.js";
 import type { CommandPaletteView } from "./utils/commands/command-palette-view.js";
 import { buildReviewPrompt } from "./utils/commands/review-prompt.js";
 import { SlashHintBar } from "./utils/commands/slash-hint-bar.js";
+import { openExternalEditor } from "./utils/external-editor.js";
 import {
 	type FooterHint,
 	type FooterMode,
@@ -558,6 +559,8 @@ export class TuiRenderer {
 					this.quickSettingsController.toggleToolOutputs(),
 				toggleThinkingBlocks: () =>
 					this.quickSettingsController.toggleThinkingBlocks(),
+				openExternalEditor: () => this.handleExternalEditor(),
+				suspend: () => this.handleCtrlZ(),
 				handleSlashCycle: (reverse) =>
 					this.slashHintController?.handleSlashCycle(reverse) ?? false,
 				cycleThinkingLevel: () =>
@@ -1405,6 +1408,33 @@ export class TuiRenderer {
 			}
 			this.refreshFooterHint();
 		}
+	}
+
+	private handleExternalEditor(): void {
+		const result = openExternalEditor(this.ui, this.editor.getText());
+		if (result.error) {
+			this.notificationView.showInfo(result.error);
+			return;
+		}
+		if (typeof result.updatedText === "string") {
+			this.editor.setText(result.updatedText);
+			this.ui.requestRender();
+		}
+	}
+
+	private handleCtrlZ(): void {
+		if (process.platform === "win32") {
+			this.notificationView.showInfo(
+				"Suspending is not supported on Windows terminals.",
+			);
+			return;
+		}
+		process.once("SIGCONT", () => {
+			this.ui.start();
+			this.ui.requestRender("interactive");
+		});
+		this.ui.stop();
+		process.kill(0, "SIGTSTP");
 	}
 
 	/**

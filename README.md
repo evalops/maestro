@@ -116,6 +116,10 @@ export GEMINI_API_KEY=...
 # Run /login and select "Google Gemini CLI" (no API key required)
 # Optional: export GOOGLE_GEMINI_CLI_TOKEN='{"token":"...","projectId":"..."}'
 
+# Google Antigravity (Sandbox) - OAuth
+# Run /login and select "Google Antigravity" (no API key required)
+# Optional: export GOOGLE_ANTIGRAVITY_TOKEN='{"token":"...","projectId":"..."}'
+
 # Groq
 export GROQ_API_KEY=gsk_...
 

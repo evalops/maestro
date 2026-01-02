@@ -11,6 +11,10 @@ import {
 	refreshGitHubCopilotToken,
 } from "./github-copilot.js";
 import {
+	loginGoogleAntigravity,
+	refreshGoogleAntigravityToken,
+} from "./google-antigravity.js";
+import {
 	loginGoogleGeminiCli,
 	refreshGoogleGeminiCliToken,
 } from "./google-gemini-cli.js";
@@ -37,7 +41,8 @@ export type SupportedOAuthProvider =
 	| "anthropic"
 	| "openai"
 	| "github-copilot"
-	| "google-gemini-cli";
+	| "google-gemini-cli"
+	| "google-antigravity";
 
 export interface OAuthProviderInfo {
 	id: SupportedOAuthProvider;
@@ -67,6 +72,12 @@ export function getOAuthProviders(): OAuthProviderInfo[] {
 			id: "google-gemini-cli",
 			name: "Google Gemini CLI",
 			description: "Cloud Code Assist OAuth",
+			available: true,
+		},
+		{
+			id: "google-antigravity",
+			name: "Google Antigravity",
+			description: "Antigravity sandbox OAuth",
 			available: true,
 		},
 		{
@@ -117,6 +128,9 @@ export async function login(
 		case "google-gemini-cli":
 			await loginGoogleGeminiCli(options.onAuthUrl, options.onStatus);
 			break;
+		case "google-antigravity":
+			await loginGoogleAntigravity(options.onAuthUrl, options.onStatus);
+			break;
 		case "github-copilot":
 			if (!options.onDeviceCode) {
 				throw new Error(
@@ -165,6 +179,12 @@ export async function refreshToken(
 			break;
 		case "google-gemini-cli":
 			newCredentials = await refreshGoogleGeminiCliToken(
+				credentials.refresh,
+				credentials.metadata,
+			);
+			break;
+		case "google-antigravity":
+			newCredentials = await refreshGoogleAntigravityToken(
 				credentials.refresh,
 				credentials.metadata,
 			);

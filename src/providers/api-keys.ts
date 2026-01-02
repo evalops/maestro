@@ -11,6 +11,7 @@
  * |------------|-------------------------------------------|
  * | google     | GEMINI_API_KEY                            |
  * | google-gemini-cli | GOOGLE_GEMINI_CLI_TOKEN (JSON token + projectId) |
+ * | google-antigravity | GOOGLE_ANTIGRAVITY_TOKEN (JSON token + projectId) |
  * | openai     | OPENAI_API_KEY                            |
  * | anthropic  | ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_API_KEY  |
  * | bedrock    | AWS_ACCESS_KEY_ID, AWS_PROFILE, etc.      |
@@ -62,6 +63,7 @@ import { hasAwsCredentials } from "./aws-auth.js";
 export const envApiKeyMap = {
 	google: ["GEMINI_API_KEY"],
 	"google-gemini-cli": ["GOOGLE_GEMINI_CLI_TOKEN"],
+	"google-antigravity": ["GOOGLE_ANTIGRAVITY_TOKEN"],
 	openai: ["OPENAI_API_KEY"],
 	anthropic: ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
 	bedrock: [

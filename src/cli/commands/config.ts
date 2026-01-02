@@ -90,6 +90,15 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		note: "Requires OAuth via /login (token includes projectId)",
 	},
 	{
+		id: "google-antigravity",
+		name: "Google Antigravity (Sandbox)",
+		api: "google-gemini-cli",
+		defaultModel: "gemini-3-pro-high",
+		baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
+		requiresApiKey: false,
+		note: "Requires OAuth via /login (token includes projectId)",
+	},
+	{
 		id: "vertex-ai",
 		name: "Google Vertex AI (Claude/Gemini)",
 		api: "anthropic-messages",

@@ -43,6 +43,24 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 		},
 	},
 	{
+		description: "Ctrl+G opens external editor",
+		matches: (data) => data === "\x07",
+		when: (editor) => Boolean(editor.onCtrlG),
+		handle: (editor) => {
+			editor.onCtrlG?.();
+			return true;
+		},
+	},
+	{
+		description: "Ctrl+Z suspends to background",
+		matches: (data) => data === "\x1a",
+		when: (editor) => Boolean(editor.onCtrlZ),
+		handle: (editor) => {
+			editor.onCtrlZ?.();
+			return true;
+		},
+	},
+	{
 		description: "Shift+Tab cycles thinking levels (or slash reverse cycle)",
 		matches: (data) => isShiftTab(data),
 		when: (editor) => Boolean(editor.onShiftTab),
@@ -176,6 +194,8 @@ export class CustomEditor extends Editor {
 	public onCtrlP?: () => void;
 	public onCtrlO?: () => void;
 	public onCtrlT?: () => void;
+	public onCtrlG?: () => void;
+	public onCtrlZ?: () => void;
 	public onTyping?: () => void;
 	public onTab?: () => boolean;
 

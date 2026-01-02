@@ -101,7 +101,10 @@ function isOpenAIProvider(provider: string): boolean {
 }
 
 function isGoogleGeminiCliProvider(provider: string): boolean {
-	return provider.toLowerCase() === "google-gemini-cli";
+	const normalized = provider.toLowerCase();
+	return (
+		normalized === "google-gemini-cli" || normalized === "google-antigravity"
+	);
 }
 
 export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
@@ -134,9 +137,13 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 		}
 
 		if (isGoogleGeminiCliProvider(provider) && options.mode !== "api-key") {
-			const oauthToken = await getOAuthToken("google-gemini-cli");
+			const oauthProvider =
+				normalizedProvider === "google-antigravity"
+					? "google-antigravity"
+					: "google-gemini-cli";
+			const oauthToken = await getOAuthToken(oauthProvider);
 			if (oauthToken) {
-				const credentials = loadOAuthCredentials("google-gemini-cli");
+				const credentials = loadOAuthCredentials(oauthProvider);
 				const projectId =
 					typeof credentials?.metadata?.projectId === "string"
 						? credentials.metadata.projectId

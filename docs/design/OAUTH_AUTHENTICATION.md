@@ -6,7 +6,7 @@ The authentication system supports multiple providers and methods, including API
 
 Authentication capabilities:
 
-- **Multi-Provider OAuth**: Anthropic, OpenAI, GitHub Copilot, Google Gemini CLI
+- **Multi-Provider OAuth**: Anthropic, OpenAI, GitHub Copilot, Google Gemini CLI, Google Antigravity
 - **API Key Management**: Secure storage and rotation
 - **Token Refresh**: Automatic credential renewal
 - **Credential Encryption**: At-rest encryption for secrets

@@ -1,6 +1,6 @@
 /**
- * Google Gemini CLI / Cloud Code Assist provider.
- * Uses the Cloud Code Assist API endpoint to access Gemini models via OAuth.
+ * Google Gemini CLI / Antigravity provider.
+ * Uses the Cloud Code Assist API endpoint to access Gemini and other models via OAuth.
  */
 
 import {
@@ -51,6 +51,15 @@ const DEFAULT_ENDPOINT = "https://cloudcode-pa.googleapis.com";
 const GEMINI_CLI_HEADERS = {
 	"User-Agent": "google-cloud-sdk vscode_cloudshelleditor/0.1",
 	"X-Goog-Api-Client": "gl-node/22.17.0",
+	"Client-Metadata": JSON.stringify({
+		ideType: "IDE_UNSPECIFIED",
+		platform: "PLATFORM_UNSPECIFIED",
+		pluginType: "GEMINI",
+	}),
+};
+const ANTIGRAVITY_HEADERS = {
+	"User-Agent": "antigravity/1.11.5 darwin/arm64",
+	"X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
 	"Client-Metadata": JSON.stringify({
 		ideType: "IDE_UNSPECIFIED",
 		platform: "PLATFORM_UNSPECIFIED",
@@ -246,6 +255,8 @@ export async function* streamGoogleGeminiCli(
 		const requestBody = buildRequest(model, context, projectId, options);
 		const endpoint = model.baseUrl || DEFAULT_ENDPOINT;
 		const url = `${endpoint}/v1internal:streamGenerateContent?alt=sse`;
+		const isAntigravity = endpoint.includes("sandbox.googleapis.com");
+		const headers = isAntigravity ? ANTIGRAVITY_HEADERS : GEMINI_CLI_HEADERS;
 
 		let response: Response | undefined;
 		let lastError: Error | undefined;
@@ -262,7 +273,7 @@ export async function* streamGoogleGeminiCli(
 						Authorization: `Bearer ${accessToken}`,
 						"Content-Type": "application/json",
 						Accept: "text/event-stream",
-						...GEMINI_CLI_HEADERS,
+						...headers,
 						...(options.headers ?? {}),
 					},
 					body: JSON.stringify(requestBody),
