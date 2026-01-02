@@ -86,6 +86,30 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "pii",
+				description: "PII detection patterns and testing",
+				usage: "/pii [patterns|test <text>]",
+				tags: ["diagnostics", "security"],
+				examples: ["/pii", "/pii patterns", "/pii test jane.doe@example.com"],
+			},
+			withArgs("pii"),
+			handlers.pii,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "audit",
+				description: "Audit log status (enterprise)",
+				usage: "/audit [status]",
+				tags: ["diagnostics", "security"],
+				examples: ["/audit", "/audit status"],
+			},
+			withArgs("audit"),
+			handlers.audit,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "approvals",
 				description:
 					"Show approval status or switch between auto/prompt/fail modes",

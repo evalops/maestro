@@ -35,6 +35,8 @@ export interface CommandHandlers {
 	undoChanges(context: CommandExecutionContext): void;
 	mention(context: CommandExecutionContext): void;
 	access(context: CommandExecutionContext): void;
+	pii(context: CommandExecutionContext): void;
+	audit(context: CommandExecutionContext): void;
 	help(context: CommandExecutionContext): void;
 	update(context: CommandExecutionContext): Promise<void> | void;
 	changelog(context: CommandExecutionContext): void;

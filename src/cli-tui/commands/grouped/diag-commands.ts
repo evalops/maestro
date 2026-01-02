@@ -27,6 +27,8 @@
 
 import { getBedrockStatus } from "../../../providers/aws-auth.js";
 import { handleAccessCommand } from "../access-command.js";
+import { handleAuditCommand } from "../audit-command.js";
+import { handlePiiCommand } from "../pii-command.js";
 import type { CommandExecutionContext } from "../types.js";
 import { isHelpRequest, parseSubcommand } from "./utils.js";
 
@@ -140,9 +142,13 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 				break;
 
 			case "pii":
-				deps.showInfo(
-					"PII Detection: Built-in patterns for emails, phone numbers, SSNs, credit cards, etc.\nUse /diag pii patterns to list all.",
-				);
+				handlePiiCommand({
+					...customContext(
+						`/pii ${args.slice(1).join(" ")}`.trim(),
+						args.slice(1).join(" "),
+					),
+					showInfo: deps.showInfo,
+				});
 				break;
 
 			case "access":
@@ -155,15 +161,16 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 				break;
 
 			case "audit":
-				if (deps.isDatabaseConfigured()) {
-					deps.showInfo(
-						"Audit Log (Enterprise): Database connected.\nUse web API for full audit log access.",
-					);
-				} else {
-					deps.showInfo(
-						"Audit Log: Enterprise feature - database not configured.\nSet COMPOSER_DATABASE_URL to enable.",
-					);
-				}
+				handleAuditCommand(
+					{
+						...customContext(
+							`/audit ${args.slice(1).join(" ")}`.trim(),
+							args.slice(1).join(" "),
+						),
+						showInfo: deps.showInfo,
+					},
+					{ isDatabaseConfigured: deps.isDatabaseConfigured },
+				);
 				break;
 
 			case "bedrock":
