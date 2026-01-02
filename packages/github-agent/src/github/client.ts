@@ -193,6 +193,7 @@ export class GitHubApiClient {
 	private readonly scheduler: RequestScheduler;
 	private cachedTokenType?: GitHubToken["type"];
 	private rateLimit: GitHubRateLimitSnapshot = { remaining: 0 };
+	private globalPauseUntil = 0;
 
 	constructor(options: GitHubClientOptions) {
 		this.owner = options.owner;
@@ -1188,6 +1189,7 @@ export class GitHubApiClient {
 		let bypassConditional = false;
 
 		for (let attempt = 0; attempt <= 5; attempt += 1) {
+			await this.awaitGlobalPause();
 			const token = await this.auth.getToken();
 			const headers: Record<string, string> = {
 				Accept: "application/vnd.github+json",
@@ -1277,6 +1279,13 @@ export class GitHubApiClient {
 					responseHeaders,
 					attempt,
 				);
+				if (
+					retryDelay !== null &&
+					status &&
+					(status === 403 || status === 429)
+				) {
+					this.applyGlobalPause(retryDelay);
+				}
 				if (retryDelay === null || attempt >= 5) {
 					throw error;
 				}
@@ -1381,6 +1390,7 @@ export class GitHubApiClient {
 		options: { mutating?: boolean } = {},
 	): Promise<T> {
 		for (let attempt = 0; attempt <= 5; attempt += 1) {
+			await this.awaitGlobalPause();
 			const token = await this.auth.getToken();
 			const headers = {
 				Authorization:
@@ -1411,6 +1421,13 @@ export class GitHubApiClient {
 					responseHeaders,
 					attempt,
 				);
+				if (
+					retryDelay !== null &&
+					status &&
+					(status === 403 || status === 429)
+				) {
+					this.applyGlobalPause(retryDelay);
+				}
 				if (retryDelay === null || attempt >= 5) {
 					throw error;
 				}
@@ -1591,6 +1608,20 @@ export class GitHubApiClient {
 			stableParams[key] = params[key];
 		}
 		return `${endpoint}:${JSON.stringify(stableParams)}`;
+	}
+
+	private applyGlobalPause(delayMs: number): void {
+		if (delayMs <= 0) return;
+		const until = Date.now() + delayMs;
+		if (until > this.globalPauseUntil) {
+			this.globalPauseUntil = until;
+		}
+	}
+
+	private async awaitGlobalPause(): Promise<void> {
+		const now = Date.now();
+		if (now >= this.globalPauseUntil) return;
+		await wait(this.globalPauseUntil - now);
 	}
 }
 
