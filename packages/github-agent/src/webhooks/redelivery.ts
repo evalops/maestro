@@ -11,6 +11,7 @@ const RECENT_REDELIVERY_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_RECENT_REDELIVERIES = 5000;
 
 type RedeliveryState = {
+	hookId?: number;
 	recentRedeliveries?: Record<string, number>;
 };
 
@@ -59,10 +60,15 @@ export class WebhookRedeliveryManager {
 
 	setHookId(hookId: number): void {
 		this.hookId = hookId;
+		this.saveState();
 	}
 
 	private resolveHookId(): number | undefined {
-		return this.hookId ?? this.getHookId?.();
+		const resolved = this.hookId ?? this.getHookId?.();
+		if (!this.hookId && resolved) {
+			this.hookId = resolved;
+		}
+		return resolved;
 	}
 
 	private async run(): Promise<void> {
@@ -209,6 +215,9 @@ export class WebhookRedeliveryManager {
 					}
 				}
 			}
+			if (!this.hookId && Number.isFinite(parsed.hookId)) {
+				this.hookId = Number(parsed.hookId);
+			}
 		} catch {
 			// Ignore corrupt state.
 		}
@@ -216,6 +225,7 @@ export class WebhookRedeliveryManager {
 
 	private saveState(): void {
 		const state: RedeliveryState = {
+			hookId: this.hookId,
 			recentRedeliveries: Object.fromEntries(this.recentRedeliveries),
 		};
 		try {
