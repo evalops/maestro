@@ -728,7 +728,6 @@ export class SessionManager {
 	private persistEntry(entry: SessionEntry): void {
 		if (!this.enabled || !this.writer || !this.sessionFile) return;
 		if (!this.sessionInitialized) return;
-		if (!this.hasAssistantMessage) return;
 
 		if (!this.flushed) {
 			for (const e of this.fileEntries) {
@@ -796,9 +795,7 @@ export class SessionManager {
 		this.fileEntries.unshift(entry);
 		this.sessionInitialized = true;
 
-		if (this.hasAssistantMessage) {
-			this.persistEntry(entry);
-		}
+		this.persistEntry(entry);
 	}
 
 	saveMessage(message: AppMessage): void {
@@ -1371,15 +1368,13 @@ export class SessionManager {
 
 	/**
 	 * Check if we should initialize the session based on message history.
-	 * Session is initialized when we have at least 1 user message and 1 assistant message.
+	 * Session is initialized once we have at least 1 user message.
 	 */
 	shouldInitializeSession(messages: AppMessage[]): boolean {
 		if (this.sessionInitialized) return false;
 
 		const userMessages = messages.filter((m) => m.role === "user");
-		const assistantMessages = messages.filter((m) => m.role === "assistant");
-
-		return userMessages.length >= 1 && assistantMessages.length >= 1;
+		return userMessages.length >= 1;
 	}
 
 	/**
