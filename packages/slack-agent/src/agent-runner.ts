@@ -2,7 +2,8 @@
  * Agent Runner - Connects Slack messages to Composer's Agent
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -16,6 +17,10 @@ import * as logger from "./logger.js";
 import { type SandboxConfig, createExecutor } from "./sandbox.js";
 import type { ChannelInfo, SlackContext, UserInfo } from "./slack/bot.js";
 import type { ChannelStore } from "./store.js";
+import {
+	type ThreadMemoryConfig,
+	ThreadMemoryManager,
+} from "./thread-memory.js";
 import { createSlackAgentTools, setUploadFunction } from "./tools/index.js";
 import { ensureDir } from "./utils/fs.js";
 import { MessageQueue } from "./utils/message-queue.js";
@@ -109,6 +114,10 @@ export interface AgentRunResult {
 
 // Slack timestamp generator for logging
 const slackTsGenerator = createTimestampGenerator();
+const logCache = new Map<
+	string,
+	{ mtimeMs: number; size: number; turns: ConversationTurn[] }
+>();
 
 function getAnthropicApiKey(): string {
 	const key =
@@ -150,6 +159,20 @@ function parseLogMessages(channelDir: string): ConversationTurn[] {
 		return [];
 	}
 
+	try {
+		const stats = statSync(logPath);
+		const cached = logCache.get(logPath);
+		if (
+			cached &&
+			cached.mtimeMs === stats.mtimeMs &&
+			cached.size === stats.size
+		) {
+			return cached.turns;
+		}
+	} catch {
+		// Ignore stat failures; fall back to reading file.
+	}
+
 	const content = readFileSync(logPath, "utf-8");
 	const lines = content.trim().split("\n").filter(Boolean);
 
@@ -160,7 +183,13 @@ function parseLogMessages(channelDir: string): ConversationTurn[] {
 	const messages: LogMessage[] = [];
 	for (const line of lines) {
 		try {
-			messages.push(JSON.parse(line));
+			const parsed = JSON.parse(line) as LogMessage & {
+				isDeleted?: boolean;
+			};
+			if (parsed.isDeleted) {
+				continue;
+			}
+			messages.push(parsed);
 		} catch {
 			// Skip malformed lines
 		}
@@ -219,14 +248,129 @@ function parseLogMessages(channelDir: string): ConversationTurn[] {
 		turns.push(turn);
 	}
 
+	try {
+		const stats = statSync(logPath);
+		logCache.set(logPath, {
+			mtimeMs: stats.mtimeMs,
+			size: stats.size,
+			turns,
+		});
+	} catch {
+		// Ignore stat failures
+	}
+
 	return turns;
+}
+
+function hashTurnsForSummary(turns: ConversationTurn[]): string {
+	const content = turns.map((t) => `${t.date}|${t.user}|${t.text}`).join("\n");
+	return createHash("sha256").update(content).digest("hex").substring(0, 16);
+}
+
+async function getThreadTurns(
+	threadMemory: ThreadMemoryManager,
+	channelId: string,
+	threadKey: string,
+): Promise<ConversationTurn[]> {
+	const context = await threadMemory.getContext(channelId, threadKey);
+	const turns: ConversationTurn[] = [];
+	for (const msg of context.messages) {
+		if (msg.metadata?.isDeleted) continue;
+		if (msg.role !== "user" && msg.role !== "assistant") continue;
+		turns.push({
+			date: msg.createdAt,
+			user: msg.metadata?.userName ?? msg.userId ?? "unknown",
+			text: msg.content,
+			isBot: msg.role === "assistant",
+			attachments: msg.metadata?.attachments,
+		});
+	}
+	return turns;
+}
+
+async function maybeSummarizeWithModel(options: {
+	turns: ConversationTurn[];
+	channelDir: string;
+	transport: ProviderTransport;
+	model: Model;
+	maxSummaryChars: number;
+}): Promise<string | null> {
+	const summaryEnabled = process.env.SLACK_AGENT_LLM_SUMMARY === "1";
+	if (!summaryEnabled) return null;
+
+	const { turns, channelDir, transport, model, maxSummaryChars } = options;
+	if (turns.length === 0) return null;
+
+	const hash = hashTurnsForSummary(turns);
+	const cachePath = join(channelDir, "context_summary_llm.json");
+	if (existsSync(cachePath)) {
+		try {
+			const cached = JSON.parse(readFileSync(cachePath, "utf-8")) as {
+				hash?: string;
+				summary?: string;
+			};
+			if (cached.hash === hash && cached.summary) {
+				return cached.summary;
+			}
+		} catch {
+			// Ignore cache errors
+		}
+	}
+
+	const prompt = `Summarize the following Slack conversation in under ${maxSummaryChars} characters. Focus on decisions, files mentioned, and next steps. Use concise bullets if helpful.\n\n${turns
+		.map((t) => `${t.user}: ${t.text}`)
+		.join("\n")}`;
+
+	try {
+		const summaryAgent = new Agent({
+			transport,
+			initialState: {
+				systemPrompt:
+					"You summarize technical Slack conversations for an AI coding assistant.",
+				model,
+				tools: [],
+			},
+		});
+		await summaryAgent.prompt(prompt);
+		const summaryMessage = summaryAgent.state.messages
+			.filter((m): m is AssistantMessage => m.role === "assistant")
+			.pop();
+		const summary =
+			summaryMessage?.content
+				.filter((c): c is TextContent => c.type === "text")
+				.map((c) => c.text)
+				.join("\n") ?? "";
+		if (!summary.trim()) return null;
+
+		try {
+			await writeFile(
+				cachePath,
+				JSON.stringify({ hash, summary }, null, 2),
+				"utf-8",
+			);
+		} catch {
+			// Ignore cache write errors
+		}
+
+		return summary.trim();
+	} catch (error) {
+		logger.logWarning("LLM summary failed", String(error));
+		return null;
+	}
 }
 
 /**
  * Get recent messages with optional summarization of older turns
  */
-function getRecentMessages(channelDir: string, turnCount: number): string {
-	const turns = parseLogMessages(channelDir);
+async function getRecentMessages(options: {
+	channelDir: string;
+	turnCount: number;
+	threadTurns?: ConversationTurn[];
+	transport?: ProviderTransport;
+	model?: Model;
+}): Promise<string> {
+	const { channelDir, turnCount, threadTurns, transport, model } = options;
+	const turns = threadTurns ?? parseLogMessages(channelDir);
 
 	if (turns.length === 0) {
 		return "(no message history yet)";
@@ -236,11 +380,26 @@ function getRecentMessages(channelDir: string, turnCount: number): string {
 	const limitedTurns = turns.slice(-turnCount);
 
 	// Apply summarization (keeps recent 10 verbatim, summarizes older)
-	const summarized = summarizeContext(limitedTurns, channelDir, {
+	let summarized = summarizeContext(limitedTurns, channelDir, {
 		recentTurnCount: 10,
 		minTurnsForSummary: 15,
 		maxSummaryChars: 2000,
 	});
+	if (transport && model) {
+		const llmSummary = await maybeSummarizeWithModel({
+			turns: limitedTurns.slice(0, Math.max(0, limitedTurns.length - 10)),
+			channelDir,
+			transport,
+			model,
+			maxSummaryChars: 2000,
+		});
+		if (llmSummary) {
+			summarized = {
+				...summarized,
+				summary: llmSummary,
+			};
+		}
+	}
 
 	return formatSummarizedContext(summarized);
 }
@@ -463,6 +622,10 @@ export interface AgentRunnerOptions {
 	onApprovalNeeded?: ApprovalRequestCallback;
 	/** Callbacks for scheduling tasks */
 	scheduleCallbacks?: ScheduleCallbacks;
+	/** Allowed tool names for this run ("all" to allow everything) */
+	allowedTools?: string[] | "all";
+	/** Thread memory configuration */
+	threadMemory?: ThreadMemoryConfig;
 }
 
 export function createAgentRunner(
@@ -473,6 +636,9 @@ export function createAgentRunner(
 	let agent: Agent | null = null;
 	const executor = createExecutor(sandboxConfig);
 	const costTracker = workingDir ? new CostTracker(workingDir) : null;
+	const threadMemory = workingDir
+		? new ThreadMemoryManager(workingDir, options?.threadMemory)
+		: null;
 	const thinkingLevel = options?.thinking ? "medium" : "off";
 
 	return {
@@ -483,6 +649,13 @@ export function createAgentRunner(
 		): Promise<AgentRunResult> {
 			const runStartMs = Date.now();
 			await ensureDir(channelDir);
+			try {
+				await ctx.updateStatus("Starting...");
+			} catch (error) {
+				logger.logDebug("Initial status update failed", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 
 			// Wait for any file downloads to complete before processing
 			if (ctx.message.attachments.length > 0) {
@@ -496,8 +669,8 @@ export function createAgentRunner(
 			const workspacePath = executor.getWorkspacePath(
 				channelDir.replace(`/${channelId}`, ""),
 			);
-			const recentMessages = getRecentMessages(channelDir, 50);
 			const memory = getMemory(channelDir);
+			let recentMessages = "";
 
 			// Build file content section for code/text files attached to current message
 			let fileContentSection = "";
@@ -514,19 +687,6 @@ export function createAgentRunner(
 			if (fileContentSection) {
 				fileContentSection = `\n## Attached Files (content)\n${fileContentSection}`;
 			}
-			const systemPrompt = buildSystemPrompt(
-				workspacePath,
-				channelId,
-				memory,
-				sandboxConfig,
-				ctx.channels,
-				ctx.users,
-			);
-
-			logger.logInfo(
-				`Context sizes - system: ${systemPrompt.length} chars, messages: ${recentMessages.length} chars, memory: ${memory.length} chars`,
-			);
-
 			// Set up file upload function for the attach tool
 			setUploadFunction(async (filePath: string, title?: string) => {
 				const hostPath = translateToHostPath(
@@ -539,11 +699,22 @@ export function createAgentRunner(
 			});
 
 			// Create tools with executor
-			const tools = createSlackAgentTools(executor, {
+			let tools = createSlackAgentTools(executor, {
 				containerName: executor.getContainerName(),
 				onApprovalNeeded: options?.onApprovalNeeded,
 				scheduleOptions: options?.scheduleCallbacks,
 			});
+			if (options?.allowedTools && options.allowedTools !== "all") {
+				tools = tools.filter((tool) =>
+					options.allowedTools?.includes(tool.name),
+				);
+				if (tools.length === 0) {
+					logger.logWarning(
+						"No tools enabled for user",
+						ctx.message.user ?? "unknown",
+					);
+				}
+			}
 
 			// Get the model - default to Claude Sonnet 4
 			const model = getModel(
@@ -552,6 +723,16 @@ export function createAgentRunner(
 			) as Model<Api>;
 			if (!model) {
 				throw new Error("Failed to get Claude Sonnet 4 model");
+			}
+			const summaryModelId = process.env.SLACK_AGENT_SUMMARY_MODEL;
+			const summaryModel = summaryModelId
+				? (getModel("anthropic", summaryModelId) as Model<Api> | null)
+				: null;
+			if (summaryModelId && !summaryModel) {
+				logger.logWarning(
+					"Summary model not found",
+					`anthropic/${summaryModelId}`,
+				);
 			}
 
 			// Create transport
@@ -563,6 +744,31 @@ export function createAgentRunner(
 					throw new Error(`Unsupported provider: ${provider}`);
 				},
 			});
+
+			const threadTurns =
+				threadMemory && ctx.threadKey
+					? await getThreadTurns(threadMemory, channelId, ctx.threadKey)
+					: undefined;
+			recentMessages = await getRecentMessages({
+				channelDir,
+				turnCount: 50,
+				threadTurns,
+				transport,
+				model: summaryModel ?? model,
+			});
+
+			const systemPrompt = buildSystemPrompt(
+				workspacePath,
+				channelId,
+				memory,
+				sandboxConfig,
+				ctx.channels,
+				ctx.users,
+			);
+
+			logger.logInfo(
+				`Context sizes - system: ${systemPrompt.length} chars, messages: ${recentMessages.length} chars, memory: ${memory.length} chars`,
+			);
 
 			// Create agent
 			agent = new Agent({
@@ -602,7 +808,7 @@ export function createAgentRunner(
 			// Progress indicator - update status every 30 seconds during long operations
 			let lastStatusUpdate = Date.now();
 			let toolsExecuted = 0;
-			const STATUS_UPDATE_INTERVAL = 30000; // 30 seconds
+			const STATUS_UPDATE_INTERVAL = 15000; // 15 seconds
 
 			const maybeUpdateStatus = async () => {
 				const now = Date.now();
@@ -659,6 +865,14 @@ export function createAgentRunner(
 							label,
 							event.args as Record<string, unknown>,
 						);
+
+						try {
+							await ctx.updateStatus(`Running ${label}...`);
+						} catch (err) {
+							logger.logDebug("Status update failed", {
+								error: err instanceof Error ? err.message : String(err),
+							});
+						}
 
 						await store.logMessage(ctx.message.channel, {
 							date: new Date().toISOString(),
@@ -877,6 +1091,22 @@ export function createAgentRunner(
 				} catch (err) {
 					const errMsg = err instanceof Error ? err.message : String(err);
 					logger.logWarning("Failed to replace message", errMsg);
+				}
+			}
+
+			if (threadMemory && ctx.threadKey && finalText.trim()) {
+				try {
+					await threadMemory.addMessage(channelId, ctx.threadKey, {
+						role: "assistant",
+						content: finalText,
+						messageTs: slackTsGenerator.generate(),
+						metadata: { userName: "bot" },
+					});
+				} catch (error) {
+					logger.logWarning(
+						"Failed to append assistant message to thread memory",
+						String(error),
+					);
 				}
 			}
 

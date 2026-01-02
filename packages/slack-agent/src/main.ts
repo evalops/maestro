@@ -6,6 +6,7 @@
  * A Slack bot that runs an AI coding agent in a sandboxed environment.
  */
 
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DateTime } from "luxon";
 import { type AgentRunner, createAgentRunner } from "./agent-runner.js";
@@ -13,6 +14,11 @@ import { ApprovalManager } from "./approval.js";
 import { CostTracker } from "./cost-tracker.js";
 import { FeedbackTracker } from "./feedback.js";
 import * as logger from "./logger.js";
+import {
+	PermissionManager,
+	type SlackRole,
+	getAllowedToolsForRole,
+} from "./permissions.js";
 import { RateLimiter, formatRateLimitMessage } from "./rate-limiter.js";
 import {
 	type Executor,
@@ -27,6 +33,7 @@ import {
 	SlackBot,
 	type SlackContext,
 } from "./slack/bot.js";
+import { ThreadMemoryManager } from "./thread-memory.js";
 
 const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
@@ -34,6 +41,7 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_OAUTH_TOKEN = process.env.ANTHROPIC_OAUTH_TOKEN;
 const SLACK_AGENT_DEFAULT_TIMEZONE =
 	process.env.SLACK_AGENT_DEFAULT_TIMEZONE || "UTC";
+const SLACK_AGENT_DEFAULT_ROLE = process.env.SLACK_AGENT_DEFAULT_ROLE;
 
 function formatNextRun(
 	task: Pick<ScheduledTask, "nextRun" | "timezone">,
@@ -53,6 +61,21 @@ function getSandboxDescription(sandbox: SandboxConfig): string {
 		return `docker:auto (${sandbox.image || "node:20-slim"})`;
 	}
 	return `docker:${sandbox.container}`;
+}
+
+function parseDefaultRole(value?: string): SlackRole | undefined {
+	if (!value) return undefined;
+	const normalized = value.trim().toLowerCase();
+	if (
+		normalized === "admin" ||
+		normalized === "power_user" ||
+		normalized === "user" ||
+		normalized === "viewer"
+	) {
+		return normalized as SlackRole;
+	}
+	logger.logWarning("Invalid SLACK_AGENT_DEFAULT_ROLE", value);
+	return undefined;
 }
 
 function parseArgs(): { workingDir: string; sandbox: SandboxConfig } {
@@ -146,11 +169,17 @@ await validateSandbox(sandbox);
 // Create the executor (manages container lifecycle for auto mode)
 const executor: Executor = createExecutor(sandbox);
 
+const defaultRole = parseDefaultRole(SLACK_AGENT_DEFAULT_ROLE);
+const permissionManager = new PermissionManager(workingDir, {
+	...(defaultRole ? { defaultRole } : {}),
+});
+
 // Rate limiter - configurable via environment
 const rateLimiter = new RateLimiter({
 	maxPerUser: Number(process.env.SLACK_RATE_LIMIT_USER) || 10,
 	maxPerChannel: Number(process.env.SLACK_RATE_LIMIT_CHANNEL) || 30,
 	windowMs: Number(process.env.SLACK_RATE_LIMIT_WINDOW_MS) || 60000,
+	persistPath: join(workingDir, "cache", "rate-limits.json"),
 });
 
 // Cost tracker for usage reporting
@@ -162,6 +191,8 @@ const feedbackTracker = new FeedbackTracker(workingDir);
 // Approval manager for destructive operations
 const approvalManager = new ApprovalManager();
 approvalManager.start();
+
+const threadMemoryManager = new ThreadMemoryManager(workingDir);
 
 // Scheduler placeholder (initialized after bot creation)
 const schedulerHolder: { instance: Scheduler | null } = { instance: null };
@@ -214,6 +245,88 @@ const lastContexts = new Map<string, SlackContext>();
 
 // Track thinking mode preference per channel
 const thinkingEnabled = new Map<string, boolean>();
+
+function formatPermissionDenied(check: {
+	reason?: string;
+	role: string;
+}): string {
+	const reason = check.reason ? `: ${check.reason}` : "";
+	return `_Permission denied${reason}_`;
+}
+
+async function requirePermission(
+	userId: string,
+	action: string,
+	respond: (text: string) => Promise<void>,
+	resource?: string,
+): Promise<boolean> {
+	const check = permissionManager.check(userId, action, resource);
+	if (!check.allowed) {
+		await respond(formatPermissionDenied(check));
+		return false;
+	}
+	return true;
+}
+
+async function ensureNotBlocked(
+	userId: string,
+	respond: (text: string) => Promise<void>,
+): Promise<boolean> {
+	const user = permissionManager.getUser(userId);
+	if (user.isBlocked) {
+		await respond(
+			`_Access denied: ${user.blockedReason ?? "User is blocked"}_`,
+		);
+		return false;
+	}
+	return true;
+}
+
+function canViewCosts(userId: string): { allowed: boolean; reason?: string } {
+	const full = permissionManager.check(userId, "view_costs");
+	if (full.allowed) {
+		return { allowed: true };
+	}
+	const own = permissionManager.check(userId, "view_own_costs");
+	return own.allowed
+		? { allowed: true }
+		: { allowed: false, reason: own.reason };
+}
+
+function readMemoryFile(
+	filePath: string,
+	label: string,
+	maxChars = 3500,
+): string | null {
+	if (!existsSync(filePath)) return null;
+	try {
+		const content = readFileSync(filePath, "utf-8").trim();
+		if (!content) return null;
+		const truncated =
+			content.length > maxChars
+				? `${content.slice(0, maxChars)}\n... (truncated)`
+				: content;
+		return `*${label}*\n${truncated}`;
+	} catch (error) {
+		logger.logWarning("Failed to read memory file", String(error));
+		return null;
+	}
+}
+
+function clearSummaryCache(channelId: string): void {
+	const channelDir = join(workingDir, channelId);
+	const files = ["context_summary.json", "context_summary_llm.json"];
+	for (const file of files) {
+		const filePath = join(channelDir, file);
+		if (existsSync(filePath)) {
+			try {
+				rmSync(filePath);
+			} catch (error) {
+				logger.logWarning("Failed to clear summary cache", String(error));
+			}
+		}
+	}
+}
 
 /**
  * Create an approval callback for a specific channel context.
@@ -270,6 +383,13 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 			warning?: string;
 			error?: string;
 		}> => {
+			const canSchedule = permissionManager.check(userId, "schedule_task");
+			if (!canSchedule.allowed) {
+				return {
+					success: false,
+					error: canSchedule.reason ?? "Permission denied",
+				};
+			}
 			if (!schedulerHolder.instance) {
 				return { success: false, error: "Scheduler not initialized" };
 			}
@@ -300,6 +420,14 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 			};
 		},
 		onListTasks: async () => {
+			const canView = permissionManager.check(userId, "view_scheduled_tasks");
+			if (!canView.allowed) {
+				logger.logWarning(
+					"Scheduled task listing denied",
+					canView.reason ?? "Permission denied",
+				);
+				return [];
+			}
 			if (!schedulerHolder.instance) {
 				return [];
 			}
@@ -316,6 +444,19 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 		): Promise<{ success: boolean; error?: string }> => {
 			if (!schedulerHolder.instance) {
 				return { success: false, error: "Scheduler not initialized" };
+			}
+			const task = schedulerHolder.instance
+				.listTasks(channelId)
+				.find((t) => t.id === taskId);
+			if (!task) {
+				return { success: false, error: "Task not found" };
+			}
+			const canCancel = permissionManager.canCancelTask(userId, task.createdBy);
+			if (!canCancel.allowed) {
+				return {
+					success: false,
+					error: canCancel.reason ?? "Permission denied",
+				};
 			}
 			const cancelled = await schedulerHolder.instance.cancel(taskId);
 			return cancelled
@@ -348,6 +489,15 @@ async function handleScheduledTask(
 	task: ScheduledTask,
 ): Promise<{ success: boolean; error?: string }> {
 	const channelId = task.channelId;
+	const creator = permissionManager.getUser(task.createdBy);
+	if (creator.isBlocked) {
+		const reason = creator.blockedReason ?? "User is blocked";
+		logger.logWarning(
+			`Skipping scheduled task ${task.id} - creator blocked`,
+			reason,
+		);
+		return { success: false, error: reason };
+	}
 
 	// Check if already running in this channel (atomic check-and-mark)
 	if (!tryStartRun(channelId)) {
@@ -370,6 +520,11 @@ async function handleScheduledTask(
 		// Create a minimal context for the scheduled task
 		const channelDir = join(workingDir, channelId);
 		const useThinking = thinkingEnabled.get(channelId) ?? false;
+		const allowedTools = getAllowedToolsForRole(creator.role);
+		const canSchedule = permissionManager.check(
+			task.createdBy,
+			"schedule_task",
+		).allowed;
 
 		// Create approval callback for this channel
 		const onApprovalNeeded = createApprovalCallback(channelId, (text) =>
@@ -377,15 +532,15 @@ async function handleScheduledTask(
 		);
 
 		// Create schedule callbacks for this channel
-		const scheduleCallbacks = createScheduleCallbacks(
-			channelId,
-			task.createdBy,
-		);
+		const scheduleCallbacks = canSchedule
+			? createScheduleCallbacks(channelId, task.createdBy)
+			: undefined;
 
 		const runner = createAgentRunner(sandbox, workingDir, {
 			thinking: useThinking,
 			onApprovalNeeded,
 			scheduleCallbacks,
+			allowedTools,
 		});
 
 		// Create a simplified context for scheduled tasks
@@ -440,6 +595,11 @@ async function handleMessage(
 	ctx.source = source;
 	const channelId = ctx.message.channel;
 	const messageText = ctx.message.text.toLowerCase().trim();
+	const userId = ctx.message.user;
+
+	if (!(await ensureNotBlocked(userId, ctx.respond))) {
+		return;
+	}
 
 	// Handle simple /tasks text commands (not Slack-registered slash commands).
 	if (await handleTasksCommand(ctx)) {
@@ -463,6 +623,9 @@ async function handleMessage(
 
 	// Check for stop command
 	if (messageText === "stop") {
+		if (!(await requirePermission(userId, "stop", ctx.respond))) {
+			return;
+		}
 		const active = activeRuns.get(channelId);
 		if (active) {
 			await ctx.respond("_Stopping..._");
@@ -501,6 +664,9 @@ async function handleMessage(
 
 	// Check if thinking mode is enabled for this channel
 	const useThinking = thinkingEnabled.get(channelId) ?? false;
+	const allowedTools = getAllowedToolsForRole(
+		permissionManager.getUser(userId).role,
+	);
 
 	// Create approval callback for this channel
 	const onApprovalNeeded = createApprovalCallback(channelId, (text) =>
@@ -508,15 +674,16 @@ async function handleMessage(
 	);
 
 	// Create schedule callbacks for this channel
-	const scheduleCallbacks = createScheduleCallbacks(
-		channelId,
-		ctx.message.user,
-	);
+	const scheduleCallbacks = permissionManager.check(userId, "schedule_task")
+		.allowed
+		? createScheduleCallbacks(channelId, ctx.message.user)
+		: undefined;
 
 	const runner = createAgentRunner(sandbox, workingDir, {
 		thinking: useThinking,
 		onApprovalNeeded,
 		scheduleCallbacks,
+		allowedTools,
 	});
 	markRunActive(channelId, runner, ctx);
 
@@ -552,6 +719,11 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 	const match = raw.match(/^\/tasks\b\s*(.*)$/i);
 	if (!match) return false;
 
+	const userId = ctx.message.user;
+	if (!(await ensureNotBlocked(userId, ctx.respond))) {
+		return true;
+	}
+
 	const channelId = ctx.message.channel;
 	if (!schedulerHolder.instance) {
 		await ctx.respond("_Scheduler not initialized._");
@@ -572,6 +744,11 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 			return true;
 		}
 		case "list": {
+			if (
+				!(await requirePermission(userId, "view_scheduled_tasks", ctx.respond))
+			) {
+				return true;
+			}
 			const tasks = schedulerHolder.instance.listTasks(channelId);
 			if (tasks.length === 0) {
 				await ctx.respond("_No scheduled tasks for this channel._");
@@ -593,6 +770,20 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 			const taskId = args[0];
 			if (!taskId) {
 				await ctx.respond(usage);
+				return true;
+			}
+
+			const task = schedulerHolder.instance
+				.listTasks(channelId)
+				.find((t) => t.id === taskId);
+			if (!task) {
+				await ctx.respond(`_Task ${taskId} not found in this channel._`);
+				return true;
+			}
+
+			const canManage = permissionManager.canCancelTask(userId, task.createdBy);
+			if (!canManage.allowed) {
+				await ctx.respond(formatPermissionDenied(canManage));
 				return true;
 			}
 
@@ -631,13 +822,6 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 				);
 				return true;
 			}
-			const task = schedulerHolder.instance
-				.listTasks(channelId)
-				.find((t) => t.id === taskId);
-			if (!task) {
-				await ctx.respond(`_Task ${taskId} not found in this channel._`);
-				return true;
-			}
 			schedulerHolder.instance
 				.runNow(taskId)
 				.catch((err) =>
@@ -656,6 +840,114 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 	}
 }
 
+async function handleStatusRequest(
+	channelId: string,
+	userId: string,
+	respond: (text: string) => Promise<void>,
+): Promise<void> {
+	if (!(await requirePermission(userId, "view_status", respond))) {
+		return;
+	}
+
+	const busy = activeRuns.has(channelId) || startingRuns.has(channelId);
+	const thinking = thinkingEnabled.get(channelId) ?? false;
+	const stats = rateLimiter.getStats(userId, channelId);
+
+	const lines: string[] = [];
+	lines.push("*Status*");
+	lines.push(busy ? "_Working on a task_" : "_Idle_");
+	lines.push(`Thinking: ${thinking ? "on" : "off"}`);
+	lines.push(
+		`Rate limit: ${stats.userRequests}/${stats.userLimit} user | ${stats.channelRequests}/${stats.channelLimit} channel`,
+	);
+
+	await respond(lines.join("\n"));
+}
+
+async function handleCostRequest(
+	channelId: string,
+	userId: string,
+	respond: (text: string) => Promise<void>,
+): Promise<void> {
+	const full = permissionManager.check(userId, "view_costs");
+	if (!full.allowed) {
+		const own = permissionManager.check(userId, "view_own_costs");
+		if (!own.allowed) {
+			await respond(formatPermissionDenied(own));
+			return;
+		}
+	}
+
+	const summary = costTracker.getSummary(channelId);
+	const formatted = costTracker.formatSummary(summary);
+	await respond(formatted);
+}
+
+async function handleClearRequest(
+	channelId: string,
+	userId: string,
+	respond: (text: string) => Promise<void>,
+): Promise<void> {
+	if (!(await requirePermission(userId, "clear_context", respond))) {
+		return;
+	}
+	if (activeRuns.has(channelId) || startingRuns.has(channelId)) {
+		await respond("_Can't clear while working. Say `stop` first._");
+		return;
+	}
+
+	await bot.store.clearHistory(channelId);
+	await threadMemoryManager.clearChannel(channelId);
+	clearSummaryCache(channelId);
+	lastContexts.delete(channelId);
+	logger.logInfo(`Context cleared in ${channelId}`);
+	await respond("_Conversation history cleared. Starting fresh!_");
+}
+
+async function handleMemoryRequest(ctx: SlackContext): Promise<void> {
+	const userId = ctx.message.user;
+	if (!(await requirePermission(userId, "manage_memory", ctx.respond))) {
+		return;
+	}
+
+	const channelId = ctx.message.channel;
+	const channelDir = join(workingDir, channelId);
+	const sections: string[] = [];
+
+	const globalMemory = readMemoryFile(
+		join(channelDir, "..", "MEMORY.md"),
+		"Global Workspace Memory",
+	);
+	if (globalMemory) sections.push(globalMemory);
+
+	const channelMemory = readMemoryFile(
+		join(channelDir, "MEMORY.md"),
+		"Channel Memory",
+	);
+	if (channelMemory) sections.push(channelMemory);
+
+	try {
+		const summary = await threadMemoryManager.getThreadSummary(
+			channelId,
+			ctx.threadKey,
+		);
+		if (summary.messageCount > 0) {
+			sections.push(
+				`*Thread Memory*\nMessages: ${summary.messageCount}\nTokens: ${summary.totalTokens}`,
+			);
+		}
+	} catch (error) {
+		logger.logWarning("Failed to read thread memory summary", String(error));
+	}
+
+	if (sections.length === 0) {
+		await ctx.respond("_No memory stored yet._");
+		return;
+	}
+
+	await ctx.respond(sections.join("\n\n"));
+}
+
 // Reaction command handlers
 // 🛑 octagonal_sign - Stop current run
 // 👀 eyes - Check status
@@ -669,10 +961,18 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 async function handleReaction(ctx: ReactionContext): Promise<void> {
 	const channelId = ctx.channel;
 	const active = activeRuns.get(channelId);
+	const respond = (text: string) => ctx.postMessage(channelId, text);
+
+	if (!(await ensureNotBlocked(ctx.user, respond))) {
+		return;
+	}
 
 	switch (ctx.reaction) {
 		case "octagonal_sign": {
 			// 🛑 Stop command
+			if (!(await requirePermission(ctx.user, "stop", respond))) {
+				break;
+			}
 			if (active) {
 				logger.logInfo(`Stop requested via reaction in ${channelId}`);
 				await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
@@ -684,29 +984,26 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 
 		case "eyes": {
 			// 👀 Status check
-			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
-			const thinking = thinkingEnabled.get(channelId) ?? false;
-			if (active) {
-				await ctx.postMessage(
-					channelId,
-					`_Working on a task${thinking ? " (thinking mode)" : ""}. React with 🛑 to stop._`,
-				);
-			} else {
-				await ctx.postMessage(
-					channelId,
-					`_Nothing running${thinking ? " (thinking mode on)" : ""}. Mention me to start._`,
-				);
+			if (!(await requirePermission(ctx.user, "view_status", respond))) {
+				break;
 			}
+			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
+			await handleStatusRequest(channelId, ctx.user, respond);
 			break;
 		}
 
 		case "moneybag":
 		case "chart_with_upwards_trend": {
 			// 💰 or 📈 Usage/cost check
+			const canView = canViewCosts(ctx.user);
+			if (!canView.allowed) {
+				await respond(
+					`_Permission denied${canView.reason ? `: ${canView.reason}` : ""}_`,
+				);
+				break;
+			}
 			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
-			const summary = costTracker.getSummary(channelId);
-			const formatted = costTracker.formatSummary(summary);
-			await ctx.postMessage(channelId, formatted);
+			await handleCostRequest(channelId, ctx.user, respond);
 			break;
 		}
 
@@ -723,6 +1020,9 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 		case "arrows_counterclockwise":
 		case "repeat": {
 			// 🔄 Retry last request
+			if (!(await requirePermission(ctx.user, "retry", respond))) {
+				break;
+			}
 			if (active) {
 				await ctx.postMessage(
 					channelId,
@@ -749,6 +1049,9 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 		case "coffee":
 		case "brain": {
 			// ☕ or 🧠 Toggle extended thinking
+			if (!(await requirePermission(ctx.user, "toggle_thinking", respond))) {
+				break;
+			}
 			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
 			const current = thinkingEnabled.get(channelId) ?? false;
 			thinkingEnabled.set(channelId, !current);
@@ -770,28 +1073,22 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 		case "broom":
 		case "wastebasket": {
 			// 🧹 or 🗑️ Clear conversation context
-			if (active) {
-				await ctx.postMessage(
-					channelId,
-					"_Can't clear while working. React with 🛑 to stop first._",
-				);
+			if (!(await requirePermission(ctx.user, "clear_context", respond))) {
 				break;
 			}
-
 			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
-			await bot.store.clearHistory(channelId);
-			lastContexts.delete(channelId);
-			logger.logInfo(`Context cleared via reaction in ${channelId}`);
-			await ctx.postMessage(
-				channelId,
-				"_Conversation history cleared. Starting fresh!_",
-			);
+			await handleClearRequest(channelId, ctx.user, respond);
 			break;
 		}
 
 		case "calendar":
 		case "alarm_clock": {
 			// 📅 or ⏰ List scheduled tasks
+			if (
+				!(await requirePermission(ctx.user, "view_scheduled_tasks", respond))
+			) {
+				break;
+			}
 			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
 			if (!schedulerHolder.instance) {
 				await ctx.postMessage(channelId, "_Scheduler not initialized._");
@@ -857,14 +1154,44 @@ const bot = new SlackBot(
 
 		async onSlashCommand(ctx, command, text) {
 			ctx.source = "slash";
-			// Currently only support /tasks as a real Slack slash command.
-			if (command.toLowerCase() === "/tasks") {
-				await handleTasksCommand(ctx);
+			const cmd = command.toLowerCase();
+			if (!(await ensureNotBlocked(ctx.message.user, ctx.respond))) {
 				return;
 			}
-			await ctx.respond(
-				`_Unsupported slash command: ${command}. Try /tasks help._`,
-			);
+
+			switch (cmd) {
+				case "/tasks":
+					await handleTasksCommand(ctx);
+					return;
+				case "/status":
+					await handleStatusRequest(
+						ctx.message.channel,
+						ctx.message.user,
+						ctx.respond,
+					);
+					return;
+				case "/cost":
+					await handleCostRequest(
+						ctx.message.channel,
+						ctx.message.user,
+						ctx.respond,
+					);
+					return;
+				case "/memory":
+					await handleMemoryRequest(ctx);
+					return;
+				case "/clear":
+					await handleClearRequest(
+						ctx.message.channel,
+						ctx.message.user,
+						ctx.respond,
+					);
+					return;
+				default:
+					await ctx.respond(
+						`_Unsupported slash command: ${command}. Try /tasks help._`,
+					);
+			}
 		},
 
 		async onReaction(ctx) {
@@ -896,6 +1223,9 @@ async function shutdownWithCleanup(signal: string): Promise<void> {
 
 	// Stop approval manager
 	approvalManager.stop();
+
+	// Flush thread memory storage
+	await threadMemoryManager.shutdown();
 
 	// Abort all active runs
 	for (const [channelId, active] of activeRuns) {

@@ -41,17 +41,27 @@ export const METHOD_TIERS: Record<string, RateLimitTier> = {
 	"users.info": "tier2",
 	"conversations.info": "tier2",
 	"files.info": "tier2",
+	"reactions.get": "tier2",
 
 	// Tier 3 methods (write)
 	"chat.postMessage": "tier3",
+	"chat.postEphemeral": "tier3",
 	"chat.update": "tier3",
 	"chat.delete": "tier3",
+	"chat.scheduleMessage": "tier3",
+	"chat.deleteScheduledMessage": "tier3",
 	"reactions.add": "tier3",
 	"reactions.remove": "tier3",
 	"files.upload": "tier3",
 	"files.uploadV2": "tier3",
 	"files.getUploadURLExternal": "tier3",
 	"files.completeUploadExternal": "tier3",
+	"files.delete": "tier3",
+	"conversations.open": "tier3",
+	"conversations.join": "tier3",
+	"conversations.leave": "tier3",
+	"conversations.create": "tier3",
+	"conversations.invite": "tier3",
 
 	// Tier 4 methods (high volume)
 	"auth.test": "tier4",
@@ -79,6 +89,8 @@ export interface ApiQueueOptions {
 	maxDelayMs?: number;
 	/** Enable debug logging */
 	debug?: boolean;
+	/** Log unknown methods that fall back to the default tier */
+	logUnknownMethods?: boolean;
 	/** Callback when a request is rate limited */
 	onRateLimit?: (method: string, retryAfterSeconds: number) => void;
 	/** Callback when a request is retried */
@@ -108,8 +120,10 @@ export class ApiQueue {
 	private readonly baseDelayMs: number;
 	private readonly maxDelayMs: number;
 	private readonly debug: boolean;
+	private readonly logUnknownMethods: boolean;
 	private readonly onRateLimit?: ApiQueueOptions["onRateLimit"];
 	private readonly onRetry?: ApiQueueOptions["onRetry"];
+	private readonly unknownMethods = new Set<string>();
 
 	constructor(options: ApiQueueOptions = {}) {
 		this.defaultTier = options.defaultTier ?? "tier3";
@@ -117,6 +131,7 @@ export class ApiQueue {
 		this.baseDelayMs = options.baseDelayMs ?? 1000;
 		this.maxDelayMs = options.maxDelayMs ?? 30000;
 		this.debug = options.debug ?? false;
+		this.logUnknownMethods = options.logUnknownMethods ?? true;
 		this.onRateLimit = options.onRateLimit;
 		this.onRetry = options.onRetry;
 	}
@@ -152,6 +167,15 @@ export class ApiQueue {
 	 */
 	private getMethodDelay(method: string): number {
 		const tier = METHOD_TIERS[method] ?? this.defaultTier;
+		if (!METHOD_TIERS[method] && this.logUnknownMethods) {
+			if (!this.unknownMethods.has(method)) {
+				this.unknownMethods.add(method);
+				logger.logWarning(
+					`Unknown Slack API method tier, using default (${this.defaultTier})`,
+					method,
+				);
+			}
+		}
 		const requestsPerMinute = RATE_LIMIT_TIERS[tier];
 
 		// Recommended: design for 1 req/sec with burst tolerance

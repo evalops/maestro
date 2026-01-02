@@ -5,6 +5,10 @@
  * Uses a sliding window algorithm for smooth rate limiting.
  */
 
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { ensureDirSync } from "./utils/fs.js";
+
 export interface RateLimitConfig {
 	/** Max requests per user per window (default: 10) */
 	maxPerUser: number;
@@ -12,6 +16,10 @@ export interface RateLimitConfig {
 	maxPerChannel: number;
 	/** Window size in milliseconds (default: 60000 = 1 minute) */
 	windowMs: number;
+	/** Optional path to persist rate limiter state */
+	persistPath?: string;
+	/** Minimum ms between persistence writes */
+	persistIntervalMs?: number;
 }
 
 export interface RateLimitResult {
@@ -28,6 +36,7 @@ const DEFAULT_CONFIG: RateLimitConfig = {
 	maxPerUser: 10,
 	maxPerChannel: 30,
 	windowMs: 60 * 1000, // 1 minute
+	persistIntervalMs: 5000,
 };
 
 interface RequestRecord {
@@ -38,9 +47,11 @@ export class RateLimiter {
 	private config: RateLimitConfig;
 	private userRequests: Map<string, RequestRecord> = new Map();
 	private channelRequests: Map<string, RequestRecord> = new Map();
+	private lastPersistMs = 0;
 
 	constructor(config: Partial<RateLimitConfig> = {}) {
 		this.config = { ...DEFAULT_CONFIG, ...config };
+		this.loadState();
 	}
 
 	/**
@@ -85,6 +96,7 @@ export class RateLimiter {
 		// Record the request
 		userRecord.timestamps.push(now);
 		channelRecord.timestamps.push(now);
+		this.maybePersist();
 
 		const userRemaining = this.config.maxPerUser - userRecord.timestamps.length;
 		const channelRemaining =
@@ -135,6 +147,7 @@ export class RateLimiter {
 	 */
 	resetUser(userId: string): void {
 		this.userRequests.delete(userId);
+		this.maybePersist();
 	}
 
 	/**
@@ -142,6 +155,67 @@ export class RateLimiter {
 	 */
 	resetChannel(channelId: string): void {
 		this.channelRequests.delete(channelId);
+		this.maybePersist();
+	}
+
+	private loadState(): void {
+		if (!this.config.persistPath) return;
+		try {
+			if (!existsSync(this.config.persistPath)) return;
+			const raw = readFileSync(this.config.persistPath, "utf-8");
+			const data = JSON.parse(raw) as {
+				userRequests?: Record<string, number[]>;
+				channelRequests?: Record<string, number[]>;
+			};
+			const now = Date.now();
+			const windowStart = now - this.config.windowMs;
+			for (const [key, timestamps] of Object.entries(data.userRequests ?? {})) {
+				const filtered = timestamps.filter((t) => t > windowStart);
+				if (filtered.length > 0) {
+					this.userRequests.set(key, { timestamps: filtered });
+				}
+			}
+			for (const [key, timestamps] of Object.entries(
+				data.channelRequests ?? {},
+			)) {
+				const filtered = timestamps.filter((t) => t > windowStart);
+				if (filtered.length > 0) {
+					this.channelRequests.set(key, { timestamps: filtered });
+				}
+			}
+		} catch {
+			// Ignore load errors
+		}
+	}
+
+	private maybePersist(force = false): void {
+		if (!this.config.persistPath) return;
+		const now = Date.now();
+		const interval = this.config.persistIntervalMs ?? 0;
+		if (!force && interval > 0 && now - this.lastPersistMs < interval) {
+			return;
+		}
+		this.lastPersistMs = now;
+		try {
+			ensureDirSync(dirname(this.config.persistPath));
+			const data = {
+				userRequests: Object.fromEntries(
+					Array.from(this.userRequests.entries()).map(([key, value]) => [
+						key,
+						value.timestamps,
+					]),
+				),
+				channelRequests: Object.fromEntries(
+					Array.from(this.channelRequests.entries()).map(([key, value]) => [
+						key,
+						value.timestamps,
+					]),
+				),
+			};
+			writeFileSync(this.config.persistPath, JSON.stringify(data, null, 2));
+		} catch {
+			// Ignore persistence errors
+		}
 	}
 
 	private getOrCreate(
