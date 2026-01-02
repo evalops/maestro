@@ -76,6 +76,7 @@ import type {
 import { getStoredCredentials } from "./keys.js";
 import { streamAnthropic } from "./providers/anthropic.js";
 import { streamBedrock } from "./providers/bedrock.js";
+import { streamGoogleGeminiCli } from "./providers/google-gemini-cli.js";
 import { streamGoogle } from "./providers/google.js";
 import { streamOpenAI } from "./providers/openai.js";
 import { validateToolArguments } from "./providers/validation.js";
@@ -728,6 +729,15 @@ export class ProviderTransport implements AgentTransport {
 				} else if (model.api === "google-generative-ai") {
 					stream = streamGoogle(
 						model as Model<"google-generative-ai">,
+						currentContext,
+						{
+							...streamOptions,
+							thinking: cfg.reasoning,
+						},
+					);
+				} else if (model.api === "google-gemini-cli") {
+					stream = streamGoogleGeminiCli(
+						model as Model<"google-gemini-cli">,
 						currentContext,
 						{
 							...streamOptions,

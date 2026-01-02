@@ -122,6 +122,7 @@ export function calculateContextUsage(
 		| "openai-completions"
 		| "openai-responses"
 		| "google-generative-ai"
+		| "google-gemini-cli"
 		| "bedrock-converse"
 		| "vertex-ai"
 	>,
@@ -161,6 +162,7 @@ export function shouldAutoCompact(
 		| "openai-completions"
 		| "openai-responses"
 		| "google-generative-ai"
+		| "google-gemini-cli"
 		| "bedrock-converse"
 		| "vertex-ai"
 	>,
@@ -246,6 +248,7 @@ export class AutoCompactionMonitor {
 			| "openai-completions"
 			| "openai-responses"
 			| "google-generative-ai"
+			| "google-gemini-cli"
 			| "bedrock-converse"
 			| "vertex-ai"
 		>,

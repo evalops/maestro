@@ -893,10 +893,16 @@ export async function main(args: string[]) {
 			chalk.red(`Error: No credentials found for provider "${providerName}"`),
 		);
 		if (authMode !== "api-key") {
+			const loginHint =
+				providerName === "anthropic"
+					? 'Run "composer anthropic login" (claude) or use /login to authenticate before retrying.'
+					: providerName === "openai"
+						? 'Run "composer openai login" or use /login to authenticate before retrying.'
+						: 'Run "/login" to authenticate before retrying.';
 			push(
-				'Run "composer anthropic login" (claude) or provide an API key for the selected provider before retrying.',
+				`${loginHint} Or provide an API key for the selected provider.`,
 				chalk.dim(
-					'Run "composer anthropic login" (claude) or provide an API key for the selected provider before retrying.',
+					`${loginHint} Or provide an API key for the selected provider.`,
 				),
 			);
 		}

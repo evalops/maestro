@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { Spacer, type TUI, Text } from "@evalops/tui";
 import type { Container } from "@evalops/tui";
+import type { SupportedOAuthProvider } from "../../oauth/index.js";
 import type { ModalManager } from "../modal-manager.js";
 import type { NotificationView } from "../notification-view.js";
 import { OAuthSelectorView } from "../selectors/oauth-selector-view.js";
@@ -187,7 +188,6 @@ export class OAuthFlowController {
 
 		// Import OAuth system
 		const { listOAuthProviders } = await import("../../oauth/index.js");
-		type SupportedProvider = "anthropic" | "openai" | "github-copilot";
 
 		// Get logged-in providers
 		const loggedInProviders = listOAuthProviders();
@@ -212,7 +212,10 @@ export class OAuthFlowController {
 				return;
 			}
 
-			await this.performOAuthLogout(provider as SupportedProvider, showError);
+			await this.performOAuthLogout(
+				provider as SupportedOAuthProvider,
+				showError,
+			);
 			this.isOAuthFlowActive = false;
 			return;
 		}
@@ -239,13 +242,14 @@ export class OAuthFlowController {
 	}
 
 	private async performOAuthLogin(
-		providerId: "anthropic" | "openai" | "github-copilot",
+		providerId: SupportedOAuthProvider,
 		mode: string,
 		showError: (msg: string) => void,
 	): Promise<void> {
 		const { login } = await import("../../oauth/index.js");
 
 		const { chatContainer, ui, requestRender } = this.renderContext;
+		const requiresPromptCode = providerId === "anthropic";
 
 		chatContainer.addChild(new Spacer(1));
 		chatContainer.addChild(new Text(`Logging in to ${providerId}...`, 1, 0));
@@ -254,19 +258,34 @@ export class OAuthFlowController {
 		try {
 			await login(providerId, {
 				mode: mode as "pro" | "console" | undefined,
+				onStatus: (status: string) => {
+					chatContainer.addChild(new Spacer(1));
+					chatContainer.addChild(new Text(status, 1, 0));
+					requestRender();
+				},
 				onAuthUrl: (url: string) => {
 					chatContainer.addChild(new Spacer(1));
 					chatContainer.addChild(new Text("Opening browser to:", 1, 0));
 					chatContainer.addChild(new Spacer(1));
 					chatContainer.addChild(new Text(url, 1, 0));
 					chatContainer.addChild(new Spacer(1));
-					chatContainer.addChild(
-						new Text(
-							"Paste the authorization code below (or type 'cancel' to abort):",
-							1,
-							0,
-						),
-					);
+					if (requiresPromptCode) {
+						chatContainer.addChild(
+							new Text(
+								"Paste the authorization code below (or type 'cancel' to abort):",
+								1,
+								0,
+							),
+						);
+					} else {
+						chatContainer.addChild(
+							new Text(
+								"Complete authentication in the browser, then return here.",
+								1,
+								0,
+							),
+						);
+					}
 					requestRender();
 
 					// Auto-open browser using execFile for security
@@ -278,6 +297,37 @@ export class OAuthFlowController {
 								: "xdg-open";
 					const args =
 						process.platform === "win32" ? ["/c", "start", "", url] : [url];
+					execFile(openCmd, args, (error) => {
+						if (error) {
+							this.notificationView.showInfo(
+								"Could not auto-open browser. Please copy the URL manually.",
+							);
+						}
+					});
+				},
+				onDeviceCode: (code: string, verificationUri: string) => {
+					chatContainer.addChild(new Spacer(1));
+					chatContainer.addChild(new Text("Authenticate by visiting:", 1, 0));
+					chatContainer.addChild(new Spacer(1));
+					chatContainer.addChild(new Text(verificationUri, 1, 0));
+					chatContainer.addChild(new Spacer(1));
+					chatContainer.addChild(new Text(`Enter code: ${code}`, 1, 0));
+					chatContainer.addChild(new Spacer(1));
+					chatContainer.addChild(
+						new Text("Waiting for authorization...", 1, 0),
+					);
+					requestRender();
+
+					const openCmd =
+						process.platform === "darwin"
+							? "open"
+							: process.platform === "win32"
+								? "cmd"
+								: "xdg-open";
+					const args =
+						process.platform === "win32"
+							? ["/c", "start", "", verificationUri]
+							: [verificationUri];
 					execFile(openCmd, args, (error) => {
 						if (error) {
 							this.notificationView.showInfo(
@@ -363,7 +413,7 @@ export class OAuthFlowController {
 	}
 
 	private async performOAuthLogout(
-		providerId: "anthropic" | "openai" | "github-copilot",
+		providerId: SupportedOAuthProvider,
 		showError: (msg: string) => void,
 	): Promise<void> {
 		const { chatContainer, requestRender } = this.renderContext;

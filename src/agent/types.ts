@@ -45,6 +45,7 @@ import type {
  * - `openai-responses` - OpenAI Responses API (newer format)
  * - `anthropic-messages` - Anthropic Messages API
  * - `google-generative-ai` - Google Generative AI (Gemini)
+ * - `google-gemini-cli` - Google Cloud Code Assist (Gemini CLI)
  * - `bedrock-converse` - AWS Bedrock Converse API
  */
 export type Api =
@@ -52,6 +53,7 @@ export type Api =
 	| "openai-responses"
 	| "anthropic-messages"
 	| "google-generative-ai"
+	| "google-gemini-cli"
 	| "bedrock-converse"
 	| "vertex-ai";
 

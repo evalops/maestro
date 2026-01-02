@@ -81,6 +81,15 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		apiKeyEnv: "GEMINI_API_KEY",
 	},
 	{
+		id: "google-gemini-cli",
+		name: "Google Gemini CLI (Cloud Code Assist)",
+		api: "google-gemini-cli",
+		defaultModel: "gemini-2.5-flash",
+		baseUrl: "https://cloudcode-pa.googleapis.com",
+		requiresApiKey: false,
+		note: "Requires OAuth via /login (token includes projectId)",
+	},
+	{
 		id: "vertex-ai",
 		name: "Google Vertex AI (Claude/Gemini)",
 		api: "anthropic-messages",
