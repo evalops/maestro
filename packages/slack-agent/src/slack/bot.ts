@@ -123,6 +123,12 @@ export interface SlackBotConfig {
 	historyLimit?: number;
 	/** Max pages to backfill per channel */
 	historyMaxPages?: number;
+	/** Toggle backfill on startup */
+	backfillOnStartup?: boolean;
+	/** Only backfill matching channel IDs or names */
+	backfillInclude?: string[];
+	/** Skip backfill for matching channel IDs or names */
+	backfillExclude?: string[];
 }
 
 export interface ChannelInfo {
@@ -159,6 +165,9 @@ export class SlackBot {
 	private readonly validator: ReturnType<typeof createValidator>;
 	private readonly historyLimit: number;
 	private readonly historyMaxPages: number;
+	private readonly backfillOnStartup: boolean;
+	private readonly backfillInclude: Set<string> | null;
+	private readonly backfillExclude: Set<string>;
 
 	constructor(handler: SlackAgentHandler, config: SlackBotConfig) {
 		this.handler = handler;
@@ -189,6 +198,12 @@ export class SlackBot {
 		this.validator = createValidator(config.validation);
 		this.historyLimit = Math.max(1, Math.min(config.historyLimit ?? 15, 1000));
 		this.historyMaxPages = Math.max(1, config.historyMaxPages ?? 3);
+		this.backfillOnStartup = config.backfillOnStartup ?? true;
+		const include = this.normalizeBackfillSelectors(config.backfillInclude);
+		this.backfillInclude = include.size > 0 ? include : null;
+		this.backfillExclude = this.normalizeBackfillSelectors(
+			config.backfillExclude,
+		);
 		this.apiQueue = createApiQueue({
 			...config.apiQueue,
 			onRateLimit: (method, retryAfterSeconds) => {
@@ -320,6 +335,39 @@ export class SlackBot {
 			});
 		}
 		return result;
+	}
+
+	private normalizeBackfillSelector(value: string): string {
+		return value.trim().toLowerCase().replace(/^#/, "");
+	}
+
+	private normalizeBackfillSelectors(values?: string[]): Set<string> {
+		if (!values) return new Set();
+		return new Set(
+			values
+				.map((value) => this.normalizeBackfillSelector(value))
+				.filter((value) => value.length > 0),
+		);
+	}
+
+	private shouldBackfillChannel(
+		channelId: string,
+		channelName: string,
+	): boolean {
+		const normalizedId = this.normalizeBackfillSelector(channelId);
+		const normalizedName = this.normalizeBackfillSelector(channelName);
+		const isIncluded = this.backfillInclude
+			? this.backfillInclude.has(normalizedId) ||
+				this.backfillInclude.has(normalizedName)
+			: true;
+		if (!isIncluded) return false;
+		if (
+			this.backfillExclude.has(normalizedId) ||
+			this.backfillExclude.has(normalizedName)
+		) {
+			return false;
+		}
+		return true;
 	}
 
 	private async getUserInfo(
@@ -1088,12 +1136,33 @@ export class SlackBot {
 	}
 
 	private async backfillAllChannels(): Promise<void> {
+		if (!this.backfillOnStartup) {
+			logger.logInfo("Backfill disabled on startup.");
+			return;
+		}
+
+		const allChannels = Array.from(this.channelCache.entries());
+		const channelsToBackfill = allChannels.filter(([channelId, channelName]) =>
+			this.shouldBackfillChannel(channelId, channelName),
+		);
+
+		if (this.backfillInclude || this.backfillExclude.size > 0) {
+			logger.logInfo(
+				`Backfill filtered to ${channelsToBackfill.length} of ${allChannels.length} channels.`,
+			);
+		}
+
+		if (channelsToBackfill.length === 0) {
+			logger.logInfo("Backfill skipped: no matching channels.");
+			return;
+		}
+
 		const startTime = Date.now();
-		logger.logBackfillStart(this.channelCache.size);
+		logger.logBackfillStart(channelsToBackfill.length);
 
 		let totalMessages = 0;
 
-		for (const [channelId, channelName] of this.channelCache) {
+		for (const [channelId, channelName] of channelsToBackfill) {
 			try {
 				const count = await this.backfillChannel(channelId);
 				if (count > 0) {

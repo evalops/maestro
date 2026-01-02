@@ -211,11 +211,16 @@ Invite the bot to channels where you want it to operate:
 | `SLACK_AGENT_DEFAULT_ROLE` | No | user | Default role for new users (admin, power_user, user, viewer) |
 | `SLACK_AGENT_HISTORY_LIMIT` | No | 15 | Max messages per conversations.history request |
 | `SLACK_AGENT_HISTORY_PAGES` | No | 3 | Max pages to backfill per channel |
+| `SLACK_AGENT_BACKFILL_ON_STARTUP` | No | true | Toggle history backfill on startup |
+| `SLACK_AGENT_BACKFILL_CHANNELS` | No | - | Comma-separated channel IDs or names to include in backfill |
+| `SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS` | No | - | Comma-separated channel IDs or names to exclude from backfill |
 | `SLACK_RATE_LIMIT_USER` | No | 10 | Max requests per user per minute |
 | `SLACK_RATE_LIMIT_CHANNEL` | No | 30 | Max requests per channel per minute |
 | `SLACK_RATE_LIMIT_WINDOW_MS` | No | 60000 | Rate limit window in milliseconds |
 
 *Either `ANTHROPIC_API_KEY` or `ANTHROPIC_OAUTH_TOKEN` is required.
+
+Channel selectors accept IDs or names with or without a leading `#`.
 
 ### CLI Options
 

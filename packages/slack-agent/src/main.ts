@@ -44,6 +44,11 @@ const SLACK_AGENT_DEFAULT_TIMEZONE =
 const SLACK_AGENT_DEFAULT_ROLE = process.env.SLACK_AGENT_DEFAULT_ROLE;
 const SLACK_AGENT_HISTORY_LIMIT = process.env.SLACK_AGENT_HISTORY_LIMIT;
 const SLACK_AGENT_HISTORY_PAGES = process.env.SLACK_AGENT_HISTORY_PAGES;
+const SLACK_AGENT_BACKFILL_ON_STARTUP =
+	process.env.SLACK_AGENT_BACKFILL_ON_STARTUP;
+const SLACK_AGENT_BACKFILL_CHANNELS = process.env.SLACK_AGENT_BACKFILL_CHANNELS;
+const SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS =
+	process.env.SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS;
 
 function formatNextRun(
 	task: Pick<ScheduledTask, "nextRun" | "timezone">,
@@ -87,6 +92,24 @@ function parsePositiveInt(value?: string): number | undefined {
 		return undefined;
 	}
 	return parsed;
+}
+
+function parseBoolean(value?: string): boolean | undefined {
+	if (!value) return undefined;
+	const normalized = value.trim().toLowerCase();
+	if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
+	if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
+	logger.logWarning("Invalid SLACK_AGENT_BACKFILL_ON_STARTUP", value);
+	return undefined;
+}
+
+function parseCommaList(value?: string): string[] | undefined {
+	if (!value) return undefined;
+	const items = value
+		.split(",")
+		.map((item) => item.trim())
+		.filter((item) => item.length > 0);
+	return items.length > 0 ? items : undefined;
 }
 
 function parseArgs(): { workingDir: string; sandbox: SandboxConfig } {
@@ -164,6 +187,15 @@ function printUsage(): void {
 	);
 	console.error(
 		"  SLACK_AGENT_HISTORY_PAGES Max backfill pages per channel (default: 3)",
+	);
+	console.error(
+		"  SLACK_AGENT_BACKFILL_ON_STARTUP Toggle backfill on startup (default: true)",
+	);
+	console.error(
+		"  SLACK_AGENT_BACKFILL_CHANNELS Comma-separated channel IDs or names to include",
+	);
+	console.error(
+		"  SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS Comma-separated channel IDs or names to exclude",
 	);
 }
 
@@ -1224,6 +1256,9 @@ const bot = new SlackBot(
 		workingDir,
 		historyLimit: parsePositiveInt(SLACK_AGENT_HISTORY_LIMIT),
 		historyMaxPages: parsePositiveInt(SLACK_AGENT_HISTORY_PAGES),
+		backfillOnStartup: parseBoolean(SLACK_AGENT_BACKFILL_ON_STARTUP),
+		backfillInclude: parseCommaList(SLACK_AGENT_BACKFILL_CHANNELS),
+		backfillExclude: parseCommaList(SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS),
 	},
 );
 
