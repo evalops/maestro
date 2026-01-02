@@ -489,6 +489,9 @@ export class Agent {
 	 */
 	setModel(m: Model<Api>): void {
 		this._state.model = m;
+		if (!m.reasoning && this._state.thinkingLevel !== "off") {
+			this._state.thinkingLevel = "off";
+		}
 	}
 
 	/**

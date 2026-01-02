@@ -1022,6 +1022,7 @@ export class TuiRenderer {
 			modalManager: this.modalManager,
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			modelScope: this.modelScope,
 		});
 		this.queueModeSelectorView = new QueueModeSelectorView({
 			ui: this.ui,
