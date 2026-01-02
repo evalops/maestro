@@ -1186,20 +1186,22 @@ export class SlackBot {
 		const startTime = Date.now();
 		logger.logBackfillStart(targets.length);
 
-		let totalMessages = 0;
-		let index = 0;
+		const queue = [...targets];
 		const concurrency = Math.min(this.backfillConcurrency, targets.length);
 
-		const worker = async (): Promise<void> => {
-			while (index < targets.length) {
-				const current = targets[index];
-				index += 1;
+		const worker = async (): Promise<number> => {
+			let localTotal = 0;
+			while (true) {
+				const current = queue.shift();
+				if (!current) {
+					break;
+				}
 				try {
 					const count = await this.backfillChannel(current.id);
 					if (count > 0) {
 						logger.logBackfillChannel(current.name, count);
 					}
-					totalMessages += count;
+					localTotal += count;
 				} catch (error) {
 					logger.logWarning(
 						`Failed to backfill channel #${current.name}`,
@@ -1207,9 +1209,13 @@ export class SlackBot {
 					);
 				}
 			}
+			return localTotal;
 		};
 
-		await Promise.all(Array.from({ length: concurrency }, () => worker()));
+		const results = await Promise.all(
+			Array.from({ length: concurrency }, () => worker()),
+		);
+		const totalMessages = results.reduce((sum, count) => sum + count, 0);
 
 		const durationMs = Date.now() - startTime;
 		logger.logBackfillComplete(totalMessages, durationMs);

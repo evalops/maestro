@@ -1023,15 +1023,33 @@ async function handleBackfillCommand(
 
 	await ctx.respond(`_Starting backfill for ${targetLabel}..._`);
 
-	void bot
-		.backfill(backfillAll ? undefined : [ctx.message.channel])
-		.then(async () => {
+	const notifySuccess = async () => {
+		try {
 			await ctx.respond("_Backfill complete._");
-		})
-		.catch(async (error) => {
+		} catch (error) {
+			logger.logWarning(
+				"Backfill finished but failed to send completion message",
+				String(error),
+			);
+		}
+	};
+
+	void (async () => {
+		try {
+			await bot.backfill(backfillAll ? undefined : [ctx.message.channel]);
+			await notifySuccess();
+		} catch (error) {
 			logger.logWarning("Backfill failed", String(error));
-			await ctx.respond("_Backfill failed. Check logs for details._");
-		});
+			try {
+				await ctx.respond("_Backfill failed. Check logs for details._");
+			} catch (notifyError) {
+				logger.logWarning(
+					"Failed to send backfill failure message",
+					String(notifyError),
+				);
+			}
+		}
+	})();
 }
 
 // Reaction command handlers
