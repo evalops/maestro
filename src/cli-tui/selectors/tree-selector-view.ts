@@ -184,7 +184,8 @@ export class TreeSelectorView {
 		}
 
 		try {
-			const oldLeafId = this.options.sessionManager.getLeafId();
+			const oldLeafId =
+				visibleLeafId ?? this.options.sessionManager.getLeafId();
 			const targetEntry = this.options.sessionManager.getEntry(entryId);
 			if (!targetEntry) {
 				throw new Error(`Entry ${entryId} not found`);
@@ -224,6 +225,11 @@ export class TreeSelectorView {
 			} else if (targetEntry.type === "custom_message") {
 				newLeafId = targetEntry.parentId;
 				editorText = extractUserText({ content: targetEntry.content });
+			} else if (
+				targetEntry.type === "label" ||
+				targetEntry.type === "custom"
+			) {
+				newLeafId = targetEntry.parentId;
 			}
 
 			if (summaryText) {
