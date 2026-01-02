@@ -5,6 +5,10 @@ const ANSI_ESCAPE_PATTERN = new RegExp(
 	`${String.fromCharCode(27)}\\[[0-9;?]*[ -\\/]*[@-~]`,
 	"y",
 );
+const OSC_8_HYPERLINK_PATTERN = new RegExp(
+	`${String.fromCharCode(27)}\\]8;;.*?(?:${String.fromCharCode(7)}|${String.fromCharCode(27)}\\\\)`,
+	"g",
+);
 
 // Grapheme segmenter for proper Unicode iteration (handles emojis, ZWJ sequences, etc.)
 const graphemeSegmenter = new Intl.Segmenter(undefined, {
@@ -227,7 +231,10 @@ class AnsiCodeTracker {
  */
 export function visibleWidth(str: string): number {
 	// Replace tabs with 3 spaces before measuring
-	const normalized = str.replace(/\t/g, "   ");
+	const normalized = str
+		.replace(/\t/g, "   ")
+		// Strip OSC 8 hyperlinks to avoid inflated widths for clickable links.
+		.replace(OSC_8_HYPERLINK_PATTERN, "");
 	return stringWidth(normalized);
 }
 
