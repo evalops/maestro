@@ -1,3 +1,4 @@
+import { isDatabaseConfigured } from "../../db/client.js";
 import type { CommandExecutionContext } from "./types.js";
 
 export type GroupedCommandHandlers = {
@@ -163,7 +164,7 @@ export function createGroupedCommandHandlers(
 				handleSources: (ctx: CommandExecutionContext) =>
 					deps.diag.handleSources(ctx),
 				showInfo: (msg: string) => context.showInfo(msg),
-				isDatabaseConfigured: () => false,
+				isDatabaseConfigured: () => isDatabaseConfigured(),
 			});
 			await handler(context);
 		},
