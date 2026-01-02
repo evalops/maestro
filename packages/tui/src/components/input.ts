@@ -136,10 +136,22 @@ export class Input implements Component {
 	 */
 	handleInput(data: string): void {
 		let input = data;
-		if (input.includes(AnsiKeys.PASTE_START)) {
-			this.isInPaste = true;
-			this.pasteBuffer = "";
-			input = input.replace(AnsiKeys.PASTE_START, "");
+		if (!this.isInPaste) {
+			const pasteStartIndex = input.indexOf(AnsiKeys.PASTE_START);
+			if (pasteStartIndex !== -1) {
+				const beforePaste = input.slice(0, pasteStartIndex);
+				const afterPaste = input.slice(
+					pasteStartIndex + AnsiKeys.PASTE_START.length,
+				);
+
+				if (beforePaste) {
+					this.handleInput(beforePaste);
+				}
+
+				this.isInPaste = true;
+				this.pasteBuffer = "";
+				input = afterPaste;
+			}
 		}
 
 		if (this.isInPaste) {
