@@ -176,7 +176,12 @@ export async function handleBranch(
 
 			const userMessages = session.messages
 				.map((msg, index) => ({ msg, index }))
-				.filter(({ msg }) => msg.role === "user");
+				.filter(
+					(
+						entry,
+					): entry is { msg: UserMessageWithAttachments; index: number } =>
+						entry.msg.role === "user",
+				);
 
 			let targetIndex: number;
 			if (data.userMessageNumber !== undefined) {
