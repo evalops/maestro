@@ -416,7 +416,8 @@ export class SlackBot {
 			async ({ body, ack, envelope_id }) => {
 				await ack();
 
-				if (!this.handler.onSlashCommand) return;
+				const onSlashCommand = this.handler.onSlashCommand;
+				if (!onSlashCommand) return;
 
 				const slackCommand = body as {
 					command: string;
@@ -442,7 +443,7 @@ export class SlackBot {
 				const eventId = slackCommand.event_id ?? slackCommand.trigger_id;
 				await this.processEvent(key, eventId, async () => {
 					const ctx = await this.createSlashContext(slackCommand);
-					await this.handler.onSlashCommand(
+					await onSlashCommand(
 						ctx,
 						slackCommand.command,
 						slackCommand.text || "",
@@ -473,8 +474,9 @@ export class SlackBot {
 				slackEvent.subtype !== "file_share"
 			)
 				return;
-			if (!slackEvent.user) return;
-			if (slackEvent.user === this.botUserId) return;
+			const user = slackEvent.user;
+			if (!user) return;
+			if (user === this.botUserId) return;
 			if (
 				!slackEvent.text &&
 				(!slackEvent.files || slackEvent.files.length === 0)
@@ -486,7 +488,7 @@ export class SlackBot {
 				const prepared = await this.logMessage({
 					text: slackEvent.text || "",
 					channel: slackEvent.channel,
-					user: slackEvent.user,
+					user,
 					ts: slackEvent.ts,
 					threadTs: slackEvent.thread_ts,
 					files: slackEvent.files,
@@ -498,7 +500,7 @@ export class SlackBot {
 						{
 							text: slackEvent.text || "",
 							channel: slackEvent.channel,
-							user: slackEvent.user,
+							user,
 							ts: slackEvent.ts,
 							thread_ts: slackEvent.thread_ts,
 							files: slackEvent.files,
@@ -515,7 +517,8 @@ export class SlackBot {
 		this.socketClient.on("reaction_added", async ({ event, ack, body }) => {
 			await ack();
 
-			if (!this.handler.onReaction) return;
+			const onReaction = this.handler.onReaction;
+			if (!onReaction) return;
 
 			const envelope = body as { event_id?: string };
 			const reactionEvent = event as {
@@ -536,7 +539,7 @@ export class SlackBot {
 
 			const dedupeKey = `reaction:${reactionEvent.item.channel}:${reactionEvent.item.ts}:${reactionEvent.reaction}:${reactionEvent.user}`;
 			await this.processEvent(dedupeKey, envelope.event_id, async () => {
-				await this.handler.onReaction({
+				await onReaction({
 					reaction: reactionEvent.reaction,
 					user: reactionEvent.user,
 					channel: reactionEvent.item.channel,
@@ -649,14 +652,15 @@ export class SlackBot {
 	private async resolveFiles(files: SlackFile[]): Promise<SlackFile[]> {
 		const resolved: SlackFile[] = [];
 		for (const file of files) {
-			if (file.url_private_download || file.url_private || !file.id) {
+			const fileId = file.id;
+			if (file.url_private_download || file.url_private || !fileId) {
 				resolved.push(file);
 				continue;
 			}
 
 			try {
 				const result = await this.callSlack(
-					() => this.webClient.files.info({ file: file.id }),
+					() => this.webClient.files.info({ file: fileId }),
 					"files.info",
 				);
 				const info = result.file as SlackFile | undefined;
