@@ -8,7 +8,10 @@ import {
 import type { HookMessage } from "../agent/types.js";
 import type { HookMessageRenderer } from "../hooks/types.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
+import { createLogger } from "../utils/logger.js";
 import { BorderedBox } from "./utils/borders.js";
+
+const logger = createLogger("tui:hook-message");
 
 function extractHookMessageText(message: HookMessage): string {
 	if (typeof message.content === "string") {
@@ -45,8 +48,11 @@ export class HookMessageComponent extends Container {
 					this.addChild(component);
 					return;
 				}
-			} catch {
-				// Fall back to default rendering
+			} catch (error) {
+				logger.warn("Hook message renderer failed", {
+					customType: this.message.customType,
+					error: error instanceof Error ? error.message : String(error),
+				});
 			}
 		}
 

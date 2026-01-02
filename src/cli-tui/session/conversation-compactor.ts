@@ -205,6 +205,9 @@ export class ConversationCompactor {
 		// Calculate token count before compaction for metrics
 		const tokensBefore = lastUsage ? calculateContextTokens(lastUsage) : 0;
 
+		const sessionContext = this.options.sessionManager.buildSessionContext();
+		const firstKeptEntryId = sessionContext.messageEntries[boundary]?.id;
+
 		// Save compaction entry to session (for history reconstruction)
 		this.options.sessionManager.saveCompaction(
 			summaryText,
@@ -213,6 +216,7 @@ export class ConversationCompactor {
 			{
 				auto: options?.auto,
 				customInstructions: options?.customInstructions,
+				firstKeptEntryId,
 			},
 		);
 

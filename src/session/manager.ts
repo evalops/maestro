@@ -917,11 +917,19 @@ export class SessionManager {
 		summary: string,
 		firstKeptEntryIndex: number,
 		tokensBefore: number,
-		options?: { auto?: boolean; customInstructions?: string },
+		options?: {
+			auto?: boolean;
+			customInstructions?: string;
+			firstKeptEntryId?: string;
+		},
 	): void {
 		if (!this.enabled) return;
 		const context = this.buildSessionContext();
-		const targetEntry = context.messageEntries[firstKeptEntryIndex];
+		const resolvedEntry = options?.firstKeptEntryId
+			? this.getEntry(options.firstKeptEntryId)
+			: undefined;
+		const targetEntry =
+			resolvedEntry ?? context.messageEntries[firstKeptEntryIndex];
 		const fallbackEntry = this.getEntries()[0];
 		const firstKeptEntryId =
 			targetEntry?.id ?? this.leafId ?? fallbackEntry?.id;

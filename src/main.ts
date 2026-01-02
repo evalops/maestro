@@ -650,10 +650,14 @@ async function runRpcMode(
 					timestamp: Date.now(),
 				};
 
+				const sessionContext = sessionManager.buildSessionContext();
+				const firstKeptEntryId = sessionContext.messageEntries[boundary]?.id;
+
 				// Save compaction to session
 				sessionManager.saveCompaction(summaryText, boundary, tokensBefore, {
 					auto: false,
 					customInstructions,
+					firstKeptEntryId,
 				});
 
 				// Update agent messages
@@ -2068,9 +2072,13 @@ export async function main(args: string[]) {
 					timestamp: Date.now(),
 				};
 
+				const sessionContext = sessionManager.buildSessionContext();
+				const firstKeptEntryId = sessionContext.messageEntries[boundary]?.id;
+
 				// Save compaction
 				sessionManager.saveCompaction(summaryText, boundary, tokensBefore, {
 					auto: true,
+					firstKeptEntryId,
 				});
 
 				// Update agent messages
