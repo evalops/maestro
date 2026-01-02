@@ -236,7 +236,7 @@ function migrateV1ToV2(entries: SessionEntry[]): void {
 			const fallback = messageEntries[0]?.id ?? compaction.id;
 			compaction.firstKeptEntryId = target?.id ?? fallback;
 		}
-		compaction.firstKeptEntryIndex = undefined;
+		delete compaction.firstKeptEntryIndex;
 	}
 }
 
