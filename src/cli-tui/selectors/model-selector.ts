@@ -5,6 +5,10 @@ import {
 	getRegisteredModels,
 	reloadModelConfig,
 } from "../../models/registry.js";
+import {
+	type SupportedOAuthProvider,
+	hasOAuthCredentials,
+} from "../../oauth/index.js";
 import { lookupApiKey } from "../../providers/api-keys.js";
 
 /**
@@ -257,6 +261,19 @@ export class ModelSelectorComponent extends Container {
 	} {
 		// Always allow local endpoints; otherwise require a key
 		if (model.isLocal) return { usable: true };
+		const oauthProviders = new Set<SupportedOAuthProvider>([
+			"anthropic",
+			"openai",
+			"github-copilot",
+			"google-gemini-cli",
+			"google-antigravity",
+		]);
+		if (
+			oauthProviders.has(model.provider as SupportedOAuthProvider) &&
+			hasOAuthCredentials(model.provider as SupportedOAuthProvider)
+		) {
+			return { usable: true };
+		}
 		const apiKey = lookupApiKey(model.provider);
 		if (apiKey.source !== "missing") {
 			return { usable: true };
