@@ -50,4 +50,8 @@ export class RunController {
 		this.options.focusEditor();
 		this.lastCtrlCTime = now;
 	}
+
+	recordCtrlC(): void {
+		this.lastCtrlCTime = Date.now();
+	}
 }
