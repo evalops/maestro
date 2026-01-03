@@ -58,6 +58,7 @@ export interface CommandHandlers {
 	autocompact(context: CommandExecutionContext): void;
 	footer(context: CommandExecutionContext): void;
 	compactTools(context: CommandExecutionContext): void;
+	steer(context: CommandExecutionContext): void | Promise<void>;
 	queue(context: CommandExecutionContext): Promise<void> | void;
 	branch(context: CommandExecutionContext): void;
 	tree(context: CommandExecutionContext): void;

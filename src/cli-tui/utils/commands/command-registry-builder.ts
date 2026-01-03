@@ -62,6 +62,7 @@ export interface CommandRegistryOptions {
 	handleCompactTools: (
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
+	handleSteer: (context: CommandExecutionContext) => void | Promise<void>;
 	handleQueue: (context: CommandExecutionContext) => void | Promise<void>;
 	handleBranch: (context: CommandExecutionContext) => void | Promise<void>;
 	handleTree: (context: CommandExecutionContext) => void | Promise<void>;
@@ -158,6 +159,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			autocompact: opts.handleAutocompact,
 			footer: opts.handleFooter,
 			compactTools: opts.handleCompactTools,
+			steer: opts.handleSteer,
 			commands: opts.handleCommands,
 			queue: opts.handleQueue,
 			branch: opts.handleBranch,

@@ -107,6 +107,7 @@ export interface TuiCommandRegistryDeps {
 	handleEnhancedUndoCommand: (context: CommandExecutionContext) => void;
 	handleFooterCommand: (context: CommandExecutionContext) => void;
 	handleCompactToolsCommand: (rawInput: string) => void;
+	handleSteerCommand: (context: CommandExecutionContext) => void;
 	handleStatsCommand: (context: CommandExecutionContext) => void;
 	handleNewChatCommand: (context: CommandExecutionContext) => void;
 	handleTreeCommand: (context: CommandExecutionContext) => void;
@@ -219,6 +220,7 @@ export function buildTuiCommandRegistryOptions(
 		handleFooter: (context) => deps.handleFooterCommand(context),
 		handleCompactTools: (context) =>
 			deps.handleCompactToolsCommand(context.rawInput),
+		handleSteer: (context) => deps.handleSteerCommand(context),
 		handleCommands: (context) =>
 			deps.customCommandsController.handleCommandsCommand(context),
 		handleQueue: (context) => {

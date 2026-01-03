@@ -59,6 +59,19 @@ describe("PromptQueue", () => {
 		expect(snapshot.pending.length).toBe(0);
 	});
 
+	it("enqueues prompts at the front when requested", async () => {
+		const calls: string[] = [];
+		const queue = new PromptQueue(async (text) => {
+			calls.push(text);
+		});
+		const done = waitForSettled(queue, 3);
+		queue.enqueue("first");
+		queue.enqueue("second");
+		queue.enqueueFront("priority");
+		await done;
+		expect(calls).toEqual(["first", "priority", "second"]);
+	});
+
 	it("emits cancel events by default when calling cancelAll", async () => {
 		// Use a blocking runner so prompts stay in pending
 		let resolve!: () => void;

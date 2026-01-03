@@ -33,13 +33,28 @@ export class PromptQueue {
 	) {}
 
 	enqueue(text: string): QueuedPrompt {
+		return this.enqueueInternal(text, "back");
+	}
+
+	enqueueFront(text: string): QueuedPrompt {
+		return this.enqueueInternal(text, "front");
+	}
+
+	private enqueueInternal(
+		text: string,
+		position: "front" | "back",
+	): QueuedPrompt {
 		const entry: QueuedPrompt = {
 			id: this.nextId++,
 			text,
 			createdAt: Date.now(),
 		};
 		const willRunImmediately = !this.active && this.pending.length === 0;
-		this.pending.push(entry);
+		if (position === "front") {
+			this.pending.unshift(entry);
+		} else {
+			this.pending.push(entry);
+		}
 		this.emit({
 			type: "enqueue",
 			entry,

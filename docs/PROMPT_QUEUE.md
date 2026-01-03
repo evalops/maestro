@@ -19,6 +19,7 @@ how the queue works and how the loader visualizes each stage.
 - `/queue` – list pending prompts, showing IDs and trimmed text.
 - `/queue cancel <id>` – remove a pending prompt.
 - `/queue clear` (planned) – drop all pending prompts.
+- `/steer <message>` – interrupt the active run and enqueue a prompt at the front.
 - Footer hint shows “N prompts queued” whenever `pending.length > 0`.
 
 ## Loader Stages
