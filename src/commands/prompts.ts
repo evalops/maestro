@@ -489,15 +489,16 @@ export function renderPrompt(
 	const escapeMarker = "\x00DOLLAR\x00";
 	result = result.replace(/\$\$/g, escapeMarker);
 
-	// Substitute $ARGUMENTS
-	result = result.replace(/\$ARGUMENTS/g, args.positional.join(" "));
-
 	// Substitute positional arguments $1-$9
 	for (let i = 1; i <= 9; i++) {
 		const pattern = new RegExp(`\\$${i}`, "g");
 		const value = args.positional[i - 1] ?? "";
 		result = result.replace(pattern, value);
 	}
+
+	// Substitute $ARGUMENTS after positional replacement to avoid
+	// rewriting $1-like substrings inside the expanded arguments.
+	result = result.replace(/\$ARGUMENTS/g, args.positional.join(" "));
 
 	// Substitute named arguments
 	for (const [key, value] of Object.entries(args.named)) {
