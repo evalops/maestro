@@ -403,6 +403,18 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "steer",
+				description: "Interrupt current run and run a prompt next",
+				usage: "/steer <message>",
+				tags: ["session"],
+				examples: ["/steer focus on tests next"],
+			},
+			withArgs("steer"),
+			handlers.steer,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "about",
 				description: "Show Composer build, env, and git info",
 				usage: "/about",

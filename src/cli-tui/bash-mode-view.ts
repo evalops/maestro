@@ -176,6 +176,19 @@ ${muted("Ctrl+C aborts running commands.")}`,
 		return true;
 	}
 
+	async tryHandleOneOffInput(rawInput: string): Promise<boolean> {
+		if (this.active || !rawInput.startsWith("!!")) {
+			return false;
+		}
+		const command = rawInput.slice(2).trim();
+		if (!command) {
+			this.options.showInfoMessage("Usage: !! <command>");
+			return true;
+		}
+		await this.executeOneOffCommand(command);
+		return true;
+	}
+
 	private enterBashMode(): void {
 		if (this.active) {
 			return;
@@ -404,6 +417,63 @@ ${muted("Back to normal chat.")}`,
 		block.setStatus(result.success ? "success" : "error");
 		this.options.ui.requestRender();
 		this.resetHistoryNavigation(true);
+	}
+
+	private async executeOneOffCommand(command: string): Promise<void> {
+		const promptLine = this.formatPrompt(command);
+		const block = new BashShellBlock(
+			this.formatDisplayPath(this.currentCwd),
+			`${promptLine}\n${muted("Running…")}`,
+		);
+		block.setPromptLine(promptLine);
+		block.setStatus("pending");
+		this.options.chatContainer.addChild(block);
+		this.options.ui.requestRender();
+
+		this.stopStreamUpdates();
+		this.isRunning = true;
+		this.currentAbortController = new AbortController();
+		this.streamUpdateInterval = setInterval(() => {
+			block.appendStreamOutput("");
+			this.options.ui.requestRender();
+		}, 80);
+
+		const result = await runStreamingShellCommand(command, {
+			cwd: this.currentCwd,
+			env: { ...process.env, ...this.sessionEnv },
+			signal: this.currentAbortController.signal,
+			onStdout: (chunk) => {
+				block.appendStreamOutput(chunk);
+				this.options.ui.requestRender();
+			},
+			onStderr: (chunk) => {
+				block.appendStreamOutput(chalk.hex("#ff8c69")(chunk));
+				this.options.ui.requestRender();
+			},
+		});
+
+		this.stopStreamUpdates();
+		this.isRunning = false;
+		this.currentAbortController = null;
+		this.lastExitCode = result.code;
+
+		const elapsedMs = block.getElapsedMs();
+		const elapsed =
+			elapsedMs < 1000 ? `${elapsedMs}ms` : `${(elapsedMs / 1000).toFixed(1)}s`;
+		const statusLine = badge(
+			"Exit code",
+			String(result.code),
+			result.success ? "success" : "danger",
+		);
+		const timeLabel = muted(`(${elapsed})`);
+		const body = [result.stdout, result.stderr].filter(Boolean).join("\n");
+
+		block.clearStreamBuffer();
+		block.setBody(
+			`${promptLine}\n${body || muted("(no output)")}\n\n${statusLine} ${timeLabel}`,
+		);
+		block.setStatus(result.success ? "success" : "error");
+		this.options.ui.requestRender();
 	}
 
 	private stopStreamUpdates(): void {

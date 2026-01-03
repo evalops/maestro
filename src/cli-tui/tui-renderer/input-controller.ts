@@ -68,6 +68,9 @@ export class InputController {
 			return;
 		}
 		const bashModeView = this.deps.getBashModeView();
+		if (await bashModeView.tryHandleOneOffInput(text)) {
+			return;
+		}
 		if (await bashModeView.tryHandleInput(text)) {
 			return;
 		}
@@ -88,6 +91,13 @@ export class InputController {
 
 	handleKeepPartialRequest(): boolean {
 		return this.deps.getInterruptController().handleKeepPartialRequest();
+	}
+
+	interruptNow(options?: { keepPartial?: boolean }): void {
+		if (this.deps.autoRetryController.isRetrying()) {
+			this.deps.autoRetryController.abortRetry();
+		}
+		this.onInterruptCallback?.(options);
 	}
 
 	handleCtrlDExit(): void {

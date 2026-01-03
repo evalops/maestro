@@ -1253,6 +1253,7 @@ export class TuiRenderer {
 				handleFooterCommand: (context) => this.handleFooterCommand(context),
 				handleCompactToolsCommand: (rawInput) =>
 					this.handleCompactToolsCommand(rawInput),
+				handleSteerCommand: (context) => this.handleSteerCommand(context),
 				handleStatsCommand: (context) => this.handleStatsCommand(context),
 				handleNewChatCommand: (context) => this.handleNewChatCommand(context),
 				handleTreeCommand: (_context) => this.treeSelectorView.show(),
@@ -1774,6 +1775,28 @@ export class TuiRenderer {
 	private handleCompactToolsCommand(rawInput: string): void {
 		this.toolOutputView.handleCompactToolsCommand(rawInput);
 		this.persistUiState();
+	}
+
+	private handleSteerCommand(context: CommandExecutionContext): void {
+		const text = context.argumentText.trim();
+		if (!text) {
+			context.showError("Usage: /steer <message>");
+			return;
+		}
+
+		const wasRunning = this.isAgentRunning;
+		if (wasRunning) {
+			this.inputController.interruptNow({ keepPartial: false });
+			this.notificationView.showToast(
+				"Steering: interrupted current run",
+				"warn",
+			);
+		}
+
+		const entry = this.queueController.enqueuePrompt(text, { front: true });
+		if (!entry) {
+			context.showError("Prompt queue is not available.");
+		}
 	}
 
 	private async handleReviewCommand(

@@ -46,6 +46,7 @@ Prefix a message with `!` to enter persistent bash mode.
 - Output appears in a framed “bash” block with exit code and cwd.
 - Up/Down arrow keys cycle command history; Shift+Enter inserts literal newlines.
 - Type `exit`, `quit`, or `leave` to return to normal chat. The footer shows “Bash mode active — type exit to leave.”
+- Use `!! <command>` for a one-off shell command without entering bash mode.
 
 ## CLI mode
 - Supports `--mode json` and `--mode rpc` for scripting, plus provider/model flags (`--provider`, `--model`, `--api-key`).
@@ -55,6 +56,7 @@ Prefix a message with `!` to enter persistent bash mode.
 
 ## Prompt queue
 When the agent is busy, additional prompts are enqueued. The footer shows the count (“2 prompts queued”), and `/queue` lists, cancels, or reprioritizes pending items. Bash mode bypasses the queue for immediate shell access. Details: [Prompt Queue](PROMPT_QUEUE.md).
+Use `/steer <message>` to interrupt the current run and push a new prompt to the front of the queue.
 
 ## Background tasks
 - Run long commands with `/background_tasks action=start …`; check `/background_tasks action=list` or `/background_tasks action=logs` without leaving chat.

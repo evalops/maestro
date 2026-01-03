@@ -177,6 +177,21 @@ export class QueueController {
 	}
 
 	/**
+	 * Enqueue a prompt, optionally prioritizing it ahead of existing entries.
+	 */
+	enqueuePrompt(
+		text: string,
+		options?: { front?: boolean },
+	): QueuedPrompt | null {
+		if (!this.promptQueue) {
+			return null;
+		}
+		return options?.front
+			? this.promptQueue.enqueueFront(text)
+			: this.promptQueue.enqueue(text);
+	}
+
+	/**
 	 * Get a snapshot of the current queue state.
 	 */
 	getSnapshot(): { active?: QueuedPrompt; pending: QueuedPrompt[] } {
