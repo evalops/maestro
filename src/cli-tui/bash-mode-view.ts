@@ -431,6 +431,8 @@ ${muted("Back to normal chat.")}`,
 		this.options.ui.requestRender();
 
 		this.stopStreamUpdates();
+		this.isRunning = true;
+		this.currentAbortController = new AbortController();
 		this.streamUpdateInterval = setInterval(() => {
 			block.appendStreamOutput("");
 			this.options.ui.requestRender();
@@ -438,7 +440,8 @@ ${muted("Back to normal chat.")}`,
 
 		const result = await runStreamingShellCommand(command, {
 			cwd: this.currentCwd,
-			env: process.env,
+			env: { ...process.env, ...this.sessionEnv },
+			signal: this.currentAbortController.signal,
 			onStdout: (chunk) => {
 				block.appendStreamOutput(chunk);
 				this.options.ui.requestRender();
@@ -450,6 +453,8 @@ ${muted("Back to normal chat.")}`,
 		});
 
 		this.stopStreamUpdates();
+		this.isRunning = false;
+		this.currentAbortController = null;
 		this.lastExitCode = result.code;
 
 		const elapsedMs = block.getElapsedMs();
