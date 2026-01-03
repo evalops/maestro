@@ -29,9 +29,18 @@ describe("hexToRgb", () => {
 		expect(hexToRgb("AABBCC")).toEqual({ r: 170, g: 187, b: 204 });
 	});
 
+	it("parses shorthand hex", () => {
+		expect(hexToRgb("#fff")).toEqual({ r: 255, g: 255, b: 255 });
+		expect(hexToRgb("#abcd")).toEqual({ r: 170, g: 187, b: 204 });
+	});
+
+	it("parses hex with alpha channel", () => {
+		expect(hexToRgb("#14532d20")).toEqual({ r: 20, g: 83, b: 45 });
+	});
+
 	it("throws on invalid hex length", () => {
-		expect(() => hexToRgb("#fff")).toThrow("Invalid hex color: #fff");
 		expect(() => hexToRgb("#fffffff")).toThrow("Invalid hex color: #fffffff");
+		expect(() => hexToRgb("#fffff")).toThrow("Invalid hex color: #fffff");
 		expect(() => hexToRgb("")).toThrow("Invalid hex color: ");
 	});
 
