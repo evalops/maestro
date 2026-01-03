@@ -109,6 +109,7 @@ export interface TuiCommandRegistryDeps {
 	handleCompactToolsCommand: (rawInput: string) => void;
 	handleStatsCommand: (context: CommandExecutionContext) => void;
 	handleNewChatCommand: (context: CommandExecutionContext) => void;
+	handleTreeCommand: (context: CommandExecutionContext) => void;
 	handleMcpCommand: (context: CommandExecutionContext) => void;
 	handleComposerCommand: (context: CommandExecutionContext) => void;
 	handleContextCommand: (context: CommandExecutionContext) => void;
@@ -229,6 +230,7 @@ export function buildTuiCommandRegistryOptions(
 		},
 		handleBranch: (context) =>
 			deps.branchController.handleBranchCommand(context),
+		handleTree: (context) => deps.handleTreeCommand(context),
 		handleLogin: (context) =>
 			deps.oauthFlowController.handleLoginCommand(context.argumentText, (msg) =>
 				context.showError(msg),

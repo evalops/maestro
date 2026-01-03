@@ -122,10 +122,12 @@ describe("OAuth Index", () => {
 		it("should return all supported providers", () => {
 			const providers = getOAuthProviders();
 
-			expect(providers).toHaveLength(3);
+			expect(providers).toHaveLength(5);
 			expect(providers.map((p) => p.id)).toContain("anthropic");
 			expect(providers.map((p) => p.id)).toContain("openai");
 			expect(providers.map((p) => p.id)).toContain("github-copilot");
+			expect(providers.map((p) => p.id)).toContain("google-gemini-cli");
+			expect(providers.map((p) => p.id)).toContain("google-antigravity");
 		});
 
 		it("should mark all providers as available", () => {
@@ -142,6 +144,8 @@ describe("OAuth Index", () => {
 			expect(hasOAuthCredentials("anthropic")).toBe(false);
 			expect(hasOAuthCredentials("openai")).toBe(false);
 			expect(hasOAuthCredentials("github-copilot")).toBe(false);
+			expect(hasOAuthCredentials("google-gemini-cli")).toBe(false);
+			expect(hasOAuthCredentials("google-antigravity")).toBe(false);
 		});
 
 		it("should return true when credentials exist", () => {

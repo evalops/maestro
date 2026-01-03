@@ -1,5 +1,7 @@
+import { spawn } from "node:child_process";
 import type { SlashCommand } from "@evalops/tui";
 import {
+	type Component,
 	Container,
 	Markdown,
 	ProcessTerminal,
@@ -20,6 +22,11 @@ import type { Agent } from "../agent/agent.js";
 import type { AgentEvent, AgentState, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
+import {
+	getTypeScriptHookCommands,
+	setGlobalUIContext,
+} from "../hooks/index.js";
+import type { HookCommandContext, HookUIContext } from "../hooks/types.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
 import { listOAuthProviders, loadOAuthCredentials } from "../oauth/storage.js";
@@ -30,7 +37,12 @@ import {
 } from "../session/manager.js";
 import type { SessionManager } from "../session/manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
-import { getCurrentThemeName, setTheme } from "../theme/theme.js";
+import {
+	type Theme,
+	getCurrentThemeName,
+	setTheme,
+	theme,
+} from "../theme/theme.js";
 import { getTrainingStatus } from "../training.js";
 
 import { AutoCompactionMonitor } from "../agent/auto-compaction.js";
@@ -103,11 +115,13 @@ import {
 import { RunCommandView } from "./run/run-command-view.js";
 import { RunController } from "./run/run-controller.js";
 import type { FileSearchView } from "./search/file-search-view.js";
+import { BaseSelectorComponent } from "./selectors/base-selector.js";
 import { ModelSelectorView } from "./selectors/model-selector-view.js";
 import { QueueModeSelectorView } from "./selectors/queue-mode-selector-view.js";
 import { ReportSelectorView } from "./selectors/report-selector-view.js";
 import { ThemeSelectorView } from "./selectors/theme-selector-view.js";
 import { ThinkingSelectorView } from "./selectors/thinking-selector-view.js";
+import { TreeSelectorView } from "./selectors/tree-selector-view.js";
 import { UserMessageSelectorView } from "./selectors/user-message-selector-view.js";
 import { ConversationCompactor } from "./session/conversation-compactor.js";
 import { SessionContext } from "./session/session-context.js";
@@ -143,6 +157,7 @@ import { UpdateView } from "./update-view.js";
 import type { CommandPaletteView } from "./utils/commands/command-palette-view.js";
 import { buildReviewPrompt } from "./utils/commands/review-prompt.js";
 import { SlashHintBar } from "./utils/commands/slash-hint-bar.js";
+import { openExternalEditor } from "./utils/external-editor.js";
 import {
 	type FooterHint,
 	type FooterMode,
@@ -159,6 +174,7 @@ import { resolveEnvPath } from "../utils/path-expansion.js";
 import { handleFrameworkCommand as frameworkHandler } from "./commands/framework-handlers.js";
 import { handleGuardianCommand as guardianHandler } from "./commands/guardian-handlers.js";
 import { handleOtelCommand as otelHandler } from "./commands/otel-handlers.js";
+import { HookInputModal } from "./hooks/hook-input-modal.js";
 import { ModalManager } from "./modal-manager.js";
 import { PasteHandler } from "./paste/paste-handler.js";
 import {
@@ -306,6 +322,8 @@ export class TuiRenderer {
 	private sessionRecoveryManager: SessionRecoveryManager;
 	private testVerificationService: AutoVerifyService | null = null;
 	private planHint: string | null = null;
+	private hookStatusByKey = new Map<string, string>();
+	private hookUiContext?: HookUIContext;
 	private toolOutputView: ToolOutputView;
 	private commandPaletteView: CommandPaletteView;
 	private slashCommands: SlashCommand[] = [];
@@ -346,6 +364,7 @@ export class TuiRenderer {
 	private themeSelectorView: ThemeSelectorView;
 	private modelSelectorView: ModelSelectorView;
 	private reportSelectorView: ReportSelectorView;
+	private treeSelectorView: TreeSelectorView;
 	private oauthFlowController!: OAuthFlowController;
 	private queueModeSelectorView: QueueModeSelectorView;
 	private userMessageSelectorView: UserMessageSelectorView;
@@ -540,6 +559,8 @@ export class TuiRenderer {
 					this.quickSettingsController.toggleToolOutputs(),
 				toggleThinkingBlocks: () =>
 					this.quickSettingsController.toggleThinkingBlocks(),
+				openExternalEditor: () => this.handleExternalEditor(),
+				suspend: () => this.handleCtrlZ(),
 				handleSlashCycle: (reverse) =>
 					this.slashHintController?.handleSlashCycle(reverse) ?? false,
 				cycleThinkingLevel: () =>
@@ -580,6 +601,8 @@ export class TuiRenderer {
 			ui: this.ui,
 			footer: this.footer,
 		});
+		this.hookUiContext = this.createHookUiContext();
+		setGlobalUIContext(this.hookUiContext, true);
 
 		// Now that all core layout containers exist, compute the initial viewport
 		// sizing and wire resize handling.
@@ -1002,6 +1025,7 @@ export class TuiRenderer {
 			modalManager: this.modalManager,
 			ui: this.ui,
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			modelScope: this.modelScope,
 		});
 		this.queueModeSelectorView = new QueueModeSelectorView({
 			ui: this.ui,
@@ -1029,6 +1053,27 @@ export class TuiRenderer {
 			notificationView: this.notificationView,
 			onBranchCreated: () => {
 				// Complete UI cleanup after branching (same as resetConversation)
+				this.sessionContext.resetArtifacts();
+				this.toolOutputView.clearTrackedComponents();
+				this.chatContainer.clear();
+				this.scrollContainer.clearHistory();
+				this.startupContainer.clear();
+				this.planView.syncHintWithStore();
+				this.planHint = null;
+				this.footer.updateState(this.agent.state);
+				this.refreshFooterHint();
+				this.renderInitialMessages(this.agent.state);
+				this.ui.requestRender();
+			},
+		});
+		this.treeSelectorView = new TreeSelectorView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			editor: this.editor,
+			modalManager: this.modalManager,
+			ui: this.ui,
+			notificationView: this.notificationView,
+			onNavigated: () => {
 				this.sessionContext.resetArtifacts();
 				this.toolOutputView.clearTrackedComponents();
 				this.chatContainer.clear();
@@ -1210,6 +1255,7 @@ export class TuiRenderer {
 					this.handleCompactToolsCommand(rawInput),
 				handleStatsCommand: (context) => this.handleStatsCommand(context),
 				handleNewChatCommand: (context) => this.handleNewChatCommand(context),
+				handleTreeCommand: (_context) => this.treeSelectorView.show(),
 				handleMcpCommand: (context) => this.handleMcpCommand(context),
 				handleComposerCommand: (context) => this.handleComposerCommand(context),
 				handleContextCommand: (context) => this.handleContextCommand(context),
@@ -1241,6 +1287,11 @@ export class TuiRenderer {
 			},
 			logDebug: (message, meta) => logger.debug(message, meta),
 		});
+		const hookRegistry = this.buildHookCommandEntries(registry.commands);
+		if (hookRegistry.commands.length > 0) {
+			registry.entries.push(...hookRegistry.entries);
+			registry.commands.push(...hookRegistry.commands);
+		}
 
 		this.commandEntries = registry.entries;
 		this.slashCommands = registry.commands;
@@ -1357,6 +1408,33 @@ export class TuiRenderer {
 			}
 			this.refreshFooterHint();
 		}
+	}
+
+	private handleExternalEditor(): void {
+		const result = openExternalEditor(this.ui, this.editor.getText());
+		if (result.error) {
+			this.notificationView.showInfo(result.error);
+			return;
+		}
+		if (typeof result.updatedText === "string") {
+			this.editor.setText(result.updatedText);
+			this.ui.requestRender();
+		}
+	}
+
+	private handleCtrlZ(): void {
+		if (process.platform === "win32") {
+			this.notificationView.showInfo(
+				"Suspending is not supported on Windows terminals.",
+			);
+			return;
+		}
+		process.once("SIGCONT", () => {
+			this.ui.start();
+			this.ui.requestRender("interactive");
+		});
+		this.ui.stop();
+		process.kill(0, "SIGTSTP");
 	}
 
 	/**
@@ -1941,6 +2019,297 @@ export class TuiRenderer {
 		this.provideFailureHints(errorMessage);
 	}
 
+	private createHookUiContext(): HookUIContext {
+		return {
+			select: (title, options) => this.showHookSelector(title, options),
+			confirm: (title, message) => this.showHookConfirm(title, message),
+			input: (title, placeholder) => this.showHookInput(title, placeholder),
+			notify: (message, type) => {
+				if (type === "error") {
+					this.notificationView.showError(message);
+					return;
+				}
+				const tone = type === "warning" ? "warn" : "info";
+				this.notificationView.showToast(message, tone);
+			},
+			setStatus: (key, text) => this.setHookStatus(key, text),
+			custom: (factory) => this.showHookCustom(factory),
+			setEditorText: (text) => {
+				this.editor.setText(text);
+				this.ui.requestRender();
+			},
+			getEditorText: () => this.editor.getText(),
+			editor: (title, prefill) => this.showHookEditor(title, prefill),
+			get theme() {
+				return theme;
+			},
+		};
+	}
+
+	private showHookSelector(
+		title: string,
+		options: string[],
+	): Promise<string | null> {
+		return new Promise((resolve) => {
+			if (options.length === 0) {
+				resolve(null);
+				return;
+			}
+			const items = options.map((option) => ({
+				label: option,
+				value: option,
+			}));
+			const selector = new BaseSelectorComponent({
+				items,
+				visibleRows: Math.min(10, items.length),
+				onSelect: (value) => {
+					this.modalManager.pop();
+					resolve(value);
+				},
+				onCancel: () => {
+					this.modalManager.pop();
+					resolve(null);
+				},
+				prepend: [new Text(theme.fg("accent", title), 1, 0), new Spacer(1)],
+			});
+			this.modalManager.push(selector);
+		});
+	}
+
+	private showHookConfirm(title: string, message: string): Promise<boolean> {
+		return new Promise((resolve) => {
+			const items = [
+				{ label: "Yes", value: "yes" },
+				{ label: "No", value: "no" },
+			];
+			const selector = new BaseSelectorComponent({
+				items,
+				visibleRows: 2,
+				onSelect: (value) => {
+					this.modalManager.pop();
+					resolve(value === "yes");
+				},
+				onCancel: () => {
+					this.modalManager.pop();
+					resolve(false);
+				},
+				prepend: [
+					new Text(theme.fg("accent", title), 1, 0),
+					new Text(theme.fg("muted", message), 1, 0),
+					new Spacer(1),
+				],
+			});
+			this.modalManager.push(selector);
+		});
+	}
+
+	private showHookInput(
+		title: string,
+		placeholder?: string,
+	): Promise<string | null> {
+		return new Promise((resolve) => {
+			const modal = new HookInputModal({
+				ui: this.ui,
+				title,
+				placeholder,
+				onSubmit: (value) => {
+					this.modalManager.pop();
+					resolve(value);
+				},
+				onCancel: () => {
+					this.modalManager.pop();
+					resolve(null);
+				},
+			});
+			this.modalManager.push(modal);
+		});
+	}
+
+	private showHookEditor(
+		title: string,
+		prefill?: string,
+	): Promise<string | null> {
+		return new Promise((resolve) => {
+			const modal = new HookInputModal({
+				ui: this.ui,
+				title,
+				prefill,
+				description: "Enter to save | Esc to cancel | Shift+Enter for newline",
+				onSubmit: (value) => {
+					this.modalManager.pop();
+					resolve(value);
+				},
+				onCancel: () => {
+					this.modalManager.pop();
+					resolve(null);
+				},
+			});
+			this.modalManager.push(modal);
+		});
+	}
+
+	private async showHookCustom<T>(
+		factory: (
+			tui: TUI,
+			theme: Theme,
+			done: (result: T) => void,
+		) => Component | Promise<Component>,
+	): Promise<T> {
+		return new Promise((resolve) => {
+			let resolved = false;
+			const done = (result: T) => {
+				if (resolved) return;
+				resolved = true;
+				this.modalManager.pop();
+				resolve(result);
+			};
+
+			void (async () => {
+				try {
+					const component = await factory(this.ui, theme, done);
+					const modal = component as Component & {
+						onClose?: () => void;
+					};
+					const previousOnClose = modal.onClose;
+					modal.onClose = () => {
+						previousOnClose?.();
+						if (!resolved) {
+							done(undefined as T);
+						}
+					};
+					this.modalManager.push(modal);
+				} catch (error) {
+					this.notificationView.showError(
+						error instanceof Error ? error.message : "Hook custom UI failed",
+					);
+					resolve(undefined as T);
+				}
+			})();
+		});
+	}
+
+	private execHookCommand(
+		command: string,
+		args: string[],
+	): Promise<{ stdout: string; stderr: string; code: number }> {
+		return new Promise((resolve) => {
+			const child = spawn(command, args, {
+				cwd: process.cwd(),
+				shell: false,
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+
+			let stdout = "";
+			let stderr = "";
+
+			child.stdout?.on("data", (data) => {
+				stdout += data.toString();
+			});
+
+			child.stderr?.on("data", (data) => {
+				stderr += data.toString();
+			});
+
+			child.on("error", (error) => {
+				resolve({
+					stdout,
+					stderr: `${stderr}\n${error.message}`,
+					code: 1,
+				});
+			});
+
+			child.on("close", (code) => {
+				resolve({
+					stdout,
+					stderr,
+					code: code ?? 1,
+				});
+			});
+		});
+	}
+
+	private createHookCommandContext(): HookCommandContext {
+		return {
+			exec: (command, args) => this.execHookCommand(command, args),
+			ui: this.hookUiContext ?? this.createHookUiContext(),
+			hasUI: true,
+			cwd: process.cwd(),
+			sessionFile: this.sessionManager.getSessionFile(),
+			isIdle: () => !this.agent.state.isStreaming,
+			abort: () => this.agent.abort(),
+			hasQueuedMessages: () => this.agent.getQueuedMessageCount() > 0,
+			waitForIdle: () => {
+				if (!this.agent.state.isStreaming) {
+					return Promise.resolve();
+				}
+				return new Promise((resolve) => {
+					const unsubscribe = this.agent.subscribe((event) => {
+						if (event.type === "agent_end") {
+							unsubscribe();
+							resolve();
+						}
+					});
+				});
+			},
+		};
+	}
+
+	private buildHookCommandEntries(existingCommands: SlashCommand[]): {
+		entries: CommandEntry[];
+		commands: SlashCommand[];
+	} {
+		const existingNames = new Set(existingCommands.map((cmd) => cmd.name));
+		const entries: CommandEntry[] = [];
+		const commands: SlashCommand[] = [];
+		for (const command of getTypeScriptHookCommands()) {
+			if (existingNames.has(command.name)) {
+				logger.warn("Skipping hook command due to name conflict", {
+					name: command.name,
+				});
+				continue;
+			}
+			const slashCommand: SlashCommand = {
+				name: command.name,
+				description: command.description ?? "Hook command",
+				usage: `/${command.name} [args]`,
+				tags: ["hooks"],
+			};
+			const matches = (input: string) =>
+				input === `/${command.name}` || input.startsWith(`/${command.name} `);
+			const execute = (input: string) => {
+				const argumentText = input
+					.replace(new RegExp(`^/${command.name}\\s*`), "")
+					.trim();
+				const context = this.createCommandContext({
+					command: slashCommand,
+					rawInput: input,
+					argumentText,
+				});
+				if (
+					argumentText === "?" ||
+					argumentText === "--help" ||
+					argumentText === "-h"
+				) {
+					context.renderHelp();
+					return;
+				}
+				const hookContext = this.createHookCommandContext();
+				const result = command.handler(argumentText, hookContext);
+				if (result && typeof (result as Promise<void>).then === "function") {
+					(result as Promise<void>).catch((error) => {
+						context.showError(
+							error instanceof Error ? error.message : String(error),
+						);
+					});
+				}
+			};
+			entries.push({ command: slashCommand, matches, execute });
+			commands.push(slashCommand);
+			existingNames.add(command.name);
+		}
+		return { entries, commands };
+	}
+
 	public refreshFooterHint(): void {
 		const sandboxMode =
 			this.agent.state.sandboxMode ?? process.env.COMPOSER_SANDBOX ?? null;
@@ -1966,28 +2335,43 @@ export class TuiRenderer {
 		if (this.isAgentRunning) {
 			return;
 		}
-		const hints: string[] = [
-			this.idleFooterHint,
-			...this.buildOperationalHints(),
-		];
+		const hints: FooterHint[] = [];
+		const pushHint = (
+			type: FooterHint["type"],
+			message: string,
+			priority: number,
+		): void => {
+			if (message.trim().length === 0) return;
+			hints.push({ type, message, priority });
+		};
+
+		if (this.idleFooterHint) {
+			pushHint("custom", this.idleFooterHint, 20);
+		}
+		for (const hint of this.buildOperationalHints()) {
+			pushHint("custom", hint, 40);
+		}
+		for (const hint of this.getHookStatusHints()) {
+			hints.push(hint);
+		}
 		const activeToast = this.footer.getActiveToast();
 		if (
 			activeToast &&
 			(activeToast.tone === "danger" || activeToast.tone === "warn")
 		) {
-			hints.push(`Alert: ${activeToast.message}`);
+			pushHint("custom", `Alert: ${activeToast.message}`, 160);
 		}
 		if (this.startupWarnings.length > 0) {
-			hints.push(...this.startupWarnings.map((w) => w.message));
+			hints.push(...this.startupWarnings);
 		}
 		if (this.planHint) {
-			hints.push(`Plan ${this.planHint}`);
+			pushHint("plan", `Plan ${this.planHint}`, 120);
 		}
 		const queueHint = this.queueController.buildQueueHint();
 		if (queueHint) {
-			hints.push(queueHint);
+			pushHint("queue", queueHint, 110);
 		}
-		this.footer.setHint(hints.filter(Boolean).join(" • "));
+		this.footer.setHints(hints);
 	}
 
 	private buildOperationalHints(): string[] {
@@ -2009,6 +2393,35 @@ export class TuiRenderer {
 		}
 		if (this.bashModeView?.isActive()) {
 			hints.push("Bash mode active — type exit to leave");
+		}
+		return hints;
+	}
+
+	private sanitizeHookStatusText(text: string): string {
+		return text.replace(/[\r\n\t]+/g, " ");
+	}
+
+	private setHookStatus(key: string, text: string | undefined): void {
+		if (!key) return;
+		if (!text || text.trim().length === 0) {
+			if (this.hookStatusByKey.delete(key)) {
+				this.refreshFooterHint();
+			}
+			return;
+		}
+		const sanitized = this.sanitizeHookStatusText(text);
+		const previous = this.hookStatusByKey.get(key);
+		if (previous === sanitized) {
+			return;
+		}
+		this.hookStatusByKey.set(key, sanitized);
+		this.refreshFooterHint();
+	}
+
+	private getHookStatusHints(): FooterHint[] {
+		const hints: FooterHint[] = [];
+		for (const text of this.hookStatusByKey.values()) {
+			hints.push({ type: "custom", message: text, priority: 130 });
 		}
 		return hints;
 	}
@@ -2138,6 +2551,7 @@ export class TuiRenderer {
 					handleSessionsList: (ctx) =>
 						this.sessionView.handleSessionsCommand(ctx.rawInput),
 					handleBranch: (ctx) => this.branchController.handleBranchCommand(ctx),
+					handleTree: (_ctx) => this.treeSelectorView.show(),
 					handleQueue: (ctx) => {
 						if (this.queuePanelController) {
 							this.queuePanelController.handleQueueCommand(ctx);

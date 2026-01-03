@@ -20,6 +20,9 @@
 			"suspicious": {
 				"noConsole": "off",
 				"noExplicitAny": "warn"
+			},
+			"performance": {
+				"noDelete": "off"
 			}
 		}
 	}

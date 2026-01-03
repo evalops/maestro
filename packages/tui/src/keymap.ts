@@ -149,6 +149,14 @@ export const KittyKeys = {
 
 	// Backspace combinations
 	ALT_BACKSPACE: kittySequence(KITTY_CODEPOINTS.backspace, KITTY_MODIFIERS.alt),
+	SHIFT_CTRL_D: kittySequence(
+		KITTY_CODEPOINTS.d,
+		KITTY_MODIFIERS.shift | KITTY_MODIFIERS.ctrl,
+	),
+	SHIFT_CTRL_O: kittySequence(
+		KITTY_CODEPOINTS.o,
+		KITTY_MODIFIERS.shift | KITTY_MODIFIERS.ctrl,
+	),
 } as const;
 
 // Raw control character codes (for comparison with KittyKeys)
@@ -263,6 +271,58 @@ export function isShiftEnter(data: string): boolean {
  */
 export function isAltEnter(data: string): boolean {
 	return data === KittyKeys.ALT_ENTER;
+}
+
+export function isEnter(data: string): boolean {
+	return data === "\r" || data === "\n";
+}
+
+export function isBackspace(data: string): boolean {
+	return data === "\x7f" || data === "\x08";
+}
+
+export function isDelete(data: string): boolean {
+	return data === AnsiKeys.DELETE;
+}
+
+export function isArrowLeft(data: string): boolean {
+	return data === AnsiKeys.LEFT || data === AnsiKeys.LEFT_SS3;
+}
+
+export function isArrowRight(data: string): boolean {
+	return data === AnsiKeys.RIGHT || data === AnsiKeys.RIGHT_SS3;
+}
+
+export function isArrowUp(data: string): boolean {
+	return data === AnsiKeys.UP || data === AnsiKeys.UP_SS3;
+}
+
+export function isArrowDown(data: string): boolean {
+	return data === AnsiKeys.DOWN || data === AnsiKeys.DOWN_SS3;
+}
+
+export function isCtrlLeft(data: string): boolean {
+	return data === AnsiKeys.CTRL_LEFT || data === AnsiKeys.CTRL_LEFT_ALT;
+}
+
+export function isCtrlRight(data: string): boolean {
+	return data === AnsiKeys.CTRL_RIGHT || data === AnsiKeys.CTRL_RIGHT_ALT;
+}
+
+export function isAltLeft(data: string): boolean {
+	return data === AnsiKeys.ALT_LEFT;
+}
+
+export function isAltRight(data: string): boolean {
+	return data === AnsiKeys.ALT_RIGHT;
+}
+
+export function isShiftCtrlD(data: string): boolean {
+	return data === KittyKeys.SHIFT_CTRL_D;
+}
+
+export function isShiftCtrlO(data: string): boolean {
+	return data === KittyKeys.SHIFT_CTRL_O;
 }
 
 export class Keymap<TContext = unknown> {

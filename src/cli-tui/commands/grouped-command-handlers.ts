@@ -21,6 +21,7 @@ export type GroupedCommandDeps = {
 		handleSessionInfo: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleSessionsList: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleBranch: (ctx: CommandExecutionContext) => void | Promise<void>;
+		handleTree: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleQueue: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleExport: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleShare: (ctx: CommandExecutionContext) => void | Promise<void>;
@@ -127,6 +128,8 @@ export function createGroupedCommandHandlers(
 					deps.session.handleSessionsList(ctx),
 				handleBranch: (ctx: CommandExecutionContext) =>
 					deps.session.handleBranch(ctx),
+				handleTree: (ctx: CommandExecutionContext) =>
+					deps.session.handleTree(ctx),
 				handleQueue: (ctx: CommandExecutionContext) =>
 					deps.session.handleQueue(ctx),
 				handleExport: (ctx: CommandExecutionContext) =>

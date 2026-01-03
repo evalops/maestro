@@ -66,6 +66,45 @@ async function writeFileAtomically(
 
 /** Diff support lives in diff-utils for reuse */
 
+type LineEnding = "\n" | "\r\n" | "\r";
+
+type NormalizedDocument = {
+	original: string;
+	normalized: string;
+	bom: string;
+	lineEnding: LineEnding;
+};
+
+function detectLineEnding(text: string): LineEnding {
+	if (text.includes("\r\n")) return "\r\n";
+	if (text.includes("\r")) return "\r";
+	return "\n";
+}
+
+function normalizeDocument(content: string): NormalizedDocument {
+	const bom = content.startsWith("\uFEFF") ? "\uFEFF" : "";
+	const withoutBom = bom ? content.slice(1) : content;
+	const lineEnding = detectLineEnding(withoutBom);
+	const normalized = withoutBom.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	return { original: content, normalized, bom, lineEnding };
+}
+
+function normalizeEditText(text: string | undefined): string | undefined {
+	if (text === undefined) return undefined;
+	return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function restoreDocumentContent(
+	normalized: string,
+	document: NormalizedDocument,
+): string {
+	const restored =
+		document.lineEnding === "\n"
+			? normalized
+			: normalized.replace(/\n/g, document.lineEnding);
+	return `${document.bom}${restored}`;
+}
+
 const editOperationSchema = Type.Object({
 	oldText: Type.String({
 		description: "Exact text to find and replace",
@@ -202,14 +241,26 @@ If "not found", read file to check actual content.`,
 			);
 		}
 
+		if (replaceAll && occurrence !== 1) {
+			throw new Error("Cannot use both replaceAll and occurrence.");
+		}
+
+		const normalizedOldText = normalizeEditText(oldText);
+		const normalizedNewText = normalizeEditText(newText);
+		const normalizedEdits = edits?.map((edit) => ({
+			...edit,
+			oldText: normalizeEditText(edit.oldText) ?? "",
+			newText: normalizeEditText(edit.newText),
+		}));
+
 		// Helper to apply edits to content (shared between sandbox and normal mode)
 		const applyEdits = (
 			originalContent: string,
 		): { newContent: string; replacementCount: number } => {
-			if (hasMultiEdit && edits) {
+			if (hasMultiEdit && normalizedEdits) {
 				let content = originalContent;
 				let editsApplied = 0;
-				for (const [index, edit] of edits.entries()) {
+				for (const [index, edit] of normalizedEdits.entries()) {
 					const matches = findExactMatches(content, edit.oldText);
 					if (matches.length === 0) {
 						const approx = findApproximateMatches(content, edit.oldText);
@@ -235,12 +286,15 @@ If "not found", read file to check actual content.`,
 				return { newContent: content, replacementCount: editsApplied };
 			}
 			// Single edit mode
-			if (!oldText || oldText.length === 0) {
+			if (!normalizedOldText || normalizedOldText.length === 0) {
 				throw new Error("oldText cannot be empty");
 			}
-			const exactMatches = findExactMatches(originalContent, oldText);
+			const exactMatches = findExactMatches(originalContent, normalizedOldText);
 			if (exactMatches.length === 0) {
-				const approx = findApproximateMatches(originalContent, oldText);
+				const approx = findApproximateMatches(
+					originalContent,
+					normalizedOldText,
+				);
 				const suggestion = approx.length
 					? `\n\nPossible matches:\n${approx.slice(0, 3).map(formatMatchPreview).join("\n")}`
 					: `\n\nTip: double-check whitespace/newlines via /diff ${path}`;
@@ -255,7 +309,10 @@ If "not found", read file to check actual content.`,
 					);
 				}
 				return {
-					newContent: originalContent.replaceAll(oldText, newText ?? ""),
+					newContent: originalContent.replaceAll(
+						normalizedOldText,
+						normalizedNewText ?? "",
+					),
 					replacementCount: exactMatches.length,
 				};
 			}
@@ -269,8 +326,8 @@ If "not found", read file to check actual content.`,
 			return {
 				newContent:
 					originalContent.slice(0, matchIndex) +
-					(newText ?? "") +
-					originalContent.slice(matchIndex + oldText.length),
+					(normalizedNewText ?? "") +
+					originalContent.slice(matchIndex + normalizedOldText.length),
 				replacementCount: 1,
 			};
 		};
@@ -283,7 +340,13 @@ If "not found", read file to check actual content.`,
 					throw new Error(`File not found in sandbox: ${path}`);
 				}
 				const originalContent = await sandbox.readFile(path);
-				const { newContent, replacementCount } = applyEdits(originalContent);
+				const document = normalizeDocument(originalContent);
+				const { newContent: normalizedNewContent, replacementCount } =
+					applyEdits(document.normalized);
+				const newContent = restoreDocumentContent(
+					normalizedNewContent,
+					document,
+				);
 				const diff = generateDiffString(originalContent, newContent);
 
 				if (!dryRun) {
@@ -319,92 +382,11 @@ If "not found", read file to check actual content.`,
 		throwIfAborted();
 		const originalContent = await readFile(absolutePath, "utf-8");
 		throwIfAborted();
-
-		let newContent: string;
-		let replacementCount: number;
-
-		if (hasMultiEdit) {
-			// Multi-edit mode: apply edits sequentially
-			let content = originalContent;
-			let editsApplied = 0;
-
-			for (const [index, edit] of edits.entries()) {
-				const matches = findExactMatches(content, edit.oldText);
-				if (matches.length === 0) {
-					const approx = findApproximateMatches(content, edit.oldText);
-					const suggestion = approx.length
-						? `\n\nPossible matches:\n${approx.slice(0, 3).map(formatMatchPreview).join("\n")}`
-						: "";
-					throw new Error(
-						`Edit #${index + 1}: Could not find text after ${editsApplied} prior edit(s).${suggestion}`,
-					);
-				}
-				if (matches.length > 1) {
-					throw new Error(
-						`Edit #${index + 1}: Found ${matches.length} matches for oldText. Provide more context to uniquely identify the target. Matches at lines: ${matches.map((m) => m.line).join(", ")}`,
-					);
-				}
-				const matchIndex = matches[0]?.index ?? 0;
-
-				content =
-					content.slice(0, matchIndex) +
-					(edit.newText ?? "") +
-					content.slice(matchIndex + edit.oldText.length);
-				editsApplied++;
-				throwIfAborted();
-			}
-
-			newContent = content;
-			replacementCount = editsApplied;
-		} else {
-			// Single edit mode (original behavior)
-			if (!oldText || oldText.length === 0) {
-				throw new Error("oldText cannot be empty");
-			}
-
-			if (replaceAll && occurrence !== 1) {
-				throw new Error(
-					"Cannot use both replaceAll and occurrence parameters.",
-				);
-			}
-
-			const exactMatches = findExactMatches(originalContent, oldText);
-			if (exactMatches.length === 0) {
-				const approx = findApproximateMatches(originalContent, oldText);
-				const suggestion = approx.length
-					? `\n\nPossible matches:\n${approx.slice(0, 3).map(formatMatchPreview).join("\n")}`
-					: `\n\nTip: double-check whitespace/newlines via /diff ${path}`;
-				throw new Error(
-					`Could not find the exact text in ${path}.${suggestion}`,
-				);
-			}
-
-			const MAX_REPLACEMENTS = 10000;
-
-			if (replaceAll) {
-				if (exactMatches.length > MAX_REPLACEMENTS) {
-					throw new Error(
-						`Too many replacements: ${exactMatches.length} (max ${MAX_REPLACEMENTS}).`,
-					);
-				}
-				newContent = originalContent.replaceAll(oldText, newText ?? "");
-				replacementCount = exactMatches.length;
-			} else {
-				if (occurrence > exactMatches.length) {
-					throw new Error(
-						`Only ${exactMatches.length} occurrence(s) found, but #${occurrence} requested.`,
-					);
-				}
-				const targetMatch = exactMatches[occurrence - 1];
-				const matchIndex = targetMatch.index ?? 0;
-				newContent =
-					originalContent.slice(0, matchIndex) +
-					(newText ?? "") +
-					originalContent.slice(matchIndex + oldText.length);
-				replacementCount = 1;
-			}
-		}
-
+		const document = normalizeDocument(originalContent);
+		const { newContent: normalizedNewContent, replacementCount } = applyEdits(
+			document.normalized,
+		);
+		const newContent = restoreDocumentContent(normalizedNewContent, document);
 		const diff = generateDiffString(originalContent, newContent);
 
 		if (dryRun) {

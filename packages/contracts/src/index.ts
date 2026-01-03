@@ -385,6 +385,13 @@ export type ComposerAgentEvent =
 			args: Record<string, unknown>;
 	  }
 	| {
+			type: "tool_execution_update";
+			toolCallId: string;
+			toolName: string;
+			args: Record<string, unknown>;
+			partialResult: unknown;
+	  }
+	| {
 			type: "tool_execution_end";
 			toolCallId: string;
 			toolName: string;

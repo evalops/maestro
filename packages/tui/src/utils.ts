@@ -5,11 +5,19 @@ const ANSI_ESCAPE_PATTERN = new RegExp(
 	`${String.fromCharCode(27)}\\[[0-9;?]*[ -\\/]*[@-~]`,
 	"y",
 );
+const OSC_8_HYPERLINK_PATTERN = new RegExp(
+	`${String.fromCharCode(27)}\\]8;;.*?(?:${String.fromCharCode(7)}|${String.fromCharCode(27)}\\\\)`,
+	"g",
+);
 
 // Grapheme segmenter for proper Unicode iteration (handles emojis, ZWJ sequences, etc.)
 const graphemeSegmenter = new Intl.Segmenter(undefined, {
 	granularity: "grapheme",
 });
+
+export function getSegmenter(): Intl.Segmenter {
+	return graphemeSegmenter;
+}
 
 /**
  * Track active ANSI SGR codes to preserve styling across line breaks.
@@ -223,7 +231,10 @@ class AnsiCodeTracker {
  */
 export function visibleWidth(str: string): number {
 	// Replace tabs with 3 spaces before measuring
-	const normalized = str.replace(/\t/g, "   ");
+	const normalized = str
+		.replace(/\t/g, "   ")
+		// Strip OSC 8 hyperlinks to avoid inflated widths for clickable links.
+		.replace(OSC_8_HYPERLINK_PATTERN, "");
 	return stringWidth(normalized);
 }
 
@@ -367,6 +378,197 @@ export function wrapAnsiLines(lines: string[], width: number): string[] {
 	return wrapped;
 }
 
+function updateTrackerFromText(text: string, tracker: AnsiCodeTracker): void {
+	let i = 0;
+	while (i < text.length) {
+		const ansiResult = extractAnsiCode(text, i);
+		if (ansiResult) {
+			tracker.process(ansiResult.code);
+			i += ansiResult.length;
+		} else {
+			i++;
+		}
+	}
+}
+
+function splitIntoTokensWithAnsi(text: string): string[] {
+	const tokens: string[] = [];
+	let current = "";
+	let pendingAnsi = "";
+	let i = 0;
+	let inWhitespace = false;
+
+	while (i < text.length) {
+		const ansiResult = extractAnsiCode(text, i);
+		if (ansiResult) {
+			pendingAnsi += ansiResult.code;
+			i += ansiResult.length;
+			continue;
+		}
+
+		const char = text[i] ?? "";
+		const charIsSpace = isWhitespaceChar(char);
+
+		if (current.length > 0 && charIsSpace !== inWhitespace) {
+			tokens.push(current);
+			current = pendingAnsi + char;
+			pendingAnsi = "";
+		} else {
+			current += pendingAnsi + char;
+			pendingAnsi = "";
+		}
+
+		inWhitespace = charIsSpace;
+		i++;
+	}
+
+	if (pendingAnsi) {
+		current += pendingAnsi;
+	}
+
+	if (current) {
+		tokens.push(current);
+	}
+
+	return tokens;
+}
+
+function breakLongWord(
+	word: string,
+	width: number,
+	tracker: AnsiCodeTracker,
+): string[] {
+	const lines: string[] = [];
+	let currentLine = tracker.getActiveCodes();
+	let currentWidth = 0;
+
+	let i = 0;
+	const segments: Array<{ type: "ansi" | "grapheme"; value: string }> = [];
+
+	while (i < word.length) {
+		const ansiResult = extractAnsiCode(word, i);
+		if (ansiResult) {
+			segments.push({ type: "ansi", value: ansiResult.code });
+			i += ansiResult.length;
+		} else {
+			let end = i;
+			while (end < word.length) {
+				const nextAnsi = extractAnsiCode(word, end);
+				if (nextAnsi) break;
+				end++;
+			}
+			const textPortion = word.slice(i, end);
+			for (const seg of graphemeSegmenter.segment(textPortion)) {
+				segments.push({ type: "grapheme", value: seg.segment });
+			}
+			i = end;
+		}
+	}
+
+	for (const seg of segments) {
+		if (seg.type === "ansi") {
+			currentLine += seg.value;
+			tracker.process(seg.value);
+			continue;
+		}
+
+		const grapheme = seg.value;
+		const graphemeWidth = visibleWidth(grapheme);
+		if (currentWidth + graphemeWidth > width && currentWidth > 0) {
+			lines.push(currentLine + ANSI_ESCAPE_RESET);
+			currentLine = tracker.getActiveCodes();
+			currentWidth = 0;
+		}
+
+		currentLine += grapheme;
+		currentWidth += graphemeWidth;
+	}
+
+	if (currentLine) {
+		lines.push(currentLine);
+	}
+
+	return lines;
+}
+
+function wrapSingleLine(line: string, width: number): string[] {
+	if (!line) {
+		return [""];
+	}
+
+	const visibleLength = visibleWidth(line);
+	if (visibleLength <= width) {
+		return [line];
+	}
+
+	const wrapped: string[] = [];
+	const tracker = new AnsiCodeTracker();
+	const tokens = splitIntoTokensWithAnsi(line);
+
+	let currentLine = "";
+	let currentVisibleLength = 0;
+
+	for (const token of tokens) {
+		const tokenVisibleLength = visibleWidth(token);
+
+		if (tokenVisibleLength > width) {
+			if (currentLine) {
+				wrapped.push(currentLine + ANSI_ESCAPE_RESET);
+				currentLine = tracker.getActiveCodes();
+				currentVisibleLength = 0;
+			}
+
+			const broken = breakLongWord(token, width, tracker);
+			if (broken.length > 0) {
+				for (let i = 0; i < broken.length - 1; i++) {
+					wrapped.push(broken[i] ?? "");
+				}
+				currentLine = broken[broken.length - 1] ?? tracker.getActiveCodes();
+				currentVisibleLength = visibleWidth(currentLine);
+			}
+			updateTrackerFromText(token, tracker);
+			continue;
+		}
+
+		if (
+			currentVisibleLength + tokenVisibleLength > width &&
+			currentLine.trim()
+		) {
+			wrapped.push(currentLine + ANSI_ESCAPE_RESET);
+			currentLine = tracker.getActiveCodes();
+			currentVisibleLength = 0;
+		}
+
+		currentLine += token;
+		currentVisibleLength += tokenVisibleLength;
+		updateTrackerFromText(token, tracker);
+	}
+
+	if (currentLine) {
+		wrapped.push(currentLine);
+	}
+
+	return wrapped.length > 0 ? wrapped : [""];
+}
+
+export function wrapTextWithAnsi(text: string, width: number): string[] {
+	if (!text) {
+		return [""];
+	}
+
+	const inputLines = text.split("\n");
+	const result: string[] = [];
+	const tracker = new AnsiCodeTracker();
+
+	for (const inputLine of inputLines) {
+		const prefix = result.length > 0 ? tracker.getActiveCodes() : "";
+		result.push(...wrapSingleLine(prefix + inputLine, width));
+		updateTrackerFromText(inputLine, tracker);
+	}
+
+	return result.length > 0 ? result : [""];
+}
+
 /**
  * Truncate a line to fit within the given width, preserving ANSI styling.
  * Adds an ellipsis at the end if truncation occurs.
@@ -412,4 +614,14 @@ export function truncateToWidth(line: string, width: number): string {
 	}
 
 	return result;
+}
+
+const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
+
+export function isWhitespaceChar(char: string): boolean {
+	return /\s/.test(char);
+}
+
+export function isPunctuationChar(char: string): boolean {
+	return PUNCTUATION_REGEX.test(char);
 }

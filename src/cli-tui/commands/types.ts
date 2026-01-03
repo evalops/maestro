@@ -60,6 +60,7 @@ export interface CommandHandlers {
 	compactTools(context: CommandExecutionContext): void;
 	queue(context: CommandExecutionContext): Promise<void> | void;
 	branch(context: CommandExecutionContext): void;
+	tree(context: CommandExecutionContext): void;
 	quit(context: CommandExecutionContext): void;
 	approvals(context: CommandExecutionContext): void;
 	planMode(context: CommandExecutionContext): void;

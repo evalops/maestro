@@ -2,6 +2,7 @@
  * Minimal TUI implementation with differential rendering
  */
 import { performance } from "node:perf_hooks";
+import { isShiftCtrlD } from "./keymap.js";
 import type { Terminal } from "./terminal.js";
 import { truncateToWidth, visibleWidth, wrapAnsiLines } from "./utils.js";
 import {
@@ -168,6 +169,9 @@ export class TUI extends Container {
 
 	/** Currently focused component that receives keyboard input. */
 	private focusedComponent: Component | null = null;
+
+	/** Global callback for debug key (Shift+Ctrl+D). */
+	public onDebug?: () => void;
 
 	/** Flag to coalesce multiple render requests into one. */
 	private renderRequested = false;
@@ -486,6 +490,10 @@ export class TUI extends Container {
 	}
 
 	private handleInput(data: string): void {
+		if (isShiftCtrlD(data) && this.onDebug) {
+			this.onDebug();
+			return;
+		}
 		// Global interrupt path: Ctrl+C or bare Esc should always have an effect.
 		if ((data === "\u0003" || data === "\u001b") && this.interruptHandler) {
 			this.interruptHandler();

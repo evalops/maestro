@@ -233,6 +233,8 @@ Environment overrides:
 1. **Anthropic**: Claude Pro/Max subscriptions
 2. **OpenAI**: ChatGPT Plus subscriptions
 3. **GitHub Copilot**: GitHub Copilot subscriptions
+4. **Google Gemini CLI**: Cloud Code Assist OAuth
+5. **Google Antigravity**: Antigravity sandbox OAuth
 
 ### Credential Storage
 

@@ -1990,6 +1990,18 @@ export class ComposerChat extends LitElement {
 						break;
 					}
 
+					case "tool_execution_update": {
+						const toolInfo = activeTools.get(agentEvent.toolCallId);
+						if (toolInfo && assistantMessage.tools) {
+							const tool = assistantMessage.tools[
+								toolInfo.index
+							] as ExtendedToolCall;
+							tool.result = agentEvent.partialResult;
+							this.messages = [...this.messages];
+						}
+						break;
+					}
+
 					case "tool_execution_end": {
 						// Update tool with result
 						const completedTool = activeTools.get(agentEvent.toolCallId);

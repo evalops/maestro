@@ -134,8 +134,10 @@ import {
 } from "./hooks/notification-hooks.js";
 import {
 	discoverAndLoadTypeScriptHooks,
+	setGlobalAppendEntryHandler,
 	setGlobalCwd,
 	setGlobalSendHandler,
+	setGlobalSendMessageHandler,
 } from "./hooks/typescript-loader.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
@@ -648,10 +650,14 @@ async function runRpcMode(
 					timestamp: Date.now(),
 				};
 
+				const sessionContext = sessionManager.buildSessionContext();
+				const firstKeptEntryId = sessionContext.messageEntries[boundary]?.id;
+
 				// Save compaction to session
 				sessionManager.saveCompaction(summaryText, boundary, tokensBefore, {
 					auto: false,
 					customInstructions,
+					firstKeptEntryId,
 				});
 
 				// Update agent messages
@@ -887,10 +893,16 @@ export async function main(args: string[]) {
 			chalk.red(`Error: No credentials found for provider "${providerName}"`),
 		);
 		if (authMode !== "api-key") {
+			const loginHint =
+				providerName === "anthropic"
+					? 'Run "composer anthropic login" (claude) or use /login to authenticate before retrying.'
+					: providerName === "openai"
+						? 'Run "composer openai login" or use /login to authenticate before retrying.'
+						: 'Run "/login" to authenticate before retrying.';
 			push(
-				'Run "composer anthropic login" (claude) or provide an API key for the selected provider before retrying.',
+				`${loginHint} Or provide an API key for the selected provider.`,
 				chalk.dim(
-					'Run "composer anthropic login" (claude) or provide an API key for the selected provider before retrying.',
+					`${loginHint} Or provide an API key for the selected provider.`,
 				),
 			);
 		}
@@ -1598,6 +1610,53 @@ export async function main(args: string[]) {
 			void agent.prompt(text, attachments);
 		}
 	});
+	setGlobalSendMessageHandler((message, triggerTurn) => {
+		const hookMessage = {
+			role: "hookMessage" as const,
+			customType: message.customType,
+			content: message.content,
+			display: message.display,
+			details: message.details,
+			timestamp: Date.now(),
+		};
+		const manager = sessionManager as SessionManager & {
+			appendCustomMessageEntry?: (
+				customType: string,
+				content:
+					| string
+					| { type: string; text?: string; data?: string; mimeType?: string }[],
+				display: boolean,
+				details?: unknown,
+			) => void;
+		};
+		manager.appendCustomMessageEntry?.(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+		);
+		if (agent.state.isStreaming) {
+			// Queue for next turn; triggerTurn is ignored while streaming
+			void agent.queueMessage(hookMessage);
+			return;
+		}
+		agent.injectMessage(hookMessage);
+		if (triggerTurn) {
+			void agent.continue();
+		}
+	});
+	setGlobalAppendEntryHandler((customType, data) => {
+		const manager = sessionManager as SessionManager & {
+			appendCustomEntry?: (type: string, payload?: unknown) => void;
+		};
+		if (manager.appendCustomEntry) {
+			manager.appendCustomEntry(customType, data);
+		} else {
+			console.warn(
+				`[hooks] appendEntry(${customType}) ignored (session manager does not support custom entries yet)`,
+			);
+		}
+	});
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 12: MCP (Model Context Protocol) Integration
@@ -2019,9 +2078,13 @@ export async function main(args: string[]) {
 					timestamp: Date.now(),
 				};
 
+				const sessionContext = sessionManager.buildSessionContext();
+				const firstKeptEntryId = sessionContext.messageEntries[boundary]?.id;
+
 				// Save compaction
 				sessionManager.saveCompaction(summaryText, boundary, tokensBefore, {
 					auto: true,
+					firstKeptEntryId,
 				});
 
 				// Update agent messages

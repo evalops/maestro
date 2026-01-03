@@ -1,70 +1,12 @@
 /**
  * Session Manager - Conversation Persistence and Recovery
  *
- * This module manages session state persistence for the Composer CLI, enabling
- * users to continue conversations across restarts, branch from previous points,
- * and maintain conversation history for auditing and review.
+ * Sessions are stored as JSONL (JSON Lines) files. Each entry is append-only and
+ * may include tree metadata (id/parentId) to support branching and navigation.
  *
- * ## Storage Architecture
- *
- * Sessions are stored as JSONL (JSON Lines) files in a user-specific directory:
- *
- * ```
- * ~/.composer/agent/sessions/
- * └── --home-user-projects-myapp--/
- *     ├── 2024-01-15T10-30-00-000Z_uuid1.jsonl
- *     ├── 2024-01-15T14-45-00-000Z_uuid2.jsonl
- *     └── ...
- * ```
- *
- * The directory structure uses a sanitized version of the working directory
- * to separate sessions by project. This allows different projects to have
- * independent session histories.
- *
- * ## JSONL Format
- *
- * Each line in a session file is a JSON object representing an entry:
- *
- * ```jsonl
- * {"type":"session","id":"uuid","timestamp":"...","cwd":"/path/to/project","model":"anthropic/claude-opus-4-5-20251101"}
- * {"type":"message","timestamp":"...","message":{"role":"user","content":"Hello"}}
- * {"type":"message","timestamp":"...","message":{"role":"assistant","content":[...]}}
- * {"type":"thinking_level_change","timestamp":"...","thinkingLevel":"high"}
- * {"type":"model_change","timestamp":"...","model":"openai/gpt-4o"}
- * {"type":"session_meta","timestamp":"...","summary":"Discussed project setup","favorite":true}
- * ```
- *
- * ## Entry Types
- *
- * | Type                   | Purpose                                          |
- * |------------------------|--------------------------------------------------|
- * | session                | Session header with ID, cwd, model, tools        |
- * | message                | User or assistant message                        |
- * | thinking_level_change  | Record when thinking level is changed            |
- * | model_change           | Record when model is switched                    |
- * | session_meta           | Metadata: summary, title, tags, favorite flag    |
- *
- * ## Lazy Initialization
- *
- * Sessions are not initialized until the first message exchange completes.
- * This prevents creating empty session files when users immediately exit
- * or encounter errors. Messages are queued in memory until initialization.
- *
- * ## Buffered Writing
- *
- * Writes are batched for performance using `SessionFileWriter`. The buffer
- * is flushed:
- * - When batch size is reached (configurable)
- * - On explicit flush() calls
- * - On process exit (SIGINT, SIGTERM, beforeExit, uncaughtException)
- *
- * ## Metadata Caching
- *
- * `SessionMetadataCache` tracks the current model and thinking level without
- * re-reading the entire session file. This is updated as entries are written
- * and seeded from existing files when resuming sessions.
- *
- * @module session/manager
+ * Tree entries form a conversation tree where the "leaf" pointer tracks the
+ * active branch. The session file is append-only; branching updates the leaf
+ * pointer without modifying history.
  */
 
 import {
@@ -77,13 +19,21 @@ import {
 	renameSync,
 	statSync,
 	unlinkSync,
+	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { v4 as uuidv4 } from "uuid";
+import {
+	createBranchSummaryMessage,
+	createCompactionSummaryMessage,
+	createHookMessage,
+} from "../agent/custom-messages.js";
 import type {
 	AgentState,
 	AppMessage,
 	Attachment,
+	ImageContent,
+	TextContent,
 	UserMessageWithAttachments,
 } from "../agent/types.js";
 import { getAgentDir } from "../config/constants.js";
@@ -102,7 +52,12 @@ import {
 } from "./metadata-cache.js";
 import {
 	type AttachmentExtractedEntry,
+	type BranchSummaryEntry,
+	CURRENT_SESSION_VERSION,
 	type CompactionEntry,
+	type CustomEntry,
+	type CustomMessageEntry,
+	type LabelEntry,
 	type ModelChangeEntry,
 	type SessionEntry,
 	type SessionHeaderEntry,
@@ -110,7 +65,10 @@ import {
 	type SessionMetaEntry,
 	type SessionMetadata,
 	type SessionSummary,
+	type SessionTreeEntry,
+	type SessionTreeNode,
 	type ThinkingLevelChangeEntry,
+	isSessionTreeEntry,
 	tryParseSessionEntry,
 } from "./types.js";
 
@@ -127,6 +85,14 @@ interface SessionFileInfo {
 	favorite: boolean;
 	firstMessage: string;
 	allMessagesText: string;
+}
+
+interface SessionContextSnapshot {
+	messages: AppMessage[];
+	messageEntries: SessionTreeEntry[];
+	thinkingLevel: string;
+	model: string | null;
+	modelMetadata?: SessionModelMetadata;
 }
 
 function isMessageWithAttachments(
@@ -165,6 +131,42 @@ function applyAttachmentExtracts(
 	return { ...message, attachments: nextAttachments };
 }
 
+function extractTextFromContent(
+	content: string | { type: string; text?: string }[],
+): string {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content
+			.filter(
+				(block) => block.type === "text" && typeof block.text === "string",
+			)
+			.map((block) => block.text)
+			.join(" ");
+	}
+	return "";
+}
+
+function isLikelyCompactionSummary(message: AppMessage): boolean {
+	if (message.role !== "assistant") return false;
+	const text = extractTextFromContent(message.content).trim();
+	if (!text) return false;
+	return (
+		text.includes("Another language model started to solve this problem") ||
+		text.includes("(Compacted") ||
+		text.includes("_Local summary of prior discussion")
+	);
+}
+
+function generateEntryId(existing: { has(id: string): boolean }): string {
+	for (let i = 0; i < 100; i++) {
+		const id = uuidv4().slice(0, 8);
+		if (!existing.has(id)) {
+			return id;
+		}
+	}
+	return uuidv4();
+}
+
 function readSessionEntries(filePath: string): SessionEntry[] {
 	if (!existsSync(filePath)) {
 		return [];
@@ -196,6 +198,215 @@ function safeReadSessionEntries(
 	}
 }
 
+// Mutates entries in place to upgrade legacy session files.
+function migrateV1ToV2(entries: SessionEntry[]): void {
+	const ids = new Set<string>();
+	let prevId: string | null = null;
+	const messageEntries: SessionMessageEntry[] = [];
+
+	for (const entry of entries) {
+		if (entry.type === "session") {
+			entry.version = CURRENT_SESSION_VERSION;
+			continue;
+		}
+		if (!isSessionTreeEntry(entry)) {
+			continue;
+		}
+		if (!entry.id || ids.has(entry.id)) {
+			entry.id = generateEntryId(ids);
+		}
+		ids.add(entry.id);
+		entry.parentId = prevId;
+		prevId = entry.id;
+		if (entry.type === "message") {
+			messageEntries.push(entry);
+		}
+	}
+
+	for (const entry of entries) {
+		if (entry.type !== "compaction") continue;
+		const compaction = entry as CompactionEntry & {
+			firstKeptEntryIndex?: number;
+		};
+		if (
+			typeof compaction.firstKeptEntryIndex === "number" &&
+			!compaction.firstKeptEntryId
+		) {
+			const target = messageEntries[compaction.firstKeptEntryIndex];
+			const fallback = messageEntries[0]?.id ?? compaction.id;
+			compaction.firstKeptEntryId = target?.id ?? fallback;
+		}
+		delete compaction.firstKeptEntryIndex;
+	}
+}
+
+function migrateToCurrentVersion(entries: SessionEntry[]): boolean {
+	const header = entries.find((e) => e.type === "session") as
+		| SessionHeaderEntry
+		| undefined;
+	const version = header?.version ?? 1;
+	if (version >= CURRENT_SESSION_VERSION) return false;
+
+	if (version < 2) {
+		migrateV1ToV2(entries);
+	}
+
+	return true;
+}
+
+function buildSessionContextFromEntries(
+	entries: SessionEntry[],
+	options?: {
+		leafId?: string | null;
+		byId?: Map<string, SessionTreeEntry>;
+		header?: SessionHeaderEntry | null;
+	},
+): SessionContextSnapshot {
+	const treeEntries = entries.filter(isSessionTreeEntry);
+	const byId = options?.byId ?? new Map<string, SessionTreeEntry>();
+	if (!options?.byId) {
+		for (const entry of treeEntries) {
+			byId.set(entry.id, entry);
+		}
+	}
+
+	const header =
+		options?.header ??
+		(entries.find((e) => e.type === "session") as SessionHeaderEntry | null);
+	let thinkingLevel = header?.thinkingLevel ?? "off";
+	let model = header?.model ?? null;
+	let modelMetadata = header?.modelMetadata;
+
+	if (options?.leafId === null) {
+		return {
+			messages: [],
+			messageEntries: [],
+			thinkingLevel,
+			model,
+			modelMetadata,
+		};
+	}
+
+	let leaf: SessionTreeEntry | undefined;
+	if (options?.leafId) {
+		leaf = byId.get(options.leafId);
+	}
+	if (!leaf) {
+		leaf = treeEntries[treeEntries.length - 1];
+	}
+
+	if (!leaf) {
+		return {
+			messages: [],
+			messageEntries: [],
+			thinkingLevel,
+			model,
+			modelMetadata,
+		};
+	}
+
+	const path: SessionTreeEntry[] = [];
+	let current: SessionTreeEntry | undefined = leaf;
+	while (current) {
+		path.unshift(current);
+		current = current.parentId ? byId.get(current.parentId) : undefined;
+	}
+
+	let compaction: CompactionEntry | null = null;
+	for (const entry of path) {
+		if (entry.type === "thinking_level_change") {
+			thinkingLevel = entry.thinkingLevel;
+		} else if (entry.type === "model_change") {
+			model = entry.model;
+			if (entry.modelMetadata) {
+				modelMetadata = entry.modelMetadata;
+			}
+		} else if (entry.type === "message" && entry.message.role === "assistant") {
+			model = `${entry.message.provider}/${entry.message.model}`;
+		} else if (entry.type === "compaction") {
+			compaction = entry;
+		}
+	}
+
+	const messages: AppMessage[] = [];
+	const messageEntries: SessionTreeEntry[] = [];
+
+	const appendMessage = (entry: SessionTreeEntry) => {
+		if (entry.type === "message") {
+			messages.push(entry.message);
+			messageEntries.push(entry);
+			return;
+		}
+		if (entry.type === "custom_message") {
+			messages.push(
+				createHookMessage(
+					entry.customType,
+					entry.content,
+					entry.display,
+					entry.details,
+					entry.timestamp,
+				),
+			);
+			messageEntries.push(entry);
+			return;
+		}
+		if (entry.type === "branch_summary" && entry.summary) {
+			messages.push(
+				createBranchSummaryMessage(
+					entry.summary,
+					entry.fromId,
+					entry.timestamp,
+				),
+			);
+			messageEntries.push(entry);
+		}
+	};
+
+	if (compaction) {
+		const compactionIdx = path.findIndex(
+			(entry) => entry.type === "compaction" && entry.id === compaction.id,
+		);
+		const hasStoredSummary = path
+			.slice(compactionIdx + 1)
+			.some(
+				(entry) =>
+					entry.type === "message" && isLikelyCompactionSummary(entry.message),
+			);
+
+		if (!hasStoredSummary) {
+			messages.push(
+				createCompactionSummaryMessage(
+					compaction.summary,
+					compaction.tokensBefore,
+					compaction.timestamp,
+				),
+			);
+			messageEntries.push(compaction);
+		}
+
+		let foundFirstKept = false;
+		for (let i = 0; i < compactionIdx; i++) {
+			const entry = path[i];
+			if (entry.id === compaction.firstKeptEntryId) {
+				foundFirstKept = true;
+			}
+			if (foundFirstKept) {
+				appendMessage(entry);
+			}
+		}
+
+		for (let i = compactionIdx + 1; i < path.length; i++) {
+			appendMessage(path[i]);
+		}
+	} else {
+		for (const entry of path) {
+			appendMessage(entry);
+		}
+	}
+
+	return { messages, messageEntries, thinkingLevel, model, modelMetadata };
+}
+
 function buildSessionFileInfo(
 	entries: SessionEntry[],
 	stats: Stats,
@@ -203,15 +414,14 @@ function buildSessionFileInfo(
 	if (entries.length === 0) {
 		return null;
 	}
+	migrateToCurrentVersion(entries);
 
 	let sessionId = "";
 	let created = stats.birthtime;
-	let messageCount = 0;
 	let summary: string | undefined;
 	let title: string | undefined;
 	let tags: string[] | undefined;
 	let favorite = false;
-	const appMessages: AppMessage[] = [];
 	const extractedById = new Map<string, string>();
 
 	for (const entry of entries) {
@@ -225,12 +435,6 @@ function buildSessionFileInfo(
 			case "attachment_extract":
 				if (entry.attachmentId && entry.extractedText) {
 					extractedById.set(entry.attachmentId, entry.extractedText);
-				}
-				break;
-			case "message":
-				if (entry.message) {
-					messageCount++;
-					appMessages.push(entry.message as AppMessage);
 				}
 				break;
 			case "session_meta":
@@ -252,11 +456,16 @@ function buildSessionFileInfo(
 		}
 	}
 
+	const context = buildSessionContextFromEntries(entries);
+	const messageCount = entries.filter(
+		(entry) => entry.type === "message",
+	).length;
+
 	const normalizedMessages = extractedById.size
-		? appMessages.map((message) =>
+		? context.messages.map((message) =>
 				applyAttachmentExtracts(message, extractedById),
 			)
-		: appMessages;
+		: context.messages;
 
 	const renderables = buildConversationModel(normalizedMessages);
 	const firstRenderableUser = renderables.find((renderable) =>
@@ -289,17 +498,15 @@ export type { SessionModelMetadata } from "./metadata-cache.js";
 
 export type {
 	AttachmentExtractedEntry,
+	BranchSummaryEntry,
 	CompactionEntry,
 	SessionHeaderEntry,
 	SessionMessageEntry,
 	SessionMetaEntry,
 	SessionToolInfo,
+	SessionTreeEntry,
+	SessionTreeNode,
 } from "./types.js";
-
-type PendingSessionEntry =
-	| SessionMessageEntry
-	| ThinkingLevelChangeEntry
-	| ModelChangeEntry;
 
 export function toSessionModelMetadata(
 	model: RegisteredModel,
@@ -329,43 +536,6 @@ function findRegisteredModel(modelKey: string): RegisteredModel | undefined {
 
 /**
  * Main session management class.
- *
- * Handles all aspects of session lifecycle:
- * - Creating new sessions
- * - Continuing/resuming existing sessions
- * - Saving messages and state changes
- * - Loading session history
- * - Session branching for "undo" functionality
- * - Session metadata (favorites, tags, summaries)
- *
- * ## Usage
- *
- * ```typescript
- * // Create new session
- * const manager = new SessionManager();
- *
- * // Continue most recent session
- * const manager = new SessionManager(true);
- *
- * // Load specific session
- * const manager = new SessionManager(false, "/path/to/session.jsonl");
- *
- * // Save messages as they're exchanged
- * manager.saveMessage(userMessage);
- * manager.saveMessage(assistantMessage);
- *
- * // Initialize session after first exchange
- * if (manager.shouldInitializeSession(messages)) {
- *   manager.startSession(agentState);
- * }
- * ```
- *
- * ## Session Lifecycle
- *
- * 1. **Pre-initialization**: Messages queued in memory
- * 2. **Initialization**: Session file created with header
- * 3. **Active**: Messages written to file
- * 4. **Completed**: File remains for future resumption
  */
 export class SessionManager {
 	/** Unique identifier for this session (UUID v4) */
@@ -378,8 +548,6 @@ export class SessionManager {
 	private enabled = true;
 	/** Whether the session header has been written */
 	private sessionInitialized = false;
-	/** Messages waiting to be written (before initialization) */
-	private pendingMessages: PendingSessionEntry[] = [];
 	/** Buffered file writer for efficient I/O */
 	private writer?: SessionFileWriter;
 	/** Snapshot of agent state for recovery purposes */
@@ -388,6 +556,13 @@ export class SessionManager {
 	private lastModelMetadata?: SessionModelMetadata;
 	/** Cache for current model/thinking level */
 	private metadataCache = new SessionMetadataCache();
+
+	private fileEntries: SessionEntry[] = [];
+	private byId: Map<string, SessionTreeEntry> = new Map();
+	private labelsById: Map<string, string> = new Map();
+	private leafId: string | null = null;
+	private flushed = false;
+	private hasAssistantMessage = false;
 
 	/**
 	 * Creates a new SessionManager.
@@ -401,16 +576,12 @@ export class SessionManager {
 		if (customSessionPath) {
 			// Use custom session file path
 			this.sessionFile = resolve(customSessionPath);
-			this.loadSessionId();
-			// Mark as initialized since we're loading an existing session
-			this.sessionInitialized = existsSync(this.sessionFile);
+			this.setSessionFile(this.sessionFile);
 		} else if (continueSession) {
 			const mostRecent = this.findMostRecentlyModifiedSession();
 			if (mostRecent) {
 				this.sessionFile = mostRecent;
-				this.loadSessionId();
-				// Mark as initialized since we're loading an existing session
-				this.sessionInitialized = true;
+				this.setSessionFile(this.sessionFile);
 			} else {
 				this.initNewSession();
 			}
@@ -419,7 +590,9 @@ export class SessionManager {
 		}
 
 		this.initializeWriter();
-		this.metadataCache.seedFromFile(this.sessionFile);
+		if (this.sessionInitialized) {
+			this.metadataCache.seedFromFile(this.sessionFile);
+		}
 	}
 
 	/** Disable session saving (for --no-session mode) */
@@ -428,7 +601,10 @@ export class SessionManager {
 		this.writer?.flushSync();
 		this.writer?.dispose();
 		this.writer = undefined;
-		this.pendingMessages = [];
+		this.fileEntries = [];
+		this.byId.clear();
+		this.labelsById.clear();
+		this.leafId = null;
 	}
 
 	private initializeWriter(): void {
@@ -441,7 +617,6 @@ export class SessionManager {
 
 	private getSessionDirectory(): string {
 		const cwd = process.cwd();
-		// Replace all path separators and colons (for Windows drive letters) with dashes
 		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 
 		const configDir = resolve(getAgentDir());
@@ -459,6 +634,14 @@ export class SessionManager {
 			this.sessionDir,
 			`${timestamp}_${this.sessionId}.jsonl`,
 		);
+		this.fileEntries = [];
+		this.byId.clear();
+		this.labelsById.clear();
+		this.leafId = null;
+		this.flushed = false;
+		this.hasAssistantMessage = false;
+		this.sessionInitialized = false;
+		this.metadataCache.reset();
 	}
 
 	startFreshSession(): void {
@@ -468,9 +651,8 @@ export class SessionManager {
 		this.writer?.flushSync();
 		this.writer?.dispose();
 		this.writer = undefined;
-		this.pendingMessages = [];
-		this.sessionInitialized = false;
-		this.metadataCache = new SessionMetadataCache();
+		this.agentSnapshot = undefined;
+		this.lastModelMetadata = undefined;
 		this.initNewSession();
 		this.initializeWriter();
 	}
@@ -479,19 +661,21 @@ export class SessionManager {
 	 * Reset session state for /clear command - clears pending messages and starts new session
 	 */
 	reset(): void {
-		// Dispose of old writer
 		this.writer?.flushSync();
 		this.writer?.dispose();
 		this.writer = undefined;
 
-		// Clear state
-		this.pendingMessages = [];
+		this.fileEntries = [];
+		this.byId.clear();
+		this.labelsById.clear();
+		this.leafId = null;
+		this.flushed = false;
+		this.hasAssistantMessage = false;
 		this.sessionInitialized = false;
-		this.metadataCache = new SessionMetadataCache();
+		this.metadataCache.reset();
 		this.agentSnapshot = undefined;
 		this.lastModelMetadata = undefined;
 
-		// Start new session
 		this.initNewSession();
 		this.initializeWriter();
 	}
@@ -512,37 +696,94 @@ export class SessionManager {
 		}
 	}
 
-	private loadSessionId(): void {
-		const entries = safeReadSessionEntries(this.sessionFile);
-		const sessionEntry = entries.find(
-			(entry): entry is SessionHeaderEntry => entry.type === "session",
-		);
+	private rebuildIndex(entries: SessionEntry[]): void {
+		this.byId.clear();
+		this.labelsById.clear();
+		this.leafId = null;
+		this.hasAssistantMessage = false;
 
-		this.sessionId = sessionEntry?.id ?? uuidv4();
+		for (const entry of entries) {
+			if (!isSessionTreeEntry(entry)) continue;
+			this.byId.set(entry.id, entry);
+			this.leafId = entry.id;
+			if (entry.type === "label") {
+				if (entry.label) {
+					this.labelsById.set(entry.targetId, entry.label);
+				} else {
+					this.labelsById.delete(entry.targetId);
+				}
+			}
+			if (entry.type === "message" && entry.message.role === "assistant") {
+				this.hasAssistantMessage = true;
+			}
+		}
+	}
+
+	private rewriteSessionFile(): void {
+		if (!this.enabled || !this.sessionFile) return;
+		const content = `${this.fileEntries.map((e) => JSON.stringify(e)).join("\n")}\n`;
+		writeFileSync(this.sessionFile, content);
+	}
+
+	private persistEntry(entry: SessionEntry): void {
+		if (!this.enabled || !this.writer || !this.sessionFile) return;
+		if (!this.sessionInitialized) return;
+
+		if (!this.flushed) {
+			for (const e of this.fileEntries) {
+				this.writer.write(e);
+			}
+			this.writer.flushSync();
+			this.flushed = true;
+			return;
+		}
+
+		this.writer.write(entry);
+	}
+
+	private appendTreeEntry(entry: SessionTreeEntry): void {
+		this.fileEntries.push(entry);
+		this.byId.set(entry.id, entry);
+		this.leafId = entry.id;
+		if (entry.type === "label") {
+			if (entry.label) {
+				this.labelsById.set(entry.targetId, entry.label);
+			} else {
+				this.labelsById.delete(entry.targetId);
+			}
+		}
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			this.hasAssistantMessage = true;
+		}
+		this.persistEntry(entry);
+	}
+
+	private createTreeEntryId(): string {
+		return generateEntryId(this.byId);
 	}
 
 	startSession(state: AgentState): void {
 		if (!this.enabled || this.sessionInitialized) return;
-		this.sessionInitialized = true;
 
 		const modelKeyFromState = `${state.model.provider}/${state.model.id}`;
-		const pendingModelChange = this.getLatestPendingModelChange();
-		const pendingThinkingLevel = this.getLatestPendingThinkingLevel();
-		const sessionModelKey = pendingModelChange?.model ?? modelKeyFromState;
+		const latestModelChange = this.getLatestModelChange();
+		const latestThinkingLevel = this.getLatestThinkingLevel();
+		const sessionModelKey = latestModelChange?.model ?? modelKeyFromState;
 		const primaryMetadata =
-			pendingModelChange?.modelMetadata ??
+			latestModelChange?.modelMetadata ??
 			(sessionModelKey === modelKeyFromState
 				? toSessionModelMetadata(state.model as RegisteredModel)
 				: undefined);
 		const fallbackMetadata = this.resolveModelMetadata(sessionModelKey);
 		const entry: SessionHeaderEntry = {
 			type: "session",
+			version: CURRENT_SESSION_VERSION,
 			id: this.sessionId,
 			timestamp: new Date().toISOString(),
 			cwd: process.cwd(),
 			model: sessionModelKey,
 			modelMetadata: primaryMetadata ?? fallbackMetadata,
-			thinkingLevel: pendingThinkingLevel ?? state.thinkingLevel,
+			thinkingLevel: latestThinkingLevel ?? state.thinkingLevel,
 			systemPrompt: state.systemPrompt,
 			tools: state.tools.map((tool) => ({
 				name: tool.name,
@@ -551,108 +792,180 @@ export class SessionManager {
 			})),
 		};
 		this.metadataCache.apply(entry);
-		this.writer?.write(entry);
+		this.fileEntries.unshift(entry);
+		this.sessionInitialized = true;
 
-		// Write any queued messages
-		for (const msg of this.pendingMessages) {
-			this.writer?.write(msg);
-		}
-		this.pendingMessages = [];
-		this.writer?.flushSync();
+		this.persistEntry(entry);
 	}
 
 	saveMessage(message: AppMessage): void {
 		if (!this.enabled) return;
 		const entry: SessionMessageEntry = {
 			type: "message",
+			id: this.createTreeEntryId(),
+			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			message,
 		};
 
-		this.queueEntry(entry);
+		this.appendTreeEntry(entry);
 	}
 
 	saveThinkingLevelChange(thinkingLevel: string): void {
 		if (!this.enabled) return;
 		const entry: ThinkingLevelChangeEntry = {
 			type: "thinking_level_change",
+			id: this.createTreeEntryId(),
+			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			thinkingLevel,
 		};
 		this.metadataCache.apply(entry);
 
-		this.queueEntry(entry);
+		this.appendTreeEntry(entry);
 	}
 
 	saveModelChange(model: string, metadata?: SessionModelMetadata): void {
 		if (!this.enabled) return;
 		const entry: ModelChangeEntry = {
 			type: "model_change",
+			id: this.createTreeEntryId(),
+			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			model,
 			modelMetadata: metadata,
 		};
 		this.metadataCache.apply(entry);
 
-		this.queueEntry(entry);
+		this.appendTreeEntry(entry);
+	}
+
+	appendCustomEntry(customType: string, data?: unknown): void {
+		if (!this.enabled) return;
+		const entry: CustomEntry = {
+			type: "custom",
+			customType,
+			data,
+			id: this.createTreeEntryId(),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		this.appendTreeEntry(entry);
+	}
+
+	appendCustomMessageEntry<T = unknown>(
+		customType: string,
+		content: string | (TextContent | ImageContent)[],
+		display: boolean,
+		details?: T,
+	): void {
+		if (!this.enabled) return;
+		const entry: CustomMessageEntry<T> = {
+			type: "custom_message",
+			customType,
+			content,
+			display,
+			details,
+			id: this.createTreeEntryId(),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		this.appendTreeEntry(entry);
+	}
+
+	appendBranchSummary(
+		summary: string,
+		options?: { fromId?: string; details?: unknown; fromHook?: boolean },
+	): void {
+		if (!this.enabled) return;
+		const fromId = options?.fromId ?? this.leafId ?? "root";
+		const entry: BranchSummaryEntry = {
+			type: "branch_summary",
+			id: this.createTreeEntryId(),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			fromId,
+			summary,
+			details: options?.details,
+			fromHook: options?.fromHook,
+		};
+		this.appendTreeEntry(entry);
+	}
+
+	appendLabel(targetId: string, label: string | undefined): void {
+		if (!this.byId.has(targetId)) {
+			throw new Error(`Entry ${targetId} not found`);
+		}
+		const entry: LabelEntry = {
+			type: "label",
+			id: this.createTreeEntryId(),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			targetId,
+			label,
+		};
+		this.appendTreeEntry(entry);
 	}
 
 	/**
 	 * Save a compaction event to the session file.
-	 *
-	 * This records when context was compacted, including the generated summary
-	 * and metadata about the compaction. The session loader uses this to
-	 * reconstruct conversations with summaries replacing compacted messages.
-	 *
-	 * @param summary - Generated summary of compacted messages
-	 * @param firstKeptEntryIndex - Index of first entry to keep
-	 * @param tokensBefore - Token count before compaction
-	 * @param options - Additional options (auto, customInstructions)
 	 */
 	saveCompaction(
 		summary: string,
 		firstKeptEntryIndex: number,
 		tokensBefore: number,
-		options?: { auto?: boolean; customInstructions?: string },
+		options?: {
+			auto?: boolean;
+			customInstructions?: string;
+			firstKeptEntryId?: string;
+		},
 	): void {
 		if (!this.enabled) return;
+		const context = this.buildSessionContext();
+		const resolvedEntry = options?.firstKeptEntryId
+			? this.getEntry(options.firstKeptEntryId)
+			: undefined;
+		const targetEntry =
+			resolvedEntry ?? context.messageEntries[firstKeptEntryIndex];
+		const fallbackEntry = this.getEntries()[0];
+		const firstKeptEntryId =
+			targetEntry?.id ?? this.leafId ?? fallbackEntry?.id;
+		if (!firstKeptEntryId) {
+			logger.warn("Failed to resolve compaction cut point; skipping save");
+			return;
+		}
 		const entry: CompactionEntry = {
 			type: "compaction",
+			id: this.createTreeEntryId(),
+			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			summary,
-			firstKeptEntryIndex,
+			firstKeptEntryId,
 			tokensBefore,
 			auto: options?.auto,
 			customInstructions: options?.customInstructions,
 		};
 
-		// Compaction entries are written directly (not queued) since they should
-		// persist immediately after the compaction operation completes
-		if (this.sessionInitialized) {
-			this.writer?.write(entry);
-			this.writer?.flushSync();
-		}
+		this.appendTreeEntry(entry);
+		this.writer?.flushSync();
 	}
 
 	/**
 	 * Find the most recent compaction entry in the current session.
-	 *
-	 * @returns The most recent compaction entry or null if none exists
 	 */
 	findLatestCompaction(): CompactionEntry | null {
-		this.writer?.flushSync();
-		const entries = safeReadSessionEntries(this.sessionFile);
-		for (let i = entries.length - 1; i >= 0; i--) {
-			if (entries[i].type === "compaction") {
-				return entries[i] as CompactionEntry;
+		for (let i = this.fileEntries.length - 1; i >= 0; i--) {
+			const entry = this.fileEntries[i];
+			if (entry.type === "compaction") {
+				return entry as CompactionEntry;
 			}
 		}
 		return null;
 	}
 
-	private getLatestPendingThinkingLevel(): string | undefined {
-		for (let i = this.pendingMessages.length - 1; i >= 0; i--) {
-			const entry = this.pendingMessages[i];
+	private getLatestThinkingLevel(): string | undefined {
+		for (let i = this.fileEntries.length - 1; i >= 0; i--) {
+			const entry = this.fileEntries[i];
 			if (entry.type === "thinking_level_change") {
 				return entry.thinkingLevel;
 			}
@@ -660,11 +973,11 @@ export class SessionManager {
 		return undefined;
 	}
 
-	private getLatestPendingModelChange(): ModelChangeEntry | undefined {
-		for (let i = this.pendingMessages.length - 1; i >= 0; i--) {
-			const entry = this.pendingMessages[i];
+	private getLatestModelChange(): ModelChangeEntry | undefined {
+		for (let i = this.fileEntries.length - 1; i >= 0; i--) {
+			const entry = this.fileEntries[i];
 			if (entry.type === "model_change") {
-				return entry;
+				return entry as ModelChangeEntry;
 			}
 		}
 		return undefined;
@@ -675,14 +988,6 @@ export class SessionManager {
 	): SessionModelMetadata | undefined {
 		const registered = findRegisteredModel(modelKey);
 		return registered ? toSessionModelMetadata(registered) : undefined;
-	}
-
-	private queueEntry(entry: PendingSessionEntry): void {
-		if (!this.sessionInitialized) {
-			this.pendingMessages.push(entry);
-			return;
-		}
-		this.writer?.write(entry);
 	}
 
 	private appendSessionMetaEntry(
@@ -721,9 +1026,9 @@ export class SessionManager {
 	private appendAttachmentExtractEntry(
 		targetFile: string,
 		payload: { attachmentId: string; extractedText: string },
-	): void {
-		if (!existsSync(targetFile)) return;
-		if (!payload.attachmentId || !payload.extractedText) return;
+	): AttachmentExtractedEntry | null {
+		if (!existsSync(targetFile)) return null;
+		if (!payload.attachmentId || !payload.extractedText) return null;
 		const entry: AttachmentExtractedEntry = {
 			type: "attachment_extract",
 			timestamp: new Date().toISOString(),
@@ -732,12 +1037,14 @@ export class SessionManager {
 		};
 		try {
 			appendFileSync(targetFile, `${JSON.stringify(entry)}\n`);
+			return entry;
 		} catch (error) {
 			logger.error(
 				"Failed to append attachment extraction",
 				error instanceof Error ? error : new Error(String(error)),
 			);
 		}
+		return null;
 	}
 
 	/**
@@ -749,10 +1056,13 @@ export class SessionManager {
 		text: string,
 	): void {
 		if (!sessionPath || !existsSync(sessionPath)) return;
-		this.appendAttachmentExtractEntry(sessionPath, {
+		const entry = this.appendAttachmentExtractEntry(sessionPath, {
 			attachmentId,
 			extractedText: text,
 		});
+		if (entry && sessionPath === this.sessionFile) {
+			this.fileEntries.push(entry);
+		}
 	}
 
 	saveSessionSummary(summary: string, sessionPath?: string): void {
@@ -778,41 +1088,43 @@ export class SessionManager {
 		this.appendSessionMetaEntry(sessionPath, { tags });
 	}
 
-	loadMessages(): AppMessage[] {
-		this.writer?.flushSync();
-		const entries = safeReadSessionEntries(this.sessionFile);
-		const extractedById = new Map<string, string>();
-		const messages: AppMessage[] = [];
+	buildSessionContext(
+		leafId: string | null = this.leafId,
+	): SessionContextSnapshot {
+		return buildSessionContextFromEntries(this.fileEntries, {
+			leafId,
+			byId: this.byId,
+			header: this.getHeader(),
+		});
+	}
 
-		for (const entry of entries) {
+	loadMessages(): AppMessage[] {
+		const context = this.buildSessionContext();
+		const extractedById = new Map<string, string>();
+		for (const entry of this.fileEntries) {
 			if (entry.type === "attachment_extract") {
 				if (entry.attachmentId && entry.extractedText) {
 					extractedById.set(entry.attachmentId, entry.extractedText);
 				}
-				continue;
-			}
-			if (entry.type === "message" && entry.message) {
-				messages.push(entry.message as AppMessage);
 			}
 		}
-
-		if (extractedById.size === 0) return messages;
-
-		return messages.map((message) =>
+		if (extractedById.size === 0) return context.messages;
+		return context.messages.map((message) =>
 			applyAttachmentExtracts(message, extractedById),
 		);
 	}
 
 	loadThinkingLevel(): string {
-		return this.metadataCache.getThinkingLevel();
+		return this.buildSessionContext().thinkingLevel;
 	}
 
 	loadModel(): string | null {
-		return this.metadataCache.getModel();
+		return this.buildSessionContext().model;
 	}
 
 	loadModelMetadata(): SessionModelMetadata | undefined {
-		return this.metadataCache.getModelMetadata() ?? this.lastModelMetadata;
+		const context = this.buildSessionContext();
+		return context.modelMetadata ?? this.lastModelMetadata;
 	}
 
 	getSessionId(): string {
@@ -821,6 +1133,130 @@ export class SessionManager {
 
 	getSessionFile(): string {
 		return this.sessionFile;
+	}
+
+	getLeafId(): string | null {
+		return this.leafId;
+	}
+
+	getLeafEntry(): SessionTreeEntry | undefined {
+		return this.leafId ? this.byId.get(this.leafId) : undefined;
+	}
+
+	getEntry(id: string): SessionTreeEntry | undefined {
+		return this.byId.get(id);
+	}
+
+	getLabel(id: string): string | undefined {
+		return this.labelsById.get(id);
+	}
+
+	getChildren(parentId: string): SessionTreeEntry[] {
+		const children: SessionTreeEntry[] = [];
+		for (const entry of this.byId.values()) {
+			if (entry.parentId === parentId) {
+				children.push(entry);
+			}
+		}
+		return children;
+	}
+
+	getBranch(fromId?: string | null): SessionTreeEntry[] {
+		const path: SessionTreeEntry[] = [];
+		const startId = fromId ?? this.leafId;
+		let current = startId ? this.byId.get(startId) : undefined;
+		while (current) {
+			path.unshift(current);
+			current = current.parentId ? this.byId.get(current.parentId) : undefined;
+		}
+		return path;
+	}
+
+	getEntries(): SessionTreeEntry[] {
+		return this.fileEntries.filter(isSessionTreeEntry);
+	}
+
+	getHeader(): SessionHeaderEntry | null {
+		const header = this.fileEntries.find((e) => e.type === "session");
+		return header ? (header as SessionHeaderEntry) : null;
+	}
+
+	getTree(): SessionTreeNode[] {
+		const entries = this.getEntries();
+		const nodeMap = new Map<string, SessionTreeNode>();
+		const roots: SessionTreeNode[] = [];
+
+		for (const entry of entries) {
+			const label = this.labelsById.get(entry.id);
+			nodeMap.set(entry.id, { entry, children: [], label });
+		}
+
+		for (const entry of entries) {
+			const node = nodeMap.get(entry.id);
+			if (!node) {
+				continue;
+			}
+			if (entry.parentId === null || entry.parentId === entry.id) {
+				roots.push(node);
+				continue;
+			}
+			const parent = nodeMap.get(entry.parentId);
+			if (parent) {
+				parent.children.push(node);
+			} else {
+				roots.push(node);
+			}
+		}
+
+		const stack: SessionTreeNode[] = [...roots];
+		while (stack.length > 0) {
+			const node = stack.pop();
+			if (!node) {
+				continue;
+			}
+			node.children.sort(
+				(a, b) =>
+					new Date(a.entry.timestamp).getTime() -
+					new Date(b.entry.timestamp).getTime(),
+			);
+			stack.push(...node.children);
+		}
+
+		return roots;
+	}
+
+	branch(branchFromId: string): void {
+		if (!this.byId.has(branchFromId)) {
+			throw new Error(`Entry ${branchFromId} not found`);
+		}
+		this.leafId = branchFromId;
+	}
+
+	branchWithSummary(
+		branchFromId: string | null,
+		summary: string,
+		options?: { fromId?: string; details?: unknown; fromHook?: boolean },
+	): string {
+		if (branchFromId !== null && !this.byId.has(branchFromId)) {
+			throw new Error(`Entry ${branchFromId} not found`);
+		}
+		this.leafId = branchFromId;
+		const entry: BranchSummaryEntry = {
+			type: "branch_summary",
+			id: this.createTreeEntryId(),
+			parentId: branchFromId,
+			timestamp: new Date().toISOString(),
+			fromId: options?.fromId ?? branchFromId ?? "root",
+			summary,
+			details: options?.details,
+			fromHook: options?.fromHook,
+		};
+		this.appendTreeEntry(entry);
+		return entry.id;
+	}
+
+	resetLeaf(): void {
+		this.leafId = null;
 	}
 
 	updateSnapshot(state: AgentState, metadata?: SessionModelMetadata): void {
@@ -907,28 +1343,38 @@ export class SessionManager {
 	 * Set the session file to an existing session
 	 */
 	setSessionFile(path: string): void {
-		if (this.writer) {
-			void this.writer.flush();
+		this.writer?.flushSync();
+		this.writer?.dispose();
+
+		this.sessionFile = resolve(path);
+		if (existsSync(this.sessionFile)) {
+			const entries = safeReadSessionEntries(this.sessionFile);
+			const migrated = migrateToCurrentVersion(entries);
+			this.fileEntries = entries;
+			this.sessionInitialized = entries.some((e) => e.type === "session");
+			this.rebuildIndex(entries);
+			if (migrated) {
+				this.rewriteSessionFile();
+			}
+			const header = this.getHeader();
+			this.sessionId = header?.id ?? uuidv4();
+			this.flushed = true;
+			this.metadataCache.seedFromFile(this.sessionFile);
+		} else {
+			this.initNewSession();
 		}
-		this.sessionFile = path;
-		this.loadSessionId();
-		// Mark as initialized since we're loading an existing session
-		this.sessionInitialized = existsSync(path);
 		this.initializeWriter();
-		this.metadataCache.seedFromFile(this.sessionFile);
 	}
 
 	/**
 	 * Check if we should initialize the session based on message history.
-	 * Session is initialized when we have at least 1 user message and 1 assistant message.
+	 * Session is initialized once we have at least 1 user message.
 	 */
 	shouldInitializeSession(messages: AppMessage[]): boolean {
 		if (this.sessionInitialized) return false;
 
 		const userMessages = messages.filter((m) => m.role === "user");
-		const assistantMessages = messages.filter((m) => m.role === "assistant");
-
-		return userMessages.length >= 1 && assistantMessages.length >= 1;
+		return userMessages.length >= 1;
 	}
 
 	/**
@@ -937,15 +1383,98 @@ export class SessionManager {
 	 * @param state - Current agent state
 	 * @param branchFromIndex - Index of the last message to include in the branch (exclusive)
 	 */
-	createBranchedSession(state: AgentState, branchFromIndex: number): string {
-		// Validate branchFromIndex bounds
+	createBranchedSession(state: AgentState, branchFromIndex: number): string;
+	/**
+	 * Create a branched session from a specific tree entry id.
+	 */
+	createBranchedSession(leafId: string): string;
+	createBranchedSession(
+		stateOrLeafId: AgentState | string,
+		branchFromIndex?: number,
+	): string {
+		if (typeof stateOrLeafId === "string") {
+			return this.createBranchedSessionFromLeaf(stateOrLeafId);
+		}
+		if (typeof branchFromIndex !== "number") {
+			throw new Error(
+				"branchFromIndex is required when branching from AgentState",
+			);
+		}
+		return this.createBranchedSessionFromState(stateOrLeafId, branchFromIndex);
+	}
+
+	private createBranchedSessionFromLeaf(leafId: string): string {
+		const path = this.getBranch(leafId);
+		if (path.length === 0) {
+			throw new Error(`Entry ${leafId} not found`);
+		}
+
+		const pathWithoutLabels = path.filter((e) => e.type !== "label");
+		const newSessionId = uuidv4();
+		const timestamp = new Date().toISOString();
+		const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+		const newSessionFile = join(
+			this.sessionDir,
+			`${fileTimestamp}_${newSessionId}.jsonl`,
+		);
+
+		const context = this.buildSessionContext(leafId);
+		const header: SessionHeaderEntry = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: newSessionId,
+			timestamp,
+			cwd: process.cwd(),
+			model: context.model ?? this.getHeader()?.model,
+			modelMetadata: context.modelMetadata ?? this.getHeader()?.modelMetadata,
+			thinkingLevel: context.thinkingLevel,
+			systemPrompt: this.getHeader()?.systemPrompt,
+			tools: this.getHeader()?.tools,
+			branchedFrom: this.sessionFile,
+		};
+
+		const pathEntryIds = new Set(pathWithoutLabels.map((e) => e.id));
+		const labelsToWrite: Array<{ targetId: string; label: string }> = [];
+		for (const [targetId, label] of this.labelsById) {
+			if (pathEntryIds.has(targetId)) {
+				labelsToWrite.push({ targetId, label });
+			}
+		}
+
+		appendFileSync(newSessionFile, `${JSON.stringify(header)}\n`);
+		for (const entry of pathWithoutLabels) {
+			appendFileSync(newSessionFile, `${JSON.stringify(entry)}\n`);
+		}
+		let parentId = pathWithoutLabels[pathWithoutLabels.length - 1]?.id ?? null;
+		const labelEntries: LabelEntry[] = [];
+		for (const { targetId, label } of labelsToWrite) {
+			const labelEntry: LabelEntry = {
+				type: "label",
+				id: generateEntryId(pathEntryIds),
+				parentId,
+				timestamp: new Date().toISOString(),
+				targetId,
+				label,
+			};
+			appendFileSync(newSessionFile, `${JSON.stringify(labelEntry)}\n`);
+			pathEntryIds.add(labelEntry.id);
+			labelEntries.push(labelEntry);
+			parentId = labelEntry.id;
+		}
+
+		return newSessionFile;
+	}
+
+	private createBranchedSessionFromState(
+		state: AgentState,
+		branchFromIndex: number,
+	): string {
 		if (branchFromIndex < 0 || branchFromIndex > state.messages.length) {
 			throw new Error(
 				`Invalid branchFromIndex: ${branchFromIndex}. Must be between 0 and ${state.messages.length}`,
 			);
 		}
 
-		// Create a new session ID for the branch
 		const newSessionId = uuidv4();
 		const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 		const newSessionFile = join(
@@ -954,41 +1483,43 @@ export class SessionManager {
 		);
 		const tempFile = `${newSessionFile}.tmp`;
 
-		// Use transactional write (temp file + atomic rename)
 		try {
-			// Write session header with branch source tracking
 			const modelKey = state.model
 				? `${state.model.provider}/${state.model.id}`
 				: "unknown/unknown";
 			const entry: SessionHeaderEntry = {
 				type: "session",
+				version: CURRENT_SESSION_VERSION,
 				id: newSessionId,
 				timestamp: new Date().toISOString(),
 				cwd: process.cwd(),
 				model: modelKey,
 				modelMetadata: this.lastModelMetadata,
 				thinkingLevel: state.thinkingLevel,
-				branchedFrom: this.sessionFile, // Track parent session for lineage
+				branchedFrom: this.sessionFile,
 			};
 			appendFileSync(tempFile, `${JSON.stringify(entry)}\n`);
 
-			// Write messages up to (but not including) the branch point
+			let parentId: string | null = null;
 			if (branchFromIndex > 0) {
 				const messagesToWrite = state.messages.slice(0, branchFromIndex);
+				const ids = new Set<string>();
 				for (const message of messagesToWrite) {
 					const messageEntry: SessionMessageEntry = {
 						type: "message",
+						id: generateEntryId(ids),
+						parentId,
 						timestamp: new Date().toISOString(),
 						message,
 					};
+					ids.add(messageEntry.id);
+					parentId = messageEntry.id;
 					appendFileSync(tempFile, `${JSON.stringify(messageEntry)}\n`);
 				}
 			}
 
-			// Atomic rename to final location
 			renameSync(tempFile, newSessionFile);
 		} catch (error) {
-			// Cleanup temp file on failure
 			try {
 				if (existsSync(tempFile)) {
 					unlinkSync(tempFile);
@@ -1043,7 +1574,7 @@ export class SessionManager {
 					favorite: info.favorite,
 					tags: info.tags,
 				});
-			} catch (e) {
+			} catch {
 				// Skip files that can't be read
 			}
 		}
@@ -1079,7 +1610,7 @@ export class SessionManager {
 
 		return {
 			id: info.id,
-			title: info.title ?? info.summary, // Prefer title over summary
+			title: info.title ?? info.summary,
 			messages: info.messages,
 			createdAt: info.created.toISOString(),
 			updatedAt: stats.mtime.toISOString(),
@@ -1102,14 +1633,14 @@ export class SessionManager {
 	}> {
 		this.startFreshSession();
 
-		// Write summary as title if provided
 		if (options?.title && this.enabled) {
 			const entry: SessionMetaEntry = {
 				type: "session_meta",
 				timestamp: new Date().toISOString(),
 				title: options.title,
 			};
-			this.writer?.write(entry);
+			this.fileEntries.push(entry);
+			this.persistEntry(entry);
 		}
 
 		const now = new Date().toISOString();

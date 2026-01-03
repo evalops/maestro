@@ -53,6 +53,7 @@
  * | openai-responses      | OpenAI Responses API (newer)             |
  * | anthropic-messages    | Anthropic Messages API                   |
  * | google-generative-ai  | Google Generative AI API                 |
+ * | google-gemini-cli     | Google Cloud Code Assist (Gemini CLI)    |
  *
  * ## Model Resolution
  *
@@ -138,6 +139,7 @@ const modelSchema = Type.Object({
 			Type.Literal("openai-responses"),
 			Type.Literal("anthropic-messages"),
 			Type.Literal("google-generative-ai"),
+			Type.Literal("google-gemini-cli"),
 			Type.Literal("bedrock-converse"),
 			Type.Literal("vertex-ai"),
 		]),

@@ -11,6 +11,7 @@ interface ModelSelectorViewOptions {
 	modalManager: ModalManager;
 	ui: TUI;
 	showInfoMessage: (text: string) => void;
+	modelScope?: RegisteredModel[];
 }
 
 export class ModelSelectorView {
@@ -37,6 +38,7 @@ export class ModelSelectorView {
 				this.hide();
 				this.options.ui.requestRender();
 			},
+			this.options.modelScope ?? [],
 		);
 		this.options.modalManager.push(this.selector);
 	}

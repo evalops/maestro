@@ -6,8 +6,10 @@ import {
 	isRenderableToolResultMessage,
 	isRenderableUserMessage,
 } from "../conversation/render-model.js";
+import { getTypeScriptHookMessageRenderer } from "../hooks/index.js";
 import { theme } from "../theme/theme.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
+import { HookMessageComponent } from "./hook-message.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { UserMessageComponent } from "./user-message.js";
 
@@ -51,6 +53,56 @@ export class MessageView {
 	}
 
 	addMessage(message: AppMessage): void {
+		if (message.role === "branchSummary") {
+			const hookMessage = {
+				role: "hookMessage" as const,
+				customType: "branchSummary",
+				content: `Branch summary:\n\n${message.summary}`,
+				display: true,
+				details: { fromId: message.fromId },
+				timestamp: message.timestamp,
+			};
+			if (this.isZenMode() && this.messageCount > 0) {
+				this.options.chatContainer.addChild(createZenSeparator());
+			}
+			const renderer = getTypeScriptHookMessageRenderer(hookMessage.customType);
+			const component = new HookMessageComponent(hookMessage, renderer);
+			this.options.chatContainer.addChild(component);
+			this.messageCount++;
+			return;
+		}
+		if (message.role === "compactionSummary") {
+			const hookMessage = {
+				role: "hookMessage" as const,
+				customType: "compactionSummary",
+				content: `Compaction summary:\n\n${message.summary}`,
+				display: true,
+				details: { tokensBefore: message.tokensBefore },
+				timestamp: message.timestamp,
+			};
+			if (this.isZenMode() && this.messageCount > 0) {
+				this.options.chatContainer.addChild(createZenSeparator());
+			}
+			const renderer = getTypeScriptHookMessageRenderer(hookMessage.customType);
+			const component = new HookMessageComponent(hookMessage, renderer);
+			this.options.chatContainer.addChild(component);
+			this.messageCount++;
+			return;
+		}
+		if (message.role === "hookMessage") {
+			if (!message.display) {
+				return;
+			}
+			if (this.isZenMode() && this.messageCount > 0) {
+				this.options.chatContainer.addChild(createZenSeparator());
+			}
+			const renderer = getTypeScriptHookMessageRenderer(message.customType);
+			const component = new HookMessageComponent(message, renderer);
+			this.options.chatContainer.addChild(component);
+			this.messageCount++;
+			return;
+		}
+
 		const renderable = createRenderableMessage(message);
 		if (!renderable) {
 			return;

@@ -209,6 +209,7 @@ const RETRYABLE_PATTERNS = [
 	// Temporary failures
 	/temporarily/i,
 	/try again/i,
+	/connection.?error/i,
 ];
 
 /**

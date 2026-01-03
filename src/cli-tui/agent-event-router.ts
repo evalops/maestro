@@ -89,6 +89,14 @@ export class AgentEventRouter {
 				}
 				return;
 
+			case "tool_execution_update":
+				this.options.streamingView.updateToolPartialResult(
+					event.toolCallId,
+					event.partialResult,
+				);
+				this.options.requestRender();
+				return;
+
 			case "agent_end":
 				this.options.runController.handleAgentEnd(() => {
 					this.options.streamingView.forceStopStreaming();
@@ -122,6 +130,11 @@ export class AgentEventRouter {
 
 	private handleMessageEnd(event: AgentEvent & { type: "message_end" }): void {
 		if (event.message.role === "user") {
+			return;
+		}
+		if (event.message.role !== "assistant") {
+			this.options.messageView.addMessage(event.message as AppMessage);
+			this.options.requestRender();
 			return;
 		}
 		if (event.message.role === "assistant") {

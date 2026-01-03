@@ -14,6 +14,7 @@
 		"../../src/tools/**/*.ts",
 		"../../src/utils/**/*.ts",
 		"../../src/hooks/**/*.ts",
+		"../../src/theme/**/*.ts",
 		"../../src/safety/**/*.ts",
 		"../../src/tracking/**/*.ts",
 		"../../src/config/constants.ts",

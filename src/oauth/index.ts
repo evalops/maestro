@@ -11,6 +11,14 @@ import {
 	refreshGitHubCopilotToken,
 } from "./github-copilot.js";
 import {
+	loginGoogleAntigravity,
+	refreshGoogleAntigravityToken,
+} from "./google-antigravity.js";
+import {
+	loginGoogleGeminiCli,
+	refreshGoogleGeminiCliToken,
+} from "./google-gemini-cli.js";
+import {
 	loginOpenAI,
 	migrateOpenAICredentials,
 	refreshOpenAIToken,
@@ -29,7 +37,12 @@ const logger = createLogger("oauth");
 export { listOAuthProvidersFromStorage as listOAuthProviders };
 export type { OAuthCredentials } from "./storage.js";
 
-export type SupportedOAuthProvider = "anthropic" | "openai" | "github-copilot";
+export type SupportedOAuthProvider =
+	| "anthropic"
+	| "openai"
+	| "github-copilot"
+	| "google-gemini-cli"
+	| "google-antigravity";
 
 export interface OAuthProviderInfo {
 	id: SupportedOAuthProvider;
@@ -56,6 +69,18 @@ export function getOAuthProviders(): OAuthProviderInfo[] {
 			available: true,
 		},
 		{
+			id: "google-gemini-cli",
+			name: "Google Gemini CLI",
+			description: "Cloud Code Assist OAuth",
+			available: true,
+		},
+		{
+			id: "google-antigravity",
+			name: "Google Antigravity",
+			description: "Antigravity sandbox OAuth",
+			available: true,
+		},
+		{
 			id: "github-copilot",
 			name: "GitHub Copilot",
 			description: "GitHub Copilot subscription",
@@ -79,13 +104,18 @@ export async function login(
 	options: {
 		mode?: AnthropicLoginMode;
 		onAuthUrl: (url: string) => void;
-		onPromptCode: () => Promise<string>;
+		onPromptCode?: () => Promise<string>;
 		onStatus?: (status: string) => void;
 		onDeviceCode?: (code: string, verificationUri: string) => void;
 	},
 ): Promise<void> {
 	switch (provider) {
 		case "anthropic":
+			if (!options.onPromptCode) {
+				throw new Error(
+					"Anthropic login requires onPromptCode callback for auth code input",
+				);
+			}
 			await loginAnthropic(
 				options.mode ?? "pro",
 				options.onAuthUrl,
@@ -94,6 +124,12 @@ export async function login(
 			break;
 		case "openai":
 			await loginOpenAI(options.onAuthUrl, options.onStatus);
+			break;
+		case "google-gemini-cli":
+			await loginGoogleGeminiCli(options.onAuthUrl, options.onStatus);
+			break;
+		case "google-antigravity":
+			await loginGoogleAntigravity(options.onAuthUrl, options.onStatus);
 			break;
 		case "github-copilot":
 			if (!options.onDeviceCode) {
@@ -137,6 +173,18 @@ export async function refreshToken(
 			break;
 		case "openai":
 			newCredentials = await refreshOpenAIToken(
+				credentials.refresh,
+				credentials.metadata,
+			);
+			break;
+		case "google-gemini-cli":
+			newCredentials = await refreshGoogleGeminiCliToken(
+				credentials.refresh,
+				credentials.metadata,
+			);
+			break;
+		case "google-antigravity":
+			newCredentials = await refreshGoogleAntigravityToken(
 				credentials.refresh,
 				credentials.metadata,
 			);

@@ -4940,7 +4940,7 @@ export const MODELS = {
       name: "GLM-4.5-Flash",
       api: "openai-completions" as const,
       provider: "zai",
-      baseUrl: "https://api.zaidomain.com/v1/chat/completions",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
       reasoning: true,
       toolUse: true,
       input: [
@@ -4960,7 +4960,7 @@ export const MODELS = {
       name: "GLM-4.5",
       api: "openai-completions" as const,
       provider: "zai",
-      baseUrl: "https://api.zaidomain.com/v1/chat/completions",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
       reasoning: true,
       toolUse: true,
       input: [
@@ -4980,7 +4980,7 @@ export const MODELS = {
       name: "GLM-4.5-Air",
       api: "openai-completions" as const,
       provider: "zai",
-      baseUrl: "https://api.zaidomain.com/v1/chat/completions",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
       reasoning: true,
       toolUse: true,
       input: [
@@ -5000,7 +5000,7 @@ export const MODELS = {
       name: "GLM-4.5V",
       api: "openai-completions" as const,
       provider: "zai",
-      baseUrl: "https://api.zaidomain.com/v1/chat/completions",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
       reasoning: true,
       toolUse: true,
       input: [
@@ -5021,7 +5021,7 @@ export const MODELS = {
       name: "GLM-4.6",
       api: "openai-completions" as const,
       provider: "zai",
-      baseUrl: "https://api.zaidomain.com/v1/chat/completions",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
       reasoning: true,
       toolUse: true,
       input: [
@@ -5041,7 +5041,7 @@ export const MODELS = {
       name: "GLM-4.6V",
       api: "openai-completions" as const,
       provider: "zai",
-      baseUrl: "https://api.zaidomain.com/v1/chat/completions",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
       reasoning: true,
       toolUse: true,
       input: [

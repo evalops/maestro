@@ -12,6 +12,8 @@
  * - **PostToolUseFailure**: After tool execution fails
  * - **SessionStart**: When a session begins
  * - **SessionEnd**: When a session ends
+ * - **SessionBeforeTree**: Before session tree navigation
+ * - **SessionTree**: After session tree navigation
  * - **SubagentStart**: Before spawning a subagent
  * - **SubagentStop**: When a subagent completes
  * - **UserPromptSubmit**: When user submits a prompt
@@ -62,6 +64,8 @@ export type {
 	EvalGateHookInput,
 	SessionStartHookInput,
 	SessionEndHookInput,
+	SessionBeforeTreeHookInput,
+	SessionTreeHookInput,
 	SubagentStartHookInput,
 	SubagentStopHookInput,
 	UserPromptSubmitHookInput,
@@ -91,6 +95,7 @@ export type {
 	PostToolUseFailureHookOutput,
 	EvalGateHookOutput,
 	SessionStartHookOutput,
+	SessionBeforeTreeHookOutput,
 	SubagentStartHookOutput,
 	SubagentStopHookOutput,
 	UserPromptSubmitHookOutput,
@@ -114,10 +119,16 @@ export type {
 	// TypeScript hook API types
 	HookAttachment,
 	HookSendHandler,
+	HookSendMessageHandler,
+	HookAppendEntryHandler,
 	HookUIContext,
 	HookEventContext,
+	HookCommandContext,
 	ExecResult,
 	HookHandler,
+	HookMessageRenderer,
+	HookMessageRenderOptions,
+	RegisteredCommand,
 	HookAPI,
 	HookFactory,
 	LoadedTypeScriptHook,
@@ -201,10 +212,15 @@ export {
 export {
 	discoverAndLoadTypeScriptHooks,
 	getLoadedTypeScriptHooks,
+	getTypeScriptHookMessageRenderer,
+	getTypeScriptHookCommands,
+	getTypeScriptHookCommand,
 	hasTypeScriptHookHandlers,
 	executeTypeScriptHooks,
 	setGlobalSendHandler,
 	getGlobalSendHandler,
+	setGlobalSendMessageHandler,
+	setGlobalAppendEntryHandler,
 	setGlobalUIContext,
 	setGlobalCwd,
 	setGlobalSessionFile,

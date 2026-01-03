@@ -34,6 +34,7 @@
  */
 
 import type { SessionEntry } from "../session/types.js";
+import { convertAppMessageToLlm } from "./custom-messages.js";
 import type { AppMessage, AssistantMessage, Usage } from "./types.js";
 
 // ============================================================================
@@ -641,17 +642,21 @@ export function buildLocalSummary(
  * @returns Combined text content or empty string
  */
 function extractMessageText(message: AppMessage): string {
-	if (typeof message.content === "string") {
-		return message.content;
+	const llmMessage = convertAppMessageToLlm(message);
+	if (!llmMessage) {
+		return "";
 	}
-	if (Array.isArray(message.content)) {
-		return message.content
+	if (typeof llmMessage.content === "string") {
+		return llmMessage.content;
+	}
+	if (Array.isArray(llmMessage.content)) {
+		return llmMessage.content
 			.map((part) => {
 				if (part.type === "text") return part.text;
 				if (part.type === "thinking") return part.thinking;
 				return "";
 			})
-			.filter(Boolean)
+			.filter((part): part is string => Boolean(part))
 			.join(" ");
 	}
 	return "";

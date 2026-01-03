@@ -7,6 +7,8 @@ export interface EditorBindingHandlers {
 	cycleModel: () => void | Promise<void>;
 	toggleToolOutputs: () => void;
 	toggleThinkingBlocks: () => void;
+	openExternalEditor: () => void;
+	suspend: () => void;
 	handleSlashCycle: (reverse: boolean) => boolean;
 	cycleThinkingLevel: () => void;
 }
@@ -33,6 +35,12 @@ export function attachEditorBindings(params: {
 	};
 	editor.onCtrlT = () => {
 		handlers.toggleThinkingBlocks();
+	};
+	editor.onCtrlG = () => {
+		handlers.openExternalEditor();
+	};
+	editor.onCtrlZ = () => {
+		handlers.suspend();
 	};
 	editor.onTab = () => handlers.handleSlashCycle(false);
 	editor.onShiftTab = () => {

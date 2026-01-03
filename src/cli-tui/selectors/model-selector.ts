@@ -5,6 +5,10 @@ import {
 	getRegisteredModels,
 	reloadModelConfig,
 } from "../../models/registry.js";
+import {
+	type SupportedOAuthProvider,
+	hasOAuthCredentials,
+} from "../../oauth/index.js";
 import { lookupApiKey } from "../../providers/api-keys.js";
 
 /**
@@ -21,17 +25,22 @@ export class ModelSelectorComponent extends Container {
 	private onCancelCallback: () => void;
 	private filteredForCredentials = false;
 	private credentialHints: string[] = [];
+	private modelScope: RegisteredModel[] = [];
+	private isScoped = false;
 
 	constructor(
 		currentModel: RegisteredModel,
 		onSelect: (model: RegisteredModel) => void,
 		onCancel: () => void,
+		modelScope: RegisteredModel[] = [],
 	) {
 		super();
 
 		this.currentModel = currentModel;
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
+		this.modelScope = modelScope;
+		this.isScoped = modelScope.length > 0;
 
 		// Load all models
 		this.loadModels();
@@ -68,15 +77,18 @@ export class ModelSelectorComponent extends Container {
 		// Always reload config so edits to models.json are visible
 		reloadModelConfig();
 		const models = getRegisteredModels();
+		const scopedModels = this.isScoped
+			? this.applyModelScope(models, this.modelScope)
+			: models;
 		const hints = new Set<string>();
-		const filtered = models.filter((model) => {
+		const filtered = scopedModels.filter((model) => {
 			const result = this.isModelUsable(model);
 			if (!result.usable && result.hint) {
 				hints.add(result.hint);
 			}
 			return result.usable;
 		});
-		this.filteredForCredentials = filtered.length !== models.length;
+		this.filteredForCredentials = filtered.length !== scopedModels.length;
 		this.credentialHints = Array.from(hints);
 		filtered.sort((a, b) => {
 			const aIsCurrent = this.currentModel?.id === a.id;
@@ -87,6 +99,19 @@ export class ModelSelectorComponent extends Container {
 		});
 		this.allModels = filtered;
 		this.filteredModels = filtered;
+	}
+
+	private applyModelScope(
+		models: RegisteredModel[],
+		scope: RegisteredModel[],
+	): RegisteredModel[] {
+		if (scope.length === 0) return models;
+		const scopeKeys = new Set(
+			scope.map((model) => `${model.provider}/${model.id}`),
+		);
+		return models.filter((model) =>
+			scopeKeys.has(`${model.provider}/${model.id}`),
+		);
 	}
 
 	private filterModels(query: string): void {
@@ -191,11 +216,13 @@ export class ModelSelectorComponent extends Container {
 	handleInput(keyData: string): void {
 		// Up arrow
 		if (keyData === "\x1b[A") {
+			if (this.filteredModels.length === 0) return;
 			this.selectedIndex = Math.max(0, this.selectedIndex - 1);
 			this.updateList();
 		}
 		// Down arrow
 		else if (keyData === "\x1b[B") {
+			if (this.filteredModels.length === 0) return;
 			this.selectedIndex = Math.min(
 				this.filteredModels.length - 1,
 				this.selectedIndex + 1,
@@ -234,6 +261,19 @@ export class ModelSelectorComponent extends Container {
 	} {
 		// Always allow local endpoints; otherwise require a key
 		if (model.isLocal) return { usable: true };
+		const oauthProviders = new Set<SupportedOAuthProvider>([
+			"anthropic",
+			"openai",
+			"github-copilot",
+			"google-gemini-cli",
+			"google-antigravity",
+		]);
+		if (
+			oauthProviders.has(model.provider as SupportedOAuthProvider) &&
+			hasOAuthCredentials(model.provider as SupportedOAuthProvider)
+		) {
+			return { usable: true };
+		}
 		const apiKey = lookupApiKey(model.provider);
 		if (apiKey.source !== "missing") {
 			return { usable: true };

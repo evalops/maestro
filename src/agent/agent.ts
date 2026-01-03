@@ -87,6 +87,7 @@ import {
 	type AgentContextSource,
 	type ContextLoadResult,
 } from "./context-manager.js";
+import { convertAppMessagesToLlm, isCoreMessage } from "./custom-messages.js";
 import {
 	type PreprocessMessagesFn,
 	chainPreprocessMessages,
@@ -129,7 +130,7 @@ const logger = createLogger("agent");
  */
 function defaultMessageTransformer(messages: AppMessage[]): Message[] {
 	return (
-		messages
+		convertAppMessagesToLlm(messages)
 			// Filter to only roles the LLM understands
 			.filter(
 				(m) =>
@@ -488,6 +489,9 @@ export class Agent {
 	 */
 	setModel(m: Model<Api>): void {
 		this._state.model = m;
+		if (!m.reasoning && this._state.thinkingLevel !== "off") {
+			this._state.thinkingLevel = "off";
+		}
 	}
 
 	/**
@@ -565,6 +569,14 @@ export class Agent {
 	 */
 	appendMessage(m: AppMessage): void {
 		this._state.messages = [...this._state.messages, m];
+	}
+
+	/**
+	 * Inject a message into the conversation history and emit a message_end event.
+	 */
+	injectMessage(m: AppMessage): void {
+		this._state.messages = [...this._state.messages, m];
+		this.emit({ type: "message_end", message: m });
 	}
 
 	/**
@@ -792,10 +804,14 @@ export class Agent {
 				abortController.signal,
 			)) {
 				if (event.type === "message_start") {
-					this._state.streamMessage = event.message;
+					this._state.streamMessage = isCoreMessage(event.message)
+						? event.message
+						: null;
 					this.emit(event);
 				} else if (event.type === "message_update") {
-					this._state.streamMessage = event.message;
+					this._state.streamMessage = isCoreMessage(event.message)
+						? event.message
+						: null;
 					this.emit(event);
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
@@ -812,6 +828,8 @@ export class Agent {
 					this._state.pendingToolCalls.set(event.toolCallId, {
 						toolName: event.toolName,
 					});
+					this.emit(event);
+				} else if (event.type === "tool_execution_update") {
 					this.emit(event);
 				} else if (event.type === "tool_execution_end") {
 					this._state.pendingToolCalls.delete(event.toolCallId);
@@ -953,10 +971,14 @@ export class Agent {
 				abortController.signal,
 			)) {
 				if (event.type === "message_start") {
-					this._state.streamMessage = event.message;
+					this._state.streamMessage = isCoreMessage(event.message)
+						? event.message
+						: null;
 					this.emit(event);
 				} else if (event.type === "message_update") {
-					this._state.streamMessage = event.message;
+					this._state.streamMessage = isCoreMessage(event.message)
+						? event.message
+						: null;
 					this.emit(event);
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
@@ -1050,6 +1072,7 @@ export class Agent {
 		prompt: string,
 		systemPrompt = "",
 		modelOverride?: Model<Api>,
+		signal?: AbortSignal,
 	): Promise<AssistantMessage> {
 		const summaryModel = modelOverride ?? this._state.model;
 		if (!summaryModel) {
@@ -1072,6 +1095,19 @@ export class Agent {
 		};
 
 		const controller = new AbortController();
+		if (signal) {
+			if (signal.aborted) {
+				controller.abort(signal.reason);
+			} else {
+				signal.addEventListener(
+					"abort",
+					() => {
+						controller.abort(signal.reason);
+					},
+					{ once: true },
+				);
+			}
+		}
 		let finalMessage: AssistantMessage | null = null;
 
 		try {

@@ -45,6 +45,7 @@ import type {
  * - `openai-responses` - OpenAI Responses API (newer format)
  * - `anthropic-messages` - Anthropic Messages API
  * - `google-generative-ai` - Google Generative AI (Gemini)
+ * - `google-gemini-cli` - Google Cloud Code Assist (Gemini CLI)
  * - `bedrock-converse` - AWS Bedrock Converse API
  */
 export type Api =
@@ -52,6 +53,7 @@ export type Api =
 	| "openai-responses"
 	| "anthropic-messages"
 	| "google-generative-ai"
+	| "google-gemini-cli"
 	| "bedrock-converse"
 	| "vertex-ai";
 
@@ -343,6 +345,55 @@ export interface ToolResultMessage<TDetails = unknown> {
 }
 
 /**
+ * Message type for hook-injected messages.
+ *
+ * Hooks can inject these into the conversation. They are converted to user
+ * messages for LLM context and can optionally be hidden from the UI.
+ */
+export interface HookMessage<T = unknown> {
+	/** Message role discriminator */
+	role: "hookMessage";
+	/** Hook-defined message category */
+	customType: string;
+	/** Message content - string or array of content blocks */
+	content: string | (TextContent | ImageContent)[];
+	/** Whether to render this message in the UI */
+	display: boolean;
+	/** Optional hook-specific metadata (not sent to the LLM) */
+	details?: T;
+	/** Unix timestamp in milliseconds when message was created */
+	timestamp: number;
+}
+
+/**
+ * Message type for branch summaries when navigating session trees.
+ */
+export interface BranchSummaryMessage {
+	/** Message role discriminator */
+	role: "branchSummary";
+	/** Summary text */
+	summary: string;
+	/** ID of the branch point this summary came from */
+	fromId: string;
+	/** Unix timestamp in milliseconds when summary was created */
+	timestamp: number;
+}
+
+/**
+ * Message type for compaction summaries.
+ */
+export interface CompactionSummaryMessage {
+	/** Message role discriminator */
+	role: "compactionSummary";
+	/** Summary text */
+	summary: string;
+	/** Token count before compaction (for diagnostics) */
+	tokensBefore: number;
+	/** Unix timestamp in milliseconds when summary was created */
+	timestamp: number;
+}
+
+/**
  * Union type representing any message in a conversation.
  *
  * A conversation is an ordered sequence of messages alternating between
@@ -467,6 +518,7 @@ export interface AgentTool<
 	 * @param params - Parameters matching the tool's schema
 	 * @param signal - Optional AbortSignal for cancellation
 	 * @param context - Optional execution context (sandbox, etc.)
+	 * @param onUpdate - Optional callback for partial tool output streaming
 	 * @returns Tool result with content and optional details
 	 */
 	execute: (
@@ -474,8 +526,13 @@ export interface AgentTool<
 		params: Record<string, unknown>,
 		signal?: AbortSignal,
 		context?: { sandbox?: import("../sandbox/types.js").Sandbox },
+		onUpdate?: AgentToolUpdateCallback<TDetails>,
 	) => AgentToolResult<TDetails> | Promise<AgentToolResult<TDetails>>;
 }
+
+export type AgentToolUpdateCallback<TDetails = unknown> = (
+	partial: AgentToolResult<TDetails>,
+) => void;
 
 /**
  * Result returned from tool execution.
@@ -757,7 +814,11 @@ export type UserMessageWithAttachments = UserMessage & {
  * Placeholder for custom message types.
  * Can be extended to add application-specific message types.
  */
-export type CustomMessages = Record<string, never>;
+export interface CustomMessages {
+	hookMessage: HookMessage;
+	branchSummary: BranchSummaryMessage;
+	compactionSummary: CompactionSummaryMessage;
+}
 
 /**
  * Application-level message type.
@@ -856,6 +917,7 @@ export interface AgentState {
  *
  * ## Tool Events
  * - `tool_execution_start` - Tool execution started
+ * - `tool_execution_update` - Tool execution produced partial output
  * - `tool_execution_end` - Tool execution completed
  * - `client_tool_request` - Client-side tool invocation needed
  *
@@ -952,6 +1014,18 @@ export type AgentEvent =
 			result: ToolResultMessage;
 			/** Whether the tool returned an error */
 			isError: boolean;
+	  }
+	| {
+			/** Tool execution produced partial output */
+			type: "tool_execution_update";
+			/** Tool call identifier */
+			toolCallId: string;
+			/** Name of the tool */
+			toolName: string;
+			/** Arguments passed to the tool */
+			args: Record<string, unknown>;
+			/** Partial tool result */
+			partialResult: AgentToolResult;
 	  }
 	| {
 			/** User approval required for an action */

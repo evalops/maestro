@@ -7,6 +7,7 @@
  * @module hooks/ui-context
  */
 
+import { theme } from "../theme/theme.js";
 import type { HookUIContext } from "./types.js";
 
 /**
@@ -102,6 +103,32 @@ export function createRpcUIContext(
 				// Ignore notification errors
 			});
 		},
+		setStatus(_key: string, _text: string | undefined): void {
+			// Not supported in RPC mode yet
+		},
+		async custom<T>(
+			_factory: (
+				tui: import("@evalops/tui").TUI,
+				theme: import("../theme/theme.js").Theme,
+				done: (result: T) => void,
+			) =>
+				| import("@evalops/tui").Component
+				| Promise<import("@evalops/tui").Component>,
+		): Promise<T> {
+			return undefined as T;
+		},
+		setEditorText(_text: string): void {
+			// Not supported in RPC mode yet
+		},
+		getEditorText(): string {
+			return "";
+		},
+		async editor(_title: string, _prefill?: string): Promise<string | null> {
+			return null;
+		},
+		get theme() {
+			return theme;
+		},
 	};
 }
 
@@ -122,6 +149,32 @@ export function createNoOpUIContext(): HookUIContext {
 		notify(_message: string, _type?: "info" | "warning" | "error"): void {
 			// No-op
 		},
+		setStatus(_key: string, _text: string | undefined): void {
+			// No-op
+		},
+		async custom<T>(
+			_factory: (
+				tui: import("@evalops/tui").TUI,
+				theme: import("../theme/theme.js").Theme,
+				done: (result: T) => void,
+			) =>
+				| import("@evalops/tui").Component
+				| Promise<import("@evalops/tui").Component>,
+		): Promise<T> {
+			return undefined as T;
+		},
+		setEditorText(_text: string): void {
+			// No-op
+		},
+		getEditorText(): string {
+			return "";
+		},
+		async editor(_title: string, _prefill?: string): Promise<string | null> {
+			return null;
+		},
+		get theme() {
+			return theme;
+		},
 	};
 }
 
@@ -130,75 +183,114 @@ export function createNoOpUIContext(): HookUIContext {
  * Uses readline for interactive prompts.
  */
 export function createConsoleUIContext(): HookUIContext {
+	const select = async (
+		title: string,
+		options: string[],
+	): Promise<string | null> => {
+		const readline = await import("node:readline");
+		const rl = readline.createInterface({
+			input: process.stdin,
+			output: process.stdout,
+		});
+
+		return new Promise((resolve) => {
+			console.log(`\n${title}`);
+			options.forEach((opt, i) => {
+				console.log(`  ${i + 1}. ${opt}`);
+			});
+
+			rl.question("Select (number): ", (answer) => {
+				rl.close();
+				const index = Number.parseInt(answer, 10) - 1;
+				if (index >= 0 && index < options.length) {
+					resolve(options[index]);
+				} else {
+					resolve(null);
+				}
+			});
+		});
+	};
+
+	const confirm = async (title: string, message: string): Promise<boolean> => {
+		const readline = await import("node:readline");
+		const rl = readline.createInterface({
+			input: process.stdin,
+			output: process.stdout,
+		});
+
+		return new Promise((resolve) => {
+			console.log(`\n${title}`);
+			console.log(message);
+
+			rl.question("Confirm (y/n): ", (answer) => {
+				rl.close();
+				resolve(answer.toLowerCase() === "y" || answer.toLowerCase() === "yes");
+			});
+		});
+	};
+
+	const input = async (
+		title: string,
+		placeholder?: string,
+	): Promise<string | null> => {
+		const readline = await import("node:readline");
+		const rl = readline.createInterface({
+			input: process.stdin,
+			output: process.stdout,
+		});
+
+		return new Promise((resolve) => {
+			const prompt = placeholder ? `${title} (${placeholder}): ` : `${title}: `;
+
+			rl.question(prompt, (answer) => {
+				rl.close();
+				resolve(answer || null);
+			});
+		});
+	};
+
+	const notify = (
+		message: string,
+		type?: "info" | "warning" | "error",
+	): void => {
+		const prefix =
+			type === "error" ? "ERROR" : type === "warning" ? "WARNING" : "INFO";
+		console.log(`[${prefix}] ${message}`);
+	};
+
 	return {
-		async select(title: string, options: string[]): Promise<string | null> {
-			const readline = await import("node:readline");
-			const rl = readline.createInterface({
-				input: process.stdin,
-				output: process.stdout,
-			});
-
-			return new Promise((resolve) => {
-				console.log(`\n${title}`);
-				options.forEach((opt, i) => {
-					console.log(`  ${i + 1}. ${opt}`);
-				});
-
-				rl.question("Select (number): ", (answer) => {
-					rl.close();
-					const index = Number.parseInt(answer, 10) - 1;
-					if (index >= 0 && index < options.length) {
-						resolve(options[index]);
-					} else {
-						resolve(null);
-					}
-				});
-			});
+		select,
+		confirm,
+		input,
+		notify,
+		setStatus(_key: string, _text: string | undefined): void {
+			// No-op in console mode
 		},
-
-		async confirm(title: string, message: string): Promise<boolean> {
-			const readline = await import("node:readline");
-			const rl = readline.createInterface({
-				input: process.stdin,
-				output: process.stdout,
-			});
-
-			return new Promise((resolve) => {
-				console.log(`\n${title}`);
-				console.log(message);
-
-				rl.question("Confirm (y/n): ", (answer) => {
-					rl.close();
-					resolve(
-						answer.toLowerCase() === "y" || answer.toLowerCase() === "yes",
-					);
-				});
-			});
+		async custom<T>(
+			_factory: (
+				tui: import("@evalops/tui").TUI,
+				theme: import("../theme/theme.js").Theme,
+				done: (result: T) => void,
+			) =>
+				| import("@evalops/tui").Component
+				| Promise<import("@evalops/tui").Component>,
+		): Promise<T> {
+			return undefined as T;
 		},
-
-		async input(title: string, placeholder?: string): Promise<string | null> {
-			const readline = await import("node:readline");
-			const rl = readline.createInterface({
-				input: process.stdin,
-				output: process.stdout,
-			});
-
-			return new Promise((resolve) => {
-				const prompt = placeholder
-					? `${title} (${placeholder}): `
-					: `${title}: `;
-
-				rl.question(prompt, (answer) => {
-					rl.close();
-					resolve(answer || null);
-				});
-			});
+		setEditorText(_text: string): void {
+			// No-op in console mode
 		},
-
-		notify(message: string, type?: "info" | "warning" | "error"): void {
-			const prefix =
-				type === "error" ? "ERROR" : type === "warning" ? "WARNING" : "INFO";
-			console.log(`[${prefix}] ${message}`);
+		getEditorText(): string {
+			return "";
+		},
+		async editor(title: string, prefill?: string): Promise<string | null> {
+			if (prefill) {
+				console.log(`\n${title}\n${prefill}`);
+			}
+			return input(title);
+		},
+		get theme() {
+			return theme;
 		},
 	};
 }

@@ -32,6 +32,7 @@
  * | anthropic_oauth_env | Anthropic OAuth token from env           |
  * | anthropic_oauth_file| Anthropic OAuth from stored credentials  |
  * | openai_oauth_file   | OpenAI OAuth from stored credentials     |
+ * | google_oauth_file   | Google OAuth from stored credentials     |
  *
  * ## Example
  *
@@ -65,7 +66,8 @@ export type AuthCredentialSource =
 	| "custom_env"
 	| "anthropic_oauth_env"
 	| "anthropic_oauth_file"
-	| "openai_oauth_file";
+	| "openai_oauth_file"
+	| "google_oauth_file";
 
 export interface AuthCredential {
 	provider: string;
@@ -98,6 +100,13 @@ function isOpenAIProvider(provider: string): boolean {
 	);
 }
 
+function isGoogleGeminiCliProvider(provider: string): boolean {
+	const normalized = provider.toLowerCase();
+	return (
+		normalized === "google-gemini-cli" || normalized === "google-antigravity"
+	);
+}
+
 export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 	const explicitKey = options.explicitApiKey?.trim();
 	return async (provider: string): Promise<AuthCredential | undefined> => {
@@ -124,6 +133,30 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 					source: "openai_oauth_file",
 					metadata: { mode: oauthCred.mode },
 				};
+			}
+		}
+
+		if (isGoogleGeminiCliProvider(provider) && options.mode !== "api-key") {
+			const oauthProvider =
+				normalizedProvider === "google-antigravity"
+					? "google-antigravity"
+					: "google-gemini-cli";
+			const oauthToken = await getOAuthToken(oauthProvider);
+			if (oauthToken) {
+				const credentials = loadOAuthCredentials(oauthProvider);
+				const projectId =
+					typeof credentials?.metadata?.projectId === "string"
+						? credentials.metadata.projectId
+						: undefined;
+				if (projectId) {
+					return {
+						provider,
+						token: JSON.stringify({ token: oauthToken, projectId }),
+						type: "api-key",
+						source: "google_oauth_file",
+						metadata: credentials?.metadata,
+					};
+				}
 			}
 		}
 

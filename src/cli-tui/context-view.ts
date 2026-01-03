@@ -1,4 +1,5 @@
 import type { Component } from "@evalops/tui";
+import { convertAppMessageToLlm } from "../agent/custom-messages.js";
 import type {
 	AgentState,
 	AssistantMessage,
@@ -171,14 +172,20 @@ export class ContextView implements Component {
 		}
 
 		for (const msg of state.messages) {
-			const tokens = estimate(JSON.stringify(msg.content));
+			const llmMessage = convertAppMessageToLlm(msg);
+			if (!llmMessage) {
+				continue;
+			}
+			const tokens = estimate(JSON.stringify(llmMessage.content));
 
 			if (msg.role === "user") {
 				let label = "";
-				if (Array.isArray(msg.content)) {
+				if (Array.isArray(llmMessage.content)) {
 					label = "Multipart User Message";
 				} else {
-					label = (msg.content as string).slice(0, 50).replace(/\n/g, " ");
+					label = (llmMessage.content as string)
+						.slice(0, 50)
+						.replace(/\n/g, " ");
 				}
 
 				items.push({
@@ -208,6 +215,27 @@ export class ContextView implements Component {
 					tokens,
 					percent: totalTokens > 0 ? (tokens / totalTokens) * 100 : 0,
 					type: "tool",
+				});
+			} else if (msg.role === "hookMessage") {
+				items.push({
+					label: `Hook Message (${msg.customType}) (est.)`,
+					tokens,
+					percent: totalTokens > 0 ? (tokens / totalTokens) * 100 : 0,
+					type: "tool",
+				});
+			} else if (msg.role === "branchSummary") {
+				items.push({
+					label: "Branch Summary (est.)",
+					tokens,
+					percent: totalTokens > 0 ? (tokens / totalTokens) * 100 : 0,
+					type: "user",
+				});
+			} else if (msg.role === "compactionSummary") {
+				items.push({
+					label: "Compaction Summary (est.)",
+					tokens,
+					percent: totalTokens > 0 ? (tokens / totalTokens) * 100 : 0,
+					type: "user",
 				});
 			}
 		}

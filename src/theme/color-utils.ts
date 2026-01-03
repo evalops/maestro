@@ -77,7 +77,21 @@ export function detectColorMode(): ColorMode {
  * hexToRgb("#00ff00") // { r: 0, g: 255, b: 0 }
  */
 export function hexToRgb(hex: string): RgbColor {
-	const cleaned = hex.replace("#", "");
+	let cleaned = hex.replace("#", "");
+	if (cleaned.length === 8) {
+		cleaned = cleaned.slice(0, 6);
+	} else if (cleaned.length === 4) {
+		cleaned = cleaned
+			.slice(0, 3)
+			.split("")
+			.map((ch) => ch + ch)
+			.join("");
+	} else if (cleaned.length === 3) {
+		cleaned = cleaned
+			.split("")
+			.map((ch) => ch + ch)
+			.join("");
+	}
 	if (cleaned.length !== 6) {
 		throw new Error(`Invalid hex color: ${hex}`);
 	}

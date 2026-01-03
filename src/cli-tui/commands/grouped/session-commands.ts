@@ -10,6 +10,7 @@
  *   /session list         - List recent sessions
  *   /session load <id>    - Load a session by ID
  *   /session branch [n]   - Branch from message n
+ *   /session tree         - Navigate the session tree
  *   /session queue        - Show/manage message queue
  *   /session export       - Export session to file
  *   /session share        - Generate shareable HTML
@@ -27,6 +28,7 @@ export interface SessionCommandDeps {
 	handleClear: () => Promise<void> | void;
 	handleSessionsList: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleBranch: (ctx: CommandExecutionContext) => Promise<void> | void;
+	handleTree: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleQueue: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleExport: (ctx: CommandExecutionContext) => Promise<void> | void;
 	handleShare: (ctx: CommandExecutionContext) => Promise<void> | void;
@@ -74,6 +76,9 @@ export function createSessionCommandHandler(deps: SessionCommandDeps) {
 
 			case "branch":
 				await deps.handleBranch(rewriteContext("branch"));
+				break;
+			case "tree":
+				await deps.handleTree(rewriteContext("tree"));
 				break;
 
 			case "queue":
@@ -141,6 +146,7 @@ function showSessionHelp(ctx: CommandExecutionContext): void {
   /session list         List recent sessions
   /session load <id>    Load a session by ID or index
   /session branch [n]   Branch from user message n
+  /session tree         Navigate the session tree
   /session queue        Show/manage message queue
   /session export       Export session to file
   /session share        Generate shareable HTML
