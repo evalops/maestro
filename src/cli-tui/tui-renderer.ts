@@ -727,7 +727,7 @@ export class TuiRenderer {
 			notifyFileChanges: () => this.gitView.notifyFileChanges(),
 			inMinimalMode: () => this.isMinimalMode(),
 		});
-		this.ui.setInterruptHandler(() => this.runController.handleCtrlC());
+		this.ui.setInterruptHandler(() => this.handleCtrlC());
 		this.toolStatusView = new ToolStatusView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -1358,7 +1358,7 @@ export class TuiRenderer {
 				this.isAgentRunning || this.interruptController.isArmed(),
 			onInterrupt: () => this.inputController.handleInterruptRequest(),
 			onKeepPartial: () => this.inputController.handleKeepPartialRequest(),
-			onCtrlC: () => this.runController.handleCtrlC(),
+			onCtrlC: () => this.handleCtrlC(),
 			onCtrlD: () => this.inputController.handleCtrlDExit(),
 			showCommandPalette: () => this.commandPaletteView.showCommandPalette(),
 			showFileSearch: () => this.fileSearchView.showFileSearch(),
@@ -1549,6 +1549,15 @@ export class TuiRenderer {
 		callback: (options?: { keepPartial?: boolean }) => void,
 	): void {
 		this.inputController.setInterruptCallback(callback);
+	}
+
+	private handleCtrlC(): void {
+		if (this.bashModeView.isCommandRunning()) {
+			if (this.bashModeView.abortCurrentCommand()) {
+				return;
+			}
+		}
+		this.runController.handleCtrlC();
 	}
 
 	private renderHeader(): void {
