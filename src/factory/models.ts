@@ -12,7 +12,8 @@ export interface FactoryModel {
 export function toFactoryModels(config: CustomModelConfig): FactoryModel[] {
 	const models: FactoryModel[] = [];
 	for (const provider of config.providers) {
-		for (const model of provider.models) {
+		const providerModels = provider.models ?? [];
+		for (const model of providerModels) {
 			const baseUrl = model.baseUrl ?? provider.baseUrl;
 			if (!baseUrl) continue;
 			models.push({

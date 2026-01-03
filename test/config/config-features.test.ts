@@ -481,6 +481,60 @@ describe("Config Features", () => {
 		});
 	});
 
+	describe("Built-in provider overrides", () => {
+		it("should override baseUrl for built-in models", () => {
+			const configPath = join(testDir, "override-baseurl.json");
+			const overrideUrl = "http://localhost:7777/v1/messages";
+			const config = {
+				providers: [
+					{
+						id: "anthropic",
+						name: "Anthropic",
+						baseUrl: overrideUrl,
+					},
+				],
+			};
+
+			writeConfigFile(configPath, config);
+			process.env.COMPOSER_CONFIG = configPath;
+			reloadModelConfig();
+
+			const models = getRegisteredModels().filter(
+				(model) => model.provider === "anthropic",
+			);
+			expect(models.length).toBeGreaterThan(0);
+			for (const model of models) {
+				expect(model.baseUrl).toBe(overrideUrl);
+				expect(model.isLocal).toBe(true);
+			}
+		});
+
+		it("should apply header overrides to built-in models", () => {
+			const configPath = join(testDir, "override-headers.json");
+			const config = {
+				providers: [
+					{
+						id: "anthropic",
+						name: "Anthropic",
+						headers: {
+							"X-Test-Header": "enabled",
+						},
+					},
+				],
+			};
+
+			writeConfigFile(configPath, config);
+			process.env.COMPOSER_CONFIG = configPath;
+			reloadModelConfig();
+
+			const models = getRegisteredModels().filter(
+				(model) => model.provider === "anthropic",
+			);
+			expect(models.length).toBeGreaterThan(0);
+			expect(models[0]?.headers?.["X-Test-Header"]).toBe("enabled");
+		});
+	});
+
 	describe("Local provider detection", () => {
 		it("should mark localhost providers as local in inspection", () => {
 			const configPath = join(testDir, "local-provider.json");

@@ -26,7 +26,7 @@ export function loadComposerConfigOrThrow(): CustomModelConfig {
 
 export function countModels(config: CustomModelConfig): number {
 	return config.providers.reduce(
-		(total, provider) => total + provider.models.length,
+		(total, provider) => total + (provider.models?.length ?? 0),
 		0,
 	);
 }
