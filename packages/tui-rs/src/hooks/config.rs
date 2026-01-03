@@ -388,6 +388,8 @@ fn parse_event_type(name: &str) -> Option<HookEventType> {
         "SessionStart" => Some(HookEventType::SessionStart),
         "SessionEnd" => Some(HookEventType::SessionEnd),
         "SessionSwitch" => Some(HookEventType::SessionSwitch),
+        "SessionBeforeTree" => Some(HookEventType::SessionBeforeTree),
+        "SessionTree" => Some(HookEventType::SessionTree),
         "UserPromptSubmit" => Some(HookEventType::UserPromptSubmit),
         "PreCompact" => Some(HookEventType::PreCompact),
         "Notification" => Some(HookEventType::Notification),

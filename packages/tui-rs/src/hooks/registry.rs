@@ -282,6 +282,8 @@ impl HookRegistry {
             | HookEventType::PreCompact
             | HookEventType::Notification
             | HookEventType::SessionSwitch
+            | HookEventType::SessionBeforeTree
+            | HookEventType::SessionTree
             | HookEventType::Branch => false,
         }
     }

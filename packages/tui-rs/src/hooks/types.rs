@@ -36,6 +36,8 @@ pub enum HookEventType {
     SessionStart,
     SessionEnd,
     SessionSwitch,
+    SessionBeforeTree,
+    SessionTree,
     UserPromptSubmit,
     PreCompact,
     Notification,
