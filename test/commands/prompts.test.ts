@@ -112,6 +112,12 @@ describe("prompts", () => {
 			expect(renderPrompt(prompt, args)).toBe("All args: foo bar baz");
 		});
 
+		it("does not rewrite positional markers inside $ARGUMENTS", () => {
+			const prompt = createPrompt("First: $1 All: $ARGUMENTS", true);
+			const args = { positional: ["foo", "$1"], named: {} };
+			expect(renderPrompt(prompt, args)).toBe("First: foo All: foo $1");
+		});
+
 		it("handles $$ escape sequence", () => {
 			const prompt = createPrompt("Cost is $$100");
 			const args = { positional: [], named: {} };
