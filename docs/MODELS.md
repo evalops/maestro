@@ -29,27 +29,45 @@ Custom config files accept:
 
 ```json
 {
-  "providers": {
-    "my-provider": {
-      "baseUrl": "https://api.example.com/v1",
-      "headers": { "Authorization": "Bearer ..." },
-      "enabled": true
-    }
-  },
-  "models": [
+  "providers": [
     {
-      "provider": "my-provider",
-      "id": "my-model",
-      "name": "My Model",
-      "reasoning": false,
-      "contextWindow": 128000
+      "id": "anthropic",
+      "name": "Anthropic",
+      "baseUrl": "https://proxy.example.com/v1/messages",
+      "headers": { "X-Proxy-User": "alice" }
+    },
+    {
+      "id": "my-provider",
+      "name": "My Provider",
+      "api": "openai-responses",
+      "baseUrl": "https://api.example.com/v1",
+      "apiKeyEnv": "MY_PROVIDER_API_KEY",
+      "models": [
+        {
+          "id": "my-model",
+          "name": "My Model",
+          "reasoning": false,
+          "contextWindow": 128000,
+          "maxTokens": 4096
+        }
+      ]
     }
-  ]
+  ],
+  "aliases": {
+    "fast": "anthropic/claude-haiku"
+  }
 }
 ```
 
 Factory files follow their own schema; Composer maps Factory model IDs to
 providers internally (see `factoryDataCache.modelProviderMap`).
+
+### Override-only providers
+
+If a provider entry omits `models`, it is treated as an override for built-in
+providers (matched by `id`). In this mode, `baseUrl` and `headers` are applied
+to **all** built-in models for that provider. Provider headers are merged with
+model headers (model-specific headers win).
 
 ## Provider Loaders
 

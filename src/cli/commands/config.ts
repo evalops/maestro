@@ -204,18 +204,28 @@ export function buildConfigShowSections(
 			badge(`Providers (${inspection.providers.length})`, undefined, "info"),
 		);
 		for (const provider of inspection.providers) {
+			const isOverrideOnly = provider.modelCount === 0;
 			const heading = `${chalk.cyan(provider.id)} ${muted(
 				`(${provider.modelCount} models)`,
 			)}`;
-			const keyBadge = provider.apiKeySource
-				? badge("API key", provider.apiKeySource, "success")
-				: badge("API key missing", undefined, "warn");
 			const enabledBadge = provider.enabled
 				? badge("enabled", undefined, "success")
 				: badge("disabled", undefined, "warn");
-			output.push(
-				`  ${heading} ${themedSeparator()} ${keyBadge} ${themedSeparator()} ${enabledBadge}`,
-			);
+			const metaBadges: string[] = [];
+			if (isOverrideOnly) {
+				metaBadges.push(badge("override-only", undefined, "info"));
+				if (provider.apiKeySource) {
+					metaBadges.push(badge("API key", provider.apiKeySource, "success"));
+				}
+			} else {
+				const keyBadge = provider.apiKeySource
+					? badge("API key", provider.apiKeySource, "success")
+					: badge("API key missing", undefined, "warn");
+				metaBadges.push(keyBadge);
+			}
+			metaBadges.push(enabledBadge);
+			const metaLine = metaBadges.join(` ${themedSeparator()} `);
+			output.push(`  ${heading} ${themedSeparator()} ${metaLine}`);
 			output.push(`     ${muted(provider.name)}`);
 			output.push(`     ${muted(`Base URL: ${provider.baseUrl}`)}`);
 			if (provider.options && Object.keys(provider.options).length > 0) {
@@ -378,19 +388,29 @@ function renderConfigShowLegacy(
 			badge(`Providers (${inspection.providers.length})`, undefined, "info"),
 		);
 		for (const provider of inspection.providers) {
+			const isOverrideOnly = provider.modelCount === 0;
 			const heading = `${chalk.cyan(provider.id)} ${muted(
 				`(${provider.modelCount} models)`,
 			)}`;
-			const keyBadge = provider.apiKeySource
-				? badge("API key", provider.apiKeySource, "success")
-				: badge("API key missing", undefined, "warn");
 			const enabledBadge = provider.enabled
 				? badge("enabled", undefined, "success")
 				: badge("disabled", undefined, "warn");
+			const metaBadges: string[] = [];
+			if (isOverrideOnly) {
+				metaBadges.push(badge("override-only", undefined, "info"));
+				if (provider.apiKeySource) {
+					metaBadges.push(badge("API key", provider.apiKeySource, "success"));
+				}
+			} else {
+				const keyBadge = provider.apiKeySource
+					? badge("API key", provider.apiKeySource, "success")
+					: badge("API key missing", undefined, "warn");
+				metaBadges.push(keyBadge);
+			}
+			metaBadges.push(enabledBadge);
+			const metaLine = metaBadges.join(` ${themedSeparator()} `);
 
-			console.log(
-				`  ${heading} ${themedSeparator()} ${keyBadge} ${themedSeparator()} ${enabledBadge}`,
-			);
+			console.log(`  ${heading} ${themedSeparator()} ${metaLine}`);
 			console.log(`     ${muted(provider.name)}`);
 			console.log(`     ${muted(`Base URL: ${provider.baseUrl}`)}`);
 			if (provider.options && Object.keys(provider.options).length > 0) {

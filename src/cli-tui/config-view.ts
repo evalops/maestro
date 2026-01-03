@@ -206,7 +206,13 @@ export class ConfigView {
 		const sections = inspection.providers.map((provider) => {
 			const header = `${chalk.bold(provider.name)} ${muted(`(${provider.id})`)}`;
 			const metaParts = [badge("Models", String(provider.modelCount))];
-			if (provider.apiKeySource) {
+			const isOverrideOnly = provider.modelCount === 0;
+			if (isOverrideOnly) {
+				metaParts.push(badge("override-only", undefined, "info"));
+				if (provider.apiKeySource) {
+					metaParts.push(badge("API key", provider.apiKeySource, "success"));
+				}
+			} else if (provider.apiKeySource) {
 				metaParts.push(badge("API key", provider.apiKeySource, "success"));
 			} else if (provider.isLocal) {
 				metaParts.push(badge("No API key", "local", "info"));

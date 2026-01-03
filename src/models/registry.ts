@@ -1187,7 +1187,13 @@ export function validateConfig(): ConfigValidationResult {
 			if (config) {
 				result.summary.providers += config.providers.length;
 				for (const provider of config.providers) {
-					result.summary.models += provider.models?.length ?? 0;
+					const modelCount = provider.models?.length ?? 0;
+					result.summary.models += modelCount;
+					if (modelCount === 0 && !provider.baseUrl && !provider.headers) {
+						result.warnings.push(
+							`Provider "${provider.id}" has no models and no override settings (baseUrl/headers); entry has no effect.`,
+						);
+					}
 				}
 			}
 		} catch (error) {
