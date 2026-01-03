@@ -241,6 +241,10 @@ If "not found", read file to check actual content.`,
 			);
 		}
 
+		if (replaceAll && occurrence !== 1) {
+			throw new Error("Cannot use both replaceAll and occurrence.");
+		}
+
 		const normalizedOldText = normalizeEditText(oldText);
 		const normalizedNewText = normalizeEditText(newText);
 		const normalizedEdits = edits?.map((edit) => ({
