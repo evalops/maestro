@@ -434,6 +434,24 @@ describe("Config Features", () => {
 			const result = validateConfig();
 			expect(result.warnings.length).toBeGreaterThan(0);
 		});
+
+		it("should warn on providers with no models and no overrides", () => {
+			const configPath = join(testDir, "noop-provider.json");
+			const config = {
+				providers: [
+					{
+						id: "noop",
+						name: "No-op Provider",
+					},
+				],
+			};
+
+			writeConfigFile(configPath, config);
+			process.env.COMPOSER_CONFIG = configPath;
+
+			const result = validateConfig();
+			expect(result.warnings.some((w) => w.includes("no effect"))).toBe(true);
+		});
 	});
 
 	describe("Config Inspection", () => {
