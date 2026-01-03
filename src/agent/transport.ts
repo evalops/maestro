@@ -595,12 +595,18 @@ export class ProviderTransport implements AgentTransport {
 			};
 		}
 
+		const trainingHeaders = getTrainingHeaders();
+		const headers =
+			trainingHeaders || model.headers
+				? { ...(model.headers ?? {}), ...(trainingHeaders ?? {}) }
+				: undefined;
+
 		const streamOptions = {
 			apiKey,
 			maxTokens: model.maxTokens,
 			signal,
 			authType: credential?.type ?? "api-key",
-			headers: getTrainingHeaders(),
+			headers,
 		};
 
 		let hasMoreToolCalls = true;

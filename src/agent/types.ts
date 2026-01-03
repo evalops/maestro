@@ -729,6 +729,8 @@ export interface Model<TApi extends Api> {
 	provider: Provider;
 	/** Base URL for API requests */
 	baseUrl: string;
+	/** Optional custom headers to include in API requests */
+	headers?: Record<string, string>;
 	/** Whether the model supports extended thinking */
 	reasoning: boolean;
 	/** Whether the model supports tool use */

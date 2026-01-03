@@ -167,11 +167,12 @@ const providerSchema = Type.Object({
 	name: Type.String({ minLength: 1 }),
 	api: Type.Optional(modelSchema.properties.api),
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
+	headers: headersSchema,
 	apiKeyEnv: Type.Optional(Type.String({ minLength: 1 })),
 	apiKey: Type.Optional(Type.String({ minLength: 1 })),
 	enabled: Type.Optional(Type.Boolean({ default: true })),
 	options: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-	models: Type.Array(modelSchema, { minItems: 1 }),
+	models: Type.Optional(Type.Array(modelSchema)),
 });
 
 const configSchema = Type.Object({
@@ -259,6 +260,16 @@ function mergeDeep<T>(target: T, source: Partial<T>): T {
 	}
 
 	return output;
+}
+
+function mergeHeaders(
+	base?: Record<string, string>,
+	overrides?: Record<string, string>,
+): Record<string, string> | undefined {
+	if (!base && !overrides) {
+		return undefined;
+	}
+	return { ...(base ?? {}), ...(overrides ?? {}) };
 }
 
 function isObject(item: unknown): item is Record<string, unknown> {
@@ -424,10 +435,7 @@ function applyProviderLoader(
 	// Merge loader results with provider config
 	if (result) {
 		if (result.headers) {
-			enhanced.models = enhanced.models.map((model) => ({
-				...model,
-				headers: { ...result.headers, ...model.headers },
-			}));
+			enhanced.headers = mergeHeaders(result.headers, enhanced.headers);
 		}
 
 		if (result.baseUrl && !provider.baseUrl) {
@@ -679,6 +687,7 @@ function toModel(provider: CustomProvider, model: CustomModel): Model<Api> {
 
 	// Normalize the base URL
 	baseUrl = normalizeBaseUrl(baseUrl, provider.id, api);
+	const headers = mergeHeaders(provider.headers, model.headers);
 
 	return {
 		id: model.id,
@@ -686,6 +695,7 @@ function toModel(provider: CustomProvider, model: CustomModel): Model<Api> {
 		api,
 		provider: provider.id,
 		baseUrl,
+		headers,
 		reasoning: model.reasoning ?? false,
 		input: model.input ?? ["text"],
 		cost: model.cost ?? { ...COST_DEFAULT },
@@ -694,22 +704,56 @@ function toModel(provider: CustomProvider, model: CustomModel): Model<Api> {
 	};
 }
 
+interface ProviderOverride {
+	baseUrl?: string;
+	headers?: Record<string, string>;
+}
+
+function getProviderOverrides(
+	config: CustomModelConfig,
+): Map<string, ProviderOverride> {
+	const overrides = new Map<string, ProviderOverride>();
+
+	for (const provider of config.providers) {
+		const models = provider.models ?? [];
+		if (models.length > 0) {
+			continue;
+		}
+		if (provider.baseUrl || provider.headers) {
+			overrides.set(provider.id, {
+				baseUrl: provider.baseUrl,
+				headers: provider.headers,
+			});
+		}
+	}
+
+	return overrides;
+}
+
 function buildRegistry(): RegisteredModel[] {
 	const registry: RegisteredModel[] = [];
+	const config = loadConfig();
+	const overrides = getProviderOverrides(config);
 	// Built-in
 	for (const provider of getProviders()) {
+		const override = overrides.get(provider);
 		for (const model of getModels(provider)) {
+			const baseUrl = override?.baseUrl
+				? normalizeBaseUrl(override.baseUrl, provider, model.api)
+				: model.baseUrl;
+			const headers = mergeHeaders(model.headers, override?.headers);
 			registry.push({
 				...(model as Model<Api>),
+				baseUrl,
+				headers,
 				providerName: provider,
 				source: "builtin",
-				isLocal: false,
+				isLocal: isLocalBaseUrl(baseUrl),
 			});
 		}
 	}
 	// Custom
 	customProviderMetadata.clear();
-	const config = loadConfig();
 	for (const provider of config.providers) {
 		customProviderMetadata.set(provider.id, {
 			id: provider.id,
@@ -718,7 +762,8 @@ function buildRegistry(): RegisteredModel[] {
 			apiKeyEnv: provider.apiKeyEnv,
 			baseUrl: provider.baseUrl,
 		});
-		for (const model of provider.models) {
+		const models = provider.models ?? [];
+		for (const model of models) {
 			const resolved = toModel(provider, model);
 			const modelBaseUrl = model.baseUrl ?? provider.baseUrl;
 			registry.push({
@@ -947,6 +992,7 @@ function buildFactoryData(): {
 				contextWindow: maxTokens,
 				maxTokens,
 			};
+			provider.models ??= [];
 			provider.models.push(model);
 			modelProviderMap.set(entry.model, provider.id);
 		}
@@ -1141,7 +1187,7 @@ export function validateConfig(): ConfigValidationResult {
 			if (config) {
 				result.summary.providers += config.providers.length;
 				for (const provider of config.providers) {
-					result.summary.models += provider.models.length;
+					result.summary.models += provider.models?.length ?? 0;
 				}
 			}
 		} catch (error) {
@@ -1219,6 +1265,7 @@ export function inspectConfig(): ConfigInspection {
 
 	// Track providers
 	for (const provider of config.providers) {
+		const models = provider.models ?? [];
 		let apiKeySource: string | undefined;
 
 		if (provider.apiKeyEnv) {
@@ -1230,7 +1277,7 @@ export function inspectConfig(): ConfigInspection {
 		const providerBase = provider.baseUrl || "(auto-generated)";
 		const local =
 			isLocalBaseUrl(provider.baseUrl) ||
-			provider.models.some((model) => isLocalBaseUrl(model.baseUrl));
+			models.some((model) => isLocalBaseUrl(model.baseUrl));
 		inspection.providers.push({
 			id: provider.id,
 			name: provider.name,
@@ -1239,8 +1286,8 @@ export function inspectConfig(): ConfigInspection {
 			apiKeySource,
 			isLocal: local,
 			options: provider.options,
-			modelCount: provider.models.length,
-			models: provider.models.map((m) => ({
+			modelCount: models.length,
+			models: models.map((m) => ({
 				id: m.id,
 				name: m.name,
 				reasoning: m.reasoning,
