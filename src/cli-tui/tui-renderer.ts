@@ -1552,8 +1552,10 @@ export class TuiRenderer {
 	}
 
 	private handleCtrlC(): void {
-		if (this.bashModeView.isCommandRunning()) {
-			if (this.bashModeView.abortCurrentCommand()) {
+		const bashModeView = this.bashModeView;
+		if (bashModeView?.isCommandRunning()) {
+			if (bashModeView.abortCurrentCommand()) {
+				this.runController.recordCtrlC();
 				return;
 			}
 		}
