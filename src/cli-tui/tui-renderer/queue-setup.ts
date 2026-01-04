@@ -37,7 +37,9 @@ export function createQueueController(params: {
 		callbacks: {
 			onModeChange: (kind, mode) => {
 				if (kind === "steering") {
-					agent.setQueueMode(mode === "all" ? "all" : "one");
+					agent.setSteeringMode(mode === "all" ? "all" : "one");
+				} else {
+					agent.setFollowUpMode(mode === "all" ? "all" : "one");
 				}
 				refreshQueuePanel();
 			},

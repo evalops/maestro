@@ -249,6 +249,8 @@ export async function handleBranch(
 				thinkingLevel: (thinkingLevel as "off" | "low" | "high") ?? "off",
 				systemPrompt: "",
 				tools: [],
+				steeringMode: "all" as const,
+				followUpMode: "all" as const,
 				queueMode: "all" as const,
 				isStreaming: false,
 				streamMessage: null,
@@ -259,6 +261,8 @@ export async function handleBranch(
 				thinkingLevel: "off" | "low" | "high";
 				systemPrompt: string;
 				tools: never[];
+				steeringMode: "all";
+				followUpMode: "all";
 				queueMode: "all";
 				isStreaming: boolean;
 				streamMessage: null;

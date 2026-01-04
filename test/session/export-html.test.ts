@@ -38,6 +38,8 @@ function buildAgentState(): AgentState {
 		},
 		thinkingLevel: "off",
 		tools: [],
+		steeringMode: "all",
+		followUpMode: "all",
 		queueMode: "all",
 		messages: [],
 		isStreaming: false,

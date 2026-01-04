@@ -86,6 +86,8 @@ function createMockState(
 		},
 		tools: [],
 		thinkingLevel: "off",
+		steeringMode: "all",
+		followUpMode: "all",
 		queueMode: "all",
 		isStreaming: false,
 		streamMessage: null,

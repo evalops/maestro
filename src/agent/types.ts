@@ -859,9 +859,19 @@ export interface AgentState {
 	/** Available tools for this agent */
 	tools: AgentTool[];
 	/**
-	 * Controls how queued messages are sent between turns.
+	 * Controls how queued steering messages are sent between turns.
 	 * - `"all"` - Send all queued messages at once
 	 * - `"one"` - Send one message at a time
+	 */
+	steeringMode: "all" | "one";
+	/**
+	 * Controls how queued follow-up messages are sent between turns.
+	 * - `"all"` - Send all queued messages at once
+	 * - `"one"` - Send one message at a time
+	 */
+	followUpMode: "all" | "one";
+	/**
+	 * @deprecated Use steeringMode/followUpMode instead.
 	 */
 	queueMode: "all" | "one";
 	/** Conversation history */
@@ -1122,7 +1132,11 @@ export interface AgentRunConfig {
 	model: Model<Api>;
 	/** Optional reasoning effort level */
 	reasoning?: ReasoningEffort;
-	/** Function to retrieve queued messages for batch sending */
+	/** Function to retrieve steering messages for batch sending */
+	getSteeringMessages?: <T>() => Promise<QueuedMessage<T>[]>;
+	/** Function to retrieve follow-up messages for batch sending */
+	getFollowUpMessages?: <T>() => Promise<QueuedMessage<T>[]>;
+	/** @deprecated Use getSteeringMessages/getFollowUpMessages instead */
 	getQueuedMessages?: <T>() => Promise<QueuedMessage<T>[]>;
 	/**
 	 * Optional message preprocessor applied immediately before calling the LLM provider.

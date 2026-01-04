@@ -1604,7 +1604,7 @@ export async function main(args: string[]) {
 		};
 		if (agent.state.isStreaming) {
 			// Queue message for processing after current turn
-			void agent.queueMessage(message);
+			void agent.followUp(message);
 		} else {
 			// Start new turn immediately
 			void agent.prompt(text, attachments);
@@ -1637,7 +1637,7 @@ export async function main(args: string[]) {
 		);
 		if (agent.state.isStreaming) {
 			// Queue for next turn; triggerTurn is ignored while streaming
-			void agent.queueMessage(hookMessage);
+			void agent.followUp(hookMessage);
 			return;
 		}
 		agent.injectMessage(hookMessage);

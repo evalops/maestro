@@ -517,7 +517,8 @@ export class TuiRenderer {
 		this.recentCommands = initialPrefs.recentCommands;
 		this.favoriteCommands = initialPrefs.favoriteCommands;
 		this.agent = agent;
-		this.agent.setQueueMode(initialSteeringMode === "all" ? "all" : "one");
+		this.agent.setSteeringMode(initialSteeringMode === "all" ? "all" : "one");
+		this.agent.setFollowUpMode(initialFollowUpMode === "all" ? "all" : "one");
 		this.sessionManager = sessionManager;
 		this.version = version;
 		this.explicitApiKey = explicitApiKey;

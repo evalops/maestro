@@ -36,9 +36,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const MAX_PENDING_MESSAGES: usize = 10;
 
 /// Kind of prompt queued while the agent is busy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PromptKind {
     /// Standard prompt (normal submission)
+    #[default]
     Prompt,
     /// Steering prompt (interrupt + higher priority)
     Steer,
@@ -53,12 +54,6 @@ impl PromptKind {
             PromptKind::Steer => "steer",
             PromptKind::FollowUp => "follow-up",
         }
-    }
-}
-
-impl Default for PromptKind {
-    fn default() -> Self {
-        PromptKind::Prompt
     }
 }
 

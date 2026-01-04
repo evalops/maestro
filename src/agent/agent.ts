@@ -307,7 +307,10 @@ export class Agent {
 		messages: AppMessage[],
 	) => Message[] | Promise<Message[]>;
 	private preprocessMessages?: PreprocessMessagesFn;
-	private messageQueue: Array<QueuedMessage<AppMessage>> = [];
+	private steeringQueue: Array<QueuedMessage<AppMessage>> = [];
+	private followUpQueue: Array<QueuedMessage<AppMessage>> = [];
+	private steeringMode: "all" | "one" = "all";
+	private followUpMode: "all" | "one" = "all";
 	private queueMode: "all" | "one" = "all";
 	private runningPrompt?: Promise<void>;
 	private resolveRunningPrompt?: () => void;
@@ -343,9 +346,13 @@ export class Agent {
 			thinkingLevel,
 			tools,
 			queueMode,
+			steeringMode,
+			followUpMode,
 			...restInitialState
 		} = opts.initialState ?? {};
 		this.queueMode = queueMode ?? "all";
+		this.steeringMode = steeringMode ?? queueMode ?? "all";
+		this.followUpMode = followUpMode ?? queueMode ?? "all";
 
 		if (restInitialState.user) {
 			if (
@@ -375,6 +382,8 @@ export class Agent {
 				restInitialState.sandboxEnabled ?? Boolean(restInitialState.sandbox),
 			...restInitialState,
 			queueMode: this.queueMode,
+			steeringMode: this.steeringMode,
+			followUpMode: this.followUpMode,
 		};
 	}
 
@@ -461,16 +470,32 @@ export class Agent {
 		}
 	}
 
-	private async dequeueQueuedMessages<T>(): Promise<QueuedMessage<T>[]> {
-		if (this.messageQueue.length === 0) {
+	private async dequeueSteeringMessages<T>(): Promise<QueuedMessage<T>[]> {
+		if (this.steeringQueue.length === 0) {
 			return [];
 		}
-		if (this.queueMode === "one") {
-			const next = this.messageQueue.shift();
+		if (this.steeringMode === "one") {
+			const next = this.steeringQueue.shift();
 			return next ? [next as QueuedMessage<T>] : [];
 		}
-		const queued = this.messageQueue.splice(0) as QueuedMessage<T>[];
+		const queued = this.steeringQueue.splice(0) as QueuedMessage<T>[];
 		return queued;
+	}
+
+	private async dequeueFollowUpMessages<T>(): Promise<QueuedMessage<T>[]> {
+		if (this.followUpQueue.length === 0) {
+			return [];
+		}
+		if (this.followUpMode === "one") {
+			const next = this.followUpQueue.shift();
+			return next ? [next as QueuedMessage<T>] : [];
+		}
+		const queued = this.followUpQueue.splice(0) as QueuedMessage<T>[];
+		return queued;
+	}
+
+	private async dequeueQueuedMessages<T>(): Promise<QueuedMessage<T>[]> {
+		return this.dequeueFollowUpMessages<T>();
 	}
 
 	/**
@@ -504,12 +529,42 @@ export class Agent {
 	}
 
 	/**
-	 * Controls how queued messages are drained between turns.
+	 * Controls how queued steering messages are drained between turns.
 	 * "all" (default) sends the full queue; "one" sends a single item per turn.
+	 */
+	setSteeringMode(mode: "all" | "one"): void {
+		this.steeringMode = mode;
+		this.queueMode = mode;
+		this._state.steeringMode = mode;
+		this._state.queueMode = mode;
+	}
+
+	getSteeringMode(): "all" | "one" {
+		return this.steeringMode;
+	}
+
+	/**
+	 * Controls how queued follow-up messages are drained between turns.
+	 * "all" (default) sends the full queue; "one" sends a single item per turn.
+	 */
+	setFollowUpMode(mode: "all" | "one"): void {
+		this.followUpMode = mode;
+		this._state.followUpMode = mode;
+	}
+
+	getFollowUpMode(): "all" | "one" {
+		return this.followUpMode;
+	}
+
+	/**
+	 * @deprecated Use setSteeringMode/setFollowUpMode instead.
+	 * Sets both steering + follow-up modes for compatibility.
 	 */
 	setQueueMode(mode: "all" | "one"): void {
 		this.queueMode = mode;
 		this._state.queueMode = mode;
+		this.setSteeringMode(mode);
+		this.setFollowUpMode(mode);
 	}
 
 	/**
@@ -580,16 +635,39 @@ export class Agent {
 	}
 
 	/**
-	 * Queues a message for later processing.
+	 * Queues a steering message to interrupt the agent mid-run.
+	 *
+	 * Delivered after the current tool execution and skips remaining tools.
 	 *
 	 * @param m - Message to queue
 	 */
-	async queueMessage(m: AppMessage): Promise<void> {
+	async steer(m: AppMessage): Promise<void> {
 		const transformed = await this.messageTransformer([m]);
-		this.messageQueue.push({
+		this.steeringQueue.push({
 			original: m,
 			llm: transformed[0],
 		});
+	}
+
+	/**
+	 * Queues a follow-up message to be processed after the agent finishes.
+	 *
+	 * @param m - Message to queue
+	 */
+	async followUp(m: AppMessage): Promise<void> {
+		const transformed = await this.messageTransformer([m]);
+		this.followUpQueue.push({
+			original: m,
+			llm: transformed[0],
+		});
+	}
+
+	/**
+	 * @deprecated Use steer() or followUp() instead.
+	 * Defaults to follow-up semantics.
+	 */
+	async queueMessage(m: AppMessage): Promise<void> {
+		await this.followUp(m);
 	}
 
 	/**
@@ -603,7 +681,15 @@ export class Agent {
 	 * Get the number of queued messages.
 	 */
 	getQueuedMessageCount(): number {
-		return this.messageQueue.length;
+		return this.steeringQueue.length + this.followUpQueue.length;
+	}
+
+	getQueuedSteeringCount(): number {
+		return this.steeringQueue.length;
+	}
+
+	getQueuedFollowUpCount(): number {
+		return this.followUpQueue.length;
 	}
 
 	/**
@@ -690,7 +776,8 @@ export class Agent {
 		this._state.streamMessage = null;
 		this._state.pendingToolCalls.clear();
 		this._state.error = undefined;
-		this.messageQueue = [];
+		this.steeringQueue = [];
+		this.followUpQueue = [];
 		this.abortController = undefined;
 		this.runningPrompt = undefined;
 		this.resolveRunningPrompt = undefined;
@@ -789,7 +876,8 @@ export class Agent {
 				model: this._state.model,
 				reasoning,
 				preprocessMessages: this.preprocessMessages,
-				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
+				getSteeringMessages: async <T>() => this.dequeueSteeringMessages<T>(),
+				getFollowUpMessages: async <T>() => this.dequeueFollowUpMessages<T>(),
 				user: this._state.user,
 				session: this._state.session,
 				sandbox: this._state.sandbox,

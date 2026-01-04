@@ -279,18 +279,13 @@ impl ApprovalMode {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Queue mode for prompts while the agent is running.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QueueMode {
     /// Allow queueing multiple prompts while running
+    #[default]
     All,
     /// Only allow one-at-a-time (no queueing while running)
     One,
-}
-
-impl Default for QueueMode {
-    fn default() -> Self {
-        QueueMode::All
-    }
 }
 
 impl QueueMode {

@@ -8,6 +8,8 @@ import { SessionManager } from "../../src/session/manager.js";
 // Helper to create a minimal agent state
 function createMockState(): AgentState {
 	return {
+		steeringMode: "all",
+		followUpMode: "all",
 		queueMode: "all",
 		messages: [],
 		systemPrompt: "test system prompt",
