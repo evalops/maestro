@@ -282,9 +282,12 @@ export class OAuthFlowController {
 					chatContainer.addChild(new Text("Opening browser to:", 1, 0));
 					chatContainer.addChild(new Spacer(1));
 					chatContainer.addChild(
-						new Text(theme.fg("accent", formatLink(url)), 1, 0),
+						new Text(
+							theme.fg("accent", formatLink(url, "Open login URL")),
+							1,
+							0,
+						),
 					);
-					chatContainer.addChild(new Text(url, 1, 0));
 					chatContainer.addChild(new Spacer(1));
 					if (copyToOsc52(url)) {
 						chatContainer.addChild(
@@ -337,9 +340,15 @@ export class OAuthFlowController {
 					chatContainer.addChild(new Text("Authenticate by visiting:", 1, 0));
 					chatContainer.addChild(new Spacer(1));
 					chatContainer.addChild(
-						new Text(theme.fg("accent", formatLink(verificationUri)), 1, 0),
+						new Text(
+							theme.fg(
+								"accent",
+								formatLink(verificationUri, "Open verification URL"),
+							),
+							1,
+							0,
+						),
 					);
-					chatContainer.addChild(new Text(verificationUri, 1, 0));
 					chatContainer.addChild(new Spacer(1));
 					if (copyToOsc52(verificationUri)) {
 						chatContainer.addChild(
