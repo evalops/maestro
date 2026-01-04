@@ -109,20 +109,25 @@ export class MessageView {
 		}
 
 		if (isRenderableUserMessage(renderable)) {
-			if (renderable.text) {
-				// Add zen separator between messages (not before first)
-				if (this.isZenMode() && this.messageCount > 0) {
-					this.options.chatContainer.addChild(createZenSeparator());
-				}
-				const userComponent = new UserMessageComponent(
-					renderable.text,
-					this.isFirstUserMessage,
-					renderable.raw.timestamp,
-				);
-				this.options.chatContainer.addChild(userComponent);
-				this.isFirstUserMessage = false;
-				this.messageCount++;
+			const text = renderable.text ?? "";
+			const hasText = text.trim().length > 0;
+			const hasAttachments = renderable.attachments.length > 0;
+			if (!hasText && !hasAttachments) {
+				return;
 			}
+			// Add zen separator between messages (not before first)
+			if (this.isZenMode() && this.messageCount > 0) {
+				this.options.chatContainer.addChild(createZenSeparator());
+			}
+			const userComponent = new UserMessageComponent(
+				text,
+				renderable.attachments,
+				this.isFirstUserMessage,
+				renderable.raw.timestamp,
+			);
+			this.options.chatContainer.addChild(userComponent);
+			this.isFirstUserMessage = false;
+			this.messageCount++;
 			return;
 		}
 

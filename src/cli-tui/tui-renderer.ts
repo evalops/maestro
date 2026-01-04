@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
+import Clipboard from "@crosscopy/clipboard";
 import type { SlashCommand } from "@evalops/tui";
 import {
 	type Component,
@@ -19,7 +22,12 @@ import type {
 	ApprovalMode,
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/agent.js";
-import type { AgentEvent, AgentState, AppMessage } from "../agent/types.js";
+import type {
+	AgentEvent,
+	AgentState,
+	AppMessage,
+	Attachment,
+} from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
 import {
@@ -106,7 +114,11 @@ import type { OAuthFlowController } from "./oauth/index.js";
 import { OllamaView } from "./ollama-view.js";
 import type { PlanView } from "./plan-view.js";
 import type { PlanController } from "./plan/plan-controller.js";
-import type { PromptQueue } from "./prompt-queue.js";
+import type {
+	PromptPayload,
+	PromptQueue,
+	QueuedPrompt,
+} from "./prompt-queue.js";
 import {
 	type QueueController,
 	type QueueMode,
@@ -412,6 +424,9 @@ export class TuiRenderer {
 	private lowBandwidthConfig: LowBandwidthConfig = getLowBandwidthConfig();
 	private interruptController!: InterruptController;
 	private pasteHandler!: PasteHandler;
+	private pendingAttachmentCounter = 0;
+	private pendingAttachments = new Map<number, Attachment>();
+	private terminalTitle: string | null = null;
 	private groupedHandlers?: GroupedCommandHandlers;
 	private uiStateController!: UiStateController;
 	private quickSettingsController!: QuickSettingsController;
@@ -533,6 +548,7 @@ export class TuiRenderer {
 		this.startupChangelogSummary = options.startupChangelogSummary;
 		this.updateNotice = options.updateNotice;
 		this.ui = new TUI(new ProcessTerminal(), this.terminalFeatures);
+		this.updateTerminalTitle();
 		this.configureRenderThrottle();
 		this.startupContainer = new Container();
 		this.headerContainer = new Container();
@@ -553,6 +569,7 @@ export class TuiRenderer {
 			ui: this.ui,
 			handlers: {
 				handleLargePaste: (event) => this.pasteHandler.handleLargePaste(event),
+				handlePasteImage: () => this.handleClipboardImagePaste(),
 				handleTyping: () => this.handleEditorTyping(),
 				cycleModel: () => this.quickSettingsController.cycleModel(),
 				toggleToolOutputs: () =>
@@ -638,6 +655,7 @@ export class TuiRenderer {
 				getBashModeView: () => this.bashModeView,
 				getInterruptController: () => this.interruptController,
 				autoRetryController: this.autoRetryController,
+				consumeAttachments: (text) => this.consumeAttachments(text),
 			},
 			callbacks: {
 				showInfo: (message) => this.notificationView.showInfo(message),
@@ -650,7 +668,10 @@ export class TuiRenderer {
 			footer: this.footer,
 			notificationView: this.notificationView,
 			onInterrupt: (options) => this.inputController.notifyInterrupt(options),
-			restoreQueuedPrompts: () => this.queueController.restoreQueuedPrompts(),
+			restoreQueuedPrompts: () => {
+				const restored = this.queueController.restoreQueuedPrompts();
+				this.restoreQueuedAttachments(restored);
+			},
 			getWorkingHint: () => this.workingFooterHint,
 			isMinimalMode: () => this.isMinimalMode(),
 			isAgentRunning: () => this.isAgentRunning,
@@ -1354,6 +1375,7 @@ export class TuiRenderer {
 			onSubmit: (text) => {
 				void this.inputController.handleTextSubmit(text);
 			},
+			canSubmitEmpty: () => this.hasPendingAttachments(),
 			shouldInterrupt: () =>
 				this.isAgentRunning || this.interruptController.isArmed(),
 			onInterrupt: () => this.inputController.handleInterruptRequest(),
@@ -1541,7 +1563,7 @@ export class TuiRenderer {
 		this.sessionStateController.renderConversationView();
 	}
 
-	async getUserInput(): Promise<string> {
+	async getUserInput(): Promise<PromptPayload> {
 		return this.inputController.getUserInput();
 	}
 
@@ -1856,7 +1878,143 @@ export class TuiRenderer {
 
 	private clearEditor(): void {
 		this.editor.setText("");
+		this.clearPendingAttachments();
 		this.ui.requestRender();
+	}
+
+	private clearPendingAttachments(): void {
+		this.pendingAttachments.clear();
+		this.pendingAttachmentCounter = 0;
+	}
+
+	private hasPendingAttachments(): boolean {
+		return this.pendingAttachments.size > 0;
+	}
+
+	private consumeAttachments(text: string): PromptPayload {
+		const { text: updatedText, attachments } =
+			this.consumePendingAttachmentMarkers(text);
+		return {
+			text: updatedText,
+			attachments: attachments.length > 0 ? attachments : undefined,
+		};
+	}
+
+	private consumePendingAttachmentMarkers(text: string): {
+		text: string;
+		attachments: Attachment[];
+	} {
+		if (this.pendingAttachments.size === 0) {
+			return { text, attachments: [] };
+		}
+		let updated = text;
+		const attachments: Attachment[] = [];
+		for (const [id, attachment] of this.pendingAttachments) {
+			const marker = `[image #${id}]`;
+			if (!updated.includes(marker)) {
+				continue;
+			}
+			const replacement = `[attachment] ${attachment.fileName} (${attachment.mimeType})`;
+			updated = updated.split(marker).join(replacement);
+			attachments.push(attachment);
+		}
+		this.clearPendingAttachments();
+		return { text: updated, attachments };
+	}
+
+	private async handleClipboardImagePaste(): Promise<void> {
+		try {
+			if (!Clipboard.hasImage()) {
+				return;
+			}
+			const imageData = await Clipboard.getImageBinary();
+			if (!imageData || imageData.length === 0) {
+				return;
+			}
+			const attachmentId = `att_${randomUUID()}`;
+			const fileName = `clipboard-image-${attachmentId.slice(-6)}.png`;
+			const attachment: Attachment = {
+				id: attachmentId,
+				type: "image",
+				fileName,
+				mimeType: "image/png",
+				size: imageData.length,
+				content: Buffer.from(imageData).toString("base64"),
+			};
+			const markerId = ++this.pendingAttachmentCounter;
+			this.pendingAttachments.set(markerId, attachment);
+			this.editor.insertText(`[image #${markerId}]`);
+			this.ui.requestRender();
+		} catch {
+			// Ignore clipboard errors (permissions, empty clipboard, etc.)
+		}
+	}
+
+	private restoreQueuedAttachments(entries: QueuedPrompt[]): void {
+		const restored = entries.some(
+			(entry) => (entry.attachments?.length ?? 0) > 0,
+		);
+		if (!restored) {
+			return;
+		}
+		this.clearPendingAttachments();
+		const segments: string[] = [];
+		for (const entry of entries) {
+			let segment = entry.text;
+			const attachments = entry.attachments ?? [];
+			if (attachments.length > 0) {
+				const markers: string[] = [];
+				for (const attachment of attachments) {
+					const markerId = ++this.pendingAttachmentCounter;
+					this.pendingAttachments.set(markerId, attachment);
+					markers.push(`[image #${markerId}]`);
+				}
+				if (markers.length > 0) {
+					const trimmed = segment.trim();
+					segment =
+						trimmed.length > 0
+							? `${trimmed}\n${markers.join(" ")}`
+							: markers.join(" ");
+				}
+			}
+			segments.push(segment);
+		}
+		const restoredText = segments
+			.filter((s) => s.trim().length > 0)
+			.join("\n\n");
+		if (restoredText) {
+			this.editor.setText(restoredText);
+		}
+	}
+
+	private updateTerminalTitle(): void {
+		if (process.env.COMPOSER_DISABLE_TERMINAL_TITLE === "1") {
+			return;
+		}
+		if (!process.stdout.isTTY) {
+			return;
+		}
+		const dir = basename(process.cwd());
+		const nextTitle = `composer - ${dir}`;
+		if (this.terminalTitle === nextTitle) {
+			return;
+		}
+		process.stdout.write(`\u001b]0;${nextTitle}\u0007`);
+		this.terminalTitle = nextTitle;
+	}
+
+	private clearTerminalTitle(): void {
+		if (!this.terminalTitle) {
+			return;
+		}
+		if (process.env.COMPOSER_DISABLE_TERMINAL_TITLE === "1") {
+			return;
+		}
+		if (!process.stdout.isTTY) {
+			return;
+		}
+		process.stdout.write("\u001b]0;\u0007");
+		this.terminalTitle = null;
 	}
 
 	private handleApprovalRequired(request: ActionApprovalRequest): void {
@@ -2744,6 +2902,7 @@ export class TuiRenderer {
 			this.ui.stop();
 			this.isInitialized = false;
 		}
+		this.clearTerminalTitle();
 		// End session recovery tracking and create final backup
 		this.sessionRecoveryManager.endSession();
 		// Stop test verification service

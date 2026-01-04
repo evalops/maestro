@@ -87,6 +87,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.946.0",
+    "@crosscopy/clipboard": "^0.2.8",
     "@evalops/contracts": "workspace:*",
     "@evalops/tui": "workspace:*",
     "@google/genai": "^1.29.1",

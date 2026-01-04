@@ -9,6 +9,7 @@ import type { BashModeView } from "../bash-mode-view.js";
 import type { CustomEditor } from "../custom-editor.js";
 import type { InterruptController } from "../interrupt-controller.js";
 import type { PasteHandler } from "../paste/paste-handler.js";
+import type { PromptPayload } from "../prompt-queue.js";
 
 export interface InputControllerDeps {
 	editor: CustomEditor;
@@ -16,6 +17,7 @@ export interface InputControllerDeps {
 	getBashModeView: () => BashModeView;
 	getInterruptController: () => InterruptController;
 	autoRetryController: AutoRetryController;
+	consumeAttachments: (text: string) => PromptPayload;
 }
 
 export interface InputControllerCallbacks {
@@ -32,7 +34,7 @@ export interface InputControllerOptions {
 export class InputController {
 	private readonly deps: InputControllerDeps;
 	private readonly callbacks: InputControllerCallbacks;
-	private onInputCallback?: (text: string) => void;
+	private onInputCallback?: (payload: PromptPayload) => void;
 	private onInterruptCallback?: (options?: { keepPartial?: boolean }) => void;
 
 	constructor(options: InputControllerOptions) {
@@ -40,11 +42,11 @@ export class InputController {
 		this.callbacks = options.callbacks;
 	}
 
-	async getUserInput(): Promise<string> {
+	async getUserInput(): Promise<PromptPayload> {
 		return new Promise((resolve) => {
-			this.onInputCallback = (text: string) => {
+			this.onInputCallback = (payload: PromptPayload) => {
 				this.onInputCallback = undefined;
-				resolve(text);
+				resolve(payload);
 			};
 		});
 	}
@@ -74,11 +76,17 @@ export class InputController {
 		if (await bashModeView.tryHandleInput(text)) {
 			return;
 		}
-		if (text.trim()) {
-			this.deps.editor.addToHistory(text);
+		const payload = this.deps.consumeAttachments(text);
+		const hasText = payload.text.trim().length > 0;
+		const hasAttachments = (payload.attachments?.length ?? 0) > 0;
+		if (!hasText && !hasAttachments) {
+			return;
+		}
+		if (hasText) {
+			this.deps.editor.addToHistory(payload.text);
 		}
 		if (this.onInputCallback) {
-			this.onInputCallback(text);
+			this.onInputCallback(payload);
 		}
 	}
 

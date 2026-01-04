@@ -7,6 +7,7 @@ interface EditorViewOptions {
 	onFirstInput: () => void;
 	onCommandExecuted?: (name: string) => void;
 	onSubmit: (text: string) => void;
+	canSubmitEmpty?: () => boolean;
 	shouldInterrupt: () => boolean;
 	onInterrupt?: () => void;
 	/**
@@ -56,6 +57,9 @@ export class EditorView {
 		editor.onSubmit = (text) => {
 			const trimmed = text.trim();
 			if (!trimmed) {
+				if (this.options.canSubmitEmpty?.()) {
+					this.options.onSubmit("");
+				}
 				return;
 			}
 			this.options.onFirstInput();

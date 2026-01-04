@@ -3,6 +3,7 @@ import type { CustomEditor } from "../custom-editor.js";
 
 export interface EditorBindingHandlers {
 	handleLargePaste: (event: LargePasteEvent) => void | Promise<void>;
+	handlePasteImage: () => void | Promise<void>;
 	handleTyping: () => void;
 	cycleModel: () => void | Promise<void>;
 	toggleToolOutputs: () => void;
@@ -23,6 +24,9 @@ export function attachEditorBindings(params: {
 
 	editor.onLargePaste = (event) => {
 		void handlers.handleLargePaste(event);
+	};
+	editor.onPasteImage = () => {
+		void handlers.handlePasteImage();
 	};
 	editor.onTyping = () => {
 		handlers.handleTyping();
