@@ -13,12 +13,12 @@ export class QueueModeSelectorComponent extends BaseSelectorComponent<
 			{
 				value: "one",
 				label: "one-at-a-time",
-				description: "Process queued messages one by one (recommended)",
+				description: "Pause follow-ups while the agent is running",
 			},
 			{
 				value: "all",
 				label: "all",
-				description: "Process all queued messages at once",
+				description: "Allow follow-up queueing while the agent runs",
 			},
 		];
 

@@ -62,13 +62,9 @@ export class InputController {
 	}
 
 	async handleTextSubmit(text: string): Promise<void> {
-		const payload = await this.preparePayload(text);
+		const payload = await this.prepareQueuedPayload(text);
 		if (!payload) {
 			return;
-		}
-		const hasText = payload.text.trim().length > 0;
-		if (hasText) {
-			this.deps.editor.addToHistory(payload.text);
 		}
 		if (this.onInputCallback) {
 			this.onInputCallback(payload);
@@ -76,13 +72,9 @@ export class InputController {
 	}
 
 	async handleFollowUpSubmit(text: string): Promise<boolean> {
-		const payload = await this.preparePayload(text);
+		const payload = await this.prepareQueuedPayload(text);
 		if (!payload) {
 			return false;
-		}
-		const hasText = payload.text.trim().length > 0;
-		if (hasText) {
-			this.deps.editor.addToHistory(payload.text);
 		}
 		if (this.onInputCallback) {
 			this.onInputCallback(payload);
@@ -111,6 +103,18 @@ export class InputController {
 	handleCtrlDExit(): void {
 		this.callbacks.stopRenderer();
 		this.callbacks.exitProcess(0);
+	}
+
+	async prepareQueuedPayload(text: string): Promise<PromptPayload | null> {
+		const payload = await this.preparePayload(text);
+		if (!payload) {
+			return null;
+		}
+		const hasText = payload.text.trim().length > 0;
+		if (hasText) {
+			this.deps.editor.addToHistory(payload.text);
+		}
+		return payload;
 	}
 
 	private async preparePayload(text: string): Promise<PromptPayload | null> {

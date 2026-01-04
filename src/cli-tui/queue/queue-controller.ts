@@ -1,3 +1,4 @@
+import type { Attachment } from "../../agent/types.js";
 import type { CustomEditor } from "../custom-editor.js";
 import type { NotificationView } from "../notification-view.js";
 import type {
@@ -181,14 +182,14 @@ export class QueueController {
 	 */
 	enqueuePrompt(
 		text: string,
-		options?: { front?: boolean },
+		options?: { front?: boolean; attachments?: Attachment[] },
 	): QueuedPrompt | null {
 		if (!this.promptQueue) {
 			return null;
 		}
 		return options?.front
-			? this.promptQueue.enqueueFront(text)
-			: this.promptQueue.enqueue(text);
+			? this.promptQueue.enqueueFront(text, options.attachments)
+			: this.promptQueue.enqueue(text, options?.attachments);
 	}
 
 	/**
