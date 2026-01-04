@@ -8,7 +8,8 @@ export function createQueueController(params: {
 	agent: Agent;
 	notificationView: NotificationView;
 	editor: CustomEditor;
-	initialMode: QueueMode;
+	initialSteeringMode: QueueMode;
+	initialFollowUpMode: QueueMode;
 	refreshQueuePanel: () => void;
 	isAgentRunning: () => boolean;
 	refreshFooterHint: () => void;
@@ -19,7 +20,8 @@ export function createQueueController(params: {
 		agent,
 		notificationView,
 		editor,
-		initialMode,
+		initialSteeringMode,
+		initialFollowUpMode,
 		refreshQueuePanel,
 		isAgentRunning,
 		refreshFooterHint,
@@ -30,10 +32,13 @@ export function createQueueController(params: {
 	return new QueueController({
 		notificationView,
 		editor,
-		initialMode,
+		initialSteeringMode,
+		initialFollowUpMode,
 		callbacks: {
-			onModeChange: (mode) => {
-				agent.setQueueMode(mode === "all" ? "all" : "one");
+			onModeChange: (kind, mode) => {
+				if (kind === "steering") {
+					agent.setQueueMode(mode === "all" ? "all" : "one");
+				}
 				refreshQueuePanel();
 			},
 			onQueueCountChange: () => {

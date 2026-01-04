@@ -71,7 +71,22 @@ export async function handleUI(
 							sessionState.footerMode ?? state.footerMode ?? "ensemble",
 						compactTools:
 							sessionState.compactTools ?? state.compactTools ?? false,
-						queueMode: sessionState.queueMode ?? state.queueMode ?? "all",
+						queueMode:
+							sessionState.followUpMode ??
+							sessionState.queueMode ??
+							state.followUpMode ??
+							state.queueMode ??
+							"all",
+						steeringMode:
+							sessionState.steeringMode ??
+							state.steeringMode ??
+							state.queueMode ??
+							"all",
+						followUpMode:
+							sessionState.followUpMode ??
+							state.followUpMode ??
+							state.queueMode ??
+							"all",
 					},
 					corsHeaders,
 				);

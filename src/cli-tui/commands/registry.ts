@@ -394,7 +394,7 @@ export function createCommandRegistry({
 			{
 				name: "queue",
 				description: "List, cancel, or change queue mode",
-				usage: "/queue [list|cancel <id>|mode <one|all>]",
+				usage: "/queue [list|cancel <id>|mode [steer|followup] <one|all>]",
 				tags: ["session"],
 			},
 			withArgs("queue"),

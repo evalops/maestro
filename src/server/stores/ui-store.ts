@@ -33,6 +33,8 @@ function normalize(raw: unknown): UiStateFile {
 			const state = v as UiState;
 			result[key] = {
 				queueMode: state.queueMode,
+				steeringMode: state.steeringMode,
+				followUpMode: state.followUpMode,
 				compactTools: state.compactTools,
 				footerMode: state.footerMode,
 				cleanMode: state.cleanMode,

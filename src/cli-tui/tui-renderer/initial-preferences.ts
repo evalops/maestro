@@ -12,7 +12,8 @@ export type InitialQueueMode = QueueMode;
 
 export interface TuiRendererInitialPreferences {
 	uiState: UiState;
-	initialQueueMode: InitialQueueMode;
+	initialSteeringMode: InitialQueueMode;
+	initialFollowUpMode: InitialQueueMode;
 	cleanMode?: CleanMode;
 	footerMode?: FooterMode;
 	reducedMotion?: boolean;
@@ -26,10 +27,19 @@ export interface TuiRendererInitialPreferences {
 export function loadInitialTuiRendererPreferences(): TuiRendererInitialPreferences {
 	const uiState = loadUiState();
 
-	const initialQueueMode: QueueMode =
-		uiState.queueMode === "one" || uiState.queueMode === "all"
-			? uiState.queueMode
-			: "all";
+	const initialSteeringMode: QueueMode =
+		uiState.steeringMode === "one" || uiState.steeringMode === "all"
+			? uiState.steeringMode
+			: uiState.queueMode === "one" || uiState.queueMode === "all"
+				? uiState.queueMode
+				: "all";
+
+	const initialFollowUpMode: QueueMode =
+		uiState.followUpMode === "one" || uiState.followUpMode === "all"
+			? uiState.followUpMode
+			: uiState.queueMode === "one" || uiState.queueMode === "all"
+				? uiState.queueMode
+				: "all";
 
 	const envCleanMode = readCleanModeFromEnv();
 	const cleanMode = envCleanMode ?? uiState.cleanMode;
@@ -64,7 +74,8 @@ export function loadInitialTuiRendererPreferences(): TuiRendererInitialPreferenc
 
 	return {
 		uiState,
-		initialQueueMode,
+		initialSteeringMode,
+		initialFollowUpMode,
 		cleanMode: cleanMode ?? undefined,
 		footerMode: uiState.footerMode,
 		reducedMotion,

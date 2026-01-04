@@ -11,25 +11,29 @@ import {
 interface QueuePanelModalOptions {
 	onClose: () => void;
 	onCancel: (id: number) => void;
-	onToggleMode: () => void;
+	onToggleSteeringMode: () => void;
+	onToggleFollowUpMode: () => void;
 }
 
 export class QueuePanelModal implements Component {
 	private activePrompt: QueuedPrompt | null = null;
 	private pendingPrompts: QueuedPrompt[] = [];
 	private selectedIndex = 0;
-	private mode: "one" | "all" = "all";
+	private steeringMode: "one" | "all" = "all";
+	private followUpMode: "one" | "all" = "all";
 
 	constructor(private readonly options: QueuePanelModalOptions) {}
 
 	setData(
 		active: QueuedPrompt | null,
 		pending: QueuedPrompt[],
-		mode: "one" | "all",
+		steeringMode: "one" | "all",
+		followUpMode: "one" | "all",
 	): void {
 		this.activePrompt = active;
 		this.pendingPrompts = pending;
-		this.mode = mode;
+		this.steeringMode = steeringMode;
+		this.followUpMode = followUpMode;
 		// Clamp selected index
 		if (this.selectedIndex >= pending.length) {
 			this.selectedIndex = Math.max(0, pending.length - 1);
@@ -52,14 +56,25 @@ export class QueuePanelModal implements Component {
 		// Separator
 		lines.push(chalk.hex(borderColor)(`├${"─".repeat(width - 2)}┤`));
 
-		// Mode
-		const modeLabel =
-			this.mode === "all"
-				? "Mode: all (submissions enqueue while running)"
-				: "Mode: one-at-a-time (submissions paused while running)";
-		const modeLine = padLine(chalk.hex("#94a3b8")(modeLabel), width - 4);
+		// Modes
+		const followUpLabel =
+			this.followUpMode === "all"
+				? "Follow-up: all (queue while running)"
+				: "Follow-up: one-at-a-time (pause while running)";
+		const steeringLabel =
+			this.steeringMode === "all"
+				? "Steering: all (queue while running)"
+				: "Steering: one-at-a-time (pause while running)";
+		const modeLine = padLine(chalk.hex("#94a3b8")(followUpLabel), width - 4);
+		const steeringLine = padLine(
+			chalk.hex("#94a3b8")(steeringLabel),
+			width - 4,
+		);
 		lines.push(
 			`${chalk.hex(borderColor)("│ ")}${modeLine}${chalk.hex(borderColor)(" │")}`,
+		);
+		lines.push(
+			`${chalk.hex(borderColor)("│ ")}${steeringLine}${chalk.hex(borderColor)(" │")}`,
 		);
 
 		lines.push(
@@ -68,8 +83,9 @@ export class QueuePanelModal implements Component {
 
 		// Active prompt
 		if (this.activePrompt) {
+			const kindLabel = this.describeKind(this.activePrompt.kind);
 			const activeLabel = padLine(
-				chalk.green(`Active: #${this.activePrompt.id}`),
+				chalk.green(`Active (${kindLabel}): #${this.activePrompt.id}`),
 				width - 4,
 			);
 			lines.push(
@@ -118,7 +134,7 @@ export class QueuePanelModal implements Component {
 				const actualIndex = start + i;
 				const isSelected = actualIndex === this.selectedIndex;
 				const prefix = isSelected ? chalk.cyan("► ") : "  ";
-				const label = `#${prompt.id}`;
+				const label = `#${prompt.id} (${this.describeKind(prompt.kind)})`;
 				const text = this.formatText(prompt.text, width - 12);
 				const promptLine = padLine(
 					`${prefix}${chalk.hex("#60a5fa")(label)} ${chalk.hex("#94a3b8")(text)}`,
@@ -145,7 +161,8 @@ export class QueuePanelModal implements Component {
 		lines.push(chalk.hex(borderColor)(`├${"─".repeat(width - 2)}┤`));
 
 		// Help text
-		const helpText = "[↑/↓] navigate  [x] cancel  [m] toggle mode  [esc] close";
+		const helpText =
+			"[↑/↓] navigate  [x] cancel  [f] follow-up  [s] steering  [esc] close";
 		const helpLine = centerText(helpText, width - 4);
 		lines.push(
 			`${chalk.hex(borderColor)("│ ")}${chalk.dim(helpLine)}${chalk.hex(borderColor)(" │")}`,
@@ -188,9 +205,12 @@ export class QueuePanelModal implements Component {
 			}
 			return;
 		}
-		if (data === "m" || data === "M") {
-			// Toggle mode
-			this.options.onToggleMode();
+		if (data === "f" || data === "F") {
+			this.options.onToggleFollowUpMode();
+			return;
+		}
+		if (data === "s" || data === "S") {
+			this.options.onToggleSteeringMode();
 			return;
 		}
 	}
@@ -201,5 +221,15 @@ export class QueuePanelModal implements Component {
 			return "(empty message)";
 		}
 		return truncateText(singleLine, maxLength);
+	}
+
+	private describeKind(kind: QueuedPrompt["kind"]): string {
+		if (kind === "steer") {
+			return "steer";
+		}
+		if (kind === "followUp") {
+			return "follow-up";
+		}
+		return "prompt";
 	}
 }

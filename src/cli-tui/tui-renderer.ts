@@ -452,7 +452,8 @@ export class TuiRenderer {
 	) {
 		const initialPrefs = loadInitialTuiRendererPreferences();
 		this.uiState = initialPrefs.uiState;
-		const initialQueueMode: QueueMode = initialPrefs.initialQueueMode;
+		const initialSteeringMode: QueueMode = initialPrefs.initialSteeringMode;
+		const initialFollowUpMode: QueueMode = initialPrefs.initialFollowUpMode;
 		if (initialPrefs.cleanMode) {
 			this.cleanMode = initialPrefs.cleanMode;
 		}
@@ -516,7 +517,7 @@ export class TuiRenderer {
 		this.recentCommands = initialPrefs.recentCommands;
 		this.favoriteCommands = initialPrefs.favoriteCommands;
 		this.agent = agent;
-		this.agent.setQueueMode(initialQueueMode === "all" ? "all" : "one");
+		this.agent.setQueueMode(initialSteeringMode === "all" ? "all" : "one");
 		this.sessionManager = sessionManager;
 		this.version = version;
 		this.explicitApiKey = explicitApiKey;
@@ -631,7 +632,8 @@ export class TuiRenderer {
 			agent: this.agent,
 			notificationView: this.notificationView,
 			editor: this.editor,
-			initialMode: initialQueueMode,
+			initialSteeringMode: initialSteeringMode,
+			initialFollowUpMode: initialFollowUpMode,
 			refreshQueuePanel: () => this.queuePanelController?.refreshPanel(),
 			isAgentRunning: () => this.isAgentRunning,
 			refreshFooterHint: () => this.refreshFooterHint(),
@@ -737,9 +739,8 @@ export class TuiRenderer {
 			footer: this.footer,
 			ui: this.ui,
 			workingHint: this.workingFooterHint,
-			setEditorDisabled: (disabled) => {
-				this.editor.disableSubmit =
-					disabled && !this.queueController.isEnabled();
+			setEditorDisabled: (_disabled) => {
+				this.editor.disableSubmit = false;
 			},
 			focusEditor: () => this.focusEditor(),
 			clearEditor: () => this.clearEditor(),
@@ -1052,7 +1053,7 @@ export class TuiRenderer {
 			ui: this.ui,
 			modalManager: this.modalManager,
 			notificationView: this.notificationView,
-			onModeSelected: (mode) => this.queueController.setMode(mode),
+			onModeSelected: (kind, mode) => this.queueController.setMode(kind, mode),
 		});
 		this.reportSelectorView = new ReportSelectorView({
 			modalManager: this.modalManager,
@@ -1826,6 +1827,12 @@ export class TuiRenderer {
 		}
 
 		const wasRunning = this.isAgentRunning;
+		if (wasRunning && !this.queueController.canQueueSteering()) {
+			context.showError(
+				"Steering mode set to one-at-a-time. Use /queue mode steer all to allow multiple steering messages.",
+			);
+			return;
+		}
 		if (wasRunning) {
 			this.inputController.interruptNow({ keepPartial: false });
 			this.notificationView.showToast(
@@ -1834,7 +1841,10 @@ export class TuiRenderer {
 			);
 		}
 
-		const entry = this.queueController.enqueuePrompt(text, { front: true });
+		const entry = this.queueController.enqueuePrompt(text, {
+			front: true,
+			kind: "steer",
+		});
 		if (!entry) {
 			context.showError("Prompt queue is not available.");
 		}
@@ -1909,9 +1919,9 @@ export class TuiRenderer {
 	}
 
 	private async handleFollowUpSubmit(text: string): Promise<void> {
-		if (this.isAgentRunning && !this.queueController.isEnabled()) {
+		if (this.isAgentRunning && !this.queueController.canQueueFollowUp()) {
 			this.notificationView.showInfo(
-				"Queue mode set to one-at-a-time. Use /queue mode all to enable follow-ups while running.",
+				"Follow-up mode set to one-at-a-time. Use /queue mode followup all to enable follow-ups while running.",
 			);
 			return;
 		}
@@ -1931,6 +1941,12 @@ export class TuiRenderer {
 		if (!payload) {
 			return;
 		}
+		if (this.isAgentRunning && !this.queueController.canQueueSteering()) {
+			this.notificationView.showInfo(
+				"Steering mode set to one-at-a-time. Use /queue mode steer all to enable multiple steering messages.",
+			);
+			return;
+		}
 		if (this.isAgentRunning) {
 			this.inputController.interruptNow({ keepPartial: false });
 			this.notificationView.showToast(
@@ -1941,6 +1957,7 @@ export class TuiRenderer {
 		const entry = this.queueController.enqueuePrompt(payload.text, {
 			front: true,
 			attachments: payload.attachments,
+			kind: "steer",
 		});
 		if (!entry) {
 			this.notificationView.showError("Prompt queue is not available.");
@@ -2090,7 +2107,9 @@ export class TuiRenderer {
 		const favoriteCommands =
 			this.slashHintController?.getFavoriteCommands() ?? this.favoriteCommands;
 		saveUiState({
-			queueMode: this.queueController.getMode(),
+			queueMode: this.queueController.getFollowUpMode(),
+			steeringMode: this.queueController.getSteeringMode(),
+			followUpMode: this.queueController.getFollowUpMode(),
 			compactTools: this.toolOutputView.isCompact(),
 			footerMode: this.footerMode,
 			reducedMotion: this.reducedMotion,
@@ -2562,7 +2581,7 @@ export class TuiRenderer {
 		this.footer.setRuntimeBadges(
 			buildRuntimeBadges({
 				approvalMode: this.approvalService.getMode(),
-				promptQueueMode: this.queueController.getMode(),
+				promptQueueMode: this.queueController.getFollowUpMode(),
 				queuedPromptCount: this.queueController.getQueuedCount(),
 				hasPromptQueue: this.queueController.hasQueue(),
 				thinkingLevel: this.agent.state.thinkingLevel,

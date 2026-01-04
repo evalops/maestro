@@ -2,6 +2,7 @@ import type { Attachment } from "../../agent/types.js";
 import type { CustomEditor } from "../custom-editor.js";
 import type { NotificationView } from "../notification-view.js";
 import type {
+	PromptKind,
 	PromptQueue,
 	PromptQueueEvent,
 	QueuedPrompt,
@@ -13,13 +14,14 @@ import type {
  * - "one": Submissions are blocked until current run finishes
  */
 export type QueueMode = "one" | "all";
+export type QueueModeKind = "steering" | "followUp";
 
 /**
  * Callbacks for the queue controller.
  */
 export interface QueueControllerCallbacks {
 	/** Called when queue mode changes */
-	onModeChange?(mode: QueueMode): void;
+	onModeChange?(kind: QueueModeKind, mode: QueueMode): void;
 	/** Called when queue count changes */
 	onQueueCountChange?(count: number): void;
 	/** Check if agent is currently running */
@@ -29,7 +31,10 @@ export interface QueueControllerCallbacks {
 	/** Request UI render */
 	requestRender(): void;
 	/** Persist UI state */
-	persistUiState(state: { queueMode: QueueMode }): void;
+	persistUiState(state: {
+		steeringMode?: QueueMode;
+		followUpMode?: QueueMode;
+	}): void;
 }
 
 /**
@@ -39,7 +44,8 @@ export interface QueueControllerOptions {
 	notificationView: NotificationView;
 	editor: CustomEditor;
 	callbacks: QueueControllerCallbacks;
-	initialMode?: QueueMode;
+	initialSteeringMode?: QueueMode;
+	initialFollowUpMode?: QueueMode;
 }
 
 /**
@@ -57,17 +63,19 @@ export class QueueController {
 
 	private promptQueue?: PromptQueue;
 	private promptQueueUnsubscribe?: () => void;
-	private queueMode: QueueMode;
-	private queueEnabled: boolean;
+	private steeringMode: QueueMode;
+	private followUpMode: QueueMode;
 	private queuedPromptCount = 0;
+	private queuedSteeringCount = 0;
+	private queuedFollowUpCount = 0;
 	private nextQueuedPreview: string | null = null;
 
 	constructor(options: QueueControllerOptions) {
 		this.notificationView = options.notificationView;
 		this.editor = options.editor;
 		this.callbacks = options.callbacks;
-		this.queueMode = options.initialMode ?? "all";
-		this.queueEnabled = this.queueMode === "all";
+		this.steeringMode = options.initialSteeringMode ?? "all";
+		this.followUpMode = options.initialFollowUpMode ?? "all";
 	}
 
 	/**
@@ -75,7 +83,6 @@ export class QueueController {
 	 */
 	attach(queue: PromptQueue): void {
 		this.promptQueue = queue;
-		this.queueEnabled = this.queueMode === "all";
 		this.promptQueueUnsubscribe?.();
 		this.promptQueueUnsubscribe = queue.subscribe((event) =>
 			this.handleEvent(event),
@@ -100,15 +107,23 @@ export class QueueController {
 	/**
 	 * Get the current queue mode.
 	 */
-	getMode(): QueueMode {
-		return this.queueMode;
+	getSteeringMode(): QueueMode {
+		return this.steeringMode;
+	}
+
+	getFollowUpMode(): QueueMode {
+		return this.followUpMode;
 	}
 
 	/**
-	 * Check if queue is enabled.
+	 * Check if follow-up queueing is enabled.
 	 */
-	isEnabled(): boolean {
-		return this.queueEnabled;
+	isFollowUpEnabled(): boolean {
+		return this.followUpMode === "all";
+	}
+
+	isSteeringEnabled(): boolean {
+		return this.steeringMode === "all";
 	}
 
 	/**
@@ -116,6 +131,14 @@ export class QueueController {
 	 */
 	getQueuedCount(): number {
 		return this.queuedPromptCount;
+	}
+
+	getQueuedSteeringCount(): number {
+		return this.queuedSteeringCount;
+	}
+
+	getQueuedFollowUpCount(): number {
+		return this.queuedFollowUpCount;
 	}
 
 	/**
@@ -135,21 +158,25 @@ export class QueueController {
 	/**
 	 * Set the queue mode.
 	 */
-	setMode(mode: QueueMode): void {
-		this.queueMode = mode;
-		this.queueEnabled = mode === "all";
-		if (this.callbacks.isAgentRunning()) {
-			this.editor.disableSubmit = !this.queueEnabled;
+	setMode(kind: QueueModeKind, mode: QueueMode): void {
+		if (kind === "steering") {
+			this.steeringMode = mode;
+		} else {
+			this.followUpMode = mode;
 		}
-		this.callbacks.persistUiState({ queueMode: mode });
+		this.callbacks.persistUiState({
+			steeringMode: this.steeringMode,
+			followUpMode: this.followUpMode,
+		});
+		const label = kind === "steering" ? "Steering" : "Follow-up";
 		this.notificationView.showToast(
 			mode === "all"
-				? "Queue mode set to all: prompts will enqueue while the model is running."
-				: "Queue mode set to one: submissions pause until the current run finishes.",
+				? `${label} mode set to all: messages can queue while running.`
+				: `${label} mode set to one-at-a-time: queue pauses while running.`,
 			"success",
 		);
 		this.callbacks.refreshFooterHint();
-		this.callbacks.onModeChange?.(mode);
+		this.callbacks.onModeChange?.(kind, mode);
 	}
 
 	/**
@@ -182,14 +209,26 @@ export class QueueController {
 	 */
 	enqueuePrompt(
 		text: string,
-		options?: { front?: boolean; attachments?: Attachment[] },
+		options?: {
+			front?: boolean;
+			attachments?: Attachment[];
+			kind?: PromptKind;
+		},
 	): QueuedPrompt | null {
 		if (!this.promptQueue) {
 			return null;
 		}
 		return options?.front
-			? this.promptQueue.enqueueFront(text, options.attachments)
-			: this.promptQueue.enqueue(text, options?.attachments);
+			? this.promptQueue.enqueueFront(
+					text,
+					options.attachments,
+					options.kind ?? "prompt",
+				)
+			: this.promptQueue.enqueue(
+					text,
+					options?.attachments,
+					options?.kind ?? "prompt",
+				);
 	}
 
 	/**
@@ -200,6 +239,14 @@ export class QueueController {
 			return { pending: [] };
 		}
 		return this.promptQueue.getSnapshot();
+	}
+
+	canQueueSteering(): boolean {
+		return this.steeringMode === "all";
+	}
+
+	canQueueFollowUp(): boolean {
+		return this.followUpMode === "all";
 	}
 
 	/**
@@ -243,6 +290,16 @@ export class QueueController {
 		if (this.callbacks.isAgentRunning()) {
 			return null;
 		}
+		if (this.queuedSteeringCount > 0 || this.queuedFollowUpCount > 0) {
+			const parts = [];
+			if (this.queuedSteeringCount > 0) {
+				parts.push(`${this.queuedSteeringCount} steer`);
+			}
+			if (this.queuedFollowUpCount > 0) {
+				parts.push(`${this.queuedFollowUpCount} follow-up`);
+			}
+			return `${parts.join(", ")} queued`;
+		}
 		if (this.nextQueuedPreview) {
 			return `Next queued: ${this.nextQueuedPreview}`;
 		}
@@ -263,8 +320,9 @@ export class QueueController {
 			);
 		}
 		if (event.type === "enqueue" && !event.willRunImmediately) {
+			const label = this.describePromptKind(event.entry.kind);
 			this.notificationView.showInfo(
-				`Queued prompt #${event.entry.id} (${event.pendingCount} pending)`,
+				`Queued ${label} #${event.entry.id} (${event.pendingCount} pending)`,
 			);
 		}
 		if (event.type === "cancel") {
@@ -282,13 +340,23 @@ export class QueueController {
 	private updateQueuedPromptCount(): void {
 		if (!this.promptQueue) {
 			this.queuedPromptCount = 0;
+			this.queuedSteeringCount = 0;
+			this.queuedFollowUpCount = 0;
 			this.nextQueuedPreview = null;
 			return;
 		}
 		const snapshot = this.promptQueue.getSnapshot();
 		this.queuedPromptCount = snapshot.pending.length;
+		this.queuedSteeringCount = snapshot.pending.filter(
+			(entry) => entry.kind === "steer",
+		).length;
+		this.queuedFollowUpCount = snapshot.pending.filter(
+			(entry) => entry.kind === "followUp",
+		).length;
 		const next = snapshot.pending[0];
-		this.nextQueuedPreview = next ? this.formatQueuedText(next.text, 60) : null;
+		this.nextQueuedPreview = next
+			? `${this.describePromptKind(next.kind)}: ${this.formatQueuedText(next.text, 60)}`
+			: null;
 		this.callbacks.onQueueCountChange?.(this.queuedPromptCount);
 	}
 
@@ -305,5 +373,15 @@ export class QueueController {
 			return error.message;
 		}
 		return String(error ?? "Unknown error");
+	}
+
+	private describePromptKind(kind: PromptKind): string {
+		if (kind === "steer") {
+			return "steer";
+		}
+		if (kind === "followUp") {
+			return "follow-up";
+		}
+		return "prompt";
 	}
 }

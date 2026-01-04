@@ -1,13 +1,17 @@
 import type { Attachment } from "../agent/types.js";
 
+export type PromptKind = "prompt" | "steer" | "followUp";
+
 export interface PromptPayload {
 	text: string;
 	attachments?: Attachment[];
+	kind?: PromptKind;
 }
 
 export interface QueuedPrompt extends PromptPayload {
 	id: number;
 	createdAt: number;
+	kind: PromptKind;
 }
 
 export type PromptQueueEvent =
@@ -41,17 +45,26 @@ export class PromptQueue {
 		private readonly onRunnerError?: (error: unknown) => void,
 	) {}
 
-	enqueue(text: string, attachments?: Attachment[]): QueuedPrompt {
-		return this.enqueueInternal(text, attachments, "back");
+	enqueue(
+		text: string,
+		attachments?: Attachment[],
+		kind: PromptKind = "prompt",
+	): QueuedPrompt {
+		return this.enqueueInternal(text, attachments, kind, "back");
 	}
 
-	enqueueFront(text: string, attachments?: Attachment[]): QueuedPrompt {
-		return this.enqueueInternal(text, attachments, "front");
+	enqueueFront(
+		text: string,
+		attachments?: Attachment[],
+		kind: PromptKind = "prompt",
+	): QueuedPrompt {
+		return this.enqueueInternal(text, attachments, kind, "front");
 	}
 
 	private enqueueInternal(
 		text: string,
 		attachments: Attachment[] | undefined,
+		kind: PromptKind,
 		position: "front" | "back",
 	): QueuedPrompt {
 		const entry: QueuedPrompt = {
@@ -59,6 +72,7 @@ export class PromptQueue {
 			text,
 			attachments,
 			createdAt: Date.now(),
+			kind,
 		};
 		const willRunImmediately = !this.active && this.pending.length === 0;
 		if (position === "front") {
