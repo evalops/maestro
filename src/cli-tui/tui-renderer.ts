@@ -1373,6 +1373,10 @@ export class TuiRenderer {
 			onCommandExecuted: (name) =>
 				this.slashHintController.recordCommandUsage(name),
 			onSubmit: (text) => {
+				if (this.isAgentRunning) {
+					void this.handleSteerSubmit(text);
+					return;
+				}
 				void this.inputController.handleTextSubmit(text);
 			},
 			onFollowUp: (text) => {
@@ -1905,6 +1909,12 @@ export class TuiRenderer {
 	}
 
 	private async handleFollowUpSubmit(text: string): Promise<void> {
+		if (this.isAgentRunning && !this.queueController.isEnabled()) {
+			this.notificationView.showInfo(
+				"Queue mode set to one-at-a-time. Use /queue mode all to enable follow-ups while running.",
+			);
+			return;
+		}
 		const queued = await this.inputController.handleFollowUpSubmit(text);
 		if (!queued) {
 			return;
@@ -1913,6 +1923,30 @@ export class TuiRenderer {
 		if (this.isAgentRunning) {
 			this.notificationView.showToast("Queued follow-up message.", "info");
 		}
+		this.refreshFooterHint();
+	}
+
+	private async handleSteerSubmit(text: string): Promise<void> {
+		const payload = await this.inputController.prepareQueuedPayload(text);
+		if (!payload) {
+			return;
+		}
+		if (this.isAgentRunning) {
+			this.inputController.interruptNow({ keepPartial: false });
+			this.notificationView.showToast(
+				"Steering: interrupted current run",
+				"warn",
+			);
+		}
+		const entry = this.queueController.enqueuePrompt(payload.text, {
+			front: true,
+			attachments: payload.attachments,
+		});
+		if (!entry) {
+			this.notificationView.showError("Prompt queue is not available.");
+			return;
+		}
+		this.clearEditor();
 		this.refreshFooterHint();
 	}
 

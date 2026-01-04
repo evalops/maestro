@@ -23,7 +23,7 @@ const HOTKEYS_MARKDOWN = `
 **Editing**
 | Key | Action |
 |-----|--------|
-| \`Enter\` | Send message |
+| \`Enter\` | Send message (steer while running) |
 | \`Shift+Enter\` | New line |
 | \`Alt+Enter\` | Queue follow-up (while running) |
 | \`Ctrl+W\` / \`Option+Backspace\` | Delete word backwards |

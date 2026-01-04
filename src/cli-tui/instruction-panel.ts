@@ -10,7 +10,7 @@ export class InstructionPanelComponent implements Component {
 		{ keys: "ctrl+k", desc: "delete line" },
 		{ keys: "ctrl+g", desc: "external editor" },
 		{ keys: "ctrl+v", desc: "paste image" },
-		{ keys: "alt+enter", desc: "queue follow-up" },
+		{ keys: "alt+enter", desc: "queue follow-up (while running)" },
 		{ keys: "ctrl+z", desc: "suspend" },
 		{ keys: "shift+tab", desc: "thinking level" },
 		{ keys: "ctrl+p", desc: "cycle models" },
