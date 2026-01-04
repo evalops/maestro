@@ -62,32 +62,32 @@ export class InputController {
 	}
 
 	async handleTextSubmit(text: string): Promise<void> {
-		const pasteHandler = this.deps.getPasteHandler();
-		if (pasteHandler.hasPending()) {
-			this.callbacks.showInfo(
-				"Still summarizing pasted content — please wait a moment.",
-			);
+		const payload = await this.preparePayload(text);
+		if (!payload) {
 			return;
 		}
-		const bashModeView = this.deps.getBashModeView();
-		if (await bashModeView.tryHandleOneOffInput(text)) {
-			return;
-		}
-		if (await bashModeView.tryHandleInput(text)) {
-			return;
-		}
-		const payload = this.deps.consumeAttachments(text);
 		const hasText = payload.text.trim().length > 0;
-		const hasAttachments = (payload.attachments?.length ?? 0) > 0;
-		if (!hasText && !hasAttachments) {
-			return;
-		}
 		if (hasText) {
 			this.deps.editor.addToHistory(payload.text);
 		}
 		if (this.onInputCallback) {
 			this.onInputCallback(payload);
 		}
+	}
+
+	async handleFollowUpSubmit(text: string): Promise<boolean> {
+		const payload = await this.preparePayload(text);
+		if (!payload) {
+			return false;
+		}
+		const hasText = payload.text.trim().length > 0;
+		if (hasText) {
+			this.deps.editor.addToHistory(payload.text);
+		}
+		if (this.onInputCallback) {
+			this.onInputCallback(payload);
+		}
+		return true;
 	}
 
 	handleInterruptRequest(): void {
@@ -111,6 +111,30 @@ export class InputController {
 	handleCtrlDExit(): void {
 		this.callbacks.stopRenderer();
 		this.callbacks.exitProcess(0);
+	}
+
+	private async preparePayload(text: string): Promise<PromptPayload | null> {
+		const pasteHandler = this.deps.getPasteHandler();
+		if (pasteHandler.hasPending()) {
+			this.callbacks.showInfo(
+				"Still summarizing pasted content — please wait a moment.",
+			);
+			return null;
+		}
+		const bashModeView = this.deps.getBashModeView();
+		if (await bashModeView.tryHandleOneOffInput(text)) {
+			return null;
+		}
+		if (await bashModeView.tryHandleInput(text)) {
+			return null;
+		}
+		const payload = this.deps.consumeAttachments(text);
+		const hasText = payload.text.trim().length > 0;
+		const hasAttachments = (payload.attachments?.length ?? 0) > 0;
+		if (!hasText && !hasAttachments) {
+			return null;
+		}
+		return payload;
 	}
 }
 

@@ -26,6 +26,7 @@ const SHORTCUTS = [
 	{ key: "@", desc: "mention files" },
 	{ key: "/help", desc: "commands" },
 	{ key: "Ctrl+V", desc: "paste image" },
+	{ key: "Alt+Enter", desc: "follow-up" },
 	{ key: "Ctrl+C", desc: "cancel" },
 ] as const;
 

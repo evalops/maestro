@@ -75,6 +75,15 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 		},
 	},
 	{
+		description: "Alt+Enter queues a follow-up message (Kitty protocol)",
+		matches: (data) => data === KittyKeys.ALT_ENTER,
+		when: (editor) => Boolean(editor.onFollowUp),
+		handle: (editor) => {
+			editor.onFollowUp?.();
+			return true;
+		},
+	},
+	{
 		description: "Alt+Enter inserts newline (Kitty protocol)",
 		matches: (data) => data === KittyKeys.ALT_ENTER,
 		handle: (editor) => {
@@ -198,6 +207,7 @@ export class CustomEditor extends Editor {
 	public onCtrlC?: () => void;
 	public onCtrlD?: () => void;
 	public onShortcut?: (shortcut: string) => boolean;
+	public onFollowUp?: () => void;
 	public onHistoryNavigate?: (direction: "prev" | "next") => boolean;
 	public onShiftTab?: () => boolean | undefined;
 	public onCtrlP?: () => void;
