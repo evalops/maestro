@@ -477,8 +477,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     /// Handle an agent message (common for both backends)
     async fn handle_agent_message(&mut self, msg: FromAgent) -> Result<()> {
         if matches!(msg, FromAgent::ResponseStart { .. }) {
-            if let Some(pending) = self.queued_prompts.pop_front() {
-                self.state.add_user_message(pending.content);
+            let was_busy = self.state.busy;
+            self.state.busy = true;
+            if !was_busy {
+                if let Some(pending) = self.queued_prompts.pop_front() {
+                    self.state.add_user_message(pending.content);
+                }
             }
         }
         match &msg {
