@@ -1375,6 +1375,10 @@ export class TuiRenderer {
 			onSubmit: (text) => {
 				void this.inputController.handleTextSubmit(text);
 			},
+			onFollowUp: (text) => {
+				void this.handleFollowUpSubmit(text);
+			},
+			shouldFollowUp: () => this.isAgentRunning,
 			canSubmitEmpty: () => this.hasPendingAttachments(),
 			shouldInterrupt: () =>
 				this.isAgentRunning || this.interruptController.isArmed(),
@@ -1898,6 +1902,18 @@ export class TuiRenderer {
 			text: updatedText,
 			attachments: attachments.length > 0 ? attachments : undefined,
 		};
+	}
+
+	private async handleFollowUpSubmit(text: string): Promise<void> {
+		const queued = await this.inputController.handleFollowUpSubmit(text);
+		if (!queued) {
+			return;
+		}
+		this.clearEditor();
+		if (this.isAgentRunning) {
+			this.notificationView.showToast("Queued follow-up message.", "info");
+		}
+		this.refreshFooterHint();
 	}
 
 	private consumePendingAttachmentMarkers(text: string): {

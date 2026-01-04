@@ -8,6 +8,8 @@ interface EditorViewOptions {
 	onCommandExecuted?: (name: string) => void;
 	onSubmit: (text: string) => void;
 	canSubmitEmpty?: () => boolean;
+	onFollowUp?: (text: string) => void;
+	shouldFollowUp?: () => boolean;
 	shouldInterrupt: () => boolean;
 	onInterrupt?: () => void;
 	/**
@@ -28,6 +30,29 @@ interface EditorViewOptions {
 export class EditorView {
 	constructor(private readonly options: EditorViewOptions) {
 		const editor = options.editor;
+		const handleSubmit = (text: string, submit: (value: string) => void) => {
+			const trimmed = text.trim();
+			if (!trimmed) {
+				if (this.options.canSubmitEmpty?.()) {
+					submit("");
+				}
+				return;
+			}
+			this.options.onFirstInput();
+			const command = this.options
+				.getCommandEntries()
+				.find((entry) => entry.matches(trimmed));
+			if (command) {
+				this.options.onCommandExecuted?.(command.command.name);
+				const outcome = command.execute(trimmed);
+				this.options.editor.setText("");
+				if (outcome && typeof (outcome as Promise<void>).then === "function") {
+					void outcome;
+				}
+				return;
+			}
+			submit(trimmed);
+		};
 		editor.onEscape = () => {
 			if (this.options.shouldInterrupt() && this.options.onInterrupt) {
 				this.options.onInterrupt();
@@ -55,27 +80,16 @@ export class EditorView {
 			return false;
 		};
 		editor.onSubmit = (text) => {
-			const trimmed = text.trim();
-			if (!trimmed) {
-				if (this.options.canSubmitEmpty?.()) {
-					this.options.onSubmit("");
-				}
+			handleSubmit(text, this.options.onSubmit);
+		};
+		editor.onFollowUp = () => {
+			if (this.options.shouldFollowUp && !this.options.shouldFollowUp()) {
+				this.options.editor.insertText("\n");
 				return;
 			}
-			this.options.onFirstInput();
-			const command = this.options
-				.getCommandEntries()
-				.find((entry) => entry.matches(trimmed));
-			if (command) {
-				this.options.onCommandExecuted?.(command.command.name);
-				const outcome = command.execute(trimmed);
-				this.options.editor.setText("");
-				if (outcome && typeof (outcome as Promise<void>).then === "function") {
-					void outcome;
-				}
-				return;
+			if (this.options.onFollowUp) {
+				handleSubmit(this.options.editor.getText(), this.options.onFollowUp);
 			}
-			this.options.onSubmit(trimmed);
 		};
 	}
 }
