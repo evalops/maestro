@@ -9,6 +9,8 @@ export type QueueMode = "one" | "all";
 
 export interface UiState {
 	queueMode?: QueueMode;
+	steeringMode?: QueueMode;
+	followUpMode?: QueueMode;
 	compactTools?: boolean;
 	footerMode?: FooterMode;
 	zenMode?: boolean;
@@ -34,11 +36,22 @@ export function loadUiState(): UiState {
 	try {
 		const raw = readFileSync(uiStatePath, "utf-8");
 		const parsed = JSON.parse(raw) as UiState;
+		const legacyQueueMode =
+			parsed.queueMode === "one" || parsed.queueMode === "all"
+				? parsed.queueMode
+				: undefined;
+		const steeringMode =
+			parsed.steeringMode === "one" || parsed.steeringMode === "all"
+				? parsed.steeringMode
+				: legacyQueueMode;
+		const followUpMode =
+			parsed.followUpMode === "one" || parsed.followUpMode === "all"
+				? parsed.followUpMode
+				: legacyQueueMode;
 		return {
-			queueMode:
-				parsed.queueMode === "one" || parsed.queueMode === "all"
-					? parsed.queueMode
-					: undefined,
+			queueMode: legacyQueueMode,
+			steeringMode,
+			followUpMode,
 			compactTools:
 				typeof parsed.compactTools === "boolean"
 					? parsed.compactTools

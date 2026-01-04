@@ -76,6 +76,7 @@ export class InputController {
 		if (!payload) {
 			return false;
 		}
+		payload.kind = "followUp";
 		if (this.onInputCallback) {
 			this.onInputCallback(payload);
 		}

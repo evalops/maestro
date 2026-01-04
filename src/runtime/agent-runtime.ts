@@ -70,7 +70,7 @@ export class AgentRuntimeController {
 	}
 
 	enqueue(payload: PromptPayload): void {
-		this.promptQueue.enqueue(payload.text, payload.attachments);
+		this.promptQueue.enqueue(payload.text, payload.attachments, payload.kind);
 	}
 
 	/**

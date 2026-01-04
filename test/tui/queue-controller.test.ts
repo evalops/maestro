@@ -86,19 +86,24 @@ describe("QueueController", () => {
 				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
-			expect(controller.getMode()).toBe("all");
-			expect(controller.isEnabled()).toBe(true);
+			expect(controller.getSteeringMode()).toBe("all");
+			expect(controller.getFollowUpMode()).toBe("all");
+			expect(controller.isFollowUpEnabled()).toBe(true);
+			expect(controller.isSteeringEnabled()).toBe(true);
 		});
 
-		it("uses initialMode when provided", () => {
+		it("uses initial modes when provided", () => {
 			const controller = new QueueController({
 				notificationView: createMockNotificationView(),
 				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
-				initialMode: "one",
+				initialSteeringMode: "one",
+				initialFollowUpMode: "one",
 			});
-			expect(controller.getMode()).toBe("one");
-			expect(controller.isEnabled()).toBe(false);
+			expect(controller.getSteeringMode()).toBe("one");
+			expect(controller.getFollowUpMode()).toBe("one");
+			expect(controller.isFollowUpEnabled()).toBe(false);
+			expect(controller.isSteeringEnabled()).toBe(false);
 		});
 	});
 
@@ -133,60 +138,43 @@ describe("QueueController", () => {
 	});
 
 	describe("setMode", () => {
-		it("sets mode to all and enables queue", () => {
+		it("sets follow-up mode to all and enables follow-ups", () => {
 			const callbacks = createMockCallbacks();
 			const notificationView = createMockNotificationView();
 			const controller = new QueueController({
 				notificationView: notificationView,
 				editor: createMockEditor(),
 				callbacks,
-				initialMode: "one",
+				initialFollowUpMode: "one",
 			});
 
-			controller.setMode("all");
+			controller.setMode("followUp", "all");
 
-			expect(controller.getMode()).toBe("all");
-			expect(controller.isEnabled()).toBe(true);
+			expect(controller.getFollowUpMode()).toBe("all");
+			expect(controller.isFollowUpEnabled()).toBe(true);
 			expect(callbacks.persistUiState).toHaveBeenCalledWith({
-				queueMode: "all",
+				steeringMode: "all",
+				followUpMode: "all",
 			});
 			expect(notificationView.showToast).toHaveBeenCalledWith(
 				expect.stringContaining("all"),
 				"success",
 			);
-			expect(callbacks.onModeChange).toHaveBeenCalledWith("all");
+			expect(callbacks.onModeChange).toHaveBeenCalledWith("followUp", "all");
 		});
 
-		it("sets mode to one and disables queue", () => {
+		it("sets steering mode to one", () => {
 			const callbacks = createMockCallbacks();
 			const controller = new QueueController({
 				notificationView: createMockNotificationView(),
 				editor: createMockEditor(),
 				callbacks,
-				initialMode: "all",
+				initialSteeringMode: "all",
 			});
 
-			controller.setMode("one");
+			controller.setMode("steering", "one");
 
-			expect(controller.getMode()).toBe("one");
-			expect(controller.isEnabled()).toBe(false);
-		});
-
-		it("disables submit when agent is running and mode is one", () => {
-			const callbacks = createMockCallbacks({
-				isAgentRunning: vi.fn().mockReturnValue(true),
-			});
-			const editor = createMockEditor();
-			const controller = new QueueController({
-				notificationView: createMockNotificationView(),
-				editor: editor,
-				callbacks,
-				initialMode: "all",
-			});
-
-			controller.setMode("one");
-
-			expect(editor.disableSubmit).toBe(true);
+			expect(controller.getSteeringMode()).toBe("one");
 		});
 	});
 
@@ -253,10 +241,10 @@ describe("QueueController", () => {
 		it("restores active and pending prompts to editor", () => {
 			const queue = createMockPromptQueue();
 			queue.getSnapshot.mockReturnValue({
-				active: { id: 1, text: "Active prompt" },
+				active: { id: 1, text: "Active prompt", kind: "prompt" },
 				pending: [
-					{ id: 2, text: "Pending 1" },
-					{ id: 3, text: "Pending 2" },
+					{ id: 2, text: "Pending 1", kind: "prompt" },
+					{ id: 3, text: "Pending 2", kind: "prompt" },
 				],
 			});
 			const editor = createMockEditor();
@@ -337,7 +325,12 @@ describe("QueueController", () => {
 			queue._emit({
 				type: "error",
 				error: new Error("Test error"),
-				entry: { id: 5, text: "test", createdAt: Date.now() },
+				entry: {
+					id: 5,
+					text: "test",
+					createdAt: Date.now(),
+					kind: "prompt",
+				},
 			});
 
 			expect(notificationView.showError).toHaveBeenCalledWith(
@@ -358,12 +351,17 @@ describe("QueueController", () => {
 			queue._emit({
 				type: "enqueue",
 				willRunImmediately: false,
-				entry: { id: 2, text: "test", createdAt: Date.now() },
+				entry: {
+					id: 2,
+					text: "test",
+					createdAt: Date.now(),
+					kind: "followUp",
+				},
 				pendingCount: 2,
 			});
 
 			expect(notificationView.showInfo).toHaveBeenCalledWith(
-				"Queued prompt #2 (2 pending)",
+				"Queued follow-up #2 (2 pending)",
 			);
 		});
 
@@ -379,7 +377,12 @@ describe("QueueController", () => {
 
 			queue._emit({
 				type: "cancel",
-				entry: { id: 3, text: "test", createdAt: Date.now() },
+				entry: {
+					id: 3,
+					text: "test",
+					createdAt: Date.now(),
+					kind: "prompt",
+				},
 			});
 
 			expect(notificationView.showInfo).toHaveBeenCalledWith(

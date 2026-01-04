@@ -39,10 +39,16 @@ export class QueuePanelController {
 					this.refreshPanel();
 				}
 			},
-			onToggleMode: () => {
-				const current = this.options.queueController.getMode();
+			onToggleFollowUpMode: () => {
+				const current = this.options.queueController.getFollowUpMode();
 				const next: QueueMode = current === "all" ? "one" : "all";
-				this.options.queueController.setMode(next);
+				this.options.queueController.setMode("followUp", next);
+				this.refreshPanel();
+			},
+			onToggleSteeringMode: () => {
+				const current = this.options.queueController.getSteeringMode();
+				const next: QueueMode = current === "all" ? "one" : "all";
+				this.options.queueController.setMode("steering", next);
 				this.refreshPanel();
 			},
 		});
@@ -58,12 +64,27 @@ export class QueuePanelController {
 			this.showPanel();
 			return;
 		}
-		const [action, idText] = args.split(/\s+/, 2);
+		const [action, scopeText, valueText] = args.split(/\s+/, 3);
 		if (action === "mode") {
-			const modeText = (idText ?? "").toLowerCase();
+			const scope =
+				(scopeText ?? "").toLowerCase() || (valueText ? "followup" : "");
+			const normalizedScope =
+				scope === "steer" || scope === "steering"
+					? "steering"
+					: scope === "followup" || scope === "follow-up"
+						? "followUp"
+						: null;
+			const modeText = normalizedScope
+				? (valueText ?? "").toLowerCase()
+				: scope;
 			if (!modeText) {
+				const targetKind =
+					normalizedScope === "steering" ? "steering" : "followUp";
 				this.options.queueModeSelectorView.show(
-					this.options.queueController.getMode(),
+					normalizedScope === "steering"
+						? this.options.queueController.getSteeringMode()
+						: this.options.queueController.getFollowUpMode(),
+					targetKind,
 				);
 				return;
 			}
@@ -71,11 +92,19 @@ export class QueuePanelController {
 				context.showError('Mode must be "one" or "all".');
 				return;
 			}
-			this.options.queueController.setMode(modeText as QueueMode);
+			if (normalizedScope === "steering") {
+				this.options.queueController.setMode("steering", modeText as QueueMode);
+				return;
+			}
+			if (normalizedScope === "followUp" || !normalizedScope) {
+				this.options.queueController.setMode("followUp", modeText as QueueMode);
+				return;
+			}
+			context.showError("Usage: /queue mode [steer|followup] <one|all>");
 			return;
 		}
 		if (action === "cancel") {
-			const id = Number.parseInt(idText ?? "", 10);
+			const id = Number.parseInt(scopeText ?? "", 10);
 			if (!Number.isFinite(id)) {
 				context.showError("Provide a numeric prompt id to cancel.");
 				return;
@@ -100,7 +129,8 @@ export class QueuePanelController {
 		this.modal.setData(
 			snapshot.active ?? null,
 			snapshot.pending,
-			this.options.queueController.getMode(),
+			this.options.queueController.getSteeringMode(),
+			this.options.queueController.getFollowUpMode(),
 		);
 		this.options.modalManager.push(this.modal);
 	}
@@ -110,7 +140,8 @@ export class QueuePanelController {
 		this.modal.setData(
 			snapshot.active ?? null,
 			snapshot.pending,
-			this.options.queueController.getMode(),
+			this.options.queueController.getSteeringMode(),
+			this.options.queueController.getFollowUpMode(),
 		);
 		if (this.options.modalManager.getActiveModal() === this.modal) {
 			this.options.ui.requestRender();
@@ -127,12 +158,18 @@ export class QueuePanelController {
 		}
 		const snapshot = this.options.queueController.getSnapshot();
 		const lines: string[] = [];
-		const mode = this.options.queueController.getMode();
-		const modeLabel =
-			mode === "all"
-				? "all (submissions enqueue while running)"
-				: "one-at-a-time (submissions paused while running)";
-		lines.push(`Mode: ${modeLabel}`);
+		const followUpMode = this.options.queueController.getFollowUpMode();
+		const steeringMode = this.options.queueController.getSteeringMode();
+		const followUpLabel =
+			followUpMode === "all"
+				? "all (follow-ups can queue while running)"
+				: "one-at-a-time (follow-ups pause while running)";
+		const steeringLabel =
+			steeringMode === "all"
+				? "all (steering can queue while running)"
+				: "one-at-a-time (steering pauses while running)";
+		lines.push(`Follow-up mode: ${followUpLabel}`);
+		lines.push(`Steering mode: ${steeringLabel}`);
 		if (snapshot.active) {
 			lines.push(
 				`Active: #${snapshot.active.id} – ${this.formatQueuedText(snapshot.active.text)}`,
@@ -148,7 +185,7 @@ export class QueuePanelController {
 				);
 			});
 			lines.push(
-				"Use /queue cancel <id> to remove a prompt. Use /queue mode <one|all> to change behavior.",
+				"Use /queue cancel <id> to remove a prompt. Use /queue mode [steer|followup] <one|all> to change behavior.",
 			);
 		}
 		this.options.chatContainer.addChild(new Spacer(1));

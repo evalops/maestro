@@ -1,13 +1,14 @@
 import type { TUI } from "@evalops/tui";
 import type { ModalManager } from "../modal-manager.js";
 import type { NotificationView } from "../notification-view.js";
+import type { QueueModeKind } from "../queue/queue-controller.js";
 import { QueueModeSelectorComponent } from "./queue-mode-selector.js";
 
 interface QueueModeSelectorViewOptions {
 	modalManager: ModalManager;
 	ui: TUI;
 	notificationView: NotificationView;
-	onModeSelected: (mode: "all" | "one") => void;
+	onModeSelected: (kind: QueueModeKind, mode: "all" | "one") => void;
 }
 
 export class QueueModeSelectorView {
@@ -15,7 +16,7 @@ export class QueueModeSelectorView {
 
 	constructor(private readonly options: QueueModeSelectorViewOptions) {}
 
-	show(currentMode: "all" | "one"): void {
+	show(currentMode: "all" | "one", kind: QueueModeKind): void {
 		if (this.selector) {
 			return;
 		}
@@ -23,7 +24,7 @@ export class QueueModeSelectorView {
 		this.selector = new QueueModeSelectorComponent(
 			currentMode,
 			(mode) => {
-				this.options.onModeSelected(mode);
+				this.options.onModeSelected(kind, mode);
 				this.hide();
 				this.options.ui.requestRender();
 			},

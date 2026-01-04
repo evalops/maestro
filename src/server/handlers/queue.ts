@@ -34,7 +34,11 @@ function getQueueState(sessionKey: string) {
 	const sessionState = getSessionQueue(
 		state,
 		sessionKey,
-		perSession.queueMode ?? uiState.queueMode ?? "all",
+		perSession.followUpMode ??
+			perSession.queueMode ??
+			uiState.followUpMode ??
+			uiState.queueMode ??
+			"all",
 	);
 	saveQueueState(state);
 	saveWebUiState(webState);
@@ -158,7 +162,7 @@ export async function handleQueue(
 					return;
 				}
 				queueState.mode = data.mode;
-				saveUiState({ queueMode: data.mode });
+				saveUiState({ queueMode: data.mode, followUpMode: data.mode });
 				sendJson(
 					res,
 					200,
