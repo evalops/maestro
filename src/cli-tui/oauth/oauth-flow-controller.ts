@@ -281,18 +281,24 @@ export class OAuthFlowController {
 					chatContainer.addChild(new Spacer(1));
 					chatContainer.addChild(new Text("Opening browser to:", 1, 0));
 					chatContainer.addChild(new Spacer(1));
-					chatContainer.addChild(
-						new Text(
-							theme.fg("accent", formatLink(url, "Open login URL")),
-							1,
-							0,
-						),
-					);
+					if (process.stdout.isTTY) {
+						chatContainer.addChild(
+							new Text(
+								theme.fg("accent", formatLink(url, "Open login URL")),
+								1,
+								0,
+							),
+						);
+					}
+					chatContainer.addChild(new Text(url, 1, 0));
 					chatContainer.addChild(new Spacer(1));
 					if (copyToOsc52(url)) {
 						chatContainer.addChild(
 							new Text(
-								theme.fg("dim", "(URL copied to clipboard - paste in browser)"),
+								theme.fg(
+									"dim",
+									"(Clipboard copy requested via OSC-52; paste in browser if supported.)",
+								),
 								1,
 								0,
 							),
@@ -339,21 +345,27 @@ export class OAuthFlowController {
 					chatContainer.addChild(new Spacer(1));
 					chatContainer.addChild(new Text("Authenticate by visiting:", 1, 0));
 					chatContainer.addChild(new Spacer(1));
-					chatContainer.addChild(
-						new Text(
-							theme.fg(
-								"accent",
-								formatLink(verificationUri, "Open verification URL"),
+					if (process.stdout.isTTY) {
+						chatContainer.addChild(
+							new Text(
+								theme.fg(
+									"accent",
+									formatLink(verificationUri, "Open verification URL"),
+								),
+								1,
+								0,
 							),
-							1,
-							0,
-						),
-					);
+						);
+					}
+					chatContainer.addChild(new Text(verificationUri, 1, 0));
 					chatContainer.addChild(new Spacer(1));
 					if (copyToOsc52(verificationUri)) {
 						chatContainer.addChild(
 							new Text(
-								theme.fg("dim", "(URL copied to clipboard - paste in browser)"),
+								theme.fg(
+									"dim",
+									"(Clipboard copy requested via OSC-52; paste in browser if supported.)",
+								),
 								1,
 								0,
 							),
