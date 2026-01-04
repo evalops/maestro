@@ -238,6 +238,29 @@ pub enum CommandAction {
     ShowToolHistory(ToolHistoryAction),
     /// Skills system action
     Skills(SkillsAction),
+    /// Queue management action
+    Queue(QueueAction),
+    /// Submit a steering prompt
+    Steer(String),
+}
+
+/// Queue mode target for queue commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueModeKind {
+    Steering,
+    FollowUp,
+}
+
+/// Queue-related actions.
+#[derive(Debug, Clone)]
+pub enum QueueAction {
+    /// Show queue status
+    Show,
+    /// Set queue mode
+    Mode {
+        kind: QueueModeKind,
+        mode: crate::state::QueueMode,
+    },
 }
 
 /// Actions for usage/cost display

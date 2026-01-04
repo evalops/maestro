@@ -37,6 +37,7 @@
 // IMPORTS
 // ─────────────────────────────────────────────────────────────────────────────
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 // `Arc` (Atomic Reference Counted) is a thread-safe reference-counted pointer.
 // Multiple owners can share the same data. The data is freed when the last
@@ -62,11 +63,12 @@ use tokio::sync::mpsc;
 // - Sender can be cloned (multiple producers)
 // - Receiver cannot be cloned (single consumer)
 
-use crate::agent::{FromAgent, NativeAgent, NativeAgentConfig, ToolResult};
+use crate::agent::MAX_PENDING_MESSAGES;
+use crate::agent::{FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult};
 use crate::clipboard::ClipboardManager;
 use crate::commands::{
-    build_command_registry, CommandAction, CommandOutput, CommandRegistry, ModalType,
-    SlashCommandMatcher, SlashCycleState,
+    build_command_registry, CommandAction, CommandOutput, CommandRegistry, ModalType, QueueAction,
+    QueueModeKind, SlashCommandMatcher, SlashCycleState,
 };
 use crate::components::{
     calculate_input_height, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest,
@@ -105,6 +107,12 @@ pub enum ActiveModal {
     ModelSelector,
     /// Color theme selector
     ThemeSelector,
+}
+
+#[derive(Debug, Clone)]
+struct QueuedPrompt {
+    content: String,
+    kind: PromptKind,
 }
 
 /// Main application struct - the central coordinator.
@@ -202,6 +210,9 @@ pub struct App {
 
     /// Tool execution history.
     tool_history: crate::tools::ToolHistory,
+
+    /// Prompts submitted while running (queued in the agent).
+    queued_prompts: VecDeque<QueuedPrompt>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -277,6 +288,7 @@ impl App {
             prompt_history: crate::history::PromptHistory::load_or_create()
                 .unwrap_or_else(|_| crate::history::PromptHistory::default()),
             tool_history: crate::tools::ToolHistory::default(),
+            queued_prompts: VecDeque::new(),
         }
     }
 
@@ -464,6 +476,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
     /// Handle an agent message (common for both backends)
     async fn handle_agent_message(&mut self, msg: FromAgent) -> Result<()> {
+        if matches!(msg, FromAgent::ResponseStart { .. }) {
+            if let Some(pending) = self.queued_prompts.pop_front() {
+                self.state.add_user_message(pending.content);
+            }
+        }
         match &msg {
             FromAgent::Ready { model, provider } => {
                 self.state.status = Some(format!("Connected: {} via {}", model, provider));
@@ -663,6 +680,7 @@ Add the required fields and retry.",
                         agent.cancel();
                     }
                     self.state.busy = false;
+                    self.queued_prompts.clear();
                 } else {
                     self.should_quit = true;
                 }
@@ -696,13 +714,13 @@ Add the required fields and retry.",
             }
 
             // / trigger for slash commands
-            KeyCode::Char('/') if !self.state.busy && self.state.input().is_empty() => {
+            KeyCode::Char('/') if self.state.input().is_empty() => {
                 self.state.insert_char('/');
                 self.slash_state.set_query("", &self.slash_matcher);
             }
 
             // Tab for slash command completion
-            KeyCode::Tab if !self.state.busy && self.state.input().starts_with('/') => {
+            KeyCode::Tab if self.state.input().starts_with('/') => {
                 self.handle_slash_tab();
             }
 
@@ -758,21 +776,15 @@ Add the required fields and retry.",
 
             // Input editing
             KeyCode::Char(c) if !ctrl => {
-                if !self.state.busy {
-                    self.state.insert_char(c);
-                    self.update_slash_state();
-                }
+                self.state.insert_char(c);
+                self.update_slash_state();
             }
             KeyCode::Backspace => {
-                if !self.state.busy {
-                    self.state.backspace();
-                    self.update_slash_state();
-                }
+                self.state.backspace();
+                self.update_slash_state();
             }
             KeyCode::Delete => {
-                if !self.state.busy {
-                    self.state.delete();
-                }
+                self.state.delete();
             }
             KeyCode::Left => {
                 self.state.move_left();
@@ -789,32 +801,43 @@ Add the required fields and retry.",
 
             // Submit or newline (Shift+Enter for newline)
             KeyCode::Enter => {
-                if !self.state.busy {
-                    if shift {
-                        // Shift+Enter: insert newline for multi-line input
-                        self.state.insert_char('\n');
-                    } else if !self.state.input().is_empty() {
-                        // Enter: submit
-                        if self.state.input().starts_with('/') {
-                            self.execute_slash_command().await?;
+                if shift {
+                    // Shift+Enter: insert newline for multi-line input
+                    self.state.insert_char('\n');
+                } else if !self.state.input().is_empty() {
+                    if self.state.input().starts_with('/') {
+                        self.execute_slash_command().await?;
+                    } else if self.state.busy {
+                        let input = self.state.input().to_string();
+                        let ok = if alt {
+                            self.handle_follow_up_submit(input).await?
                         } else {
-                            let input = self.state.take_input();
-                            self.submit_prompt(input).await?;
+                            self.handle_steer_submit(input).await?
+                        };
+                        if ok {
+                            self.state.set_input("");
                         }
+                    } else if alt {
+                        let input = self.state.input().to_string();
+                        let ok = self.handle_follow_up_submit(input).await?;
+                        if ok {
+                            self.state.set_input("");
+                        }
+                    } else {
+                        let input = self.state.take_input();
+                        self.submit_prompt(input).await?;
                     }
                 }
             }
 
             // Clear input
             KeyCode::Char('u') if ctrl => {
-                if !self.state.busy {
-                    self.state.set_input("");
-                    self.slash_state.reset();
-                }
+                self.state.set_input("");
+                self.slash_state.reset();
             }
 
             // Paste from clipboard
-            KeyCode::Char('y') if ctrl && !self.state.busy => {
+            KeyCode::Char('y') if ctrl => {
                 if let Ok(text) = self.clipboard.paste() {
                     // Insert text including newlines for multi-line support
                     // Skip carriage returns to normalize line endings
@@ -823,6 +846,7 @@ Add the required fields and retry.",
                             self.state.insert_char(c);
                         }
                     }
+                    self.update_slash_state();
                 }
             }
 
@@ -1174,56 +1198,59 @@ Add the required fields and retry.",
     }
 
     /// Handle a command output from the registry
-    fn handle_command_output(&mut self, output: CommandOutput) {
-        match output {
-            CommandOutput::Message(msg) => {
-                self.state.add_system_message(msg);
-            }
-            CommandOutput::Help(msg) => {
-                self.state.add_system_message(msg);
-            }
-            CommandOutput::Warning(msg) => {
-                self.state.error = Some(msg);
-            }
-            CommandOutput::OpenModal(modal_type) => match modal_type {
-                ModalType::ThemeSelector => {
-                    self.theme_selector.show();
-                    self.active_modal = ActiveModal::ThemeSelector;
+    async fn handle_command_output(&mut self, output: CommandOutput) {
+        let mut stack = vec![output];
+        while let Some(current) = stack.pop() {
+            match current {
+                CommandOutput::Message(msg) => {
+                    self.state.add_system_message(msg);
                 }
-                ModalType::ModelSelector => {
-                    self.model_selector.show();
-                    self.active_modal = ActiveModal::ModelSelector;
+                CommandOutput::Help(msg) => {
+                    self.state.add_system_message(msg);
                 }
-                ModalType::SessionList => {
-                    self.session_switcher.show();
-                    self.active_modal = ActiveModal::SessionSwitcher;
+                CommandOutput::Warning(msg) => {
+                    self.state.error = Some(msg);
                 }
-                ModalType::FileSearch => {
-                    self.file_search.show();
-                    self.active_modal = ActiveModal::FileSearch;
+                CommandOutput::OpenModal(modal_type) => match modal_type {
+                    ModalType::ThemeSelector => {
+                        self.theme_selector.show();
+                        self.active_modal = ActiveModal::ThemeSelector;
+                    }
+                    ModalType::ModelSelector => {
+                        self.model_selector.show();
+                        self.active_modal = ActiveModal::ModelSelector;
+                    }
+                    ModalType::SessionList => {
+                        self.session_switcher.show();
+                        self.active_modal = ActiveModal::SessionSwitcher;
+                    }
+                    ModalType::FileSearch => {
+                        self.file_search.show();
+                        self.active_modal = ActiveModal::FileSearch;
+                    }
+                    ModalType::CommandPalette => {
+                        self.command_palette.show();
+                        self.active_modal = ActiveModal::CommandPalette;
+                    }
+                    ModalType::Help => {
+                        self.show_help();
+                    }
+                },
+                CommandOutput::Action(action) => {
+                    self.handle_command_action(action).await;
                 }
-                ModalType::CommandPalette => {
-                    self.command_palette.show();
-                    self.active_modal = ActiveModal::CommandPalette;
-                }
-                ModalType::Help => {
-                    self.show_help();
-                }
-            },
-            CommandOutput::Action(action) => {
-                self.handle_command_action(action);
-            }
-            CommandOutput::Silent => {}
-            CommandOutput::Multi(outputs) => {
-                for out in outputs {
-                    self.handle_command_output(out);
+                CommandOutput::Silent => {}
+                CommandOutput::Multi(outputs) => {
+                    for out in outputs.into_iter().rev() {
+                        stack.push(out);
+                    }
                 }
             }
         }
     }
 
     /// Handle a command action that modifies state
-    fn handle_command_action(&mut self, action: CommandAction) {
+    async fn handle_command_action(&mut self, action: CommandAction) {
         match action {
             CommandAction::ClearMessages => {
                 self.state.messages.clear();
@@ -1387,6 +1414,12 @@ Add the required fields and retry.",
             }
             CommandAction::Skills(skills_action) => {
                 self.handle_skills_action(skills_action);
+            }
+            CommandAction::Queue(action) => {
+                self.handle_queue_action(action);
+            }
+            CommandAction::Steer(text) => {
+                let _ = self.handle_steer_submit(text).await;
             }
         }
     }
@@ -1755,6 +1788,58 @@ Add the required fields and retry.",
         }
     }
 
+    fn handle_queue_action(&mut self, action: QueueAction) {
+        match action {
+            QueueAction::Show => {
+                let total = self.queued_prompts.len();
+                let steer_count = self
+                    .queued_prompts
+                    .iter()
+                    .filter(|p| p.kind == PromptKind::Steer)
+                    .count();
+                let follow_up_count = self
+                    .queued_prompts
+                    .iter()
+                    .filter(|p| p.kind == PromptKind::FollowUp)
+                    .count();
+                let mut msg = String::new();
+                msg.push_str("## Queue\n\n");
+                msg.push_str(&format!(
+                    "**Steering mode:** {}\n",
+                    self.state.steering_mode.label()
+                ));
+                msg.push_str(&format!(
+                    "**Follow-up mode:** {}\n",
+                    self.state.follow_up_mode.label()
+                ));
+                msg.push_str(&format!("**Pending:** {}\n", total));
+                if total > 0 {
+                    msg.push_str(&format!(
+                        "- steer: {}, follow-up: {}\n",
+                        steer_count, follow_up_count
+                    ));
+                }
+                msg.push_str("\nUse /queue mode [steer|followup] <one|all> to change behavior.");
+                self.state.add_system_message(msg);
+            }
+            QueueAction::Mode { kind, mode } => {
+                let label = match kind {
+                    QueueModeKind::Steering => {
+                        self.state.steering_mode = mode;
+                        "Steering"
+                    }
+                    QueueModeKind::FollowUp => {
+                        self.state.follow_up_mode = mode;
+                        "Follow-up"
+                    }
+                };
+                self.state
+                    .status
+                    .replace(format!("{label} mode: {}", mode.label()));
+            }
+        }
+    }
+
     /// Execute a slash command
     async fn execute_slash_command(&mut self) -> Result<()> {
         let input = self.state.take_input();
@@ -1769,7 +1854,7 @@ Add the required fields and retry.",
             .execute(&input, &cwd, session_id.as_deref(), model.as_deref())
         {
             Ok(output) => {
-                self.handle_command_output(output);
+                self.handle_command_output(output).await;
                 return Ok(());
             }
             Err(e) => {
@@ -1928,6 +2013,14 @@ Add the required fields and retry.",
                     "**Zen Mode:** {}\n",
                     if self.state.zen_mode { "on" } else { "off" }
                 ));
+                diag.push_str(&format!(
+                    "**Steering Mode:** {}\n",
+                    self.state.steering_mode.label()
+                ));
+                diag.push_str(&format!(
+                    "**Follow-up Mode:** {}\n",
+                    self.state.follow_up_mode.label()
+                ));
 
                 // Terminal info
                 if let Ok((cols, rows)) = crossterm::terminal::size() {
@@ -2010,7 +2103,8 @@ Navigation:
   Ctrl+L        Clear screen
 
 Input:
-  Enter         Send message / Execute command
+  Enter         Send message (steer while running)
+  Alt+Enter     Queue follow-up (while running)
   @             Open file search
   /             Start slash command
   Ctrl+U        Clear input
@@ -2038,6 +2132,8 @@ Slash Commands:
   /clear        Clear messages
   /copy         Copy last response
   /theme        Change theme
+  /queue        Manage follow-up / steering queue modes
+  /steer        Send a steering message
   /sessions     Browse sessions
   /files        Search files
   /commands     Open command palette
@@ -2046,8 +2142,101 @@ Slash Commands:
         self.state.add_system_message(help_text.trim().to_string());
     }
 
+    async fn handle_follow_up_submit(&mut self, content: String) -> Result<bool> {
+        if content.trim().is_empty() {
+            return Ok(false);
+        }
+        if self.state.busy && !self.state.follow_up_mode.allows_queue() {
+            self.state.status = Some(
+                "Follow-up mode set to one-at-a-time. Use /queue mode followup all to enable follow-ups while running."
+                    .to_string(),
+            );
+            return Ok(false);
+        }
+        if self.state.busy {
+            return self
+                .queue_prompt(content, PromptKind::FollowUp, false)
+                .await;
+        }
+        self.submit_prompt_with_kind(content, PromptKind::FollowUp)
+            .await
+    }
+
+    async fn handle_steer_submit(&mut self, content: String) -> Result<bool> {
+        if content.trim().is_empty() {
+            return Ok(false);
+        }
+        if self.state.busy && !self.state.steering_mode.allows_queue() {
+            self.state.status = Some(
+                "Steering mode set to one-at-a-time. Use /queue mode steer all to allow multiple steering messages."
+                    .to_string(),
+            );
+            return Ok(false);
+        }
+        if self.state.busy {
+            if let Some(agent) = &self.native_agent {
+                agent.cancel_keep_queue();
+            }
+            self.state.status = Some("Steering: interrupted current run".to_string());
+            return self.queue_prompt(content, PromptKind::Steer, true).await;
+        }
+        self.submit_prompt_with_kind(content, PromptKind::Steer)
+            .await
+    }
+
+    async fn queue_prompt(
+        &mut self,
+        content: String,
+        kind: PromptKind,
+        front: bool,
+    ) -> Result<bool> {
+        let Some(agent) = &self.native_agent else {
+            self.state.error = Some("Agent not initialized".to_string());
+            return Ok(false);
+        };
+
+        if let Err(e) = agent.prompt_with_kind(content.clone(), vec![], kind).await {
+            self.state.error = Some(format!("Failed to queue prompt: {}", e));
+            return Ok(false);
+        }
+
+        let dropped = self.enqueue_pending_prompt(content, kind, front);
+        if let Some(dropped) = dropped {
+            self.state.status = Some(format!(
+                "Queue full, dropped oldest {}.",
+                dropped.kind.label()
+            ));
+        }
+        Ok(true)
+    }
+
+    fn enqueue_pending_prompt(
+        &mut self,
+        content: String,
+        kind: PromptKind,
+        front: bool,
+    ) -> Option<QueuedPrompt> {
+        let entry = QueuedPrompt { content, kind };
+        if front {
+            self.queued_prompts.push_front(entry);
+        } else {
+            self.queued_prompts.push_back(entry);
+        }
+        if self.queued_prompts.len() > MAX_PENDING_MESSAGES {
+            return self.queued_prompts.pop_back();
+        }
+        None
+    }
+
     /// Submit a prompt to the agent
     async fn submit_prompt(&mut self, content: String) -> Result<()> {
+        let _ = self
+            .submit_prompt_with_kind(content, PromptKind::Prompt)
+            .await?;
+        Ok(())
+    }
+
+    async fn submit_prompt_with_kind(&mut self, content: String, kind: PromptKind) -> Result<bool> {
         // Add user message to state
         self.state.add_user_message(content.clone());
         self.state.busy = true;
@@ -2055,16 +2244,16 @@ Slash Commands:
         if let Some(agent) = &self.native_agent {
             // Send the prompt - returns immediately, actual work happens in background task
             // Events will be received via poll_agent in the main loop
-            if let Err(e) = agent.prompt(content, vec![]).await {
+            if let Err(e) = agent.prompt_with_kind(content, vec![], kind).await {
                 self.state.error = Some(format!("Failed to send prompt: {}", e));
                 self.state.busy = false;
+                return Ok(false);
             }
-        } else {
-            self.state.error = Some("Agent not initialized".to_string());
-            self.state.busy = false;
+            return Ok(true);
         }
-
-        Ok(())
+        self.state.error = Some("Agent not initialized".to_string());
+        self.state.busy = false;
+        Ok(false)
     }
 
     /// Render the UI
@@ -2099,7 +2288,7 @@ Slash Commands:
             }
 
             // Render slash completions if active
-            if active_modal == ActiveModal::None && slash_state.has_completions() && !state.busy {
+            if active_modal == ActiveModal::None && slash_state.has_completions() {
                 Self::render_slash_completions_static(slash_state, frame, area);
             }
 
@@ -2131,7 +2320,7 @@ Slash Commands:
 
             // Position terminal cursor in the input area
             // Layout: [Messages(Min), Input(auto), Status(1)]
-            if active_modal == ActiveModal::None && !state.busy {
+            if active_modal == ActiveModal::None {
                 // Calculate input area position (same layout as ChatView)
                 let status_height = if state.zen_mode { 0 } else { 1 };
                 let input_height = calculate_input_height(state, area);

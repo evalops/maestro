@@ -98,7 +98,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::message_queue::MessageQueue;
+use super::message_queue::{MessageQueue, PromptKind, MAX_PENDING_MESSAGES};
 use super::safety::{SafetyController, SafetyVerdict};
 use super::{FromAgent, TokenUsage, ToolResult};
 use crate::ai::{
@@ -238,13 +238,14 @@ enum AgentCommand {
     Prompt {
         content: String,
         attachments: Vec<String>,
+        kind: PromptKind,
     },
 
     /// Cancel the current operation
     ///
     /// Triggers the cancellation token to stop the active AI request.
     /// The runner will clean up and send a `FromAgent::ResponseEnd` event.
-    Cancel,
+    Cancel { clear_pending: bool },
 
     /// Change the active model
     ///
@@ -404,8 +405,8 @@ impl NativeAgent {
         // Create retry policy for transient API errors
         let retry_policy = super::retry::RetryPolicy::default();
 
-        // Create message queue for pending prompts (max 10 queued messages)
-        let pending_messages = MessageQueue::with_max_size(10);
+        // Create message queue for pending prompts (bounded)
+        let pending_messages = MessageQueue::with_max_size(MAX_PENDING_MESSAGES);
 
         // Create the background runner
         let runner = NativeAgentRunner {
@@ -495,10 +496,22 @@ impl NativeAgent {
     /// // Returns immediately, response arrives via events
     /// ```
     pub async fn prompt(&self, content: String, attachments: Vec<String>) -> Result<()> {
+        self.prompt_with_kind(content, attachments, PromptKind::Prompt)
+            .await
+    }
+
+    /// Send a prompt with an explicit kind (prompt/steer/follow-up).
+    pub async fn prompt_with_kind(
+        &self,
+        content: String,
+        attachments: Vec<String>,
+        kind: PromptKind,
+    ) -> Result<()> {
         self.command_tx
             .send(AgentCommand::Prompt {
                 content,
                 attachments,
+                kind,
             })
             .map_err(|e| anyhow::anyhow!("Failed to send prompt: {}", e))?;
         Ok(())
@@ -506,7 +519,16 @@ impl NativeAgent {
 
     /// Cancel the current operation
     pub fn cancel(&self) {
-        let _ = self.command_tx.send(AgentCommand::Cancel);
+        self.cancel_with_options(true);
+    }
+
+    /// Cancel the current operation but keep any queued prompts.
+    pub fn cancel_keep_queue(&self) {
+        self.cancel_with_options(false);
+    }
+
+    fn cancel_with_options(&self, clear_pending: bool) {
+        let _ = self.command_tx.send(AgentCommand::Cancel { clear_pending });
     }
 
     /// Clear conversation history
@@ -831,6 +853,7 @@ impl NativeAgentRunner {
                 AgentCommand::Prompt {
                     content,
                     attachments,
+                    kind,
                 } => {
                     if self.busy {
                         // Queue the message instead of rejecting it
@@ -841,17 +864,28 @@ impl NativeAgentRunner {
                                     .to_string(),
                             });
                         }
-                        if let Some(dropped) = self.pending_messages.push(&content) {
+                        let dropped = if kind == PromptKind::Steer {
+                            self.pending_messages.push_urgent_with_kind(&content, kind)
+                        } else {
+                            self.pending_messages.push_with_kind(&content, kind)
+                        };
+                        if let Some(dropped) = dropped {
                             let _ = self.event_tx.send(FromAgent::Status {
                                 message: format!(
-                                    "Queue full, dropped oldest message: {}...",
+                                    "Queue full, dropped oldest {}: {}...",
+                                    dropped.kind.label(),
                                     &dropped.content[..dropped.content.len().min(30)]
                                 ),
                             });
                         }
                         let stats = self.pending_messages.stats();
+                        let label = kind.label();
                         let _ = self.event_tx.send(FromAgent::Status {
-                            message: stats.status_string(),
+                            message: if stats.pending_count == 1 {
+                                format!("Queued {} (1 pending)", label)
+                            } else {
+                                format!("Queued {} ({} pending)", label, stats.pending_count)
+                            },
                         });
                         continue;
                     }
@@ -953,11 +987,12 @@ impl NativeAgentRunner {
                     // Process any pending messages that were queued while busy
                     while let Some(pending) = self.pending_messages.pop() {
                         let remaining = self.pending_messages.len();
+                        let label = pending.kind.label();
                         let _ = self.event_tx.send(FromAgent::Status {
                             message: if remaining > 0 {
-                                format!("Processing queued message ({} remaining)...", remaining)
+                                format!("Processing queued {} ({} remaining)...", label, remaining)
                             } else {
-                                "Processing queued message...".to_string()
+                                format!("Processing queued {}...", label)
                             },
                         });
 
@@ -1037,17 +1072,19 @@ impl NativeAgentRunner {
                         });
                     }
                 }
-                AgentCommand::Cancel => {
+                AgentCommand::Cancel { clear_pending } => {
                     if let Some(token) = &self.cancel_token {
                         token.cancel();
                     }
                     self.busy = false;
-                    // Also clear any pending messages on cancel
-                    let cleared = self.pending_messages.clear();
-                    if !cleared.is_empty() {
-                        let _ = self.event_tx.send(FromAgent::Status {
-                            message: format!("Cleared {} pending message(s)", cleared.len()),
-                        });
+                    if clear_pending {
+                        // Also clear any pending messages on cancel
+                        let cleared = self.pending_messages.clear();
+                        if !cleared.is_empty() {
+                            let _ = self.event_tx.send(FromAgent::Status {
+                                message: format!("Cleared {} pending message(s)", cleared.len()),
+                            });
+                        }
                     }
                     self.pending_tool_approvals.clear();
                 }

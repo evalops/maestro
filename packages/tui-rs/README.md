@@ -128,7 +128,8 @@ src/
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Send message |
+| `Enter` | Send message (steer while running) |
+| `Alt+Enter` | Queue follow-up (while running) |
 | `Shift+Enter` | Insert newline (multi-line input) |
 | `Esc` | Cancel/close modal |
 | `Ctrl+C` | Interrupt agent / Quit |

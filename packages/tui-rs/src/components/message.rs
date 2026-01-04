@@ -1031,11 +1031,10 @@ impl<'a> ChatInputWidget<'a> {
     /// - Unicode display width
     ///
     /// Returns `None` if:
-    /// - Widget is in busy state (cursor shouldn't be shown)
     /// - Area is too small to render
     /// - Cursor is outside visible area (scrolled out of view)
     pub fn cursor_pos(&self, input_area: Rect) -> Option<(u16, u16)> {
-        if self.busy || input_area.width < 3 || input_area.height < 3 {
+        if input_area.width < 3 || input_area.height < 3 {
             return None;
         }
 

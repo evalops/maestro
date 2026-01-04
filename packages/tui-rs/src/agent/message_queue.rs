@@ -32,11 +32,43 @@
 use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Maximum number of pending messages allowed in the queue.
+pub const MAX_PENDING_MESSAGES: usize = 10;
+
+/// Kind of prompt queued while the agent is busy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    /// Standard prompt (normal submission)
+    Prompt,
+    /// Steering prompt (interrupt + higher priority)
+    Steer,
+    /// Follow-up prompt (queued while running)
+    FollowUp,
+}
+
+impl PromptKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            PromptKind::Prompt => "prompt",
+            PromptKind::Steer => "steer",
+            PromptKind::FollowUp => "follow-up",
+        }
+    }
+}
+
+impl Default for PromptKind {
+    fn default() -> Self {
+        PromptKind::Prompt
+    }
+}
+
 /// A pending message waiting to be processed.
 #[derive(Debug, Clone)]
 pub struct PendingMessage {
     /// The message content
     pub content: String,
+    /// What kind of prompt this is
+    pub kind: PromptKind,
     /// Timestamp when the message was queued (milliseconds since epoch)
     pub queued_at: u64,
     /// Optional priority (higher = more urgent)
@@ -46,8 +78,14 @@ pub struct PendingMessage {
 impl PendingMessage {
     /// Create a new pending message with current timestamp
     pub fn new(content: impl Into<String>) -> Self {
+        Self::with_kind(content, PromptKind::Prompt)
+    }
+
+    /// Create a new pending message with an explicit kind
+    pub fn with_kind(content: impl Into<String>, kind: PromptKind) -> Self {
         Self {
             content: content.into(),
+            kind,
             queued_at: current_timestamp_ms(),
             priority: 0,
         }
@@ -55,8 +93,14 @@ impl PendingMessage {
 
     /// Create a high-priority pending message
     pub fn urgent(content: impl Into<String>) -> Self {
+        Self::urgent_with_kind(content, PromptKind::Prompt)
+    }
+
+    /// Create a high-priority pending message with an explicit kind
+    pub fn urgent_with_kind(content: impl Into<String>, kind: PromptKind) -> Self {
         Self {
             content: content.into(),
+            kind,
             queued_at: current_timestamp_ms(),
             priority: 100,
         }
@@ -110,7 +154,18 @@ impl MessageQueue {
     ///
     /// Returns the message that was dropped if the queue overflowed.
     pub fn push(&mut self, content: impl Into<String>) -> Option<PendingMessage> {
-        self.push_message(PendingMessage::new(content))
+        self.push_with_kind(content, PromptKind::Prompt)
+    }
+
+    /// Push a message with a specific kind onto the queue
+    ///
+    /// Returns the message that was dropped if the queue overflowed.
+    pub fn push_with_kind(
+        &mut self,
+        content: impl Into<String>,
+        kind: PromptKind,
+    ) -> Option<PendingMessage> {
+        self.push_message(PendingMessage::with_kind(content, kind))
     }
 
     /// Push a pending message onto the queue
@@ -136,7 +191,16 @@ impl MessageQueue {
 
     /// Push a high-priority message to the front of the queue
     pub fn push_urgent(&mut self, content: impl Into<String>) -> Option<PendingMessage> {
-        self.push_message(PendingMessage::urgent(content))
+        self.push_urgent_with_kind(content, PromptKind::Prompt)
+    }
+
+    /// Push a high-priority message with a specific kind to the front of the queue
+    pub fn push_urgent_with_kind(
+        &mut self,
+        content: impl Into<String>,
+        kind: PromptKind,
+    ) -> Option<PendingMessage> {
+        self.push_message(PendingMessage::urgent_with_kind(content, kind))
     }
 
     /// Pop the next message from the queue
@@ -169,12 +233,24 @@ impl MessageQueue {
     /// Get queue statistics
     pub fn stats(&self) -> QueueStats {
         let oldest_waiting_ms = self.queue.front().map(|m| m.waiting_ms());
+        let pending_steer = self
+            .queue
+            .iter()
+            .filter(|m| m.kind == PromptKind::Steer)
+            .count();
+        let pending_follow_up = self
+            .queue
+            .iter()
+            .filter(|m| m.kind == PromptKind::FollowUp)
+            .count();
 
         QueueStats {
             pending_count: self.queue.len(),
             total_queued: self.total_queued,
             dropped_count: self.dropped_count,
             oldest_waiting_ms,
+            pending_steer,
+            pending_follow_up,
         }
     }
 
@@ -217,6 +293,10 @@ pub struct QueueStats {
     pub dropped_count: u64,
     /// How long the oldest message has been waiting
     pub oldest_waiting_ms: Option<u64>,
+    /// Number of queued steering messages
+    pub pending_steer: usize,
+    /// Number of queued follow-up messages
+    pub pending_follow_up: usize,
 }
 
 impl QueueStats {
@@ -329,13 +409,16 @@ mod tests {
         let mut queue = MessageQueue::new();
 
         queue.push("Test");
-        queue.push("Test 2");
+        queue.push_with_kind("Steer", PromptKind::Steer);
+        queue.push_with_kind("Follow", PromptKind::FollowUp);
 
         let stats = queue.stats();
-        assert_eq!(stats.pending_count, 2);
-        assert_eq!(stats.total_queued, 2);
+        assert_eq!(stats.pending_count, 3);
+        assert_eq!(stats.total_queued, 3);
         assert_eq!(stats.dropped_count, 0);
         assert!(stats.has_pending());
+        assert_eq!(stats.pending_steer, 1);
+        assert_eq!(stats.pending_follow_up, 1);
     }
 
     #[test]

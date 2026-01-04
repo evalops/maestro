@@ -75,8 +75,9 @@ use std::sync::Arc;
 use super::types::{
     ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory, CommandContext,
     CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction,
-    ModalType, SkillsAction, ToolHistoryAction, UsageAction,
+    ModalType, QueueAction, QueueModeKind, SkillsAction, ToolHistoryAction, UsageAction,
 };
+use crate::state::QueueMode;
 
 /// Registry of all available commands with efficient lookup and execution
 ///
@@ -567,6 +568,89 @@ pub fn build_command_registry() -> CommandRegistry {
         CommandCategory::Ui,
         Box::new(|_| Ok(CommandOutput::Action(CommandAction::CopyLastMessage))),
     ));
+
+    // Queue command
+    registry.register(
+        Command::new(
+            "queue",
+            "Manage queued prompts",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                let args = ctx.raw_args.trim();
+                if args.is_empty() || args.eq_ignore_ascii_case("list") {
+                    return Ok(CommandOutput::Action(CommandAction::Queue(
+                        QueueAction::Show,
+                    )));
+                }
+
+                let mut parts = args.split_whitespace();
+                let action = parts.next().unwrap_or("");
+                if action != "mode" {
+                    return Err(CommandError::new(
+                        "Usage: /queue [list|mode [steer|followup] <one|all>]",
+                    ));
+                }
+
+                let scope = parts.next();
+                let value = parts.next();
+                let (kind, mode) = match (scope, value) {
+                    (None, _) => {
+                        return Err(CommandError::new(
+                            "Usage: /queue mode [steer|followup] <one|all>",
+                        ));
+                    }
+                    (Some(scope), None) => {
+                        if let Some(mode) = QueueMode::parse(scope) {
+                            (QueueModeKind::FollowUp, mode)
+                        } else {
+                            return Err(CommandError::new(
+                                "Usage: /queue mode [steer|followup] <one|all>",
+                            ));
+                        }
+                    }
+                    (Some(scope), Some(value)) => {
+                        let kind = match scope.to_lowercase().as_str() {
+                            "steer" | "steering" => QueueModeKind::Steering,
+                            "followup" | "follow-up" => QueueModeKind::FollowUp,
+                            _ => {
+                                return Err(CommandError::new(
+                                    "Usage: /queue mode [steer|followup] <one|all>",
+                                ));
+                            }
+                        };
+                        let Some(mode) = QueueMode::parse(value) else {
+                            return Err(CommandError::new("Mode must be \"one\" or \"all\"."));
+                        };
+                        (kind, mode)
+                    }
+                };
+
+                Ok(CommandOutput::Action(CommandAction::Queue(
+                    QueueAction::Mode { kind, mode },
+                )))
+            }),
+        )
+        .usage("/queue [list|mode [steer|followup] <one|all>]"),
+    );
+
+    // Steer command
+    registry.register(
+        Command::new(
+            "steer",
+            "Send a steering message",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                let text = ctx.raw_args.trim();
+                if text.is_empty() {
+                    return Err(CommandError::new("Usage: /steer <message>"));
+                }
+                Ok(CommandOutput::Action(CommandAction::Steer(
+                    text.to_string(),
+                )))
+            }),
+        )
+        .usage("/steer <message>"),
+    );
 
     // Theme command
     registry.register(

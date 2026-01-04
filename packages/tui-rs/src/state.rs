@@ -275,6 +275,49 @@ impl ApprovalMode {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// QUEUE MODES
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Queue mode for prompts while the agent is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueMode {
+    /// Allow queueing multiple prompts while running
+    All,
+    /// Only allow one-at-a-time (no queueing while running)
+    One,
+}
+
+impl Default for QueueMode {
+    fn default() -> Self {
+        QueueMode::All
+    }
+}
+
+impl QueueMode {
+    /// Human-readable label for display in the UI.
+    pub fn label(&self) -> &'static str {
+        match self {
+            QueueMode::All => "all (queue while running)",
+            QueueMode::One => "one-at-a-time (pause while running)",
+        }
+    }
+
+    /// Parse a queue mode from user input.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "all" => Some(QueueMode::All),
+            "one" | "single" => Some(QueueMode::One),
+            _ => None,
+        }
+    }
+
+    /// Whether queueing is allowed under this mode.
+    pub fn allows_queue(&self) -> bool {
+        matches!(self, QueueMode::All)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MAIN APPLICATION STATE
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -325,7 +368,7 @@ pub struct AppState {
     pub session_id: Option<String>,
 
     /// Whether the agent is currently processing a request.
-    /// When true, we show a loading spinner and disable new input.
+    /// When true, we show a loading spinner and adjust input hints.
     pub busy: bool,
 
     /// When the agent became busy (for elapsed time display).
@@ -366,6 +409,12 @@ pub struct AppState {
     /// Current approval mode for tool execution.
     /// Controls whether tools run automatically or require approval.
     pub approval_mode: ApprovalMode,
+
+    /// Queue mode for steering prompts while running.
+    pub steering_mode: QueueMode,
+
+    /// Queue mode for follow-up prompts while running.
+    pub follow_up_mode: QueueMode,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -423,6 +472,8 @@ impl AppState {
             thinking_buffer: String::new(),
             zen_mode: false,                        // Full UI by default
             approval_mode: ApprovalMode::default(), // Selective mode
+            steering_mode: QueueMode::default(),    // Queue steering by default
+            follow_up_mode: QueueMode::default(),   // Queue follow-ups by default
         }
     }
 
@@ -1030,6 +1081,14 @@ mod tests {
         assert!(ApprovalMode::Safe.label().contains("Safe"));
     }
 
+    #[test]
+    fn test_queue_mode_parse() {
+        assert_eq!(QueueMode::parse("all"), Some(QueueMode::All));
+        assert_eq!(QueueMode::parse("one"), Some(QueueMode::One));
+        assert_eq!(QueueMode::parse("single"), Some(QueueMode::One));
+        assert_eq!(QueueMode::parse("unknown"), None);
+    }
+
     // ============================================================
     // AppState Creation Tests
     // ============================================================
@@ -1052,6 +1111,8 @@ mod tests {
         assert!(state.thinking_header.is_none());
         assert!(!state.zen_mode);
         assert_eq!(state.approval_mode, ApprovalMode::Selective);
+        assert_eq!(state.steering_mode, QueueMode::All);
+        assert_eq!(state.follow_up_mode, QueueMode::All);
     }
 
     #[test]
