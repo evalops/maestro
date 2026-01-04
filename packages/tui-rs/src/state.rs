@@ -297,6 +297,14 @@ impl QueueMode {
         }
     }
 
+    /// Short label for compact UI badges.
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            QueueMode::All => "all",
+            QueueMode::One => "one",
+        }
+    }
+
     /// Parse a queue mode from user input.
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
@@ -413,6 +421,12 @@ pub struct AppState {
 
     /// Number of prompts currently queued while running.
     pub queued_prompt_count: usize,
+
+    /// Number of queued steering prompts.
+    pub queued_steering_count: usize,
+
+    /// Number of queued follow-up prompts.
+    pub queued_follow_up_count: usize,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -473,6 +487,8 @@ impl AppState {
             steering_mode: QueueMode::default(),    // Queue steering by default
             follow_up_mode: QueueMode::default(),   // Queue follow-ups by default
             queued_prompt_count: 0,                 // No queued prompts
+            queued_steering_count: 0,               // No queued steering prompts
+            queued_follow_up_count: 0,              // No queued follow-up prompts
         }
     }
 

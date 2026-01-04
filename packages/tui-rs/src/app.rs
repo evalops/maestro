@@ -1797,17 +1797,9 @@ Add the required fields and retry.",
     fn handle_queue_action(&mut self, action: QueueAction) {
         match action {
             QueueAction::Show => {
-                let total = self.queued_prompts.len();
-                let steer_count = self
-                    .queued_prompts
-                    .iter()
-                    .filter(|p| p.kind == PromptKind::Steer)
-                    .count();
-                let follow_up_count = self
-                    .queued_prompts
-                    .iter()
-                    .filter(|p| p.kind == PromptKind::FollowUp)
-                    .count();
+                let total = self.state.queued_prompt_count;
+                let steer_count = self.state.queued_steering_count;
+                let follow_up_count = self.state.queued_follow_up_count;
                 let mut msg = String::new();
                 msg.push_str("## Queue\n\n");
                 msg.push_str(&format!(
@@ -2238,7 +2230,18 @@ Slash Commands:
     }
 
     fn sync_queue_prompt_count(&mut self) {
+        let mut steer_count = 0;
+        let mut follow_up_count = 0;
+        for prompt in &self.queued_prompts {
+            match prompt.kind {
+                PromptKind::Steer => steer_count += 1,
+                PromptKind::FollowUp => follow_up_count += 1,
+                PromptKind::Prompt => {}
+            }
+        }
         self.state.queued_prompt_count = self.queued_prompts.len();
+        self.state.queued_steering_count = steer_count;
+        self.state.queued_follow_up_count = follow_up_count;
     }
 
     /// Submit a prompt to the agent
@@ -2354,6 +2357,8 @@ Slash Commands:
                     0,
                     None,
                     state.queued_prompt_count,
+                    state.queued_steering_count,
+                    state.queued_follow_up_count,
                 );
 
                 if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
@@ -2948,6 +2953,57 @@ mod tests {
         // scroll_up by more than current clamps to 0
         state.scroll_up(100);
         assert_eq!(state.scroll_offset, 0);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Queue State Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    fn new_test_app() -> App {
+        let (terminal, capabilities) =
+            crate::terminal::init_fallback().expect("init fallback terminal");
+        App::new_with_terminal(terminal, capabilities)
+    }
+
+    #[tokio::test]
+    async fn test_queue_counts_sync_on_response_start() {
+        let mut app = new_test_app();
+
+        app.enqueue_pending_prompt("follow-up".to_string(), PromptKind::FollowUp, false);
+        app.enqueue_pending_prompt("steer".to_string(), PromptKind::Steer, false);
+
+        assert_eq!(app.state.queued_prompt_count, 2);
+        assert_eq!(app.state.queued_follow_up_count, 1);
+        assert_eq!(app.state.queued_steering_count, 1);
+
+        app.state.busy = false;
+        app.handle_agent_message(FromAgent::ResponseStart {
+            response_id: "resp-1".to_string(),
+        })
+        .await
+        .expect("handle response start");
+
+        assert_eq!(app.state.queued_prompt_count, 1);
+        assert_eq!(app.state.queued_follow_up_count, 0);
+        assert_eq!(app.state.queued_steering_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_queue_counts_clear_on_interrupt() {
+        let mut app = new_test_app();
+
+        app.enqueue_pending_prompt("follow-up".to_string(), PromptKind::FollowUp, false);
+        app.enqueue_pending_prompt("steer".to_string(), PromptKind::Steer, false);
+        app.state.busy = true;
+
+        app.handle_key(KeyCode::Char('c'), CrosstermModifiers::CONTROL)
+            .await
+            .expect("interrupt");
+
+        assert_eq!(app.state.queued_prompt_count, 0);
+        assert_eq!(app.state.queued_follow_up_count, 0);
+        assert_eq!(app.state.queued_steering_count, 0);
+        assert!(app.queued_prompts.is_empty());
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -991,6 +991,8 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 ///     elapsed_secs,
 ///     thinking_header,
 ///     queued_prompt_count,
+///     queued_steering_count,
+///     queued_follow_up_count,
 /// );
 /// frame.render_widget(widget, area);
 ///
@@ -1005,6 +1007,8 @@ pub struct ChatInputWidget<'a> {
     elapsed_secs: u64,
     thinking_header: Option<&'a str>,
     queued_prompt_count: usize,
+    queued_steering_count: usize,
+    queued_follow_up_count: usize,
 }
 
 impl<'a> ChatInputWidget<'a> {
@@ -1015,6 +1019,8 @@ impl<'a> ChatInputWidget<'a> {
         elapsed_secs: u64,
         thinking_header: Option<&'a str>,
         queued_prompt_count: usize,
+        queued_steering_count: usize,
+        queued_follow_up_count: usize,
     ) -> Self {
         Self {
             textarea,
@@ -1023,6 +1029,8 @@ impl<'a> ChatInputWidget<'a> {
             elapsed_secs,
             thinking_header,
             queued_prompt_count,
+            queued_steering_count,
+            queued_follow_up_count,
         }
     }
 
@@ -1086,7 +1094,22 @@ impl Widget for ChatInputWidget<'_> {
             }
 
             let queue_note = if self.queued_prompt_count > 0 {
-                format!(" | {} queued", self.queued_prompt_count)
+                let mut detail = Vec::new();
+                if self.queued_steering_count > 0 {
+                    detail.push(format!("{} steer", self.queued_steering_count));
+                }
+                if self.queued_follow_up_count > 0 {
+                    detail.push(format!("{} follow-up", self.queued_follow_up_count));
+                }
+                if detail.is_empty() {
+                    format!(" | {} queued", self.queued_prompt_count)
+                } else {
+                    format!(
+                        " | {} queued ({})",
+                        self.queued_prompt_count,
+                        detail.join(", ")
+                    )
+                }
             } else {
                 String::new()
             };
@@ -1199,6 +1222,7 @@ pub struct StatusBarWidget<'a> {
     usage: UsageSummary,
     /// Number of active hooks (None = hooks disabled)
     hook_count: Option<usize>,
+    queue_badge: Option<&'a str>,
 }
 
 impl<'a> StatusBarWidget<'a> {
@@ -1215,6 +1239,7 @@ impl<'a> StatusBarWidget<'a> {
             git_branch,
             usage: UsageSummary::default(),
             hook_count: None,
+            queue_badge: None,
         }
     }
 
@@ -1226,6 +1251,11 @@ impl<'a> StatusBarWidget<'a> {
     /// Set hook count (None = hooks disabled, Some(0) = enabled but none loaded)
     pub fn with_hooks(mut self, count: Option<usize>) -> Self {
         self.hook_count = count;
+        self
+    }
+
+    pub fn with_queue_badge(mut self, badge: Option<&'a str>) -> Self {
+        self.queue_badge = badge;
         self
     }
 }
@@ -1300,6 +1330,13 @@ impl Widget for StatusBarWidget<'_> {
                     UsageSummary::format_tokens(self.usage.input_tokens),
                     UsageSummary::format_tokens(self.usage.output_tokens)
                 ),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        if let Some(badge) = self.queue_badge {
+            right_spans.push(Span::styled(
+                format!("{badge} "),
                 Style::default().fg(Color::DarkGray),
             ));
         }
@@ -1398,6 +1435,8 @@ impl Widget for ChatView<'_> {
             self.state.elapsed_busy_secs(),
             self.state.thinking_header.as_deref(),
             self.state.queued_prompt_count,
+            self.state.queued_steering_count,
+            self.state.queued_follow_up_count,
         );
         input_widget.render(chunks[1], buf);
 
@@ -1415,13 +1454,23 @@ impl Widget for ChatView<'_> {
                     acc
                 });
 
+            let queue_badge = {
+                let label = format!("queue:{}", self.state.follow_up_mode.short_label());
+                if self.state.queued_prompt_count > 0 {
+                    Some(format!("{label}({})", self.state.queued_prompt_count))
+                } else {
+                    Some(label)
+                }
+            };
+
             let status_widget = StatusBarWidget::new(
                 self.state.model.as_deref(),
                 self.state.provider.as_deref(),
                 self.state.cwd.as_deref(),
                 self.state.git_branch.as_deref(),
             )
-            .with_usage(usage);
+            .with_usage(usage)
+            .with_queue_badge(queue_badge.as_deref());
             status_widget.render(chunks[2], buf);
         }
     }
