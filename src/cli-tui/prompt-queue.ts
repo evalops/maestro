@@ -1,6 +1,12 @@
-export interface QueuedPrompt {
-	id: number;
+import type { Attachment } from "../agent/types.js";
+
+export interface PromptPayload {
 	text: string;
+	attachments?: Attachment[];
+}
+
+export interface QueuedPrompt extends PromptPayload {
+	id: number;
 	createdAt: number;
 }
 
@@ -28,25 +34,30 @@ export class PromptQueue {
 	private listeners = new Set<(event: PromptQueueEvent) => void>();
 
 	constructor(
-		private readonly runner: (text: string) => Promise<void>,
+		private readonly runner: (
+			text: string,
+			attachments?: Attachment[],
+		) => Promise<void>,
 		private readonly onRunnerError?: (error: unknown) => void,
 	) {}
 
-	enqueue(text: string): QueuedPrompt {
-		return this.enqueueInternal(text, "back");
+	enqueue(text: string, attachments?: Attachment[]): QueuedPrompt {
+		return this.enqueueInternal(text, attachments, "back");
 	}
 
-	enqueueFront(text: string): QueuedPrompt {
-		return this.enqueueInternal(text, "front");
+	enqueueFront(text: string, attachments?: Attachment[]): QueuedPrompt {
+		return this.enqueueInternal(text, attachments, "front");
 	}
 
 	private enqueueInternal(
 		text: string,
+		attachments: Attachment[] | undefined,
 		position: "front" | "back",
 	): QueuedPrompt {
 		const entry: QueuedPrompt = {
 			id: this.nextId++,
 			text,
+			attachments,
 			createdAt: Date.now(),
 		};
 		const willRunImmediately = !this.active && this.pending.length === 0;
@@ -126,7 +137,7 @@ export class PromptQueue {
 		this.active = next;
 		this.emit({ type: "start", entry: next });
 		try {
-			await this.runner(next.text);
+			await this.runner(next.text, next.attachments);
 			this.emit({ type: "finish", entry: next });
 		} catch (error) {
 			if (this.onRunnerError) {

@@ -204,20 +204,23 @@ export class QueueController {
 	/**
 	 * Restore queued prompts to the editor on interrupt.
 	 */
-	restoreQueuedPrompts(): void {
+	restoreQueuedPrompts(): QueuedPrompt[] {
 		if (!this.promptQueue) {
-			return;
+			return [];
 		}
 		const snapshot = this.promptQueue.getSnapshot();
+		const entries: QueuedPrompt[] = [];
 		const messages: string[] = [];
 		if (snapshot.active) {
 			messages.push(snapshot.active.text);
+			entries.push(snapshot.active);
 		}
 		for (const entry of snapshot.pending) {
 			messages.push(entry.text);
+			entries.push(entry);
 		}
 		if (!messages.length) {
-			return;
+			return [];
 		}
 		const restored = messages.join("\n\n");
 		this.promptQueue.cancelAll?.({ silent: true });
@@ -229,6 +232,7 @@ export class QueueController {
 		);
 		this.updateQueuedPromptCount();
 		this.callbacks.refreshFooterHint();
+		return entries;
 	}
 
 	/**

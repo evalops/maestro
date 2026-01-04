@@ -6,6 +6,7 @@ import {
 	Text,
 	visibleWidth,
 } from "@evalops/tui";
+import type { RenderableAttachment } from "../conversation/render-model.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 import { themedBottomLine, themedTopLine } from "./utils/borders.js";
 import { formatRelativeTime } from "./utils/footer-utils.js";
@@ -37,7 +38,12 @@ class OffsetWrapper implements Component {
 export class UserMessageComponent extends Container {
 	private markdown: Markdown;
 
-	constructor(text: string, isFirst: boolean, timestamp?: number) {
+	constructor(
+		text: string,
+		attachments: RenderableAttachment[],
+		isFirst: boolean,
+		timestamp?: number,
+	) {
 		super();
 
 		if (!isFirst) {
@@ -45,7 +51,7 @@ export class UserMessageComponent extends Container {
 		}
 
 		const terminalWidth = process.stdout.columns ?? 80;
-		const panelWidth = this.computePanelWidth(text);
+		const panelWidth = this.computePanelWidth(text, attachments);
 		// Calculate right-align offset (terminal width - panel width - margin)
 		const rightOffset = Math.max(0, terminalWidth - panelWidth - 2);
 
@@ -78,6 +84,20 @@ export class UserMessageComponent extends Container {
 		);
 		this.addChild(new OffsetWrapper(this.markdown, rightOffset, panelWidth));
 
+		const attachmentLines = this.buildAttachmentLines(attachments);
+		if (attachmentLines.length > 0) {
+			const attachmentBlock = attachmentLines
+				.map((line) => theme.fg("muted", line))
+				.join("\n");
+			this.addChild(
+				new OffsetWrapper(
+					new Text(attachmentBlock, 1, 0),
+					rightOffset,
+					panelWidth,
+				),
+			);
+		}
+
 		// Bottom border
 		this.addChild(
 			new OffsetWrapper(
@@ -91,9 +111,13 @@ export class UserMessageComponent extends Container {
 	private static readonly MIN_WIDTH = PANEL_WIDTHS.userMessage.min;
 	private static readonly MAX_WIDTH = PANEL_WIDTHS.userMessage.max;
 
-	private computePanelWidth(text: string): number {
+	private computePanelWidth(
+		text: string,
+		attachments: RenderableAttachment[],
+	): number {
 		const lines = text.split("\n");
-		const maxLine = lines.reduce(
+		const attachmentLines = this.buildAttachmentLines(attachments);
+		const maxLine = [...lines, ...attachmentLines].reduce(
 			(max, line) => Math.max(max, visibleWidth(line)),
 			0,
 		);
@@ -101,6 +125,17 @@ export class UserMessageComponent extends Container {
 			UserMessageComponent.MAX_WIDTH,
 			Math.max(UserMessageComponent.MIN_WIDTH, maxLine + 6),
 		);
+	}
+
+	private buildAttachmentLines(attachments: RenderableAttachment[]): string[] {
+		if (attachments.length === 0) {
+			return [];
+		}
+		const lines = ["Attachments:"];
+		for (const attachment of attachments) {
+			lines.push(`- ${attachment.fileName} (${attachment.mimeType})`);
+		}
+		return lines;
 	}
 
 	private buildTopLine(width: number): string {

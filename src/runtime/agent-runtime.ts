@@ -1,6 +1,6 @@
 import type { Agent } from "../agent/agent.js";
 import type { AppMessage } from "../agent/types.js";
-import { PromptQueue } from "../cli-tui/prompt-queue.js";
+import { type PromptPayload, PromptQueue } from "../cli-tui/prompt-queue.js";
 import type { TuiRenderer } from "../cli-tui/tui-renderer.js";
 import { composerManager } from "../composers/index.js";
 import { createLogger } from "../utils/logger.js";
@@ -30,7 +30,7 @@ export class AgentRuntimeController {
 
 	constructor(private readonly options: AgentRuntimeControllerOptions) {
 		this.promptQueue = new PromptQueue(
-			async (text) => {
+			async (text, attachments) => {
 				if (this.renderer?.ensureContextBudgetBeforePrompt) {
 					await this.renderer.ensureContextBudgetBeforePrompt();
 				}
@@ -44,7 +44,7 @@ export class AgentRuntimeController {
 					}
 				}
 
-				await this.options.agent.prompt(text);
+				await this.options.agent.prompt(text, attachments);
 			},
 			(error) => {
 				if (this.options.onError) {
@@ -69,8 +69,8 @@ export class AgentRuntimeController {
 		renderer.setInterruptCallback((options) => this.interrupt(options));
 	}
 
-	enqueue(text: string): void {
-		this.promptQueue.enqueue(text);
+	enqueue(payload: PromptPayload): void {
+		this.promptQueue.enqueue(payload.text, payload.attachments);
 	}
 
 	/**

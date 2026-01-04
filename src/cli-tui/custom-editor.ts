@@ -83,6 +83,15 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 		},
 	},
 	{
+		description: "Ctrl+V pastes an image from clipboard",
+		matches: (data) => data === "\x16",
+		when: (editor) => Boolean(editor.onPasteImage),
+		handle: (editor) => {
+			editor.onPasteImage?.();
+			return true;
+		},
+	},
+	{
 		description: "Escape closes Composer modals (unless autocomplete is open)",
 		matches: (data) => data === "\x1b",
 		when: (editor) =>
@@ -198,6 +207,7 @@ export class CustomEditor extends Editor {
 	public onCtrlZ?: () => void;
 	public onTyping?: () => void;
 	public onTab?: () => boolean;
+	public onPasteImage?: () => void;
 
 	handleInput(rawData: string): void {
 		const data = this.normalizeArrowInput(rawData);

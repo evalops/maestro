@@ -29,6 +29,7 @@ const HOTKEYS_MARKDOWN = `
 | \`Ctrl+U\` | Delete to start of line |
 | \`Ctrl+K\` | Delete to end of line / Command palette |
 | \`Ctrl+G\` | Edit message in external editor |
+| \`Ctrl+V\` | Paste image from clipboard |
 
 **Model & Thinking**
 | Key | Action |

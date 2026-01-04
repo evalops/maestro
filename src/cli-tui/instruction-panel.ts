@@ -9,6 +9,7 @@ export class InstructionPanelComponent implements Component {
 		{ keys: "ctrl+c×2", desc: "exit" },
 		{ keys: "ctrl+k", desc: "delete line" },
 		{ keys: "ctrl+g", desc: "external editor" },
+		{ keys: "ctrl+v", desc: "paste image" },
 		{ keys: "ctrl+z", desc: "suspend" },
 		{ keys: "shift+tab", desc: "thinking level" },
 		{ keys: "ctrl+p", desc: "cycle models" },
