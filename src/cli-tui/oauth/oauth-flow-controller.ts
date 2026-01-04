@@ -2,9 +2,23 @@ import { execFile } from "node:child_process";
 import { Spacer, type TUI, Text } from "@evalops/tui";
 import type { Container } from "@evalops/tui";
 import type { SupportedOAuthProvider } from "../../oauth/index.js";
+import { theme } from "../../theme/theme.js";
 import type { ModalManager } from "../modal-manager.js";
 import type { NotificationView } from "../notification-view.js";
 import { OAuthSelectorView } from "../selectors/oauth-selector-view.js";
+import { formatLink } from "../utils/links.js";
+
+const OSC52_PREFIX = "\u001b]52;c;";
+const OSC52_SUFFIX = "\u0007";
+
+function copyToOsc52(value: string): boolean {
+	if (!process.stdout.isTTY) {
+		return false;
+	}
+	const base64 = Buffer.from(value).toString("base64");
+	process.stdout.write(`${OSC52_PREFIX}${base64}${OSC52_SUFFIX}`);
+	return true;
+}
 
 /**
  * Callback interface for editor interactions during OAuth flow.
@@ -267,8 +281,30 @@ export class OAuthFlowController {
 					chatContainer.addChild(new Spacer(1));
 					chatContainer.addChild(new Text("Opening browser to:", 1, 0));
 					chatContainer.addChild(new Spacer(1));
+					if (process.stdout.isTTY) {
+						chatContainer.addChild(
+							new Text(
+								theme.fg("accent", formatLink(url, "Open login URL")),
+								1,
+								0,
+							),
+						);
+					}
 					chatContainer.addChild(new Text(url, 1, 0));
 					chatContainer.addChild(new Spacer(1));
+					if (copyToOsc52(url)) {
+						chatContainer.addChild(
+							new Text(
+								theme.fg(
+									"dim",
+									"(Clipboard copy requested via OSC-52; paste in browser if supported.)",
+								),
+								1,
+								0,
+							),
+						);
+						chatContainer.addChild(new Spacer(1));
+					}
 					if (requiresPromptCode) {
 						chatContainer.addChild(
 							new Text(
@@ -309,8 +345,33 @@ export class OAuthFlowController {
 					chatContainer.addChild(new Spacer(1));
 					chatContainer.addChild(new Text("Authenticate by visiting:", 1, 0));
 					chatContainer.addChild(new Spacer(1));
+					if (process.stdout.isTTY) {
+						chatContainer.addChild(
+							new Text(
+								theme.fg(
+									"accent",
+									formatLink(verificationUri, "Open verification URL"),
+								),
+								1,
+								0,
+							),
+						);
+					}
 					chatContainer.addChild(new Text(verificationUri, 1, 0));
 					chatContainer.addChild(new Spacer(1));
+					if (copyToOsc52(verificationUri)) {
+						chatContainer.addChild(
+							new Text(
+								theme.fg(
+									"dim",
+									"(Clipboard copy requested via OSC-52; paste in browser if supported.)",
+								),
+								1,
+								0,
+							),
+						);
+						chatContainer.addChild(new Spacer(1));
+					}
 					chatContainer.addChild(new Text(`Enter code: ${code}`, 1, 0));
 					chatContainer.addChild(new Spacer(1));
 					chatContainer.addChild(
