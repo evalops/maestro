@@ -410,6 +410,9 @@ pub struct AppState {
 
     /// Queue mode for follow-up prompts while running.
     pub follow_up_mode: QueueMode,
+
+    /// Number of prompts currently queued while running.
+    pub queued_prompt_count: usize,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -469,6 +472,7 @@ impl AppState {
             approval_mode: ApprovalMode::default(), // Selective mode
             steering_mode: QueueMode::default(),    // Queue steering by default
             follow_up_mode: QueueMode::default(),   // Queue follow-ups by default
+            queued_prompt_count: 0,                 // No queued prompts
         }
     }
 

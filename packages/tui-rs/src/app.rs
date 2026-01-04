@@ -482,6 +482,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             if !was_busy {
                 if let Some(pending) = self.queued_prompts.pop_front() {
                     self.state.add_user_message(pending.content);
+                    self.sync_queue_prompt_count();
                 }
             }
         }
@@ -685,6 +686,7 @@ Add the required fields and retry.",
                     }
                     self.state.busy = false;
                     self.queued_prompts.clear();
+                    self.sync_queue_prompt_count();
                 } else {
                     self.should_quit = true;
                 }
@@ -2227,9 +2229,16 @@ Slash Commands:
             self.queued_prompts.push_back(entry);
         }
         if self.queued_prompts.len() > MAX_PENDING_MESSAGES {
-            return self.queued_prompts.pop_back();
+            let dropped = self.queued_prompts.pop_back();
+            self.sync_queue_prompt_count();
+            return dropped;
         }
+        self.sync_queue_prompt_count();
         None
+    }
+
+    fn sync_queue_prompt_count(&mut self) {
+        self.state.queued_prompt_count = self.queued_prompts.len();
     }
 
     /// Submit a prompt to the agent
@@ -2338,7 +2347,14 @@ Slash Commands:
                 };
 
                 // Create widget just to calculate cursor position
-                let input_widget = ChatInputWidget::new(&state.textarea, "", state.busy, 0, None);
+                let input_widget = ChatInputWidget::new(
+                    &state.textarea,
+                    "",
+                    state.busy,
+                    0,
+                    None,
+                    state.queued_prompt_count,
+                );
 
                 if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
                     frame.set_cursor_position((cursor_x, cursor_y));

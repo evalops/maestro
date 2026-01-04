@@ -990,6 +990,7 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 ///     busy,
 ///     elapsed_secs,
 ///     thinking_header,
+///     queued_prompt_count,
 /// );
 /// frame.render_widget(widget, area);
 ///
@@ -1003,6 +1004,7 @@ pub struct ChatInputWidget<'a> {
     busy: bool,
     elapsed_secs: u64,
     thinking_header: Option<&'a str>,
+    queued_prompt_count: usize,
 }
 
 impl<'a> ChatInputWidget<'a> {
@@ -1012,6 +1014,7 @@ impl<'a> ChatInputWidget<'a> {
         busy: bool,
         elapsed_secs: u64,
         thinking_header: Option<&'a str>,
+        queued_prompt_count: usize,
     ) -> Self {
         Self {
             textarea,
@@ -1019,6 +1022,7 @@ impl<'a> ChatInputWidget<'a> {
             busy,
             elapsed_secs,
             thinking_header,
+            queued_prompt_count,
         }
     }
 
@@ -1081,8 +1085,13 @@ impl Widget for ChatInputWidget<'_> {
                 spans.extend(shimmer_spans("Working"));
             }
 
+            let queue_note = if self.queued_prompt_count > 0 {
+                format!(" | {} queued", self.queued_prompt_count)
+            } else {
+                String::new()
+            };
             spans.push(Span::styled(
-                format!(" ({} | ESC to interrupt) ", elapsed),
+                format!(" ({}{} | ESC to interrupt) ", elapsed, queue_note),
                 Style::default().fg(Color::DarkGray),
             ));
             Line::from(spans)
@@ -1388,6 +1397,7 @@ impl Widget for ChatView<'_> {
             self.state.busy,
             self.state.elapsed_busy_secs(),
             self.state.thinking_header.as_deref(),
+            self.state.queued_prompt_count,
         );
         input_widget.render(chunks[1], buf);
 
