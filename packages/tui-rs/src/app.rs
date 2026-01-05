@@ -111,7 +111,14 @@ pub enum ActiveModal {
 
 #[derive(Debug, Clone)]
 struct QueuedPrompt {
+    id: u64,
     content: String,
+    kind: PromptKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QueuedPromptCursor {
+    id: u64,
     kind: PromptKind,
 }
 
@@ -214,8 +221,14 @@ pub struct App {
     /// Prompts submitted while running (queued in the agent).
     queued_prompts: VecDeque<QueuedPrompt>,
 
-    /// Kind of queued prompt currently being processed by the agent.
-    queued_prompt_inflight: Option<PromptKind>,
+    /// Queued prompt reserved by the agent (between ResponseEnd and ResponseStart).
+    queued_prompt_inflight: Option<QueuedPromptCursor>,
+
+    /// Queued prompt currently being processed.
+    queued_prompt_active: Option<QueuedPrompt>,
+
+    /// Next id for queued prompts.
+    next_queue_id: u64,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -274,10 +287,19 @@ impl App {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
 
+        let mut state = AppState::new();
+        let queue_modes = crate::ui_state::load_queue_modes();
+        if let Some(mode) = queue_modes.steering_mode {
+            state.steering_mode = mode;
+        }
+        if let Some(mode) = queue_modes.follow_up_mode {
+            state.follow_up_mode = mode;
+        }
+
         // Construct the App with all fields initialized.
         // `Self` is an alias for the type we're implementing (App).
         Self {
-            state: AppState::new(),
+            state,
             native_agent: None,     // Agent spawned later in run()
             native_event_rx: None,  // Channel created when agent spawns
             tool_response_tx: None, // Channel created when agent spawns
@@ -302,6 +324,8 @@ impl App {
             tool_history: crate::tools::ToolHistory::default(),
             queued_prompts: VecDeque::new(),
             queued_prompt_inflight: None,
+            queued_prompt_active: None,
+            next_queue_id: 1,
         }
     }
 
@@ -495,8 +519,11 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             self.queued_prompt_inflight = None;
             if !was_busy {
                 if let Some(pending) = self.queued_prompts.pop_front() {
+                    self.queued_prompt_active = Some(pending.clone());
                     self.state.add_user_message(pending.content);
                     self.sync_queue_prompt_count();
+                } else {
+                    self.queued_prompt_active = None;
                 }
             }
         }
@@ -510,12 +537,22 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             FromAgent::ResponseEnd { .. } => {
                 // Clear busy state when response completes
                 self.state.busy = false;
-                self.queued_prompt_inflight = self.queued_prompts.front().map(|prompt| prompt.kind);
+                self.queued_prompt_active = None;
+                self.queued_prompt_inflight =
+                    self.queued_prompts
+                        .front()
+                        .map(|prompt| QueuedPromptCursor {
+                            id: prompt.id,
+                            kind: prompt.kind,
+                        });
                 self.sync_queue_prompt_count();
             }
             FromAgent::Error { .. } => {
                 // Clear busy state on error
                 self.state.busy = false;
+                self.queued_prompt_inflight = None;
+                self.queued_prompt_active = None;
+                self.sync_queue_prompt_count();
             }
             FromAgent::ToolCall {
                 call_id,
@@ -703,6 +740,7 @@ Add the required fields and retry.",
                     self.state.busy = false;
                     self.queued_prompts.clear();
                     self.queued_prompt_inflight = None;
+                    self.queued_prompt_active = None;
                     self.sync_queue_prompt_count();
                 } else {
                     self.should_quit = true;
@@ -1834,8 +1872,78 @@ Add the required fields and retry.",
                         steer_count, follow_up_count
                     ));
                 }
-                msg.push_str("\nUse /queue mode [steer|followup] <one|all> to change behavior.");
+                if let Some(active) = &self.queued_prompt_active {
+                    msg.push_str(&format!(
+                        "\n**Active:** #{} ({}) – {}\n",
+                        active.id,
+                        active.kind.label(),
+                        Self::format_queue_snippet(&active.content, 80)
+                    ));
+                }
+                if self.queued_prompts.is_empty() {
+                    msg.push_str("\nNo queued prompts.\n");
+                } else {
+                    msg.push_str("\n**Pending prompts:**\n");
+                    let inflight_id = self.queued_prompt_inflight.map(|cursor| cursor.id);
+                    for (index, prompt) in self.queued_prompts.iter().enumerate() {
+                        let marker = if inflight_id == Some(prompt.id) {
+                            " (starting...)"
+                        } else {
+                            ""
+                        };
+                        msg.push_str(&format!(
+                            "{}. #{} ({}){} – {}\n",
+                            index + 1,
+                            prompt.id,
+                            prompt.kind.label(),
+                            marker,
+                            Self::format_queue_snippet(&prompt.content, 80)
+                        ));
+                    }
+                }
+                msg.push_str(
+                    "\nUse /queue cancel <id> to remove a prompt. Use /queue mode [steer|followup] <one|all> to change behavior.",
+                );
                 self.state.add_system_message(msg);
+            }
+            QueueAction::Cancel { id } => {
+                if self
+                    .queued_prompt_active
+                    .as_ref()
+                    .is_some_and(|prompt| prompt.id == id)
+                {
+                    self.state
+                        .status
+                        .replace(format!("Queued prompt #{} is already processing.", id));
+                    return;
+                }
+                if self
+                    .queued_prompt_inflight
+                    .is_some_and(|prompt| prompt.id == id)
+                {
+                    self.state.status.replace(format!(
+                        "Queued prompt #{} is starting; try again if it re-queues.",
+                        id
+                    ));
+                    return;
+                }
+                match self.remove_queued_prompt(id) {
+                    Some(removed) => {
+                        if let Some(agent) = &self.native_agent {
+                            agent.cancel_queued(id);
+                        }
+                        self.state.status.replace(format!(
+                            "Removed queued {} #{}.",
+                            removed.kind.label(),
+                            removed.id
+                        ));
+                    }
+                    None => {
+                        self.state
+                            .status
+                            .replace(format!("No queued prompt found with id #{}.", id));
+                    }
+                }
             }
             QueueAction::Mode { kind, mode } => {
                 let label = match kind {
@@ -1848,6 +1956,10 @@ Add the required fields and retry.",
                         "Follow-up"
                     }
                 };
+                let _ = crate::ui_state::save_queue_modes(
+                    self.state.steering_mode,
+                    self.state.follow_up_mode,
+                );
                 self.state
                     .status
                     .replace(format!("{label} mode: {}", mode.label()));
@@ -2147,7 +2259,7 @@ Slash Commands:
   /clear        Clear messages
   /copy         Copy last response
   /theme        Change theme
-  /queue        Manage follow-up / steering queue modes
+  /queue        Manage queued prompts (list/cancel/modes)
   /steer        Send a steering message
   /sessions     Browse sessions
   /files        Search files
@@ -2205,17 +2317,20 @@ Slash Commands:
         kind: PromptKind,
         front: bool,
     ) -> Result<bool> {
+        let queue_id = self.reserve_queue_id();
         let Some(agent) = &self.native_agent else {
             self.state.error = Some("Agent not initialized".to_string());
             return Ok(false);
         };
-
-        if let Err(e) = agent.prompt_with_kind(content.clone(), vec![], kind).await {
+        if let Err(e) = agent
+            .prompt_with_kind(content.clone(), vec![], kind, Some(queue_id))
+            .await
+        {
             self.state.error = Some(format!("Failed to queue prompt: {}", e));
             return Ok(false);
         }
 
-        let dropped = self.enqueue_pending_prompt(content, kind, front);
+        let dropped = self.enqueue_pending_prompt(queue_id, content, kind, front);
         if let Some(dropped) = dropped {
             self.state.status = Some(format!(
                 "Queue full, dropped oldest {}.",
@@ -2225,13 +2340,20 @@ Slash Commands:
         Ok(true)
     }
 
+    fn reserve_queue_id(&mut self) -> u64 {
+        let id = self.next_queue_id;
+        self.next_queue_id = self.next_queue_id.saturating_add(1).max(1);
+        id
+    }
+
     fn enqueue_pending_prompt(
         &mut self,
+        id: u64,
         content: String,
         kind: PromptKind,
         front: bool,
     ) -> Option<QueuedPrompt> {
-        let entry = QueuedPrompt { content, kind };
+        let entry = QueuedPrompt { id, content, kind };
         if front {
             self.queued_prompts.push_front(entry);
         } else {
@@ -2248,6 +2370,33 @@ Slash Commands:
         None
     }
 
+    fn remove_queued_prompt(&mut self, id: u64) -> Option<QueuedPrompt> {
+        let index = self
+            .queued_prompts
+            .iter()
+            .position(|prompt| prompt.id == id)?;
+        let removed = self.queued_prompts.remove(index);
+        self.sync_queue_prompt_count();
+        removed
+    }
+
+    fn format_queue_snippet(text: &str, max_len: usize) -> String {
+        let mut condensed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if condensed.is_empty() {
+            condensed = "(empty message)".to_string();
+        }
+        if condensed.len() <= max_len {
+            return condensed;
+        }
+        if max_len <= 3 {
+            return "...".to_string();
+        }
+        let cutoff = max_len.saturating_sub(3);
+        let mut truncated = condensed.chars().take(cutoff).collect::<String>();
+        truncated.push_str("...");
+        truncated
+    }
+
     fn sync_queue_prompt_count(&mut self) {
         let mut steer_count: usize = 0;
         let mut follow_up_count: usize = 0;
@@ -2260,8 +2409,8 @@ Slash Commands:
         }
         let inflight_offset = usize::from(self.queued_prompt_inflight.is_some());
         self.state.queued_prompt_count = self.queued_prompts.len().saturating_sub(inflight_offset);
-        if let Some(inflight_kind) = self.queued_prompt_inflight {
-            match inflight_kind {
+        if let Some(inflight) = self.queued_prompt_inflight {
+            match inflight.kind {
                 PromptKind::Steer => steer_count = steer_count.saturating_sub(1),
                 PromptKind::FollowUp => follow_up_count = follow_up_count.saturating_sub(1),
                 PromptKind::Prompt => {}
@@ -2287,7 +2436,7 @@ Slash Commands:
         if let Some(agent) = &self.native_agent {
             // Send the prompt - returns immediately, actual work happens in background task
             // Events will be received via poll_agent in the main loop
-            if let Err(e) = agent.prompt_with_kind(content, vec![], kind).await {
+            if let Err(e) = agent.prompt_with_kind(content, vec![], kind, None).await {
                 self.state.error = Some(format!("Failed to send prompt: {}", e));
                 self.state.busy = false;
                 return Ok(false);
@@ -2496,6 +2645,7 @@ impl Default for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::QueueMode;
 
     // ─────────────────────────────────────────────────────────────────────────
     // ActiveModal Tests
@@ -3005,19 +3155,29 @@ mod tests {
             viewport_top,
             viewport_height,
         };
-        App::new_with_terminal_with_history(
+        let mut app = App::new_with_terminal_with_history(
             terminal,
             capabilities,
             crate::history::PromptHistory::default(),
-        )
+        );
+        app.state.steering_mode = QueueMode::default();
+        app.state.follow_up_mode = QueueMode::default();
+        app
     }
 
     #[tokio::test]
     async fn test_queue_counts_sync_on_response_start() {
         let mut app = new_test_app();
 
-        app.enqueue_pending_prompt("follow-up".to_string(), PromptKind::FollowUp, false);
-        app.enqueue_pending_prompt("steer".to_string(), PromptKind::Steer, false);
+        let follow_up_id = app.reserve_queue_id();
+        let steer_id = app.reserve_queue_id();
+        app.enqueue_pending_prompt(
+            follow_up_id,
+            "follow-up".to_string(),
+            PromptKind::FollowUp,
+            false,
+        );
+        app.enqueue_pending_prompt(steer_id, "steer".to_string(), PromptKind::Steer, false);
         assert_eq!(app.state.queued_prompt_count, 2);
         assert_eq!(app.state.queued_follow_up_count, 1);
         assert_eq!(app.state.queued_steering_count, 1);
@@ -3038,8 +3198,15 @@ mod tests {
     async fn test_queue_counts_clear_on_interrupt() {
         let mut app = new_test_app();
 
-        app.enqueue_pending_prompt("follow-up".to_string(), PromptKind::FollowUp, false);
-        app.enqueue_pending_prompt("steer".to_string(), PromptKind::Steer, false);
+        let follow_up_id = app.reserve_queue_id();
+        let steer_id = app.reserve_queue_id();
+        app.enqueue_pending_prompt(
+            follow_up_id,
+            "follow-up".to_string(),
+            PromptKind::FollowUp,
+            false,
+        );
+        app.enqueue_pending_prompt(steer_id, "steer".to_string(), PromptKind::Steer, false);
         app.state.busy = true;
 
         app.handle_key(KeyCode::Char('c'), CrosstermModifiers::CONTROL)
@@ -3050,6 +3217,72 @@ mod tests {
         assert_eq!(app.state.queued_follow_up_count, 0);
         assert_eq!(app.state.queued_steering_count, 0);
         assert!(app.queued_prompts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_queue_overflow_with_inflight_does_not_drop() {
+        let mut app = new_test_app();
+
+        for _ in 0..MAX_PENDING_MESSAGES {
+            let id = app.reserve_queue_id();
+            app.enqueue_pending_prompt(id, "follow-up".to_string(), PromptKind::FollowUp, false);
+        }
+
+        let inflight_id = app.queued_prompts.front().unwrap().id;
+        app.queued_prompt_inflight = Some(QueuedPromptCursor {
+            id: inflight_id,
+            kind: PromptKind::FollowUp,
+        });
+        app.sync_queue_prompt_count();
+
+        let new_id = app.reserve_queue_id();
+        let dropped =
+            app.enqueue_pending_prompt(new_id, "extra".to_string(), PromptKind::FollowUp, false);
+
+        assert!(dropped.is_none());
+        assert_eq!(app.queued_prompts.len(), MAX_PENDING_MESSAGES + 1);
+        assert_eq!(app.state.queued_prompt_count, MAX_PENDING_MESSAGES);
+    }
+
+    #[test]
+    fn test_queue_cancel_by_id() {
+        let mut app = new_test_app();
+
+        let first_id = app.reserve_queue_id();
+        let second_id = app.reserve_queue_id();
+        app.enqueue_pending_prompt(first_id, "first".to_string(), PromptKind::FollowUp, false);
+        app.enqueue_pending_prompt(second_id, "second".to_string(), PromptKind::Steer, false);
+
+        app.handle_queue_action(QueueAction::Cancel { id: first_id });
+
+        assert_eq!(app.queued_prompts.len(), 1);
+        assert_eq!(app.queued_prompts.front().unwrap().id, second_id);
+        assert_eq!(app.state.queued_prompt_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_queue_counts_clear_on_error() {
+        let mut app = new_test_app();
+
+        let id = app.reserve_queue_id();
+        app.enqueue_pending_prompt(id, "follow-up".to_string(), PromptKind::FollowUp, false);
+        app.queued_prompt_inflight = Some(QueuedPromptCursor {
+            id,
+            kind: PromptKind::FollowUp,
+        });
+        app.sync_queue_prompt_count();
+
+        app.state.busy = true;
+        app.handle_agent_message(FromAgent::Error {
+            message: "oops".to_string(),
+            fatal: false,
+        })
+        .await
+        .expect("handle error");
+
+        assert!(!app.state.busy);
+        assert!(app.queued_prompt_inflight.is_none());
+        assert_eq!(app.state.queued_prompt_count, 1);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

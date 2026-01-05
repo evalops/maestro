@@ -27,6 +27,8 @@ use std::time::{Instant, SystemTime};
 // `SystemTime` is wall-clock time (can go backwards if system time changes)
 // We use `Instant` for UI timers (elapsed seconds) and `SystemTime` for timestamps
 
+use serde::{Deserialize, Serialize};
+
 use crate::agent::{FromAgent, TokenUsage};
 // Import from our own crate using `crate::` prefix
 // `FromAgent` is an enum of all messages the agent can send us
@@ -279,7 +281,8 @@ impl ApprovalMode {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Queue mode for prompts while the agent is running.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum QueueMode {
     /// Allow queueing multiple prompts while running
     #[default]

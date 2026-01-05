@@ -60,6 +60,8 @@ impl PromptKind {
 /// A pending message waiting to be processed.
 #[derive(Debug, Clone)]
 pub struct PendingMessage {
+    /// Stable queue identifier (0 means unset and will be assigned by the queue)
+    pub id: u64,
     /// The message content
     pub content: String,
     /// What kind of prompt this is
@@ -78,7 +80,13 @@ impl PendingMessage {
 
     /// Create a new pending message with an explicit kind
     pub fn with_kind(content: impl Into<String>, kind: PromptKind) -> Self {
+        Self::with_kind_and_id(content, kind, 0)
+    }
+
+    /// Create a new pending message with an explicit kind and id
+    pub fn with_kind_and_id(content: impl Into<String>, kind: PromptKind, id: u64) -> Self {
         Self {
+            id,
             content: content.into(),
             kind,
             queued_at: current_timestamp_ms(),
@@ -93,7 +101,13 @@ impl PendingMessage {
 
     /// Create a high-priority pending message with an explicit kind
     pub fn urgent_with_kind(content: impl Into<String>, kind: PromptKind) -> Self {
+        Self::urgent_with_kind_and_id(content, kind, 0)
+    }
+
+    /// Create a high-priority pending message with an explicit kind and id
+    pub fn urgent_with_kind_and_id(content: impl Into<String>, kind: PromptKind, id: u64) -> Self {
         Self {
+            id,
             content: content.into(),
             kind,
             queued_at: current_timestamp_ms(),
@@ -120,6 +134,8 @@ pub struct MessageQueue {
     total_queued: u64,
     /// Total messages dropped due to overflow
     dropped_count: u64,
+    /// Next id to assign to a queued message
+    next_id: u64,
 }
 
 impl MessageQueue {
@@ -130,6 +146,7 @@ impl MessageQueue {
             max_size: 0,
             total_queued: 0,
             dropped_count: 0,
+            next_id: 1,
         }
     }
 
@@ -142,7 +159,15 @@ impl MessageQueue {
             max_size,
             total_queued: 0,
             dropped_count: 0,
+            next_id: 1,
         }
+    }
+
+    /// Reserve a new queue id.
+    pub fn reserve_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1).max(1);
+        id
     }
 
     /// Push a message onto the queue
@@ -163,9 +188,28 @@ impl MessageQueue {
         self.push_message(PendingMessage::with_kind(content, kind))
     }
 
+    /// Push a message with a specific kind and id onto the queue
+    ///
+    /// Returns the message that was dropped if the queue overflowed.
+    pub fn push_with_kind_and_id(
+        &mut self,
+        content: impl Into<String>,
+        kind: PromptKind,
+        id: u64,
+    ) -> Option<PendingMessage> {
+        self.push_message(PendingMessage::with_kind_and_id(content, kind, id))
+    }
+
     /// Push a pending message onto the queue
     pub fn push_message(&mut self, msg: PendingMessage) -> Option<PendingMessage> {
         self.total_queued += 1;
+
+        let mut msg = msg;
+        if msg.id == 0 {
+            msg.id = self.reserve_id();
+        } else if msg.id >= self.next_id {
+            self.next_id = msg.id.saturating_add(1).max(1);
+        }
 
         // Handle priority messages
         if msg.priority > 0 {
@@ -198,6 +242,16 @@ impl MessageQueue {
         self.push_message(PendingMessage::urgent_with_kind(content, kind))
     }
 
+    /// Push a high-priority message with a specific kind and id to the front of the queue
+    pub fn push_urgent_with_kind_and_id(
+        &mut self,
+        content: impl Into<String>,
+        kind: PromptKind,
+        id: u64,
+    ) -> Option<PendingMessage> {
+        self.push_message(PendingMessage::urgent_with_kind_and_id(content, kind, id))
+    }
+
     /// Pop the next message from the queue
     pub fn pop(&mut self) -> Option<PendingMessage> {
         self.queue.pop_front()
@@ -216,6 +270,12 @@ impl MessageQueue {
     /// Get the number of pending messages
     pub fn len(&self) -> usize {
         self.queue.len()
+    }
+
+    /// Remove a message by id from the queue
+    pub fn remove_by_id(&mut self, id: u64) -> Option<PendingMessage> {
+        let index = self.queue.iter().position(|msg| msg.id == id)?;
+        self.queue.remove(index)
     }
 
     /// Clear all pending messages
@@ -468,6 +528,21 @@ mod tests {
 
         let contents: Vec<&str> = queue.iter().map(|m| m.content.as_str()).collect();
         assert_eq!(contents, vec!["A", "B", "C"]);
+    }
+
+    #[test]
+    fn test_remove_by_id() {
+        let mut queue = MessageQueue::new();
+
+        let first_id = queue.reserve_id();
+        let second_id = queue.reserve_id();
+        queue.push_with_kind_and_id("First", PromptKind::Prompt, first_id);
+        queue.push_with_kind_and_id("Second", PromptKind::Prompt, second_id);
+
+        let removed = queue.remove_by_id(first_id).expect("removed");
+        assert_eq!(removed.id, first_id);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.peek().unwrap().id, second_id);
     }
 
     #[test]

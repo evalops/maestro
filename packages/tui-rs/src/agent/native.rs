@@ -239,6 +239,8 @@ enum AgentCommand {
         content: String,
         attachments: Vec<String>,
         kind: PromptKind,
+        /// Optional queue id for correlating queued prompts with UI state.
+        queue_id: Option<u64>,
     },
 
     /// Cancel the current operation
@@ -246,6 +248,9 @@ enum AgentCommand {
     /// Triggers the cancellation token to stop the active AI request.
     /// The runner will clean up and send a `FromAgent::ResponseEnd` event.
     Cancel { clear_pending: bool },
+
+    /// Cancel a queued prompt by id
+    CancelQueued { id: u64 },
 
     /// Change the active model
     ///
@@ -497,7 +502,7 @@ impl NativeAgent {
     /// // Returns immediately, response arrives via events
     /// ```
     pub async fn prompt(&self, content: String, attachments: Vec<String>) -> Result<()> {
-        self.prompt_with_kind(content, attachments, PromptKind::Prompt)
+        self.prompt_with_kind(content, attachments, PromptKind::Prompt, None)
             .await
     }
 
@@ -507,12 +512,14 @@ impl NativeAgent {
         content: String,
         attachments: Vec<String>,
         kind: PromptKind,
+        queue_id: Option<u64>,
     ) -> Result<()> {
         self.command_tx
             .send(AgentCommand::Prompt {
                 content,
                 attachments,
                 kind,
+                queue_id,
             })
             .map_err(|e| anyhow::anyhow!("Failed to send prompt: {}", e))?;
         Ok(())
@@ -526,6 +533,10 @@ impl NativeAgent {
     /// Cancel the current operation but keep any queued prompts.
     pub fn cancel_keep_queue(&self) {
         self.cancel_with_options(false);
+    }
+
+    pub fn cancel_queued(&self, id: u64) {
+        let _ = self.command_tx.send(AgentCommand::CancelQueued { id });
     }
 
     fn cancel_with_options(&self, clear_pending: bool) {
@@ -858,6 +869,7 @@ impl NativeAgentRunner {
                     content,
                     attachments,
                     kind,
+                    queue_id,
                 } => {
                     if self.busy {
                         // Queue the message instead of rejecting it
@@ -868,10 +880,13 @@ impl NativeAgentRunner {
                                     .to_string(),
                             });
                         }
+                        let id = queue_id.unwrap_or_else(|| self.pending_messages.reserve_id());
                         let dropped = if kind == PromptKind::Steer {
-                            self.pending_messages.push_urgent_with_kind(&content, kind)
+                            self.pending_messages
+                                .push_urgent_with_kind_and_id(&content, kind, id)
                         } else {
-                            self.pending_messages.push_with_kind(&content, kind)
+                            self.pending_messages
+                                .push_with_kind_and_id(&content, kind, id)
                         };
                         if let Some(dropped) = dropped {
                             let _ = self.event_tx.send(FromAgent::Status {
@@ -886,9 +901,12 @@ impl NativeAgentRunner {
                         let label = kind.label();
                         let _ = self.event_tx.send(FromAgent::Status {
                             message: if stats.pending_count == 1 {
-                                format!("Queued {} (1 pending)", label)
+                                format!("Queued {} #{} (1 pending)", label, id)
                             } else {
-                                format!("Queued {} ({} pending)", label, stats.pending_count)
+                                format!(
+                                    "Queued {} #{} ({} pending)",
+                                    label, id, stats.pending_count
+                                )
                             },
                         });
                         continue;
@@ -994,9 +1012,12 @@ impl NativeAgentRunner {
                         let label = pending.kind.label();
                         let _ = self.event_tx.send(FromAgent::Status {
                             message: if remaining > 0 {
-                                format!("Processing queued {} ({} remaining)...", label, remaining)
+                                format!(
+                                    "Processing queued {} #{} ({} remaining)...",
+                                    label, pending.id, remaining
+                                )
                             } else {
-                                format!("Processing queued {}...", label)
+                                format!("Processing queued {} #{}...", label, pending.id)
                             },
                         });
 
@@ -1096,6 +1117,21 @@ impl NativeAgentRunner {
                         }
                     }
                     self.pending_tool_approvals.clear();
+                }
+                AgentCommand::CancelQueued { id } => {
+                    if let Some(removed) = self.pending_messages.remove_by_id(id) {
+                        let _ = self.event_tx.send(FromAgent::Status {
+                            message: format!(
+                                "Removed queued {} #{}",
+                                removed.kind.label(),
+                                removed.id
+                            ),
+                        });
+                    } else {
+                        let _ = self.event_tx.send(FromAgent::Status {
+                            message: format!("No queued prompt found with id #{}", id),
+                        });
+                    }
                 }
                 AgentCommand::SetModel { model } => match UnifiedClient::from_model(&model) {
                     Ok(client) => {
