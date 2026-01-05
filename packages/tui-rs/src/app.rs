@@ -2240,8 +2240,8 @@ Slash Commands:
     }
 
     fn sync_queue_prompt_count(&mut self) {
-        let mut steer_count = 0;
-        let mut follow_up_count = 0;
+        let mut steer_count: usize = 0;
+        let mut follow_up_count: usize = 0;
         for prompt in &self.queued_prompts {
             match prompt.kind {
                 PromptKind::Steer => steer_count += 1,
