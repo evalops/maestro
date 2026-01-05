@@ -990,9 +990,7 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 ///     busy,
 ///     elapsed_secs,
 ///     thinking_header,
-///     queued_prompt_count,
-///     queued_steering_count,
-///     queued_follow_up_count,
+///     queue_summary,
 /// );
 /// frame.render_widget(widget, area);
 ///
@@ -1006,9 +1004,28 @@ pub struct ChatInputWidget<'a> {
     busy: bool,
     elapsed_secs: u64,
     thinking_header: Option<&'a str>,
-    queued_prompt_count: usize,
-    queued_steering_count: usize,
-    queued_follow_up_count: usize,
+    queue_summary: Option<QueueSummary>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct QueueSummary {
+    pub total: usize,
+    pub steering: usize,
+    pub follow_up: usize,
+}
+
+impl QueueSummary {
+    pub fn new(total: usize, steering: usize, follow_up: usize) -> Self {
+        Self {
+            total,
+            steering,
+            follow_up,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
 }
 
 impl<'a> ChatInputWidget<'a> {
@@ -1018,9 +1035,7 @@ impl<'a> ChatInputWidget<'a> {
         busy: bool,
         elapsed_secs: u64,
         thinking_header: Option<&'a str>,
-        queued_prompt_count: usize,
-        queued_steering_count: usize,
-        queued_follow_up_count: usize,
+        queue_summary: Option<QueueSummary>,
     ) -> Self {
         Self {
             textarea,
@@ -1028,9 +1043,7 @@ impl<'a> ChatInputWidget<'a> {
             busy,
             elapsed_secs,
             thinking_header,
-            queued_prompt_count,
-            queued_steering_count,
-            queued_follow_up_count,
+            queue_summary,
         }
     }
 
@@ -1093,22 +1106,22 @@ impl Widget for ChatInputWidget<'_> {
                 spans.extend(shimmer_spans("Working"));
             }
 
-            let queue_note = if self.queued_prompt_count > 0 {
-                let mut detail = Vec::new();
-                if self.queued_steering_count > 0 {
-                    detail.push(format!("{} steer", self.queued_steering_count));
-                }
-                if self.queued_follow_up_count > 0 {
-                    detail.push(format!("{} follow-up", self.queued_follow_up_count));
-                }
-                if detail.is_empty() {
-                    format!(" | {} queued", self.queued_prompt_count)
+            let queue_note = if let Some(summary) = self.queue_summary {
+                if summary.is_empty() {
+                    String::new()
                 } else {
-                    format!(
-                        " | {} queued ({})",
-                        self.queued_prompt_count,
-                        detail.join(", ")
-                    )
+                    let mut detail = Vec::new();
+                    if summary.steering > 0 {
+                        detail.push(format!("{} steer", summary.steering));
+                    }
+                    if summary.follow_up > 0 {
+                        detail.push(format!("{} follow-up", summary.follow_up));
+                    }
+                    if detail.is_empty() {
+                        format!(" | {} queued", summary.total)
+                    } else {
+                        format!(" | {} queued ({})", summary.total, detail.join(", "))
+                    }
                 }
             } else {
                 String::new()
@@ -1434,9 +1447,15 @@ impl Widget for ChatView<'_> {
             self.state.busy,
             self.state.elapsed_busy_secs(),
             self.state.thinking_header.as_deref(),
-            self.state.queued_prompt_count,
-            self.state.queued_steering_count,
-            self.state.queued_follow_up_count,
+            if self.state.queued_prompt_count > 0 {
+                Some(QueueSummary::new(
+                    self.state.queued_prompt_count,
+                    self.state.queued_steering_count,
+                    self.state.queued_follow_up_count,
+                ))
+            } else {
+                None
+            },
         );
         input_widget.render(chunks[1], buf);
 

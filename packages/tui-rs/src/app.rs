@@ -2350,16 +2350,8 @@ Slash Commands:
                 };
 
                 // Create widget just to calculate cursor position
-                let input_widget = ChatInputWidget::new(
-                    &state.textarea,
-                    "",
-                    state.busy,
-                    0,
-                    None,
-                    state.queued_prompt_count,
-                    state.queued_steering_count,
-                    state.queued_follow_up_count,
-                );
+                let input_widget =
+                    ChatInputWidget::new(&state.textarea, "", state.busy, 0, None, None);
 
                 if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
                     frame.set_cursor_position((cursor_x, cursor_y));
