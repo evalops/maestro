@@ -1474,7 +1474,11 @@ impl Widget for ChatView<'_> {
                 });
 
             let queue_badge = {
-                let label = format!("queue:{}", self.state.follow_up_mode.short_label());
+                let label = format!(
+                    "queue:f={} s={}",
+                    self.state.follow_up_mode.short_label(),
+                    self.state.steering_mode.short_label()
+                );
                 if self.state.queued_prompt_count > 0 {
                     Some(format!("{label}({})", self.state.queued_prompt_count))
                 } else {
