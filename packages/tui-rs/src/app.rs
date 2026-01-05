@@ -250,6 +250,16 @@ impl App {
     }
 
     fn new_with_terminal(terminal: terminal::Terminal, capabilities: TerminalCapabilities) -> Self {
+        let prompt_history = crate::history::PromptHistory::load_or_create()
+            .unwrap_or_else(|_| crate::history::PromptHistory::default());
+        Self::new_with_terminal_with_history(terminal, capabilities, prompt_history)
+    }
+
+    fn new_with_terminal_with_history(
+        terminal: terminal::Terminal,
+        capabilities: TerminalCapabilities,
+        prompt_history: crate::history::PromptHistory,
+    ) -> Self {
         // Build the command registry and wrap it in Arc for shared ownership.
         // Arc::new() moves the registry into the Arc.
         let command_registry = Arc::new(build_command_registry());
@@ -288,8 +298,7 @@ impl App {
             model_selector: ModelSelector::new(),
             theme_selector: ThemeSelector::new(),
             usage_tracker: crate::usage::UsageTracker::new(),
-            prompt_history: crate::history::PromptHistory::load_or_create()
-                .unwrap_or_else(|_| crate::history::PromptHistory::default()),
+            prompt_history,
             tool_history: crate::tools::ToolHistory::default(),
             queued_prompts: VecDeque::new(),
             queued_prompt_inflight: None,
@@ -2970,9 +2979,37 @@ mod tests {
     // ─────────────────────────────────────────────────────────────────────────
 
     fn new_test_app() -> App {
-        let (terminal, capabilities) =
-            crate::terminal::init_fallback().expect("init fallback terminal");
-        App::new_with_terminal(terminal, capabilities)
+        let fallback_path = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(fallback_path)
+            .expect("open fallback terminal");
+        let viewport_height = 24;
+        let viewport_top = 1;
+        let backend = ratatui::backend::CrosstermBackend::new(file);
+        let terminal = ratatui::Terminal::with_options(
+            backend,
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(
+                    0,
+                    0,
+                    80,
+                    viewport_height,
+                )),
+            },
+        )
+        .expect("create fallback terminal");
+        let capabilities = crate::terminal::TerminalCapabilities {
+            enhanced_keys: false,
+            viewport_top,
+            viewport_height,
+        };
+        App::new_with_terminal_with_history(
+            terminal,
+            capabilities,
+            crate::history::PromptHistory::default(),
+        )
     }
 
     #[tokio::test]
@@ -2981,7 +3018,6 @@ mod tests {
 
         app.enqueue_pending_prompt("follow-up".to_string(), PromptKind::FollowUp, false);
         app.enqueue_pending_prompt("steer".to_string(), PromptKind::Steer, false);
-
         assert_eq!(app.state.queued_prompt_count, 2);
         assert_eq!(app.state.queued_follow_up_count, 1);
         assert_eq!(app.state.queued_steering_count, 1);
