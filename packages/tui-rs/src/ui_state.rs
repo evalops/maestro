@@ -49,20 +49,41 @@ pub fn save_queue_modes(steering_mode: QueueMode, follow_up_mode: QueueMode) -> 
         return Ok(());
     };
 
-    let next = UiStateFile {
-        queue_mode: if steering_mode == follow_up_mode {
-            Some(steering_mode)
-        } else {
-            None
-        },
-        steering_mode: Some(steering_mode),
-        follow_up_mode: Some(follow_up_mode),
+    let mut root = match fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+    {
+        Some(value) => value,
+        None => serde_json::Value::Object(serde_json::Map::new()),
     };
+    if !root.is_object() {
+        root = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let object = root
+        .as_object_mut()
+        .expect("ui state value should be an object");
+
+    object.insert(
+        "steeringMode".to_string(),
+        serde_json::to_value(steering_mode)?,
+    );
+    object.insert(
+        "followUpMode".to_string(),
+        serde_json::to_value(follow_up_mode)?,
+    );
+    if steering_mode == follow_up_mode {
+        object.insert(
+            "queueMode".to_string(),
+            serde_json::to_value(steering_mode)?,
+        );
+    } else {
+        object.remove("queueMode");
+    }
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let encoded = serde_json::to_string_pretty(&next)?;
+    let encoded = serde_json::to_string_pretty(&root)?;
     fs::write(path, encoded)
 }
 
