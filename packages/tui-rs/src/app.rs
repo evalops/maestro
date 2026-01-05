@@ -483,13 +483,13 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         if matches!(msg, FromAgent::ResponseStart { .. }) {
             let was_busy = self.state.busy;
             self.state.busy = true;
+            self.queued_prompt_inflight = None;
             if !was_busy {
                 if let Some(pending) = self.queued_prompts.pop_front() {
                     self.state.add_user_message(pending.content);
                     self.sync_queue_prompt_count();
                 }
             }
-            self.queued_prompt_inflight = None;
         }
         match &msg {
             FromAgent::Ready { model, provider } => {
