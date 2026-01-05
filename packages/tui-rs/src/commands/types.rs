@@ -256,6 +256,8 @@ pub enum QueueModeKind {
 pub enum QueueAction {
     /// Show queue status
     Show,
+    /// Cancel a queued prompt by id
+    Cancel { id: u64 },
     /// Set queue mode
     Mode {
         kind: QueueModeKind,

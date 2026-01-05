@@ -197,6 +197,9 @@ pub mod usage;
 /// Stores and retrieves previous prompts for easy recall.
 pub mod history;
 
+/// Persistent UI state (queue modes, preferences).
+pub mod ui_state;
+
 /// Configuration file watcher for hot-reload.
 /// Watches config files and emits events on changes.
 pub mod config_watcher;

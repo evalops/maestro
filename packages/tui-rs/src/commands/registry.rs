@@ -585,9 +585,22 @@ pub fn build_command_registry() -> CommandRegistry {
 
                 let mut parts = args.split_whitespace();
                 let action = parts.next().unwrap_or("");
+                if action.eq_ignore_ascii_case("cancel") {
+                    let raw_id = parts
+                        .next()
+                        .ok_or_else(|| CommandError::new("Usage: /queue cancel <id>"))?;
+                    let trimmed = raw_id.trim_start_matches('#');
+                    let id = trimmed.parse::<u64>().map_err(|_| {
+                        CommandError::new("Queue id must be a number (e.g. /queue cancel 12)")
+                    })?;
+                    return Ok(CommandOutput::Action(CommandAction::Queue(
+                        QueueAction::Cancel { id },
+                    )));
+                }
+
                 if action != "mode" {
                     return Err(CommandError::new(
-                        "Usage: /queue [list|mode [steer|followup] <one|all>]",
+                        "Usage: /queue [list|cancel <id>|mode [steer|followup] <one|all>]",
                     ));
                 }
 
@@ -630,7 +643,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 )))
             }),
         )
-        .usage("/queue [list|mode [steer|followup] <one|all>]"),
+        .usage("/queue [list|cancel <id>|mode [steer|followup] <one|all>]"),
     );
 
     // Steer command
