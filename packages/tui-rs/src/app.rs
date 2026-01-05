@@ -213,6 +213,9 @@ pub struct App {
 
     /// Prompts submitted while running (queued in the agent).
     queued_prompts: VecDeque<QueuedPrompt>,
+
+    /// Kind of queued prompt currently being processed by the agent.
+    queued_prompt_inflight: Option<PromptKind>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -289,6 +292,7 @@ impl App {
                 .unwrap_or_else(|_| crate::history::PromptHistory::default()),
             tool_history: crate::tools::ToolHistory::default(),
             queued_prompts: VecDeque::new(),
+            queued_prompt_inflight: None,
         }
     }
 
@@ -485,6 +489,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     self.sync_queue_prompt_count();
                 }
             }
+            self.queued_prompt_inflight = None;
         }
         match &msg {
             FromAgent::Ready { model, provider } => {
@@ -496,6 +501,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             FromAgent::ResponseEnd { .. } => {
                 // Clear busy state when response completes
                 self.state.busy = false;
+                self.queued_prompt_inflight = self.queued_prompts.front().map(|prompt| prompt.kind);
+                self.sync_queue_prompt_count();
             }
             FromAgent::Error { .. } => {
                 // Clear busy state on error
@@ -686,6 +693,7 @@ Add the required fields and retry.",
                     }
                     self.state.busy = false;
                     self.queued_prompts.clear();
+                    self.queued_prompt_inflight = None;
                     self.sync_queue_prompt_count();
                 } else {
                     self.should_quit = true;
@@ -2220,7 +2228,9 @@ Slash Commands:
         } else {
             self.queued_prompts.push_back(entry);
         }
-        if self.queued_prompts.len() > MAX_PENDING_MESSAGES {
+        let inflight_offset = usize::from(self.queued_prompt_inflight.is_some());
+        let effective_len = self.queued_prompts.len().saturating_sub(inflight_offset);
+        if effective_len > MAX_PENDING_MESSAGES {
             let dropped = self.queued_prompts.pop_back();
             self.sync_queue_prompt_count();
             return dropped;
@@ -2239,7 +2249,15 @@ Slash Commands:
                 PromptKind::Prompt => {}
             }
         }
-        self.state.queued_prompt_count = self.queued_prompts.len();
+        let inflight_offset = usize::from(self.queued_prompt_inflight.is_some());
+        self.state.queued_prompt_count = self.queued_prompts.len().saturating_sub(inflight_offset);
+        if let Some(inflight_kind) = self.queued_prompt_inflight {
+            match inflight_kind {
+                PromptKind::Steer => steer_count = steer_count.saturating_sub(1),
+                PromptKind::FollowUp => follow_up_count = follow_up_count.saturating_sub(1),
+                PromptKind::Prompt => {}
+            }
+        }
         self.state.queued_steering_count = steer_count;
         self.state.queued_follow_up_count = follow_up_count;
     }

@@ -420,6 +420,7 @@ impl NativeAgent {
             command_rx,
             busy: false,
             cancel_token: None,
+            clear_pending_on_cancel: true,
             hooks,
             safety,
             workflow_state: WorkflowStateTracker::default(),
@@ -661,6 +662,9 @@ struct NativeAgentRunner {
     /// Created when a prompt starts, triggered when `Cancel` command arrives.
     /// Used with `tokio::select!` to support graceful cancellation.
     cancel_token: Option<CancellationToken>,
+
+    /// Whether a cancellation should also clear pending messages.
+    clear_pending_on_cancel: bool,
 
     /// Hook system for tool interception
     ///
@@ -1022,8 +1026,10 @@ impl NativeAgentRunner {
                                 Err(e) => {
                                     let msg = e.to_string();
                                     if msg == "Request cancelled" {
-                                        // Clear remaining pending messages on cancel
-                                        self.pending_messages.clear();
+                                        if self.clear_pending_on_cancel {
+                                            // Clear remaining pending messages on cancel
+                                            self.pending_messages.clear();
+                                        }
                                         break;
                                     }
 
@@ -1044,7 +1050,9 @@ impl NativeAgentRunner {
                                             });
                                             tokio::time::sleep(delay).await;
                                             if cancel_token.is_cancelled() {
-                                                self.pending_messages.clear();
+                                                if self.clear_pending_on_cancel {
+                                                    self.pending_messages.clear();
+                                                }
                                                 break;
                                             }
                                         }
@@ -1076,6 +1084,7 @@ impl NativeAgentRunner {
                     if let Some(token) = &self.cancel_token {
                         token.cancel();
                     }
+                    self.clear_pending_on_cancel = clear_pending;
                     self.busy = false;
                     if clear_pending {
                         // Also clear any pending messages on cancel
