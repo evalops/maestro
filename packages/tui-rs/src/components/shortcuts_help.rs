@@ -216,7 +216,12 @@ impl ShortcutsHelp {
         self.add(Shortcut::new(
             ShortcutCategory::Input,
             "Enter",
-            "Submit message",
+            "Submit message (steer while running)",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Input,
+            "Alt+Enter",
+            "Queue follow-up (while running)",
         ));
         self.add(Shortcut::new(
             ShortcutCategory::Input,
@@ -664,10 +669,14 @@ mod tests {
 
     #[test]
     fn test_shortcut_new() {
-        let shortcut = Shortcut::new(ShortcutCategory::Input, "Enter", "Submit message");
+        let shortcut = Shortcut::new(
+            ShortcutCategory::Input,
+            "Enter",
+            "Submit message (steer while running)",
+        );
 
         assert_eq!(shortcut.keys, "Enter");
-        assert_eq!(shortcut.description, "Submit message");
+        assert_eq!(shortcut.description, "Submit message (steer while running)");
         assert_eq!(shortcut.category, ShortcutCategory::Input);
         assert!(shortcut.context_hint.is_none());
     }

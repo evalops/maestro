@@ -204,7 +204,7 @@ describe("Agent mock transport", () => {
 				yield { type: "message_start", message: userMessage };
 				yield { type: "message_end", message: userMessage };
 
-				const queued = await config.getQueuedMessages?.<AppMessage>();
+				const queued = await config.getFollowUpMessages?.<AppMessage>();
 				this.queuedMessages = queued ?? [];
 				for (const entry of this.queuedMessages) {
 					yield { type: "message_start", message: entry.original };
@@ -245,7 +245,7 @@ describe("Agent mock transport", () => {
 			initialState: { model: mockModel },
 		});
 
-		await agent.queueMessage({
+		await agent.followUp({
 			role: "user",
 			content: [{ type: "text", text: "See docs" }],
 			attachments: [

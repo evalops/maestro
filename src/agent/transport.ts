@@ -90,6 +90,7 @@ import type {
 	AssistantMessageEvent,
 	Message,
 	Model,
+	QueuedMessage,
 	ToolCall,
 	ToolResultMessage,
 } from "./types.js";
@@ -611,12 +612,15 @@ export class ProviderTransport implements AgentTransport {
 
 		let hasMoreToolCalls = true;
 		const allMessages = [...context.messages];
-		let queuedMessages = cfg.getQueuedMessages
-			? await cfg.getQueuedMessages<AppMessage>()
-			: [];
-		let prefetchedQueuedMessages: typeof queuedMessages | null = null;
+		const getSteeringMessages =
+			cfg.getSteeringMessages ?? cfg.getQueuedMessages;
+		const getFollowUpMessages = cfg.getFollowUpMessages;
 
-		while (hasMoreToolCalls || queuedMessages.length > 0) {
+		let pendingMessages = getSteeringMessages
+			? await getSteeringMessages<AppMessage>()
+			: [];
+
+		while (hasMoreToolCalls || pendingMessages.length > 0) {
 			yield { type: "turn_start" };
 
 			// Enforce session limits before every turn (duration + tokens)
@@ -647,21 +651,22 @@ export class ProviderTransport implements AgentTransport {
 				}
 			}
 
-			if (queuedMessages.length > 0) {
-				for (const queued of queuedMessages) {
+			if (pendingMessages.length > 0) {
+				for (const queued of pendingMessages) {
 					yield { type: "message_start", message: queued.original };
 					yield { type: "message_end", message: queued.original };
 					if (queued.llm) {
 						allMessages.push(queued.llm);
 					}
 				}
-				queuedMessages = [];
+				pendingMessages = [];
 			}
 
 			let currentAssistantMessage: AssistantMessage | null = null;
 			let completedAssistantMessage: AssistantMessage | null = null;
 			const toolCallsToExecute: ToolCall[] = [];
 			let toolResults: ToolResultMessage[] = [];
+			let steeringAfterTools: QueuedMessage<AppMessage>[] | null = null;
 			let pendingNextTurn = false;
 			let encounteredError = false;
 
@@ -894,6 +899,20 @@ export class ProviderTransport implements AgentTransport {
 					}
 				}
 
+				let steeringTriggered = false;
+				let remainingToolCalls: ToolCall[] = [];
+
+				const checkSteering = async (): Promise<void> => {
+					if (steeringTriggered || !getSteeringMessages) {
+						return;
+					}
+					const steering = await getSteeringMessages<AppMessage>();
+					if (steering.length > 0) {
+						steeringTriggered = true;
+						steeringAfterTools = steering;
+					}
+				};
+
 				const buildExecutionEvents = (
 					toolCall: ToolCall,
 					message: ToolResultMessage,
@@ -939,6 +958,30 @@ export class ProviderTransport implements AgentTransport {
 						throw error;
 					}
 				};
+				const emitSkippedToolCall = (toolCall: ToolCall): AgentEvent[] => {
+					const skippedResult: ToolResultMessage = {
+						role: "toolResult",
+						toolCallId: toolCall.id,
+						toolName: toolCall.name,
+						content: [
+							{
+								type: "text",
+								text: "Skipped due to queued user message.",
+							},
+						],
+						isError: true,
+						timestamp: this.clock.now(),
+					};
+					return [
+						{
+							type: "tool_execution_start",
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							args: toolCall.arguments,
+						} as AgentEvent,
+						...emitToolResult(skippedResult, toolCall, true),
+					];
+				};
 
 				const scheduleResolveIfNeeded = async (): Promise<AgentEvent[]> => {
 					if (pendingExecutions.length < concurrencyLimit) {
@@ -962,12 +1005,22 @@ export class ProviderTransport implements AgentTransport {
 								outcome.isError,
 							),
 						);
+						await checkSteering();
 						break;
 					}
 					return events;
 				};
 
-				for (const toolCall of toolCallsToExecute) {
+				for (
+					let toolIndex = 0;
+					toolIndex < toolCallsToExecute.length;
+					toolIndex++
+				) {
+					if (steeringTriggered) {
+						remainingToolCalls = toolCallsToExecute.slice(toolIndex);
+						break;
+					}
+					const toolCall = toolCallsToExecute[toolIndex];
 					const signature = stableStringify(toolCall.arguments);
 					const tail = this.recentToolCalls
 						.concat({ name: toolCall.name, signature })
@@ -995,6 +1048,11 @@ export class ProviderTransport implements AgentTransport {
 						for (const evt of emitToolResult(doomMessage, toolCall, true)) {
 							yield evt;
 						}
+						await checkSteering();
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+							break;
+						}
 						continue;
 					}
 					const now = this.clock.now();
@@ -1018,6 +1076,11 @@ export class ProviderTransport implements AgentTransport {
 						};
 						for (const evt of emitToolResult(rateMessage, toolCall, true)) {
 							yield evt;
+						}
+						await checkSteering();
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+							break;
 						}
 						continue;
 					}
@@ -1075,6 +1138,11 @@ export class ProviderTransport implements AgentTransport {
 								true,
 							)) {
 								yield event;
+							}
+							await checkSteering();
+							if (steeringTriggered) {
+								remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+								break;
 							}
 							continue;
 						}
@@ -1143,6 +1211,11 @@ export class ProviderTransport implements AgentTransport {
 						for (const event of emitToolResult(blockedResult, toolCall, true)) {
 							yield event;
 						}
+						await checkSteering();
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+							break;
+						}
 						continue;
 					}
 
@@ -1157,6 +1230,11 @@ export class ProviderTransport implements AgentTransport {
 						);
 						for (const event of emitToolResult(policyResult, toolCall, true)) {
 							yield event;
+						}
+						await checkSteering();
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+							break;
 						}
 						continue;
 					}
@@ -1218,6 +1296,11 @@ export class ProviderTransport implements AgentTransport {
 						for (const event of emitToolResult(deniedResult, toolCall, true)) {
 							yield event;
 						}
+						await checkSteering();
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+							break;
+						}
 						continue;
 					}
 
@@ -1238,6 +1321,11 @@ export class ProviderTransport implements AgentTransport {
 						};
 						for (const event of emitToolResult(errorResult, toolCall, true)) {
 							yield event;
+						}
+						await checkSteering();
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+							break;
 						}
 						continue;
 					}
@@ -1267,6 +1355,11 @@ export class ProviderTransport implements AgentTransport {
 							true,
 						)) {
 							yield event;
+						}
+						await checkSteering();
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+							break;
 						}
 						continue;
 					}
@@ -1541,6 +1634,10 @@ export class ProviderTransport implements AgentTransport {
 					for (const event of events) {
 						yield event;
 					}
+					if (steeringTriggered) {
+						remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+						break;
+					}
 				}
 
 				while (pendingExecutions.length > 0) {
@@ -1560,12 +1657,21 @@ export class ProviderTransport implements AgentTransport {
 					)) {
 						yield event;
 					}
+					await checkSteering();
 				}
 
-				if (cfg.getQueuedMessages) {
-					prefetchedQueuedMessages = await cfg.getQueuedMessages<AppMessage>();
-					if (prefetchedQueuedMessages.length > 0) {
-						pendingNextTurn = true;
+				if (steeringTriggered && remainingToolCalls.length > 0) {
+					for (const toolCall of remainingToolCalls) {
+						for (const event of emitSkippedToolCall(toolCall)) {
+							yield event;
+						}
+					}
+				}
+
+				if (!steeringTriggered && getSteeringMessages) {
+					const steering = await getSteeringMessages<AppMessage>();
+					if (steering.length > 0) {
+						steeringAfterTools = steering;
 					}
 				}
 			}
@@ -1603,13 +1709,28 @@ export class ProviderTransport implements AgentTransport {
 				toolResults,
 			};
 
-			if (prefetchedQueuedMessages) {
-				queuedMessages = prefetchedQueuedMessages;
-				prefetchedQueuedMessages = null;
-			} else {
-				queuedMessages = cfg.getQueuedMessages
-					? await cfg.getQueuedMessages<AppMessage>()
-					: [];
+			if (steeringAfterTools && steeringAfterTools.length > 0) {
+				pendingMessages = steeringAfterTools;
+			} else if (getSteeringMessages) {
+				const steering = await getSteeringMessages<AppMessage>();
+				if (steering.length > 0) {
+					pendingMessages = steering;
+				}
+			}
+
+			if (
+				!pendingNextTurn &&
+				pendingMessages.length === 0 &&
+				getFollowUpMessages
+			) {
+				const followUps = await getFollowUpMessages<AppMessage>();
+				if (followUps.length > 0) {
+					pendingMessages = followUps;
+				}
+			}
+
+			if (pendingMessages.length > 0) {
+				pendingNextTurn = true;
 			}
 
 			hasMoreToolCalls = encounteredError ? false : pendingNextTurn;
