@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
 	ComposerAgentEventSchema,
 	ComposerChatRequestSchema,
+	ComposerCommandListResponseSchema,
+	ComposerCommandPrefsSchema,
+	ComposerConfigResponseSchema,
+	ComposerConfigWriteResponseSchema,
+	ComposerFilesResponseSchema,
 	ComposerMessageSchema,
 	ComposerModelListResponseSchema,
 	ComposerModelSchema,
@@ -82,6 +87,45 @@ describe("contracts validators", () => {
 			models: [model],
 		});
 		expect(listResult.ok).toBe(true);
+	});
+
+	it("accepts command and file responses", () => {
+		const commands = {
+			commands: [
+				{
+					name: "hello",
+					description: "Say hi",
+					prompt: "Hello {{name}}",
+					args: [{ name: "name", required: true }],
+				},
+			],
+		};
+		const commandResult = validateSchema(
+			ComposerCommandListResponseSchema,
+			commands,
+		);
+		expect(commandResult.ok).toBe(true);
+		const prefsResult = validateSchema(ComposerCommandPrefsSchema, {
+			favorites: ["hello"],
+			recents: [],
+		});
+		expect(prefsResult.ok).toBe(true);
+		const filesResult = validateSchema(ComposerFilesResponseSchema, {
+			files: ["README.md"],
+		});
+		expect(filesResult.ok).toBe(true);
+	});
+
+	it("accepts config responses", () => {
+		const configResult = validateSchema(ComposerConfigResponseSchema, {
+			config: { model: "demo", limits: { maxTokens: 1000 } },
+			configPath: "/tmp/composer.config.json",
+		});
+		expect(configResult.ok).toBe(true);
+		const writeResult = validateSchema(ComposerConfigWriteResponseSchema, {
+			success: true,
+		});
+		expect(writeResult.ok).toBe(true);
 	});
 
 	it("accepts a usage response with breakdowns", () => {

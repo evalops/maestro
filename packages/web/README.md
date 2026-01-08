@@ -169,7 +169,7 @@ Requires:
 - **Code splitting** via Vite
 - **Lazy loading** of syntax highlighting
 - **Efficient re-renders** with Lit's reactive properties
-- **Virtual scrolling** for long conversations (coming soon)
+- **Virtual scrolling** for long conversations
 
 ## Security
 
@@ -188,7 +188,6 @@ Requires:
 - [ ] Collaborative sessions
 - [ ] Keyboard shortcuts panel
 - [ ] Accessibility improvements
-- [ ] Virtual scrolling for performance
 - [ ] Offline support with Service Worker
 
 ## Contributing

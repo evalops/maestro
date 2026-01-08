@@ -50,7 +50,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "OK"
+            "description": "Workspace files",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FilesResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -66,7 +73,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "OK"
+            "description": "Custom commands",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandsResponse"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -82,7 +96,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": "OK"
+            "description": "Command preferences",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandPrefs"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -92,18 +113,37 @@
         ]
       },
       "post": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Update command preferences",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandPrefs"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Command preferences updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandPrefsWriteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid preferences payload"
+          }
+        }
       }
     },
     "/api/models": {
@@ -191,7 +231,14 @@
         },
         "responses": {
           "200": {
-            "description": "Config persisted"
+            "description": "Config persisted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigWriteResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid config"
@@ -2554,28 +2601,140 @@
           "name"
         ]
       },
-      "ConfigWriteRequest": {
+      "CommandsResponse": {
         "type": "object",
-        "required": [
-          "config"
-        ],
         "properties": {
-          "config": {
-            "type": "object"
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "name",
+                "prompt"
+              ]
+            }
           }
         },
-        "additionalProperties": true
+        "required": [
+          "commands"
+        ]
+      },
+      "CommandPrefs": {
+        "type": "object",
+        "properties": {
+          "favorites": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "favorites",
+          "recents"
+        ]
+      },
+      "CommandPrefsWriteResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      },
+      "FilesResponse": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "files"
+        ]
+      },
+      "ConfigWriteRequest": {
+        "type": "object",
+        "properties": {
+          "config": {
+            "type": "object",
+            "patternProperties": {
+              "^(.*)$": {}
+            }
+          }
+        },
+        "required": [
+          "config"
+        ]
       },
       "ConfigResponse": {
         "type": "object",
         "properties": {
           "config": {
-            "type": "object"
+            "type": "object",
+            "patternProperties": {
+              "^(.*)$": {}
+            }
           },
           "configPath": {
             "type": "string"
           }
-        }
+        },
+        "required": [
+          "config",
+          "configPath"
+        ]
+      },
+      "ConfigWriteResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success"
+        ]
       },
       "StatusResponse": {
         "type": "object",

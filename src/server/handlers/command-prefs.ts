@@ -5,6 +5,11 @@ import { PATHS } from "../../config/constants.js";
 import { resolveEnvPath } from "../../utils/path-expansion.js";
 import type { WebServerContext } from "../app-context.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
+import {
+	type CommandPrefsUpdateInput,
+	CommandPrefsUpdateSchema,
+	parseAndValidateJson,
+} from "../validation.js";
 
 type CommandPrefs = {
 	favorites: string[];
@@ -53,25 +58,13 @@ export async function handleCommandPrefs(
 			return;
 		}
 		if (req.method === "POST") {
-			let body: Record<string, unknown>;
-			try {
-				const chunks: Buffer[] = [];
-				for await (const chunk of req) {
-					chunks.push(chunk as Buffer);
-				}
-				const bodyRaw = Buffer.concat(chunks).toString("utf8");
-				body = bodyRaw ? (JSON.parse(bodyRaw) as Record<string, unknown>) : {};
-			} catch {
-				sendJson(res, 400, { error: "Invalid JSON payload" }, corsHeaders, req);
-				return;
-			}
+			const body = await parseAndValidateJson<CommandPrefsUpdateInput>(
+				req,
+				CommandPrefsUpdateSchema,
+			);
 			const prefs: CommandPrefs = {
-				favorites: Array.isArray(body.favorites)
-					? body.favorites.filter((x: unknown) => typeof x === "string")
-					: [],
-				recents: Array.isArray(body.recents)
-					? body.recents.filter((x: unknown) => typeof x === "string")
-					: [],
+				favorites: body.favorites ?? [],
+				recents: body.recents ?? [],
 			};
 			savePrefs(prefs);
 			sendJson(res, 200, { ok: true }, corsHeaders, req);

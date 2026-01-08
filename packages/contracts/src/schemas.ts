@@ -137,6 +137,53 @@ export const ComposerModelListResponseSchema = Type.Object({
 	models: Type.Array(ComposerModelSchema),
 });
 
+export const ComposerCommandArgSchema = Type.Object({
+	name: Type.String(),
+	required: Type.Optional(Type.Boolean()),
+});
+
+export const ComposerCommandSchema = Type.Object({
+	name: Type.String(),
+	description: Type.Optional(Type.String()),
+	prompt: Type.String(),
+	args: Type.Optional(Type.Array(ComposerCommandArgSchema)),
+});
+
+export const ComposerCommandListResponseSchema = Type.Object({
+	commands: Type.Array(ComposerCommandSchema),
+});
+
+export const ComposerCommandPrefsSchema = Type.Object({
+	favorites: Type.Array(Type.String()),
+	recents: Type.Array(Type.String()),
+});
+
+export const ComposerCommandPrefsUpdateSchema = Type.Object({
+	favorites: Type.Optional(Type.Array(Type.String())),
+	recents: Type.Optional(Type.Array(Type.String())),
+});
+
+export const ComposerCommandPrefsWriteResponseSchema = Type.Object({
+	ok: Type.Boolean(),
+});
+
+export const ComposerConfigWriteRequestSchema = Type.Object({
+	config: Type.Record(Type.String(), Type.Unknown()),
+});
+
+export const ComposerConfigResponseSchema = Type.Object({
+	config: Type.Record(Type.String(), Type.Unknown()),
+	configPath: Type.String(),
+});
+
+export const ComposerConfigWriteResponseSchema = Type.Object({
+	success: Type.Boolean(),
+});
+
+export const ComposerFilesResponseSchema = Type.Object({
+	files: Type.Array(Type.String()),
+});
+
 export const ComposerSessionSummarySchema = Type.Object({
 	id: Type.String(),
 	title: Type.Optional(Type.String()),

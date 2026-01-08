@@ -2,7 +2,14 @@ import { readFileSync, writeFileSync } from "node:fs";
 import ts from "typescript";
 import {
 	ComposerChatRequestSchema as ChatRequestSchema,
+	ComposerCommandListResponseSchema,
+	ComposerCommandPrefsSchema,
+	ComposerCommandPrefsWriteResponseSchema,
+	ComposerConfigResponseSchema,
+	ComposerConfigWriteRequestSchema,
+	ComposerConfigWriteResponseSchema,
 	ComposerErrorResponseSchema,
+	ComposerFilesResponseSchema,
 	ComposerModelListResponseSchema,
 	ComposerModelSchema,
 	ComposerModelSetSchema as ModelSetSchema,
@@ -87,19 +94,13 @@ function buildComponents() {
 		ModelEntry: ComposerModelSchema,
 		ModelsResponse: ComposerModelListResponseSchema,
 		ModelSelectionResponse: ComposerModelSchema,
-		ConfigWriteRequest: {
-			type: "object",
-			required: ["config"],
-			properties: { config: { type: "object" } },
-			additionalProperties: true,
-		},
-		ConfigResponse: {
-			type: "object",
-			properties: {
-				config: { type: "object" },
-				configPath: { type: "string" },
-			},
-		},
+		CommandsResponse: ComposerCommandListResponseSchema,
+		CommandPrefs: ComposerCommandPrefsSchema,
+		CommandPrefsWriteResponse: ComposerCommandPrefsWriteResponseSchema,
+		FilesResponse: ComposerFilesResponseSchema,
+		ConfigWriteRequest: ComposerConfigWriteRequestSchema,
+		ConfigResponse: ComposerConfigResponseSchema,
+		ConfigWriteResponse: ComposerConfigWriteResponseSchema,
 		StatusResponse: ComposerStatusResponseSchema,
 		UsageResponse: ComposerUsageResponseSchema,
 		SessionSummary: ComposerSessionSummarySchema,
@@ -206,6 +207,68 @@ function buildPaths(routes: Route[]) {
 		};
 	}
 
+	if (paths["/api/commands"]?.get) {
+		paths["/api/commands"].get.responses = {
+			200: {
+				description: "Custom commands",
+				content: {
+					"application/json": {
+						schema: { $ref: "#/components/schemas/CommandsResponse" },
+					},
+				},
+			},
+		};
+	}
+
+	if (paths["/api/files"]?.get) {
+		paths["/api/files"].get.responses = {
+			200: {
+				description: "Workspace files",
+				content: {
+					"application/json": {
+						schema: { $ref: "#/components/schemas/FilesResponse" },
+					},
+				},
+			},
+		};
+	}
+
+	if (paths["/api/command-prefs"]) {
+		const prefsSchema = { $ref: "#/components/schemas/CommandPrefs" };
+		const prefsResponse = {
+			200: {
+				description: "Command preferences",
+				content: { "application/json": { schema: prefsSchema } },
+			},
+		};
+		if (paths["/api/command-prefs"].get) {
+			paths["/api/command-prefs"].get.responses = prefsResponse;
+		}
+		if (paths["/api/command-prefs"].post) {
+			paths["/api/command-prefs"].post = {
+				summary: "Update command preferences",
+				security: [{ ComposerApiKey: [] }],
+				requestBody: {
+					required: true,
+					content: { "application/json": { schema: prefsSchema } },
+				},
+				responses: {
+					200: {
+						description: "Command preferences updated",
+						content: {
+							"application/json": {
+								schema: {
+									$ref: "#/components/schemas/CommandPrefsWriteResponse",
+								},
+							},
+						},
+					},
+					400: { description: "Invalid preferences payload" },
+				},
+			};
+		}
+	}
+
 	if (paths["/api/model"]) {
 		const base = {
 			security: [{ ComposerApiKey: [] }],
@@ -274,7 +337,16 @@ function buildPaths(routes: Route[]) {
 					},
 				},
 				responses: {
-					200: { description: "Config persisted" },
+					200: {
+						description: "Config persisted",
+						content: {
+							"application/json": {
+								schema: {
+									$ref: "#/components/schemas/ConfigWriteResponse",
+								},
+							},
+						},
+					},
 					400: { description: "Invalid config" },
 					413: { description: "Payload too large" },
 				},
