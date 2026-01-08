@@ -5,7 +5,12 @@ import {
 	runGuardian,
 	setGuardianEnabled,
 } from "../../guardian/index.js";
-import { readJsonBody, sendJson } from "../server-utils.js";
+import { sendJson } from "../server-utils.js";
+import {
+	type GuardianConfigRequestInput,
+	GuardianConfigRequestSchema,
+	parseAndValidateJson,
+} from "../validation.js";
 
 export async function handleGuardianStatus(
 	req: IncomingMessage,
@@ -70,33 +75,25 @@ export async function handleGuardianConfig(
 	corsHeaders: Record<string, string>,
 ) {
 	try {
-		const data = await readJsonBody<{ enabled?: boolean }>(req);
+		const data = await parseAndValidateJson<GuardianConfigRequestInput>(
+			req,
+			GuardianConfigRequestSchema,
+		);
 
-		if (typeof data.enabled === "boolean") {
-			setGuardianEnabled(data.enabled);
+		setGuardianEnabled(data.enabled);
 
-			sendJson(
-				res,
-				200,
-				{
-					success: true,
-					enabled: data.enabled,
-				},
-				corsHeaders,
-			);
-		} else {
-			sendJson(
-				res,
-				400,
-				{
-					error: "Invalid request. 'enabled' boolean is required.",
-				},
-				corsHeaders,
-			);
-		}
+		sendJson(
+			res,
+			200,
+			{
+				success: true,
+				enabled: data.enabled,
+			},
+			corsHeaders,
+		);
 	} catch (error) {
 		if (error instanceof Error && "statusCode" in error) {
-			// ApiError from readJsonBody
+			// ApiError from parseAndValidateJson
 			sendJson(
 				res,
 				(error as { statusCode: number }).statusCode,

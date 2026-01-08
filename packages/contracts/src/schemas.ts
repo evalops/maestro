@@ -454,6 +454,343 @@ export const ComposerBackgroundTaskHealthSchema = Type.Object({
 	historyTruncated: Type.Boolean(),
 });
 
+export const ComposerGuardianTargetSchema = Type.Union([
+	Type.Literal("staged"),
+	Type.Literal("all"),
+]);
+
+export const ComposerGuardianStatusSchema = Type.Union([
+	Type.Literal("passed"),
+	Type.Literal("failed"),
+	Type.Literal("skipped"),
+	Type.Literal("error"),
+]);
+
+export const ComposerGuardianToolResultSchema = Type.Object({
+	tool: Type.String(),
+	exitCode: Type.Number(),
+	stdout: Type.String(),
+	stderr: Type.String(),
+	durationMs: Type.Number(),
+	skipped: Type.Optional(Type.Boolean()),
+	reason: Type.Optional(Type.String()),
+});
+
+export const ComposerGuardianRunResultSchema = Type.Object({
+	status: ComposerGuardianStatusSchema,
+	exitCode: Type.Number(),
+	startedAt: Type.Number(),
+	durationMs: Type.Number(),
+	target: ComposerGuardianTargetSchema,
+	trigger: Type.Optional(Type.String()),
+	filesScanned: Type.Number(),
+	files: Type.Optional(Type.Array(Type.String())),
+	summary: Type.String(),
+	skipReason: Type.Optional(Type.String()),
+	toolResults: Type.Array(ComposerGuardianToolResultSchema),
+});
+
+export const ComposerGuardianStateSchema = Type.Object({
+	enabled: Type.Boolean(),
+	lastRun: Type.Optional(ComposerGuardianRunResultSchema),
+});
+
+export const ComposerGuardianStatusResponseSchema = Type.Object({
+	enabled: Type.Boolean(),
+	state: ComposerGuardianStateSchema,
+});
+
+export const ComposerGuardianRunResponseSchema =
+	ComposerGuardianRunResultSchema;
+
+export const ComposerGuardianConfigRequestSchema = Type.Object({
+	enabled: Type.Boolean(),
+});
+
+export const ComposerGuardianConfigResponseSchema = Type.Object({
+	success: Type.Boolean(),
+	enabled: Type.Boolean(),
+});
+
+export const ComposerPlanModeStateSchema = Type.Object({
+	active: Type.Boolean(),
+	filePath: Type.String(),
+	sessionId: Type.Optional(Type.String()),
+	gitBranch: Type.Optional(Type.String()),
+	gitCommitSha: Type.Optional(Type.String()),
+	createdAt: Type.String(),
+	updatedAt: Type.String(),
+	name: Type.Optional(Type.String()),
+});
+
+export const ComposerPlanStatusResponseSchema = Type.Object({
+	state: Type.Union([ComposerPlanModeStateSchema, Type.Null()]),
+	content: Type.Union([Type.String(), Type.Null()]),
+});
+
+export const ComposerPlanEnterRequestSchema = Type.Object({
+	action: Type.Literal("enter"),
+	name: Type.Optional(Type.String()),
+	sessionId: Type.Optional(Type.String()),
+});
+
+export const ComposerPlanExitRequestSchema = Type.Object({
+	action: Type.Literal("exit"),
+});
+
+export const ComposerPlanUpdateRequestSchema = Type.Object({
+	action: Type.Literal("update"),
+	content: Type.String(),
+});
+
+export const ComposerPlanRequestSchema = Type.Union([
+	ComposerPlanEnterRequestSchema,
+	ComposerPlanExitRequestSchema,
+	ComposerPlanUpdateRequestSchema,
+]);
+
+export const ComposerPlanActionResponseSchema = Type.Union([
+	Type.Object({
+		success: Type.Boolean(),
+		state: ComposerPlanModeStateSchema,
+	}),
+	Type.Object({
+		success: Type.Boolean(),
+	}),
+]);
+
+export const ComposerBackgroundSettingsSchema = Type.Object({
+	notificationsEnabled: Type.Boolean(),
+	statusDetailsEnabled: Type.Boolean(),
+});
+
+export const ComposerBackgroundStatusSnapshotSchema = Type.Object({
+	running: Type.Number(),
+	total: Type.Number(),
+	failed: Type.Number(),
+	detailsRedacted: Type.Boolean(),
+});
+
+export const ComposerBackgroundStatusResponseSchema = Type.Object({
+	settings: ComposerBackgroundSettingsSchema,
+	snapshot: Type.Union([ComposerBackgroundStatusSnapshotSchema, Type.Null()]),
+});
+
+export const ComposerBackgroundHistoryEntrySchema = Type.Object({
+	timestamp: Type.String(),
+	event: Type.Union([
+		Type.Literal("started"),
+		Type.Literal("restarted"),
+		Type.Literal("exited"),
+		Type.Literal("failed"),
+		Type.Literal("stopped"),
+	]),
+	taskId: Type.String(),
+	command: Type.String(),
+	failureReason: Type.Optional(Type.String()),
+	limitBreach: Type.Optional(ComposerBackgroundTaskLimitBreachSchema),
+});
+
+export const ComposerBackgroundHistoryResponseSchema = Type.Object({
+	history: Type.Array(ComposerBackgroundHistoryEntrySchema),
+	truncated: Type.Boolean(),
+});
+
+export const ComposerBackgroundPathResponseSchema = Type.Object({
+	path: Type.String(),
+	exists: Type.Boolean(),
+	overridden: Type.Boolean(),
+});
+
+export const ComposerBackgroundUpdateRequestSchema = Type.Object({
+	enabled: Type.Boolean(),
+});
+
+export const ComposerBackgroundUpdateResponseSchema = Type.Object({
+	success: Type.Boolean(),
+	message: Type.String(),
+});
+
+export const ComposerApprovalModeSchema = Type.Union([
+	Type.Literal("auto"),
+	Type.Literal("prompt"),
+	Type.Literal("fail"),
+]);
+
+export const ComposerApprovalsStatusResponseSchema = Type.Object({
+	mode: ComposerApprovalModeSchema,
+	availableModes: Type.Array(ComposerApprovalModeSchema),
+});
+
+export const ComposerApprovalsUpdateRequestSchema = Type.Object({
+	mode: ComposerApprovalModeSchema,
+	sessionId: Type.Optional(Type.String()),
+});
+
+export const ComposerApprovalsUpdateResponseSchema = Type.Object({
+	success: Type.Boolean(),
+	mode: ComposerApprovalModeSchema,
+	message: Type.String(),
+});
+
+export const ComposerFrameworkScopeSchema = Type.Union([
+	Type.Literal("user"),
+	Type.Literal("workspace"),
+]);
+
+export const ComposerFrameworkStatusResponseSchema = Type.Object({
+	framework: Type.String(),
+	source: Type.String(),
+	locked: Type.Boolean(),
+	scope: ComposerFrameworkScopeSchema,
+});
+
+export const ComposerFrameworkListEntrySchema = Type.Object({
+	id: Type.String(),
+	summary: Type.String(),
+});
+
+export const ComposerFrameworkListResponseSchema = Type.Object({
+	frameworks: Type.Array(ComposerFrameworkListEntrySchema),
+});
+
+export const ComposerFrameworkUpdateRequestSchema = Type.Object({
+	framework: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+	scope: Type.Optional(ComposerFrameworkScopeSchema),
+});
+
+export const ComposerFrameworkUpdateResponseSchema = Type.Object({
+	success: Type.Boolean(),
+	message: Type.String(),
+	framework: Type.Union([Type.String(), Type.Null()]),
+	summary: Type.Optional(Type.String()),
+	scope: Type.Optional(ComposerFrameworkScopeSchema),
+});
+
+export const ComposerChangeTypeSchema = Type.Union([
+	Type.Literal("create"),
+	Type.Literal("modify"),
+	Type.Literal("delete"),
+]);
+
+export const ComposerFileChangeSchema = Type.Object({
+	id: Type.String(),
+	type: ComposerChangeTypeSchema,
+	path: Type.String(),
+	before: Type.Union([Type.String(), Type.Null()]),
+	after: Type.Union([Type.String(), Type.Null()]),
+	toolName: Type.String(),
+	toolCallId: Type.String(),
+	timestamp: Type.Number(),
+	isGitTracked: Type.Boolean(),
+	messageId: Type.Optional(Type.String()),
+});
+
+export const ComposerUndoRestoreActionSchema = Type.Union([
+	Type.Literal("restore"),
+	Type.Literal("delete"),
+	Type.Literal("recreate"),
+]);
+
+export const ComposerUndoPreviewSchema = Type.Object({
+	changes: Type.Array(ComposerFileChangeSchema),
+	restores: Type.Array(
+		Type.Object({
+			path: Type.String(),
+			action: ComposerUndoRestoreActionSchema,
+		}),
+	),
+	conflicts: Type.Array(
+		Type.Object({
+			path: Type.String(),
+			reason: Type.String(),
+		}),
+	),
+});
+
+export const ComposerUndoCheckpointSchema = Type.Object({
+	name: Type.String(),
+	description: Type.Optional(Type.String()),
+	changeCount: Type.Number(),
+	timestamp: Type.Number(),
+});
+
+export const ComposerUndoStatusResponseSchema = Type.Object({
+	totalChanges: Type.Number(),
+	canUndo: Type.Boolean(),
+	checkpoints: Type.Array(ComposerUndoCheckpointSchema),
+});
+
+export const ComposerUndoHistoryEntrySchema = Type.Object({
+	description: Type.String(),
+	fileCount: Type.Number(),
+	timestamp: Type.Number(),
+});
+
+export const ComposerUndoHistoryResponseSchema = Type.Object({
+	history: Type.Array(ComposerUndoHistoryEntrySchema),
+});
+
+export const ComposerUndoRequestSchema = Type.Object({
+	action: Type.Optional(
+		Type.Union([
+			Type.Literal("undo"),
+			Type.Literal("checkpoint"),
+			Type.Literal("restore"),
+		]),
+	),
+	count: Type.Optional(Type.Number()),
+	preview: Type.Optional(Type.Boolean()),
+	force: Type.Optional(Type.Boolean()),
+	name: Type.Optional(Type.String()),
+	description: Type.Optional(Type.String()),
+});
+
+export const ComposerUndoPreviewMessageSchema = Type.Object({
+	message: Type.String(),
+	fileCount: Type.Optional(Type.Number()),
+	description: Type.Optional(Type.String()),
+});
+
+export const ComposerUndoPreviewResponseSchema = Type.Object({
+	preview: Type.Union([
+		ComposerUndoPreviewSchema,
+		ComposerUndoPreviewMessageSchema,
+	]),
+});
+
+export const ComposerUndoCheckpointSaveResponseSchema = Type.Object({
+	success: Type.Boolean(),
+	checkpoint: Type.Object({
+		name: Type.String(),
+		changeCount: Type.Number(),
+		timestamp: Type.Number(),
+	}),
+});
+
+export const ComposerUndoCheckpointListResponseSchema = Type.Object({
+	checkpoints: Type.Array(ComposerUndoCheckpointSchema),
+});
+
+export const ComposerUndoOperationResponseSchema = Type.Union([
+	Type.Object({
+		success: Type.Boolean(),
+		undone: Type.Number(),
+		errors: Type.Array(Type.String()),
+	}),
+	Type.Object({
+		success: Type.Boolean(),
+		message: Type.String(),
+		files: Type.Optional(Type.Array(Type.String())),
+	}),
+	Type.Object({
+		message: Type.String(),
+	}),
+	ComposerUndoPreviewResponseSchema,
+	ComposerUndoCheckpointSaveResponseSchema,
+	ComposerUndoCheckpointListResponseSchema,
+]);
+
 export const ComposerStatusResponseSchema = Type.Object({
 	cwd: Type.String(),
 	git: Type.Union([

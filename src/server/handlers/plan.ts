@@ -6,7 +6,12 @@ import {
 	readPlanFile,
 	writePlanFile,
 } from "../../agent/plan-mode.js";
-import { readJsonBody, sendJson } from "../server-utils.js";
+import { sendJson } from "../server-utils.js";
+import {
+	type PlanRequestInput,
+	PlanRequestSchema,
+	parseAndValidateJson,
+} from "../validation.js";
 
 export async function handlePlan(
 	req: IncomingMessage,
@@ -31,12 +36,10 @@ export async function handlePlan(
 
 	if (req.method === "POST") {
 		try {
-			const data = await readJsonBody<{
-				action?: string;
-				name?: string;
-				sessionId?: string;
-				content?: string;
-			}>(req);
+			const data = await parseAndValidateJson<PlanRequestInput>(
+				req,
+				PlanRequestSchema,
+			);
 			const { action } = data;
 
 			if (action === "enter") {
@@ -81,7 +84,7 @@ export async function handlePlan(
 			}
 		} catch (error) {
 			if (error instanceof Error && "statusCode" in error) {
-				// ApiError from readJsonBody
+				// ApiError from parseAndValidateJson
 				sendJson(
 					res,
 					(error as { statusCode: number }).statusCode,

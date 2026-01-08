@@ -1,8 +1,14 @@
 import type { IncomingMessage } from "node:http";
 import {
+	ComposerApprovalsUpdateRequestSchema,
+	ComposerBackgroundUpdateRequestSchema,
 	ComposerChatRequestSchema,
 	ComposerCommandPrefsUpdateSchema,
+	ComposerFrameworkUpdateRequestSchema,
+	ComposerGuardianConfigRequestSchema,
 	ComposerModelSetSchema,
+	ComposerPlanRequestSchema,
+	ComposerUndoRequestSchema,
 } from "@evalops/contracts";
 import type { Static } from "@sinclair/typebox";
 import {
@@ -34,6 +40,35 @@ export type ModelSetInput = Static<typeof ModelSetSchema>;
 
 export const CommandPrefsUpdateSchema = ComposerCommandPrefsUpdateSchema;
 export type CommandPrefsUpdateInput = Static<typeof CommandPrefsUpdateSchema>;
+
+export const GuardianConfigRequestSchema = ComposerGuardianConfigRequestSchema;
+export type GuardianConfigRequestInput = Static<
+	typeof GuardianConfigRequestSchema
+>;
+
+export const PlanRequestSchema = ComposerPlanRequestSchema;
+export type PlanRequestInput = Static<typeof PlanRequestSchema>;
+
+export const BackgroundUpdateRequestSchema =
+	ComposerBackgroundUpdateRequestSchema;
+export type BackgroundUpdateRequestInput = Static<
+	typeof BackgroundUpdateRequestSchema
+>;
+
+export const ApprovalsUpdateRequestSchema =
+	ComposerApprovalsUpdateRequestSchema;
+export type ApprovalsUpdateRequestInput = Static<
+	typeof ApprovalsUpdateRequestSchema
+>;
+
+export const FrameworkUpdateRequestSchema =
+	ComposerFrameworkUpdateRequestSchema;
+export type FrameworkUpdateRequestInput = Static<
+	typeof FrameworkUpdateRequestSchema
+>;
+
+export const UndoRequestSchema = ComposerUndoRequestSchema;
+export type UndoRequestInput = Static<typeof UndoRequestSchema>;
 
 export async function parseAndValidateJson<T>(
 	req: IncomingMessage,

@@ -50,6 +50,11 @@
 
 import {
 	isComposerAgentEvent,
+	isComposerApprovalsStatusResponse,
+	isComposerApprovalsUpdateResponse,
+	isComposerBackgroundHistoryResponse,
+	isComposerBackgroundStatusResponse,
+	isComposerBackgroundUpdateResponse,
 	isComposerChatRequest,
 	isComposerCommandListResponse,
 	isComposerCommandPrefs,
@@ -58,16 +63,31 @@ import {
 	isComposerConfigWriteResponse,
 	isComposerErrorResponse,
 	isComposerFilesResponse,
+	isComposerFrameworkListResponse,
+	isComposerFrameworkStatusResponse,
+	isComposerFrameworkUpdateResponse,
+	isComposerGuardianConfigResponse,
+	isComposerGuardianRunResponse,
+	isComposerGuardianStatusResponse,
 	isComposerModel,
 	isComposerModelListResponse,
+	isComposerPlanActionResponse,
+	isComposerPlanStatusResponse,
 	isComposerSession,
 	isComposerSessionListResponse,
 	isComposerStatusResponse,
+	isComposerUndoOperationResponse,
+	isComposerUndoStatusResponse,
 	isComposerUsageResponse,
 } from "@evalops/contracts";
 import type {
 	ComposerAgentEvent,
+	ComposerApprovalsStatusResponse,
+	ComposerApprovalsUpdateResponse,
 	ComposerAssistantMessageEvent,
+	ComposerBackgroundHistoryResponse,
+	ComposerBackgroundStatusResponse,
+	ComposerBackgroundUpdateResponse,
 	ComposerChatRequest,
 	ComposerCommand,
 	ComposerCommandPrefs,
@@ -75,11 +95,21 @@ import type {
 	ComposerConfigWriteRequest,
 	ComposerConfigWriteResponse,
 	ComposerErrorResponse,
+	ComposerFrameworkListResponse,
+	ComposerFrameworkStatusResponse,
+	ComposerFrameworkUpdateResponse,
+	ComposerGuardianConfigResponse,
+	ComposerGuardianRunResponse,
+	ComposerGuardianStatusResponse,
 	ComposerMessage,
 	ComposerModel,
+	ComposerPlanActionResponse,
+	ComposerPlanStatusResponse,
 	ComposerSession,
 	ComposerSessionSummary,
 	ComposerToolCall,
+	ComposerUndoOperationResponse,
+	ComposerUndoStatusResponse,
 } from "@evalops/contracts";
 
 export type Message = ComposerMessage;
@@ -107,6 +137,36 @@ export type ConfigResponse = ComposerConfigResponse;
 export type ConfigWriteRequest = ComposerConfigWriteRequest;
 
 export type ConfigWriteResponse = ComposerConfigWriteResponse;
+
+export type GuardianStatusResponse = ComposerGuardianStatusResponse;
+
+export type GuardianRunResponse = ComposerGuardianRunResponse;
+
+export type GuardianConfigResponse = ComposerGuardianConfigResponse;
+
+export type PlanStatusResponse = ComposerPlanStatusResponse;
+
+export type PlanActionResponse = ComposerPlanActionResponse;
+
+export type BackgroundStatusResponse = ComposerBackgroundStatusResponse;
+
+export type BackgroundHistoryResponse = ComposerBackgroundHistoryResponse;
+
+export type BackgroundUpdateResponse = ComposerBackgroundUpdateResponse;
+
+export type ApprovalsStatusResponse = ComposerApprovalsStatusResponse;
+
+export type ApprovalsUpdateResponse = ComposerApprovalsUpdateResponse;
+
+export type FrameworkStatusResponse = ComposerFrameworkStatusResponse;
+
+export type FrameworkListResponse = ComposerFrameworkListResponse;
+
+export type FrameworkUpdateResponse = ComposerFrameworkUpdateResponse;
+
+export type UndoStatusResponse = ComposerUndoStatusResponse;
+
+export type UndoOperationResponse = ComposerUndoOperationResponse;
 
 const MAX_SSE_BUFFER = 1024 * 1024; // 1MB safeguard
 const VALIDATE_AGENT_EVENTS = Boolean(import.meta.env?.DEV);
@@ -1136,54 +1196,82 @@ export class ApiClient {
 	}
 
 	// Guardian
-	async getGuardianStatus(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/guardian/status");
+	async getGuardianStatus(): Promise<GuardianStatusResponse> {
+		const data = await this.fetchJsonWithFallback("/api/guardian/status");
+		if (VALIDATE_API_RESPONSES && !isComposerGuardianStatusResponse(data)) {
+			throw new Error("Invalid guardian status response payload");
+		}
+		return data as GuardianStatusResponse;
 	}
 
-	async runGuardian(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/guardian/run", {
+	async runGuardian(): Promise<GuardianRunResponse> {
+		const data = await this.fetchJsonWithFallback("/api/guardian/run", {
 			method: "POST",
 		});
+		if (VALIDATE_API_RESPONSES && !isComposerGuardianRunResponse(data)) {
+			throw new Error("Invalid guardian run response payload");
+		}
+		return data as GuardianRunResponse;
 	}
 
-	async setGuardianEnabled(enabled: boolean): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/guardian/config", {
+	async setGuardianEnabled(enabled: boolean): Promise<GuardianConfigResponse> {
+		const data = await this.fetchJsonWithFallback("/api/guardian/config", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ enabled }),
 		});
+		if (VALIDATE_API_RESPONSES && !isComposerGuardianConfigResponse(data)) {
+			throw new Error("Invalid guardian config response payload");
+		}
+		return data as GuardianConfigResponse;
 	}
 
 	// Plan Mode
-	async getPlan(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/plan");
+	async getPlan(): Promise<PlanStatusResponse> {
+		const data = await this.fetchJsonWithFallback("/api/plan");
+		if (VALIDATE_API_RESPONSES && !isComposerPlanStatusResponse(data)) {
+			throw new Error("Invalid plan status response payload");
+		}
+		return data as PlanStatusResponse;
 	}
 
 	async enterPlanMode(
 		name?: string,
 		sessionId?: string,
-	): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/plan", {
+	): Promise<PlanActionResponse> {
+		const data = await this.fetchJsonWithFallback("/api/plan", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ action: "enter", name, sessionId }),
 		});
+		if (VALIDATE_API_RESPONSES && !isComposerPlanActionResponse(data)) {
+			throw new Error("Invalid plan action response payload");
+		}
+		return data as PlanActionResponse;
 	}
 
-	async exitPlanMode(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/plan", {
+	async exitPlanMode(): Promise<PlanActionResponse> {
+		const data = await this.fetchJsonWithFallback("/api/plan", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ action: "exit" }),
 		});
+		if (VALIDATE_API_RESPONSES && !isComposerPlanActionResponse(data)) {
+			throw new Error("Invalid plan action response payload");
+		}
+		return data as PlanActionResponse;
 	}
 
-	async updatePlan(content: string): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/plan", {
+	async updatePlan(content: string): Promise<PlanActionResponse> {
+		const data = await this.fetchJsonWithFallback("/api/plan", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ action: "update", content }),
 		});
+		if (VALIDATE_API_RESPONSES && !isComposerPlanActionResponse(data)) {
+			throw new Error("Invalid plan action response payload");
+		}
+		return data as PlanActionResponse;
 	}
 
 	// MCP
@@ -1192,37 +1280,79 @@ export class ApiClient {
 	}
 
 	// Background Tasks
-	async getBackgroundStatus(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/background?action=status");
+	async getBackgroundStatus(): Promise<BackgroundStatusResponse> {
+		const data = await this.fetchJsonWithFallback(
+			"/api/background?action=status",
+		);
+		if (VALIDATE_API_RESPONSES && !isComposerBackgroundStatusResponse(data)) {
+			throw new Error("Invalid background status response payload");
+		}
+		return data as BackgroundStatusResponse;
 	}
 
-	async getBackgroundHistory(limit = 10): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback(
+	async getBackgroundHistory(limit = 10): Promise<BackgroundHistoryResponse> {
+		const data = await this.fetchJsonWithFallback(
 			`/api/background?action=history&limit=${limit}`,
 		);
+		if (VALIDATE_API_RESPONSES && !isComposerBackgroundHistoryResponse(data)) {
+			throw new Error("Invalid background history response payload");
+		}
+		return data as BackgroundHistoryResponse;
 	}
 
 	async setBackgroundNotifications(
 		enabled: boolean,
-	): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/background?action=notify", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ enabled }),
-		});
+	): Promise<BackgroundUpdateResponse> {
+		const data = await this.fetchJsonWithFallback(
+			"/api/background?action=notify",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ enabled }),
+			},
+		);
+		if (VALIDATE_API_RESPONSES && !isComposerBackgroundUpdateResponse(data)) {
+			throw new Error("Invalid background update response payload");
+		}
+		return data as BackgroundUpdateResponse;
+	}
+
+	async setBackgroundStatusDetails(
+		enabled: boolean,
+	): Promise<BackgroundUpdateResponse> {
+		const data = await this.fetchJsonWithFallback(
+			"/api/background?action=details",
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ enabled }),
+			},
+		);
+		if (VALIDATE_API_RESPONSES && !isComposerBackgroundUpdateResponse(data)) {
+			throw new Error("Invalid background update response payload");
+		}
+		return data as BackgroundUpdateResponse;
 	}
 
 	// Undo/Checkpoint
-	async getUndoStatus(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/undo?action=status");
+	async getUndoStatus(): Promise<UndoStatusResponse> {
+		const data = await this.fetchJsonWithFallback("/api/undo?action=status");
+		if (VALIDATE_API_RESPONSES && !isComposerUndoStatusResponse(data)) {
+			throw new Error("Invalid undo status response payload");
+		}
+		return data as UndoStatusResponse;
 	}
 
-	async undoChanges(count = 1): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/undo", {
+	async undoChanges(count = 1): Promise<UndoOperationResponse> {
+		const data = await this.fetchJsonWithFallback("/api/undo", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ action: "undo", count }),
 		});
+		if (VALIDATE_API_RESPONSES && !isComposerUndoOperationResponse(data)) {
+			throw new Error("Invalid undo operation response payload");
+		}
+		return data as UndoOperationResponse;
 	}
 
 	async getChanges(
@@ -1236,17 +1366,21 @@ export class ApiClient {
 	// Approvals
 	async getApprovalMode(
 		sessionId = "default",
-	): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback(
+	): Promise<ApprovalsStatusResponse> {
+		const data = await this.fetchJsonWithFallback(
 			`/api/approvals?sessionId=${sessionId}`,
 		);
+		if (VALIDATE_API_RESPONSES && !isComposerApprovalsStatusResponse(data)) {
+			throw new Error("Invalid approvals status response payload");
+		}
+		return data as ApprovalsStatusResponse;
 	}
 
 	async setApprovalMode(
 		mode: "auto" | "prompt" | "fail",
 		sessionId = "default",
-	): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback(
+	): Promise<ApprovalsUpdateResponse> {
+		const data = await this.fetchJsonWithFallback(
 			`/api/approvals?sessionId=${sessionId}`,
 			{
 				method: "POST",
@@ -1254,26 +1388,44 @@ export class ApiClient {
 				body: JSON.stringify({ mode }),
 			},
 		);
+		if (VALIDATE_API_RESPONSES && !isComposerApprovalsUpdateResponse(data)) {
+			throw new Error("Invalid approvals update response payload");
+		}
+		return data as ApprovalsUpdateResponse;
 	}
 
 	// Framework
-	async getFrameworkPreference(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/framework?action=status");
+	async getFrameworkPreference(): Promise<FrameworkStatusResponse> {
+		const data = await this.fetchJsonWithFallback(
+			"/api/framework?action=status",
+		);
+		if (VALIDATE_API_RESPONSES && !isComposerFrameworkStatusResponse(data)) {
+			throw new Error("Invalid framework status response payload");
+		}
+		return data as FrameworkStatusResponse;
 	}
 
-	async listFrameworks(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/framework?action=list");
+	async listFrameworks(): Promise<FrameworkListResponse> {
+		const data = await this.fetchJsonWithFallback("/api/framework?action=list");
+		if (VALIDATE_API_RESPONSES && !isComposerFrameworkListResponse(data)) {
+			throw new Error("Invalid framework list response payload");
+		}
+		return data as FrameworkListResponse;
 	}
 
 	async setFramework(
 		framework: string | null,
 		scope: "user" | "workspace" = "user",
-	): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/framework", {
+	): Promise<FrameworkUpdateResponse> {
+		const data = await this.fetchJsonWithFallback("/api/framework", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ framework, scope }),
 		});
+		if (VALIDATE_API_RESPONSES && !isComposerFrameworkUpdateResponse(data)) {
+			throw new Error("Invalid framework update response payload");
+		}
+		return data as FrameworkUpdateResponse;
 	}
 
 	// Tools

@@ -6,7 +6,12 @@ import {
 	updateBackgroundTaskSettings,
 } from "../../runtime/background-settings.js";
 import { backgroundTaskManager } from "../../tools/background-tasks.js";
-import { readJsonBody, sendJson } from "../server-utils.js";
+import { sendJson } from "../server-utils.js";
+import {
+	type BackgroundUpdateRequestInput,
+	BackgroundUpdateRequestSchema,
+	parseAndValidateJson,
+} from "../validation.js";
 
 export async function handleBackground(
 	req: IncomingMessage,
@@ -127,18 +132,11 @@ export async function handleBackground(
 			const action = url.searchParams.get("action") || "notify";
 
 			if (action === "notify" || action === "details") {
-				const data = await readJsonBody<{ enabled?: boolean }>(req);
-				const enabled = data.enabled;
-
-				if (typeof enabled !== "boolean") {
-					sendJson(
-						res,
-						400,
-						{ error: "enabled must be a boolean" },
-						corsHeaders,
-					);
-					return;
-				}
+				const data = await parseAndValidateJson<BackgroundUpdateRequestInput>(
+					req,
+					BackgroundUpdateRequestSchema,
+				);
+				const { enabled } = data;
 
 				updateBackgroundTaskSettings(
 					action === "notify"

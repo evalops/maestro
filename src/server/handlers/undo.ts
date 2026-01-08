@@ -1,7 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { getCheckpointService } from "../../checkpoints/index.js";
 import { getChangeTracker } from "../../undo/index.js";
-import { readJsonBody, sendJson } from "../server-utils.js";
+import { sendJson } from "../server-utils.js";
+import {
+	type UndoRequestInput,
+	UndoRequestSchema,
+	parseAndValidateJson,
+} from "../validation.js";
 
 export async function handleUndo(
 	req: IncomingMessage,
@@ -65,14 +70,10 @@ export async function handleUndo(
 
 	if (req.method === "POST") {
 		try {
-			const data = await readJsonBody<{
-				action?: string;
-				count?: number;
-				preview?: boolean;
-				force?: boolean;
-				name?: string;
-				description?: string;
-			}>(req);
+			const data = await parseAndValidateJson<UndoRequestInput>(
+				req,
+				UndoRequestSchema,
+			);
 
 			const action = data.action || "undo";
 
@@ -256,6 +257,7 @@ export async function handleUndo(
 			sendJson(res, 400, { error: "Invalid action" }, corsHeaders);
 		} catch (error) {
 			if (error instanceof Error && "statusCode" in error) {
+				// ApiError from parseAndValidateJson
 				sendJson(
 					res,
 					(error as { statusCode: number }).statusCode,

@@ -251,80 +251,136 @@
     },
     "/api/guardian/status": {
       "get": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Get guardian status",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "responses": {
+          "200": {
+            "description": "Guardian status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardianStatusResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/guardian/run": {
       "post": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Run guardian checks",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "responses": {
+          "200": {
+            "description": "Guardian run result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardianRunResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/guardian/config": {
       "post": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Update guardian config",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuardianConfigRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Guardian config updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardianConfigResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid guardian config"
+          }
+        }
       }
     },
     "/api/plan": {
       "get": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Get plan mode state",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "responses": {
+          "200": {
+            "description": "Plan mode status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanStatusResponse"
+                }
+              }
+            }
+          }
+        }
       },
       "post": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Update plan mode",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Plan mode updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanActionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid plan request"
+          }
+        }
       }
     },
     "/api/mcp": {
@@ -367,62 +423,135 @@
     },
     "/api/background": {
       "get": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Get background task status",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "responses": {
+          "200": {
+            "description": "Background task data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/BackgroundStatusResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BackgroundHistoryResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BackgroundPathResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid action"
+          }
+        }
       },
       "post": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Update background settings",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackgroundUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Background settings updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackgroundUpdateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid background action"
+          }
+        }
       }
     },
     "/api/undo": {
       "get": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Get undo status",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "responses": {
+          "200": {
+            "description": "Undo status data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/UndoStatusResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/UndoHistoryResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid action"
+          }
+        }
       },
       "post": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Perform undo operation",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UndoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Undo action result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UndoOperationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid undo request"
+          }
+        }
       }
     },
     "/api/changes": {
@@ -443,62 +572,122 @@
     },
     "/api/approvals": {
       "get": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Get approval mode",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "responses": {
+          "200": {
+            "description": "Approval mode",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalsStatusResponse"
+                }
+              }
+            }
+          }
+        }
       },
       "post": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Set approval mode",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalsUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Approval mode updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalsUpdateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid approval mode"
+          }
+        }
       }
     },
     "/api/framework": {
       "get": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Get framework preference",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "responses": {
+          "200": {
+            "description": "Framework status data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/FrameworkStatusResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FrameworkListResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid action"
+          }
+        }
       },
       "post": {
-        "summary": "Auto-generated from route definition",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
+        "summary": "Update framework preference",
         "security": [
           {
             "ComposerApiKey": []
           }
-        ]
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FrameworkUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Framework preference updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrameworkUpdateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid framework"
+          }
+        }
       }
     },
     "/api/tools": {
@@ -2734,6 +2923,1259 @@
         },
         "required": [
           "success"
+        ]
+      },
+      "GuardianStatusResponse": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "lastRun": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "anyOf": [
+                      {
+                        "const": "passed",
+                        "type": "string"
+                      },
+                      {
+                        "const": "failed",
+                        "type": "string"
+                      },
+                      {
+                        "const": "skipped",
+                        "type": "string"
+                      },
+                      {
+                        "const": "error",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "exitCode": {
+                    "type": "number"
+                  },
+                  "startedAt": {
+                    "type": "number"
+                  },
+                  "durationMs": {
+                    "type": "number"
+                  },
+                  "target": {
+                    "anyOf": [
+                      {
+                        "const": "staged",
+                        "type": "string"
+                      },
+                      {
+                        "const": "all",
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "trigger": {
+                    "type": "string"
+                  },
+                  "filesScanned": {
+                    "type": "number"
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "skipReason": {
+                    "type": "string"
+                  },
+                  "toolResults": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "tool": {
+                          "type": "string"
+                        },
+                        "exitCode": {
+                          "type": "number"
+                        },
+                        "stdout": {
+                          "type": "string"
+                        },
+                        "stderr": {
+                          "type": "string"
+                        },
+                        "durationMs": {
+                          "type": "number"
+                        },
+                        "skipped": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "tool",
+                        "exitCode",
+                        "stdout",
+                        "stderr",
+                        "durationMs"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "status",
+                  "exitCode",
+                  "startedAt",
+                  "durationMs",
+                  "target",
+                  "filesScanned",
+                  "summary",
+                  "toolResults"
+                ]
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "state"
+        ]
+      },
+      "GuardianRunResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "anyOf": [
+              {
+                "const": "passed",
+                "type": "string"
+              },
+              {
+                "const": "failed",
+                "type": "string"
+              },
+              {
+                "const": "skipped",
+                "type": "string"
+              },
+              {
+                "const": "error",
+                "type": "string"
+              }
+            ]
+          },
+          "exitCode": {
+            "type": "number"
+          },
+          "startedAt": {
+            "type": "number"
+          },
+          "durationMs": {
+            "type": "number"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "const": "staged",
+                "type": "string"
+              },
+              {
+                "const": "all",
+                "type": "string"
+              }
+            ]
+          },
+          "trigger": {
+            "type": "string"
+          },
+          "filesScanned": {
+            "type": "number"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string"
+          },
+          "skipReason": {
+            "type": "string"
+          },
+          "toolResults": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "tool": {
+                  "type": "string"
+                },
+                "exitCode": {
+                  "type": "number"
+                },
+                "stdout": {
+                  "type": "string"
+                },
+                "stderr": {
+                  "type": "string"
+                },
+                "durationMs": {
+                  "type": "number"
+                },
+                "skipped": {
+                  "type": "boolean"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool",
+                "exitCode",
+                "stdout",
+                "stderr",
+                "durationMs"
+              ]
+            }
+          }
+        },
+        "required": [
+          "status",
+          "exitCode",
+          "startedAt",
+          "durationMs",
+          "target",
+          "filesScanned",
+          "summary",
+          "toolResults"
+        ]
+      },
+      "GuardianConfigRequest": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "GuardianConfigResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success",
+          "enabled"
+        ]
+      },
+      "PlanStatusResponse": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "active": {
+                    "type": "boolean"
+                  },
+                  "filePath": {
+                    "type": "string"
+                  },
+                  "sessionId": {
+                    "type": "string"
+                  },
+                  "gitBranch": {
+                    "type": "string"
+                  },
+                  "gitCommitSha": {
+                    "type": "string"
+                  },
+                  "createdAt": {
+                    "type": "string"
+                  },
+                  "updatedAt": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "active",
+                  "filePath",
+                  "createdAt",
+                  "updatedAt"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "content"
+        ]
+      },
+      "PlanRequest": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "const": "enter",
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "sessionId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "const": "exit",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "action": {
+                "const": "update",
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "content"
+            ]
+          }
+        ]
+      },
+      "PlanActionResponse": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "success": {
+                "type": "boolean"
+              },
+              "state": {
+                "type": "object",
+                "properties": {
+                  "active": {
+                    "type": "boolean"
+                  },
+                  "filePath": {
+                    "type": "string"
+                  },
+                  "sessionId": {
+                    "type": "string"
+                  },
+                  "gitBranch": {
+                    "type": "string"
+                  },
+                  "gitCommitSha": {
+                    "type": "string"
+                  },
+                  "createdAt": {
+                    "type": "string"
+                  },
+                  "updatedAt": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "active",
+                  "filePath",
+                  "createdAt",
+                  "updatedAt"
+                ]
+              }
+            },
+            "required": [
+              "success",
+              "state"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "success": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "success"
+            ]
+          }
+        ]
+      },
+      "BackgroundStatusResponse": {
+        "type": "object",
+        "properties": {
+          "settings": {
+            "type": "object",
+            "properties": {
+              "notificationsEnabled": {
+                "type": "boolean"
+              },
+              "statusDetailsEnabled": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "notificationsEnabled",
+              "statusDetailsEnabled"
+            ]
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "running": {
+                    "type": "number"
+                  },
+                  "total": {
+                    "type": "number"
+                  },
+                  "failed": {
+                    "type": "number"
+                  },
+                  "detailsRedacted": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "running",
+                  "total",
+                  "failed",
+                  "detailsRedacted"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "settings",
+          "snapshot"
+        ]
+      },
+      "BackgroundHistoryResponse": {
+        "type": "object",
+        "properties": {
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "timestamp": {
+                  "type": "string"
+                },
+                "event": {
+                  "anyOf": [
+                    {
+                      "const": "started",
+                      "type": "string"
+                    },
+                    {
+                      "const": "restarted",
+                      "type": "string"
+                    },
+                    {
+                      "const": "exited",
+                      "type": "string"
+                    },
+                    {
+                      "const": "failed",
+                      "type": "string"
+                    },
+                    {
+                      "const": "stopped",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "taskId": {
+                  "type": "string"
+                },
+                "command": {
+                  "type": "string"
+                },
+                "failureReason": {
+                  "type": "string"
+                },
+                "limitBreach": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "anyOf": [
+                        {
+                          "const": "memory",
+                          "type": "string"
+                        },
+                        {
+                          "const": "cpu",
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "limit": {
+                      "type": "number"
+                    },
+                    "actual": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "limit",
+                    "actual"
+                  ]
+                }
+              },
+              "required": [
+                "timestamp",
+                "event",
+                "taskId",
+                "command"
+              ]
+            }
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "history",
+          "truncated"
+        ]
+      },
+      "BackgroundPathResponse": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "overridden": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "exists",
+          "overridden"
+        ]
+      },
+      "BackgroundUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "BackgroundUpdateResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "message"
+        ]
+      },
+      "ApprovalsStatusResponse": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "anyOf": [
+              {
+                "const": "auto",
+                "type": "string"
+              },
+              {
+                "const": "prompt",
+                "type": "string"
+              },
+              {
+                "const": "fail",
+                "type": "string"
+              }
+            ]
+          },
+          "availableModes": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "const": "auto",
+                  "type": "string"
+                },
+                {
+                  "const": "prompt",
+                  "type": "string"
+                },
+                {
+                  "const": "fail",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        "required": [
+          "mode",
+          "availableModes"
+        ]
+      },
+      "ApprovalsUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "anyOf": [
+              {
+                "const": "auto",
+                "type": "string"
+              },
+              {
+                "const": "prompt",
+                "type": "string"
+              },
+              {
+                "const": "fail",
+                "type": "string"
+              }
+            ]
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ]
+      },
+      "ApprovalsUpdateResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "const": "auto",
+                "type": "string"
+              },
+              {
+                "const": "prompt",
+                "type": "string"
+              },
+              {
+                "const": "fail",
+                "type": "string"
+              }
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "mode",
+          "message"
+        ]
+      },
+      "FrameworkStatusResponse": {
+        "type": "object",
+        "properties": {
+          "framework": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "locked": {
+            "type": "boolean"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "const": "user",
+                "type": "string"
+              },
+              {
+                "const": "workspace",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "required": [
+          "framework",
+          "source",
+          "locked",
+          "scope"
+        ]
+      },
+      "FrameworkListResponse": {
+        "type": "object",
+        "properties": {
+          "frameworks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "summary"
+              ]
+            }
+          }
+        },
+        "required": [
+          "frameworks"
+        ]
+      },
+      "FrameworkUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "framework": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "const": "user",
+                "type": "string"
+              },
+              {
+                "const": "workspace",
+                "type": "string"
+              }
+            ]
+          }
+        }
+      },
+      "FrameworkUpdateResponse": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "framework": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "const": "user",
+                "type": "string"
+              },
+              {
+                "const": "workspace",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "required": [
+          "success",
+          "message",
+          "framework"
+        ]
+      },
+      "UndoStatusResponse": {
+        "type": "object",
+        "properties": {
+          "totalChanges": {
+            "type": "number"
+          },
+          "canUndo": {
+            "type": "boolean"
+          },
+          "checkpoints": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "changeCount": {
+                  "type": "number"
+                },
+                "timestamp": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "name",
+                "changeCount",
+                "timestamp"
+              ]
+            }
+          }
+        },
+        "required": [
+          "totalChanges",
+          "canUndo",
+          "checkpoints"
+        ]
+      },
+      "UndoHistoryResponse": {
+        "type": "object",
+        "properties": {
+          "history": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "fileCount": {
+                  "type": "number"
+                },
+                "timestamp": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "description",
+                "fileCount",
+                "timestamp"
+              ]
+            }
+          }
+        },
+        "required": [
+          "history"
+        ]
+      },
+      "UndoRequest": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "const": "undo",
+                "type": "string"
+              },
+              {
+                "const": "checkpoint",
+                "type": "string"
+              },
+              {
+                "const": "restore",
+                "type": "string"
+              }
+            ]
+          },
+          "count": {
+            "type": "number"
+          },
+          "preview": {
+            "type": "boolean"
+          },
+          "force": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      },
+      "UndoOperationResponse": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "success": {
+                "type": "boolean"
+              },
+              "undone": {
+                "type": "number"
+              },
+              "errors": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "success",
+              "undone",
+              "errors"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "success": {
+                "type": "boolean"
+              },
+              "message": {
+                "type": "string"
+              },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "success",
+              "message"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "preview": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "changes": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "type": {
+                              "anyOf": [
+                                {
+                                  "const": "create",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "modify",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "delete",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "before": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "after": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "toolName": {
+                              "type": "string"
+                            },
+                            "toolCallId": {
+                              "type": "string"
+                            },
+                            "timestamp": {
+                              "type": "number"
+                            },
+                            "isGitTracked": {
+                              "type": "boolean"
+                            },
+                            "messageId": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "type",
+                            "path",
+                            "before",
+                            "after",
+                            "toolName",
+                            "toolCallId",
+                            "timestamp",
+                            "isGitTracked"
+                          ]
+                        }
+                      },
+                      "restores": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "path": {
+                              "type": "string"
+                            },
+                            "action": {
+                              "anyOf": [
+                                {
+                                  "const": "restore",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "delete",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "recreate",
+                                  "type": "string"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "path",
+                            "action"
+                          ]
+                        }
+                      },
+                      "conflicts": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "path": {
+                              "type": "string"
+                            },
+                            "reason": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "path",
+                            "reason"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "changes",
+                      "restores",
+                      "conflicts"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "message": {
+                        "type": "string"
+                      },
+                      "fileCount": {
+                        "type": "number"
+                      },
+                      "description": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "message"
+                    ]
+                  }
+                ]
+              }
+            },
+            "required": [
+              "preview"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "success": {
+                "type": "boolean"
+              },
+              "checkpoint": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "changeCount": {
+                    "type": "number"
+                  },
+                  "timestamp": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "name",
+                  "changeCount",
+                  "timestamp"
+                ]
+              }
+            },
+            "required": [
+              "success",
+              "checkpoint"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "checkpoints": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "changeCount": {
+                      "type": "number"
+                    },
+                    "timestamp": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "changeCount",
+                    "timestamp"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "checkpoints"
+            ]
+          }
         ]
       },
       "StatusResponse": {

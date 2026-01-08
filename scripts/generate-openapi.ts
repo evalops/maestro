@@ -8,16 +8,39 @@ import {
 	ComposerConfigResponseSchema,
 	ComposerConfigWriteRequestSchema,
 	ComposerConfigWriteResponseSchema,
+	ComposerApprovalsStatusResponseSchema,
+	ComposerApprovalsUpdateRequestSchema,
+	ComposerApprovalsUpdateResponseSchema,
+	ComposerBackgroundHistoryResponseSchema,
+	ComposerBackgroundPathResponseSchema,
+	ComposerBackgroundStatusResponseSchema,
+	ComposerBackgroundUpdateRequestSchema,
+	ComposerBackgroundUpdateResponseSchema,
 	ComposerErrorResponseSchema,
 	ComposerFilesResponseSchema,
+	ComposerFrameworkListResponseSchema,
+	ComposerFrameworkStatusResponseSchema,
+	ComposerFrameworkUpdateRequestSchema,
+	ComposerFrameworkUpdateResponseSchema,
+	ComposerGuardianConfigRequestSchema,
+	ComposerGuardianConfigResponseSchema,
+	ComposerGuardianRunResponseSchema,
+	ComposerGuardianStatusResponseSchema,
 	ComposerModelListResponseSchema,
 	ComposerModelSchema,
 	ComposerModelSetSchema as ModelSetSchema,
 	ComposerMessageSchema,
+	ComposerPlanActionResponseSchema,
+	ComposerPlanRequestSchema,
+	ComposerPlanStatusResponseSchema,
 	ComposerSessionListResponseSchema,
 	ComposerSessionSchema,
 	ComposerSessionSummarySchema,
 	ComposerStatusResponseSchema,
+	ComposerUndoHistoryResponseSchema,
+	ComposerUndoOperationResponseSchema,
+	ComposerUndoRequestSchema,
+	ComposerUndoStatusResponseSchema,
 	ComposerUsageResponseSchema,
 } from "../packages/contracts/src/schemas.js";
 let version = "0.0.0";
@@ -101,6 +124,29 @@ function buildComponents() {
 		ConfigWriteRequest: ComposerConfigWriteRequestSchema,
 		ConfigResponse: ComposerConfigResponseSchema,
 		ConfigWriteResponse: ComposerConfigWriteResponseSchema,
+		GuardianStatusResponse: ComposerGuardianStatusResponseSchema,
+		GuardianRunResponse: ComposerGuardianRunResponseSchema,
+		GuardianConfigRequest: ComposerGuardianConfigRequestSchema,
+		GuardianConfigResponse: ComposerGuardianConfigResponseSchema,
+		PlanStatusResponse: ComposerPlanStatusResponseSchema,
+		PlanRequest: ComposerPlanRequestSchema,
+		PlanActionResponse: ComposerPlanActionResponseSchema,
+		BackgroundStatusResponse: ComposerBackgroundStatusResponseSchema,
+		BackgroundHistoryResponse: ComposerBackgroundHistoryResponseSchema,
+		BackgroundPathResponse: ComposerBackgroundPathResponseSchema,
+		BackgroundUpdateRequest: ComposerBackgroundUpdateRequestSchema,
+		BackgroundUpdateResponse: ComposerBackgroundUpdateResponseSchema,
+		ApprovalsStatusResponse: ComposerApprovalsStatusResponseSchema,
+		ApprovalsUpdateRequest: ComposerApprovalsUpdateRequestSchema,
+		ApprovalsUpdateResponse: ComposerApprovalsUpdateResponseSchema,
+		FrameworkStatusResponse: ComposerFrameworkStatusResponseSchema,
+		FrameworkListResponse: ComposerFrameworkListResponseSchema,
+		FrameworkUpdateRequest: ComposerFrameworkUpdateRequestSchema,
+		FrameworkUpdateResponse: ComposerFrameworkUpdateResponseSchema,
+		UndoStatusResponse: ComposerUndoStatusResponseSchema,
+		UndoHistoryResponse: ComposerUndoHistoryResponseSchema,
+		UndoRequest: ComposerUndoRequestSchema,
+		UndoOperationResponse: ComposerUndoOperationResponseSchema,
 		StatusResponse: ComposerStatusResponseSchema,
 		UsageResponse: ComposerUsageResponseSchema,
 		SessionSummary: ComposerSessionSummarySchema,
@@ -349,6 +395,311 @@ function buildPaths(routes: Route[]) {
 					},
 					400: { description: "Invalid config" },
 					413: { description: "Payload too large" },
+				},
+			};
+		}
+	}
+
+	if (paths["/api/guardian/status"]) {
+		if (paths["/api/guardian/status"].get) {
+			paths["/api/guardian/status"].get = {
+				summary: "Get guardian status",
+				security: [{ ComposerApiKey: [] }],
+				responses: {
+					200: {
+						description: "Guardian status",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/GuardianStatusResponse" },
+							},
+						},
+					},
+				},
+			};
+		}
+	}
+
+	if (paths["/api/guardian/run"]) {
+		if (paths["/api/guardian/run"].post) {
+			paths["/api/guardian/run"].post = {
+				summary: "Run guardian checks",
+				security: [{ ComposerApiKey: [] }],
+				responses: {
+					200: {
+						description: "Guardian run result",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/GuardianRunResponse" },
+							},
+						},
+					},
+				},
+			};
+		}
+	}
+
+	if (paths["/api/guardian/config"]) {
+		if (paths["/api/guardian/config"].post) {
+			paths["/api/guardian/config"].post = {
+				summary: "Update guardian config",
+				security: [{ ComposerApiKey: [] }],
+				requestBody: {
+					required: true,
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/GuardianConfigRequest" },
+						},
+					},
+				},
+				responses: {
+					200: {
+						description: "Guardian config updated",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/GuardianConfigResponse" },
+							},
+						},
+					},
+					400: { description: "Invalid guardian config" },
+				},
+			};
+		}
+	}
+
+	if (paths["/api/plan"]) {
+		if (paths["/api/plan"].get) {
+			paths["/api/plan"].get = {
+				summary: "Get plan mode state",
+				security: [{ ComposerApiKey: [] }],
+				responses: {
+					200: {
+						description: "Plan mode status",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/PlanStatusResponse" },
+							},
+						},
+					},
+				},
+			};
+		}
+		if (paths["/api/plan"].post) {
+			paths["/api/plan"].post = {
+				summary: "Update plan mode",
+				security: [{ ComposerApiKey: [] }],
+				requestBody: {
+					required: true,
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/PlanRequest" },
+						},
+					},
+				},
+				responses: {
+					200: {
+						description: "Plan mode updated",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/PlanActionResponse" },
+							},
+						},
+					},
+					400: { description: "Invalid plan request" },
+				},
+			};
+		}
+	}
+
+	if (paths["/api/background"]) {
+		if (paths["/api/background"].get) {
+			paths["/api/background"].get = {
+				summary: "Get background task status",
+				security: [{ ComposerApiKey: [] }],
+				responses: {
+					200: {
+						description: "Background task data",
+						content: {
+							"application/json": {
+								schema: {
+									oneOf: [
+										{ $ref: "#/components/schemas/BackgroundStatusResponse" },
+										{ $ref: "#/components/schemas/BackgroundHistoryResponse" },
+										{ $ref: "#/components/schemas/BackgroundPathResponse" },
+									],
+								},
+							},
+						},
+					},
+					400: { description: "Invalid action" },
+				},
+			};
+		}
+		if (paths["/api/background"].post) {
+			paths["/api/background"].post = {
+				summary: "Update background settings",
+				security: [{ ComposerApiKey: [] }],
+				requestBody: {
+					required: true,
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/BackgroundUpdateRequest" },
+						},
+					},
+				},
+				responses: {
+					200: {
+						description: "Background settings updated",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/BackgroundUpdateResponse" },
+							},
+						},
+					},
+					400: { description: "Invalid background action" },
+				},
+			};
+		}
+	}
+
+	if (paths["/api/undo"]) {
+		if (paths["/api/undo"].get) {
+			paths["/api/undo"].get = {
+				summary: "Get undo status",
+				security: [{ ComposerApiKey: [] }],
+				responses: {
+					200: {
+						description: "Undo status data",
+						content: {
+							"application/json": {
+								schema: {
+									oneOf: [
+										{ $ref: "#/components/schemas/UndoStatusResponse" },
+										{ $ref: "#/components/schemas/UndoHistoryResponse" },
+									],
+								},
+							},
+						},
+					},
+					400: { description: "Invalid action" },
+				},
+			};
+		}
+		if (paths["/api/undo"].post) {
+			paths["/api/undo"].post = {
+				summary: "Perform undo operation",
+				security: [{ ComposerApiKey: [] }],
+				requestBody: {
+					required: true,
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/UndoRequest" },
+						},
+					},
+				},
+				responses: {
+					200: {
+						description: "Undo action result",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/UndoOperationResponse" },
+							},
+						},
+					},
+					400: { description: "Invalid undo request" },
+				},
+			};
+		}
+	}
+
+	if (paths["/api/approvals"]) {
+		if (paths["/api/approvals"].get) {
+			paths["/api/approvals"].get = {
+				summary: "Get approval mode",
+				security: [{ ComposerApiKey: [] }],
+				responses: {
+					200: {
+						description: "Approval mode",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/ApprovalsStatusResponse" },
+							},
+						},
+					},
+				},
+			};
+		}
+		if (paths["/api/approvals"].post) {
+			paths["/api/approvals"].post = {
+				summary: "Set approval mode",
+				security: [{ ComposerApiKey: [] }],
+				requestBody: {
+					required: true,
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/ApprovalsUpdateRequest" },
+						},
+					},
+				},
+				responses: {
+					200: {
+						description: "Approval mode updated",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/ApprovalsUpdateResponse" },
+							},
+						},
+					},
+					400: { description: "Invalid approval mode" },
+				},
+			};
+		}
+	}
+
+	if (paths["/api/framework"]) {
+		if (paths["/api/framework"].get) {
+			paths["/api/framework"].get = {
+				summary: "Get framework preference",
+				security: [{ ComposerApiKey: [] }],
+				responses: {
+					200: {
+						description: "Framework status data",
+						content: {
+							"application/json": {
+								schema: {
+									oneOf: [
+										{ $ref: "#/components/schemas/FrameworkStatusResponse" },
+										{ $ref: "#/components/schemas/FrameworkListResponse" },
+									],
+								},
+							},
+						},
+					},
+					400: { description: "Invalid action" },
+				},
+			};
+		}
+		if (paths["/api/framework"].post) {
+			paths["/api/framework"].post = {
+				summary: "Update framework preference",
+				security: [{ ComposerApiKey: [] }],
+				requestBody: {
+					required: true,
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/FrameworkUpdateRequest" },
+						},
+					},
+				},
+				responses: {
+					200: {
+						description: "Framework preference updated",
+						content: {
+							"application/json": {
+								schema: { $ref: "#/components/schemas/FrameworkUpdateResponse" },
+							},
+						},
+					},
+					400: { description: "Invalid framework" },
 				},
 			};
 		}

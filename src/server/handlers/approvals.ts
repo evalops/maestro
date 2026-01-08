@@ -1,6 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ApprovalMode } from "../../agent/action-approval.js";
-import { readJsonBody, sendJson } from "../server-utils.js";
+import { sendJson } from "../server-utils.js";
+import {
+	type ApprovalsUpdateRequestInput,
+	ApprovalsUpdateRequestSchema,
+	parseAndValidateJson,
+} from "../validation.js";
 
 // Store approval mode preference (per-session or global)
 // In a real implementation, this might be stored per-user or per-session
@@ -33,23 +38,12 @@ export async function handleApprovals(
 
 	if (req.method === "POST") {
 		try {
-			const data = await readJsonBody<{
-				mode?: string;
-				sessionId?: string;
-			}>(req);
-
-			const mode = data.mode;
-			if (!mode || !["auto", "prompt", "fail"].includes(mode)) {
-				sendJson(
-					res,
-					400,
-					{ error: 'Mode must be one of "auto", "prompt", or "fail"' },
-					corsHeaders,
-				);
-				return;
-			}
-
+			const data = await parseAndValidateJson<ApprovalsUpdateRequestInput>(
+				req,
+				ApprovalsUpdateRequestSchema,
+			);
 			const sessionId = data.sessionId || "default";
+			const mode = data.mode;
 			approvalModeStore.set(sessionId, mode as ApprovalMode);
 
 			sendJson(
