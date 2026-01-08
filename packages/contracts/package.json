@@ -19,6 +19,9 @@
 		"build": "tsc -p tsconfig.build.json",
 		"dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput"
 	},
+	"dependencies": {
+		"@sinclair/typebox": "^0.33.0"
+	},
 	"keywords": ["composer", "contracts", "evalops"],
 	"author": "EvalOps",
 	"license": "MIT"

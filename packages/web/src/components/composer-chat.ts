@@ -331,6 +331,11 @@ export class ComposerChat extends LitElement {
 			padding: 1rem;
 		}
 
+		.virtual-spacer {
+			width: 100%;
+			display: block;
+		}
+
 		.history-truncation {
 			font-family: var(--font-mono, monospace);
 			font-size: 0.7rem;
@@ -734,6 +739,12 @@ export class ComposerChat extends LitElement {
 	@state() private shareToken: string | null = null;
 	@state() private renderLimit = 200;
 	@state() private renderEndIndex = 0;
+	@state() private virtualStartIndex = 0;
+	@state() private virtualEndIndex = 0;
+	@state() private virtualPaddingTop = 0;
+	@state() private virtualPaddingBottom = 0;
+	@state()
+	private avgMessageHeight = ComposerChat.DEFAULT_AVG_MESSAGE_HEIGHT;
 	@state() private unseenMessages = 0;
 	@state() private loadingEarlier = false;
 	@state() private settingsOpen = false;
@@ -794,6 +805,21 @@ export class ComposerChat extends LitElement {
 	private autoScroll = true;
 	private lastMessagesLength = 0;
 	private messagesScrollRaf: number | null = null;
+	private messageHeights = new Map<number, number>();
+	private observedMessageNodes = new Set<Element>();
+	private messageResizeObserver: ResizeObserver | null = null;
+	private static DEFAULT_AVG_MESSAGE_HEIGHT = 120;
+	private static VIRTUALIZATION_MIN_MESSAGES = 120;
+	private static VIRTUAL_OVERSCAN = 6;
+
+	private resetVirtualizationState(): void {
+		this.messageHeights.clear();
+		this.avgMessageHeight = ComposerChat.DEFAULT_AVG_MESSAGE_HEIGHT;
+		this.virtualStartIndex = 0;
+		this.virtualEndIndex = 0;
+		this.virtualPaddingTop = 0;
+		this.virtualPaddingBottom = 0;
+	}
 	private historyObserver: IntersectionObserver | null = null;
 	private observedHistoryEl: Element | null = null;
 	private handleOnline = () => {
@@ -850,6 +876,190 @@ export class ComposerChat extends LitElement {
 		const windowSize = Math.max(1, this.renderLimit);
 		const start = Math.max(0, end - windowSize);
 		return { start, end, total };
+	}
+
+	private estimateMessageHeight(index: number): number {
+		return this.messageHeights.get(index) ?? this.avgMessageHeight;
+	}
+
+	private updateVirtualWindow(): void {
+		const scroller = this.getMessagesScroller();
+		const { start, end } = this.getRenderWindow();
+		const totalVisible = Math.max(0, end - start);
+
+		if (!scroller || totalVisible === 0) {
+			this.virtualStartIndex = start;
+			this.virtualEndIndex = end;
+			this.virtualPaddingTop = 0;
+			this.virtualPaddingBottom = 0;
+			return;
+		}
+
+		const shouldVirtualize =
+			totalVisible >= ComposerChat.VIRTUALIZATION_MIN_MESSAGES;
+		if (!shouldVirtualize) {
+			if (
+				this.virtualStartIndex !== start ||
+				this.virtualEndIndex !== end ||
+				this.virtualPaddingTop !== 0 ||
+				this.virtualPaddingBottom !== 0
+			) {
+				this.virtualStartIndex = start;
+				this.virtualEndIndex = end;
+				this.virtualPaddingTop = 0;
+				this.virtualPaddingBottom = 0;
+			}
+			return;
+		}
+
+		const heights: number[] = [];
+		let totalHeight = 0;
+		for (let i = 0; i < totalVisible; i += 1) {
+			const h = this.estimateMessageHeight(start + i);
+			heights.push(h);
+			totalHeight += h;
+		}
+
+		const overscanPx = this.avgMessageHeight * ComposerChat.VIRTUAL_OVERSCAN;
+		const targetStart = Math.max(0, scroller.scrollTop - overscanPx);
+		const targetEnd = scroller.scrollTop + scroller.clientHeight + overscanPx;
+
+		let topPadding = 0;
+		let localStart = 0;
+		for (; localStart < totalVisible; localStart += 1) {
+			const next = topPadding + heights[localStart];
+			if (next >= targetStart) break;
+			topPadding = next;
+		}
+		if (localStart >= totalVisible) {
+			const lastIndex = Math.max(0, totalVisible - 1);
+			localStart = lastIndex;
+			topPadding = Math.max(0, totalHeight - heights[lastIndex]);
+		}
+
+		let visibleHeight = topPadding;
+		let localEnd = localStart;
+		for (; localEnd < totalVisible; localEnd += 1) {
+			visibleHeight += heights[localEnd];
+			if (visibleHeight >= targetEnd) break;
+		}
+		if (localEnd === localStart) {
+			localEnd = Math.min(totalVisible, localStart + 1);
+			visibleHeight = topPadding + heights[localStart];
+		} else {
+			localEnd += 1;
+		}
+
+		const bottomPadding = Math.max(0, totalHeight - visibleHeight);
+		const nextStart = start + localStart;
+		const nextEnd = start + localEnd;
+
+		if (
+			nextStart !== this.virtualStartIndex ||
+			nextEnd !== this.virtualEndIndex ||
+			topPadding !== this.virtualPaddingTop ||
+			bottomPadding !== this.virtualPaddingBottom
+		) {
+			this.virtualStartIndex = nextStart;
+			this.virtualEndIndex = nextEnd;
+			this.virtualPaddingTop = Math.max(0, Math.round(topPadding));
+			this.virtualPaddingBottom = Math.max(0, Math.round(bottomPadding));
+		}
+	}
+
+	private ensureMessageObserver(): void {
+		if (typeof ResizeObserver === "undefined") return;
+		if (this.messageResizeObserver) return;
+		this.messageResizeObserver = new ResizeObserver((entries) => {
+			let changed = false;
+			for (const entry of entries) {
+				const node = entry.target as HTMLElement;
+				const indexAttr = node.dataset.index;
+				if (!indexAttr) continue;
+				const index = Number.parseInt(indexAttr, 10);
+				if (Number.isNaN(index)) continue;
+				const height = Math.round(entry.contentRect.height);
+				if (height <= 0) continue;
+				const prev = this.messageHeights.get(index);
+				if (prev !== height) {
+					this.messageHeights.set(index, height);
+					changed = true;
+					const blended = Math.round(
+						this.avgMessageHeight * 0.8 + height * 0.2,
+					);
+					if (Math.abs(blended - this.avgMessageHeight) > 1) {
+						this.avgMessageHeight = blended;
+					}
+				}
+			}
+			if (changed) {
+				this.updateVirtualWindow();
+			}
+		});
+	}
+
+	private syncMessageObservers(): void {
+		this.ensureMessageObserver();
+		if (!this.messageResizeObserver) return;
+
+		const nodes = this.shadowRoot?.querySelectorAll<HTMLElement>(
+			"composer-message[data-index]",
+		);
+		const nextNodes = new Set<Element>();
+		if (nodes) {
+			for (const node of nodes) {
+				nextNodes.add(node);
+				if (!this.observedMessageNodes.has(node)) {
+					this.messageResizeObserver?.observe(node);
+				}
+			}
+		}
+
+		for (const node of this.observedMessageNodes) {
+			if (!nextNodes.has(node)) {
+				this.messageResizeObserver?.unobserve(node);
+			}
+		}
+
+		this.observedMessageNodes = nextNodes;
+	}
+
+	private captureMessageHeights(): void {
+		const nodes = this.shadowRoot?.querySelectorAll<HTMLElement>(
+			"composer-message[data-index]",
+		);
+		if (!nodes || nodes.length === 0) return;
+
+		let total = 0;
+		let count = 0;
+		let changed = false;
+		for (const node of nodes) {
+			const indexAttr = node.dataset.index;
+			if (!indexAttr) continue;
+			const index = Number.parseInt(indexAttr, 10);
+			if (Number.isNaN(index)) continue;
+			const height = node.offsetHeight;
+			if (height <= 0) continue;
+			const prev = this.messageHeights.get(index);
+			if (prev !== height) {
+				this.messageHeights.set(index, height);
+				changed = true;
+			}
+			total += height;
+			count += 1;
+		}
+
+		if (count > 0) {
+			const nextAvg = Math.round(total / count);
+			if (Math.abs(nextAvg - this.avgMessageHeight) > 2) {
+				this.avgMessageHeight = nextAvg;
+				changed = true;
+			}
+		}
+
+		if (changed) {
+			this.updateVirtualWindow();
+		}
 	}
 
 	private syncRenderWindowToBottom() {
@@ -928,6 +1138,8 @@ export class ComposerChat extends LitElement {
 			if (scroller.scrollTop < 80) {
 				void this.maybeAutoLoadEarlier();
 			}
+
+			this.updateVirtualWindow();
 		});
 	};
 
@@ -1037,6 +1249,7 @@ export class ComposerChat extends LitElement {
 				throw new Error("Invalid shared session response");
 			}
 			this.currentSessionId = session.id;
+			this.resetVirtualizationState();
 			this.messages = Array.isArray(session.messages)
 				? this.normalizeMessages(session.messages)
 				: [];
@@ -1203,6 +1416,15 @@ export class ComposerChat extends LitElement {
 			this.historyObserver = null;
 			this.observedHistoryEl = null;
 		}
+		if (this.messageResizeObserver) {
+			try {
+				this.messageResizeObserver.disconnect();
+			} catch {
+				// ignore
+			}
+			this.messageResizeObserver = null;
+			this.observedMessageNodes.clear();
+		}
 	}
 
 	protected firstUpdated(): void {
@@ -1217,6 +1439,14 @@ export class ComposerChat extends LitElement {
 			this.renderEndIndex = this.messages.length;
 		}
 		this.lastMessagesLength = this.messages.length;
+		this.updateVirtualWindow();
+		if (typeof window !== "undefined") {
+			const raf = window.requestAnimationFrame
+				? window.requestAnimationFrame.bind(window)
+				: (cb: FrameRequestCallback) =>
+						window.setTimeout(() => cb(Date.now()), 16);
+			raf(() => this.captureMessageHeights());
+		}
 	}
 
 	protected updated(changed: PropertyValues): void {
@@ -1250,11 +1480,34 @@ export class ComposerChat extends LitElement {
 				}
 			} else if (nextLen === 0) {
 				this.unseenMessages = 0;
+				this.messageHeights.clear();
+				this.virtualStartIndex = 0;
+				this.virtualEndIndex = 0;
+				this.virtualPaddingTop = 0;
+				this.virtualPaddingBottom = 0;
 			}
 		}
 
 		if (this.autoScroll && this.renderEndIndex !== total) {
 			this.renderEndIndex = total;
+		}
+
+		if (
+			changed.has("messages") ||
+			changed.has("renderLimit") ||
+			changed.has("renderEndIndex")
+		) {
+			if (typeof window !== "undefined") {
+				const raf = window.requestAnimationFrame
+					? window.requestAnimationFrame.bind(window)
+					: (cb: FrameRequestCallback) =>
+							window.setTimeout(() => cb(Date.now()), 16);
+				raf(() => {
+					this.syncMessageObservers();
+					this.captureMessageHeights();
+					this.updateVirtualWindow();
+				});
+			}
 		}
 	}
 
@@ -1598,6 +1851,7 @@ export class ComposerChat extends LitElement {
 		try {
 			const session = await this.apiClient.createSession("New Chat");
 			this.currentSessionId = session.id;
+			this.resetVirtualizationState();
 			this.messages = Array.isArray(session.messages)
 				? this.normalizeMessages(session.messages)
 				: [];
@@ -1623,6 +1877,7 @@ export class ComposerChat extends LitElement {
 				throw new Error("Invalid session response");
 			}
 			this.currentSessionId = session.id;
+			this.resetVirtualizationState();
 			this.messages = Array.isArray(session.messages)
 				? this.normalizeMessages(session.messages)
 				: [];
@@ -2324,6 +2579,7 @@ export class ComposerChat extends LitElement {
 			const messagesEl = this.getMessagesScroller();
 			if (!messagesEl) return;
 			messagesEl.scrollTop = messagesEl.scrollHeight;
+			this.updateVirtualWindow();
 		});
 	}
 
@@ -2441,11 +2697,35 @@ export class ComposerChat extends LitElement {
 			total: totalMessages,
 		} = this.getRenderWindow();
 		const visibleMessages = this.messages.slice(windowStart, windowEnd);
+		const shouldVirtualize =
+			windowEnd - windowStart >= ComposerChat.VIRTUALIZATION_MIN_MESSAGES;
+		const resolvedVirtualStart =
+			this.virtualStartIndex >= windowStart &&
+			this.virtualStartIndex < windowEnd
+				? this.virtualStartIndex
+				: windowStart;
+		const resolvedVirtualEnd =
+			this.virtualEndIndex > resolvedVirtualStart &&
+			this.virtualEndIndex <= windowEnd
+				? this.virtualEndIndex
+				: windowEnd;
+		const virtualStartLocal = Math.max(0, resolvedVirtualStart - windowStart);
+		const virtualEndLocal = Math.max(
+			virtualStartLocal,
+			resolvedVirtualEnd - windowStart,
+		);
+		const virtualMessages = shouldVirtualize
+			? visibleMessages.slice(virtualStartLocal, virtualEndLocal)
+			: visibleMessages;
+		const visibleCount = visibleMessages.length;
 		const hiddenOldCount = windowStart;
 		const hiddenNewCount = totalMessages - windowEnd;
-		const renderedMessages = visibleMessages.map(
-			(msg) => html`
+		const renderedMessages = virtualMessages.map(
+			(msg, idx) => html`
 				<composer-message
+					data-index=${
+						shouldVirtualize ? resolvedVirtualStart + idx : windowStart + idx
+					}
 					role=${msg.role}
 					content=${msg.content}
 					timestamp=${msg.timestamp || ""}
@@ -2457,6 +2737,20 @@ export class ComposerChat extends LitElement {
 				></composer-message>
 			`,
 		);
+		const topSpacer =
+			shouldVirtualize && this.virtualPaddingTop > 0
+				? html`<div
+						class="virtual-spacer"
+						style="height: ${this.virtualPaddingTop}px"
+					></div>`
+				: "";
+		const bottomSpacer =
+			shouldVirtualize && this.virtualPaddingBottom > 0
+				? html`<div
+						class="virtual-spacer"
+						style="height: ${this.virtualPaddingBottom}px"
+					></div>`
+				: "";
 		const recentSessions = showSessionGallery ? this.sessions.slice(0, 8) : [];
 		const sessionLoading = this.loading && this.messages.length === 0;
 		const lastUpdated = this.status?.lastUpdated ?? null;
@@ -2778,15 +3072,15 @@ export class ComposerChat extends LitElement {
 								</div>
 						  `
 								: html`
-										${
-											hiddenOldCount > 0
-												? html`
-														<div class="history-truncation" data-history-truncation>
-															Showing ${renderedMessages.length} of ${totalMessages}${
-																hiddenNewCount > 0
-																	? ` (+${hiddenNewCount} newer hidden)`
-																	: ""
-															}.
+												${
+													hiddenOldCount > 0
+														? html`
+																<div class="history-truncation" data-history-truncation>
+																	Showing ${visibleCount} of ${totalMessages}${
+																		hiddenNewCount > 0
+																			? ` (+${hiddenNewCount} newer hidden)`
+																			: ""
+																	}.
 															<button
 																class="history-btn"
 																@click=${this.loadEarlierMessages}
@@ -2794,20 +3088,22 @@ export class ComposerChat extends LitElement {
 															>
 																${this.loadingEarlier ? "Loading..." : "Load earlier"}
 															</button>
-														</div>
-													`
-												: ""
-										}
-										${renderedMessages}
-										${
-											this.unseenMessages > 0
-												? html`
-													<button class="jump-latest" @click=${this.jumpToLatest}>
-														${this.unseenMessages} new message${this.unseenMessages === 1 ? "" : "s"} — Jump to latest
+																</div>
+															`
+														: ""
+												}
+												${topSpacer}
+												${renderedMessages}
+												${bottomSpacer}
+												${
+													this.unseenMessages > 0
+														? html`
+															<button class="jump-latest" @click=${this.jumpToLatest}>
+																${this.unseenMessages} new message${this.unseenMessages === 1 ? "" : "s"} — Jump to latest
 													</button>
 												`
-												: ""
-										}
+														: ""
+												}
 									`
 						}
 					${this.loading ? html`<div class="loading">Processing...</div>` : ""}

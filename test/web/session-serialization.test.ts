@@ -1,4 +1,5 @@
 import type { ComposerMessage } from "@evalops/contracts";
+import { isComposerMessage } from "@evalops/contracts";
 import { describe, expect, it } from "vitest";
 import type {
 	AppMessage,
@@ -83,6 +84,7 @@ describe("session serialization", () => {
 		]);
 
 		expect(composerMessages).toHaveLength(3);
+		expect(composerMessages.every((msg) => isComposerMessage(msg))).toBe(true);
 		expect(composerMessages[1]).toMatchObject({
 			role: "assistant",
 			content: "On it",

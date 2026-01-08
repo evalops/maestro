@@ -135,6 +135,8 @@ export class ComposerMessage extends LitElement {
 			line-height: 1.7;
 			color: var(--text-primary, #e8e9eb);
 			border-bottom: 1px solid var(--border-subtle, #141517);
+			content-visibility: auto;
+			contain-intrinsic-size: 1px 220px;
 		}
 
 		.message:last-child {

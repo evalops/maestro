@@ -200,6 +200,19 @@ export class ScrollContainer implements Component {
 	}
 
 	/**
+	 * Clears the scrollback history and resets scroll state.
+	 * Useful when starting a new session or reclaiming memory.
+	 */
+	clearHistory(): void {
+		this.contentHistory = [];
+		this.lastRenderedLines = [];
+		this.lastChildRenderHash = "";
+		this.truncatedLines = 0;
+		this.scrollOffset = 0;
+		this.userScrolledUp = false;
+	}
+
+	/**
 	 * Gets the current scroll offset.
 	 */
 	getScrollOffset(): number {
@@ -211,18 +224,6 @@ export class ScrollContainer implements Component {
 	 */
 	getMaxScrollOffset(): number {
 		return Math.max(0, this.contentHistory.length - this.viewportHeight);
-	}
-
-	/**
-	 * Clears all history. Use when starting a new session.
-	 */
-	clearHistory(): void {
-		this.contentHistory = [];
-		this.scrollOffset = 0;
-		this.userScrolledUp = false;
-		this.lastChildRenderHash = "";
-		this.lastRenderedLines = [];
-		this.truncatedLines = 0;
 	}
 
 	/**

@@ -11,6 +11,101 @@
     }
   ],
   "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/debug/z": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/files": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/commands": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/command-prefs": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
     "/api/models": {
       "get": {
         "summary": "Auto-generated from route definition",
@@ -107,8 +202,790 @@
         }
       }
     },
+    "/api/guardian/status": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/guardian/run": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/guardian/config": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/plan": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/mcp": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
     "/api/usage": {
       "get": {
+        "summary": "Usage summary",
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Usage payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/background": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/undo": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/changes": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/approvals": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/framework": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/tools": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/review": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/context": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/telemetry": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/training": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/diagnostics": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/lsp": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/workflow": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/run": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/ollama": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/preview": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/composer": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/cost": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/quota": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/memory": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/mode": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/zen": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/ui": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/queue": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/branch": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
+      "post": {
         "summary": "Auto-generated from route definition",
         "parameters": [],
         "responses": {
@@ -181,6 +1058,22 @@
         }
       }
     },
+    "/api/metrics": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
     "/api/chat": {
       "post": {
         "summary": "Send a chat request (SSE)",
@@ -214,6 +1107,261 @@
             "description": "Unauthorized"
           }
         }
+      }
+    },
+    "/api/chat/approval": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/chat/client-tool-result": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/attachments/extract": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{id}/artifacts": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{id}/artifacts.zip": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{id}/artifacts/events": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{id}/artifacts/{filename}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{id}/artifacts/{filename}/view": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{id}/attachments/{attachmentId}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{id}/attachments/{attachmentId}/extract": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
       }
     },
     "/api/sessions": {
@@ -326,6 +1474,29 @@
           }
         }
       },
+      "patch": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      },
       "delete": {
         "summary": "Delete session",
         "security": [
@@ -355,6 +1526,162 @@
           }
         }
       }
+    },
+    "/api/sessions/{id}/share": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/{id}/export": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/shared/{token}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/sessions/shared/{token}/attachments/{attachmentId}": {
+      "get": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "attachmentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/policy/validate": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/admin/cleanup": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/admin/warm-caches": {
+      "post": {
+        "summary": "Auto-generated from route definition",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "ComposerApiKey": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -370,31 +1697,325 @@
       "ChatRequest": {
         "type": "object",
         "properties": {
+          "model": {
+            "type": "string"
+          },
           "messages": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "role": {
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "const": "user",
+                      "type": "string"
+                    },
+                    {
+                      "const": "assistant",
+                      "type": "string"
+                    },
+                    {
+                      "const": "system",
+                      "type": "string"
+                    },
+                    {
+                      "const": "tool",
+                      "type": "string"
+                    }
+                  ]
                 },
                 "content": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "text",
+                                "type": "string"
+                              },
+                              "text": {
+                                "type": "string"
+                              },
+                              "textSignature": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "text"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "image",
+                                "type": "string"
+                              },
+                              "data": {
+                                "type": "string"
+                              },
+                              "mimeType": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "data",
+                              "mimeType"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "thinking",
+                                "type": "string"
+                              },
+                              "thinking": {
+                                "type": "string"
+                              },
+                              "thinkingSignature": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "thinking"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "toolCall",
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "arguments": {
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              },
+                              "thoughtSignature": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "id",
+                              "name",
+                              "arguments"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                "attachments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "anyOf": [
+                          {
+                            "const": "image",
+                            "type": "string"
+                          },
+                          {
+                            "const": "document",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "fileName": {
+                        "type": "string"
+                      },
+                      "mimeType": {
+                        "type": "string"
+                      },
+                      "size": {
+                        "type": "number"
+                      },
+                      "content": {
+                        "type": "string"
+                      },
+                      "contentOmitted": {
+                        "type": "boolean"
+                      },
+                      "extractedText": {
+                        "type": "string"
+                      },
+                      "preview": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "type",
+                      "fileName",
+                      "mimeType",
+                      "size"
+                    ]
+                  }
+                },
+                "timestamp": {
                   "type": "string"
+                },
+                "thinking": {
+                  "type": "string"
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "anyOf": [
+                          {
+                            "const": "pending",
+                            "type": "string"
+                          },
+                          {
+                            "const": "running",
+                            "type": "string"
+                          },
+                          {
+                            "const": "completed",
+                            "type": "string"
+                          },
+                          {
+                            "const": "error",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "args": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "result": {},
+                      "toolCallId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "status"
+                    ]
+                  }
+                },
+                "toolName": {
+                  "type": "string"
+                },
+                "isError": {
+                  "type": "boolean"
+                },
+                "usage": {
+                  "type": "object",
+                  "properties": {
+                    "input": {
+                      "type": "number"
+                    },
+                    "output": {
+                      "type": "number"
+                    },
+                    "cacheRead": {
+                      "type": "number"
+                    },
+                    "cacheWrite": {
+                      "type": "number"
+                    },
+                    "cost": {
+                      "type": "object",
+                      "properties": {
+                        "input": {
+                          "type": "number"
+                        },
+                        "output": {
+                          "type": "number"
+                        },
+                        "cacheRead": {
+                          "type": "number"
+                        },
+                        "cacheWrite": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "input",
+                        "output"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "input",
+                    "output"
+                  ]
                 }
               },
               "required": [
-                "role"
+                "role",
+                "content"
               ]
             }
           },
-          "model": {
-            "type": "string"
+          "thinkingLevel": {
+            "anyOf": [
+              {
+                "const": "off",
+                "type": "string"
+              },
+              {
+                "const": "minimal",
+                "type": "string"
+              },
+              {
+                "const": "low",
+                "type": "string"
+              },
+              {
+                "const": "medium",
+                "type": "string"
+              },
+              {
+                "const": "high",
+                "type": "string"
+              }
+            ]
           },
           "sessionId": {
             "type": "string"
           },
-          "thinkingLevel": {
-            "type": "string"
+          "stream": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -415,18 +2036,287 @@
       },
       "ChatMessage": {
         "type": "object",
-        "required": [
-          "role"
-        ],
         "properties": {
           "role": {
-            "type": "string"
+            "anyOf": [
+              {
+                "const": "user",
+                "type": "string"
+              },
+              {
+                "const": "assistant",
+                "type": "string"
+              },
+              {
+                "const": "system",
+                "type": "string"
+              },
+              {
+                "const": "tool",
+                "type": "string"
+              }
+            ]
           },
           "content": {
-            "type": "string",
-            "nullable": true
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "const": "text",
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "textSignature": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "text"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "const": "image",
+                          "type": "string"
+                        },
+                        "data": {
+                          "type": "string"
+                        },
+                        "mimeType": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "data",
+                        "mimeType"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "const": "thinking",
+                          "type": "string"
+                        },
+                        "thinking": {
+                          "type": "string"
+                        },
+                        "thinkingSignature": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "thinking"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "const": "toolCall",
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "arguments": {
+                          "type": "object",
+                          "patternProperties": {
+                            "^(.*)$": {}
+                          }
+                        },
+                        "thoughtSignature": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "id",
+                        "name",
+                        "arguments"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "anyOf": [
+                    {
+                      "const": "image",
+                      "type": "string"
+                    },
+                    {
+                      "const": "document",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "fileName": {
+                  "type": "string"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "number"
+                },
+                "content": {
+                  "type": "string"
+                },
+                "contentOmitted": {
+                  "type": "boolean"
+                },
+                "extractedText": {
+                  "type": "string"
+                },
+                "preview": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "fileName",
+                "mimeType",
+                "size"
+              ]
+            }
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "thinking": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "status": {
+                  "anyOf": [
+                    {
+                      "const": "pending",
+                      "type": "string"
+                    },
+                    {
+                      "const": "running",
+                      "type": "string"
+                    },
+                    {
+                      "const": "completed",
+                      "type": "string"
+                    },
+                    {
+                      "const": "error",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "args": {
+                  "type": "object",
+                  "patternProperties": {
+                    "^(.*)$": {}
+                  }
+                },
+                "result": {},
+                "toolCallId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "status"
+              ]
+            }
+          },
+          "toolName": {
+            "type": "string"
+          },
+          "isError": {
+            "type": "boolean"
+          },
+          "usage": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              },
+              "cost": {
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "type": "number"
+                  },
+                  "output": {
+                    "type": "number"
+                  },
+                  "cacheRead": {
+                    "type": "number"
+                  },
+                  "cacheWrite": {
+                    "type": "number"
+                  },
+                  "total": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "input",
+                  "output"
+                ]
+              }
+            },
+            "required": [
+              "input",
+              "output"
+            ]
           }
-        }
+        },
+        "required": [
+          "role",
+          "content"
+        ]
       },
       "ModelEntry": {
         "type": "object",
@@ -545,15 +2435,50 @@
             "type": "string"
           },
           "git": {
-            "type": "object",
-            "properties": {
-              "branch": {
-                "type": "string"
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "branch": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "object",
+                    "properties": {
+                      "modified": {
+                        "type": "number"
+                      },
+                      "added": {
+                        "type": "number"
+                      },
+                      "deleted": {
+                        "type": "number"
+                      },
+                      "untracked": {
+                        "type": "number"
+                      },
+                      "total": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "modified",
+                      "added",
+                      "deleted",
+                      "untracked",
+                      "total"
+                    ]
+                  }
+                },
+                "required": [
+                  "branch",
+                  "status"
+                ]
               },
-              "status": {
-                "type": "object"
+              {
+                "type": "null"
               }
-            }
+            ]
           },
           "context": {
             "type": "object",
@@ -564,7 +2489,11 @@
               "claudeMd": {
                 "type": "boolean"
               }
-            }
+            },
+            "required": [
+              "agentMd",
+              "claudeMd"
+            ]
           },
           "server": {
             "type": "object",
@@ -578,10 +2507,237 @@
               "staticCacheMaxAgeSeconds": {
                 "type": "number"
               }
-            }
+            },
+            "required": [
+              "uptime",
+              "version"
+            ]
+          },
+          "database": {
+            "type": "object",
+            "properties": {
+              "configured": {
+                "type": "boolean"
+              },
+              "connected": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "configured",
+              "connected"
+            ]
           },
           "backgroundTasks": {
-            "type": "object"
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "total": {
+                    "type": "number"
+                  },
+                  "running": {
+                    "type": "number"
+                  },
+                  "restarting": {
+                    "type": "number"
+                  },
+                  "failed": {
+                    "type": "number"
+                  },
+                  "entries": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "summary": {
+                          "type": "string"
+                        },
+                        "command": {
+                          "type": "string"
+                        },
+                        "restarts": {
+                          "type": "string"
+                        },
+                        "issues": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "lastLogLine": {
+                          "type": "string"
+                        },
+                        "logTruncated": {
+                          "type": "boolean"
+                        },
+                        "durationSeconds": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "status",
+                        "summary",
+                        "command",
+                        "issues",
+                        "durationSeconds"
+                      ]
+                    }
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  },
+                  "notificationsEnabled": {
+                    "type": "boolean"
+                  },
+                  "detailsRedacted": {
+                    "type": "boolean"
+                  },
+                  "history": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "event": {
+                          "anyOf": [
+                            {
+                              "const": "started",
+                              "type": "string"
+                            },
+                            {
+                              "const": "restarted",
+                              "type": "string"
+                            },
+                            {
+                              "const": "exited",
+                              "type": "string"
+                            },
+                            {
+                              "const": "failed",
+                              "type": "string"
+                            },
+                            {
+                              "const": "stopped",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "taskId": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "command": {
+                          "type": "string"
+                        },
+                        "timestamp": {
+                          "type": "string"
+                        },
+                        "restartAttempts": {
+                          "type": "number"
+                        },
+                        "failureReason": {
+                          "type": "string"
+                        },
+                        "limitBreach": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "anyOf": [
+                                {
+                                  "const": "memory",
+                                  "type": "string"
+                                },
+                                {
+                                  "const": "cpu",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            "limit": {
+                              "type": "number"
+                            },
+                            "actual": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "limit",
+                            "actual"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "event",
+                        "taskId",
+                        "status",
+                        "command",
+                        "timestamp",
+                        "restartAttempts"
+                      ]
+                    }
+                  },
+                  "historyTruncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "total",
+                  "running",
+                  "restarting",
+                  "failed",
+                  "entries",
+                  "truncated",
+                  "notificationsEnabled",
+                  "detailsRedacted",
+                  "history",
+                  "historyTruncated"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hooks": {
+            "type": "object",
+            "properties": {
+              "asyncInFlight": {
+                "type": "number"
+              },
+              "concurrency": {
+                "type": "object",
+                "properties": {
+                  "max": {
+                    "type": "number"
+                  },
+                  "active": {
+                    "type": "number"
+                  },
+                  "queued": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "max",
+                  "active",
+                  "queued"
+                ]
+              }
+            },
+            "required": [
+              "asyncInFlight",
+              "concurrency"
+            ]
           },
           "lastUpdated": {
             "type": "number"
@@ -589,16 +2745,262 @@
           "lastLatencyMs": {
             "type": "number"
           }
-        }
+        },
+        "required": [
+          "cwd",
+          "git",
+          "context",
+          "server",
+          "database",
+          "backgroundTasks",
+          "hooks",
+          "lastUpdated",
+          "lastLatencyMs"
+        ]
+      },
+      "UsageResponse": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": "object",
+            "properties": {
+              "totalCost": {
+                "type": "number"
+              },
+              "totalRequests": {
+                "type": "number"
+              },
+              "totalTokens": {
+                "type": "number"
+              },
+              "tokensDetailed": {
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "type": "number"
+                  },
+                  "output": {
+                    "type": "number"
+                  },
+                  "cacheRead": {
+                    "type": "number"
+                  },
+                  "cacheWrite": {
+                    "type": "number"
+                  },
+                  "total": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "input",
+                  "output",
+                  "cacheRead",
+                  "cacheWrite",
+                  "total"
+                ]
+              },
+              "totalTokensDetailed": {
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "type": "number"
+                  },
+                  "output": {
+                    "type": "number"
+                  },
+                  "cacheRead": {
+                    "type": "number"
+                  },
+                  "cacheWrite": {
+                    "type": "number"
+                  },
+                  "total": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "input",
+                  "output",
+                  "cacheRead",
+                  "cacheWrite",
+                  "total"
+                ]
+              },
+              "totalTokensBreakdown": {
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "type": "number"
+                  },
+                  "output": {
+                    "type": "number"
+                  },
+                  "cacheRead": {
+                    "type": "number"
+                  },
+                  "cacheWrite": {
+                    "type": "number"
+                  },
+                  "total": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "input",
+                  "output",
+                  "cacheRead",
+                  "cacheWrite",
+                  "total"
+                ]
+              },
+              "totalCachedTokens": {
+                "type": "number"
+              },
+              "byProvider": {
+                "type": "object",
+                "patternProperties": {
+                  "^(.*)$": {
+                    "type": "object",
+                    "properties": {
+                      "cost": {
+                        "type": "number"
+                      },
+                      "requests": {
+                        "type": "number"
+                      },
+                      "tokens": {
+                        "type": "number"
+                      },
+                      "tokensDetailed": {
+                        "type": "object",
+                        "properties": {
+                          "input": {
+                            "type": "number"
+                          },
+                          "output": {
+                            "type": "number"
+                          },
+                          "cacheRead": {
+                            "type": "number"
+                          },
+                          "cacheWrite": {
+                            "type": "number"
+                          },
+                          "total": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "input",
+                          "output",
+                          "cacheRead",
+                          "cacheWrite",
+                          "total"
+                        ]
+                      },
+                      "calls": {
+                        "type": "number"
+                      },
+                      "cachedTokens": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "cost",
+                      "requests",
+                      "tokens",
+                      "tokensDetailed",
+                      "calls",
+                      "cachedTokens"
+                    ]
+                  }
+                }
+              },
+              "byModel": {
+                "type": "object",
+                "patternProperties": {
+                  "^(.*)$": {
+                    "type": "object",
+                    "properties": {
+                      "cost": {
+                        "type": "number"
+                      },
+                      "requests": {
+                        "type": "number"
+                      },
+                      "tokens": {
+                        "type": "number"
+                      },
+                      "tokensDetailed": {
+                        "type": "object",
+                        "properties": {
+                          "input": {
+                            "type": "number"
+                          },
+                          "output": {
+                            "type": "number"
+                          },
+                          "cacheRead": {
+                            "type": "number"
+                          },
+                          "cacheWrite": {
+                            "type": "number"
+                          },
+                          "total": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "input",
+                          "output",
+                          "cacheRead",
+                          "cacheWrite",
+                          "total"
+                        ]
+                      },
+                      "calls": {
+                        "type": "number"
+                      },
+                      "cachedTokens": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "cost",
+                      "requests",
+                      "tokens",
+                      "tokensDetailed",
+                      "calls",
+                      "cachedTokens"
+                    ]
+                  }
+                }
+              }
+            },
+            "required": [
+              "totalCost",
+              "totalRequests",
+              "totalTokens",
+              "tokensDetailed",
+              "totalTokensDetailed",
+              "totalTokensBreakdown",
+              "totalCachedTokens",
+              "byProvider",
+              "byModel"
+            ]
+          },
+          "hasData": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "summary",
+          "hasData"
+        ]
       },
       "SessionSummary": {
         "type": "object",
-        "required": [
-          "id",
-          "createdAt",
-          "updatedAt",
-          "messageCount"
-        ],
         "properties": {
           "id": {
             "type": "string"
@@ -607,80 +3009,503 @@
             "type": "string"
           },
           "createdAt": {
-            "type": "string",
-            "format": "date-time"
+            "type": "string"
           },
           "updatedAt": {
-            "type": "string",
-            "format": "date-time"
+            "type": "string"
           },
           "messageCount": {
-            "type": "integer"
+            "type": "number"
+          },
+          "favorite": {
+            "type": "boolean"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
-        }
+        },
+        "required": [
+          "id",
+          "createdAt",
+          "updatedAt",
+          "messageCount"
+        ]
       },
       "Session": {
         "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "messageCount": {
+            "type": "number"
+          },
+          "favorite": {
+            "type": "boolean"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "role": {
+                  "anyOf": [
+                    {
+                      "const": "user",
+                      "type": "string"
+                    },
+                    {
+                      "const": "assistant",
+                      "type": "string"
+                    },
+                    {
+                      "const": "system",
+                      "type": "string"
+                    },
+                    {
+                      "const": "tool",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "content": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "text",
+                                "type": "string"
+                              },
+                              "text": {
+                                "type": "string"
+                              },
+                              "textSignature": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "text"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "image",
+                                "type": "string"
+                              },
+                              "data": {
+                                "type": "string"
+                              },
+                              "mimeType": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "data",
+                              "mimeType"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "thinking",
+                                "type": "string"
+                              },
+                              "thinking": {
+                                "type": "string"
+                              },
+                              "thinkingSignature": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "thinking"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "const": "toolCall",
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "arguments": {
+                                "type": "object",
+                                "patternProperties": {
+                                  "^(.*)$": {}
+                                }
+                              },
+                              "thoughtSignature": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "id",
+                              "name",
+                              "arguments"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                "attachments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "anyOf": [
+                          {
+                            "const": "image",
+                            "type": "string"
+                          },
+                          {
+                            "const": "document",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "fileName": {
+                        "type": "string"
+                      },
+                      "mimeType": {
+                        "type": "string"
+                      },
+                      "size": {
+                        "type": "number"
+                      },
+                      "content": {
+                        "type": "string"
+                      },
+                      "contentOmitted": {
+                        "type": "boolean"
+                      },
+                      "extractedText": {
+                        "type": "string"
+                      },
+                      "preview": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "type",
+                      "fileName",
+                      "mimeType",
+                      "size"
+                    ]
+                  }
+                },
+                "timestamp": {
+                  "type": "string"
+                },
+                "thinking": {
+                  "type": "string"
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "anyOf": [
+                          {
+                            "const": "pending",
+                            "type": "string"
+                          },
+                          {
+                            "const": "running",
+                            "type": "string"
+                          },
+                          {
+                            "const": "completed",
+                            "type": "string"
+                          },
+                          {
+                            "const": "error",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "args": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "result": {},
+                      "toolCallId": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "status"
+                    ]
+                  }
+                },
+                "toolName": {
+                  "type": "string"
+                },
+                "isError": {
+                  "type": "boolean"
+                },
+                "usage": {
+                  "type": "object",
+                  "properties": {
+                    "input": {
+                      "type": "number"
+                    },
+                    "output": {
+                      "type": "number"
+                    },
+                    "cacheRead": {
+                      "type": "number"
+                    },
+                    "cacheWrite": {
+                      "type": "number"
+                    },
+                    "cost": {
+                      "type": "object",
+                      "properties": {
+                        "input": {
+                          "type": "number"
+                        },
+                        "output": {
+                          "type": "number"
+                        },
+                        "cacheRead": {
+                          "type": "number"
+                        },
+                        "cacheWrite": {
+                          "type": "number"
+                        },
+                        "total": {
+                          "type": "number"
+                        }
+                      },
+                      "required": [
+                        "input",
+                        "output"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "input",
+                    "output"
+                  ]
+                }
+              },
+              "required": [
+                "role",
+                "content"
+              ]
+            }
+          }
+        },
         "required": [
           "id",
           "createdAt",
           "updatedAt",
           "messageCount",
           "messages"
-        ],
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "updatedAt": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "messageCount": {
-            "type": "integer"
-          },
-          "messages": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ChatMessage"
-            }
-          }
-        }
+        ]
       },
       "SessionsResponse": {
         "type": "object",
-        "required": [
-          "sessions"
-        ],
         "properties": {
           "sessions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/SessionSummary"
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string"
+                },
+                "messageCount": {
+                  "type": "number"
+                },
+                "favorite": {
+                  "type": "boolean"
+                },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "createdAt",
+                "updatedAt",
+                "messageCount"
+              ]
             }
           }
-        }
+        },
+        "required": [
+          "sessions"
+        ]
       },
       "ErrorResponse": {
         "type": "object",
-        "required": [
-          "error"
-        ],
         "properties": {
           "error": {
             "type": "string"
           },
-          "details": {
+          "code": {
             "type": "string"
+          },
+          "details": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "patternProperties": {
+                "^(.*)$": {}
+              }
+            }
+          },
+          "composer": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "category": {
+                "anyOf": [
+                  {
+                    "const": "validation",
+                    "type": "string"
+                  },
+                  {
+                    "const": "permission",
+                    "type": "string"
+                  },
+                  {
+                    "const": "network",
+                    "type": "string"
+                  },
+                  {
+                    "const": "timeout",
+                    "type": "string"
+                  },
+                  {
+                    "const": "filesystem",
+                    "type": "string"
+                  },
+                  {
+                    "const": "tool",
+                    "type": "string"
+                  },
+                  {
+                    "const": "session",
+                    "type": "string"
+                  },
+                  {
+                    "const": "config",
+                    "type": "string"
+                  },
+                  {
+                    "const": "api",
+                    "type": "string"
+                  },
+                  {
+                    "const": "internal",
+                    "type": "string"
+                  }
+                ]
+              },
+              "severity": {
+                "anyOf": [
+                  {
+                    "const": "error",
+                    "type": "string"
+                  },
+                  {
+                    "const": "warning",
+                    "type": "string"
+                  },
+                  {
+                    "const": "info",
+                    "type": "string"
+                  }
+                ]
+              },
+              "retriable": {
+                "type": "boolean"
+              },
+              "context": {
+                "type": "object",
+                "patternProperties": {
+                  "^(.*)$": {}
+                }
+              }
+            },
+            "required": [
+              "code",
+              "category"
+            ]
           }
-        }
+        },
+        "required": [
+          "error"
+        ]
       }
     }
   }

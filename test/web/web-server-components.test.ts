@@ -1,5 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isComposerErrorResponse } from "@evalops/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ValidationError } from "../../src/errors/index.js";
 import {
 	CircuitBreaker,
 	type CircuitBreakerOptions,
@@ -10,6 +12,7 @@ import {
 import { RateLimiter } from "../../src/server/rate-limiter.js";
 import {
 	ApiError,
+	createCorsHeaders,
 	respondWithApiError,
 	sendJson,
 } from "../../src/server/server-utils.js";
@@ -162,6 +165,14 @@ describe("sendJson", () => {
 	});
 });
 
+describe("createCorsHeaders", () => {
+	it("includes PATCH and DELETE in allowed methods", () => {
+		const headers = createCorsHeaders("*");
+		expect(headers["Access-Control-Allow-Methods"]).toContain("PATCH");
+		expect(headers["Access-Control-Allow-Methods"]).toContain("DELETE");
+	});
+});
+
 describe("respondWithApiError", () => {
 	it("should not mutate the original status object", () => {
 		// Mock response object
@@ -211,5 +222,40 @@ describe("respondWithApiError", () => {
 		// The status object created internally is what matters.
 		// This test is hard to verify "mutation" without inspecting internal variables or mocking Status.fromError.
 		// But we can verify functionality.
+	});
+
+	it("includes composer error metadata when available", () => {
+		let responseBody = "";
+		const res: MockResponse = {
+			writableEnded: false,
+			headersSent: false,
+			writeHead: () => {},
+			end: (body?: string) => {
+				responseBody = body ?? "";
+			},
+			setHeader: () => {},
+		};
+
+		const error = new ValidationError("Invalid input", {
+			field: "name",
+			expected: "string",
+		});
+
+		respondWithApiError(
+			res as unknown as ServerResponse<IncomingMessage>,
+			error,
+			400,
+		);
+
+		const payload = JSON.parse(responseBody) as {
+			composer?: { code?: string; category?: string; context?: unknown };
+		};
+		expect(isComposerErrorResponse(payload)).toBe(true);
+		expect(payload.composer?.code).toBe("VALIDATION_ERROR");
+		expect(payload.composer?.category).toBe("validation");
+		expect(payload.composer?.context).toMatchObject({
+			field: "name",
+			expected: "string",
+		});
 	});
 });

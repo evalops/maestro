@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { pipeline } from "node:stream";
 import { promisify } from "node:util";
 import { createDeflate, createGzip } from "node:zlib";
+import { isComposerError } from "../errors/index.js";
 import { Code, Status, StatusError } from "./status.js";
 
 const pipe = promisify(pipeline);
@@ -62,7 +63,7 @@ export class ApiError extends StatusError {
 export function createCorsHeaders(origin: string): Record<string, string> {
 	const headers: Record<string, string> = {
 		"Access-Control-Allow-Origin": origin,
-		"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+		"Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
 		"Access-Control-Allow-Headers":
 			"Content-Type, Authorization, X-Composer-Api-Key, X-Composer-Approval-Mode, X-Composer-Csrf, X-Csrf-Token, X-Xsrf-Token",
 		"Access-Control-Max-Age": "86400",
@@ -277,6 +278,16 @@ export function respondWithApiError(
 			error: status.message,
 			code: Code[status.code],
 			details: status.details.length ? status.details : undefined,
+			composer: isComposerError(error)
+				? {
+						code: error.code,
+						category: error.category,
+						severity: error.severity,
+						retriable: error.retriable,
+						context:
+							Object.keys(error.context).length > 0 ? error.context : undefined,
+					}
+				: undefined,
 		},
 		corsHeaders,
 		req,

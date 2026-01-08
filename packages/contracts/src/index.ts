@@ -437,6 +437,47 @@ export type ComposerAgentEvent =
 	| { type: "aborted" };
 
 /**
+ * Error severity levels for API payloads.
+ */
+export type ComposerErrorSeverity = "error" | "warning" | "info";
+
+/**
+ * Error categories for API payloads.
+ */
+export type ComposerErrorCategory =
+	| "validation"
+	| "permission"
+	| "network"
+	| "timeout"
+	| "filesystem"
+	| "tool"
+	| "session"
+	| "config"
+	| "api"
+	| "internal";
+
+/**
+ * Structured error payload for API responses.
+ */
+export interface ComposerErrorPayload {
+	code: string;
+	category: ComposerErrorCategory;
+	severity?: ComposerErrorSeverity;
+	retriable?: boolean;
+	context?: Record<string, unknown>;
+}
+
+/**
+ * Standard API error response shape.
+ */
+export interface ComposerErrorResponse {
+	error: string;
+	code?: string;
+	details?: Record<string, unknown>[];
+	composer?: ComposerErrorPayload;
+}
+
+/**
  * Response payload for session list endpoint.
  */
 export interface ComposerSessionListResponse {
@@ -454,3 +495,148 @@ export interface ComposerSessionUpdateEvent {
 	/** ID of the created/updated session */
 	sessionId: string;
 }
+
+/**
+ * Background task resource limit breach metadata.
+ */
+export interface ComposerBackgroundTaskLimitBreach {
+	kind: "memory" | "cpu";
+	limit: number;
+	actual: number;
+}
+
+/**
+ * Background task history record.
+ */
+export interface ComposerBackgroundTaskHistoryEntry {
+	event: "started" | "restarted" | "exited" | "failed" | "stopped";
+	taskId: string;
+	status: string;
+	command: string;
+	timestamp: string;
+	restartAttempts: number;
+	failureReason?: string;
+	limitBreach?: ComposerBackgroundTaskLimitBreach;
+}
+
+/**
+ * Background task health entry.
+ */
+export interface ComposerBackgroundTaskHealthEntry {
+	id: string;
+	status: string;
+	summary: string;
+	command: string;
+	restarts?: string;
+	issues: string[];
+	lastLogLine?: string;
+	logTruncated?: boolean;
+	durationSeconds: number;
+}
+
+/**
+ * Background task health snapshot.
+ */
+export interface ComposerBackgroundTaskHealth {
+	total: number;
+	running: number;
+	restarting: number;
+	failed: number;
+	entries: ComposerBackgroundTaskHealthEntry[];
+	truncated: boolean;
+	notificationsEnabled: boolean;
+	detailsRedacted: boolean;
+	history: ComposerBackgroundTaskHistoryEntry[];
+	historyTruncated: boolean;
+}
+
+/**
+ * Workspace status response payload.
+ */
+export interface ComposerStatusResponse {
+	cwd: string;
+	git: {
+		branch: string;
+		status: {
+			modified: number;
+			added: number;
+			deleted: number;
+			untracked: number;
+			total: number;
+		};
+	} | null;
+	context: {
+		agentMd: boolean;
+		claudeMd: boolean;
+	};
+	server: {
+		uptime: number;
+		version: string;
+		staticCacheMaxAgeSeconds?: number;
+	};
+	database: {
+		configured: boolean;
+		connected: boolean;
+	};
+	backgroundTasks: ComposerBackgroundTaskHealth | null;
+	hooks: {
+		asyncInFlight: number;
+		concurrency: {
+			max: number;
+			active: number;
+			queued: number;
+		};
+	};
+	lastUpdated: number;
+	lastLatencyMs: number;
+}
+
+/**
+ * Token totals for usage summaries.
+ */
+export interface ComposerUsageTokenTotals {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	total: number;
+}
+
+/**
+ * Usage breakdown entry.
+ */
+export interface ComposerUsageBreakdown {
+	cost: number;
+	requests: number;
+	tokens: number;
+	tokensDetailed: ComposerUsageTokenTotals;
+	calls: number;
+	cachedTokens: number;
+}
+
+/**
+ * Usage summary response payload.
+ */
+export interface ComposerUsageSummary {
+	totalCost: number;
+	totalRequests: number;
+	totalTokens: number;
+	tokensDetailed: ComposerUsageTokenTotals;
+	totalTokensDetailed: ComposerUsageTokenTotals;
+	totalTokensBreakdown: ComposerUsageTokenTotals;
+	totalCachedTokens: number;
+	byProvider: Record<string, ComposerUsageBreakdown>;
+	byModel: Record<string, ComposerUsageBreakdown>;
+}
+
+/**
+ * Usage API response payload.
+ */
+export interface ComposerUsageResponse {
+	summary: ComposerUsageSummary;
+	hasData: boolean;
+}
+
+// Runtime schemas + validators
+export * from "./schemas.js";
+export * from "./validators.js";

@@ -93,4 +93,16 @@ describe("ScrollContainer history", () => {
 		expect(lines[0]).toContain("... scrollback truncated");
 		expect(lines.slice(-2)).toEqual(["c", "d"]);
 	});
+
+	it("clears scrollback history on demand", () => {
+		const content = new StaticComponent(["a", "b"]);
+		const scroll = new ScrollContainer(content, { viewportHeight: 10 });
+
+		expect(scroll.render(20)).toEqual(["a", "b"]);
+
+		scroll.clearHistory();
+		content.setLines(["c"]);
+
+		expect(scroll.render(20)).toEqual(["c"]);
+	});
 });

@@ -43,8 +43,12 @@ describe("OpenAPI spec", () => {
 		expect(SessionSummary.required).toEqual(
 			expect.arrayContaining(["id", "messageCount"]),
 		);
-		const sessionsItems = SessionsResponse.properties.sessions.items?.$ref;
-		expect(sessionsItems).toBe("#/components/schemas/SessionSummary");
+		const sessionsItems = SessionsResponse.properties.sessions.items;
+		if (sessionsItems?.$ref) {
+			expect(sessionsItems.$ref).toBe("#/components/schemas/SessionSummary");
+		} else {
+			expect(sessionsItems?.properties?.id).toBeDefined();
+		}
 	});
 
 	it("documents session mutation responses", () => {

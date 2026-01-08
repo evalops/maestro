@@ -45,4 +45,23 @@ describe("ApiClient fallback resolution", () => {
 			"http://localhost:8080",
 		);
 	});
+
+	it("short-circuits fallback retries on non-retriable 4xx responses", async () => {
+		const fetchMock = vi.fn().mockResolvedValueOnce(
+			new Response(JSON.stringify({ error: "Not found" }), {
+				status: 404,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+
+		global.fetch = fetchMock;
+
+		const api = new ApiClient("https://app.test");
+		const model = await api.getCurrentModel();
+
+		expect(model).toBeNull();
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(String(fetchMock.mock.calls[0][0])).toContain("https://app.test");
+	});
 });

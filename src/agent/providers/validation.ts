@@ -1,3 +1,4 @@
+import { Value } from "@sinclair/typebox/value";
 import {
 	Ajv,
 	type AnySchema,
@@ -63,9 +64,23 @@ export function validateToolArguments(
 ): Record<string, unknown> {
 	// Skip validation in browser extension environment (CSP restrictions prevent AJV from working)
 	if (!ajv || isBrowserExtension) {
-		// Trust the LLM's output without validation
-		// Browser extensions can't use AJV due to Manifest V3 CSP restrictions
-		return isRecord(toolCall.arguments) ? toolCall.arguments : {};
+		const args = isRecord(toolCall.arguments) ? toolCall.arguments : {};
+		// Browser extensions can't use AJV due to Manifest V3 CSP restrictions.
+		// TypeBox's Value.Check avoids eval, so we can still validate safely here.
+		try {
+			if (Value.Check(tool.parameters, args)) {
+				return args;
+			}
+		} catch (error) {
+			logger.warn("TypeBox validation failed in CSP-safe mode", {
+				error: error instanceof Error ? error.message : String(error),
+				tool: tool.name,
+			});
+		}
+		logger.warn("Tool arguments failed validation in CSP-safe mode", {
+			tool: tool.name,
+		});
+		return {};
 	}
 
 	// Compile (or reuse) the schema

@@ -1,9 +1,16 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import ts from "typescript";
 import {
-	ChatRequestSchema,
-	ModelSetSchema,
-} from "../src/server/validation.js";
+	ComposerChatRequestSchema as ChatRequestSchema,
+	ComposerErrorResponseSchema,
+	ComposerModelSetSchema as ModelSetSchema,
+	ComposerMessageSchema,
+	ComposerSessionListResponseSchema,
+	ComposerSessionSchema,
+	ComposerSessionSummarySchema,
+	ComposerStatusResponseSchema,
+	ComposerUsageResponseSchema,
+} from "../packages/contracts/src/schemas.js";
 let version = "0.0.0";
 try {
 	const pkg = JSON.parse(readFileSync("package.json", "utf8"));
@@ -26,6 +33,27 @@ function extractRoutes(sourcePath: string): Route[] {
 
 	const routes: Route[] = [];
 
+	function collectRoutes(elements: ts.NodeArray<ts.Expression>) {
+		for (const el of elements) {
+			if (!ts.isObjectLiteralExpression(el)) continue;
+			let method: string | undefined;
+			let path: string | undefined;
+			for (const prop of el.properties) {
+				if (!ts.isPropertyAssignment(prop)) continue;
+				const key = prop.name.getText().replace(/['"]/g, "");
+				if (key === "method" && ts.isStringLiteral(prop.initializer)) {
+					method = prop.initializer.text.toLowerCase();
+				}
+				if (key === "path" && ts.isStringLiteral(prop.initializer)) {
+					path = prop.initializer.text.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
+				}
+			}
+			if (method && path) {
+				routes.push({ method, path });
+			}
+		}
+	}
+
 	function visit(node: ts.Node) {
 		if (
 			ts.isVariableDeclaration(node) &&
@@ -33,24 +61,14 @@ function extractRoutes(sourcePath: string): Route[] {
 			node.initializer &&
 			ts.isArrayLiteralExpression(node.initializer)
 		) {
-			for (const el of node.initializer.elements) {
-				if (!ts.isObjectLiteralExpression(el)) continue;
-				let method: string | undefined;
-				let path: string | undefined;
-				for (const prop of el.properties) {
-					if (!ts.isPropertyAssignment(prop)) continue;
-					const key = prop.name.getText().replace(/['"]/g, "");
-					if (key === "method" && ts.isStringLiteral(prop.initializer)) {
-						method = prop.initializer.text.toLowerCase();
-					}
-					if (key === "path" && ts.isStringLiteral(prop.initializer)) {
-						path = prop.initializer.text.replace(/:([A-Za-z0-9_]+)/g, "{$1}");
-					}
-				}
-				if (method && path) {
-					routes.push({ method, path });
-				}
-			}
+			collectRoutes(node.initializer.elements);
+		}
+		if (
+			ts.isReturnStatement(node) &&
+			node.expression &&
+			ts.isArrayLiteralExpression(node.expression)
+		) {
+			collectRoutes(node.expression.elements);
 		}
 		ts.forEachChild(node, visit);
 	}
@@ -63,14 +81,7 @@ function buildComponents() {
 	const schemas: Record<string, unknown> = {
 		ChatRequest: ChatRequestSchema,
 		ModelSetRequest: ModelSetSchema,
-		ChatMessage: {
-			type: "object",
-			required: ["role"],
-			properties: {
-				role: { type: "string" },
-				content: { type: "string", nullable: true },
-			},
-		},
+		ChatMessage: ComposerMessageSchema,
 		ModelEntry: {
 			type: "object",
 			required: ["id", "provider", "api"],
@@ -127,87 +138,12 @@ function buildComponents() {
 				configPath: { type: "string" },
 			},
 		},
-		StatusResponse: {
-			type: "object",
-			properties: {
-				cwd: { type: "string" },
-				git: {
-					type: "object",
-					properties: {
-						branch: { type: "string" },
-						status: { type: "object" },
-					},
-				},
-				context: {
-					type: "object",
-					properties: {
-						agentMd: { type: "boolean" },
-						claudeMd: { type: "boolean" },
-					},
-				},
-				server: {
-					type: "object",
-					properties: {
-						uptime: { type: "number" },
-						version: { type: "string" },
-						staticCacheMaxAgeSeconds: { type: "number" },
-					},
-				},
-				backgroundTasks: { type: "object" },
-				lastUpdated: { type: "number" },
-				lastLatencyMs: { type: "number" },
-			},
-		},
-		SessionSummary: {
-			type: "object",
-			required: ["id", "createdAt", "updatedAt", "messageCount"],
-			properties: {
-				id: { type: "string" },
-				title: { type: "string" },
-				createdAt: { type: "string", format: "date-time" },
-				updatedAt: { type: "string", format: "date-time" },
-				messageCount: { type: "integer" },
-			},
-		},
-		Session: {
-			type: "object",
-			required: [
-				"id",
-				"createdAt",
-				"updatedAt",
-				"messageCount",
-				"messages",
-			],
-			properties: {
-				id: { type: "string" },
-				title: { type: "string" },
-				createdAt: { type: "string", format: "date-time" },
-				updatedAt: { type: "string", format: "date-time" },
-				messageCount: { type: "integer" },
-				messages: {
-					type: "array",
-					items: { $ref: "#/components/schemas/ChatMessage" },
-				},
-			},
-		},
-		SessionsResponse: {
-			type: "object",
-			required: ["sessions"],
-			properties: {
-				sessions: {
-					type: "array",
-					items: { $ref: "#/components/schemas/SessionSummary" },
-				},
-			},
-		},
-		ErrorResponse: {
-			type: "object",
-			required: ["error"],
-			properties: {
-				error: { type: "string" },
-				details: { type: "string" },
-			},
-		},
+		StatusResponse: ComposerStatusResponseSchema,
+		UsageResponse: ComposerUsageResponseSchema,
+		SessionSummary: ComposerSessionSummarySchema,
+		Session: ComposerSessionSchema,
+		SessionsResponse: ComposerSessionListResponseSchema,
+		ErrorResponse: ComposerErrorResponseSchema,
 	};
 
 	return {
@@ -495,6 +431,23 @@ function buildPaths(routes: Route[]) {
 		};
 	}
 
+	if (paths["/api/usage"]?.get) {
+		paths["/api/usage"].get = {
+			summary: "Usage summary",
+			security: [{ ComposerApiKey: [] }],
+			responses: {
+				200: {
+					description: "Usage payload",
+					content: {
+						"application/json": {
+							schema: { $ref: "#/components/schemas/UsageResponse" },
+						},
+					},
+				},
+			},
+		};
+	}
+
 	return paths;
 }
 
@@ -516,7 +469,7 @@ function buildSpec(routes: Route[]) {
 }
 
 function main() {
-	const routes = extractRoutes("src/web-server.ts");
+	const routes = extractRoutes("src/server/routes.ts");
 	const spec = buildSpec(routes);
 	try {
 		writeFileSync("openapi.json", JSON.stringify(spec, null, 2), "utf8");

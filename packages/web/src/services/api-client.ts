@@ -48,10 +48,20 @@
  * @module services/api-client
  */
 
+import {
+	isComposerAgentEvent,
+	isComposerChatRequest,
+	isComposerErrorResponse,
+	isComposerSession,
+	isComposerSessionListResponse,
+	isComposerStatusResponse,
+	isComposerUsageResponse,
+} from "@evalops/contracts";
 import type {
 	ComposerAgentEvent,
 	ComposerAssistantMessageEvent,
 	ComposerChatRequest,
+	ComposerErrorResponse,
 	ComposerMessage,
 	ComposerSession,
 	ComposerSessionSummary,
@@ -95,6 +105,39 @@ export type SessionSummary = ComposerSessionSummary;
 export type ChatRequest = ComposerChatRequest;
 
 const MAX_SSE_BUFFER = 1024 * 1024; // 1MB safeguard
+const VALIDATE_AGENT_EVENTS = Boolean(import.meta.env?.DEV);
+const VALIDATE_CHAT_REQUESTS = Boolean(import.meta.env?.DEV);
+const VALIDATE_API_RESPONSES = Boolean(import.meta.env?.DEV);
+
+export class ApiClientError extends Error {
+	readonly status: number;
+	readonly payload?: ComposerErrorResponse;
+
+	constructor(
+		message: string,
+		status: number,
+		payload?: ComposerErrorResponse,
+	) {
+		super(message);
+		this.name = "ApiClientError";
+		this.status = status;
+		this.payload = payload;
+	}
+}
+
+function isNonRetriableClientError(error: unknown): error is ApiClientError {
+	if (!(error instanceof ApiClientError)) return false;
+	if (error.status < 400 || error.status >= 500) return false;
+	return error.status !== 408 && error.status !== 429;
+}
+
+function shouldLogFallbackError(error: unknown): boolean {
+	return !(
+		error instanceof ApiClientError &&
+		error.status >= 400 &&
+		error.status < 500
+	);
+}
 
 function arrayBufferToBase64(arrayBuffer: ArrayBuffer): string {
 	const bytes = new Uint8Array(arrayBuffer);
@@ -185,6 +228,23 @@ export interface BackgroundTaskSnapshotEntry {
 	restarts?: string;
 }
 
+export interface BackgroundTaskLimitBreach {
+	kind: "memory" | "cpu";
+	limit: number;
+	actual: number;
+}
+
+export interface BackgroundTaskHistoryEntry {
+	event: "started" | "restarted" | "exited" | "failed" | "stopped";
+	taskId: string;
+	status: string;
+	command: string;
+	timestamp: string;
+	restartAttempts: number;
+	failureReason?: string;
+	limitBreach?: BackgroundTaskLimitBreach;
+}
+
 export interface BackgroundTaskSnapshot {
 	total: number;
 	running: number;
@@ -194,6 +254,8 @@ export interface BackgroundTaskSnapshot {
 	notificationsEnabled?: boolean;
 	detailsRedacted?: boolean;
 	entries?: BackgroundTaskSnapshotEntry[];
+	history?: BackgroundTaskHistoryEntry[];
+	historyTruncated?: boolean;
 }
 
 export interface WorkspaceStatus {
@@ -215,45 +277,58 @@ export interface WorkspaceStatus {
 	server: {
 		uptime: number;
 		version: string;
+		staticCacheMaxAgeSeconds?: number;
 	};
-	backgroundTasks?: BackgroundTaskSnapshot | null;
-	lastUpdated?: number;
-	lastLatencyMs?: number;
+	database: {
+		configured: boolean;
+		connected: boolean;
+	};
+	backgroundTasks: BackgroundTaskSnapshot | null;
+	hooks: {
+		asyncInFlight: number;
+		concurrency: {
+			max: number;
+			active: number;
+			queued: number;
+		};
+	};
+	lastUpdated: number;
+	lastLatencyMs: number;
 }
 
 export interface UsageSummary {
 	totalCost: number;
-	totalRequests?: number;
+	totalRequests: number;
 	totalTokens: number;
-	totalTokensDetailed?: {
+	totalTokensDetailed: {
 		input: number;
 		output: number;
 		cacheRead: number;
 		cacheWrite: number;
 		total: number;
 	};
-	totalTokensBreakdown?: UsageSummary["totalTokensDetailed"];
-	totalCachedTokens?: number;
+	totalTokensBreakdown: UsageSummary["totalTokensDetailed"];
+	totalCachedTokens: number;
 	byProvider: Record<
 		string,
 		{
 			cost: number;
-			calls?: number;
-			requests?: number;
+			calls: number;
+			requests: number;
 			tokens: number;
-			tokensDetailed?: UsageSummary["totalTokensDetailed"];
-			cachedTokens?: number;
+			tokensDetailed: UsageSummary["totalTokensDetailed"];
+			cachedTokens: number;
 		}
 	>;
 	byModel: Record<
 		string,
 		{
 			cost: number;
-			calls?: number;
-			requests?: number;
+			calls: number;
+			requests: number;
 			tokens: number;
-			tokensDetailed?: UsageSummary["totalTokensDetailed"];
-			cachedTokens?: number;
+			tokensDetailed: UsageSummary["totalTokensDetailed"];
+			cachedTokens: number;
 		}
 	>;
 }
@@ -265,10 +340,37 @@ export interface CommandPrefs {
 
 async function safeJson(response: Response) {
 	const contentType = response.headers.get("content-type") || "";
+	const isJson = contentType.includes("application/json");
+
 	if (!response.ok) {
-		throw new Error(`API error: ${response.status} ${response.statusText}`);
+		const raw = await response.text();
+		let payload: unknown = undefined;
+		if (isJson && raw) {
+			try {
+				payload = JSON.parse(raw);
+			} catch {
+				payload = undefined;
+			}
+		}
+
+		if (payload && isComposerErrorResponse(payload)) {
+			throw new ApiClientError(payload.error, response.status, payload);
+		}
+		if (payload && typeof (payload as { error?: string }).error === "string") {
+			throw new ApiClientError(
+				(payload as { error: string }).error,
+				response.status,
+			);
+		}
+
+		const snippet = raw ? ` Snippet: ${raw.slice(0, 120)}` : "";
+		throw new ApiClientError(
+			`API error: ${response.status} ${response.statusText}.${snippet}`,
+			response.status,
+		);
 	}
-	if (!contentType.includes("application/json")) {
+
+	if (!isJson) {
 		const text = await response.text();
 		throw new Error(
 			`Expected JSON but received ${contentType || "unknown"}; check API endpoint. Snippet: ${text.slice(0, 120)}`,
@@ -403,11 +505,16 @@ export class ApiClient {
 				return await safeJson(res);
 			} catch (e) {
 				lastError = e;
-				console.warn("API fallback failed", {
-					base,
-					path,
-					error: e instanceof Error ? e.message : String(e),
-				});
+				if (isNonRetriableClientError(e)) {
+					throw e;
+				}
+				if (shouldLogFallbackError(e)) {
+					console.warn("API fallback failed", {
+						base,
+						path,
+						error: e instanceof Error ? e.message : String(e),
+					});
+				}
 			}
 		}
 		throw lastError instanceof Error
@@ -428,16 +535,24 @@ export class ApiClient {
 			try {
 				const res = await fetch(`${base}${path}`, init);
 				if (!res.ok) {
-					throw new Error(`API error: ${res.status} ${res.statusText}`);
+					throw new ApiClientError(
+						`API error: ${res.status} ${res.statusText}`,
+						res.status,
+					);
 				}
 				return res;
 			} catch (e) {
 				lastError = e;
-				console.warn("API fallback failed", {
-					base,
-					path,
-					error: e instanceof Error ? e.message : String(e),
-				});
+				if (isNonRetriableClientError(e)) {
+					throw e;
+				}
+				if (shouldLogFallbackError(e)) {
+					console.warn("API fallback failed", {
+						base,
+						path,
+						error: e instanceof Error ? e.message : String(e),
+					});
+				}
 			}
 		}
 		throw lastError instanceof Error
@@ -449,6 +564,9 @@ export class ApiClient {
 	 * Send a chat message and receive streaming response (text only - for backward compatibility)
 	 */
 	async *chat(request: ChatRequest): AsyncGenerator<string, void, unknown> {
+		if (VALIDATE_CHAT_REQUESTS && !isComposerChatRequest(request)) {
+			throw new Error("Invalid chat request payload");
+		}
 		const response = await fetch(`${this.baseUrl}/api/chat`, {
 			method: "POST",
 			headers: {
@@ -571,6 +689,9 @@ export class ApiClient {
 	async *chatWithEvents(
 		request: ChatRequest,
 	): AsyncGenerator<AgentEvent, void, unknown> {
+		if (VALIDATE_CHAT_REQUESTS && !isComposerChatRequest(request)) {
+			throw new Error("Invalid chat request payload");
+		}
 		const response = await fetch(`${this.baseUrl}/api/chat`, {
 			method: "POST",
 			headers: {
@@ -610,8 +731,12 @@ export class ApiClient {
 					if (!data || data === "[DONE]") continue;
 
 					try {
-						const event = JSON.parse(data) as AgentEvent;
-						yield event;
+						const parsedEvent = JSON.parse(data);
+						if (VALIDATE_AGENT_EVENTS && !isComposerAgentEvent(parsedEvent)) {
+							console.warn("Invalid agent event payload:", parsedEvent);
+							continue;
+						}
+						yield parsedEvent as AgentEvent;
 					} catch (e) {
 						console.warn("Failed to parse SSE data:", data);
 					}
@@ -716,6 +841,9 @@ export class ApiClient {
 	async getSessions(): Promise<SessionSummary[]> {
 		try {
 			const data = await this.fetchJsonWithFallback("/api/sessions");
+			if (VALIDATE_API_RESPONSES && !isComposerSessionListResponse(data)) {
+				throw new Error("Invalid sessions response payload");
+			}
 			return data.sessions || [];
 		} catch (e) {
 			console.error("Failed to fetch sessions:", e);
@@ -729,6 +857,9 @@ export class ApiClient {
 	async getStatus(): Promise<WorkspaceStatus | null> {
 		try {
 			const data = await this.fetchJsonWithFallback("/api/status");
+			if (VALIDATE_API_RESPONSES && !isComposerStatusResponse(data)) {
+				throw new Error("Invalid status response payload");
+			}
 			return data as WorkspaceStatus;
 		} catch (e) {
 			console.error("Failed to fetch status:", e);
@@ -742,6 +873,9 @@ export class ApiClient {
 	async getUsage(): Promise<UsageSummary | null> {
 		try {
 			const data = await this.fetchJsonWithFallback("/api/usage");
+			if (VALIDATE_API_RESPONSES && !isComposerUsageResponse(data)) {
+				throw new Error("Invalid usage response payload");
+			}
 			return data.summary || null;
 		} catch (e) {
 			console.error("Failed to fetch usage:", e);
@@ -754,6 +888,9 @@ export class ApiClient {
 	 */
 	async getSession(sessionId: string): Promise<Session> {
 		const data = await this.fetchJsonWithFallback(`/api/sessions/${sessionId}`);
+		if (VALIDATE_API_RESPONSES && !isComposerSession(data)) {
+			throw new Error("Invalid session payload");
+		}
 		return data as Session;
 	}
 
@@ -890,9 +1027,17 @@ export class ApiClient {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ title }),
 			});
-			return (await safeJson(fallback)) as Session;
+			const data = await safeJson(fallback);
+			if (VALIDATE_API_RESPONSES && !isComposerSession(data)) {
+				throw new Error("Invalid session payload");
+			}
+			return data as Session;
 		}
-		return (await safeJson(response)) as Session;
+		const data = await safeJson(response);
+		if (VALIDATE_API_RESPONSES && !isComposerSession(data)) {
+			throw new Error("Invalid session payload");
+		}
+		return data as Session;
 	}
 
 	/**

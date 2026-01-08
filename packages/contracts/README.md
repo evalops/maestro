@@ -32,4 +32,17 @@ const usage: ComposerUsage = {
 payload.usage = usage;
 ```
 
+## Runtime validation
+
+Contracts also ship lightweight runtime schemas and validators for boundary checks:
+
+```ts
+import {
+  ComposerChatRequestSchema,
+  assertComposerChatRequest,
+} from "@evalops/contracts";
+
+assertComposerChatRequest(payload);
+```
+
 Consumers outside the monorepo can depend on `@evalops/contracts` once the package has been built/published; only the compiled `dist` folder is distributed.
