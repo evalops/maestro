@@ -252,6 +252,83 @@ export interface ComposerModelListResponse {
 }
 
 /**
+ * Argument definition for a custom command.
+ */
+export interface ComposerCommandArg {
+	name: string;
+	required?: boolean;
+}
+
+/**
+ * Custom command definition (safe for client consumption).
+ */
+export interface ComposerCommand {
+	name: string;
+	description?: string;
+	prompt: string;
+	args?: ComposerCommandArg[];
+}
+
+/**
+ * Response payload for `/api/commands`.
+ */
+export interface ComposerCommandListResponse {
+	commands: ComposerCommand[];
+}
+
+/**
+ * Command favorites/recents preferences.
+ */
+export interface ComposerCommandPrefs {
+	favorites: string[];
+	recents: string[];
+}
+
+/**
+ * Update payload for command preferences.
+ */
+export interface ComposerCommandPrefsUpdate {
+	favorites?: string[];
+	recents?: string[];
+}
+
+/**
+ * Response payload for command preference updates.
+ */
+export interface ComposerCommandPrefsWriteResponse {
+	ok: boolean;
+}
+
+/**
+ * Request payload for `/api/config`.
+ */
+export interface ComposerConfigWriteRequest {
+	config: Record<string, unknown>;
+}
+
+/**
+ * Response payload for `/api/config` GET.
+ */
+export interface ComposerConfigResponse {
+	config: Record<string, unknown>;
+	configPath: string;
+}
+
+/**
+ * Response payload for `/api/config` POST.
+ */
+export interface ComposerConfigWriteResponse {
+	success: boolean;
+}
+
+/**
+ * Response payload for `/api/files`.
+ */
+export interface ComposerFilesResponse {
+	files: string[];
+}
+
+/**
  * Request payload for the chat API endpoint.
  *
  * Sent to `POST /api/chat` to initiate or continue a conversation.

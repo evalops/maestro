@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import {
 	ComposerChatRequestSchema,
+	ComposerCommandPrefsUpdateSchema,
 	ComposerModelSetSchema,
 } from "@evalops/contracts";
 import type { Static } from "@sinclair/typebox";
@@ -30,6 +31,9 @@ export type ChatRequestInput = Static<typeof ChatRequestSchema>;
 
 export const ModelSetSchema = ComposerModelSetSchema;
 export type ModelSetInput = Static<typeof ModelSetSchema>;
+
+export const CommandPrefsUpdateSchema = ComposerCommandPrefsUpdateSchema;
+export type CommandPrefsUpdateInput = Static<typeof CommandPrefsUpdateSchema>;
 
 export async function parseAndValidateJson<T>(
 	req: IncomingMessage,

@@ -51,7 +51,13 @@
 import {
 	isComposerAgentEvent,
 	isComposerChatRequest,
+	isComposerCommandListResponse,
+	isComposerCommandPrefs,
+	isComposerCommandPrefsWriteResponse,
+	isComposerConfigResponse,
+	isComposerConfigWriteResponse,
 	isComposerErrorResponse,
+	isComposerFilesResponse,
 	isComposerModel,
 	isComposerModelListResponse,
 	isComposerSession,
@@ -63,6 +69,11 @@ import type {
 	ComposerAgentEvent,
 	ComposerAssistantMessageEvent,
 	ComposerChatRequest,
+	ComposerCommand,
+	ComposerCommandPrefs,
+	ComposerConfigResponse,
+	ComposerConfigWriteRequest,
+	ComposerConfigWriteResponse,
 	ComposerErrorResponse,
 	ComposerMessage,
 	ComposerModel,
@@ -86,6 +97,16 @@ export type Session = ComposerSession;
 export type SessionSummary = ComposerSessionSummary;
 
 export type ChatRequest = ComposerChatRequest;
+
+export type CommandDefinition = ComposerCommand;
+
+export type CommandPrefs = ComposerCommandPrefs;
+
+export type ConfigResponse = ComposerConfigResponse;
+
+export type ConfigWriteRequest = ComposerConfigWriteRequest;
+
+export type ConfigWriteResponse = ComposerConfigWriteResponse;
 
 const MAX_SSE_BUFFER = 1024 * 1024; // 1MB safeguard
 const VALIDATE_AGENT_EVENTS = Boolean(import.meta.env?.DEV);
@@ -314,11 +335,6 @@ export interface UsageSummary {
 			cachedTokens: number;
 		}
 	>;
-}
-
-export interface CommandPrefs {
-	favorites: string[];
-	recents: string[];
 }
 
 async function safeJson(response: Response) {
@@ -822,9 +838,28 @@ export class ApiClient {
 	async getFiles(): Promise<string[]> {
 		try {
 			const data = await this.fetchJsonWithFallback("/api/files");
+			if (VALIDATE_API_RESPONSES && !isComposerFilesResponse(data)) {
+				throw new Error("Invalid files response payload");
+			}
 			return data.files || [];
 		} catch (e) {
 			console.error("Failed to fetch files:", e);
+			return [];
+		}
+	}
+
+	/**
+	 * Get custom commands from the server.
+	 */
+	async getCommands(): Promise<CommandDefinition[]> {
+		try {
+			const data = await this.fetchJsonWithFallback("/api/commands");
+			if (VALIDATE_API_RESPONSES && !isComposerCommandListResponse(data)) {
+				throw new Error("Invalid commands response payload");
+			}
+			return data.commands || [];
+		} catch (e) {
+			console.error("Failed to fetch commands:", e);
 			return [];
 		}
 	}
@@ -1052,21 +1087,17 @@ export class ApiClient {
 	async getCommandPrefs(): Promise<CommandPrefs> {
 		try {
 			const data = await this.fetchJsonWithFallback("/api/command-prefs");
-			return {
-				favorites: Array.isArray(data.favorites)
-					? (data.favorites as string[]).filter((x) => typeof x === "string")
-					: [],
-				recents: Array.isArray(data.recents)
-					? (data.recents as string[]).filter((x) => typeof x === "string")
-					: [],
-			};
+			if (VALIDATE_API_RESPONSES && !isComposerCommandPrefs(data)) {
+				throw new Error("Invalid command prefs payload");
+			}
+			return data as CommandPrefs;
 		} catch {
 			return { favorites: [], recents: [] };
 		}
 	}
 
 	async saveCommandPrefs(prefs: CommandPrefs): Promise<void> {
-		await this.tryFallbackFetch("/api/command-prefs", {
+		const response = await this.tryFallbackFetch("/api/command-prefs", {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
@@ -1074,6 +1105,34 @@ export class ApiClient {
 			},
 			body: JSON.stringify(prefs),
 		});
+		const data = await safeJson(response);
+		if (VALIDATE_API_RESPONSES && !isComposerCommandPrefsWriteResponse(data)) {
+			throw new Error("Invalid command prefs write response");
+		}
+	}
+
+	async getConfig(): Promise<ConfigResponse> {
+		const data = await this.fetchJsonWithFallback("/api/config");
+		if (VALIDATE_API_RESPONSES && !isComposerConfigResponse(data)) {
+			throw new Error("Invalid config response payload");
+		}
+		return data as ConfigResponse;
+	}
+
+	async saveConfig(payload: ConfigWriteRequest): Promise<ConfigWriteResponse> {
+		const response = await this.tryFallbackFetch("/api/config", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Accept: "application/json",
+			},
+			body: JSON.stringify(payload),
+		});
+		const data = await safeJson(response);
+		if (VALIDATE_API_RESPONSES && !isComposerConfigWriteResponse(data)) {
+			throw new Error("Invalid config write response payload");
+		}
+		return data as ConfigWriteResponse;
 	}
 
 	// Guardian

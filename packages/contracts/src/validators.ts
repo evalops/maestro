@@ -3,7 +3,15 @@ import { Value } from "@sinclair/typebox/value";
 import {
 	ComposerAgentEventSchema,
 	ComposerChatRequestSchema,
+	ComposerCommandListResponseSchema,
+	ComposerCommandPrefsSchema,
+	ComposerCommandPrefsUpdateSchema,
+	ComposerCommandPrefsWriteResponseSchema,
+	ComposerConfigResponseSchema,
+	ComposerConfigWriteRequestSchema,
+	ComposerConfigWriteResponseSchema,
 	ComposerErrorResponseSchema,
+	ComposerFilesResponseSchema,
 	ComposerMessageSchema,
 	ComposerModelListResponseSchema,
 	ComposerModelSchema,
@@ -69,6 +77,46 @@ export const isComposerAgentEvent = (
 ): value is Static<typeof ComposerAgentEventSchema> =>
 	Value.Check(ComposerAgentEventSchema, value);
 
+export const isComposerCommandListResponse = (
+	value: unknown,
+): value is Static<typeof ComposerCommandListResponseSchema> =>
+	Value.Check(ComposerCommandListResponseSchema, value);
+
+export const isComposerCommandPrefs = (
+	value: unknown,
+): value is Static<typeof ComposerCommandPrefsSchema> =>
+	Value.Check(ComposerCommandPrefsSchema, value);
+
+export const isComposerCommandPrefsUpdate = (
+	value: unknown,
+): value is Static<typeof ComposerCommandPrefsUpdateSchema> =>
+	Value.Check(ComposerCommandPrefsUpdateSchema, value);
+
+export const isComposerCommandPrefsWriteResponse = (
+	value: unknown,
+): value is Static<typeof ComposerCommandPrefsWriteResponseSchema> =>
+	Value.Check(ComposerCommandPrefsWriteResponseSchema, value);
+
+export const isComposerConfigWriteRequest = (
+	value: unknown,
+): value is Static<typeof ComposerConfigWriteRequestSchema> =>
+	Value.Check(ComposerConfigWriteRequestSchema, value);
+
+export const isComposerConfigResponse = (
+	value: unknown,
+): value is Static<typeof ComposerConfigResponseSchema> =>
+	Value.Check(ComposerConfigResponseSchema, value);
+
+export const isComposerConfigWriteResponse = (
+	value: unknown,
+): value is Static<typeof ComposerConfigWriteResponseSchema> =>
+	Value.Check(ComposerConfigWriteResponseSchema, value);
+
+export const isComposerFilesResponse = (
+	value: unknown,
+): value is Static<typeof ComposerFilesResponseSchema> =>
+	Value.Check(ComposerFilesResponseSchema, value);
+
 export const isComposerModel = (
 	value: unknown,
 ): value is Static<typeof ComposerModelSchema> =>
@@ -118,6 +166,66 @@ export const assertComposerAgentEvent = (
 	value: unknown,
 ): asserts value is Static<typeof ComposerAgentEventSchema> =>
 	assertSchema(ComposerAgentEventSchema, value, "ComposerAgentEvent");
+
+export const assertComposerCommandListResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerCommandListResponseSchema> =>
+	assertSchema(
+		ComposerCommandListResponseSchema,
+		value,
+		"ComposerCommandListResponse",
+	);
+
+export const assertComposerCommandPrefs = (
+	value: unknown,
+): asserts value is Static<typeof ComposerCommandPrefsSchema> =>
+	assertSchema(ComposerCommandPrefsSchema, value, "ComposerCommandPrefs");
+
+export const assertComposerCommandPrefsUpdate = (
+	value: unknown,
+): asserts value is Static<typeof ComposerCommandPrefsUpdateSchema> =>
+	assertSchema(
+		ComposerCommandPrefsUpdateSchema,
+		value,
+		"ComposerCommandPrefsUpdate",
+	);
+
+export const assertComposerCommandPrefsWriteResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerCommandPrefsWriteResponseSchema> =>
+	assertSchema(
+		ComposerCommandPrefsWriteResponseSchema,
+		value,
+		"ComposerCommandPrefsWriteResponse",
+	);
+
+export const assertComposerConfigWriteRequest = (
+	value: unknown,
+): asserts value is Static<typeof ComposerConfigWriteRequestSchema> =>
+	assertSchema(
+		ComposerConfigWriteRequestSchema,
+		value,
+		"ComposerConfigWriteRequest",
+	);
+
+export const assertComposerConfigResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerConfigResponseSchema> =>
+	assertSchema(ComposerConfigResponseSchema, value, "ComposerConfigResponse");
+
+export const assertComposerConfigWriteResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerConfigWriteResponseSchema> =>
+	assertSchema(
+		ComposerConfigWriteResponseSchema,
+		value,
+		"ComposerConfigWriteResponse",
+	);
+
+export const assertComposerFilesResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerFilesResponseSchema> =>
+	assertSchema(ComposerFilesResponseSchema, value, "ComposerFilesResponse");
 
 export const assertComposerModel = (
 	value: unknown,
