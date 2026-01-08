@@ -2,6 +2,14 @@ import type { Static, TSchema } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import {
 	ComposerAgentEventSchema,
+	ComposerApprovalsStatusResponseSchema,
+	ComposerApprovalsUpdateRequestSchema,
+	ComposerApprovalsUpdateResponseSchema,
+	ComposerBackgroundHistoryResponseSchema,
+	ComposerBackgroundPathResponseSchema,
+	ComposerBackgroundStatusResponseSchema,
+	ComposerBackgroundUpdateRequestSchema,
+	ComposerBackgroundUpdateResponseSchema,
 	ComposerChatRequestSchema,
 	ComposerCommandListResponseSchema,
 	ComposerCommandPrefsSchema,
@@ -12,13 +20,28 @@ import {
 	ComposerConfigWriteResponseSchema,
 	ComposerErrorResponseSchema,
 	ComposerFilesResponseSchema,
+	ComposerFrameworkListResponseSchema,
+	ComposerFrameworkStatusResponseSchema,
+	ComposerFrameworkUpdateRequestSchema,
+	ComposerFrameworkUpdateResponseSchema,
+	ComposerGuardianConfigRequestSchema,
+	ComposerGuardianConfigResponseSchema,
+	ComposerGuardianRunResponseSchema,
+	ComposerGuardianStatusResponseSchema,
 	ComposerMessageSchema,
 	ComposerModelListResponseSchema,
 	ComposerModelSchema,
+	ComposerPlanActionResponseSchema,
+	ComposerPlanRequestSchema,
+	ComposerPlanStatusResponseSchema,
 	ComposerSessionListResponseSchema,
 	ComposerSessionSchema,
 	ComposerSessionSummarySchema,
 	ComposerStatusResponseSchema,
+	ComposerUndoHistoryResponseSchema,
+	ComposerUndoOperationResponseSchema,
+	ComposerUndoRequestSchema,
+	ComposerUndoStatusResponseSchema,
 	ComposerUsageResponseSchema,
 } from "./schemas.js";
 
@@ -111,6 +134,121 @@ export const isComposerConfigWriteResponse = (
 	value: unknown,
 ): value is Static<typeof ComposerConfigWriteResponseSchema> =>
 	Value.Check(ComposerConfigWriteResponseSchema, value);
+
+export const isComposerGuardianStatusResponse = (
+	value: unknown,
+): value is Static<typeof ComposerGuardianStatusResponseSchema> =>
+	Value.Check(ComposerGuardianStatusResponseSchema, value);
+
+export const isComposerGuardianRunResponse = (
+	value: unknown,
+): value is Static<typeof ComposerGuardianRunResponseSchema> =>
+	Value.Check(ComposerGuardianRunResponseSchema, value);
+
+export const isComposerGuardianConfigRequest = (
+	value: unknown,
+): value is Static<typeof ComposerGuardianConfigRequestSchema> =>
+	Value.Check(ComposerGuardianConfigRequestSchema, value);
+
+export const isComposerGuardianConfigResponse = (
+	value: unknown,
+): value is Static<typeof ComposerGuardianConfigResponseSchema> =>
+	Value.Check(ComposerGuardianConfigResponseSchema, value);
+
+export const isComposerPlanStatusResponse = (
+	value: unknown,
+): value is Static<typeof ComposerPlanStatusResponseSchema> =>
+	Value.Check(ComposerPlanStatusResponseSchema, value);
+
+export const isComposerPlanRequest = (
+	value: unknown,
+): value is Static<typeof ComposerPlanRequestSchema> =>
+	Value.Check(ComposerPlanRequestSchema, value);
+
+export const isComposerPlanActionResponse = (
+	value: unknown,
+): value is Static<typeof ComposerPlanActionResponseSchema> =>
+	Value.Check(ComposerPlanActionResponseSchema, value);
+
+export const isComposerBackgroundStatusResponse = (
+	value: unknown,
+): value is Static<typeof ComposerBackgroundStatusResponseSchema> =>
+	Value.Check(ComposerBackgroundStatusResponseSchema, value);
+
+export const isComposerBackgroundHistoryResponse = (
+	value: unknown,
+): value is Static<typeof ComposerBackgroundHistoryResponseSchema> =>
+	Value.Check(ComposerBackgroundHistoryResponseSchema, value);
+
+export const isComposerBackgroundPathResponse = (
+	value: unknown,
+): value is Static<typeof ComposerBackgroundPathResponseSchema> =>
+	Value.Check(ComposerBackgroundPathResponseSchema, value);
+
+export const isComposerBackgroundUpdateRequest = (
+	value: unknown,
+): value is Static<typeof ComposerBackgroundUpdateRequestSchema> =>
+	Value.Check(ComposerBackgroundUpdateRequestSchema, value);
+
+export const isComposerBackgroundUpdateResponse = (
+	value: unknown,
+): value is Static<typeof ComposerBackgroundUpdateResponseSchema> =>
+	Value.Check(ComposerBackgroundUpdateResponseSchema, value);
+
+export const isComposerApprovalsStatusResponse = (
+	value: unknown,
+): value is Static<typeof ComposerApprovalsStatusResponseSchema> =>
+	Value.Check(ComposerApprovalsStatusResponseSchema, value);
+
+export const isComposerApprovalsUpdateRequest = (
+	value: unknown,
+): value is Static<typeof ComposerApprovalsUpdateRequestSchema> =>
+	Value.Check(ComposerApprovalsUpdateRequestSchema, value);
+
+export const isComposerApprovalsUpdateResponse = (
+	value: unknown,
+): value is Static<typeof ComposerApprovalsUpdateResponseSchema> =>
+	Value.Check(ComposerApprovalsUpdateResponseSchema, value);
+
+export const isComposerFrameworkStatusResponse = (
+	value: unknown,
+): value is Static<typeof ComposerFrameworkStatusResponseSchema> =>
+	Value.Check(ComposerFrameworkStatusResponseSchema, value);
+
+export const isComposerFrameworkListResponse = (
+	value: unknown,
+): value is Static<typeof ComposerFrameworkListResponseSchema> =>
+	Value.Check(ComposerFrameworkListResponseSchema, value);
+
+export const isComposerFrameworkUpdateRequest = (
+	value: unknown,
+): value is Static<typeof ComposerFrameworkUpdateRequestSchema> =>
+	Value.Check(ComposerFrameworkUpdateRequestSchema, value);
+
+export const isComposerFrameworkUpdateResponse = (
+	value: unknown,
+): value is Static<typeof ComposerFrameworkUpdateResponseSchema> =>
+	Value.Check(ComposerFrameworkUpdateResponseSchema, value);
+
+export const isComposerUndoStatusResponse = (
+	value: unknown,
+): value is Static<typeof ComposerUndoStatusResponseSchema> =>
+	Value.Check(ComposerUndoStatusResponseSchema, value);
+
+export const isComposerUndoHistoryResponse = (
+	value: unknown,
+): value is Static<typeof ComposerUndoHistoryResponseSchema> =>
+	Value.Check(ComposerUndoHistoryResponseSchema, value);
+
+export const isComposerUndoRequest = (
+	value: unknown,
+): value is Static<typeof ComposerUndoRequestSchema> =>
+	Value.Check(ComposerUndoRequestSchema, value);
+
+export const isComposerUndoOperationResponse = (
+	value: unknown,
+): value is Static<typeof ComposerUndoOperationResponseSchema> =>
+	Value.Check(ComposerUndoOperationResponseSchema, value);
 
 export const isComposerFilesResponse = (
 	value: unknown,
@@ -220,6 +358,205 @@ export const assertComposerConfigWriteResponse = (
 		ComposerConfigWriteResponseSchema,
 		value,
 		"ComposerConfigWriteResponse",
+	);
+
+export const assertComposerGuardianStatusResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerGuardianStatusResponseSchema> =>
+	assertSchema(
+		ComposerGuardianStatusResponseSchema,
+		value,
+		"ComposerGuardianStatusResponse",
+	);
+
+export const assertComposerGuardianRunResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerGuardianRunResponseSchema> =>
+	assertSchema(
+		ComposerGuardianRunResponseSchema,
+		value,
+		"ComposerGuardianRunResponse",
+	);
+
+export const assertComposerGuardianConfigRequest = (
+	value: unknown,
+): asserts value is Static<typeof ComposerGuardianConfigRequestSchema> =>
+	assertSchema(
+		ComposerGuardianConfigRequestSchema,
+		value,
+		"ComposerGuardianConfigRequest",
+	);
+
+export const assertComposerGuardianConfigResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerGuardianConfigResponseSchema> =>
+	assertSchema(
+		ComposerGuardianConfigResponseSchema,
+		value,
+		"ComposerGuardianConfigResponse",
+	);
+
+export const assertComposerPlanStatusResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerPlanStatusResponseSchema> =>
+	assertSchema(
+		ComposerPlanStatusResponseSchema,
+		value,
+		"ComposerPlanStatusResponse",
+	);
+
+export const assertComposerPlanRequest = (
+	value: unknown,
+): asserts value is Static<typeof ComposerPlanRequestSchema> =>
+	assertSchema(ComposerPlanRequestSchema, value, "ComposerPlanRequest");
+
+export const assertComposerPlanActionResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerPlanActionResponseSchema> =>
+	assertSchema(
+		ComposerPlanActionResponseSchema,
+		value,
+		"ComposerPlanActionResponse",
+	);
+
+export const assertComposerBackgroundStatusResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerBackgroundStatusResponseSchema> =>
+	assertSchema(
+		ComposerBackgroundStatusResponseSchema,
+		value,
+		"ComposerBackgroundStatusResponse",
+	);
+
+export const assertComposerBackgroundHistoryResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerBackgroundHistoryResponseSchema> =>
+	assertSchema(
+		ComposerBackgroundHistoryResponseSchema,
+		value,
+		"ComposerBackgroundHistoryResponse",
+	);
+
+export const assertComposerBackgroundPathResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerBackgroundPathResponseSchema> =>
+	assertSchema(
+		ComposerBackgroundPathResponseSchema,
+		value,
+		"ComposerBackgroundPathResponse",
+	);
+
+export const assertComposerBackgroundUpdateRequest = (
+	value: unknown,
+): asserts value is Static<typeof ComposerBackgroundUpdateRequestSchema> =>
+	assertSchema(
+		ComposerBackgroundUpdateRequestSchema,
+		value,
+		"ComposerBackgroundUpdateRequest",
+	);
+
+export const assertComposerBackgroundUpdateResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerBackgroundUpdateResponseSchema> =>
+	assertSchema(
+		ComposerBackgroundUpdateResponseSchema,
+		value,
+		"ComposerBackgroundUpdateResponse",
+	);
+
+export const assertComposerApprovalsStatusResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerApprovalsStatusResponseSchema> =>
+	assertSchema(
+		ComposerApprovalsStatusResponseSchema,
+		value,
+		"ComposerApprovalsStatusResponse",
+	);
+
+export const assertComposerApprovalsUpdateRequest = (
+	value: unknown,
+): asserts value is Static<typeof ComposerApprovalsUpdateRequestSchema> =>
+	assertSchema(
+		ComposerApprovalsUpdateRequestSchema,
+		value,
+		"ComposerApprovalsUpdateRequest",
+	);
+
+export const assertComposerApprovalsUpdateResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerApprovalsUpdateResponseSchema> =>
+	assertSchema(
+		ComposerApprovalsUpdateResponseSchema,
+		value,
+		"ComposerApprovalsUpdateResponse",
+	);
+
+export const assertComposerFrameworkStatusResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerFrameworkStatusResponseSchema> =>
+	assertSchema(
+		ComposerFrameworkStatusResponseSchema,
+		value,
+		"ComposerFrameworkStatusResponse",
+	);
+
+export const assertComposerFrameworkListResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerFrameworkListResponseSchema> =>
+	assertSchema(
+		ComposerFrameworkListResponseSchema,
+		value,
+		"ComposerFrameworkListResponse",
+	);
+
+export const assertComposerFrameworkUpdateRequest = (
+	value: unknown,
+): asserts value is Static<typeof ComposerFrameworkUpdateRequestSchema> =>
+	assertSchema(
+		ComposerFrameworkUpdateRequestSchema,
+		value,
+		"ComposerFrameworkUpdateRequest",
+	);
+
+export const assertComposerFrameworkUpdateResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerFrameworkUpdateResponseSchema> =>
+	assertSchema(
+		ComposerFrameworkUpdateResponseSchema,
+		value,
+		"ComposerFrameworkUpdateResponse",
+	);
+
+export const assertComposerUndoStatusResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerUndoStatusResponseSchema> =>
+	assertSchema(
+		ComposerUndoStatusResponseSchema,
+		value,
+		"ComposerUndoStatusResponse",
+	);
+
+export const assertComposerUndoHistoryResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerUndoHistoryResponseSchema> =>
+	assertSchema(
+		ComposerUndoHistoryResponseSchema,
+		value,
+		"ComposerUndoHistoryResponse",
+	);
+
+export const assertComposerUndoRequest = (
+	value: unknown,
+): asserts value is Static<typeof ComposerUndoRequestSchema> =>
+	assertSchema(ComposerUndoRequestSchema, value, "ComposerUndoRequest");
+
+export const assertComposerUndoOperationResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerUndoOperationResponseSchema> =>
+	assertSchema(
+		ComposerUndoOperationResponseSchema,
+		value,
+		"ComposerUndoOperationResponse",
 	);
 
 export const assertComposerFilesResponse = (

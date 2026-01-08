@@ -660,6 +660,247 @@ export interface ComposerBackgroundTaskHealth {
 	historyTruncated: boolean;
 }
 
+export type ComposerGuardianTarget = "staged" | "all";
+
+export type ComposerGuardianStatus = "passed" | "failed" | "skipped" | "error";
+
+export interface ComposerGuardianToolResult {
+	tool: string;
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+	durationMs: number;
+	skipped?: boolean;
+	reason?: string;
+}
+
+export interface ComposerGuardianRunResult {
+	status: ComposerGuardianStatus;
+	exitCode: number;
+	startedAt: number;
+	durationMs: number;
+	target: ComposerGuardianTarget;
+	trigger?: string;
+	filesScanned: number;
+	files?: string[];
+	summary: string;
+	skipReason?: string;
+	toolResults: ComposerGuardianToolResult[];
+}
+
+export interface ComposerGuardianState {
+	enabled: boolean;
+	lastRun?: ComposerGuardianRunResult;
+}
+
+export interface ComposerGuardianStatusResponse {
+	enabled: boolean;
+	state: ComposerGuardianState;
+}
+
+export type ComposerGuardianRunResponse = ComposerGuardianRunResult;
+
+export interface ComposerGuardianConfigRequest {
+	enabled: boolean;
+}
+
+export interface ComposerGuardianConfigResponse {
+	success: boolean;
+	enabled: boolean;
+}
+
+export interface ComposerPlanModeState {
+	active: boolean;
+	filePath: string;
+	sessionId?: string;
+	gitBranch?: string;
+	gitCommitSha?: string;
+	createdAt: string;
+	updatedAt: string;
+	name?: string;
+}
+
+export interface ComposerPlanStatusResponse {
+	state: ComposerPlanModeState | null;
+	content: string | null;
+}
+
+export type ComposerPlanRequest =
+	| { action: "enter"; name?: string; sessionId?: string }
+	| { action: "exit" }
+	| { action: "update"; content: string };
+
+export type ComposerPlanActionResponse =
+	| { success: boolean; state: ComposerPlanModeState }
+	| { success: boolean };
+
+export interface ComposerBackgroundSettings {
+	notificationsEnabled: boolean;
+	statusDetailsEnabled: boolean;
+}
+
+export interface ComposerBackgroundStatusSnapshot {
+	running: number;
+	total: number;
+	failed: number;
+	detailsRedacted: boolean;
+}
+
+export interface ComposerBackgroundStatusResponse {
+	settings: ComposerBackgroundSettings;
+	snapshot: ComposerBackgroundStatusSnapshot | null;
+}
+
+export interface ComposerBackgroundHistoryEntry {
+	timestamp: string;
+	event: "started" | "restarted" | "exited" | "failed" | "stopped";
+	taskId: string;
+	command: string;
+	failureReason?: string;
+	limitBreach?: ComposerBackgroundTaskLimitBreach;
+}
+
+export interface ComposerBackgroundHistoryResponse {
+	history: ComposerBackgroundHistoryEntry[];
+	truncated: boolean;
+}
+
+export interface ComposerBackgroundPathResponse {
+	path: string;
+	exists: boolean;
+	overridden: boolean;
+}
+
+export interface ComposerBackgroundUpdateRequest {
+	enabled: boolean;
+}
+
+export interface ComposerBackgroundUpdateResponse {
+	success: boolean;
+	message: string;
+}
+
+export type ComposerApprovalMode = "auto" | "prompt" | "fail";
+
+export interface ComposerApprovalsStatusResponse {
+	mode: ComposerApprovalMode;
+	availableModes: ComposerApprovalMode[];
+}
+
+export interface ComposerApprovalsUpdateRequest {
+	mode: ComposerApprovalMode;
+	sessionId?: string;
+}
+
+export interface ComposerApprovalsUpdateResponse {
+	success: boolean;
+	mode: ComposerApprovalMode;
+	message: string;
+}
+
+export type ComposerFrameworkScope = "user" | "workspace";
+
+export interface ComposerFrameworkStatusResponse {
+	framework: string;
+	source: string;
+	locked: boolean;
+	scope: ComposerFrameworkScope;
+}
+
+export interface ComposerFrameworkListEntry {
+	id: string;
+	summary: string;
+}
+
+export interface ComposerFrameworkListResponse {
+	frameworks: ComposerFrameworkListEntry[];
+}
+
+export interface ComposerFrameworkUpdateRequest {
+	framework?: string | null;
+	scope?: ComposerFrameworkScope;
+}
+
+export interface ComposerFrameworkUpdateResponse {
+	success: boolean;
+	message: string;
+	framework: string | null;
+	summary?: string;
+	scope?: ComposerFrameworkScope;
+}
+
+export type ComposerChangeType = "create" | "modify" | "delete";
+
+export interface ComposerFileChange {
+	id: string;
+	type: ComposerChangeType;
+	path: string;
+	before: string | null;
+	after: string | null;
+	toolName: string;
+	toolCallId: string;
+	timestamp: number;
+	isGitTracked: boolean;
+	messageId?: string;
+}
+
+export type ComposerUndoRestoreAction = "restore" | "delete" | "recreate";
+
+export interface ComposerUndoPreview {
+	changes: ComposerFileChange[];
+	restores: Array<{ path: string; action: ComposerUndoRestoreAction }>;
+	conflicts: Array<{ path: string; reason: string }>;
+}
+
+export interface ComposerUndoCheckpoint {
+	name: string;
+	description?: string;
+	changeCount: number;
+	timestamp: number;
+}
+
+export interface ComposerUndoStatusResponse {
+	totalChanges: number;
+	canUndo: boolean;
+	checkpoints: ComposerUndoCheckpoint[];
+}
+
+export interface ComposerUndoHistoryEntry {
+	description: string;
+	fileCount: number;
+	timestamp: number;
+}
+
+export interface ComposerUndoHistoryResponse {
+	history: ComposerUndoHistoryEntry[];
+}
+
+export interface ComposerUndoPreviewMessage {
+	message: string;
+	fileCount?: number;
+	description?: string;
+}
+
+export interface ComposerUndoRequest {
+	action?: "undo" | "checkpoint" | "restore";
+	count?: number;
+	preview?: boolean;
+	force?: boolean;
+	name?: string;
+	description?: string;
+}
+
+export type ComposerUndoOperationResponse =
+	| { success: boolean; undone: number; errors: string[] }
+	| { success: boolean; message: string; files?: string[] }
+	| { message: string }
+	| { preview: ComposerUndoPreview | ComposerUndoPreviewMessage }
+	| {
+			success: boolean;
+			checkpoint: { name: string; changeCount: number; timestamp: number };
+	  }
+	| { checkpoints: ComposerUndoCheckpoint[] };
+
 /**
  * Workspace status response payload.
  */

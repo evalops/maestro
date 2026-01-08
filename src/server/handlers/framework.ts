@@ -7,7 +7,12 @@ import {
 	setDefaultFramework,
 	setWorkspaceFramework,
 } from "../../config/framework.js";
-import { readJsonBody, sendJson } from "../server-utils.js";
+import { sendJson } from "../server-utils.js";
+import {
+	type FrameworkUpdateRequestInput,
+	FrameworkUpdateRequestSchema,
+	parseAndValidateJson,
+} from "../validation.js";
 
 export async function handleFramework(
 	req: IncomingMessage,
@@ -60,10 +65,10 @@ export async function handleFramework(
 
 	if (req.method === "POST") {
 		try {
-			const data = await readJsonBody<{
-				framework?: string | null;
-				scope?: "user" | "workspace";
-			}>(req);
+			const data = await parseAndValidateJson<FrameworkUpdateRequestInput>(
+				req,
+				FrameworkUpdateRequestSchema,
+			);
 
 			const framework = data.framework;
 			const scope = data.scope || "user";
@@ -120,6 +125,7 @@ export async function handleFramework(
 			);
 		} catch (error) {
 			if (error instanceof Error && "statusCode" in error) {
+				// ApiError from parseAndValidateJson
 				sendJson(
 					res,
 					(error as { statusCode: number }).statusCode,
