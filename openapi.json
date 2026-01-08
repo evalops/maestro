@@ -2320,11 +2320,6 @@
       },
       "ModelEntry": {
         "type": "object",
-        "required": [
-          "id",
-          "provider",
-          "api"
-        ],
         "properties": {
           "id": {
             "type": "string"
@@ -2339,14 +2334,40 @@
             "type": "string"
           },
           "contextWindow": {
-            "type": "integer"
+            "type": "number"
+          },
+          "maxOutputTokens": {
+            "type": "number"
           },
           "maxTokens": {
-            "type": "integer"
+            "type": "number"
+          },
+          "reasoning": {
+            "type": "boolean"
           },
           "cost": {
             "type": "object",
-            "additionalProperties": true
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              },
+              "total": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "input",
+              "output"
+            ]
           },
           "capabilities": {
             "type": "object",
@@ -2365,7 +2386,12 @@
               }
             }
           }
-        }
+        },
+        "required": [
+          "id",
+          "provider",
+          "name"
+        ]
       },
       "ModelsResponse": {
         "type": "object",
@@ -2373,17 +2399,88 @@
           "models": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/ModelEntry"
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "api": {
+                  "type": "string"
+                },
+                "contextWindow": {
+                  "type": "number"
+                },
+                "maxOutputTokens": {
+                  "type": "number"
+                },
+                "maxTokens": {
+                  "type": "number"
+                },
+                "reasoning": {
+                  "type": "boolean"
+                },
+                "cost": {
+                  "type": "object",
+                  "properties": {
+                    "input": {
+                      "type": "number"
+                    },
+                    "output": {
+                      "type": "number"
+                    },
+                    "cacheRead": {
+                      "type": "number"
+                    },
+                    "cacheWrite": {
+                      "type": "number"
+                    },
+                    "total": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "input",
+                    "output"
+                  ]
+                },
+                "capabilities": {
+                  "type": "object",
+                  "properties": {
+                    "streaming": {
+                      "type": "boolean"
+                    },
+                    "tools": {
+                      "type": "boolean"
+                    },
+                    "vision": {
+                      "type": "boolean"
+                    },
+                    "reasoning": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "provider",
+                "name"
+              ]
             }
           }
-        }
+        },
+        "required": [
+          "models"
+        ]
       },
       "ModelSelectionResponse": {
         "type": "object",
-        "required": [
-          "id",
-          "provider"
-        ],
         "properties": {
           "id": {
             "type": "string"
@@ -2394,16 +2491,68 @@
           "name": {
             "type": "string"
           },
+          "api": {
+            "type": "string"
+          },
           "contextWindow": {
-            "type": "integer"
+            "type": "number"
+          },
+          "maxOutputTokens": {
+            "type": "number"
           },
           "maxTokens": {
-            "type": "integer"
+            "type": "number"
           },
           "reasoning": {
             "type": "boolean"
+          },
+          "cost": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "cacheRead": {
+                "type": "number"
+              },
+              "cacheWrite": {
+                "type": "number"
+              },
+              "total": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "input",
+              "output"
+            ]
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "streaming": {
+                "type": "boolean"
+              },
+              "tools": {
+                "type": "boolean"
+              },
+              "vision": {
+                "type": "boolean"
+              },
+              "reasoning": {
+                "type": "boolean"
+              }
+            }
           }
-        }
+        },
+        "required": [
+          "id",
+          "provider",
+          "name"
+        ]
       },
       "ConfigWriteRequest": {
         "type": "object",

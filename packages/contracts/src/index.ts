@@ -219,6 +219,39 @@ export interface ComposerUsage {
 }
 
 /**
+ * Model capability metadata exposed by the API.
+ */
+export interface ComposerModelCapabilities {
+	streaming?: boolean;
+	tools?: boolean;
+	vision?: boolean;
+	reasoning?: boolean;
+}
+
+/**
+ * Model metadata returned by `/api/models` and `/api/model`.
+ */
+export interface ComposerModel {
+	id: string;
+	provider: string;
+	name: string;
+	api?: string;
+	contextWindow?: number;
+	maxOutputTokens?: number;
+	maxTokens?: number;
+	reasoning?: boolean;
+	cost?: ComposerUsageCost;
+	capabilities?: ComposerModelCapabilities;
+}
+
+/**
+ * Response payload for `/api/models`.
+ */
+export interface ComposerModelListResponse {
+	models: ComposerModel[];
+}
+
+/**
  * Request payload for the chat API endpoint.
  *
  * Sent to `POST /api/chat` to initiate or continue a conversation.

@@ -31,7 +31,9 @@ describe("ApiClient fallback resolution", () => {
 		const fetchMock = vi
 			.fn()
 			.mockRejectedValueOnce(new Error("primary failed"))
-			.mockResolvedValueOnce(makeJsonResponse({ id: "m", provider: "p" }));
+			.mockResolvedValueOnce(
+				makeJsonResponse({ id: "m", provider: "p", name: "Model M" }),
+			);
 
 		global.fetch = fetchMock;
 

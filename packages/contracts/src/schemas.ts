@@ -113,6 +113,30 @@ export const ComposerModelSetSchema = Type.Object({
 	model: Type.String({ minLength: 1 }),
 });
 
+export const ComposerModelCapabilitiesSchema = Type.Object({
+	streaming: Type.Optional(Type.Boolean()),
+	tools: Type.Optional(Type.Boolean()),
+	vision: Type.Optional(Type.Boolean()),
+	reasoning: Type.Optional(Type.Boolean()),
+});
+
+export const ComposerModelSchema = Type.Object({
+	id: Type.String(),
+	provider: Type.String(),
+	name: Type.String(),
+	api: Type.Optional(Type.String()),
+	contextWindow: Type.Optional(Type.Number()),
+	maxOutputTokens: Type.Optional(Type.Number()),
+	maxTokens: Type.Optional(Type.Number()),
+	reasoning: Type.Optional(Type.Boolean()),
+	cost: Type.Optional(ComposerUsageCostSchema),
+	capabilities: Type.Optional(ComposerModelCapabilitiesSchema),
+});
+
+export const ComposerModelListResponseSchema = Type.Object({
+	models: Type.Array(ComposerModelSchema),
+});
+
 export const ComposerSessionSummarySchema = Type.Object({
 	id: Type.String(),
 	title: Type.Optional(Type.String()),

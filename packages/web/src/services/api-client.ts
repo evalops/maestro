@@ -52,6 +52,8 @@ import {
 	isComposerAgentEvent,
 	isComposerChatRequest,
 	isComposerErrorResponse,
+	isComposerModel,
+	isComposerModelListResponse,
 	isComposerSession,
 	isComposerSessionListResponse,
 	isComposerStatusResponse,
@@ -63,6 +65,7 @@ import type {
 	ComposerChatRequest,
 	ComposerErrorResponse,
 	ComposerMessage,
+	ComposerModel,
 	ComposerSession,
 	ComposerSessionSummary,
 	ComposerToolCall,
@@ -76,27 +79,7 @@ export type AssistantMessageEvent = ComposerAssistantMessageEvent;
 /** AgentEvent is a discriminated union of all possible server-sent events */
 export type AgentEvent = ComposerAgentEvent;
 
-export interface Model {
-	id: string;
-	provider: string;
-	name: string;
-	contextWindow?: number;
-	maxOutputTokens?: number;
-	maxTokens?: number;
-	api?: string;
-	cost?: {
-		input: number;
-		output: number;
-		cacheRead?: number;
-		cacheWrite?: number;
-	};
-	capabilities?: {
-		streaming?: boolean;
-		tools?: boolean;
-		vision?: boolean;
-		reasoning?: boolean;
-	};
-}
+export type Model = ComposerModel;
 
 export type Session = ComposerSession;
 
@@ -780,8 +763,16 @@ export class ApiClient {
 	 * Get list of available models
 	 */
 	async getModels(): Promise<Model[]> {
-		const data = await this.fetchJsonWithFallback("/api/models");
-		return data.models || [];
+		try {
+			const data = await this.fetchJsonWithFallback("/api/models");
+			if (VALIDATE_API_RESPONSES && !isComposerModelListResponse(data)) {
+				throw new Error("Invalid models response payload");
+			}
+			return data.models || [];
+		} catch (e) {
+			console.error("Failed to fetch models:", e);
+			return [];
+		}
 	}
 
 	/**
@@ -790,6 +781,9 @@ export class ApiClient {
 	async getCurrentModel(): Promise<Model | null> {
 		try {
 			const data = await this.fetchJsonWithFallback("/api/model");
+			if (VALIDATE_API_RESPONSES && !isComposerModel(data)) {
+				throw new Error("Invalid model response payload");
+			}
 			return (data as Model) ?? null;
 		} catch {
 			return null;

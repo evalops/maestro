@@ -5,6 +5,8 @@ import {
 	ComposerChatRequestSchema,
 	ComposerErrorResponseSchema,
 	ComposerMessageSchema,
+	ComposerModelListResponseSchema,
+	ComposerModelSchema,
 	ComposerSessionListResponseSchema,
 	ComposerSessionSchema,
 	ComposerSessionSummarySchema,
@@ -67,6 +69,16 @@ export const isComposerAgentEvent = (
 ): value is Static<typeof ComposerAgentEventSchema> =>
 	Value.Check(ComposerAgentEventSchema, value);
 
+export const isComposerModel = (
+	value: unknown,
+): value is Static<typeof ComposerModelSchema> =>
+	Value.Check(ComposerModelSchema, value);
+
+export const isComposerModelListResponse = (
+	value: unknown,
+): value is Static<typeof ComposerModelListResponseSchema> =>
+	Value.Check(ComposerModelListResponseSchema, value);
+
 export const isComposerSessionSummary = (
 	value: unknown,
 ): value is Static<typeof ComposerSessionSummarySchema> =>
@@ -106,6 +118,20 @@ export const assertComposerAgentEvent = (
 	value: unknown,
 ): asserts value is Static<typeof ComposerAgentEventSchema> =>
 	assertSchema(ComposerAgentEventSchema, value, "ComposerAgentEvent");
+
+export const assertComposerModel = (
+	value: unknown,
+): asserts value is Static<typeof ComposerModelSchema> =>
+	assertSchema(ComposerModelSchema, value, "ComposerModel");
+
+export const assertComposerModelListResponse = (
+	value: unknown,
+): asserts value is Static<typeof ComposerModelListResponseSchema> =>
+	assertSchema(
+		ComposerModelListResponseSchema,
+		value,
+		"ComposerModelListResponse",
+	);
 
 export const assertComposerErrorResponse = (
 	value: unknown,

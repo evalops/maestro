@@ -50,9 +50,17 @@ function respondWithModel(
 		{
 			id: model.id,
 			provider: model.provider,
-			name: model.name,
+			name: model.name || model.id,
+			api: model.api,
 			contextWindow: model.contextWindow,
 			maxTokens: model.maxTokens,
+			cost: model.cost,
+			capabilities: {
+				streaming: true,
+				tools: true,
+				vision: model.input?.includes("image") || false,
+				reasoning: model.reasoning || false,
+			},
 			reasoning: model.reasoning,
 		},
 		cors,

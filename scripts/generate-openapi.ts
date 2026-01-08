@@ -3,6 +3,8 @@ import ts from "typescript";
 import {
 	ComposerChatRequestSchema as ChatRequestSchema,
 	ComposerErrorResponseSchema,
+	ComposerModelListResponseSchema,
+	ComposerModelSchema,
 	ComposerModelSetSchema as ModelSetSchema,
 	ComposerMessageSchema,
 	ComposerSessionListResponseSchema,
@@ -82,49 +84,9 @@ function buildComponents() {
 		ChatRequest: ChatRequestSchema,
 		ModelSetRequest: ModelSetSchema,
 		ChatMessage: ComposerMessageSchema,
-		ModelEntry: {
-			type: "object",
-			required: ["id", "provider", "api"],
-			properties: {
-				id: { type: "string" },
-				provider: { type: "string" },
-				name: { type: "string" },
-				api: { type: "string" },
-				contextWindow: { type: "integer" },
-				maxTokens: { type: "integer" },
-				cost: { type: "object", additionalProperties: true },
-				capabilities: {
-					type: "object",
-					properties: {
-						streaming: { type: "boolean" },
-						tools: { type: "boolean" },
-						vision: { type: "boolean" },
-						reasoning: { type: "boolean" },
-					},
-				},
-			},
-		},
-		ModelsResponse: {
-			type: "object",
-			properties: {
-				models: {
-					type: "array",
-					items: { $ref: "#/components/schemas/ModelEntry" },
-				},
-			},
-		},
-		ModelSelectionResponse: {
-			type: "object",
-			required: ["id", "provider"],
-			properties: {
-				id: { type: "string" },
-				provider: { type: "string" },
-				name: { type: "string" },
-				contextWindow: { type: "integer" },
-				maxTokens: { type: "integer" },
-				reasoning: { type: "boolean" },
-			},
-		},
+		ModelEntry: ComposerModelSchema,
+		ModelsResponse: ComposerModelListResponseSchema,
+		ModelSelectionResponse: ComposerModelSchema,
 		ConfigWriteRequest: {
 			type: "object",
 			required: ["config"],

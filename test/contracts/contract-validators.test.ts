@@ -3,6 +3,8 @@ import {
 	ComposerAgentEventSchema,
 	ComposerChatRequestSchema,
 	ComposerMessageSchema,
+	ComposerModelListResponseSchema,
+	ComposerModelSchema,
 	ComposerStatusResponseSchema,
 	ComposerUsageResponseSchema,
 } from "../../packages/contracts/src/schemas.js";
@@ -63,6 +65,23 @@ describe("contracts validators", () => {
 		};
 		const result = validateSchema(ComposerStatusResponseSchema, status);
 		expect(result.ok).toBe(true);
+	});
+
+	it("accepts model responses for models and model selection", () => {
+		const model = {
+			id: "test-model",
+			provider: "test",
+			name: "Test Model",
+			contextWindow: 1000,
+			maxTokens: 500,
+			reasoning: false,
+		};
+		const modelResult = validateSchema(ComposerModelSchema, model);
+		expect(modelResult.ok).toBe(true);
+		const listResult = validateSchema(ComposerModelListResponseSchema, {
+			models: [model],
+		});
+		expect(listResult.ok).toBe(true);
 	});
 
 	it("accepts a usage response with breakdowns", () => {
