@@ -193,19 +193,19 @@ class ContextualLogger extends Logger {
 		return { ...this.contextData, ...context };
 	}
 
-	debug(message: string, context?: LogContext): void {
+	override debug(message: string, context?: LogContext): void {
 		this.parent.debug(message, this.mergeContext(context));
 	}
 
-	info(message: string, context?: LogContext): void {
+	override info(message: string, context?: LogContext): void {
 		this.parent.info(message, this.mergeContext(context));
 	}
 
-	warn(message: string, context?: LogContext): void {
+	override warn(message: string, context?: LogContext): void {
 		this.parent.warn(message, this.mergeContext(context));
 	}
 
-	error(message: string, error?: Error, context?: LogContext): void {
+	override error(message: string, error?: Error, context?: LogContext): void {
 		this.parent.error(message, error, this.mergeContext(context));
 	}
 }

@@ -12,7 +12,7 @@ import * as logger from "./logger.js";
  */
 export class SlackAgentError extends Error {
 	public readonly code: string;
-	public readonly cause?: Error;
+	public override readonly cause?: Error;
 	public readonly context?: Record<string, unknown>;
 
 	constructor(

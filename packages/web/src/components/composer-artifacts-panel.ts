@@ -44,7 +44,7 @@ function languageFromFilename(filename: string): string {
 
 @customElement("composer-artifacts-panel")
 export class ComposerArtifactsPanel extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			position: absolute;
 			top: 48px;
@@ -258,7 +258,7 @@ export class ComposerArtifactsPanel extends LitElement {
 		}
 	}
 
-	render() {
+	override render() {
 		const artifacts = Array.isArray(this.artifacts) ? this.artifacts : [];
 		const active =
 			(this.activeFilename &&

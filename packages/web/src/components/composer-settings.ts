@@ -13,7 +13,7 @@ import type {
 
 @customElement("composer-settings")
 export class ComposerSettings extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			display: flex;
 			flex-direction: column;
@@ -302,7 +302,7 @@ export class ComposerSettings extends LitElement {
 	@state() private usage: UsageSummary | null = null;
 	@state() private selectedTab: "workspace" | "models" | "usage" = "workspace";
 
-	async connectedCallback() {
+	override async connectedCallback() {
 		super.connectedCallback();
 		await this.loadData();
 	}
@@ -622,7 +622,7 @@ export class ComposerSettings extends LitElement {
 		`;
 	}
 
-	render() {
+	override render() {
 		return html`
 			<div class="settings-header">
 				<h2>⚙ Settings</h2>

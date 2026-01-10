@@ -37,7 +37,7 @@ type BatchResultEntry = {
 
 @customElement("composer-tool-execution")
 export class ComposerToolExecution extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			display: block;
 			font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
@@ -592,13 +592,13 @@ export class ComposerToolExecution extends LitElement {
 		this.showFullResult = !this.showFullResult;
 	}
 
-	protected updated(changed: Map<string, unknown>) {
+	protected override updated(changed: Map<string, unknown>) {
 		if (changed.has("compact") && this.compact && !this.bodyCollapsed) {
 			this.bodyCollapsed = true;
 		}
 	}
 
-	protected firstUpdated(): void {
+	protected override firstUpdated(): void {
 		if (this.isBatchTool() && !this.bodyCollapsed) {
 			this.bodyCollapsed = true;
 		}
@@ -841,7 +841,7 @@ export class ComposerToolExecution extends LitElement {
 			`;
 	}
 
-	render() {
+	override render() {
 		const statusClass = this.isRunning
 			? "running"
 			: this.isError

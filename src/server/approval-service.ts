@@ -6,7 +6,7 @@ import {
 import { approvalStore } from "./approval-store.js";
 
 export class WebActionApprovalService extends ActionApprovalService {
-	async requestApproval(
+	override async requestApproval(
 		request: ActionApprovalRequest,
 		signal?: AbortSignal,
 	): Promise<ActionApprovalDecision> {

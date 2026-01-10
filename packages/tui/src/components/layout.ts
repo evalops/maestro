@@ -79,7 +79,7 @@ export class Column extends Container {
 	 * @param width - Available width for rendering
 	 * @returns Array of rendered lines
 	 */
-	render(width: number): string[] {
+	override render(width: number): string[] {
 		const lines: string[] = [];
 		const gapLine = " ".repeat(Math.max(0, width));
 
@@ -207,7 +207,7 @@ export class Row extends Container {
 	 * @param width - Available width for the row
 	 * @returns Array of rendered lines
 	 */
-	render(width: number): string[] {
+	override render(width: number): string[] {
 		if (this.children.length === 0) return ["".padEnd(width, " ")];
 
 		// Track which children go on which line
@@ -490,7 +490,7 @@ export class Box extends Container {
 		}
 	}
 
-	render(width: number): string[] {
+	override render(width: number): string[] {
 		const lines: string[] = [];
 		const marginLine = " ".repeat(Math.max(0, width));
 		for (let i = 0; i < this.marginY; i++) lines.push(marginLine);

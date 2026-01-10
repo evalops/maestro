@@ -10,7 +10,7 @@ const SEARCH_DEBOUNCE = 150;
 
 @customElement("model-selector")
 export class ModelSelector extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			display: block;
 		}
@@ -211,12 +211,12 @@ export class ModelSelector extends LitElement {
 
 	private apiClient!: ApiClient;
 
-	connectedCallback() {
+	override connectedCallback() {
 		super.connectedCallback();
 		this.apiClient = new ApiClient(this.apiEndpoint);
 	}
 
-	async updated(changed: Map<string, unknown>) {
+	override async updated(changed: Map<string, unknown>) {
 		if (changed.has("open") && this.open) {
 			await this.loadModels();
 		}
@@ -282,7 +282,7 @@ export class ModelSelector extends LitElement {
 		}
 	}
 
-	render() {
+	override render() {
 		if (!this.open) return html``;
 
 		return html`

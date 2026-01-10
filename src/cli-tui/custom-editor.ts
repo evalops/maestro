@@ -219,7 +219,7 @@ export class CustomEditor extends Editor {
 	public onTab?: () => boolean;
 	public onPasteImage?: () => void;
 
-	handleInput(rawData: string): void {
+	override handleInput(rawData: string): void {
 		const data = this.normalizeArrowInput(rawData);
 		if (this.tryHandleKeyBindings(data)) return;
 

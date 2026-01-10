@@ -148,7 +148,7 @@ class TreeList extends Container {
 		}
 	}
 
-	render(width: number): string[] {
+	override render(width: number): string[] {
 		const lines: string[] = [];
 		if (this.flatNodes.length === 0) {
 			lines.push(chalk.dim("  No entries found"));

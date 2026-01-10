@@ -62,7 +62,7 @@ interface MessageWithThinking extends Message {
 
 @customElement("composer-chat")
 export class ComposerChat extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			display: flex !important;
 			height: 100% !important;
@@ -1360,7 +1360,7 @@ export class ComposerChat extends LitElement {
 		);
 	}
 
-	connectedCallback() {
+	override connectedCallback() {
 		super.connectedCallback();
 		this.apiClient = new ApiClient(this.apiEndpoint);
 		this.subscribeToStore();
@@ -1387,7 +1387,7 @@ export class ComposerChat extends LitElement {
 		);
 	}
 
-	disconnectedCallback(): void {
+	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		if (this.unsubscribeStore) this.unsubscribeStore();
 		window.removeEventListener("online", this.handleOnline);
@@ -1427,7 +1427,7 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
-	protected firstUpdated(): void {
+	protected override firstUpdated(): void {
 		const scroller = this.getMessagesScroller();
 		scroller?.addEventListener("scroll", this.handleMessagesScroll, {
 			passive: true,
@@ -1449,7 +1449,7 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
-	protected updated(changed: PropertyValues): void {
+	protected override updated(changed: PropertyValues): void {
 		super.updated(changed);
 		this.ensureHistoryObserver();
 		this.refreshHistoryObserverTarget();
@@ -2662,7 +2662,7 @@ export class ComposerChat extends LitElement {
 		}, duration);
 	}
 
-	render() {
+	override render() {
 		const cwd = this.status?.cwd || "unknown";
 		const gitBranch = this.status?.git?.branch || "unknown";
 		const gitStatus = this.status?.git?.status;

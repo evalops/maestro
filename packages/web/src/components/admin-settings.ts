@@ -44,7 +44,7 @@ interface ConfirmDialog {
 
 @customElement("admin-settings")
 export class AdminSettings extends LitElement {
-	static styles = css`
+	static override styles = css`
 		/* ============================================================
 		   CONTROL ROOM - Enterprise Admin Aesthetic
 		   Inspired by mission control centers and financial terminals
@@ -1199,7 +1199,7 @@ export class AdminSettings extends LitElement {
 		this.api = getEnterpriseApi();
 	}
 
-	async connectedCallback() {
+	override async connectedCallback() {
 		super.connectedCallback();
 		// Try to load real data in background, but UI renders immediately with defaults
 		if (this.api.isAuthenticated()) {
@@ -1208,7 +1208,7 @@ export class AdminSettings extends LitElement {
 		}
 	}
 
-	disconnectedCallback() {
+	override disconnectedCallback() {
 		super.disconnectedCallback();
 		this.stopAlertRefresh();
 	}
@@ -2589,7 +2589,7 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 		}
 	}
 
-	render() {
+	override render() {
 		return html`
 			<div class="admin-header">
 				<h2>Admin Settings</h2>

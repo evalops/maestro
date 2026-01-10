@@ -28,7 +28,7 @@ const logger = createLogger("providers:stream-idle-timeout");
  * the COMPOSER_STREAM_MAX_RETRIES environment variable.
  */
 export class StreamIdleTimeoutError extends Error {
-	readonly name = "StreamIdleTimeoutError";
+	override readonly name = "StreamIdleTimeoutError";
 	/** Indicates this error is safe to retry. Transport layer handles retries automatically. */
 	readonly retryable = true;
 

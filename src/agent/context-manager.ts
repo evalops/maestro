@@ -45,7 +45,7 @@ export class ContextTimeoutError extends Error {
  */
 export class ContextSourceError extends Error {
 	readonly sourceName: string;
-	readonly cause: Error | unknown;
+	override readonly cause: Error | unknown;
 
 	constructor(sourceName: string, cause: Error | unknown) {
 		const message = cause instanceof Error ? cause.message : String(cause);

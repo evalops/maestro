@@ -6,7 +6,7 @@ import { PassThrough, Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 class EpipeStdin extends Writable {
-	_write(
+	override _write(
 		_chunk: Buffer | string,
 		_encoding: BufferEncoding,
 		callback: (error?: Error | null) => void,

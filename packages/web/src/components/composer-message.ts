@@ -115,7 +115,7 @@ marked.use({
 
 @customElement("composer-message")
 export class ComposerMessage extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			display: block;
 		}
@@ -477,7 +477,7 @@ export class ComposerMessage extends LitElement {
 		}
 	`;
 
-	@property() role: "user" | "assistant" | "system" = "user";
+	@property() override role: "user" | "assistant" | "system" = "user";
 	@property({ attribute: false }) content: string | ComposerContentBlock[] = "";
 	@property() timestamp = "";
 	@property() thinking = "";
@@ -508,12 +508,12 @@ export class ComposerMessage extends LitElement {
 	private readonly instanceId = randomId("msg_");
 	private readonly onHljsLoaded = () => this.requestUpdate();
 
-	connectedCallback(): void {
+	override connectedCallback(): void {
 		super.connectedCallback();
 		hljsLoadListeners.add(this.onHljsLoaded);
 	}
 
-	disconnectedCallback(): void {
+	override disconnectedCallback(): void {
 		hljsLoadListeners.delete(this.onHljsLoaded);
 		super.disconnectedCallback();
 	}
@@ -694,7 +694,7 @@ export class ComposerMessage extends LitElement {
 		`;
 	}
 
-	render() {
+	override render() {
 		// Check if message has thinking or tools
 		const hasThinking = this.thinking && this.thinking.length > 0;
 		const hasTools = this.tools && this.tools.length > 0;

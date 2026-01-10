@@ -91,7 +91,7 @@ export class RotatingLogWriter extends Writable {
 		this.writeQueue = this.ready;
 	}
 
-	_write(
+	override _write(
 		chunk: Buffer | string,
 		encoding: BufferEncoding,
 		callback: (error?: Error | null) => void,
@@ -114,7 +114,7 @@ export class RotatingLogWriter extends Writable {
 		);
 	}
 
-	_final(callback: (error?: Error | null) => void): void {
+	override _final(callback: (error?: Error | null) => void): void {
 		this.writeQueue.then(
 			() => callback(),
 			(error) => callback(error),

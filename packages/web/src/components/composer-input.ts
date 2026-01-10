@@ -10,7 +10,7 @@ import { WEB_SLASH_COMMANDS, type WebSlashCommand } from "./slash-commands.js";
 
 @customElement("composer-input")
 export class ComposerInput extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			display: block;
 		}
@@ -765,7 +765,7 @@ export class ComposerInput extends LitElement {
 		return "";
 	}
 
-	render() {
+	override render() {
 		const charCount = this.value.length;
 		const showCount = charCount > this.maxLength * 0.5;
 

@@ -5,7 +5,7 @@ import {
 import { getWorkspaceFiles } from "../utils/workspace-files.js";
 
 export class SmartAutocompleteProvider extends CombinedAutocompleteProvider {
-	protected getFileSuggestions(prefix: string): AutocompleteItem[] {
+	protected override getFileSuggestions(prefix: string): AutocompleteItem[] {
 		// Use fast workspace file search for @ mentions
 		if (prefix.startsWith("@")) {
 			const query = prefix.slice(1).toLowerCase();

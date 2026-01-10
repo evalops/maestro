@@ -10,7 +10,7 @@ export class JsonParseError extends Error {
 	constructor(
 		message: string,
 		public readonly input: string,
-		public readonly cause?: Error,
+		public override readonly cause?: Error,
 	) {
 		super(message);
 		this.name = "JsonParseError";

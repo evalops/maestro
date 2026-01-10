@@ -7,7 +7,7 @@ import { customElement, property, state } from "lit/decorators.js";
 
 @customElement("composer-thinking")
 export class ComposerThinking extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			display: block;
 			font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
@@ -164,7 +164,7 @@ export class ComposerThinking extends LitElement {
 		return firstLine.length > 80 ? `${firstLine.slice(0, 80)}...` : firstLine;
 	}
 
-	render() {
+	override render() {
 		const hasContent = this.content.length > 0;
 
 		return html`

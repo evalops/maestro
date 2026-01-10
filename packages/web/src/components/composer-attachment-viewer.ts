@@ -112,7 +112,7 @@ type AttachmentKind =
 
 @customElement("composer-attachment-viewer")
 export class ComposerAttachmentViewer extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			position: fixed;
 			inset: 0;
@@ -806,7 +806,7 @@ export class ComposerAttachmentViewer extends LitElement {
 		}
 	}
 
-	render() {
+	override render() {
 		if (!this.open) return null;
 		const att = this.attachment;
 		if (!att) return null;

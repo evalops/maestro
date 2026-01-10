@@ -4,7 +4,7 @@ import type { WebSlashCommand } from "./slash-commands.js";
 
 @customElement("command-drawer")
 export class CommandDrawer extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			position: fixed;
 			inset: 0;
@@ -175,7 +175,7 @@ export class CommandDrawer extends LitElement {
 		}
 	}
 
-	render() {
+	override render() {
 		const rows = this.scored;
 		return html`<div class="backdrop" @click=${() =>
 			this.dispatchEvent(

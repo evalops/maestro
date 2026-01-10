@@ -8,15 +8,15 @@ class TestView extends BaseView {
 	readonly onUnmountSpy = vi.fn();
 	readonly onDisposeSpy = vi.fn();
 
-	onMount(): void {
+	override onMount(): void {
 		this.onMountSpy();
 	}
 
-	onUnmount(): void {
+	override onUnmount(): void {
 		this.onUnmountSpy();
 	}
 
-	protected onDispose(): void {
+	protected override onDispose(): void {
 		this.onDisposeSpy();
 	}
 

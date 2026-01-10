@@ -59,7 +59,7 @@ ${trimmed}
 
 @customElement("composer-sandboxed-iframe")
 export class ComposerSandboxedIframe extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			display: block;
 			width: 100%;
@@ -241,7 +241,7 @@ export class ComposerSandboxedIframe extends LitElement {
 		return `${userHtml}\n${injected}`;
 	}
 
-	render() {
+	override render() {
 		return html`<iframe
 			sandbox="allow-scripts allow-modals allow-downloads"
 			.referrerPolicy=${"no-referrer"}

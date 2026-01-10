@@ -13,7 +13,7 @@ import {
 
 class MemoryStream extends Writable {
 	chunks: string[] = [];
-	_write(
+	override _write(
 		chunk: Buffer | string,
 		_encoding: BufferEncoding,
 		callback: (error?: Error | null) => void,

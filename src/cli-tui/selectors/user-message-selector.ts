@@ -25,11 +25,11 @@ class UserMessageList extends Container {
 		this.selectedIndex = Math.max(0, messages.length - 1);
 	}
 
-	invalidate(): void {
+	override invalidate(): void {
 		// No cached state to invalidate currently
 	}
 
-	render(width: number): string[] {
+	override render(width: number): string[] {
 		const lines: string[] = [];
 
 		if (this.messages.length === 0) {

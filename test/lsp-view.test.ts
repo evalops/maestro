@@ -20,10 +20,10 @@ const createStubTerminal = (): import("@evalops/tui").Terminal => ({
 });
 
 class StubTui extends TUI {
-	requestRender = vi.fn();
-	setFocus = vi.fn();
-	start = vi.fn();
-	stop = vi.fn();
+	override requestRender = vi.fn();
+	override setFocus = vi.fn();
+	override start = vi.fn();
+	override stop = vi.fn();
 
 	constructor() {
 		super(createStubTerminal());

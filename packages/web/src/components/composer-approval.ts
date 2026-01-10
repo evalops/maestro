@@ -14,7 +14,7 @@ interface ApprovalRequest {
 
 @customElement("composer-approval")
 export class ComposerApproval extends LitElement {
-	static styles = css`
+	static override styles = css`
 		:host {
 			display: block;
 			font-family: 'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace;
@@ -261,17 +261,17 @@ export class ComposerApproval extends LitElement {
 		}
 	}
 
-	connectedCallback() {
+	override connectedCallback() {
 		super.connectedCallback();
 		window.addEventListener("keydown", this.handleKeyDownRef);
 	}
 
-	disconnectedCallback() {
+	override disconnectedCallback() {
 		super.disconnectedCallback();
 		window.removeEventListener("keydown", this.handleKeyDownRef);
 	}
 
-	render() {
+	override render() {
 		if (!this.request) return html``;
 
 		const args = this.request.args || {};
