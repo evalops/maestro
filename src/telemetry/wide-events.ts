@@ -13,7 +13,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { recordTelemetry } from "../telemetry.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -133,6 +132,23 @@ const DEFAULT_SAMPLING_CONFIG: TailSamplingConfig = {
 	alwaysSampleFirstN: 1, // Always sample first turn
 };
 
+/**
+ * Telemetry recorder function type.
+ * Injected to break circular dependency with telemetry.ts.
+ */
+export type TelemetryRecorder = (event: CanonicalTurnEvent) => Promise<void>;
+
+// Default recorder - imported lazily to break circular dependency
+let defaultRecorder: TelemetryRecorder | undefined;
+
+/**
+ * Set the default telemetry recorder.
+ * Called once during initialization to inject the recordTelemetry function.
+ */
+export function setDefaultTelemetryRecorder(recorder: TelemetryRecorder): void {
+	defaultRecorder = recorder;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Turn Collector
 // ─────────────────────────────────────────────────────────────────────────────
@@ -189,15 +205,18 @@ export class TurnCollector {
 
 	private samplingConfig: TailSamplingConfig;
 	private traceId?: string;
+	private recorder?: TelemetryRecorder;
 
 	constructor(
 		private readonly sessionId: string,
 		private readonly turnNumber: number,
 		samplingConfig?: Partial<TailSamplingConfig>,
+		recorder?: TelemetryRecorder,
 	) {
 		this.turnId = randomUUID();
 		this.startTime = performance.now();
 		this.samplingConfig = { ...DEFAULT_SAMPLING_CONFIG, ...samplingConfig };
+		this.recorder = recorder;
 	}
 
 	// ─── Setters ──────────────────────────────────────────────────────────────
@@ -400,7 +419,10 @@ export class TurnCollector {
 
 		// Only persist if sampled
 		if (sampled) {
-			void recordTelemetry(event);
+			const recorder = this.recorder ?? defaultRecorder;
+			if (recorder) {
+				void recorder(event);
+			}
 		}
 
 		return event;
@@ -447,8 +469,9 @@ export function createTurnCollector(
 	sessionId: string,
 	turnNumber: number,
 	config?: Partial<TailSamplingConfig>,
+	recorder?: TelemetryRecorder,
 ): TurnCollector {
-	return new TurnCollector(sessionId, turnNumber, config);
+	return new TurnCollector(sessionId, turnNumber, config, recorder);
 }
 
 /**

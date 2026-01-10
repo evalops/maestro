@@ -8,7 +8,10 @@ import {
 	initOpenTelemetry,
 	isOpenTelemetryEnabled,
 } from "./opentelemetry.js";
-import type { CanonicalTurnEvent } from "./telemetry/wide-events.js";
+import {
+	type CanonicalTurnEvent,
+	setDefaultTelemetryRecorder,
+} from "./telemetry/wide-events.js";
 import { resolveEnvPath } from "./utils/path-expansion.js";
 import {
 	sanitizeOptionalWithStaticMask,
@@ -771,3 +774,6 @@ export function recordSandboxViolation(
 				: undefined,
 	});
 }
+
+// Initialize the wide-events telemetry recorder to break circular dependency
+setDefaultTelemetryRecorder(recordTelemetry);
