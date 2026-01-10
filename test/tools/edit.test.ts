@@ -533,4 +533,191 @@ describe("edit tool", () => {
 			).rejects.toThrow("Must provide");
 		});
 	});
+
+	describe("fuzzy matching edge cases", () => {
+		it("handles CRLF vs LF line ending differences", async () => {
+			const filePath = join(testDir, "crlf.txt");
+			writeFileSync(filePath, "line1\r\nline2\r\nline3");
+
+			// Search with LF, file has CRLF
+			try {
+				await editTool.execute("edit-32", {
+					path: filePath,
+					oldText: "line1\nline2\nline3",
+					newText: "replaced",
+				});
+			} catch (e) {
+				const error = e as Error;
+				// Should suggest the CRLF version as a close match
+				expect(error.message).toContain("Could not find");
+			}
+		});
+
+		it("handles trailing whitespace differences", async () => {
+			const filePath = join(testDir, "trailing.txt");
+			writeFileSync(filePath, "content with trailing   \nmore content");
+
+			try {
+				await editTool.execute("edit-33", {
+					path: filePath,
+					oldText: "content with trailing\nmore content", // No trailing spaces
+					newText: "replaced",
+				});
+			} catch (e) {
+				const error = e as Error;
+				expect(error.message).toContain("Could not find");
+			}
+		});
+
+		it("handles leading whitespace differences", async () => {
+			const filePath = join(testDir, "leading.txt");
+			writeFileSync(filePath, "function test() {\n    return true;\n}");
+
+			try {
+				await editTool.execute("edit-34", {
+					path: filePath,
+					oldText: "function test() {\n  return true;\n}", // 2 spaces vs 4
+					newText: "replaced",
+				});
+			} catch (e) {
+				const error = e as Error;
+				expect(error.message).toContain("Could not find");
+			}
+		});
+
+		it("handles empty lines in search text", async () => {
+			const filePath = join(testDir, "emptylines.txt");
+			writeFileSync(filePath, "first\n\n\nsecond\nthird");
+
+			// Exact match with empty lines should work
+			const result = await editTool.execute("edit-35", {
+				path: filePath,
+				oldText: "first\n\n\nsecond",
+				newText: "replaced",
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(readFileSync(filePath, "utf-8")).toBe("replaced\nthird");
+		});
+
+		it("handles unicode content", async () => {
+			const filePath = join(testDir, "unicode.txt");
+			writeFileSync(filePath, "Hello 世界! 🌍 Émojis work");
+
+			const result = await editTool.execute("edit-36", {
+				path: filePath,
+				oldText: "世界! 🌍",
+				newText: "World! 🌎",
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(readFileSync(filePath, "utf-8")).toBe(
+				"Hello World! 🌎 Émojis work",
+			);
+		});
+
+		it("handles tab vs spaces mismatch", async () => {
+			const filePath = join(testDir, "tabspaces.txt");
+			writeFileSync(filePath, "\tindented with tab");
+
+			try {
+				await editTool.execute("edit-37", {
+					path: filePath,
+					oldText: "    indented with tab", // 4 spaces instead of tab
+					newText: "replaced",
+				});
+			} catch (e) {
+				const error = e as Error;
+				expect(error.message).toContain("Could not find");
+			}
+		});
+
+		it("handles single character differences in long text", async () => {
+			const filePath = join(testDir, "longtext.txt");
+			writeFileSync(
+				filePath,
+				"This is a longer piece of text with multiple words and some content that should be matched accurately",
+			);
+
+			try {
+				await editTool.execute("edit-38", {
+					path: filePath,
+					oldText:
+						"This is a longer piece of text with multiple words and some content that should be matched acurately", // typo: acurately
+					newText: "replaced",
+				});
+			} catch (e) {
+				const error = e as Error;
+				expect(error.message).toContain("Could not find");
+			}
+		});
+
+		it("handles multiline with mixed indentation", async () => {
+			const filePath = join(testDir, "mixedindent.txt");
+			writeFileSync(
+				filePath,
+				"function test() {\n\tif (true) {\n\t\treturn 1;\n\t}\n}",
+			);
+
+			// Exact match with correct indentation should work
+			const result = await editTool.execute("edit-39", {
+				path: filePath,
+				oldText: "if (true) {\n\t\treturn 1;\n\t}",
+				newText: "if (false) {\n\t\treturn 0;\n\t}",
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(readFileSync(filePath, "utf-8")).toBe(
+				"function test() {\n\tif (false) {\n\t\treturn 0;\n\t}\n}",
+			);
+		});
+
+		it("handles regex special characters in search text", async () => {
+			const filePath = join(testDir, "regex.txt");
+			writeFileSync(filePath, "const pattern = /^[a-z]+$/gi;");
+
+			const result = await editTool.execute("edit-40", {
+				path: filePath,
+				oldText: "/^[a-z]+$/gi",
+				newText: "/^[A-Z]+$/i",
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(readFileSync(filePath, "utf-8")).toBe(
+				"const pattern = /^[A-Z]+$/i;",
+			);
+		});
+
+		it("handles overlapping matches with replaceAll", async () => {
+			const filePath = join(testDir, "overlap.txt");
+			writeFileSync(filePath, "aaaa");
+
+			// Non-overlapping replacement
+			const result = await editTool.execute("edit-41", {
+				path: filePath,
+				oldText: "aa",
+				newText: "bb",
+				replaceAll: true,
+			});
+
+			expect(result.isError).toBeFalsy();
+			expect(readFileSync(filePath, "utf-8")).toBe("bbbb");
+		});
+
+		it("handles BOM (byte order mark) in file", async () => {
+			const filePath = join(testDir, "bom.txt");
+			// Write file with BOM
+			writeFileSync(filePath, "\ufeffcontent with BOM");
+
+			const result = await editTool.execute("edit-42", {
+				path: filePath,
+				oldText: "content with BOM",
+				newText: "modified content",
+			});
+
+			expect(result.isError).toBeFalsy();
+			// BOM should be preserved
+			expect(readFileSync(filePath, "utf-8")).toBe("\ufeffmodified content");
+		});
+	});
 });

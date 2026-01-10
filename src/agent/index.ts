@@ -148,8 +148,11 @@ export type {
 	AssistantMessage,
 	AssistantMessageEvent,
 	Attachment,
+	BranchSummaryMessage,
+	CompactionSummaryMessage,
 	Context,
 	CustomMessages,
+	HookMessage,
 	ImageContent,
 	Message,
 	Model,
@@ -168,3 +171,26 @@ export type {
 	UserMessage,
 	UserMessageWithAttachments,
 } from "./types.js";
+export {
+	// Message type guards
+	isUserMessage,
+	isAssistantMessage,
+	isToolResultMessage,
+	isHookMessage,
+	isBranchSummaryMessage,
+	isCompactionSummaryMessage,
+	isUserMessageWithAttachments,
+	hasAttachments,
+	isLLMMessage,
+	// Content type guards
+	isTextContent,
+	isThinkingContent,
+	isImageContent,
+	isToolCall,
+	// Utility functions
+	getToolCalls,
+	getTextContent,
+	getThinkingContent,
+	hasToolCalls,
+	getUserMessageText,
+} from "./type-guards.js";

@@ -19,6 +19,50 @@ import { createLogger } from "../utils/logger.js";
 const logger = createLogger("tool-result-cache");
 
 /**
+ * LRU cache for memoizing hash computations.
+ * Avoids repeated SHA256 hashing for identical tool+args combinations.
+ */
+class HashMemoCache {
+	private cache = new Map<string, string>();
+	private maxSize: number;
+
+	constructor(maxSize = 500) {
+		this.maxSize = maxSize;
+	}
+
+	get(key: string): string | undefined {
+		const value = this.cache.get(key);
+		if (value !== undefined) {
+			// Move to end for LRU (delete and re-add)
+			this.cache.delete(key);
+			this.cache.set(key, value);
+		}
+		return value;
+	}
+
+	set(key: string, value: string): void {
+		// If key exists, delete first to update position
+		if (this.cache.has(key)) {
+			this.cache.delete(key);
+		}
+		// Evict oldest if at capacity
+		else if (this.cache.size >= this.maxSize) {
+			const firstKey = this.cache.keys().next().value;
+			if (firstKey !== undefined) {
+				this.cache.delete(firstKey);
+			}
+		}
+		this.cache.set(key, value);
+	}
+
+	clear(): void {
+		this.cache.clear();
+	}
+}
+
+const hashMemoCache = new HashMemoCache();
+
+/**
  * Cache scope determines visibility of cached results.
  */
 export type CacheScope = "session" | "user" | "global";
@@ -216,6 +260,7 @@ export function getToolResultCacheConfig(): ToolResultCacheConfig {
 
 /**
  * Generate a cache key from tool name and arguments.
+ * Uses memoization to avoid repeated SHA256 hashing for identical inputs.
  */
 function generateCacheKey(
 	toolName: string,
@@ -235,10 +280,14 @@ function generateCacheKey(
 				: args;
 
 	const argsString = JSON.stringify(keyArgs, Object.keys(keyArgs).sort());
-	const hash = createHash("sha256")
-		.update(`${toolName}:${argsString}`)
-		.digest("hex")
-		.slice(0, 32);
+	const hashInput = `${toolName}:${argsString}`;
+
+	// Check memoization cache first
+	let hash = hashMemoCache.get(hashInput);
+	if (!hash) {
+		hash = createHash("sha256").update(hashInput).digest("hex").slice(0, 32);
+		hashMemoCache.set(hashInput, hash);
+	}
 
 	const scopePrefix = scopeId ? `${scope}:${scopeId}` : scope;
 	return `${scopePrefix}:${toolName}:${hash}`;

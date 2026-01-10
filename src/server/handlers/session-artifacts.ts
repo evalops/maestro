@@ -29,9 +29,9 @@ function injectLiveReload(html: string, eventsUrl: string): string {
 	        if (data && data.type === "artifact_updated") {
 	          location.reload();
 	        }
-	      } catch (_) {}
+	      } catch (err) { console.error("[Composer] Failed to parse live reload event:", err); }
 	    };
-	  } catch (_) {}
+	  } catch (err) { console.error("[Composer] Failed to setup live reload EventSource:", err); }
 	})();
 	`.trim();
 	const script = `<script>\n${escapeScriptContent(scriptBody)}\n</script>`;
@@ -75,7 +75,8 @@ function injectArtifactsSnapshotRuntime(
 (function() {
   try {
     window.artifacts = ${escapeScriptContent(JSON.stringify(snapshot))};
-  } catch (_) {
+  } catch (err) {
+    console.error("[Composer] Failed to initialize artifacts snapshot:", err);
     window.artifacts = {};
   }
 
@@ -427,7 +428,7 @@ window.addEventListener("message", (e) => {
       try {
         const es = new EventSource(${JSON.stringify(eventsUrl)});
         es.onmessage = () => location.reload();
-      } catch (_) {}
+      } catch (err) { console.error("[Composer] Failed to setup viewer EventSource:", err); }
     </script>
   </body>
 </html>`;

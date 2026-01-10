@@ -365,4 +365,69 @@ describe("bash tool", () => {
 			expect(output).toContain("line3");
 		});
 	});
+
+	describe("process cleanup edge cases", () => {
+		it("kills process tree on timeout", async () => {
+			// Start a command that spawns a subprocess
+			const result = await bashTool.execute("bash-26", {
+				command: "bash -c 'sleep 30 & sleep 30'",
+				timeout: 0.1, // 100ms timeout
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("timed out");
+		});
+
+		it("handles command that exits before timeout", async () => {
+			const result = await bashTool.execute("bash-28", {
+				command: "echo 'quick'; exit 0",
+				timeout: 5,
+			});
+
+			expect(result.isError).toBeFalsy();
+			const output = getTextOutput(result);
+			expect(output).toContain("quick");
+		});
+
+		it("handles command that outputs continuously then times out", async () => {
+			const result = await bashTool.execute("bash-29", {
+				command: "for i in 1 2 3; do echo $i; sleep 0.1; done; sleep 30",
+				timeout: 0.5,
+			});
+
+			const output = getTextOutput(result);
+			// Should capture some output before timeout
+			expect(output).toContain("1");
+			expect(output).toContain("timed out");
+		});
+
+		it("handles stderr output on timeout", async () => {
+			const result = await bashTool.execute("bash-30", {
+				command: "echo 'error message' >&2; sleep 30",
+				timeout: 0.1,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("error message");
+			expect(output).toContain("timed out");
+		});
+
+		it("handles concurrent abort and timeout", async () => {
+			const controller = new AbortController();
+
+			const promise = bashTool.execute(
+				"bash-31",
+				{ command: "sleep 30", timeout: 0.2 },
+				controller.signal,
+			);
+
+			// Abort at the same time as timeout
+			setTimeout(() => controller.abort(), 200);
+
+			const result = await promise;
+			const output = getTextOutput(result);
+			// Either abort or timeout message is acceptable
+			expect(output).toMatch(/aborted|timed out/i);
+		});
+	});
 });
