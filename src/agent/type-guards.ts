@@ -404,3 +404,118 @@ export function getUserMessageText(msg: UserMessage): string {
 		.map((block) => block.text)
 		.join("");
 }
+
+/**
+ * Get the first tool call from an AssistantMessage, if any.
+ *
+ * @example
+ * ```typescript
+ * const firstCall = getFirstToolCall(assistantMsg);
+ * if (firstCall) {
+ *   console.log("First tool:", firstCall.name);
+ * }
+ * ```
+ */
+export function getFirstToolCall(msg: AssistantMessage): ToolCall | undefined {
+	return msg.content.find(isToolCall);
+}
+
+/**
+ * Check if a ToolResultMessage represents an error.
+ *
+ * @example
+ * ```typescript
+ * if (isErrorResult(toolResult)) {
+ *   console.error("Tool failed:", toolResult.toolName);
+ * }
+ * ```
+ */
+export function isErrorResult(msg: ToolResultMessage): boolean {
+	return msg.isError === true;
+}
+
+/**
+ * Get the last AssistantMessage from a message array.
+ *
+ * @example
+ * ```typescript
+ * const lastAssistant = getLastAssistantMessage(messages);
+ * if (lastAssistant) {
+ *   console.log("Last response:", getTextContent(lastAssistant));
+ * }
+ * ```
+ */
+export function getLastAssistantMessage(
+	messages: AppMessage[],
+): AssistantMessage | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (isAssistantMessage(msg)) {
+			return msg;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Get the last UserMessage from a message array.
+ *
+ * @example
+ * ```typescript
+ * const lastUser = getLastUserMessage(messages);
+ * if (lastUser) {
+ *   console.log("Last user input:", getUserMessageText(lastUser));
+ * }
+ * ```
+ */
+export function getLastUserMessage(
+	messages: AppMessage[],
+): UserMessage | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const msg = messages[i];
+		if (isUserMessage(msg)) {
+			return msg;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Count messages by role type.
+ *
+ * @example
+ * ```typescript
+ * const counts = countMessagesByRole(messages);
+ * console.log(`${counts.user} user, ${counts.assistant} assistant messages`);
+ * ```
+ */
+export function countMessagesByRole(messages: AppMessage[]): {
+	user: number;
+	assistant: number;
+	toolResult: number;
+	other: number;
+} {
+	const counts = { user: 0, assistant: 0, toolResult: 0, other: 0 };
+	for (const msg of messages) {
+		if (isUserMessage(msg)) counts.user++;
+		else if (isAssistantMessage(msg)) counts.assistant++;
+		else if (isToolResultMessage(msg)) counts.toolResult++;
+		else counts.other++;
+	}
+	return counts;
+}
+
+/**
+ * Extract all image content from any message content array.
+ *
+ * @example
+ * ```typescript
+ * const images = getImageContent(toolResult.content);
+ * console.log(`Found ${images.length} images`);
+ * ```
+ */
+export function getImageContent(
+	content: Array<TextContent | ThinkingContent | ImageContent | ToolCall>,
+): ImageContent[] {
+	return content.filter(isImageContent);
+}

@@ -193,4 +193,10 @@ export {
 	getThinkingContent,
 	hasToolCalls,
 	getUserMessageText,
+	getFirstToolCall,
+	isErrorResult,
+	getLastAssistantMessage,
+	getLastUserMessage,
+	countMessagesByRole,
+	getImageContent,
 } from "./type-guards.js";
