@@ -138,9 +138,9 @@ describe("ChannelStore", () => {
 			);
 
 			expect(attachments).toHaveLength(1);
-			expect(attachments[0].original).toBe("image.png");
-			expect(attachments[0].local).toContain("C123456/attachments/");
-			expect(attachments[0].local).toContain("image.png");
+			expect(attachments[0]!.original).toBe("image.png");
+			expect(attachments[0]!.local).toContain("C123456/attachments/");
+			expect(attachments[0]!.local).toContain("image.png");
 		});
 
 		it("uses url_private as fallback when url_private_download is missing", () => {
@@ -157,7 +157,7 @@ describe("ChannelStore", () => {
 			);
 
 			expect(attachments).toHaveLength(1);
-			expect(attachments[0].original).toBe("document.pdf");
+			expect(attachments[0]!.original).toBe("document.pdf");
 		});
 
 		it("skips files without URL", () => {
@@ -175,7 +175,7 @@ describe("ChannelStore", () => {
 			);
 
 			expect(attachments).toHaveLength(1);
-			expect(attachments[0].original).toBe("has-url.txt");
+			expect(attachments[0]!.original).toBe("has-url.txt");
 		});
 
 		it("skips files without name", () => {
@@ -268,8 +268,8 @@ describe("ChannelStore", () => {
 			const lines = content.trim().split("\n");
 
 			expect(lines).toHaveLength(2);
-			expect(JSON.parse(lines[0]).text).toBe("First message");
-			expect(JSON.parse(lines[1]).text).toBe("Second message");
+			expect(JSON.parse(lines[0]!).text).toBe("First message");
+			expect(JSON.parse(lines[1]!).text).toBe("Second message");
 		});
 
 		it("deduplicates messages with same channel and timestamp", async () => {
@@ -488,7 +488,7 @@ describe("ChannelStore", () => {
 
 			// Verify backup contains the original data
 			const backupContent = readFileSync(
-				join(channelDir, backupFiles[0]),
+				join(channelDir, backupFiles[0]!),
 				"utf-8",
 			);
 			expect(backupContent).toContain("Message to backup");
@@ -585,9 +585,9 @@ describe("ChannelStore", () => {
 			);
 
 			expect(attachments).toHaveLength(1);
-			expect(attachments[0].mimetype).toBe("application/javascript");
-			expect(attachments[0].filetype).toBe("javascript");
-			expect(attachments[0].size).toBe(1024);
+			expect(attachments[0]!.mimetype).toBe("application/javascript");
+			expect(attachments[0]!.filetype).toBe("javascript");
+			expect(attachments[0]!.size).toBe(1024);
 		});
 	});
 });

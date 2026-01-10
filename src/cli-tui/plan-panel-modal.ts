@@ -68,6 +68,7 @@ export class PlanPanelModal implements Component {
 			);
 		} else {
 			const selectedGoal = this.goals[this.selectedGoalIndex];
+			if (!selectedGoal) return lines;
 
 			// Show all goals as tabs
 			const goalTabs = this.goals.map((g, idx) => {
@@ -109,6 +110,7 @@ export class PlanPanelModal implements Component {
 
 				for (let i = 0; i < visible.length; i++) {
 					const task = visible[i];
+					if (!task) continue;
 					const actualIndex = start + i;
 					const isSelected = actualIndex === this.selectedTaskIndex;
 					const prefix = isSelected ? theme.fg("accent", "► ") : "  ";

@@ -193,8 +193,8 @@ describe("Guardian Config", () => {
 
 			expect(result.valid).toHaveLength(2);
 			expect(result.invalid).toHaveLength(1);
-			expect(result.invalid[0].pattern).toBe("[invalid(");
-			expect(result.invalid[0].error).toBeDefined();
+			expect(result.invalid[0]!.pattern).toBe("[invalid(");
+			expect(result.invalid[0]!.error).toBeDefined();
 		});
 
 		it("should handle empty array", () => {

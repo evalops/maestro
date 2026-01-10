@@ -153,7 +153,7 @@ describe("Session Endpoints", () => {
 
 			const body = getBody() as { sessions: Array<{ id: string }> };
 			expect(body.sessions).toHaveLength(2);
-			expect(body.sessions[0].id).toBe("test-session-1");
+			expect(body.sessions[0]!.id).toBe("test-session-1");
 		});
 	});
 

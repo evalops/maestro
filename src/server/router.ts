@@ -155,8 +155,8 @@ function matchPath(
 
 	const params: Record<string, string> = {};
 	for (let i = 0; i < routeSegments.length; i++) {
-		const routeSegment = routeSegments[i];
-		const pathSegment = pathSegments[i];
+		const routeSegment = routeSegments[i]!;
+		const pathSegment = pathSegments[i]!;
 		if (routeSegment.startsWith(":")) {
 			params[routeSegment.slice(1)] = pathSegment;
 			continue;

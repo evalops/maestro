@@ -136,9 +136,9 @@ describe("Audit Log Integrity", () => {
 			// Verify chain
 			previousHash = genesisHash;
 			for (let i = 0; i < entries.length; i++) {
-				const expectedHash = computeEntryHash(entries[i], previousHash);
+				const expectedHash = computeEntryHash(entries[i]!, previousHash);
 				expect(expectedHash).toBe(hashes[i]);
-				previousHash = hashes[i];
+				previousHash = hashes[i]!;
 			}
 		});
 
@@ -163,11 +163,11 @@ describe("Audit Log Integrity", () => {
 			];
 
 			// Build chain with original data
-			const hash1 = computeEntryHash(entries[0], genesisHash);
-			const hash2 = computeEntryHash(entries[1], hash1);
+			const hash1 = computeEntryHash(entries[0]!, genesisHash);
+			const hash2 = computeEntryHash(entries[1]!, hash1);
 
 			// Tamper with second entry
-			const tamperedEntry = { ...entries[1], action: "action.TAMPERED" };
+			const tamperedEntry = { ...entries[1]!, action: "action.TAMPERED" };
 			const tamperedHash = computeEntryHash(tamperedEntry, hash1);
 
 			// Hashes should not match

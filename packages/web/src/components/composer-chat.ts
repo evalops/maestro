@@ -927,25 +927,29 @@ export class ComposerChat extends LitElement {
 		let topPadding = 0;
 		let localStart = 0;
 		for (; localStart < totalVisible; localStart += 1) {
-			const next = topPadding + heights[localStart];
+			const h = heights[localStart];
+			if (h === undefined) break;
+			const next = topPadding + h;
 			if (next >= targetStart) break;
 			topPadding = next;
 		}
 		if (localStart >= totalVisible) {
 			const lastIndex = Math.max(0, totalVisible - 1);
 			localStart = lastIndex;
-			topPadding = Math.max(0, totalHeight - heights[lastIndex]);
+			topPadding = Math.max(0, totalHeight - (heights[lastIndex] ?? 0));
 		}
 
 		let visibleHeight = topPadding;
 		let localEnd = localStart;
 		for (; localEnd < totalVisible; localEnd += 1) {
-			visibleHeight += heights[localEnd];
+			const h = heights[localEnd];
+			if (h === undefined) break;
+			visibleHeight += h;
 			if (visibleHeight >= targetEnd) break;
 		}
 		if (localEnd === localStart) {
 			localEnd = Math.min(totalVisible, localStart + 1);
-			visibleHeight = topPadding + heights[localStart];
+			visibleHeight = topPadding + (heights[localStart] ?? 0);
 		} else {
 			localEnd += 1;
 		}
@@ -2178,8 +2182,9 @@ export class ComposerChat extends LitElement {
 										(t) => t.toolCallId === partial.id,
 									);
 									if (existingIndex >= 0) {
+										const existingTool = assistantMessage.tools[existingIndex]!;
 										assistantMessage.tools[existingIndex] = {
-											...assistantMessage.tools[existingIndex],
+											...existingTool,
 											args,
 											status: "pending",
 										};

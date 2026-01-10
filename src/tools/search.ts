@@ -446,8 +446,8 @@ Examples:
 			for (const line of lines) {
 				const match = line.match(countLineRegex);
 				if (match) {
-					const file = match[1];
-					const matchCount = Number.parseInt(match[2], 10);
+					const file = match[1]!;
+					const matchCount = Number.parseInt(match[2]!, 10);
 					allCounts.push({ file, count: matchCount });
 					totalMatches += matchCount;
 				}

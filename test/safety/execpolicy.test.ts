@@ -73,7 +73,7 @@ describe("execpolicy", () => {
 
 			const result = policy.check(["npm", "install"], () => "prompt");
 			expect(result.decision).toBe("prompt");
-			expect(result.matchedRules[0].type).toBe("heuristics");
+			expect(result.matchedRules[0]!.type).toBe("heuristics");
 		});
 
 		it("decision priority: forbidden > prompt > allow", () => {

@@ -168,7 +168,7 @@ describe("logError", () => {
 		logError("File read", error);
 
 		expect(consoleLogSpy).toHaveBeenCalled();
-		const output = consoleLogSpy.mock.calls[0][0] as string;
+		const output = consoleLogSpy.mock.calls[0]![0] as string;
 		expect(output).toContain("File read failed");
 		expect(output).toContain("Test error");
 	});

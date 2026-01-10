@@ -632,7 +632,7 @@ export function shouldGuardCommand(command: string): {
 		return { shouldGuard: false, trigger: null };
 	}
 	const gitMatch = command.match(/\bgit\s+(commit|push)\b/i);
-	if (gitMatch) {
+	if (gitMatch?.[1]) {
 		return { shouldGuard: true, trigger: `git ${gitMatch[1].toLowerCase()}` };
 	}
 

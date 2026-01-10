@@ -176,9 +176,9 @@ describe("withRetry", () => {
 		);
 
 		expect(onRetryCalls).toHaveLength(2);
-		expect(onRetryCalls[0].attempt).toBe(1);
-		expect(onRetryCalls[0].error.message).toBe("Rate limit");
-		expect(onRetryCalls[1].attempt).toBe(2);
+		expect(onRetryCalls[0]!.attempt).toBe(1);
+		expect(onRetryCalls[0]!.error.message).toBe("Rate limit");
+		expect(onRetryCalls[1]!.attempt).toBe(2);
 	});
 
 	it("uses exponential backoff for delays", async () => {

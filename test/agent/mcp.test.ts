@@ -42,8 +42,8 @@ describe("MCP config loader", () => {
 
 		const config = loadMcpConfig(testDir);
 		expect(config.servers).toHaveLength(1);
-		expect(config.servers[0].name).toBe("test-server");
-		expect(config.servers[0].command).toBe("node");
+		expect(config.servers[0]!.name).toBe("test-server");
+		expect(config.servers[0]!.command).toBe("node");
 	});
 
 	it("loads servers from mcpServers format (Claude Desktop style)", () => {
@@ -63,9 +63,9 @@ describe("MCP config loader", () => {
 
 		const config = loadMcpConfig(testDir);
 		expect(config.servers).toHaveLength(1);
-		expect(config.servers[0].name).toBe("my-server");
-		expect(config.servers[0].command).toBe("npx");
-		expect(config.servers[0].args).toEqual(["-y", "@example/mcp-server"]);
+		expect(config.servers[0]!.name).toBe("my-server");
+		expect(config.servers[0]!.command).toBe("npx");
+		expect(config.servers[0]!.args).toEqual(["-y", "@example/mcp-server"]);
 	});
 
 	it("excludes disabled servers", () => {
@@ -83,7 +83,7 @@ describe("MCP config loader", () => {
 
 		const config = loadMcpConfig(testDir);
 		expect(config.servers).toHaveLength(1);
-		expect(config.servers[0].name).toBe("enabled");
+		expect(config.servers[0]!.name).toBe("enabled");
 	});
 
 	it("detects http transport from url", () => {
@@ -100,7 +100,7 @@ describe("MCP config loader", () => {
 
 		const config = loadMcpConfig(testDir);
 		expect(config.servers).toHaveLength(1);
-		expect(config.servers[0].transport).toBe("http");
+		expect(config.servers[0]!.transport).toBe("http");
 	});
 
 	it("detects SSE transport when URL ends with /sse", () => {
@@ -117,7 +117,7 @@ describe("MCP config loader", () => {
 
 		const config = loadMcpConfig(testDir);
 		expect(config.servers).toHaveLength(1);
-		expect(config.servers[0].transport).toBe("sse");
+		expect(config.servers[0]!.transport).toBe("sse");
 	});
 
 	it("detects SSE transport when URL contains /sse/ path segment", () => {
@@ -133,7 +133,7 @@ describe("MCP config loader", () => {
 		);
 
 		const config = loadMcpConfig(testDir);
-		expect(config.servers[0].transport).toBe("sse");
+		expect(config.servers[0]!.transport).toBe("sse");
 	});
 
 	it("does NOT detect SSE for URLs with 'sse' in other positions (e.g., /sessions)", () => {
@@ -150,7 +150,7 @@ describe("MCP config loader", () => {
 
 		const config = loadMcpConfig(testDir);
 		expect(config.servers).toHaveLength(1);
-		expect(config.servers[0].transport).toBe("http");
+		expect(config.servers[0]!.transport).toBe("http");
 	});
 
 	it("detects SSE transport for sse subdomain", () => {
@@ -166,7 +166,7 @@ describe("MCP config loader", () => {
 		);
 
 		const config = loadMcpConfig(testDir);
-		expect(config.servers[0].transport).toBe("sse");
+		expect(config.servers[0]!.transport).toBe("sse");
 	});
 
 	it("rejects invalid server configs (stdio without command)", () => {
@@ -238,8 +238,8 @@ describe("MCP client manager", () => {
 
 		const status = manager.getStatus();
 		expect(status.servers).toHaveLength(1);
-		expect(status.servers[0].name).toBe("test");
-		expect(status.servers[0].connected).toBe(false);
+		expect(status.servers[0]!.name).toBe("test");
+		expect(status.servers[0]!.connected).toBe(false);
 	});
 
 	it("clears reconnect timers on disconnectAll", async () => {
@@ -285,7 +285,7 @@ describe("MCP client manager", () => {
 
 		status = manager.getStatus();
 		expect(status.servers).toHaveLength(1);
-		expect(status.servers[0].name).toBe("server1");
+		expect(status.servers[0]!.name).toBe("server1");
 	});
 
 	it("emits error event on connection failure", async () => {
@@ -303,7 +303,7 @@ describe("MCP client manager", () => {
 		await vi.advanceTimersByTimeAsync(100);
 
 		expect(errorHandler).toHaveBeenCalled();
-		expect(errorHandler.mock.calls[0][0].name).toBe("failing");
+		expect(errorHandler.mock.calls[0]![0].name).toBe("failing");
 	});
 
 	it("getAllTools returns empty array when no servers connected", () => {

@@ -100,12 +100,12 @@ describe("SessionManager - Deferred Session Creation", () => {
 
 			const sessions = sessionManager.loadAllSessions();
 			expect(sessions.length).toBe(1);
-			expect(sessions[0].summary).toContain("Deeply review the codebase");
-			expect(sessions[0].favorite).toBe(false);
+			expect(sessions[0]!.summary).toContain("Deeply review the codebase");
+			expect(sessions[0]!.favorite).toBe(false);
 
-			sessionManager.setSessionFavorite(sessions[0].path, true);
+			sessionManager.setSessionFavorite(sessions[0]!.path, true);
 			const updated = sessionManager.loadAllSessions();
-			expect(updated[0].favorite).toBe(true);
+			expect(updated[0]!.favorite).toBe(true);
 		});
 
 		it("prefers custom summary metadata when provided", () => {
@@ -118,7 +118,7 @@ describe("SessionManager - Deferred Session Creation", () => {
 			sessionManager.saveSessionSummary("Custom curated summary");
 
 			const sessions = sessionManager.loadAllSessions();
-			expect(sessions[0].summary).toBe("Custom curated summary");
+			expect(sessions[0]!.summary).toBe("Custom curated summary");
 		});
 	});
 
@@ -208,7 +208,7 @@ describe("SessionManager - Deferred Session Creation", () => {
 
 			// Add a user message
 			state.messages.push(createUserMessage("Hello"));
-			sessionManager.saveMessage(state.messages[0]);
+			sessionManager.saveMessage(state.messages[0]!);
 
 			// Still no file
 			expect(existsSync(sessionFile)).toBe(false);
@@ -271,7 +271,7 @@ describe("SessionManager - Deferred Session Creation", () => {
 			state.messages.push(createUserMessage("Test"));
 
 			sessionManager1.startSession(state);
-			sessionManager1.saveMessage(state.messages[0]);
+			sessionManager1.saveMessage(state.messages[0]!);
 
 			const sessionFile = sessionManager1.getSessionFile();
 			expect(existsSync(sessionFile)).toBe(true);
@@ -356,7 +356,7 @@ describe("SessionManager - Deferred Session Creation", () => {
 			const state = createMockState();
 			state.messages.push(createUserMessage("Test"));
 
-			sessionManager.saveMessage(state.messages[0]);
+			sessionManager.saveMessage(state.messages[0]!);
 			sessionManager.startSession(state);
 
 			const sessionFile = sessionManager.getSessionFile();

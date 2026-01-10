@@ -179,8 +179,8 @@ function generateLocalSummary(
 	const parts: string[] = [];
 
 	// Time range
-	const firstDate = turns[0].date.substring(0, 10);
-	const lastDate = turns[turns.length - 1].date.substring(0, 10);
+	const firstDate = turns[0]!.date.substring(0, 10);
+	const lastDate = turns[turns.length - 1]!.date.substring(0, 10);
 	if (firstDate === lastDate) {
 		parts.push(`Conversation on ${firstDate}`);
 	} else {

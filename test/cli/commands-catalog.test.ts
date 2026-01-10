@@ -41,7 +41,7 @@ describe("command catalog", () => {
 			);
 			const catalog = loadCommandCatalog(work);
 			expect(catalog).toHaveLength(1);
-			expect(catalog[0].prompt).toContain("Yo");
+			expect(catalog[0]!.prompt).toContain("Yo");
 		});
 	});
 

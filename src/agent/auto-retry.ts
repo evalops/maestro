@@ -39,7 +39,7 @@ function extractRetryDelayMs(errorMessage?: string): number | undefined {
 	const resetMatch = errorMessage.match(
 		/reset after (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i,
 	);
-	if (resetMatch) {
+	if (resetMatch?.[3]) {
 		const hours = resetMatch[1] ? Number.parseInt(resetMatch[1], 10) : 0;
 		const minutes = resetMatch[2] ? Number.parseInt(resetMatch[2], 10) : 0;
 		const seconds = Number.parseFloat(resetMatch[3]);
@@ -53,7 +53,7 @@ function extractRetryDelayMs(errorMessage?: string): number | undefined {
 
 	// Pattern 2: "Please retry in X[ms|s]"
 	const retryInMatch = errorMessage.match(/Please retry in ([0-9.]+)(ms|s)/i);
-	if (retryInMatch?.[1]) {
+	if (retryInMatch?.[1] && retryInMatch[2]) {
 		const value = Number.parseFloat(retryInMatch[1]);
 		if (!Number.isNaN(value) && value > 0) {
 			const ms = retryInMatch[2].toLowerCase() === "ms" ? value : value * 1000;
@@ -65,7 +65,7 @@ function extractRetryDelayMs(errorMessage?: string): number | undefined {
 	const retryDelayMatch = errorMessage.match(
 		/"retryDelay":\s*"([0-9.]+)(ms|s)"/i,
 	);
-	if (retryDelayMatch?.[1]) {
+	if (retryDelayMatch?.[1] && retryDelayMatch[2]) {
 		const value = Number.parseFloat(retryDelayMatch[1]);
 		if (!Number.isNaN(value) && value > 0) {
 			const ms =
@@ -258,10 +258,8 @@ export class AutoRetryController {
 
 		// Remove error message from agent state
 		const messages = agent.state.messages;
-		if (
-			messages.length > 0 &&
-			messages[messages.length - 1].role === "assistant"
-		) {
+		const lastMessage = messages[messages.length - 1];
+		if (lastMessage && lastMessage.role === "assistant") {
 			agent.replaceMessages(messages.slice(0, -1));
 		}
 

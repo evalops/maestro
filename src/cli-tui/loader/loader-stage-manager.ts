@@ -146,12 +146,12 @@ export class LoaderStageManager {
 			this.stages.push({ key, label });
 			index = this.stages.length - 1;
 		} else if (labelOverride) {
-			this.stages[index].label = labelOverride;
+			this.stages[index]!.label = labelOverride;
 		}
 		if (previousStageKey) {
 			this.completedStageKeys.add(previousStageKey);
 		}
-		const stage = this.stages[index];
+		const stage = this.stages[index]!;
 		this.currentStageKey = key;
 		if (stageChanged) {
 			this.telemetry.updateCurrentStage(key);

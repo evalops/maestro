@@ -50,7 +50,7 @@ describe("RequestScheduler", () => {
 
 		await Promise.all([first, second]);
 		expect(startTimes.length).toBe(2);
-		expect(startTimes[1] - startTimes[0]).toBeGreaterThanOrEqual(
+		expect(startTimes[1]! - startTimes[0]!).toBeGreaterThanOrEqual(
 			minDelayMs - jitterMs,
 		);
 	});

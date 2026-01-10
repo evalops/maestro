@@ -200,7 +200,19 @@ export async function handleBranch(
 					);
 					return;
 				}
-				targetIndex = userMessages[data.userMessageNumber - 1].index;
+				const targetUserMessage = userMessages[data.userMessageNumber - 1];
+				if (!targetUserMessage) {
+					sendJson(
+						res,
+						400,
+						{
+							error: `User message not found at index ${data.userMessageNumber}`,
+						},
+						corsHeaders,
+					);
+					return;
+				}
+				targetIndex = targetUserMessage.index;
 			} else if (data.messageIndex !== undefined) {
 				if (
 					data.messageIndex < 0 ||
@@ -236,11 +248,22 @@ export async function handleBranch(
 
 			// Create minimal agent state for branching
 			const { getRegisteredModels } = await import("../../models/registry.js");
+			const registeredModels = getRegisteredModels();
 			const registeredModel = modelKey
-				? (getRegisteredModels().find(
+				? (registeredModels.find(
 						(m) => `${m.provider}/${m.id}` === modelKey || m.id === modelKey,
-					) ?? getRegisteredModels()[0])
-				: getRegisteredModels()[0];
+					) ?? registeredModels[0])
+				: registeredModels[0];
+
+			if (!registeredModel) {
+				sendJson(
+					res,
+					500,
+					{ error: "No registered models available" },
+					corsHeaders,
+				);
+				return;
+			}
 
 			// Create minimal AgentState for createBranchedSession
 			// createBranchedSession only uses: messages, model, thinkingLevel

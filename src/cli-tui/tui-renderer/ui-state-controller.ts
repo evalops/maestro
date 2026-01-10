@@ -195,7 +195,7 @@ export class UiStateController {
 		if (candidate === "mode" || candidate === "set" || candidate === "style") {
 			candidate = tokens[1] ?? "";
 		}
-		const parsed = this.parseFooterMode(candidate);
+		const parsed = this.parseFooterMode(candidate ?? "");
 		if (!parsed) {
 			context.showError(
 				"Footer mode must be either 'ensemble' (rich) or 'solo' (minimal).",

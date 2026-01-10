@@ -69,10 +69,10 @@ describe("PlanView editor functionality", () => {
 		planView.moveTask("My Goal", id2, "up");
 
 		const updated = loadTodoStore(planFilePath);
-		const items = updated["My Goal"].items;
-		expect(items[0].id).toBe(id2);
-		expect(items[1].id).toBe(id1);
-		expect(items[2].id).toBe(id3);
+		const items = updated["My Goal"]!.items;
+		expect(items[0]!.id).toBe(id2);
+		expect(items[1]!.id).toBe(id1);
+		expect(items[2]!.id).toBe(id3);
 		expect(mockOptions.onStoreChanged).toHaveBeenCalled();
 	});
 
@@ -96,10 +96,10 @@ describe("PlanView editor functionality", () => {
 		planView.moveTask("My Goal", id2, "down");
 
 		const updated = loadTodoStore(planFilePath);
-		const items = updated["My Goal"].items;
-		expect(items[0].id).toBe(id1);
-		expect(items[1].id).toBe(id3);
-		expect(items[2].id).toBe(id2);
+		const items = updated["My Goal"]!.items;
+		expect(items[0]!.id).toBe(id1);
+		expect(items[1]!.id).toBe(id3);
+		expect(items[2]!.id).toBe(id2);
 		expect(mockOptions.onStoreChanged).toHaveBeenCalled();
 	});
 
@@ -121,11 +121,11 @@ describe("PlanView editor functionality", () => {
 		// Move top task up
 		planView.moveTask("My Goal", id1, "up");
 		let updated = loadTodoStore(planFilePath);
-		expect(updated["My Goal"].items[0].id).toBe(id1);
+		expect(updated["My Goal"]!.items[0]!.id).toBe(id1);
 
 		// Move bottom task down
 		planView.moveTask("My Goal", id2, "down");
 		updated = loadTodoStore(planFilePath);
-		expect(updated["My Goal"].items[1].id).toBe(id2);
+		expect(updated["My Goal"]!.items[1]!.id).toBe(id2);
 	});
 });

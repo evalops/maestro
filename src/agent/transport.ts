@@ -1021,6 +1021,7 @@ export class ProviderTransport implements AgentTransport {
 						break;
 					}
 					const toolCall = toolCallsToExecute[toolIndex];
+					if (!toolCall) continue;
 					const signature = stableStringify(toolCall.arguments);
 					const tail = this.recentToolCalls
 						.concat({ name: toolCall.name, signature })

@@ -108,7 +108,7 @@ export class CostTracker {
 	 */
 	getSummary(channelId: string): UsageSummary {
 		const records = this.loadUsageLog(channelId);
-		const today = new Date().toISOString().split("T")[0];
+		const today = new Date().toISOString().split("T")[0]!;
 
 		const todayRecords = records.filter((r) => r.timestamp.startsWith(today));
 

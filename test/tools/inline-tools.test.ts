@@ -55,8 +55,8 @@ describe("loadInlineTools", () => {
 
 		const tools = loadInlineTools(testDir);
 		expect(tools).toHaveLength(1);
-		expect(tools[0].name).toBe("hello");
-		expect(tools[0].description).toBe("Say hello");
+		expect(tools[0]!.name).toBe("hello");
+		expect(tools[0]!.description).toBe("Say hello");
 	});
 
 	it("loads tool with parameters", () => {
@@ -83,10 +83,10 @@ describe("loadInlineTools", () => {
 
 		const tools = loadInlineTools(testDir);
 		expect(tools).toHaveLength(1);
-		expect(tools[0].name).toBe("greet");
+		expect(tools[0]!.name).toBe("greet");
 
 		// Check schema has parameters
-		const schema = tools[0].parameters;
+		const schema = tools[0]!.parameters;
 		expect(schema).toBeDefined();
 		expect(schema.properties).toHaveProperty("name");
 		expect(schema.properties).toHaveProperty("loud");
@@ -113,7 +113,7 @@ describe("loadInlineTools", () => {
 
 		const tools = loadInlineTools(testDir);
 		expect(tools).toHaveLength(1);
-		expect(tools[0].name).toBe("deploy");
+		expect(tools[0]!.name).toBe("deploy");
 	});
 
 	it("loads tool with annotations", () => {
@@ -134,7 +134,7 @@ describe("loadInlineTools", () => {
 
 		const tools = loadInlineTools(testDir);
 		expect(tools).toHaveLength(1);
-		expect(tools[0].annotations?.destructiveHint).toBe(true);
+		expect(tools[0]!.annotations?.destructiveHint).toBe(true);
 	});
 
 	it("skips invalid tool definitions", () => {
@@ -156,7 +156,7 @@ describe("loadInlineTools", () => {
 
 		const tools = loadInlineTools(testDir);
 		expect(tools).toHaveLength(1);
-		expect(tools[0].name).toBe("valid");
+		expect(tools[0]!.name).toBe("valid");
 	});
 
 	it("validates tool name format", () => {
@@ -247,7 +247,7 @@ describe("inline tool execution", () => {
 		expect(tools).toHaveLength(1);
 
 		// Execute the tool
-		const result = await tools[0].execute("test-call", {});
+		const result = await tools[0]!.execute("test-call", {});
 		expect(result.isError).toBeFalsy();
 		expect(result.content).toHaveLength(1);
 		expect(result.content[0]).toEqual({
@@ -280,7 +280,7 @@ echo "Received: $input"
 		writeFileSync(join(composerDir, "tools.json"), JSON.stringify(config));
 
 		const tools = loadInlineTools(testDir);
-		const result = await tools[0].execute("test-call", { name: "world" });
+		const result = await tools[0]!.execute("test-call", { name: "world" });
 
 		expect(result.isError).toBeFalsy();
 		expect(result.content[0]).toHaveProperty("text");
@@ -302,7 +302,7 @@ echo "Received: $input"
 		writeFileSync(join(composerDir, "tools.json"), JSON.stringify(config));
 
 		const tools = loadInlineTools(testDir);
-		const result = await tools[0].execute("test-call", {});
+		const result = await tools[0]!.execute("test-call", {});
 
 		expect(result.isError).toBe(true);
 	});
@@ -321,7 +321,7 @@ echo "Received: $input"
 		writeFileSync(join(composerDir, "tools.json"), JSON.stringify(config));
 
 		const tools = loadInlineTools(testDir);
-		const result = await tools[0].execute("test-call", {});
+		const result = await tools[0]!.execute("test-call", {});
 
 		expect(result.isError).toBeFalsy();
 		const text = (result.content[0] as { type: "text"; text: string }).text;
@@ -342,7 +342,7 @@ echo "Received: $input"
 		writeFileSync(join(composerDir, "tools.json"), JSON.stringify(config));
 
 		const tools = loadInlineTools(testDir);
-		const result = await tools[0].execute("test-call", {});
+		const result = await tools[0]!.execute("test-call", {});
 
 		expect(result.isError).toBe(true);
 		const text = (result.content[0] as { type: "text"; text: string }).text;
@@ -364,7 +364,7 @@ echo "Received: $input"
 		writeFileSync(join(composerDir, "tools.json"), JSON.stringify(config));
 
 		const tools = loadInlineTools(testDir);
-		const result = await tools[0].execute("test-call", {});
+		const result = await tools[0]!.execute("test-call", {});
 
 		expect(result.isError).toBeFalsy();
 		const text = (result.content[0] as { type: "text"; text: string }).text;
@@ -396,7 +396,7 @@ echo "Received: $input"
 
 		try {
 			const tools = loadInlineTools(testDir);
-			const result = await tools[0].execute("test-call", {});
+			const result = await tools[0]!.execute("test-call", {});
 
 			expect(result.isError).toBeFalsy();
 			const text = (result.content[0] as { type: "text"; text: string }).text;

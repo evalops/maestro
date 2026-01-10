@@ -313,7 +313,10 @@ export interface IpAccessConfig {
 function parseCidr(cidr: string): { start: bigint; end: bigint } | null {
 	const parts = cidr.split("/");
 	const ip = parts[0];
-	const prefix = parts.length > 1 ? Number.parseInt(parts[1], 10) : 32;
+	if (!ip) {
+		return null;
+	}
+	const prefix = parts.length > 1 ? Number.parseInt(parts[1]!, 10) : 32;
 
 	if (Number.isNaN(prefix) || prefix < 0 || prefix > 32) {
 		return null;
@@ -327,11 +330,12 @@ function parseCidr(cidr: string): { start: bigint; end: bigint } | null {
 		return null;
 	}
 
+	// Length check above guarantees these exist
 	const ipNum = BigInt(
-		((ipParts[0] << 24) |
-			(ipParts[1] << 16) |
-			(ipParts[2] << 8) |
-			ipParts[3]) >>>
+		((ipParts[0]! << 24) |
+			(ipParts[1]! << 16) |
+			(ipParts[2]! << 8) |
+			ipParts[3]!) >>>
 			0,
 	);
 	const mask = BigInt(0xffffffff) << BigInt(32 - prefix);
@@ -355,8 +359,10 @@ function ipToNumber(ip: string): bigint | null {
 		return null;
 	}
 
+	// Length check above guarantees these exist
 	return BigInt(
-		((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0,
+		((parts[0]! << 24) | (parts[1]! << 16) | (parts[2]! << 8) | parts[3]!) >>>
+			0,
 	);
 }
 

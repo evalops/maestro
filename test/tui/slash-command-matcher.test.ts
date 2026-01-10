@@ -44,7 +44,7 @@ describe("SlashCommandMatcher", () => {
 				favorites: new Set(),
 				recents: new Set(),
 			});
-			expect(matches[0].name).toBe("help");
+			expect(matches[0]!.name).toBe("help");
 		});
 
 		it("alias exact match scores high", () => {
@@ -52,7 +52,7 @@ describe("SlashCommandMatcher", () => {
 				favorites: new Set(),
 				recents: new Set(),
 			});
-			expect(matches[0].name).toBe("help");
+			expect(matches[0]!.name).toBe("help");
 		});
 
 		it("prefix match works", () => {
@@ -81,7 +81,7 @@ describe("SlashCommandMatcher", () => {
 				favorites: new Set(["theme"]),
 				recents: new Set(),
 			});
-			expect(matches[0].name).toBe("theme");
+			expect(matches[0]!.name).toBe("theme");
 		});
 
 		it("recents are prioritized with empty query", () => {
@@ -89,7 +89,7 @@ describe("SlashCommandMatcher", () => {
 				favorites: new Set(),
 				recents: new Set(["model"]),
 			});
-			expect(matches[0].name).toBe("model");
+			expect(matches[0]!.name).toBe("model");
 		});
 
 		it("favorites outrank recents", () => {
@@ -97,8 +97,8 @@ describe("SlashCommandMatcher", () => {
 				favorites: new Set(["theme"]),
 				recents: new Set(["model"]),
 			});
-			expect(matches[0].name).toBe("theme");
-			expect(matches[1].name).toBe("model");
+			expect(matches[0]!.name).toBe("theme");
+			expect(matches[1]!.name).toBe("model");
 		});
 
 		it("returns empty array when no matches", () => {
@@ -114,7 +114,7 @@ describe("SlashCommandMatcher", () => {
 				favorites: new Set(),
 				recents: new Set(),
 			});
-			expect(matches[0].name).toBe("help");
+			expect(matches[0]!.name).toBe("help");
 		});
 
 		it("alias prefix match works", () => {

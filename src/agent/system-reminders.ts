@@ -216,7 +216,7 @@ export class SystemReminderManager {
 			arr: T[],
 		): number => {
 			for (let i = arr.length - 1; i >= 0; i--) {
-				if (arr[i].type === "text") return i;
+				if (arr[i]?.type === "text") return i;
 			}
 			return -1;
 		};
@@ -405,7 +405,10 @@ export function extractSystemReminders(text: string): string[] {
 	const reminders: string[] = [];
 	let match: RegExpExecArray | null = regex.exec(text);
 	while (match !== null) {
-		reminders.push(match[1].trim());
+		const captured = match[1];
+		if (captured !== undefined) {
+			reminders.push(captured.trim());
+		}
 		match = regex.exec(text);
 	}
 	return reminders;

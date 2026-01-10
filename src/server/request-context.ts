@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
 export interface RequestContext {
 	requestId: string;
@@ -57,7 +57,10 @@ export function parseTraceParent(header?: string | string[]): {
 		};
 	}
 
-	const [_, traceId, parentSpanId, flags] = parts;
+	// Length validated above, safe to assert non-null
+	const traceId = parts[1]!;
+	const parentSpanId = parts[2]!;
+	const flags = parts[3]!;
 	if (
 		!isValidTraceId(traceId) ||
 		!isValidSpanId(parentSpanId) ||

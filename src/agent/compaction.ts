@@ -131,7 +131,7 @@ function getAssistantUsage(msg: AppMessage): Usage | null {
  */
 export function getLastAssistantUsage(messages: AppMessage[]): Usage | null {
 	for (let i = messages.length - 1; i >= 0; i--) {
-		const usage = getAssistantUsage(messages[i]);
+		const usage = getAssistantUsage(messages[i]!);
 		if (usage) return usage;
 	}
 	return null;
@@ -148,6 +148,7 @@ export function getLastAssistantUsageFromEntries(
 ): Usage | null {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
+		if (!entry) continue;
 		if (entry.type === "message") {
 			const usage = getAssistantUsage(entry.message as AppMessage);
 			if (usage) return usage;
@@ -230,7 +231,7 @@ function findTurnBoundaries(
 ): number[] {
 	const boundaries: number[] = [];
 	for (let i = startIndex; i < endIndex; i++) {
-		if (messages[i].role === "user") {
+		if (messages[i]!.role === "user") {
 			boundaries.push(i);
 		}
 	}
@@ -251,7 +252,7 @@ export function findTurnStartIndex(
 	startIndex: number,
 ): number {
 	for (let i = entryIndex; i >= startIndex; i--) {
-		if (messages[i].role === "user") {
+		if (messages[i]!.role === "user") {
 			return i;
 		}
 	}
@@ -293,7 +294,7 @@ export function findCutPoint(
 	// Collect assistant usages walking backwards from endIndex
 	const assistantUsages: Array<{ index: number; tokens: number }> = [];
 	for (let i = endIndex - 1; i >= startIndex; i--) {
-		const usage = getAssistantUsage(messages[i]);
+		const usage = getAssistantUsage(messages[i]!);
 		if (usage) {
 			assistantUsages.push({
 				index: i,
@@ -304,22 +305,23 @@ export function findCutPoint(
 
 	if (assistantUsages.length === 0) {
 		// No usage info, keep last turn only
-		return boundaries[boundaries.length - 1];
+		return boundaries[boundaries.length - 1]!;
 	}
 
 	// Walk through and find where cumulative token difference exceeds keepRecentTokens
-	const newestTokens = assistantUsages[0].tokens;
+	const newestTokens = assistantUsages[0]!.tokens;
 	let cutIndex = startIndex; // Default: keep everything in range
 
 	for (let i = 1; i < assistantUsages.length; i++) {
-		const tokenDiff = newestTokens - assistantUsages[i].tokens;
+		const tokenDiff = newestTokens - assistantUsages[i]!.tokens;
 		if (tokenDiff >= keepRecentTokens) {
 			// Find the turn boundary at or before the assistant we want to keep
-			const lastKeptAssistantIndex = assistantUsages[i - 1].index;
+			const lastKeptAssistantIndex = assistantUsages[i - 1]!.index;
 
 			for (let b = boundaries.length - 1; b >= 0; b--) {
-				if (boundaries[b] <= lastKeptAssistantIndex) {
-					cutIndex = boundaries[b];
+				const boundary = boundaries[b];
+				if (boundary !== undefined && boundary <= lastKeptAssistantIndex) {
+					cutIndex = boundary;
 					break;
 				}
 			}
@@ -346,7 +348,7 @@ function findValidCutPoints(
 ): number[] {
 	const cutPoints: number[] = [];
 	for (let i = startIndex; i < endIndex; i++) {
-		const role = messages[i].role;
+		const role = messages[i]!.role;
 		// user and assistant are valid cut points
 		// toolResult must stay with its preceding tool call
 		if (role === "user" || role === "assistant") {
@@ -393,7 +395,7 @@ export function findCutPointWithSplitInfo(
 	let cutIndex = startIndex;
 
 	for (let i = endIndex - 1; i >= startIndex; i--) {
-		const usage = getAssistantUsage(messages[i]);
+		const usage = getAssistantUsage(messages[i]!);
 		if (usage) {
 			accumulatedTokens = calculateContextTokens(usage);
 			// Using cumulative tokens from the last assistant message
@@ -481,7 +483,7 @@ export function adjustBoundaryForToolResults(
 	// Walk backwards to find missing tool calls
 	while (missingToolCalls.size > 0 && adjusted > 0) {
 		adjusted -= 1;
-		const candidate = messages[adjusted];
+		const candidate = messages[adjusted]!;
 		processAssistantMessage(candidate);
 		processToolResultMessage(candidate);
 	}

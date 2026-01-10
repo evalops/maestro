@@ -110,6 +110,7 @@ export const webfetchTool = createTool<typeof webfetchSchema, WebfetchDetails>({
 
 		for (let i = 0; i < data.results.length; i++) {
 			const result = data.results[i];
+			if (!result) continue;
 			const textWeight = result.text
 				? Math.min(result.text.length, MAX_CONTENT_CHARS * 2)
 				: 0;

@@ -26,7 +26,7 @@ function generateDiffString(
 	let lastWasChange = false;
 
 	for (let i = 0; i < parts.length; i++) {
-		const part = parts[i];
+		const part = parts[i]!;
 		const raw = part.value.split("\n");
 		if (raw[raw.length - 1] === "") {
 			raw.pop();
@@ -46,8 +46,9 @@ function generateDiffString(
 			}
 			lastWasChange = true;
 		} else {
+			const nextPart = parts[i + 1];
 			const nextPartIsChange =
-				i < parts.length - 1 && (parts[i + 1].added || parts[i + 1].removed);
+				i < parts.length - 1 && (nextPart?.added || nextPart?.removed);
 
 			if (lastWasChange || nextPartIsChange) {
 				let linesToShow = raw;

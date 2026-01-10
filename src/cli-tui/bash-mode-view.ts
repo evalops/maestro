@@ -491,7 +491,12 @@ ${muted("Back to normal chat.")}`,
 			return null;
 		}
 		const key = exportMatch[1];
-		let value = exportMatch[2];
+		const rawValue = exportMatch[2];
+		// Guard against undefined (regex groups always exist after successful match, but TS doesn't know)
+		if (key === undefined || rawValue === undefined) {
+			return null;
+		}
+		let value = rawValue;
 		// Strip surrounding quotes if present (only if length > 1 to avoid single quote edge case)
 		if (
 			value.length > 1 &&
@@ -642,7 +647,10 @@ ${muted("(persists for this bash mode session)")}`;
 			this.historyIndex++;
 		}
 		if (this.historyIndex !== null) {
-			this.applyHistoryText(this.history[this.historyIndex]);
+			const historyEntry = this.history[this.historyIndex];
+			if (historyEntry !== undefined) {
+				this.applyHistoryText(historyEntry);
+			}
 		}
 		return true;
 	}

@@ -738,7 +738,7 @@ export function convertComposerMessageToApp(
 		// Generate tool result messages for each tool call
 		// These follow the assistant message in the conversation
 		tools.forEach((tool, toolIndex) => {
-			const normalizedCall = toolCalls[toolIndex];
+			const normalizedCall = toolCalls[toolIndex]!;
 			results.push(
 				normalizeToolResult(tool, normalizedCall, message.timestamp, context),
 			);

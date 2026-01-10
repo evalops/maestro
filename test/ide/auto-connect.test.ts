@@ -160,7 +160,7 @@ describe("IDE Auto-Connect", () => {
 			const ides = detectIDEs();
 
 			if (ides.length > 0) {
-				const firstIDE = ides[0];
+				const firstIDE = ides[0]!;
 				const connected = manager.connectTo(firstIDE.type);
 
 				expect(connected).not.toBeNull();
@@ -173,7 +173,7 @@ describe("IDE Auto-Connect", () => {
 			const ides = detectIDEs();
 
 			if (ides.length > 0) {
-				manager.connectTo(ides[0].type);
+				manager.connectTo(ides[0]!.type);
 				manager.disconnect();
 
 				expect(manager.getConnectedIDE()).toBeNull();

@@ -419,9 +419,8 @@ function applyProviderLoader(
 	provider: CustomProvider,
 	options?: { includeDisabled?: boolean },
 ): CustomProvider | null {
-	const loader =
-		PROVIDER_LOADERS[provider.id] ??
-		PROVIDER_LOADERS[provider.id.split("-")[0]]; // Try base name (e.g., "bedrock" from "aws-bedrock")
+	const baseName = provider.id.split("-")[0] ?? provider.id;
+	const loader = PROVIDER_LOADERS[provider.id] ?? PROVIDER_LOADERS[baseName]; // Try base name (e.g., "bedrock" from "aws-bedrock")
 
 	if (!loader) {
 		return provider;
@@ -476,7 +475,8 @@ function parseJsoncWithErrors(text: string, filePath: string): unknown {
 			.map((e) => {
 				const beforeOffset = text.substring(0, e.offset).split("\n");
 				const line = beforeOffset.length;
-				const column = beforeOffset[beforeOffset.length - 1].length + 1;
+				const lastLine = beforeOffset[beforeOffset.length - 1];
+				const column = (lastLine?.length ?? 0) + 1;
 				const problemLine = lines[line - 1];
 
 				const error = `${printParseErrorCode(e.error)} at line ${line}, column ${column}`;
@@ -896,7 +896,7 @@ function capitalize(value: string): string {
 
 function deriveProviderApi(provider?: string): Api {
 	if (provider && FACTORY_API_MAP[provider as keyof typeof FACTORY_API_MAP]) {
-		return FACTORY_API_MAP[provider as keyof typeof FACTORY_API_MAP];
+		return FACTORY_API_MAP[provider as keyof typeof FACTORY_API_MAP]!;
 	}
 	return "openai-responses";
 }
@@ -1032,7 +1032,7 @@ function stripJsonComments(input: string): string {
 	let previousChar = "";
 	let result = "";
 	for (let i = 0; i < input.length; i++) {
-		const char = input[i];
+		const char = input[i]!;
 		const next = input[i + 1];
 		if (!insideString && char === "/" && next === "/") {
 			while (i < input.length && input[i] !== "\n") {
@@ -1158,7 +1158,9 @@ export function validateConfig(): ConfigValidationResult {
 			// Find file references
 			const fileMatches = [...raw.matchAll(/\{file:([^}]+)\}/g)];
 			for (const match of fileMatches) {
-				let filePath = expandTildePath(match[1]);
+				const matchedPath = match[1];
+				if (!matchedPath) continue;
+				let filePath = expandTildePath(matchedPath);
 				if (!isAbsolute(filePath)) {
 					filePath = join(dirname(path), filePath);
 				}
@@ -1175,6 +1177,7 @@ export function validateConfig(): ConfigValidationResult {
 			const envMatches = [...raw.matchAll(/\{env:([^}]+)\}/g)];
 			for (const match of envMatches) {
 				const varName = match[1];
+				if (!varName) continue;
 				result.summary.envVars.push(varName);
 
 				if (!process.env[varName]) {
@@ -1310,7 +1313,9 @@ export function inspectConfig(): ConfigInspection {
 		const fileMatches = [...raw.matchAll(/\{file:([^}]+)\}/g)];
 
 		for (const match of fileMatches) {
-			let filePath = expandTildePath(match[1]);
+			const matchedPath = match[1];
+			if (!matchedPath) continue;
+			let filePath = expandTildePath(matchedPath);
 			if (!isAbsolute(filePath)) {
 				filePath = join(dirname(path), filePath);
 			}
@@ -1343,7 +1348,10 @@ export function inspectConfig(): ConfigInspection {
 		const envMatches = [...raw.matchAll(/\{env:([^}]+)\}/g)];
 
 		for (const match of envMatches) {
-			envVarsSet.add(match[1]);
+			const envVar = match[1];
+			if (envVar) {
+				envVarsSet.add(envVar);
+			}
 		}
 	}
 
@@ -1401,7 +1409,9 @@ export function resolveAlias(
 
 	// Parse format: "provider/modelId"
 	const parts = target.split("/");
-	if (parts.length !== 2) {
+	const provider = parts[0];
+	const modelId = parts[1];
+	if (parts.length !== 2 || !provider || !modelId) {
 		logger.warn("Invalid alias target, expected format: provider/modelId", {
 			target,
 			alias,
@@ -1410,8 +1420,8 @@ export function resolveAlias(
 	}
 
 	return {
-		provider: parts[0],
-		modelId: parts[1],
+		provider,
+		modelId,
 	};
 }
 

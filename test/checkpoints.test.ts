@@ -107,7 +107,7 @@ describe("Checkpoint System", () => {
 				expect(checkpoint?.toolCallId).toBe("call-123");
 				expect(checkpoint?.description).toBe("Test checkpoint");
 				expect(checkpoint?.snapshots).toHaveLength(1);
-				expect(checkpoint?.snapshots[0].content).toBe("content");
+				expect(checkpoint?.snapshots[0]!.content).toBe("content");
 			});
 
 			it("should return null when no files can be snapshotted", () => {
@@ -289,7 +289,7 @@ describe("Checkpoint System", () => {
 				const result = store.restoreToCheckpoint("nonexistent-id");
 
 				expect(result.success).toBe(false);
-				expect(result.failedFiles[0].error).toContain("not found");
+				expect(result.failedFiles[0]!.error).toContain("not found");
 			});
 		});
 
@@ -305,9 +305,9 @@ describe("Checkpoint System", () => {
 				const checkpoints = store.getCheckpoints();
 
 				expect(checkpoints).toHaveLength(3);
-				expect(checkpoints[0].toolName).toBe("Write");
-				expect(checkpoints[1].toolName).toBe("Edit");
-				expect(checkpoints[2].toolName).toBe("Bash");
+				expect(checkpoints[0]!.toolName).toBe("Write");
+				expect(checkpoints[1]!.toolName).toBe("Edit");
+				expect(checkpoints[2]!.toolName).toBe("Bash");
 			});
 		});
 
@@ -346,7 +346,7 @@ describe("Checkpoint System", () => {
 				const checkpoints = store2.getCheckpoints();
 
 				expect(checkpoints).toHaveLength(3);
-				expect(checkpoints[0].toolCallId).toBe("call-2"); // First one was removed
+				expect(checkpoints[0]!.toolCallId).toBe("call-2"); // First one was removed
 			});
 		});
 
@@ -388,7 +388,7 @@ describe("Checkpoint System", () => {
 				});
 
 				expect(store3.getCheckpoints()).toHaveLength(1);
-				expect(store3.getCheckpoints()[0].toolCallId).toBe("call-1");
+				expect(store3.getCheckpoints()[0]!.toolCallId).toBe("call-1");
 			});
 		});
 	});

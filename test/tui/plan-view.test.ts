@@ -259,7 +259,7 @@ describe("PlanView clear functionality", () => {
 
 		// Verify plan hint was updated (not null since Plan B remains)
 		expect(mockOptions.setPlanHint).toHaveBeenCalled();
-		const hintCall = mockOptions.setPlanHint.mock.calls[0][0];
+		const hintCall = mockOptions.setPlanHint.mock.calls[0]![0];
 		expect(hintCall).toContain("Plan B");
 	});
 });

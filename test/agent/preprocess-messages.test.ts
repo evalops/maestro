@@ -80,22 +80,22 @@ describe("defaultPreprocessMessages", () => {
 			undefined,
 		);
 
-		const user = out[0];
+		const user = out[0]!;
 		expect(user.role).toBe("user");
 		expect(Array.isArray(user.content)).toBe(true);
 		if (Array.isArray(user.content)) {
 			expect(user.content).toHaveLength(1);
-			expect(user.content[0]?.type).toBe("text");
+			expect(user.content[0]!.type).toBe("text");
 			expect(
 				(user.content[0] as { type: "text"; text: string }).text,
 			).toContain("does not support image");
 		}
 
-		const toolResult = out[1];
+		const toolResult = out[1]!;
 		expect(toolResult.role).toBe("toolResult");
 		if (toolResult.role === "toolResult") {
 			expect(toolResult.content).toHaveLength(1);
-			expect(toolResult.content[0]?.type).toBe("text");
+			expect((toolResult.content[0] as { type: string }).type).toBe("text");
 		}
 	});
 
@@ -141,7 +141,7 @@ describe("defaultPreprocessMessages", () => {
 			| undefined;
 		expect(lastCall?.[1]).toMatchObject({ maxWidth: 2000, maxHeight: 2000 });
 
-		const user = out[0];
+		const user = out[0]!;
 		expect(user.role).toBe("user");
 		if (user.role === "user" && Array.isArray(user.content)) {
 			const imageBlocks = user.content.filter((c) => c.type === "image");

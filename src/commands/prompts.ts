@@ -82,11 +82,11 @@ function parseFrontmatter(content: string): {
 		return { frontmatter: {}, body: content };
 	}
 
-	const [, yamlContent, body] = match;
+	const [, yamlContent, body = ""] = match;
 	const frontmatter: Record<string, unknown> = {};
 
 	// Simple YAML parser for common patterns (key: value and arrays)
-	const lines = yamlContent.split("\n");
+	const lines = yamlContent!.split("\n");
 	let currentKey: string | null = null;
 	let currentArray: string[] | null = null;
 
@@ -180,7 +180,7 @@ function extractNamedPlaceholders(body: string): string[] {
 	const placeholders = new Set<string>();
 
 	for (const match of body.matchAll(pattern)) {
-		const name = match[1];
+		const name = match[1]!;
 		// Skip special placeholders
 		if (name === "ARGUMENTS") continue;
 		placeholders.add(name);
@@ -400,7 +400,7 @@ export function parsePromptArgs(argString: string): ParsedPromptArgs {
 	let quoteChar = "";
 
 	for (let i = 0; i < argString.length; i++) {
-		const char = argString[i];
+		const char = argString[i]!;
 
 		if (!inQuotes && (char === '"' || char === "'")) {
 			inQuotes = true;

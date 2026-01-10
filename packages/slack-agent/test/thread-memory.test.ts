@@ -127,8 +127,8 @@ describe("ThreadMemoryManager", () => {
 
 			// Should only include user and assistant messages
 			expect(messages).toHaveLength(2);
-			expect(messages[0].role).toBe("user");
-			expect(messages[1].role).toBe("assistant");
+			expect(messages[0]!.role).toBe("user");
+			expect(messages[1]!.role).toBe("assistant");
 		});
 	});
 

@@ -24,7 +24,7 @@ function parseVersion(version: string): [number, number, number] {
 	if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) {
 		throw new Error(`Invalid version string: ${version}`);
 	}
-	return [parts[0], parts[1], parts[2]];
+	return [parts[0]!, parts[1]!, parts[2]!];
 }
 
 /**
@@ -301,8 +301,8 @@ describe("version script integration", () => {
 			];
 
 			for (let i = 1; i < versions.length; i++) {
-				const prev = parseVersion(versions[i - 1]);
-				const curr = parseVersion(versions[i]);
+				const prev = parseVersion(versions[i - 1]!);
+				const curr = parseVersion(versions[i]!);
 
 				// Current should be "greater" than previous
 				const prevSum = prev[0] * 10000 + prev[1] * 100 + prev[2];

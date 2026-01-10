@@ -225,7 +225,7 @@ export function resolveVarRefs(
 		throw new Error(`Variable reference not found: ${value}`);
 	}
 	visited.add(value);
-	return resolveVarRefs(vars[value], vars, visited);
+	return resolveVarRefs(vars[value]!, vars, visited);
 }
 
 /**

@@ -12,7 +12,7 @@
  * - COMPOSER_AUTO_TEST_COMMAND: Custom test command (auto-detected if not set)
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { minimatch } from "minimatch";
 import { createLogger } from "../utils/logger.js";
@@ -462,10 +462,13 @@ function parseGenericOutput(output: string): Partial<TestResult> {
 	for (const pattern of failurePatterns) {
 		let match = pattern.exec(output);
 		while (match !== null) {
-			failures.push({
-				testName: match[1].trim(),
-				errorMessage: match[1].trim(),
-			});
+			const matchedText = match[1];
+			if (matchedText) {
+				failures.push({
+					testName: matchedText.trim(),
+					errorMessage: matchedText.trim(),
+				});
+			}
 			match = pattern.exec(output);
 		}
 	}
@@ -475,11 +478,11 @@ function parseGenericOutput(output: string): Partial<TestResult> {
 	const failMatch = output.match(/(\d+)\s+fail(?:ed|ing)?/i);
 	const skipMatch = output.match(/(\d+)\s+skip(?:ped)?/i);
 
-	const passed = passMatch ? Number.parseInt(passMatch[1], 10) : 0;
+	const passed = passMatch ? Number.parseInt(passMatch[1]!, 10) : 0;
 	const failed = failMatch
-		? Number.parseInt(failMatch[1], 10)
+		? Number.parseInt(failMatch[1]!, 10)
 		: failures.length;
-	const skipped = skipMatch ? Number.parseInt(skipMatch[1], 10) : 0;
+	const skipped = skipMatch ? Number.parseInt(skipMatch[1]!, 10) : 0;
 
 	return {
 		totalTests: passed + failed + skipped,
@@ -919,7 +922,7 @@ export function formatTestResult(result: TestResult): string {
 					: "";
 				lines.push(`  • ${failure.testName}${location}`);
 				if (failure.errorMessage) {
-					const msg = failure.errorMessage.split("\n")[0].slice(0, 100);
+					const msg = failure.errorMessage.split("\n")[0]?.slice(0, 100) ?? "";
 					lines.push(`    ${msg}`);
 				}
 			}

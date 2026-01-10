@@ -324,6 +324,7 @@ export async function* streamAnthropic(
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const msg = transformedMessages[i];
+		if (!msg) continue;
 
 		if (msg.role === "user") {
 			const content =
@@ -398,7 +399,7 @@ export async function* streamAnthropic(
 			let j = i + 1;
 			while (
 				j < context.messages.length &&
-				context.messages[j].role === "toolResult"
+				context.messages[j]?.role === "toolResult"
 			) {
 				const nextMsg = context.messages[j] as ToolResultMessage;
 				toolResults.push({
@@ -458,7 +459,7 @@ export async function* streamAnthropic(
 			return mappedTool;
 		}) || [];
 
-	if (tools.length > 0 && tools[tools.length - 1].cache_control) {
+	if (tools.length > 0 && tools[tools.length - 1]?.cache_control) {
 		cacheAppliedCount++;
 	}
 
@@ -484,7 +485,7 @@ export async function* streamAnthropic(
 				? { cache_control: { type: "ephemeral" as const } }
 				: {}),
 		});
-		if (systemBlocks[0].cache_control) {
+		if (systemBlocks[0]?.cache_control) {
 			cacheAppliedCount++;
 		}
 	}
@@ -496,7 +497,7 @@ export async function* streamAnthropic(
 		i--
 	) {
 		const msg = messages[i];
-		if (msg.role === "user" && Array.isArray(msg.content)) {
+		if (msg?.role === "user" && Array.isArray(msg.content)) {
 			const lastContent = msg.content[msg.content.length - 1];
 			if (
 				lastContent &&

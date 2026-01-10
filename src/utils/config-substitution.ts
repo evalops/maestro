@@ -104,6 +104,7 @@ export function substituteFileRefs(text: string, configDir: string): string {
 
 		for (const match of matches) {
 			let filePath = match[1];
+			if (!filePath) continue;
 
 			filePath = expandTildePath(filePath);
 

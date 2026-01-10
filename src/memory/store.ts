@@ -125,6 +125,9 @@ export function updateMemory(
 	}
 
 	const entry = store.entries[index];
+	if (!entry) {
+		return null;
+	}
 	if (updates.content !== undefined) {
 		entry.content = updates.content;
 	}

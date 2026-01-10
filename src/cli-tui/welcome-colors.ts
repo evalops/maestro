@@ -16,19 +16,19 @@ export function gradientColor(intensity: number): (input: string) => string {
 export function interpolateGradient(value: number): string {
 	const clamped = Math.max(0, Math.min(1, value));
 	for (let i = 0; i < ORB_PALETTE.length - 1; i++) {
-		const current = ORB_PALETTE[i];
-		const next = ORB_PALETTE[i + 1];
+		const current = ORB_PALETTE[i]!;
+		const next = ORB_PALETTE[i + 1]!;
 		if (clamped <= next.stop) {
 			const range = next.stop - current.stop || 1;
 			const ratio = (clamped - current.stop) / range;
-			const r = lerp(current.color[0], next.color[0], ratio);
-			const g = lerp(current.color[1], next.color[1], ratio);
-			const b = lerp(current.color[2], next.color[2], ratio);
+			const r = lerp(current.color[0]!, next.color[0]!, ratio);
+			const g = lerp(current.color[1]!, next.color[1]!, ratio);
+			const b = lerp(current.color[2]!, next.color[2]!, ratio);
 			return rgbToHex(r, g, b);
 		}
 	}
-	const last = ORB_PALETTE[ORB_PALETTE.length - 1];
-	return rgbToHex(last.color[0], last.color[1], last.color[2]);
+	const last = ORB_PALETTE[ORB_PALETTE.length - 1]!;
+	return rgbToHex(last.color[0]!, last.color[1]!, last.color[2]!);
 }
 
 function lerp(start: number, end: number, ratio: number): number {

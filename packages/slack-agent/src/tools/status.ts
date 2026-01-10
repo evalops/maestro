@@ -133,7 +133,7 @@ export function createStatusTool(
 				if (duResult.code === 0) {
 					const match = duResult.stdout.match(/^(\d+)/);
 					if (match) {
-						health.workspace.usedBytes = Number.parseInt(match[1], 10);
+						health.workspace.usedBytes = Number.parseInt(match[1]!, 10);
 						health.workspace.usedHuman = formatBytes(
 							health.workspace.usedBytes,
 						);

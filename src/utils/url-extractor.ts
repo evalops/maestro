@@ -93,6 +93,7 @@ export function extractUrlsFromShellCommand(command: string): string[] {
 	const matches = command.matchAll(new RegExp(CURL_WGET_PATTERN));
 	for (const match of matches) {
 		const argsStr = match[1];
+		if (!argsStr) continue;
 		// Split by spaces, respecting quotes
 		const argParts = argsStr.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
 

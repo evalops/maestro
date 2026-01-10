@@ -176,7 +176,7 @@ export function parseCommandArguments(command: string): string[] {
 	let argStarted = false;
 
 	for (let i = 0; i < command.length; i += 1) {
-		const char = command[i];
+		const char = command[i]!;
 		if (escaping) {
 			current += char;
 			argStarted = true;

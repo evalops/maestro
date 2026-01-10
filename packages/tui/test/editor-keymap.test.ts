@@ -160,8 +160,8 @@ describe("Keymap", () => {
 			const bindings = keymap.getBindings();
 
 			expect(bindings).toHaveLength(2);
-			expect(bindings[0].description).toBe("High priority");
-			expect(bindings[1].description).toBe("Low priority");
+			expect(bindings[0]!.description).toBe("High priority");
+			expect(bindings[1]!.description).toBe("Low priority");
 		});
 	});
 
@@ -185,7 +185,7 @@ describe("Keymap", () => {
 			const matches = keymap.findMatching(ctrl(ControlCodes.CTRL_A), context);
 
 			expect(matches).toHaveLength(1);
-			expect(matches[0].description).toBe("Select all");
+			expect(matches[0]!.description).toBe("Select all");
 		});
 	});
 
@@ -210,7 +210,7 @@ describe("Keymap", () => {
 			normalContext.mode = "normal";
 			const activeInNormal = keymap.getActiveBindings(normalContext);
 			expect(activeInNormal).toHaveLength(1);
-			expect(activeInNormal[0].description).toBe("Always active");
+			expect(activeInNormal[0]!.description).toBe("Always active");
 
 			const insertContext = createMockContext();
 			insertContext.mode = "insert";

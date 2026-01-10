@@ -304,7 +304,7 @@ describe("retry logic", () => {
 			// Second delay should be roughly 2x the first (accounting for jitter)
 			// Base: 100, 200
 			// With jitter: 100-130, 200-260
-			expect(delays[1]).toBeGreaterThan(delays[0]);
+			expect(delays[1]!).toBeGreaterThan(delays[0]!);
 		});
 
 		it("caps delay at maxDelayMs", async () => {

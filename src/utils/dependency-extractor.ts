@@ -67,7 +67,7 @@ function cleanPackageSpec(spec: string): string {
 	}
 
 	// Handle standard packages (e.g. pkg@1.0.0, pkg==1.0.0, pkg>=1.0.0)
-	return spec.split(/[@=<>]/)[0];
+	return spec.split(/[@=<>]/)[0] ?? spec;
 }
 
 /**
@@ -106,8 +106,10 @@ export function extractDependencies(command: string): string[] {
 	for (const pattern of patterns) {
 		const matches = command.matchAll(new RegExp(pattern, "gi"));
 		for (const match of matches) {
+			const captured = match[1];
+			if (!captured) continue;
 			// Split by spaces and cleanup flags/versions
-			const deps = match[1]
+			const deps = captured
 				.split(/\s+/)
 				.filter((p) => !p.startsWith("-"))
 				.map(cleanPackageSpec)

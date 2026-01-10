@@ -500,9 +500,11 @@ function buildInput(
 						input.push(reasoningItem);
 					}
 				} else if (block.type === "toolCall" && !isIncomplete) {
-					const id = block.id.includes("|") ? block.id.split("|")[1] : block.id;
+					const id = block.id.includes("|")
+						? block.id.split("|")[1]!
+						: block.id;
 					const callId = block.id.includes("|")
-						? block.id.split("|")[0]
+						? block.id.split("|")[0]!
 						: block.id;
 					input.push({
 						type: "function_call",
@@ -520,7 +522,7 @@ function buildInput(
 				.join("\n");
 
 			const callId = msg.toolCallId.includes("|")
-				? msg.toolCallId.split("|")[0]
+				? msg.toolCallId.split("|")[0]!
 				: msg.toolCallId;
 
 			input.push({

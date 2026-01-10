@@ -7,8 +7,8 @@ import { clampAnsiLines } from "../../src/cli-tui/utils/tool-text-utils.js";
 describe("clampAnsiLines", () => {
 	it("respects max width with wide characters and ellipsis", () => {
 		const [line] = clampAnsiLines(["😀😀😀😀"], 4);
-		expect(visibleWidth(line)).toBeLessThanOrEqual(4);
-		expect(line.endsWith("…")).toBe(true);
+		expect(visibleWidth(line!)).toBeLessThanOrEqual(4);
+		expect(line!.endsWith("…")).toBe(true);
 	});
 
 	it("keeps content when already within width", () => {
@@ -19,7 +19,7 @@ describe("clampAnsiLines", () => {
 	it("handles ANSI-colored strings without bleeding", () => {
 		const colored = chalk.green("hello world");
 		const [line] = clampAnsiLines([colored], 6);
-		expect(visibleWidth(line)).toBeLessThanOrEqual(6);
+		expect(visibleWidth(line!)).toBeLessThanOrEqual(6);
 		const appended = `${line}plain`;
 		const strippedTail = stripAnsiMinimal(appended).slice(-5);
 		expect(strippedTail).toBe("plain");

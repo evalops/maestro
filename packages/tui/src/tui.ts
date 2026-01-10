@@ -763,6 +763,7 @@ export class TUI extends Container {
 				continue;
 			}
 			let line = newLines[i];
+			if (!line) continue;
 			// Safety fallback: if a line somehow exceeds width after wrapping,
 			// truncate it gracefully instead of crashing. This shouldn't happen
 			// in normal operation, but we handle it to avoid breaking the UI.

@@ -61,7 +61,7 @@ describe("ApprovalModal", () => {
 		const commandLines: string[] = [];
 		const innerWidth = width - 4;
 		for (let i = commandIndex + 1; i < lines.length; i++) {
-			const line = lines[i];
+			const line = lines[i]!;
 			if (
 				line.startsWith("╠") ||
 				line.startsWith("╚") ||
@@ -178,7 +178,7 @@ describe("ApprovalModal", () => {
 		expect(reasonHeaderIndex).toBeGreaterThanOrEqual(0);
 		let captured = "";
 		for (let i = reasonHeaderIndex + 1; i < lines.length; i++) {
-			const line = lines[i];
+			const line = lines[i]!;
 			// Double border uses ║ for vertical
 			if (!line.includes("║")) {
 				continue;

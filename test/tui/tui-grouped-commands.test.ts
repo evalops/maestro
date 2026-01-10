@@ -745,7 +745,7 @@ describe("Grouped Command Handlers", () => {
 			await handler(ctx);
 
 			expect(deps.handleBranch).toHaveBeenCalled();
-			const receivedCtx = deps.handleBranch.mock.calls[0][0];
+			const receivedCtx = deps.handleBranch.mock.calls[0]![0];
 			expect(receivedCtx.rawInput).toBe("/branch 3");
 			expect(receivedCtx.argumentText).toBe("3");
 		});
@@ -779,7 +779,7 @@ describe("Grouped Command Handlers", () => {
 			await handler(ctx);
 
 			expect(deps.handleBackground).toHaveBeenCalled();
-			const receivedCtx = deps.handleBackground.mock.calls[0][0];
+			const receivedCtx = deps.handleBackground.mock.calls[0]![0];
 			expect(receivedCtx.rawInput).toBe("/background notify on");
 			expect(receivedCtx.argumentText).toBe("notify on");
 		});
@@ -810,7 +810,7 @@ describe("Grouped Command Handlers", () => {
 			await handler(ctx);
 
 			expect(deps.handleCheckpoint).toHaveBeenCalled();
-			const receivedCtx = deps.handleCheckpoint.mock.calls[0][0];
+			const receivedCtx = deps.handleCheckpoint.mock.calls[0]![0];
 			expect(receivedCtx.rawInput).toBe("/checkpoint save my-checkpoint");
 			expect(receivedCtx.argumentText).toBe("save my-checkpoint");
 		});
@@ -1049,7 +1049,7 @@ describe("Grouped Command Handlers", () => {
 			await handler(ctx);
 
 			expect(deps.handleSessionsList).toHaveBeenCalled();
-			const receivedCtx = deps.handleSessionsList.mock.calls[0][0];
+			const receivedCtx = deps.handleSessionsList.mock.calls[0]![0];
 			expect(receivedCtx.argumentText).toBe("load 5");
 		});
 
@@ -1201,12 +1201,12 @@ describe("Grouped Command Handlers", () => {
 			// Prefix filters
 			const sMatches = completions("s");
 			expect(sMatches).toHaveLength(1);
-			expect(sMatches?.[0].value).toBe("status");
+			expect(sMatches![0]!.value).toBe("status");
 
 			// Alias matches
 			const lsMatches = completions("ls");
 			expect(lsMatches).toHaveLength(1);
-			expect(lsMatches?.[0].value).toBe("list");
+			expect(lsMatches![0]!.value).toBe("list");
 
 			// No matches
 			const noMatches = completions("xyz");

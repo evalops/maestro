@@ -273,6 +273,7 @@ export const websearchTool = createTool<
 			}
 			const result = data.results[i];
 
+			if (!result) continue;
 			const textPreview = result.text
 				? result.text.length > MAX_RESULT_TEXT_CHARS
 					? `${result.text.substring(0, MAX_RESULT_TEXT_CHARS)}...`

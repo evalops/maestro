@@ -245,7 +245,7 @@ describe("ApprovalManager", () => {
 
 			const pending = manager.getPendingForChannel("C123");
 			expect(pending).toHaveLength(1);
-			expect(pending[0].operation).toBe("rm -rf");
+			expect(pending[0]!.operation).toBe("rm -rf");
 		});
 	});
 

@@ -53,6 +53,7 @@ class UserMessageList extends Container {
 		// Render visible messages (2 lines per message + blank line)
 		for (let i = startIndex; i < endIndex; i++) {
 			const message = this.messages[i];
+			if (!message) continue;
 			const isSelected = i === this.selectedIndex;
 
 			// First line: cursor + message

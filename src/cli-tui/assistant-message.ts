@@ -162,16 +162,14 @@ export class AssistantMessageComponent extends Container {
 	): void {
 		// Update existing thinking blocks
 		for (let i = 0; i < thinkingBlocks.length; i++) {
+			const blockText = thinkingBlocks[i]!;
 			if (i < this.thinkingMarkdowns.length) {
 				// Reuse existing markdown component
-				this.thinkingMarkdowns[i].setStreaming(streaming);
-				this.thinkingMarkdowns[i].setText(thinkingBlocks[i]);
+				this.thinkingMarkdowns[i]!.setStreaming(streaming);
+				this.thinkingMarkdowns[i]!.setText(blockText);
 			} else {
 				// Create new thinking block
-				const container = this.createThinkingBlock(
-					thinkingBlocks[i],
-					streaming,
-				);
+				const container = this.createThinkingBlock(blockText, streaming);
 				this.thinkingContainers.push(container);
 				// Extract the Markdown component from the container (it's the second child)
 				const markdown = container.children[1] as Markdown;
@@ -204,14 +202,15 @@ export class AssistantMessageComponent extends Container {
 	private updateTextBlocks(textBlocks: string[], streaming: boolean): void {
 		// Update existing text markdown components
 		for (let i = 0; i < textBlocks.length; i++) {
+			const blockText = textBlocks[i]!;
 			if (i < this.textMarkdowns.length) {
 				// Reuse existing markdown component
-				this.textMarkdowns[i].setStreaming(streaming);
-				this.textMarkdowns[i].setText(textBlocks[i]);
+				this.textMarkdowns[i]!.setStreaming(streaming);
+				this.textMarkdowns[i]!.setText(blockText);
 			} else {
 				// Create new markdown component
 				const markdown = new Markdown(
-					textBlocks[i],
+					blockText,
 					undefined,
 					undefined,
 					undefined,

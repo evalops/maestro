@@ -266,7 +266,7 @@ function expandEnv(
 		if (!value) return value;
 		return value.replace(/\$\{([^}]+)\}/g, (_match, expr: unknown) => {
 			const [name, fallback] = String(expr).split(":-");
-			const val = process.env[name];
+			const val = name ? process.env[name] : undefined;
 			if (val !== undefined) return val;
 			if (fallback !== undefined) return fallback;
 			logger.debug("Missing environment variable during MCP expansion", {

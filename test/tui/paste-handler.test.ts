@@ -341,7 +341,7 @@ describe("PasteHandler", () => {
 				marker: "[PASTE:1]",
 			});
 
-			const call = agent.generateSummary.mock.calls[0];
+			const call = agent.generateSummary.mock.calls[0]!;
 			const messageContent = call[0][0].content[0].text;
 			expect(messageContent).toContain("[truncated");
 			expect(messageContent.length).toBeLessThan(15000);

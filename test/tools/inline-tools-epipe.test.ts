@@ -74,7 +74,7 @@ describe("inline tool execution (EPIPE)", () => {
 		const tools = loadInlineTools(testDir);
 		expect(tools).toHaveLength(1);
 
-		const result = await tools[0].execute("test-call", {});
+		const result = await tools[0]!.execute("test-call", {});
 		expect(result.isError).toBe(true);
 	});
 });

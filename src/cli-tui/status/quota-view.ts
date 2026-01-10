@@ -399,7 +399,7 @@ export class QuotaView {
 			return;
 		}
 
-		const arg = args[0].toLowerCase();
+		const arg = args[0]!.toLowerCase();
 
 		if (arg === "off" || arg === "disable" || arg === "clear") {
 			this.sessionQuotaLimit = {

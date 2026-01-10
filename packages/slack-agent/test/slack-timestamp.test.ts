@@ -23,7 +23,7 @@ describe("createTimestampGenerator", () => {
 
 		// Verify each timestamp is greater than or equal to the previous
 		for (let i = 1; i < timestamps.length; i++) {
-			const cmp = compareSlackTimestamps(timestamps[i - 1], timestamps[i]);
+			const cmp = compareSlackTimestamps(timestamps[i - 1]!, timestamps[i]!);
 			expect(cmp).toBeLessThanOrEqual(0);
 		}
 	});

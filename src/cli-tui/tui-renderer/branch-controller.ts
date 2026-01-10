@@ -87,6 +87,10 @@ export class BranchController {
 		}
 
 		const selection = userMessages[targetIndex - 1];
+		if (!selection) {
+			context.showError("Failed to find the selected message.");
+			return;
+		}
 		const slice = messages.slice(0, selection.index);
 		const editorSeed = extractUserText(selection.msg);
 		const newSessionFile = this.callbacks.createBranchedSession(slice.length);

@@ -71,14 +71,14 @@ This is the skill content.
 			const { skills } = loadSkills(testDir);
 
 			expect(skills).toHaveLength(1);
-			expect(skills[0].name).toBe("test-skill");
-			expect(skills[0].description).toBe("A test skill for testing");
-			expect(skills[0].tags).toEqual(["testing", "example"]);
-			expect(skills[0].author).toBe("Test Author");
-			expect(skills[0].version).toBe("1.0.0");
-			expect(skills[0].triggers).toEqual(["run tests", "test code"]);
-			expect(skills[0].sourceType).toBe("project");
-			expect(skills[0].content).toContain("# Test Skill Instructions");
+			expect(skills[0]!.name).toBe("test-skill");
+			expect(skills[0]!.description).toBe("A test skill for testing");
+			expect(skills[0]!.tags).toEqual(["testing", "example"]);
+			expect(skills[0]!.author).toBe("Test Author");
+			expect(skills[0]!.version).toBe("1.0.0");
+			expect(skills[0]!.triggers).toEqual(["run tests", "test code"]);
+			expect(skills[0]!.sourceType).toBe("project");
+			expect(skills[0]!.content).toContain("# Test Skill Instructions");
 		});
 
 		it("discovers bundled resources", () => {
@@ -103,26 +103,26 @@ Use the bundled scripts.
 			const { skills } = loadSkills(testDir);
 
 			expect(skills).toHaveLength(1);
-			expect(skills[0].resources).toHaveLength(3);
+			expect(skills[0]!.resources).toHaveLength(3);
 
-			const resourceNames = skills[0].resources.map((r) => r.name).sort();
+			const resourceNames = skills[0]!.resources.map((r) => r.name).sort();
 			expect(resourceNames).toEqual([
 				"reference.md",
 				"setup.sh",
 				"template.hbs",
 			]);
 
-			const scriptResource = skills[0].resources.find(
+			const scriptResource = skills[0]!.resources.find(
 				(r) => r.name === "setup.sh",
 			);
 			expect(scriptResource?.type).toBe("script");
 
-			const templateResource = skills[0].resources.find(
+			const templateResource = skills[0]!.resources.find(
 				(r) => r.name === "template.hbs",
 			);
 			expect(templateResource?.type).toBe("template");
 
-			const referenceResource = skills[0].resources.find(
+			const referenceResource = skills[0]!.resources.find(
 				(r) => r.name === "reference.md",
 			);
 			expect(referenceResource?.type).toBe("reference");
@@ -151,7 +151,7 @@ Content.
 			const { skills } = loadSkills(testDir);
 
 			expect(skills).toHaveLength(1);
-			expect(skills[0].name).toBe("valid");
+			expect(skills[0]!.name).toBe("valid");
 		});
 
 		it("skips skills with missing required fields", () => {
@@ -200,7 +200,7 @@ Content.
 			const { skills } = loadSkills(testDir);
 
 			expect(skills).toHaveLength(1);
-			expect(skills[0].name).toBe("valid");
+			expect(skills[0]!.name).toBe("valid");
 		});
 
 		it("loads multiple skills", () => {
@@ -301,7 +301,7 @@ Content.
 			);
 
 			const { skills } = loadSkills(testDir);
-			const formatted = formatSkillListItem(skills[0]);
+			const formatted = formatSkillListItem(skills[0]!);
 
 			expect(formatted).toContain("format-test");
 			expect(formatted).toContain("(project)");
@@ -333,7 +333,7 @@ tags:
 			writeFileSync(join(skillDir, "helper.sh"), "#!/bin/bash");
 
 			const { skills } = loadSkills(testDir);
-			const formatted = formatSkillForInjection(skills[0]);
+			const formatted = formatSkillForInjection(skills[0]!);
 
 			expect(formatted).toContain("# Skill: inject-test");
 			expect(formatted).toContain("> Test injection");

@@ -916,7 +916,7 @@ export class ComposerToolExecution extends LitElement {
 							<span>${statusText}</span>
 							${
 								formattedArgs.length > 0
-									? html`<span class="metadata-value">${formattedArgs[0].key}: ${this.formatValue(formattedArgs[0].value)}</span>`
+									? html`<span class="metadata-value">${formattedArgs[0]!.key}: ${this.formatValue(formattedArgs[0]!.value)}</span>`
 									: ""
 							}
 							${

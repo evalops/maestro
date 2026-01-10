@@ -434,10 +434,10 @@ export class ComposerSidebarProvider
 					) ?? workspaceFolders[0];
 			}
 
-			const tryResolve = (root: vscode.WorkspaceFolder) =>
+			const tryResolve = (root: vscode.WorkspaceFolder | undefined) =>
 				path.isAbsolute(filePath)
 					? path.resolve(filePath)
-					: path.resolve(root.uri.fsPath, filePath);
+					: path.resolve(root?.uri.fsPath ?? "", filePath);
 
 			let normalizedPath = tryResolve(targetWorkspace);
 

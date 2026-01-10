@@ -194,15 +194,15 @@ describe("Cost Tracking", () => {
 			const summary = getUsageSummary();
 			expect(summary.byProvider.anthropic).toBeDefined();
 			expect(summary.byProvider.openai).toBeDefined();
-			expect(summary.byProvider.anthropic.requests).toBe(2);
-			expect(summary.byProvider.openai.requests).toBe(1);
+			expect(summary.byProvider.anthropic!.requests).toBe(2);
+			expect(summary.byProvider.openai!.requests).toBe(1);
 		});
 
 		it("should break down by model", () => {
 			const summary = getUsageSummary();
 			expect(summary.byModel["anthropic/claude-sonnet-4-5"]).toBeDefined();
 			expect(summary.byModel["anthropic/claude-haiku"]).toBeDefined();
-			expect(summary.byModel["anthropic/claude-sonnet-4-5"].cost).toBeCloseTo(
+			expect(summary.byModel["anthropic/claude-sonnet-4-5"]!.cost).toBeCloseTo(
 				0.01,
 				5,
 			);

@@ -160,6 +160,10 @@ async function handleRegister(
 				})
 				.returning();
 
+			if (!createdUser || !createdOrg) {
+				throw new Error("Failed to create user or organization");
+			}
+
 			const systemOwnerRole = await tx.query.roles.findFirst({
 				where: and(eq(roles.name, "org_owner"), eq(roles.isSystem, true)),
 			});
@@ -621,9 +625,13 @@ async function handleInviteUser(
 			.insert(users)
 			.values({
 				email: body.email,
-				name: body.email.split("@")[0],
+				name: body.email.split("@")[0] ?? body.email,
 			})
 			.returning();
+		if (!newUser) {
+			sendJson(res, 500, { error: "Failed to create user" }, cors, req);
+			return;
+		}
 		user = newUser;
 	}
 

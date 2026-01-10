@@ -832,6 +832,7 @@ export class GitHubApiClient {
 			return null;
 		}
 		const pr = data[0];
+		if (!pr) return null;
 		return { number: pr.number, url: pr.html_url };
 	}
 
@@ -1653,7 +1654,7 @@ function chunkArray<T>(items: T[], size: number): T[][] {
 
 function extractIssueNumber(issueUrl: string): number | null {
 	const match = issueUrl.match(/\/issues\/(\d+)/);
-	if (!match) return null;
+	if (!match?.[1]) return null;
 	return Number.parseInt(match[1], 10);
 }
 

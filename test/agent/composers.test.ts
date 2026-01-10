@@ -37,10 +37,10 @@ describe("Composers loader", () => {
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].name).toBe("test-composer");
-		expect(composers[0].description).toBe("A test composer");
-		expect(composers[0].tools).toEqual(["read", "search"]);
-		expect(composers[0].source).toBe("project");
+		expect(composers[0]!.name).toBe("test-composer");
+		expect(composers[0]!.description).toBe("A test composer");
+		expect(composers[0]!.tools).toEqual(["read", "search"]);
+		expect(composers[0]!.source).toBe("project");
 	});
 
 	it("loads composer from YAML file", () => {
@@ -56,8 +56,8 @@ tools: [read, write, bash]
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].name).toBe("yaml-composer");
-		expect(composers[0].tools).toEqual(["read", "write", "bash"]);
+		expect(composers[0]!.name).toBe("yaml-composer");
+		expect(composers[0]!.tools).toEqual(["read", "write", "bash"]);
 	});
 
 	it("uses filename as name when name not specified", () => {
@@ -72,7 +72,7 @@ tools: [read, write, bash]
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].name).toBe("unnamed");
+		expect(composers[0]!.name).toBe("unnamed");
 	});
 
 	it("excludes disabled composers", () => {
@@ -93,7 +93,7 @@ tools: [read, write, bash]
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].name).toBe("enabled");
+		expect(composers[0]!.name).toBe("enabled");
 	});
 
 	it("normalizes tools string to array", () => {
@@ -109,7 +109,7 @@ tools: [read, write, bash]
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].tools).toEqual(["read", "search", "write"]);
+		expect(composers[0]!.tools).toEqual(["read", "search", "write"]);
 	});
 
 	it("normalizes comma-separated tools string to array", () => {
@@ -125,7 +125,7 @@ tools: [read, write, bash]
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].tools).toEqual(["read", "search", "write"]);
+		expect(composers[0]!.tools).toEqual(["read", "search", "write"]);
 	});
 
 	it("keeps tools as array when already an array", () => {
@@ -141,7 +141,7 @@ tools: [read, write, bash]
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].tools).toEqual(["read", "write"]);
+		expect(composers[0]!.tools).toEqual(["read", "write"]);
 	});
 
 	it("sets tools to undefined for invalid tools type", () => {
@@ -157,7 +157,7 @@ tools: [read, write, bash]
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].tools).toBeUndefined();
+		expect(composers[0]!.tools).toBeUndefined();
 	});
 
 	it("rejects path traversal via symlinks", () => {
@@ -209,9 +209,11 @@ systemPrompt: |
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].name).toBe("multiline-composer");
-		expect(composers[0].systemPrompt).toContain("You are a helpful assistant.");
-		expect(composers[0].systemPrompt).toContain("Be concise");
+		expect(composers[0]!.name).toBe("multiline-composer");
+		expect(composers[0]!.systemPrompt).toContain(
+			"You are a helpful assistant.",
+		);
+		expect(composers[0]!.systemPrompt).toContain("Be concise");
 	});
 
 	it("handles YAML nested objects (triggers)", () => {
@@ -233,9 +235,9 @@ triggers:
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].triggers).toBeDefined();
-		expect(composers[0].triggers?.keywords).toEqual(["deploy", "release"]);
-		expect(composers[0].triggers?.files).toEqual(["*.tf", "*.hcl"]);
+		expect(composers[0]!.triggers).toBeDefined();
+		expect(composers[0]!.triggers?.keywords).toEqual(["deploy", "release"]);
+		expect(composers[0]!.triggers?.files).toEqual(["*.tf", "*.hcl"]);
 	});
 
 	it("ignores non-config files", () => {
@@ -250,7 +252,7 @@ triggers:
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].name).toBe("valid");
+		expect(composers[0]!.name).toBe("valid");
 	});
 
 	it("handles malformed JSON gracefully", () => {
@@ -264,7 +266,7 @@ triggers:
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].name).toBe("valid");
+		expect(composers[0]!.name).toBe("valid");
 	});
 
 	it("handles malformed YAML gracefully", () => {
@@ -283,7 +285,7 @@ triggers:
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].name).toBe("valid");
+		expect(composers[0]!.name).toBe("valid");
 	});
 
 	it("loads .yml extension same as .yaml", () => {
@@ -298,7 +300,7 @@ description: Uses .yml extension
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].name).toBe("yml-composer");
+		expect(composers[0]!.name).toBe("yml-composer");
 	});
 
 	it("adds default description when not specified", () => {
@@ -311,6 +313,6 @@ description: Uses .yml extension
 
 		const composers = loadComposers(testDir, { includeBuiltin: false });
 		expect(composers).toHaveLength(1);
-		expect(composers[0].description).toBe("Custom composer: no-desc");
+		expect(composers[0]!.description).toBe("Custom composer: no-desc");
 	});
 });

@@ -27,7 +27,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import type { ExecResult, Sandbox } from "./types.js";
 
-const execAsync = promisify(exec);
+const _execAsync = promisify(exec);
 
 // ─────────────────────────────────────────────────────────────
 // Sandbox Policy Types
@@ -261,7 +261,7 @@ function createSeatbeltArgs(
 		const policies: string[] = [];
 
 		for (let index = 0; index < writableRoots.length; index++) {
-			const wr = writableRoots[index];
+			const wr = writableRoots[index]!;
 			const canonicalRoot = canonicalize(wr.root);
 			const rootParam = `WRITABLE_ROOT_${index}`;
 			params.push([rootParam, canonicalRoot]);
@@ -275,7 +275,7 @@ function createSeatbeltArgs(
 					subIndex < wr.readOnlySubpaths.length;
 					subIndex++
 				) {
-					const ro = wr.readOnlySubpaths[subIndex];
+					const ro = wr.readOnlySubpaths[subIndex]!;
 					const canonicalRo = canonicalize(ro);
 					const roParam = `WRITABLE_ROOT_${index}_RO_${subIndex}`;
 					requireParts.push(`(require-not (subpath (param "${roParam}")))`);

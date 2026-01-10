@@ -121,6 +121,7 @@ function parseArgs(): { workingDir: string; sandbox: SandboxConfig } {
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
+		if (!arg) continue;
 		if (arg === "--help" || arg === "-h") {
 			printUsage();
 			process.exit(0);

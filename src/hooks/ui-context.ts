@@ -203,7 +203,7 @@ export function createConsoleUIContext(): HookUIContext {
 				rl.close();
 				const index = Number.parseInt(answer, 10) - 1;
 				if (index >= 0 && index < options.length) {
-					resolve(options[index]);
+					resolve(options[index] ?? null);
 				} else {
 					resolve(null);
 				}

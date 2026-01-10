@@ -116,6 +116,9 @@ export class PlanView {
 			return false;
 		}
 		const [firstWord, ...restWords] = argsPortion.split(/\s+/);
+		if (!firstWord) {
+			return false;
+		}
 		const action = firstWord.toLowerCase();
 		const remainder = argsPortion.slice(firstWord.length).trim();
 		switch (action) {
@@ -183,16 +186,18 @@ export class PlanView {
 			);
 			return;
 		}
-		const goalKey = findGoalKey(store, segments[0]);
+		const goalQuery = segments[0]!;
+		const taskContent = segments[1]!;
+		const goalKey = findGoalKey(store, goalQuery);
 		if (!goalKey) {
-			this.options.showInfoMessage(`No plan found matching "${segments[0]}".`);
+			this.options.showInfoMessage(`No plan found matching "${goalQuery}".`);
 			return;
 		}
 		const priority = (segments[2]?.toLowerCase() || "medium").trim();
-		const entry = store[goalKey];
+		const entry = store[goalKey]!;
 		entry.items.push({
 			id: randomUUID(),
-			content: segments[1],
+			content: taskContent,
 			status: "pending",
 			priority,
 		});
@@ -214,13 +219,14 @@ export class PlanView {
 			);
 			return;
 		}
-		const goalKey = findGoalKey(store, segments[0]);
+		const goalQuery = segments[0]!;
+		const taskRef = segments[1]!;
+		const goalKey = findGoalKey(store, goalQuery);
 		if (!goalKey) {
-			this.options.showInfoMessage(`No plan found matching "${segments[0]}".`);
+			this.options.showInfoMessage(`No plan found matching "${goalQuery}".`);
 			return;
 		}
-		const entry = store[goalKey];
-		const taskRef = segments[1];
+		const entry = store[goalKey]!;
 		const task = this.resolveTask(entry, taskRef);
 		if (!task) {
 			this.options.showInfoMessage(`Task "${taskRef}" was not found.`);
@@ -343,7 +349,7 @@ export class PlanView {
 		if (newIndex < 0 || newIndex >= entry.items.length) return;
 
 		const [item] = entry.items.splice(index, 1);
-		entry.items.splice(newIndex, 0, item);
+		entry.items.splice(newIndex, 0, item!);
 		entry.updatedAt = new Date().toISOString();
 
 		saveTodoStore(this.options.filePath, store);
@@ -366,7 +372,7 @@ export class PlanView {
 	private showPlanSummary(store: TodoStore): void {
 		const goals = Object.keys(store);
 		const summaries = goals.map((goal) => {
-			const entry = store[goal];
+			const entry = store[goal]!;
 			const counts = countTodoStatuses(entry.items);
 			return `${chalk.bold(goal)}\n  ${formatInfoLabel("Pending")} ${counts.pending
 				.toString()
@@ -388,7 +394,7 @@ export class PlanView {
 	}
 
 	private showGoalDetail(store: TodoStore, goalKey: string): void {
-		const entry = store[goalKey];
+		const entry = store[goalKey]!;
 		const counts = countTodoStatuses(entry.items);
 		const tasks = entry.items.length
 			? entry.items
@@ -463,7 +469,7 @@ export function calculatePlanHint(store: TodoStore): string | null {
 		const bTime = Number(new Date(b.updatedAt ?? 0));
 		return bTime - aTime;
 	});
-	const entry = goals[0];
+	const entry = goals[0]!;
 	const counts = countTodoStatuses(entry.items ?? []);
 	const total = counts.pending + counts.in_progress + counts.completed;
 	const summary = total > 0 ? `${counts.completed}/${total} done` : "no tasks";

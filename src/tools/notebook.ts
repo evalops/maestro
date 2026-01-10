@@ -235,16 +235,20 @@ Use 'read' tool first to view notebook structure and get cell IDs/indices.`,
 				}
 				targetIndex = findCellIndex(cells, cell_id, cell_index);
 				const targetCell = cells[targetIndex];
+				if (!targetCell) {
+					return respond.error(`Cell at index ${targetIndex} not found`);
+				}
 				const newType = cell_type || targetCell.cell_type;
 
-				cells[targetIndex] = {
+				const updatedCell: NotebookCell = {
 					...targetCell,
 					cell_type: newType,
 					source: sourceToArray(new_source),
 					// Reset outputs for code cells when content changes
 					...(newType === "code" ? { outputs: [], execution_count: null } : {}),
 				};
-				resultCellId = cells[targetIndex].id;
+				cells[targetIndex] = updatedCell;
+				resultCellId = updatedCell.id;
 				resultMessage = `Replaced cell ${targetIndex} in ${path}`;
 				break;
 			}
@@ -286,6 +290,9 @@ Use 'read' tool first to view notebook structure and get cell IDs/indices.`,
 				}
 				targetIndex = findCellIndex(cells, cell_id, cell_index);
 				const deletedCell = cells[targetIndex];
+				if (!deletedCell) {
+					return respond.error(`Cell at index ${targetIndex} not found`);
+				}
 				cells.splice(targetIndex, 1);
 				resultCellId = deletedCell.id;
 				resultMessage = `Deleted cell ${targetIndex} from ${path}`;

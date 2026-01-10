@@ -28,8 +28,9 @@ export function collectEntriesForBranchSummary(
 
 	let commonAncestorId: string | null = null;
 	for (let i = targetPath.length - 1; i >= 0; i--) {
-		if (oldPath.has(targetPath[i].id)) {
-			commonAncestorId = targetPath[i].id;
+		const entry = targetPath[i]!;
+		if (oldPath.has(entry.id)) {
+			commonAncestorId = entry.id;
 			break;
 		}
 	}

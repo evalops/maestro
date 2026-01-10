@@ -1,5 +1,6 @@
 import type { TUI } from "@evalops/tui";
 import type { Agent } from "../../agent/agent.js";
+import { isUserMessage } from "../../agent/type-guards.js";
 import type { TextContent } from "../../agent/types.js";
 import type { SessionManager } from "../../session/manager.js";
 import type { CustomEditor } from "../custom-editor.js";
@@ -37,29 +38,30 @@ export class UserMessageSelectorView {
 
 		for (let i = 0; i < messages.length; i++) {
 			const message = messages[i];
-			if (message.role === "user") {
-				// Extract text content from message
-				let text = "";
-				if (typeof message.content === "string") {
-					text = message.content;
-				} else if (Array.isArray(message.content)) {
-					const textBlocks = message.content.filter(
-						(c): c is { type: "text"; text: string } => c.type === "text",
-					);
-					text = stripAnsiSequences(
-						textBlocks
-							.map((c) => c.text)
-							.join(" ")
-							.replace(/\n/g, " "),
-					).trim();
-				}
+			if (!message) continue;
+			if (!isUserMessage(message)) continue;
 
-				// Include all user messages, even those with no text content
-				userMessages.push({
-					index: i,
-					text: text ? text.substring(0, 200) : "(no text content)", // Truncate for display
-				});
+			// Extract text content from message
+			let text = "";
+			if (typeof message.content === "string") {
+				text = message.content;
+			} else if (Array.isArray(message.content)) {
+				const textBlocks = message.content.filter(
+					(c): c is TextContent => c.type === "text",
+				);
+				text = stripAnsiSequences(
+					textBlocks
+						.map((c) => c.text)
+						.join(" ")
+						.replace(/\n/g, " "),
+				).trim();
 			}
+
+			// Include all user messages, even those with no text content
+			userMessages.push({
+				index: i,
+				text: text ? text.substring(0, 200) : "(no text content)", // Truncate for display
+			});
 		}
 
 		// Check if we have any messages to branch from (allow single user message branching)
@@ -93,7 +95,7 @@ export class UserMessageSelectorView {
 		// Get the selected user message text to put in the editor
 		const selectedMessage = this.options.agent.state.messages[messageIndex];
 		let selectedText = "";
-		if (selectedMessage.role === "user") {
+		if (selectedMessage && isUserMessage(selectedMessage)) {
 			if (typeof selectedMessage.content === "string") {
 				selectedText = selectedMessage.content;
 			} else if (Array.isArray(selectedMessage.content)) {

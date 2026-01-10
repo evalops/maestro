@@ -94,6 +94,7 @@ export function transformMessages<T extends Message>(
 		const matchedToolCallIds = new Set<string>();
 		for (let i = index + 1; i < allMessages.length; i++) {
 			const nextMsg = allMessages[i];
+			if (!nextMsg) continue;
 
 			// Stop scanning when we hit another assistant message
 			if (nextMsg.role === "assistant") {

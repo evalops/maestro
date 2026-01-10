@@ -15,8 +15,8 @@ describe("Swarm plan parser", () => {
 		expect(plan.tasks).toHaveLength(3);
 
 		const [task1, task2, task3] = plan.tasks;
-		expect(task2.dependsOn).toEqual([task1.id]);
-		expect(task3.dependsOn).toEqual([task2.id]);
+		expect(task2!.dependsOn).toEqual([task1!.id]);
+		expect(task3!.dependsOn).toEqual([task2!.id]);
 	});
 
 	it("ignores dependencies on completed tasks but keeps ordering for incomplete ones", () => {
@@ -33,8 +33,8 @@ describe("Swarm plan parser", () => {
 
 		const [second, third] = plan.tasks;
 		// Dependency on completed task 1 is already satisfied.
-		expect(second.dependsOn).toBeUndefined();
+		expect(second!.dependsOn).toBeUndefined();
 		// Third should depend on second.
-		expect(third.dependsOn).toEqual([second.id]);
+		expect(third!.dependsOn).toEqual([second!.id]);
 	});
 });

@@ -140,7 +140,9 @@ export function parseJsonLines<T = unknown>(
 	const lines = input.split("\n");
 
 	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i].trim();
+		const rawLine = lines[i];
+		if (!rawLine) continue;
+		const line = rawLine.trim();
 		if (!line) continue;
 
 		const result = safeJsonParse<T>(line, `line ${i + 1}`);

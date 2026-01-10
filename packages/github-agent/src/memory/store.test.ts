@@ -139,9 +139,9 @@ describe("MemoryStore", () => {
 
 			const pending = store.getPendingTasks();
 
-			expect(pending[0].id).toBe("high");
-			expect(pending[1].id).toBe("medium");
-			expect(pending[2].id).toBe("low");
+			expect(pending[0]!.id).toBe("high");
+			expect(pending[1]!.id).toBe("medium");
+			expect(pending[2]!.id).toBe("low");
 		});
 
 		it("should update task status and record results", () => {
@@ -318,9 +318,9 @@ describe("MemoryStore", () => {
 
 			const outcomes = store.getPendingOutcomes();
 			expect(outcomes).toHaveLength(1);
-			expect(outcomes[0].taskId).toBe("task-1");
-			expect(outcomes[0].prNumber).toBe(123);
-			expect(outcomes[0].status).toBe("pending");
+			expect(outcomes[0]!.taskId).toBe("task-1");
+			expect(outcomes[0]!.prNumber).toBe(123);
+			expect(outcomes[0]!.status).toBe("pending");
 		});
 
 		it("should update outcome status and track merges", () => {
@@ -355,8 +355,8 @@ describe("MemoryStore", () => {
 			});
 
 			const outcomes = store.getPendingOutcomes();
-			expect(outcomes[0].reviewFeedback).toHaveLength(1);
-			expect(outcomes[0].reviewFeedback[0].comments).toContain(
+			expect(outcomes[0]!.reviewFeedback).toHaveLength(1);
+			expect(outcomes[0]!.reviewFeedback![0]!.comments).toContain(
 				"Please add tests",
 			);
 		});

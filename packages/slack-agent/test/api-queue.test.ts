@@ -80,7 +80,7 @@ describe("ApiQueue", () => {
 		await p2;
 
 		// Tier 3 = 50 req/min = 1200ms interval (but min 1000ms)
-		const interval = timestamps[1] - timestamps[0];
+		const interval = timestamps[1]! - timestamps[0]!;
 		expect(interval).toBeGreaterThanOrEqual(1000);
 	});
 
@@ -176,8 +176,8 @@ describe("ApiQueue", () => {
 		await vi.runAllTimersAsync();
 
 		expect(await promise).toBe("success");
-		expect(timestamps[1] - timestamps[0]).toBeGreaterThanOrEqual(2000);
-		expect(timestamps[1] - timestamps[0]).toBeLessThan(5000);
+		expect(timestamps[1]! - timestamps[0]!).toBeGreaterThanOrEqual(2000);
+		expect(timestamps[1]! - timestamps[0]!).toBeLessThan(5000);
 	});
 
 	it("getStats returns queue information", async () => {

@@ -285,7 +285,7 @@ async function tryAccessShare(shareToken: string): Promise<{
 			sessionId: sharedSessionsTable.sessionId,
 		});
 
-	if (result.length > 0) {
+	if (result.length > 0 && result[0]) {
 		return { allowed: true, sessionId: result[0].sessionId };
 	}
 

@@ -68,13 +68,13 @@ describe("LSP Integration Tests", () => {
 
 		await waitFor(async () => {
 			const clients = await getClients();
-			return clients.length === 1 && clients[0].initialized;
+			return clients.length === 1 && clients[0]!.initialized;
 		});
 
 		const clients = await getClients();
 		expect(clients.length).toBe(1);
-		expect(clients[0].id).toBe("fake-lsp");
-		expect(clients[0].initialized).toBe(true);
+		expect(clients[0]!.id).toBe("fake-lsp");
+		expect(clients[0]!.initialized).toBe(true);
 	}, 5000);
 
 	it("should collect diagnostics from LSP server", async () => {
@@ -102,8 +102,8 @@ describe("LSP Integration Tests", () => {
 		const diagnostics = await collectDiagnostics();
 		const allDiags = Object.values(diagnostics).flat();
 		expect(allDiags.length).toBeGreaterThan(0);
-		expect(allDiags[0].severity).toBe(1); // Error
-		expect(allDiags[0].message).toContain("Test error");
+		expect(allDiags[0]!.severity).toBe(1); // Error
+		expect(allDiags[0]!.message).toContain("Test error");
 	}, 5000);
 
 	it("should track file changes with didChange", async () => {
@@ -178,8 +178,8 @@ describe("LSP Integration Tests", () => {
 
 		const symbols = await workspaceSymbol("MyClass");
 		expect(symbols.length).toBeGreaterThan(0);
-		expect(symbols[0].name).toBe("MyClass");
-		expect(symbols[0].kind).toBe(5); // Class
+		expect(symbols[0]!.name).toBe("MyClass");
+		expect(symbols[0]!.kind).toBe(5); // Class
 	}, 5000);
 
 	it("should get document symbols", async () => {
@@ -235,21 +235,21 @@ describe("LSP Integration Tests", () => {
 		await touchFile(testFile);
 		await waitFor(async () => {
 			const clients = await getClients();
-			return clients.length === 1 && clients[0].openFiles.has(testFile);
+			return clients.length === 1 && clients[0]!.openFiles.has(testFile);
 		});
 
 		const clientsBefore = await getClients();
 		expect(clientsBefore.length).toBe(1);
-		expect(clientsBefore[0].openFiles.has(testFile)).toBe(true);
+		expect(clientsBefore[0]!.openFiles.has(testFile)).toBe(true);
 
 		await closeFile(testFile);
 		await waitFor(async () => {
 			const clients = await getClients();
-			return clients.length === 1 && !clients[0].openFiles.has(testFile);
+			return clients.length === 1 && !clients[0]!.openFiles.has(testFile);
 		});
 
 		const clientsAfter = await getClients();
-		expect(clientsAfter[0].openFiles.has(testFile)).toBe(false);
+		expect(clientsAfter[0]!.openFiles.has(testFile)).toBe(false);
 	}, 5000);
 
 	it("should not spawn duplicate clients for same root", async () => {
@@ -280,12 +280,12 @@ describe("LSP Integration Tests", () => {
 		await touchFile(file2);
 		await waitFor(async () => {
 			const clients = await getClients();
-			return clients.length === 1 && clients[0].openFiles.size === 2;
+			return clients.length === 1 && clients[0]!.openFiles.size === 2;
 		});
 
 		const clientsAfter2 = await getClients();
 		expect(clientsAfter2.length).toBe(1); // Still only 1 client
-		expect(clientsAfter2[0].openFiles.size).toBe(2); // But tracking 2 files
+		expect(clientsAfter2[0]!.openFiles.size).toBe(2); // But tracking 2 files
 	}, 5000);
 
 	it("should handle multiple file extensions with one server", async () => {
@@ -308,12 +308,12 @@ describe("LSP Integration Tests", () => {
 		await touchFile(jsFile);
 		await waitFor(async () => {
 			const clients = await getClients();
-			return clients.length === 1 && clients[0].openFiles.size === 2;
+			return clients.length === 1 && clients[0]!.openFiles.size === 2;
 		});
 
 		const clients = await getClients();
 		expect(clients.length).toBe(1);
-		expect(clients[0].openFiles.size).toBe(2);
+		expect(clients[0]!.openFiles.size).toBe(2);
 	}, 5000);
 
 	it("should recover when LSP server fails to start", async () => {

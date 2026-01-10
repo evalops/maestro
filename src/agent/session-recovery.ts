@@ -181,7 +181,7 @@ export function loadSessionBackup(
 			return null;
 		}
 
-		const filePath = join(config.backupDir, files[0]);
+		const filePath = join(config.backupDir, files[0]!);
 		const raw = readFileSync(filePath, "utf-8");
 		return JSON.parse(raw) as SessionBackup;
 	} catch (err) {

@@ -869,7 +869,7 @@ export async function* streamOpenAI(
 							}
 
 							const block = partial.content[idx];
-							if (block.type !== "toolCall") continue;
+							if (!block || block.type !== "toolCall") continue;
 
 							if (toolCall.id) {
 								block.id = toolCall.id;
@@ -947,6 +947,7 @@ export async function* streamOpenAI(
 						// Finalize all content blocks
 						for (let i = 0; i < partial.content.length; i++) {
 							const block = partial.content[i];
+							if (!block) continue;
 							if (block.type === "toolCall" && !toolEnded.has(i)) {
 								const overrideArgs = toolArgOverrides.get(i);
 								if (overrideArgs) {

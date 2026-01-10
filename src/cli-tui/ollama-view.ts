@@ -432,7 +432,9 @@ Now using ${match.id} (${match.providerName}).`;
 
 	private runSystemCommand(args: string[]): string | undefined {
 		try {
-			const result = spawnSync(args[0], args.slice(1), {
+			const cmd = args[0];
+			if (!cmd) return undefined;
+			const result = spawnSync(cmd, args.slice(1), {
 				cwd: process.cwd(),
 				encoding: "utf-8",
 			});

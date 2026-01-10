@@ -48,7 +48,7 @@ class AnsiCodeTracker {
 		if (!match) return;
 
 		const params = match[1];
-		if (params === "" || params === "0") {
+		if (!params || params === "0") {
 			this.reset();
 			return;
 		}
@@ -57,7 +57,7 @@ class AnsiCodeTracker {
 		const parts = params.split(";");
 		let i = 0;
 		while (i < parts.length) {
-			const code = Number.parseInt(parts[i], 10);
+			const code = Number.parseInt(parts[i]!, 10);
 
 			// Handle 256-color and RGB codes which consume multiple parameters
 			if (code === 38 || code === 48) {

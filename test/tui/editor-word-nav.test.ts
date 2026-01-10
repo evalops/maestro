@@ -42,12 +42,12 @@ describe("Editor word navigation across lines", () => {
 		const editor = new Editor() as unknown as EditorPrivate;
 		editor.state.lines = ["hi 🙂 there"];
 		editor.state.cursorLine = 0;
-		editor.state.cursorCol = editor.state.lines[0].length;
+		editor.state.cursorCol = editor.state.lines[0]!.length;
 
 		editor.moveWordBackwards();
-		expect(editor.state.lines[0]?.slice(editor.state.cursorCol)).toBe("there");
+		expect(editor.state.lines[0]!.slice(editor.state.cursorCol)).toBe("there");
 
 		editor.moveWordBackwards();
-		expect(editor.state.cursorCol).toBe(editor.state.lines[0].indexOf("🙂"));
+		expect(editor.state.cursorCol).toBe(editor.state.lines[0]!.indexOf("🙂"));
 	});
 });

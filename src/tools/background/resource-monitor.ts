@@ -130,7 +130,7 @@ export class ResourceMonitor {
 		try {
 			const status = readFileSync(`/proc/${pid}/status`, "utf8");
 			const match = status.match(/VmRSS:\s+(\d+)\s+kB/i);
-			if (match) {
+			if (match?.[1]) {
 				const rssValue = Number.parseInt(match[1], 10);
 				if (Number.isFinite(rssValue)) {
 					usage.maxRssKb = Math.max(rssValue, 0);
@@ -220,9 +220,10 @@ export class ResourceMonitor {
 		const [hoursOrMinutes, minutesOrSeconds, seconds] =
 			parts.length === 3 ? parts : [0, parts[0] ?? 0, parts[1] ?? 0];
 
-		const hours = parts.length === 3 ? hoursOrMinutes : 0;
-		const minutes = parts.length === 3 ? minutesOrSeconds : hoursOrMinutes;
-		const secs = parts.length === 3 ? seconds : minutesOrSeconds;
+		const hours = (parts.length === 3 ? hoursOrMinutes : 0) ?? 0;
+		const minutes =
+			(parts.length === 3 ? minutesOrSeconds : hoursOrMinutes) ?? 0;
+		const secs = (parts.length === 3 ? seconds : minutesOrSeconds) ?? 0;
 
 		const totalSeconds =
 			(dayPortion || 0) * 24 * 3600 + hours * 3600 + minutes * 60 + secs;

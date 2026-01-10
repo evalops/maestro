@@ -446,7 +446,7 @@ function paintYaml(line: string): string {
 	}
 
 	const [, indent, key, rest] = match;
-	let value = rest.trimStart();
+	let value = rest!.trimStart();
 
 	// Highlight quoted strings in values
 	value = value.replace(/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'/g, (str) =>

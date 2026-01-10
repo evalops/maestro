@@ -133,6 +133,9 @@ export class Policy {
 		}
 
 		const [first, ...rest] = prefix;
+		if (!first) {
+			throw new Error("prefix cannot be empty");
+		}
 		const pattern: PrefixPattern = {
 			first,
 			rest: rest.map((t) => ({ type: "single", value: t })),
@@ -178,6 +181,9 @@ export class Policy {
 		for (let i = 0; i < pattern.rest.length; i++) {
 			const patternToken = pattern.rest[i];
 			const cmdToken = cmd[i + 1];
+			if (!patternToken || cmdToken === undefined) {
+				return null;
+			}
 
 			if (!this.tokenMatches(patternToken, cmdToken)) {
 				return null;
@@ -216,11 +222,11 @@ export class Policy {
 		cmd: string[],
 		heuristicsFallback?: (cmd: string[]) => Decision,
 	): RuleMatch[] {
-		if (cmd.length === 0) {
+		const program = cmd[0];
+		if (!program) {
 			return [];
 		}
 
-		const program = cmd[0];
 		const rules = this.rulesByProgram.get(program) ?? [];
 
 		const matched: RuleMatch[] = [];
@@ -283,11 +289,15 @@ export function parsePolicy(content: string, identifier: string): Policy {
 
 	for (const match of content.matchAll(ruleRegex)) {
 		const args = match[1];
+		if (!args) continue;
 
 		try {
 			const parsed = parsePrefixRuleArgs(args);
 
 			const [first, ...rest] = parsed.pattern;
+			if (!first) {
+				throw new Error("pattern cannot be empty");
+			}
 			const pattern: PrefixPattern = {
 				first: getPatternString(first),
 				rest: rest.map((t) => {
@@ -301,7 +311,7 @@ export function parsePolicy(content: string, identifier: string): Policy {
 				}),
 			};
 
-			// Handle alternatives in first token
+			// Handle alternatives in first token (first is validated above)
 			const firstAlternatives = getPatternAlternatives(first);
 			for (const firstAlt of firstAlternatives) {
 				const rule: PrefixRule = {
@@ -341,7 +351,14 @@ export function parsePolicy(content: string, identifier: string): Policy {
 }
 
 function getPatternString(token: string | string[]): string {
-	return typeof token === "string" ? token : token[0];
+	if (typeof token === "string") {
+		return token;
+	}
+	const first = token[0];
+	if (!first) {
+		throw new Error("pattern array cannot be empty");
+	}
+	return first;
 }
 
 function getPatternAlternatives(token: string | string[]): string[] {
@@ -357,6 +374,9 @@ function matchesPrefix(pattern: PrefixPattern, cmd: string[]): boolean {
 	for (let i = 0; i < pattern.rest.length; i++) {
 		const patternToken = pattern.rest[i];
 		const cmdToken = cmd[i + 1];
+		if (!patternToken || cmdToken === undefined) {
+			return false;
+		}
 
 		if (patternToken.type === "single") {
 			if (patternToken.value !== cmdToken) {
@@ -389,13 +409,13 @@ function parsePrefixRuleArgs(args: string): ParsedPrefixRule {
 
 	// Parse pattern=...
 	const patternMatch = args.match(/pattern\s*=\s*(\[[\s\S]*?\])/);
-	if (patternMatch) {
+	if (patternMatch?.[1]) {
 		result.pattern = parsePatternArray(patternMatch[1]);
 	}
 
 	// Parse decision=...
 	const decisionMatch = args.match(/decision\s*=\s*"(\w+)"/);
-	if (decisionMatch) {
+	if (decisionMatch?.[1]) {
 		const d = decisionMatch[1];
 		if (d === "allow" || d === "prompt" || d === "forbidden") {
 			result.decision = d;
@@ -404,13 +424,13 @@ function parsePrefixRuleArgs(args: string): ParsedPrefixRule {
 
 	// Parse match=...
 	const matchMatch = args.match(/(?<![_])match\s*=\s*(\[[\s\S]*?\](?:\s*,)?)/);
-	if (matchMatch) {
+	if (matchMatch?.[1]) {
 		result.match = parseExamplesArray(matchMatch[1]);
 	}
 
 	// Parse not_match=...
 	const notMatchMatch = args.match(/not_match\s*=\s*(\[[\s\S]*?\])/);
-	if (notMatchMatch) {
+	if (notMatchMatch?.[1]) {
 		result.notMatch = parseExamplesArray(notMatchMatch[1]);
 	}
 
@@ -429,33 +449,36 @@ function parsePatternArray(str: string): (string | string[])[] {
 	let i = 0;
 	while (i < content.length) {
 		// Skip whitespace and commas
-		while (i < content.length && /[\s,]/.test(content[i])) i++;
+		while (i < content.length && /[\s,]/.test(content.charAt(i))) i++;
 		if (i >= content.length) break;
 
-		if (content[i] === '"' || content[i] === "'") {
+		const char = content.charAt(i);
+		if (char === '"' || char === "'") {
 			// String token
-			const quote = content[i];
+			const quote = char;
 			i++;
 			let value = "";
-			while (i < content.length && content[i] !== quote) {
-				if (content[i] === "\\" && i + 1 < content.length) {
+			while (i < content.length && content.charAt(i) !== quote) {
+				const c = content.charAt(i);
+				if (c === "\\" && i + 1 < content.length) {
 					i++;
-					value += content[i];
+					value += content.charAt(i);
 				} else {
-					value += content[i];
+					value += c;
 				}
 				i++;
 			}
 			i++; // skip closing quote
 			result.push(value);
-		} else if (content[i] === "[") {
+		} else if (char === "[") {
 			// Alternatives array
 			const start = i;
 			let depth = 1;
 			i++;
 			while (i < content.length && depth > 0) {
-				if (content[i] === "[") depth++;
-				else if (content[i] === "]") depth--;
+				const c = content.charAt(i);
+				if (c === "[") depth++;
+				else if (c === "]") depth--;
 				i++;
 			}
 			const nestedStr = content.slice(start, i);
@@ -473,19 +496,21 @@ function parseStringArray(str: string): string[] {
 
 	let i = 0;
 	while (i < content.length) {
-		while (i < content.length && /[\s,]/.test(content[i])) i++;
+		while (i < content.length && /[\s,]/.test(content.charAt(i))) i++;
 		if (i >= content.length) break;
 
-		if (content[i] === '"' || content[i] === "'") {
-			const quote = content[i];
+		const char = content.charAt(i);
+		if (char === '"' || char === "'") {
+			const quote = char;
 			i++;
 			let value = "";
-			while (i < content.length && content[i] !== quote) {
-				if (content[i] === "\\" && i + 1 < content.length) {
+			while (i < content.length && content.charAt(i) !== quote) {
+				const c = content.charAt(i);
+				if (c === "\\" && i + 1 < content.length) {
 					i++;
-					value += content[i];
+					value += content.charAt(i);
 				} else {
-					value += content[i];
+					value += c;
 				}
 				i++;
 			}
@@ -503,31 +528,34 @@ function parseExamplesArray(str: string): string[][] {
 
 	let i = 0;
 	while (i < content.length) {
-		while (i < content.length && /[\s,]/.test(content[i])) i++;
+		while (i < content.length && /[\s,]/.test(content.charAt(i))) i++;
 		if (i >= content.length) break;
 
-		if (content[i] === "[") {
+		const char = content.charAt(i);
+		if (char === "[") {
 			const start = i;
 			let depth = 1;
 			i++;
 			while (i < content.length && depth > 0) {
-				if (content[i] === "[") depth++;
-				else if (content[i] === "]") depth--;
+				const c = content.charAt(i);
+				if (c === "[") depth++;
+				else if (c === "]") depth--;
 				i++;
 			}
 			const nestedStr = content.slice(start, i);
 			result.push(parseStringArray(nestedStr));
-		} else if (content[i] === '"' || content[i] === "'") {
+		} else if (char === '"' || char === "'") {
 			// Shell command string that needs to be split
-			const quote = content[i];
+			const quote = char;
 			i++;
 			let value = "";
-			while (i < content.length && content[i] !== quote) {
-				if (content[i] === "\\" && i + 1 < content.length) {
+			while (i < content.length && content.charAt(i) !== quote) {
+				const c = content.charAt(i);
+				if (c === "\\" && i + 1 < content.length) {
 					i++;
-					value += content[i];
+					value += content.charAt(i);
 				} else {
-					value += content[i];
+					value += c;
 				}
 				i++;
 			}

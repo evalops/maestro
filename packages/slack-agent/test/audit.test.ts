@@ -38,12 +38,12 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const lines = content.trim().split("\n");
 
 			expect(lines.length).toBe(2);
-			const entry1 = JSON.parse(lines[0]);
-			const entry2 = JSON.parse(lines[1]);
+			const entry1 = JSON.parse(lines[0]!);
+			const entry2 = JSON.parse(lines[1]!);
 
 			expect(entry1.action).toBe("message");
 			expect(entry2.action).toBe("tool_call");
@@ -54,7 +54,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.timestamp).toBeDefined();
@@ -71,7 +71,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entries = content
 				.trim()
 				.split("\n")
@@ -108,7 +108,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.inputPreview).toBe("Contact me at [EMAIL]");
@@ -122,7 +122,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.inputPreview).toBe("Call me at [PHONE]");
@@ -136,7 +136,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.inputPreview).toBe("Card: [CARD]");
@@ -151,7 +151,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.inputPreview).toBe("Key: [REDACTED_KEY]");
@@ -165,7 +165,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.inputPreview).toBe("AWS: [AWS_KEY]");
@@ -179,7 +179,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.inputPreview.length).toBeLessThan(200);
@@ -193,7 +193,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.action).toBe("message");
@@ -218,7 +218,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.action).toBe("tool_call");
@@ -234,7 +234,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.action).toBe("approval_request");
@@ -246,7 +246,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.action).toBe("approval_granted");
@@ -258,7 +258,7 @@ describe("AuditLogger", () => {
 
 			const auditDir = join(dir, "audit");
 			const files = await readdir(auditDir);
-			const content = await readFile(join(auditDir, files[0]), "utf-8");
+			const content = await readFile(join(auditDir, files[0]!), "utf-8");
 			const entry = JSON.parse(content.trim());
 
 			expect(entry.action).toBe("approval_denied");
@@ -319,7 +319,7 @@ describe("AuditLogger with PII redaction disabled", () => {
 
 		const auditDir = join(dir, "audit");
 		const files = await readdir(auditDir);
-		const content = await readFile(join(auditDir, files[0]), "utf-8");
+		const content = await readFile(join(auditDir, files[0]!), "utf-8");
 		const entry = JSON.parse(content.trim());
 
 		expect(entry.inputPreview).toBe("Email: test@example.com");

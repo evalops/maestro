@@ -66,10 +66,10 @@ describe("transformMessages", () => {
 			const model = createModel("anthropic", "anthropic-messages");
 			const result = transformMessages(messages, model);
 
-			expect(result[0].role).toBe("assistant");
+			expect(result[0]!.role).toBe("assistant");
 			const content = (result[0] as AssistantMessage).content;
 			expect(content).toHaveLength(2);
-			expect(content[0].type).toBe("thinking");
+			expect(content[0]!.type).toBe("thinking");
 		});
 
 		it("converts thinking blocks to text when crossing providers", () => {
@@ -87,10 +87,10 @@ describe("transformMessages", () => {
 			const model = createModel("openai", "openai-completions");
 			const result = transformMessages(messages, model);
 
-			expect(result[0].role).toBe("assistant");
+			expect(result[0]!.role).toBe("assistant");
 			const content = (result[0] as AssistantMessage).content;
 			expect(content).toHaveLength(2);
-			expect(content[0].type).toBe("text");
+			expect(content[0]!.type).toBe("text");
 			expect((content[0] as { type: "text"; text: string }).text).toContain(
 				"<thinking>",
 			);
@@ -112,7 +112,7 @@ describe("transformMessages", () => {
 			const result = transformMessages(messages, model);
 
 			const content = (result[0] as AssistantMessage).content;
-			expect(content[0].type).toBe("text");
+			expect(content[0]!.type).toBe("text");
 		});
 	});
 
@@ -143,7 +143,7 @@ describe("transformMessages", () => {
 
 			const assistantContent = (result[0] as AssistantMessage).content;
 			expect(assistantContent).toHaveLength(2);
-			expect(assistantContent[1].type).toBe("toolCall");
+			expect(assistantContent[1]!.type).toBe("toolCall");
 		});
 
 		it("filters out tool calls without results", () => {
@@ -166,7 +166,7 @@ describe("transformMessages", () => {
 
 			const firstContent = (result[0] as AssistantMessage).content;
 			expect(firstContent).toHaveLength(1);
-			expect(firstContent[0].type).toBe("text");
+			expect(firstContent[0]!.type).toBe("text");
 		});
 
 		it("keeps tool calls in the last message (ongoing turn)", () => {
@@ -186,7 +186,7 @@ describe("transformMessages", () => {
 
 			const content = (result[0] as AssistantMessage).content;
 			expect(content).toHaveLength(1);
-			expect(content[0].type).toBe("toolCall");
+			expect(content[0]!.type).toBe("toolCall");
 		});
 
 		it("handles multiple tool calls with partial results", () => {

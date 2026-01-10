@@ -305,14 +305,14 @@ export class GitView {
 			const rest = line.slice(3).trim();
 			const renameParts = rest.split(" -> ");
 			const displayPath =
-				renameParts.length === 2 ? renameParts[1].trim() : rest;
+				renameParts.length === 2 ? renameParts[1]!.trim() : rest;
 			return {
 				path: displayPath,
 				displayPath,
 				stagedCode: code[0] ?? " ",
 				worktreeCode: code[1] ?? " ",
 				renamePath:
-					renameParts.length === 2 ? renameParts[0].trim() : undefined,
+					renameParts.length === 2 ? renameParts[0]!.trim() : undefined,
 			};
 		});
 	}

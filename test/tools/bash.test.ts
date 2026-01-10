@@ -56,7 +56,7 @@ describe("bash tool", () => {
 		});
 
 		it("executes via tool registry", async () => {
-			const result = await toolRegistry.bash.execute("bash-registry", {
+			const result = await toolRegistry.bash!.execute("bash-registry", {
 				command: "echo 'Registry OK'",
 			});
 

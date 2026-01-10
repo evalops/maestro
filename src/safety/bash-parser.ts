@@ -523,7 +523,7 @@ export function analyzeCommandSafety(command: string): {
 
 		// Check git commands
 		if (program === "git" && cmd.args.length > 0) {
-			const subcommand = cmd.args[0];
+			const subcommand = cmd.args[0]!;
 			if (DANGEROUS_GIT_SUBCOMMANDS.has(subcommand)) {
 				return {
 					safe: false,
@@ -579,7 +579,7 @@ export function isKnownSafeCommand(command: string): boolean {
 
 		// Check if it's a safe git command
 		if (program === "git" && cmd.args.length > 0) {
-			const subcommand = cmd.args[0];
+			const subcommand = cmd.args[0]!;
 			if (SAFE_GIT_SUBCOMMANDS.has(subcommand)) {
 				continue;
 			}
@@ -603,6 +603,9 @@ export function unwrapShellCommand(command: string): string | null {
 	}
 
 	const cmd = parsed.commands[0];
+	if (!cmd) {
+		return null;
+	}
 	const program = resolveProgramName(cmd.program);
 
 	// Check for bash/sh/zsh with -c flag
@@ -610,12 +613,15 @@ export function unwrapShellCommand(command: string): string | null {
 		const cIndex = cmd.args.findIndex((a) => a === "-c" || a === "-lc");
 		if (cIndex !== -1 && cIndex + 1 < cmd.args.length) {
 			// Return the command string (removing quotes if present)
-			let innerCmd = cmd.args[cIndex + 1];
+			const innerCmd = cmd.args[cIndex + 1];
+			if (!innerCmd) {
+				return null;
+			}
 			if (
 				(innerCmd.startsWith('"') && innerCmd.endsWith('"')) ||
 				(innerCmd.startsWith("'") && innerCmd.endsWith("'"))
 			) {
-				innerCmd = innerCmd.slice(1, -1);
+				return innerCmd.slice(1, -1);
 			}
 			return innerCmd;
 		}

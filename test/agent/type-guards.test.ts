@@ -184,8 +184,8 @@ describe("type-guards", () => {
 		it("getToolCalls extracts all tool calls", () => {
 			const calls = getToolCalls(assistantWithTools);
 			expect(calls).toHaveLength(2);
-			expect(calls[0].name).toBe("read");
-			expect(calls[1].name).toBe("write");
+			expect(calls[0]!.name).toBe("read");
+			expect(calls[1]!.name).toBe("write");
 		});
 
 		it("getToolCalls returns empty array when no tools", () => {
@@ -412,8 +412,8 @@ describe("type-guards", () => {
 			];
 			const images = getImageContent(content);
 			expect(images).toHaveLength(2);
-			expect(images[0].mimeType).toBe("image/png");
-			expect(images[1].mimeType).toBe("image/jpeg");
+			expect(images[0]!.mimeType).toBe("image/png");
+			expect(images[1]!.mimeType).toBe("image/jpeg");
 		});
 
 		it("returns empty array when no images", () => {

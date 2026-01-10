@@ -195,7 +195,7 @@ describe("MetricsCollector", () => {
 
 			expect(summary.counters.counter1).toBe(1);
 			expect(summary.gauges.gauge1).toBe(42);
-			expect(summary.histograms.hist1.count).toBe(1);
+			expect(summary.histograms.hist1!.count).toBe(1);
 		});
 	});
 

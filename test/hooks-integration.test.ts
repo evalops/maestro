@@ -367,7 +367,7 @@ echo '{"continue": true}'
 
 			// Should only have one result (the blocker)
 			expect(results).toHaveLength(1);
-			expect(results[0].blockingError).toBeDefined();
+			expect(results[0]!.blockingError).toBeDefined();
 		});
 	});
 
@@ -899,7 +899,7 @@ echo '{"continue": true, "systemMessage": "Important: Follow security best pract
 			const results = await executeHooks(input, testDir);
 
 			expect(results).toHaveLength(1);
-			expect(results[0].permissionBehavior).toBe("allow");
+			expect(results[0]!.permissionBehavior).toBe("allow");
 		});
 	});
 

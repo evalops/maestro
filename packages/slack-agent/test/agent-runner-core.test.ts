@@ -52,8 +52,8 @@ describe("agent-runner core logic", () => {
 			];
 			const messages = parseLogMessages(lines);
 			expect(messages).toHaveLength(2);
-			expect(messages[0].text).toBe("Hello");
-			expect(messages[1].text).toBe("Hi there");
+			expect(messages[0]!.text).toBe("Hello");
+			expect(messages[1]!.text).toBe("Hi there");
 		});
 
 		it("skips malformed JSON lines", () => {
@@ -73,9 +73,9 @@ describe("agent-runner core logic", () => {
 				'{"ts":"1234567890.000002","text":"Second"}',
 			];
 			const messages = parseLogMessages(lines);
-			expect(messages[0].text).toBe("First");
-			expect(messages[1].text).toBe("Second");
-			expect(messages[2].text).toBe("Third");
+			expect(messages[0]!.text).toBe("First");
+			expect(messages[1]!.text).toBe("Second");
+			expect(messages[2]!.text).toBe("Third");
 		});
 
 		it("handles empty input", () => {

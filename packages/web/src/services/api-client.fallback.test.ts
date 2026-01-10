@@ -42,8 +42,8 @@ describe("ApiClient fallback resolution", () => {
 
 		expect(model?.id).toBe("m");
 		expect(fetchMock).toHaveBeenCalledTimes(2);
-		expect(String(fetchMock.mock.calls[0][0])).toContain("https://app.test");
-		expect(String(fetchMock.mock.calls[1][0])).toContain(
+		expect(String(fetchMock.mock.calls[0]![0])).toContain("https://app.test");
+		expect(String(fetchMock.mock.calls[1]![0])).toContain(
 			"http://localhost:8080",
 		);
 	});
@@ -64,6 +64,6 @@ describe("ApiClient fallback resolution", () => {
 		expect(model).toBeNull();
 
 		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(String(fetchMock.mock.calls[0][0])).toContain("https://app.test");
+		expect(String(fetchMock.mock.calls[0]![0])).toContain("https://app.test");
 	});
 });

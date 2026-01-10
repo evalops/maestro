@@ -268,10 +268,10 @@ describe("ToolResultCache", () => {
 			expect(stats.totalLookups).toBe(5);
 			expect(stats.hits).toBe(2);
 			expect(stats.misses).toBe(3);
-			expect(stats.byTool.read.hits).toBe(1);
-			expect(stats.byTool.read.misses).toBe(2);
-			expect(stats.byTool.list.hits).toBe(1);
-			expect(stats.byTool.list.misses).toBe(1);
+			expect(stats.byTool.read!.hits).toBe(1);
+			expect(stats.byTool.read!.misses).toBe(2);
+			expect(stats.byTool.list!.hits).toBe(1);
+			expect(stats.byTool.list!.misses).toBe(1);
 		});
 
 		it("should calculate hit ratio correctly", () => {
@@ -397,15 +397,15 @@ describe("DEFAULT_TOOL_CACHE_CONFIGS", () => {
 	});
 
 	it("should mark read-only tools as cacheable", () => {
-		expect(DEFAULT_TOOL_CACHE_CONFIGS.read.cacheable).toBe(true);
-		expect(DEFAULT_TOOL_CACHE_CONFIGS.list.cacheable).toBe(true);
-		expect(DEFAULT_TOOL_CACHE_CONFIGS.search.cacheable).toBe(true);
+		expect(DEFAULT_TOOL_CACHE_CONFIGS.read!.cacheable).toBe(true);
+		expect(DEFAULT_TOOL_CACHE_CONFIGS.list!.cacheable).toBe(true);
+		expect(DEFAULT_TOOL_CACHE_CONFIGS.search!.cacheable).toBe(true);
 	});
 
 	it("should mark mutating tools as not cacheable", () => {
-		expect(DEFAULT_TOOL_CACHE_CONFIGS.bash.cacheable).toBe(false);
-		expect(DEFAULT_TOOL_CACHE_CONFIGS.write.cacheable).toBe(false);
-		expect(DEFAULT_TOOL_CACHE_CONFIGS.edit.cacheable).toBe(false);
+		expect(DEFAULT_TOOL_CACHE_CONFIGS.bash!.cacheable).toBe(false);
+		expect(DEFAULT_TOOL_CACHE_CONFIGS.write!.cacheable).toBe(false);
+		expect(DEFAULT_TOOL_CACHE_CONFIGS.edit!.cacheable).toBe(false);
 	});
 });
 

@@ -216,10 +216,10 @@ describe("File Upload Integration", () => {
 			);
 
 			expect(attachments).toHaveLength(1);
-			expect(attachments[0].original).toBe("app.ts");
-			expect(attachments[0].mimetype).toBe("text/typescript");
-			expect(attachments[0].filetype).toBe("typescript");
-			expect(attachments[0].size).toBe(1024);
+			expect(attachments[0]!.original).toBe("app.ts");
+			expect(attachments[0]!.mimetype).toBe("text/typescript");
+			expect(attachments[0]!.filetype).toBe("typescript");
+			expect(attachments[0]!.size).toBe(1024);
 		});
 
 		it("handles multiple files", () => {
@@ -268,7 +268,7 @@ describe("File Upload Integration", () => {
 			);
 
 			expect(attachments).toHaveLength(1);
-			expect(attachments[0].original).toBe("hasurl.js");
+			expect(attachments[0]!.original).toBe("hasurl.js");
 		});
 
 		it("skips files without name", () => {
@@ -287,7 +287,7 @@ describe("File Upload Integration", () => {
 			);
 
 			expect(attachments).toHaveLength(1);
-			expect(attachments[0].original).toBe("hasname.js");
+			expect(attachments[0]!.original).toBe("hasname.js");
 		});
 
 		it("generates unique local filenames from timestamp", () => {
@@ -301,7 +301,7 @@ describe("File Upload Integration", () => {
 			const attachments1 = store.processAttachments("C123456", files, ts1);
 			const attachments2 = store.processAttachments("C123456", files, ts2);
 
-			expect(attachments1[0].local).not.toBe(attachments2[0].local);
+			expect(attachments1[0]!.local).not.toBe(attachments2[0]!.local);
 		});
 
 		it("sanitizes filenames with special characters", () => {
@@ -319,10 +319,10 @@ describe("File Upload Integration", () => {
 			);
 
 			// Should not contain spaces or parentheses
-			expect(attachments[0].local).not.toContain(" ");
-			expect(attachments[0].local).not.toContain("(");
-			expect(attachments[0].local).not.toContain(")");
-			expect(attachments[0].local).toContain("my_file__1_.js");
+			expect(attachments[0]!.local).not.toContain(" ");
+			expect(attachments[0]!.local).not.toContain("(");
+			expect(attachments[0]!.local).not.toContain(")");
+			expect(attachments[0]!.local).toContain("my_file__1_.js");
 		});
 	});
 
@@ -391,9 +391,9 @@ describe("File Upload Integration", () => {
 				"1234567890.123456",
 			);
 
-			expect(attachments1[0].local).toContain("C111111");
-			expect(attachments2[0].local).toContain("C222222");
-			expect(attachments1[0].local).not.toBe(attachments2[0].local);
+			expect(attachments1[0]!.local).toContain("C111111");
+			expect(attachments2[0]!.local).toContain("C222222");
+			expect(attachments1[0]!.local).not.toBe(attachments2[0]!.local);
 		});
 	});
 });

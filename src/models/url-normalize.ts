@@ -46,7 +46,9 @@ export function normalizeLLMBaseUrl(
 		) {
 			return false;
 		}
-		const [a, b] = octets;
+		const a = octets[0];
+		const b = octets[1];
+		if (a === undefined || b === undefined) return false;
 		return (
 			// 10.0.0.0/8
 			a === 10 ||
@@ -90,13 +92,13 @@ export function normalizeLLMBaseUrl(
 		const ipv4MappedMatch = addr.match(
 			/^(?:::ffff:|0:0:0:0:0:ffff:)(\d+\.\d+\.\d+\.\d+)$/i,
 		);
-		if (ipv4MappedMatch) {
+		if (ipv4MappedMatch?.[1]) {
 			return isPrivateIpv4(ipv4MappedMatch[1]);
 		}
 
 		// IPv4-compatible IPv6 (deprecated but still block) ::x.x.x.x
 		const ipv4CompatMatch = addr.match(/^::(\d+\.\d+\.\d+\.\d+)$/);
-		if (ipv4CompatMatch) {
+		if (ipv4CompatMatch?.[1]) {
 			return isPrivateIpv4(ipv4CompatMatch[1]);
 		}
 
@@ -125,7 +127,7 @@ export function normalizeLLMBaseUrl(
 			return url.toString();
 		} catch {
 			// Fallback string check: ensure desiredPath appears after a slash, not in hostname
-			const [pathPortion] = urlStr.split(/[?#]/, 1);
+			const pathPortion = urlStr.split(/[?#]/, 1)[0] ?? urlStr;
 			const pathIndex = pathPortion.indexOf(desiredPath);
 			const looksLikePath = pathIndex > 0 && pathPortion[pathIndex - 1] === "/";
 			const hasDesiredPath = hasPath(pathPortion) && looksLikePath;

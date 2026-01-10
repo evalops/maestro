@@ -167,7 +167,7 @@ describe("TOTP Service", () => {
 			const codes = generateBackupCodes(5);
 			const hashes = codes.map(hashBackupCode);
 
-			const result = verifyBackupCode(codes[2], hashes);
+			const result = verifyBackupCode(codes[2]!, hashes);
 			expect(result.valid).toBe(true);
 			expect(result.usedIndex).toBe(2);
 		});

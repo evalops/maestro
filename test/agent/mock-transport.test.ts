@@ -265,7 +265,7 @@ describe("Agent mock transport", () => {
 		await agent.prompt("Process queued context");
 
 		expect(transport.queuedMessages).toHaveLength(1);
-		const queuedEntry = transport.queuedMessages[0];
+		const queuedEntry = transport.queuedMessages[0]!;
 		expect(queuedEntry.original.role).toBe("user");
 		const rawContent = queuedEntry.llm?.content;
 		const llmContent = Array.isArray(rawContent) ? rawContent : [];

@@ -403,6 +403,7 @@ function extractFilePaths(context: ActionApprovalContext): string[] {
 			const matches = command.matchAll(fileCommands);
 			for (const match of matches) {
 				const argsStr = match[1];
+				if (!argsStr) continue;
 				// Split by spaces, respecting quotes
 				const argParts = argsStr.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
 				for (const arg of argParts) {
@@ -423,7 +424,9 @@ function extractFilePaths(context: ActionApprovalContext): string[] {
 			const redirectPattern = /[<>]{1,2}\s*([^\s<>|&;]+)/g;
 			const redirectMatches = command.matchAll(redirectPattern);
 			for (const match of redirectMatches) {
-				const path = match[1].replace(/^["']|["']$/g, "");
+				const rawPath = match[1];
+				if (!rawPath) continue;
+				const path = rawPath.replace(/^["']|["']$/g, "");
 				if (path && path.length > 0) {
 					paths.push(path);
 				}
@@ -441,6 +444,7 @@ function extractFilePaths(context: ActionApprovalContext): string[] {
 					const innerMatches = innerCmd.matchAll(fileCommands);
 					for (const innerMatch of innerMatches) {
 						const innerArgsStr = innerMatch[1];
+						if (!innerArgsStr) continue;
 						const innerArgParts =
 							innerArgsStr.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
 						for (const arg of innerArgParts) {

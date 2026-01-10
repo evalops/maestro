@@ -354,8 +354,9 @@ function extractLastAssistantMessage(
 	messages: AppMessage[],
 ): string | undefined {
 	const assistantMessages = messages.filter((m) => m.role === "assistant");
-	if (assistantMessages.length === 0) return undefined;
-	return extractAssistantText(assistantMessages[assistantMessages.length - 1]);
+	const lastMessage = assistantMessages[assistantMessages.length - 1];
+	if (!lastMessage) return undefined;
+	return extractAssistantText(lastMessage);
 }
 
 function extractAssistantText(message: AppMessage): string | undefined {

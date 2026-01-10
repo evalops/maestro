@@ -112,7 +112,7 @@ describe("websearch tool", () => {
 			summary: { target: "news", model: "exa:claude" },
 		});
 
-		const requestBody = mockedCallExa.mock.calls[0][1];
+		const requestBody = mockedCallExa.mock.calls[0]![1];
 		expect(requestBody).toMatchObject({
 			livecrawl: "always",
 			subpages: { limit: 2 },
@@ -189,7 +189,7 @@ describe("webfetch tool", () => {
 		};
 		const result = await webfetchTool.execute("call-2", params);
 
-		const requestBody = mockedCallExa.mock.calls[0][1];
+		const requestBody = mockedCallExa.mock.calls[0]![1];
 		expect(requestBody).toMatchObject({
 			contents: {
 				highlights: { highlightsPerUrl: 2, numSentences: 4 },

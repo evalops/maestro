@@ -182,6 +182,7 @@ export class Markdown implements Component {
 			// Convert tokens to styled terminal output
 			for (let i = 0; i < tokens.length; i++) {
 				const token = tokens[i];
+				if (!token) continue;
 				const nextToken = tokens[i + 1];
 				const tokenLines = this.renderToken(
 					token,
@@ -484,6 +485,7 @@ export class Markdown implements Component {
 		})();
 		for (let i = 0; i < token.items.length; i++) {
 			const item = token.items[i];
+			if (!item) continue;
 			const checkbox = item.task ? (item.checked ? "[x] " : "[ ] ") : "";
 			const marker = token.ordered ? `${startIndex + i}. ` : "- ";
 			const bullet = this.applyTheme("listBullet", marker + checkbox, (text) =>
@@ -582,22 +584,29 @@ export class Markdown implements Component {
 		const columnCount = token.header.length;
 		// Check header
 		for (let i = 0; i < token.header.length; i++) {
-			const headerText = this.renderInlineTokens(token.header[i].tokens || []);
+			const headerCell = token.header[i];
+			if (!headerCell) continue;
+			const headerText = this.renderInlineTokens(headerCell.tokens || []);
 			const width = visibleWidth(headerText);
-			columnWidths[i] = Math.max(columnWidths[i] || 0, width);
+			columnWidths[i] = Math.max(columnWidths[i] ?? 0, width);
 		}
 		// Check rows
 		for (const row of token.rows) {
 			for (let i = 0; i < row.length; i++) {
-				const cellText = this.renderInlineTokens(row[i].tokens || []);
+				const cell = row[i];
+				if (!cell) continue;
+				const cellText = this.renderInlineTokens(cell.tokens || []);
 				const width = visibleWidth(cellText);
-				columnWidths[i] = Math.max(columnWidths[i] || 0, width);
+				columnWidths[i] = Math.max(columnWidths[i] ?? 0, width);
 			}
 		}
 		// Limit column widths to reasonable max
 		const maxColWidth = 40;
 		for (let i = 0; i < columnWidths.length; i++) {
-			columnWidths[i] = Math.min(columnWidths[i], maxColWidth);
+			const colWidth = columnWidths[i];
+			if (colWidth !== undefined) {
+				columnWidths[i] = Math.min(colWidth, maxColWidth);
+			}
 		}
 		// If the table would overflow the available width, shrink columns proportionally.
 		const fixedWidth = 3 * columnCount + 1; // borders + separators (│ + │)
@@ -626,6 +635,7 @@ export class Markdown implements Component {
 					for (const idx of sortedIndexes) {
 						if (deficit <= 0) break;
 						const current = resized[idx];
+						if (current === undefined) continue;
 						const possibleReduction = Math.min(
 							deficit,
 							Math.max(0, current - 1),
@@ -636,7 +646,10 @@ export class Markdown implements Component {
 					}
 				}
 				for (let i = 0; i < resized.length; i++) {
-					columnWidths[i] = resized[i];
+					const resizedValue = resized[i];
+					if (resizedValue !== undefined) {
+						columnWidths[i] = resizedValue;
+					}
 				}
 			}
 		}
@@ -663,6 +676,7 @@ export class Markdown implements Component {
 				const codePoint = text.codePointAt(i);
 				const char =
 					codePoint !== undefined ? String.fromCodePoint(codePoint) : text[i];
+				if (!char) break;
 				const charWidth = visibleWidth(char);
 				if (widthSoFar + charWidth > targetWidth) break;
 				result += char;
@@ -674,9 +688,10 @@ export class Markdown implements Component {
 		// Render header
 		const headerCells = token.header.map(
 			(cell: Tokens.TableCell, i: number) => {
+				const colWidth = columnWidths[i] ?? 0;
 				const raw = this.renderInlineTokens(cell.tokens || []);
-				const text = truncateCell(raw, columnWidths[i]);
-				return chalk.bold(padCell(text, columnWidths[i]));
+				const text = truncateCell(raw, colWidth);
+				return chalk.bold(padCell(text, colWidth));
 			},
 		);
 		lines.push(`│ ${headerCells.join(" │ ")} │`);
@@ -686,9 +701,10 @@ export class Markdown implements Component {
 		// Render rows
 		for (const row of token.rows) {
 			const rowCells = row.map((cell: Tokens.TableCell, i: number) => {
+				const colWidth = columnWidths[i] ?? 0;
 				const raw = this.renderInlineTokens(cell.tokens || []);
-				const text = truncateCell(raw, columnWidths[i]);
-				return padCell(text, columnWidths[i]);
+				const text = truncateCell(raw, colWidth);
+				return padCell(text, colWidth);
 			});
 			lines.push(`│ ${rowCells.join(" │ ")} │`);
 		}

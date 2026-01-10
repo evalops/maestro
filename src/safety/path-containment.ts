@@ -225,8 +225,7 @@ export function getSafePathMatch(
 	}
 
 	for (const [index, trustedPath] of summary.trustedPaths.entries()) {
-		const trustedReal =
-			summary.trustedPathsReal[index] ?? summary.trustedPaths[index];
+		const trustedReal = summary.trustedPathsReal[index] ?? trustedPath;
 		if (
 			isWithin(trustedPath, resolvedPath) &&
 			isWithin(trustedReal, realFilePath)

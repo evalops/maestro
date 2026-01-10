@@ -35,8 +35,10 @@ export function handleCopyCommand(
 	const messages = deps.getMessages();
 	let lastAssistant: AppMessage | null = null;
 	for (let i = messages.length - 1; i >= 0; i--) {
-		if (messages[i].role === "assistant") {
-			lastAssistant = messages[i];
+		const msg = messages[i];
+		if (!msg) continue;
+		if (msg.role === "assistant") {
+			lastAssistant = msg;
 			break;
 		}
 	}

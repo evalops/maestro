@@ -135,8 +135,8 @@ export function parseOverflowDetails(
 	);
 	if (anthropicMatch) {
 		return {
-			requestedTokens: Number.parseInt(anthropicMatch[1], 10),
-			maxTokens: Number.parseInt(anthropicMatch[2], 10),
+			requestedTokens: Number.parseInt(anthropicMatch[1]!, 10),
+			maxTokens: Number.parseInt(anthropicMatch[2]!, 10),
 		};
 	}
 
@@ -146,8 +146,8 @@ export function parseOverflowDetails(
 	);
 	if (googleMatch) {
 		return {
-			requestedTokens: Number.parseInt(googleMatch[1], 10),
-			maxTokens: Number.parseInt(googleMatch[2], 10),
+			requestedTokens: Number.parseInt(googleMatch[1]!, 10),
+			maxTokens: Number.parseInt(googleMatch[2]!, 10),
 		};
 	}
 
@@ -157,8 +157,8 @@ export function parseOverflowDetails(
 	);
 	if (xaiMatch) {
 		return {
-			maxTokens: Number.parseInt(xaiMatch[1], 10),
-			requestedTokens: Number.parseInt(xaiMatch[2], 10),
+			maxTokens: Number.parseInt(xaiMatch[1]!, 10),
+			requestedTokens: Number.parseInt(xaiMatch[2]!, 10),
 		};
 	}
 
@@ -168,8 +168,8 @@ export function parseOverflowDetails(
 	);
 	if (openrouterMatch) {
 		return {
-			maxTokens: Number.parseInt(openrouterMatch[1], 10),
-			requestedTokens: Number.parseInt(openrouterMatch[2], 10),
+			maxTokens: Number.parseInt(openrouterMatch[1]!, 10),
+			requestedTokens: Number.parseInt(openrouterMatch[2]!, 10),
 		};
 	}
 

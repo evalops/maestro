@@ -386,7 +386,7 @@ function buildSessionContextFromEntries(
 
 		let foundFirstKept = false;
 		for (let i = 0; i < compactionIdx; i++) {
-			const entry = path[i];
+			const entry = path[i]!;
 			if (entry.id === compaction.firstKeptEntryId) {
 				foundFirstKept = true;
 			}
@@ -396,7 +396,7 @@ function buildSessionContextFromEntries(
 		}
 
 		for (let i = compactionIdx + 1; i < path.length; i++) {
-			appendMessage(path[i]);
+			appendMessage(path[i]!);
 		}
 	} else {
 		for (const entry of path) {
@@ -551,7 +551,7 @@ export class SessionManager {
 	/** Buffered file writer for efficient I/O */
 	private writer?: SessionFileWriter;
 	/** Snapshot of agent state for recovery purposes */
-	private agentSnapshot?: AgentState;
+	private _agentSnapshot?: AgentState;
 	/** Metadata for the last used model */
 	private lastModelMetadata?: SessionModelMetadata;
 	/** Cache for current model/thinking level */
@@ -562,7 +562,7 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
 	private flushed = false;
-	private hasAssistantMessage = false;
+	private _hasAssistantMessage = false;
 
 	/**
 	 * Creates a new SessionManager.
@@ -639,7 +639,7 @@ export class SessionManager {
 		this.labelsById.clear();
 		this.leafId = null;
 		this.flushed = false;
-		this.hasAssistantMessage = false;
+		this._hasAssistantMessage = false;
 		this.sessionInitialized = false;
 		this.metadataCache.reset();
 	}
@@ -651,7 +651,7 @@ export class SessionManager {
 		this.writer?.flushSync();
 		this.writer?.dispose();
 		this.writer = undefined;
-		this.agentSnapshot = undefined;
+		this._agentSnapshot = undefined;
 		this.lastModelMetadata = undefined;
 		this.initNewSession();
 		this.initializeWriter();
@@ -670,10 +670,10 @@ export class SessionManager {
 		this.labelsById.clear();
 		this.leafId = null;
 		this.flushed = false;
-		this.hasAssistantMessage = false;
+		this._hasAssistantMessage = false;
 		this.sessionInitialized = false;
 		this.metadataCache.reset();
-		this.agentSnapshot = undefined;
+		this._agentSnapshot = undefined;
 		this.lastModelMetadata = undefined;
 
 		this.initNewSession();
@@ -700,7 +700,7 @@ export class SessionManager {
 		this.byId.clear();
 		this.labelsById.clear();
 		this.leafId = null;
-		this.hasAssistantMessage = false;
+		this._hasAssistantMessage = false;
 
 		for (const entry of entries) {
 			if (!isSessionTreeEntry(entry)) continue;
@@ -714,7 +714,7 @@ export class SessionManager {
 				}
 			}
 			if (entry.type === "message" && entry.message.role === "assistant") {
-				this.hasAssistantMessage = true;
+				this._hasAssistantMessage = true;
 			}
 		}
 	}
@@ -753,7 +753,7 @@ export class SessionManager {
 			}
 		}
 		if (entry.type === "message" && entry.message.role === "assistant") {
-			this.hasAssistantMessage = true;
+			this._hasAssistantMessage = true;
 		}
 		this.persistEntry(entry);
 	}
@@ -955,7 +955,7 @@ export class SessionManager {
 	 */
 	findLatestCompaction(): CompactionEntry | null {
 		for (let i = this.fileEntries.length - 1; i >= 0; i--) {
-			const entry = this.fileEntries[i];
+			const entry = this.fileEntries[i]!;
 			if (entry.type === "compaction") {
 				return entry as CompactionEntry;
 			}
@@ -965,7 +965,7 @@ export class SessionManager {
 
 	private getLatestThinkingLevel(): string | undefined {
 		for (let i = this.fileEntries.length - 1; i >= 0; i--) {
-			const entry = this.fileEntries[i];
+			const entry = this.fileEntries[i]!;
 			if (entry.type === "thinking_level_change") {
 				return entry.thinkingLevel;
 			}
@@ -975,7 +975,7 @@ export class SessionManager {
 
 	private getLatestModelChange(): ModelChangeEntry | undefined {
 		for (let i = this.fileEntries.length - 1; i >= 0; i--) {
-			const entry = this.fileEntries[i];
+			const entry = this.fileEntries[i]!;
 			if (entry.type === "model_change") {
 				return entry as ModelChangeEntry;
 			}
@@ -1260,7 +1260,7 @@ export class SessionManager {
 	}
 
 	updateSnapshot(state: AgentState, metadata?: SessionModelMetadata): void {
-		this.agentSnapshot = state;
+		this._agentSnapshot = state;
 		if (metadata) {
 			this.lastModelMetadata = metadata;
 		}

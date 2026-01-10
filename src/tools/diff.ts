@@ -341,6 +341,10 @@ export function parseStatusOutput(raw: string): ParsedStatus {
 	let i = 0;
 	while (i < entries.length) {
 		const entry = entries[i];
+		if (!entry) {
+			i += 1;
+			continue;
+		}
 
 		if (entry.startsWith("# branch.")) {
 			parsed.branch ??= {};
@@ -363,8 +367,8 @@ export function parseStatusOutput(raw: string): ParsedStatus {
 			}
 			if (entry.startsWith("# branch.ab ")) {
 				const parts = entry.slice("# branch.ab ".length).trim().split(" ");
-				const ahead = Number.parseInt(parts[0]?.replace("+", ""), 10);
-				const behind = Number.parseInt(parts[1]?.replace("-", ""), 10);
+				const ahead = Number.parseInt(parts[0]?.replace("+", "") ?? "", 10);
+				const behind = Number.parseInt(parts[1]?.replace("-", "") ?? "", 10);
 				parsed.branch.ahead = Number.isNaN(ahead) ? undefined : ahead;
 				parsed.branch.behind = Number.isNaN(behind) ? undefined : behind;
 				i += 1;
@@ -381,12 +385,12 @@ export function parseStatusOutput(raw: string): ParsedStatus {
 			if (!match) {
 				throw new Error(`Malformed type1 entry: ${entry}`);
 			}
-			const xy = match[1];
+			const xy = match[1]!;
 			parsed.files.push({
 				kind: "change",
-				path: match[2],
-				indexStatus: mapStatusChar(xy[0]),
-				worktreeStatus: mapStatusChar(xy[1]),
+				path: match[2]!,
+				indexStatus: mapStatusChar(xy[0]!),
+				worktreeStatus: mapStatusChar(xy[1]!),
 			});
 			i += 1;
 			continue;
@@ -409,12 +413,12 @@ export function parseStatusOutput(raw: string): ParsedStatus {
 			if (!match) {
 				throw new Error(`Malformed unmerged entry: ${entry}`);
 			}
-			const xy = match[1];
+			const xy = match[1]!;
 			parsed.files.push({
 				kind: "unmerged",
-				path: match[2],
-				indexStatus: mapStatusChar(xy[0]),
-				worktreeStatus: mapStatusChar(xy[1]),
+				path: match[2]!,
+				indexStatus: mapStatusChar(xy[0]!),
+				worktreeStatus: mapStatusChar(xy[1]!),
 			});
 			i += 1;
 			continue;
@@ -448,14 +452,14 @@ function parseRenameEntry(
 	const match = entry.match(/^2\s+(\S{2})\s+(?:\S+\s+){5,7}([RC]\d+)\s+(.+)$/);
 	if (!match) return undefined;
 
-	const xy = match[1];
-	const scoreToken = match[2];
+	const xy = match[1]!;
+	const scoreToken = match[2]!;
 	const score =
 		scoreToken && /^[RC]\d+$/.test(scoreToken)
 			? Number.parseInt(scoreToken.slice(1), 10)
 			: Number.NaN;
 	const isCopy = scoreToken?.startsWith("C") ?? false;
-	const path = match[3];
+	const path = match[3]!;
 	// The next porcelain entry is always the original path, even if it starts
 	// with characters like "! " that look like another entry prefix. Preserve
 	// it as-is to avoid misclassifying paths that start with header markers.
@@ -468,8 +472,8 @@ function parseRenameEntry(
 			path,
 			origPath: origPathCandidate,
 			score: Number.isNaN(score) ? undefined : score,
-			indexStatus: mapStatusChar(xy[0]),
-			worktreeStatus: mapStatusChar(xy[1]),
+			indexStatus: mapStatusChar(xy[0]!),
+			worktreeStatus: mapStatusChar(xy[1]!),
 			isCopy,
 		},
 		consumed,

@@ -23,8 +23,8 @@ describe("bash-parser", () => {
 			const result = parseBashCommand("ls -la");
 			expect(result.success).toBe(true);
 			expect(result.commands).toHaveLength(1);
-			expect(result.commands[0].program).toBe("ls");
-			expect(result.commands[0].args).toContain("-la");
+			expect(result.commands[0]!.program).toBe("ls");
+			expect(result.commands[0]!.args).toContain("-la");
 		});
 
 		it("detects pipes", () => {
@@ -53,8 +53,8 @@ describe("bash-parser", () => {
 			if (!isParserAvailable()) return;
 			const result = parseBashCommand("git status");
 			expect(result.success).toBe(true);
-			expect(result.commands[0].program).toBe("git");
-			expect(result.commands[0].args).toContain("status");
+			expect(result.commands[0]!.program).toBe("git");
+			expect(result.commands[0]!.args).toContain("status");
 		});
 	});
 

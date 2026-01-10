@@ -254,7 +254,7 @@ function parseFrontmatter(content: string): {
 
 	// Simple YAML parser for common patterns
 	const frontmatter: Record<string, unknown> = {};
-	const lines = yamlContent.split("\n");
+	const lines = yamlContent!.split("\n");
 	let currentKey: string | null = null;
 	let currentArray: string[] | null = null;
 	let inMetadata = false;
@@ -328,7 +328,7 @@ function parseFrontmatter(content: string): {
 		frontmatter.metadata = metadataObj;
 	}
 
-	return { frontmatter, body };
+	return { frontmatter, body: body! };
 }
 
 /**

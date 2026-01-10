@@ -183,8 +183,8 @@ export function getAheadBehind(
 		return undefined;
 	}
 
-	const ahead = Number.parseInt(parts[0], 10);
-	const behind = Number.parseInt(parts[1], 10);
+	const ahead = Number.parseInt(parts[0]!, 10);
+	const behind = Number.parseInt(parts[1]!, 10);
 
 	if (Number.isNaN(ahead) || Number.isNaN(behind)) {
 		return undefined;

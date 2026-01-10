@@ -121,8 +121,8 @@ export function parseTimeExpression(
 		/^in\s+(\d+)\s*(min(?:ute)?s?|hour?s?|day?s?|week?s?)$/,
 	);
 	if (inMatch) {
-		const amount = Number.parseInt(inMatch[1], 10);
-		const unit = inMatch[2];
+		const amount = Number.parseInt(inMatch[1]!, 10);
+		const unit = inMatch[2]!;
 		let dt = nowDt;
 
 		if (unit.startsWith("min")) {
@@ -140,7 +140,7 @@ export function parseTimeExpression(
 	// "at HH:MM" or "at Ham/pm" (interpreted in task timezone)
 	const atMatch = lowerExpr.match(/^at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
 	if (atMatch) {
-		let hours = Number.parseInt(atMatch[1], 10);
+		let hours = Number.parseInt(atMatch[1]!, 10);
 		const minutes = atMatch[2] ? Number.parseInt(atMatch[2], 10) : 0;
 		const ampm = atMatch[3];
 
@@ -186,7 +186,7 @@ export function parseTimeExpression(
 		/^next\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$/,
 	);
 	if (nextDayMatch) {
-		const targetDay = toLuxonWeekday(getDayIndex(nextDayMatch[1]));
+		const targetDay = toLuxonWeekday(getDayIndex(nextDayMatch[1]!));
 		let hours = nextDayMatch[2] ? Number.parseInt(nextDayMatch[2], 10) : 9;
 		const minutes = nextDayMatch[3] ? Number.parseInt(nextDayMatch[3], 10) : 0;
 		const ampm = nextDayMatch[4];
@@ -213,7 +213,7 @@ export function parseTimeExpression(
 		/^this\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$/,
 	);
 	if (thisDayMatch) {
-		const targetDay = toLuxonWeekday(getDayIndex(thisDayMatch[1]));
+		const targetDay = toLuxonWeekday(getDayIndex(thisDayMatch[1]!));
 		let hours = thisDayMatch[2] ? Number.parseInt(thisDayMatch[2], 10) : 9;
 		const minutes = thisDayMatch[3] ? Number.parseInt(thisDayMatch[3], 10) : 0;
 		const ampm = thisDayMatch[4];
@@ -265,8 +265,8 @@ export function parseRecurringSchedule(
 		/^every\s+(\d+)\s*(min(?:ute)?s?|hours?)$/,
 	);
 	if (intervalMatch) {
-		const amount = Number.parseInt(intervalMatch[1], 10);
-		const unit = intervalMatch[2];
+		const amount = Number.parseInt(intervalMatch[1]!, 10);
+		const unit = intervalMatch[2]!;
 
 		if (unit.startsWith("min")) {
 			const schedule = `*/${amount} * * * *`;
@@ -350,7 +350,7 @@ export function parseRecurringSchedule(
 		/^every\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$/,
 	);
 	if (dayMatch) {
-		const targetDayIndex = getDayIndex(dayMatch[1]);
+		const targetDayIndex = getDayIndex(dayMatch[1]!);
 		const targetWeekday = toLuxonWeekday(targetDayIndex);
 		let hours = dayMatch[2] ? Number.parseInt(dayMatch[2], 10) : 9;
 		const minutes = dayMatch[3] ? Number.parseInt(dayMatch[3], 10) : 0;
@@ -384,8 +384,8 @@ export function parseRecurringSchedule(
 		/^every\s+(\d+)\s+weeks?\s+on\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)(?:\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$/,
 	);
 	if (weeksMatch) {
-		const intervalWeeks = Number.parseInt(weeksMatch[1], 10);
-		const targetDayIndex = getDayIndex(weeksMatch[2]);
+		const intervalWeeks = Number.parseInt(weeksMatch[1]!, 10);
+		const targetDayIndex = getDayIndex(weeksMatch[2]!);
 		const targetWeekday = toLuxonWeekday(targetDayIndex);
 		let hours = weeksMatch[3] ? Number.parseInt(weeksMatch[3], 10) : 9;
 		const minutes = weeksMatch[4] ? Number.parseInt(weeksMatch[4], 10) : 0;
@@ -426,8 +426,8 @@ export function parseRecurringSchedule(
 			fourth: 4,
 			last: -1,
 		};
-		const nth = ordinals[nthDayMatch[1]];
-		const targetDayIndex = getDayIndex(nthDayMatch[2]);
+		const nth = ordinals[nthDayMatch[1]!]!;
+		const targetDayIndex = getDayIndex(nthDayMatch[2]!);
 		const targetWeekday = toLuxonWeekday(targetDayIndex);
 		let hours = nthDayMatch[3] ? Number.parseInt(nthDayMatch[3], 10) : 9;
 		const minutes = nthDayMatch[4] ? Number.parseInt(nthDayMatch[4], 10) : 0;
@@ -453,7 +453,7 @@ export function parseRecurringSchedule(
 	// Raw cron: "cron 0 9 * * 1"
 	const cronMatch = lowerExpr.match(/^cron\s+(.+)$/);
 	if (cronMatch) {
-		const cronExpr = cronMatch[1].trim();
+		const cronExpr = cronMatch[1]!.trim();
 		const parts = cronExpr.split(/\s+/);
 		if (parts.length === 5) {
 			const nextRun = getNextRunFromSchedule(cronExpr, now, timezone);
@@ -575,11 +575,11 @@ export function getNextRunFromSchedule(
 	const afterDt = DateTime.fromJSDate(after).setZone(zone);
 
 	// Handle custom weekly interval format: "W<weeks> min hour * * day"
-	if (parts[0].startsWith("W")) {
+	if (parts[0]?.startsWith("W")) {
 		const weeks = Number.parseInt(parts[0].slice(1), 10);
-		const minute = Number.parseInt(parts[1], 10);
-		const hour = Number.parseInt(parts[2], 10);
-		const dayOfWeekIndex = Number.parseInt(parts[5], 10);
+		const minute = Number.parseInt(parts[1]!, 10);
+		const hour = Number.parseInt(parts[2]!, 10);
+		const dayOfWeekIndex = Number.parseInt(parts[5]!, 10);
 		const targetWeekday = toLuxonWeekday(dayOfWeekIndex);
 
 		let nextDt = afterDt.set({
@@ -604,11 +604,11 @@ export function getNextRunFromSchedule(
 	}
 
 	// Handle custom nth day of month format: "N<nth> min hour * * day"
-	if (parts[0].startsWith("N")) {
+	if (parts[0]?.startsWith("N")) {
 		const nth = Number.parseInt(parts[0].slice(1), 10);
-		const minute = Number.parseInt(parts[1], 10);
-		const hour = Number.parseInt(parts[2], 10);
-		const dayOfWeekIndex = Number.parseInt(parts[5], 10);
+		const minute = Number.parseInt(parts[1]!, 10);
+		const hour = Number.parseInt(parts[2]!, 10);
+		const dayOfWeekIndex = Number.parseInt(parts[5]!, 10);
 		const targetWeekday = toLuxonWeekday(dayOfWeekIndex);
 
 		return findNthDayOfMonth(
@@ -625,7 +625,9 @@ export function getNextRunFromSchedule(
 		return afterDt.plus({ hours: 1 }).toJSDate();
 	}
 
-	const [minutePart, hourPart, , , dayOfWeekPart] = parts;
+	const minutePart = parts[0]!;
+	const hourPart = parts[1]!;
+	const dayOfWeekPart = parts[4]!;
 
 	let nextDt = afterDt.set({ second: 0, millisecond: 0 });
 
@@ -696,7 +698,9 @@ export function getNextRunFromSchedule(
 }
 
 function expandDayRange(range: string): number[] {
-	const [start, end] = range.split("-").map((n) => Number.parseInt(n, 10));
+	const parts = range.split("-").map((n) => Number.parseInt(n, 10));
+	const start = parts[0] ?? 0;
+	const end = parts[1] ?? start;
 	const days: number[] = [];
 	for (let i = start; i <= end; i++) {
 		days.push(i);

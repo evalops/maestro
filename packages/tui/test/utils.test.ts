@@ -42,8 +42,8 @@ describe("wrapAnsiLine", () => {
 		const colored = chalk.red("colorful line");
 		const wrapped = wrapAnsiLine(colored, 6);
 		expect(wrapped.length).toBeGreaterThan(1);
-		expect(wrapped[0].endsWith("\u001b[0m")).toBe(true);
-		expect(wrapped[1].startsWith("\u001b[31m")).toBe(true);
+		expect(wrapped[0]!.endsWith("\u001b[0m")).toBe(true);
+		expect(wrapped[1]!.startsWith("\u001b[31m")).toBe(true);
 	});
 });
 

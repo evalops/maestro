@@ -172,7 +172,10 @@ function evaluateCondition(
 
 		// Handle equality comparison
 		if (trimmed.includes("===")) {
-			const [left, right] = trimmed.split("===").map((s) => s.trim());
+			const parts = trimmed.split("===").map((s) => s.trim());
+			const left = parts[0];
+			const right = parts[1];
+			if (!left || !right) return false;
 			const leftValue = resolvePathValue(left, context);
 			const rightValue =
 				right.startsWith('"') || right.startsWith("'")
@@ -187,7 +190,10 @@ function evaluateCondition(
 
 		// Handle inequality
 		if (trimmed.includes("!==")) {
-			const [left, right] = trimmed.split("!==").map((s) => s.trim());
+			const parts = trimmed.split("!==").map((s) => s.trim());
+			const left = parts[0];
+			const right = parts[1];
+			if (!left || !right) return false;
 			const leftValue = resolvePathValue(left, context);
 			const rightValue =
 				right.startsWith('"') || right.startsWith("'")

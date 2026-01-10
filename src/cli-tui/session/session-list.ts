@@ -41,6 +41,7 @@ export class SessionList implements Component {
 
 		for (let i = startIndex; i < endIndex; i++) {
 			const session = this.filteredSessions[i];
+			if (!session) continue;
 			const isSelected = i === this.selectedIndex;
 			const cursor = isSelected ? chalk.blue("› ") : "  ";
 			const message = session.firstMessage.replace(/\n/g, " ").trim();

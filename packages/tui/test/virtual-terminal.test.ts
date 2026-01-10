@@ -38,7 +38,7 @@ describe("VirtualTerminal", () => {
 
 			const lines = await term.flushAndGetViewport();
 			// xterm.js pads lines to terminal width, so use toContain or trim
-			expect(lines[0].trimEnd()).toBe("Hello World");
+			expect(lines[0]!.trimEnd()).toBe("Hello World");
 		});
 
 		it("handles resize events", async () => {
@@ -108,9 +108,9 @@ describe("VirtualTerminal", () => {
 			tui.start();
 
 			const lines = await term.flushAndGetViewport();
-			expect(lines[0].trimEnd()).toBe("Header");
-			expect(lines[1].trimEnd()).toBe("Content");
-			expect(lines[2].trimEnd()).toBe("Footer");
+			expect(lines[0]!.trimEnd()).toBe("Header");
+			expect(lines[1]!.trimEnd()).toBe("Content");
+			expect(lines[2]!.trimEnd()).toBe("Footer");
 		});
 
 		it("handles differential updates correctly", async () => {
@@ -122,7 +122,7 @@ describe("VirtualTerminal", () => {
 			// Wait for initial render (process.nextTick)
 			await new Promise((r) => process.nextTick(r));
 			let lines = await term.flushAndGetViewport();
-			expect(lines[0].trimEnd()).toBe("Initial");
+			expect(lines[0]!.trimEnd()).toBe("Initial");
 
 			// Update component
 			tui.removeChild(text);
@@ -132,7 +132,7 @@ describe("VirtualTerminal", () => {
 			// Wait for render
 			await new Promise((r) => process.nextTick(r));
 			lines = await term.flushAndGetViewport();
-			expect(lines[0].trimEnd()).toBe("Updated");
+			expect(lines[0]!.trimEnd()).toBe("Updated");
 		});
 
 		it("clears old content when lines decrease", async () => {
@@ -144,9 +144,9 @@ describe("VirtualTerminal", () => {
 
 			await new Promise((r) => process.nextTick(r));
 			let lines = await term.flushAndGetViewport();
-			expect(lines[0].trimEnd()).toBe("Line 1");
-			expect(lines[1].trimEnd()).toBe("Line 2");
-			expect(lines[2].trimEnd()).toBe("Line 3");
+			expect(lines[0]!.trimEnd()).toBe("Line 1");
+			expect(lines[1]!.trimEnd()).toBe("Line 2");
+			expect(lines[2]!.trimEnd()).toBe("Line 3");
 
 			// Remove components
 			tui.clear();
@@ -155,10 +155,10 @@ describe("VirtualTerminal", () => {
 
 			await new Promise((r) => process.nextTick(r));
 			lines = await term.flushAndGetViewport();
-			expect(lines[0].trimEnd()).toBe("Only One");
+			expect(lines[0]!.trimEnd()).toBe("Only One");
 			// Old lines should be cleared
-			expect(lines[1].trim()).toBe("");
-			expect(lines[2].trim()).toBe("");
+			expect(lines[1]!.trim()).toBe("");
+			expect(lines[2]!.trim()).toBe("");
 		});
 
 		it("preserves scrollback on full re-render (no \\x1b[3J)", async () => {
@@ -235,7 +235,7 @@ describe("VirtualTerminal", () => {
 			await term.flush();
 
 			const lines = term.getViewport();
-			expect(lines[0].trim()).toBe("");
+			expect(lines[0]!.trim()).toBe("");
 		});
 	});
 });

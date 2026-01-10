@@ -58,7 +58,7 @@ describe("MCP multi-scope precedence and env expansion", () => {
 		});
 
 		expect(cfg.servers).toHaveLength(1);
-		expect(cfg.servers[0].command).toBe("enterprise-cmd");
+		expect(cfg.servers[0]!.command).toBe("enterprise-cmd");
 	});
 
 	it("allows higher-precedence configs to disable servers from lower-precedence", () => {
@@ -99,7 +99,7 @@ describe("MCP multi-scope precedence and env expansion", () => {
 		});
 
 		const cfg = loadMcpConfig(projectDir, { includeEnvLimits: true });
-		const server = cfg.servers[0];
+		const server = cfg.servers[0]!;
 		expect(server.args).toEqual(["hello", "fallback"]);
 	});
 

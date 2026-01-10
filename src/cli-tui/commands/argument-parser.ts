@@ -23,6 +23,7 @@ export function parseCommandArguments(
 	const args: Record<string, unknown> = {};
 	for (let index = 0; index < definitions.length; index += 1) {
 		const definition = definitions[index];
+		if (!definition) continue;
 		if (definition.variadic) {
 			const remaining = tokens.splice(0);
 			if (definition.type === "number") {

@@ -378,7 +378,7 @@ export class PromptCacheManager {
 		if (additionalContext) {
 			for (let i = 0; i < additionalContext.length; i++) {
 				const contextBlock = this.createContextBlock(
-					additionalContext[i],
+					additionalContext[i]!,
 					50 - i, // Decreasing priority
 				);
 				blocks.push({

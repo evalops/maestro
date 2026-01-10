@@ -52,8 +52,9 @@ export class ModelSelectorComponent extends Container {
 		// Create search input
 		this.searchInput = new Input();
 		this.searchInput.onSubmit = () => {
-			if (this.filteredModels[this.selectedIndex]) {
-				this.handleSelect(this.filteredModels[this.selectedIndex]);
+			const selected = this.filteredModels[this.selectedIndex];
+			if (selected) {
+				this.handleSelect(selected);
 			}
 		};
 		this.addChild(this.searchInput);

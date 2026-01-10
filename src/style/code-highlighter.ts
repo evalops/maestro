@@ -248,6 +248,7 @@ function paintYaml(line: string): string {
 		return DEFAULT_CODE_COLOR(line);
 	}
 	const [, indent, key, rest] = match;
+	if (rest === undefined) return DEFAULT_CODE_COLOR(line);
 	let value = rest.trimStart();
 	value = value.replace(/"(?:\\.|[^"])*"|'(?:\\.|[^'])*'/g, (str) =>
 		STRING_COLOR(str),

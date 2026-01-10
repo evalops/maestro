@@ -363,7 +363,7 @@ export class ChannelStore {
 			if (lines.length === 0 || lines[0] === "") {
 				return null;
 			}
-			const lastLine = lines[lines.length - 1];
+			const lastLine = lines[lines.length - 1]!;
 			const message = JSON.parse(lastLine) as LoggedMessage;
 			return message.ts;
 		} catch {

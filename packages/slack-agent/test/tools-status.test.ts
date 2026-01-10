@@ -33,8 +33,8 @@ describe("createStatusTool", () => {
 
 			const result = await tool.execute("call1", { label: "check status" });
 
-			expect(result.content[0].text).toContain("Environment: host");
-			expect(result.content[0].text).toContain("Workspace:");
+			expect(result.content[0]!.text).toContain("Environment: host");
+			expect(result.content[0]!.text).toContain("Workspace:");
 		});
 
 		it("formats bytes correctly", async () => {
@@ -143,10 +143,10 @@ describe("createStatusTool", () => {
 
 			const result = await tool.execute("call1", { label: "check" });
 
-			expect(result.content[0].text).toContain("Workspace:");
-			expect(result.content[0].text).toContain("Path:");
-			expect(result.content[0].text).toContain("Disk Usage:");
-			expect(result.content[0].text).toContain("Files:");
+			expect(result.content[0]!.text).toContain("Workspace:");
+			expect(result.content[0]!.text).toContain("Path:");
+			expect(result.content[0]!.text).toContain("Disk Usage:");
+			expect(result.content[0]!.text).toContain("Files:");
 		});
 
 		it("returns details object with health info", async () => {

@@ -168,7 +168,7 @@ class TreeList extends Container {
 		);
 
 		for (let i = startIndex; i < endIndex; i++) {
-			const flatNode = this.flatNodes[i];
+			const flatNode = this.flatNodes[i]!;
 			const isSelected = i === this.selectedIndex;
 			const indent = "  ".repeat(flatNode.depth);
 			const prefix = `${indent}- `;

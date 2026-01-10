@@ -333,6 +333,11 @@ function applyUpdates(
 			continue;
 		}
 		const existing = result[targetIndex];
+		if (!existing) {
+			throw new Error(
+				`Task with id "${update.id}" not found at expected index`,
+			);
+		}
 		result[targetIndex] = {
 			...existing,
 			status: update.status ?? existing.status,

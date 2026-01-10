@@ -699,7 +699,7 @@ export class Editor implements Component {
 
 		// Fast path: single-line insert
 		if (parts.length === 1) {
-			this.insertCharacter(parts[0], { skipHistory: options.skipHistory });
+			this.insertCharacter(parts[0]!, { skipHistory: options.skipHistory });
 			return;
 		}
 
@@ -1063,13 +1063,16 @@ export class Editor implements Component {
 			// Match standard bash/zsh behavior:
 			// 1. Skip all trailing whitespace/punctuation
 			// 2. Then delete the entire word
-			while (segIdx >= 0 && this.isBoundarySegment(segments[segIdx].segment)) {
+			while (segIdx >= 0 && this.isBoundarySegment(segments[segIdx]!.segment)) {
 				segIdx -= 1;
 			}
-			while (segIdx >= 0 && !this.isBoundarySegment(segments[segIdx].segment)) {
+			while (
+				segIdx >= 0 &&
+				!this.isBoundarySegment(segments[segIdx]!.segment)
+			) {
 				segIdx -= 1;
 			}
-			deleteFrom = segIdx >= 0 ? segments[segIdx + 1].index : 0;
+			deleteFrom = segIdx >= 0 ? segments[segIdx + 1]!.index : 0;
 			this.state.lines[this.state.cursorLine] =
 				currentLine.slice(0, deleteFrom) +
 				currentLine.slice(this.state.cursorCol);
@@ -1110,13 +1113,16 @@ export class Editor implements Component {
 
 			const segments = this.getSegments(line);
 			let segIdx = this.segmentIndexBefore(segments, colIdx);
-			while (segIdx >= 0 && this.isBoundarySegment(segments[segIdx].segment)) {
+			while (segIdx >= 0 && this.isBoundarySegment(segments[segIdx]!.segment)) {
 				segIdx -= 1;
 			}
-			while (segIdx >= 0 && !this.isBoundarySegment(segments[segIdx].segment)) {
+			while (
+				segIdx >= 0 &&
+				!this.isBoundarySegment(segments[segIdx]!.segment)
+			) {
 				segIdx -= 1;
 			}
-			colIdx = segIdx >= 0 ? segments[segIdx + 1].index : 0;
+			colIdx = segIdx >= 0 ? segments[segIdx + 1]!.index : 0;
 
 			this.state.cursorLine = lineIdx;
 			this.state.cursorCol = colIdx;
@@ -1138,13 +1144,13 @@ export class Editor implements Component {
 
 			while (
 				segIdx < segments.length &&
-				!this.isBoundarySegment(segments[segIdx].segment)
+				!this.isBoundarySegment(segments[segIdx]!.segment)
 			) {
 				segIdx += 1;
 			}
 			while (
 				segIdx < segments.length &&
-				this.isBoundarySegment(segments[segIdx].segment)
+				this.isBoundarySegment(segments[segIdx]!.segment)
 			) {
 				segIdx += 1;
 			}
@@ -1163,7 +1169,7 @@ export class Editor implements Component {
 				continue;
 			}
 			this.state.cursorLine = lineIdx;
-			this.state.cursorCol = segments[segIdx].index;
+			this.state.cursorCol = segments[segIdx]!.index;
 			break;
 		}
 
@@ -1325,7 +1331,7 @@ export class Editor implements Component {
 	): number {
 		let idx = -1;
 		for (let i = 0; i < segments.length; i++) {
-			if (segments[i].index >= col) break;
+			if (segments[i]!.index >= col) break;
 			idx = i;
 		}
 		return idx;
@@ -1336,7 +1342,7 @@ export class Editor implements Component {
 		col: number,
 	): number {
 		for (let i = 0; i < segments.length; i++) {
-			if (segments[i].index >= col) return i;
+			if (segments[i]!.index >= col) return i;
 		}
 		return segments.length;
 	}

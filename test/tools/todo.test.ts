@@ -85,9 +85,9 @@ describe("todo tool", () => {
 
 			expect(result.isError).toBeFalsy();
 			const details = result.details as { items: Array<{ id: string }> };
-			expect(details.items[0].id).toBeDefined();
-			expect(details.items[1].id).toBeDefined();
-			expect(details.items[0].id).not.toBe(details.items[1].id);
+			expect(details.items[0]!.id).toBeDefined();
+			expect(details.items[1]!.id).toBeDefined();
+			expect(details.items[0]!.id).not.toBe(details.items[1]!.id);
 		});
 
 		it("uses provided IDs when specified", async () => {
@@ -97,7 +97,7 @@ describe("todo tool", () => {
 			});
 
 			const details = result.details as { items: Array<{ id: string }> };
-			expect(details.items[0].id).toBe("custom-id-1");
+			expect(details.items[0]!.id).toBe("custom-id-1");
 		});
 
 		it("accepts JSON string for items", async () => {
@@ -211,7 +211,7 @@ describe("todo tool", () => {
 			const details = result.details as {
 				items: Array<{ priority: string }>;
 			};
-			expect(details.items[0].priority).toBe("medium");
+			expect(details.items[0]!.priority).toBe("medium");
 		});
 	});
 

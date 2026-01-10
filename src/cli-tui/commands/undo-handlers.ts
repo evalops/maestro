@@ -234,6 +234,7 @@ export function handleChangesCommand(ctx: UndoRenderContext): void {
 		const recent = changes.slice(-15).reverse();
 		for (let i = 0; i < recent.length; i++) {
 			const change = recent[i];
+			if (!change) continue;
 			const icon =
 				change.type === "create"
 					? chalk.green("+")

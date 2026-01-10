@@ -816,7 +816,7 @@ export function applyCliOverride(
 	// Navigate to the nested key
 	let current: Record<string, unknown> = result as Record<string, unknown>;
 	for (let i = 0; i < keys.length - 1; i++) {
-		const k = keys[i];
+		const k = keys[i]!;
 		if (current[k] === undefined || typeof current[k] !== "object") {
 			current[k] = {};
 		}
@@ -824,7 +824,10 @@ export function applyCliOverride(
 	}
 
 	// Set the value
-	current[keys[keys.length - 1]] = value;
+	const finalKey = keys[keys.length - 1];
+	if (finalKey !== undefined) {
+		current[finalKey] = value;
+	}
 
 	return result;
 }

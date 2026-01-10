@@ -128,7 +128,7 @@ export class ToolExecutionComponent extends Container {
 
 	private buildSkeletonLine(width: number): string {
 		const frames = skeletonFrames();
-		const frame = frames[this.skeletonFrame] ?? frames[0];
+		const frame = frames[this.skeletonFrame] ?? frames[0] ?? "";
 		return theme.fg("dim", frame.repeat(Math.min(width, 30)));
 	}
 

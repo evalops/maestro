@@ -130,9 +130,9 @@ describe("FeedbackTracker", () => {
 			const lines = content.trim().split("\n");
 
 			expect(lines).toHaveLength(3);
-			expect(JSON.parse(lines[0]).reaction).toBe("positive");
-			expect(JSON.parse(lines[1]).reaction).toBe("negative");
-			expect(JSON.parse(lines[2]).reaction).toBe("positive");
+			expect(JSON.parse(lines[0]!).reaction).toBe("positive");
+			expect(JSON.parse(lines[1]!).reaction).toBe("negative");
+			expect(JSON.parse(lines[2]!).reaction).toBe("positive");
 		});
 
 		it("creates channel directory if needed", async () => {
@@ -175,8 +175,8 @@ describe("FeedbackTracker", () => {
 
 			expect(summary.recentFeedback).toHaveLength(10);
 			// Should be the last 10
-			expect(summary.recentFeedback[0].messageTs).toBe("5");
-			expect(summary.recentFeedback[9].messageTs).toBe("14");
+			expect(summary.recentFeedback[0]!.messageTs).toBe("5");
+			expect(summary.recentFeedback[9]!.messageTs).toBe("14");
 		});
 
 		it("tracks different channels independently", () => {

@@ -117,8 +117,8 @@ const comparePreRelease = (
 export function compareVersions(current: string, latest: string): number {
 	const [currentMainPart, currentPreReleasePart = ""] = current.split("-", 2);
 	const [latestMainPart, latestPreReleasePart = ""] = latest.split("-", 2);
-	const currentMain = parseMainSegments(currentMainPart);
-	const latestMain = parseMainSegments(latestMainPart);
+	const currentMain = parseMainSegments(currentMainPart!);
+	const latestMain = parseMainSegments(latestMainPart!);
 	const length = Math.max(currentMain.length, latestMain.length);
 	for (let i = 0; i < length; i++) {
 		const currentValue = currentMain[i] ?? 0;

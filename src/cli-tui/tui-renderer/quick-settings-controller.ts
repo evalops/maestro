@@ -102,7 +102,8 @@ export class QuickSettingsController {
 		const levels: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 		const current = this.agent.state.thinkingLevel || "off";
 		const index = levels.indexOf(current);
-		const nextLevel = levels[(index + 1) % levels.length];
+		// Safe: levels is a non-empty constant array and modulo ensures valid index
+		const nextLevel = levels[(index + 1) % levels.length]!;
 		this.agent.setThinkingLevel(nextLevel);
 		this.sessionManager.saveThinkingLevelChange(nextLevel);
 		this.notificationView.showInfo(`Thinking level: ${nextLevel}`);
@@ -139,7 +140,8 @@ export class QuickSettingsController {
 			if (index === -1) {
 				index = -1;
 			}
-			const nextModel = candidates[(index + 1) % candidates.length];
+			// Safe: candidates is verified non-empty above and modulo ensures valid index
+			const nextModel = candidates[(index + 1) % candidates.length]!;
 			this.agent.setModel(nextModel);
 			this.sessionManager.saveModelChange(
 				`${nextModel.provider}/${nextModel.id}`,

@@ -98,10 +98,10 @@ export function parseBedrockArn(arnOrId: string): BedrockArnInfo | null {
 
 	if (arnMatch) {
 		return {
-			region: arnMatch[1],
-			accountId: arnMatch[2],
-			resourceType: arnMatch[3],
-			resourceId: arnMatch[4],
+			region: arnMatch[1]!,
+			accountId: arnMatch[2]!,
+			resourceType: arnMatch[3]!,
+			resourceId: arnMatch[4]!,
 		};
 	}
 

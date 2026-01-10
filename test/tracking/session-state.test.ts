@@ -73,9 +73,9 @@ describe("session-state", () => {
 			});
 
 			expect(state.modelUsage["claude-3-5-sonnet"]).toBeDefined();
-			expect(state.modelUsage["claude-3-5-sonnet"].inputTokens).toBe(1000);
-			expect(state.modelUsage["claude-3-5-sonnet"].outputTokens).toBe(500);
-			expect(state.modelUsage["claude-3-5-sonnet"].costUSD).toBe(0.01);
+			expect(state.modelUsage["claude-3-5-sonnet"]!.inputTokens).toBe(1000);
+			expect(state.modelUsage["claude-3-5-sonnet"]!.outputTokens).toBe(500);
+			expect(state.modelUsage["claude-3-5-sonnet"]!.costUSD).toBe(0.01);
 			expect(state.totalCostUSD).toBe(0.01);
 		});
 
@@ -99,12 +99,12 @@ describe("session-state", () => {
 				costUSD: 0.005,
 			});
 
-			expect(state.modelUsage["claude-3-5-sonnet"].inputTokens).toBe(1500);
-			expect(state.modelUsage["claude-3-5-sonnet"].outputTokens).toBe(750);
-			expect(state.modelUsage["claude-3-5-sonnet"].cacheReadInputTokens).toBe(
+			expect(state.modelUsage["claude-3-5-sonnet"]!.inputTokens).toBe(1500);
+			expect(state.modelUsage["claude-3-5-sonnet"]!.outputTokens).toBe(750);
+			expect(state.modelUsage["claude-3-5-sonnet"]!.cacheReadInputTokens).toBe(
 				100,
 			);
-			expect(state.modelUsage["claude-3-5-sonnet"].webSearchRequests).toBe(2);
+			expect(state.modelUsage["claude-3-5-sonnet"]!.webSearchRequests).toBe(2);
 			expect(state.totalCostUSD).toBe(0.015);
 		});
 
@@ -127,8 +127,8 @@ describe("session-state", () => {
 			});
 
 			expect(Object.keys(state.modelUsage)).toHaveLength(2);
-			expect(state.modelUsage["claude-3-5-sonnet"].inputTokens).toBe(1000);
-			expect(state.modelUsage["claude-opus-4"].inputTokens).toBe(2000);
+			expect(state.modelUsage["claude-3-5-sonnet"]!.inputTokens).toBe(1000);
+			expect(state.modelUsage["claude-opus-4"]!.inputTokens).toBe(2000);
 			expect(state.totalCostUSD).toBeCloseTo(0.06);
 		});
 	});

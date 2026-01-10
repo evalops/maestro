@@ -398,7 +398,7 @@ function normalizeThemeJson(raw: unknown): unknown {
 export function loadThemeJson(name: string): ThemeJson {
 	const builtinThemes = getBuiltinThemes();
 	if (name in builtinThemes) {
-		return builtinThemes[name];
+		return builtinThemes[name]!;
 	}
 	const themesDir = getThemesDir();
 	const themePath = path.join(themesDir, `${name}.json`);

@@ -159,7 +159,7 @@ export function collapseRepeatedLinesWithHistory(
 		if (
 			isEmpty &&
 			result.length > 0 &&
-			result[result.length - 1].length === 0
+			result[result.length - 1]!.length === 0
 		) {
 			changed = true;
 			continue;
@@ -177,7 +177,7 @@ export function collapseRepeatedLinesWithHistory(
 		if (isDuplicate) {
 			// Clean up trailing blank that precedes the duplicate
 			// This prevents orphaned whitespace when duplicates are removed
-			if (result.length > 0 && result[result.length - 1].length === 0) {
+			if (result.length > 0 && result[result.length - 1]!.length === 0) {
 				result.pop();
 			}
 			changed = true;

@@ -61,7 +61,7 @@ export function parseSlackTimestamp(ts: string): {
 	date: Date;
 } {
 	const [secondsStr, microsStr = "0"] = ts.split(".");
-	const seconds = Number.parseInt(secondsStr, 10);
+	const seconds = Number.parseInt(secondsStr!, 10);
 	const micros = Number.parseInt(microsStr, 10);
 	const date = new Date(seconds * 1000 + Math.floor(micros / 1000));
 	return { seconds, micros, date };

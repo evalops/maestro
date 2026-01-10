@@ -621,6 +621,7 @@ export class Orchestrator {
 		}
 
 		const task = pending[0];
+		if (!task) return;
 
 		// Check if task is still eligible
 		if (task.attempts >= this.config.maxAttemptsPerTask) {

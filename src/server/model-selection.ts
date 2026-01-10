@@ -38,7 +38,7 @@ export function parseModelInput(modelInput?: string | null): ParsedModelInput {
 	// Only treat "/" as provider delimiter when the prefix matches a known provider.
 	if (normalized.includes("/")) {
 		const [possibleProvider, ...rest] = normalized.split("/");
-		if (providerExists(possibleProvider)) {
+		if (possibleProvider && providerExists(possibleProvider)) {
 			const modelId = rest.join("/").trim();
 			return {
 				provider: possibleProvider.trim() || undefined,

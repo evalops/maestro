@@ -110,13 +110,14 @@ export function languageIdFromFile(file: string): string {
 	const basename = file.slice(file.lastIndexOf("/") + 1);
 
 	// Check basename first (e.g., "makefile")
-	if (basename.toLowerCase() in LANGUAGE_EXTENSIONS) {
-		return LANGUAGE_EXTENSIONS[basename.toLowerCase()];
+	const lowerBasename = basename.toLowerCase();
+	if (lowerBasename in LANGUAGE_EXTENSIONS) {
+		return LANGUAGE_EXTENSIONS[lowerBasename]!;
 	}
 
 	// Then check extension
 	if (ext in LANGUAGE_EXTENSIONS) {
-		return LANGUAGE_EXTENSIONS[ext];
+		return LANGUAGE_EXTENSIONS[ext]!;
 	}
 
 	return "plaintext";

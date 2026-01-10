@@ -56,7 +56,7 @@ const createValidation = (): ConfigValidationResult => ({
 
 const createInspection = (): ConfigInspection => ({
 	sources: [
-		{ path: TEST_HIERARCHY[0], exists: true, loaded: true },
+		{ path: TEST_HIERARCHY[0]!, exists: true, loaded: true },
 		{
 			path: "/tmp/project/.composer/config.json",
 			exists: false,

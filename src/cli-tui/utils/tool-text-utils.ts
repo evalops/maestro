@@ -184,7 +184,7 @@ export function generateDiff(oldStr: string, newStr: string): string {
 	let lastWasChange = false;
 
 	for (let i = 0; i < parts.length; i++) {
-		const part = parts[i];
+		const part = parts[i]!;
 		const raw = part.value.split("\n");
 		if (raw[raw.length - 1] === "") {
 			raw.pop();
@@ -206,8 +206,9 @@ export function generateDiff(oldStr: string, newStr: string): string {
 		} else {
 			const isFirstPart = i === 0;
 			const isLastPart = i === parts.length - 1;
+			const nextPart = parts[i + 1];
 			const nextPartIsChange =
-				i < parts.length - 1 && (parts[i + 1].added || parts[i + 1].removed);
+				nextPart !== undefined && (nextPart.added || nextPart.removed);
 
 			if (lastWasChange || nextPartIsChange || isFirstPart || isLastPart) {
 				let linesToShow = raw;
@@ -405,7 +406,7 @@ function clampAnsiLine(line: string, maxWidth: number): string {
 			let j = i + 1;
 			// CSI sequences end with a final byte in the range @-~
 			while (j < line.length) {
-				const code = line[j];
+				const code = line[j]!;
 				if (code >= "@" && code <= "~") {
 					j += 1;
 					break;

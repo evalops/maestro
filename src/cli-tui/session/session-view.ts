@@ -219,14 +219,13 @@ ${muted("Use /sessions load <number> to switch.")}`;
 
 	handleSessionCommand(text: string): void {
 		const parts = text.trim().split(/\s+/);
-		if (parts.length === 1 || parts[1] === "info") {
+		const action = parts[1];
+		if (parts.length === 1 || action === "info") {
 			this.showSessionInfo();
 			return;
 		}
 
-		const action = parts[1];
-
-		if (["favorite", "fav", "star"].includes(action)) {
+		if (action && ["favorite", "fav", "star"].includes(action)) {
 			const sessionPath = this.getPersistedSessionPath();
 			if (!sessionPath) return;
 			this.options.sessionManager.setSessionFavorite(sessionPath, true);
@@ -235,7 +234,7 @@ ${muted("Use /sessions load <number> to switch.")}`;
 			return;
 		}
 
-		if (["unfavorite", "unfav", "unstar"].includes(action)) {
+		if (action && ["unfavorite", "unfav", "unstar"].includes(action)) {
 			const sessionPath = this.getPersistedSessionPath();
 			if (!sessionPath) return;
 			this.options.sessionManager.setSessionFavorite(sessionPath, false);
@@ -265,13 +264,15 @@ ${muted("Use /sessions load <number> to switch.")}`;
 
 	handleSessionsCommand(text: string): void {
 		const parts = text.trim().split(/\s+/);
+		const subCommand = parts[1];
+		const arg = parts[2];
 		if (parts.length === 1) {
 			this.options.openSessionSwitcher();
 			return;
 		}
 
-		if (parts[1] === "list") {
-			if (parts[2] === "text") {
+		if (subCommand === "list") {
+			if (arg === "text") {
 				const sessions = this.options.sessionDataProvider.loadSessions();
 				this.showSessionsList(sessions);
 			} else {
@@ -282,16 +283,16 @@ ${muted("Use /sessions load <number> to switch.")}`;
 
 		const sessions = this.options.sessionDataProvider.loadSessions();
 
-		if (parts[1] === "load" && parts.length >= 3) {
-			const index = Number.parseInt(parts[2], 10);
+		if (subCommand === "load" && arg) {
+			const index = Number.parseInt(arg, 10);
 			if (!this.loadSession(index, sessions)) {
 				return;
 			}
 			return;
 		}
 
-		if (["favorite", "fav", "star"].includes(parts[1]) && parts.length >= 3) {
-			const index = Number.parseInt(parts[2], 10);
+		if (subCommand && ["favorite", "fav", "star"].includes(subCommand) && arg) {
+			const index = Number.parseInt(arg, 10);
 			if (!Number.isFinite(index) || index <= 0) {
 				this.options.showInfoMessage("Usage: /sessions favorite <number>");
 				return;
@@ -307,10 +308,11 @@ ${muted("Use /sessions load <number> to switch.")}`;
 		}
 
 		if (
-			["unfavorite", "unfav", "unstar"].includes(parts[1]) &&
-			parts.length >= 3
+			subCommand &&
+			["unfavorite", "unfav", "unstar"].includes(subCommand) &&
+			arg
 		) {
-			const index = Number.parseInt(parts[2], 10);
+			const index = Number.parseInt(arg, 10);
 			if (!Number.isFinite(index) || index <= 0) {
 				this.options.showInfoMessage("Usage: /sessions unfavorite <number>");
 				return;
@@ -325,8 +327,8 @@ ${muted("Use /sessions load <number> to switch.")}`;
 			return;
 		}
 
-		if (parts[1] === "summarize" && parts.length >= 3) {
-			const index = Number.parseInt(parts[2], 10);
+		if (subCommand === "summarize" && arg) {
+			const index = Number.parseInt(arg, 10);
 			if (!Number.isFinite(index) || index <= 0) {
 				this.options.showInfoMessage("Usage: /sessions summarize <number>");
 				return;

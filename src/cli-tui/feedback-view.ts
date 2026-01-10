@@ -180,7 +180,7 @@ export class FeedbackView {
 				});
 				indexes.set(key, aggregates.length - 1);
 			} else {
-				aggregates[position].count += 1;
+				aggregates[position]!.count += 1;
 			}
 		}
 		const lines = aggregates

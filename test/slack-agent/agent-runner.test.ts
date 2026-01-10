@@ -293,8 +293,8 @@ describe("agent-runner", () => {
 				details: undefined,
 			};
 
-			expect(result.content[0].type).toBe("text");
-			expect(result.content[0].text).toBe("File contents here");
+			expect(result.content[0]!.type).toBe("text");
+			expect(result.content[0]!.text).toBe("File contents here");
 		});
 
 		it("formats image content from tool results", () => {
@@ -307,7 +307,7 @@ describe("agent-runner", () => {
 			};
 
 			expect(result.content).toHaveLength(2);
-			expect(result.content[1].type).toBe("image");
+			expect(result.content[1]!.type).toBe("image");
 		});
 
 		it("handles error results", () => {
@@ -317,7 +317,7 @@ describe("agent-runner", () => {
 			};
 
 			expect(errorResult.isError).toBe(true);
-			expect(errorResult.content[0].text).toContain("Error");
+			expect(errorResult.content[0]!.text).toContain("Error");
 		});
 	});
 

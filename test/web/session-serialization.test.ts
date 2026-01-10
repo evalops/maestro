@@ -85,13 +85,13 @@ describe("session serialization", () => {
 
 		expect(composerMessages).toHaveLength(3);
 		expect(composerMessages.every((msg) => isComposerMessage(msg))).toBe(true);
-		expect(composerMessages[1]).toMatchObject({
+		expect(composerMessages[1]!).toMatchObject({
 			role: "assistant",
 			content: "On it",
 			thinking: "Plan steps",
 			tools: [{ name: "read", args: { path: "package.json" } }],
 		});
-		expect(composerMessages[2]).toMatchObject({
+		expect(composerMessages[2]!).toMatchObject({
 			role: "tool",
 			toolName: "read",
 			content: '{"path":"package.json"}',
@@ -129,7 +129,7 @@ describe("session serialization", () => {
 		);
 
 		expect(appMessages).toHaveLength(2);
-		expect(appMessages[0].role).toBe("assistant");
+		expect(appMessages[0]!.role).toBe("assistant");
 		const assistant = appMessages[0] as AssistantMessage;
 		expect(assistant.usage?.input).toBe(10);
 		expect(assistant.usage?.cost.total).toBeCloseTo(0.031);
@@ -226,7 +226,7 @@ describe("session serialization", () => {
 		};
 
 		const composer = convertAppMessagesToComposer([assistant]);
-		expect(composer[0].usage?.input).toBe(111);
+		expect(composer[0]!.usage?.input).toBe(111);
 
 		const roundTrip = convertComposerMessagesToApp(composer, mockModel);
 		const roundAssistant = roundTrip[0] as AssistantMessage;

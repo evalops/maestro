@@ -654,6 +654,7 @@ export function getMatchingHooks(
 	const dedupedReversed: HookConfig[] = [];
 	for (let i = matchedHooks.length - 1; i >= 0; i--) {
 		const hook = matchedHooks[i];
+		if (!hook) continue;
 		if (hook.type === "command") {
 			if (seen.has(hook.command)) continue;
 			seen.add(hook.command);

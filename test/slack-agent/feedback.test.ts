@@ -146,7 +146,7 @@ describe("FeedbackTracker", () => {
 			const lines = content.trim().split("\n");
 			expect(lines).toHaveLength(1);
 
-			const record = JSON.parse(lines[0]);
+			const record = JSON.parse(lines[0]!);
 			expect(record.reaction).toBe("positive");
 		});
 
@@ -200,8 +200,8 @@ describe("FeedbackTracker", () => {
 			const summary = tracker.getSummary("C123456");
 
 			expect(summary.recentFeedback).toHaveLength(3);
-			expect(summary.recentFeedback[0].emoji).toBe("thumbsup");
-			expect(summary.recentFeedback[2].emoji).toBe("thumbsdown");
+			expect(summary.recentFeedback[0]!.emoji).toBe("thumbsup");
+			expect(summary.recentFeedback[2]!.emoji).toBe("thumbsdown");
 		});
 
 		it("limits recent feedback to 10 records", () => {

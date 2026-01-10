@@ -29,6 +29,9 @@ export function openExternalEditor(
 		ui.stop();
 
 		const [editor, ...editorArgs] = editorCmd.split(" ");
+		if (!editor) {
+			return { error: "No editor command found" };
+		}
 		const result = spawnSync(editor, [...editorArgs, tempFile], {
 			stdio: "inherit",
 		});

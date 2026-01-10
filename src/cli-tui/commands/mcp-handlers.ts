@@ -71,7 +71,7 @@ export function handleMcpResourcesCommand(
 
 	// /mcp resources [server] [uri] - read a specific resource
 	if (args.length >= 2) {
-		const serverName = args[0];
+		const serverName = args[0]!;
 		const uri = args.slice(1).join(" ");
 		const server = status.servers.find((s) => s.name === serverName);
 		if (!server?.connected) {
@@ -131,8 +131,8 @@ export function handleMcpPromptsCommand(
 
 	// /mcp prompts [server] [name] - get a specific prompt
 	if (args.length >= 2) {
-		const serverName = args[0];
-		const promptName = args[1];
+		const serverName = args[0]!;
+		const promptName = args[1]!;
 		const server = status.servers.find((s) => s.name === serverName);
 		if (!server?.connected) {
 			lines.push(`Server '${serverName}' not connected`);

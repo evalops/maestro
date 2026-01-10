@@ -274,7 +274,7 @@ function buildPatternFromString(patternStr: string): RegExp {
 
 	// Add global flag if not present, and whitelist common safe flags
 	const flagMatch = normalized.match(/\/([gimuy]*)$/);
-	const flagsFromInput = flagMatch ? flagMatch[1] : "";
+	const flagsFromInput = flagMatch?.[1] ?? "";
 	const flags = (
 		flagsFromInput.includes("g") ? flagsFromInput : `${flagsFromInput}g`
 	)

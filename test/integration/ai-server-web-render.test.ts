@@ -60,10 +60,10 @@ describe("AI -> server -> web render integration", () => {
 			tools?: unknown[];
 		};
 
-		el.role = assistantMsg.role;
-		el.content = assistantMsg.content;
-		el.thinking = assistantMsg.thinking ?? "";
-		el.tools = assistantMsg.tools ?? [];
+		el.role = assistantMsg!.role;
+		el.content = assistantMsg!.content;
+		el.thinking = assistantMsg!.thinking ?? "";
+		el.tools = assistantMsg!.tools ?? [];
 
 		document.body.appendChild(el);
 

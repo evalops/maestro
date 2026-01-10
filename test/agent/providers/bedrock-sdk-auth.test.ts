@@ -114,7 +114,7 @@ describe("Bedrock SDK Authentication", () => {
 			}
 
 			expect(mockClientInstances.length).toBeGreaterThan(0);
-			expect(mockClientInstances[0].region).toBe("us-west-2");
+			expect(mockClientInstances[0]!.region).toBe("us-west-2");
 		});
 
 		it("uses region from options when provided", async () => {
@@ -478,7 +478,7 @@ describe("Bedrock SDK Authentication", () => {
 			const { ConverseStreamCommand } = await import(
 				"@aws-sdk/client-bedrock-runtime"
 			);
-			const call = vi.mocked(ConverseStreamCommand).mock.calls[0][0];
+			const call = vi.mocked(ConverseStreamCommand).mock.calls[0]![0];
 			expect(call.inferenceConfig?.temperature).toBeUndefined();
 		});
 	});

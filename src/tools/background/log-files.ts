@@ -140,7 +140,7 @@ export function previewLastLine(
 	}
 	const entries = text.split(/\r?\n/).filter(Boolean);
 	for (let i = entries.length - 1; i >= 0; i -= 1) {
-		const entry = entries[i].trim();
+		const entry = entries[i]?.trim();
 		if (!entry) {
 			continue;
 		}

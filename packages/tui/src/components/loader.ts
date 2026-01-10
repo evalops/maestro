@@ -419,13 +419,13 @@ ${secondaryLine}`);
 	private getSpinnerFrame(): { glyph: string; color: string } {
 		const frames = SPINNERS[this.spinnerStyle];
 		const frameIndex = this.progressOffset % frames.length;
-		return frames[frameIndex];
+		return frames[frameIndex]!;
 	}
 
 	private getLowUnicodeSpinnerFrame(): string {
 		const frames = LOW_UNICODE_SPINNERS[this.spinnerStyle];
 		const frameIndex = this.progressOffset % frames.length;
-		return frames[frameIndex];
+		return frames[frameIndex]!;
 	}
 
 	private updateDisplay(): void {

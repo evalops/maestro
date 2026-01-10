@@ -110,9 +110,9 @@ describe("TaskExecutor", () => {
 					"This is a very long title that should be truncated to a reasonable length",
 			});
 			const branchName = executor.testGenerateBranchName(task);
-			const slugPart = branchName.split("/")[1].split("-42")[0];
+			const slugPart = branchName.split("/")[1]!.split("-42")[0];
 
-			expect(slugPart.length).toBeLessThanOrEqual(30);
+			expect(slugPart!.length).toBeLessThanOrEqual(30);
 		});
 
 		it("should remove trailing dashes from slug", () => {
@@ -278,7 +278,7 @@ describe("PR URL Parsing", () => {
 			const match = url.match(urlPattern);
 			if (match) {
 				// If it matches, the captured group should be a valid number
-				const num = Number.parseInt(match[1], 10);
+				const num = Number.parseInt(match[1]!, 10);
 				expect(Number.isNaN(num)).toBe(false);
 			}
 		}

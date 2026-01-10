@@ -8,8 +8,8 @@ describe("wrapAnsiLines", () => {
 		const red = color.red("abcdef");
 		const wrapped = wrapAnsiLines([red], 4);
 		expect(wrapped.length).toBe(2);
-		expect(visibleWidth(wrapped[0])).toBeLessThanOrEqual(4);
-		expect(visibleWidth(wrapped[1])).toBeLessThanOrEqual(4);
+		expect(visibleWidth(wrapped[0]!)).toBeLessThanOrEqual(4);
+		expect(visibleWidth(wrapped[1]!)).toBeLessThanOrEqual(4);
 	});
 
 	it("preserves active ANSI across wrapped segments", () => {

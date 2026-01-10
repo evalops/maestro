@@ -104,12 +104,12 @@ export class MemoryStore {
 			totalTokensUsed: 0,
 			totalCost: 0,
 			dailyCost: 0,
-			dailyCostDate: new Date().toISOString().split("T")[0],
+			dailyCostDate: new Date().toISOString().split("T")[0]!,
 		};
 	}
 
 	private getTodayDate(): string {
-		return new Date().toISOString().split("T")[0];
+		return new Date().toISOString().split("T")[0]!;
 	}
 
 	/**
@@ -399,7 +399,7 @@ export class MemoryStore {
 
 	private parseLabelsFromDescription(description: string): string[] {
 		const match = description.match(/^Labels:\s*(.+)$/im);
-		if (!match) return [];
+		if (!match?.[1]) return [];
 		return match[1]
 			.split(",")
 			.map((label) => label.trim())
@@ -461,6 +461,7 @@ export class MemoryStore {
 		const paths = new Set<string>();
 		for (const match of matches) {
 			const candidate = match[1];
+			if (!candidate) continue;
 			if (!candidate.includes("/") || candidate.includes("://")) continue;
 			paths.add(candidate);
 		}

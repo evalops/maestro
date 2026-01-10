@@ -188,7 +188,7 @@ describe("LSP functions", () => {
 		const locations = await definition(testFile, 0, 0);
 
 		expect(locations).toHaveLength(1);
-		expect(locations[0].uri).toBe("file:///test.ts");
+		expect(locations[0]!.uri).toBe("file:///test.ts");
 		expect(mockClient.connection.sendRequest).toHaveBeenCalledWith(
 			"textDocument/definition",
 			expect.objectContaining({

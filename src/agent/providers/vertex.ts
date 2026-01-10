@@ -574,7 +574,7 @@ export async function* streamVertex(
 			const lines = cleanBuffer.split(/\}\s*,\s*\{/);
 
 			for (let i = 0; i < lines.length - 1; i++) {
-				let jsonStr = lines[i];
+				let jsonStr = lines[i]!;
 				if (!jsonStr.startsWith("{")) jsonStr = `{${jsonStr}`;
 				if (!jsonStr.endsWith("}")) jsonStr = `${jsonStr}}`;
 
@@ -583,7 +583,7 @@ export async function* streamVertex(
 
 			// Keep last incomplete chunk in buffer
 			if (lines.length > 0) {
-				buffer = lines[lines.length - 1];
+				buffer = lines[lines.length - 1]!;
 			}
 		}
 

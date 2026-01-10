@@ -488,7 +488,7 @@ ${diff}
 		}
 
 		const prUrl = urlMatch[0];
-		const prNumber = Number.parseInt(urlMatch[1], 10);
+		const prNumber = Number.parseInt(urlMatch[1]!, 10);
 
 		if (Number.isNaN(prNumber) || prNumber <= 0) {
 			throw new Error(`Invalid PR number parsed from URL: ${prUrl}`);

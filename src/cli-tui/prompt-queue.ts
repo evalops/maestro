@@ -95,7 +95,7 @@ export class PromptQueue {
 		if (index === -1) {
 			return null;
 		}
-		const [entry] = this.pending.splice(index, 1);
+		const entry = this.pending.splice(index, 1)[0]!;
 		this.emit({ type: "cancel", entry });
 		return entry;
 	}

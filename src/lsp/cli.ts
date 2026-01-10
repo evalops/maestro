@@ -26,7 +26,7 @@ async function main() {
 					console.error("Error: diagnostics command requires a file path");
 					process.exit(1);
 				}
-				const file = args[1];
+				const file = args[1]!;
 				await touchFile(file);
 				// Wait a bit for diagnostics to arrive
 				await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -51,7 +51,7 @@ async function main() {
 					console.error("Error: document-symbols command requires a file path");
 					process.exit(1);
 				}
-				const file = args[1];
+				const file = args[1]!;
 				await touchFile(file);
 				const symbols = await documentSymbol(file);
 				console.log(JSON.stringify(symbols, null, 2));

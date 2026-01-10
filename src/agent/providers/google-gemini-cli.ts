@@ -77,7 +77,7 @@ function extractRetryDelay(errorText: string): number | undefined {
 	const durationMatch = errorText.match(
 		/reset after (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i,
 	);
-	if (durationMatch) {
+	if (durationMatch?.[3]) {
 		const hours = durationMatch[1] ? Number.parseInt(durationMatch[1], 10) : 0;
 		const minutes = durationMatch[2]
 			? Number.parseInt(durationMatch[2], 10)
@@ -92,7 +92,7 @@ function extractRetryDelay(errorText: string): number | undefined {
 	}
 
 	const retryInMatch = errorText.match(/Please retry in ([0-9.]+)(ms|s)/i);
-	if (retryInMatch?.[1]) {
+	if (retryInMatch?.[1] && retryInMatch[2]) {
 		const value = Number.parseFloat(retryInMatch[1]);
 		if (!Number.isNaN(value) && value > 0) {
 			const ms = retryInMatch[2].toLowerCase() === "ms" ? value : value * 1000;
@@ -101,7 +101,7 @@ function extractRetryDelay(errorText: string): number | undefined {
 	}
 
 	const retryDelayMatch = errorText.match(/"retryDelay":\s*"([0-9.]+)(ms|s)"/i);
-	if (retryDelayMatch?.[1]) {
+	if (retryDelayMatch?.[1] && retryDelayMatch[2]) {
 		const value = Number.parseFloat(retryDelayMatch[1]);
 		if (!Number.isNaN(value) && value > 0) {
 			const ms =

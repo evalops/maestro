@@ -109,8 +109,8 @@ describe("CostTracker", () => {
 			const lines = content.trim().split("\n");
 
 			expect(lines).toHaveLength(2);
-			expect(JSON.parse(lines[0]).inputTokens).toBe(100);
-			expect(JSON.parse(lines[1]).inputTokens).toBe(200);
+			expect(JSON.parse(lines[0]!).inputTokens).toBe(100);
+			expect(JSON.parse(lines[1]!).inputTokens).toBe(200);
 		});
 	});
 

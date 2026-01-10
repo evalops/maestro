@@ -185,8 +185,8 @@ export class MetricsCollector {
 		return {
 			count,
 			sum,
-			min: sorted[0],
-			max: sorted[count - 1],
+			min: sorted[0]!,
+			max: sorted[count - 1]!,
 			avg: sum / count,
 			p50: this.enablePercentiles ? this.percentile(sorted, 50) : 0,
 			p90: this.enablePercentiles ? this.percentile(sorted, 90) : 0,
@@ -200,7 +200,7 @@ export class MetricsCollector {
 	private percentile(sorted: number[], p: number): number {
 		if (sorted.length === 0) return 0;
 		const index = Math.ceil((p / 100) * sorted.length) - 1;
-		return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
+		return sorted[Math.max(0, Math.min(index, sorted.length - 1))]!;
 	}
 
 	/**

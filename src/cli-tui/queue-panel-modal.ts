@@ -131,6 +131,7 @@ export class QueuePanelModal implements Component {
 
 			for (let i = 0; i < visible.length; i++) {
 				const prompt = visible[i];
+				if (!prompt) continue;
 				const actualIndex = start + i;
 				const isSelected = actualIndex === this.selectedIndex;
 				const prefix = isSelected ? chalk.cyan("► ") : "  ";

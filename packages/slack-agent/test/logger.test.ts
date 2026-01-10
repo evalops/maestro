@@ -212,7 +212,7 @@ describe("logger", () => {
 
 			const output = getStrippedOutput();
 			expect(output[1]).toContain("(truncated at 1000 chars)");
-			expect(output[1].length).toBeLessThan(1200); // Some overhead for indent + truncation message
+			expect(output[1]!.length).toBeLessThan(1200); // Some overhead for indent + truncation message
 		});
 
 		it("does not log result if empty", () => {
@@ -563,7 +563,7 @@ describe("logger", () => {
 			logToolSuccess(ctx, "bash", 100, "line1\nline2\nline3");
 
 			const output = getStrippedOutput();
-			const lines = output[1].split("\n");
+			const lines = output[1]!.split("\n");
 			expect(lines).toHaveLength(3);
 			for (const line of lines) {
 				expect(line).toMatch(/^\s{11}/); // 11 spaces indent
@@ -876,7 +876,7 @@ describe("logger", () => {
 			logInfo("Test message");
 
 			expect(consoleLogSpy).toHaveBeenCalled();
-			const output = consoleLogSpy.mock.calls[0][0] as string;
+			const output = consoleLogSpy.mock.calls[0]![0] as string;
 
 			// Should be valid JSON
 			const parsed = JSON.parse(output);
@@ -891,7 +891,7 @@ describe("logger", () => {
 
 			logInfo("Test", ctx);
 
-			const output = consoleLogSpy.mock.calls[0][0] as string;
+			const output = consoleLogSpy.mock.calls[0]![0] as string;
 			const parsed = JSON.parse(output);
 			expect(parsed.context).toEqual(ctx);
 		});
@@ -901,7 +901,7 @@ describe("logger", () => {
 
 			logWarning("Warning", "Stack trace details");
 
-			const output = consoleLogSpy.mock.calls[0][0] as string;
+			const output = consoleLogSpy.mock.calls[0]![0] as string;
 			const parsed = JSON.parse(output);
 			expect(parsed.level).toBe("warn");
 			expect(parsed.data).toEqual({ details: "Stack trace details" });
@@ -914,7 +914,7 @@ describe("logger", () => {
 			logWarning("Should appear");
 
 			expect(consoleLogSpy).toHaveBeenCalledTimes(1);
-			const output = consoleLogSpy.mock.calls[0][0] as string;
+			const output = consoleLogSpy.mock.calls[0]![0] as string;
 			expect(output).toContain("warning:");
 		});
 
@@ -936,7 +936,7 @@ describe("logger", () => {
 				},
 			});
 
-			const output = consoleLogSpy.mock.calls[0][0] as string;
+			const output = consoleLogSpy.mock.calls[0]![0] as string;
 			const parsed = JSON.parse(output);
 			expect(parsed.level).toBe("info");
 			expect(parsed.message).toBe("Run summary");
@@ -953,7 +953,7 @@ describe("logger", () => {
 			const ctx: LogContext = { channelId: "C123", userName: "user" };
 			logAgentError(ctx, "Something went wrong");
 
-			const output = consoleLogSpy.mock.calls[0][0] as string;
+			const output = consoleLogSpy.mock.calls[0]![0] as string;
 			const parsed = JSON.parse(output);
 			expect(parsed.level).toBe("error");
 			expect(parsed.message).toBe("Agent error");

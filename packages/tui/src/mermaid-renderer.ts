@@ -419,7 +419,7 @@ class MermaidAsciiRenderer {
 				return;
 			}
 			for (let i = 0; i < boxWidth; i++) {
-				row[x + i] = line[i];
+				row[x + i] = line[i]!;
 			}
 		});
 	}
@@ -563,7 +563,7 @@ class MermaidAsciiRenderer {
 		// Write label characters starting after the first edge position
 		const offsetStart = minX + 1;
 		for (let i = 0; i < text.length; i++) {
-			setChar(canvas, offsetStart + i, y, text[i]);
+			setChar(canvas, offsetStart + i, y, text[i]!);
 		}
 	}
 
@@ -649,7 +649,7 @@ function assignLayers(diagram: ParsedMermaid): Map<string, number> | null {
 	// Use cursor instead of shift() for O(1) dequeue
 	let cursor = 0;
 	while (cursor < queue.length) {
-		const node = queue[cursor];
+		const node = queue[cursor]!;
 		cursor += 1;
 		const currentLayer = layerMap.get(node.id) ?? 0;
 
@@ -858,7 +858,7 @@ function ensureNode(
  */
 function parseOrientation(line: string): Orientation | null {
 	const match = line.match(/graph\s+(TD|TB|BT|LR|RL)/i);
-	if (match) {
+	if (match?.[1]) {
 		return match[1].toUpperCase() as Orientation;
 	}
 	return null;

@@ -33,7 +33,7 @@ export class ToolOutputView {
 		if (parts.length === 1) {
 			nextState = !nextState;
 		} else {
-			const arg = parts[1].toLowerCase();
+			const arg = parts[1]?.toLowerCase();
 			if (arg === "on" || arg === "true") {
 				nextState = true;
 			} else if (arg === "off" || arg === "false") {

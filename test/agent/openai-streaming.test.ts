@@ -122,7 +122,7 @@ describe("filterResponsesApiTools", () => {
 		];
 		const result = filterResponsesApiTools(tools);
 		expect(result).toHaveLength(1);
-		expect(result[0].name).toBe("valid");
+		expect(result[0]!.name).toBe("valid");
 	});
 
 	it("filters out tools with oneOf schema", () => {
@@ -136,7 +136,7 @@ describe("filterResponsesApiTools", () => {
 		];
 		const result = filterResponsesApiTools(tools);
 		expect(result).toHaveLength(1);
-		expect(result[0].name).toBe("simple");
+		expect(result[0]!.name).toBe("simple");
 	});
 
 	it("filters out tools with anyOf schema", () => {
@@ -289,7 +289,7 @@ describe("toolChoice parameter", () => {
 		}
 
 		expect(mockFetch).toHaveBeenCalledTimes(1);
-		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const [, fetchOptions] = mockFetch.mock.calls[0]!;
 		const body = JSON.parse(fetchOptions.body);
 		expect(body.tool_choice).toBe("required");
 	});
@@ -326,7 +326,7 @@ describe("toolChoice parameter", () => {
 		}
 
 		expect(mockFetch).toHaveBeenCalledTimes(1);
-		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const [, fetchOptions] = mockFetch.mock.calls[0]!;
 		const body = JSON.parse(fetchOptions.body);
 		expect(body.tool_choice).toEqual(specificTool);
 	});
@@ -357,7 +357,7 @@ describe("toolChoice parameter", () => {
 		}
 
 		expect(mockFetch).toHaveBeenCalledTimes(1);
-		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const [, fetchOptions] = mockFetch.mock.calls[0]!;
 		const body = JSON.parse(fetchOptions.body);
 		expect(body.tool_choice).toBeUndefined();
 	});
@@ -423,7 +423,7 @@ describe("responseFormat parameter (Structured Outputs)", () => {
 		}
 
 		expect(mockFetch).toHaveBeenCalledTimes(1);
-		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const [, fetchOptions] = mockFetch.mock.calls[0]!;
 		const body = JSON.parse(fetchOptions.body);
 		expect(body.response_format).toEqual({ type: "json_object" });
 	});
@@ -472,7 +472,7 @@ describe("responseFormat parameter (Structured Outputs)", () => {
 		}
 
 		expect(mockFetch).toHaveBeenCalledTimes(1);
-		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const [, fetchOptions] = mockFetch.mock.calls[0]!;
 		const body = JSON.parse(fetchOptions.body);
 		expect(body.response_format).toEqual(responseFormat);
 	});
@@ -524,7 +524,7 @@ describe("responseFormat parameter (Structured Outputs)", () => {
 		}
 
 		expect(mockFetch).toHaveBeenCalledTimes(1);
-		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const [, fetchOptions] = mockFetch.mock.calls[0]!;
 		const body = JSON.parse(fetchOptions.body);
 		expect(body.response_format).toEqual(responseFormat);
 		expect(body.response_format.json_schema.description).toBe(
@@ -558,7 +558,7 @@ describe("responseFormat parameter (Structured Outputs)", () => {
 		}
 
 		expect(mockFetch).toHaveBeenCalledTimes(1);
-		const [, fetchOptions] = mockFetch.mock.calls[0];
+		const [, fetchOptions] = mockFetch.mock.calls[0]!;
 		const body = JSON.parse(fetchOptions.body);
 		expect(body.response_format).toBeUndefined();
 	});

@@ -41,10 +41,10 @@ describe("prompt-template slash commands", () => {
 		});
 
 		expect(result.commands.map((c) => c.name)).toEqual(["pr-review"]);
-		expect(result.commands[0].aliases).toEqual(["prr"]);
+		expect(result.commands[0]!.aliases).toEqual(["prr"]);
 		expect(result.skipped).toBe(1);
 
-		const entry = result.entries[0];
+		const entry = result.entries[0]!;
 		expect(entry.matches("/pr-review")).toBe(true);
 		expect(entry.matches("/pr-review FILE=src/main.ts")).toBe(true);
 		expect(entry.matches("/prr FILE=src/main.ts")).toBe(true);

@@ -59,7 +59,7 @@ describe("bashTool", () => {
 			command: "echo hello",
 		});
 
-		expect(result.content[0].text).toBe("hello\n");
+		expect(result.content[0]!.text).toBe("hello\n");
 	});
 
 	it("combines stdout and stderr", async () => {
@@ -69,8 +69,8 @@ describe("bashTool", () => {
 			command: "echo stdout && echo stderr >&2",
 		});
 
-		expect(result.content[0].text).toContain("stdout");
-		expect(result.content[0].text).toContain("stderr");
+		expect(result.content[0]!.text).toContain("stdout");
+		expect(result.content[0]!.text).toContain("stderr");
 	});
 
 	it("throws on non-zero exit code", async () => {
@@ -91,7 +91,7 @@ describe("bashTool", () => {
 			command: "true",
 		});
 
-		expect(result.content[0].text).toBe("(no output)");
+		expect(result.content[0]!.text).toBe("(no output)");
 	});
 
 	describe("approval workflow", () => {
@@ -112,7 +112,7 @@ describe("bashTool", () => {
 			});
 
 			expect(approvalRequested).toBe(true);
-			expect(result.content[0].text).toContain("rejected");
+			expect(result.content[0]!.text).toContain("rejected");
 			expect(result.details).toHaveProperty("rejected", true);
 		});
 
@@ -126,7 +126,7 @@ describe("bashTool", () => {
 				command: "echo approved",
 			});
 
-			expect(result.content[0].text).toBe("approved\n");
+			expect(result.content[0]!.text).toBe("approved\n");
 		});
 
 		it("executes non-destructive commands without approval", async () => {
@@ -172,8 +172,8 @@ describe("readTool", () => {
 			path: filePath,
 		});
 
-		expect(result.content[0].text).toContain("Hello World");
-		expect(result.content[0].text).toContain("Line 2");
+		expect(result.content[0]!.text).toContain("Hello World");
+		expect(result.content[0]!.text).toContain("Line 2");
 	});
 
 	it("reads with offset and limit", async () => {
@@ -188,9 +188,9 @@ describe("readTool", () => {
 			limit: 2,
 		});
 
-		expect(result.content[0].text).toContain("Line 2");
-		expect(result.content[0].text).toContain("Line 3");
-		expect(result.content[0].text).not.toContain("Line 1");
+		expect(result.content[0]!.text).toContain("Line 2");
+		expect(result.content[0]!.text).toContain("Line 3");
+		expect(result.content[0]!.text).not.toContain("Line 1");
 	});
 
 	it("shows remaining lines notice", async () => {
@@ -207,9 +207,9 @@ describe("readTool", () => {
 			limit: 10,
 		});
 
-		expect(result.content[0].text).toContain("more lines not shown");
+		expect(result.content[0]!.text).toContain("more lines not shown");
 		// The offset varies based on trailing newlines from head command
-		expect(result.content[0].text).toMatch(/offset=\d+/);
+		expect(result.content[0]!.text).toMatch(/offset=\d+/);
 	});
 
 	it("throws for non-existent files", async () => {
@@ -242,10 +242,10 @@ describe("readTool", () => {
 			path: imagePath,
 		});
 
-		expect(result.content[0].text).toContain("image/png");
-		expect(result.content[1].type).toBe("image");
-		expect(result.content[1].mimeType).toBe("image/png");
-		expect(result.content[1].data).toBeTruthy();
+		expect(result.content[0]!.text).toContain("image/png");
+		expect(result.content[1]!.type).toBe("image");
+		expect(result.content[1]!.mimeType).toBe("image/png");
+		expect(result.content[1]!.data).toBeTruthy();
 	});
 });
 
@@ -273,8 +273,8 @@ describe("writeTool", () => {
 			content: "Hello World",
 		});
 
-		expect(result.content[0].text).toContain("Successfully wrote");
-		expect(result.content[0].text).toContain("11 bytes");
+		expect(result.content[0]!.text).toContain("Successfully wrote");
+		expect(result.content[0]!.text).toContain("11 bytes");
 
 		const content = await readFile(filePath, "utf-8");
 		expect(content).toBe("Hello World");
@@ -351,7 +351,7 @@ describe("editTool", () => {
 			newText: "Universe",
 		});
 
-		expect(result.content[0].text).toContain("Successfully replaced");
+		expect(result.content[0]!.text).toContain("Successfully replaced");
 
 		const content = await readFile(filePath, "utf-8");
 		expect(content).toBe("Hello Universe");
@@ -468,7 +468,7 @@ describe("attachTool", () => {
 
 		expect(uploadedPath).toBe(filePath);
 		expect(uploadedTitle).toBe("upload.txt");
-		expect(result.content[0].text).toContain("Attached file: upload.txt");
+		expect(result.content[0]!.text).toContain("Attached file: upload.txt");
 	});
 
 	it("uses custom title when provided", async () => {
@@ -516,16 +516,16 @@ describe("statusTool", () => {
 		const tool = createStatusTool(executor);
 		const result = await tool.execute("call-1", { label: "checking status" });
 
-		expect(result.content[0].text).toContain("Environment: host");
-		expect(result.content[0].text).toContain("Workspace:");
+		expect(result.content[0]!.text).toContain("Environment: host");
+		expect(result.content[0]!.text).toContain("Workspace:");
 	});
 
 	it("includes workspace info", async () => {
 		const tool = createStatusTool(executor);
 		const result = await tool.execute("call-1", { label: "checking status" });
 
-		expect(result.content[0].text).toContain("Disk Usage:");
-		expect(result.content[0].text).toContain("Files:");
+		expect(result.content[0]!.text).toContain("Disk Usage:");
+		expect(result.content[0]!.text).toContain("Files:");
 	});
 
 	it("returns structured details", async () => {
@@ -560,9 +560,9 @@ describe("scheduleTool", () => {
 			when: "tomorrow at 9am",
 		});
 
-		expect(result.content[0].text).toContain("scheduled successfully");
-		expect(result.content[0].text).toContain("task-123");
-		expect(result.content[0].text).toContain("2025-01-01T09:00:00Z");
+		expect(result.content[0]!.text).toContain("scheduled successfully");
+		expect(result.content[0]!.text).toContain("task-123");
+		expect(result.content[0]!.text).toContain("2025-01-01T09:00:00Z");
 	});
 
 	it("shows warning when present", async () => {
@@ -585,7 +585,7 @@ describe("scheduleTool", () => {
 			when: "9am",
 		});
 
-		expect(result.content[0].text).toContain("Warning: Using UTC timezone");
+		expect(result.content[0]!.text).toContain("Warning: Using UTC timezone");
 	});
 
 	it("handles schedule errors", async () => {
@@ -606,8 +606,8 @@ describe("scheduleTool", () => {
 			when: "invalid",
 		});
 
-		expect(result.content[0].text).toContain("Failed to schedule");
-		expect(result.content[0].text).toContain("Invalid time format");
+		expect(result.content[0]!.text).toContain("Failed to schedule");
+		expect(result.content[0]!.text).toContain("Invalid time format");
 	});
 
 	it("requires parameters for schedule action", async () => {
@@ -622,7 +622,7 @@ describe("scheduleTool", () => {
 			action: "schedule",
 		});
 
-		expect(result.content[0].text).toContain("requires description");
+		expect(result.content[0]!.text).toContain("requires description");
 	});
 
 	it("lists tasks", async () => {
@@ -650,10 +650,10 @@ describe("scheduleTool", () => {
 			action: "list",
 		});
 
-		expect(result.content[0].text).toContain("Daily standup");
-		expect(result.content[0].text).toContain("(recurring)");
-		expect(result.content[0].text).toContain("One-time reminder");
-		expect(result.content[0].text).not.toContain(
+		expect(result.content[0]!.text).toContain("Daily standup");
+		expect(result.content[0]!.text).toContain("(recurring)");
+		expect(result.content[0]!.text).toContain("One-time reminder");
+		expect(result.content[0]!.text).not.toContain(
 			"One-time reminder (recurring)",
 		);
 	});
@@ -670,7 +670,7 @@ describe("scheduleTool", () => {
 			action: "list",
 		});
 
-		expect(result.content[0].text).toContain("No scheduled tasks");
+		expect(result.content[0]!.text).toContain("No scheduled tasks");
 	});
 
 	it("cancels tasks", async () => {
@@ -691,7 +691,7 @@ describe("scheduleTool", () => {
 		});
 
 		expect(cancelledId).toBe("task-123");
-		expect(result.content[0].text).toContain("cancelled successfully");
+		expect(result.content[0]!.text).toContain("cancelled successfully");
 	});
 
 	it("requires taskId for cancel action", async () => {
@@ -706,7 +706,7 @@ describe("scheduleTool", () => {
 			action: "cancel",
 		});
 
-		expect(result.content[0].text).toContain("requires taskId");
+		expect(result.content[0]!.text).toContain("requires taskId");
 	});
 
 	it("handles cancel errors", async () => {
@@ -725,7 +725,7 @@ describe("scheduleTool", () => {
 			taskId: "nonexistent",
 		});
 
-		expect(result.content[0].text).toContain("Failed to cancel");
-		expect(result.content[0].text).toContain("Task not found");
+		expect(result.content[0]!.text).toContain("Failed to cancel");
+		expect(result.content[0]!.text).toContain("Task not found");
 	});
 });

@@ -155,8 +155,8 @@ describeDb("Database Integration Tests", () => {
 				.returning();
 
 			expect(created).toBeDefined();
-			expect(created.id).toBe(orgId);
-			expect(created.name).toBe(`Test Org ${testId}`);
+			expect(created!.id).toBe(orgId);
+			expect(created!.name).toBe(`Test Org ${testId}`);
 
 			// Read back
 			const [found] = await db
@@ -165,8 +165,8 @@ describeDb("Database Integration Tests", () => {
 				.where(eq(schema.organizations.id, orgId));
 
 			expect(found).toBeDefined();
-			expect(found.name).toBe(`Test Org ${testId}`);
-			expect(found.settings).toEqual({
+			expect(found!.name).toBe(`Test Org ${testId}`);
+			expect(found!.settings).toEqual({
 				alertWebhooks: ["https://example.com/webhook"],
 			});
 
@@ -202,7 +202,7 @@ describeDb("Database Integration Tests", () => {
 				.where(eq(schema.organizations.id, orgId))
 				.returning();
 
-			expect(updated.settings).toEqual({
+			expect(updated!.settings).toEqual({
 				alertWebhooks: ["https://new.webhook"],
 				webhookSigningSecret: "secret123",
 			});
@@ -233,8 +233,8 @@ describeDb("Database Integration Tests", () => {
 				.returning();
 
 			expect(created).toBeDefined();
-			expect(created.email).toBe(`test-${testId}@example.com`);
-			expect(created.settings?.preferredModels).toContain("claude-3");
+			expect(created!.email).toBe(`test-${testId}@example.com`);
+			expect(created!.settings?.preferredModels).toContain("claude-3");
 
 			// Cleanup
 			await db.delete(schema.users).where(eq(schema.users.id, userId));
@@ -267,8 +267,8 @@ describeDb("Database Integration Tests", () => {
 				.returning();
 
 			expect(created).toBeDefined();
-			expect(created.severity).toBe("medium");
-			expect(created.isRead).toBe(false);
+			expect(created!.severity).toBe("medium");
+			expect(created!.isRead).toBe(false);
 
 			// Update alert
 			const [updated] = await db
@@ -277,7 +277,7 @@ describeDb("Database Integration Tests", () => {
 				.where(eq(schema.alerts.id, alertId))
 				.returning();
 
-			expect(updated.isRead).toBe(true);
+			expect(updated!.isRead).toBe(true);
 
 			// Delete alert and org
 			await db.delete(schema.alerts).where(eq(schema.alerts.id, alertId));
@@ -324,8 +324,8 @@ describeDb("Database Integration Tests", () => {
 				.returning();
 
 			expect(created).toBeDefined();
-			expect(created.action).toBe("test.action");
-			expect(created.status).toBe("success");
+			expect(created!.action).toBe("test.action");
+			expect(created!.status).toBe("success");
 
 			// Cleanup
 			await db.delete(schema.auditLogs).where(eq(schema.auditLogs.id, logId));
@@ -356,8 +356,8 @@ describeDb("Database Integration Tests", () => {
 				.returning();
 
 			expect(created).toBeDefined();
-			expect(created.shareToken).toBe(shareToken);
-			expect(created.accessCount).toBe(0);
+			expect(created!.shareToken).toBe(shareToken);
+			expect(created!.accessCount).toBe(0);
 
 			// Increment access count
 			const [updated] = await db
@@ -366,7 +366,7 @@ describeDb("Database Integration Tests", () => {
 				.where(eq(schema.sharedSessions.id, shareId))
 				.returning();
 
-			expect(updated.accessCount).toBe(1);
+			expect(updated!.accessCount).toBe(1);
 
 			// Query by token
 			const [found] = await db
@@ -375,7 +375,7 @@ describeDb("Database Integration Tests", () => {
 				.where(eq(schema.sharedSessions.shareToken, shareToken));
 
 			expect(found).toBeDefined();
-			expect(found.sessionId).toBe(`session-${testId}`);
+			expect(found!.sessionId).toBe(`session-${testId}`);
 
 			// Cleanup
 			await db

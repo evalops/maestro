@@ -271,7 +271,7 @@ export class ThreadMemoryManager {
 			totalTokens: context.totalTokens,
 			lastMessageAt:
 				context.messages.length > 0
-					? context.messages[context.messages.length - 1].createdAt
+					? context.messages[context.messages.length - 1]!.createdAt
 					: null,
 		};
 	}

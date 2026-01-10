@@ -92,14 +92,14 @@ describe("logger", () => {
 			);
 
 			expect(consoleLogSpy).toHaveBeenCalled();
-			const call = consoleLogSpy.mock.calls[0][0];
+			const call = consoleLogSpy.mock.calls[0]![0];
 			expect(call).toContain("Hello world");
 		});
 
 		it("includes timestamp in log", () => {
 			logger.logUserMessage({ channelId: "C123456" }, "test");
 
-			const call = consoleLogSpy.mock.calls[0][0];
+			const call = consoleLogSpy.mock.calls[0]![0];
 			// Timestamp format: [HH:MM:SS]
 			expect(call).toMatch(/\[\d{2}:\d{2}:\d{2}\]/);
 		});
@@ -115,7 +115,7 @@ describe("logger", () => {
 			);
 
 			expect(consoleLogSpy).toHaveBeenCalled();
-			const call = consoleLogSpy.mock.calls[0][0];
+			const call = consoleLogSpy.mock.calls[0]![0];
 			expect(call).toContain("read");
 			expect(call).toContain("Reading config file");
 		});
@@ -136,7 +136,7 @@ describe("logger", () => {
 				limit: 20,
 			});
 
-			const argsCall = consoleLogSpy.mock.calls[1][0];
+			const argsCall = consoleLogSpy.mock.calls[1]![0];
 			expect(argsCall).toContain("/etc/config:10-30");
 		});
 
@@ -146,7 +146,7 @@ describe("logger", () => {
 				path: "/file.txt",
 			});
 
-			const argsCall = consoleLogSpy.mock.calls[1][0];
+			const argsCall = consoleLogSpy.mock.calls[1]![0];
 			expect(argsCall).not.toContain("Should not appear");
 		});
 	});
@@ -160,7 +160,7 @@ describe("logger", () => {
 				"file contents here",
 			);
 
-			const call = consoleLogSpy.mock.calls[0][0];
+			const call = consoleLogSpy.mock.calls[0]![0];
 			expect(call).toContain("ok");
 			expect(call).toContain("read");
 			expect(call).toContain("1.5s");
@@ -175,7 +175,7 @@ describe("logger", () => {
 			);
 
 			expect(consoleLogSpy).toHaveBeenCalledTimes(2);
-			const resultCall = consoleLogSpy.mock.calls[1][0];
+			const resultCall = consoleLogSpy.mock.calls[1]![0];
 			expect(resultCall).toContain("result text");
 		});
 
@@ -183,7 +183,7 @@ describe("logger", () => {
 			const longResult = "x".repeat(2000);
 			logger.logToolSuccess({ channelId: "C123456" }, "read", 1000, longResult);
 
-			const resultCall = consoleLogSpy.mock.calls[1][0];
+			const resultCall = consoleLogSpy.mock.calls[1]![0];
 			expect(resultCall).toContain("truncated");
 		});
 	});
@@ -197,7 +197,7 @@ describe("logger", () => {
 				"Command failed",
 			);
 
-			const call = consoleLogSpy.mock.calls[0][0];
+			const call = consoleLogSpy.mock.calls[0]![0];
 			expect(call).toContain("err");
 			expect(call).toContain("bash");
 			expect(call).toContain("0.5s");
@@ -212,7 +212,7 @@ describe("logger", () => {
 			);
 
 			expect(consoleLogSpy).toHaveBeenCalledTimes(2);
-			const errorCall = consoleLogSpy.mock.calls[1][0];
+			const errorCall = consoleLogSpy.mock.calls[1]![0];
 			expect(errorCall).toContain("Error details");
 		});
 	});
@@ -221,7 +221,7 @@ describe("logger", () => {
 		it("logs streaming response indicator", () => {
 			logger.logResponseStart({ channelId: "C123456", userName: "user" });
 
-			const call = consoleLogSpy.mock.calls[0][0];
+			const call = consoleLogSpy.mock.calls[0]![0];
 			expect(call).toContain("Streaming response");
 		});
 	});
@@ -232,7 +232,7 @@ describe("logger", () => {
 			logger.logThinking({ channelId: "C123456" }, longThinking);
 
 			expect(consoleLogSpy).toHaveBeenCalledTimes(2);
-			const thinkingCall = consoleLogSpy.mock.calls[1][0];
+			const thinkingCall = consoleLogSpy.mock.calls[1]![0];
 			expect(thinkingCall).toContain("truncated");
 		});
 	});
@@ -242,7 +242,7 @@ describe("logger", () => {
 			logger.logResponse({ channelId: "C123456" }, "This is the response");
 
 			expect(consoleLogSpy).toHaveBeenCalledTimes(2);
-			const responseCall = consoleLogSpy.mock.calls[1][0];
+			const responseCall = consoleLogSpy.mock.calls[1]![0];
 			expect(responseCall).toContain("This is the response");
 		});
 	});
@@ -251,7 +251,7 @@ describe("logger", () => {
 		it("logs info message with system context", () => {
 			logger.logInfo("System information message");
 
-			const call = consoleLogSpy.mock.calls[0][0];
+			const call = consoleLogSpy.mock.calls[0]![0];
 			expect(call).toContain("[system]");
 			expect(call).toContain("System information message");
 		});
@@ -262,9 +262,9 @@ describe("logger", () => {
 			logger.logWarning("Something went wrong", "Additional details here");
 
 			expect(consoleLogSpy).toHaveBeenCalledTimes(2);
-			const warningCall = consoleLogSpy.mock.calls[0][0];
+			const warningCall = consoleLogSpy.mock.calls[0]![0];
 			expect(warningCall).toContain("warning");
-			const detailsCall = consoleLogSpy.mock.calls[1][0];
+			const detailsCall = consoleLogSpy.mock.calls[1]![0];
 			expect(detailsCall).toContain("Additional details");
 		});
 
@@ -280,14 +280,14 @@ describe("logger", () => {
 			logger.logAgentError({ channelId: "C123456" }, "Agent crashed");
 
 			expect(consoleLogSpy).toHaveBeenCalledTimes(2);
-			const errorCall = consoleLogSpy.mock.calls[0][0];
+			const errorCall = consoleLogSpy.mock.calls[0]![0];
 			expect(errorCall).toContain("Agent error");
 		});
 
 		it("handles system context", () => {
 			logger.logAgentError("system", "System-level error");
 
-			const call = consoleLogSpy.mock.calls[0][0];
+			const call = consoleLogSpy.mock.calls[0]![0];
 			expect(call).toContain("[system]");
 		});
 	});
@@ -395,7 +395,7 @@ describe("logger", () => {
 		it("logs backfill complete with duration", () => {
 			logger.logBackfillComplete(150, 5000);
 
-			const call = consoleLogSpy.mock.calls[0][0];
+			const call = consoleLogSpy.mock.calls[0]![0];
 			expect(call).toContain("Backfill complete");
 			expect(call).toContain("150 messages");
 			expect(call).toContain("5.0s");

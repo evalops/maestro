@@ -321,7 +321,7 @@ If "not found", read file to check actual content.`,
 					`Only ${exactMatches.length} occurrence(s) found, but #${occurrence} requested.`,
 				);
 			}
-			const targetMatch = exactMatches[occurrence - 1];
+			const targetMatch = exactMatches[occurrence - 1]!;
 			const matchIndex = targetMatch.index ?? 0;
 			return {
 				newContent:
@@ -525,16 +525,16 @@ function levenshtein(a: string, b: string): number {
 
 			// Take minimum of three possible operations:
 			curr[j] = Math.min(
-				prev[j] + 1, // deletion: remove a[i-1], use distance for a[0..i-2] to b[0..j-1]
-				curr[j - 1] + 1, // insertion: insert b[j-1], use distance for a[0..i-1] to b[0..j-2]
-				prev[j - 1] + cost, // substitution: use distance for a[0..i-2] to b[0..j-2] + substitution cost
+				prev[j]! + 1, // deletion: remove a[i-1], use distance for a[0..i-2] to b[0..j-1]
+				curr[j - 1]! + 1, // insertion: insert b[j-1], use distance for a[0..i-1] to b[0..j-2]
+				prev[j - 1]! + cost, // substitution: use distance for a[0..i-2] to b[0..j-2] + substitution cost
 			);
 		}
 		// Swap rows: current row becomes previous for next iteration
 		[prev, curr] = [curr, prev];
 	}
 	// After all iterations, `prev` contains the final row (due to swap)
-	return prev[b.length];
+	return prev[b.length]!;
 }
 
 /**
@@ -760,7 +760,7 @@ function getLineNumber(content: string, index: number): number {
 	return content.slice(0, index).split("\n").length;
 }
 
-function getSnippet(content: string, start: number, length: number): string {
+function getSnippet(content: string, start: number, _length: number): string {
 	const lines = content.split("\n");
 	const lineNum = getLineNumber(content, start);
 	const startLine = Math.max(0, lineNum - 2);

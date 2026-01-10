@@ -64,7 +64,9 @@ export function isLoopbackIPv4(octets: number[]): boolean {
  * @returns true if private/reserved address
  */
 export function isPrivateIPv4(octets: number[]): boolean {
-	const [a, b] = octets;
+	const a = octets[0];
+	const b = octets[1];
+	if (a === undefined || b === undefined) return false;
 	return (
 		a === 10 || // 10.0.0.0/8
 		(a === 172 && b >= 16 && b <= 31) || // 172.16.0.0/12
@@ -88,7 +90,7 @@ export function isPrivateIPv4(octets: number[]): boolean {
 export function parseIPv4MappedHex(host: string): number[] | null {
 	// Match ::ffff:XXXX:XXXX format (hex representation of IPv4)
 	const match = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-	if (!match) return null;
+	if (!match || !match[1] || !match[2]) return null;
 
 	const high = Number.parseInt(match[1], 16);
 	const low = Number.parseInt(match[2], 16);
@@ -111,7 +113,7 @@ export function parseIPv4MappedHex(host: string): number[] | null {
  */
 export function parseIPv4MappedDecimal(host: string): number[] | null {
 	const match = host.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i);
-	if (!match) return null;
+	if (!match || !match[1]) return null;
 	return parseIPv4(match[1]);
 }
 

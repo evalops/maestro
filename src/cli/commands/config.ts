@@ -236,8 +236,14 @@ export function buildConfigShowSections(
 					output.push(muted(`       • ${formatModelLabel(model)}`));
 				}
 			} else {
-				output.push(muted(`       • ${formatModelLabel(provider.models[0])}`));
-				output.push(muted(`       • ${formatModelLabel(provider.models[1])}`));
+				const firstModel = provider.models[0];
+				const secondModel = provider.models[1];
+				if (firstModel) {
+					output.push(muted(`       • ${formatModelLabel(firstModel)}`));
+				}
+				if (secondModel) {
+					output.push(muted(`       • ${formatModelLabel(secondModel)}`));
+				}
 				output.push(muted(`       ... and ${provider.models.length - 2} more`));
 			}
 			output.push("");
@@ -423,8 +429,14 @@ function renderConfigShowLegacy(
 					console.log(muted(`       • ${formatModelLabel(model)}`));
 				}
 			} else {
-				console.log(muted(`       • ${formatModelLabel(provider.models[0])}`));
-				console.log(muted(`       • ${formatModelLabel(provider.models[1])}`));
+				const firstModel = provider.models[0];
+				const secondModel = provider.models[1];
+				if (firstModel) {
+					console.log(muted(`       • ${formatModelLabel(firstModel)}`));
+				}
+				if (secondModel) {
+					console.log(muted(`       • ${formatModelLabel(secondModel)}`));
+				}
 				console.log(muted(`       ... and ${provider.models.length - 2} more`));
 			}
 			console.log();
@@ -575,6 +587,11 @@ export async function handleConfigInit(): Promise<void> {
 					? Number.parseInt(providerChoice.trim(), 10) - 1
 					: 0;
 			preset = PROVIDER_PRESETS[presetIndex] ?? PROVIDER_PRESETS[0];
+		}
+
+		// At this point preset is guaranteed to be defined because PROVIDER_PRESETS is non-empty
+		if (!preset) {
+			throw new Error("No provider presets available");
 		}
 
 		const {
@@ -903,9 +920,15 @@ export async function handleConfigLocal(): Promise<void> {
 		}
 
 		if (choice === "3") {
+			const lmstudioTemplate = LOCAL_PROVIDER_TEMPLATES.lmstudio;
+			const ollamaTemplate = LOCAL_PROVIDER_TEMPLATES.ollama;
 			const targets = [
-				{ name: "LM Studio", url: LOCAL_PROVIDER_TEMPLATES.lmstudio.baseUrl },
-				{ name: "Ollama", url: LOCAL_PROVIDER_TEMPLATES.ollama.baseUrl },
+				...(lmstudioTemplate
+					? [{ name: "LM Studio", url: lmstudioTemplate.baseUrl }]
+					: []),
+				...(ollamaTemplate
+					? [{ name: "Ollama", url: ollamaTemplate.baseUrl }]
+					: []),
 			];
 			for (const target of targets) {
 				console.log(await checkLocalEndpoint(target.name, target.url));
@@ -916,6 +939,11 @@ export async function handleConfigLocal(): Promise<void> {
 
 		const templateKey = choice === "2" ? "ollama" : "lmstudio";
 		const template = LOCAL_PROVIDER_TEMPLATES[templateKey];
+		if (!template) {
+			console.log(chalk.red(`\nUnknown template: ${templateKey}`));
+			rl.close();
+			return;
+		}
 
 		const scope = (
 			await rl.question(

@@ -9,7 +9,7 @@ export function parseMcpToolName(
 ): { server: string; tool?: string } | null {
 	const parts = name.split("__");
 	if (parts[0] !== "mcp" || parts.length < 2) return null;
-	const server = parts[1];
+	const server = parts[1]!;
 	const tool = parts.length > 2 ? parts.slice(2).join("__") : undefined;
 	return { server, tool };
 }

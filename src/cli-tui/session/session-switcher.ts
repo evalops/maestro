@@ -151,8 +151,8 @@ export class SessionSwitcherComponent extends Column {
 				align: "center",
 			},
 		);
-		row.setChildOptions(row.children[0], { maxWidth: 4 });
-		row.setChildOptions(row.children[4], { minWidth: 10 });
+		row.setChildOptions(row.children[0]!, { maxWidth: 4 });
+		row.setChildOptions(row.children[4]!, { minWidth: 10 });
 		return row;
 	}
 

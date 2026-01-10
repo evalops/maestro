@@ -314,8 +314,8 @@ describe("Enhanced Cost Tracking", () => {
 			const comparisons = compareProviders();
 
 			for (let i = 1; i < comparisons.length; i++) {
-				expect(comparisons[i - 1].totalCost).toBeGreaterThanOrEqual(
-					comparisons[i].totalCost,
+				expect(comparisons[i - 1]!.totalCost).toBeGreaterThanOrEqual(
+					comparisons[i]!.totalCost,
 				);
 			}
 		});
@@ -415,7 +415,7 @@ describe("Enhanced Cost Tracking", () => {
 			});
 
 			if (trends.length > 0) {
-				expect(trends[0].date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+				expect(trends[0]!.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 			}
 		});
 
@@ -434,7 +434,7 @@ describe("Enhanced Cost Tracking", () => {
 			expect(Array.isArray(trends)).toBe(true);
 			// Weeks should start on Sunday
 			if (trends.length > 0) {
-				const date = new Date(trends[0].date);
+				const date = new Date(trends[0]!.date);
 				// Note: Not all entries will be on Sunday since we aggregate by week start
 				expect(date).toBeInstanceOf(Date);
 			}
@@ -455,7 +455,7 @@ describe("Enhanced Cost Tracking", () => {
 			expect(Array.isArray(trends)).toBe(true);
 			// Months should start on day 1
 			if (trends.length > 0) {
-				expect(trends[0].date).toMatch(/-01$/);
+				expect(trends[0]!.date).toMatch(/-01$/);
 			}
 		});
 
@@ -472,7 +472,7 @@ describe("Enhanced Cost Tracking", () => {
 			});
 
 			for (let i = 1; i < trends.length; i++) {
-				expect(trends[i].date >= trends[i - 1].date).toBe(true);
+				expect(trends[i]!.date >= trends[i - 1]!.date).toBe(true);
 			}
 		});
 
@@ -502,7 +502,7 @@ describe("Enhanced Cost Tracking", () => {
 			});
 
 			if (trends.length > 0) {
-				const todayTrend = trends[trends.length - 1];
+				const todayTrend = trends[trends.length - 1]!;
 				expect(todayTrend.requests).toBe(2);
 				expect(todayTrend.cost).toBe(0.03);
 				expect(todayTrend.tokens).toBe(4500); // 1000 + 500 + 2000 + 1000

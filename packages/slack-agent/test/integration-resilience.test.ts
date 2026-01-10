@@ -88,7 +88,7 @@ describe("Resilience Utilities Integration", () => {
 			// Initially healthy
 			let result = await health.check();
 			expect(result.healthy).toBe(true);
-			expect(result.components["external-api"].message).toContain("CLOSED");
+			expect(result.components["external-api"]!.message).toContain("CLOSED");
 
 			// Trip the breaker
 			await breaker
@@ -100,7 +100,7 @@ describe("Resilience Utilities Integration", () => {
 			// Now unhealthy
 			result = await health.check();
 			expect(result.healthy).toBe(false);
-			expect(result.components["external-api"].message).toContain("OPEN");
+			expect(result.components["external-api"]!.message).toContain("OPEN");
 		});
 
 		it("multiple circuit breakers in health check", async () => {
@@ -130,8 +130,8 @@ describe("Resilience Utilities Integration", () => {
 
 			const result = await health.check();
 			expect(result.healthy).toBe(false);
-			expect(result.components.slack.healthy).toBe(false);
-			expect(result.components.database.healthy).toBe(true);
+			expect(result.components.slack!.healthy).toBe(false);
+			expect(result.components.database!.healthy).toBe(true);
 		});
 	});
 
@@ -255,7 +255,7 @@ describe("Resilience Utilities Integration", () => {
 				100,
 			);
 			expect(metricsStatus.gauges.app_active_connections).toBe(25);
-			expect(metricsStatus.histograms.app_request_latency.count).toBe(3);
+			expect(metricsStatus.histograms.app_request_latency!.count).toBe(3);
 		});
 
 		it("exports prometheus format", () => {

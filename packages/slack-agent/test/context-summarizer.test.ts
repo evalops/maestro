@@ -68,8 +68,8 @@ describe("summarizeContext", () => {
 
 		expect(result.recentTurns).toHaveLength(5);
 		// Should be the last 5 turns
-		expect(result.recentTurns[0].text).toBe("Message 20");
-		expect(result.recentTurns[4].text).toBe("Message 24");
+		expect(result.recentTurns[0]!.text).toBe("Message 20");
+		expect(result.recentTurns[4]!.text).toBe("Message 24");
 	});
 
 	it("caches summaries to disk", async () => {
@@ -269,7 +269,7 @@ describe("formatSummarizedContext", () => {
 
 		// Format: date\tuser\ttext\tattachments
 		const lines = result.split("\n");
-		const parts = lines[0].split("\t");
+		const parts = lines[0]!.split("\t");
 		expect(parts).toHaveLength(4);
 	});
 

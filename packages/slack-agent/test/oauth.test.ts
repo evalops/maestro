@@ -118,7 +118,7 @@ describe("WorkspaceManager", () => {
 
 			const workspaces = manager.getAll();
 			expect(workspaces).toHaveLength(1);
-			expect(workspaces[0].teamId).toBe("T1");
+			expect(workspaces[0]!.teamId).toBe("T1");
 		});
 	});
 

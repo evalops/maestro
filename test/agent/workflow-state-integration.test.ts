@@ -159,7 +159,7 @@ describe("ProviderTransport workflow-state integration", () => {
 		expect(approvalSpy).not.toHaveBeenCalled();
 		expect(handoffExecute).not.toHaveBeenCalled();
 		expect(handoffResults).toHaveLength(1);
-		expect(handoffResults[0].content[0]).toMatchObject({
+		expect(handoffResults[0]!.content[0]).toMatchObject({
 			text: expect.stringContaining("redact_transcript"),
 		});
 		expect(logSpy).toHaveBeenCalledWith(

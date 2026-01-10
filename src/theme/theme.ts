@@ -136,7 +136,7 @@ function detectTerminalBackground(): "dark" | "light" {
 	const colorfgbg = process.env.COLORFGBG || "";
 	if (colorfgbg) {
 		const parts = colorfgbg.split(";");
-		if (parts.length >= 2) {
+		if (parts.length >= 2 && parts[1] !== undefined) {
 			const bg = Number.parseInt(parts[1], 10);
 			if (!Number.isNaN(bg)) {
 				const result = bg < 8 ? "dark" : "light";

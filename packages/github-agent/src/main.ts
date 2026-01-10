@@ -140,11 +140,12 @@ function parseArgs(): {
 	// Helper to get and validate the next argument value
 	const requireArg = (flag: string, index: number): string => {
 		const nextIndex = index + 1;
-		if (nextIndex >= args.length || args[nextIndex].startsWith("-")) {
+		const nextArg = args[nextIndex];
+		if (nextIndex >= args.length || !nextArg || nextArg.startsWith("-")) {
 			console.error(`Error: ${flag} requires a value`);
 			process.exit(1);
 		}
-		return args[nextIndex];
+		return nextArg;
 	};
 	const parsePositiveIntArg = (
 		flag: string,
@@ -164,7 +165,7 @@ function parseArgs(): {
 	};
 
 	for (let i = 0; i < args.length; i++) {
-		const arg = args[i];
+		const arg = args[i]!;
 
 		if (arg === "--help" || arg === "-h") {
 			printUsage();

@@ -96,7 +96,7 @@ describe("Scheduler Integration", () => {
 
 		const tasks = scheduler2.listTasks("C123456");
 		expect(tasks).toHaveLength(1);
-		expect(tasks[0].description).toBe("Persisted task");
+		expect(tasks[0]!.description).toBe("Persisted task");
 
 		await scheduler2.stop();
 	});
@@ -134,7 +134,7 @@ describe("Scheduler Integration", () => {
 		await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
 
 		expect(executedTasks).toHaveLength(1);
-		expect(executedTasks[0].description).toBe("Quick task");
+		expect(executedTasks[0]!.description).toBe("Quick task");
 
 		vi.useRealTimers();
 	});
@@ -175,12 +175,12 @@ describe("Scheduler Integration", () => {
 		await vi.advanceTimersByTimeAsync(90 * 60 * 1000);
 
 		expect(executedTasks.length).toBeGreaterThanOrEqual(1);
-		expect(executedTasks[0].description).toBe("Hourly check");
+		expect(executedTasks[0]!.description).toBe("Hourly check");
 
 		// Task should still be active (recurring)
 		const tasks = scheduler.listTasks("C123456");
 		expect(tasks).toHaveLength(1);
-		expect(tasks[0].active).toBe(true);
+		expect(tasks[0]!.active).toBe(true);
 
 		vi.useRealTimers();
 	});

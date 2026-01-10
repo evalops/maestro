@@ -627,7 +627,7 @@ class BackgroundTaskManager extends EventEmitter {
 		if (parsed.length === 0) {
 			throw new ToolError("Command must contain an executable to run");
 		}
-		return spawn(parsed[0], parsed.slice(1), spawnOptions);
+		return spawn(parsed[0]!, parsed.slice(1), spawnOptions);
 	}
 
 	private launchProcess(task: BackgroundTask): void {

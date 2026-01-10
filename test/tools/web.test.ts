@@ -200,7 +200,7 @@ describe("websearch tool", () => {
 				results: Array<{ title: string; url: string }>;
 			};
 			expect(details.results).toHaveLength(2);
-			expect(details.results[0].title).toBe("Test Result 1");
+			expect(details.results[0]!.title).toBe("Test Result 1");
 		});
 	});
 });
@@ -293,7 +293,7 @@ describe("webfetch tool", () => {
 				results: Array<{ title: string; url: string }>;
 			};
 			expect(details.results).toHaveLength(1);
-			expect(details.results[0].url).toBe("https://example.com/page");
+			expect(details.results[0]!.url).toBe("https://example.com/page");
 		});
 	});
 });

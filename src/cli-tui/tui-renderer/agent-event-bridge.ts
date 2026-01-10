@@ -11,6 +11,7 @@ import type {
 import type { Agent } from "../../agent/agent.js";
 import type { AutoRetryController } from "../../agent/auto-retry.js";
 import type { SessionRecoveryManager } from "../../agent/session-recovery.js";
+import { isAssistantMessage } from "../../agent/type-guards.js";
 import type { AgentEvent, AgentState } from "../../agent/types.js";
 import type { RegisteredModel } from "../../models/registry.js";
 import {
@@ -124,7 +125,8 @@ export class AgentEventBridge {
 	private recordTokenUsageFromMessages(state: AgentState): void {
 		for (let i = state.messages.length - 1; i >= 0; i--) {
 			const message = state.messages[i];
-			if (message.role === "assistant" && message.usage) {
+			if (!message) continue;
+			if (isAssistantMessage(message)) {
 				recordTokenUsage(
 					this.deps.sessionManager.getSessionId(),
 					{

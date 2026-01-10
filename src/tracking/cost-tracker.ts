@@ -189,10 +189,11 @@ export function getUsageSummary(options?: {
 				},
 			};
 		}
-		summary.byProvider[entry.provider].cost += entry.cost;
-		summary.byProvider[entry.provider].requests += 1;
-		summary.byProvider[entry.provider].tokens += tokens;
-		const providerTokens = summary.byProvider[entry.provider].tokensDetailed;
+		const providerData = summary.byProvider[entry.provider]!;
+		providerData.cost += entry.cost;
+		providerData.requests += 1;
+		providerData.tokens += tokens;
+		const providerTokens = providerData.tokensDetailed;
 		providerTokens.input += tokensInput;
 		providerTokens.output += tokensOutput;
 		providerTokens.cacheRead += tokensCacheRead;
@@ -375,7 +376,7 @@ export function compareProviders(options?: {
 		> = {};
 		for (const [modelKey, modelData] of Object.entries(summary.byModel)) {
 			if (modelKey.startsWith(`${provider}/`)) {
-				const modelName = modelKey.split("/")[1];
+				const modelName = modelKey.split("/")[1]!;
 				providerModels[modelName] = modelData;
 			}
 		}
@@ -426,12 +427,12 @@ export function getUsageTrends(options: {
 
 		switch (options.granularity) {
 			case "day":
-				key = date.toISOString().split("T")[0];
+				key = date.toISOString().split("T")[0]!;
 				break;
 			case "week": {
 				const weekStart = new Date(date);
 				weekStart.setDate(date.getDate() - date.getDay());
-				key = weekStart.toISOString().split("T")[0];
+				key = weekStart.toISOString().split("T")[0]!;
 				break;
 			}
 			case "month":

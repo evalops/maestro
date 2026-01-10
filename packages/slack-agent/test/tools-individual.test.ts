@@ -39,7 +39,7 @@ describe("createBashTool", () => {
 			command: "echo hello",
 		});
 
-		expect(result.content[0].text).toBe("hello\n");
+		expect(result.content[0]!.text).toBe("hello\n");
 	});
 
 	it("combines stdout and stderr", async () => {
@@ -53,7 +53,7 @@ describe("createBashTool", () => {
 			command: "test",
 		});
 
-		expect(result.content[0].text).toBe("output\nwarning");
+		expect(result.content[0]!.text).toBe("output\nwarning");
 	});
 
 	it("returns (no output) for empty results", async () => {
@@ -67,7 +67,7 @@ describe("createBashTool", () => {
 			command: "silent",
 		});
 
-		expect(result.content[0].text).toBe("(no output)");
+		expect(result.content[0]!.text).toBe("(no output)");
 	});
 
 	it("throws on non-zero exit code", async () => {
@@ -105,7 +105,7 @@ describe("createBashTool", () => {
 			command: "rm -rf /important",
 		});
 
-		expect(result.content[0].text).toContain("rejected");
+		expect(result.content[0]!.text).toContain("rejected");
 		expect((result.details as { rejected?: boolean })?.rejected).toBe(true);
 		expect(executor.exec).not.toHaveBeenCalled();
 	});
@@ -142,7 +142,7 @@ describe("createEditTool", () => {
 			newText: "goodbye",
 		});
 
-		expect(result.content[0].text).toContain("Successfully replaced");
+		expect(result.content[0]!.text).toContain("Successfully replaced");
 		const details = result.details as { diff?: string } | undefined;
 		expect(details?.diff).toBeDefined();
 	});
@@ -223,7 +223,7 @@ describe("createWriteTool", () => {
 			content: "Hello, World!",
 		});
 
-		expect(result.content[0].text).toContain("Successfully wrote 13 bytes");
+		expect(result.content[0]!.text).toContain("Successfully wrote 13 bytes");
 	});
 
 	it("creates parent directories", async () => {
@@ -302,7 +302,7 @@ describe("attachTool", () => {
 			expect.stringContaining("document.pdf"),
 			"document.pdf",
 		);
-		expect(result.content[0].text).toContain("document.pdf");
+		expect(result.content[0]!.text).toContain("document.pdf");
 	});
 
 	it("uses custom title when provided", async () => {

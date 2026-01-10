@@ -151,7 +151,9 @@ export class AuditLogger {
 				const content = readFileSync(join(this.auditDir, file), "utf-8");
 				const lines = content.trim().split("\n").filter(Boolean);
 				if (lines.length > 0) {
-					const lastEntry = JSON.parse(lines[lines.length - 1]) as AuditEntry;
+					const lastLine = lines[lines.length - 1];
+					if (!lastLine) continue;
+					const lastEntry = JSON.parse(lastLine) as AuditEntry;
 					return lastEntry.integrityHash;
 				}
 			}
@@ -315,7 +317,9 @@ export class AuditLogger {
 				const lines = content.trim().split("\n").filter(Boolean);
 
 				for (let i = 0; i < lines.length; i++) {
-					const entry = JSON.parse(lines[i]) as AuditEntry;
+					const line = lines[i];
+					if (!line) continue;
+					const entry = JSON.parse(line) as AuditEntry;
 
 					// Check chain continuity
 					if (entry.previousHash !== previousHash) {
@@ -364,7 +368,7 @@ export class AuditLogger {
 			for (const file of files) {
 				// Check date range from filename
 				const dateMatch = file.match(/audit-(\d{4}-\d{2}-\d{2})\.jsonl/);
-				if (dateMatch) {
+				if (dateMatch?.[1]) {
 					const fileDate = new Date(dateMatch[1]);
 					if (options.startDate && fileDate < options.startDate) continue;
 					if (options.endDate && fileDate > options.endDate) continue;
@@ -413,7 +417,7 @@ export class AuditLogger {
 				const dateMatch = file.match(
 					/audit-(\d{4}-\d{2}-\d{2})(?:-\d+)?\.jsonl/,
 				);
-				if (dateMatch) {
+				if (dateMatch?.[1]) {
 					const fileDate = new Date(dateMatch[1]);
 					if (fileDate < cutoff) {
 						unlinkSync(join(this.auditDir, file));

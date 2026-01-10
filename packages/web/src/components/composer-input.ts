@@ -363,7 +363,7 @@ export class ComposerInput extends LitElement {
 		const match = /@([a-zA-Z0-9_\-\.\/]*)$/.exec(textBeforeCursor);
 
 		if (match) {
-			const query = match[1].toLowerCase();
+			const query = (match[1] ?? "").toLowerCase();
 			const requestId = ++this.checkMentionCounter;
 
 			if (this.allFiles.length === 0) {
@@ -401,7 +401,7 @@ export class ComposerInput extends LitElement {
 				this.mentionMatch = {
 					start: match.index,
 					end: cursor,
-					query: match[1],
+					query: match[1] ?? "",
 				};
 				return;
 			}
@@ -457,8 +457,9 @@ export class ComposerInput extends LitElement {
 
 		// Replace current token with selected command
 		const parts = this.value.split(/\s+/);
-		if (parts.length > 0) {
-			parts[0] = `/${this.slashHint?.name ?? parts[0].slice(1)}`;
+		const firstPart = parts[0];
+		if (parts.length > 0 && firstPart !== undefined) {
+			parts[0] = `/${this.slashHint?.name ?? firstPart.slice(1)}`;
 			this.value = parts.join(" ");
 			this.requestUpdate();
 		}
@@ -504,7 +505,10 @@ export class ComposerInput extends LitElement {
 			}
 			if (e.key === "Enter" || e.key === "Tab") {
 				e.preventDefault();
-				this.selectSuggestion(this.filteredFiles[this.suggestionIndex]);
+				const selectedFile = this.filteredFiles[this.suggestionIndex];
+				if (selectedFile !== undefined) {
+					this.selectSuggestion(selectedFile);
+				}
 				return;
 			}
 			if (e.key === "Escape") {

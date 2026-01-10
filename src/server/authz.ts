@@ -29,8 +29,8 @@ function verifySharedToken(token: string): string | null {
 	// Format: base64url(userId).signature
 	const parts = token.split(".");
 	if (parts.length !== 2) return null;
-	const user = parts[0];
-	const providedSig = parts[1];
+	const user = parts[0]!;
+	const providedSig = parts[1]!;
 	let userId: string;
 	try {
 		userId = base64UrlDecode(user);

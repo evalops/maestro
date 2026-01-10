@@ -323,8 +323,8 @@ export class Row extends Container {
 		const assigned: number[] = [];
 		let remaining = availableWidth;
 		for (let i = 0; i < items.length; i++) {
-			const raw = Math.floor((availableWidth * weights[i]) / totalWeight);
-			const target = clampValue(raw, minWidths[i], maxWidths[i]);
+			const raw = Math.floor((availableWidth * weights[i]!) / totalWeight);
+			const target = clampValue(raw, minWidths[i]!, maxWidths[i]!);
 			const colWidth = Math.max(
 				1,
 				Math.min(target, remaining - (items.length - i - 1)),
@@ -334,22 +334,20 @@ export class Row extends Container {
 		}
 		let leftover = remaining;
 		for (let i = 0; leftover > 0 && i < assigned.length; i++, leftover--) {
-			assigned[i] += 1;
+			assigned[i]! += 1;
 		}
 
 		const rendered = items.map(({ child }, idx) => {
-			const childLines = child.render(assigned[idx]);
-			return childLines.map((line) => padToWidth(line, assigned[idx]));
+			const childLines = child.render(assigned[idx]!);
+			return childLines.map((line) => padToWidth(line, assigned[idx]!));
 		});
 		const maxHeight = Math.max(...rendered.map((lines) => lines.length));
 		const padded = rendered.map((lines, idx) => {
-			const filler = " ".repeat(assigned[idx]);
+			const filler = " ".repeat(assigned[idx]!);
 			const deficit = maxHeight - lines.length;
 			if (deficit <= 0) return lines;
-			const alignSelf = this.getChildOptions(
-				items[idx].child,
-				items[idx].index,
-			).alignSelf;
+			const item = items[idx]!;
+			const alignSelf = this.getChildOptions(item.child, item.index).alignSelf;
 			const verticalAlign = alignSelf ?? this.align;
 			if (verticalAlign === "start") {
 				for (let i = 0; i < deficit; i++) lines.push(filler);
@@ -406,7 +404,7 @@ export class Row extends Container {
 				if (col > 0) {
 					line += " ".repeat(gapSizes[col - 1] ?? baseGap);
 				}
-				line += padded[col][row];
+				line += padded[col]![row]!;
 			}
 			combined.push(padToWidth(line, width));
 		}

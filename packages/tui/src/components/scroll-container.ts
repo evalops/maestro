@@ -460,7 +460,7 @@ export class ScrollContainer implements Component {
 				// Replace last line with indicator overlay
 				const lastIdx = visibleLines.length - 1;
 				visibleLines[lastIdx] = this.overlayIndicator(
-					visibleLines[lastIdx],
+					visibleLines[lastIdx]!,
 					indicator,
 					width,
 				);
@@ -608,7 +608,7 @@ export class ScrollContainer implements Component {
 			this.contentHistory.push(marker);
 			return;
 		}
-		const hadMarker = this.isTruncationMarker(this.contentHistory[0]);
+		const hadMarker = this.isTruncationMarker(this.contentHistory[0]!);
 		if (hadMarker) {
 			this.contentHistory[0] = marker;
 		} else {

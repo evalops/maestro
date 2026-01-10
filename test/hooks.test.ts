@@ -93,7 +93,7 @@ describe("Hook System", () => {
 
 			const config = loadHookConfiguration("/tmp/test");
 			expect(config.PreToolUse).toBeDefined();
-			expect(config.PreToolUse?.[0]?.hooks[0].type).toBe("callback");
+			expect(config.PreToolUse?.[0]?.hooks[0]!.type).toBe("callback");
 
 			unregister();
 			clearHookConfigCache();

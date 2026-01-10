@@ -1672,7 +1672,7 @@ export class AdminSettings extends LitElement {
 			.join(" ");
 
 		const lastY =
-			height - ((data[data.length - 1] - min) / range) * (height - 4) - 2;
+			height - ((data[data.length - 1]! - min) / range) * (height - 4) - 2;
 
 		return html`
 			<svg width="${width}" height="${height}" style="display: block;">

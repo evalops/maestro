@@ -160,7 +160,7 @@ export class ComposerThinking extends LitElement {
 
 	private getSummary(): string {
 		if (!this.content) return "Thinking...";
-		const firstLine = this.content.split("\n")[0];
+		const firstLine = this.content.split("\n")[0]!;
 		return firstLine.length > 80 ? `${firstLine.slice(0, 80)}...` : firstLine;
 	}
 

@@ -78,13 +78,13 @@ function tokenize(input: string): Token[] {
 	let i = 0;
 
 	while (i < input.length) {
-		const char = input[i];
+		const char = input[i]!;
 
 		// Whitespace
 		if (/\s/.test(char)) {
 			let ws = "";
-			while (i < input.length && /\s/.test(input[i])) {
-				ws += input[i];
+			while (i < input.length && /\s/.test(input[i]!)) {
+				ws += input[i]!;
 				i++;
 			}
 			tokens.push({ type: "whitespace", value: ws });
@@ -100,8 +100,8 @@ function tokenize(input: string): Token[] {
 		}
 
 		// Single-char operators
-		if (OPERATORS.has(char)) {
-			tokens.push({ type: "operator", value: char });
+		if (OPERATORS.has(char!)) {
+			tokens.push({ type: "operator", value: char! });
 			i++;
 			continue;
 		}
@@ -112,10 +112,10 @@ function tokenize(input: string): Token[] {
 			i++;
 			while (i < input.length && input[i] !== '"') {
 				if (input[i] === "\\" && i + 1 < input.length) {
-					str += input[i] + input[i + 1];
+					str += input[i]! + input[i + 1]!;
 					i += 2;
 				} else {
-					str += input[i];
+					str += input[i]!;
 					i++;
 				}
 			}
@@ -132,7 +132,7 @@ function tokenize(input: string): Token[] {
 			let str = "'";
 			i++;
 			while (i < input.length && input[i] !== "'") {
-				str += input[i];
+				str += input[i]!;
 				i++;
 			}
 			if (i < input.length) {
@@ -151,7 +151,7 @@ function tokenize(input: string): Token[] {
 				varName += "{";
 				i++;
 				while (i < input.length && input[i] !== "}") {
-					varName += input[i];
+					varName += input[i]!;
 					i++;
 				}
 				if (i < input.length) {
@@ -159,8 +159,8 @@ function tokenize(input: string): Token[] {
 					i++;
 				}
 			} else {
-				while (i < input.length && /[\w]/.test(input[i])) {
-					varName += input[i];
+				while (i < input.length && /[\w]/.test(input[i]!)) {
+					varName += input[i]!;
 					i++;
 				}
 			}
@@ -172,13 +172,13 @@ function tokenize(input: string): Token[] {
 		let word = "";
 		while (
 			i < input.length &&
-			!/\s/.test(input[i]) &&
-			!OPERATORS.has(input[i]) &&
+			!/\s/.test(input[i]!) &&
+			!OPERATORS.has(input[i]!) &&
 			input[i] !== '"' &&
 			input[i] !== "'" &&
 			input[i] !== "$"
 		) {
-			word += input[i];
+			word += input[i]!;
 			i++;
 		}
 		if (word) {

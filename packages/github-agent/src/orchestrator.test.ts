@@ -217,7 +217,7 @@ describe("Orchestrator", () => {
 				totalTokensUsed: 0,
 				totalCost: 0,
 				dailyCost: 0,
-				dailyCostDate: new Date().toISOString().split("T")[0],
+				dailyCostDate: new Date().toISOString().split("T")[0]!,
 			} satisfies AgentStats),
 			save: vi.fn(),
 		};

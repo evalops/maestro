@@ -125,12 +125,12 @@ function handleSave(
 	args: string[],
 	rawArgs: string,
 ): void {
-	if (args.length < 2) {
+	const topic = args[0];
+	if (!topic || args.length < 2) {
 		ctx.showError("Usage: /memory save <topic> <content>");
 		return;
 	}
 
-	const topic = args[0];
 	// Extract content - everything after the topic
 	const content = rawArgs.replace(topic, "").trim();
 
@@ -167,7 +167,9 @@ function handleSearch(ctx: MemoryRenderContext, query: string): void {
 	const lines = [`Search Results for "${query}" (${results.length} found)`, ""];
 
 	for (let i = 0; i < results.length; i++) {
-		const { entry, score, matchedOn } = results[i];
+		const result = results[i];
+		if (!result) continue;
+		const { entry, score, matchedOn } = result;
 		const scoreStr = chalk.dim(`[${score.toFixed(1)}]`);
 		const topicStr = chalk.cyan(`[${entry.topic}]`);
 		const matchStr = chalk.dim(`(${matchedOn})`);

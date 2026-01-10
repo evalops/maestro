@@ -159,7 +159,7 @@ export class FooterComponent {
 		const priority = this.toastPriority(toast.tone);
 		let inserted = false;
 		for (let i = 0; i < this.toastQueue.length; i++) {
-			if (priority > this.toastPriority(this.toastQueue[i].tone)) {
+			if (priority > this.toastPriority(this.toastQueue[i]!.tone)) {
 				this.toastQueue.splice(i, 0, toast);
 				inserted = true;
 				break;

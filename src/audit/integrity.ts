@@ -261,6 +261,7 @@ export async function verifyAuditChain(
 
 		for (let i = 0; i < entries.length; i++) {
 			const entry = entries[i];
+			if (!entry) continue;
 
 			// Skip entries without integrity hash (legacy or disabled)
 			if (!entry.integrityHash) {

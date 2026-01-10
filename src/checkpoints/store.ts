@@ -199,6 +199,16 @@ export class CheckpointStore {
 		}
 
 		const checkpoint = this.checkpoints[checkpointIndex];
+		if (!checkpoint) {
+			return {
+				success: false,
+				restoredFiles: [],
+				failedFiles: [
+					{ path: "", error: `Checkpoint ${checkpointId} not found` },
+				],
+				checkpoint: { id: checkpointId } as Checkpoint,
+			};
+		}
 		const restoredFiles: string[] = [];
 		const failedFiles: Array<{ path: string; error: string }> = [];
 
@@ -281,6 +291,9 @@ export class CheckpointStore {
 		}
 
 		const lastCheckpoint = this.checkpoints[this.checkpoints.length - 1];
+		if (!lastCheckpoint) {
+			return null;
+		}
 		return this.restoreToCheckpoint(lastCheckpoint.id);
 	}
 

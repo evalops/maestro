@@ -46,8 +46,8 @@ describe("HealthChecker", () => {
 
 			expect(result.healthy).toBe(true);
 			expect(result.status).toBe("healthy");
-			expect(result.components.db.healthy).toBe(true);
-			expect(result.components.cache.healthy).toBe(true);
+			expect(result.components.db!.healthy).toBe(true);
+			expect(result.components.cache!.healthy).toBe(true);
 		});
 
 		it("returns unhealthy when critical component fails", async () => {
@@ -84,8 +84,8 @@ describe("HealthChecker", () => {
 
 			const result = await checker.check();
 
-			expect(result.components.db.healthy).toBe(true);
-			expect(result.components.db.message).toBe("Connection pool: 5/10");
+			expect(result.components.db!.healthy).toBe(true);
+			expect(result.components.db!.message).toBe("Connection pool: 5/10");
 		});
 
 		it("handles throwing checks", async () => {
@@ -98,8 +98,8 @@ describe("HealthChecker", () => {
 			const result = await checker.check();
 
 			expect(result.healthy).toBe(false);
-			expect(result.components.db.healthy).toBe(false);
-			expect(result.components.db.message).toBe("Connection refused");
+			expect(result.components.db!.healthy).toBe(false);
+			expect(result.components.db!.message).toBe("Connection refused");
 		});
 
 		it("includes latency measurements", async () => {
@@ -112,7 +112,7 @@ describe("HealthChecker", () => {
 
 			const result = await checker.check();
 
-			expect(result.components.slow.latencyMs).toBeGreaterThanOrEqual(50);
+			expect(result.components.slow!.latencyMs).toBeGreaterThanOrEqual(50);
 		});
 
 		it("includes timestamp and version", async () => {
@@ -151,8 +151,8 @@ describe("HealthChecker", () => {
 			await vi.advanceTimersByTimeAsync(150);
 			const result = await checkPromise;
 
-			expect(result.components.slow.healthy).toBe(false);
-			expect(result.components.slow.message).toContain("timeout");
+			expect(result.components.slow!.healthy).toBe(false);
+			expect(result.components.slow!.message).toContain("timeout");
 		});
 
 		it("uses per-check timeout override", async () => {
@@ -171,7 +171,7 @@ describe("HealthChecker", () => {
 			await vi.advanceTimersByTimeAsync(60);
 			const result = await checkPromise;
 
-			expect(result.components.fast.healthy).toBe(true);
+			expect(result.components.fast!.healthy).toBe(true);
 		});
 	});
 
@@ -326,7 +326,7 @@ describe("createHealthEndpoints", () => {
 		expect(result.status).toBe(200);
 		expect(result.body.healthy).toBe(true);
 		expect(result.body.version).toBe("1.0.0");
-		expect(result.body.components.db.healthy).toBe(true);
+		expect(result.body.components.db!.healthy).toBe(true);
 	});
 });
 

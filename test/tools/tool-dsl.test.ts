@@ -93,8 +93,8 @@ describe("createTool DSL", () => {
 
 	it("renders code fences via builder", async () => {
 		const result = await codeTool.execute("call-6", {});
-		const text =
-			result.content[0].type === "text" ? result.content[0].text : "";
+		const firstContent = result.content[0]!;
+		const text = firstContent.type === "text" ? firstContent.text : "";
 		expect(text).toContain("```ts");
 		expect(text).toContain("const x = 42;");
 	});

@@ -367,6 +367,13 @@ export async function queueWebhook(
 			})
 			.returning({ id: webhookDeliveries.id });
 
+		if (!delivery) {
+			logger.error("Failed to queue webhook: no delivery returned", undefined, {
+				url: options.url,
+			});
+			return null;
+		}
+
 		logger.debug("Webhook queued", {
 			id: delivery.id,
 			url: options.url,

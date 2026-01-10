@@ -111,7 +111,7 @@ export class BranchController {
 			return;
 		}
 
-		const selection = userMessages[targetIndex - 1];
+		const selection = userMessages[targetIndex - 1]!;
 		const slice = messages.slice(0, selection.index);
 		const editorSeed = this.extractUserText(selection.msg as AppMessage);
 		this.createBranch(slice, targetIndex, editorSeed);

@@ -95,7 +95,7 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 		// Check for git subcommand completion
 		const gitMatch = textBeforeCursor.match(/^git\s+(\S*)$/);
 		if (gitMatch) {
-			const prefix = gitMatch[1];
+			const prefix = gitMatch[1]!;
 			const items = this.getGitSubcommandSuggestions(prefix);
 			if (items.length > 0) {
 				return { items, prefix };
@@ -105,7 +105,7 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 		// Check for npm run completion
 		const npmMatch = textBeforeCursor.match(/^npm\s+run\s+(\S*)$/);
 		if (npmMatch) {
-			const prefix = npmMatch[1];
+			const prefix = npmMatch[1]!;
 			const items = this.getNpmScriptSuggestions(prefix);
 			if (items.length > 0) {
 				return { items, prefix };
@@ -115,7 +115,7 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 		// Check for bun run completion
 		const bunMatch = textBeforeCursor.match(/^bun\s+run\s+(\S*)$/);
 		if (bunMatch) {
-			const prefix = bunMatch[1];
+			const prefix = bunMatch[1]!;
 			const items = this.getNpmScriptSuggestions(prefix);
 			if (items.length > 0) {
 				return { items, prefix };
@@ -125,7 +125,7 @@ export class BashAutocompleteProvider implements AutocompleteProvider {
 		// Check for command completion (first word)
 		const firstWordMatch = textBeforeCursor.match(/^(\S*)$/);
 		if (firstWordMatch) {
-			const prefix = firstWordMatch[1];
+			const prefix = firstWordMatch[1]!;
 			const items = this.getCommandSuggestions(prefix);
 			if (items.length > 0) {
 				return { items, prefix };

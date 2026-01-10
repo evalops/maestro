@@ -95,8 +95,10 @@ export function parseArgs(args: string[]): Args {
 			result.continue = true;
 		} else if (arg === "--resume" || arg === "-r") {
 			if (result.command === "exec") {
-				if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
-					result.execResumeId = args[++i];
+				const nextArg = args[i + 1];
+				if (i + 1 < args.length && nextArg && !nextArg.startsWith("-")) {
+					result.execResumeId = nextArg;
+					i++;
 				} else {
 					result.execUseLast = true;
 				}
@@ -108,7 +110,8 @@ export function parseArgs(args: string[]): Args {
 		} else if ((arg === "--model" || arg === "-m") && i + 1 < args.length) {
 			result.model = args[++i];
 		} else if (arg === "--models" && i + 1 < args.length) {
-			const patterns = args[++i]
+			const modelsArg = args[++i]!;
+			const patterns = modelsArg
 				.split(",")
 				.map((value) => value.trim())
 				.filter((value) => value.length > 0);
@@ -159,7 +162,8 @@ export function parseArgs(args: string[]): Args {
 		} else if (arg === "--last" && result.command === "exec") {
 			result.execUseLast = true;
 		} else if (arg === "--tools" && i + 1 < args.length) {
-			const toolNames = args[++i]
+			const toolsArg = args[++i]!;
+			const toolNames = toolsArg
 				.split(",")
 				.map((value) => value.trim())
 				.filter((value) => value.length > 0);
@@ -174,20 +178,23 @@ export function parseArgs(args: string[]): Args {
 			result.profile = args[++i];
 		} else if (arg === "--config" && i + 1 < args.length) {
 			// Config overrides in key=value format
-			const override = args[++i];
+			const override = args[++i]!;
 			if (!result.configOverrides) {
 				result.configOverrides = [];
 			}
 			result.configOverrides.push(override);
-		} else if (!arg.startsWith("-")) {
+		} else if (arg && !arg.startsWith("-")) {
 			if (!result.command && COMMANDS.has(arg)) {
 				result.command = arg;
+				const nextArg = args[i + 1];
 				if (
 					SUBCOMMAND_COMMANDS.has(arg) &&
 					i + 1 < args.length &&
-					!args[i + 1].startsWith("-")
+					nextArg &&
+					!nextArg.startsWith("-")
 				) {
-					result.subcommand = args[++i];
+					result.subcommand = nextArg;
+					i++;
 				}
 			} else {
 				result.messages.push(arg);

@@ -56,7 +56,7 @@ describe("slack-agent tools", () => {
 			});
 
 			expect(result.content).toHaveLength(1);
-			expect(result.content[0].type).toBe("text");
+			expect(result.content[0]!.type).toBe("text");
 			expect((result.content[0] as { text: string }).text.trim()).toBe(
 				"hello world",
 			);
@@ -279,7 +279,7 @@ describe("slack-agent tools", () => {
 			});
 
 			expect(result.content).toHaveLength(1);
-			expect(result.content[0].type).toBe("text");
+			expect(result.content[0]!.type).toBe("text");
 			const text = (result.content[0] as { text: string }).text;
 			expect(text).toContain("Hello, World!");
 			expect(text).toContain("Line 2");
@@ -435,8 +435,8 @@ describe("slack-agent tools", () => {
 			});
 
 			expect(result.content).toHaveLength(2);
-			expect(result.content[0].type).toBe("text");
-			expect(result.content[1].type).toBe("image");
+			expect(result.content[0]!.type).toBe("text");
+			expect(result.content[1]!.type).toBe("image");
 			expect((result.content[1] as { mimeType: string }).mimeType).toBe(
 				"image/png",
 			);
@@ -708,7 +708,7 @@ describe("slack-agent tools", () => {
 			});
 
 			expect(result.content).toHaveLength(1);
-			expect(result.content[0].type).toBe("text");
+			expect(result.content[0]!.type).toBe("text");
 			const text = (result.content[0] as { text: string }).text;
 			expect(text).toContain("Environment: host");
 		});

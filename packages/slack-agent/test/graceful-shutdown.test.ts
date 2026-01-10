@@ -113,7 +113,7 @@ describe("ShutdownManager", () => {
 			expect(executed).toEqual(["pass1", "fail", "pass2"]);
 			expect(result.success).toBe(false);
 			expect(result.errors).toHaveLength(1);
-			expect(result.errors[0].name).toBe("fail");
+			expect(result.errors[0]!.name).toBe("fail");
 		});
 
 		it("returns success true when all handlers pass", async () => {

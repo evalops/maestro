@@ -41,7 +41,7 @@ export function parsePlanContent(content: string): ParsedPlan {
 	// Extract title from first H1
 	for (const line of lines) {
 		const h1Match = line.match(/^#\s+(?:Plan:\s*)?(.+)$/);
-		if (h1Match) {
+		if (h1Match?.[1]) {
 			title = h1Match[1].trim();
 			break;
 		}
@@ -50,10 +50,15 @@ export function parsePlanContent(content: string): ParsedPlan {
 	// Extract tasks from checkbox items and numbered lists
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
+		if (!line) continue;
 
 		// Match checkbox items: - [ ] task or - [x] task
 		const checkboxMatch = line.match(/^(\s*)[-*]\s*\[([ xX])\]\s*(.+)$/);
-		if (checkboxMatch) {
+		if (
+			checkboxMatch?.[1] !== undefined &&
+			checkboxMatch[2] &&
+			checkboxMatch[3]
+		) {
 			rawTasks.push({
 				text: checkboxMatch[3].trim(),
 				completed: checkboxMatch[2].toLowerCase() === "x",
@@ -65,7 +70,7 @@ export function parsePlanContent(content: string): ParsedPlan {
 
 		// Match numbered list items: 1. task or 1) task
 		const numberedMatch = line.match(/^(\s*)\d+[.)]\s+(.+)$/);
-		if (numberedMatch) {
+		if (numberedMatch?.[1] !== undefined && numberedMatch[2]) {
 			// Skip if it's a sub-item description
 			const text = numberedMatch[2].trim();
 			if (
@@ -85,7 +90,7 @@ export function parsePlanContent(content: string): ParsedPlan {
 
 		// Match bullet items that look like tasks (starts with verb or "Add/Create/Implement")
 		const bulletMatch = line.match(/^(\s*)[-*]\s+(.+)$/);
-		if (bulletMatch) {
+		if (bulletMatch?.[1] !== undefined && bulletMatch[2]) {
 			const text = bulletMatch[2].trim();
 			const isTask = isLikelyTask(text);
 			if (isTask && !text.startsWith("[") && text.length > 10) {
@@ -115,7 +120,10 @@ export function parsePlanContent(content: string): ParsedPlan {
 	for (const [incompleteIndex, raw] of incompleteTasks.entries()) {
 		const rawIndex =
 			rawIndexByLine.get(raw.lineNumber) ?? rawTasks.indexOf(raw);
-		rawIndexToFullId.set(rawIndex, tasks[incompleteIndex].id);
+		const task = tasks[incompleteIndex];
+		if (task) {
+			rawIndexToFullId.set(rawIndex, task.id);
+		}
 	}
 
 	// Resolve dependencies to full IDs so executor checks work.
@@ -135,8 +143,9 @@ export function parsePlanContent(content: string): ParsedPlan {
 			.map((idx) => rawIndexToFullId.get(idx))
 			.filter((dep): dep is string => Boolean(dep));
 
-		if (fullDeps.length > 0) {
-			tasks[incompleteIndex].dependsOn = fullDeps;
+		const task = tasks[incompleteIndex];
+		if (fullDeps.length > 0 && task) {
+			task.dependsOn = fullDeps;
 		}
 	}
 
@@ -229,14 +238,18 @@ function extractFileReferences(text: string): string[] {
 	// Match quoted paths
 	const quotedMatches = text.matchAll(/["'`]([^"'`]+\.[a-z]+)["'`]/gi);
 	for (const match of quotedMatches) {
-		files.push(match[1]);
+		const captured = match[1];
+		if (captured) {
+			files.push(captured);
+		}
 	}
 
 	// Match backtick code spans with paths
 	const codeMatches = text.matchAll(/`([^`]+\.[a-z]+)`/gi);
 	for (const match of codeMatches) {
-		if (!files.includes(match[1])) {
-			files.push(match[1]);
+		const captured = match[1];
+		if (captured && !files.includes(captured)) {
+			files.push(captured);
 		}
 	}
 
@@ -245,8 +258,9 @@ function extractFileReferences(text: string): string[] {
 		/\b((?:src|lib|test|tests|packages?)\/[^\s,)]+\.[a-z]+)\b/gi,
 	);
 	for (const match of pathMatches) {
-		if (!files.includes(match[1])) {
-			files.push(match[1]);
+		const captured = match[1];
+		if (captured && !files.includes(captured)) {
+			files.push(captured);
 		}
 	}
 
@@ -266,7 +280,7 @@ function extractDependencies(
 
 	// Check for "after" references
 	const afterMatch = lowerText.match(/after\s+(?:task\s+)?(\d+)/);
-	if (afterMatch) {
+	if (afterMatch?.[1]) {
 		const depIndex = Number.parseInt(afterMatch[1], 10) - 1;
 		if (depIndex >= 0 && depIndex < currentIndex) {
 			deps.push(`task-${depIndex + 1}`);
@@ -275,7 +289,7 @@ function extractDependencies(
 
 	// Check for "depends on" references
 	const dependsMatch = lowerText.match(/depends\s+on\s+(?:task\s+)?(\d+)/);
-	if (dependsMatch) {
+	if (dependsMatch?.[1]) {
 		const depIndex = Number.parseInt(dependsMatch[1], 10) - 1;
 		if (depIndex >= 0 && depIndex < currentIndex) {
 			deps.push(`task-${depIndex + 1}`);

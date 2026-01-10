@@ -60,7 +60,7 @@ export class TruncatedText implements Component {
 					let j = i + 2;
 					while (
 						j < singleLineText.length &&
-						!/[a-zA-Z]/.test(singleLineText[j])
+						!/[a-zA-Z]/.test(singleLineText[j]!)
 					) {
 						j++;
 					}
@@ -71,7 +71,7 @@ export class TruncatedText implements Component {
 					continue;
 				}
 
-				const char = singleLineText[i];
+				const char = singleLineText[i]!;
 				const charWidth = visibleWidth(char);
 
 				if (currentWidth + charWidth > targetWidth) {

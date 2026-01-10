@@ -3006,6 +3006,9 @@ export class TuiRenderer {
 		}
 
 		// Load credentials to get metadata (like mode)
+		if (!activeProvider) {
+			return { authenticated: false, provider: undefined, mode: undefined };
+		}
 		const credentials = loadOAuthCredentials(activeProvider);
 		const mode = credentials?.metadata?.mode as string | undefined;
 

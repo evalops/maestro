@@ -100,7 +100,8 @@ class Histogram {
 		if (this.values.length === 0) return 0;
 		const sorted = [...this.values].sort((a, b) => a - b);
 		const index = Math.ceil((percentile / 100) * sorted.length) - 1;
-		return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
+		// Index is guaranteed to be within bounds due to the Math.max/min clamping
+		return sorted[Math.max(0, Math.min(index, sorted.length - 1))]!;
 	}
 }
 
@@ -412,7 +413,7 @@ export function logRequest(
 	// Update Prometheus metrics
 	const method = req.method || "UNKNOWN";
 	const url = req.url || "/";
-	const route = url.split("?")[0];
+	const route = url.split("?")[0] ?? url;
 
 	incCounter("http_requests_total", {
 		method,
