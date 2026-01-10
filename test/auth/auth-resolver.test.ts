@@ -1,14 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getFreshAnthropicOAuthCredential } from "../../src/providers/anthropic-auth.js";
+import { getOAuthToken } from "../../src/oauth/index.js";
+import { loadOAuthCredentials } from "../../src/oauth/storage.js";
 import { createAuthResolver } from "../../src/providers/auth.js";
 import { getFreshOpenAIOAuthCredential } from "../../src/providers/openai-auth.js";
 
-vi.mock("../../src/providers/anthropic-auth.js", () => ({
-	getFreshAnthropicOAuthCredential: vi.fn(),
-}));
-
 vi.mock("../../src/providers/openai-auth.js", () => ({
 	getFreshOpenAIOAuthCredential: vi.fn(),
+}));
+
+vi.mock("../../src/oauth/index.js", () => ({
+	getOAuthToken: vi.fn(),
+}));
+
+vi.mock("../../src/oauth/storage.js", () => ({
+	loadOAuthCredentials: vi.fn(),
 }));
 
 describe("auth resolver", () => {
@@ -83,19 +88,23 @@ describe("auth resolver", () => {
 	});
 
 	it("prefers stored anthropic oauth token in claude mode", async () => {
-		const mocked = vi.mocked(getFreshAnthropicOAuthCredential);
-		mocked.mockResolvedValue({
-			accessToken: "oauth-token",
-			refreshToken: "ref",
-			expiresAt: Date.now() + 60_000,
-			mode: "pro",
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("oauth-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "oauth-token",
+			refresh: "ref",
+			expires: Date.now() + 60_000,
+			metadata: { mode: "pro" },
 		});
 		const resolver = createAuthResolver({ mode: "claude" });
 		const credential = await resolver("anthropic");
 		expect(credential).toBeDefined();
 		expect(credential?.type).toBe("anthropic-oauth");
 		expect(credential?.token).toBe("oauth-token");
-		mocked.mockReset();
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
 	});
 
 	it("reads env claude token ahead of file", async () => {

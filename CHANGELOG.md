@@ -27,7 +27,35 @@ versioning when releases are cut.
 
 ### Changed
 
+- **BREAKING**: Removed legacy Anthropic OAuth fallback (`anthropic-oauth.json`). Users must re-authenticate using the new OAuth system (`oauth.json`) via `composer anthropic login`. The legacy credential file is no longer read.
 - **BREAKING**: Rate limiting now uses `socket.remoteAddress` by default instead of `X-Forwarded-For`. Deployments behind reverse proxies (nginx, CloudFlare, load balancers) must set `COMPOSER_TRUST_PROXY=true` to correctly identify client IPs.
+- Enabled strict `noExplicitAny` linting rule in biome.json (changed from warn to error).
+- Standardized `@sinclair/typebox` dependency to `^0.34.0` across all packages.
+
+### Deprecated
+
+The following APIs are deprecated and will be removed in a future release:
+
+**Agent API:**
+- `Agent.setQueueMode()` → Use `setSteeringMode()`/`setFollowUpMode()` instead
+- `Agent.queueMessage()` → Use `steer()`/`followUp()` instead
+- `AgentState.queueMode` → Use `steeringMode`/`followUpMode` instead
+- `AgentOptions.getQueuedMessages` → Use `getSteeringMessages()`/`getFollowUpMessages()` instead
+
+**Skills API:**
+- `SkillFrontmatter.tags` → Use `metadata` instead
+- `SkillFrontmatter.author` → Use `metadata.author` instead
+- `SkillFrontmatter.version` → Use `metadata.version` instead
+- `SkillFrontmatter.triggers` → Use `description` for trigger keywords instead
+- `getSkillsSummary()` → Use `skillsToPrompt()` for XML format
+
+**Modal API:**
+- `Modal.onClose` → Use `dispose()` instead
+- `Modal.onMount` → Use `mount()` instead
+- `Modal.onUnmount` → Use `unmount()` instead
+
+**Utilities:**
+- `ConcurrencySlots` → Use `ConcurrencyManager` from `src/utils/concurrency-manager.ts`
 
 ### Fixed
 

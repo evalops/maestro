@@ -20,7 +20,7 @@
 		"dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput"
 	},
 	"dependencies": {
-		"@sinclair/typebox": "^0.33.0"
+		"@sinclair/typebox": "^0.34.0"
 	},
 	"keywords": ["composer", "contracts", "evalops"],
 	"author": "EvalOps",

@@ -51,7 +51,6 @@
 
 import { getOAuthToken } from "../oauth/index.js";
 import { loadOAuthCredentials } from "../oauth/storage.js";
-import { getFreshAnthropicOAuthCredential } from "./anthropic-auth.js";
 import { lookupApiKey } from "./api-keys.js";
 import { getFreshOpenAIOAuthCredential } from "./openai-auth.js";
 
@@ -178,30 +177,19 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 				};
 			}
 
-			// Try new OAuth system first (oauth.json)
-			const newOAuthToken = await getOAuthToken("anthropic");
-			if (newOAuthToken) {
+			// Try OAuth system (oauth.json)
+			const oauthToken = await getOAuthToken("anthropic");
+			if (oauthToken) {
 				const credentials = loadOAuthCredentials("anthropic");
 				return {
 					provider,
-					token: newOAuthToken,
+					token: oauthToken,
 					type: "anthropic-oauth",
 					source: "anthropic_oauth_file",
 					metadata: credentials?.metadata,
 				};
 			}
 
-			// Fall back to legacy OAuth system (anthropic-oauth.json)
-			const stored = await getFreshAnthropicOAuthCredential();
-			if (stored) {
-				return {
-					provider,
-					token: stored.accessToken,
-					type: "anthropic-oauth",
-					source: "anthropic_oauth_file",
-					metadata: { mode: stored.mode },
-				};
-			}
 			if (options.mode === "claude") {
 				return undefined;
 			}

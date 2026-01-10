@@ -19,7 +19,7 @@
 		"rules": {
 			"suspicious": {
 				"noConsole": "off",
-				"noExplicitAny": "warn"
+				"noExplicitAny": "error"
 			},
 			"performance": {
 				"noDelete": "off"
