@@ -372,13 +372,31 @@ function runTrufflehog(files: string[], root: string): GuardianToolResult {
 
 export type HeuristicFindingName =
 	| "AWS access key"
+	| "AWS secret key"
 	| "Private key block"
 	| "Generic API key"
-	| "Slack token";
+	| "Slack token"
+	| "GitHub token"
+	| "GitLab token"
+	| "Google API key"
+	| "Stripe key"
+	| "OpenAI API key"
+	| "SendGrid API key"
+	| "Twilio auth token"
+	| "Discord webhook"
+	| "Database URL with credentials"
+	| "JWT token";
 
 const HEURISTIC_PATTERNS: Array<{ name: HeuristicFindingName; regex: RegExp }> =
 	[
-		{ name: "AWS access key", regex: /AKIA[0-9A-Z]{16}/ },
+		// AWS credentials
+		{ name: "AWS access key", regex: /\bAKIA[0-9A-Z]{16}\b/ },
+		{
+			name: "AWS secret key",
+			// AWS secret keys are 40 characters of base64-like characters
+			regex:
+				/(?:aws_secret_access_key|secret_access_key|aws_secret)\s*[:=]\s*['"]?[A-Za-z0-9/+=]{40}['"]?/i,
+		},
 		{
 			name: "Private key block",
 			regex: /BEGIN [A-Z ]*PRIVATE KEY/,
@@ -402,6 +420,63 @@ const HEURISTIC_PATTERNS: Array<{ name: HeuristicFindingName; regex: RegExp }> =
 			// Use a stricter shape to avoid false positives in tests/docs.
 			regex: /\b(?:xox[baprs]|xapp)-\d{6,}(?:-\d{6,}){1,2}-[A-Za-z0-9-]{10,}\b/,
 		},
+		{
+			name: "GitHub token",
+			// GitHub tokens: ghp_ (personal), gho_ (OAuth), ghu_ (user-to-server),
+			// ghs_ (server-to-server), ghr_ (refresh), github_pat_
+			regex: /\b(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{36,}\b/,
+		},
+		{
+			name: "GitLab token",
+			// GitLab personal access tokens: glpat-...
+			regex: /\bglpat-[A-Za-z0-9_-]{20,}\b/,
+		},
+		{
+			name: "Google API key",
+			// Google API keys start with AIza
+			regex: /\bAIza[A-Za-z0-9_-]{35}\b/,
+		},
+		{
+			name: "Stripe key",
+			// Stripe keys: sk_live_, pk_live_, sk_test_, pk_test_, rk_live_, rk_test_
+			regex: /\b[spr]k_(?:live|test)_[A-Za-z0-9]{24,}\b/,
+		},
+		{
+			name: "OpenAI API key",
+			// OpenAI keys: sk-... (typically 48+ chars total)
+			regex: /\bsk-[A-Za-z0-9]{32,}\b/,
+		},
+		{
+			name: "SendGrid API key",
+			// SendGrid keys start with SG.
+			regex: /\bSG\.[A-Za-z0-9_-]{22,}\.[A-Za-z0-9_-]{22,}\b/,
+		},
+		{
+			name: "Twilio auth token",
+			// Twilio auth tokens in config patterns
+			regex:
+				/twilio[_-]?(?:auth[_-]?token|account[_-]?sid)\s*[:=]\s*['"]?[A-Za-z0-9]{32,}['"]?/i,
+		},
+		{
+			name: "Discord webhook",
+			// Discord webhook URLs contain sensitive tokens
+			regex:
+				/https:\/\/(?:discord(?:app)?\.com|canary\.discord\.com)\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+/,
+		},
+		{
+			name: "Database URL with credentials",
+			// Database connection strings with embedded credentials
+			// postgres://user:password@host, mysql://user:pass@host, mongodb://user:pass@host
+			regex:
+				/\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^:]+:[^@]+@[^\s'"]+/i,
+		},
+		{
+			name: "JWT token",
+			// JWT tokens have a distinctive structure: eyJ...
+			// Only flag if it looks like a real token (has all three parts with decent lengths)
+			regex:
+				/\beyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/,
+		},
 	];
 
 export function detectHeuristicFindings(
@@ -422,6 +497,8 @@ function runHeuristicScan(files: string[], root: string): GuardianToolResult {
 	const ignorePatterns = [
 		/test\/enterprise\/pii-detector\.test\.ts$/,
 		/test\/guardian\/heuristic-scan\.test\.ts$/,
+		// The runner itself contains regex patterns that look like secrets
+		/src\/guardian\/runner\.ts$/,
 	];
 
 	for (const relative of files) {
