@@ -25,8 +25,8 @@ import type {
 	ThinkingContent,
 	ToolCall,
 } from "../types.js";
-import type { OpenAIOptions } from "./openai.js";
-import { filterResponsesApiTools } from "./openai.js";
+import type { OpenAIOptions } from "./openai-shared.js";
+import { filterResponsesApiTools } from "./openai-shared.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { createToolArgumentNormalizer, isRecord } from "./tool-arguments.js";
 
