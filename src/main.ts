@@ -100,7 +100,12 @@ import {
 	LspContextSource,
 	TodoContextSource,
 } from "./agent/context-providers.js";
-import { Agent, ProviderTransport, type ThinkingLevel } from "./agent/index.js";
+import {
+	Agent,
+	ProviderTransport,
+	type ThinkingLevel,
+	isAssistantMessage,
+} from "./agent/index.js";
 import {
 	disposeCheckpointService,
 	initCheckpointService,
@@ -399,7 +404,7 @@ async function runSingleShotMode(
 		// This provides clean output for shell pipelines and scripts
 		if (mode === "text") {
 			const lastMessage = agent.state.messages[agent.state.messages.length - 1];
-			if (lastMessage.role === "assistant") {
+			if (isAssistantMessage(lastMessage)) {
 				for (const content of lastMessage.content) {
 					if (content.type === "text") {
 						console.log(content.text);

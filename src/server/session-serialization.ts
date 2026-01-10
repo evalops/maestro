@@ -28,6 +28,11 @@ import type {
 	ComposerToolCall,
 	ComposerUsage,
 } from "@evalops/contracts";
+import {
+	isAssistantMessage,
+	isToolResultMessage,
+	isUserMessage,
+} from "../agent/type-guards.js";
 import type {
 	AppMessage,
 	AssistantMessage,
@@ -429,7 +434,7 @@ export function convertAppMessageToComposer(
 	);
 
 	// User messages - simple text extraction
-	if (message.role === "user") {
+	if (isUserMessage(message)) {
 		const attachments = toComposerAttachments(
 			"attachments" in message
 				? (message as { attachments?: Attachment[] }).attachments
@@ -445,28 +450,26 @@ export function convertAppMessageToComposer(
 	}
 
 	// Assistant messages - extract text, thinking, and tool calls
-	if (message.role === "assistant") {
-		const assistant = message as AssistantMessage;
-		const tools = extractToolCalls(assistant.content);
+	if (isAssistantMessage(message)) {
+		const tools = extractToolCalls(message.content);
 		return {
 			role: "assistant",
-			content: extractTextContent(assistant.content),
-			thinking: extractThinking(assistant.content),
+			content: extractTextContent(message.content),
+			thinking: extractThinking(message.content),
 			timestamp,
 			tools: tools.length ? tools : undefined,
-			usage: toComposerUsage(assistant.usage),
+			usage: toComposerUsage(message.usage),
 		};
 	}
 
 	// Tool result messages - include tool name and error status
-	if (message.role === "toolResult") {
-		const toolMessage = message as ToolResultMessage;
+	if (isToolResultMessage(message)) {
 		return {
 			role: "tool",
-			content: extractTextContent(toolMessage.content),
+			content: extractTextContent(message.content),
 			timestamp,
-			toolName: toolMessage.toolName,
-			isError: toolMessage.isError,
+			toolName: message.toolName,
+			isError: message.isError,
 		};
 	}
 
