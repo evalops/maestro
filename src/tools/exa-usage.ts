@@ -1,4 +1,16 @@
-import type { ExaTelemetryEvent } from "./exa-client.js";
+export interface ExaTelemetryEvent {
+	toolName?: string;
+	operation?: string;
+	endpoint: string;
+	attempt: number;
+	durationMs: number;
+	status?: number;
+	success: boolean;
+	requestId?: string;
+	costDollars?: number;
+	errorMessage?: string;
+	timestamp: number;
+}
 
 export interface ExaUsageEvent {
 	timestamp: number;

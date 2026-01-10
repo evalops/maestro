@@ -3,6 +3,8 @@ import { parseJsonOr, safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
 import { retry } from "../utils/retry.js";
 import { trackExaUsage } from "./exa-usage.js";
+export type { ExaTelemetryEvent } from "./exa-usage.js";
+import type { ExaTelemetryEvent } from "./exa-usage.js";
 
 const logger = createLogger("tools:exa");
 
@@ -26,20 +28,6 @@ interface ExaErrorResponse {
 	message?: string;
 	requestId?: string;
 	costDollars?: number | string | { total?: number };
-}
-
-export interface ExaTelemetryEvent {
-	toolName?: string;
-	operation?: string;
-	endpoint: string;
-	attempt: number;
-	durationMs: number;
-	status?: number;
-	success: boolean;
-	requestId?: string;
-	costDollars?: number;
-	errorMessage?: string;
-	timestamp: number;
 }
 
 export interface CallExaOptions {
