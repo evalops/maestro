@@ -61,9 +61,9 @@ describe("TUI rendering (property-based)", () => {
 			.array(safeCharArb, { minLength: 0, maxLength: 80 })
 			.map((chars) => chars.join(""));
 
-		const actionArb = fc.oneof<Action>(
+		const actionArb = fc.oneof(
 			fc.record({
-				type: fc.constant("setLines"),
+				type: fc.constant("setLines" as const),
 				lines: fc.array(
 					// Avoid newline/control chars; keep comparisons stable across xterm.js.
 					safeLineArb,
@@ -71,11 +71,11 @@ describe("TUI rendering (property-based)", () => {
 				),
 			}),
 			fc.record({
-				type: fc.constant("resize"),
+				type: fc.constant("resize" as const),
 				columns: fc.integer({ min: 10, max: 80 }),
 				rows: fc.integer({ min: 3, max: 25 }),
 			}),
-		);
+		) as fc.Arbitrary<Action>;
 
 		await fc.assert(
 			fc.asyncProperty(

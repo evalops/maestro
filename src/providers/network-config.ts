@@ -358,9 +358,12 @@ export async function fetchWithRetry(
 
 				// Retryable status code
 				if (attempt < config.maxRetries) {
-					const retryAfterDelay = parseRetryAfter(
-						Object.fromEntries(response.headers.entries()),
-					);
+					const retryHeaders: Record<string, string> = {};
+					const retryAfter = response.headers.get("retry-after");
+					const retryAfterMs = response.headers.get("retry-after-ms");
+					if (retryAfter) retryHeaders["retry-after"] = retryAfter;
+					if (retryAfterMs) retryHeaders["retry-after-ms"] = retryAfterMs;
+					const retryAfterDelay = parseRetryAfter(retryHeaders);
 					const delay = retryAfterDelay ?? calculateBackoff(attempt, config);
 
 					logger.debug("Retrying request after status", {

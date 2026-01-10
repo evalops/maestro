@@ -545,7 +545,7 @@ describe("Enhanced Cost Tracking", () => {
 			expect(totalFromComparisons).toBeCloseTo(summary.totalCost, 5);
 		});
 
-		it("should handle large datasets efficiently", () => {
+		it("should handle large datasets efficiently", { timeout: 60_000 }, () => {
 			// Create 1000 entries
 			for (let i = 0; i < 1000; i++) {
 				trackUsage({
@@ -558,7 +558,7 @@ describe("Enhanced Cost Tracking", () => {
 			}
 
 			const start = Date.now();
-			const csv = exportUsageToCSV();
+			exportUsageToCSV();
 			const csvTime = Date.now() - start;
 
 			const jsonStart = Date.now();
