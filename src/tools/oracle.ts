@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { Static } from "@sinclair/typebox";
 import { getRegisteredModels } from "../models/registry.js";
-import { readOnlyToolNames } from "./index.js";
 import { createTool } from "./tool-dsl.js";
+import { readOnlyToolNames } from "./tool-names.js";
 
 const ORACLE_TIMEOUT_MS = 120_000;
 

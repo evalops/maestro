@@ -203,24 +203,8 @@ export const toolRegistry: Record<string, (typeof codingTools)[number]> = {
 	gh_repo: ghRepoTool,
 };
 
-/**
- * Read-only tool names for restricted contexts.
- *
- * These tools are safe to use in subagents (like Oracle) that should
- * only observe the codebase without making changes. They cannot:
- * - Write or edit files
- * - Execute shell commands
- * - Make external API calls
- */
-export const readOnlyToolNames = [
-	"read",
-	"list",
-	"find",
-	"search",
-	"parallel_ripgrep",
-	"diff",
-	"status",
-] as const;
+// Re-export tool name constants
+export { readOnlyToolNames, type ReadOnlyToolName } from "./tool-names.js";
 
 /**
  * Filter tools by name from the registry.
