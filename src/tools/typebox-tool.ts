@@ -1,6 +1,5 @@
 import { performance } from "node:perf_hooks";
 import type { Static, TSchema } from "@sinclair/typebox";
-import { Type } from "@sinclair/typebox";
 import type { ErrorObject } from "ajv";
 import type {
 	AgentTool,
@@ -37,7 +36,9 @@ interface CreateTypeboxToolOptions<Schema extends TSchema, Details> {
 export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 	options: CreateTypeboxToolOptions<Schema, Details>,
 ): AgentTool<Schema, Details> {
-	const schema = Type.Strict(options.schema) as Schema;
+	// In TypeBox 0.34.x+, Type.Strict() is no longer needed - internal symbols
+	// are non-enumerable and automatically excluded from JSON serialization
+	const schema = options.schema;
 	const parameters = schema;
 	const validate = compileTypeboxSchema(schema);
 

@@ -32,5 +32,18 @@ export default defineConfig({
       include: ['test/**/*.bench.ts'],
       reporters: ['verbose'],
     },
+    // Coverage configuration (run with --coverage flag)
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html', 'lcov'],
+      reportsDirectory: './coverage',
+      include: ['src/**/*.ts'],
+      exclude: [
+        'src/**/*.d.ts',
+        'src/**/*.test.ts',
+        'src/**/types.ts',
+        'src/cli.ts',
+      ],
+    },
   }
 });
