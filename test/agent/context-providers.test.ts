@@ -19,8 +19,13 @@ describe("TodoContextSource", () => {
 				goal: "Build a rocket",
 				updatedAt: new Date().toISOString(),
 				items: [
-					{ id: "1", content: "Buy fuel", status: "pending" },
-					{ id: "2", content: "Launch", status: "pending" },
+					{
+						id: "1",
+						content: "Buy fuel",
+						status: "pending",
+						priority: "medium",
+					},
+					{ id: "2", content: "Launch", status: "pending", priority: "medium" },
 				],
 			},
 		};

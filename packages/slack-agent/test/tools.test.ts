@@ -418,7 +418,8 @@ describe("editTool", () => {
 		});
 
 		expect(result.details).toHaveProperty("diff");
-		const diff = result.details?.diff as string;
+		const details = result.details as { diff?: string } | undefined;
+		const diff = details?.diff as string;
 		expect(diff).toContain("-");
 		expect(diff).toContain("+");
 	});

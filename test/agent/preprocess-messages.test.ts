@@ -136,7 +136,9 @@ describe("defaultPreprocessMessages", () => {
 
 		// All images get processed using the tightened 2000x2000 budget.
 		expect(imageProcessorMock.processImage).toHaveBeenCalled();
-		const lastCall = imageProcessorMock.processImage.mock.calls.at(-1);
+		const lastCall = imageProcessorMock.processImage.mock.calls.at(-1) as
+			| unknown[]
+			| undefined;
 		expect(lastCall?.[1]).toMatchObject({ maxWidth: 2000, maxHeight: 2000 });
 
 		const user = out[0];

@@ -89,6 +89,8 @@ describe("SessionMetadataCache", () => {
 
 			cache.apply({
 				type: "thinking_level_change",
+				id: "thinking-1",
+				parentId: null,
 				timestamp: new Date().toISOString(),
 				thinkingLevel: "max",
 			});
@@ -106,6 +108,8 @@ describe("SessionMetadataCache", () => {
 
 			cache.apply({
 				type: "model_change",
+				id: "model-1",
+				parentId: null,
 				timestamp: new Date().toISOString(),
 				model: "openai/gpt-4o",
 				modelMetadata: {

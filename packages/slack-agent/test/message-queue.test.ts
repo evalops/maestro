@@ -126,8 +126,11 @@ describe("MessageQueue", () => {
 
 	it("handles async operations sequentially", async () => {
 		const events: string[] = [];
-		let resolveFirst: (() => void) | null = null;
-		let resolveSecond: (() => void) | null = null;
+		// Use objects to hold resolvers so TypeScript can track mutations
+		const resolvers: {
+			first: (() => void) | null;
+			second: (() => void) | null;
+		} = { first: null, second: null };
 
 		const queue = new MessageQueue({
 			handler: {
@@ -135,11 +138,11 @@ describe("MessageQueue", () => {
 					events.push(`start:${text}`);
 					if (text === "first") {
 						await new Promise<void>((r) => {
-							resolveFirst = r;
+							resolvers.first = r;
 						});
 					} else if (text === "second") {
 						await new Promise<void>((r) => {
-							resolveSecond = r;
+							resolvers.second = r;
 						});
 					}
 					events.push(`end:${text}`);
@@ -157,12 +160,12 @@ describe("MessageQueue", () => {
 		expect(events).toEqual(["start:first"]);
 
 		// Resolve first, second should start
-		resolveFirst?.();
+		resolvers.first?.();
 		await new Promise((r) => setTimeout(r, 10));
 		expect(events).toEqual(["start:first", "end:first", "start:second"]);
 
 		// Resolve second, third should run to completion
-		resolveSecond?.();
+		resolvers.second?.();
 		await queue.flush();
 		expect(events).toEqual([
 			"start:first",

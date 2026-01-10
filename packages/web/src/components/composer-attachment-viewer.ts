@@ -482,7 +482,7 @@ export class ComposerAttachmentViewer extends LitElement {
 		) {
 			try {
 				const bytes = decodeBase64ToBytes(att.content);
-				const blob = new Blob([bytes], {
+				const blob = new Blob([bytes as BlobPart], {
 					type: att.mimeType || "application/octet-stream",
 				});
 				this.cleanupLoaded();
@@ -549,7 +549,7 @@ export class ComposerAttachmentViewer extends LitElement {
 		if (!att.content) return;
 		try {
 			const bytes = decodeBase64ToBytes(att.content);
-			const blob = new Blob([bytes], {
+			const blob = new Blob([bytes as BlobPart], {
 				type: att.mimeType || "application/octet-stream",
 			});
 			const url = URL.createObjectURL(blob);
@@ -721,7 +721,7 @@ export class ComposerAttachmentViewer extends LitElement {
 			wrapper.appendChild(canvas);
 			container.appendChild(wrapper);
 
-			await page.render({ canvasContext: ctx, viewport }).promise;
+			await page.render({ canvas, canvasContext: ctx, viewport }).promise;
 		}
 	}
 

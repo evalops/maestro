@@ -66,8 +66,7 @@ const InputSchema = Type.Optional(
 	),
 );
 
-const ModelSchema = Type.Strict(
-	Type.Object(
+const ModelSchema = Type.Object(
 		{
 			id: Type.String({
 				description: "Unique identifier for the model",
@@ -96,12 +95,10 @@ const ModelSchema = Type.Strict(
 			}),
 			headers: HeadersSchema,
 		},
-		{ description: "Model configuration" },
-	),
+		{ description: "Model configuration", additionalProperties: false },
 );
 
-const ProviderSchema = Type.Strict(
-	Type.Object(
+const ProviderSchema = Type.Object(
 		{
 			id: Type.String({
 				description: "Unique identifier for the provider",
@@ -131,12 +128,10 @@ const ProviderSchema = Type.Strict(
 				minItems: 1,
 			}),
 		},
-		{ description: "Provider configuration" },
-	),
+		{ description: "Provider configuration", additionalProperties: false },
 );
 
-const ConfigSchema = Type.Strict(
-	Type.Object(
+const ConfigSchema = Type.Object(
 		{
 			$schema: Type.Optional(
 				Type.String({ description: "JSON Schema reference for IDE support" }),
@@ -146,8 +141,7 @@ const ConfigSchema = Type.Strict(
 				default: [],
 			}),
 		},
-		{ description: "Composer CLI configuration" },
-	),
+		{ description: "Composer CLI configuration", additionalProperties: false },
 );
 
 const schema = {

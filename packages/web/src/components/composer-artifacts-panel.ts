@@ -5,6 +5,7 @@ import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import type { Artifact } from "../services/artifacts.js";
 import { ArtifactsRuntimeProvider } from "./sandbox/artifacts-runtime-provider.js";
 import { AttachmentsRuntimeProvider } from "./sandbox/attachments-runtime-provider.js";
+import type { SandboxRuntimeProvider } from "./sandbox/sandbox-runtime-provider.js";
 import "./composer-sandboxed-iframe.js";
 import type { ComposerAttachment } from "@evalops/contracts";
 
@@ -152,8 +153,10 @@ export class ComposerArtifactsPanel extends LitElement {
 	@state() private highlightedHtml: string | null = null;
 	@state() private highlightError: string | null = null;
 
-	private buildRuntimeProviders() {
-		const providers = [new ArtifactsRuntimeProvider(() => this.artifacts)];
+	private buildRuntimeProviders(): SandboxRuntimeProvider[] {
+		const providers: SandboxRuntimeProvider[] = [
+			new ArtifactsRuntimeProvider(() => this.artifacts),
+		];
 		const attachments = Array.isArray(this.attachments) ? this.attachments : [];
 		const withContent = attachments.filter(
 			(a) => typeof a.content === "string" && a.content.length > 0,

@@ -333,10 +333,13 @@ describe("createSlackAgentEmitter", () => {
 
 	it("handles message event with data", () => {
 		const emitter = createSlackAgentEmitter();
-		let received: { text: string; channel: string } | null = null;
+		// Use object to track callback assignment
+		const state: { received: { text: string; channel: string } | null } = {
+			received: null,
+		};
 
 		emitter.on("message", (msg) => {
-			received = msg;
+			state.received = msg;
 		});
 
 		emitter.emit("message", {
@@ -346,8 +349,8 @@ describe("createSlackAgentEmitter", () => {
 			ts: "1234567890.123456",
 		});
 
-		expect(received?.text).toBe("hello");
-		expect(received?.channel).toBe("C123");
+		expect(state.received?.text).toBe("hello");
+		expect(state.received?.channel).toBe("C123");
 	});
 
 	it("handles error event", () => {

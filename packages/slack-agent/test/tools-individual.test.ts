@@ -106,7 +106,7 @@ describe("createBashTool", () => {
 		});
 
 		expect(result.content[0].text).toContain("rejected");
-		expect(result.details?.rejected).toBe(true);
+		expect((result.details as { rejected?: boolean })?.rejected).toBe(true);
 		expect(executor.exec).not.toHaveBeenCalled();
 	});
 
@@ -143,7 +143,8 @@ describe("createEditTool", () => {
 		});
 
 		expect(result.content[0].text).toContain("Successfully replaced");
-		expect(result.details?.diff).toBeDefined();
+		const details = result.details as { diff?: string } | undefined;
+		expect(details?.diff).toBeDefined();
 	});
 
 	it("throws when text not found", async () => {

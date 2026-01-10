@@ -1991,6 +1991,7 @@ describe("retry utilities", () => {
 					shouldRetry: () => true,
 					onRetry: (_error, _attempt, delay) => {
 						observedDelay = delay;
+						return undefined;
 					},
 				},
 			);

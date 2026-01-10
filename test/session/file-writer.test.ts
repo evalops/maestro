@@ -12,6 +12,8 @@ import type { SessionEntry } from "../../src/session/types.js";
 function createMessageEntry(content: string): SessionEntry {
 	return {
 		type: "thinking_level_change",
+		id: `entry-${Math.random().toString(36).slice(2)}`,
+		parentId: null,
 		timestamp: new Date().toISOString(),
 		thinkingLevel: content, // Use thinkingLevel to store test content
 	};

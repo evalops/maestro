@@ -295,15 +295,17 @@ export const isComposerUsageResponse = (
 ): value is Static<typeof ComposerUsageResponseSchema> =>
 	Value.Check(ComposerUsageResponseSchema, value);
 
-export const assertComposerChatRequest = (
+export function assertComposerChatRequest(
 	value: unknown,
-): asserts value is Static<typeof ComposerChatRequestSchema> =>
+): asserts value is Static<typeof ComposerChatRequestSchema> {
 	assertSchema(ComposerChatRequestSchema, value, "ComposerChatRequest");
+}
 
-export const assertComposerAgentEvent = (
+export function assertComposerAgentEvent(
 	value: unknown,
-): asserts value is Static<typeof ComposerAgentEventSchema> =>
+): asserts value is Static<typeof ComposerAgentEventSchema> {
 	assertSchema(ComposerAgentEventSchema, value, "ComposerAgentEvent");
+}
 
 export const assertComposerCommandListResponse = (
 	value: unknown,

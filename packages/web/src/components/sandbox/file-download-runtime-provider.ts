@@ -57,10 +57,7 @@ export function getSandboxDownloadsSnapshot(
 }
 
 function downloadInHost(file: DownloadableFile): void {
-	const blob = new Blob(
-		[file.content instanceof Uint8Array ? file.content : file.content],
-		{ type: file.mimeType },
-	);
+	const blob = new Blob([file.content as BlobPart], { type: file.mimeType });
 	const url = URL.createObjectURL(blob);
 	const a = document.createElement("a");
 	a.href = url;

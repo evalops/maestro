@@ -10,8 +10,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync } from "node:fs";
 import type { GitHubApiClient } from "../github/client.js";
 import type { GitHubReporter, TaskProgress } from "../github/reporter.js";
 import type { MemoryStore } from "../memory/store.js";
@@ -67,19 +66,21 @@ export class TaskExecutor {
 			const prompt = this.buildPrompt(task);
 
 			// Step 3: Run composer exec
-			let composerResult: Awaited<ReturnType<typeof this.runComposer>> | null =
-				null;
+			type ComposerResult = Awaited<ReturnType<typeof this.runComposer>>;
+			let composerResultTemp: ComposerResult | null = null;
 			await this.runStep(task, progress, "composer", async () => {
 				this.log("[executor] Running composer...");
-				composerResult = await this.runComposer(prompt);
+				composerResultTemp = await this.runComposer(prompt);
 
-				if (!composerResult.success) {
-					throw new Error(`Composer failed: ${composerResult.error}`);
+				if (!composerResultTemp.success) {
+					throw new Error(`Composer failed: ${composerResultTemp.error}`);
 				}
 			});
-			if (!composerResult) {
+			if (!composerResultTemp) {
 				throw new Error("Composer did not return a result");
 			}
+			// Assert type after validation - TypeScript doesn't track callback assignments
+			const composerResult: ComposerResult = composerResultTemp;
 			progress.tokensUsed = composerResult.tokensUsed;
 			progress.cost = composerResult.cost;
 
@@ -96,14 +97,17 @@ export class TaskExecutor {
 			}
 
 			// Step 6: Create PR
-			let pr: { number: number; url: string } | null = null;
+			type PrResult = { number: number; url: string };
+			let prTemp: PrResult | null = null;
 			await this.runStep(task, progress, "pr", async () => {
 				this.log("[executor] Creating PR...");
-				pr = await this.createPR(task, progress, branchName);
+				prTemp = await this.createPR(task, progress, branchName);
 			});
-			if (!pr) {
+			if (!prTemp) {
 				throw new Error("PR creation did not return a result");
 			}
+			// Assert type after validation - TypeScript doesn't track callback assignments
+			const pr: PrResult = prTemp;
 			progress.prUrl = pr.url;
 
 			await this.applyPrMetadata(pr.number);

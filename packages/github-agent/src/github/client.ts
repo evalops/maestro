@@ -617,6 +617,35 @@ export class GitHubApiClient {
 		prNumber: number,
 		options: { maxThreads?: number; maxCommentsPerThread?: number } = {},
 	): Promise<PRReviewThread[]> {
+		type ReviewThreadComment = {
+			id: string;
+			body: string;
+			createdAt: string;
+			author: { login: string } | null;
+		};
+		type ReviewThreadNode = {
+			id: string;
+			isResolved: boolean;
+			path: string;
+			line: number | null;
+			comments: {
+				nodes: Array<ReviewThreadComment | null>;
+			};
+		};
+		type ReviewThreadsResponse = GraphqlResponse<{
+			repository: {
+				pullRequest: {
+					reviewThreads: {
+						nodes: Array<ReviewThreadNode | null>;
+						pageInfo: {
+							hasNextPage: boolean;
+							endCursor: string | null;
+						};
+					};
+				} | null;
+			};
+		}>;
+
 		const maxThreads = options.maxThreads ?? 50;
 		const maxCommentsPerThread = options.maxCommentsPerThread ?? 50;
 		const results: PRReviewThread[] = [];
@@ -626,41 +655,9 @@ export class GitHubApiClient {
 		while (remaining > 0) {
 			const pageSize = Math.min(remaining, 50);
 			try {
-				const data = await this.graphqlRequest<
-					GraphqlResponse<{
-						repository: {
-							pullRequest: {
-								reviewThreads: {
-									nodes: Array<{
-										id: string;
-										isResolved: boolean;
-										path: string;
-										line: number | null;
-										comments: {
-											nodes: Array<{
-												id: string;
-												body: string;
-												createdAt: string;
-												author: { login: string } | null;
-											} | null>;
-										};
-									} | null>;
-									pageInfo: {
-										hasNextPage: boolean;
-										endCursor: string | null;
-									};
-								};
-							} | null;
-						};
-						rateLimit?: {
-							remaining: number;
-							resetAt: string;
-							limit?: number;
-							cost?: number;
-						};
-					}>
-				>(
-					`
+				const data: ReviewThreadsResponse =
+					await this.graphqlRequest<ReviewThreadsResponse>(
+						`
           query($owner: String!, $repo: String!, $number: Int!, $threads: Int!, $comments: Int!, $after: String) {
             repository(owner: $owner, name: $repo) {
               pullRequest(number: $number) {
@@ -694,16 +691,16 @@ export class GitHubApiClient {
             }
           }
         `,
-					{
-						owner: this.owner,
-						repo: this.repo,
-						number: prNumber,
-						threads: pageSize,
-						comments: maxCommentsPerThread,
-						after: cursor,
-					},
-					{ mutating: false },
-				);
+						{
+							owner: this.owner,
+							repo: this.repo,
+							number: prNumber,
+							threads: pageSize,
+							comments: maxCommentsPerThread,
+							after: cursor,
+						},
+						{ mutating: false },
+					);
 
 				if (data.rateLimit) {
 					this.captureGraphqlRateLimit(data.rateLimit);
@@ -722,12 +719,8 @@ export class GitHubApiClient {
 						line: thread.line ?? null,
 						comments:
 							thread.comments.nodes
-								?.filter(
-									(
-										comment,
-									): comment is NonNullable<
-										(typeof thread.comments.nodes)[number]
-									> => Boolean(comment),
+								?.filter((comment): comment is ReviewThreadComment =>
+									Boolean(comment),
 								)
 								.map((comment) => ({
 									id: comment.id,
@@ -1214,16 +1207,23 @@ export class GitHubApiClient {
 			try {
 				const response = await this.scheduler.schedule(
 					() =>
-						this.octokit.request<T>(endpoint, {
+						this.octokit.request(endpoint, {
 							...params,
 							headers,
-						}),
+						}) as Promise<{
+							data: T;
+							status: number;
+							headers: Record<string, string | number | undefined>;
+						}>,
 					{ mutating: isMutation },
 				);
 				this.captureRateLimit(response.headers);
 				if (cacheKey) {
-					const etag = response.headers.etag;
-					const lastModified = response.headers["last-modified"];
+					const rawEtag = response.headers.etag;
+					const rawLastModified = response.headers["last-modified"];
+					const etag = typeof rawEtag === "string" ? rawEtag : undefined;
+					const lastModified =
+						typeof rawLastModified === "string" ? rawLastModified : undefined;
 					if (etag || lastModified) {
 						this.conditionalCache.set(cacheKey, {
 							etag,
@@ -1553,12 +1553,15 @@ export class GitHubApiClient {
 		};
 	}
 
-	private captureRateLimit(headers?: Record<string, string> | null): void {
+	private captureRateLimit(
+		headers?: Record<string, string | number | undefined> | null,
+	): void {
 		if (!headers) return;
 		const remaining = parseNumber(headers["x-ratelimit-remaining"]);
 		const limit = parseNumber(headers["x-ratelimit-limit"]);
 		const reset = parseNumber(headers["x-ratelimit-reset"]);
-		const resource = headers["x-ratelimit-resource"];
+		const rawResource = headers["x-ratelimit-resource"];
+		const resource = typeof rawResource === "string" ? rawResource : undefined;
 		if (remaining !== null) {
 			this.rateLimit = {
 				remaining,
@@ -1654,8 +1657,9 @@ function extractIssueNumber(issueUrl: string): number | null {
 	return Number.parseInt(match[1], 10);
 }
 
-function parseNumber(value?: string | null): number | null {
-	if (!value) return null;
+function parseNumber(value?: string | number | null): number | null {
+	if (value === undefined || value === null) return null;
+	if (typeof value === "number") return value;
 	const parsed = Number.parseInt(value, 10);
 	return Number.isNaN(parsed) ? null : parsed;
 }

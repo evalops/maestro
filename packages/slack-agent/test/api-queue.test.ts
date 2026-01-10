@@ -86,21 +86,14 @@ describe("ApiQueue", () => {
 
 	it("handles request errors and rejects promise", async () => {
 		const queue = new ApiQueue({ maxRetries: 0 });
-		let caughtError: Error | null = null;
 
 		const promise = queue.enqueue("test.method", async () => {
 			throw new Error("Test error");
 		});
 
-		// Catch the error to prevent unhandled rejection
-		promise.catch((e) => {
-			caughtError = e;
-		});
-
 		await vi.runAllTimersAsync();
 
-		expect(caughtError).not.toBeNull();
-		expect(caughtError?.message).toBe("Test error");
+		await expect(promise).rejects.toThrow("Test error");
 	});
 
 	it("retries on retryable errors", async () => {
@@ -124,22 +117,15 @@ describe("ApiQueue", () => {
 	it("respects max retries", async () => {
 		const queue = new ApiQueue({ maxRetries: 2, baseDelayMs: 100 });
 		let attempts = 0;
-		let caughtError: Error | null = null;
 
 		const promise = queue.enqueue("test.method", async () => {
 			attempts++;
 			throw new Error("network error");
 		});
 
-		// Catch the error to prevent unhandled rejection
-		promise.catch((e) => {
-			caughtError = e;
-		});
-
 		await vi.runAllTimersAsync();
 
-		expect(caughtError).not.toBeNull();
-		expect(caughtError?.message).toBe("network error");
+		await expect(promise).rejects.toThrow("network error");
 		expect(attempts).toBe(3); // Initial + 2 retries
 	});
 

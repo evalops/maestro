@@ -1,6 +1,7 @@
 /**
  * API Client for Composer Backend (VS Code Extension Version)
  */
+// @ts-ignore - type-only import from ESM module is safe in CJS context
 import type * as Contracts from "@evalops/contracts";
 
 export type Message = Contracts.ComposerMessage;

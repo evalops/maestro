@@ -790,7 +790,7 @@ export class ComposerChat extends LitElement {
 	@state() private sessionSearch = "";
 	@state() private attachmentViewerOpen = false;
 	@state() private attachmentViewerAttachment:
-		| Message["attachments"][number]
+		| NonNullable<Message["attachments"]>[number]
 		| null = null;
 	@property({ type: Boolean, reflect: true, attribute: "reduced-motion" })
 	private reducedMotion = false;
@@ -1007,7 +1007,7 @@ export class ComposerChat extends LitElement {
 		);
 		const nextNodes = new Set<Element>();
 		if (nodes) {
-			for (const node of nodes) {
+			for (const node of Array.from(nodes)) {
 				nextNodes.add(node);
 				if (!this.observedMessageNodes.has(node)) {
 					this.messageResizeObserver?.observe(node);
@@ -1033,7 +1033,7 @@ export class ComposerChat extends LitElement {
 		let total = 0;
 		let count = 0;
 		let changed = false;
-		for (const node of nodes) {
+		for (const node of Array.from(nodes)) {
 			const indexAttr = node.dataset.index;
 			if (!indexAttr) continue;
 			const index = Number.parseInt(indexAttr, 10);
@@ -1089,7 +1089,8 @@ export class ComposerChat extends LitElement {
 
 	private refreshHistoryObserverTarget() {
 		if (!this.historyObserver) return;
-		const next = this.shadowRoot?.querySelector("[data-history-truncation]");
+		const next =
+			this.shadowRoot?.querySelector("[data-history-truncation]") ?? null;
 		if (next === this.observedHistoryEl) return;
 
 		if (this.observedHistoryEl) {
@@ -1186,7 +1187,9 @@ export class ComposerChat extends LitElement {
 	}
 
 	private handleOpenAttachment = (
-		e: CustomEvent<{ attachment?: Message["attachments"][number] }>,
+		e: CustomEvent<{
+			attachment?: NonNullable<Message["attachments"]>[number];
+		}>,
 	) => {
 		const attachment = e.detail?.attachment ?? null;
 		if (!attachment) return;
@@ -2384,7 +2387,9 @@ export class ComposerChat extends LitElement {
 
 		let settled = false;
 		let returnValue: string | null = null;
-		let error: { message: string; stack?: string } | null = null;
+		const errorState: { value: { message: string; stack?: string } | null } = {
+			value: null,
+		};
 
 		let resolveDone!: () => void;
 		const done = new Promise<void>((resolve) => {
@@ -2408,7 +2413,7 @@ export class ComposerChat extends LitElement {
 					const err = m.error;
 					if (err && typeof err === "object") {
 						const rec = err as Record<string, unknown>;
-						error = {
+						errorState.value = {
 							message:
 								typeof rec.message === "string"
 									? rec.message
@@ -2416,7 +2421,7 @@ export class ComposerChat extends LitElement {
 							stack: typeof rec.stack === "string" ? rec.stack : undefined,
 						};
 					} else {
-						error = { message: "Execution error" };
+						errorState.value = { message: "Execution error" };
 					}
 					resolveDone();
 				}
@@ -2510,7 +2515,7 @@ export class ComposerChat extends LitElement {
 		const hardTimeout = window.setTimeout(() => {
 			if (settled) return;
 			settled = true;
-			error = { message: "Execution timed out" };
+			errorState.value = { message: "Execution timed out" };
 			resolveDone();
 		}, timeoutMs + 200);
 
@@ -2531,9 +2536,9 @@ export class ComposerChat extends LitElement {
 		const downloads = getSandboxDownloadsSnapshot(sandboxId)?.files ?? [];
 
 		const lines: string[] = [];
-		if (error) {
-			lines.push(`Error: ${error.message}`);
-			if (error.stack) lines.push(error.stack);
+		if (errorState.value) {
+			lines.push(`Error: ${errorState.value.message}`);
+			if (errorState.value.stack) lines.push(errorState.value.stack);
 		} else if (returnValue !== null) {
 			lines.push("Return value:");
 			lines.push(returnValue);
@@ -2548,7 +2553,7 @@ export class ComposerChat extends LitElement {
 			}
 		}
 
-		if (!error && lastError) {
+		if (!errorState.value && lastError) {
 			lines.push("", "Last error:");
 			lines.push(lastError.message);
 			if (lastError.stack) lines.push(lastError.stack);
@@ -2561,7 +2566,10 @@ export class ComposerChat extends LitElement {
 			}
 		}
 
-		return { isError: Boolean(error), text: lines.filter(Boolean).join("\n") };
+		return {
+			isError: Boolean(errorState.value),
+			text: lines.filter(Boolean).join("\n"),
+		};
 	}
 
 	private retryLastSend = () => {
@@ -2590,7 +2598,7 @@ export class ComposerChat extends LitElement {
 	}
 
 	private getAllAttachments(): NonNullable<Message["attachments"]> {
-		const byId = new Map<string, Message["attachments"][number]>();
+		const byId = new Map<string, NonNullable<Message["attachments"]>[number]>();
 
 		for (const msg of this.messages) {
 			if (msg.role !== "user") continue;

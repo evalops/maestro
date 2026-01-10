@@ -62,7 +62,6 @@ export class GitHubWebhookServer {
 		this.handlers = options.handlers;
 		this.webhooks = new Webhooks({
 			secret: options.secret,
-			userAgent: "evalops-github-agent",
 		});
 		this.port = options.port;
 		this.path = options.path.startsWith("/")
@@ -196,20 +195,29 @@ export class GitHubWebhookServer {
 	private registerHandlers(): void {
 		this.webhooks.on("issues.labeled", async ({ payload }) => {
 			if (payload.issue.state !== "open") return;
-			const labels = payload.issue.labels.map((l) => l.name ?? "");
+			const labels = (payload.issue.labels ?? []).map((l) => l.name ?? "");
 			if (!matchesAnyLabel(labels, this.config.issueLabels)) return;
-			await this.handlers.onNewIssue(toIssue(payload.issue));
+			const issue = payload.issue as typeof payload.issue & {
+				state: "open" | "closed";
+			};
+			await this.handlers.onNewIssue(toIssue(issue));
 		});
 
 		this.webhooks.on("issues.opened", async ({ payload }) => {
-			const labels = payload.issue.labels.map((l) => l.name ?? "");
+			const labels = (payload.issue.labels ?? []).map((l) => l.name ?? "");
 			if (!matchesAnyLabel(labels, this.config.issueLabels)) return;
-			await this.handlers.onNewIssue(toIssue(payload.issue));
+			const issue = payload.issue as typeof payload.issue & {
+				state: "open" | "closed";
+			};
+			await this.handlers.onNewIssue(toIssue(issue));
 		});
 
 		this.webhooks.on("issue_comment.created", async ({ payload }) => {
 			if (!this.handlers.onIssueComment) return;
-			await this.handlers.onIssueComment(toIssue(payload.issue), {
+			const issue = payload.issue as typeof payload.issue & {
+				state: "open" | "closed";
+			};
+			await this.handlers.onIssueComment(toIssue(issue), {
 				id: payload.comment.id,
 				issueNumber: payload.issue.number,
 				author: payload.comment.user?.login ?? "unknown",
@@ -287,11 +295,13 @@ export class GitHubWebhookServer {
 			const event = this.pendingEvents.shift();
 			if (!event) continue;
 			try {
+				// Cast is safe: event was already validated by the webhook handler
 				await this.webhooks.receive({
 					id: event.id,
 					name: event.name,
 					payload: event.payload,
-				});
+					// biome-ignore lint/suspicious/noExplicitAny: event type matches webhook expectations
+				} as any);
 			} catch (error) {
 				this.handleEventError(event, error);
 			}
@@ -402,7 +412,7 @@ function toIssue(issue: {
 	number: number;
 	title: string;
 	body: string | null;
-	labels: Array<{ name?: string | null }>;
+	labels?: Array<{ name?: string | null }>;
 	state: "open" | "closed";
 	user: { login?: string | null } | null;
 	created_at: string;
@@ -415,7 +425,9 @@ function toIssue(issue: {
 		number: issue.number,
 		title: issue.title,
 		body: issue.body ?? null,
-		labels: issue.labels.map((label) => label.name ?? "").filter(Boolean),
+		labels: (issue.labels ?? [])
+			.map((label) => label.name ?? "")
+			.filter(Boolean),
 		state: issue.state,
 		author: issue.user?.login ?? "unknown",
 		createdAt: issue.created_at,
@@ -431,7 +443,7 @@ function toPullRequest(pr: {
 	title: string;
 	body: string | null;
 	state: "open" | "closed";
-	merged: boolean;
+	merged?: boolean;
 	user: { login?: string | null } | null;
 	head: { ref: string; sha: string };
 	base: { ref: string };
@@ -440,7 +452,8 @@ function toPullRequest(pr: {
 	merged_at: string | null;
 	html_url: string;
 }): GitHubPR {
-	const state = pr.state === "closed" && pr.merged ? "merged" : pr.state;
+	const state =
+		pr.state === "closed" && pr.merged === true ? "merged" : pr.state;
 	return {
 		number: pr.number,
 		title: pr.title,

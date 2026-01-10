@@ -99,9 +99,8 @@ describe("hooks/config extends", () => {
 				const hooks = getMatchingHooks(config, matchInput());
 				expect(hooks).toHaveLength(1);
 				expect(hooks[0].type).toBe("command");
-				expect(hooks[0].command).toBe(
-					resolve(projectDir, "scripts/override.sh"),
-				);
+				const hook = hooks[0] as { type: "command"; command: string };
+				expect(hook.command).toBe(resolve(projectDir, "scripts/override.sh"));
 			},
 		));
 
@@ -158,7 +157,8 @@ describe("hooks/config extends", () => {
 				const hooks = getMatchingHooks(config, matchInput());
 				expect(hooks).toHaveLength(1);
 				expect(hooks[0].type).toBe("command");
-				expect(normalizeDarwinTmpPath(hooks[0].command)).toBe(
+				const hook = hooks[0] as { type: "command"; command: string };
+				expect(normalizeDarwinTmpPath(hook.command)).toBe(
 					normalizeDarwinTmpPath(resolve(nodeModules, "scripts/preset.sh")),
 				);
 			},
@@ -193,7 +193,8 @@ describe("hooks/config extends", () => {
 				const hooks = getMatchingHooks(config, matchInput());
 				expect(hooks).toHaveLength(1);
 				expect(hooks[0].type).toBe("command");
-				expect(hooks[0].command).toBe("user.sh");
+				const hook = hooks[0] as { type: "command"; command: string };
+				expect(hook.command).toBe("user.sh");
 			},
 		));
 });

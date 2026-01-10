@@ -106,7 +106,7 @@ describe("GitHubWatcher", () => {
 	describe("constructor", () => {
 		it("should initialize with correct config", () => {
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -117,7 +117,7 @@ describe("GitHubWatcher", () => {
 	describe("trackPR", () => {
 		it("should add PR to tracked set", () => {
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -130,7 +130,7 @@ describe("GitHubWatcher", () => {
 	describe("start and stop", () => {
 		it("should start polling and stop cleanly", async () => {
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -150,7 +150,7 @@ describe("GitHubWatcher", () => {
 
 		it("should set up recurring poll", async () => {
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -177,7 +177,7 @@ describe("GitHubWatcher", () => {
 			]);
 
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -217,7 +217,7 @@ describe("GitHubWatcher", () => {
 				]);
 
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -249,7 +249,7 @@ describe("GitHubWatcher", () => {
 			]);
 
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -268,7 +268,7 @@ describe("GitHubWatcher", () => {
 			);
 
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -291,7 +291,7 @@ describe("GitHubWatcher", () => {
 			);
 
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -325,7 +325,7 @@ describe("GitHubWatcher", () => {
 			]);
 
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -360,7 +360,7 @@ describe("GitHubWatcher", () => {
 			]);
 
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -396,7 +396,7 @@ describe("GitHubWatcher", () => {
 			]);
 
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);
@@ -417,7 +417,7 @@ describe("GitHubWatcher", () => {
 			mockClient.getIssue.mockResolvedValue(issue);
 
 			const watcher = new GitHubWatcher(
-				mockClient as unknown as Parameters<typeof GitHubWatcher>[0],
+				mockClient as unknown as ConstructorParameters<typeof GitHubWatcher>[0],
 				config,
 				events,
 			);

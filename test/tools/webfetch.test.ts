@@ -28,11 +28,11 @@ async function withImmediateTimeouts<T>(fn: () => Promise<T>): Promise<T> {
 	const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
 		...args: Parameters<typeof setTimeout>
 	) => {
-		const [handler, _delay, ...rest] = args;
+		const [handler, _delay] = args;
 		if (typeof handler === "function") {
-			handler(...(rest as unknown[]));
+			handler();
 		}
-		return 0 as ReturnType<typeof setTimeout>;
+		return 0 as unknown as ReturnType<typeof setTimeout>;
 	}) as typeof setTimeout);
 	const clearTimeoutSpy = vi
 		.spyOn(globalThis, "clearTimeout")

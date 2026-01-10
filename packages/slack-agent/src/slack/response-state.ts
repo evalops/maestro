@@ -8,6 +8,7 @@
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
+import { Readable } from "node:stream";
 import type {
 	ChatPostMessageArguments,
 	FilesUploadV2Arguments,
@@ -236,7 +237,9 @@ export function createResponseHandlers(
 					"Content-Type": "application/octet-stream",
 					"Content-Length": size.toString(),
 				},
-				body: createReadStream(filePath),
+				body: Readable.toWeb(
+					createReadStream(filePath),
+				) as ReadableStream<Uint8Array>,
 				duplex: "half",
 			};
 			const response = await fetch(uploadUrl, requestOptions);
