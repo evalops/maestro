@@ -7,7 +7,7 @@
       "group": "build",
       "problemMatcher": ["$tsc"],
       "label": "npm: build",
-      "detail": "tsc -p tsconfig.build.json && chmod +x dist/cli.js"
+      "detail": "node -e \"require('fs').mkdirSync('./tmp/tsbuildinfo', { recursive: true })\" && tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --packages external --external tree-sitter --external tree-sitter-bash --outfile dist/cli.js && chmod +x dist/cli.js && node ./scripts/copy-themes.js"
     },
     {
       "type": "npm",
@@ -32,7 +32,7 @@
         }
       },
       "label": "npm: dev",
-      "detail": "tsc -p tsconfig.build.json --watch --preserveWatchOutput"
+      "detail": "node -e \"require('fs').mkdirSync('./tmp/tsbuildinfo', { recursive: true })\" && tsc -b tsconfig.build.json --watch --preserveWatchOutput"
     },
     {
       "type": "npm",
