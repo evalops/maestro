@@ -106,7 +106,7 @@
     "clipboardy": "^4.0.0",
     "diff": "^8.0.2",
     "dotenv": "^16.4.5",
-    "drizzle-orm": "^0.44.7",
+    "drizzle-orm": "0.45.1",
     "fflate": "^0.8.2",
     "glob": "^11.1.0",
     "ioredis": "^5.9.1",
