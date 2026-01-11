@@ -1,4 +1,15 @@
 //! Todo tool for tracking multi-step tasks.
+//!
+//! This module provides a persistent todo list for the agent to track
+//! progress on multi-step tasks. Todos are organized by goal and stored
+//! in a JSON file.
+//!
+//! # Features
+//!
+//! - Create and update todo items with status, priority, notes, and due dates
+//! - Track dependencies between items (`blocked_by`)
+//! - Persistent storage in `~/.composer/todos.json`
+//! - Progress summary with pending/in-progress/completed counts
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -292,4 +303,362 @@ pub async fn todo(args: serde_json::Value) -> ToolResult {
     });
 
     ToolResult::success(output).with_details(details)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // TodoArgs Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_todo_args_minimal() {
+        let json = serde_json::json!({"goal": "Implement feature X"});
+        let args: TodoArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.goal, "Implement feature X");
+        assert!(args.items.is_none());
+        assert!(args.updates.is_none());
+    }
+
+    #[test]
+    fn test_todo_args_with_items() {
+        let json = serde_json::json!({
+            "goal": "Test goal",
+            "items": [
+                {"content": "Task 1"},
+                {"content": "Task 2", "status": "completed"}
+            ]
+        });
+        let args: TodoArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.goal, "Test goal");
+        assert!(args.items.is_some());
+    }
+
+    #[test]
+    fn test_todo_args_include_summary_alias() {
+        let json = serde_json::json!({
+            "goal": "Test",
+            "includeSummary": false
+        });
+        let args: TodoArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.include_summary, Some(false));
+    }
+
+    // ========================================================================
+    // TodoItemInput Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_todo_item_input_minimal() {
+        let json = serde_json::json!({"content": "Do something"});
+        let item: TodoItemInput = serde_json::from_value(json).unwrap();
+        assert_eq!(item.content, "Do something");
+        assert!(item.id.is_none());
+        assert!(item.status.is_none());
+        assert!(item.priority.is_none());
+    }
+
+    #[test]
+    fn test_todo_item_input_full() {
+        let json = serde_json::json!({
+            "id": "task-1",
+            "content": "Complete implementation",
+            "status": "in_progress",
+            "priority": "high",
+            "notes": "Important!",
+            "due": "2024-12-31",
+            "blockedBy": ["task-0"]
+        });
+        let item: TodoItemInput = serde_json::from_value(json).unwrap();
+        assert_eq!(item.id, Some("task-1".to_string()));
+        assert_eq!(item.content, "Complete implementation");
+        assert_eq!(item.status, Some("in_progress".to_string()));
+        assert_eq!(item.priority, Some("high".to_string()));
+        assert_eq!(item.notes, Some("Important!".to_string()));
+        assert_eq!(item.due, Some("2024-12-31".to_string()));
+        assert_eq!(item.blocked_by, Some(vec!["task-0".to_string()]));
+    }
+
+    // ========================================================================
+    // TodoUpdateInput Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_todo_update_input_status_only() {
+        let json = serde_json::json!({
+            "id": "task-1",
+            "status": "completed"
+        });
+        let update: TodoUpdateInput = serde_json::from_value(json).unwrap();
+        assert_eq!(update.id, "task-1");
+        assert_eq!(update.status, Some("completed".to_string()));
+        assert!(update.remove.is_none());
+    }
+
+    #[test]
+    fn test_todo_update_input_remove() {
+        let json = serde_json::json!({
+            "id": "task-to-remove",
+            "remove": true
+        });
+        let update: TodoUpdateInput = serde_json::from_value(json).unwrap();
+        assert_eq!(update.id, "task-to-remove");
+        assert_eq!(update.remove, Some(true));
+    }
+
+    // ========================================================================
+    // normalize_items Tests
+    // ========================================================================
+
+    #[test]
+    fn test_normalize_items_empty() {
+        let items: Vec<TodoItemInput> = vec![];
+        let normalized = normalize_items(items);
+        assert!(normalized.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_items_defaults() {
+        let items = vec![TodoItemInput {
+            id: None,
+            content: "Test task".to_string(),
+            status: None,
+            priority: None,
+            notes: None,
+            due: None,
+            blocked_by: None,
+        }];
+        let normalized = normalize_items(items);
+        assert_eq!(normalized.len(), 1);
+        assert!(!normalized[0].id.is_empty()); // UUID generated
+        assert_eq!(normalized[0].content, "Test task");
+        assert_eq!(normalized[0].status, "pending");
+        assert_eq!(normalized[0].priority, "medium");
+    }
+
+    #[test]
+    fn test_normalize_items_preserves_values() {
+        let items = vec![TodoItemInput {
+            id: Some("my-id".to_string()),
+            content: "Custom task".to_string(),
+            status: Some("completed".to_string()),
+            priority: Some("high".to_string()),
+            notes: Some("Note".to_string()),
+            due: Some("2024-01-01".to_string()),
+            blocked_by: Some(vec!["other".to_string()]),
+        }];
+        let normalized = normalize_items(items);
+        assert_eq!(normalized[0].id, "my-id");
+        assert_eq!(normalized[0].status, "completed");
+        assert_eq!(normalized[0].priority, "high");
+        assert_eq!(normalized[0].notes, Some("Note".to_string()));
+    }
+
+    // ========================================================================
+    // apply_updates Tests
+    // ========================================================================
+
+    #[test]
+    fn test_apply_updates_status_change() {
+        let mut items = vec![NormalizedTodo {
+            id: "task-1".to_string(),
+            content: "Test".to_string(),
+            status: "pending".to_string(),
+            priority: "medium".to_string(),
+            notes: None,
+            due: None,
+            blocked_by: None,
+        }];
+        let updates = vec![TodoUpdateInput {
+            id: "task-1".to_string(),
+            status: Some("completed".to_string()),
+            priority: None,
+            notes: None,
+            due: None,
+            blocked_by: None,
+            content: None,
+            remove: None,
+        }];
+        apply_updates(&mut items, updates).unwrap();
+        assert_eq!(items[0].status, "completed");
+    }
+
+    #[test]
+    fn test_apply_updates_remove() {
+        let mut items = vec![
+            NormalizedTodo {
+                id: "task-1".to_string(),
+                content: "Keep".to_string(),
+                status: "pending".to_string(),
+                priority: "medium".to_string(),
+                notes: None,
+                due: None,
+                blocked_by: None,
+            },
+            NormalizedTodo {
+                id: "task-2".to_string(),
+                content: "Remove".to_string(),
+                status: "pending".to_string(),
+                priority: "medium".to_string(),
+                notes: None,
+                due: None,
+                blocked_by: None,
+            },
+        ];
+        let updates = vec![TodoUpdateInput {
+            id: "task-2".to_string(),
+            status: None,
+            priority: None,
+            notes: None,
+            due: None,
+            blocked_by: None,
+            content: None,
+            remove: Some(true),
+        }];
+        apply_updates(&mut items, updates).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, "task-1");
+    }
+
+    #[test]
+    fn test_apply_updates_not_found() {
+        let mut items = vec![];
+        let updates = vec![TodoUpdateInput {
+            id: "nonexistent".to_string(),
+            status: Some("completed".to_string()),
+            priority: None,
+            notes: None,
+            due: None,
+            blocked_by: None,
+            content: None,
+            remove: None,
+        }];
+        let result = apply_updates(&mut items, updates);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No task found"));
+    }
+
+    // ========================================================================
+    // status_symbol Tests
+    // ========================================================================
+
+    #[test]
+    fn test_status_symbol_completed() {
+        assert_eq!(status_symbol("completed"), "[x]");
+    }
+
+    #[test]
+    fn test_status_symbol_in_progress() {
+        assert_eq!(status_symbol("in_progress"), "[~]");
+    }
+
+    #[test]
+    fn test_status_symbol_pending() {
+        assert_eq!(status_symbol("pending"), "[ ]");
+    }
+
+    #[test]
+    fn test_status_symbol_unknown() {
+        assert_eq!(status_symbol("unknown"), "[ ]");
+    }
+
+    // ========================================================================
+    // format_output Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_output_empty() {
+        let output = format_output("Test Goal", &[], false);
+        assert!(output.contains("Test Goal"));
+        assert!(output.contains("No tasks available"));
+    }
+
+    #[test]
+    fn test_format_output_with_items() {
+        let items = vec![NormalizedTodo {
+            id: "1".to_string(),
+            content: "Do something".to_string(),
+            status: "pending".to_string(),
+            priority: "high".to_string(),
+            notes: None,
+            due: None,
+            blocked_by: None,
+        }];
+        let output = format_output("My Goal", &items, false);
+        assert!(output.contains("My Goal"));
+        assert!(output.contains("[ ] Do something"));
+        assert!(output.contains("priority: high"));
+    }
+
+    #[test]
+    fn test_format_output_with_summary() {
+        let items = vec![
+            NormalizedTodo {
+                id: "1".to_string(),
+                content: "Task 1".to_string(),
+                status: "completed".to_string(),
+                priority: "medium".to_string(),
+                notes: None,
+                due: None,
+                blocked_by: None,
+            },
+            NormalizedTodo {
+                id: "2".to_string(),
+                content: "Task 2".to_string(),
+                status: "pending".to_string(),
+                priority: "medium".to_string(),
+                notes: None,
+                due: None,
+                blocked_by: None,
+            },
+        ];
+        let output = format_output("Goal", &items, true);
+        assert!(output.contains("Progress"));
+        assert!(output.contains("Total: 2"));
+        assert!(output.contains("Completed: 1"));
+    }
+
+    #[test]
+    fn test_format_output_with_notes_and_due() {
+        let items = vec![NormalizedTodo {
+            id: "1".to_string(),
+            content: "Important task".to_string(),
+            status: "in_progress".to_string(),
+            priority: "high".to_string(),
+            notes: Some("Remember this".to_string()),
+            due: Some("2024-12-31".to_string()),
+            blocked_by: Some(vec!["other-task".to_string()]),
+        }];
+        let output = format_output("Goal", &items, false);
+        assert!(output.contains("[~] Important task"));
+        assert!(output.contains("notes: Remember this"));
+        assert!(output.contains("due: 2024-12-31"));
+        assert!(output.contains("blocked by: other-task"));
+    }
+
+    // ========================================================================
+    // store_path Tests
+    // ========================================================================
+
+    #[test]
+    fn test_store_path_default() {
+        std::env::remove_var("COMPOSER_TODO_FILE");
+        let path = store_path();
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.contains("todos.json"),
+            "Path should contain todos.json: {}",
+            path_str
+        );
+    }
+
+    #[test]
+    fn test_store_path_from_env() {
+        std::env::set_var("COMPOSER_TODO_FILE", "/custom/path/todos.json");
+        let path = store_path();
+        assert_eq!(path, PathBuf::from("/custom/path/todos.json"));
+        std::env::remove_var("COMPOSER_TODO_FILE");
+    }
 }

@@ -1,4 +1,16 @@
 //! Exa-backed websearch and codesearch helpers.
+//!
+//! This module provides tools for web search and code search using the Exa API.
+//!
+//! # Requirements
+//!
+//! The `EXA_API_KEY` environment variable must be set. Get your key at
+//! <https://dashboard.exa.ai/api-keys>
+//!
+//! # Tools
+//!
+//! - [`websearch`] - General web search with optional content extraction
+//! - [`codesearch`] - Code-focused search returning examples and context
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -347,4 +359,186 @@ pub async fn codesearch(args: Value) -> ToolResult {
     });
 
     ToolResult::success(output_lines.join("\n")).with_details(details)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // normalize_cost_dollars Tests
+    // ========================================================================
+
+    #[test]
+    fn test_normalize_cost_number() {
+        let value = serde_json::json!(0.0025);
+        assert_eq!(normalize_cost_dollars(&value), Some(0.0025));
+    }
+
+    #[test]
+    fn test_normalize_cost_string() {
+        let value = serde_json::json!("0.0025");
+        assert_eq!(normalize_cost_dollars(&value), Some(0.0025));
+    }
+
+    #[test]
+    fn test_normalize_cost_string_with_whitespace() {
+        let value = serde_json::json!("  0.0025  ");
+        assert_eq!(normalize_cost_dollars(&value), Some(0.0025));
+    }
+
+    #[test]
+    fn test_normalize_cost_object_with_total() {
+        let value = serde_json::json!({"total": 0.05});
+        assert_eq!(normalize_cost_dollars(&value), Some(0.05));
+    }
+
+    #[test]
+    fn test_normalize_cost_empty_string() {
+        let value = serde_json::json!("");
+        assert_eq!(normalize_cost_dollars(&value), None);
+    }
+
+    #[test]
+    fn test_normalize_cost_null() {
+        let value = Value::Null;
+        assert_eq!(normalize_cost_dollars(&value), None);
+    }
+
+    #[test]
+    fn test_normalize_cost_array() {
+        let value = serde_json::json!([1, 2, 3]);
+        assert_eq!(normalize_cost_dollars(&value), None);
+    }
+
+    #[test]
+    fn test_normalize_cost_nested_string_number() {
+        // String containing a number that needs to be parsed
+        let value = serde_json::json!("0.123");
+        assert_eq!(normalize_cost_dollars(&value), Some(0.123));
+    }
+
+    // ========================================================================
+    // WebsearchArgs Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_websearch_args_minimal() {
+        let json = serde_json::json!({"query": "rust programming"});
+        let args: WebsearchArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.query, "rust programming");
+        assert!(args.num_results.is_none());
+        assert!(args.search_type.is_none());
+    }
+
+    #[test]
+    fn test_websearch_args_full() {
+        let json = serde_json::json!({
+            "query": "rust async",
+            "numResults": 10,
+            "type": "keyword",
+            "category": "programming",
+            "includeDomains": ["docs.rs", "crates.io"],
+            "excludeDomains": ["example.com"],
+            "startPublishedDate": "2024-01-01",
+            "endPublishedDate": "2024-12-31",
+            "livecrawl": "always"
+        });
+        let args: WebsearchArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.query, "rust async");
+        assert_eq!(args.num_results, Some(10));
+        assert_eq!(args.search_type, Some("keyword".to_string()));
+        assert_eq!(args.category, Some("programming".to_string()));
+        assert_eq!(
+            args.include_domains,
+            Some(vec!["docs.rs".to_string(), "crates.io".to_string()])
+        );
+        assert_eq!(args.exclude_domains, Some(vec!["example.com".to_string()]));
+    }
+
+    #[test]
+    fn test_websearch_args_with_content_options() {
+        let json = serde_json::json!({
+            "query": "test",
+            "text": true,
+            "summary": {"maxLength": 100},
+            "highlights": true
+        });
+        let args: WebsearchArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.query, "test");
+        assert!(args.text.is_some());
+        assert!(args.summary.is_some());
+        assert!(args.highlights.is_some());
+    }
+
+    // ========================================================================
+    // CodesearchArgs Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_codesearch_args_minimal() {
+        let json = serde_json::json!({"query": "how to parse JSON in rust"});
+        let args: CodesearchArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.query, "how to parse JSON in rust");
+        assert!(args.tokens_num.is_none());
+    }
+
+    #[test]
+    fn test_codesearch_args_with_tokens() {
+        let json = serde_json::json!({
+            "query": "async await pattern",
+            "tokensNum": 5000
+        });
+        let args: CodesearchArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.query, "async await pattern");
+        assert!(args.tokens_num.is_some());
+    }
+
+    #[test]
+    fn test_codesearch_args_dynamic_tokens() {
+        let json = serde_json::json!({
+            "query": "error handling",
+            "tokensNum": "dynamic"
+        });
+        let args: CodesearchArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.query, "error handling");
+        assert_eq!(args.tokens_num, Some(Value::String("dynamic".to_string())));
+    }
+
+    // ========================================================================
+    // get_exa_api_key Tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_exa_api_key_not_set() {
+        // Temporarily unset the key if it exists
+        let original = std::env::var("EXA_API_KEY").ok();
+        std::env::remove_var("EXA_API_KEY");
+
+        let result = get_exa_api_key();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("EXA_API_KEY"));
+
+        // Restore if it was set
+        if let Some(key) = original {
+            std::env::set_var("EXA_API_KEY", key);
+        }
+    }
+
+    #[test]
+    fn test_get_exa_api_key_set() {
+        let original = std::env::var("EXA_API_KEY").ok();
+        std::env::set_var("EXA_API_KEY", "test-key-123");
+
+        let result = get_exa_api_key();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "test-key-123");
+
+        // Restore original state
+        if let Some(key) = original {
+            std::env::set_var("EXA_API_KEY", key);
+        } else {
+            std::env::remove_var("EXA_API_KEY");
+        }
+    }
 }
