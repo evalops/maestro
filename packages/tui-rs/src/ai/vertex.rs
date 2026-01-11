@@ -1401,9 +1401,14 @@ mod tests {
             top_k: Some(0),
         };
         let json = serde_json::to_string(&config).unwrap();
-        // Verify serialization includes expected values
-        assert!(json.contains("\"temperature\":0.0") || json.contains("\"temperature\":0"));
-        assert!(json.contains("\"maxOutputTokens\":0"));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value.get("temperature").and_then(|v| v.as_f64()), Some(0.0));
+        assert_eq!(
+            value.get("maxOutputTokens").and_then(|v| v.as_u64()),
+            Some(0)
+        );
+        assert_eq!(value.get("topP").and_then(|v| v.as_f64()), Some(0.0));
+        assert_eq!(value.get("topK").and_then(|v| v.as_u64()), Some(0));
 
         // Test max reasonable values
         let config_max = GenerationConfig {
@@ -1413,8 +1418,17 @@ mod tests {
             top_k: Some(1000),
         };
         let json_max = serde_json::to_string(&config_max).unwrap();
-        assert!(json_max.contains("\"temperature\":2"));
-        assert!(json_max.contains("\"maxOutputTokens\":1000000"));
+        let value_max: serde_json::Value = serde_json::from_str(&json_max).unwrap();
+        assert_eq!(
+            value_max.get("temperature").and_then(|v| v.as_f64()),
+            Some(2.0)
+        );
+        assert_eq!(
+            value_max.get("maxOutputTokens").and_then(|v| v.as_u64()),
+            Some(1_000_000)
+        );
+        assert_eq!(value_max.get("topP").and_then(|v| v.as_f64()), Some(1.0));
+        assert_eq!(value_max.get("topK").and_then(|v| v.as_u64()), Some(1000));
     }
 
     #[test]

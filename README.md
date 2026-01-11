@@ -507,7 +507,7 @@ docker compose up -d
 
 # Set environment variables
 export COMPOSER_REDIS_URL=redis://localhost:6379
-export COMPOSER_DATABASE_URL=postgresql://composer:composer@localhost:5432/composer
+export COMPOSER_DATABASE_URL=postgresql://localhost:5432/composer?user=composer&password=composer
 
 # Verify services are running
 docker compose ps

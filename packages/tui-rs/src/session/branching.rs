@@ -26,6 +26,7 @@ pub struct BranchPoint {
     /// Optional description of why this branch was created
     pub description: Option<String>,
     /// Tags for organizing branches
+    #[serde(default)]
     pub tags: Vec<String>,
 }
 
@@ -1192,9 +1193,7 @@ mod tests {
             "id": "branch-test",
             "fork_message_id": "msg-1",
             "fork_index": 5,
-            "created_at": 1234567890,
-            "description": null,
-            "tags": []
+            "created_at": 1234567890
         }"#;
 
         let branch: BranchPoint = serde_json::from_str(json).unwrap();
