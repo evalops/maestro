@@ -15,9 +15,9 @@
 	"sideEffects": false,
 	"files": ["dist"],
 	"scripts": {
-		"clean": "rm -rf dist",
-		"build": "tsc -p tsconfig.build.json",
-		"dev": "tsc -p tsconfig.build.json --watch --preserveWatchOutput"
+		"clean": "rm -rf dist ../../tmp/tsbuildinfo/contracts.tsbuildinfo",
+		"build": "rm -rf dist && mkdir -p ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
+		"dev": "mkdir -p ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --watch --preserveWatchOutput"
 	},
 	"dependencies": {
 		"@sinclair/typebox": "^0.34.0"
