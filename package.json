@@ -183,7 +183,7 @@
     "bun": ">=1.1.0"
   },
   "optionalDependencies": {
-    "sharp": "^0.33.5"
+    "sharp": "0.34.5"
   },
   "packageManager": "bun@1.1.31",
   "trustedDependencies": [
