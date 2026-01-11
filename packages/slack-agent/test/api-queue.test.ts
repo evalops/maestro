@@ -91,9 +91,10 @@ describe("ApiQueue", () => {
 			throw new Error("Test error");
 		});
 
-		await vi.runAllTimersAsync();
+		const rejection = expect(promise).rejects.toThrow("Test error");
 
-		await expect(promise).rejects.toThrow("Test error");
+		await vi.runAllTimersAsync();
+		await rejection;
 	});
 
 	it("retries on retryable errors", async () => {
@@ -123,9 +124,10 @@ describe("ApiQueue", () => {
 			throw new Error("network error");
 		});
 
-		await vi.runAllTimersAsync();
+		const rejection = expect(promise).rejects.toThrow("network error");
 
-		await expect(promise).rejects.toThrow("network error");
+		await vi.runAllTimersAsync();
+		await rejection;
 		expect(attempts).toBe(3); // Initial + 2 retries
 	});
 
