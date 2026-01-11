@@ -16,14 +16,14 @@
     "dist"
   ],
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist ./tmp/tsbuildinfo/composer.tsbuildinfo",
     "prepare": "husky",
     "install:local": "node ./scripts/install-client.js",
     "prebuild": "node ./scripts/ensure-deps.js",
-    "build": "tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --packages external --external tree-sitter --external tree-sitter-bash --outfile dist/cli.js && chmod +x dist/cli.js && node ./scripts/copy-themes.js",
+    "build": "mkdir -p ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --packages external --external tree-sitter --external tree-sitter-bash --outfile dist/cli.js && chmod +x dist/cli.js && node ./scripts/copy-themes.js",
     "start": "node --enable-source-maps dist/cli.js",
     "start:native": "COMPOSER_AGENT_SCRIPT=\"$(pwd)/dist/cli.js\" ./packages/tui-rs/target/release/composer-tui",
-    "dev": "tsc -b tsconfig.build.json --watch --preserveWatchOutput",
+    "dev": "mkdir -p ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --watch --preserveWatchOutput",
     "dev:all": "concurrently --names \"cli,test\" --prefix-colors \"cyan,yellow\" \"npm run dev\" \"npm run test:watch\"",
     "test:watch": "vitest --watch",
     "test:fast": "VITEST_FAST=1 vitest --run",
