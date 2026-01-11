@@ -1,4 +1,16 @@
 //! Git status tool helper.
+//!
+//! This module provides a wrapper around `git status --porcelain=v2` that parses
+//! the output into structured data. It extracts:
+//!
+//! - Branch information (head, upstream, ahead/behind counts)
+//! - File counts (modified, added, deleted, untracked, ignored)
+//!
+//! # Options
+//!
+//! - `branch_summary` - Include branch information (default: true)
+//! - `include_ignored` - Include ignored files in the count (default: false)
+//! - `paths` - Filter to specific paths (optional)
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -142,4 +154,131 @@ pub async fn git_status(args: Value, cwd: &str) -> ToolResult {
     });
 
     ToolResult::success(summary_lines.join("\n")).with_details(details)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // StatusArgs Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_args_deserialize_empty() {
+        let json = serde_json::json!({});
+        let args: StatusArgs = serde_json::from_value(json).unwrap();
+        assert!(args.branch_summary.is_none());
+        assert!(args.include_ignored.is_none());
+        assert!(args.paths.is_none());
+    }
+
+    #[test]
+    fn test_args_deserialize_snake_case() {
+        let json = serde_json::json!({
+            "branch_summary": false,
+            "include_ignored": true
+        });
+        let args: StatusArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.branch_summary, Some(false));
+        assert_eq!(args.include_ignored, Some(true));
+    }
+
+    #[test]
+    fn test_args_deserialize_camel_case_aliases() {
+        let json = serde_json::json!({
+            "branchSummary": true,
+            "includeIgnored": false
+        });
+        let args: StatusArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.branch_summary, Some(true));
+        assert_eq!(args.include_ignored, Some(false));
+    }
+
+    #[test]
+    fn test_args_deserialize_paths_string() {
+        let json = serde_json::json!({
+            "paths": "src/main.rs"
+        });
+        let args: StatusArgs = serde_json::from_value(json).unwrap();
+        assert!(args.paths.is_some());
+        assert_eq!(args.paths.unwrap().as_str(), Some("src/main.rs"));
+    }
+
+    #[test]
+    fn test_args_deserialize_paths_array() {
+        let json = serde_json::json!({
+            "paths": ["src/", "tests/"]
+        });
+        let args: StatusArgs = serde_json::from_value(json).unwrap();
+        assert!(args.paths.is_some());
+        assert!(args.paths.unwrap().is_array());
+    }
+
+    // ========================================================================
+    // normalize_paths Tests
+    // ========================================================================
+
+    #[test]
+    fn test_normalize_paths_none() {
+        let result = normalize_paths(None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_paths_string() {
+        let result = normalize_paths(Some(Value::String("src/main.rs".to_string())));
+        assert_eq!(result, vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn test_normalize_paths_array() {
+        let array = Value::Array(vec![
+            Value::String("src/".to_string()),
+            Value::String("tests/".to_string()),
+            Value::String("lib/".to_string()),
+        ]);
+        let result = normalize_paths(Some(array));
+        assert_eq!(result, vec!["src/", "tests/", "lib/"]);
+    }
+
+    #[test]
+    fn test_normalize_paths_empty_array() {
+        let array = Value::Array(vec![]);
+        let result = normalize_paths(Some(array));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_paths_mixed_array() {
+        // Array with non-string values should filter them out
+        let array = Value::Array(vec![
+            Value::String("valid".to_string()),
+            Value::Number(serde_json::Number::from(42)),
+            Value::String("also_valid".to_string()),
+            Value::Bool(true),
+        ]);
+        let result = normalize_paths(Some(array));
+        assert_eq!(result, vec!["valid", "also_valid"]);
+    }
+
+    #[test]
+    fn test_normalize_paths_invalid_type() {
+        // Number value should return empty vec
+        let result = normalize_paths(Some(Value::Number(serde_json::Number::from(42))));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_paths_object() {
+        // Object value should return empty vec
+        let result = normalize_paths(Some(serde_json::json!({"path": "src/"})));
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_normalize_paths_null() {
+        let result = normalize_paths(Some(Value::Null));
+        assert!(result.is_empty());
+    }
 }
