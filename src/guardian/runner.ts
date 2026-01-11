@@ -468,7 +468,7 @@ const HEURISTIC_PATTERNS: Array<{ name: HeuristicFindingName; regex: RegExp }> =
 			// Database connection strings with embedded credentials
 			// postgres://user:password@host, mysql://user:pass@host, mongodb://user:pass@host
 			regex:
-				/\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s:@]+:[^\s@]+@[^\s'"]+/i,
+				/\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis):\/\/[^\s:]+:[^\s@]+@[^\s'"]+/i,
 		},
 		{
 			name: "JWT token",

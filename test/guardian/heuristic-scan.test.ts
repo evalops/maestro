@@ -144,6 +144,14 @@ describe("guardian heuristic scan", () => {
 			);
 		});
 
+		it("flags usernames containing @ symbols", () => {
+			const contents =
+				'MONGO_URI="mongodb+srv://admin@company.com:password@cluster.mongodb.net/db"\n';
+			expect(detectHeuristicFindings(contents)).toContain(
+				"Database URL with credentials",
+			);
+		});
+
 		it("does not flag query-parameter credentials", () => {
 			const contents =
 				"DATABASE_URL=postgresql://localhost:5432/composer?user=app&password=secret\n";
