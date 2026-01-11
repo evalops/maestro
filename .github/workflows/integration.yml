@@ -64,7 +64,7 @@ jobs:
       - name: Run integration tests
         env:
           COMPOSER_REDIS_URL: redis://localhost:6379
-          COMPOSER_DATABASE_URL: postgresql://composer:composer@localhost:5432/composer
+          COMPOSER_DATABASE_URL: postgresql://localhost:5432/composer?user=composer&password=composer
         run: |
           # Run all web tests with Redis and PostgreSQL available
           # Redis tests will use actual Redis instead of skipping
