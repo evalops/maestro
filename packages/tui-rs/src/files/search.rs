@@ -109,7 +109,7 @@ impl FileSearch {
             return FileSearchResult {
                 matches,
                 total_files,
-                query: query.to_string(),
+                query: query.clone(),
             };
         }
 
@@ -126,7 +126,7 @@ impl FileSearch {
         FileSearchResult {
             matches,
             total_files,
-            query: query.to_string(),
+            query,
         }
     }
 
