@@ -1,4 +1,21 @@
 //! Document extraction tool helpers.
+//!
+//! This module provides functionality for extracting text content from various
+//! document formats downloaded from URLs. It supports:
+//!
+//! - **PDF** - Portable Document Format
+//! - **DOCX** - Microsoft Word Open XML documents
+//! - **PPTX** - Microsoft PowerPoint Open XML presentations
+//! - **XLSX** - Microsoft Excel Open XML spreadsheets
+//! - **Text** - Plain text, Markdown, CSV, JSON, XML, YAML
+//!
+//! # Features
+//!
+//! - Automatic format detection based on file extension and MIME type
+//! - Content-Disposition header parsing for filename extraction
+//! - XML entity decoding for Office Open XML formats
+//! - Size limits to prevent memory exhaustion (50MB max)
+//! - Optional character limit truncation
 
 use std::cmp::Ordering;
 use std::io::Cursor;
@@ -281,4 +298,308 @@ pub async fn extract_document(args: Value) -> ToolResult {
     });
 
     ToolResult::success(output).with_details(details)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // ExtractDocumentArgs Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_args_deserialize_minimal() {
+        let json = serde_json::json!({
+            "url": "https://example.com/doc.pdf"
+        });
+        let args: ExtractDocumentArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.url, "https://example.com/doc.pdf");
+        assert!(args.max_chars.is_none());
+    }
+
+    #[test]
+    fn test_args_deserialize_with_max_chars() {
+        let json = serde_json::json!({
+            "url": "https://example.com/doc.pdf",
+            "max_chars": 5000
+        });
+        let args: ExtractDocumentArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.max_chars, Some(5000));
+    }
+
+    #[test]
+    fn test_args_deserialize_camel_case_alias() {
+        let json = serde_json::json!({
+            "url": "https://example.com/doc.pdf",
+            "maxChars": 10000
+        });
+        let args: ExtractDocumentArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.max_chars, Some(10000));
+    }
+
+    // ========================================================================
+    // guess_filename_from_url Tests
+    // ========================================================================
+
+    #[test]
+    fn test_guess_filename_simple() {
+        let url = reqwest::Url::parse("https://example.com/report.pdf").unwrap();
+        assert_eq!(guess_filename_from_url(&url), "report.pdf");
+    }
+
+    #[test]
+    fn test_guess_filename_with_path() {
+        let url = reqwest::Url::parse("https://example.com/docs/2024/report.docx").unwrap();
+        assert_eq!(guess_filename_from_url(&url), "report.docx");
+    }
+
+    #[test]
+    fn test_guess_filename_trailing_slash() {
+        let url = reqwest::Url::parse("https://example.com/files/").unwrap();
+        assert_eq!(guess_filename_from_url(&url), "files");
+    }
+
+    #[test]
+    fn test_guess_filename_no_path() {
+        let url = reqwest::Url::parse("https://example.com/").unwrap();
+        assert_eq!(guess_filename_from_url(&url), "document");
+    }
+
+    // ========================================================================
+    // parse_content_disposition Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_content_disposition_quoted() {
+        let header = r#"attachment; filename="report.pdf""#;
+        assert_eq!(
+            parse_content_disposition(Some(header)),
+            Some("report.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_content_disposition_unquoted() {
+        let header = "attachment; filename=report.pdf";
+        assert_eq!(
+            parse_content_disposition(Some(header)),
+            Some("report.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_content_disposition_utf8() {
+        let header = "attachment; filename*=UTF-8''report%20final.pdf";
+        assert_eq!(
+            parse_content_disposition(Some(header)),
+            Some("report final.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_content_disposition_none() {
+        assert_eq!(parse_content_disposition(None), None);
+    }
+
+    #[test]
+    fn test_parse_content_disposition_no_filename() {
+        let header = "attachment";
+        assert_eq!(parse_content_disposition(Some(header)), None);
+    }
+
+    // ========================================================================
+    // decode_xml_entities Tests
+    // ========================================================================
+
+    #[test]
+    fn test_decode_xml_entities_basic() {
+        assert_eq!(decode_xml_entities("&lt;div&gt;"), "<div>");
+    }
+
+    #[test]
+    fn test_decode_xml_entities_ampersand() {
+        assert_eq!(decode_xml_entities("A &amp; B"), "A & B");
+    }
+
+    #[test]
+    fn test_decode_xml_entities_quotes() {
+        assert_eq!(
+            decode_xml_entities("&quot;hello&quot; &apos;world&apos;"),
+            "\"hello\" 'world'"
+        );
+    }
+
+    #[test]
+    fn test_decode_xml_entities_mixed() {
+        assert_eq!(
+            decode_xml_entities("x &lt; y &amp;&amp; y &gt; z"),
+            "x < y && y > z"
+        );
+    }
+
+    #[test]
+    fn test_decode_xml_entities_none() {
+        assert_eq!(decode_xml_entities("plain text"), "plain text");
+    }
+
+    // ========================================================================
+    // strip_xml Tests
+    // ========================================================================
+
+    #[test]
+    fn test_strip_xml_simple_tags() {
+        assert_eq!(strip_xml("<p>Hello</p>"), "Hello");
+    }
+
+    #[test]
+    fn test_strip_xml_nested_tags() {
+        assert_eq!(strip_xml("<div><span>Text</span></div>"), "Text");
+    }
+
+    #[test]
+    fn test_strip_xml_paragraph_breaks() {
+        assert_eq!(
+            strip_xml("<w:p>Para1</w:p><w:p>Para2</w:p>"),
+            "Para1\nPara2\n"
+        );
+    }
+
+    #[test]
+    fn test_strip_xml_tabs() {
+        assert_eq!(strip_xml("A<w:tab/>B"), "A\tB");
+    }
+
+    #[test]
+    fn test_strip_xml_line_breaks() {
+        assert_eq!(strip_xml("Line1<w:br/>Line2"), "Line1\nLine2");
+    }
+
+    #[test]
+    fn test_strip_xml_with_entities() {
+        assert_eq!(strip_xml("<p>x &lt; y</p>"), "x < y");
+    }
+
+    // ========================================================================
+    // detect_format Tests
+    // ========================================================================
+
+    #[test]
+    fn test_detect_format_pdf_by_extension() {
+        assert_eq!(detect_format("report.pdf", None), Some("pdf"));
+    }
+
+    #[test]
+    fn test_detect_format_pdf_by_mime() {
+        assert_eq!(
+            detect_format("unknown", Some("application/pdf")),
+            Some("pdf")
+        );
+    }
+
+    #[test]
+    fn test_detect_format_docx_by_extension() {
+        assert_eq!(detect_format("document.docx", None), Some("docx"));
+    }
+
+    #[test]
+    fn test_detect_format_docx_by_mime() {
+        assert_eq!(
+            detect_format(
+                "doc",
+                Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            ),
+            Some("docx")
+        );
+    }
+
+    #[test]
+    fn test_detect_format_pptx() {
+        assert_eq!(detect_format("slides.pptx", None), Some("pptx"));
+    }
+
+    #[test]
+    fn test_detect_format_xlsx() {
+        assert_eq!(detect_format("data.xlsx", None), Some("xlsx"));
+    }
+
+    #[test]
+    fn test_detect_format_text_extensions() {
+        assert_eq!(detect_format("readme.txt", None), Some("text"));
+        assert_eq!(detect_format("readme.md", None), Some("text"));
+        assert_eq!(detect_format("data.csv", None), Some("text"));
+        assert_eq!(detect_format("config.json", None), Some("text"));
+        assert_eq!(detect_format("config.yaml", None), Some("text"));
+        assert_eq!(detect_format("config.yml", None), Some("text"));
+        assert_eq!(detect_format("data.xml", None), Some("text"));
+    }
+
+    #[test]
+    fn test_detect_format_text_by_mime() {
+        assert_eq!(detect_format("unknown", Some("text/plain")), Some("text"));
+        assert_eq!(detect_format("unknown", Some("text/html")), Some("text"));
+    }
+
+    #[test]
+    fn test_detect_format_unknown() {
+        assert_eq!(detect_format("unknown.bin", None), None);
+        assert_eq!(detect_format("image.png", Some("image/png")), None);
+    }
+
+    #[test]
+    fn test_detect_format_case_insensitive() {
+        assert_eq!(detect_format("DOC.PDF", None), Some("pdf"));
+        assert_eq!(detect_format("DOC.DOCX", None), Some("docx"));
+    }
+
+    // ========================================================================
+    // extract_text_file Tests
+    // ========================================================================
+
+    #[test]
+    fn test_extract_text_file_utf8() {
+        let bytes = b"Hello, World!";
+        assert_eq!(extract_text_file(bytes), "Hello, World!");
+    }
+
+    #[test]
+    fn test_extract_text_file_multiline() {
+        let bytes = b"Line 1\nLine 2\nLine 3";
+        assert_eq!(extract_text_file(bytes), "Line 1\nLine 2\nLine 3");
+    }
+
+    #[test]
+    fn test_extract_text_file_unicode() {
+        let text = "こんにちは World 🌍";
+        let bytes = text.as_bytes();
+        assert_eq!(extract_text_file(bytes), text);
+    }
+
+    // ========================================================================
+    // extract_from_format Tests
+    // ========================================================================
+
+    #[test]
+    fn test_extract_from_format_text() {
+        let bytes = b"Hello from text file";
+        let result = extract_from_format("text", bytes);
+        assert_eq!(result, Some("Hello from text file".to_string()));
+    }
+
+    #[test]
+    fn test_extract_from_format_unknown() {
+        let bytes = b"some data";
+        let result = extract_from_format("unknown_format", bytes);
+        assert!(result.is_none());
+    }
+
+    // ========================================================================
+    // MAX_DOWNLOAD_BYTES Constant
+    // ========================================================================
+
+    #[test]
+    fn test_max_download_bytes() {
+        // 50MB = 50 * 1024 * 1024 = 52,428,800 bytes
+        assert_eq!(MAX_DOWNLOAD_BYTES, 52_428_800);
+    }
 }
