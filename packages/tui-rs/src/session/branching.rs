@@ -24,6 +24,7 @@ pub struct BranchPoint {
     /// When the branch was created (unix timestamp ms)
     pub created_at: u64,
     /// Optional description of why this branch was created
+    #[serde(default)]
     pub description: Option<String>,
     /// Tags for organizing branches
     #[serde(default)]
