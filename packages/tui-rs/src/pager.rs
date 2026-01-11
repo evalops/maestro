@@ -13,7 +13,7 @@ use crate::key_hints::{self, KeyBinding};
 
 /// Navigation bindings for the pager
 pub mod bindings {
-    use super::*;
+    use super::{key_hints, KeyBinding, KeyCode};
 
     pub const UP: KeyBinding = key_hints::plain(KeyCode::Up);
     pub const DOWN: KeyBinding = key_hints::plain(KeyCode::Down);
@@ -50,6 +50,7 @@ pub struct Pager<'a> {
 
 impl<'a> Pager<'a> {
     /// Create a new pager with the given content
+    #[must_use]
     pub fn new(content: Text<'a>) -> Self {
         Self {
             content,
@@ -62,6 +63,7 @@ impl<'a> Pager<'a> {
     }
 
     /// Create a pager from lines
+    #[must_use]
     pub fn from_lines(lines: Vec<Line<'a>>) -> Self {
         Self::new(Text::from(lines))
     }
@@ -78,18 +80,21 @@ impl<'a> Pager<'a> {
     }
 
     /// Show line numbers
+    #[must_use]
     pub fn line_numbers(mut self, show: bool) -> Self {
         self.show_line_numbers = show;
         self
     }
 
     /// Enable/disable line wrapping
+    #[must_use]
     pub fn wrap(mut self, wrap: bool) -> Self {
         self.wrap = wrap;
         self
     }
 
     /// Check if the pager is done
+    #[must_use]
     pub fn is_done(&self) -> bool {
         self.done
     }
@@ -130,11 +135,13 @@ impl<'a> Pager<'a> {
     }
 
     /// Get the content height
+    #[must_use]
     pub fn content_height(&self) -> usize {
         self.content.lines.len()
     }
 
     /// Get current scroll position
+    #[must_use]
     pub fn scroll_position(&self) -> usize {
         self.scroll
     }
@@ -151,7 +158,7 @@ impl Widget for Pager<'_> {
             .border_style(Style::default().fg(Color::DarkGray));
 
         if let Some(title) = &self.title {
-            block = block.title(format!(" {} ", title));
+            block = block.title(format!(" {title} "));
         }
 
         // Inner area for content
@@ -213,11 +220,11 @@ fn create_footer(scroll: usize, total_lines: usize, visible_lines: usize) -> Lin
         "End".to_string()
     } else {
         let percent = (scroll * 100) / total_lines.max(1);
-        format!("{}%", percent)
+        format!("{percent}%")
     };
 
     spans.push(Span::styled(
-        format!(" {} ", position),
+        format!(" {position} "),
         Style::default().fg(Color::Black).bg(Color::DarkGray),
     ));
 
@@ -236,12 +243,12 @@ fn create_footer(scroll: usize, total_lines: usize, visible_lines: usize) -> Lin
             spans.push(Span::styled(" │ ", Style::default().fg(Color::DarkGray)));
         }
         spans.push(Span::styled(
-            key.to_string(),
+            (*key).to_string(),
             Style::default().add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
-            desc.to_string(),
+            (*desc).to_string(),
             Style::default().fg(Color::DarkGray),
         ));
     }
@@ -255,6 +262,7 @@ pub struct PagerModal<'a> {
 }
 
 impl<'a> PagerModal<'a> {
+    #[must_use]
     pub fn new(content: Text<'a>) -> Self {
         Self {
             pager: Pager::new(content),
@@ -266,6 +274,7 @@ impl<'a> PagerModal<'a> {
         self
     }
 
+    #[must_use]
     pub fn is_done(&self) -> bool {
         self.pager.is_done()
     }

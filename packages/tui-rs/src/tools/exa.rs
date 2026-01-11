@@ -29,7 +29,7 @@ fn normalize_cost_dollars(value: &Value) -> Option<f64> {
             }
             trimmed.parse::<f64>().ok()
         }
-        Value::Object(map) => map.get("total").and_then(|v| v.as_f64()),
+        Value::Object(map) => map.get("total").and_then(serde_json::Value::as_f64),
         _ => None,
     }
 }
@@ -76,7 +76,7 @@ pub async fn websearch(args: Value) -> ToolResult {
     let parsed: WebsearchArgs = match serde_json::from_value(args) {
         Ok(val) => val,
         Err(err) => {
-            return ToolResult::failure(format!("Invalid websearch arguments: {}", err));
+            return ToolResult::failure(format!("Invalid websearch arguments: {err}"));
         }
     };
 
@@ -143,7 +143,7 @@ pub async fn websearch(args: Value) -> ToolResult {
 
     let client = reqwest::Client::new();
     let response = match client
-        .post(format!("{}/search", EXA_API_BASE))
+        .post(format!("{EXA_API_BASE}/search"))
         .bearer_auth(api_key)
         .json(&body)
         .send()
@@ -151,7 +151,7 @@ pub async fn websearch(args: Value) -> ToolResult {
     {
         Ok(resp) => resp,
         Err(err) => {
-            return ToolResult::failure(format!("Websearch failed: {}", err));
+            return ToolResult::failure(format!("Websearch failed: {err}"));
         }
     };
 
@@ -160,8 +160,7 @@ pub async fn websearch(args: Value) -> ToolResult {
         Ok(json) => json,
         Err(err) => {
             return ToolResult::failure(format!(
-                "Failed to parse websearch response (status {}): {}",
-                status, err
+                "Failed to parse websearch response (status {status}): {err}"
             ));
         }
     };
@@ -173,7 +172,7 @@ pub async fn websearch(args: Value) -> ToolResult {
             .and_then(|v| v.as_str())
             .or_else(|| data.get("message").and_then(|v| v.as_str()))
             .unwrap_or("Websearch failed");
-        return ToolResult::failure(format!("Websearch error ({}): {}", status, message));
+        return ToolResult::failure(format!("Websearch error ({status}): {message}"));
     }
 
     let results = data
@@ -192,10 +191,10 @@ pub async fn websearch(args: Value) -> ToolResult {
     let mut output_lines = Vec::new();
     output_lines.push(format!("Results: {}", results.len()));
     if !resolved_type.is_empty() {
-        output_lines.push(format!("Search type: {}", resolved_type));
+        output_lines.push(format!("Search type: {resolved_type}"));
     }
     if let Some(cost) = cost {
-        output_lines.push(format!("Cost: ${:.4}", cost));
+        output_lines.push(format!("Cost: ${cost:.4}"));
     }
     output_lines.push(String::new());
 
@@ -205,7 +204,7 @@ pub async fn websearch(args: Value) -> ToolResult {
             .and_then(|v| v.as_str())
             .unwrap_or("Untitled");
         let url = result.get("url").and_then(|v| v.as_str()).unwrap_or("");
-        output_lines.push(format!("{} - {}", title, url));
+        output_lines.push(format!("{title} - {url}"));
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             let snippet: String = text.chars().take(MAX_RESULT_TEXT_CHARS).collect();
             if !snippet.trim().is_empty() {
@@ -249,7 +248,7 @@ pub async fn websearch(args: Value) -> ToolResult {
 pub async fn codesearch(args: Value) -> ToolResult {
     let parsed: CodesearchArgs = match serde_json::from_value(args) {
         Ok(val) => val,
-        Err(err) => return ToolResult::failure(format!("Invalid codesearch arguments: {}", err)),
+        Err(err) => return ToolResult::failure(format!("Invalid codesearch arguments: {err}")),
     };
 
     let api_key = match get_exa_api_key() {
@@ -267,14 +266,14 @@ pub async fn codesearch(args: Value) -> ToolResult {
 
     let client = reqwest::Client::new();
     let response = match client
-        .post(format!("{}/context", EXA_API_BASE))
+        .post(format!("{EXA_API_BASE}/context"))
         .bearer_auth(api_key)
         .json(&body)
         .send()
         .await
     {
         Ok(resp) => resp,
-        Err(err) => return ToolResult::failure(format!("Codesearch failed: {}", err)),
+        Err(err) => return ToolResult::failure(format!("Codesearch failed: {err}")),
     };
 
     let status = response.status();
@@ -282,8 +281,7 @@ pub async fn codesearch(args: Value) -> ToolResult {
         Ok(json) => json,
         Err(err) => {
             return ToolResult::failure(format!(
-                "Failed to parse codesearch response (status {}): {}",
-                status, err
+                "Failed to parse codesearch response (status {status}): {err}"
             ));
         }
     };
@@ -295,7 +293,7 @@ pub async fn codesearch(args: Value) -> ToolResult {
             .and_then(|v| v.as_str())
             .or_else(|| data.get("message").and_then(|v| v.as_str()))
             .unwrap_or("Codesearch failed");
-        return ToolResult::failure(format!("Codesearch error ({}): {}", status, message));
+        return ToolResult::failure(format!("Codesearch error ({status}): {message}"));
     }
 
     let response_text = data
@@ -305,13 +303,16 @@ pub async fn codesearch(args: Value) -> ToolResult {
         .to_string();
     let results_count = data
         .get("resultsCount")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let output_tokens = data
         .get("outputTokens")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
-    let search_time = data.get("searchTime").and_then(|v| v.as_u64()).unwrap_or(0);
+    let search_time = data
+        .get("searchTime")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     let cost = data
         .get("costDollars")
         .and_then(normalize_cost_dollars)
@@ -320,10 +321,9 @@ pub async fn codesearch(args: Value) -> ToolResult {
     let query = data.get("query").and_then(|v| v.as_str()).unwrap_or("");
 
     let mut output_lines = Vec::new();
-    output_lines.push(format!("Query: \"{}\"", query));
+    output_lines.push(format!("Query: \"{query}\""));
     output_lines.push(format!(
-        "Results: {} sources, {} tokens",
-        results_count, output_tokens
+        "Results: {results_count} sources, {output_tokens} tokens"
     ));
     output_lines.push(format!(
         "Search time: {:.2}s, Cost: ${:.4}",

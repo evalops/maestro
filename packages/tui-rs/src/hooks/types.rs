@@ -1,7 +1,7 @@
 //! Hook types and traits
 //!
 //! Defines the core types for the hook system including:
-//! - Hook event types (PreToolUse, PostToolUse, etc.)
+//! - Hook event types (`PreToolUse`, `PostToolUse`, etc.)
 //! - Hook result types (Continue, Block, Modify)
 //! - Traits for implementing hooks
 
@@ -60,7 +60,7 @@ pub enum HookEventType {
     Branch,
 }
 
-/// Input data for PreToolUse hooks
+/// Input data for `PreToolUse` hooks
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreToolUseInput {
     pub hook_event_name: String,
@@ -72,7 +72,7 @@ pub struct PreToolUseInput {
     pub tool_input: serde_json::Value,
 }
 
-/// Input data for PostToolUse hooks
+/// Input data for `PostToolUse` hooks
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostToolUseInput {
     pub hook_event_name: String,
@@ -86,7 +86,7 @@ pub struct PostToolUseInput {
     pub is_error: bool,
 }
 
-/// Input data for SessionStart hooks
+/// Input data for `SessionStart` hooks
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStartInput {
     pub hook_event_name: String,
@@ -96,7 +96,7 @@ pub struct SessionStartInput {
     pub source: String,
 }
 
-/// Input data for SessionEnd hooks
+/// Input data for `SessionEnd` hooks
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEndInput {
     pub hook_event_name: String,
@@ -119,7 +119,7 @@ pub struct OverflowInput {
     pub max_tokens: u64,
 }
 
-/// Input data for PreMessage hooks
+/// Input data for `PreMessage` hooks
 ///
 /// Called before a user message is sent to the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,7 +136,7 @@ pub struct PreMessageInput {
     pub model: Option<String>,
 }
 
-/// Input data for PostMessage hooks
+/// Input data for `PostMessage` hooks
 ///
 /// Called after an assistant response is generated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,7 +157,7 @@ pub struct PostMessageInput {
     pub stop_reason: Option<String>,
 }
 
-/// Input data for OnError hooks
+/// Input data for `OnError` hooks
 ///
 /// Called when an error occurs during agent execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,7 +176,7 @@ pub struct OnErrorInput {
     pub recoverable: bool,
 }
 
-/// Input data for EvalGate hooks
+/// Input data for `EvalGate` hooks
 ///
 /// Called after tool execution to emit structured assertions/scores.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,7 +195,7 @@ pub struct EvalGateInput {
     pub tool_output: String,
 }
 
-/// Input data for SubagentStart hooks
+/// Input data for `SubagentStart` hooks
 ///
 /// Called before spawning a subagent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,7 +212,7 @@ pub struct SubagentStartInput {
     pub parent_agent_id: Option<String>,
 }
 
-/// Input data for SubagentStop hooks
+/// Input data for `SubagentStop` hooks
 ///
 /// Called when a subagent completes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,7 +233,7 @@ pub struct SubagentStopInput {
     pub success: bool,
 }
 
-/// Input data for PermissionRequest hooks
+/// Input data for `PermissionRequest` hooks
 ///
 /// Called when permission is required for a tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,7 +252,7 @@ pub struct PermissionRequestInput {
     pub reason: String,
 }
 
-/// Trait for PreToolUse hooks
+/// Trait for `PreToolUse` hooks
 ///
 /// Implement this trait to intercept tool calls before execution.
 pub trait PreToolUseHook: Send + Sync {
@@ -274,7 +274,7 @@ pub trait PreToolUseHook: Send + Sync {
     }
 }
 
-/// Trait for PostToolUse hooks
+/// Trait for `PostToolUse` hooks
 ///
 /// Implement this trait to process tool results after execution.
 pub trait PostToolUseHook: Send + Sync {
@@ -294,12 +294,12 @@ pub trait PostToolUseHook: Send + Sync {
     }
 }
 
-/// Trait for SessionStart hooks
+/// Trait for `SessionStart` hooks
 pub trait SessionStartHook: Send + Sync {
     fn on_session_start(&self, input: &SessionStartInput) -> HookResult;
 }
 
-/// Trait for SessionEnd hooks
+/// Trait for `SessionEnd` hooks
 pub trait SessionEndHook: Send + Sync {
     fn on_session_end(&self, input: &SessionEndInput) -> HookResult;
 }
@@ -318,7 +318,7 @@ pub trait OverflowHook: Send + Sync {
     fn on_overflow(&self, input: &OverflowInput) -> HookResult;
 }
 
-/// Trait for PreMessage hooks
+/// Trait for `PreMessage` hooks
 ///
 /// Called before a user message is sent to the model.
 /// Can be used to modify, validate, or block messages.
@@ -332,7 +332,7 @@ pub trait PreMessageHook: Send + Sync {
     fn on_pre_message(&self, input: &PreMessageInput) -> HookResult;
 }
 
-/// Trait for PostMessage hooks
+/// Trait for `PostMessage` hooks
 ///
 /// Called after an assistant response is generated.
 /// Can be used for logging, analytics, or post-processing.
@@ -344,7 +344,7 @@ pub trait PostMessageHook: Send + Sync {
     fn on_post_message(&self, input: &PostMessageInput) -> HookResult;
 }
 
-/// Trait for OnError hooks
+/// Trait for `OnError` hooks
 ///
 /// Called when an error occurs during agent execution.
 /// Can be used for error logging, alerting, or recovery.
@@ -360,7 +360,7 @@ pub trait OnErrorHook: Send + Sync {
     fn on_error(&self, input: &OnErrorInput) -> HookResult;
 }
 
-/// Trait for EvalGate hooks
+/// Trait for `EvalGate` hooks
 ///
 /// Called after tool execution to emit structured assertions/scores.
 /// Used for evaluation and testing scenarios.
@@ -369,7 +369,7 @@ pub trait EvalGateHook: Send + Sync {
     fn on_eval_gate(&self, input: &EvalGateInput) -> HookResult;
 }
 
-/// Trait for SubagentStart hooks
+/// Trait for `SubagentStart` hooks
 ///
 /// Called before spawning a subagent.
 /// Can be used to modify subagent parameters or block spawning.
@@ -383,7 +383,7 @@ pub trait SubagentStartHook: Send + Sync {
     fn on_subagent_start(&self, input: &SubagentStartInput) -> HookResult;
 }
 
-/// Trait for SubagentStop hooks
+/// Trait for `SubagentStop` hooks
 ///
 /// Called when a subagent completes execution.
 /// Can be used for logging or post-processing subagent results.
@@ -392,7 +392,7 @@ pub trait SubagentStopHook: Send + Sync {
     fn on_subagent_stop(&self, input: &SubagentStopInput) -> HookResult;
 }
 
-/// Trait for PermissionRequest hooks
+/// Trait for `PermissionRequest` hooks
 ///
 /// Called when a tool requires permission to execute.
 /// Can be used to auto-approve, auto-deny, or modify approval behavior.

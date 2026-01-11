@@ -16,6 +16,7 @@ pub struct FileMatch {
 }
 
 impl FileMatch {
+    #[must_use]
     pub fn new(file: WorkspaceFile, score: i32, matched_indices: Vec<usize>) -> Self {
         Self {
             file,
@@ -46,6 +47,7 @@ pub struct FileSearch {
 
 impl FileSearch {
     /// Create a new file search
+    #[must_use]
     pub fn new(files: Vec<WorkspaceFile>) -> Self {
         Self {
             files,
@@ -54,30 +56,37 @@ impl FileSearch {
     }
 
     /// Set maximum results
+    #[must_use]
     pub fn max_results(mut self, max: usize) -> Self {
         self.max_results = max;
         self
     }
 
     /// Filter to only source code files
+    #[must_use]
     pub fn source_code_only(mut self) -> Self {
-        self.files.retain(|f| f.is_source_code());
+        self.files
+            .retain(super::workspace::WorkspaceFile::is_source_code);
         self
     }
 
     /// Filter to only config files
+    #[must_use]
     pub fn config_only(mut self) -> Self {
-        self.files.retain(|f| f.is_config());
+        self.files
+            .retain(super::workspace::WorkspaceFile::is_config);
         self
     }
 
     /// Filter by file extensions
+    #[must_use]
     pub fn with_extensions(mut self, extensions: &[&str]) -> Self {
         self.files.retain(|f| f.has_extension(extensions));
         self
     }
 
     /// Search for files matching the query
+    #[must_use]
     pub fn search(&self, query: &str) -> FileSearchResult {
         let query = query.to_lowercase();
         let total_files = self.files.len();
@@ -233,6 +242,7 @@ fn fuzzy_match(text: &str, pattern: &str) -> Option<(i32, Vec<usize>)> {
 }
 
 /// Highlight matched characters in a string (indices are byte indices)
+#[must_use]
 pub fn highlight_matches(text: &str, byte_indices: &[usize]) -> Vec<(char, bool)> {
     text.char_indices()
         .map(|(byte_idx, c)| (c, byte_indices.contains(&byte_idx)))

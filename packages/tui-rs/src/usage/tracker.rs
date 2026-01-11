@@ -59,17 +59,20 @@ impl TurnUsage {
     }
 
     /// Set the duration for this turn
+    #[must_use]
     pub fn with_duration(mut self, duration: Duration) -> Self {
         self.duration = Some(duration);
         self
     }
 
     /// Total tokens (input + output)
+    #[must_use]
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens + self.output_tokens
     }
 
     /// Tokens per second (if duration is set)
+    #[must_use]
     pub fn tokens_per_second(&self) -> Option<f64> {
         self.duration.map(|d| {
             let secs = d.as_secs_f64();
@@ -98,6 +101,7 @@ pub struct SessionUsage {
 
 impl SessionUsage {
     /// Create a new session usage tracker
+    #[must_use]
     pub fn new(session_id: Option<String>) -> Self {
         Self {
             session_id,
@@ -117,6 +121,7 @@ impl SessionUsage {
     }
 
     /// Get total stats across all turns
+    #[must_use]
     pub fn totals(&self) -> UsageStats {
         let mut stats = UsageStats::default();
         for turn in &self.turns {
@@ -126,16 +131,19 @@ impl SessionUsage {
     }
 
     /// Get stats for a specific model
+    #[must_use]
     pub fn stats_for_model(&self, model: &str) -> Option<&UsageStats> {
         self.by_model.get(model)
     }
 
     /// Number of turns in this session
+    #[must_use]
     pub fn turn_count(&self) -> usize {
         self.turns.len()
     }
 
     /// Duration since session start
+    #[must_use]
     pub fn duration(&self) -> Option<Duration> {
         self.started_at
             .and_then(|start| SystemTime::now().duration_since(start).ok())
@@ -177,11 +185,13 @@ impl UsageStats {
     }
 
     /// Total tokens
+    #[must_use]
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens + self.output_tokens
     }
 
     /// Average tokens per turn
+    #[must_use]
     pub fn avg_tokens_per_turn(&self) -> f64 {
         if self.turns > 0 {
             self.total_tokens() as f64 / self.turns as f64
@@ -191,6 +201,7 @@ impl UsageStats {
     }
 
     /// Average cost per turn
+    #[must_use]
     pub fn avg_cost_per_turn(&self) -> f64 {
         if self.turns > 0 {
             self.cost / self.turns as f64
@@ -200,6 +211,7 @@ impl UsageStats {
     }
 
     /// Cache hit ratio (cached reads vs total input)
+    #[must_use]
     pub fn cache_hit_ratio(&self) -> f64 {
         let total_input = self.input_tokens + self.cache_read_tokens;
         if total_input > 0 {
@@ -210,6 +222,7 @@ impl UsageStats {
     }
 
     /// Output tokens per second (if duration available)
+    #[must_use]
     pub fn tokens_per_second(&self) -> Option<f64> {
         let secs = self.total_duration.as_secs_f64();
         if secs > 0.0 {
@@ -273,6 +286,7 @@ pub struct UsageTracker {
 
 impl UsageTracker {
     /// Create a new usage tracker
+    #[must_use]
     pub fn new() -> Self {
         Self {
             current_model: "unknown".to_string(),
@@ -362,36 +376,43 @@ impl UsageTracker {
     }
 
     /// Get total cost
+    #[must_use]
     pub fn total_cost(&self) -> f64 {
         self.session.totals().cost
     }
 
     /// Get total tokens
+    #[must_use]
     pub fn total_tokens(&self) -> u64 {
         self.session.totals().total_tokens()
     }
 
     /// Get session stats
+    #[must_use]
     pub fn stats(&self) -> UsageStats {
         self.session.totals()
     }
 
     /// Get stats for current model
+    #[must_use]
     pub fn current_model_stats(&self) -> Option<&UsageStats> {
         self.session.stats_for_model(&self.current_model)
     }
 
     /// Get the session data
+    #[must_use]
     pub fn session(&self) -> &SessionUsage {
         &self.session
     }
 
     /// Get number of turns
+    #[must_use]
     pub fn turn_count(&self) -> usize {
         self.session.turn_count()
     }
 
     /// Generate a summary string
+    #[must_use]
     pub fn summary(&self) -> String {
         let stats = self.stats();
         format!(
@@ -404,6 +425,7 @@ impl UsageTracker {
     }
 
     /// Generate a detailed summary
+    #[must_use]
     pub fn detailed_summary(&self) -> String {
         let stats = self.stats();
         let mut lines = vec![
@@ -437,7 +459,7 @@ impl UsageTracker {
 
         if let Some(tps) = stats.tokens_per_second() {
             lines.push(String::new());
-            lines.push(format!("Speed: {:.1} tokens/sec", tps));
+            lines.push(format!("Speed: {tps:.1} tokens/sec"));
         }
 
         // Per-model breakdown if multiple models used
@@ -456,6 +478,7 @@ impl UsageTracker {
     }
 
     /// Export usage data
+    #[must_use]
     pub fn export(&self) -> UsageExport {
         UsageExport {
             session_id: self.session.session_id.clone(),

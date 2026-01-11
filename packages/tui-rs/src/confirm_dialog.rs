@@ -73,12 +73,14 @@ impl ConfirmDialog {
     }
 
     /// Mark as dangerous (destructive action).
+    #[must_use]
     pub fn dangerous(mut self) -> Self {
         self.dangerous = true;
         self
     }
 
     /// Default to yes selected.
+    #[must_use]
     pub fn default_yes(mut self) -> Self {
         self.selected_yes = true;
         self
@@ -106,11 +108,11 @@ impl ConfirmDialog {
                 ConfirmResult::Pending
             }
             // Direct selection
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
+            KeyCode::Char('y' | 'Y') => {
                 self.result = Some(ConfirmResult::Confirmed);
                 ConfirmResult::Confirmed
             }
-            KeyCode::Char('n') | KeyCode::Char('N') => {
+            KeyCode::Char('n' | 'N') => {
                 self.result = Some(ConfirmResult::Cancelled);
                 ConfirmResult::Cancelled
             }
@@ -139,11 +141,13 @@ impl ConfirmDialog {
     }
 
     /// Check if dialog is resolved.
+    #[must_use]
     pub fn is_resolved(&self) -> bool {
         self.result.is_some()
     }
 
     /// Get the result if resolved.
+    #[must_use]
     pub fn result(&self) -> Option<ConfirmResult> {
         self.result
     }
@@ -155,8 +159,9 @@ impl ConfirmDialog {
     }
 
     /// Calculate the preferred size for this dialog.
+    #[must_use]
     pub fn preferred_size(&self) -> (u16, u16) {
-        let msg_width = self.message.lines().map(|l| l.len()).max().unwrap_or(20);
+        let msg_width = self.message.lines().map(str::len).max().unwrap_or(20);
         let title_width = self.title.len() + 4;
         let button_width = self.yes_label.len() + self.no_label.len() + 10;
 
@@ -167,12 +172,13 @@ impl ConfirmDialog {
     }
 }
 
-/// Widget for rendering a ConfirmDialog.
+/// Widget for rendering a `ConfirmDialog`.
 pub struct ConfirmDialogWidget<'a> {
     dialog: &'a ConfirmDialog,
 }
 
 impl<'a> ConfirmDialogWidget<'a> {
+    #[must_use]
     pub fn new(dialog: &'a ConfirmDialog) -> Self {
         Self { dialog }
     }
@@ -243,13 +249,13 @@ impl Widget for ConfirmDialogWidget<'_> {
             Style::default().fg(Color::DarkGray)
         };
 
-        let no_style = if !self.dialog.selected_yes {
+        let no_style = if self.dialog.selected_yes {
+            Style::default().fg(Color::DarkGray)
+        } else {
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::White)
                 .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
         };
 
         let yes_text = format!(" {} ", self.dialog.yes_label);

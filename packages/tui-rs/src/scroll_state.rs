@@ -18,6 +18,7 @@ pub struct ScrollState {
 
 impl ScrollState {
     /// Create a new scroll state with no selection.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             selected_idx: None,
@@ -95,7 +96,7 @@ impl ScrollState {
         });
     }
 
-    /// Move selection up by a page (visible_rows items).
+    /// Move selection up by a page (`visible_rows` items).
     pub fn page_up(&mut self, len: usize, visible_rows: usize) {
         if len == 0 {
             self.selected_idx = None;
@@ -108,7 +109,7 @@ impl ScrollState {
         });
     }
 
-    /// Move selection down by a page (visible_rows items).
+    /// Move selection down by a page (`visible_rows` items).
     pub fn page_down(&mut self, len: usize, visible_rows: usize) {
         if len == 0 {
             self.selected_idx = None;
@@ -154,6 +155,7 @@ impl ScrollState {
     }
 
     /// Get the range of visible indices given the total length and visible rows.
+    #[must_use]
     pub fn visible_range(&self, len: usize, visible_rows: usize) -> std::ops::Range<usize> {
         let start = self.scroll_top;
         let end = (start + visible_rows).min(len);
@@ -161,11 +163,13 @@ impl ScrollState {
     }
 
     /// Check if there are items above the visible area.
+    #[must_use]
     pub fn has_items_above(&self) -> bool {
         self.scroll_top > 0
     }
 
     /// Check if there are items below the visible area.
+    #[must_use]
     pub fn has_items_below(&self, len: usize, visible_rows: usize) -> bool {
         self.scroll_top + visible_rows < len
     }

@@ -117,11 +117,13 @@ impl Default for SafetyConfig {
 
 impl SafetyController {
     /// Create a new safety controller with default configuration
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(SafetyConfig::default())
     }
 
     /// Create a new safety controller with custom configuration
+    #[must_use]
     pub fn with_config(config: SafetyConfig) -> Self {
         Self {
             recent_calls: Vec::new(),
@@ -134,6 +136,7 @@ impl SafetyController {
     ///
     /// Returns a verdict indicating whether the call is allowed or blocked.
     /// Does NOT record the call - call `record_tool_call` after execution.
+    #[must_use]
     pub fn check_tool_call(&self, tool_name: &str, args: &serde_json::Value) -> SafetyVerdict {
         // Check doom loop first
         if let Some(reason) = self.check_doom_loop(tool_name, args) {
@@ -214,8 +217,7 @@ impl SafetyController {
 
             if all_identical {
                 return Some(format!(
-                    "Blocked \"{}\" to prevent a possible doom loop: same tool invoked {} times with identical arguments.",
-                    tool_name, threshold
+                    "Blocked \"{tool_name}\" to prevent a possible doom loop: same tool invoked {threshold} times with identical arguments."
                 ));
             }
         }
@@ -271,6 +273,7 @@ const RETRYABLE_PATTERNS: &[&str] = &[
 ///
 /// Returns true if the error is likely transient and the operation could
 /// succeed on retry (e.g., rate limits, server errors, overload).
+#[must_use]
 pub fn is_retryable_error(error_message: &str) -> bool {
     let lower = error_message.to_lowercase();
     RETRYABLE_PATTERNS
@@ -293,6 +296,7 @@ const OVERFLOW_PATTERNS: &[&str] = &[
 /// Check if an error message indicates context overflow
 ///
 /// Context overflow is NOT retryable - requires context compaction.
+#[must_use]
 pub fn is_context_overflow(error_message: &str) -> bool {
     let lower = error_message.to_lowercase();
     OVERFLOW_PATTERNS

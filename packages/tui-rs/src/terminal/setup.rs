@@ -32,7 +32,7 @@
 //! - `REPORT_ALTERNATE_KEYS`: Provide base layout keys alongside modified ones
 //!
 //! These enhancements improve the reliability of keyboard shortcuts, especially in
-//! SSH sessions and modern terminals like iTerm2, WezTerm, and Kitty.
+//! SSH sessions and modern terminals like iTerm2, `WezTerm`, and Kitty.
 //!
 //! # Inline Viewport Mode
 //!
@@ -66,7 +66,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement},
 };
-use once_cell::sync::Lazy;
 use ratatui::backend::CrosstermBackend;
 use ratatui::{TerminalOptions, Viewport};
 
@@ -78,7 +77,8 @@ use ratatui::{TerminalOptions, Viewport};
 ///
 /// We use `Lazy` from `once_cell` to ensure thread-safe lazy initialization,
 /// and `Mutex` to provide interior mutability for the restore operation.
-static TTY: Lazy<Mutex<Option<File>>> = Lazy::new(|| Mutex::new(None));
+static TTY: std::sync::LazyLock<Mutex<Option<File>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
 
 #[cfg(windows)]
 const TERMINAL_DEVICE: &str = "CONOUT$";
@@ -125,6 +125,7 @@ pub struct TerminalCapabilities {
 ///
 /// This is a quick availability check that discards error details. For detailed
 /// error reporting, use [`check_tty()`] instead.
+#[must_use]
 pub fn is_tty_available() -> bool {
     OpenOptions::new()
         .read(true)
@@ -184,7 +185,7 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
         .map_err(|e| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("Cannot open {}: {}", TERMINAL_DEVICE, e),
+                format!("Cannot open {TERMINAL_DEVICE}: {e}"),
             )
         })?;
 
@@ -223,7 +224,7 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
     // Move cursor to bottom of screen and print enough newlines to create
     // space for the inline viewport. This ensures the viewport starts at
     // the correct position for history push.
-    write!(tty, "\x1b[{};1H", height)?; // Move to last row
+    write!(tty, "\x1b[{height};1H")?; // Move to last row
     for _ in 0..viewport_height {
         writeln!(tty)?;
     }
@@ -239,7 +240,8 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
 
     // Store the TTY handle globally for restore
     // Use unwrap_or_else to recover from poisoned locks
-    *TTY.lock().unwrap_or_else(|e| e.into_inner()) = Some(tty.try_clone()?);
+    *TTY.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tty.try_clone()?);
 
     // Create the terminal with inline viewport mode
     let backend = CrosstermBackend::new(tty);
@@ -277,7 +279,8 @@ pub fn init_fallback() -> io::Result<(Terminal, TerminalCapabilities)> {
         original_hook(panic_info);
     }));
 
-    *TTY.lock().unwrap_or_else(|e| e.into_inner()) = Some(file.try_clone()?);
+    *TTY.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(file.try_clone()?);
 
     let backend = CrosstermBackend::new(file);
     let terminal = Terminal::with_options(
@@ -303,7 +306,9 @@ pub fn restore() -> io::Result<()> {
 
 fn restore_impl() -> io::Result<()> {
     // Get the TTY handle - recover from poisoned lock to ensure terminal cleanup
-    let mut guard = TTY.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = TTY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     if let Some(ref mut tty) = *guard {
         // Pop keyboard enhancement flags
@@ -364,6 +369,7 @@ pub fn size() -> io::Result<(u16, u16)> {
 ///
 /// The viewport height is calculated as `height - 2`, with a minimum of 10 rows
 /// to ensure usability even in very small terminals.
+#[must_use]
 pub fn calculate_viewport(height: u16) -> (u16, u16) {
     let viewport_height = height.saturating_sub(2).max(10);
     let viewport_top = height.saturating_sub(viewport_height) + 1;

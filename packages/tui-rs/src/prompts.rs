@@ -55,6 +55,7 @@ pub enum PromptSource {
 }
 
 impl PromptSource {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::User => "user",
@@ -196,7 +197,7 @@ fn scan_prompts_directory(dir: &Path, source_type: PromptSource) -> Vec<PromptDe
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map(|e| e == "md").unwrap_or(false) {
+            if path.extension().is_some_and(|e| e == "md") {
                 if let Some(prompt) = load_prompt_from_file(&path, source_type) {
                     prompts.push(prompt);
                 }
@@ -208,6 +209,7 @@ fn scan_prompts_directory(dir: &Path, source_type: PromptSource) -> Vec<PromptDe
 }
 
 /// Load all available prompts from user and project directories.
+#[must_use]
 pub fn load_prompts(workspace_dir: &Path) -> Vec<PromptDefinition> {
     let home = dirs::home_dir().unwrap_or_default();
     let user_prompts_dir = home.join(".composer").join("prompts");
@@ -233,6 +235,7 @@ pub fn load_prompts(workspace_dir: &Path) -> Vec<PromptDefinition> {
 }
 
 /// Find a prompt by name (case-insensitive).
+#[must_use]
 pub fn find_prompt<'a>(
     prompts: &'a [PromptDefinition],
     name: &str,
@@ -318,6 +321,7 @@ pub fn validate_args(prompt: &PromptDefinition, args: &ParsedArgs) -> Result<(),
 }
 
 /// Render a prompt with the given arguments.
+#[must_use]
 pub fn render_prompt(prompt: &PromptDefinition, args: &ParsedArgs) -> String {
     let mut result = prompt.body.clone();
 
@@ -330,14 +334,17 @@ pub fn render_prompt(prompt: &PromptDefinition, args: &ParsedArgs) -> String {
 
     // Substitute positional arguments $1-$9
     for i in 1..=9 {
-        let pattern = format!("${}", i);
-        let value = args.positional.get(i - 1).map(|s| s.as_str()).unwrap_or("");
+        let pattern = format!("${i}");
+        let value = args
+            .positional
+            .get(i - 1)
+            .map_or("", std::string::String::as_str);
         result = result.replace(&pattern, value);
     }
 
     // Substitute named arguments
     for (key, value) in &args.named {
-        let pattern = format!("${}", key);
+        let pattern = format!("${key}");
         result = result.replace(&pattern, value);
     }
 
@@ -348,6 +355,7 @@ pub fn render_prompt(prompt: &PromptDefinition, args: &ParsedArgs) -> String {
 }
 
 /// Format prompt for display in a list.
+#[must_use]
 pub fn format_prompt_list_item(prompt: &PromptDefinition) -> String {
     let source = match prompt.source_type {
         PromptSource::User => "(user)",
@@ -358,6 +366,7 @@ pub fn format_prompt_list_item(prompt: &PromptDefinition) -> String {
 }
 
 /// Get usage hint for a prompt.
+#[must_use]
 pub fn get_usage_hint(prompt: &PromptDefinition) -> String {
     let mut parts = vec![format!("/prompts:{}", prompt.name)];
 
@@ -367,7 +376,7 @@ pub fn get_usage_hint(prompt: &PromptDefinition) -> String {
         let args: Vec<_> = prompt
             .named_placeholders
             .iter()
-            .map(|p| format!("{}=<value>", p))
+            .map(|p| format!("{p}=<value>"))
             .collect();
         parts.push(args.join(" "));
     } else if prompt.has_positional_placeholders {

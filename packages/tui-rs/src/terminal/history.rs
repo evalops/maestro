@@ -102,10 +102,10 @@ pub fn push_history_lines<W: Write>(
     let wrapped = wrap_lines(&ratatui_lines, width as usize);
 
     // Set scroll region from line 1 to just above viewport (1-indexed for DECSTBM)
-    write!(writer, "\x1b[1;{}r", viewport_top)?;
+    write!(writer, "\x1b[1;{viewport_top}r")?;
 
     // Move cursor to bottom of scroll region
-    write!(writer, "\x1b[{};1H", viewport_top)?;
+    write!(writer, "\x1b[{viewport_top};1H")?;
 
     // Print each line - they'll scroll up into the scrollback
     for line in &wrapped {
@@ -124,7 +124,7 @@ pub fn push_history_lines<W: Write>(
     Ok(())
 }
 
-/// Convert protocol HistoryLine to ratatui Line.
+/// Convert protocol `HistoryLine` to ratatui Line.
 ///
 /// This function bridges the gap between our protocol types (used for IPC) and
 /// ratatui's rendering types. It converts styled spans from the protocol format
@@ -231,8 +231,8 @@ fn color_to_ansi_fg(color: ratatui::style::Color) -> String {
         Color::LightBlue => "\x1b[94m".to_string(),
         Color::LightMagenta => "\x1b[95m".to_string(),
         Color::LightCyan => "\x1b[96m".to_string(),
-        Color::Indexed(idx) => format!("\x1b[38;5;{}m", idx),
-        Color::Rgb(r, g, b) => format!("\x1b[38;2;{};{};{}m", r, g, b),
+        Color::Indexed(idx) => format!("\x1b[38;5;{idx}m"),
+        Color::Rgb(r, g, b) => format!("\x1b[38;2;{r};{g};{b}m"),
     }
 }
 
@@ -259,8 +259,8 @@ fn color_to_ansi_bg(color: ratatui::style::Color) -> String {
         Color::LightBlue => "\x1b[104m".to_string(),
         Color::LightMagenta => "\x1b[105m".to_string(),
         Color::LightCyan => "\x1b[106m".to_string(),
-        Color::Indexed(idx) => format!("\x1b[48;5;{}m", idx),
-        Color::Rgb(r, g, b) => format!("\x1b[48;2;{};{};{}m", r, g, b),
+        Color::Indexed(idx) => format!("\x1b[48;5;{idx}m"),
+        Color::Rgb(r, g, b) => format!("\x1b[48;2;{r};{g};{b}m"),
     }
 }
 

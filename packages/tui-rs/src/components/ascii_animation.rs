@@ -33,7 +33,7 @@ pub const FRAME_TICK_DEFAULT: Duration = Duration::from_millis(100);
 
 /// ASCII art animation frames - Robot variant
 pub const ROBOT_FRAMES: &[&str] = &[
-    r#"
+    r"
     ┌─────┐
     │ ◕ ◕ │
     │  ▽  │
@@ -41,8 +41,8 @@ pub const ROBOT_FRAMES: &[&str] = &[
    ┌───┴───┐
    │       │
    └───────┘
-    "#,
-    r#"
+    ",
+    r"
     ┌─────┐
     │ ◕ ◕ │
     │  △  │
@@ -50,8 +50,8 @@ pub const ROBOT_FRAMES: &[&str] = &[
    ┌───┴───┐
    │       │
    └───────┘
-    "#,
-    r#"
+    ",
+    r"
     ┌─────┐
     │ ◔ ◕ │
     │  ▽  │
@@ -59,8 +59,8 @@ pub const ROBOT_FRAMES: &[&str] = &[
    ┌───┴───┐
    │       │
    └───────┘
-    "#,
-    r#"
+    ",
+    r"
     ┌─────┐
     │ ◕ ◔ │
     │  ▽  │
@@ -68,44 +68,44 @@ pub const ROBOT_FRAMES: &[&str] = &[
    ┌───┴───┐
    │       │
    └───────┘
-    "#,
+    ",
 ];
 
 /// ASCII art animation frames - Terminal variant
 pub const TERMINAL_FRAMES: &[&str] = &[
-    r#"
+    r"
   ╔══════════════╗
   ║ composer_    ║
   ║ █            ║
   ║              ║
   ╚══════════════╝
-    "#,
-    r#"
+    ",
+    r"
   ╔══════════════╗
   ║ composer_█   ║
   ║              ║
   ║              ║
   ╚══════════════╝
-    "#,
-    r#"
+    ",
+    r"
   ╔══════════════╗
   ║ composer_    ║
   ║ > thinking   ║
   ║   █          ║
   ╚══════════════╝
-    "#,
-    r#"
+    ",
+    r"
   ╔══════════════╗
   ║ composer_    ║
   ║ > thinking...║
   ║              ║
   ╚══════════════╝
-    "#,
+    ",
 ];
 
 /// ASCII art animation frames - Pulse variant
 pub const PULSE_FRAMES: &[&str] = &[
-    r#"
+    r"
        ·
       ···
      ·····
@@ -113,8 +113,8 @@ pub const PULSE_FRAMES: &[&str] = &[
      ·····
       ···
        ·
-    "#,
-    r#"
+    ",
+    r"
        ○
       ○○○
      ○○○○○
@@ -122,8 +122,8 @@ pub const PULSE_FRAMES: &[&str] = &[
      ○○○○○
       ○○○
        ○
-    "#,
-    r#"
+    ",
+    r"
        ●
       ●●●
      ●●●●●
@@ -131,8 +131,8 @@ pub const PULSE_FRAMES: &[&str] = &[
      ●●●●●
       ●●●
        ●
-    "#,
-    r#"
+    ",
+    r"
        ○
       ○○○
      ○○○○○
@@ -140,7 +140,7 @@ pub const PULSE_FRAMES: &[&str] = &[
      ○○○○○
       ○○○
        ○
-    "#,
+    ",
 ];
 
 /// ASCII art animation frames - Wave variant
@@ -179,11 +179,13 @@ impl Default for AsciiAnimation {
 
 impl AsciiAnimation {
     /// Create a new animation with all variants
+    #[must_use]
     pub fn new() -> Self {
         Self::with_variants(ALL_VARIANTS, 0)
     }
 
     /// Create animation with specific variants
+    #[must_use]
     pub fn with_variants(variants: &'static [&'static [&'static str]], variant_idx: usize) -> Self {
         assert!(!variants.is_empty(), "Must have at least one variant");
         let clamped_idx = variant_idx.min(variants.len() - 1);
@@ -197,32 +199,38 @@ impl AsciiAnimation {
     }
 
     /// Create robot animation
+    #[must_use]
     pub fn robot() -> Self {
         Self::with_variants(&[ROBOT_FRAMES], 0)
     }
 
     /// Create terminal animation
+    #[must_use]
     pub fn terminal() -> Self {
         Self::with_variants(&[TERMINAL_FRAMES], 0)
     }
 
     /// Create pulse animation
+    #[must_use]
     pub fn pulse() -> Self {
         Self::with_variants(&[PULSE_FRAMES], 0)
     }
 
     /// Create wave animation
+    #[must_use]
     pub fn wave() -> Self {
         Self::with_variants(&[WAVE_FRAMES], 0)
     }
 
     /// Set the frame tick duration
+    #[must_use]
     pub fn with_frame_tick(mut self, duration: Duration) -> Self {
         self.frame_tick = duration;
         self
     }
 
     /// Get the current frame to display
+    #[must_use]
     pub fn current_frame(&self) -> &'static str {
         let frames = self.frames();
         if frames.is_empty() {
@@ -240,6 +248,7 @@ impl AsciiAnimation {
     }
 
     /// Get the frame index
+    #[must_use]
     pub fn frame_index(&self) -> usize {
         let frames = self.frames();
         if frames.is_empty() {
@@ -278,11 +287,13 @@ impl AsciiAnimation {
     }
 
     /// Get current variant index
+    #[must_use]
     pub fn variant_index(&self) -> usize {
         self.variant_idx
     }
 
     /// Get number of variants
+    #[must_use]
     pub fn variant_count(&self) -> usize {
         self.variants.len()
     }
@@ -293,11 +304,13 @@ impl AsciiAnimation {
     }
 
     /// Get the height of the animation (in lines)
+    #[must_use]
     pub fn height(&self) -> usize {
         self.current_frame().lines().count()
     }
 
     /// Get the width of the animation (max line length)
+    #[must_use]
     pub fn width(&self) -> usize {
         self.current_frame()
             .lines()
@@ -307,6 +320,7 @@ impl AsciiAnimation {
     }
 
     /// Get time until next frame
+    #[must_use]
     pub fn time_to_next_frame(&self) -> Duration {
         let tick_ms = self.frame_tick.as_millis();
         if tick_ms == 0 {
@@ -333,24 +347,24 @@ impl AsciiAnimation {
 /// Static ASCII art logos
 pub mod logos {
     /// Composer logo
-    pub const COMPOSER: &str = r#"
+    pub const COMPOSER: &str = r"
    ___
   / __\___  _ __ ___  _ __   ___  ___  ___ _ __
  / /  / _ \| '_ ` _ \| '_ \ / _ \/ __|/ _ \ '__|
 / /__| (_) | | | | | | |_) | (_) \__ \  __/ |
 \____/\___/|_| |_| |_| .__/ \___/|___/\___|_|
                      |_|
-    "#;
+    ";
 
     /// Small composer logo
-    pub const COMPOSER_SMALL: &str = r#"
+    pub const COMPOSER_SMALL: &str = r"
 ╔═╗┌─┐┌┬┐┌─┐┌─┐┌─┐┌─┐┬─┐
 ║  │ ││││├─┘│ │└─┐├┤ ├┬┘
 ╚═╝└─┘┴ ┴┴  └─┘└─┘└─┘┴└─
-    "#;
+    ";
 
     /// AI brain logo
-    pub const AI_BRAIN: &str = r#"
+    pub const AI_BRAIN: &str = r"
       ╭──────╮
      ╭┤ ◉  ◉ ├╮
      │╰──────╯│
@@ -358,7 +372,7 @@ pub mod logos {
     │ ▓▓▓▓▓▓▓▓ │
     │ ░░░░░░░░ │
     ╰──────────╯
-    "#;
+    ";
 }
 
 #[cfg(test)]

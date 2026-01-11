@@ -48,6 +48,7 @@ pub enum ThinkingPhase {
 
 impl ThinkingPhase {
     /// Get a human-readable label for the phase
+    #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
             Self::Analyzing => "Analyzing",
@@ -59,6 +60,7 @@ impl ThinkingPhase {
     }
 
     /// Get the color for this phase
+    #[must_use]
     pub fn color(&self) -> Color {
         match self {
             Self::Analyzing => Color::Cyan,
@@ -70,6 +72,7 @@ impl ThinkingPhase {
     }
 
     /// Get the spinner frames for this phase
+    #[must_use]
     pub fn spinner_frames(&self) -> &'static [&'static str] {
         match self {
             Self::Analyzing => &["◐", "◓", "◑", "◒"],
@@ -139,11 +142,13 @@ impl Default for ThinkingIndicator {
 
 impl ThinkingIndicator {
     /// Create a new thinking indicator
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Start thinking mode
+    #[must_use]
     pub fn start(mut self) -> Self {
         self.active = true;
         self.started_at = Some(Instant::now());
@@ -154,6 +159,7 @@ impl ThinkingIndicator {
     }
 
     /// Stop thinking mode
+    #[must_use]
     pub fn stop(mut self) -> Self {
         self.active = false;
         self.phase = ThinkingPhase::Complete;
@@ -161,24 +167,28 @@ impl ThinkingIndicator {
     }
 
     /// Set the thinking budget
+    #[must_use]
     pub fn with_budget(mut self, tokens: u32) -> Self {
         self.budget = tokens;
         self
     }
 
     /// Set tokens used
+    #[must_use]
     pub fn with_used(mut self, tokens: u32) -> Self {
         self.tokens_used = tokens;
         self
     }
 
     /// Set the current phase
+    #[must_use]
     pub fn with_phase(mut self, phase: ThinkingPhase) -> Self {
         self.phase = phase;
         self
     }
 
     /// Set display mode
+    #[must_use]
     pub fn with_mode(mut self, mode: ThinkingDisplayMode) -> Self {
         self.mode = mode;
         self
@@ -191,12 +201,14 @@ impl ThinkingIndicator {
     }
 
     /// Enable/disable elapsed time display
+    #[must_use]
     pub fn show_elapsed(mut self, show: bool) -> Self {
         self.show_elapsed = show;
         self
     }
 
     /// Enable/disable budget display
+    #[must_use]
     pub fn show_budget(mut self, show: bool) -> Self {
         self.show_budget = show;
         self
@@ -209,12 +221,14 @@ impl ThinkingIndicator {
     }
 
     /// Get the current spinner character
+    #[must_use]
     pub fn spinner(&self) -> &'static str {
         let frames = self.phase.spinner_frames();
         frames[self.frame % frames.len()]
     }
 
     /// Get elapsed time since thinking started
+    #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.started_at
             .map(|start| start.elapsed())
@@ -222,11 +236,12 @@ impl ThinkingIndicator {
     }
 
     /// Get budget usage as percentage
+    #[must_use]
     pub fn budget_percentage(&self) -> f64 {
         if self.budget == 0 {
             return 0.0;
         }
-        (self.tokens_used as f64 / self.budget as f64) * 100.0
+        (f64::from(self.tokens_used) / f64::from(self.budget)) * 100.0
     }
 
     /// Format elapsed time for display
@@ -236,7 +251,7 @@ impl ThinkingIndicator {
         if secs >= 60 {
             format!("{}m {}s", secs / 60, secs % 60)
         } else if secs > 0 {
-            format!("{}s", secs)
+            format!("{secs}s")
         } else {
             format!("{}ms", elapsed.as_millis())
         }
@@ -245,7 +260,7 @@ impl ThinkingIndicator {
     /// Format tokens for display
     fn format_tokens(tokens: u32) -> String {
         if tokens >= 1_000 {
-            format!("{:.1}K", tokens as f64 / 1_000.0)
+            format!("{:.1}K", f64::from(tokens) / 1_000.0)
         } else {
             tokens.to_string()
         }
@@ -274,7 +289,7 @@ impl ThinkingIndicator {
         let color = self.phase.color();
 
         let mut parts = vec![
-            Span::styled(format!("{} ", spinner), Style::default().fg(color)),
+            Span::styled(format!("{spinner} "), Style::default().fg(color)),
             Span::styled(
                 label,
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -318,7 +333,7 @@ impl ThinkingIndicator {
         let color = self.phase.color();
 
         // Title with spinner and phase
-        let title = format!(" {} Extended Thinking: {} ", spinner, label);
+        let title = format!(" {spinner} Extended Thinking: {label} ");
 
         // Budget info for gauge label
         let gauge_label = if self.show_elapsed {
@@ -370,11 +385,13 @@ pub struct ThinkingIndicatorBuilder {
 
 impl ThinkingIndicatorBuilder {
     /// Create a new builder
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set as active/started
+    #[must_use]
     pub fn active(mut self) -> Self {
         self.indicator.active = true;
         self.indicator.started_at = Some(Instant::now());
@@ -382,48 +399,56 @@ impl ThinkingIndicatorBuilder {
     }
 
     /// Set the phase
+    #[must_use]
     pub fn phase(mut self, phase: ThinkingPhase) -> Self {
         self.indicator.phase = phase;
         self
     }
 
     /// Set the token budget
+    #[must_use]
     pub fn budget(mut self, tokens: u32) -> Self {
         self.indicator.budget = tokens;
         self
     }
 
     /// Set tokens used
+    #[must_use]
     pub fn used(mut self, tokens: u32) -> Self {
         self.indicator.tokens_used = tokens;
         self
     }
 
     /// Set display mode
+    #[must_use]
     pub fn mode(mut self, mode: ThinkingDisplayMode) -> Self {
         self.indicator.mode = mode;
         self
     }
 
     /// Set compact mode
+    #[must_use]
     pub fn compact(mut self) -> Self {
         self.indicator.mode = ThinkingDisplayMode::Compact;
         self
     }
 
     /// Set full mode
+    #[must_use]
     pub fn full(mut self) -> Self {
         self.indicator.mode = ThinkingDisplayMode::Full;
         self
     }
 
     /// Set minimal mode
+    #[must_use]
     pub fn minimal(mut self) -> Self {
         self.indicator.mode = ThinkingDisplayMode::Minimal;
         self
     }
 
     /// Build the indicator
+    #[must_use]
     pub fn build(self) -> ThinkingIndicator {
         self.indicator
     }
@@ -452,6 +477,7 @@ impl Default for ThinkingState {
 
 impl ThinkingState {
     /// Create a new thinking state
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -505,6 +531,7 @@ impl ThinkingState {
     }
 
     /// Get a reference to the indicator for rendering
+    #[must_use]
     pub fn indicator(&self) -> &ThinkingIndicator {
         &self.indicator
     }

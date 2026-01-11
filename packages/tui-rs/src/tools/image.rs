@@ -2,7 +2,7 @@
 //!
 //! This module provides tools for working with images in the agent:
 //!
-//! - **read_image**: Read an image file and encode it for vision APIs
+//! - **`read_image`**: Read an image file and encode it for vision APIs
 //! - **screenshot**: Capture a screenshot of the screen or a window
 //!
 //! # Supported Formats
@@ -78,12 +78,14 @@ pub struct ScreenshotArgs {
 pub struct ImageTool;
 
 impl ImageTool {
-    /// Create a new ImageTool instance
+    /// Create a new `ImageTool` instance
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
 
-    /// Get the tool definition for read_image
+    /// Get the tool definition for `read_image`
+    #[must_use]
     pub fn read_image_definition() -> Tool {
         Tool::new(
             "read_image",
@@ -106,6 +108,7 @@ impl ImageTool {
     }
 
     /// Get the tool definition for screenshot
+    #[must_use]
     pub fn screenshot_definition() -> Tool {
         Tool::new(
             "screenshot",
@@ -142,10 +145,10 @@ impl ImageTool {
 
         // Determine MIME type from extension (case-insensitive)
         let extension = path.extension().and_then(|e| e.to_str());
-        let extension_lower = extension.map(|ext| ext.to_ascii_lowercase());
+        let extension_lower = extension.map(str::to_ascii_lowercase);
         let mime_type = match extension_lower.as_deref() {
             Some("png") => "image/png",
-            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("jpg" | "jpeg") => "image/jpeg",
             Some("gif") => "image/gif",
             Some("webp") => "image/webp",
             Some("bmp") => "image/bmp",
@@ -154,8 +157,7 @@ impl ImageTool {
                 let details = ImageDetails::from_file(&args.file_path)
                     .with_duration(start_time.elapsed().as_millis() as u64);
                 return ToolResult::failure(format!(
-                    "Not an image file: .{} is not a supported image format. Use the 'read' tool for text files (.txt, .md, .rs, .json, etc). Supported image formats: PNG, JPEG, GIF, WebP, BMP, SVG",
-                    ext
+                    "Not an image file: .{ext} is not a supported image format. Use the 'read' tool for text files (.txt, .md, .rs, .json, etc). Supported image formats: PNG, JPEG, GIF, WebP, BMP, SVG"
                 )).with_details(details.to_json());
             }
             None => {
@@ -173,7 +175,7 @@ impl ImageTool {
                 let details = ImageDetails::from_file(&args.file_path)
                     .with_mime_type(mime_type)
                     .with_duration(start_time.elapsed().as_millis() as u64);
-                return ToolResult::failure(format!("Failed to read image: {}", e))
+                return ToolResult::failure(format!("Failed to read image: {e}"))
                     .with_details(details.to_json());
             }
         };
@@ -259,13 +261,13 @@ impl ImageTool {
 
         let dim_info = match (original_dimensions, dimensions) {
             (Some((ow, oh)), Some((w, h))) if resized => {
-                format!(" ({}x{} -> {}x{}, max {})", ow, oh, w, h, max_dim)
+                format!(" ({ow}x{oh} -> {w}x{h}, max {max_dim})")
             }
             (Some((w, h)), _) => {
                 if w > max_dim || h > max_dim {
-                    format!(" ({}x{}, exceeds max {})", w, h, max_dim)
+                    format!(" ({w}x{h}, exceeds max {max_dim})")
                 } else {
-                    format!(" ({}x{})", w, h)
+                    format!(" ({w}x{h})")
                 }
             }
             _ => String::new(),
@@ -275,15 +277,15 @@ impl ImageTool {
         let base64_data = STANDARD.encode(&data);
 
         // Format as data URI for easy consumption
-        let data_uri = format!("data:{};base64,{}", mime_type, base64_data);
+        let data_uri = format!("data:{mime_type};base64,{base64_data}");
 
         // Return structured output
         let output = serde_json::json!({
             "mime_type": mime_type.as_str(),
             "size_bytes": data.len(),
-            "dimensions": dimensions.map(|(w, h)| format!("{}x{}", w, h)),
+            "dimensions": dimensions.map(|(w, h)| format!("{w}x{h}")),
             "original_dimensions": if resized {
-                original_dimensions.map(|(w, h)| format!("{}x{}", w, h))
+                original_dimensions.map(|(w, h)| format!("{w}x{h}"))
             } else {
                 None
             },
@@ -336,12 +338,12 @@ impl ImageTool {
             Ok((data, mime_type)) => {
                 let base64_data = STANDARD.encode(&data);
                 let dimensions = get_image_dimensions(&data);
-                let data_uri = format!("data:{};base64,{}", mime_type, base64_data);
+                let data_uri = format!("data:{mime_type};base64,{base64_data}");
 
                 let output = serde_json::json!({
                     "mime_type": mime_type,
                     "size_bytes": data.len(),
-                    "dimensions": dimensions.map(|(w, h)| format!("{}x{}", w, h)),
+                    "dimensions": dimensions.map(|(w, h)| format!("{w}x{h}")),
                     "base64_length": base64_data.len(),
                     "data_uri": data_uri,
                 });
@@ -366,7 +368,7 @@ impl ImageTool {
             Err(e) => {
                 let details = ImageDetails::screenshot()
                     .with_duration(start_time.elapsed().as_millis() as u64);
-                ToolResult::failure(format!("Screenshot failed: {}", e))
+                ToolResult::failure(format!("Screenshot failed: {e}"))
                     .with_details(details.to_json())
             }
         }
@@ -398,8 +400,8 @@ fn get_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 
     // GIF signature: GIF87a or GIF89a
     if data.len() >= 10 && (data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a")) {
-        let width = u16::from_le_bytes([data[6], data[7]]) as u32;
-        let height = u16::from_le_bytes([data[8], data[9]]) as u32;
+        let width = u32::from(u16::from_le_bytes([data[6], data[7]]));
+        let height = u32::from(u16::from_le_bytes([data[8], data[9]]));
         return Some((width, height));
     }
 
@@ -443,7 +445,7 @@ async fn capture_screenshot_linux(
                         return Ok((data, "image/png"));
                     }
                     Err(e) => {
-                        last_error = format!("Failed to read screenshot: {}", e);
+                        last_error = format!("Failed to read screenshot: {e}");
                     }
                 }
             }
@@ -462,8 +464,7 @@ async fn capture_screenshot_linux(
     }
 
     Err(format!(
-        "No screenshot tool available. Install scrot, gnome-screenshot, or maim. Last error: {}",
-        last_error
+        "No screenshot tool available. Install scrot, gnome-screenshot, or maim. Last error: {last_error}"
     ))
 }
 
@@ -491,17 +492,17 @@ async fn capture_screenshot_macos(
                 let _ = std::fs::remove_file(&temp_path);
                 Ok((data, "image/png"))
             }
-            Err(e) => Err(format!("Failed to read screenshot: {}", e)),
+            Err(e) => Err(format!("Failed to read screenshot: {e}")),
         },
         Ok(output) => Err(format!(
             "screencapture failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )),
-        Err(e) => Err(format!("Failed to run screencapture: {}", e)),
+        Err(e) => Err(format!("Failed to run screencapture: {e}")),
     }
 }
 
-/// Capture screenshot on Windows using PowerShell
+/// Capture screenshot on Windows using `PowerShell`
 async fn capture_screenshot_windows(
     _window_title: Option<&str>,
 ) -> Result<(Vec<u8>, &'static str), String> {
@@ -513,7 +514,7 @@ async fn capture_screenshot_windows(
 
     // PowerShell script to capture screen
     let script = format!(
-        r#"
+        r"
         Add-Type -AssemblyName System.Windows.Forms
         $screen = [System.Windows.Forms.Screen]::PrimaryScreen
         $bitmap = New-Object System.Drawing.Bitmap($screen.Bounds.Width, $screen.Bounds.Height)
@@ -522,7 +523,7 @@ async fn capture_screenshot_windows(
         $bitmap.Save('{}')
         $graphics.Dispose()
         $bitmap.Dispose()
-        "#,
+        ",
         temp_str.replace('\\', "\\\\").replace('\'', "''")
     );
 
@@ -535,13 +536,13 @@ async fn capture_screenshot_windows(
                 let _ = std::fs::remove_file(&temp_path);
                 Ok((data, "image/png"))
             }
-            Err(e) => Err(format!("Failed to read screenshot: {}", e)),
+            Err(e) => Err(format!("Failed to read screenshot: {e}")),
         },
         Ok(output) => Err(format!(
             "PowerShell screenshot failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )),
-        Err(e) => Err(format!("Failed to run PowerShell: {}", e)),
+        Err(e) => Err(format!("Failed to run PowerShell: {e}")),
     }
 }
 

@@ -23,6 +23,7 @@ pub struct WorkspaceFile {
 
 impl WorkspaceFile {
     /// Create from a path relative to the workspace root
+    #[must_use]
     pub fn from_path(root: &Path, path: PathBuf) -> Self {
         let relative_path = path
             .strip_prefix(root)
@@ -49,6 +50,7 @@ impl WorkspaceFile {
     }
 
     /// Get a display path (shortened if in home directory)
+    #[must_use]
     pub fn display_path(&self) -> String {
         if let Some(home) =
             dirs::home_dir().or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
@@ -61,30 +63,34 @@ impl WorkspaceFile {
     }
 
     /// Check if this file has one of the given extensions
+    #[must_use]
     pub fn has_extension(&self, extensions: &[&str]) -> bool {
         self.extension
             .as_ref()
-            .map(|ext| extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)))
-            .unwrap_or(false)
+            .is_some_and(|ext| extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)))
     }
 
     /// Check if this file is source code
+    #[must_use]
     pub fn is_source_code(&self) -> bool {
         self.has_extension(patterns::SOURCE_CODE)
     }
 
     /// Check if this file is a config file
+    #[must_use]
     pub fn is_config(&self) -> bool {
         self.has_extension(patterns::CONFIG)
     }
 
     /// Check if this file is documentation
+    #[must_use]
     pub fn is_docs(&self) -> bool {
         self.has_extension(patterns::DOCS)
     }
 }
 
 /// Get all files in the workspace
+#[must_use]
 pub fn get_workspace_files(root: &Path, max_files: usize) -> Vec<WorkspaceFile> {
     // Try ripgrep first (faster)
     if let Some(files) = try_ripgrep(root, max_files) {

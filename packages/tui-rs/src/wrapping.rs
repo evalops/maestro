@@ -56,7 +56,7 @@ where
 {
     let opts = width_or_options.into();
     let mut lines: Vec<Range<usize>> = Vec::new();
-    for line in textwrap::wrap(text, opts).iter() {
+    for line in &textwrap::wrap(text, opts) {
         match line {
             std::borrow::Cow::Borrowed(slice) => {
                 let start = unsafe { slice.as_ptr().offset_from(text.as_ptr()) as usize };
@@ -92,6 +92,7 @@ impl From<usize> for RtOptions<'_> {
 }
 
 impl<'a> RtOptions<'a> {
+    #[must_use]
     pub fn new(width: usize) -> Self {
         RtOptions {
             width,
@@ -101,6 +102,7 @@ impl<'a> RtOptions<'a> {
         }
     }
 
+    #[must_use]
     pub fn initial_indent(self, initial_indent: Line<'a>) -> Self {
         RtOptions {
             initial_indent,
@@ -108,6 +110,7 @@ impl<'a> RtOptions<'a> {
         }
     }
 
+    #[must_use]
     pub fn subsequent_indent(self, subsequent_indent: Line<'a>) -> Self {
         RtOptions {
             subsequent_indent,
@@ -275,6 +278,7 @@ fn slice_line_spans<'a>(
 /// Count the total number of wrapped lines for a Text.
 ///
 /// This is useful for calculating content height in viewports.
+#[must_use]
 pub fn wrapped_line_count(text: &ratatui::text::Text, width: usize) -> usize {
     if width == 0 {
         return 0;

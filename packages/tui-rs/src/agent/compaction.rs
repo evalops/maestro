@@ -51,7 +51,7 @@ pub struct CompactionConfig {
     /// Minimum recent tokens to preserve (used with token-based cut point)
     pub keep_recent_tokens: u64,
     /// Auto-compaction threshold as a percentage (0.0 - 1.0)
-    /// When context reaches this percentage of max_context_tokens, compact proactively
+    /// When context reaches this percentage of `max_context_tokens`, compact proactively
     pub auto_compact_threshold: f64,
     /// Whether auto-compaction is enabled
     pub auto_compact_enabled: bool,
@@ -97,7 +97,7 @@ fn has_tool_results(message: &Message) -> bool {
     }
 }
 
-/// Check if a message contains tool calls (ToolUse)
+/// Check if a message contains tool calls (`ToolUse`)
 fn has_tool_calls(message: &Message) -> bool {
     if let MessageContent::Blocks(blocks) = &message.content {
         blocks
@@ -112,7 +112,7 @@ fn has_tool_calls(message: &Message) -> bool {
 ///
 /// A valid cut point is:
 /// - After a complete turn (user message or assistant response without pending tool results)
-/// - NOT in the middle of a tool call sequence (assistant with ToolUse followed by ToolResult)
+/// - NOT in the middle of a tool call sequence (assistant with `ToolUse` followed by `ToolResult`)
 /// - NOT immediately before a tool result message
 fn is_valid_cut_point(messages: &[Message], index: usize) -> bool {
     if index == 0 || index >= messages.len() {
@@ -143,7 +143,7 @@ fn is_valid_cut_point(messages: &[Message], index: usize) -> bool {
 /// Find the optimal cut point based on token budget
 ///
 /// Walks backward from the end of messages, accumulating tokens until we exceed
-/// the keep_recent_tokens budget. Returns a valid cut point that respects turn boundaries.
+/// the `keep_recent_tokens` budget. Returns a valid cut point that respects turn boundaries.
 fn find_cut_point(messages: &[Message], keep_recent_tokens: u64) -> CutPoint {
     let total_messages = messages.len();
     let mut accumulated_tokens: u64 = 0;
@@ -217,6 +217,7 @@ pub struct ContextCompactor {
 
 impl ContextCompactor {
     /// Create a new context compactor with the given configuration
+    #[must_use]
     pub fn new(config: CompactionConfig) -> Self {
         Self { config }
     }
@@ -230,6 +231,7 @@ impl ContextCompactor {
     }
 
     /// Check if compaction is needed based on estimated token count
+    #[must_use]
     pub fn needs_compaction(&self, messages: &[Message]) -> bool {
         let tokens = self.estimate_tokens(messages);
         tokens > self.config.max_context_tokens
@@ -242,7 +244,8 @@ impl ContextCompactor {
     /// - Current token count exceeds the auto-compact threshold percentage
     ///
     /// This allows proactive compaction at e.g. 85% capacity instead of waiting
-    /// for the model to hit MaxTokens and fail.
+    /// for the model to hit `MaxTokens` and fail.
+    #[must_use]
     pub fn should_auto_compact(&self, messages: &[Message]) -> bool {
         if !self.config.auto_compact_enabled {
             return false;
@@ -255,6 +258,7 @@ impl ContextCompactor {
     }
 
     /// Get the current token usage as a percentage of max capacity
+    #[must_use]
     pub fn usage_percentage(&self, messages: &[Message]) -> f64 {
         let tokens = self.estimate_tokens(messages);
         (tokens as f64 / self.config.max_context_tokens as f64) * 100.0
@@ -268,6 +272,7 @@ impl ContextCompactor {
     ///
     /// This method preserves a fixed number of recent messages.
     /// For token-aware compaction, use `compact_with_tokens`.
+    #[must_use]
     pub fn compact(&self, messages: &[Message]) -> CompactionResult {
         if messages.len() <= self.config.preserve_recent_count {
             // Not enough messages to compact
@@ -296,8 +301,7 @@ impl ContextCompactor {
         result_messages.push(Message {
             role: Role::User,
             content: MessageContent::Text(format!(
-                "<context_summary>\n{}\n</context_summary>\n\nPlease continue from where we left off.",
-                summary
+                "<context_summary>\n{summary}\n</context_summary>\n\nPlease continue from where we left off."
             )),
         });
 
@@ -318,6 +322,7 @@ impl ContextCompactor {
     /// respecting turn boundaries. Tool calls and their results are kept together.
     ///
     /// Returns a `CompactionResult` with information about whether a turn was split.
+    #[must_use]
     pub fn compact_with_tokens(&self, messages: &[Message]) -> CompactionResult {
         let total_tokens = self.estimate_tokens(messages);
 
@@ -364,8 +369,7 @@ impl ContextCompactor {
         result_messages.push(Message {
             role: Role::User,
             content: MessageContent::Text(format!(
-                "<context_summary>\n{}\n</context_summary>\n\nPlease continue from where we left off.",
-                summary
+                "<context_summary>\n{summary}\n</context_summary>\n\nPlease continue from where we left off."
             )),
         });
 
@@ -417,7 +421,7 @@ impl ContextCompactor {
                                     }
                                 }
                                 ContentBlock::ToolUse { name, .. } => {
-                                    assistant_actions.push(format!("Used tool: {}", name));
+                                    assistant_actions.push(format!("Used tool: {name}"));
                                 }
                                 ContentBlock::ToolResult {
                                     content, is_error, ..
@@ -429,8 +433,7 @@ impl ContextCompactor {
                                             "succeeded"
                                         };
                                         let truncated = truncate_text(content, 150);
-                                        tool_results
-                                            .push(format!("Tool {}: {}", status, truncated));
+                                        tool_results.push(format!("Tool {status}: {truncated}"));
                                     }
                                 }
                                 _ => {}
@@ -456,7 +459,7 @@ impl ContextCompactor {
                 user_requests
                     .iter()
                     .take(5)
-                    .map(|r| format!("- {}", r))
+                    .map(|r| format!("- {r}"))
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
@@ -468,7 +471,7 @@ impl ContextCompactor {
                 assistant_actions
                     .iter()
                     .take(10)
-                    .map(|a| format!("- {}", a))
+                    .map(|a| format!("- {a}"))
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
@@ -480,7 +483,7 @@ impl ContextCompactor {
                 tool_results
                     .iter()
                     .take(5)
-                    .map(|r| format!("- {}", r))
+                    .map(|r| format!("- {r}"))
                     .collect::<Vec<_>>()
                     .join("\n")
             ));
@@ -509,16 +512,15 @@ pub struct CompactionResult {
 
 impl CompactionResult {
     /// Check if compaction actually occurred
+    #[must_use]
     pub fn was_compacted(&self) -> bool {
         self.compacted_count > 0
     }
 
     /// Check if a turn was split during compaction
+    #[must_use]
     pub fn was_turn_split(&self) -> bool {
-        self.cut_point
-            .as_ref()
-            .map(|cp| cp.is_split_turn)
-            .unwrap_or(false)
+        self.cut_point.as_ref().is_some_and(|cp| cp.is_split_turn)
     }
 }
 
@@ -563,8 +565,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     let end_idx = text
         .char_indices()
         .nth(max_chars)
-        .map(|(i, _)| i)
-        .unwrap_or_else(|| text.len());
+        .map_or_else(|| text.len(), |(i, _)| i);
     let truncated = &text[..end_idx];
     if let Some(pos) = truncated.rfind(|c: char| c.is_whitespace()) {
         format!("{}...", &truncated[..pos].trim())

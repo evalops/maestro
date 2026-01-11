@@ -247,6 +247,7 @@ pub enum InlineToolSource {
 
 impl InlineTool {
     /// Convert to AI Tool definition for registration
+    #[must_use]
     pub fn to_tool(&self) -> Tool {
         Tool {
             name: self.definition.name.clone(),
@@ -296,6 +297,7 @@ impl InlineTool {
     }
 
     /// Check if this tool requires user approval
+    #[must_use]
     pub fn requires_approval(&self) -> bool {
         // Requires approval if explicitly set, or if destructive, or not read-only
         self.definition.annotations.requires_approval
@@ -309,6 +311,7 @@ impl InlineTool {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Get the paths to check for inline tools configuration
+#[must_use]
 pub fn get_config_paths(workspace_dir: &Path) -> InlineToolsPaths {
     let user_path = dirs::home_dir().map(|home| home.join(".composer").join("tools.json"));
 
@@ -332,6 +335,7 @@ pub struct InlineToolsPaths {
 /// Load all inline tools from user and project configuration files
 ///
 /// Project-level tools override user-level tools with the same name.
+#[must_use]
 pub fn load_inline_tools(workspace_dir: &Path) -> Vec<InlineTool> {
     let paths = get_config_paths(workspace_dir);
     let mut tools_by_name: HashMap<String, InlineTool> = HashMap::new();
@@ -486,7 +490,7 @@ impl InlineToolExecutor {
             Ok(json) => json,
             Err(e) => {
                 details = details.with_duration(start_time.elapsed().as_millis() as u64);
-                return ToolResult::failure(format!("Failed to serialize arguments: {}", e))
+                return ToolResult::failure(format!("Failed to serialize arguments: {e}"))
                     .with_details(details.to_json());
             }
         };
@@ -518,7 +522,7 @@ impl InlineToolExecutor {
             Ok(c) => c,
             Err(e) => {
                 details = details.with_duration(start_time.elapsed().as_millis() as u64);
-                return ToolResult::failure(format!("Failed to spawn command: {}", e))
+                return ToolResult::failure(format!("Failed to spawn command: {e}"))
                     .with_details(details.to_json());
             }
         };
@@ -529,7 +533,7 @@ impl InlineToolExecutor {
         // Write args to stdin as JSON
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(e) = stdin.write_all(args_json.as_bytes()).await {
-                eprintln!("Warning: Failed to write to stdin: {}", e);
+                eprintln!("Warning: Failed to write to stdin: {e}");
             }
             // stdin is dropped here, closing the pipe
         }
@@ -581,27 +585,27 @@ impl InlineToolExecutor {
                     let stderr_trimmed = stderr_text.trim();
                     if !stderr_trimmed.is_empty() {
                         if output.is_empty() {
-                            output = format!("[stderr]: {}", stderr_trimmed);
+                            output = format!("[stderr]: {stderr_trimmed}");
                         } else {
-                            output = format!("{}\n\n[stderr]: {}", output, stderr_trimmed);
+                            output = format!("{output}\n\n[stderr]: {stderr_trimmed}");
                         }
                     }
                     if let Some(notice) = truncation_notice {
                         if output.is_empty() {
                             output = notice;
                         } else {
-                            output = format!("{}\n\n{}", output, notice);
+                            output = format!("{output}\n\n{notice}");
                         }
                     }
                     ToolResult::success(output).with_details(details.to_json())
                 } else {
                     let mut error_msg = if stderr_text.is_empty() {
-                        format!("Command exited with status: {}", status)
+                        format!("Command exited with status: {status}")
                     } else {
                         stderr_text.trim().to_string()
                     };
                     if let Some(notice) = truncation_notice {
-                        error_msg = format!("{}\n\n{}", error_msg, notice);
+                        error_msg = format!("{error_msg}\n\n{notice}");
                     }
 
                     ToolResult {
@@ -612,15 +616,15 @@ impl InlineToolExecutor {
                     }
                 }
             }
-            Ok((Err(e), _, _)) | Ok((_, Err(e), _)) => {
+            Ok((Err(e), _, _) | (_, Err(e), _)) => {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 details = details.with_duration(duration_ms);
-                ToolResult::failure(format!("IO error: {}", e)).with_details(details.to_json())
+                ToolResult::failure(format!("IO error: {e}")).with_details(details.to_json())
             }
             Ok((_, _, Err(e))) => {
                 let duration_ms = start_time.elapsed().as_millis() as u64;
                 details = details.with_duration(duration_ms);
-                ToolResult::failure(format!("Process error: {}", e)).with_details(details.to_json())
+                ToolResult::failure(format!("Process error: {e}")).with_details(details.to_json())
             }
             Err(_) => {
                 // Timeout - kill the process tree to avoid orphan children

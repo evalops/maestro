@@ -1,4 +1,4 @@
-//! Background task manager (minimal parity with TS background_tasks tool).
+//! Background task manager (minimal parity with TS `background_tasks` tool).
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -8,7 +8,6 @@ use std::process::Stdio;
 use std::sync::RwLock;
 use std::time::SystemTime;
 
-use once_cell::sync::Lazy;
 use tokio::process::Command;
 use uuid::Uuid;
 
@@ -39,13 +38,14 @@ pub struct BackgroundTask {
     pub exit_code: Option<i32>,
 }
 
-static TASKS: Lazy<RwLock<HashMap<String, BackgroundTask>>> =
-    Lazy::new(|| RwLock::new(HashMap::new()));
+static TASKS: std::sync::LazyLock<RwLock<HashMap<String, BackgroundTask>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
 fn logs_dir() -> PathBuf {
-    dirs::home_dir()
-        .map(|home| home.join(".composer").join("logs"))
-        .unwrap_or_else(|| std::env::temp_dir().join("composer-logs"))
+    dirs::home_dir().map_or_else(
+        || std::env::temp_dir().join("composer-logs"),
+        |home| home.join(".composer").join("logs"),
+    )
 }
 
 fn ensure_logs_dir() -> Result<(), String> {
@@ -55,10 +55,10 @@ fn ensure_logs_dir() -> Result<(), String> {
 }
 
 fn read_last_lines(path: &Path, lines: usize) -> Result<String, String> {
-    let mut file = File::open(path).map_err(|e| format!("Failed to open log: {}", e))?;
+    let mut file = File::open(path).map_err(|e| format!("Failed to open log: {e}"))?;
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)
-        .map_err(|e| format!("Failed to read log: {}", e))?;
+        .map_err(|e| format!("Failed to read log: {e}"))?;
 
     let text = String::from_utf8_lossy(&buf);
     let mut collected: Vec<&str> = text.lines().collect();
@@ -76,20 +76,20 @@ pub async fn start(
 ) -> Result<BackgroundTask, String> {
     ensure_logs_dir()?;
     let id = Uuid::new_v4().to_string();
-    let log_path = logs_dir().join(format!("background-{}.log", id));
+    let log_path = logs_dir().join(format!("background-{id}.log"));
 
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)
-        .map_err(|e| format!("Failed to open log file: {}", e))?;
+        .map_err(|e| format!("Failed to open log file: {e}"))?;
 
     let stdout = Stdio::from(log_file.try_clone().map_err(|e| e.to_string())?);
     let stderr = Stdio::from(log_file);
 
     let mut cmd = if shell {
         let (shell_path, shell_args) =
-            resolve_shell_config().map_err(|e| format!("Shell unavailable: {}", e))?;
+            resolve_shell_config().map_err(|e| format!("Shell unavailable: {e}"))?;
         let mut cmd = Command::new(shell_path);
         cmd.args(shell_args).arg(command.clone());
         cmd
@@ -119,7 +119,7 @@ pub async fn start(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to spawn background task: {}", e))?;
+        .map_err(|e| format!("Failed to spawn background task: {e}"))?;
 
     let pid = child.id();
     if let Some(pid) = pid {

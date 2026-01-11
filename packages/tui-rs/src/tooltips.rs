@@ -2,12 +2,11 @@
 //!
 //! Displays helpful tips to users, loaded from tooltips.txt
 
-use once_cell::sync::Lazy;
 use rand::Rng;
 
 const RAW_TOOLTIPS: &str = include_str!("../tooltips.txt");
 
-static TOOLTIPS: Lazy<Vec<&'static str>> = Lazy::new(|| {
+static TOOLTIPS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| {
     RAW_TOOLTIPS
         .lines()
         .map(str::trim)
@@ -26,6 +25,7 @@ pub fn random_tooltip() -> Option<&'static str> {
 }
 
 /// Get all tooltips
+#[must_use]
 pub fn all_tooltips() -> &'static [&'static str] {
     &TOOLTIPS
 }

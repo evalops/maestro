@@ -117,6 +117,7 @@ impl Default for MarkdownStyles {
 ///
 /// let text = render_markdown("**Bold** and *italic*");
 /// ```
+#[must_use]
 pub fn render_markdown(input: &str) -> Text<'static> {
     render_markdown_with_width(input, None)
 }
@@ -128,6 +129,7 @@ pub fn render_markdown(input: &str) -> Text<'static> {
 ///
 /// Note: The width parameter is currently unused but reserved for future implementation
 /// of automatic line wrapping at the markdown rendering level.
+#[must_use]
 pub fn render_markdown_with_width(input: &str, _width: Option<usize>) -> Text<'static> {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -234,7 +236,7 @@ impl MarkdownRenderer {
         }
     }
 
-    fn render<'a>(&mut self, parser: Parser<'a>) {
+    fn render(&mut self, parser: Parser<'_>) {
         for event in parser {
             match event {
                 Event::Start(tag) => self.start_tag(tag),
@@ -242,7 +244,7 @@ impl MarkdownRenderer {
                 Event::Text(text) => self.add_text(&text),
                 Event::Code(code) => {
                     self.current_spans
-                        .push(Span::styled(format!("`{}`", code), self.styles.code));
+                        .push(Span::styled(format!("`{code}`"), self.styles.code));
                 }
                 Event::SoftBreak => {
                     self.current_spans.push(Span::raw(" "));
@@ -313,7 +315,7 @@ impl MarkdownRenderer {
                 self.flush_line();
                 // Add list marker
                 let marker = if let Some(Some(n)) = self.list_stack.last_mut() {
-                    let marker = format!("{}. ", n);
+                    let marker = format!("{n}. ");
                     *n += 1;
                     marker
                 } else {
@@ -321,7 +323,7 @@ impl MarkdownRenderer {
                 };
                 let indent = "  ".repeat(self.list_stack.len().saturating_sub(1));
                 self.current_spans.push(Span::styled(
-                    format!("{}{}", indent, marker),
+                    format!("{indent}{marker}"),
                     self.styles.list_marker,
                 ));
             }
@@ -414,7 +416,7 @@ impl MarkdownRenderer {
                 // Append the URL after the link text
                 if let Some(url) = self.current_link_url.take() {
                     self.current_spans.push(Span::styled(
-                        format!(" ({})", url),
+                        format!(" ({url})"),
                         Style::default().fg(Color::DarkGray),
                     ));
                 }
@@ -425,12 +427,7 @@ impl MarkdownRenderer {
 
     fn into_text(mut self) -> Text<'static> {
         // Remove trailing empty lines
-        while self
-            .lines
-            .last()
-            .map(|l| l.spans.is_empty())
-            .unwrap_or(false)
-        {
+        while self.lines.last().is_some_and(|l| l.spans.is_empty()) {
             self.lines.pop();
         }
         Text::from(self.lines)

@@ -22,16 +22,15 @@ struct ExtractDocumentArgs {
 fn guess_filename_from_url(url: &reqwest::Url) -> String {
     url.path_segments()
         .and_then(|mut segments| segments.rfind(|s| !s.is_empty()))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "document".to_string())
+        .map_or_else(|| "document".to_string(), std::string::ToString::to_string)
 }
 
 fn parse_content_disposition(header: Option<&str>) -> Option<String> {
     let header = header?;
     let patterns = [
-        Regex::new(r#"filename\*=UTF-8''([^;]+)"#).ok()?,
+        Regex::new(r"filename\*=UTF-8''([^;]+)").ok()?,
         Regex::new(r#"filename="([^"]+)""#).ok()?,
-        Regex::new(r#"filename=([^;]+)"#).ok()?,
+        Regex::new(r"filename=([^;]+)").ok()?,
     ];
     for pattern in patterns {
         if let Some(caps) = pattern.captures(header) {
@@ -57,8 +56,8 @@ fn decode_xml_entities(input: &str) -> String {
 }
 
 fn strip_xml(input: &str) -> String {
-    static TAG_RE: once_cell::sync::Lazy<Regex> =
-        once_cell::sync::Lazy::new(|| Regex::new(r"<[^>]+>").unwrap());
+    static TAG_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"<[^>]+>").unwrap());
     let mut text = input.replace("<w:tab/>", "\t");
     text = text.replace("<w:br/>", "\n");
     text = text.replace("</w:p>", "\n");
@@ -155,7 +154,7 @@ fn detect_format(file_name: &str, mime: Option<&str>) -> Option<&'static str> {
         || lower.ends_with(".xml")
         || lower.ends_with(".yaml")
         || lower.ends_with(".yml")
-        || mime.map(|m| m.starts_with("text/")).unwrap_or(false)
+        || mime.is_some_and(|m| m.starts_with("text/"))
     {
         return Some("text");
     }
@@ -177,7 +176,7 @@ pub async fn extract_document(args: Value) -> ToolResult {
     let parsed: ExtractDocumentArgs = match serde_json::from_value(args) {
         Ok(val) => val,
         Err(err) => {
-            return ToolResult::failure(format!("Invalid extract_document arguments: {}", err))
+            return ToolResult::failure(format!("Invalid extract_document arguments: {err}"))
         }
     };
 
@@ -194,7 +193,7 @@ pub async fn extract_document(args: Value) -> ToolResult {
     let response = match client.get(url.clone()).send().await {
         Ok(resp) => resp,
         Err(err) => {
-            return ToolResult::failure(format!("Failed to download document: {}", err));
+            return ToolResult::failure(format!("Failed to download document: {err}"));
         }
     };
 
@@ -226,12 +225,12 @@ pub async fn extract_document(args: Value) -> ToolResult {
     let content_disposition = headers
         .get(reqwest::header::CONTENT_DISPOSITION)
         .and_then(|v| v.to_str().ok())
-        .map(|value| value.to_string());
+        .map(std::string::ToString::to_string);
 
     let bytes = match response.bytes().await {
         Ok(b) => b.to_vec(),
         Err(err) => {
-            return ToolResult::failure(format!("Failed to read document bytes: {}", err));
+            return ToolResult::failure(format!("Failed to read document bytes: {err}"));
         }
     };
 

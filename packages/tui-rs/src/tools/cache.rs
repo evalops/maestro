@@ -89,7 +89,7 @@ pub struct CachedResult {
     /// When the entry was created (runtime use, not serialized)
     #[serde(skip)]
     pub created_at: Option<Instant>,
-    /// Timestamp for persistence (seconds since UNIX_EPOCH)
+    /// Timestamp for persistence (seconds since `UNIX_EPOCH`)
     #[serde(default)]
     pub created_timestamp: Option<u64>,
 }
@@ -111,11 +111,13 @@ impl CachedResult {
     }
 
     /// Check if the cache entry has expired
+    #[must_use]
     pub fn is_expired(&self, ttl: Duration) -> bool {
-        self.created_at.map(|t| t.elapsed() > ttl).unwrap_or(true)
+        self.created_at.is_none_or(|t| t.elapsed() > ttl)
     }
 
     /// Check if the entry is expired based on timestamp (for persisted entries)
+    #[must_use]
     pub fn is_expired_by_timestamp(&self, ttl: Duration) -> bool {
         let Some(created) = self.created_timestamp else {
             return true;
@@ -183,6 +185,7 @@ impl Default for ToolResultCache {
 
 impl ToolResultCache {
     /// Create a new cache with the given configuration
+    #[must_use]
     pub fn new(mut config: CacheConfig) -> Self {
         // Normalize tool names for case-insensitive matching.
         config.excluded_tools = config
@@ -201,6 +204,7 @@ impl ToolResultCache {
     }
 
     /// Check if caching is enabled for a tool
+    #[must_use]
     pub fn is_cacheable(&self, tool_name: &str) -> bool {
         let tool_name = tool_name.to_lowercase();
         self.config.enabled && !self.config.excluded_tools.contains(&tool_name)
@@ -343,6 +347,7 @@ impl ToolResultCache {
     }
 
     /// Get the number of tracked file dependencies
+    #[must_use]
     pub fn file_dep_count(&self) -> usize {
         self.file_deps.len()
     }
@@ -372,6 +377,7 @@ impl ToolResultCache {
     }
 
     /// Get cache statistics
+    #[must_use]
     pub fn stats(&self) -> CacheStats {
         CacheStats {
             entries: self.entries.len(),
@@ -387,6 +393,7 @@ impl ToolResultCache {
     }
 
     /// Get the configuration
+    #[must_use]
     pub fn config(&self) -> &CacheConfig {
         &self.config
     }
@@ -401,6 +408,7 @@ impl ToolResultCache {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Get the default cache file path for a workspace
+    #[must_use]
     pub fn default_cache_path(workspace: &Path) -> PathBuf {
         workspace.join(".composer").join("tool-cache.jsonl")
     }
@@ -431,7 +439,7 @@ impl ToolResultCache {
             };
 
             if let Ok(json) = serde_json::to_string(&entry) {
-                writeln!(writer, "{}", json)?;
+                writeln!(writer, "{json}")?;
             }
         }
 
@@ -495,6 +503,7 @@ impl ToolResultCache {
     }
 
     /// Load cache from a file path, creating a new cache with default config
+    #[must_use]
     pub fn load_or_create(path: &Path) -> Self {
         let mut cache = Self::new(CacheConfig::default());
         let _ = cache.load_from_file(path);

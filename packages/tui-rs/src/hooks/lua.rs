@@ -42,7 +42,7 @@
 //! return { continue = true }
 //! ```
 
-use super::types::*;
+use super::types::{HookEventType, HookResult, PostToolUseInput, PreToolUseInput};
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -69,6 +69,7 @@ pub struct LuaHookExecutor {
 
 #[cfg(not(feature = "lua"))]
 impl LuaHookExecutor {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             scripts: Vec::new(),
@@ -107,6 +108,7 @@ impl LuaHookExecutor {
         Ok(())
     }
 
+    #[must_use]
     pub fn execute_pre_tool_use(&self, input: &PreToolUseInput) -> HookResult {
         for script in &self.scripts {
             if script.event != HookEventType::PreToolUse {
@@ -140,14 +142,17 @@ impl LuaHookExecutor {
         Some(HookResult::Continue)
     }
 
+    #[must_use]
     pub fn execute_post_tool_use(&self, _input: &PostToolUseInput) -> HookResult {
         HookResult::Continue
     }
 
+    #[must_use]
     pub fn has_hooks(&self) -> bool {
         !self.scripts.is_empty()
     }
 
+    #[must_use]
     pub fn script_count(&self) -> usize {
         self.scripts.len()
     }

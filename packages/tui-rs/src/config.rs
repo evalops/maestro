@@ -46,7 +46,6 @@
 // IMPORTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-use once_cell::sync::Lazy;
 // `once_cell::Lazy` provides lazy initialization for static values.
 // The value is computed on first access and cached for subsequent accesses.
 // This is Rust's solution to the "static initialization order" problem.
@@ -123,6 +122,7 @@ pub enum ApprovalPolicy {
 }
 
 impl ApprovalPolicy {
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "untrusted" => Some(Self::Untrusted),
@@ -145,6 +145,7 @@ pub enum SandboxMode {
 }
 
 impl SandboxMode {
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "read-only" => Some(Self::ReadOnly),
@@ -451,29 +452,30 @@ pub struct ComposerConfig {
 // ─────────────────────────────────────────────────────────────
 
 /// Default configuration values
-pub static DEFAULT_CONFIG: Lazy<ComposerConfig> = Lazy::new(|| ComposerConfig {
-    model: Some("claude-sonnet-4-20250514".to_string()),
-    model_provider: Some("anthropic".to_string()),
-    approval_policy: Some(ApprovalPolicy::Untrusted),
-    sandbox_mode: Some(SandboxMode::WorkspaceWrite),
-    model_reasoning_effort: Some(ReasoningEffort::Medium),
-    features: Some(FeaturesConfig {
-        view_image_tool: Some(true),
+pub static DEFAULT_CONFIG: std::sync::LazyLock<ComposerConfig> =
+    std::sync::LazyLock::new(|| ComposerConfig {
+        model: Some("claude-sonnet-4-20250514".to_string()),
+        model_provider: Some("anthropic".to_string()),
+        approval_policy: Some(ApprovalPolicy::Untrusted),
+        sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+        model_reasoning_effort: Some(ReasoningEffort::Medium),
+        features: Some(FeaturesConfig {
+            view_image_tool: Some(true),
+            ..Default::default()
+        }),
+        history: Some(HistoryConfig {
+            persistence: Some(HistoryPersistence::SaveAll),
+            ..Default::default()
+        }),
+        tui: Some(TuiConfig {
+            notifications: Some(NotificationsSetting::Enabled(true)),
+            animations: Some(true),
+        }),
+        file_opener: Some(FileOpener::Vscode),
+        project_doc_max_bytes: Some(32 * 1024),
+        project_doc_fallback_filenames: Some(vec!["CLAUDE.md".to_string()]),
         ..Default::default()
-    }),
-    history: Some(HistoryConfig {
-        persistence: Some(HistoryPersistence::SaveAll),
-        ..Default::default()
-    }),
-    tui: Some(TuiConfig {
-        notifications: Some(NotificationsSetting::Enabled(true)),
-        animations: Some(true),
-    }),
-    file_opener: Some(FileOpener::Vscode),
-    project_doc_max_bytes: Some(32 * 1024),
-    project_doc_fallback_filenames: Some(vec!["CLAUDE.md".to_string()]),
-    ..Default::default()
-});
+    });
 
 // ─────────────────────────────────────────────────────────────
 // Configuration Cache
@@ -516,7 +518,7 @@ struct ConfigCache {
 /// - `RwLock` provides thread-safe access
 ///
 /// The `|| { ... }` is a closure that creates the initial value.
-static CONFIG_CACHE: Lazy<RwLock<ConfigCache>> = Lazy::new(|| {
+static CONFIG_CACHE: std::sync::LazyLock<RwLock<ConfigCache>> = std::sync::LazyLock::new(|| {
     RwLock::new(ConfigCache {
         config: None,
         workspace_dir: None,
@@ -530,7 +532,9 @@ static CONFIG_CACHE: Lazy<RwLock<ConfigCache>> = Lazy::new(|| {
 pub fn clear_config_cache() {
     // `.write()` acquires an exclusive write lock
     // Use `unwrap_or_else` to recover from poisoned locks
-    let mut cache = CONFIG_CACHE.write().unwrap_or_else(|e| e.into_inner());
+    let mut cache = CONFIG_CACHE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.config = None;
     cache.workspace_dir = None;
     cache.profile_name = None;
@@ -736,7 +740,7 @@ fn parse_config_file(path: &Path) -> Option<ComposerConfig> {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to read config file {:?}: {}", path, e);
+            eprintln!("Failed to read config file {}: {e}", path.display());
             return None;
         }
     };
@@ -744,7 +748,7 @@ fn parse_config_file(path: &Path) -> Option<ComposerConfig> {
     match toml::from_str(&content) {
         Ok(config) => Some(config),
         Err(e) => {
-            eprintln!("Failed to parse config file {:?}: {}", path, e);
+            eprintln!("Failed to parse config file {}: {e}", path.display());
             None
         }
     }
@@ -784,18 +788,16 @@ fn apply_env_overrides(config: &mut ComposerConfig) {
 
 /// Apply profile settings to configuration
 fn apply_profile(config: &mut ComposerConfig, profile_name: &str) {
-    let profile = match &config.profiles {
-        Some(profiles) => match profiles.get(profile_name) {
-            Some(p) => p.clone(),
-            None => {
-                eprintln!("Profile not found: {}", profile_name);
-                return;
-            }
-        },
-        None => {
-            eprintln!("No profiles defined");
+    let profile = if let Some(profiles) = &config.profiles {
+        if let Some(p) = profiles.get(profile_name) {
+            p.clone()
+        } else {
+            eprintln!("Profile not found: {profile_name}");
             return;
         }
+    } else {
+        eprintln!("No profiles defined");
+        return;
     };
 
     // Apply profile fields
@@ -836,7 +838,7 @@ fn apply_profile(config: &mut ComposerConfig, profile_name: &str) {
 ///
 /// A fully merged `ComposerConfig` with all overrides applied.
 ///
-/// # Rust Concept: Caching with RwLock
+/// # Rust Concept: Caching with `RwLock`
 ///
 /// Configuration loading is expensive (file I/O, parsing). We cache the result
 /// and only reload if the workspace or profile changes.
@@ -847,7 +849,9 @@ fn apply_profile(config: &mut ComposerConfig, profile_name: &str) {
 pub fn load_config(workspace_dir: &Path, profile_name: Option<&str>) -> ComposerConfig {
     // Check cache - use a block to limit the scope of the read lock
     {
-        let cache = CONFIG_CACHE.read().unwrap_or_else(|e| e.into_inner());
+        let cache = CONFIG_CACHE
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Return cached config if it matches the requested parameters
         if cache.config.is_some()
             && cache.workspace_dir.as_deref() == Some(workspace_dir)
@@ -889,7 +893,9 @@ pub fn load_config(workspace_dir: &Path, profile_name: Option<&str>) -> Composer
 
     // Cache the result
     {
-        let mut cache = CONFIG_CACHE.write().unwrap_or_else(|e| e.into_inner());
+        let mut cache = CONFIG_CACHE
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.config = Some(config.clone());
         cache.workspace_dir = Some(workspace_dir.to_path_buf());
         cache.profile_name = profile_name.map(String::from);
@@ -899,6 +905,7 @@ pub fn load_config(workspace_dir: &Path, profile_name: Option<&str>) -> Composer
 }
 
 /// Load configuration with CLI overrides
+#[must_use]
 pub fn load_config_with_overrides(
     workspace_dir: &Path,
     profile_name: Option<&str>,
@@ -914,6 +921,7 @@ pub fn load_config_with_overrides(
 // ─────────────────────────────────────────────────────────────
 
 /// Get the list of available profiles
+#[must_use]
 pub fn get_available_profiles(workspace_dir: &Path) -> Vec<String> {
     let config = load_config(workspace_dir, None);
     match config.profiles {
@@ -923,6 +931,7 @@ pub fn get_available_profiles(workspace_dir: &Path) -> Vec<String> {
 }
 
 /// Get a summary of the current configuration for display
+#[must_use]
 pub fn get_config_summary(workspace_dir: &Path) -> String {
     let config = load_config(workspace_dir, None);
     let mut lines = Vec::new();
@@ -947,7 +956,7 @@ pub fn get_config_summary(workspace_dir: &Path) -> String {
     ));
 
     if let Some(ref profile) = config.profile {
-        lines.push(format!("Active Profile: {}", profile));
+        lines.push(format!("Active Profile: {profile}"));
     }
 
     let profiles = get_available_profiles(workspace_dir);
@@ -959,6 +968,7 @@ pub fn get_config_summary(workspace_dir: &Path) -> String {
 }
 
 /// Parse a CLI config override in the format "key=value"
+#[must_use]
 pub fn parse_cli_override(override_str: &str) -> Option<(String, toml::Value)> {
     let eq_index = override_str.find('=')?;
     if eq_index == 0 {
@@ -969,22 +979,17 @@ pub fn parse_cli_override(override_str: &str) -> Option<(String, toml::Value)> {
     let value_str = override_str[eq_index + 1..].trim();
 
     // Try to parse as TOML value
-    let toml_str = format!("value = {}", value_str);
-    match toml::from_str::<toml::Table>(&toml_str) {
-        Ok(table) => {
-            let value = table.get("value")?.clone();
-            Some((key, value))
+    let toml_str = format!("value = {value_str}");
+    if let Ok(table) = toml::from_str::<toml::Table>(&toml_str) {
+        let value = table.get("value")?.clone();
+        Some((key, value))
+    } else {
+        // Treat as string, removing surrounding quotes if present
+        let mut v = value_str.to_string();
+        if (v.starts_with('"') && v.ends_with('"')) || (v.starts_with('\'') && v.ends_with('\'')) {
+            v = v[1..v.len() - 1].to_string();
         }
-        Err(_) => {
-            // Treat as string, removing surrounding quotes if present
-            let mut v = value_str.to_string();
-            if (v.starts_with('"') && v.ends_with('"'))
-                || (v.starts_with('\'') && v.ends_with('\''))
-            {
-                v = v[1..v.len() - 1].to_string();
-            }
-            Some((key, toml::Value::String(v)))
-        }
+        Some((key, toml::Value::String(v)))
     }
 }
 

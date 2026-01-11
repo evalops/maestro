@@ -20,6 +20,7 @@ fn has_true_color() -> bool {
 ///
 /// - With true color: uses shimmer effect on the bullet
 /// - Without: alternates between filled and hollow bullet
+#[must_use]
 pub fn spinner(start_time: Option<Instant>, animations_enabled: bool) -> Span<'static> {
     if !animations_enabled {
         return Span::styled("*", Style::default().add_modifier(Modifier::DIM));
@@ -48,6 +49,7 @@ pub fn spinner(start_time: Option<Instant>, animations_enabled: bool) -> Span<'s
 pub const BRAILLE_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Get a braille spinner frame based on elapsed time
+#[must_use]
 pub fn braille_spinner(start_time: Option<Instant>) -> Span<'static> {
     let elapsed = start_time.map(|st| st.elapsed()).unwrap_or_default();
     let frame_idx = (elapsed.as_millis() / 80) as usize % BRAILLE_FRAMES.len();
@@ -63,6 +65,7 @@ pub fn braille_spinner(start_time: Option<Instant>) -> Span<'static> {
 pub const DOT_FRAMES: &[&str] = &["   ", ".  ", ".. ", "..."];
 
 /// Get a dot spinner frame
+#[must_use]
 pub fn dot_spinner(start_time: Option<Instant>) -> &'static str {
     let elapsed = start_time.map(|st| st.elapsed()).unwrap_or_default();
     let frame_idx = (elapsed.as_millis() / 400) as usize % DOT_FRAMES.len();

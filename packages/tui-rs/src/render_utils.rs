@@ -12,6 +12,7 @@ use std::borrow::Cow;
 ///
 /// This is useful when you need to store lines in a collection that outlives
 /// the original borrowed data.
+#[must_use]
 pub fn line_to_static(line: &Line<'_>) -> Line<'static> {
     Line {
         style: line.style,
@@ -28,7 +29,7 @@ pub fn line_to_static(line: &Line<'_>) -> Line<'static> {
 }
 
 /// Append owned copies of borrowed lines to `out`.
-pub fn push_owned_lines<'a>(src: &[Line<'a>], out: &mut Vec<Line<'static>>) {
+pub fn push_owned_lines(src: &[Line<'_>], out: &mut Vec<Line<'static>>) {
     for l in src {
         out.push(line_to_static(l));
     }
@@ -36,6 +37,7 @@ pub fn push_owned_lines<'a>(src: &[Line<'a>], out: &mut Vec<Line<'static>>) {
 
 /// Consider a line blank if it has no spans or only spans whose contents are
 /// empty or consist solely of spaces (no tabs/newlines).
+#[must_use]
 pub fn is_blank_line(line: &Line<'_>) -> bool {
     if line.spans.is_empty() {
         return true;
@@ -71,6 +73,7 @@ pub fn is_blank_line(line: &Line<'_>) -> bool {
 /// // └ First line
 /// //   Second line
 /// ```
+#[must_use]
 pub fn prefix_lines(
     lines: Vec<Line<'static>>,
     initial_prefix: Span<'static>,
@@ -95,6 +98,7 @@ pub fn prefix_lines(
 /// Prefix lines with borrowed spans (for when you don't need owned output).
 ///
 /// Returns a new Vec of lines with the prefixes prepended.
+#[must_use]
 pub fn prefix_lines_borrowed<'a>(
     lines: &[Line<'a>],
     initial_prefix: &'a str,
@@ -131,6 +135,7 @@ pub fn prefix_lines_borrowed<'a>(
 /// # Returns
 ///
 /// A new Vec with at most `max_lines` lines, with an ellipsis if truncated.
+#[must_use]
 pub fn truncate_lines_middle(
     lines: &[Line<'static>],
     max_lines: usize,
@@ -176,12 +181,14 @@ pub fn truncate_lines_middle(
 }
 
 /// Create an ellipsis line showing how many lines were omitted.
+#[must_use]
 pub fn ellipsis_line(omitted: usize) -> Line<'static> {
     use ratatui::style::Stylize;
     Line::from(vec![format!("… +{omitted} lines").dim()])
 }
 
 /// Limit lines from the start, showing an ellipsis for any beyond the limit.
+#[must_use]
 pub fn limit_lines_from_start(lines: &[Line<'static>], keep: usize) -> Vec<Line<'static>> {
     if lines.len() <= keep {
         return lines.to_vec();

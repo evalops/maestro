@@ -62,6 +62,7 @@ pub enum Decision {
 }
 
 impl Decision {
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "allow" => Some(Self::Allow),
@@ -71,6 +72,7 @@ impl Decision {
         }
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Allow => "allow",
@@ -95,6 +97,7 @@ impl PatternToken {
         }
     }
 
+    #[must_use]
     pub fn alternatives(&self) -> &[String] {
         match self {
             Self::Single(s) => std::slice::from_ref(s),
@@ -151,6 +154,7 @@ pub enum RuleMatch {
 }
 
 impl RuleMatch {
+    #[must_use]
     pub fn decision(&self) -> Decision {
         match self {
             Self::Prefix { decision, .. } => *decision,
@@ -168,6 +172,7 @@ pub struct Evaluation {
 }
 
 impl Evaluation {
+    #[must_use]
     pub fn is_match(&self) -> bool {
         self.matched_rules
             .iter()
@@ -195,6 +200,7 @@ pub struct Policy {
 }
 
 impl Policy {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -265,6 +271,7 @@ impl Policy {
         matched_rules
     }
 
+    #[must_use]
     pub fn rules(&self) -> &HashMap<String, Vec<PrefixRule>> {
         &self.rules_by_program
     }
@@ -493,10 +500,10 @@ pub fn append_allow_prefix_rule(policy_path: &Path, prefix: &[String]) -> Result
 
     let tokens: Vec<String> = prefix
         .iter()
-        .map(|t| serde_json::to_string(t).unwrap_or_else(|_| format!("\"{}\"", t)))
+        .map(|t| serde_json::to_string(t).unwrap_or_else(|_| format!("\"{t}\"")))
         .collect();
     let pattern = format!("[{}]", tokens.join(", "));
-    let rule = format!(r#"prefix_rule(pattern={}, decision="allow")"#, pattern);
+    let rule = format!(r#"prefix_rule(pattern={pattern}, decision="allow")"#);
 
     // Create directory if needed
     if let Some(dir) = policy_path.parent() {
@@ -509,28 +516,28 @@ pub fn append_allow_prefix_rule(policy_path: &Path, prefix: &[String]) -> Result
         .read(true)
         .append(true)
         .open(policy_path)
-        .map_err(|e| format!("Failed to open policy file: {}", e))?;
+        .map_err(|e| format!("Failed to open policy file: {e}"))?;
 
     // Check if file ends with newline
     let len = file
         .metadata()
         .map(|m| m.len())
-        .map_err(|e| format!("Failed to get metadata: {}", e))?;
+        .map_err(|e| format!("Failed to get metadata: {e}"))?;
 
     if len > 0 {
         file.seek(SeekFrom::End(-1))
-            .map_err(|e| format!("Failed to seek: {}", e))?;
+            .map_err(|e| format!("Failed to seek: {e}"))?;
         let mut last = [0u8; 1];
         file.read_exact(&mut last)
-            .map_err(|e| format!("Failed to read: {}", e))?;
+            .map_err(|e| format!("Failed to read: {e}"))?;
         if last[0] != b'\n' {
             file.write_all(b"\n")
-                .map_err(|e| format!("Failed to write newline: {}", e))?;
+                .map_err(|e| format!("Failed to write newline: {e}"))?;
         }
     }
 
-    file.write_all(format!("{}\n", rule).as_bytes())
-        .map_err(|e| format!("Failed to write rule: {}", e))?;
+    file.write_all(format!("{rule}\n").as_bytes())
+        .map_err(|e| format!("Failed to write rule: {e}"))?;
 
     Ok(())
 }
@@ -540,6 +547,7 @@ pub fn append_allow_prefix_rule(policy_path: &Path, prefix: &[String]) -> Result
 // ─────────────────────────────────────────────────────────────
 
 /// Parse a command string into tokens.
+#[must_use]
 pub fn parse_command(command: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -588,6 +596,7 @@ pub fn parse_command(command: &str) -> Vec<String> {
 }
 
 /// Check if a command is allowed without prompting.
+#[must_use]
 pub fn is_command_allowed(command: &str, workspace_dir: &Path) -> bool {
     let policy = load_policy(workspace_dir);
     let tokens = parse_command(command);
@@ -596,6 +605,7 @@ pub fn is_command_allowed(command: &str, workspace_dir: &Path) -> bool {
 }
 
 /// Check if a command is forbidden.
+#[must_use]
 pub fn is_command_forbidden(command: &str, workspace_dir: &Path) -> bool {
     let policy = load_policy(workspace_dir);
     let tokens = parse_command(command);

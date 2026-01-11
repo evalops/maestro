@@ -75,7 +75,7 @@
 //!
 //! - **Matching**: O(n) where n = number of commands (typically 20-30)
 //! - **Sorting**: O(n log n) for score-based ranking
-//! - **Favorites/Recent**: O(1) lookup using Vec::contains (small lists)
+//! - **Favorites/Recent**: O(1) lookup using `Vec::contains` (small lists)
 //! - **Query caching**: Tab cycling avoids re-matching on every keypress
 
 use std::sync::Arc;
@@ -127,6 +127,7 @@ pub struct CommandMatch {
 
 impl CommandMatch {
     /// Create a new match
+    #[must_use]
     pub fn new(command: Arc<Command>, score: i32) -> Self {
         Self {
             matched_name: command.name.clone(),
@@ -137,6 +138,7 @@ impl CommandMatch {
     }
 
     /// Set matched alias
+    #[must_use]
     pub fn with_alias(mut self, alias: String) -> Self {
         self.matched_alias = Some(alias.clone());
         self.matched_name = alias;
@@ -238,6 +240,7 @@ pub struct SlashCommandMatcher {
 
 impl SlashCommandMatcher {
     /// Create a new matcher
+    #[must_use]
     pub fn new(registry: Arc<CommandRegistry>) -> Self {
         Self {
             registry,
@@ -307,6 +310,7 @@ impl SlashCommandMatcher {
     /// // ]
     /// ```
     #[allow(clippy::needless_borrow)] // Borrows enable &String -> &str coercion
+    #[must_use]
     pub fn get_matches(&self, query: &str) -> Vec<CommandMatch> {
         let query = query.to_lowercase();
         let query = query.trim_start_matches('/');
@@ -419,6 +423,7 @@ impl SlashCommandMatcher {
     }
 
     /// Get completions for tab cycling
+    #[must_use]
     pub fn get_completions(&self, query: &str) -> Vec<String> {
         self.get_matches(query)
             .into_iter()
@@ -427,6 +432,7 @@ impl SlashCommandMatcher {
     }
 
     /// Get the best match for a query
+    #[must_use]
     pub fn best_match(&self, query: &str) -> Option<CommandMatch> {
         self.get_matches(query).into_iter().next()
     }
@@ -490,6 +496,7 @@ pub struct SlashCycleState {
 
 impl SlashCycleState {
     /// Create a new cycle state
+    #[must_use]
     pub fn new() -> Self {
         Self {
             query: None,
@@ -535,8 +542,11 @@ impl SlashCycleState {
     }
 
     /// Get the current completion
+    #[must_use]
     pub fn current(&self) -> Option<&str> {
-        self.completions.get(self.index).map(|s| s.as_str())
+        self.completions
+            .get(self.index)
+            .map(std::string::String::as_str)
     }
 
     /// Reset the cycle state
@@ -547,16 +557,19 @@ impl SlashCycleState {
     }
 
     /// Check if there are completions available
+    #[must_use]
     pub fn has_completions(&self) -> bool {
         !self.completions.is_empty()
     }
 
     /// Get all completions
+    #[must_use]
     pub fn completions(&self) -> &[String] {
         &self.completions
     }
 
     /// Get the current index
+    #[must_use]
     pub fn current_index(&self) -> usize {
         self.index
     }
@@ -586,6 +599,7 @@ pub struct InlineCompletion {
 
 impl InlineCompletion {
     /// Create an inline completion
+    #[must_use]
     pub fn new(full_text: String, suffix: String, hint: Option<String>, score: i32) -> Self {
         Self {
             full_text,
@@ -631,6 +645,7 @@ impl SlashCommandMatcher {
     ///
     /// Returns the best match's suffix that would complete the input,
     /// suitable for displaying as ghost text after the cursor.
+    #[must_use]
     pub fn get_inline_completion(&self, input: &str) -> Option<InlineCompletion> {
         if !input.starts_with('/') || input.len() < 2 {
             return None;
@@ -646,7 +661,7 @@ impl SlashCommandMatcher {
         if matched_name.starts_with(&input_cmd) && matched_name.len() > input_cmd.len() {
             let suffix = matched_name[input_cmd.len()..].to_string();
             return Some(InlineCompletion::new(
-                format!("/{}", matched_name),
+                format!("/{matched_name}"),
                 suffix,
                 Some(best.command.description.clone()),
                 best.score,
@@ -660,6 +675,7 @@ impl SlashCommandMatcher {
     ///
     /// Returns detailed completion information including command arguments,
     /// suitable for displaying a completion popup or dropdown.
+    #[must_use]
     pub fn get_rich_completions(&self, query: &str, limit: usize) -> Vec<RichCompletion> {
         self.get_matches(query)
             .into_iter()
@@ -695,6 +711,7 @@ impl SlashCommandMatcher {
     ///
     /// When the user has typed a command and is typing arguments,
     /// this returns possible completions for the current argument.
+    #[must_use]
     pub fn get_arg_completions(&self, input: &str) -> Vec<String> {
         let parts: Vec<&str> = input.splitn(2, ' ').collect();
         if parts.len() < 2 {
@@ -702,7 +719,6 @@ impl SlashCommandMatcher {
         }
 
         let cmd_name = parts[0].trim_start_matches('/');
-        let _arg_part = parts[1];
 
         // Find the command
         let cmd = match self.registry.get(cmd_name) {

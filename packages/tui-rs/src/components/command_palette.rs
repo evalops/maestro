@@ -5,7 +5,7 @@
 //!
 //! # Architecture
 //!
-//! ## CommandPalette (Stateful Component)
+//! ## `CommandPalette` (Stateful Component)
 //!
 //! The `CommandPalette` struct maintains:
 //! - `matcher`: Fuzzy search engine (`SlashCommandMatcher`) over command registry
@@ -215,6 +215,7 @@ pub struct CommandPalette {
 
 impl CommandPalette {
     /// Create a new command palette
+    #[must_use]
     pub fn new(registry: Arc<CommandRegistry>) -> Self {
         Self {
             matcher: SlashCommandMatcher::new(registry),
@@ -250,6 +251,7 @@ impl CommandPalette {
     }
 
     /// Check if visible
+    #[must_use]
     pub fn is_visible(&self) -> bool {
         self.visible
     }
@@ -269,8 +271,7 @@ impl CommandPalette {
             let prev = self.query[..self.cursor]
                 .chars()
                 .last()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.query.remove(self.cursor - prev);
             self.cursor -= prev;
             self.search();
@@ -283,8 +284,7 @@ impl CommandPalette {
             let prev = self.query[..self.cursor]
                 .chars()
                 .last()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.cursor -= prev;
         }
     }
@@ -295,8 +295,7 @@ impl CommandPalette {
             let next = self.query[self.cursor..]
                 .chars()
                 .next()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.cursor += next;
         }
     }
@@ -316,6 +315,7 @@ impl CommandPalette {
     }
 
     /// Get the selected command
+    #[must_use]
     pub fn selected_command(&self) -> Option<&CommandMatch> {
         self.matches.get(self.selected)
     }

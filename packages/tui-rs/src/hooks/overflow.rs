@@ -6,7 +6,7 @@
 //! # Detection Strategy
 //!
 //! Overflow is detected when:
-//! 1. Response ends with stop_reason = "length" / "max_tokens"
+//! 1. Response ends with `stop_reason` = "length" / "`max_tokens`"
 //! 2. Token count approaches the model's context limit
 //! 3. API returns a context length error
 //!
@@ -17,7 +17,7 @@
 //! 2. Trigger automatic compaction
 //! 3. Resume conversation with compacted context
 
-use super::types::*;
+use super::types::{HookResult, OverflowInput};
 use std::time::Instant;
 
 /// Model context limits (tokens)
@@ -27,9 +27,9 @@ pub struct ModelLimits {
     pub max_context: u64,
     /// Maximum output tokens
     pub max_output: u64,
-    /// Warning threshold (percentage of max_context)
+    /// Warning threshold (percentage of `max_context`)
     pub warning_threshold: f64,
-    /// Critical threshold (percentage of max_context)
+    /// Critical threshold (percentage of `max_context`)
     pub critical_threshold: f64,
 }
 
@@ -46,6 +46,7 @@ impl Default for ModelLimits {
 
 impl ModelLimits {
     /// Create limits for a specific model
+    #[must_use]
     pub fn for_model(model_id: &str) -> Self {
         match model_id {
             // Claude models
@@ -89,16 +90,19 @@ impl ModelLimits {
     }
 
     /// Check if token count is at warning level
+    #[must_use]
     pub fn is_warning(&self, tokens: u64) -> bool {
         tokens as f64 >= self.max_context as f64 * self.warning_threshold
     }
 
     /// Check if token count is at critical level
+    #[must_use]
     pub fn is_critical(&self, tokens: u64) -> bool {
         tokens as f64 >= self.max_context as f64 * self.critical_threshold
     }
 
     /// Check if token count exceeds max
+    #[must_use]
     pub fn is_overflow(&self, tokens: u64) -> bool {
         tokens >= self.max_context
     }
@@ -124,6 +128,7 @@ pub enum StopReason {
 impl StopReason {
     /// Parse from string (handles different API formats)
     #[allow(clippy::should_implement_trait)]
+    #[must_use]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "end_turn" | "stop" => StopReason::EndTurn,
@@ -136,6 +141,7 @@ impl StopReason {
     }
 
     /// Check if this stop reason indicates overflow
+    #[must_use]
     pub fn is_overflow(&self) -> bool {
         matches!(self, StopReason::MaxTokens | StopReason::Length)
     }
@@ -158,6 +164,7 @@ pub struct OverflowDetector {
 
 impl OverflowDetector {
     /// Create a new detector with default limits
+    #[must_use]
     pub fn new() -> Self {
         Self {
             limits: ModelLimits::default(),
@@ -168,6 +175,7 @@ impl OverflowDetector {
     }
 
     /// Create a detector for a specific model
+    #[must_use]
     pub fn for_model(model_id: &str) -> Self {
         Self {
             limits: ModelLimits::for_model(model_id),
@@ -178,6 +186,7 @@ impl OverflowDetector {
     }
 
     /// Set custom limits
+    #[must_use]
     pub fn with_limits(mut self, limits: ModelLimits) -> Self {
         self.limits = limits;
         self
@@ -200,6 +209,7 @@ impl OverflowDetector {
     }
 
     /// Check current status
+    #[must_use]
     pub fn check_status(&self) -> OverflowStatus {
         if self.limits.is_overflow(self.current_tokens) {
             OverflowStatus::Overflow
@@ -213,16 +223,18 @@ impl OverflowDetector {
     }
 
     /// Check if a stop reason indicates overflow
+    #[must_use]
     pub fn check_stop_reason(&self, stop_reason: &str) -> bool {
         StopReason::from_str(stop_reason).is_overflow()
     }
 
     /// Handle overflow condition
+    #[must_use]
     pub fn handle_overflow(&self, cwd: &str, session_id: Option<&str>) -> HookResult {
         let input = OverflowInput {
             hook_event_name: "Overflow".to_string(),
             cwd: cwd.to_string(),
-            session_id: session_id.map(|s| s.to_string()),
+            session_id: session_id.map(std::string::ToString::to_string),
             timestamp: chrono::Utc::now().to_rfc3339(),
             token_count: self.current_tokens,
             max_tokens: self.limits.max_context,
@@ -237,16 +249,19 @@ impl OverflowDetector {
     }
 
     /// Get current token count
+    #[must_use]
     pub fn current_tokens(&self) -> u64 {
         self.current_tokens
     }
 
     /// Get max context size
+    #[must_use]
     pub fn max_tokens(&self) -> u64 {
         self.limits.max_context
     }
 
     /// Get utilization percentage
+    #[must_use]
     pub fn utilization(&self) -> f64 {
         self.current_tokens as f64 / self.limits.max_context as f64 * 100.0
     }
@@ -273,6 +288,7 @@ pub enum OverflowStatus {
 
 impl OverflowStatus {
     /// Get a human-readable description
+    #[must_use]
     pub fn description(&self) -> &'static str {
         match self {
             OverflowStatus::Normal => "Normal",
@@ -283,6 +299,7 @@ impl OverflowStatus {
     }
 
     /// Check if compaction should be triggered
+    #[must_use]
     pub fn should_compact(&self) -> bool {
         matches!(self, OverflowStatus::Critical | OverflowStatus::Overflow)
     }
@@ -303,6 +320,7 @@ pub struct CompactionRequest {
 
 impl OverflowDetector {
     /// Generate a compaction request
+    #[must_use]
     pub fn create_compaction_request(&self) -> CompactionRequest {
         // Target: reduce to 50% of max context
         let target = (self.limits.max_context as f64 * 0.5) as u64;

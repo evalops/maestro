@@ -31,6 +31,7 @@ impl MessageContent {
         Self::Text(s.into())
     }
 
+    #[must_use]
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::Text(s) => Some(s),
@@ -105,6 +106,7 @@ impl Tool {
         }
     }
 
+    #[must_use]
     pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
         self.input_schema = schema;
         self
@@ -129,12 +131,12 @@ pub enum StreamEvent {
     /// Content block completed
     ContentBlockStop {
         index: usize,
-        /// Signature for thinking blocks (captured from signature_delta)
+        /// Signature for thinking blocks (captured from `signature_delta`)
         thinking_signature: Option<String>,
     },
     /// Message completed
     MessageStop {
-        /// Stop reason from the API (MaxTokens indicates overflow)
+        /// Stop reason from the API (`MaxTokens` indicates overflow)
         stop_reason: Option<StopReason>,
     },
     /// Usage stats
@@ -185,6 +187,7 @@ pub struct ThinkingConfig {
 }
 
 impl ThinkingConfig {
+    #[must_use]
     pub fn enabled(budget_tokens: u32) -> Self {
         Self {
             thinking_type: "enabled".to_string(),
@@ -213,6 +216,7 @@ pub struct Usage {
 }
 
 impl Usage {
+    #[must_use]
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens + self.output_tokens
     }

@@ -80,10 +80,10 @@
 //!
 //! # Credit
 //!
-//! Adapted from OpenAI Codex (MIT License):
-//! https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/textarea.rs
+//! Adapted from `OpenAI` Codex (MIT License):
+//! <https://github.com/openai/codex/blob/main/codex-rs/tui/src/bottom_pane/textarea.rs>
 //!
-//! Integrated with AppState for multi-line input support in Composer.
+//! Integrated with `AppState` for multi-line input support in Composer.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -135,6 +135,7 @@ struct WrapCache {
 
 impl TextArea {
     /// Create a new empty text area
+    #[must_use]
     pub fn new() -> Self {
         Self {
             text: String::new(),
@@ -340,11 +341,13 @@ impl<'a> TextAreaWidget<'a> {
         }
     }
 
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
+    #[must_use]
     pub fn placeholder(mut self, text: &'a str, style: Style) -> Self {
         self.placeholder = Some(text);
         self.placeholder_style = style;

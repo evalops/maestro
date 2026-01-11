@@ -31,7 +31,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::types::*;
+use super::types::{
+    ContentBlock, Message, MessageContent, RequestConfig, Role, StopReason, StreamEvent,
+};
 use super::AiProvider;
 
 /// Google Gemini API base URL
@@ -53,7 +55,7 @@ impl GoogleClient {
         }
     }
 
-    /// Create a Google client from GOOGLE_API_KEY environment variable
+    /// Create a Google client from `GOOGLE_API_KEY` environment variable
     pub fn from_env() -> Result<Self> {
         let api_key = env::var("GOOGLE_API_KEY")
             .or_else(|_| env::var("GEMINI_API_KEY"))
@@ -82,7 +84,7 @@ impl GoogleClient {
                 stream_google_response(client, api_key, model, request, tx.clone()).await
             {
                 let _ = tx.send(StreamEvent::Error {
-                    message: format!("Google API error: {}", e),
+                    message: format!("Google API error: {e}"),
                 });
             }
         });
@@ -146,7 +148,7 @@ impl GoogleClient {
                 .filter_map(|block| match block {
                     ContentBlock::Text { text } => Some(Part::Text { text: text.clone() }),
                     ContentBlock::Thinking { thinking, .. } => Some(Part::Text {
-                        text: format!("<thinking>{}</thinking>", thinking),
+                        text: format!("<thinking>{thinking}</thinking>"),
                     }),
                     ContentBlock::ToolUse { id: _, name, input } => Some(Part::FunctionCall {
                         function_call: FunctionCall {
@@ -176,6 +178,7 @@ impl GoogleClient {
     }
 
     /// Get the provider type
+    #[must_use]
     pub fn provider(&self) -> AiProvider {
         AiProvider::Google
     }
@@ -189,10 +192,8 @@ async fn stream_google_response(
     request: GoogleRequest,
     tx: mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<()> {
-    let url = format!(
-        "{}/models/{}:streamGenerateContent?alt=sse&key={}",
-        GOOGLE_API_BASE, model, api_key
-    );
+    let url =
+        format!("{GOOGLE_API_BASE}/models/{model}:streamGenerateContent?alt=sse&key={api_key}");
 
     let response = client
         .post(&url)
@@ -205,7 +206,7 @@ async fn stream_google_response(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Google API error ({}): {}", status, body);
+        anyhow::bail!("Google API error ({status}): {body}");
     }
 
     // Parse SSE stream
@@ -392,6 +393,7 @@ struct UsageMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::Tool;
 
     // ========================================================================
     // Client Creation Tests

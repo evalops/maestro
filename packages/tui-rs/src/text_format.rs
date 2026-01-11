@@ -43,6 +43,7 @@ pub const TOOL_OUTPUT_MAX_LINES: usize = 5;
 /// # Returns
 ///
 /// Formatted and truncated string
+#[must_use]
 pub fn format_and_truncate_tool_result(text: &str, max_lines: usize, line_width: usize) -> String {
     // Max graphemes = lines * width, minus a fudge factor
     let max_graphemes = (max_lines * line_width).saturating_sub(max_lines);
@@ -67,6 +68,7 @@ pub fn format_and_truncate_tool_result(text: &str, max_lines: usize, line_width:
 /// # Returns
 ///
 /// `Some(formatted)` if input is valid JSON, `None` otherwise.
+#[must_use]
 pub fn format_json_compact(text: &str) -> Option<String> {
     let json: serde_json::Value = serde_json::from_str(text).ok()?;
     let json_pretty = serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string());
@@ -123,6 +125,7 @@ pub fn format_json_compact(text: &str) -> Option<String> {
 /// # Returns
 ///
 /// The truncated string, with `...` appended if truncated.
+#[must_use]
 pub fn truncate_text(text: &str, max_chars: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
 
@@ -137,7 +140,7 @@ pub fn truncate_text(text: &str, max_chars: usize) -> String {
 
     // Truncate to max - 3 and add "..."
     let truncated: String = chars[..max_chars - 3].iter().collect();
-    format!("{}...", truncated)
+    format!("{truncated}...")
 }
 
 /// Truncate text to a maximum number of lines.
@@ -150,6 +153,7 @@ pub fn truncate_text(text: &str, max_chars: usize) -> String {
 /// # Returns
 ///
 /// Tuple of (truncated lines, number of omitted lines)
+#[must_use]
 pub fn truncate_lines(text: &str, max_lines: usize) -> (Vec<&str>, usize) {
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
@@ -163,7 +167,7 @@ pub fn truncate_lines(text: &str, max_lines: usize) -> (Vec<&str>, usize) {
 
 /// Center-truncate a path, keeping leading and trailing segments.
 ///
-/// This is a sophisticated path truncation algorithm ported from OpenAI Codex CLI.
+/// This is a sophisticated path truncation algorithm ported from `OpenAI` Codex CLI.
 /// It inserts a Unicode ellipsis in the middle when the path is too long, and
 /// attempts to preserve as many segments as possible while fitting within the width.
 ///
@@ -188,6 +192,7 @@ pub fn truncate_lines(text: &str, max_lines: usize) -> (Vec<&str>, usize) {
 /// let truncated = center_truncate_path(path, 30);
 /// // Result: "/home/user/…/path/file.rs"
 /// ```
+#[must_use]
 pub fn center_truncate_path(path: &str, max_width: usize) -> String {
     use unicode_width::UnicodeWidthChar;
 
@@ -278,7 +283,7 @@ pub fn center_truncate_path(path: &str, max_width: usize) -> String {
     let mut combos: Vec<(usize, usize)> = Vec::new();
     let segment_count = raw_segments.len();
     for left in 1..=segment_count {
-        let min_right = if left == segment_count { 0 } else { 1 };
+        let min_right = usize::from(left != segment_count);
         for right in min_right..=(segment_count - left) {
             combos.push((left, right));
         }
@@ -418,6 +423,7 @@ pub fn center_truncate_path(path: &str, max_width: usize) -> String {
 /// # Returns
 ///
 /// Path with home directory replaced by `~` if applicable.
+#[must_use]
 pub fn relativize_to_home(path: &str) -> String {
     if let Some(home) = dirs::home_dir() {
         let home_str = home.to_string_lossy();

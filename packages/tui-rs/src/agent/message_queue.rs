@@ -48,6 +48,7 @@ pub enum PromptKind {
 }
 
 impl PromptKind {
+    #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
             PromptKind::Prompt => "prompt",
@@ -116,6 +117,7 @@ impl PendingMessage {
     }
 
     /// How long this message has been waiting (in milliseconds)
+    #[must_use]
     pub fn waiting_ms(&self) -> u64 {
         current_timestamp_ms().saturating_sub(self.queued_at)
     }
@@ -140,6 +142,7 @@ pub struct MessageQueue {
 
 impl MessageQueue {
     /// Create a new empty message queue
+    #[must_use]
     pub fn new() -> Self {
         Self {
             queue: VecDeque::new(),
@@ -153,6 +156,7 @@ impl MessageQueue {
     /// Create a queue with a maximum size
     ///
     /// When the queue is full, oldest messages are dropped.
+    #[must_use]
     pub fn with_max_size(max_size: usize) -> Self {
         Self {
             queue: VecDeque::with_capacity(max_size.min(100)),
@@ -258,16 +262,19 @@ impl MessageQueue {
     }
 
     /// Peek at the next message without removing it
+    #[must_use]
     pub fn peek(&self) -> Option<&PendingMessage> {
         self.queue.front()
     }
 
     /// Check if the queue is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
     /// Get the number of pending messages
+    #[must_use]
     pub fn len(&self) -> usize {
         self.queue.len()
     }
@@ -286,8 +293,9 @@ impl MessageQueue {
     }
 
     /// Get queue statistics
+    #[must_use]
     pub fn stats(&self) -> QueueStats {
-        let oldest_waiting_ms = self.queue.front().map(|m| m.waiting_ms());
+        let oldest_waiting_ms = self.queue.front().map(PendingMessage::waiting_ms);
         let pending_steer = self
             .queue
             .iter()
@@ -356,11 +364,13 @@ pub struct QueueStats {
 
 impl QueueStats {
     /// Check if any messages are pending
+    #[must_use]
     pub fn has_pending(&self) -> bool {
         self.pending_count > 0
     }
 
     /// Format as a status string for display
+    #[must_use]
     pub fn status_string(&self) -> String {
         if self.pending_count == 0 {
             String::new()

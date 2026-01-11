@@ -33,6 +33,7 @@ pub struct SingleLineInput {
 
 impl SingleLineInput {
     /// Create a new single-line input.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             prompt: "> ".to_string(),
@@ -53,6 +54,7 @@ impl SingleLineInput {
     }
 
     /// Get the current value.
+    #[must_use]
     pub fn value(&self) -> &str {
         &self.value
     }
@@ -64,6 +66,7 @@ impl SingleLineInput {
     }
 
     /// Get cursor position.
+    #[must_use]
     pub fn cursor(&self) -> usize {
         self.cursor
     }
@@ -161,13 +164,15 @@ impl SingleLineInput {
     }
 
     /// Check if input is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
     }
 
     /// Calculate visible text and cursor position for a given width.
     ///
-    /// Returns (visible_text, cursor_display_position, viewport_start).
+    /// Returns (`visible_text`, `cursor_display_position`, `viewport_start`).
+    #[must_use]
     pub fn calculate_viewport(&self, available_width: usize) -> (&str, usize, usize) {
         let text_width = self.value.width();
 
@@ -205,6 +210,7 @@ impl SingleLineInput {
     }
 
     /// Render the input to a Line with cursor styling.
+    #[must_use]
     pub fn render_line(&self, width: usize) -> Line<'static> {
         let prompt_width = self.prompt.width();
         let available_width = width.saturating_sub(prompt_width);
@@ -259,13 +265,14 @@ impl SingleLineInput {
 // WIDGET IMPLEMENTATION
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Widget for rendering a SingleLineInput.
+/// Widget for rendering a `SingleLineInput`.
 pub struct SingleLineInputWidget<'a> {
     input: &'a SingleLineInput,
     focused: bool,
 }
 
 impl<'a> SingleLineInputWidget<'a> {
+    #[must_use]
     pub fn new(input: &'a SingleLineInput) -> Self {
         Self {
             input,
@@ -273,6 +280,7 @@ impl<'a> SingleLineInputWidget<'a> {
         }
     }
 
+    #[must_use]
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
         self
@@ -332,7 +340,7 @@ fn char_range_to_bytes(s: &str, start_char: usize, end_char: usize) -> (usize, u
     (byte_start, byte_end)
 }
 
-/// Split a string at a display position, returning (before, char_at_pos, after).
+/// Split a string at a display position, returning (before, `char_at_pos`, after).
 fn split_at_display_pos(s: &str, display_pos: usize) -> (&str, &str, &str) {
     let mut current_width = 0;
 

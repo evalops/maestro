@@ -36,11 +36,13 @@ pub struct KeyBinding {
 
 impl KeyBinding {
     /// Create a new key binding
+    #[must_use]
     pub const fn new(key: KeyCode, modifiers: KeyModifiers) -> Self {
         Self { key, modifiers }
     }
 
     /// Check if this binding matches a key event
+    #[must_use]
     pub fn matches(&self, event: &KeyEvent) -> bool {
         self.key == event.code
             && self.modifiers == event.modifiers
@@ -48,6 +50,7 @@ impl KeyBinding {
     }
 
     /// Get the display string for this binding
+    #[must_use]
     pub fn display(&self) -> String {
         let mut parts = Vec::new();
 
@@ -80,7 +83,7 @@ impl KeyBinding {
     }
 }
 
-/// Convert a KeyCode to its display string
+/// Convert a `KeyCode` to its display string
 fn key_to_string(key: KeyCode) -> String {
     match key {
         KeyCode::Enter => "Enter".to_string(),
@@ -99,32 +102,38 @@ fn key_to_string(key: KeyCode) -> String {
         KeyCode::Right => "→".to_string(),
         KeyCode::Char(' ') => "Space".to_string(),
         KeyCode::Char(c) => c.to_ascii_uppercase().to_string(),
-        KeyCode::F(n) => format!("F{}", n),
+        KeyCode::F(n) => format!("F{n}"),
         _ => "?".to_string(),
     }
 }
 
 // Convenience constructors
+#[must_use]
 pub const fn plain(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::NONE)
 }
 
+#[must_use]
 pub const fn ctrl(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::CONTROL)
 }
 
+#[must_use]
 pub const fn alt(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::ALT)
 }
 
+#[must_use]
 pub const fn shift(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::SHIFT)
 }
 
+#[must_use]
 pub const fn ctrl_shift(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::CONTROL.union(KeyModifiers::SHIFT))
 }
 
+#[must_use]
 pub const fn ctrl_alt(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::CONTROL.union(KeyModifiers::ALT))
 }
@@ -155,6 +164,7 @@ pub struct KeyHint {
 }
 
 impl KeyHint {
+    #[must_use]
     pub const fn new(binding: KeyBinding, description: &'static str) -> Self {
         Self {
             binding,
@@ -163,6 +173,7 @@ impl KeyHint {
     }
 
     /// Render as spans: [key] description
+    #[must_use]
     pub fn to_spans(&self) -> Vec<Span<'static>> {
         vec![
             Span::styled(
@@ -177,7 +188,7 @@ impl KeyHint {
 
 // Common key bindings
 pub mod bindings {
-    use super::*;
+    use super::{ctrl, plain, KeyBinding, KeyCode};
 
     pub const QUIT: KeyBinding = ctrl(KeyCode::Char('c'));
     pub const ESCAPE: KeyBinding = plain(KeyCode::Esc);

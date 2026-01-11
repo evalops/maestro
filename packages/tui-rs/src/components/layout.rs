@@ -18,6 +18,7 @@ pub struct BoxWidget {
 }
 
 impl BoxWidget {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             border: BorderStyle::None,
@@ -26,11 +27,13 @@ impl BoxWidget {
         }
     }
 
+    #[must_use]
     pub fn border(mut self, border: BorderStyle) -> Self {
         self.border = border;
         self
     }
 
+    #[must_use]
     pub fn padding(mut self, padding: Padding) -> Self {
         self.padding = padding;
         self
@@ -42,6 +45,7 @@ impl BoxWidget {
     }
 
     /// Get the inner area after applying border and padding
+    #[must_use]
     pub fn inner_area(&self, area: Rect) -> Rect {
         let border_offset = match self.border {
             BorderStyle::None => 0,
@@ -67,35 +71,32 @@ impl Default for BoxWidget {
 
 impl Widget for BoxWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        match self.border {
-            BorderStyle::None => {}
-            _ => {
-                let borders = Borders::ALL;
+        if let BorderStyle::None = self.border {
+        } else {
+            let borders = Borders::ALL;
 
-                let mut block = Block::default().borders(borders);
+            let mut block = Block::default().borders(borders);
 
-                // Set border style
-                block = match self.border {
-                    BorderStyle::Single => block.border_type(ratatui::widgets::BorderType::Plain),
-                    BorderStyle::Double => block.border_type(ratatui::widgets::BorderType::Double),
-                    BorderStyle::Rounded => {
-                        block.border_type(ratatui::widgets::BorderType::Rounded)
-                    }
-                    BorderStyle::Heavy => block.border_type(ratatui::widgets::BorderType::Thick),
-                    BorderStyle::None => block,
-                };
+            // Set border style
+            block = match self.border {
+                BorderStyle::Single => block.border_type(ratatui::widgets::BorderType::Plain),
+                BorderStyle::Double => block.border_type(ratatui::widgets::BorderType::Double),
+                BorderStyle::Rounded => block.border_type(ratatui::widgets::BorderType::Rounded),
+                BorderStyle::Heavy => block.border_type(ratatui::widgets::BorderType::Thick),
+                BorderStyle::None => block,
+            };
 
-                if let Some(title) = self.title {
-                    block = block.title(title);
-                }
-
-                block.render(area, buf);
+            if let Some(title) = self.title {
+                block = block.title(title);
             }
+
+            block.render(area, buf);
         }
     }
 }
 
 /// Calculate child areas for a column layout
+#[must_use]
 pub fn column_layout(area: Rect, child_count: usize, gap: u16) -> Vec<Rect> {
     if child_count == 0 || area.height == 0 {
         return Vec::new();
@@ -126,6 +127,7 @@ pub fn column_layout(area: Rect, child_count: usize, gap: u16) -> Vec<Rect> {
 }
 
 /// Calculate child areas for a row layout
+#[must_use]
 pub fn row_layout(area: Rect, child_count: usize, gap: u16) -> Vec<Rect> {
     if child_count == 0 || area.width == 0 {
         return Vec::new();

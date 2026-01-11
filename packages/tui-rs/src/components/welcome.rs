@@ -61,6 +61,7 @@ impl Default for WelcomeScreen {
 
 impl WelcomeScreen {
     /// Create a new welcome screen
+    #[must_use]
     pub fn new() -> Self {
         Self {
             animation: Some(AsciiAnimation::new()),
@@ -86,6 +87,7 @@ impl WelcomeScreen {
     }
 
     /// Set authentication status
+    #[must_use]
     pub fn authenticated(mut self, is_authenticated: bool) -> Self {
         self.is_authenticated = is_authenticated;
         self
@@ -98,12 +100,14 @@ impl WelcomeScreen {
     }
 
     /// Enable/disable animations
+    #[must_use]
     pub fn animations(mut self, enabled: bool) -> Self {
         self.animations_enabled = enabled;
         self
     }
 
     /// Enable/disable keyboard hints
+    #[must_use]
     pub fn show_hints(mut self, show: bool) -> Self {
         self.show_hints = show;
         self
@@ -277,6 +281,7 @@ pub enum OnboardingStep {
 
 impl OnboardingStep {
     /// Get the next step
+    #[must_use]
     pub fn next(self) -> Self {
         match self {
             Self::Welcome => Self::Auth,
@@ -288,6 +293,7 @@ impl OnboardingStep {
     }
 
     /// Get the previous step
+    #[must_use]
     pub fn prev(self) -> Self {
         match self {
             Self::Welcome => Self::Welcome,
@@ -299,6 +305,7 @@ impl OnboardingStep {
     }
 
     /// Get step index (0-based)
+    #[must_use]
     pub fn index(self) -> usize {
         match self {
             Self::Welcome => 0,
@@ -310,11 +317,13 @@ impl OnboardingStep {
     }
 
     /// Get total number of steps
+    #[must_use]
     pub fn total() -> usize {
         5
     }
 
     /// Get step label
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Self::Welcome => "Welcome",
@@ -347,6 +356,7 @@ impl Default for OnboardingFlow {
 
 impl OnboardingFlow {
     /// Create a new onboarding flow
+    #[must_use]
     pub fn new() -> Self {
         Self {
             current_step: OnboardingStep::Welcome,
@@ -372,11 +382,13 @@ impl OnboardingFlow {
     }
 
     /// Check if complete
+    #[must_use]
     pub fn is_complete(&self) -> bool {
         self.current_step == OnboardingStep::Complete
     }
 
     /// Get progress percentage
+    #[must_use]
     pub fn progress(&self) -> f64 {
         (self.current_step.index() as f64 / (OnboardingStep::total() - 1) as f64) * 100.0
     }
@@ -419,6 +431,7 @@ impl SplashScreen {
     }
 
     /// Show/hide logo
+    #[must_use]
     pub fn show_logo(mut self, show: bool) -> Self {
         self.show_logo = show;
         self

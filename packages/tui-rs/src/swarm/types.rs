@@ -112,24 +112,28 @@ impl SwarmTask {
     }
 
     /// Add dependencies
+    #[must_use]
     pub fn with_dependencies(mut self, deps: Vec<TaskId>) -> Self {
         self.dependencies = deps;
         self
     }
 
     /// Set priority
+    #[must_use]
     pub fn with_priority(mut self, priority: TaskPriority) -> Self {
         self.priority = priority;
         self
     }
 
     /// Set complexity
+    #[must_use]
     pub fn with_complexity(mut self, complexity: u8) -> Self {
         self.complexity = complexity.clamp(1, 10);
         self
     }
 
     /// Check if task can be started (all dependencies complete)
+    #[must_use]
     pub fn can_start(&self, completed_tasks: &HashSet<TaskId>) -> bool {
         self.status == TaskStatus::Pending
             && self
@@ -197,18 +201,21 @@ impl SwarmPlan {
     }
 
     /// Add tasks
+    #[must_use]
     pub fn with_tasks(mut self, tasks: Vec<SwarmTask>) -> Self {
         self.tasks = tasks;
         self
     }
 
     /// Set max concurrency
+    #[must_use]
     pub fn with_max_concurrency(mut self, n: usize) -> Self {
         self.max_concurrency = n.max(1);
         self
     }
 
     /// Get tasks that are ready to run
+    #[must_use]
     pub fn ready_tasks(&self, completed: &HashSet<TaskId>) -> Vec<&SwarmTask> {
         self.tasks
             .iter()
@@ -217,6 +224,7 @@ impl SwarmPlan {
     }
 
     /// Get task by ID
+    #[must_use]
     pub fn get_task(&self, id: &str) -> Option<&SwarmTask> {
         self.tasks.iter().find(|t| t.id == id)
     }
@@ -228,6 +236,7 @@ impl SwarmPlan {
 
     /// Check if the dependency graph has any cycles.
     /// Returns Some(cycle) with the task IDs forming a cycle, or None if acyclic.
+    #[must_use]
     pub fn find_cycle(&self) -> Option<Vec<TaskId>> {
         // Build adjacency map: task_id -> dependencies
         let task_ids: HashSet<_> = self.tasks.iter().map(|t| t.id.as_str()).collect();
@@ -248,8 +257,10 @@ impl SwarmPlan {
                 Some(1) => {
                     // Found cycle - extract it from path
                     let cycle_start = path.iter().position(|&id| id == task_id).unwrap();
-                    let mut cycle: Vec<String> =
-                        path[cycle_start..].iter().map(|s| s.to_string()).collect();
+                    let mut cycle: Vec<String> = path[cycle_start..]
+                        .iter()
+                        .map(|s| (*s).to_string())
+                        .collect();
                     cycle.push(task_id.to_string());
                     return Some(cycle);
                 }
@@ -321,6 +332,7 @@ impl SwarmPlan {
     }
 
     /// Returns true if the dependency graph is acyclic (valid DAG)
+    #[must_use]
     pub fn is_acyclic(&self) -> bool {
         self.find_cycle().is_none()
     }
@@ -400,7 +412,7 @@ pub struct SwarmState {
     pub completed_tasks: HashSet<TaskId>,
     /// Failed task IDs
     pub failed_tasks: HashSet<TaskId>,
-    /// Currently running tasks (task_id -> agent_id)
+    /// Currently running tasks (`task_id` -> `agent_id`)
     pub running_tasks: HashMap<TaskId, AgentId>,
     /// Start time (unix timestamp ms)
     pub started_at: Option<u64>,
@@ -410,6 +422,7 @@ pub struct SwarmState {
 
 impl SwarmState {
     /// Create new state with a plan and config
+    #[must_use]
     pub fn new(plan: SwarmPlan, config: SwarmConfig) -> Self {
         Self {
             status: SwarmStatus::Initializing,
@@ -420,6 +433,7 @@ impl SwarmState {
     }
 
     /// Get progress as (completed, total)
+    #[must_use]
     pub fn progress(&self) -> (usize, usize) {
         let completed = self.completed_tasks.len() + self.failed_tasks.len();
         let total = self.plan.tasks.len();
@@ -427,6 +441,7 @@ impl SwarmState {
     }
 
     /// Check if swarm is done
+    #[must_use]
     pub fn is_done(&self) -> bool {
         matches!(
             self.status,
@@ -435,6 +450,7 @@ impl SwarmState {
     }
 
     /// Check if can start more tasks
+    #[must_use]
     pub fn can_start_more(&self) -> bool {
         self.running_tasks.len() < self.config.max_concurrency
             && !self.is_done()

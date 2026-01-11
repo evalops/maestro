@@ -38,6 +38,7 @@ impl Default for ThemeSelector {
 
 impl ThemeSelector {
     /// Create a new theme selector
+    #[must_use]
     pub fn new() -> Self {
         let theme_list = themes::available_themes();
         let filtered: Vec<usize> = (0..theme_list.len()).collect();
@@ -73,6 +74,7 @@ impl ThemeSelector {
     }
 
     /// Check if visible
+    #[must_use]
     pub fn is_visible(&self) -> bool {
         self.visible
     }
@@ -90,8 +92,7 @@ impl ThemeSelector {
             let prev = self.query[..self.cursor]
                 .chars()
                 .last()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.query.remove(self.cursor - prev);
             self.cursor -= prev;
             self.filter();
@@ -104,8 +105,7 @@ impl ThemeSelector {
             let prev = self.query[..self.cursor]
                 .chars()
                 .last()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.cursor -= prev;
         }
     }
@@ -116,8 +116,7 @@ impl ThemeSelector {
             let next = self.query[self.cursor..]
                 .chars()
                 .next()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.cursor += next;
         }
     }
@@ -137,16 +136,17 @@ impl ThemeSelector {
     }
 
     /// Get the selected theme name
+    #[must_use]
     pub fn selected_theme(&self) -> Option<&str> {
         self.filtered
             .get(self.selected)
             .and_then(|&idx| self.themes.get(idx))
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
     }
 
     /// Confirm selection and return the theme name
     pub fn confirm(&mut self) -> Option<String> {
-        let name = self.selected_theme().map(|s| s.to_string());
+        let name = self.selected_theme().map(std::string::ToString::to_string);
         self.hide();
         name
     }
@@ -234,11 +234,7 @@ impl ThemeSelector {
             .map(|(i, &theme_idx)| {
                 let theme_name = &self.themes[theme_idx];
                 let is_selected = i == self.selected;
-                let is_current = self
-                    .current_theme
-                    .as_ref()
-                    .map(|c| c == theme_name)
-                    .unwrap_or(false);
+                let is_current = self.current_theme.as_ref().is_some_and(|c| c == theme_name);
 
                 let style = if is_selected {
                     Style::default().bg(Color::DarkGray).fg(Color::White)

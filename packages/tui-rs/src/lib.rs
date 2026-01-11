@@ -798,7 +798,7 @@ pub use render_utils::{
 
 /// Text formatting utilities for terminal display.
 ///
-/// Ported from OpenAI Codex CLI (MIT licensed):
+/// Ported from `OpenAI` Codex CLI (MIT licensed):
 /// - Truncate text to fit within a given character count
 /// - Format JSON in compact single-line format
 /// - Center-truncate paths with ellipsis in middle

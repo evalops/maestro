@@ -164,7 +164,7 @@ pub enum ToAgent {
     /// Request to cancel current operation
     ///
     /// Triggers the cancellation token to stop the active AI request. The agent
-    /// will clean up and send a ResponseEnd event.
+    /// will clean up and send a `ResponseEnd` event.
     Cancel,
 
     /// Shutdown the agent gracefully
@@ -242,6 +242,7 @@ impl ToolResult {
     }
 
     /// Add details to the result
+    #[must_use]
     pub fn with_details(mut self, details: serde_json::Value) -> Self {
         self.details = Some(details);
         self
@@ -320,14 +321,14 @@ pub enum FromAgent {
 
         /// Provider name
         ///
-        /// Example: "Anthropic", "OpenAI"
+        /// Example: "Anthropic", "`OpenAI`"
         provider: String,
     },
 
     /// Agent started generating a response
     ///
     /// Marks the beginning of a new AI response. The `response_id` can be used
-    /// to correlate chunks and the final ResponseEnd event.
+    /// to correlate chunks and the final `ResponseEnd` event.
     ResponseStart {
         /// Unique ID for this response
         ///
@@ -342,7 +343,7 @@ pub enum FromAgent {
     ResponseChunk {
         /// Response ID this chunk belongs to
         ///
-        /// Matches the `response_id` from ResponseStart.
+        /// Matches the `response_id` from `ResponseStart`.
         response_id: String,
 
         /// The text content
@@ -365,7 +366,7 @@ pub enum FromAgent {
     ResponseEnd {
         /// Response ID
         ///
-        /// Matches the `response_id` from ResponseStart.
+        /// Matches the `response_id` from `ResponseStart`.
         response_id: String,
 
         /// Token usage stats
@@ -378,11 +379,11 @@ pub enum FromAgent {
     /// Agent wants to call a tool
     ///
     /// The agent has requested to execute a tool (bash, read, write, etc.).
-    /// If `requires_approval` is true, the TUI must respond with a ToolResponse.
+    /// If `requires_approval` is true, the TUI must respond with a `ToolResponse`.
     ToolCall {
         /// Unique ID for this tool call
         ///
-        /// UUID v4 string. Must be used in the ToolResponse to identify which
+        /// UUID v4 string. Must be used in the `ToolResponse` to identify which
         /// tool call is being approved/denied.
         call_id: String,
 
@@ -399,7 +400,7 @@ pub enum FromAgent {
 
         /// Whether this requires user approval
         ///
-        /// If true, the agent will wait for a ToolResponse before executing.
+        /// If true, the agent will wait for a `ToolResponse` before executing.
         /// If false, the tool is auto-approved and executes immediately.
         requires_approval: bool,
     },
@@ -410,7 +411,7 @@ pub enum FromAgent {
     ToolStart {
         /// Tool call ID
         ///
-        /// Matches the `call_id` from ToolCall.
+        /// Matches the `call_id` from `ToolCall`.
         call_id: String,
     },
 
@@ -421,7 +422,7 @@ pub enum FromAgent {
     ToolOutput {
         /// Tool call ID
         ///
-        /// Matches the `call_id` from ToolCall.
+        /// Matches the `call_id` from `ToolCall`.
         call_id: String,
 
         /// Output content
@@ -436,7 +437,7 @@ pub enum FromAgent {
     ToolEnd {
         /// Tool call ID
         ///
-        /// Matches the `call_id` from ToolCall.
+        /// Matches the `call_id` from `ToolCall`.
         call_id: String,
 
         /// Whether it succeeded
@@ -516,12 +517,12 @@ pub enum FromAgent {
 
     /// Tool was blocked by a hook
     ///
-    /// Emitted when a PreToolUse hook blocks tool execution. The tool result
+    /// Emitted when a `PreToolUse` hook blocks tool execution. The tool result
     /// will contain an error message, and the model will be informed.
     HookBlocked {
         /// Tool call ID
         ///
-        /// Matches the `call_id` from the attempted ToolCall.
+        /// Matches the `call_id` from the attempted `ToolCall`.
         call_id: String,
 
         /// Name of the blocked tool

@@ -58,7 +58,7 @@
 //! Uses advanced serde features:
 //!
 //! - `#[serde(tag = "type")]`: Discriminate enum variants by `type` field
-//! - `#[serde(rename_all = "snake_case")]`: Convert variant names to snake_case
+//! - `#[serde(rename_all = "snake_case")]`: Convert variant names to `snake_case`
 //! - `#[serde(default)]`: Use default value if field is missing
 //! - `Option<T>`: Optional fields that may be absent from JSON
 //!
@@ -83,15 +83,15 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use super::client::{AiClient, AiProvider};
-use super::types::*;
+use super::types::{ContentBlock, Message, RequestConfig, StopReason, StreamEvent};
 
 /// Parser state for accumulating data across SSE events within a single stream.
 /// This replaces thread-local storage to avoid race conditions in async contexts.
 #[derive(Debug, Default)]
 struct SseParserState {
-    /// Stop reason from message_delta, consumed by message_stop
+    /// Stop reason from `message_delta`, consumed by `message_stop`
     pending_stop_reason: Option<StopReason>,
-    /// Thinking signature from signature_delta, associated with thinking blocks
+    /// Thinking signature from `signature_delta`, associated with thinking blocks
     pending_thinking_signature: Option<String>,
 }
 
@@ -211,7 +211,7 @@ impl AnthropicClient {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             let _ = tx.send(StreamEvent::Error {
-                message: format!("API error {}: {}", status, error_text),
+                message: format!("API error {status}: {error_text}"),
             });
             return Ok(rx);
         }
@@ -254,7 +254,7 @@ impl AnthropicClient {
                     Err(e) => {
                         // Stream error - notify receiver and exit
                         let _ = tx.send(StreamEvent::Error {
-                            message: format!("Stream error: {}", e),
+                            message: format!("Stream error: {e}"),
                         });
                         break;
                     }
@@ -360,7 +360,7 @@ impl AiClient for AnthropicClient {
     }
 }
 
-/// Parse an SSE event into a StreamEvent
+/// Parse an SSE event into a `StreamEvent`
 ///
 /// # SSE Format
 ///
@@ -544,7 +544,7 @@ struct MessageInfo {
 /// Content block start event - signals start of a new content block
 ///
 /// The `index` field identifies which content block this is (0-based).
-/// Multiple blocks can exist in a single message (e.g., text + tool_use).
+/// Multiple blocks can exist in a single message (e.g., text + `tool_use`).
 #[derive(Debug, Deserialize)]
 struct ContentBlockStartEvent {
     index: usize,
@@ -564,8 +564,8 @@ struct ContentBlockStartEvent {
 /// {"type": "thinking", "thinking": "..."}    -> Thinking variant
 /// ```
 ///
-/// The `rename_all = "snake_case"` converts Rust's PascalCase variant names
-/// to snake_case for JSON (Text -> "text", ToolUse -> "tool_use").
+/// The `rename_all = "snake_case"` converts Rust's `PascalCase` variant names
+/// to `snake_case` for JSON (Text -> "text", `ToolUse` -> "`tool_use`").
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RawContentBlock {
@@ -615,7 +615,7 @@ struct ContentBlockDeltaEvent {
 ///
 /// Serde:
 /// 1. Reads `"type": "text_delta"`
-/// 2. Converts "text_delta" to TextDelta variant (via rename_all)
+/// 2. Converts "`text_delta`" to `TextDelta` variant (via `rename_all`)
 /// 3. Deserializes remaining fields (`text`) into that variant
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -671,6 +671,7 @@ struct ErrorInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::Tool;
 
     /// Helper to create a fresh parser state for tests
     fn new_state() -> SseParserState {

@@ -33,6 +33,7 @@ pub enum NotificationLevel {
 
 impl NotificationLevel {
     /// Get the display icon for this level.
+    #[must_use]
     pub fn icon(&self) -> &'static str {
         match self {
             Self::Info => "ℹ",
@@ -43,6 +44,7 @@ impl NotificationLevel {
     }
 
     /// Get the ASCII fallback icon.
+    #[must_use]
     pub fn ascii_icon(&self) -> &'static str {
         match self {
             Self::Info => "i",
@@ -53,6 +55,7 @@ impl NotificationLevel {
     }
 
     /// Get the color for this level.
+    #[must_use]
     pub fn color(&self) -> Color {
         match self {
             Self::Info => Color::Cyan,
@@ -141,18 +144,21 @@ impl Notification {
     }
 
     /// Set the auto-dismiss duration.
+    #[must_use]
     pub fn with_duration(mut self, duration: Duration) -> Self {
         self.duration = Some(duration);
         self
     }
 
     /// Make this notification persistent (no auto-dismiss).
+    #[must_use]
     pub fn persistent(mut self) -> Self {
         self.duration = None;
         self
     }
 
     /// Check if this notification has expired.
+    #[must_use]
     pub fn is_expired(&self) -> bool {
         if let Some(duration) = self.duration {
             self.created_at.elapsed() >= duration
@@ -162,6 +168,7 @@ impl Notification {
     }
 
     /// Render the notification to a Line.
+    #[must_use]
     pub fn render(&self, use_ascii: bool) -> Line<'static> {
         let icon = if use_ascii {
             self.level.ascii_icon()
@@ -171,7 +178,7 @@ impl Notification {
 
         let mut spans = vec![
             Span::styled(
-                format!("{} ", icon),
+                format!("{icon} "),
                 Style::default()
                     .fg(self.level.color())
                     .add_modifier(Modifier::BOLD),
@@ -191,7 +198,7 @@ impl Notification {
 
         if let Some(ref msg) = self.message {
             spans.push(Span::styled(
-                format!(" - {}", msg),
+                format!(" - {msg}"),
                 Style::default().fg(Color::DarkGray),
             ));
         }
@@ -237,6 +244,7 @@ pub struct NotificationQueue {
 
 impl NotificationQueue {
     /// Create a new notification queue.
+    #[must_use]
     pub fn new(config: NotificationQueueConfig) -> Self {
         Self {
             notifications: VecDeque::new(),
@@ -305,6 +313,7 @@ impl NotificationQueue {
     }
 
     /// Get visible notifications (highest priority first).
+    #[must_use]
     pub fn visible(&self) -> Vec<&Notification> {
         let mut sorted: Vec<_> = self.notifications.iter().collect();
         sorted.sort_by(|a, b| {
@@ -316,16 +325,19 @@ impl NotificationQueue {
     }
 
     /// Get the number of notifications.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.notifications.len()
     }
 
     /// Check if empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.notifications.is_empty()
     }
 
     /// Render visible notifications.
+    #[must_use]
     pub fn render(&self) -> Vec<Line<'static>> {
         self.visible()
             .iter()
@@ -368,6 +380,7 @@ impl Toast {
         Self::new(message, NotificationLevel::Error)
     }
 
+    #[must_use]
     pub fn is_expired(&self) -> bool {
         self.created_at.elapsed() >= self.duration
     }

@@ -68,13 +68,13 @@ const MAX_CONSECUTIVE_PARSE_ERRORS: usize = 5;
 impl std::fmt::Display for AsyncTransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AsyncTransportError::SpawnFailed(e) => write!(f, "Failed to spawn agent: {}", e),
-            AsyncTransportError::SendFailed(e) => write!(f, "Failed to send to agent: {}", e),
+            AsyncTransportError::SpawnFailed(e) => write!(f, "Failed to spawn agent: {e}"),
+            AsyncTransportError::SendFailed(e) => write!(f, "Failed to send to agent: {e}"),
             AsyncTransportError::ParseFailed(e) => {
-                write!(f, "Failed to parse agent message: {}", e)
+                write!(f, "Failed to parse agent message: {e}")
             }
             AsyncTransportError::ProcessExited(code) => {
-                write!(f, "Agent process exited with code: {:?}", code)
+                write!(f, "Agent process exited with code: {code:?}")
             }
             AsyncTransportError::ChannelClosed => write!(f, "Communication channel closed"),
             AsyncTransportError::Timeout => write!(f, "Operation timed out"),
@@ -179,7 +179,7 @@ impl AsyncAgentTransport {
     ) {
         loop {
             tokio::select! {
-                _ = cancel.cancelled() => break,
+                () = cancel.cancelled() => break,
                 msg = rx.recv() => {
                     match msg {
                         Some(msg) => {
@@ -230,7 +230,7 @@ impl AsyncAgentTransport {
 
         loop {
             tokio::select! {
-                _ = cancel.cancelled() => break,
+                () = cancel.cancelled() => break,
                 line_result = async {
                     if let Some(timeout_duration) = read_timeout {
                         match timeout(timeout_duration, lines.next_line()).await {
@@ -436,42 +436,49 @@ impl AsyncAgentTransport {
     }
 
     /// Get a reference to the current agent state
+    #[must_use]
     pub fn state(&self) -> &AgentState {
         &self.state
     }
 
     /// Check if the agent is ready
+    #[must_use]
     pub fn is_ready(&self) -> bool {
         self.state.is_ready
     }
 
     /// Check if the agent is currently responding
+    #[must_use]
     pub fn is_responding(&self) -> bool {
         self.state.is_responding
     }
 
     /// Get the model name
+    #[must_use]
     pub fn model(&self) -> Option<&str> {
         self.state.model.as_deref()
     }
 
     /// Get the provider name
+    #[must_use]
     pub fn provider(&self) -> Option<&str> {
         self.state.provider.as_deref()
     }
 
     /// Get the cancellation token for external cancellation
+    #[must_use]
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel_token.clone()
     }
 }
 
-/// Builder for creating an AsyncAgentTransport
+/// Builder for creating an `AsyncAgentTransport`
 pub struct AsyncAgentTransportBuilder {
     config: AsyncTransportConfig,
 }
 
 impl AsyncAgentTransportBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: AsyncTransportConfig::default(),
@@ -503,12 +510,14 @@ impl AsyncAgentTransportBuilder {
     }
 
     /// Set read timeout
+    #[must_use]
     pub fn read_timeout(mut self, duration: Duration) -> Self {
         self.config.read_timeout = Some(duration);
         self
     }
 
     /// Set buffer size
+    #[must_use]
     pub fn buffer_size(mut self, size: usize) -> Self {
         self.config.buffer_size = size;
         self

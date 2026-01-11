@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 /// - 59 → "59s"
 /// - 60 → "1m 00s"
 /// - 3661 → "1h 01m 01s"
+#[must_use]
 pub fn format_elapsed_compact(elapsed_secs: u64) -> String {
     if elapsed_secs < 60 {
         return format!("{elapsed_secs}s");
@@ -34,6 +35,7 @@ pub fn format_elapsed_compact(elapsed_secs: u64) -> String {
 }
 
 /// Format a duration into a compact form.
+#[must_use]
 pub fn format_duration_compact(duration: Duration) -> String {
     format_elapsed_compact(duration.as_secs())
 }
@@ -43,15 +45,16 @@ pub fn format_duration_compact(duration: Duration) -> String {
 /// - < 1s: "420ms"
 /// - < 60s: "5.2s"
 /// - >= 60s: Uses compact format
+#[must_use]
 pub fn format_elapsed_precise(duration: Duration) -> String {
     let millis = duration.as_millis();
     if millis < 1000 {
-        return format!("{}ms", millis);
+        return format!("{millis}ms");
     }
     let secs = duration.as_secs();
     if secs < 60 {
         let tenths = (millis % 1000) / 100;
-        return format!("{}.{}s", secs, tenths);
+        return format!("{secs}.{tenths}s");
     }
     format_elapsed_compact(secs)
 }
@@ -82,6 +85,7 @@ impl Default for PausableTimer {
 
 impl PausableTimer {
     /// Create a new timer that starts running immediately.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             elapsed_running: Duration::ZERO,
@@ -91,6 +95,7 @@ impl PausableTimer {
     }
 
     /// Create a new timer that starts paused.
+    #[must_use]
     pub fn paused() -> Self {
         Self {
             elapsed_running: Duration::ZERO,
@@ -100,6 +105,7 @@ impl PausableTimer {
     }
 
     /// Check if the timer is currently paused.
+    #[must_use]
     pub fn is_paused(&self) -> bool {
         self.is_paused
     }
@@ -140,11 +146,13 @@ impl PausableTimer {
     }
 
     /// Get the total elapsed duration.
+    #[must_use]
     pub fn elapsed(&self) -> Duration {
         self.elapsed_at(Instant::now())
     }
 
     /// Get the elapsed duration at a specific instant.
+    #[must_use]
     pub fn elapsed_at(&self, now: Instant) -> Duration {
         let mut elapsed = self.elapsed_running;
         if !self.is_paused {
@@ -154,21 +162,25 @@ impl PausableTimer {
     }
 
     /// Get elapsed seconds.
+    #[must_use]
     pub fn elapsed_secs(&self) -> u64 {
         self.elapsed().as_secs()
     }
 
     /// Get elapsed seconds at a specific instant.
+    #[must_use]
     pub fn elapsed_secs_at(&self, now: Instant) -> u64 {
         self.elapsed_at(now).as_secs()
     }
 
     /// Format the elapsed time compactly.
+    #[must_use]
     pub fn format_compact(&self) -> String {
         format_elapsed_compact(self.elapsed_secs())
     }
 
     /// Format the elapsed time precisely.
+    #[must_use]
     pub fn format_precise(&self) -> String {
         format_elapsed_precise(self.elapsed())
     }
@@ -193,25 +205,26 @@ pub const SPINNER_ASCII: &[&str] = &["|", "/", "-", "\\"];
 /// * `start_time` - When the spinner started (for animation timing)
 /// * `frames` - The spinner frame characters
 /// * `interval_ms` - Milliseconds between frames
+#[must_use]
 pub fn spinner_frame<'a>(
     start_time: Option<Instant>,
     frames: &'a [&'a str],
     interval_ms: u64,
 ) -> &'a str {
     let now = Instant::now();
-    let elapsed = start_time
-        .map(|t| now.saturating_duration_since(t))
-        .unwrap_or(Duration::ZERO);
-    let frame_idx = (elapsed.as_millis() / interval_ms as u128) as usize % frames.len();
+    let elapsed = start_time.map_or(Duration::ZERO, |t| now.saturating_duration_since(t));
+    let frame_idx = (elapsed.as_millis() / u128::from(interval_ms)) as usize % frames.len();
     frames[frame_idx]
 }
 
 /// Get the default spinner frame.
+#[must_use]
 pub fn spinner(start_time: Option<Instant>) -> &'static str {
     spinner_frame(start_time, SPINNER_FRAMES, 80)
 }
 
 /// Get a spinner span for use in ratatui.
+#[must_use]
 pub fn spinner_span(start_time: Option<Instant>) -> ratatui::text::Span<'static> {
     ratatui::text::Span::raw(spinner(start_time).to_string())
 }

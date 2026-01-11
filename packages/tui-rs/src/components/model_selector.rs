@@ -17,7 +17,7 @@ pub struct ModelInfo {
     pub id: String,
     /// Display name
     pub name: String,
-    /// Provider (Anthropic, OpenAI, etc.)
+    /// Provider (Anthropic, `OpenAI`, etc.)
     pub provider: String,
     /// Short description
     pub description: String,
@@ -95,6 +95,7 @@ impl Default for ModelSelector {
 
 impl ModelSelector {
     /// Create a new model selector
+    #[must_use]
     pub fn new() -> Self {
         let models = available_models();
         let filtered: Vec<usize> = (0..models.len()).collect();
@@ -129,6 +130,7 @@ impl ModelSelector {
     }
 
     /// Check if visible
+    #[must_use]
     pub fn is_visible(&self) -> bool {
         self.visible
     }
@@ -146,8 +148,7 @@ impl ModelSelector {
             let prev = self.query[..self.cursor]
                 .chars()
                 .last()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.query.remove(self.cursor - prev);
             self.cursor -= prev;
             self.filter();
@@ -160,8 +161,7 @@ impl ModelSelector {
             let prev = self.query[..self.cursor]
                 .chars()
                 .last()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.cursor -= prev;
         }
     }
@@ -172,8 +172,7 @@ impl ModelSelector {
             let next = self.query[self.cursor..]
                 .chars()
                 .next()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.cursor += next;
         }
     }
@@ -193,6 +192,7 @@ impl ModelSelector {
     }
 
     /// Get the selected model
+    #[must_use]
     pub fn selected_model(&self) -> Option<&ModelInfo> {
         self.filtered
             .get(self.selected)
@@ -291,11 +291,7 @@ impl ModelSelector {
             .map(|(i, &model_idx)| {
                 let model = &self.models[model_idx];
                 let is_selected = i == self.selected;
-                let is_current = self
-                    .current_model
-                    .as_ref()
-                    .map(|c| c == &model.id)
-                    .unwrap_or(false);
+                let is_current = self.current_model.as_ref().is_some_and(|c| c == &model.id);
 
                 let style = if is_selected {
                     Style::default().bg(Color::DarkGray).fg(Color::White)

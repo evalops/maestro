@@ -100,6 +100,7 @@ impl<T: Clone> Default for UndoHistory<T> {
 
 impl<T: Clone> UndoHistory<T> {
     /// Create a new undo history with default settings.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             undo_stack: Vec::new(),
@@ -111,12 +112,14 @@ impl<T: Clone> UndoHistory<T> {
     }
 
     /// Create with custom max history size.
+    #[must_use]
     pub fn with_max_history(mut self, max: usize) -> Self {
         self.max_history = max;
         self
     }
 
     /// Create with custom debounce duration.
+    #[must_use]
     pub fn with_debounce(mut self, debounce: Duration) -> Self {
         self.debounce = debounce;
         self
@@ -192,21 +195,25 @@ impl<T: Clone> UndoHistory<T> {
     }
 
     /// Check if undo is available.
+    #[must_use]
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }
 
     /// Check if redo is available.
+    #[must_use]
     pub fn can_redo(&self) -> bool {
         !self.redo_stack.is_empty()
     }
 
     /// Get the number of undo entries.
+    #[must_use]
     pub fn undo_count(&self) -> usize {
         self.undo_stack.len()
     }
 
     /// Get the number of redo entries.
+    #[must_use]
     pub fn redo_count(&self) -> usize {
         self.redo_stack.len()
     }
@@ -219,11 +226,13 @@ impl<T: Clone> UndoHistory<T> {
     }
 
     /// Peek at the last undo entry without removing it.
+    #[must_use]
     pub fn peek_undo(&self) -> Option<&T> {
         self.undo_stack.last().map(|e| &e.state)
     }
 
     /// Peek at the last redo entry without removing it.
+    #[must_use]
     pub fn peek_redo(&self) -> Option<&T> {
         self.redo_stack.last().map(|e| &e.state)
     }
@@ -248,6 +257,7 @@ pub struct EditorState {
 
 impl EditorState {
     /// Create a new editor state.
+    #[must_use]
     pub fn new(lines: Vec<String>, cursor_line: usize, cursor_col: usize) -> Self {
         Self {
             lines,
@@ -266,11 +276,13 @@ impl EditorState {
     }
 
     /// Convert to a single string.
+    #[must_use]
     pub fn to_text(&self) -> String {
         self.lines.join("\n")
     }
 
     /// Check if state is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty() || (self.lines.len() == 1 && self.lines[0].is_empty())
     }

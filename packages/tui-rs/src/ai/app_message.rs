@@ -145,6 +145,7 @@ impl BashExecution {
     }
 
     /// Mark as truncated with optional full output path
+    #[must_use]
     pub fn with_truncation(mut self, full_output_path: Option<String>) -> Self {
         self.truncated = true;
         self.full_output_path = full_output_path;
@@ -152,12 +153,14 @@ impl BashExecution {
     }
 
     /// Add execution duration
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
     }
 
     /// Check if the command succeeded (exit code 0)
+    #[must_use]
     pub fn succeeded(&self) -> bool {
         self.exit_code == 0 && !self.cancelled
     }
@@ -185,7 +188,7 @@ impl BashExecution {
 
         if self.truncated {
             if let Some(ref path) = self.full_output_path {
-                status_parts.push(format!("(truncated, full output: {})", path));
+                status_parts.push(format!("(truncated, full output: {path})"));
             } else {
                 status_parts.push("(truncated)".to_string());
             }
@@ -203,11 +206,13 @@ impl BashExecution {
 
 impl AppMessage {
     /// Check if this is a user message
+    #[must_use]
     pub fn is_user(&self) -> bool {
         matches!(self, AppMessage::User { .. })
     }
 
     /// Check if this is an assistant message
+    #[must_use]
     pub fn is_assistant(&self) -> bool {
         matches!(
             self,
@@ -216,26 +221,31 @@ impl AppMessage {
     }
 
     /// Check if this is a bash execution
+    #[must_use]
     pub fn is_bash_execution(&self) -> bool {
         matches!(self, AppMessage::BashExecution(_))
     }
 
     /// Check if this is a tool result
+    #[must_use]
     pub fn is_tool_result(&self) -> bool {
         matches!(self, AppMessage::ToolResult { .. })
     }
 
     /// Check if this is a system message
+    #[must_use]
     pub fn is_system(&self) -> bool {
         matches!(self, AppMessage::System { .. })
     }
 
     /// Check if this is a context summary
+    #[must_use]
     pub fn is_context_summary(&self) -> bool {
         matches!(self, AppMessage::ContextSummary { .. })
     }
 
     /// Get the timestamp if available
+    #[must_use]
     pub fn timestamp(&self) -> Option<u64> {
         match self {
             AppMessage::User { timestamp, .. } => *timestamp,
@@ -252,6 +262,7 @@ impl AppMessage {
     ///
     /// Returns None for message types that shouldn't be sent to the API
     /// (like System messages).
+    #[must_use]
     pub fn to_api_message(&self) -> Option<Message> {
         match self {
             AppMessage::User { content, .. } => Some(Message {
@@ -296,15 +307,14 @@ impl AppMessage {
             AppMessage::ContextSummary { summary, .. } => Some(Message {
                 role: Role::User,
                 content: MessageContent::Text(format!(
-                    "<context_summary>\n{}\n</context_summary>\n\nPlease continue from where we left off.",
-                    summary
+                    "<context_summary>\n{summary}\n</context_summary>\n\nPlease continue from where we left off."
                 )),
             }),
         }
     }
 }
 
-/// Transform a slice of AppMessages to API-compatible Messages.
+/// Transform a slice of `AppMessages` to API-compatible Messages.
 ///
 /// Filters out message types that shouldn't be sent to the API (like System messages)
 /// and converts custom types to their API representation.
@@ -316,16 +326,18 @@ impl AppMessage {
 /// # Returns
 ///
 /// A vector of standard Message types ready for the API
+#[must_use]
 pub fn transform_to_api_messages(app_messages: &[AppMessage]) -> Vec<Message> {
     app_messages
         .iter()
-        .filter_map(|m| m.to_api_message())
+        .filter_map(AppMessage::to_api_message)
         .collect()
 }
 
-/// Convert standard Messages to AppMessages.
+/// Convert standard Messages to `AppMessages`.
 ///
 /// This is useful when loading messages from an API response or legacy format.
+#[must_use]
 pub fn from_api_messages(messages: &[Message]) -> Vec<AppMessage> {
     messages
         .iter()

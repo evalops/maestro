@@ -54,7 +54,7 @@ fn format_questions(questions: &[Question]) -> String {
 pub fn ask_user(args: serde_json::Value) -> ToolResult {
     let parsed: AskUserArgs = match serde_json::from_value(args) {
         Ok(val) => val,
-        Err(err) => return ToolResult::failure(format!("Invalid ask_user arguments: {}", err)),
+        Err(err) => return ToolResult::failure(format!("Invalid ask_user arguments: {err}")),
     };
 
     if parsed.questions.is_empty() {
@@ -68,8 +68,7 @@ pub fn ask_user(args: serde_json::Value) -> ToolResult {
     });
 
     ToolResult::success(format!(
-        "Please answer the following question(s):\n\n{}\n\nReply with option numbers, option labels, or your own answer for \"Other\".",
-        formatted
+        "Please answer the following question(s):\n\n{formatted}\n\nReply with option numbers, option labels, or your own answer for \"Other\"."
     ))
     .with_details(details)
 }

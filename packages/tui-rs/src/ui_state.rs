@@ -26,6 +26,7 @@ pub struct QueueModeState {
     pub follow_up_mode: Option<QueueMode>,
 }
 
+#[must_use]
 pub fn load_queue_modes() -> QueueModeState {
     let Some(path) = ui_state_path() else {
         return QueueModeState::default();

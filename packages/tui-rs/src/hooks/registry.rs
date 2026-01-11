@@ -2,7 +2,13 @@
 //!
 //! Provides a registry for managing hooks and executing them at the appropriate times.
 
-use super::types::*;
+use super::types::{
+    EvalGateHook, EvalGateInput, HookEventType, HookResult, OnErrorHook, OnErrorInput,
+    OverflowHook, OverflowInput, PermissionRequestHook, PermissionRequestInput, PostMessageHook,
+    PostMessageInput, PostToolUseHook, PostToolUseInput, PreMessageHook, PreMessageInput,
+    PreToolUseHook, PreToolUseInput, SessionEndHook, SessionEndInput, SessionStartHook,
+    SessionStartInput, SubagentStartHook, SubagentStartInput, SubagentStopHook, SubagentStopInput,
+};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -32,6 +38,7 @@ impl Default for HookRegistry {
 
 impl HookRegistry {
     /// Create a new empty hook registry
+    #[must_use]
     pub fn new() -> Self {
         Self {
             pre_tool_use_hooks: Vec::new(),
@@ -49,22 +56,22 @@ impl HookRegistry {
         }
     }
 
-    /// Register a PreToolUse hook
+    /// Register a `PreToolUse` hook
     pub fn register_pre_tool_use(&mut self, hook: Arc<dyn PreToolUseHook>) {
         self.pre_tool_use_hooks.push(hook);
     }
 
-    /// Register a PostToolUse hook
+    /// Register a `PostToolUse` hook
     pub fn register_post_tool_use(&mut self, hook: Arc<dyn PostToolUseHook>) {
         self.post_tool_use_hooks.push(hook);
     }
 
-    /// Register a SessionStart hook
+    /// Register a `SessionStart` hook
     pub fn register_session_start(&mut self, hook: Arc<dyn SessionStartHook>) {
         self.session_start_hooks.push(hook);
     }
 
-    /// Register a SessionEnd hook
+    /// Register a `SessionEnd` hook
     pub fn register_session_end(&mut self, hook: Arc<dyn SessionEndHook>) {
         self.session_end_hooks.push(hook);
     }
@@ -74,44 +81,45 @@ impl HookRegistry {
         self.overflow_hooks.push(hook);
     }
 
-    /// Register a PreMessage hook
+    /// Register a `PreMessage` hook
     pub fn register_pre_message(&mut self, hook: Arc<dyn PreMessageHook>) {
         self.pre_message_hooks.push(hook);
     }
 
-    /// Register a PostMessage hook
+    /// Register a `PostMessage` hook
     pub fn register_post_message(&mut self, hook: Arc<dyn PostMessageHook>) {
         self.post_message_hooks.push(hook);
     }
 
-    /// Register an OnError hook
+    /// Register an `OnError` hook
     pub fn register_on_error(&mut self, hook: Arc<dyn OnErrorHook>) {
         self.on_error_hooks.push(hook);
     }
 
-    /// Register an EvalGate hook
+    /// Register an `EvalGate` hook
     pub fn register_eval_gate(&mut self, hook: Arc<dyn EvalGateHook>) {
         self.eval_gate_hooks.push(hook);
     }
 
-    /// Register a SubagentStart hook
+    /// Register a `SubagentStart` hook
     pub fn register_subagent_start(&mut self, hook: Arc<dyn SubagentStartHook>) {
         self.subagent_start_hooks.push(hook);
     }
 
-    /// Register a SubagentStop hook
+    /// Register a `SubagentStop` hook
     pub fn register_subagent_stop(&mut self, hook: Arc<dyn SubagentStopHook>) {
         self.subagent_stop_hooks.push(hook);
     }
 
-    /// Register a PermissionRequest hook
+    /// Register a `PermissionRequest` hook
     pub fn register_permission_request(&mut self, hook: Arc<dyn PermissionRequestHook>) {
         self.permission_request_hooks.push(hook);
     }
 
-    /// Execute PreToolUse hooks
+    /// Execute `PreToolUse` hooks
     ///
     /// Returns the first blocking result, or Continue if all hooks pass.
+    #[must_use]
     pub fn execute_pre_tool_use(&self, input: &PreToolUseInput) -> HookResult {
         for hook in &self.pre_tool_use_hooks {
             if hook.matches(&input.tool_name) {
@@ -127,7 +135,8 @@ impl HookRegistry {
         HookResult::Continue
     }
 
-    /// Execute PostToolUse hooks
+    /// Execute `PostToolUse` hooks
+    #[must_use]
     pub fn execute_post_tool_use(&self, input: &PostToolUseInput) -> HookResult {
         for hook in &self.post_tool_use_hooks {
             if hook.matches(&input.tool_name) {
@@ -141,7 +150,8 @@ impl HookRegistry {
         HookResult::Continue
     }
 
-    /// Execute SessionStart hooks
+    /// Execute `SessionStart` hooks
+    #[must_use]
     pub fn execute_session_start(&self, input: &SessionStartInput) -> HookResult {
         for hook in &self.session_start_hooks {
             let result = hook.on_session_start(input);
@@ -153,7 +163,8 @@ impl HookRegistry {
         HookResult::Continue
     }
 
-    /// Execute SessionEnd hooks
+    /// Execute `SessionEnd` hooks
+    #[must_use]
     pub fn execute_session_end(&self, input: &SessionEndInput) -> HookResult {
         for hook in &self.session_end_hooks {
             let result = hook.on_session_end(input);
@@ -166,6 +177,7 @@ impl HookRegistry {
     }
 
     /// Execute Overflow hooks
+    #[must_use]
     pub fn execute_overflow(&self, input: &OverflowInput) -> HookResult {
         for hook in &self.overflow_hooks {
             let result = hook.on_overflow(input);
@@ -177,7 +189,8 @@ impl HookRegistry {
         HookResult::Continue
     }
 
-    /// Execute PreMessage hooks
+    /// Execute `PreMessage` hooks
+    #[must_use]
     pub fn execute_pre_message(&self, input: &PreMessageInput) -> HookResult {
         for hook in &self.pre_message_hooks {
             let result = hook.on_pre_message(input);
@@ -189,7 +202,8 @@ impl HookRegistry {
         HookResult::Continue
     }
 
-    /// Execute PostMessage hooks
+    /// Execute `PostMessage` hooks
+    #[must_use]
     pub fn execute_post_message(&self, input: &PostMessageInput) -> HookResult {
         for hook in &self.post_message_hooks {
             let result = hook.on_post_message(input);
@@ -201,7 +215,8 @@ impl HookRegistry {
         HookResult::Continue
     }
 
-    /// Execute OnError hooks
+    /// Execute `OnError` hooks
+    #[must_use]
     pub fn execute_on_error(&self, input: &OnErrorInput) -> HookResult {
         for hook in &self.on_error_hooks {
             let result = hook.on_error(input);
@@ -213,7 +228,8 @@ impl HookRegistry {
         HookResult::Continue
     }
 
-    /// Execute EvalGate hooks
+    /// Execute `EvalGate` hooks
+    #[must_use]
     pub fn execute_eval_gate(&self, input: &EvalGateInput) -> HookResult {
         for hook in &self.eval_gate_hooks {
             let result = hook.on_eval_gate(input);
@@ -225,7 +241,8 @@ impl HookRegistry {
         HookResult::Continue
     }
 
-    /// Execute SubagentStart hooks
+    /// Execute `SubagentStart` hooks
+    #[must_use]
     pub fn execute_subagent_start(&self, input: &SubagentStartInput) -> HookResult {
         for hook in &self.subagent_start_hooks {
             let result = hook.on_subagent_start(input);
@@ -237,7 +254,8 @@ impl HookRegistry {
         HookResult::Continue
     }
 
-    /// Execute SubagentStop hooks
+    /// Execute `SubagentStop` hooks
+    #[must_use]
     pub fn execute_subagent_stop(&self, input: &SubagentStopInput) -> HookResult {
         for hook in &self.subagent_stop_hooks {
             let result = hook.on_subagent_stop(input);
@@ -249,7 +267,8 @@ impl HookRegistry {
         HookResult::Continue
     }
 
-    /// Execute PermissionRequest hooks
+    /// Execute `PermissionRequest` hooks
+    #[must_use]
     pub fn execute_permission_request(&self, input: &PermissionRequestInput) -> HookResult {
         for hook in &self.permission_request_hooks {
             let result = hook.on_permission_request(input);
@@ -262,6 +281,7 @@ impl HookRegistry {
     }
 
     /// Check if any hooks are registered for an event type
+    #[must_use]
     pub fn has_hooks(&self, event_type: HookEventType) -> bool {
         match event_type {
             HookEventType::PreToolUse => !self.pre_tool_use_hooks.is_empty(),
@@ -289,6 +309,7 @@ impl HookRegistry {
     }
 
     /// Get count of all registered hooks
+    #[must_use]
     pub fn total_hook_count(&self) -> usize {
         self.pre_tool_use_hooks.len()
             + self.post_tool_use_hooks.len()
@@ -305,7 +326,7 @@ impl HookRegistry {
     }
 }
 
-/// Thread-safe wrapper for HookRegistry
+/// Thread-safe wrapper for `HookRegistry`
 pub struct SharedHookRegistry {
     inner: Arc<RwLock<HookRegistry>>,
 }
@@ -318,6 +339,7 @@ impl Default for SharedHookRegistry {
 
 impl SharedHookRegistry {
     /// Create a new shared hook registry
+    #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(HookRegistry::new())),
@@ -325,29 +347,30 @@ impl SharedHookRegistry {
     }
 
     /// Get a clone of the inner Arc for sharing
+    #[must_use]
     pub fn clone_inner(&self) -> Arc<RwLock<HookRegistry>> {
         Arc::clone(&self.inner)
     }
 
-    /// Register a PreToolUse hook
+    /// Register a `PreToolUse` hook
     pub async fn register_pre_tool_use(&self, hook: Arc<dyn PreToolUseHook>) {
         let mut registry = self.inner.write().await;
         registry.register_pre_tool_use(hook);
     }
 
-    /// Register a PostToolUse hook
+    /// Register a `PostToolUse` hook
     pub async fn register_post_tool_use(&self, hook: Arc<dyn PostToolUseHook>) {
         let mut registry = self.inner.write().await;
         registry.register_post_tool_use(hook);
     }
 
-    /// Execute PreToolUse hooks
+    /// Execute `PreToolUse` hooks
     pub async fn execute_pre_tool_use(&self, input: &PreToolUseInput) -> HookResult {
         let registry = self.inner.read().await;
         registry.execute_pre_tool_use(input)
     }
 
-    /// Execute PostToolUse hooks
+    /// Execute `PostToolUse` hooks
     pub async fn execute_post_tool_use(&self, input: &PostToolUseInput) -> HookResult {
         let registry = self.inner.read().await;
         registry.execute_post_tool_use(input)
@@ -383,7 +406,7 @@ impl PreToolUseHook for LoggingHook {
             let _ = path;
         }
 
-        eprintln!("{}", log_line);
+        eprintln!("{log_line}");
         HookResult::Continue
     }
 }
@@ -411,7 +434,7 @@ impl PreToolUseHook for SafetyHook {
             for pattern in &dangerous_patterns {
                 if command.contains(pattern) {
                     return HookResult::Block {
-                        reason: format!("Blocked dangerous command pattern: {}", pattern),
+                        reason: format!("Blocked dangerous command pattern: {pattern}"),
                     };
                 }
             }

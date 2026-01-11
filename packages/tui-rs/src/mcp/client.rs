@@ -94,6 +94,7 @@ pub struct McpConnection {
 
 impl McpConnection {
     /// Create a new connection (not yet connected)
+    #[must_use]
     pub fn new(config: McpServerConfig) -> Self {
         Self {
             name: config.name.clone(),
@@ -188,8 +189,8 @@ impl McpConnection {
             }
         }
         if std::env::var("HOME").is_err() {
-            if let Some(home) =
-                dirs::home_dir().and_then(|path| path.to_str().map(|p| p.to_string()))
+            if let Some(home) = dirs::home_dir()
+                .and_then(|path| path.to_str().map(std::string::ToString::to_string))
             {
                 cmd.env("HOME", home);
             }
@@ -200,9 +201,9 @@ impl McpConnection {
         }
 
         // Spawn the process
-        let mut child = cmd.spawn().map_err(|e| {
-            McpError::ConnectionFailed(format!("Failed to spawn {}: {}", command, e))
-        })?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| McpError::ConnectionFailed(format!("Failed to spawn {command}: {e}")))?;
 
         // Take stdin/stdout
         let stdin = child
@@ -265,7 +266,7 @@ impl McpConnection {
 
         let _init_result: InitializeResult = response
             .result_as()
-            .map_err(|e| McpError::Protocol(format!("Invalid initialize response: {}", e)))?;
+            .map_err(|e| McpError::Protocol(format!("Invalid initialize response: {e}")))?;
 
         // Send initialized notification
         let notification = serde_json::json!({
@@ -290,7 +291,7 @@ impl McpConnection {
 
         let tools_result: ToolsListResult = response
             .result_as()
-            .map_err(|e| McpError::Protocol(format!("Invalid tools/list response: {}", e)))?;
+            .map_err(|e| McpError::Protocol(format!("Invalid tools/list response: {e}")))?;
 
         self.tools = tools_result.tools;
         Ok(())
@@ -303,7 +304,7 @@ impl McpConnection {
 
         let resources_result: ResourcesListResult = response
             .result_as()
-            .map_err(|e| McpError::Protocol(format!("Invalid resources/list response: {}", e)))?;
+            .map_err(|e| McpError::Protocol(format!("Invalid resources/list response: {e}")))?;
 
         self.resources = resources_result.resources;
         Ok(())
@@ -347,7 +348,7 @@ impl McpConnection {
 
         let result: McpToolResult = response
             .result_as()
-            .map_err(|e| McpError::Protocol(format!("Invalid tool result: {}", e)))?;
+            .map_err(|e| McpError::Protocol(format!("Invalid tool result: {e}")))?;
 
         Ok(result)
     }
@@ -369,7 +370,7 @@ impl McpConnection {
 
         let result: ResourceReadResult = response
             .result_as()
-            .map_err(|e| McpError::Protocol(format!("Invalid resource read result: {}", e)))?;
+            .map_err(|e| McpError::Protocol(format!("Invalid resource read result: {e}")))?;
 
         Ok(result)
     }
@@ -448,8 +449,7 @@ impl McpConnection {
                 if let Ok(Some(status)) = process.try_wait() {
                     self.initialized = false;
                     return Err(McpError::ConnectionFailed(format!(
-                        "MCP stdio server exited: {}",
-                        status
+                        "MCP stdio server exited: {status}"
                     )));
                 }
 
@@ -457,8 +457,7 @@ impl McpConnection {
                 if let Err(e) = stdin.write_all(json.as_bytes()).await {
                     self.initialized = false;
                     return Err(McpError::ConnectionFailed(format!(
-                        "Failed to write to MCP stdio stdin: {}",
-                        e
+                        "Failed to write to MCP stdio stdin: {e}"
                     )));
                 }
                 stdin.write_all(b"\n").await?;
@@ -540,6 +539,7 @@ pub struct McpClient {
 
 impl McpClient {
     /// Create a new MCP client
+    #[must_use]
     pub fn new() -> Self {
         Self {
             connections: RwLock::new(HashMap::new()),
@@ -672,8 +672,7 @@ impl McpClient {
             let parts: Vec<&str> = rest.split("__").collect();
             if parts.len() < 2 {
                 return Err(McpError::ToolNotFound(format!(
-                    "Invalid MCP tool name format: {}",
-                    prefixed_name
+                    "Invalid MCP tool name format: {prefixed_name}"
                 )));
             }
             for idx in (1..parts.len()).rev() {
@@ -689,8 +688,7 @@ impl McpClient {
             let parts: Vec<&str> = rest.split('_').collect();
             if parts.len() < 2 {
                 return Err(McpError::ToolNotFound(format!(
-                    "Invalid MCP tool name format: {}",
-                    prefixed_name
+                    "Invalid MCP tool name format: {prefixed_name}"
                 )));
             }
             for idx in (1..parts.len()).rev() {
@@ -703,8 +701,7 @@ impl McpClient {
         }
 
         Err(McpError::ToolNotFound(format!(
-            "Invalid MCP tool name format: {}",
-            prefixed_name
+            "Invalid MCP tool name format: {prefixed_name}"
         )))
     }
 
@@ -721,6 +718,7 @@ impl McpClient {
     }
 
     /// Check if a tool name is an MCP tool
+    #[must_use]
     pub fn is_mcp_tool(name: &str) -> bool {
         if name == "mcp_list_resources" || name == "mcp_read_resource" {
             return false;

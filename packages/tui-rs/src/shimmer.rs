@@ -72,6 +72,7 @@ impl Default for ShimmerConfig {
 
 impl ShimmerConfig {
     /// Create a config that automatically detects terminal capabilities.
+    #[must_use]
     pub fn auto() -> Self {
         Self {
             has_true_color: crate::color_utils::has_true_color_support(),
@@ -88,11 +89,13 @@ impl ShimmerConfig {
 ///
 /// Returns a vector of spans where each character has a style based on
 /// its distance from the current shimmer position.
+#[must_use]
 pub fn shimmer_spans(text: &str) -> Vec<Span<'static>> {
     shimmer_spans_with_config(text, &ShimmerConfig::auto())
 }
 
 /// Create shimmer spans with custom configuration.
+#[must_use]
 pub fn shimmer_spans_with_config(text: &str, config: &ShimmerConfig) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
@@ -142,6 +145,7 @@ pub fn shimmer_spans_with_config(text: &str, config: &ShimmerConfig) -> Vec<Span
 /// Create shimmer spans at a specific time offset.
 ///
 /// Useful for testing or when you want to control the animation position.
+#[must_use]
 pub fn shimmer_spans_at_time(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
     let config = ShimmerConfig::auto();
     let chars: Vec<char> = text.chars().collect();
@@ -200,11 +204,13 @@ fn fallback_style_for_intensity(intensity: f32) -> Style {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Create a shimmer line from text.
+#[must_use]
 pub fn shimmer_line(text: &str) -> ratatui::text::Line<'static> {
     ratatui::text::Line::from(shimmer_spans(text))
 }
 
 /// Create a shimmer line with custom configuration.
+#[must_use]
 pub fn shimmer_line_with_config(
     text: &str,
     config: &ShimmerConfig,

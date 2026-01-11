@@ -37,6 +37,7 @@ pub struct KeyBinding {
 
 impl KeyBinding {
     /// Create a new key binding.
+    #[must_use]
     pub const fn new(key: KeyCode, modifiers: KeyModifiers) -> Self {
         Self { key, modifiers }
     }
@@ -44,6 +45,7 @@ impl KeyBinding {
     /// Check if a key event matches this binding.
     ///
     /// Matches on Press and Repeat events.
+    #[must_use]
     pub fn is_press(&self, event: KeyEvent) -> bool {
         self.key == event.code
             && self.modifiers == event.modifiers
@@ -51,6 +53,7 @@ impl KeyBinding {
     }
 
     /// Check if a key event matches this binding (press only, no repeat).
+    #[must_use]
     pub fn is_press_only(&self, event: KeyEvent) -> bool {
         self.key == event.code
             && self.modifiers == event.modifiers
@@ -59,31 +62,37 @@ impl KeyBinding {
 }
 
 /// Create a binding for a plain key (no modifiers).
+#[must_use]
 pub const fn plain(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::NONE)
 }
 
 /// Create a binding for Alt + key.
+#[must_use]
 pub const fn alt(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::ALT)
 }
 
 /// Create a binding for Shift + key.
+#[must_use]
 pub const fn shift(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::SHIFT)
 }
 
 /// Create a binding for Ctrl + key.
+#[must_use]
 pub const fn ctrl(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::CONTROL)
 }
 
 /// Create a binding for Ctrl + Alt + key.
+#[must_use]
 pub const fn ctrl_alt(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::CONTROL.union(KeyModifiers::ALT))
 }
 
 /// Create a binding for Ctrl + Shift + key.
+#[must_use]
 pub const fn ctrl_shift(key: KeyCode) -> KeyBinding {
     KeyBinding::new(key, KeyModifiers::CONTROL.union(KeyModifiers::SHIFT))
 }
@@ -141,7 +150,8 @@ fn key_hint_style() -> Style {
     Style::default().dim()
 }
 
-/// Check if modifiers include Ctrl or Alt (but not AltGr on Windows).
+/// Check if modifiers include Ctrl or Alt (but not `AltGr` on Windows).
+#[must_use]
 pub fn has_ctrl_or_alt(mods: KeyModifiers) -> bool {
     (mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::ALT)) && !is_altgr(mods)
 }
@@ -157,11 +167,13 @@ pub fn is_altgr(mods: KeyModifiers) -> bool {
 
 #[cfg(not(windows))]
 #[inline]
+#[must_use]
 pub fn is_altgr(_mods: KeyModifiers) -> bool {
     false
 }
 
 /// Format a key binding for display in help text.
+#[must_use]
 pub fn format_key_hint(binding: &KeyBinding) -> String {
     let span: Span = binding.into();
     span.content.to_string()

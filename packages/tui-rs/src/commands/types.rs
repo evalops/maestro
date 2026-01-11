@@ -8,23 +8,23 @@
 //! ## Command Definition
 //!
 //! - **Command**: Complete command specification with name, handler, arguments, category
-//! - **CommandHandler**: Type alias for handler function pointer/closure
-//! - **CommandArgument**: Argument definition with name, type, defaults, validation
+//! - **`CommandHandler`**: Type alias for handler function pointer/closure
+//! - **`CommandArgument`**: Argument definition with name, type, defaults, validation
 //!
 //! ## Execution
 //!
-//! - **CommandContext**: Runtime context passed to handlers (cwd, session, args, etc.)
-//! - **CommandResult**: Result type for handler execution (Ok/Err)
+//! - **`CommandContext`**: Runtime context passed to handlers (cwd, session, args, etc.)
+//! - **`CommandResult`**: Result type for handler execution (Ok/Err)
 //!
 //! ## Output Types
 //!
-//! - **CommandOutput**: Enum of possible handler return values (Message, Action, Modal, etc.)
-//! - **CommandAction**: Enum of state-modifying actions (Quit, ClearMessages, etc.)
-//! - **ModalType**: Types of modals that can be opened
+//! - **`CommandOutput`**: Enum of possible handler return values (Message, Action, Modal, etc.)
+//! - **`CommandAction`**: Enum of state-modifying actions (Quit, `ClearMessages`, etc.)
+//! - **`ModalType`**: Types of modals that can be opened
 //!
 //! ## Errors
 //!
-//! - **CommandError**: Rich error type with message and optional hint
+//! - **`CommandError`**: Rich error type with message and optional hint
 //!
 //! # Enum-based Dispatch
 //!
@@ -108,7 +108,7 @@ pub type CommandHandler = Box<dyn Fn(&CommandContext) -> CommandResult + Send + 
 /// - **Message**: Display informational text to the user (e.g., status, results)
 /// - **Help**: Display help documentation (may be rendered specially)
 /// - **Warning**: Display a warning (not an error, execution succeeded)
-/// - **OpenModal**: Open a UI modal/selector (theme picker, file browser, etc.)
+/// - **`OpenModal`**: Open a UI modal/selector (theme picker, file browser, etc.)
 /// - **Action**: Execute a state-modifying action (quit, clear, refresh, etc.)
 /// - **Silent**: Command succeeded but has no visible output
 /// - **Multi**: Multiple outputs to be processed in sequence
@@ -177,16 +177,16 @@ pub enum CommandOutput {
 ///
 /// # Variants
 ///
-/// - **ClearMessages**: Remove all chat messages from the display
-/// - **ToggleZenMode**: Switch between normal and minimal UI
-/// - **SetApprovalMode**: Change safety/approval settings (yolo/selective/safe)
-/// - **SetThinkingLevel**: Configure extended thinking level
+/// - **`ClearMessages`**: Remove all chat messages from the display
+/// - **`ToggleZenMode`**: Switch between normal and minimal UI
+/// - **`SetApprovalMode`**: Change safety/approval settings (yolo/selective/safe)
+/// - **`SetThinkingLevel`**: Configure extended thinking level
 /// - **Quit**: Exit the application
-/// - **RefreshWorkspace**: Reload workspace file listing
-/// - **CopyLastMessage**: Copy the last message to clipboard
-/// - **CompactConversation**: Compress conversation history, optionally with custom instructions
-/// - **ShowMcpStatus**: Display Model Context Protocol server status
-/// - **HooksManage**: Hook system management action (list, toggle, reload, metrics)
+/// - **`RefreshWorkspace`**: Reload workspace file listing
+/// - **`CopyLastMessage`**: Copy the last message to clipboard
+/// - **`CompactConversation`**: Compress conversation history, optionally with custom instructions
+/// - **`ShowMcpStatus`**: Display Model Context Protocol server status
+/// - **`HooksManage`**: Hook system management action (list, toggle, reload, metrics)
 ///
 /// # Example
 ///
@@ -354,11 +354,11 @@ pub enum SkillsAction {
 ///
 /// # Variants
 ///
-/// - **ThemeSelector**: Color theme picker (dark, light, custom themes)
-/// - **ModelSelector**: AI model chooser (Claude 3.5 Sonnet, etc.)
-/// - **SessionList**: Session browser for loading/managing conversations
-/// - **FileSearch**: File browser/search for attaching context
-/// - **CommandPalette**: Command search and execution
+/// - **`ThemeSelector`**: Color theme picker (dark, light, custom themes)
+/// - **`ModelSelector`**: AI model chooser (Claude 3.5 Sonnet, etc.)
+/// - **`SessionList`**: Session browser for loading/managing conversations
+/// - **`FileSearch`**: File browser/search for attaching context
+/// - **`CommandPalette`**: Command search and execution
 /// - **Help**: Help documentation viewer
 ///
 /// # Example
@@ -461,7 +461,7 @@ impl std::fmt::Display for CommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.message)?;
         if let Some(ref hint) = self.hint {
-            write!(f, " ({})", hint)?;
+            write!(f, " ({hint})")?;
         }
         Ok(())
     }
@@ -480,7 +480,7 @@ impl std::error::Error for CommandError {}
 ///
 /// - `input`: Full command string as typed by user (e.g., "/help theme")
 /// - `command_name`: The matched command name (could be primary name or alias)
-/// - `args`: Parsed and typed arguments as a HashMap
+/// - `args`: Parsed and typed arguments as a `HashMap`
 /// - `raw_args`: Unparsed argument string (everything after command name)
 ///
 /// ## Environment State
@@ -537,6 +537,7 @@ pub struct CommandContext {
 
 impl CommandContext {
     /// Get a string argument
+    #[must_use]
     pub fn get_string(&self, name: &str) -> Option<&str> {
         match self.args.get(name)? {
             ArgumentValue::String(s) => Some(s),
@@ -545,6 +546,7 @@ impl CommandContext {
     }
 
     /// Get a boolean argument
+    #[must_use]
     pub fn get_bool(&self, name: &str) -> Option<bool> {
         match self.args.get(name)? {
             ArgumentValue::Bool(b) => Some(*b),
@@ -553,6 +555,7 @@ impl CommandContext {
     }
 
     /// Get an integer argument
+    #[must_use]
     pub fn get_int(&self, name: &str) -> Option<i64> {
         match self.args.get(name)? {
             ArgumentValue::Int(i) => Some(*i),
@@ -561,6 +564,7 @@ impl CommandContext {
     }
 
     /// Check if a flag is present
+    #[must_use]
     pub fn has_flag(&self, name: &str) -> bool {
         self.get_bool(name).unwrap_or(false)
     }
@@ -597,6 +601,7 @@ pub enum CommandCategory {
 }
 
 impl CommandCategory {
+    #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
             CommandCategory::Ui => "UI",
@@ -610,6 +615,7 @@ impl CommandCategory {
         }
     }
 
+    #[must_use]
     pub fn description(&self) -> &'static str {
         match self {
             CommandCategory::Ui => "User interface settings",
@@ -691,11 +697,13 @@ impl CommandArgument {
         }
     }
 
+    #[must_use]
     pub fn required(mut self) -> Self {
         self.required = true;
         self
     }
 
+    #[must_use]
     pub fn with_default(mut self, value: ArgumentValue) -> Self {
         self.default = Some(value);
         self
@@ -728,7 +736,7 @@ impl CommandArgument {
 /// ## Subcommands (Optional)
 ///
 /// - `is_group`: True if this command has subcommands
-/// - `subcommands`: List of subcommand names (e.g., ["info", "new", "list"])
+/// - `subcommands`: List of subcommand names (e.g., `["info", "new", "list"]`)
 ///
 /// # Builder Pattern
 ///
@@ -778,7 +786,7 @@ pub struct Command {
     pub handler: CommandHandler,
     /// Whether this command has subcommands
     pub is_group: bool,
-    /// Subcommand names (if is_group is true)
+    /// Subcommand names (if `is_group` is true)
     pub subcommands: Vec<String>,
 }
 
@@ -792,7 +800,7 @@ impl Command {
     ) -> Self {
         let name = name.into();
         Self {
-            usage: format!("/{}", name),
+            usage: format!("/{name}"),
             name,
             description: description.into(),
             category,
@@ -811,6 +819,7 @@ impl Command {
     }
 
     /// Add an argument
+    #[must_use]
     pub fn arg(mut self, arg: CommandArgument) -> Self {
         self.arguments.push(arg);
         self

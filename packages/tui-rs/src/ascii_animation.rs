@@ -31,6 +31,7 @@ impl AsciiAnimation {
     /// Create a new animation from frames.
     ///
     /// Each frame is a slice of lines.
+    #[must_use]
     pub fn new(frames: Vec<Vec<String>>) -> Self {
         Self {
             frames,
@@ -41,21 +42,24 @@ impl AsciiAnimation {
     }
 
     /// Create from static string frames.
+    #[must_use]
     pub fn from_static(frames: &[&[&str]]) -> Self {
         let frames: Vec<Vec<String>> = frames
             .iter()
-            .map(|f| f.iter().map(|s| s.to_string()).collect())
+            .map(|f| f.iter().map(|s| (*s).to_string()).collect())
             .collect();
         Self::new(frames)
     }
 
     /// Set frame duration.
+    #[must_use]
     pub fn with_duration(mut self, duration: Duration) -> Self {
         self.frame_duration = duration;
         self
     }
 
     /// Set whether animation loops.
+    #[must_use]
     pub fn with_looping(mut self, looping: bool) -> Self {
         self.looping = looping;
         self
@@ -67,6 +71,7 @@ impl AsciiAnimation {
     }
 
     /// Get current frame index.
+    #[must_use]
     pub fn current_frame_index(&self) -> usize {
         if self.frames.is_empty() || self.frame_duration.is_zero() {
             return 0;
@@ -85,6 +90,7 @@ impl AsciiAnimation {
     }
 
     /// Get current frame lines.
+    #[must_use]
     pub fn current_frame(&self) -> &[String] {
         if self.frames.is_empty() {
             return &[];
@@ -93,11 +99,13 @@ impl AsciiAnimation {
     }
 
     /// Get frame count.
+    #[must_use]
     pub fn frame_count(&self) -> usize {
         self.frames.len()
     }
 
     /// Check if animation has finished (non-looping only).
+    #[must_use]
     pub fn is_finished(&self) -> bool {
         if self.looping || self.frames.is_empty() {
             return false;
@@ -108,6 +116,7 @@ impl AsciiAnimation {
     }
 
     /// Get animation dimensions (width, height).
+    #[must_use]
     pub fn dimensions(&self) -> (usize, usize) {
         if self.frames.is_empty() {
             return (0, 0);
@@ -122,6 +131,7 @@ impl AsciiAnimation {
     }
 
     /// Time until next frame change.
+    #[must_use]
     pub fn time_until_next_frame(&self) -> Duration {
         if self.frame_duration.is_zero() {
             return Duration::ZERO;
@@ -139,6 +149,7 @@ impl AsciiAnimation {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Built-in spinner animation (dots).
+#[must_use]
 pub fn spinner_dots() -> AsciiAnimation {
     AsciiAnimation::from_static(&[
         &["⠋"],
@@ -156,18 +167,21 @@ pub fn spinner_dots() -> AsciiAnimation {
 }
 
 /// Built-in spinner animation (line).
+#[must_use]
 pub fn spinner_line() -> AsciiAnimation {
     AsciiAnimation::from_static(&[&["-"], &["\\"], &["|"], &["/"]])
         .with_duration(Duration::from_millis(100))
 }
 
 /// Built-in spinner animation (growing dots).
+#[must_use]
 pub fn spinner_grow() -> AsciiAnimation {
     AsciiAnimation::from_static(&[&[".  "], &[".. "], &["..."], &[".. "], &[".  "], &["   "]])
         .with_duration(Duration::from_millis(150))
 }
 
 /// Built-in bouncing ball animation.
+#[must_use]
 pub fn bouncing_ball() -> AsciiAnimation {
     AsciiAnimation::from_static(&[
         &["●    "],
@@ -183,6 +197,7 @@ pub fn bouncing_ball() -> AsciiAnimation {
 }
 
 /// Built-in progress bar animation.
+#[must_use]
 pub fn progress_bar() -> AsciiAnimation {
     AsciiAnimation::from_static(&[
         &["[    ]"],
@@ -198,6 +213,7 @@ pub fn progress_bar() -> AsciiAnimation {
 }
 
 /// Built-in wave animation.
+#[must_use]
 pub fn wave() -> AsciiAnimation {
     AsciiAnimation::from_static(&[
         &["▁▂▃▄▅▆▇█▇▆▅▄▃▂▁"],
@@ -220,6 +236,7 @@ pub fn wave() -> AsciiAnimation {
 }
 
 /// Built-in pulse animation (ASCII-safe).
+#[must_use]
 pub fn pulse_ascii() -> AsciiAnimation {
     AsciiAnimation::from_static(&[
         &["(   )"],
@@ -234,6 +251,7 @@ pub fn pulse_ascii() -> AsciiAnimation {
 }
 
 /// Simple box animation.
+#[must_use]
 pub fn box_spin() -> AsciiAnimation {
     AsciiAnimation::from_static(&[
         &["┌─┐", "│ │", "└─┘"],
@@ -245,18 +263,21 @@ pub fn box_spin() -> AsciiAnimation {
 }
 
 /// Thinking dots animation.
+#[must_use]
 pub fn thinking() -> AsciiAnimation {
     AsciiAnimation::from_static(&[&["●○○"], &["○●○"], &["○○●"], &["○●○"]])
         .with_duration(Duration::from_millis(200))
 }
 
 /// Earth rotation animation.
+#[must_use]
 pub fn earth() -> AsciiAnimation {
     AsciiAnimation::from_static(&[&["🌍"], &["🌎"], &["🌏"]])
         .with_duration(Duration::from_millis(300))
 }
 
 /// Clock animation.
+#[must_use]
 pub fn clock() -> AsciiAnimation {
     AsciiAnimation::from_static(&[
         &["🕐"],
@@ -308,6 +329,7 @@ pub enum AnimationPreset {
 
 impl AnimationPreset {
     /// Create animation from preset.
+    #[must_use]
     pub fn create(self) -> AsciiAnimation {
         match self {
             Self::Dots => spinner_dots(),
@@ -325,6 +347,7 @@ impl AnimationPreset {
     }
 
     /// Get ASCII-only presets (for low-unicode terminals).
+    #[must_use]
     pub fn ascii_presets() -> &'static [AnimationPreset] {
         &[
             Self::Line,
@@ -336,6 +359,7 @@ impl AnimationPreset {
     }
 
     /// Get all presets.
+    #[must_use]
     pub fn all() -> &'static [AnimationPreset] {
         &[
             Self::Dots,

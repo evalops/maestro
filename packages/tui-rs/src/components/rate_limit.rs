@@ -1,7 +1,7 @@
 //! Rate Limit Display Component
 //!
 //! Displays API rate limit status with visual progress bars and reset times.
-//! Similar to OpenAI Codex's rate limit display.
+//! Similar to `OpenAI` Codex's rate limit display.
 //!
 //! # Features
 //!
@@ -44,6 +44,7 @@ pub struct RateLimitWindow {
 
 impl RateLimitWindow {
     /// Create a new rate limit window
+    #[must_use]
     pub fn new(used_percent: f64, resets_in_secs: Option<u64>) -> Self {
         Self {
             used_percent: used_percent.clamp(0.0, 1.0),
@@ -54,6 +55,7 @@ impl RateLimitWindow {
     }
 
     /// Set the window duration
+    #[must_use]
     pub fn with_window(mut self, minutes: u64) -> Self {
         self.window_minutes = Some(minutes);
         self
@@ -66,6 +68,7 @@ impl RateLimitWindow {
     }
 
     /// Get the color based on usage
+    #[must_use]
     pub fn color(&self) -> Color {
         let pct = self.used_percent * 100.0;
         if pct >= 90.0 {
@@ -87,21 +90,23 @@ impl RateLimitWindow {
 
 /// Format seconds into compact human-readable form
 /// Examples: 59s, 1m 00s, 59m 59s, 1h 00m
+#[must_use]
 pub fn format_duration_compact(secs: u64) -> String {
     if secs < 60 {
-        format!("{}s", secs)
+        format!("{secs}s")
     } else if secs < 3600 {
         let minutes = secs / 60;
         let seconds = secs % 60;
-        format!("{}m {:02}s", minutes, seconds)
+        format!("{minutes}m {seconds:02}s")
     } else {
         let hours = secs / 3600;
         let minutes = (secs % 3600) / 60;
-        format!("{}h {:02}m", hours, minutes)
+        format!("{hours}h {minutes:02}m")
     }
 }
 
 /// Format elapsed time with automatic unit selection
+#[must_use]
 pub fn format_elapsed(duration: Duration) -> String {
     format_duration_compact(duration.as_secs())
 }
@@ -128,11 +133,13 @@ pub enum RateLimitState {
 
 impl RateLimitState {
     /// Check if data is stale (older than 15 minutes)
+    #[must_use]
     pub fn is_stale(&self) -> bool {
         matches!(self, RateLimitState::Stale { .. })
     }
 
     /// Check if data is available
+    #[must_use]
     pub fn is_available(&self) -> bool {
         matches!(self, RateLimitState::Available { .. })
     }
@@ -151,6 +158,7 @@ pub struct CreditsDisplay {
 
 impl CreditsDisplay {
     /// Create a new credits display
+    #[must_use]
     pub fn new(balance: Option<String>) -> Self {
         Self {
             has_credits: balance.is_some(),
@@ -160,6 +168,7 @@ impl CreditsDisplay {
     }
 
     /// Mark as unlimited
+    #[must_use]
     pub fn unlimited(mut self) -> Self {
         self.unlimited = true;
         self.has_credits = true;
@@ -184,29 +193,34 @@ pub struct RateLimitDisplay {
 
 impl RateLimitDisplay {
     /// Create a new rate limit display
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set the primary rate limit window
+    #[must_use]
     pub fn with_primary(mut self, window: RateLimitWindow) -> Self {
         self.primary = Some(window);
         self
     }
 
     /// Set the secondary rate limit window
+    #[must_use]
     pub fn with_secondary(mut self, window: RateLimitWindow) -> Self {
         self.secondary = Some(window);
         self
     }
 
     /// Set credits display
+    #[must_use]
     pub fn with_credits(mut self, credits: CreditsDisplay) -> Self {
         self.credits = Some(credits);
         self
     }
 
     /// Enable compact mode
+    #[must_use]
     pub fn compact(mut self) -> Self {
         self.compact = true;
         self
@@ -225,13 +239,13 @@ impl RateLimitDisplay {
 
         let reset_text = window
             .format_reset()
-            .map(|r| format!(" (resets in {})", r))
+            .map(|r| format!(" (resets in {r})"))
             .unwrap_or_default();
 
         let gauge_label = format!("{:.0}%{}", window.used_percent * 100.0, reset_text);
 
         Gauge::default()
-            .block(Block::default().title(format!(" {} ", label)))
+            .block(Block::default().title(format!(" {label} ")))
             .gauge_style(Style::default().fg(color))
             .percent(pct.min(100))
             .label(gauge_label)
@@ -246,13 +260,13 @@ impl RateLimitDisplay {
             let pct = primary.used_percent * 100.0;
             let color = primary.color();
             spans.push(Span::styled(
-                format!("Rate: {:.0}%", pct),
+                format!("Rate: {pct:.0}%"),
                 Style::default().fg(color),
             ));
 
             if let Some(reset) = primary.format_reset() {
                 spans.push(Span::styled(
-                    format!(" ({})", reset),
+                    format!(" ({reset})"),
                     Style::default().fg(Color::DarkGray),
                 ));
             }
@@ -269,7 +283,7 @@ impl RateLimitDisplay {
                 ));
             } else if let Some(ref balance) = credits.balance {
                 spans.push(Span::styled(
-                    format!("Credits: {}", balance),
+                    format!("Credits: {balance}"),
                     Style::default().fg(Color::Cyan),
                 ));
             }
@@ -283,7 +297,7 @@ impl RateLimitDisplay {
         let title = self.title.as_deref().unwrap_or("Rate Limits");
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(format!(" {} ", title));
+            .title(format!(" {title} "));
 
         let inner = block.inner(area);
         block.render(area, buf);
@@ -320,7 +334,7 @@ impl RateLimitDisplay {
                     Span::styled("Credits: Unlimited", Style::default().fg(Color::Green))
                 } else if let Some(ref balance) = credits.balance {
                     Span::styled(
-                        format!("Credits: {}", balance),
+                        format!("Credits: {balance}"),
                         Style::default().fg(Color::Cyan),
                     )
                 } else {
@@ -353,6 +367,7 @@ pub struct RateLimitTracker {
 
 impl RateLimitTracker {
     /// Create a new tracker with default 15-minute stale threshold
+    #[must_use]
     pub fn new() -> Self {
         Self {
             state: RateLimitState::Missing,
@@ -388,6 +403,7 @@ impl RateLimitTracker {
     }
 
     /// Get a display widget for the current state
+    #[must_use]
     pub fn display(&self) -> RateLimitDisplay {
         match &self.state {
             RateLimitState::Available {

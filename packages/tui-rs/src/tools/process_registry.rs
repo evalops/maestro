@@ -27,13 +27,11 @@
 use std::collections::HashSet;
 use std::sync::RwLock;
 
-use once_cell::sync::Lazy;
-
 use super::process_utils::kill_process_tree;
 
 /// Global registry of tracked background process IDs
-static PROCESS_REGISTRY: Lazy<RwLock<ProcessRegistry>> =
-    Lazy::new(|| RwLock::new(ProcessRegistry::new()));
+static PROCESS_REGISTRY: std::sync::LazyLock<RwLock<ProcessRegistry>> =
+    std::sync::LazyLock::new(|| RwLock::new(ProcessRegistry::new()));
 
 /// Process registry for tracking background processes
 #[derive(Debug)]
@@ -44,6 +42,7 @@ pub struct ProcessRegistry {
 
 impl ProcessRegistry {
     /// Create a new empty registry
+    #[must_use]
     pub fn new() -> Self {
         Self {
             pids: HashSet::new(),
@@ -61,11 +60,13 @@ impl ProcessRegistry {
     }
 
     /// Get all tracked PIDs
+    #[must_use]
     pub fn pids(&self) -> Vec<u32> {
         self.pids.iter().copied().collect()
     }
 
     /// Get count of tracked processes
+    #[must_use]
     pub fn count(&self) -> usize {
         self.pids.len()
     }
@@ -92,7 +93,7 @@ impl Default for ProcessRegistry {
 pub fn register(pid: u32) {
     if let Ok(mut registry) = PROCESS_REGISTRY.write() {
         registry.register(pid);
-        eprintln!("[process_registry] Registered background process: {}", pid);
+        eprintln!("[process_registry] Registered background process: {pid}");
     }
 }
 
@@ -102,7 +103,7 @@ pub fn register(pid: u32) {
 pub fn unregister(pid: u32) {
     if let Ok(mut registry) = PROCESS_REGISTRY.write() {
         if registry.unregister(pid) {
-            eprintln!("[process_registry] Unregistered process: {}", pid);
+            eprintln!("[process_registry] Unregistered process: {pid}");
         }
     }
 }
@@ -163,19 +164,16 @@ pub fn cleanup_all() -> usize {
     let mut killed = 0;
     for pid in pids {
         if is_process_running(pid) {
-            eprintln!("[process_registry] Killing process tree: {}", pid);
+            eprintln!("[process_registry] Killing process tree: {pid}");
             kill_process_tree(pid);
             killed += 1;
         } else {
-            eprintln!("[process_registry] Process {} already exited", pid);
+            eprintln!("[process_registry] Process {pid} already exited");
         }
     }
 
     if killed > 0 {
-        eprintln!(
-            "[process_registry] Cleaned up {} background process(es)",
-            killed
-        );
+        eprintln!("[process_registry] Cleaned up {killed} background process(es)");
     }
 
     killed
@@ -194,7 +192,7 @@ pub fn cleanup_one(pid: u32) -> bool {
 
     // Then kill
     if is_process_running(pid) {
-        eprintln!("[process_registry] Killing process tree: {}", pid);
+        eprintln!("[process_registry] Killing process tree: {pid}");
         kill_process_tree(pid);
         true
     } else {

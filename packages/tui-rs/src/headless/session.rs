@@ -126,6 +126,7 @@ pub enum SessionEntry {
 
 impl SessionEntry {
     /// Create a sent entry with current timestamp
+    #[must_use]
     pub fn sent(message: ToAgentMessage) -> Self {
         SessionEntry::Sent {
             timestamp: current_timestamp(),
@@ -134,6 +135,7 @@ impl SessionEntry {
     }
 
     /// Create a received entry with current timestamp
+    #[must_use]
     pub fn received(message: FromAgentMessage) -> Self {
         SessionEntry::Received {
             timestamp: current_timestamp(),
@@ -142,6 +144,7 @@ impl SessionEntry {
     }
 
     /// Get the timestamp of this entry
+    #[must_use]
     pub fn timestamp(&self) -> u64 {
         match self {
             SessionEntry::Sent { timestamp, .. } => *timestamp,
@@ -307,8 +310,8 @@ impl SessionRecorder {
         let sessions_dir = sessions_dir.as_ref();
         fs::create_dir_all(sessions_dir)?;
 
-        let path = sessions_dir.join(format!("{}.jsonl", id));
-        let metadata_path = sessions_dir.join(format!("{}.meta.json", id));
+        let path = sessions_dir.join(format!("{id}.jsonl"));
+        let metadata_path = sessions_dir.join(format!("{id}.meta.json"));
 
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let writer = BufWriter::new(file);
@@ -327,8 +330,8 @@ impl SessionRecorder {
     /// Resume an existing session
     pub fn resume(sessions_dir: impl AsRef<Path>, id: &str) -> std::io::Result<Self> {
         let sessions_dir = sessions_dir.as_ref();
-        let path = sessions_dir.join(format!("{}.jsonl", id));
-        let metadata_path = sessions_dir.join(format!("{}.meta.json", id));
+        let path = sessions_dir.join(format!("{id}.jsonl"));
+        let metadata_path = sessions_dir.join(format!("{id}.meta.json"));
 
         // Load existing metadata
         let metadata = if metadata_path.exists() {
@@ -352,16 +355,19 @@ impl SessionRecorder {
     }
 
     /// Get the session ID
+    #[must_use]
     pub fn id(&self) -> &str {
         &self.id
     }
 
     /// Get the path to the session JSONL file
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// Get the session metadata
+    #[must_use]
     pub fn metadata(&self) -> &SessionMetadata {
         &self.metadata
     }
@@ -415,7 +421,7 @@ impl SessionRecorder {
     fn write_entry(&mut self, entry: &SessionEntry) -> std::io::Result<()> {
         let json = serde_json::to_string(entry)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        writeln!(self.writer, "{}", json)?;
+        writeln!(self.writer, "{json}")?;
         self.writer.flush()?;
         Ok(())
     }
@@ -489,8 +495,8 @@ impl SessionReader {
     /// Load a session from disk
     pub fn load(sessions_dir: impl AsRef<Path>, id: &str) -> std::io::Result<Self> {
         let sessions_dir = sessions_dir.as_ref();
-        let path = sessions_dir.join(format!("{}.jsonl", id));
-        let metadata_path = sessions_dir.join(format!("{}.meta.json", id));
+        let path = sessions_dir.join(format!("{id}.jsonl"));
+        let metadata_path = sessions_dir.join(format!("{id}.meta.json"));
 
         // Load metadata
         let metadata = if metadata_path.exists() {
@@ -514,7 +520,7 @@ impl SessionReader {
                 match serde_json::from_str::<SessionEntry>(&line) {
                     Ok(entry) => entries.push(entry),
                     Err(e) => {
-                        eprintln!("Warning: Failed to parse session entry: {}", e);
+                        eprintln!("Warning: Failed to parse session entry: {e}");
                     }
                 }
             }
@@ -528,21 +534,25 @@ impl SessionReader {
     }
 
     /// Get the session ID
+    #[must_use]
     pub fn id(&self) -> &str {
         &self.id
     }
 
     /// Get the session metadata
+    #[must_use]
     pub fn metadata(&self) -> &SessionMetadata {
         &self.metadata
     }
 
     /// Get all entries
+    #[must_use]
     pub fn entries(&self) -> &[SessionEntry] {
         &self.entries
     }
 
     /// Get only sent messages
+    #[must_use]
     pub fn sent_messages(&self) -> Vec<&ToAgentMessage> {
         self.entries
             .iter()
@@ -554,6 +564,7 @@ impl SessionReader {
     }
 
     /// Get only received messages
+    #[must_use]
     pub fn received_messages(&self) -> Vec<&FromAgentMessage> {
         self.entries
             .iter()
@@ -565,6 +576,7 @@ impl SessionReader {
     }
 
     /// Get user prompts only
+    #[must_use]
     pub fn prompts(&self) -> Vec<&str> {
         self.entries
             .iter()
@@ -590,11 +602,10 @@ pub fn list_sessions(sessions_dir: impl AsRef<Path>) -> std::io::Result<Vec<Sess
     for entry in fs::read_dir(sessions_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map(|e| e == "json").unwrap_or(false)
+        if path.extension().is_some_and(|e| e == "json")
             && path
                 .file_name()
-                .map(|n| n.to_string_lossy().ends_with(".meta.json"))
-                .unwrap_or(false)
+                .is_some_and(|n| n.to_string_lossy().ends_with(".meta.json"))
         {
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(meta) = serde_json::from_str::<SessionMetadata>(&content) {
@@ -613,8 +624,8 @@ pub fn list_sessions(sessions_dir: impl AsRef<Path>) -> std::io::Result<Vec<Sess
 /// Delete a session
 pub fn delete_session(sessions_dir: impl AsRef<Path>, id: &str) -> std::io::Result<()> {
     let sessions_dir = sessions_dir.as_ref();
-    let jsonl_path = sessions_dir.join(format!("{}.jsonl", id));
-    let meta_path = sessions_dir.join(format!("{}.meta.json", id));
+    let jsonl_path = sessions_dir.join(format!("{id}.jsonl"));
+    let meta_path = sessions_dir.join(format!("{id}.meta.json"));
 
     if jsonl_path.exists() {
         fs::remove_file(&jsonl_path)?;

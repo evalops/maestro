@@ -21,6 +21,7 @@ pub struct TerminalSize {
 
 impl TerminalSize {
     /// Create a new terminal size.
+    #[must_use]
     pub fn new(width: u16, height: u16) -> Self {
         Self { width, height }
     }
@@ -28,6 +29,7 @@ impl TerminalSize {
     /// Get the current terminal size.
     ///
     /// Falls back to 80x24 if detection fails.
+    #[must_use]
     pub fn current() -> Self {
         crossterm::terminal::size()
             .map(|(w, h)| Self::new(w, h))
@@ -35,13 +37,15 @@ impl TerminalSize {
     }
 
     /// Check if this size is valid (non-zero dimensions).
+    #[must_use]
     pub fn is_valid(&self) -> bool {
         self.width > 0 && self.height > 0
     }
 
     /// Get the area (width * height).
+    #[must_use]
     pub fn area(&self) -> u32 {
-        self.width as u32 * self.height as u32
+        u32::from(self.width) * u32::from(self.height)
     }
 }
 
@@ -80,6 +84,7 @@ impl Default for ResizeTracker {
 
 impl ResizeTracker {
     /// Create a new resize tracker.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             previous_size: None,
@@ -102,8 +107,7 @@ impl ResizeTracker {
     ) -> bool {
         let width_changed = self
             .previous_size
-            .map(|prev| prev.width != current_size.width)
-            .unwrap_or(false);
+            .is_some_and(|prev| prev.width != current_size.width);
 
         let overflow_changed = self.previous_overflow != is_overflow;
         let line_count_decreased = line_count < self.previous_line_count;
@@ -117,13 +121,13 @@ impl ResizeTracker {
     }
 
     /// Check if the terminal was resized since last check.
+    #[must_use]
     pub fn was_resized(&self, current_size: TerminalSize) -> bool {
-        self.previous_size
-            .map(|prev| prev != current_size)
-            .unwrap_or(true)
+        self.previous_size != Some(current_size)
     }
 
     /// Get the previous size, if known.
+    #[must_use]
     pub fn previous_size(&self) -> Option<TerminalSize> {
         self.previous_size
     }
@@ -187,6 +191,7 @@ impl<K: Eq + Hash, V> WidthCache<K, V> {
     /// Create a new width cache.
     ///
     /// `max_widths` is the number of different terminal widths to cache.
+    #[must_use]
     pub fn new(max_widths: usize) -> Self {
         Self {
             entries: HashMap::new(),
@@ -241,13 +246,18 @@ impl<K: Eq + Hash, V> WidthCache<K, V> {
     }
 
     /// Get the number of cached widths.
+    #[must_use]
     pub fn width_count(&self) -> usize {
         self.entries.len()
     }
 
     /// Get the total number of cached entries.
+    #[must_use]
     pub fn entry_count(&self) -> usize {
-        self.entries.values().map(|m| m.len()).sum()
+        self.entries
+            .values()
+            .map(std::collections::HashMap::len)
+            .sum()
     }
 
     /// Check if the cache contains a key at any width.

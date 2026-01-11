@@ -54,24 +54,28 @@ impl TruncatedText {
     }
 
     /// Set the text style.
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
     }
 
     /// Set the truncation style.
+    #[must_use]
     pub fn truncation(mut self, truncation: TruncationStyle) -> Self {
         self.truncation = truncation;
         self
     }
 
     /// Use ASCII ellipsis ("...") instead of unicode.
+    #[must_use]
     pub fn ascii_ellipsis(mut self) -> Self {
         self.ellipsis = "...";
         self
     }
 
     /// Render to a Line that fits within the given width.
+    #[must_use]
     pub fn render_line(&self, max_width: usize) -> Line<'static> {
         let text_width = self.text.width();
 
@@ -169,6 +173,7 @@ impl TruncatedPath {
     }
 
     /// Set the path style.
+    #[must_use]
     pub fn style(mut self, style: Style) -> Self {
         self.style = style;
         self
@@ -177,6 +182,7 @@ impl TruncatedPath {
     /// Render to a Line that fits within the given width.
     ///
     /// Preserves the first and last path segments when possible.
+    #[must_use]
     pub fn render_line(&self, max_width: usize) -> Line<'static> {
         let path_width = self.path.width();
 

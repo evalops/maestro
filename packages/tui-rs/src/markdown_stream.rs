@@ -46,6 +46,7 @@ pub struct MarkdownStreamCollector {
 
 impl MarkdownStreamCollector {
     /// Create a new collector with optional width for wrapping.
+    #[must_use]
     pub fn new(width: Option<usize>) -> Self {
         Self {
             buffer: String::new(),
@@ -66,6 +67,7 @@ impl MarkdownStreamCollector {
     }
 
     /// Get the current buffer contents (for debugging/display).
+    #[must_use]
     pub fn buffer(&self) -> &str {
         &self.buffer
     }
@@ -134,6 +136,7 @@ impl MarkdownStreamCollector {
     }
 
     /// Get the total number of lines committed so far.
+    #[must_use]
     pub fn committed_count(&self) -> usize {
         self.committed_line_count
     }

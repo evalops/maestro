@@ -115,12 +115,14 @@ impl BashDetails {
     }
 
     /// Add duration information
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
     }
 
     /// Mark as truncated with optional full output path
+    #[must_use]
     pub fn with_truncation(mut self, full_output_path: Option<String>) -> Self {
         self.truncated = true;
         self.full_output_path = full_output_path;
@@ -140,22 +142,26 @@ impl BashDetails {
     }
 
     /// Mark as requiring approval
+    #[must_use]
     pub fn with_approval(mut self) -> Self {
         self.required_approval = true;
         self
     }
 
     /// Check if the command succeeded
+    #[must_use]
     pub fn succeeded(&self) -> bool {
         self.exit_code == 0 && !self.cancelled
     }
 
     /// Convert to JSON value for storage
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
 
     /// Try to parse from JSON value
+    #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }
@@ -204,26 +210,31 @@ impl ReadDetails {
         }
     }
 
+    #[must_use]
     pub fn with_size(mut self, size_bytes: u64) -> Self {
         self.size_bytes = Some(size_bytes);
         self
     }
 
+    #[must_use]
     pub fn with_lines(mut self, lines_read: usize) -> Self {
         self.lines_read = Some(lines_read);
         self
     }
 
+    #[must_use]
     pub fn with_truncated(mut self, truncated: bool) -> Self {
         self.truncated = truncated;
         self
     }
 
+    #[must_use]
     pub fn with_offset(mut self, offset: Option<usize>) -> Self {
         self.offset = offset;
         self
     }
 
+    #[must_use]
     pub fn with_limit(mut self, limit: Option<usize>) -> Self {
         self.limit = limit;
         self
@@ -234,11 +245,13 @@ impl ReadDetails {
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
     }
 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
@@ -283,31 +296,37 @@ impl WriteDetails {
         }
     }
 
+    #[must_use]
     pub fn with_bytes(mut self, bytes: u64) -> Self {
         self.bytes_written = Some(bytes);
         self
     }
 
+    #[must_use]
     pub fn with_created(mut self, created: bool) -> Self {
         self.created = created;
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
     }
 
+    #[must_use]
     pub fn with_diff(mut self, diff: String) -> Self {
         self.diff = Some(diff);
         self
     }
 
+    #[must_use]
     pub fn with_backup(mut self, path: String) -> Self {
         self.backup_path = Some(path);
         self
     }
 
+    #[must_use]
     pub fn with_validators(mut self, validators: Vec<crate::safety::ValidatorResult>) -> Self {
         if !validators.is_empty() {
             self.validators = Some(validators);
@@ -315,6 +334,7 @@ impl WriteDetails {
         self
     }
 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
@@ -359,16 +379,19 @@ impl EditDetails {
         }
     }
 
+    #[must_use]
     pub fn with_replacements(mut self, replacements: usize) -> Self {
         self.replacements = Some(replacements);
         self
     }
 
+    #[must_use]
     pub fn with_diff(mut self, diff: String) -> Self {
         self.diff = Some(diff);
         self
     }
 
+    #[must_use]
     pub fn with_validators(mut self, validators: Vec<crate::safety::ValidatorResult>) -> Self {
         if !validators.is_empty() {
             self.validators = Some(validators);
@@ -376,12 +399,14 @@ impl EditDetails {
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
     }
 
     /// Set line change counts based on old and new strings.
+    #[must_use]
     pub fn with_line_changes(mut self, old_string: &str, new_string: &str) -> Self {
         let old_lines = old_string.lines().count() as i32;
         let new_lines = new_string.lines().count() as i32;
@@ -394,6 +419,7 @@ impl EditDetails {
         self
     }
 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
@@ -414,7 +440,7 @@ pub struct ImageDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
 
-    /// Image dimensions as "WxH"
+    /// Image dimensions as "`WxH`"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dimensions: Option<String>,
 
@@ -440,6 +466,7 @@ impl ImageDetails {
         }
     }
 
+    #[must_use]
     pub fn screenshot() -> Self {
         Self {
             is_screenshot: true,
@@ -452,30 +479,36 @@ impl ImageDetails {
         self
     }
 
+    #[must_use]
     pub fn with_size(mut self, size_bytes: u64) -> Self {
         self.size_bytes = Some(size_bytes);
         self
     }
 
+    #[must_use]
     pub fn with_dimensions(mut self, width: u32, height: u32) -> Self {
-        self.dimensions = Some(format!("{}x{}", width, height));
+        self.dimensions = Some(format!("{width}x{height}"));
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
     }
 
+    #[must_use]
     pub fn with_base64_length(mut self, len: usize) -> Self {
         self.base64_length = Some(len);
         self
     }
 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
 
+    #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }
@@ -524,6 +557,7 @@ impl WebFetchDetails {
         }
     }
 
+    #[must_use]
     pub fn with_status(mut self, code: u16) -> Self {
         self.status_code = Some(code);
         self
@@ -534,16 +568,19 @@ impl WebFetchDetails {
         self
     }
 
+    #[must_use]
     pub fn with_body_size(mut self, size: usize) -> Self {
         self.body_size = Some(size);
         self
     }
 
+    #[must_use]
     pub fn with_truncation(mut self) -> Self {
         self.truncated = true;
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
@@ -559,10 +596,12 @@ impl WebFetchDetails {
         self
     }
 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
 
+    #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }
@@ -604,25 +643,30 @@ impl GlobDetails {
         self
     }
 
+    #[must_use]
     pub fn with_matches(mut self, count: usize) -> Self {
         self.matches_count = Some(count);
         self
     }
 
+    #[must_use]
     pub fn with_truncation(mut self) -> Self {
         self.truncated = true;
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
     }
 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
 
+    #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }
@@ -672,21 +716,25 @@ impl GrepDetails {
         self
     }
 
+    #[must_use]
     pub fn with_matches(mut self, count: usize) -> Self {
         self.matches_count = Some(count);
         self
     }
 
+    #[must_use]
     pub fn with_files_matched(mut self, count: usize) -> Self {
         self.files_matched = Some(count);
         self
     }
 
+    #[must_use]
     pub fn with_truncation(mut self) -> Self {
         self.truncated = true;
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
@@ -697,10 +745,12 @@ impl GrepDetails {
         self
     }
 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
 
+    #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }
@@ -750,6 +800,7 @@ impl DiffDetails {
         self
     }
 
+    #[must_use]
     pub fn with_stats(mut self, files: usize, insertions: usize, deletions: usize) -> Self {
         self.files_changed = Some(files);
         self.insertions = Some(insertions);
@@ -757,20 +808,24 @@ impl DiffDetails {
         self
     }
 
+    #[must_use]
     pub fn with_truncation(mut self) -> Self {
         self.truncated = true;
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
     }
 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
 
+    #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }
@@ -807,30 +862,36 @@ impl ListDetails {
         }
     }
 
+    #[must_use]
     pub fn with_entries(mut self, count: usize) -> Self {
         self.entries_count = Some(count);
         self
     }
 
+    #[must_use]
     pub fn with_recursive(mut self) -> Self {
         self.recursive = true;
         self
     }
 
+    #[must_use]
     pub fn with_truncation(mut self) -> Self {
         self.truncated = true;
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
     }
 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
 
+    #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }
@@ -888,21 +949,25 @@ impl InlineToolDetails {
         self
     }
 
+    #[must_use]
     pub fn with_exit_code(mut self, code: i32) -> Self {
         self.exit_code = Some(code);
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
     }
 
+    #[must_use]
     pub fn with_timeout(mut self) -> Self {
         self.timed_out = true;
         self
     }
 
+    #[must_use]
     pub fn with_truncation(mut self) -> Self {
         self.truncated = true;
         self
@@ -913,15 +978,18 @@ impl InlineToolDetails {
         self
     }
 
+    #[must_use]
     pub fn with_timeout_config(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = Some(timeout_ms);
         self
     }
 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
 
+    #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }
@@ -951,12 +1019,13 @@ pub struct BatchDetails {
     #[serde(default)]
     pub continued_on_error: bool,
 
-    /// Individual tool durations in milliseconds (keyed by call_id)
+    /// Individual tool durations in milliseconds (keyed by `call_id`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_durations: Option<std::collections::HashMap<String, u64>>,
 }
 
 impl BatchDetails {
+    #[must_use]
     pub fn new(total: usize) -> Self {
         Self {
             total,
@@ -964,27 +1033,32 @@ impl BatchDetails {
         }
     }
 
+    #[must_use]
     pub fn with_results(mut self, successes: usize, failures: usize) -> Self {
         self.successes = successes;
         self.failures = failures;
         self
     }
 
+    #[must_use]
     pub fn with_duration(mut self, duration_ms: u64) -> Self {
         self.duration_ms = Some(duration_ms);
         self
     }
 
+    #[must_use]
     pub fn with_concurrency(mut self, max_concurrency: usize) -> Self {
         self.max_concurrency = Some(max_concurrency);
         self
     }
 
+    #[must_use]
     pub fn with_continue_on_error(mut self) -> Self {
         self.continued_on_error = true;
         self
     }
 
+    #[must_use]
     pub fn with_tool_durations(
         mut self,
         durations: std::collections::HashMap<String, u64>,
@@ -994,6 +1068,7 @@ impl BatchDetails {
     }
 
     /// Calculate success rate (0.0 - 1.0)
+    #[must_use]
     pub fn success_rate(&self) -> f64 {
         if self.total == 0 {
             0.0
@@ -1002,10 +1077,12 @@ impl BatchDetails {
         }
     }
 
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
 
+    #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }
@@ -1030,10 +1107,12 @@ pub enum ToolDetails {
 }
 
 impl ToolDetails {
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
     }
 
+    #[must_use]
     pub fn from_json(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }

@@ -118,6 +118,7 @@ impl Default for ViewportView {
 
 impl ViewportView {
     /// Create a new viewport view starting at the top.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             scroll_offset: 0,
@@ -128,6 +129,7 @@ impl ViewportView {
     }
 
     /// Create a new viewport view scrolled to the bottom.
+    #[must_use]
     pub fn at_bottom() -> Self {
         Self {
             scroll_offset: usize::MAX,
@@ -138,6 +140,7 @@ impl ViewportView {
     }
 
     /// Get the current scroll offset.
+    #[must_use]
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
     }
@@ -192,6 +195,7 @@ impl ViewportView {
     /// Check if the view is scrolled to the bottom.
     ///
     /// Used to determine if we should auto-follow new content.
+    #[must_use]
     pub fn is_scrolled_to_bottom(&self) -> bool {
         if self.scroll_offset == usize::MAX {
             return true;
@@ -331,6 +335,7 @@ impl ViewportView {
     }
 
     /// Calculate scroll percentage (0-100).
+    #[must_use]
     pub fn scroll_percentage(&self, content_height: usize, viewport_height: usize) -> u8 {
         if content_height <= viewport_height {
             return 100;
@@ -402,11 +407,13 @@ pub struct TextRenderable {
 
 impl TextRenderable {
     /// Create a new text renderable.
+    #[must_use]
     pub fn new(text: Text<'static>) -> Self {
         Self { text }
     }
 
     /// Create from lines.
+    #[must_use]
     pub fn from_lines(lines: Vec<ratatui::text::Line<'static>>) -> Self {
         Self::new(Text::from(lines))
     }

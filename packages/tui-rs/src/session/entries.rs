@@ -21,7 +21,7 @@
 //!
 //! The `#[serde(tag = "type", rename_all = "snake_case")]` attribute automatically:
 //! - Adds a `"type"` discriminator field to each JSON object
-//! - Converts variant names from PascalCase to snake_case (Session -> "session")
+//! - Converts variant names from `PascalCase` to `snake_case` (Session -> "session")
 //! - Enables efficient deserialization by reading the type field first
 //!
 //! # Message Format
@@ -73,7 +73,7 @@
 //!
 //! - **Text**: Plain text responses
 //! - **Thinking**: Internal reasoning (extended thinking feature)
-//! - **ToolCall**: Function calls to external tools
+//! - **`ToolCall`**: Function calls to external tools
 //! - **Image**: Base64-encoded images
 //!
 //! # Metadata and Configuration
@@ -386,6 +386,7 @@ pub enum ThinkingLevel {
 }
 
 impl ThinkingLevel {
+    #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
             ThinkingLevel::Off => "Off",
@@ -398,6 +399,7 @@ impl ThinkingLevel {
     }
 
     /// Convert to (enabled, budget) configuration
+    #[must_use]
     pub fn to_config(&self) -> (bool, u32) {
         match self {
             ThinkingLevel::Off => (false, 0),
@@ -410,6 +412,7 @@ impl ThinkingLevel {
     }
 
     /// Parse from string
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "off" | "none" | "disabled" => Some(ThinkingLevel::Off),
@@ -443,7 +446,7 @@ pub struct AttachmentExtract {
 /// Conversation message with role-based discrimination.
 ///
 /// Messages are serialized with a `"role"` field that determines the variant, matching
-/// the format used by AI provider APIs (Anthropic, OpenAI, etc.).
+/// the format used by AI provider APIs (Anthropic, `OpenAI`, etc.).
 ///
 /// # Role Serialization
 ///
@@ -490,7 +493,7 @@ pub enum AppMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         api: Option<String>,
 
-        /// Provider name (e.g., "Anthropic", "OpenAI").
+        /// Provider name (e.g., "Anthropic", "`OpenAI`").
         ///
         /// Omitted if None.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -512,7 +515,7 @@ pub enum AppMessage {
 
         /// Reason the model stopped generating.
         ///
-        /// Common values: "end_turn", "max_tokens", "stop_sequence", "tool_use".
+        /// Common values: "`end_turn`", "`max_tokens`", "`stop_sequence`", "`tool_use`".
         /// Omitted if None.
         #[serde(skip_serializing_if = "Option::is_none")]
         stop_reason: Option<String>,
@@ -561,6 +564,7 @@ pub enum AppMessage {
 
 impl AppMessage {
     /// Get the role of this message
+    #[must_use]
     pub fn role(&self) -> &'static str {
         match self {
             AppMessage::User { .. } => "user",
@@ -570,6 +574,7 @@ impl AppMessage {
     }
 
     /// Get the timestamp
+    #[must_use]
     pub fn timestamp(&self) -> u64 {
         match self {
             AppMessage::User { timestamp, .. } => *timestamp,
@@ -579,6 +584,7 @@ impl AppMessage {
     }
 
     /// Get text content (for display)
+    #[must_use]
     pub fn text_content(&self) -> String {
         match self {
             AppMessage::User { content, .. } => match content {
@@ -725,12 +731,14 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
+    #[must_use]
     pub fn total(&self) -> u64 {
         self.input + self.output
     }
 
+    #[must_use]
     pub fn total_cost(&self) -> f64 {
-        self.cost.as_ref().map(|c| c.total).unwrap_or(0.0)
+        self.cost.as_ref().map_or(0.0, |c| c.total)
     }
 }
 
@@ -833,6 +841,7 @@ pub struct SessionStats {
 }
 
 impl SessionStats {
+    #[must_use]
     pub fn total_messages(&self) -> usize {
         self.user_messages + self.assistant_messages + self.tool_results
     }

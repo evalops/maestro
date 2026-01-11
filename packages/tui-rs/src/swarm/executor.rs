@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 
 use super::plan_parser::validate_plan;
-use super::types::*;
+use super::types::{
+    SwarmConfig, SwarmEvent, SwarmPlan, SwarmState, SwarmStatus, SwarmTask, TaskResult, TaskStatus,
+};
 
 /// Swarm executor - coordinates multi-agent task execution
 pub struct SwarmExecutor {
@@ -45,6 +47,7 @@ impl SwarmExecutor {
     }
 
     /// Subscribe to events (creates a new receiver)
+    #[must_use]
     pub fn subscribe(&self) -> mpsc::UnboundedReceiver<SwarmEvent> {
         let (tx, rx) = mpsc::unbounded_channel();
 
@@ -74,6 +77,7 @@ impl SwarmExecutor {
     }
 
     /// Check if cancelled
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
     }

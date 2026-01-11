@@ -5,8 +5,6 @@
 
 use std::collections::HashSet;
 
-use once_cell::sync::Lazy;
-
 /// Risk level for a bash command
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandRisk {
@@ -51,7 +49,7 @@ pub struct ParsedCommand {
 }
 
 /// Safe read-only commands that don't require approval
-static SAFE_COMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+static SAFE_COMMANDS: std::sync::LazyLock<HashSet<&'static str>> = std::sync::LazyLock::new(|| {
     [
         // File reading
         "cat", "head", "tail", "less", "more", "bat", // Search
@@ -73,92 +71,95 @@ static SAFE_COMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 });
 
 /// Safe git subcommands that don't modify the repository
-static SAFE_GIT_SUBCOMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    [
-        "status",
-        "log",
-        "diff",
-        "show",
-        "branch",
-        "tag",
-        "remote",
-        "config",
-        "describe",
-        "rev-parse",
-        "ls-files",
-        "ls-tree",
-        "blame",
-        "shortlog",
-        "reflog",
-        "stash",
-    ]
-    .into_iter()
-    .collect()
-});
+static SAFE_GIT_SUBCOMMANDS: std::sync::LazyLock<HashSet<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        [
+            "status",
+            "log",
+            "diff",
+            "show",
+            "branch",
+            "tag",
+            "remote",
+            "config",
+            "describe",
+            "rev-parse",
+            "ls-files",
+            "ls-tree",
+            "blame",
+            "shortlog",
+            "reflog",
+            "stash",
+        ]
+        .into_iter()
+        .collect()
+    });
 
 /// Dangerous git subcommands that require approval
-static DANGEROUS_GIT_SUBCOMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    [
-        "reset",
-        "clean",
-        "rm",
-        "push",
-        "rebase",
-        "merge",
-        "cherry-pick",
-        "checkout",
-        "restore",
-        "switch",
-    ]
-    .into_iter()
-    .collect()
-});
+static DANGEROUS_GIT_SUBCOMMANDS: std::sync::LazyLock<HashSet<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        [
+            "reset",
+            "clean",
+            "rm",
+            "push",
+            "rebase",
+            "merge",
+            "cherry-pick",
+            "checkout",
+            "restore",
+            "switch",
+        ]
+        .into_iter()
+        .collect()
+    });
 
 /// Commands that are always dangerous
-static DANGEROUS_COMMANDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    [
-        // Destructive
-        "rm",
-        "rmdir",
-        "shred",
-        // Disk - including common mkfs variants
-        "mkfs",
-        "mkfs.ext2",
-        "mkfs.ext3",
-        "mkfs.ext4",
-        "mkfs.xfs",
-        "mkfs.btrfs",
-        "mkfs.vfat",
-        "mkfs.ntfs",
-        "mkfs.fat",
-        "dd",
-        "fdisk",
-        "parted",
-        "format",
-        // Permissions
-        "chmod",
-        "chown",
-        "chgrp",
-        // Process
-        "kill",
-        "killall",
-        "pkill",
-        // System
-        "reboot",
-        "shutdown",
-        "halt",
-        "poweroff",
-        "init",
-        "systemctl",
-        "service",
-        // Privilege
-        "sudo",
-        "su",
-        "doas",
-    ]
-    .into_iter()
-    .collect()
-});
+static DANGEROUS_COMMANDS: std::sync::LazyLock<HashSet<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        [
+            // Destructive
+            "rm",
+            "rmdir",
+            "shred",
+            // Disk - including common mkfs variants
+            "mkfs",
+            "mkfs.ext2",
+            "mkfs.ext3",
+            "mkfs.ext4",
+            "mkfs.xfs",
+            "mkfs.btrfs",
+            "mkfs.vfat",
+            "mkfs.ntfs",
+            "mkfs.fat",
+            "dd",
+            "fdisk",
+            "parted",
+            "format",
+            // Permissions
+            "chmod",
+            "chown",
+            "chgrp",
+            // Process
+            "kill",
+            "killall",
+            "pkill",
+            // System
+            "reboot",
+            "shutdown",
+            "halt",
+            "poweroff",
+            "init",
+            "systemctl",
+            "service",
+            // Privilege
+            "sudo",
+            "su",
+            "doas",
+        ]
+        .into_iter()
+        .collect()
+    });
 
 /// Check if a command matches a dangerous command (including prefix matches)
 fn is_dangerous_command(program: &str) -> bool {
@@ -174,15 +175,17 @@ fn is_dangerous_command(program: &str) -> bool {
 }
 
 /// Commands that can be dangerous with certain flags
-static CONDITIONALLY_DANGEROUS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
-    [
-        "mv", "cp", "tar", "zip", "unzip", "gzip", "gunzip", "curl", "wget", "scp", "rsync",
-    ]
-    .into_iter()
-    .collect()
-});
+static CONDITIONALLY_DANGEROUS: std::sync::LazyLock<HashSet<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        [
+            "mv", "cp", "tar", "zip", "unzip", "gzip", "gunzip", "curl", "wget", "scp", "rsync",
+        ]
+        .into_iter()
+        .collect()
+    });
 
 /// Analyze a bash command for safety
+#[must_use]
 pub fn analyze_bash_command(command: &str) -> BashAnalysis {
     let trimmed = command.trim();
 
@@ -224,7 +227,7 @@ fn parse_commands(input: &str) -> Vec<ParsedCommand> {
     // Note: This is a simplified parser - a full parser would use tree-sitter
     let parts: Vec<&str> = input
         .split(['|', ';', '\n'].as_ref())
-        .map(|s| s.trim())
+        .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect();
 
@@ -233,7 +236,7 @@ fn parse_commands(input: &str) -> Vec<ParsedCommand> {
         let subparts: Vec<&str> = part
             .split("&&")
             .flat_map(|s| s.split("||"))
-            .map(|s| s.trim())
+            .map(str::trim)
             .filter(|s| !s.is_empty())
             .collect();
 
@@ -265,7 +268,7 @@ fn parse_single_command(input: &str) -> Option<ParsedCommand> {
 
     Some(ParsedCommand {
         program: program.to_string(),
-        args: args.iter().map(|s| s.to_string()).collect(),
+        args: args.iter().map(std::string::ToString::to_string).collect(),
         raw: trimmed.to_string(),
     })
 }
@@ -412,7 +415,7 @@ fn determine_risk(
         if is_dangerous_command(program) {
             return (
                 CommandRisk::Dangerous,
-                format!("Dangerous command: {}", program),
+                format!("Dangerous command: {program}"),
             );
         }
 
@@ -429,12 +432,12 @@ fn determine_risk(
             let subcommand = cmd.args[0].to_lowercase();
             if DANGEROUS_GIT_SUBCOMMANDS.contains(subcommand.as_str()) {
                 highest_risk = CommandRisk::RequiresApproval;
-                reason = format!("Git {} can modify repository", subcommand);
+                reason = format!("Git {subcommand} can modify repository");
             } else if !SAFE_GIT_SUBCOMMANDS.contains(subcommand.as_str())
                 && highest_risk == CommandRisk::Safe
             {
                 highest_risk = CommandRisk::RequiresApproval;
-                reason = format!("Unknown git subcommand: {}", subcommand);
+                reason = format!("Unknown git subcommand: {subcommand}");
             }
             continue;
         }
@@ -443,7 +446,7 @@ fn determine_risk(
         if CONDITIONALLY_DANGEROUS.contains(program) {
             if highest_risk == CommandRisk::Safe {
                 highest_risk = CommandRisk::RequiresApproval;
-                reason = format!("{} may modify files", program);
+                reason = format!("{program} may modify files");
             }
             continue;
         }
@@ -451,7 +454,7 @@ fn determine_risk(
         // Check if command is safe
         if !SAFE_COMMANDS.contains(program) && highest_risk == CommandRisk::Safe {
             highest_risk = CommandRisk::RequiresApproval;
-            reason = format!("Unknown command: {}", program);
+            reason = format!("Unknown command: {program}");
         }
     }
 
@@ -482,12 +485,14 @@ fn determine_risk(
 }
 
 /// Quick check if a command is likely safe
+#[must_use]
 pub fn is_likely_safe(command: &str) -> bool {
     let analysis = analyze_bash_command(command);
     analysis.risk == CommandRisk::Safe
 }
 
 /// Quick check if a command is dangerous
+#[must_use]
 pub fn is_dangerous(command: &str) -> bool {
     let analysis = analyze_bash_command(command);
     analysis.risk == CommandRisk::Dangerous

@@ -73,6 +73,7 @@ impl ToolExecution {
     }
 
     /// Mark as requiring approval
+    #[must_use]
     pub fn with_approval(mut self, required: bool) -> Self {
         self.required_approval = required;
         self
@@ -124,12 +125,14 @@ impl ToolExecution {
     }
 
     /// Get the execution details
+    #[must_use]
     pub fn get_details(&self) -> Option<&serde_json::Value> {
         self.details.as_ref()
     }
 
     /// Get typed details, deserializing to the specified type.
     /// Returns None if no details exist or if deserialization fails.
+    #[must_use]
     pub fn get_typed_details<T>(&self) -> Option<T>
     where
         T: serde::de::DeserializeOwned,
@@ -140,11 +143,13 @@ impl ToolExecution {
     }
 
     /// Get duration in milliseconds
+    #[must_use]
     pub fn duration_ms(&self) -> Option<u64> {
         self.duration.map(|d| d.as_millis() as u64)
     }
 
     /// Get the exit code from bash/inline tool details if available
+    #[must_use]
     pub fn exit_code(&self) -> Option<i32> {
         self.details
             .as_ref()
@@ -152,6 +157,7 @@ impl ToolExecution {
     }
 
     /// Check if this execution timed out
+    #[must_use]
     pub fn timed_out(&self) -> bool {
         self.details
             .as_ref()
@@ -160,6 +166,7 @@ impl ToolExecution {
     }
 
     /// Get the command that was executed (for bash/inline tools)
+    #[must_use]
     pub fn command(&self) -> Option<&str> {
         self.details
             .as_ref()
@@ -172,6 +179,7 @@ impl ToolExecution {
     }
 
     /// Get a preview of the output (truncated, UTF-8 safe)
+    #[must_use]
     pub fn output_preview(&self, max_len: usize) -> Option<String> {
         self.output.as_ref().map(|o| {
             let chars: Vec<char> = o.chars().collect();
@@ -184,12 +192,12 @@ impl ToolExecution {
     }
 
     /// Get a summary line for display
+    #[must_use]
     pub fn summary(&self) -> String {
         let status = if self.success { "✓" } else { "✗" };
         let duration_str = self
             .duration
-            .map(|d| format!("{:.0}ms", d.as_millis()))
-            .unwrap_or_else(|| "...".to_string());
+            .map_or_else(|| "...".to_string(), |d| format!("{:.0}ms", d.as_millis()));
 
         format!("{} {} ({})", status, self.tool_name, duration_str)
     }
@@ -224,7 +232,8 @@ pub struct ToolStats {
 }
 
 impl ToolStats {
-    /// Create a new ToolStats with a custom max_durations limit
+    /// Create a new `ToolStats` with a custom `max_durations` limit
+    #[must_use]
     pub fn with_max_durations(max_durations: usize) -> Self {
         Self {
             max_durations,
@@ -244,16 +253,8 @@ impl ToolStats {
         self.cached_avg = None;
 
         // Track min/max
-        self.min_duration = Some(
-            self.min_duration
-                .map(|m| m.min(duration))
-                .unwrap_or(duration),
-        );
-        self.max_duration = Some(
-            self.max_duration
-                .map(|m| m.max(duration))
-                .unwrap_or(duration),
-        );
+        self.min_duration = Some(self.min_duration.map_or(duration, |m| m.min(duration)));
+        self.max_duration = Some(self.max_duration.map_or(duration, |m| m.max(duration)));
 
         // Track individual durations for percentiles (capped at max_durations)
         if self.max_durations == 0 {
@@ -265,6 +266,7 @@ impl ToolStats {
     }
 
     /// Get success rate (0.0 - 1.0)
+    #[must_use]
     pub fn success_rate(&self) -> f64 {
         if self.total > 0 {
             self.successes as f64 / self.total as f64
@@ -274,6 +276,7 @@ impl ToolStats {
     }
 
     /// Get average execution time
+    #[must_use]
     pub fn avg_duration(&self) -> Duration {
         if self.total > 0 {
             self.total_duration / self.total as u32
@@ -283,16 +286,19 @@ impl ToolStats {
     }
 
     /// Get average execution time in milliseconds
+    #[must_use]
     pub fn avg_duration_ms(&self) -> u64 {
         self.avg_duration().as_millis() as u64
     }
 
     /// Get total execution time in milliseconds
+    #[must_use]
     pub fn total_duration_ms(&self) -> u64 {
         self.total_duration.as_millis() as u64
     }
 
     /// Get failure rate (0.0 - 1.0)
+    #[must_use]
     pub fn failure_rate(&self) -> f64 {
         if self.total > 0 {
             self.failures as f64 / self.total as f64
@@ -302,16 +308,18 @@ impl ToolStats {
     }
 
     /// Check if all executions succeeded
+    #[must_use]
     pub fn all_succeeded(&self) -> bool {
         self.total > 0 && self.failures == 0
     }
 
     /// Check if any execution failed
+    #[must_use]
     pub fn has_failures(&self) -> bool {
         self.failures > 0
     }
 
-    /// Merge stats from another ToolStats
+    /// Merge stats from another `ToolStats`
     pub fn merge(&mut self, other: &ToolStats) {
         self.total += other.total;
         self.successes += other.successes;
@@ -321,27 +329,20 @@ impl ToolStats {
 
         // Merge min/max
         if let Some(other_min) = other.min_duration {
-            self.min_duration = Some(
-                self.min_duration
-                    .map(|m| m.min(other_min))
-                    .unwrap_or(other_min),
-            );
+            self.min_duration = Some(self.min_duration.map_or(other_min, |m| m.min(other_min)));
         }
         if let Some(other_max) = other.max_duration {
-            self.max_duration = Some(
-                self.max_duration
-                    .map(|m| m.max(other_max))
-                    .unwrap_or(other_max),
-            );
+            self.max_duration = Some(self.max_duration.map_or(other_max, |m| m.max(other_max)));
         }
 
         // Merge durations (up to cap)
         let remaining_cap = self.max_durations.saturating_sub(self.durations.len());
         self.durations
-            .extend(other.durations.iter().take(remaining_cap).cloned());
+            .extend(other.durations.iter().take(remaining_cap).copied());
     }
 
     /// Create a summary string for display
+    #[must_use]
     pub fn summary(&self) -> String {
         format!(
             "{}/{} ({}%) avg: {}ms",
@@ -353,6 +354,7 @@ impl ToolStats {
     }
 
     /// Convert to JSON
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "total": self.total,
@@ -365,6 +367,7 @@ impl ToolStats {
     }
 
     /// Convert to detailed JSON including min/max/percentiles
+    #[must_use]
     pub fn to_detailed_json(&self) -> serde_json::Value {
         let mut json = serde_json::json!({
             "total": self.total,
@@ -396,16 +399,19 @@ impl ToolStats {
     }
 
     /// Get minimum execution time in milliseconds
+    #[must_use]
     pub fn min_duration_ms(&self) -> Option<u64> {
         self.min_duration.map(|d| d.as_millis() as u64)
     }
 
     /// Get maximum execution time in milliseconds
+    #[must_use]
     pub fn max_duration_ms(&self) -> Option<u64> {
         self.max_duration.map(|d| d.as_millis() as u64)
     }
 
     /// Get the duration range (max - min)
+    #[must_use]
     pub fn duration_range(&self) -> Option<Duration> {
         match (self.min_duration, self.max_duration) {
             (Some(min), Some(max)) => Some(max.saturating_sub(min)),
@@ -414,18 +420,20 @@ impl ToolStats {
     }
 
     /// Get the duration range in milliseconds
+    #[must_use]
     pub fn duration_range_ms(&self) -> Option<u64> {
         self.duration_range().map(|d| d.as_millis() as u64)
     }
 
     /// Calculate percentile duration (0-100)
     /// Returns None if no durations are recorded
+    #[must_use]
     pub fn percentile(&self, p: u8) -> Option<Duration> {
         if self.durations.is_empty() {
             return None;
         }
 
-        let p = p.min(100) as f64 / 100.0;
+        let p = f64::from(p.min(100)) / 100.0;
         let mut sorted = self.durations.clone();
         sorted.sort();
 
@@ -434,11 +442,13 @@ impl ToolStats {
     }
 
     /// Calculate percentile duration in milliseconds
+    #[must_use]
     pub fn percentile_ms(&self, p: u8) -> Option<u64> {
         self.percentile(p).map(|d| d.as_millis() as u64)
     }
 
     /// Get standard deviation of durations
+    #[must_use]
     pub fn std_deviation(&self) -> Option<Duration> {
         if self.durations.len() < 2 {
             return None;
@@ -460,11 +470,13 @@ impl ToolStats {
     }
 
     /// Get standard deviation in milliseconds
+    #[must_use]
     pub fn std_deviation_ms(&self) -> Option<u64> {
         self.std_deviation().map(|d| d.as_millis() as u64)
     }
 
     /// Check if durations have high variance (std dev > avg * threshold)
+    #[must_use]
     pub fn has_high_variance(&self, threshold: f64) -> bool {
         match (self.std_deviation(), self.total > 0) {
             (Some(std), true) => {
@@ -480,6 +492,7 @@ impl ToolStats {
     }
 
     /// Get throughput (executions per second)
+    #[must_use]
     pub fn throughput(&self) -> f64 {
         if self.total_duration.is_zero() {
             0.0
@@ -488,8 +501,9 @@ impl ToolStats {
         }
     }
 
-    /// Compare with another ToolStats and return relative performance
+    /// Compare with another `ToolStats` and return relative performance
     /// Returns a value > 1.0 if self is faster, < 1.0 if slower
+    #[must_use]
     pub fn relative_performance(&self, other: &ToolStats) -> Option<f64> {
         if self.total == 0 || other.total == 0 {
             return None;
@@ -504,6 +518,7 @@ impl ToolStats {
 
     /// Get a health score (0.0-1.0) based on success rate and consistency
     /// Higher is better - penalizes failures and high variance
+    #[must_use]
     pub fn health_score(&self) -> f64 {
         if self.total == 0 {
             return 0.0;
@@ -522,11 +537,13 @@ impl ToolStats {
     }
 
     /// Check if this tool is "healthy" (high success rate, low variance)
+    #[must_use]
     pub fn is_healthy(&self, min_success_rate: f64) -> bool {
         self.total > 0 && self.success_rate() >= min_success_rate && !self.has_high_variance(2.0)
     }
 
     /// Get number of tracked durations (for percentile accuracy)
+    #[must_use]
     pub fn tracked_durations(&self) -> usize {
         self.durations.len()
     }
@@ -571,6 +588,7 @@ impl HistoryFilter {
     }
 
     /// Filter to only failures
+    #[must_use]
     pub fn failures() -> Self {
         Self {
             success: Some(false),
@@ -579,6 +597,7 @@ impl HistoryFilter {
     }
 
     /// Filter to only successes
+    #[must_use]
     pub fn successes() -> Self {
         Self {
             success: Some(true),
@@ -587,6 +606,7 @@ impl HistoryFilter {
     }
 
     /// Filter to executions that timed out
+    #[must_use]
     pub fn timed_out_only() -> Self {
         Self {
             timed_out: Some(true),
@@ -595,6 +615,7 @@ impl HistoryFilter {
     }
 
     /// Filter to executions with details
+    #[must_use]
     pub fn with_details() -> Self {
         Self {
             has_details: Some(true),
@@ -609,36 +630,42 @@ impl HistoryFilter {
     }
 
     /// Add time range filter (after)
+    #[must_use]
     pub fn after(mut self, time: SystemTime) -> Self {
         self.after = Some(time);
         self
     }
 
     /// Add time range filter (before)
+    #[must_use]
     pub fn before(mut self, time: SystemTime) -> Self {
         self.before = Some(time);
         self
     }
 
     /// Add time range filter (within last N seconds)
+    #[must_use]
     pub fn within_last(mut self, duration: Duration) -> Self {
         self.after = Some(SystemTime::now() - duration);
         self
     }
 
     /// Filter by minimum duration
+    #[must_use]
     pub fn min_duration(mut self, duration: Duration) -> Self {
         self.min_duration = Some(duration);
         self
     }
 
     /// Filter by maximum duration
+    #[must_use]
     pub fn max_duration(mut self, duration: Duration) -> Self {
         self.max_duration = Some(duration);
         self
     }
 
     /// Filter by duration range
+    #[must_use]
     pub fn duration_between(mut self, min: Duration, max: Duration) -> Self {
         self.min_duration = Some(min);
         self.max_duration = Some(max);
@@ -646,6 +673,7 @@ impl HistoryFilter {
     }
 
     /// Filter by exit code
+    #[must_use]
     pub fn with_exit_code(mut self, code: i32) -> Self {
         self.exit_code = Some(code);
         self
@@ -658,6 +686,7 @@ impl HistoryFilter {
     }
 
     /// Check if an execution matches this filter
+    #[must_use]
     pub fn matches(&self, exec: &ToolExecution) -> bool {
         if let Some(ref name) = self.tool_name {
             if !exec.tool_name.to_lowercase().contains(&name.to_lowercase()) {
@@ -676,8 +705,7 @@ impl HistoryFilter {
             let has_match = exec
                 .output
                 .as_ref()
-                .map(|o| o.to_lowercase().contains(&text_lower))
-                .unwrap_or(false);
+                .is_some_and(|o| o.to_lowercase().contains(&text_lower));
             if !has_match {
                 return false;
             }
@@ -690,13 +718,13 @@ impl HistoryFilter {
         }
 
         if let Some(min_dur) = self.min_duration {
-            if exec.duration.map(|d| d < min_dur).unwrap_or(true) {
+            if exec.duration.is_none_or(|d| d < min_dur) {
                 return false;
             }
         }
 
         if let Some(max_dur) = self.max_duration {
-            if exec.duration.map(|d| d > max_dur).unwrap_or(true) {
+            if exec.duration.is_none_or(|d| d > max_dur) {
                 return false;
             }
         }
@@ -759,6 +787,7 @@ pub struct ToolHistory {
 
 impl ToolHistory {
     /// Create a new tool history tracker
+    #[must_use]
     pub fn new(max_size: usize) -> Self {
         Self {
             executions: VecDeque::new(),
@@ -827,8 +856,7 @@ impl ToolHistory {
         let duration = self
             .in_progress
             .remove(id)
-            .map(|start| start.elapsed())
-            .unwrap_or(Duration::ZERO);
+            .map_or(Duration::ZERO, |start| start.elapsed());
 
         if let Some(exec) = self.executions.iter_mut().rev().find(|e| e.id == id) {
             exec.complete(output, duration);
@@ -850,8 +878,7 @@ impl ToolHistory {
         let duration = self
             .in_progress
             .remove(id)
-            .map(|start| start.elapsed())
-            .unwrap_or(Duration::ZERO);
+            .map_or(Duration::ZERO, |start| start.elapsed());
 
         if let Some(exec) = self.executions.iter_mut().rev().find(|e| e.id == id) {
             exec.complete_with_details(output, duration, details);
@@ -868,8 +895,7 @@ impl ToolHistory {
         let duration = self
             .in_progress
             .remove(id)
-            .map(|start| start.elapsed())
-            .unwrap_or(Duration::ZERO);
+            .map_or(Duration::ZERO, |start| start.elapsed());
 
         if let Some(exec) = self.executions.iter_mut().rev().find(|e| e.id == id) {
             exec.fail(error, duration);
@@ -891,8 +917,7 @@ impl ToolHistory {
         let duration = self
             .in_progress
             .remove(id)
-            .map(|start| start.elapsed())
-            .unwrap_or(Duration::ZERO);
+            .map_or(Duration::ZERO, |start| start.elapsed());
 
         if let Some(exec) = self.executions.iter_mut().rev().find(|e| e.id == id) {
             exec.fail_with_details(error, duration, details);
@@ -912,6 +937,7 @@ impl ToolHistory {
     }
 
     /// Get details from an execution by ID
+    #[must_use]
     pub fn get_details(&self, id: &str) -> Option<&serde_json::Value> {
         self.executions
             .iter()
@@ -925,11 +951,13 @@ impl ToolHistory {
     }
 
     /// Get recent executions
+    #[must_use]
     pub fn recent(&self, count: usize) -> Vec<&ToolExecution> {
         self.executions.iter().rev().take(count).collect()
     }
 
     /// Search history with filter
+    #[must_use]
     pub fn search(&self, filter: &HistoryFilter) -> Vec<&ToolExecution> {
         self.executions
             .iter()
@@ -939,36 +967,43 @@ impl ToolHistory {
     }
 
     /// Get executions for a specific tool
+    #[must_use]
     pub fn for_tool(&self, tool_name: &str) -> Vec<&ToolExecution> {
         self.search(&HistoryFilter::tool(tool_name))
     }
 
     /// Get an execution by ID
+    #[must_use]
     pub fn get(&self, id: &str) -> Option<&ToolExecution> {
         self.executions.iter().find(|e| e.id == id)
     }
 
     /// Get the most recent execution
+    #[must_use]
     pub fn last(&self) -> Option<&ToolExecution> {
         self.executions.back()
     }
 
     /// Get stats for a specific tool
+    #[must_use]
     pub fn tool_stats(&self, tool_name: &str) -> Option<&ToolStats> {
         self.stats.get(tool_name)
     }
 
     /// Get global stats
+    #[must_use]
     pub fn global_stats(&self) -> &ToolStats {
         &self.global_stats
     }
 
     /// Get all tool stats
+    #[must_use]
     pub fn all_stats(&self) -> &std::collections::HashMap<String, ToolStats> {
         &self.stats
     }
 
     /// Get tools ranked by usage count (descending)
+    #[must_use]
     pub fn most_used_tools(&self, limit: usize) -> Vec<(&str, &ToolStats)> {
         let mut ranked: Vec<_> = self.stats.iter().map(|(k, v)| (k.as_str(), v)).collect();
         ranked.sort_by(|a, b| b.1.total.cmp(&a.1.total));
@@ -977,6 +1012,7 @@ impl ToolHistory {
     }
 
     /// Get tools ranked by average duration (slowest first)
+    #[must_use]
     pub fn slowest_tools(&self, limit: usize) -> Vec<(&str, &ToolStats)> {
         let mut ranked: Vec<_> = self
             .stats
@@ -990,6 +1026,7 @@ impl ToolHistory {
     }
 
     /// Get tools ranked by average duration (fastest first)
+    #[must_use]
     pub fn fastest_tools(&self, limit: usize) -> Vec<(&str, &ToolStats)> {
         let mut ranked: Vec<_> = self
             .stats
@@ -1003,6 +1040,7 @@ impl ToolHistory {
     }
 
     /// Get tools ranked by failure count (most failures first)
+    #[must_use]
     pub fn most_failed_tools(&self, limit: usize) -> Vec<(&str, &ToolStats)> {
         let mut ranked: Vec<_> = self
             .stats
@@ -1016,6 +1054,7 @@ impl ToolHistory {
     }
 
     /// Get tools with the highest failure rates (at least `min_calls` total)
+    #[must_use]
     pub fn highest_failure_rate(&self, limit: usize, min_calls: u64) -> Vec<(&str, &ToolStats)> {
         let mut ranked: Vec<_> = self
             .stats
@@ -1033,16 +1072,19 @@ impl ToolHistory {
     }
 
     /// Get the total time spent executing tools
+    #[must_use]
     pub fn total_execution_time(&self) -> Duration {
         self.global_stats.total_duration
     }
 
     /// Get the total time spent executing tools in milliseconds
+    #[must_use]
     pub fn total_execution_time_ms(&self) -> u64 {
         self.global_stats.total_duration_ms()
     }
 
     /// Export all statistics as JSON
+    #[must_use]
     pub fn stats_json(&self) -> serde_json::Value {
         let tool_stats: serde_json::Map<String, serde_json::Value> = self
             .stats
@@ -1060,6 +1102,7 @@ impl ToolHistory {
     }
 
     /// Get a detailed stats summary with all tools
+    #[must_use]
     pub fn detailed_summary(&self) -> String {
         let mut lines = vec![
             "Tool Execution Statistics".to_string(),
@@ -1131,16 +1174,19 @@ impl ToolHistory {
     }
 
     /// Get the number of executions
+    #[must_use]
     pub fn len(&self) -> usize {
         self.executions.len()
     }
 
     /// Check if empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.executions.is_empty()
     }
 
     /// Get number of in-progress executions
+    #[must_use]
     pub fn in_progress_count(&self) -> usize {
         self.in_progress.len()
     }
@@ -1155,6 +1201,7 @@ impl ToolHistory {
 
     /// Compute stats from filtered executions
     /// This creates new stats from scratch based on the filter criteria
+    #[must_use]
     pub fn filtered_stats(&self, filter: &HistoryFilter) -> ToolStats {
         let mut stats = ToolStats::default();
         for exec in self.executions.iter().filter(|e| filter.matches(e)) {
@@ -1166,6 +1213,7 @@ impl ToolHistory {
     }
 
     /// Compute per-tool stats from filtered executions
+    #[must_use]
     pub fn filtered_stats_by_tool(
         &self,
         filter: &HistoryFilter,
@@ -1182,45 +1230,53 @@ impl ToolHistory {
     }
 
     /// Get stats for executions within a time range
+    #[must_use]
     pub fn stats_in_range(&self, after: SystemTime, before: SystemTime) -> ToolStats {
         let filter = HistoryFilter::default().after(after).before(before);
         self.filtered_stats(&filter)
     }
 
     /// Get stats for executions in the last N seconds
+    #[must_use]
     pub fn stats_last(&self, duration: Duration) -> ToolStats {
         let filter = HistoryFilter::default().within_last(duration);
         self.filtered_stats(&filter)
     }
 
     /// Get stats for slow executions (above threshold)
+    #[must_use]
     pub fn stats_slow_executions(&self, threshold: Duration) -> ToolStats {
         let filter = HistoryFilter::default().min_duration(threshold);
         self.filtered_stats(&filter)
     }
 
     /// Get stats for fast executions (below threshold)
+    #[must_use]
     pub fn stats_fast_executions(&self, threshold: Duration) -> ToolStats {
         let filter = HistoryFilter::default().max_duration(threshold);
         self.filtered_stats(&filter)
     }
 
     /// Get timed out executions
+    #[must_use]
     pub fn timed_out_executions(&self) -> Vec<&ToolExecution> {
         self.search(&HistoryFilter::timed_out_only())
     }
 
     /// Get executions with specific exit code
+    #[must_use]
     pub fn executions_with_exit_code(&self, code: i32) -> Vec<&ToolExecution> {
         self.search(&HistoryFilter::default().with_exit_code(code))
     }
 
     /// Get executions that have structured details
+    #[must_use]
     pub fn executions_with_details(&self) -> Vec<&ToolExecution> {
         self.search(&HistoryFilter::with_details())
     }
 
     /// Get health report for all tools
+    #[must_use]
     pub fn tool_health_report(&self) -> Vec<(&str, f64, bool)> {
         self.stats
             .iter()
@@ -1233,6 +1289,7 @@ impl ToolHistory {
     }
 
     /// Get unhealthy tools (low success rate or high variance)
+    #[must_use]
     pub fn unhealthy_tools(&self, min_success_rate: f64) -> Vec<(&str, &ToolStats)> {
         self.stats
             .iter()
@@ -1242,6 +1299,7 @@ impl ToolHistory {
     }
 
     /// Compare two tools' performance
+    #[must_use]
     pub fn compare_tools(&self, tool_a: &str, tool_b: &str) -> Option<f64> {
         match (self.stats.get(tool_a), self.stats.get(tool_b)) {
             (Some(a), Some(b)) => a.relative_performance(b),
@@ -1250,11 +1308,13 @@ impl ToolHistory {
     }
 
     /// Get overall throughput (executions per second)
+    #[must_use]
     pub fn throughput(&self) -> f64 {
         self.global_stats.throughput()
     }
 
     /// Aggregate stats from multiple tool names
+    #[must_use]
     pub fn aggregate_stats(&self, tool_names: &[&str]) -> ToolStats {
         let mut aggregated = ToolStats::default();
         for name in tool_names {
@@ -1266,6 +1326,7 @@ impl ToolHistory {
     }
 
     /// Export detailed stats as JSON (with percentiles)
+    #[must_use]
     pub fn detailed_stats_json(&self) -> serde_json::Value {
         let tool_stats: serde_json::Map<String, serde_json::Value> = self
             .stats
@@ -1284,6 +1345,7 @@ impl ToolHistory {
     }
 
     /// Generate a summary report
+    #[must_use]
     pub fn summary(&self) -> String {
         let mut lines = vec![
             format!("Tool Execution History"),

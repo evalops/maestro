@@ -10,9 +10,9 @@
 //! outside the Basic Multilingual Plane (BMP). When JavaScript strings contain
 //! unpaired surrogates (lone high or low surrogates), they can cause issues:
 //!
-//! 1. JSON.stringify() may produce invalid UTF-8
+//! 1. `JSON.stringify()` may produce invalid UTF-8
 //! 2. API servers may reject the malformed JSON
-//! 3. serde_json serialization may fail or produce unexpected results
+//! 3. `serde_json` serialization may fail or produce unexpected results
 //!
 //! While Rust strings are valid UTF-8 by construction, unpaired surrogates can
 //! enter the system when:
@@ -57,6 +57,7 @@
 /// For strings without surrogates (the common case), this function performs
 /// a single scan without allocation. Only when surrogates are found does it
 /// allocate a new string.
+#[must_use]
 pub fn sanitize_surrogates(s: &str) -> String {
     // Rust strings are UTF-8, so they can't actually contain surrogates.
     // However, we check for the UTF-8 encoding of what would be surrogate
@@ -120,6 +121,7 @@ pub fn sanitize_surrogates(s: &str) -> String {
 /// - Other C0 controls (U+0001-U+0008, U+000B-U+000C, U+000E-U+001F)
 /// - DEL (U+007F)
 /// - C1 controls (U+0080-U+009F)
+#[must_use]
 pub fn sanitize_control_chars(s: &str) -> String {
     if s.is_ascii()
         && !s
@@ -157,6 +159,7 @@ pub fn sanitize_control_chars(s: &str) -> String {
 /// # Returns
 ///
 /// A sanitized string safe for JSON serialization and API transmission.
+#[must_use]
 pub fn sanitize_for_api(s: &str) -> String {
     // For ASCII strings without control chars, return quickly
     if s.is_ascii()

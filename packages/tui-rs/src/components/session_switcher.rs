@@ -63,6 +63,7 @@ impl SessionSwitcher {
     }
 
     /// Check if visible
+    #[must_use]
     pub fn is_visible(&self) -> bool {
         self.visible
     }
@@ -76,7 +77,7 @@ impl SessionSwitcher {
                 self.filter();
             }
             Err(e) => {
-                self.error = Some(format!("Failed to load sessions: {}", e));
+                self.error = Some(format!("Failed to load sessions: {e}"));
                 self.loading = false;
             }
         }
@@ -138,6 +139,7 @@ impl SessionSwitcher {
     }
 
     /// Get the selected session
+    #[must_use]
     pub fn selected_session(&self) -> Option<&SessionInfo> {
         self.filtered
             .get(self.selected)
@@ -156,7 +158,7 @@ impl SessionSwitcher {
         if let Some(session) = self.selected_session() {
             // Delete the session file
             std::fs::remove_file(&session.path)
-                .map_err(|e| format!("Failed to delete session: {}", e))?;
+                .map_err(|e| format!("Failed to delete session: {e}"))?;
             self.refresh();
         }
         Ok(())
@@ -301,7 +303,7 @@ impl SessionSwitcher {
         // Timestamp
         let time_str = format_relative_time(&session.timestamp);
         spans.push(Span::styled(
-            format!("  {}", time_str),
+            format!("  {time_str}"),
             Style::default().fg(Color::DarkGray),
         ));
 
@@ -354,16 +356,16 @@ fn format_relative_time(timestamp: &str) -> String {
             return "just now".to_string();
         } else if duration.num_hours() < 1 {
             let mins = duration.num_minutes();
-            return format!("{}m ago", mins);
+            return format!("{mins}m ago");
         } else if duration.num_days() < 1 {
             let hours = duration.num_hours();
-            return format!("{}h ago", hours);
+            return format!("{hours}h ago");
         } else if duration.num_days() < 7 {
             let days = duration.num_days();
-            return format!("{}d ago", days);
+            return format!("{days}d ago");
         } else if duration.num_weeks() < 4 {
             let weeks = duration.num_weeks();
-            return format!("{}w ago", weeks);
+            return format!("{weeks}w ago");
         }
     }
 

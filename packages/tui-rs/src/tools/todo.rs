@@ -83,9 +83,10 @@ fn store_path() -> PathBuf {
     if let Ok(path) = std::env::var("COMPOSER_TODO_FILE") {
         return PathBuf::from(path);
     }
-    dirs::home_dir()
-        .map(|home| home.join(".composer").join("todos.json"))
-        .unwrap_or_else(|| std::env::temp_dir().join("composer-todos.json"))
+    dirs::home_dir().map_or_else(
+        || std::env::temp_dir().join("composer-todos.json"),
+        |home| home.join(".composer").join("todos.json"),
+    )
 }
 
 async fn load_store() -> Result<TodoStore, String> {
@@ -95,7 +96,7 @@ async fn load_store() -> Result<TodoStore, String> {
     }
     let content = tokio::fs::read_to_string(&path)
         .await
-        .map_err(|e| format!("Failed to read todo store: {}", e))?;
+        .map_err(|e| format!("Failed to read todo store: {e}"))?;
     let store: TodoStore = serde_json::from_str(&content).unwrap_or_else(|_| HashMap::new());
     Ok(store)
 }
@@ -105,13 +106,13 @@ async fn save_store(store: &TodoStore) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
-            .map_err(|e| format!("Failed to create todo dir: {}", e))?;
+            .map_err(|e| format!("Failed to create todo dir: {e}"))?;
     }
     let data = serde_json::to_string_pretty(store)
-        .map_err(|e| format!("Failed to serialize todo store: {}", e))?;
-    tokio::fs::write(&path, format!("{}\n", data))
+        .map_err(|e| format!("Failed to serialize todo store: {e}"))?;
+    tokio::fs::write(&path, format!("{data}\n"))
         .await
-        .map_err(|e| format!("Failed to write todo store: {}", e))?;
+        .map_err(|e| format!("Failed to write todo store: {e}"))?;
     Ok(())
 }
 
@@ -193,8 +194,7 @@ fn format_output(goal: &str, items: &[NormalizedTodo], include_summary: bool) ->
             lines.push("No tasks yet - add items to get started.".to_string());
         } else {
             lines.push(format!(
-                "Total: {} | Pending: {} | In Progress: {} | Completed: {}",
-                total, pending, in_progress, completed
+                "Total: {total} | Pending: {pending} | In Progress: {in_progress} | Completed: {completed}"
             ));
         }
         lines.push(String::new());
@@ -217,10 +217,10 @@ fn format_output(goal: &str, items: &[NormalizedTodo], include_summary: bool) ->
             item.priority
         ));
         if let Some(notes) = &item.notes {
-            lines.push(format!("    notes: {}", notes));
+            lines.push(format!("    notes: {notes}"));
         }
         if let Some(due) = &item.due {
-            lines.push(format!("    due: {}", due));
+            lines.push(format!("    due: {due}"));
         }
         if let Some(blocked) = &item.blocked_by {
             lines.push(format!("    blocked by: {}", blocked.join(", ")));
@@ -232,7 +232,7 @@ fn format_output(goal: &str, items: &[NormalizedTodo], include_summary: bool) ->
 pub async fn todo(args: serde_json::Value) -> ToolResult {
     let parsed: TodoArgs = match serde_json::from_value(args) {
         Ok(val) => val,
-        Err(err) => return ToolResult::failure(format!("Invalid todo arguments: {}", err)),
+        Err(err) => return ToolResult::failure(format!("Invalid todo arguments: {err}")),
     };
 
     let mut store = match load_store().await {
@@ -252,12 +252,12 @@ pub async fn todo(args: serde_json::Value) -> ToolResult {
         let items_vec: Vec<TodoItemInput> = if items_value.is_string() {
             match serde_json::from_str(items_value.as_str().unwrap_or("[]")) {
                 Ok(items) => items,
-                Err(err) => return ToolResult::failure(format!("Invalid items JSON: {}", err)),
+                Err(err) => return ToolResult::failure(format!("Invalid items JSON: {err}")),
             }
         } else {
             match serde_json::from_value(items_value) {
                 Ok(items) => items,
-                Err(err) => return ToolResult::failure(format!("Invalid items: {}", err)),
+                Err(err) => return ToolResult::failure(format!("Invalid items: {err}")),
             }
         };
         record.items = normalize_items(items_vec);

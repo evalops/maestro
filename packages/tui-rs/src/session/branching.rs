@@ -52,6 +52,7 @@ impl BranchPoint {
     }
 
     /// Add tags to the branch
+    #[must_use]
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self
@@ -73,6 +74,7 @@ pub struct BranchMetadata {
 
 impl BranchMetadata {
     /// Create new branch metadata
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -85,11 +87,13 @@ impl BranchMetadata {
     }
 
     /// Get a branch by ID
+    #[must_use]
     pub fn get_branch(&self, id: &str) -> Option<&BranchPoint> {
         self.branches.iter().find(|b| b.id == id)
     }
 
     /// List all branches
+    #[must_use]
     pub fn list_branches(&self) -> &[BranchPoint] {
         &self.branches
     }
@@ -100,6 +104,7 @@ impl BranchMetadata {
     }
 
     /// Get the active branch
+    #[must_use]
     pub fn get_active_branch(&self) -> Option<&BranchPoint> {
         self.active_branch
             .as_ref()
@@ -107,11 +112,13 @@ impl BranchMetadata {
     }
 
     /// Check if this is a branched session
+    #[must_use]
     pub fn is_branched(&self) -> bool {
         self.parent_session.is_some() || !self.branches.is_empty()
     }
 
     /// Get branch lineage (path from root to current)
+    #[must_use]
     pub fn lineage(&self) -> Vec<&BranchPoint> {
         // For now, just return the active branch if any
         self.get_active_branch().into_iter().collect()
@@ -129,11 +136,13 @@ pub struct BranchManager {
 
 impl BranchManager {
     /// Create a new branch manager
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create from existing metadata
+    #[must_use]
     pub fn from_metadata(metadata: BranchMetadata) -> Self {
         Self {
             metadata,
@@ -142,6 +151,7 @@ impl BranchManager {
     }
 
     /// Get the metadata
+    #[must_use]
     pub fn metadata(&self) -> &BranchMetadata {
         &self.metadata
     }
@@ -165,29 +175,28 @@ impl BranchManager {
 
     /// Switch to a different branch
     pub fn switch_to(&mut self, branch_id: Option<BranchId>) -> bool {
-        match &branch_id {
-            Some(id) => {
-                if self.metadata.get_branch(id).is_some() {
-                    self.metadata.set_active_branch(branch_id);
-                    true
-                } else {
-                    false
-                }
-            }
-            None => {
-                // Switch to main branch
-                self.metadata.set_active_branch(None);
+        if let Some(id) = &branch_id {
+            if self.metadata.get_branch(id).is_some() {
+                self.metadata.set_active_branch(branch_id);
                 true
+            } else {
+                false
             }
+        } else {
+            // Switch to main branch
+            self.metadata.set_active_branch(None);
+            true
         }
     }
 
     /// Get the fork index for the active branch
+    #[must_use]
     pub fn active_fork_index(&self) -> Option<usize> {
         self.metadata.get_active_branch().map(|b| b.fork_index)
     }
 
     /// List all branches with their descriptions
+    #[must_use]
     pub fn list_branches(&self) -> Vec<BranchSummary> {
         self.metadata
             .branches

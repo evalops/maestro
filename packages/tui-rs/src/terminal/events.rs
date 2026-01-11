@@ -10,7 +10,7 @@
 //!
 //! - Mouse events (not currently used by the application)
 //! - Key release and repeat events (only key press events are processed)
-//! - Lock key events (CapsLock, NumLock, ScrollLock)
+//! - Lock key events (`CapsLock`, `NumLock`, `ScrollLock`)
 //! - Media and modifier-only key events
 //!
 //! # Async Design
@@ -104,6 +104,7 @@ pub struct TerminalEventStream {
 
 impl TerminalEventStream {
     /// Create a new terminal event stream
+    #[must_use]
     pub fn new() -> Self {
         Self {
             inner: EventStream::new(),
@@ -199,7 +200,7 @@ fn key_code_to_string(code: KeyCode) -> Option<String> {
         KeyCode::PageUp => "PageUp".to_string(),
         KeyCode::PageDown => "PageDown".to_string(),
         KeyCode::Insert => "Insert".to_string(),
-        KeyCode::F(n) => format!("F{}", n),
+        KeyCode::F(n) => format!("F{n}"),
         KeyCode::Null => return None,
         KeyCode::CapsLock => return None,
         KeyCode::ScrollLock => return None,

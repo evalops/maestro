@@ -2,7 +2,6 @@
 //!
 //! Detects terminal color capabilities and provides appropriate colors.
 
-use once_cell::sync::Lazy;
 use ratatui::style::Color;
 
 /// Terminal color capability level
@@ -20,6 +19,7 @@ pub enum ColorLevel {
 
 impl ColorLevel {
     /// Detect the terminal's color capability
+    #[must_use]
     pub fn detect() -> Self {
         // Check for explicit disabling
         if std::env::var("NO_COLOR").is_ok() {
@@ -67,29 +67,33 @@ impl ColorLevel {
     }
 }
 
-static COLOR_LEVEL: Lazy<ColorLevel> = Lazy::new(ColorLevel::detect);
+static COLOR_LEVEL: std::sync::LazyLock<ColorLevel> = std::sync::LazyLock::new(ColorLevel::detect);
 
 /// Get the detected color level
+#[must_use]
 pub fn color_level() -> ColorLevel {
     *COLOR_LEVEL
 }
 
 /// Check if true color is available
+#[must_use]
 pub fn has_true_color() -> bool {
     *COLOR_LEVEL == ColorLevel::TrueColor
 }
 
 /// Perceptual distance between two colors (simplified CIEDE2000)
+#[must_use]
 pub fn color_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
     // Simple Euclidean distance in RGB space
     // For better results, we could use LAB color space
-    let dr = (a.0 as f64 - b.0 as f64) * 0.30;
-    let dg = (a.1 as f64 - b.1 as f64) * 0.59;
-    let db = (a.2 as f64 - b.2 as f64) * 0.11;
+    let dr = (f64::from(a.0) - f64::from(b.0)) * 0.30;
+    let dg = (f64::from(a.1) - f64::from(b.1)) * 0.59;
+    let db = (f64::from(a.2) - f64::from(b.2)) * 0.11;
     (dr * dr + dg * dg + db * db).sqrt()
 }
 
 /// Convert RGB to the best available color
+#[must_use]
 pub fn best_color(r: u8, g: u8, b: u8) -> Color {
     match color_level() {
         ColorLevel::TrueColor => Color::Rgb(r, g, b),
@@ -127,87 +131,105 @@ pub fn best_color(r: u8, g: u8, b: u8) -> Color {
 }
 
 /// Blend two RGB colors
+#[must_use]
 pub fn blend(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
     let t = t.clamp(0.0, 1.0);
-    let r = (a.0 as f32 * (1.0 - t) + b.0 as f32 * t) as u8;
-    let g = (a.1 as f32 * (1.0 - t) + b.1 as f32 * t) as u8;
-    let b_out = (a.2 as f32 * (1.0 - t) + b.2 as f32 * t) as u8;
+    let r = (f32::from(a.0) * (1.0 - t) + f32::from(b.0) * t) as u8;
+    let g = (f32::from(a.1) * (1.0 - t) + f32::from(b.1) * t) as u8;
+    let b_out = (f32::from(a.2) * (1.0 - t) + f32::from(b.2) * t) as u8;
     (r, g, b_out)
 }
 
 /// Theme colors
 pub mod theme {
-    use super::*;
+    use super::{best_color, Color};
 
     // Text hierarchy
+    #[must_use]
     pub fn text() -> Color {
         best_color(229, 229, 229)
     }
 
+    #[must_use]
     pub fn muted() -> Color {
         best_color(156, 163, 175)
     }
 
+    #[must_use]
     pub fn dim() -> Color {
         best_color(107, 114, 128)
     }
 
     // Semantic colors
+    #[must_use]
     pub fn success() -> Color {
         best_color(34, 197, 94)
     }
 
+    #[must_use]
     pub fn warning() -> Color {
         best_color(234, 179, 8)
     }
 
+    #[must_use]
     pub fn danger() -> Color {
         best_color(239, 68, 68)
     }
 
+    #[must_use]
     pub fn info() -> Color {
         best_color(59, 130, 246)
     }
 
     // Accents
+    #[must_use]
     pub fn accent_cool() -> Color {
         best_color(139, 92, 246)
     }
 
+    #[must_use]
     pub fn accent_warm() -> Color {
         best_color(249, 115, 22)
     }
 
     // Structural
+    #[must_use]
     pub fn border() -> Color {
         best_color(55, 65, 81)
     }
 
+    #[must_use]
     pub fn separator() -> Color {
         best_color(75, 85, 99)
     }
 
     // Syntax highlighting
+    #[must_use]
     pub fn syntax_keyword() -> Color {
         best_color(198, 120, 221)
     }
 
+    #[must_use]
     pub fn syntax_string() -> Color {
         best_color(152, 195, 121)
     }
 
+    #[must_use]
     pub fn syntax_number() -> Color {
         best_color(209, 154, 102)
     }
 
+    #[must_use]
     pub fn syntax_comment() -> Color {
         best_color(92, 99, 112)
     }
 
+    #[must_use]
     pub fn syntax_function() -> Color {
         best_color(97, 175, 239)
     }
 
+    #[must_use]
     pub fn syntax_type() -> Color {
         best_color(229, 192, 123)
     }

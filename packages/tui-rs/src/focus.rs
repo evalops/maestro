@@ -33,11 +33,13 @@ pub enum InputResult {
 
 impl InputResult {
     /// Check if input was consumed.
+    #[must_use]
     pub fn is_consumed(&self) -> bool {
         matches!(self, Self::Consumed | Self::Submit)
     }
 
     /// Check if focus should be released.
+    #[must_use]
     pub fn should_release(&self) -> bool {
         matches!(self, Self::ReleaseFocus | Self::Dismiss)
     }
@@ -119,6 +121,7 @@ impl<T: Focusable> Default for FocusManager<T> {
 
 impl<T: Focusable> FocusManager<T> {
     /// Create a new focus manager.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             focus_stack: Vec::new(),
@@ -156,6 +159,7 @@ impl<T: Focusable> FocusManager<T> {
     }
 
     /// Get a reference to the currently focused component.
+    #[must_use]
     pub fn focused(&self) -> Option<&T> {
         self.focus_stack.last()
     }
@@ -166,11 +170,13 @@ impl<T: Focusable> FocusManager<T> {
     }
 
     /// Check if any component is focused.
+    #[must_use]
     pub fn has_focus(&self) -> bool {
         !self.focus_stack.is_empty()
     }
 
     /// Get the depth of the focus stack.
+    #[must_use]
     pub fn depth(&self) -> usize {
         self.focus_stack.len()
     }
@@ -238,11 +244,13 @@ pub struct FocusRing {
 
 impl FocusRing {
     /// Create a new focus ring with the given number of items.
+    #[must_use]
     pub fn new(count: usize) -> Self {
         Self { count, current: 0 }
     }
 
     /// Get the currently focused index.
+    #[must_use]
     pub fn current(&self) -> usize {
         self.current
     }
@@ -269,6 +277,7 @@ impl FocusRing {
     }
 
     /// Check if an index is currently focused.
+    #[must_use]
     pub fn is_focused(&self, index: usize) -> bool {
         self.current == index
     }
@@ -304,31 +313,37 @@ impl FocusRing {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Check if a key event is an interrupt (Ctrl+C).
+#[must_use]
 pub fn is_interrupt(key: KeyEvent) -> bool {
     key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
 /// Check if a key event is Escape.
+#[must_use]
 pub fn is_escape(key: KeyEvent) -> bool {
     key.code == KeyCode::Esc
 }
 
 /// Check if a key event is Enter/Return.
+#[must_use]
 pub fn is_enter(key: KeyEvent) -> bool {
     matches!(key.code, KeyCode::Enter)
 }
 
 /// Check if a key event is Tab.
+#[must_use]
 pub fn is_tab(key: KeyEvent) -> bool {
     key.code == KeyCode::Tab && !key.modifiers.contains(KeyModifiers::SHIFT)
 }
 
 /// Check if a key event is Shift+Tab.
+#[must_use]
 pub fn is_shift_tab(key: KeyEvent) -> bool {
     key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT)
 }
 
 /// Check if a key event is a navigation key (arrows, home, end, page up/down).
+#[must_use]
 pub fn is_navigation(key: KeyEvent) -> bool {
     matches!(
         key.code,

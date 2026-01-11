@@ -77,6 +77,7 @@ impl Default for StatusIndicator {
 
 impl StatusIndicator {
     /// Create a new status indicator
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -88,12 +89,14 @@ impl StatusIndicator {
     }
 
     /// Enable/disable interrupt hint
+    #[must_use]
     pub fn show_interrupt_hint(mut self, show: bool) -> Self {
         self.show_interrupt_hint = show;
         self
     }
 
     /// Enable/disable animations
+    #[must_use]
     pub fn animations_enabled(mut self, enabled: bool) -> Self {
         self.animations_enabled = enabled;
         self
@@ -157,16 +160,19 @@ impl StatusIndicator {
     }
 
     /// Get the header text
+    #[must_use]
     pub fn header(&self) -> &str {
         &self.header
     }
 
     /// Check if running
+    #[must_use]
     pub fn is_running(&self) -> bool {
         !self.is_paused
     }
 
     /// Get total elapsed time
+    #[must_use]
     pub fn elapsed(&self) -> Duration {
         let mut total = self.elapsed_running;
         if !self.is_paused {
@@ -183,6 +189,7 @@ impl StatusIndicator {
     }
 
     /// Get formatted elapsed time
+    #[must_use]
     pub fn elapsed_display(&self) -> String {
         format_duration_compact(self.elapsed().as_secs())
     }
@@ -219,7 +226,7 @@ impl StatusIndicator {
         // Elapsed time in brackets
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
-            format!("[{}]", elapsed),
+            format!("[{elapsed}]"),
             Style::default().fg(Color::DarkGray),
         ));
 
@@ -265,6 +272,7 @@ pub struct StatusIndicatorBuilder {
 
 impl StatusIndicatorBuilder {
     /// Create a new builder
+    #[must_use]
     pub fn new() -> Self {
         Self {
             indicator: StatusIndicator::new(),
@@ -272,24 +280,28 @@ impl StatusIndicatorBuilder {
     }
 
     /// Preset for "Working" state
+    #[must_use]
     pub fn working(mut self) -> Self {
         self.indicator.header = "Working".to_string();
         self
     }
 
     /// Preset for "Thinking" state
+    #[must_use]
     pub fn thinking(mut self) -> Self {
         self.indicator.header = "Thinking".to_string();
         self
     }
 
     /// Preset for "Analyzing" state
+    #[must_use]
     pub fn analyzing(mut self) -> Self {
         self.indicator.header = "Analyzing".to_string();
         self
     }
 
     /// Preset for "Generating" state
+    #[must_use]
     pub fn generating(mut self) -> Self {
         self.indicator.header = "Generating".to_string();
         self
@@ -302,24 +314,28 @@ impl StatusIndicatorBuilder {
     }
 
     /// Enable/disable interrupt hint
+    #[must_use]
     pub fn interrupt_hint(mut self, show: bool) -> Self {
         self.indicator.show_interrupt_hint = show;
         self
     }
 
     /// Enable/disable animations
+    #[must_use]
     pub fn animations(mut self, enabled: bool) -> Self {
         self.indicator.animations_enabled = enabled;
         self
     }
 
     /// Build and start the indicator
+    #[must_use]
     pub fn build_started(mut self) -> StatusIndicator {
         self.indicator.start();
         self.indicator
     }
 
     /// Build without starting
+    #[must_use]
     pub fn build(self) -> StatusIndicator {
         self.indicator
     }

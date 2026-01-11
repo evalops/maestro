@@ -58,18 +58,21 @@ impl SelectionRow {
     }
 
     /// Add a keyboard shortcut.
+    #[must_use]
     pub fn shortcut(mut self, shortcut: KeyBinding) -> Self {
         self.shortcut = Some(shortcut);
         self
     }
 
     /// Add fuzzy match indices for highlighting.
+    #[must_use]
     pub fn match_indices(mut self, indices: Vec<usize>) -> Self {
         self.match_indices = Some(indices);
         self
     }
 
     /// Set custom wrap indent.
+    #[must_use]
     pub fn wrap_indent(mut self, indent: usize) -> Self {
         self.wrap_indent = Some(indent);
         self
@@ -116,6 +119,7 @@ pub struct SelectionList<'a> {
 
 impl<'a> SelectionList<'a> {
     /// Create a new selection list.
+    #[must_use]
     pub fn new(rows: &'a [SelectionRow], state: &'a ScrollState) -> Self {
         Self {
             rows,
@@ -125,12 +129,14 @@ impl<'a> SelectionList<'a> {
     }
 
     /// Set the configuration.
+    #[must_use]
     pub fn config(mut self, config: SelectionListConfig) -> Self {
         self.config = config;
         self
     }
 
     /// Set the maximum number of visible items.
+    #[must_use]
     pub fn max_visible(mut self, max: usize) -> Self {
         self.config.max_visible = max;
         self
@@ -143,6 +149,7 @@ impl<'a> SelectionList<'a> {
     }
 
     /// Calculate the height needed to render the list.
+    #[must_use]
     pub fn measure_height(&self, width: u16) -> u16 {
         measure_rows_height(self.rows, self.state, self.config.max_visible, width)
     }
@@ -206,8 +213,7 @@ fn build_display_line(
     let name_limit = row
         .description
         .as_ref()
-        .map(|_| desc_col.saturating_sub(2))
-        .unwrap_or(usize::MAX);
+        .map_or(usize::MAX, |_| desc_col.saturating_sub(2));
 
     let mut name_spans: Vec<Span> = Vec::with_capacity(row.name.len());
     let mut used_width = 0usize;
@@ -417,6 +423,7 @@ fn measure_rows_height(
 /// Perform fuzzy matching and return match indices.
 ///
 /// Returns None if the pattern doesn't match the text.
+#[must_use]
 pub fn fuzzy_match(text: &str, pattern: &str) -> Option<Vec<usize>> {
     if pattern.is_empty() {
         return Some(vec![]);
@@ -449,6 +456,7 @@ pub fn fuzzy_match(text: &str, pattern: &str) -> Option<Vec<usize>> {
 /// - Consecutive matches (bonus)
 /// - Match at start (bonus)
 /// - Total gaps between matches (penalty)
+#[must_use]
 pub fn fuzzy_score(indices: &[usize]) -> usize {
     if indices.is_empty() {
         return 0;

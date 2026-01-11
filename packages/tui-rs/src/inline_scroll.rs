@@ -120,8 +120,8 @@ pub fn insert_history_lines<W: Write>(
             queue!(
                 writer,
                 SetColors(Colors::new(
-                    line.style.fg.map(Into::into).unwrap_or(CColor::Reset),
-                    line.style.bg.map(Into::into).unwrap_or(CColor::Reset)
+                    line.style.fg.map_or(CColor::Reset, Into::into),
+                    line.style.bg.map_or(CColor::Reset, Into::into)
                 ))
             )?;
 

@@ -68,6 +68,7 @@ pub struct EditorWidget {
 }
 
 impl EditorWidget {
+    #[must_use]
     pub fn new(lines: Vec<String>, cursor: (usize, usize), focused: bool) -> Self {
         Self {
             lines,
@@ -77,6 +78,7 @@ impl EditorWidget {
         }
     }
 
+    #[must_use]
     pub fn scroll_offset(mut self, offset: usize) -> Self {
         self.scroll_offset = offset;
         self

@@ -85,6 +85,7 @@ impl Default for ClipboardManager {
 
 impl ClipboardManager {
     /// Create a new clipboard manager
+    #[must_use]
     pub fn new() -> Self {
         #[cfg(feature = "clipboard")]
         {
@@ -99,6 +100,7 @@ impl ClipboardManager {
     }
 
     /// Check if clipboard is available
+    #[must_use]
     pub fn is_available(&self) -> bool {
         #[cfg(feature = "clipboard")]
         {
@@ -170,6 +172,7 @@ impl ClipboardManager {
 /// This can be used to conditionally enable clipboard-related UI elements.
 ///
 /// This is a const function and can be used in const contexts.
+#[must_use]
 pub const fn is_feature_enabled() -> bool {
     cfg!(feature = "clipboard")
 }

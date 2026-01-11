@@ -54,6 +54,7 @@ pub enum ShortcutCategory {
 
 impl ShortcutCategory {
     /// Get the display label for this category
+    #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
             Self::Navigation => "Navigation",
@@ -68,6 +69,7 @@ impl ShortcutCategory {
     }
 
     /// Get the color for this category
+    #[must_use]
     pub fn color(&self) -> Color {
         match self {
             Self::Navigation => Color::Cyan,
@@ -82,6 +84,7 @@ impl ShortcutCategory {
     }
 
     /// Get all categories in display order
+    #[must_use]
     pub fn all() -> &'static [ShortcutCategory] {
         &[
             Self::Navigation,
@@ -156,6 +159,7 @@ impl Default for ShortcutsHelp {
 
 impl ShortcutsHelp {
     /// Create a new shortcuts help with default Composer shortcuts
+    #[must_use]
     pub fn new() -> Self {
         let mut help = Self {
             shortcuts: Vec::new(),
@@ -172,6 +176,7 @@ impl ShortcutsHelp {
     }
 
     /// Create an empty shortcuts help
+    #[must_use]
     pub fn empty() -> Self {
         Self {
             shortcuts: Vec::new(),
@@ -422,6 +427,7 @@ impl ShortcutsHelp {
     }
 
     /// Get filtered shortcuts
+    #[must_use]
     pub fn filtered_shortcuts(&self) -> Vec<&Shortcut> {
         self.shortcuts
             .iter()
@@ -460,6 +466,7 @@ impl ShortcutsHelp {
     }
 
     /// Get shortcuts grouped by category
+    #[must_use]
     pub fn grouped_shortcuts(&self) -> Vec<(ShortcutCategory, Vec<&Shortcut>)> {
         let filtered = self.filtered_shortcuts();
         let mut groups: Vec<(ShortcutCategory, Vec<&Shortcut>)> = Vec::new();
@@ -501,7 +508,7 @@ impl ShortcutsHelp {
                 let context = shortcut
                     .context_hint
                     .as_ref()
-                    .map(|c| format!(" ({})", c))
+                    .map(|c| format!(" ({c})"))
                     .unwrap_or_default();
 
                 rows.push(
@@ -590,6 +597,7 @@ pub struct ShortcutsHelpBuilder {
 
 impl ShortcutsHelpBuilder {
     /// Create a new builder
+    #[must_use]
     pub fn new() -> Self {
         Self {
             shortcuts: Vec::new(),
@@ -629,6 +637,7 @@ impl ShortcutsHelpBuilder {
     }
 
     /// Include default Composer shortcuts
+    #[must_use]
     pub fn with_defaults(mut self) -> Self {
         let defaults = ShortcutsHelp::new();
         self.shortcuts.extend(defaults.shortcuts);
@@ -636,6 +645,7 @@ impl ShortcutsHelpBuilder {
     }
 
     /// Build the shortcuts help
+    #[must_use]
     pub fn build(self) -> ShortcutsHelp {
         ShortcutsHelp {
             shortcuts: self.shortcuts,

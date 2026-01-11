@@ -43,6 +43,7 @@ pub struct SpinnerFrame {
 
 impl SpinnerStyle {
     /// Get the frames for this spinner style.
+    #[must_use]
     pub fn frames(&self) -> &'static [SpinnerFrame] {
         match self {
             SpinnerStyle::Braille => &BRAILLE_FRAMES,
@@ -53,11 +54,13 @@ impl SpinnerStyle {
     }
 
     /// Get ASCII fallback frames (for low-unicode terminals).
+    #[must_use]
     pub fn ascii_frames(&self) -> &'static [SpinnerFrame] {
         &ASCII_FRAMES
     }
 
     /// Recommended frame duration for smooth animation.
+    #[must_use]
     pub fn frame_duration(&self) -> Duration {
         match self {
             SpinnerStyle::Braille => Duration::from_millis(80),
@@ -239,6 +242,7 @@ impl ProgressBarStyle {
     };
 
     /// Render a progress bar.
+    #[must_use]
     pub fn render(&self, percent: f32, width: usize) -> Line<'static> {
         let percent = percent.clamp(0.0, 1.0);
         let inner_width = width.saturating_sub(2); // brackets
@@ -339,6 +343,7 @@ impl Loader {
     }
 
     /// Set the current step (for "step X of Y" display).
+    #[must_use]
     pub fn step(mut self, current: usize, total: usize) -> Self {
         self.current_step = Some(current);
         self.total_steps = Some(total);
@@ -351,6 +356,7 @@ impl Loader {
     }
 
     /// Set determinate progress (0.0-1.0).
+    #[must_use]
     pub fn progress(mut self, percent: f32) -> Self {
         self.progress = Some(percent.clamp(0.0, 1.0));
         self
@@ -367,18 +373,21 @@ impl Loader {
     }
 
     /// Set spinner style.
+    #[must_use]
     pub fn spinner(mut self, style: SpinnerStyle) -> Self {
         self.spinner_style = style;
         self
     }
 
     /// Set progress bar width.
+    #[must_use]
     pub fn progress_width(mut self, width: usize) -> Self {
         self.progress_width = width.max(5);
         self
     }
 
     /// Enable low-unicode mode (ASCII fallbacks).
+    #[must_use]
     pub fn low_unicode(mut self, enabled: bool) -> Self {
         self.low_unicode = enabled;
         if enabled {
@@ -388,6 +397,7 @@ impl Loader {
     }
 
     /// Enable low-color mode.
+    #[must_use]
     pub fn low_color(mut self, enabled: bool) -> Self {
         self.low_color = enabled;
         self
@@ -415,6 +425,7 @@ impl Loader {
     }
 
     /// Get the current spinner frame.
+    #[must_use]
     pub fn current_frame(&self) -> SpinnerFrame {
         let frames = if self.low_unicode {
             self.spinner_style.ascii_frames()
@@ -425,6 +436,7 @@ impl Loader {
     }
 
     /// Render the loader to lines.
+    #[must_use]
     pub fn render(&self) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
 
@@ -450,7 +462,7 @@ impl Loader {
         if let (Some(current), Some(total)) = (self.current_step, self.total_steps) {
             spans.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
             spans.push(Span::styled(
-                format!("step {}/{}", current, total),
+                format!("step {current}/{total}"),
                 Style::default().fg(Color::DarkGray),
             ));
         }
@@ -459,7 +471,7 @@ impl Loader {
         if let Some(ref hint) = self.hint {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
-                format!("({})", hint),
+                format!("({hint})"),
                 Style::default().fg(Color::DarkGray),
             ));
         }
@@ -484,6 +496,7 @@ impl Loader {
     }
 
     /// Complete the loader (static checkmark).
+    #[must_use]
     pub fn complete(&self, message: Option<&str>) -> Line<'static> {
         let msg = message.unwrap_or(&self.message);
         Line::from(vec![
@@ -494,6 +507,7 @@ impl Loader {
     }
 
     /// Fail the loader (static X mark).
+    #[must_use]
     pub fn fail(&self, message: Option<&str>) -> Line<'static> {
         let msg = message.unwrap_or(&self.message);
         Line::from(vec![

@@ -7,7 +7,6 @@
 //! - Privilege escalation
 //! - Code obfuscation
 
-use once_cell::sync::Lazy;
 use regex::Regex;
 
 /// A dangerous pattern with its compiled regex
@@ -59,6 +58,7 @@ impl DangerousPattern {
     }
 
     /// Check if the pattern matches the input
+    #[must_use]
     pub fn matches(&self, input: &str) -> Option<PatternMatch> {
         self.regex.find(input).map(|m| PatternMatch {
             pattern_id: self.id,
@@ -70,191 +70,193 @@ impl DangerousPattern {
 }
 
 /// All dangerous patterns (compiled once at startup)
-static DANGEROUS_PATTERNS: Lazy<Vec<DangerousPattern>> = Lazy::new(|| {
-    vec![
-        // === Persistence & Privilege Escalation ===
-        DangerousPattern::new(
-            "rm_rf",
-            "High-risk recursive delete",
-            r"(?i)\brm\s+-[^\n]*-?r[^\n]*-?f[^\n]*\s+(?:-+\w+\s+)*([\x22\x27]?\/?[\w.*\-\s]*|\.)",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "sudoers_nopasswd",
-            "Sudoers modification for passwordless sudo",
-            r"(?i)echo.*NOPASSWD.*>.*\/etc\/sudoers(?:\.d\/?[^\s]*)?",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "systemd_service",
-            "Systemd service persistence",
-            r"(?i)(systemctl.*enable|.*\.service.*>\/etc\/systemd)",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "crontab_modification",
-            "Crontab modification for persistence",
-            r"(?i)(crontab\s+-e|echo.*>.*crontab|.*>\s*\/var\/spool\/cron|.*\/etc\/cron\.(?:d|daily|hourly|weekly|monthly)\/)",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "chmod_zero",
-            "Permission removal",
-            r"(?i)chmod\s+0{3,4}\b",
-            Severity::Medium,
-        ),
-        // === Remote Script Execution ===
-        DangerousPattern::new(
-            "curl_pipe_shell",
-            "Remote script execution via piped shell",
-            r"(?i)(curl|wget)[\s\S]*?\|\s*(bash|sh|zsh|fish|csh|tcsh)",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "bash_process_substitution",
-            "Bash process substitution pulling remote content",
-            r"(?i)bash\s*<\s*\(\s*(curl|wget)",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "powershell_download_exec",
-            "PowerShell remote download and execution",
-            r"(?i)powershell.*DownloadString.*Invoke-Expression",
-            Severity::High,
-        ),
-        // === Disk/Filesystem Operations ===
-        DangerousPattern::new(
-            "mkfs",
-            "Filesystem formatting",
-            r"(?i)\bmkfs\b|\bmkfs\.[a-z0-9]+",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "disk_zero",
-            "Disk zeroing",
-            r"(?i)dd\s+if=\/dev\/(?:zero|null)",
-            Severity::High,
-        ),
-        // === Code Obfuscation & Eval Patterns ===
-        DangerousPattern::new(
-            "base64_decode",
-            "Base64 decoding (possible obfuscation)",
-            r"(?i)base64\s+-d",
-            Severity::Medium,
-        ),
-        DangerousPattern::new(
-            "base64_encoded_shell",
-            "Base64-encoded shell execution",
-            r"(?i)(echo|printf)\s+[A-Za-z0-9+/=]{20,}\s*\|\s*base64\s+-d\s*\|\s*(bash|sh|zsh)",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "openssl_enc",
-            "OpenSSL encryption (possible obfuscation)",
-            r"(?i)openssl\s+enc",
-            Severity::Medium,
-        ),
-        DangerousPattern::new(
-            "python_eval",
-            "Inline Python execution",
-            r"(?i)python\s+-c",
-            Severity::Medium,
-        ),
-        DangerousPattern::new(
-            "python_remote_exec",
-            "Inline Python fetching and exec from network",
-            r"(?i)python[23]?\s+-c\s+.*(urllib|requests).*exec",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "perl_eval",
-            "Inline Perl execution",
-            r"(?i)perl\s+-e",
-            Severity::Medium,
-        ),
-        DangerousPattern::new(
-            "node_eval",
-            "Inline Node.js execution",
-            r"(?i)node\s+-e",
-            Severity::Medium,
-        ),
-        DangerousPattern::new(
-            "php_eval",
-            "Inline PHP execution",
-            r"(?i)php\s+-r",
-            Severity::Medium,
-        ),
-        DangerousPattern::new(
-            "ruby_eval",
-            "Inline Ruby execution",
-            r"(?i)ruby\s+-e",
-            Severity::Medium,
-        ),
-        DangerousPattern::new(
-            "eval_call",
-            "Code evaluation (eval)",
-            r"(?i)eval\s*\(+",
-            Severity::Medium,
-        ),
-        DangerousPattern::new(
-            "exec_call",
-            "Code execution (exec)",
-            r"(?i)exec\s*\(+",
-            Severity::Medium,
-        ),
-        // === Reverse Shells & Network Access ===
-        DangerousPattern::new(
-            "netcat_reverse",
-            "Netcat reverse shell",
-            r"(?i)nc\s+[\w.-]+\s+\d+\s+-e\s+\/bin\/sh",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "alt_reverse_shell",
-            "Reverse shell using shell -e semantics",
-            r"(?i)(nc|netcat|bash|sh)\s+.*-e\s*(bash|sh|\/bin\/bash|\/bin\/sh)",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "bash_reverse",
-            "Bash reverse shell",
-            r"(?i)bash\s+-i\s+>&",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "dev_tcp_reverse",
-            "Bash /dev/tcp reverse shell",
-            r"(?i)\/dev\/tcp\/[\w.-]+\/\d+",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "netcat_listener",
-            "Netcat listener creation",
-            r"(?i)\bnc\s+(-l|-p)\s+\d+",
-            Severity::Medium,
-        ),
-        DangerousPattern::new(
-            "ssh_tunnel",
-            "SSH tunnel/port forwarding",
-            r"(?i)ssh\s+.*-[LRD]\s+\d+:",
-            Severity::Medium,
-        ),
-        DangerousPattern::new(
-            "docker_privileged",
-            "Privileged Docker execution",
-            // Simplified pattern: match --privileged without =false or =0
-            r"(?i)docker\s+(run|exec)\s+.*--privileged(\s|=true|=1|$)",
-            Severity::High,
-        ),
-        DangerousPattern::new(
-            "fork_bomb",
-            "Shell fork bomb",
-            // Matches the classic :(){ :|:& };: pattern and variations
-            r":\(\)\s*\{\s*:\s*\|\s*:.*\}",
-            Severity::High,
-        ),
-    ]
-});
+static DANGEROUS_PATTERNS: std::sync::LazyLock<Vec<DangerousPattern>> = std::sync::LazyLock::new(
+    || {
+        vec![
+            // === Persistence & Privilege Escalation ===
+            DangerousPattern::new(
+                "rm_rf",
+                "High-risk recursive delete",
+                r"(?i)\brm\s+-[^\n]*-?r[^\n]*-?f[^\n]*\s+(?:-+\w+\s+)*([\x22\x27]?\/?[\w.*\-\s]*|\.)",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "sudoers_nopasswd",
+                "Sudoers modification for passwordless sudo",
+                r"(?i)echo.*NOPASSWD.*>.*\/etc\/sudoers(?:\.d\/?[^\s]*)?",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "systemd_service",
+                "Systemd service persistence",
+                r"(?i)(systemctl.*enable|.*\.service.*>\/etc\/systemd)",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "crontab_modification",
+                "Crontab modification for persistence",
+                r"(?i)(crontab\s+-e|echo.*>.*crontab|.*>\s*\/var\/spool\/cron|.*\/etc\/cron\.(?:d|daily|hourly|weekly|monthly)\/)",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "chmod_zero",
+                "Permission removal",
+                r"(?i)chmod\s+0{3,4}\b",
+                Severity::Medium,
+            ),
+            // === Remote Script Execution ===
+            DangerousPattern::new(
+                "curl_pipe_shell",
+                "Remote script execution via piped shell",
+                r"(?i)(curl|wget)[\s\S]*?\|\s*(bash|sh|zsh|fish|csh|tcsh)",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "bash_process_substitution",
+                "Bash process substitution pulling remote content",
+                r"(?i)bash\s*<\s*\(\s*(curl|wget)",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "powershell_download_exec",
+                "PowerShell remote download and execution",
+                r"(?i)powershell.*DownloadString.*Invoke-Expression",
+                Severity::High,
+            ),
+            // === Disk/Filesystem Operations ===
+            DangerousPattern::new(
+                "mkfs",
+                "Filesystem formatting",
+                r"(?i)\bmkfs\b|\bmkfs\.[a-z0-9]+",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "disk_zero",
+                "Disk zeroing",
+                r"(?i)dd\s+if=\/dev\/(?:zero|null)",
+                Severity::High,
+            ),
+            // === Code Obfuscation & Eval Patterns ===
+            DangerousPattern::new(
+                "base64_decode",
+                "Base64 decoding (possible obfuscation)",
+                r"(?i)base64\s+-d",
+                Severity::Medium,
+            ),
+            DangerousPattern::new(
+                "base64_encoded_shell",
+                "Base64-encoded shell execution",
+                r"(?i)(echo|printf)\s+[A-Za-z0-9+/=]{20,}\s*\|\s*base64\s+-d\s*\|\s*(bash|sh|zsh)",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "openssl_enc",
+                "OpenSSL encryption (possible obfuscation)",
+                r"(?i)openssl\s+enc",
+                Severity::Medium,
+            ),
+            DangerousPattern::new(
+                "python_eval",
+                "Inline Python execution",
+                r"(?i)python\s+-c",
+                Severity::Medium,
+            ),
+            DangerousPattern::new(
+                "python_remote_exec",
+                "Inline Python fetching and exec from network",
+                r"(?i)python[23]?\s+-c\s+.*(urllib|requests).*exec",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "perl_eval",
+                "Inline Perl execution",
+                r"(?i)perl\s+-e",
+                Severity::Medium,
+            ),
+            DangerousPattern::new(
+                "node_eval",
+                "Inline Node.js execution",
+                r"(?i)node\s+-e",
+                Severity::Medium,
+            ),
+            DangerousPattern::new(
+                "php_eval",
+                "Inline PHP execution",
+                r"(?i)php\s+-r",
+                Severity::Medium,
+            ),
+            DangerousPattern::new(
+                "ruby_eval",
+                "Inline Ruby execution",
+                r"(?i)ruby\s+-e",
+                Severity::Medium,
+            ),
+            DangerousPattern::new(
+                "eval_call",
+                "Code evaluation (eval)",
+                r"(?i)eval\s*\(+",
+                Severity::Medium,
+            ),
+            DangerousPattern::new(
+                "exec_call",
+                "Code execution (exec)",
+                r"(?i)exec\s*\(+",
+                Severity::Medium,
+            ),
+            // === Reverse Shells & Network Access ===
+            DangerousPattern::new(
+                "netcat_reverse",
+                "Netcat reverse shell",
+                r"(?i)nc\s+[\w.-]+\s+\d+\s+-e\s+\/bin\/sh",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "alt_reverse_shell",
+                "Reverse shell using shell -e semantics",
+                r"(?i)(nc|netcat|bash|sh)\s+.*-e\s*(bash|sh|\/bin\/bash|\/bin\/sh)",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "bash_reverse",
+                "Bash reverse shell",
+                r"(?i)bash\s+-i\s+>&",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "dev_tcp_reverse",
+                "Bash /dev/tcp reverse shell",
+                r"(?i)\/dev\/tcp\/[\w.-]+\/\d+",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "netcat_listener",
+                "Netcat listener creation",
+                r"(?i)\bnc\s+(-l|-p)\s+\d+",
+                Severity::Medium,
+            ),
+            DangerousPattern::new(
+                "ssh_tunnel",
+                "SSH tunnel/port forwarding",
+                r"(?i)ssh\s+.*-[LRD]\s+\d+:",
+                Severity::Medium,
+            ),
+            DangerousPattern::new(
+                "docker_privileged",
+                "Privileged Docker execution",
+                // Simplified pattern: match --privileged without =false or =0
+                r"(?i)docker\s+(run|exec)\s+.*--privileged(\s|=true|=1|$)",
+                Severity::High,
+            ),
+            DangerousPattern::new(
+                "fork_bomb",
+                "Shell fork bomb",
+                // Matches the classic :(){ :|:& };: pattern and variations
+                r":\(\)\s*\{\s*:\s*\|\s*:.*\}",
+                Severity::High,
+            ),
+        ]
+    },
+);
 
 /// Check input against all dangerous patterns
 ///
@@ -283,6 +285,7 @@ pub fn has_high_severity_pattern(input: &str) -> bool {
 }
 
 /// Get the most severe pattern match
+#[must_use]
 pub fn most_severe_match(input: &str) -> Option<PatternMatch> {
     check_dangerous_patterns(input).into_iter().next()
 }

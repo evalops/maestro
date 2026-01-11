@@ -46,6 +46,7 @@ impl HistoryConfig {
     }
 
     /// Set max entries
+    #[must_use]
     pub fn with_max_entries(mut self, max: usize) -> Self {
         self.max_entries = max;
         self
@@ -128,6 +129,7 @@ pub struct PromptHistory {
 
 impl PromptHistory {
     /// Create a new empty history
+    #[must_use]
     pub fn new(config: HistoryConfig) -> Self {
         Self {
             entries: VecDeque::new(),
@@ -194,7 +196,7 @@ impl PromptHistory {
 
         for entry in &self.entries {
             if let Ok(line) = serde_json::to_string(entry) {
-                writeln!(writer, "{}", line)?;
+                writeln!(writer, "{line}")?;
             }
         }
 
@@ -216,7 +218,7 @@ impl PromptHistory {
         let mut writer = BufWriter::new(file);
 
         if let Ok(line) = serde_json::to_string(entry) {
-            writeln!(writer, "{}", line)?;
+            writeln!(writer, "{line}")?;
         }
 
         writer.flush()
@@ -333,6 +335,7 @@ impl PromptHistory {
     }
 
     /// Get the current entry being viewed (if navigating)
+    #[must_use]
     pub fn current(&self) -> Option<&str> {
         match self.position {
             None => None,
@@ -341,11 +344,13 @@ impl PromptHistory {
     }
 
     /// Check if currently navigating
+    #[must_use]
     pub fn is_navigating(&self) -> bool {
         self.position.is_some()
     }
 
     /// Search history with fuzzy matching
+    #[must_use]
     pub fn search(&self, query: &str) -> SearchResult {
         let query_lower = query.to_lowercase();
         let mut matches = Vec::new();
@@ -392,6 +397,7 @@ impl PromptHistory {
     }
 
     /// Get recent entries
+    #[must_use]
     pub fn recent(&self, count: usize) -> Vec<&HistoryEntry> {
         self.entries.iter().rev().take(count).collect()
     }
@@ -402,11 +408,13 @@ impl PromptHistory {
     }
 
     /// Get entry count
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Check if empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -428,6 +436,7 @@ impl PromptHistory {
     }
 
     /// Get entries for a specific session
+    #[must_use]
     pub fn for_session(&self, session_id: &str) -> Vec<&HistoryEntry> {
         self.entries
             .iter()

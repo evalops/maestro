@@ -13,9 +13,10 @@ use ratatui::style::Color;
 /// Check if a background color is light (for contrast decisions).
 ///
 /// Uses the standard luminance formula: Y = 0.299R + 0.587G + 0.114B
+#[must_use]
 pub fn is_light(bg: (u8, u8, u8)) -> bool {
     let (r, g, b) = bg;
-    let y = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+    let y = 0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b);
     y > 128.0
 }
 
@@ -30,10 +31,11 @@ pub fn is_light(bg: (u8, u8, u8)) -> bool {
 /// # Returns
 ///
 /// The blended RGB color.
+#[must_use]
 pub fn blend(fg: (u8, u8, u8), bg: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
-    let r = (fg.0 as f32 * alpha + bg.0 as f32 * (1.0 - alpha)) as u8;
-    let g = (fg.1 as f32 * alpha + bg.1 as f32 * (1.0 - alpha)) as u8;
-    let b = (fg.2 as f32 * alpha + bg.2 as f32 * (1.0 - alpha)) as u8;
+    let r = (f32::from(fg.0) * alpha + f32::from(bg.0) * (1.0 - alpha)) as u8;
+    let g = (f32::from(fg.1) * alpha + f32::from(bg.1) * (1.0 - alpha)) as u8;
+    let b = (f32::from(fg.2) * alpha + f32::from(bg.2) * (1.0 - alpha)) as u8;
     (r, g, b)
 }
 
@@ -50,10 +52,11 @@ pub fn blend(fg: (u8, u8, u8), bg: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
 /// - 1-2: Very similar
 /// - 2-10: Noticeable difference
 /// - 10+: Clearly different colors
+#[must_use]
 pub fn perceptual_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
     // Convert sRGB to linear RGB
     fn srgb_to_linear(c: u8) -> f32 {
-        let c = c as f32 / 255.0;
+        let c = f32::from(c) / 255.0;
         if c <= 0.04045 {
             c / 12.92
         } else {
@@ -81,7 +84,7 @@ pub fn perceptual_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
         let zr = z / 1.08883;
 
         fn f(t: f32) -> f32 {
-            if t > 0.008856 {
+            if t > 0.008_856 {
                 t.powf(1.0 / 3.0)
             } else {
                 7.787 * t + 16.0 / 116.0
@@ -116,6 +119,7 @@ pub fn perceptual_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
 /// If the terminal supports true color (16M), returns the exact RGB color.
 /// If it supports 256 colors, finds the closest match from the xterm palette.
 /// Otherwise, returns the default color.
+#[must_use]
 pub fn best_color(target: (u8, u8, u8)) -> Color {
     // Check for true color support
     if has_true_color_support() {
@@ -143,6 +147,7 @@ pub fn best_color(target: (u8, u8, u8)) -> Color {
 /// - COLORTERM=truecolor or 24bit
 /// - TERM containing 24bit or truecolor
 /// - Common modern terminals (kitty, iTerm, alacritty, etc.)
+#[must_use]
 pub fn has_true_color_support() -> bool {
     // Check COLORTERM first (most reliable when set)
     if let Ok(colorterm) = std::env::var("COLORTERM") {
@@ -187,6 +192,7 @@ pub fn has_true_color_support() -> bool {
 /// Check if terminal supports 256 colors.
 ///
 /// Works across local and SSH sessions by checking TERM.
+#[must_use]
 pub fn has_256_color_support() -> bool {
     // True color implies 256 color support
     if has_true_color_support() {

@@ -75,6 +75,7 @@ pub enum FlushResult {
 
 impl PasteBurst {
     /// Create a new paste burst detector.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -83,6 +84,7 @@ impl PasteBurst {
     ///
     /// This delay ensures a pending fast keystroke is flushed as normal
     /// typed input rather than being mistaken for part of a paste.
+    #[must_use]
     pub fn recommended_flush_delay() -> Duration {
         PASTE_BURST_CHAR_INTERVAL + Duration::from_millis(1)
     }
@@ -165,6 +167,7 @@ impl PasteBurst {
     }
 
     /// Check if Enter should insert a newline vs submit.
+    #[must_use]
     pub fn newline_should_insert_instead_of_submit(&self, now: Instant) -> bool {
         let in_burst_window = self.burst_window_until.is_some_and(|until| now <= until);
         self.is_active() || in_burst_window
@@ -250,6 +253,7 @@ impl PasteBurst {
     }
 
     /// Check if in any paste-burst related state.
+    #[must_use]
     pub fn is_active(&self) -> bool {
         self.is_active_internal() || self.pending_first_char.is_some()
     }
@@ -269,12 +273,14 @@ impl PasteBurst {
     }
 
     /// Get the current buffer contents (for debugging).
+    #[must_use]
     pub fn buffer(&self) -> &str {
         &self.buffer
     }
 }
 
 /// Find the byte index to start grabbing `retro_chars` characters from the end.
+#[must_use]
 pub fn retro_start_index(before: &str, retro_chars: usize) -> usize {
     if retro_chars == 0 {
         return before.len();
@@ -283,8 +289,7 @@ pub fn retro_start_index(before: &str, retro_chars: usize) -> usize {
         .char_indices()
         .rev()
         .nth(retro_chars.saturating_sub(1))
-        .map(|(idx, _)| idx)
-        .unwrap_or(0)
+        .map_or(0, |(idx, _)| idx)
 }
 
 #[cfg(test)]

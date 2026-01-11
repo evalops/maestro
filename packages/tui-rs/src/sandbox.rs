@@ -169,29 +169,29 @@ use thiserror::Error;
 /// Defines the sandbox restrictions for command execution
 ///
 /// This enum uses Rust's powerful enum variant syntax to represent different
-/// security policies. Each variant can carry associated data (like WorkspaceWrite's
+/// security policies. Each variant can carry associated data (like `WorkspaceWrite`'s
 /// configuration fields).
 ///
 /// # Serde Serialization
 ///
 /// The `#[serde(rename_all = "kebab-case")]` attribute transforms variant names
-/// from PascalCase to kebab-case for JSON serialization:
+/// from `PascalCase` to kebab-case for JSON serialization:
 /// - `DangerFullAccess` -> `"danger-full-access"`
 /// - `WorkspaceWrite` -> `"workspace-write"`
 ///
 /// # Variants
 ///
-/// - **DangerFullAccess**: Unrestricted access to filesystem, network, and all
+/// - **`DangerFullAccess`**: Unrestricted access to filesystem, network, and all
 ///   system resources. Should only be used for trusted commands or when the
 ///   sandbox causes compatibility issues.
 ///
-/// - **ReadOnly**: Filesystem is read-only everywhere. No writes permitted,
+/// - **`ReadOnly`**: Filesystem is read-only everywhere. No writes permitted,
 ///   no network access. Useful for static analysis tools or read-only queries.
 ///
-/// - **WorkspaceWrite**: The recommended default. Allows reads everywhere but
+/// - **`WorkspaceWrite`**: The recommended default. Allows reads everywhere but
 ///   restricts writes to:
 ///   - The current working directory (cwd)
-///   - Explicitly listed writable_roots
+///   - Explicitly listed `writable_roots`
 ///   - /tmp (unless excluded)
 ///   - $TMPDIR (unless excluded or same as /tmp)
 ///
@@ -202,7 +202,7 @@ use thiserror::Error;
 ///
 /// This platform-agnostic policy is translated to:
 /// - **macOS**: Seatbelt SBPL rules (allow/deny filesystem operations)
-/// - **Linux**: Landlock path_beneath rules (read/write access per directory)
+/// - **Linux**: Landlock `path_beneath` rules (read/write access per directory)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SandboxPolicy {
@@ -252,7 +252,7 @@ pub enum SandboxPolicy {
 }
 
 impl Default for SandboxPolicy {
-    /// Returns the recommended default: WorkspaceWrite with no network access
+    /// Returns the recommended default: `WorkspaceWrite` with no network access
     ///
     /// This implementation of the Default trait provides a sensible default
     /// policy that balances security and functionality:
@@ -271,14 +271,14 @@ impl Default for SandboxPolicy {
 
 /// Represents a writable directory with optional read-only subdirectories
 ///
-/// This struct is used internally when translating SandboxPolicy to platform-specific
+/// This struct is used internally when translating `SandboxPolicy` to platform-specific
 /// sandbox rules. It enables fine-grained control like "allow writes to /workspace
 /// but deny writes to /workspace/.git".
 ///
 /// # Platform Usage
 ///
 /// - **macOS**: Converted to Seatbelt (require-all (subpath root) (require-not (subpath ro)))
-/// - **Linux**: Landlock doesn't support exclusions natively, so read_only_subpaths
+/// - **Linux**: Landlock doesn't support exclusions natively, so `read_only_subpaths`
 ///   are not enforced on Linux (limitation of Landlock LSM)
 #[derive(Debug, Clone)]
 pub struct WritableRoot {
@@ -287,7 +287,7 @@ pub struct WritableRoot {
 
     /// Subdirectories within root that should remain read-only
     ///
-    /// Example: root=/workspace, read_only_subpaths=[/workspace/.git]
+    /// Example: root=/workspace, `read_only_subpaths`=[/workspace/.git]
     /// Result: Can write to /workspace/src but not /workspace/.git/
     pub read_only_subpaths: Vec<PathBuf>,
 }
@@ -295,7 +295,7 @@ pub struct WritableRoot {
 impl SandboxPolicy {
     /// Check if policy allows full disk write access
     ///
-    /// Returns true only for DangerFullAccess variant.
+    /// Returns true only for `DangerFullAccess` variant.
     ///
     /// # Example
     ///
@@ -306,17 +306,19 @@ impl SandboxPolicy {
     /// let policy = SandboxPolicy::default();
     /// assert!(!policy.has_full_disk_write_access());
     /// ```
+    #[must_use]
     pub fn has_full_disk_write_access(&self) -> bool {
         matches!(self, Self::DangerFullAccess)
     }
 
     /// Check if policy allows full disk read access
     ///
-    /// Returns true for DangerFullAccess and WorkspaceWrite (which allows
-    /// reads everywhere). Only ReadOnly variant restricts reads.
+    /// Returns true for `DangerFullAccess` and `WorkspaceWrite` (which allows
+    /// reads everywhere). Only `ReadOnly` variant restricts reads.
     ///
-    /// Note: The name is slightly misleading - ReadOnly doesn't restrict
+    /// Note: The name is slightly misleading - `ReadOnly` doesn't restrict
     /// reads, it just denies writes.
+    #[must_use]
     pub fn has_full_disk_read_access(&self) -> bool {
         !matches!(self, Self::ReadOnly)
     }
@@ -327,8 +329,9 @@ impl SandboxPolicy {
     ///
     /// This method demonstrates Rust's match expression for extracting data
     /// from enum variants:
-    /// - Use `..` to ignore other fields in WorkspaceWrite variant
-    /// - Dereference network_access with * to get bool value
+    /// - Use `..` to ignore other fields in `WorkspaceWrite` variant
+    /// - Dereference `network_access` with * to get bool value
+    #[must_use]
     pub fn has_full_network_access(&self) -> bool {
         match self {
             Self::DangerFullAccess => true,
@@ -344,12 +347,12 @@ impl SandboxPolicy {
     ///
     /// # Behavior by Policy Type
     ///
-    /// - **DangerFullAccess**: Returns empty vec (everything writable)
-    /// - **ReadOnly**: Returns empty vec (nothing writable)
-    /// - **WorkspaceWrite**: Returns vec containing:
-    ///   1. User-specified writable_roots
-    ///   2. /tmp (unless exclude_slash_tmp is true)
-    ///   3. $TMPDIR (unless exclude_tmpdir_env_var is true or equals /tmp)
+    /// - **`DangerFullAccess`**: Returns empty vec (everything writable)
+    /// - **`ReadOnly`**: Returns empty vec (nothing writable)
+    /// - **`WorkspaceWrite`**: Returns vec containing:
+    ///   1. User-specified `writable_roots`
+    ///   2. /tmp (unless `exclude_slash_tmp` is true)
+    ///   3. $TMPDIR (unless `exclude_tmpdir_env_var` is true or equals /tmp)
     ///   4. Current working directory with .git as read-only subpath
     ///
     /// # .git Protection
@@ -372,6 +375,7 @@ impl SandboxPolicy {
     /// let roots = policy.get_writable_roots_with_cwd(Path::new("/workspace"));
     /// // Returns: [/custom, /tmp, $TMPDIR, /workspace (with .git read-only)]
     /// ```
+    #[must_use]
     pub fn get_writable_roots_with_cwd(&self, cwd: &Path) -> Vec<WritableRoot> {
         let mut roots = Vec::new();
 
@@ -448,8 +452,8 @@ impl SandboxPolicy {
 ///
 /// # Error Conversion with #[from]
 ///
-/// The #[from] attribute on SpawnFailed creates an automatic From<io::Error>
-/// implementation, enabling the ? operator to convert io::Error into SandboxError:
+/// The #[from] attribute on `SpawnFailed` creates an automatic From<io::Error>
+/// implementation, enabling the ? operator to convert `io::Error` into `SandboxError`:
 ///
 /// ```rust,ignore
 /// let child = Command::new(...).spawn()?; // io::Error auto-converts
@@ -468,7 +472,7 @@ pub enum SandboxError {
 
     /// Process spawning failed (command not found, permission denied, etc.)
     ///
-    /// The #[from] attribute enables automatic conversion from std::io::Error
+    /// The #[from] attribute enables automatic conversion from `std::io::Error`
     #[error("Failed to spawn sandboxed process: {0}")]
     SpawnFailed(#[from] std::io::Error),
 
@@ -477,14 +481,14 @@ pub enum SandboxError {
     /// This can occur if:
     /// - Landlock is not supported by the kernel (< 5.13)
     /// - Path rules cannot be created
-    /// - restrict_self() syscall fails
+    /// - `restrict_self()` syscall fails
     #[error("Landlock restriction failed")]
     LandlockRestrict,
 
     /// seccomp filter application failed (Linux only)
     ///
     /// Possible causes:
-    /// - Unsupported architecture (not x86_64 or aarch64)
+    /// - Unsupported architecture (not `x86_64` or aarch64)
     /// - Invalid BPF program
     /// - seccomp syscall failed
     #[error("Seccomp filter failed: {0}")]
@@ -500,10 +504,10 @@ pub enum SandboxError {
     SeatbeltFailed(String),
 }
 
-/// Type alias for Result with SandboxError
+/// Type alias for Result with `SandboxError`
 ///
 /// This pattern is common in Rust to reduce boilerplate. Instead of writing
-/// Result<Child, SandboxError> everywhere, we can write SandboxResult<Child>.
+/// Result<Child, `SandboxError`> everywhere, we can write `SandboxResult`<Child>.
 pub type SandboxResult<T> = Result<T, SandboxError>;
 
 // ─────────────────────────────────────────────────────────────
@@ -526,11 +530,11 @@ pub type SandboxResult<T> = Result<T, SandboxError>;
 /// - **Process management**: fork, exec, signal within same sandbox
 /// - **Basic I/O**: Read user preferences, write to /dev/null
 /// - **System info**: Read hardware info via sysctl (CPU, memory, etc.)
-/// - **IOKit**: Access RootDomainUserClient for power management
+/// - **`IOKit`**: Access `RootDomainUserClient` for power management
 /// - **Mach services**: Directory services, power management
-/// - **Pseudo-terminals**: openpty() for interactive commands
+/// - **Pseudo-terminals**: `openpty()` for interactive commands
 ///
-/// # The #[allow(dead_code)] Attribute
+/// # The #[`allow(dead_code)`] Attribute
 ///
 /// This attribute suppresses compiler warnings about unused code. It's needed
 /// because this constant is only referenced in the `#[cfg(target_os = "macos")]`
@@ -647,7 +651,7 @@ const SEATBELT_BASE_POLICY: &str = r#"(version 1)
 /// Network policy for Seatbelt
 ///
 /// This SBPL policy fragment is appended to the base policy when
-/// `network_access: true` in WorkspaceWrite or when using DangerFullAccess.
+/// `network_access: true` in `WorkspaceWrite` or when using `DangerFullAccess`.
 ///
 /// # Allowed Operations
 ///
@@ -664,7 +668,7 @@ const SEATBELT_BASE_POLICY: &str = r#"(version 1)
 ///
 /// Allows writes to Darwin user cache directory for storing network-related
 /// data (DNS cache, certificate cache, etc.). The cache directory path is
-/// obtained via confstr(_CS_DARWIN_USER_CACHE_DIR).
+/// obtained via confstr(_`CS_DARWIN_USER_CACHE_DIR`).
 #[allow(dead_code)] // Only used on macOS
 const SEATBELT_NETWORK_POLICY: &str = r#"
 ; Network access policies
@@ -694,7 +698,7 @@ const SEATBELT_NETWORK_POLICY: &str = r#"
 
 /// Path to macOS sandbox-exec binary
 ///
-/// The #[cfg(target_os = "macos")] attribute means this constant only exists
+/// The #[`cfg(target_os` = "macos")] attribute means this constant only exists
 /// in macOS builds. Attempting to use this constant on Linux would result in
 /// a compile error.
 #[cfg(target_os = "macos")]
@@ -713,7 +717,7 @@ pub const SANDBOX_ENV_VAR: &str = "COMPOSER_SANDBOX";
 
 /// Platform-specific implementation for macOS Seatbelt sandbox
 ///
-/// This module is only compiled when building for macOS (target_os = "macos").
+/// This module is only compiled when building for macOS (`target_os` = "macos").
 /// It contains all Seatbelt-specific logic for policy generation and process
 /// spawning.
 ///
@@ -731,14 +735,17 @@ pub const SANDBOX_ENV_VAR: &str = "COMPOSER_SANDBOX";
 /// - `spawn_under_seatbelt()`: Spawn a process under Seatbelt sandbox
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::*;
+    use super::{
+        HashMap, Path, PathBuf, SandboxPolicy, SandboxResult, SANDBOX_ENV_VAR,
+        SEATBELT_BASE_POLICY, SEATBELT_EXECUTABLE, SEATBELT_NETWORK_POLICY,
+    };
     use std::ffi::CStr;
     use tokio::process::{Child, Command};
 
     /// Get Darwin user cache directory via confstr.
     ///
     /// This function uses FFI (Foreign Function Interface) to call the C
-    /// standard library function confstr() to retrieve the macOS user cache
+    /// standard library function `confstr()` to retrieve the macOS user cache
     /// directory path. This directory is used for network-related caching.
     ///
     /// # FFI and Unsafe Rust
@@ -747,8 +754,8 @@ mod macos {
     /// because the compiler cannot verify memory safety across the language
     /// boundary. This function demonstrates proper unsafe usage:
     ///
-    /// 1. Create a buffer sized to PATH_MAX + 1 (max path length on Unix)
-    /// 2. Call confstr() to write the path to the buffer
+    /// 1. Create a buffer sized to `PATH_MAX` + 1 (max path length on Unix)
+    /// 2. Call `confstr()` to write the path to the buffer
     /// 3. Check the return value (0 indicates error)
     /// 4. Convert the C string (null-terminated) to Rust String
     /// 5. Canonicalize the path to resolve symlinks
@@ -756,10 +763,10 @@ mod macos {
     /// # Safety Justification
     ///
     /// The unsafe blocks are safe because:
-    /// 1. The buffer is sized to PATH_MAX+1, which is sufficient for any path
+    /// 1. The buffer is sized to `PATH_MAX+1`, which is sufficient for any path
     /// 2. confstr writes a null-terminated string to the buffer
     /// 3. We check the return value before using the buffer
-    /// 4. CStr::from_ptr is given a valid null-terminated buffer that lives
+    /// 4. `CStr::from_ptr` is given a valid null-terminated buffer that lives
     ///    for the duration of the call
     ///
     /// # Return Value
@@ -787,12 +794,12 @@ mod macos {
     /// Build Seatbelt command arguments
     ///
     /// This function generates the complete argument list for sandbox-exec based
-    /// on the provided SandboxPolicy. The result is a Vec<String> that can be
-    /// passed to Command::args().
+    /// on the provided `SandboxPolicy`. The result is a Vec<String> that can be
+    /// passed to `Command::args()`.
     ///
     /// # Arguments
     ///
-    /// - `command`: The command and arguments to execute (e.g., ["ls", "-la"])
+    /// - `command`: The command and arguments to execute (e.g., `["ls", "-la"]`)
     /// - `policy`: The security policy to enforce
     /// - `cwd`: Current working directory (needed for writable roots calculation)
     ///
@@ -806,15 +813,15 @@ mod macos {
     /// # SBPL Policy Generation
     ///
     /// The function constructs the SBPL policy by concatenating:
-    /// 1. SEATBELT_BASE_POLICY (always included)
+    /// 1. `SEATBELT_BASE_POLICY` (always included)
     /// 2. File read policy (if policy allows disk reads)
-    /// 3. File write policy (generated from writable_roots)
-    /// 4. SEATBELT_NETWORK_POLICY (if network_access is true)
+    /// 3. File write policy (generated from `writable_roots`)
+    /// 4. `SEATBELT_NETWORK_POLICY` (if `network_access` is true)
     ///
     /// # Parameter Substitution
     ///
     /// Seatbelt supports parameterized policies via -D flags:
-    /// - `-DWRITABLE_ROOT_0=/workspace` defines a parameter named WRITABLE_ROOT_0
+    /// - `-DWRITABLE_ROOT_0=/workspace` defines a parameter named `WRITABLE_ROOT_0`
     /// - In SBPL: `(subpath (param "WRITABLE_ROOT_0"))` references the parameter
     ///
     /// This approach:
@@ -942,8 +949,8 @@ mod macos {
     /// # Process Spawning
     ///
     /// The function:
-    /// 1. Generates Seatbelt arguments via create_seatbelt_args()
-    /// 2. Adds SANDBOX_ENV_VAR=seatbelt to environment
+    /// 1. Generates Seatbelt arguments via `create_seatbelt_args()`
+    /// 2. Adds `SANDBOX_ENV_VAR=seatbelt` to environment
     /// 3. Spawns sandbox-exec with:
     ///    - stdin/stdout/stderr as pipes (for parent communication)
     ///    - Current directory set to cwd
@@ -957,16 +964,16 @@ mod macos {
     ///
     /// # Return Value
     ///
-    /// Returns SandboxResult<Child> where Child is a tokio::process::Child handle.
+    /// Returns `SandboxResult`<Child> where Child is a `tokio::process::Child` handle.
     /// The caller can use this handle to:
-    /// - Read stdout/stderr via child.stdout.take()
-    /// - Write to stdin via child.stdin.take()
+    /// - Read stdout/stderr via `child.stdout.take()`
+    /// - Write to stdin via `child.stdin.take()`
     /// - Wait for completion via child.wait().await
     /// - Kill the process via child.kill().await
     ///
     /// # Error Handling
     ///
-    /// Returns SandboxError::SpawnFailed if Command::spawn() fails. This can
+    /// Returns `SandboxError::SpawnFailed` if `Command::spawn()` fails. This can
     /// happen if:
     /// - sandbox-exec binary doesn't exist
     /// - Invalid SBPL policy syntax
@@ -1412,7 +1419,7 @@ mod linux {
 /// **Linux**: Checks if Landlock is enabled in the kernel
 /// - Reads /sys/kernel/security/lsm to get active LSM list
 /// - Returns true if the string contains "landlock"
-/// - Landlock requires kernel 5.13+ and CONFIG_SECURITY_LANDLOCK=y
+/// - Landlock requires kernel 5.13+ and `CONFIG_SECURITY_LANDLOCK=y`
 ///
 /// **Other platforms**: Always returns false
 /// - Windows, BSD, etc. are not supported
@@ -1434,6 +1441,7 @@ mod linux {
 /// # Return Value
 ///
 /// Returns true if sandboxing is available, false otherwise.
+#[must_use]
 pub fn is_sandbox_available() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -1475,6 +1483,7 @@ pub fn is_sandbox_available() -> bool {
 /// The return type is &'static str, meaning the string slice lives for
 /// the entire program duration. This is possible because string literals
 /// are stored in the program's read-only data section.
+#[must_use]
 pub fn sandbox_type() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -1500,30 +1509,30 @@ pub fn sandbox_type() -> &'static str {
 /// The function body contains multiple #[cfg] blocks that are resolved at compile
 /// time. Only one implementation is included in the final binary:
 ///
-/// - **macOS builds**: Calls macos::spawn_under_seatbelt()
-/// - **Linux builds**: Calls linux::spawn_sandboxed()
-/// - **Other platforms**: Returns Err(SandboxError::UnsupportedPlatform)
+/// - **macOS builds**: Calls `macos::spawn_under_seatbelt()`
+/// - **Linux builds**: Calls `linux::spawn_sandboxed()`
+/// - **Other platforms**: Returns `Err(SandboxError::UnsupportedPlatform)`
 ///
 /// # Arguments
 ///
 /// - `command`: Command and arguments as Vec<String> (e.g., vec!["ls", "-la"])
 /// - `cwd`: Working directory for the command (must exist)
-/// - `policy`: Security policy to enforce (see SandboxPolicy enum)
-/// - `env`: Environment variables as HashMap<String, String>
+/// - `policy`: Security policy to enforce (see `SandboxPolicy` enum)
+/// - `env`: Environment variables as `HashMap`<String, String>
 ///
 /// # Return Value
 ///
-/// Returns SandboxResult<Child> where Child is a tokio::process::Child.
+/// Returns `SandboxResult`<Child> where Child is a `tokio::process::Child`.
 /// The child process is already running when this function returns.
 ///
 /// # Error Handling
 ///
 /// Possible errors:
-/// - **UnsupportedPlatform**: Called on Windows, BSD, etc.
-/// - **SpawnFailed**: Command doesn't exist, permission denied, sandbox binary missing
-/// - **LandlockRestrict**: Landlock not supported or failed to apply (Linux only)
-/// - **SeccompFailed**: seccomp filter application failed (Linux only)
-/// - **SeatbeltFailed**: Invalid SBPL policy or sandbox-exec failed (macOS only)
+/// - **`UnsupportedPlatform`**: Called on Windows, BSD, etc.
+/// - **`SpawnFailed`**: Command doesn't exist, permission denied, sandbox binary missing
+/// - **`LandlockRestrict`**: Landlock not supported or failed to apply (Linux only)
+/// - **`SeccompFailed`**: seccomp filter application failed (Linux only)
+/// - **`SeatbeltFailed`**: Invalid SBPL policy or sandbox-exec failed (macOS only)
 ///
 /// # Usage Example
 ///
@@ -1546,7 +1555,7 @@ pub fn sandbox_type() -> &'static str {
 /// println!("Exit status: {}", status);
 /// ```
 ///
-/// # The #[allow(unused_variables)] Attribute
+/// # The #[`allow(unused_variables)`] Attribute
 ///
 /// This attribute suppresses warnings about unused parameters. It's needed because:
 /// - On unsupported platforms, all parameters are unused (only returns error)
@@ -1584,7 +1593,7 @@ pub async fn spawn_sandboxed_command(
 /// # Use Cases
 ///
 /// - **Unsupported platforms**: Windows, BSD, etc. where native sandboxing unavailable
-/// - **Fallback**: When is_sandbox_available() returns false
+/// - **Fallback**: When `is_sandbox_available()` returns false
 /// - **Testing**: Compare behavior between sandboxed and unsandboxed execution
 /// - **Compatibility**: Some programs don't work properly in sandboxes
 ///
@@ -1606,14 +1615,14 @@ pub async fn spawn_sandboxed_command(
 ///
 /// # Return Value
 ///
-/// Returns SandboxResult<Child> for consistency with spawn_sandboxed_command.
-/// The only error is SpawnFailed (e.g., command not found).
+/// Returns `SandboxResult`<Child> for consistency with `spawn_sandboxed_command`.
+/// The only error is `SpawnFailed` (e.g., command not found).
 ///
 /// # Implementation
 ///
-/// Directly uses tokio::process::Command with no wrapper or restrictions.
-/// This is essentially the same as calling Command::new() directly, but
-/// provides a consistent API with spawn_sandboxed_command.
+/// Directly uses `tokio::process::Command` with no wrapper or restrictions.
+/// This is essentially the same as calling `Command::new()` directly, but
+/// provides a consistent API with `spawn_sandboxed_command`.
 pub async fn spawn_unsandboxed_command(
     command: Vec<String>,
     cwd: PathBuf,

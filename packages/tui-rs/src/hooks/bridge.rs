@@ -28,7 +28,7 @@
 //! }
 //! ```
 
-use super::types::*;
+use super::types::{HookEventType, HookOutput, HookResult, PreToolUseInput};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -76,6 +76,7 @@ pub struct NodeHookBridge {
 
 impl NodeHookBridge {
     /// Create a new bridge (not yet started)
+    #[must_use]
     pub fn new(script_path: PathBuf) -> Self {
         Self {
             script_path,
@@ -87,6 +88,7 @@ impl NodeHookBridge {
     }
 
     /// Create a bridge that uses the bundled hook executor
+    #[must_use]
     pub fn bundled() -> Self {
         // Look for the hook executor script in standard locations
         let script_path = if let Some(home) = dirs::home_dir() {
@@ -157,7 +159,7 @@ impl NodeHookBridge {
         Ok(())
     }
 
-    /// Execute a PreToolUse hook via Node.js
+    /// Execute a `PreToolUse` hook via Node.js
     pub async fn execute_pre_tool_use(&self, input: &PreToolUseInput) -> Result<HookResult> {
         let request_tx = self.request_tx.as_ref().context("Bridge not started")?;
 
@@ -203,17 +205,17 @@ impl NodeHookBridge {
             let json = match serde_json::to_string(&request) {
                 Ok(j) => j,
                 Err(e) => {
-                    eprintln!("[hook-bridge] Failed to serialize request: {}", e);
+                    eprintln!("[hook-bridge] Failed to serialize request: {e}");
                     continue;
                 }
             };
 
-            if let Err(e) = writeln!(stdin, "{}", json) {
-                eprintln!("[hook-bridge] Failed to write request: {}", e);
+            if let Err(e) = writeln!(stdin, "{json}") {
+                eprintln!("[hook-bridge] Failed to write request: {e}");
                 break;
             }
             if let Err(e) = stdin.flush() {
-                eprintln!("[hook-bridge] Failed to flush stdin: {}", e);
+                eprintln!("[hook-bridge] Failed to flush stdin: {e}");
                 break;
             }
         }
@@ -230,7 +232,7 @@ impl NodeHookBridge {
             let line = match line {
                 Ok(l) => l,
                 Err(e) => {
-                    eprintln!("[hook-bridge] Failed to read line: {}", e);
+                    eprintln!("[hook-bridge] Failed to read line: {e}");
                     break;
                 }
             };
@@ -238,7 +240,7 @@ impl NodeHookBridge {
             let response: HookResponse = match serde_json::from_str(&line) {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("[hook-bridge] Failed to parse response: {}", e);
+                    eprintln!("[hook-bridge] Failed to parse response: {e}");
                     continue;
                 }
             };
@@ -251,7 +253,7 @@ impl NodeHookBridge {
     }
 }
 
-/// Convert HookOutput to HookResult
+/// Convert `HookOutput` to `HookResult`
 fn hook_output_to_result(output: &HookOutput) -> HookResult {
     if !output.should_continue {
         return HookResult::Block {
@@ -279,7 +281,7 @@ fn hook_output_to_result(output: &HookOutput) -> HookResult {
 
 /// Inline Node.js script for hook execution
 /// This is used when the external script is not available
-const INLINE_HOOK_EXECUTOR: &str = r#"
+const INLINE_HOOK_EXECUTOR: &str = r"
 const readline = require('readline');
 
 const rl = readline.createInterface({
@@ -308,13 +310,13 @@ rl.on('line', (line) => {
 rl.on('close', () => {
     process.exit(0);
 });
-"#;
+";
 
 // ============================================================================
 // Sync wrapper for non-async contexts
 // ============================================================================
 
-/// Synchronous wrapper for NodeHookBridge
+/// Synchronous wrapper for `NodeHookBridge`
 pub struct SyncNodeBridge {
     inner: Arc<Mutex<NodeHookBridge>>,
     runtime: tokio::runtime::Handle,
@@ -322,6 +324,7 @@ pub struct SyncNodeBridge {
 
 impl SyncNodeBridge {
     /// Create a new sync bridge
+    #[must_use]
     pub fn new(script_path: PathBuf, runtime: tokio::runtime::Handle) -> Self {
         Self {
             inner: Arc::new(Mutex::new(NodeHookBridge::new(script_path))),

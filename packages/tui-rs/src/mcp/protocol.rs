@@ -31,6 +31,7 @@ impl McpRequest {
     }
 
     /// Create an initialize request
+    #[must_use]
     pub fn initialize(id: u64, client_info: &ClientInfo) -> Self {
         Self::new(
             id,
@@ -46,11 +47,13 @@ impl McpRequest {
     }
 
     /// Create a tools/list request
+    #[must_use]
     pub fn list_tools(id: u64) -> Self {
         Self::new(id, "tools/list", None)
     }
 
     /// Create a tools/call request
+    #[must_use]
     pub fn call_tool(id: u64, name: &str, arguments: Value) -> Self {
         Self::new(
             id,
@@ -63,11 +66,13 @@ impl McpRequest {
     }
 
     /// Create a resources/list request
+    #[must_use]
     pub fn list_resources(id: u64) -> Self {
         Self::new(id, "resources/list", None)
     }
 
     /// Create a resources/read request
+    #[must_use]
     pub fn read_resource(id: u64, uri: &str) -> Self {
         Self::new(
             id,
@@ -96,6 +101,7 @@ pub struct McpResponse {
 
 impl McpResponse {
     /// Check if this is an error response
+    #[must_use]
     pub fn is_error(&self) -> bool {
         self.error.is_some()
     }
@@ -104,7 +110,7 @@ impl McpResponse {
     pub fn result_as<T: for<'de> Deserialize<'de>>(&self) -> Result<T, String> {
         match &self.result {
             Some(v) => serde_json::from_value(v.clone())
-                .map_err(|e| format!("Failed to deserialize result: {}", e)),
+                .map_err(|e| format!("Failed to deserialize result: {e}")),
             None => Err("No result in response".to_string()),
         }
     }
@@ -220,6 +226,7 @@ pub struct McpToolAnnotations {
 
 impl McpTool {
     /// Convert to our internal Tool type
+    #[must_use]
     pub fn to_tool(&self, server_name: &str) -> crate::ai::Tool {
         let prefixed_name = format!("mcp__{}__{}", sanitize_mcp_name(server_name), self.name);
         let description = self.description.clone().unwrap_or_default();
@@ -300,10 +307,11 @@ pub struct McpToolResult {
 
 impl McpToolResult {
     /// Convert to a string representation
+    #[must_use]
     pub fn as_string(&self) -> String {
         self.content
             .iter()
-            .map(|c| c.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -348,9 +356,9 @@ pub enum McpContent {
 impl std::fmt::Display for McpContent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            McpContent::Text { text } => write!(f, "{}", text),
-            McpContent::Image { mime_type, .. } => write!(f, "[Image: {}]", mime_type),
-            McpContent::Resource { uri, .. } => write!(f, "[Resource: {}]", uri),
+            McpContent::Text { text } => write!(f, "{text}"),
+            McpContent::Image { mime_type, .. } => write!(f, "[Image: {mime_type}]"),
+            McpContent::Resource { uri, .. } => write!(f, "[Resource: {uri}]"),
         }
     }
 }

@@ -19,6 +19,7 @@ pub struct PricingTier {
 
 impl PricingTier {
     /// Create a new pricing tier
+    #[must_use]
     pub const fn new(input: f64, output: f64, cache_read: f64, cache_write: f64) -> Self {
         Self {
             input_per_million: input,
@@ -29,11 +30,13 @@ impl PricingTier {
     }
 
     /// Create tier with just input/output pricing (cache = 0)
+    #[must_use]
     pub const fn simple(input: f64, output: f64) -> Self {
         Self::new(input, output, 0.0, 0.0)
     }
 
     /// Calculate cost for given token counts
+    #[must_use]
     pub fn calculate_cost(
         &self,
         input_tokens: u64,
@@ -70,6 +73,7 @@ pub struct ModelPricing {
 
 impl ModelPricing {
     /// Create a new model pricing database
+    #[must_use]
     pub fn new() -> Self {
         Self {
             tiers: HashMap::new(),
@@ -88,6 +92,7 @@ impl ModelPricing {
     }
 
     /// Get pricing for a model (matches by prefix)
+    #[must_use]
     pub fn get_tier(&self, model: &str) -> &PricingTier {
         // Try exact match first
         if let Some(tier) = self.tiers.get(model) {
@@ -114,6 +119,7 @@ impl ModelPricing {
     }
 
     /// Calculate cost for a model with given token counts
+    #[must_use]
     pub fn calculate_cost(
         &self,
         model: &str,

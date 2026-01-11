@@ -75,6 +75,7 @@ impl SkillDefinition {
     }
 
     /// Set source
+    #[must_use]
     pub fn with_source(mut self, source: SkillSource) -> Self {
         self.source = source;
         self
@@ -87,12 +88,14 @@ impl SkillDefinition {
     }
 
     /// Add provided tools
+    #[must_use]
     pub fn with_tools(mut self, tools: Vec<String>) -> Self {
         self.provided_tools = tools;
         self
     }
 
     /// Add trigger patterns
+    #[must_use]
     pub fn with_triggers(mut self, patterns: Vec<String>) -> Self {
         self.trigger_patterns = patterns;
         self
@@ -132,6 +135,7 @@ pub struct ActiveSkill {
 
 impl ActiveSkill {
     /// Create from a definition
+    #[must_use]
     pub fn from_definition(definition: SkillDefinition) -> Self {
         Self {
             definition,
@@ -143,6 +147,7 @@ impl ActiveSkill {
     }
 
     /// Check if the skill is active
+    #[must_use]
     pub fn is_active(&self) -> bool {
         self.state == SkillActivationState::Active
     }

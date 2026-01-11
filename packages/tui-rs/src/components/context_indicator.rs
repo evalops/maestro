@@ -43,6 +43,7 @@ pub enum UsageLevel {
 
 impl UsageLevel {
     /// Determine usage level from percentage
+    #[must_use]
     pub fn from_percentage(pct: f64) -> Self {
         if pct >= 90.0 {
             Self::Critical
@@ -56,6 +57,7 @@ impl UsageLevel {
     }
 
     /// Get the color for this usage level
+    #[must_use]
     pub fn color(&self) -> Color {
         match self {
             Self::Low => Color::Green,
@@ -66,6 +68,7 @@ impl UsageLevel {
     }
 
     /// Get a label for this usage level
+    #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
             Self::Low => "OK",
@@ -111,17 +114,20 @@ impl Default for ContextIndicator {
 
 impl ContextIndicator {
     /// Create a new context indicator
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set the context window size
+    #[must_use]
     pub fn with_context_window(mut self, tokens: u64) -> Self {
         self.context_window = tokens;
         self
     }
 
     /// Set token usage
+    #[must_use]
     pub fn with_usage(mut self, input: u64, output: u64) -> Self {
         self.input_tokens = input;
         self.output_tokens = output;
@@ -129,6 +135,7 @@ impl ContextIndicator {
     }
 
     /// Set cache tokens
+    #[must_use]
     pub fn with_cache(mut self, cache: u64) -> Self {
         self.cache_tokens = cache;
         self
@@ -141,28 +148,33 @@ impl ContextIndicator {
     }
 
     /// Enable detailed breakdown
+    #[must_use]
     pub fn detailed(mut self) -> Self {
         self.show_details = true;
         self
     }
 
     /// Enable compact mode
+    #[must_use]
     pub fn compact(mut self) -> Self {
         self.compact = true;
         self
     }
 
     /// Get total tokens used
+    #[must_use]
     pub fn total_used(&self) -> u64 {
         self.input_tokens + self.output_tokens
     }
 
     /// Get tokens remaining
+    #[must_use]
     pub fn remaining(&self) -> u64 {
         self.context_window.saturating_sub(self.total_used())
     }
 
     /// Get usage percentage
+    #[must_use]
     pub fn percentage(&self) -> f64 {
         if self.context_window == 0 {
             return 0.0;
@@ -171,6 +183,7 @@ impl ContextIndicator {
     }
 
     /// Get the usage level
+    #[must_use]
     pub fn level(&self) -> UsageLevel {
         UsageLevel::from_percentage(self.percentage())
     }
@@ -226,7 +239,7 @@ impl ContextIndicator {
         };
 
         let title = match &self.model_name {
-            Some(name) => format!(" Context: {} ", name),
+            Some(name) => format!(" Context: {name} "),
             None => " Context Window ".to_string(),
         };
 
@@ -256,6 +269,7 @@ pub struct ContextIndicatorBuilder {
 
 impl ContextIndicatorBuilder {
     /// Create a new builder
+    #[must_use]
     pub fn new() -> Self {
         Self {
             indicator: ContextIndicator::default(),
@@ -263,6 +277,7 @@ impl ContextIndicatorBuilder {
     }
 
     /// Set context window for Claude models
+    #[must_use]
     pub fn claude_opus(mut self) -> Self {
         self.indicator.context_window = 200_000;
         self.indicator.model_name = Some("Claude Opus".to_string());
@@ -270,6 +285,7 @@ impl ContextIndicatorBuilder {
     }
 
     /// Set context window for Claude Sonnet
+    #[must_use]
     pub fn claude_sonnet(mut self) -> Self {
         self.indicator.context_window = 200_000;
         self.indicator.model_name = Some("Claude Sonnet".to_string());
@@ -277,6 +293,7 @@ impl ContextIndicatorBuilder {
     }
 
     /// Set context window for Claude Haiku
+    #[must_use]
     pub fn claude_haiku(mut self) -> Self {
         self.indicator.context_window = 200_000;
         self.indicator.model_name = Some("Claude Haiku".to_string());
@@ -284,6 +301,7 @@ impl ContextIndicatorBuilder {
     }
 
     /// Set context window for GPT-4
+    #[must_use]
     pub fn gpt4(mut self) -> Self {
         self.indicator.context_window = 128_000;
         self.indicator.model_name = Some("GPT-4".to_string());
@@ -291,6 +309,7 @@ impl ContextIndicatorBuilder {
     }
 
     /// Set context window for GPT-4o
+    #[must_use]
     pub fn gpt4o(mut self) -> Self {
         self.indicator.context_window = 128_000;
         self.indicator.model_name = Some("GPT-4o".to_string());
@@ -298,6 +317,7 @@ impl ContextIndicatorBuilder {
     }
 
     /// Set context window for Gemini Pro
+    #[must_use]
     pub fn gemini_pro(mut self) -> Self {
         self.indicator.context_window = 1_000_000;
         self.indicator.model_name = Some("Gemini Pro".to_string());
@@ -305,6 +325,7 @@ impl ContextIndicatorBuilder {
     }
 
     /// Set custom context window
+    #[must_use]
     pub fn custom(mut self, window: u64, name: Option<String>) -> Self {
         self.indicator.context_window = window;
         self.indicator.model_name = name;
@@ -312,6 +333,7 @@ impl ContextIndicatorBuilder {
     }
 
     /// Set token usage
+    #[must_use]
     pub fn usage(mut self, input: u64, output: u64) -> Self {
         self.indicator.input_tokens = input;
         self.indicator.output_tokens = output;
@@ -319,18 +341,21 @@ impl ContextIndicatorBuilder {
     }
 
     /// Enable details
+    #[must_use]
     pub fn detailed(mut self) -> Self {
         self.indicator.show_details = true;
         self
     }
 
     /// Enable compact mode
+    #[must_use]
     pub fn compact(mut self) -> Self {
         self.indicator.compact = true;
         self
     }
 
     /// Build the indicator
+    #[must_use]
     pub fn build(self) -> ContextIndicator {
         self.indicator
     }

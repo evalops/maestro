@@ -35,6 +35,7 @@ pub struct AnsiCodeTracker {
 
 impl AnsiCodeTracker {
     /// Create a new tracker with no active styles.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -59,12 +60,11 @@ impl AnsiCodeTracker {
         let mut i = 0;
 
         while i < parts.len() {
-            let code: u8 = match parts[i].parse() {
-                Ok(c) => c,
-                Err(_) => {
-                    i += 1;
-                    continue;
-                }
+            let code: u8 = if let Ok(c) = parts[i].parse() {
+                c
+            } else {
+                i += 1;
+                continue;
             };
 
             match code {
@@ -151,6 +151,7 @@ impl AnsiCodeTracker {
     }
 
     /// Check if any styles are currently active.
+    #[must_use]
     pub fn has_active_codes(&self) -> bool {
         self.bold
             || self.dim
@@ -168,6 +169,7 @@ impl AnsiCodeTracker {
     ///
     /// Only resets styles that cause visual artifacts (like underline bleeding
     /// into padding). Preserves colors and other styles.
+    #[must_use]
     pub fn get_line_end_reset(&self) -> &'static str {
         if self.underline {
             "\x1b[24m" // Underline off only
@@ -179,6 +181,7 @@ impl AnsiCodeTracker {
     /// Get ANSI codes to reapply all currently active styles.
     ///
     /// Use this after a line break to restore styles.
+    #[must_use]
     pub fn get_active_codes(&self) -> String {
         if !self.has_active_codes() {
             return String::new();
@@ -226,6 +229,7 @@ impl AnsiCodeTracker {
     }
 
     /// Get a full reset code (\x1b[0m).
+    #[must_use]
     pub fn get_full_reset(&self) -> &'static str {
         if self.has_active_codes() {
             "\x1b[0m"
@@ -236,30 +240,37 @@ impl AnsiCodeTracker {
 
     // Accessor methods for checking individual styles
 
+    #[must_use]
     pub fn is_bold(&self) -> bool {
         self.bold
     }
 
+    #[must_use]
     pub fn is_dim(&self) -> bool {
         self.dim
     }
 
+    #[must_use]
     pub fn is_italic(&self) -> bool {
         self.italic
     }
 
+    #[must_use]
     pub fn is_underline(&self) -> bool {
         self.underline
     }
 
+    #[must_use]
     pub fn is_inverse(&self) -> bool {
         self.inverse
     }
 
+    #[must_use]
     pub fn fg_color(&self) -> Option<&str> {
         self.fg_color.as_deref()
     }
 
+    #[must_use]
     pub fn bg_color(&self) -> Option<&str> {
         self.bg_color.as_deref()
     }
@@ -279,6 +290,7 @@ pub enum AnsiSegment {
 }
 
 /// Parse a line into ANSI escape sequences and text segments.
+#[must_use]
 pub fn parse_ansi_segments(line: &str) -> Vec<AnsiSegment> {
     let mut segments = Vec::new();
     let mut chars = line.chars().peekable();
@@ -325,6 +337,7 @@ pub fn parse_ansi_segments(line: &str) -> Vec<AnsiSegment> {
 /// 2. Reapply styles at the start of continuation lines
 ///
 /// Returns wrapped lines as raw strings (with ANSI codes).
+#[must_use]
 pub fn wrap_ansi_line(line: &str, width: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
 
@@ -383,6 +396,7 @@ pub fn wrap_ansi_line(line: &str, width: usize) -> Vec<String> {
 }
 
 /// Wrap multiple lines, preserving ANSI codes across line breaks.
+#[must_use]
 pub fn wrap_ansi_text(text: &str, width: usize) -> Vec<String> {
     let mut result = Vec::new();
     let mut tracker = AnsiCodeTracker::new();
@@ -410,6 +424,7 @@ pub fn wrap_ansi_text(text: &str, width: usize) -> Vec<String> {
 /// Truncate a line with ANSI codes to fit within a width.
 ///
 /// Adds ellipsis if truncated, with proper reset before ellipsis.
+#[must_use]
 pub fn truncate_ansi_line(line: &str, max_width: usize) -> String {
     use unicode_width::UnicodeWidthStr;
 

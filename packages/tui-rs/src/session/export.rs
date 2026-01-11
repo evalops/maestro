@@ -32,6 +32,7 @@ pub enum ExportFormat {
 
 impl ExportFormat {
     /// Get file extension for this format
+    #[must_use]
     pub fn extension(&self) -> &'static str {
         match self {
             ExportFormat::Markdown => "md",
@@ -42,6 +43,7 @@ impl ExportFormat {
     }
 
     /// Get MIME type for this format
+    #[must_use]
     pub fn mime_type(&self) -> &'static str {
         match self {
             ExportFormat::Markdown => "text/markdown",
@@ -87,6 +89,7 @@ impl Default for ExportOptions {
 
 impl ExportOptions {
     /// Create options for markdown export
+    #[must_use]
     pub fn markdown() -> Self {
         Self {
             format: ExportFormat::Markdown,
@@ -95,6 +98,7 @@ impl ExportOptions {
     }
 
     /// Create options for HTML export
+    #[must_use]
     pub fn html() -> Self {
         Self {
             format: ExportFormat::Html,
@@ -103,6 +107,7 @@ impl ExportOptions {
     }
 
     /// Create options for JSON export
+    #[must_use]
     pub fn json() -> Self {
         Self {
             format: ExportFormat::Json,
@@ -114,6 +119,7 @@ impl ExportOptions {
     }
 
     /// Create options for plain text export
+    #[must_use]
     pub fn plain_text() -> Self {
         Self {
             format: ExportFormat::PlainText,
@@ -133,6 +139,7 @@ impl ExportOptions {
     }
 
     /// Include thinking blocks
+    #[must_use]
     pub fn with_thinking(mut self, include: bool) -> Self {
         self.include_thinking = include;
         self
@@ -150,6 +157,7 @@ pub struct SessionExporter<'a> {
 
 impl<'a> SessionExporter<'a> {
     /// Create a new exporter for a session
+    #[must_use]
     pub fn new(
         header: &'a SessionHeader,
         messages: &'a [AppMessage],
@@ -167,6 +175,7 @@ impl<'a> SessionExporter<'a> {
     }
 
     /// Create exporter from a parsed session
+    #[must_use]
     pub fn from_session(session: &'a ParsedSession, options: ExportOptions) -> Self {
         Self {
             header: &session.header,
@@ -178,6 +187,7 @@ impl<'a> SessionExporter<'a> {
     }
 
     /// Export session to a string
+    #[must_use]
     pub fn export_to_string(&self) -> String {
         match self.options.format {
             ExportFormat::Markdown => self.to_markdown(),
@@ -203,7 +213,7 @@ impl<'a> SessionExporter<'a> {
             .as_deref()
             .or(self.meta.and_then(|m| m.title.as_deref()))
             .unwrap_or("Conversation");
-        writeln!(md, "# {}\n", title).unwrap();
+        writeln!(md, "# {title}\n").unwrap();
 
         // Metadata
         writeln!(md, "**Model:** {}  ", self.header.model).unwrap();
@@ -265,11 +275,11 @@ impl<'a> SessionExporter<'a> {
                     writeln!(md, "*{}*\n", format_millis_timestamp(*timestamp)).unwrap();
                 }
                 match content {
-                    MessageContent::Text(text) => writeln!(md, "{}\n", text).unwrap(),
+                    MessageContent::Text(text) => writeln!(md, "{text}\n").unwrap(),
                     MessageContent::Blocks(blocks) => {
                         for block in blocks {
                             if let ContentBlock::Text { text } = block {
-                                writeln!(md, "{}", text).unwrap();
+                                writeln!(md, "{text}").unwrap();
                             }
                         }
                         writeln!(md).unwrap();
@@ -295,26 +305,26 @@ impl<'a> SessionExporter<'a> {
                         )
                         .unwrap();
                     } else {
-                        writeln!(md, "*({})*\n", model_str).unwrap();
+                        writeln!(md, "*({model_str})*\n").unwrap();
                     }
                 }
 
                 for block in content {
                     match block {
                         ContentBlock::Text { text } => {
-                            writeln!(md, "{}\n", text).unwrap();
+                            writeln!(md, "{text}\n").unwrap();
                         }
                         ContentBlock::Thinking { text, .. } if self.options.include_thinking => {
                             writeln!(md, "<details>").unwrap();
                             writeln!(md, "<summary>Thinking</summary>\n").unwrap();
-                            writeln!(md, "{}", text).unwrap();
+                            writeln!(md, "{text}").unwrap();
                             writeln!(md, "</details>\n").unwrap();
                         }
                         ContentBlock::ToolCall { name, args, .. }
                             if self.options.include_tool_calls =>
                         {
                             writeln!(md, "```tool").unwrap();
-                            writeln!(md, "{}: {}", name, args).unwrap();
+                            writeln!(md, "{name}: {args}").unwrap();
                             writeln!(md, "```\n").unwrap();
                         }
                         _ => {}
@@ -334,7 +344,7 @@ impl<'a> SessionExporter<'a> {
                 ..
             } if self.options.include_tool_results => {
                 let status = if *is_error { "Error" } else { "Result" };
-                writeln!(md, "### {} {}\n", tool_name, status).unwrap();
+                writeln!(md, "### {tool_name} {status}\n").unwrap();
                 writeln!(md, "```").unwrap();
                 // Truncate long outputs (using chars to handle UTF-8 safely)
                 let chars: Vec<char> = content.chars().collect();
@@ -343,7 +353,7 @@ impl<'a> SessionExporter<'a> {
                 } else {
                     content.clone()
                 };
-                writeln!(md, "{}", truncated).unwrap();
+                writeln!(md, "{truncated}").unwrap();
                 writeln!(md, "```\n").unwrap();
             }
             _ => {}
@@ -369,7 +379,7 @@ impl<'a> SessionExporter<'a> {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{}</title>
+    <title>{title}</title>
     <style>
         :root {{
             --bg: #1a1a2e;
@@ -416,13 +426,12 @@ impl<'a> SessionExporter<'a> {
         .footer {{ margin-top: 30px; text-align: center; color: #666; }}
     </style>
 </head>
-<body>"#,
-            title
+<body>"#
         )
         .unwrap();
 
         // Title and metadata
-        writeln!(html, "<h1>{}</h1>", title).unwrap();
+        writeln!(html, "<h1>{title}</h1>").unwrap();
         writeln!(html, r#"<div class="meta">"#).unwrap();
         writeln!(html, "<p><strong>Model:</strong> {}</p>", self.header.model).unwrap();
         writeln!(
@@ -577,7 +586,7 @@ impl<'a> SessionExporter<'a> {
             .or(self.meta.and_then(|m| m.title.as_deref()))
             .unwrap_or("Conversation");
 
-        writeln!(txt, "{}", title).unwrap();
+        writeln!(txt, "{title}").unwrap();
         writeln!(txt, "{}\n", "=".repeat(title.len())).unwrap();
 
         for msg in self.messages {
@@ -598,13 +607,13 @@ impl<'a> SessionExporter<'a> {
                             .collect::<Vec<_>>()
                             .join(""),
                     };
-                    writeln!(txt, "{}\n", text).unwrap();
+                    writeln!(txt, "{text}\n").unwrap();
                 }
                 AppMessage::Assistant { content, .. } => {
                     writeln!(txt, "ASSISTANT:").unwrap();
                     for block in content {
                         if let ContentBlock::Text { text } = block {
-                            writeln!(txt, "{}", text).unwrap();
+                            writeln!(txt, "{text}").unwrap();
                         }
                     }
                     writeln!(txt).unwrap();
@@ -628,9 +637,10 @@ fn escape_html(s: &str) -> String {
 
 /// Format ISO timestamp to human readable
 fn format_timestamp(timestamp: &str) -> String {
-    DateTime::parse_from_rfc3339(timestamp)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|_| timestamp.to_string())
+    DateTime::parse_from_rfc3339(timestamp).map_or_else(
+        |_| timestamp.to_string(),
+        |dt| dt.format("%Y-%m-%d %H:%M").to_string(),
+    )
 }
 
 /// Convenience function to export a session file
@@ -651,7 +661,7 @@ fn format_millis_timestamp(timestamp_millis: u64) -> String {
     let nsecs = ((timestamp_millis % 1000) * 1_000_000) as u32;
     match Utc.timestamp_opt(secs, nsecs) {
         chrono::LocalResult::Single(dt) => dt.format("%Y-%m-%d %H:%M").to_string(),
-        _ => format!("{}", timestamp_millis),
+        _ => format!("{timestamp_millis}"),
     }
 }
 

@@ -42,6 +42,7 @@ const OSC8_END: &str = "\x1b]8;;\x07";
 /// // URL as label
 /// let link = format_link("https://example.com", None);
 /// ```
+#[must_use]
 pub fn format_link(url: &str, label: Option<&str>) -> String {
     let text = label.unwrap_or(url);
     format!("{OSC8_START}{url}{OSC8_TERM}{text}{OSC8_END}")
@@ -50,6 +51,7 @@ pub fn format_link(url: &str, label: Option<&str>) -> String {
 /// Format a hyperlink with fallback for non-TTY output.
 ///
 /// Returns `label (url)` format when not in a terminal.
+#[must_use]
 pub fn format_link_with_fallback(url: &str, label: Option<&str>, is_tty: bool) -> String {
     let text = label.unwrap_or(url);
     if !is_tty {
@@ -65,11 +67,13 @@ pub fn format_link_with_fallback(url: &str, label: Option<&str>, is_tty: bool) -
 ///
 /// Use this for manual link construction when you need
 /// to apply styling to the link text.
+#[must_use]
 pub fn link_start(url: &str) -> String {
     format!("{OSC8_START}{url}{OSC8_TERM}")
 }
 
 /// The OSC 8 end sequence to close a hyperlink.
+#[must_use]
 pub fn link_end() -> &'static str {
     OSC8_END
 }
@@ -77,6 +81,7 @@ pub fn link_end() -> &'static str {
 /// Wrap text in hyperlink sequences.
 ///
 /// Lower-level function for when you need more control.
+#[must_use]
 pub fn wrap_in_link(url: &str, text: &str) -> String {
     format!("{}{}{}", link_start(url), text, OSC8_END)
 }
@@ -89,11 +94,13 @@ pub fn wrap_in_link(url: &str, text: &str) -> String {
 ///
 /// Note: ratatui's hyperlink support depends on the terminal.
 /// This embeds the OSC 8 sequences in the content.
+#[must_use]
 pub fn link_span(url: &str, label: &str, style: Style) -> Span<'static> {
     Span::styled(format_link(url, Some(label)), style)
 }
 
 /// Create a Span with hyperlink using URL as label.
+#[must_use]
 pub fn url_span(url: &str, style: Style) -> Span<'static> {
     Span::styled(format_link(url, None), style)
 }
@@ -103,6 +110,7 @@ pub fn url_span(url: &str, style: Style) -> Span<'static> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Check if a string contains OSC 8 hyperlink sequences.
+#[must_use]
 pub fn contains_hyperlink(s: &str) -> bool {
     s.contains(OSC8_START)
 }
@@ -110,6 +118,7 @@ pub fn contains_hyperlink(s: &str) -> bool {
 /// Strip OSC 8 hyperlink sequences from a string.
 ///
 /// Returns the visible text without link formatting.
+#[must_use]
 pub fn strip_hyperlinks(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -151,6 +160,7 @@ pub fn strip_hyperlinks(s: &str) -> String {
 }
 
 /// Extract URLs from text containing OSC 8 hyperlinks.
+#[must_use]
 pub fn extract_urls(s: &str) -> Vec<String> {
     let mut urls = Vec::new();
     let mut remaining = s;

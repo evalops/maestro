@@ -26,7 +26,7 @@
 //!    - Read stderr to buffer
 //!    - Wait for process exit status
 //! 4. **Timeout handling**: If time limit is exceeded, process is killed via `child.kill()`
-//! 5. **Result assembly**: stdout, stderr, and exit code are combined into ToolResult
+//! 5. **Result assembly**: stdout, stderr, and exit code are combined into `ToolResult`
 //!
 //! # Approval System
 //!
@@ -257,7 +257,7 @@ pub(crate) fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
 ///
 /// # Returns
 ///
-/// A PathBuf pointing to a unique temp file location.
+/// A `PathBuf` pointing to a unique temp file location.
 fn get_temp_file_path() -> PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -267,7 +267,7 @@ fn get_temp_file_path() -> PathBuf {
         .as_nanos();
     let pid = std::process::id();
 
-    std::env::temp_dir().join(format!("composer-bash-{}-{}.log", pid, timestamp))
+    std::env::temp_dir().join(format!("composer-bash-{pid}-{timestamp}.log"))
 }
 
 struct StreamCapture {
@@ -321,7 +321,7 @@ impl StreamCapture {
                     self.temp_file = Some(file);
                 }
                 Err(e) => {
-                    eprintln!("Failed to write temp output file: {}", e);
+                    eprintln!("Failed to write temp output file: {e}");
                     self.buffer.clear();
                 }
             }
@@ -400,7 +400,7 @@ async fn append_stream(
 ///
 /// # Returns
 ///
-/// A tuple of (truncated_output, was_truncated, stats_message)
+/// A tuple of (`truncated_output`, `was_truncated`, `stats_message`)
 fn truncate_output_tail(
     output: &str,
     max_bytes: usize,
@@ -438,8 +438,7 @@ fn truncate_output_tail(
 
     let truncated = result_lines.join("\n");
     let stats = format!(
-        "[Showing last {} lines ({} bytes) of {} lines ({} bytes total)]",
-        lines_kept, result_bytes, total_lines, total_bytes
+        "[Showing last {lines_kept} lines ({result_bytes} bytes) of {total_lines} lines ({total_bytes} bytes total)]"
     );
 
     (truncated, true, Some(stats))
@@ -486,8 +485,7 @@ async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -
     let lines_kept = trimmed_output.lines().count();
     let bytes_kept = trimmed_output.len();
     let stats = format!(
-        "[Showing last {} lines ({} bytes) of {} lines ({} bytes total)]",
-        lines_kept, bytes_kept, total_lines, total_bytes
+        "[Showing last {lines_kept} lines ({bytes_kept} bytes) of {total_lines} lines ({total_bytes} bytes total)]"
     );
 
     let mut saved_path = None;
@@ -498,7 +496,7 @@ async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -
         let mut combined_file = match tokio::fs::File::create(&combined_path).await {
             Ok(file) => Some(file),
             Err(e) => {
-                eprintln!("Failed to write temp output file: {}", e);
+                eprintln!("Failed to write temp output file: {e}");
                 None
             }
         };
@@ -507,8 +505,7 @@ async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -
             let stdout_source = stdout
                 .temp_path
                 .as_ref()
-                .map(StreamSource::File)
-                .unwrap_or_else(|| StreamSource::Memory(&stdout.buffer));
+                .map_or_else(|| StreamSource::Memory(&stdout.buffer), StreamSource::File);
             if append_stream(file, stdout_source).await.is_ok() {
                 if stderr_has_output && stdout_has_output {
                     let _ = file.write_all(b"\n--- stderr ---\n").await;
@@ -516,8 +513,7 @@ async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -
                 let stderr_source = stderr
                     .temp_path
                     .as_ref()
-                    .map(StreamSource::File)
-                    .unwrap_or_else(|| StreamSource::Memory(&stderr.buffer));
+                    .map_or_else(|| StreamSource::Memory(&stderr.buffer), StreamSource::File);
                 if append_stream(file, stderr_source).await.is_ok() {
                     let _ = file.flush().await;
                     saved_path = Some(combined_path.display().to_string());
@@ -538,12 +534,12 @@ async fn build_combined_output(stdout: &StreamCapture, stderr: &StreamCapture) -
     }
 
     let notice = match saved_path.as_ref() {
-        Some(path) => format!("{}\nFull output saved to: {}", stats, path),
+        Some(path) => format!("{stats}\nFull output saved to: {path}"),
         None => stats,
     };
 
     CombinedOutput {
-        output: format!("{}\n\n{}", notice, trimmed_output),
+        output: format!("{notice}\n\n{trimmed_output}"),
         was_truncated: true,
         temp_path: saved_path,
     }
@@ -604,7 +600,7 @@ pub struct BashArgs {
 ///
 /// # Thread Safety
 ///
-/// BashTool is not `Sync` because it uses `std::process::Command` internally. However,
+/// `BashTool` is not `Sync` because it uses `std::process::Command` internally. However,
 /// it is safe to move across async task boundaries and can be wrapped in `Arc` if needed.
 ///
 /// # Working Directory
@@ -645,6 +641,7 @@ impl BashTool {
     }
 
     /// Get the tool definition for the AI
+    #[must_use]
     pub fn definition() -> Tool {
         Tool::new(
             "bash",
@@ -712,6 +709,7 @@ impl BashTool {
     /// assert!(BashTool::requires_approval("npm install"));
     /// assert!(BashTool::requires_approval("git commit -m 'test'"));
     /// ```rust,ignore
+    #[must_use]
     pub fn requires_approval(command: &str) -> bool {
         fn is_find_with_exec(cmd_trimmed: &str) -> bool {
             if !cmd_trimmed.starts_with("find ") && cmd_trimmed != "find" {
@@ -857,6 +855,7 @@ impl BashTool {
     /// assert!(BashTool::is_dangerous("ls -la").is_none());
     /// assert!(BashTool::is_dangerous("cargo build").is_none());
     /// ```rust,ignore
+    #[must_use]
     pub fn is_dangerous(command: &str) -> Option<&'static str> {
         let cmd = command.to_lowercase();
 
@@ -908,14 +907,14 @@ impl BashTool {
     /// 5. **Result assembly**:
     ///    - Convert bytes to UTF-8 strings (lossy)
     ///    - Truncate if output exceeds 30KB
-    ///    - Return ToolResult with success flag and output/error
+    ///    - Return `ToolResult` with success flag and output/error
     ///
     /// # Timeout Behavior
     ///
     /// If the command exceeds its timeout:
     /// - `tokio::time::timeout()` returns `Err(Elapsed)`
     /// - Process is killed via `child.kill().await`
-    /// - ToolResult contains timeout error message
+    /// - `ToolResult` contains timeout error message
     ///
     /// # Error Handling
     ///
@@ -972,7 +971,7 @@ impl BashTool {
 
         // Check for dangerous commands
         if let Some(warning) = Self::is_dangerous(&args.command) {
-            return ToolResult::failure(format!("Dangerous command blocked: {}", warning));
+            return ToolResult::failure(format!("Dangerous command blocked: {warning}"));
         }
 
         // Determine timeout
@@ -1006,10 +1005,10 @@ impl BashTool {
                     .with_cwd(cwd_string.clone())
                     .with_duration(start_time.elapsed().as_millis() as u64);
                 if let Some(ref desc) = args.description {
-                    return ToolResult::failure(format!("Failed to spawn process: {}", e))
+                    return ToolResult::failure(format!("Failed to spawn process: {e}"))
                         .with_details(details.with_description(desc).to_json());
                 }
-                return ToolResult::failure(format!("Failed to spawn process: {}", e))
+                return ToolResult::failure(format!("Failed to spawn process: {e}"))
                     .with_details(details.to_json());
             }
         };
@@ -1040,8 +1039,7 @@ impl BashTool {
                 details = details.with_description(desc);
             }
             return ToolResult::success(format!(
-                "Command started in background (PID: {:?})",
-                child_pid
+                "Command started in background (PID: {child_pid:?})"
             ))
             .with_details(details.to_json());
         }
@@ -1109,19 +1107,19 @@ impl BashTool {
                     error: if status.success() {
                         None
                     } else {
-                        Some(format!("Exit code: {}", exit_code))
+                        Some(format!("Exit code: {exit_code}"))
                     },
                     details: Some(details.to_json()),
                 }
             }
-            Ok((Err(e), _, _)) | Ok((_, Err(e), _)) => {
+            Ok((Err(e), _, _) | (_, Err(e), _)) => {
                 let mut details = BashDetails::failed(&args.command, -1)
                     .with_cwd(cwd_string.clone())
                     .with_duration(start_time.elapsed().as_millis() as u64);
                 if let Some(ref desc) = args.description {
                     details = details.with_description(desc);
                 }
-                ToolResult::failure(format!("IO error: {}", e)).with_details(details.to_json())
+                ToolResult::failure(format!("IO error: {e}")).with_details(details.to_json())
             }
             Ok((_, _, Err(e))) => {
                 let mut details = BashDetails::failed(&args.command, -1)
@@ -1130,7 +1128,7 @@ impl BashTool {
                 if let Some(ref desc) = args.description {
                     details = details.with_description(desc);
                 }
-                ToolResult::failure(format!("Process error: {}", e)).with_details(details.to_json())
+                ToolResult::failure(format!("Process error: {e}")).with_details(details.to_json())
             }
             Err(_) => {
                 // Timeout - kill the entire process tree to avoid orphan processes
@@ -1149,7 +1147,7 @@ impl BashTool {
                 if let Some(ref desc) = args.description {
                     details = details.with_description(desc);
                 }
-                ToolResult::failure(format!("Command timed out after {}ms", timeout_ms))
+                ToolResult::failure(format!("Command timed out after {timeout_ms}ms"))
                     .with_details(details.to_json())
             }
         }

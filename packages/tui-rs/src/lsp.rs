@@ -3,7 +3,6 @@
 //! Provides optional access to the TypeScript LSP CLI (`dist/lsp/cli.js`) so the
 //! Rust TUI can surface diagnostics and enforce safe-mode gates.
 
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -38,7 +37,7 @@ struct LspConfig {
     blocking_severity: u8,
 }
 
-static LSP_CONFIG: Lazy<LspConfig> = Lazy::new(load_config);
+static LSP_CONFIG: std::sync::LazyLock<LspConfig> = std::sync::LazyLock::new(load_config);
 
 fn load_config() -> LspConfig {
     let mut config = LspConfig {
@@ -65,13 +64,19 @@ fn load_config() -> LspConfig {
         return config;
     };
 
-    if let Some(enabled) = lsp.get("enabled").and_then(|v| v.as_bool()) {
+    if let Some(enabled) = lsp.get("enabled").and_then(serde_json::Value::as_bool) {
         config.enabled = enabled;
     }
-    if let Some(max_diag) = lsp.get("maxDiagnosticsPerFile").and_then(|v| v.as_u64()) {
+    if let Some(max_diag) = lsp
+        .get("maxDiagnosticsPerFile")
+        .and_then(serde_json::Value::as_u64)
+    {
         config.max_diagnostics_per_file = max_diag.max(1) as usize;
     }
-    if let Some(severity) = lsp.get("blockingSeverity").and_then(|v| v.as_u64()) {
+    if let Some(severity) = lsp
+        .get("blockingSeverity")
+        .and_then(serde_json::Value::as_u64)
+    {
         config.blocking_severity = severity.clamp(1, 4) as u8;
     }
 
@@ -86,6 +91,7 @@ fn parse_env_bool(value: &str) -> Option<bool> {
     }
 }
 
+#[must_use]
 pub fn is_lsp_enabled() -> bool {
     if let Ok(value) = std::env::var("COMPOSER_LSP_ENABLED") {
         if let Some(parsed) = parse_env_bool(&value) {
@@ -95,6 +101,7 @@ pub fn is_lsp_enabled() -> bool {
     LSP_CONFIG.enabled
 }
 
+#[must_use]
 pub fn max_diagnostics_per_file() -> usize {
     if let Ok(value) = std::env::var("COMPOSER_LSP_MAX_DIAGNOSTICS") {
         if let Ok(parsed) = value.parse::<usize>() {
@@ -104,6 +111,7 @@ pub fn max_diagnostics_per_file() -> usize {
     LSP_CONFIG.max_diagnostics_per_file
 }
 
+#[must_use]
 pub fn blocking_severity() -> u8 {
     if let Ok(value) = std::env::var("COMPOSER_SAFE_LSP_SEVERITY") {
         if let Ok(parsed) = value.parse::<u8>() {
@@ -187,7 +195,7 @@ async fn run_cli_diagnostics(
         .current_dir(cwd)
         .output()
         .await
-        .map_err(|e| format!("Failed to run LSP diagnostics: {}", e))?;
+        .map_err(|e| format!("Failed to run LSP diagnostics: {e}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -200,7 +208,7 @@ async fn run_cli_diagnostics(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let map: HashMap<String, Vec<LspDiagnostic>> = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse LSP diagnostics: {}", e))?;
+        .map_err(|e| format!("Failed to parse LSP diagnostics: {e}"))?;
     Ok(map)
 }
 
@@ -250,13 +258,14 @@ pub async fn diagnostics_for_file(cwd: &str, path: &str) -> Result<Vec<LspDiagno
     Ok(Vec::new())
 }
 
+#[must_use]
 pub fn format_lsp_summary(path: &str, diagnostics: &[LspDiagnostic]) -> String {
     if diagnostics.is_empty() {
         return String::new();
     }
 
     let mut lines = Vec::new();
-    lines.push(format!("\nLinter check for {}:", path));
+    lines.push(format!("\nLinter check for {path}:"));
 
     let top = diagnostics.iter().take(5);
     for diag in top {
@@ -278,6 +287,7 @@ pub fn format_lsp_summary(path: &str, diagnostics: &[LspDiagnostic]) -> String {
     lines.join("\n")
 }
 
+#[must_use]
 pub fn sanitize_diagnostic_message(raw: &str) -> String {
     let mut cleaned = String::new();
     for ch in raw.chars() {

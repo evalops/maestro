@@ -18,6 +18,7 @@ use ratatui::text::{Line, Span, Text};
 ///
 /// Tabs can interact poorly with left-gutter prefixes in TUI and CLI
 /// transcript views. Replacing tabs with spaces avoids odd visual artifacts.
+#[must_use]
 pub fn expand_tabs(s: &str) -> Cow<'_, str> {
     if s.contains('\t') {
         // Replace each tab with 4 spaces
@@ -28,6 +29,7 @@ pub fn expand_tabs(s: &str) -> Cow<'_, str> {
 }
 
 /// Expand tabs with a custom width.
+#[must_use]
 pub fn expand_tabs_width(s: &str, tab_width: usize) -> Cow<'_, str> {
     if s.contains('\t') {
         Cow::Owned(s.replace('\t', &" ".repeat(tab_width)))
@@ -46,6 +48,7 @@ pub fn expand_tabs_width(s: &str, tab_width: usize) -> Cow<'_, str> {
 /// - Colors (foreground and background)
 /// - Bold, dim, italic, underline
 /// - Reset codes
+#[must_use]
 pub fn parse_ansi(s: &str) -> Text<'static> {
     let s = expand_tabs(s);
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -210,6 +213,7 @@ fn apply_sgr(params: &str, style: &mut Style) {
 }
 
 /// Strip ANSI escape codes from a string.
+#[must_use]
 pub fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut in_escape = false;
@@ -230,6 +234,7 @@ pub fn strip_ansi(s: &str) -> String {
 }
 
 /// Get the display width of a string, ignoring ANSI codes.
+#[must_use]
 pub fn ansi_display_width(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
     strip_ansi(s).width()

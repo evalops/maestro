@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use super::anthropic::AnthropicClient;
 use super::google::GoogleClient;
 use super::openai::OpenAiClient;
-use super::types::*;
+use super::types::{Message, RequestConfig, StreamEvent};
 use super::vertex::VertexAiClient;
 
 /// AI provider enum
@@ -28,6 +28,7 @@ pub enum AiProvider {
 
 impl AiProvider {
     /// Parse provider from model name
+    #[must_use]
     pub fn from_model(model: &str) -> Self {
         let model_lower = model.to_lowercase();
         if model_lower.starts_with("claude") || model_lower.starts_with("anthropic") {
@@ -79,11 +80,11 @@ pub trait AiClient: Send + Sync {
 pub enum UnifiedClient {
     Anthropic(AnthropicClient),
     OpenAI(OpenAiClient),
-    /// Mistral uses OpenAI client with custom base URL
+    /// Mistral uses `OpenAI` client with custom base URL
     Mistral(OpenAiClient),
     /// Google Gemini
     Google(GoogleClient),
-    /// Groq uses OpenAI client with custom base URL for fast inference
+    /// Groq uses `OpenAI` client with custom base URL for fast inference
     Groq(OpenAiClient),
     /// Google Vertex AI for enterprise Gemini
     VertexAi(VertexAiClient),
@@ -95,7 +96,7 @@ impl UnifiedClient {
         Ok(Self::Anthropic(AnthropicClient::from_env()?))
     }
 
-    /// Create client for OpenAI
+    /// Create client for `OpenAI`
     pub fn openai() -> Result<Self> {
         Ok(Self::OpenAI(OpenAiClient::from_env()?))
     }
@@ -138,6 +139,7 @@ impl UnifiedClient {
     }
 
     /// Get the provider type
+    #[must_use]
     pub fn provider(&self) -> AiProvider {
         match self {
             Self::Anthropic(_) => AiProvider::Anthropic,

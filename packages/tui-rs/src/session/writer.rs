@@ -21,8 +21,8 @@ pub enum SessionWriteError {
 impl std::fmt::Display for SessionWriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SessionWriteError::IoError(e) => write!(f, "IO error: {}", e),
-            SessionWriteError::SerializeError(msg) => write!(f, "Serialize error: {}", msg),
+            SessionWriteError::IoError(e) => write!(f, "IO error: {e}"),
+            SessionWriteError::SerializeError(msg) => write!(f, "Serialize error: {msg}"),
         }
     }
 }
@@ -77,12 +77,14 @@ impl SessionWriter {
     }
 
     /// Set the batch size
+    #[must_use]
     pub fn batch_size(mut self, size: usize) -> Self {
         self.batch_size = size;
         self
     }
 
     /// Get the file path
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -122,7 +124,7 @@ impl SessionWriter {
         for entry in self.buffer.drain(..) {
             let json = serde_json::to_string(&entry)
                 .map_err(|e| SessionWriteError::SerializeError(e.to_string()))?;
-            writeln!(writer, "{}", json)?;
+            writeln!(writer, "{json}")?;
         }
 
         writer.flush()?;
@@ -130,11 +132,13 @@ impl SessionWriter {
     }
 
     /// Check if header has been written
+    #[must_use]
     pub fn has_header(&self) -> bool {
         self.header_written
     }
 
     /// Get the number of buffered entries
+    #[must_use]
     pub fn buffered_count(&self) -> usize {
         self.buffer.len()
     }
@@ -151,7 +155,7 @@ impl Drop for SessionWriter {
 pub fn generate_session_filename(session_id: &str) -> String {
     let now = chrono::Utc::now();
     let timestamp = now.format("%Y-%m-%dT%H-%M-%S-%3fZ");
-    format!("{}_{}.jsonl", timestamp, session_id)
+    format!("{timestamp}_{session_id}.jsonl")
 }
 
 /// Sanitize a path for use in session directory names
@@ -170,7 +174,7 @@ pub fn sessions_dir(cwd: &str) -> PathBuf {
     home.join(".composer")
         .join("agent")
         .join("sessions")
-        .join(format!("--{}--", sanitized))
+        .join(format!("--{sanitized}--"))
 }
 
 #[cfg(test)]

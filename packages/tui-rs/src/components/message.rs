@@ -1,7 +1,7 @@
 //! Message display widgets
 //!
 //! This module implements the chat message display system, including the main scrollable
-//! message list (ChatView), individual message rendering (MessageWidget), and supporting
+//! message list (`ChatView`), individual message rendering (`MessageWidget`), and supporting
 //! components like the status bar and input box.
 //!
 //! # Widget Hierarchy
@@ -98,14 +98,14 @@
 //! # Keyboard Event Handling
 //!
 //! This module does NOT handle keyboard events directly. Event handling is performed in
-//! the main app loop (src/app.rs), which updates AppState. The widgets re-render based
+//! the main app loop (src/app.rs), which updates `AppState`. The widgets re-render based
 //! on the updated state.
 //!
 //! # Design Inspiration
 //!
 //! Visual design inspired by:
 //! - TypeScript Composer TUI
-//! - OpenAI Codex TUI
+//! - `OpenAI` Codex TUI
 //!
 //! Features:
 //! - Bordered panels and status badges
@@ -158,7 +158,7 @@ fn parse_markdown_lines(text: &str) -> Vec<Line<'static>> {
         if in_code_block {
             // Inside code block - render with dim style
             lines.push(Line::from(Span::styled(
-                format!("  {}", line_text),
+                format!("  {line_text}"),
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::DIM),
@@ -288,7 +288,7 @@ fn format_timestamp(time: SystemTime) -> String {
     // For proper timezone support, would need chrono crate
     let hours = (secs / 3600) % 24;
     let minutes = (secs / 60) % 60;
-    format!("{:02}:{:02}", hours, minutes)
+    format!("{hours:02}:{minutes:02}")
 }
 
 /// Get tool-specific icon (matching TypeScript TUI patterns)
@@ -433,6 +433,7 @@ pub struct MessageWidget<'a> {
 }
 
 impl<'a> MessageWidget<'a> {
+    #[must_use]
     pub fn new(message: &'a Message) -> Self {
         Self {
             message,
@@ -440,6 +441,7 @@ impl<'a> MessageWidget<'a> {
         }
     }
 
+    #[must_use]
     pub fn with_expanded_tools(mut self, expanded: &'a HashSet<String>) -> Self {
         self.expanded_tools = Some(expanded);
         self
@@ -499,12 +501,12 @@ impl Widget for MessageWidget<'_> {
                             .add_modifier(Modifier::BOLD),
                     ));
                 }
-            };
+            }
 
             // Add timestamp (right-aligned feel)
             let timestamp = format_timestamp(self.message.timestamp);
             header_spans.push(Span::styled(
-                format!("  {}", timestamp),
+                format!("  {timestamp}"),
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM),
@@ -663,8 +665,7 @@ impl Widget for MessageWidget<'_> {
 
             let expanded = self
                 .expanded_tools
-                .map(|s| s.contains(&tool_call.call_id))
-                .unwrap_or(false);
+                .is_some_and(|s| s.contains(&tool_call.call_id));
 
             // Status bullet and verb (Codex style)
             let (bullet, bullet_style, verb) = match tool_call.status {
@@ -782,7 +783,7 @@ impl Widget for MessageWidget<'_> {
                     let ellipsis_line = Line::from(vec![
                         Span::styled("    ", Style::default()),
                         Span::styled(
-                            format!("… +{} lines", omitted),
+                            format!("… +{omitted} lines"),
                             Style::default()
                                 .fg(Color::DarkGray)
                                 .add_modifier(Modifier::DIM),
@@ -856,7 +857,11 @@ fn get_tool_args_preview(tool: &str, args: &serde_json::Value, max_len: usize) -
         _ => {
             // Generic: show first string value
             args.as_object()
-                .and_then(|obj| obj.values().find_map(|v| v.as_str()).map(|s| s.to_string()))
+                .and_then(|obj| {
+                    obj.values()
+                        .find_map(|v| v.as_str())
+                        .map(std::string::ToString::to_string)
+                })
                 .unwrap_or_default()
         }
     };
@@ -894,6 +899,7 @@ pub struct ToolCallWidget<'a> {
 }
 
 impl<'a> ToolCallWidget<'a> {
+    #[must_use]
     pub fn new(tool: &'a str, status: ToolCallStatus, output: &'a str, expanded: bool) -> Self {
         Self {
             tool,
@@ -951,17 +957,17 @@ impl Widget for ToolCallWidget<'_> {
 /// Format elapsed seconds into compact form (like Codex TUI)
 fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
     if elapsed_secs < 60 {
-        return format!("{}s", elapsed_secs);
+        return format!("{elapsed_secs}s");
     }
     if elapsed_secs < 3600 {
         let minutes = elapsed_secs / 60;
         let seconds = elapsed_secs % 60;
-        return format!("{}m {:02}s", minutes, seconds);
+        return format!("{minutes}m {seconds:02}s");
     }
     let hours = elapsed_secs / 3600;
     let minutes = (elapsed_secs % 3600) / 60;
     let seconds = elapsed_secs % 60;
-    format!("{}h {:02}m {:02}s", hours, minutes, seconds)
+    format!("{hours}h {minutes:02}m {seconds:02}s")
 }
 
 /// A stateless widget for rendering the chat input box.
@@ -1058,6 +1064,7 @@ impl<'a> ChatInputWidget<'a> {
     /// Returns `None` if:
     /// - Area is too small to render
     /// - Cursor is outside visible area (scrolled out of view)
+    #[must_use]
     pub fn cursor_pos(&self, input_area: Rect) -> Option<(u16, u16)> {
         if input_area.width < 3 || input_area.height < 3 {
             return None;
@@ -1127,7 +1134,7 @@ impl Widget for ChatInputWidget<'_> {
                 String::new()
             };
             spans.push(Span::styled(
-                format!(" ({}{} | ESC to interrupt) ", elapsed, queue_note),
+                format!(" ({elapsed}{queue_note} | ESC to interrupt) "),
                 Style::default().fg(Color::DarkGray),
             ));
             Line::from(spans)
@@ -1163,7 +1170,7 @@ const MIN_MESSAGES_HEIGHT: u16 = 3;
 /// The height includes borders. It grows with content up to a cap, and
 /// always leaves at least a small message viewport.
 pub(crate) fn calculate_input_height(state: &crate::state::AppState, area: Rect) -> u16 {
-    let status_height = if state.zen_mode { 0 } else { 1 };
+    let status_height = u16::from(!state.zen_mode);
 
     // If space is tight, fall back to minimum.
     let available_after_status = area.height.saturating_sub(status_height);
@@ -1239,6 +1246,7 @@ pub struct StatusBarWidget<'a> {
 }
 
 impl<'a> StatusBarWidget<'a> {
+    #[must_use]
     pub fn new(
         model: Option<&'a str>,
         provider: Option<&'a str>,
@@ -1256,17 +1264,20 @@ impl<'a> StatusBarWidget<'a> {
         }
     }
 
+    #[must_use]
     pub fn with_usage(mut self, usage: UsageSummary) -> Self {
         self.usage = usage;
         self
     }
 
     /// Set hook count (None = hooks disabled, Some(0) = enabled but none loaded)
+    #[must_use]
     pub fn with_hooks(mut self, count: Option<usize>) -> Self {
         self.hook_count = count;
         self
     }
 
+    #[must_use]
     pub fn with_queue_badge(mut self, badge: Option<&'a str>) -> Self {
         self.queue_badge = badge;
         self
@@ -1316,7 +1327,7 @@ impl Widget for StatusBarWidget<'_> {
             }
             if count > 0 {
                 spans.push(Span::styled(
-                    format!("hooks:{}", count),
+                    format!("hooks:{count}"),
                     Style::default().fg(Color::Magenta),
                 ));
             } else {
@@ -1357,7 +1368,7 @@ impl Widget for StatusBarWidget<'_> {
         // Terminal size
         if let Ok((cols, rows)) = crate::terminal::size() {
             right_spans.push(Span::styled(
-                format!("{}x{}", cols, rows),
+                format!("{cols}x{rows}"),
                 Style::default().fg(Color::DarkGray),
             ));
         }
@@ -1428,7 +1439,7 @@ impl Widget for ChatView<'_> {
             return;
         }
 
-        let status_height = if self.state.zen_mode { 0 } else { 1 };
+        let status_height = u16::from(!self.state.zen_mode);
         let input_height = calculate_input_height(self.state, area);
         let chunks = Layout::vertical([
             Constraint::Min(0),                // Messages
@@ -1574,10 +1585,12 @@ impl ChatView<'_> {
         // Draw a simple scrollbar on the right
         if total_height > area.height {
             let bar_x = area.x + area.width.saturating_sub(1);
-            let view_ratio = area.height as f32 / total_height as f32;
-            let thumb_height = ((area.height as f32) * view_ratio).clamp(1.0, area.height as f32);
-            let scroll_ratio = window_top as f32 / total_height as f32;
-            let thumb_start = (scroll_ratio * (area.height as f32 - thumb_height)).round() as u16;
+            let view_ratio = f32::from(area.height) / f32::from(total_height);
+            let thumb_height =
+                (f32::from(area.height) * view_ratio).clamp(1.0, f32::from(area.height));
+            let scroll_ratio = f32::from(window_top) / f32::from(total_height);
+            let thumb_start =
+                (scroll_ratio * (f32::from(area.height) - thumb_height)).round() as u16;
             for i in 0..area.height {
                 let ch = if i >= thumb_start && i < thumb_start + thumb_height as u16 {
                     '█'
@@ -1594,7 +1607,7 @@ impl ChatView<'_> {
             let percent = if total_height == 0 {
                 0
             } else {
-                ((window_bottom as f32 / total_height as f32) * 100.0).round() as i32
+                ((f32::from(window_bottom) / f32::from(total_height)) * 100.0).round() as i32
             };
             let pct_str = format!("{:>3}%", percent.clamp(0, 100));
             let pct_x = bar_x.saturating_sub(pct_str.len() as u16);

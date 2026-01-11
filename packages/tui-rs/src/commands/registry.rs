@@ -15,7 +15,7 @@
 //!
 //! ## HashMap-based Lookup
 //!
-//! Two HashMaps provide O(1) lookup performance:
+//! Two `HashMaps` provide O(1) lookup performance:
 //! - `commands`: Primary name to Command mapping
 //! - `aliases`: Alias to primary name mapping (double indirection)
 //!
@@ -26,9 +26,9 @@
 //! 1. **Parse**: Strip `/`, split command name from arguments
 //! 2. **Lookup**: Find command by name or alias in registry
 //! 3. **Parse Arguments**: Convert raw string into typed arguments based on command definition
-//! 4. **Build Context**: Package inputs (cwd, session, model, args) into CommandContext
+//! 4. **Build Context**: Package inputs (cwd, session, model, args) into `CommandContext`
 //! 5. **Execute Handler**: Call the command's handler function with the context
-//! 6. **Return Output**: Handler returns CommandOutput enum (Message, Action, Modal, etc.)
+//! 6. **Return Output**: Handler returns `CommandOutput` enum (Message, Action, Modal, etc.)
 //!
 //! # Example
 //!
@@ -82,7 +82,7 @@ use crate::state::QueueMode;
 /// Registry of all available commands with efficient lookup and execution
 ///
 /// The `CommandRegistry` is the central storage for slash commands in the TUI. It provides:
-/// - Fast name-based and alias-based lookup using HashMaps
+/// - Fast name-based and alias-based lookup using `HashMaps`
 /// - Thread-safe command sharing via Arc (atomic reference counting)
 /// - Argument parsing and validation
 /// - Command execution with runtime context
@@ -120,6 +120,7 @@ pub struct CommandRegistry {
 
 impl CommandRegistry {
     /// Create a new empty registry
+    #[must_use]
     pub fn new() -> Self {
         Self {
             commands: HashMap::new(),
@@ -141,7 +142,7 @@ impl CommandRegistry {
     ///
     /// # Alias Registration
     ///
-    /// All aliases in `command.aliases` are registered in the `aliases` HashMap,
+    /// All aliases in `command.aliases` are registered in the `aliases` `HashMap`,
     /// pointing to the primary command name. This allows lookup by either name or alias.
     ///
     /// # Example
@@ -181,8 +182,8 @@ impl CommandRegistry {
     /// Get a command by name or alias
     ///
     /// Performs a two-stage lookup:
-    /// 1. Direct lookup in the `commands` HashMap
-    /// 2. If not found, lookup in the `aliases` HashMap to get the primary name,
+    /// 1. Direct lookup in the `commands` `HashMap`
+    /// 2. If not found, lookup in the `aliases` `HashMap` to get the primary name,
     ///    then lookup the primary name in `commands`
     ///
     /// Returns `Arc<Command>` for cheap cloning. The Arc is cloned (incrementing
@@ -190,7 +191,7 @@ impl CommandRegistry {
     ///
     /// # Time Complexity
     ///
-    /// O(1) average case for both direct and alias lookup (two HashMap lookups max).
+    /// O(1) average case for both direct and alias lookup (two `HashMap` lookups max).
     ///
     /// # Example
     ///
@@ -225,19 +226,26 @@ impl CommandRegistry {
     }
 
     /// Get all commands
+    #[must_use]
     pub fn all(&self) -> Vec<Arc<Command>> {
         self.commands.values().cloned().collect()
     }
 
     /// Get all command names (including aliases)
+    #[must_use]
     pub fn all_names(&self) -> Vec<&str> {
-        let mut names: Vec<&str> = self.commands.keys().map(|s| s.as_str()).collect();
-        names.extend(self.aliases.keys().map(|s| s.as_str()));
-        names.sort();
+        let mut names: Vec<&str> = self
+            .commands
+            .keys()
+            .map(std::string::String::as_str)
+            .collect();
+        names.extend(self.aliases.keys().map(std::string::String::as_str));
+        names.sort_unstable();
         names
     }
 
     /// Get commands by category
+    #[must_use]
     pub fn by_category(&self, category: CommandCategory) -> Vec<Arc<Command>> {
         self.commands
             .values()
@@ -314,7 +322,7 @@ impl CommandRegistry {
 
         // Find the command
         let command = self.get(&command_name).ok_or_else(|| {
-            CommandError::new(format!("Unknown command: /{}", command_name))
+            CommandError::new(format!("Unknown command: /{command_name}"))
                 .with_hint("Type /help to see available commands")
         })?;
 
@@ -337,11 +345,13 @@ impl CommandRegistry {
     }
 
     /// Get the number of commands
+    #[must_use]
     pub fn len(&self) -> usize {
         self.commands.len()
     }
 
     /// Check if empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
     }
@@ -355,7 +365,7 @@ impl Default for CommandRegistry {
 
 /// Parse argument string into typed values
 ///
-/// Converts a raw argument string (everything after the command name) into a HashMap
+/// Converts a raw argument string (everything after the command name) into a `HashMap`
 /// of typed argument values based on the command's argument definitions.
 ///
 /// # Parsing Strategy
@@ -406,7 +416,7 @@ fn parse_arguments(
         if let Some(value) = parts.get(i) {
             let parsed = match &def.arg_type {
                 super::types::CommandArgumentType::String => {
-                    ArgumentValue::String(value.to_string())
+                    ArgumentValue::String((*value).to_string())
                 }
                 super::types::CommandArgumentType::Bool => {
                     let b = matches!(value.to_lowercase().as_str(), "true" | "yes" | "on" | "1");
@@ -419,7 +429,7 @@ fn parse_arguments(
                     ArgumentValue::Int(i)
                 }
                 super::types::CommandArgumentType::Choice(choices) => {
-                    if !choices.contains(&value.to_string()) {
+                    if !choices.contains(&(*value).to_string()) {
                         return Err(CommandError::new(format!(
                             "Invalid value '{}' for '{}'. Expected one of: {}",
                             value,
@@ -427,11 +437,11 @@ fn parse_arguments(
                             choices.join(", ")
                         )));
                     }
-                    ArgumentValue::String(value.to_string())
+                    ArgumentValue::String((*value).to_string())
                 }
                 super::types::CommandArgumentType::FilePath
                 | super::types::CommandArgumentType::SessionId => {
-                    ArgumentValue::String(value.to_string())
+                    ArgumentValue::String((*value).to_string())
                 }
             };
             result.insert(def.name.clone(), parsed);
@@ -493,6 +503,7 @@ fn parse_arguments(
 /// assert!(registry.get("h").is_some());  // alias for help
 /// assert!(registry.get("q").is_some());  // alias for quit
 /// ```
+#[must_use]
 pub fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
 
@@ -814,10 +825,10 @@ pub fn build_command_registry() -> CommandRegistry {
             let mut info = String::new();
             info.push_str(&format!("Working directory: {}\n", ctx.cwd));
             if let Some(ref session) = ctx.session_id {
-                info.push_str(&format!("Session: {}\n", session));
+                info.push_str(&format!("Session: {session}\n"));
             }
             if let Some(ref model) = ctx.model {
-                info.push_str(&format!("Model: {}\n", model));
+                info.push_str(&format!("Model: {model}\n"));
             }
             Ok(CommandOutput::Message(info))
         }),
@@ -870,8 +881,7 @@ pub fn build_command_registry() -> CommandRegistry {
                     "disable" | "off" => HooksAction::Disable,
                     other => {
                         return Err(CommandError::new(format!(
-                            "Unknown hooks subcommand: {}",
-                            other
+                            "Unknown hooks subcommand: {other}"
                         ))
                         .with_hint("Available: list, toggle, reload, metrics, enable, disable"));
                     }
@@ -923,7 +933,7 @@ pub fn build_command_registry() -> CommandRegistry {
             CommandCategory::Ui,
             Box::new(|ctx| {
                 let style = ctx.get_string("style").unwrap_or("ensemble");
-                Ok(CommandOutput::Message(format!("Footer style: {}", style)))
+                Ok(CommandOutput::Message(format!("Footer style: {style}")))
             }),
         )
         .arg(CommandArgument::choice(
@@ -961,7 +971,7 @@ pub fn build_command_registry() -> CommandRegistry {
             CommandCategory::Config,
             Box::new(|ctx| {
                 let level = ctx.get_string("level").unwrap_or("medium");
-                Ok(CommandOutput::Message(format!("Thinking level: {}", level)))
+                Ok(CommandOutput::Message(format!("Thinking level: {level}")))
             }),
         )
         .arg(CommandArgument::choice(
@@ -1011,11 +1021,10 @@ pub fn build_command_registry() -> CommandRegistry {
                     "detailed" | "detail" | "full" => UsageAction::Detailed,
                     "reset" | "clear" => UsageAction::Reset,
                     other => {
-                        return Err(CommandError::new(format!(
-                            "Unknown cost subcommand: {}",
-                            other
-                        ))
-                        .with_hint("Available: summary, detailed, reset"));
+                        return Err(
+                            CommandError::new(format!("Unknown cost subcommand: {other}"))
+                                .with_hint("Available: summary, detailed, reset"),
+                        );
                     }
                 };
                 Ok(CommandOutput::Action(CommandAction::ShowUsage(action)))
@@ -1040,19 +1049,17 @@ pub fn build_command_registry() -> CommandRegistry {
             Box::new(|ctx| {
                 let parts: Vec<&str> = ctx.raw_args.split_whitespace().collect();
                 let format = parts.first().map(|s| s.to_lowercase());
-                let path = parts.get(1).map(|s| s.to_string());
+                let path = parts.get(1).map(|s| (*s).to_string());
 
                 let action = match format.as_deref() {
                     None | Some("") => ExportAction::ShowOptions,
-                    Some("md") | Some("markdown") => ExportAction::Markdown(path),
+                    Some("md" | "markdown") => ExportAction::Markdown(path),
                     Some("html") => ExportAction::Html(path),
                     Some("json") => ExportAction::Json(path),
-                    Some("txt") | Some("text") => ExportAction::PlainText(path),
+                    Some("txt" | "text") => ExportAction::PlainText(path),
                     Some(other) => {
-                        return Err(
-                            CommandError::new(format!("Unknown export format: {}", other))
-                                .with_hint("Available: markdown, html, json, text"),
-                        );
+                        return Err(CommandError::new(format!("Unknown export format: {other}"))
+                            .with_hint("Available: markdown, html, json, text"));
                     }
                 };
                 Ok(CommandOutput::Action(CommandAction::ExportSession(action)))
@@ -1109,10 +1116,10 @@ pub fn build_command_registry() -> CommandRegistry {
 
                 let action = match parts.first().copied() {
                     None | Some("") => ToolHistoryAction::Recent(10),
-                    Some("stats") | Some("statistics") => ToolHistoryAction::Stats,
+                    Some("stats" | "statistics") => ToolHistoryAction::Stats,
                     Some("clear") => ToolHistoryAction::Clear,
                     Some("tool") => {
-                        let tool_name = parts.get(1).unwrap_or(&"").to_string();
+                        let tool_name = (*parts.get(1).unwrap_or(&"")).to_string();
                         if tool_name.is_empty() {
                             return Err(CommandError::new("Tool name required")
                                 .with_hint("Usage: /toolhistory tool <name>"));
@@ -1150,26 +1157,26 @@ pub fn build_command_registry() -> CommandRegistry {
                 let parts: Vec<&str> = args.split_whitespace().collect();
 
                 let action = match parts.first().copied() {
-                    None | Some("") | Some("list") => SkillsAction::List,
-                    Some("reload") | Some("refresh") => SkillsAction::Reload,
-                    Some("activate") | Some("enable") | Some("on") => {
-                        let name = parts.get(1).unwrap_or(&"").to_string();
+                    None | Some("" | "list") => SkillsAction::List,
+                    Some("reload" | "refresh") => SkillsAction::Reload,
+                    Some("activate" | "enable" | "on") => {
+                        let name = (*parts.get(1).unwrap_or(&"")).to_string();
                         if name.is_empty() {
                             return Err(CommandError::new("Skill name required")
                                 .with_hint("Usage: /skills activate <skill-name>"));
                         }
                         SkillsAction::Activate(name)
                     }
-                    Some("deactivate") | Some("disable") | Some("off") => {
-                        let name = parts.get(1).unwrap_or(&"").to_string();
+                    Some("deactivate" | "disable" | "off") => {
+                        let name = (*parts.get(1).unwrap_or(&"")).to_string();
                         if name.is_empty() {
                             return Err(CommandError::new("Skill name required")
                                 .with_hint("Usage: /skills deactivate <skill-name>"));
                         }
                         SkillsAction::Deactivate(name)
                     }
-                    Some("info") | Some("show") => {
-                        let name = parts.get(1).unwrap_or(&"").to_string();
+                    Some("info" | "show") => {
+                        let name = (*parts.get(1).unwrap_or(&"")).to_string();
                         if name.is_empty() {
                             return Err(CommandError::new("Skill name required")
                                 .with_hint("Usage: /skills info <skill-name>"));

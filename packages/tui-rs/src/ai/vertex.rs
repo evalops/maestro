@@ -31,7 +31,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::types::*;
+use super::types::{
+    ContentBlock, Message, MessageContent, RequestConfig, Role, StopReason, StreamEvent,
+};
 use super::AiProvider;
 
 /// Default Vertex AI region
@@ -123,7 +125,7 @@ impl VertexAiClient {
             .await
             {
                 let _ = tx.send(StreamEvent::Error {
-                    message: format!("Vertex AI error: {}", e),
+                    message: format!("Vertex AI error: {e}"),
                 });
             }
         });
@@ -188,7 +190,7 @@ impl VertexAiClient {
                 .filter_map(|block| match block {
                     ContentBlock::Text { text } => Some(Part::Text { text: text.clone() }),
                     ContentBlock::Thinking { thinking, .. } => Some(Part::Text {
-                        text: format!("<thinking>{}</thinking>", thinking),
+                        text: format!("<thinking>{thinking}</thinking>"),
                     }),
                     ContentBlock::ToolUse { id: _, name, input } => Some(Part::FunctionCall {
                         function_call: FunctionCall {
@@ -218,6 +220,7 @@ impl VertexAiClient {
     }
 
     /// Get the provider type
+    #[must_use]
     pub fn provider(&self) -> AiProvider {
         AiProvider::VertexAi
     }
@@ -237,15 +240,14 @@ async fn stream_vertex_response(
 ) -> Result<()> {
     // Vertex AI endpoint format
     let url = format!(
-        "https://{}-aiplatform.googleapis.com/v1/projects/{}/locations/{}/publishers/google/models/{}:streamGenerateContent",
-        region, project_id, region, model
+        "https://{region}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{region}/publishers/google/models/{model}:streamGenerateContent"
     );
 
     let mut req_builder = client.post(&url).header("Content-Type", "application/json");
 
     // Add authentication
     if let Some(token) = access_token {
-        req_builder = req_builder.header("Authorization", format!("Bearer {}", token));
+        req_builder = req_builder.header("Authorization", format!("Bearer {token}"));
     } else if let Some(key) = api_key {
         req_builder = req_builder.query(&[("key", key)]);
     }
@@ -259,7 +261,7 @@ async fn stream_vertex_response(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Vertex AI error ({}): {}", status, body);
+        anyhow::bail!("Vertex AI error ({status}): {body}");
     }
 
     // Parse SSE stream
@@ -457,6 +459,7 @@ struct UsageMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::Tool;
 
     #[test]
     fn test_vertex_client_creation() {

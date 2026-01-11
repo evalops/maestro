@@ -25,26 +25,31 @@ pub struct Spacing {
 
 impl Spacing {
     /// Create uniform spacing.
+    #[must_use]
     pub fn uniform(value: usize) -> Self {
         Self { x: value, y: value }
     }
 
     /// Create horizontal-only spacing.
+    #[must_use]
     pub fn horizontal(x: usize) -> Self {
         Self { x, y: 0 }
     }
 
     /// Create vertical-only spacing.
+    #[must_use]
     pub fn vertical(y: usize) -> Self {
         Self { x: 0, y }
     }
 
     /// Total horizontal space (both sides).
+    #[must_use]
     pub fn total_x(&self) -> usize {
         self.x * 2
     }
 
     /// Total vertical space (both sides).
+    #[must_use]
     pub fn total_y(&self) -> usize {
         self.y * 2
     }
@@ -82,6 +87,7 @@ impl Default for LayoutConstraints {
 
 impl LayoutConstraints {
     /// Create new constraints with min/max width.
+    #[must_use]
     pub fn width(min: usize, max: usize) -> Self {
         Self {
             min_width: min,
@@ -91,6 +97,7 @@ impl LayoutConstraints {
     }
 
     /// Create new constraints with min/max height.
+    #[must_use]
     pub fn height(min: usize, max: usize) -> Self {
         Self {
             min_height: min,
@@ -100,6 +107,7 @@ impl LayoutConstraints {
     }
 
     /// Create fixed width constraints.
+    #[must_use]
     pub fn fixed_width(width: usize) -> Self {
         Self {
             min_width: width,
@@ -109,6 +117,7 @@ impl LayoutConstraints {
     }
 
     /// Create fixed height constraints.
+    #[must_use]
     pub fn fixed_height(height: usize) -> Self {
         Self {
             min_height: height,
@@ -118,35 +127,41 @@ impl LayoutConstraints {
     }
 
     /// Set padding.
+    #[must_use]
     pub fn with_padding(mut self, padding: Spacing) -> Self {
         self.padding = padding;
         self
     }
 
     /// Set margin.
+    #[must_use]
     pub fn with_margin(mut self, margin: Spacing) -> Self {
         self.margin = margin;
         self
     }
 
     /// Calculate content width after padding and margin.
+    #[must_use]
     pub fn content_width(&self, available: usize) -> usize {
         let outer = self.margin.total_x() + self.padding.total_x();
         available.saturating_sub(outer).max(1)
     }
 
     /// Calculate content height after padding and margin.
+    #[must_use]
     pub fn content_height(&self, available: usize) -> usize {
         let outer = self.margin.total_y() + self.padding.total_y();
         available.saturating_sub(outer).max(1)
     }
 
     /// Clamp a width to these constraints.
+    #[must_use]
     pub fn clamp_width(&self, width: usize) -> usize {
         width.clamp(self.min_width, self.max_width)
     }
 
     /// Clamp a height to these constraints.
+    #[must_use]
     pub fn clamp_height(&self, height: usize) -> usize {
         height.clamp(self.min_height, self.max_height)
     }
@@ -172,6 +187,7 @@ impl LayoutConstraints {
 /// let width = responsive_width(50, 40, 100, 0.8);
 /// assert_eq!(width, 40); // 50 * 0.8 = 40, exactly at min
 /// ```
+#[must_use]
 pub fn responsive_width(
     terminal_width: usize,
     min: usize,
@@ -188,6 +204,7 @@ pub fn responsive_width(
 /// * `total_width` - Total available width
 /// * `borders` - Whether borders are present (adds 4 for "│ " on each side)
 /// * `padding_x` - Horizontal padding on each side
+#[must_use]
 pub fn content_width(total_width: usize, borders: bool, padding_x: usize) -> usize {
     let border_width = if borders { 4 } else { 0 };
     total_width
@@ -223,6 +240,7 @@ impl Default for FlexItem {
 
 impl FlexItem {
     /// Create a flex item with given weight.
+    #[must_use]
     pub fn weight(weight: f32) -> Self {
         Self {
             weight,
@@ -231,18 +249,21 @@ impl FlexItem {
     }
 
     /// Set minimum width.
+    #[must_use]
     pub fn min(mut self, min: usize) -> Self {
         self.min_width = min;
         self
     }
 
     /// Set maximum width.
+    #[must_use]
     pub fn max(mut self, max: usize) -> Self {
         self.max_width = max;
         self
     }
 
     /// Create a fixed-width item.
+    #[must_use]
     pub fn fixed(width: usize) -> Self {
         Self {
             weight: 0.0,
@@ -277,6 +298,7 @@ impl FlexItem {
 /// // Item 2: 96 * 1/4 = 24
 /// assert_eq!(widths, vec![24, 48, 24]);
 /// ```
+#[must_use]
 pub fn distribute_flex(available: usize, items: &[FlexItem], gap: usize) -> Vec<usize> {
     if items.is_empty() {
         return vec![];
@@ -366,6 +388,7 @@ pub enum Breakpoint {
 
 impl Breakpoint {
     /// Get breakpoint for a given terminal width.
+    #[must_use]
     pub fn from_width(width: usize) -> Self {
         match width {
             0..=39 => Breakpoint::Narrow,
@@ -377,6 +400,7 @@ impl Breakpoint {
     }
 
     /// Get minimum width for this breakpoint.
+    #[must_use]
     pub fn min_width(self) -> usize {
         match self {
             Breakpoint::Narrow => 0,
@@ -388,6 +412,7 @@ impl Breakpoint {
     }
 
     /// Check if width matches this breakpoint or larger.
+    #[must_use]
     pub fn matches(self, width: usize) -> bool {
         width >= self.min_width()
     }
@@ -598,11 +623,13 @@ impl Default for ZoneConfig {
 
 impl ZoneLayout {
     /// Create a new zone layout.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set gap between zones.
+    #[must_use]
     pub fn gap(mut self, gap: usize) -> Self {
         self.gap = gap;
         self
@@ -617,6 +644,7 @@ impl ZoneLayout {
     }
 
     /// Calculate zone widths for a given total width.
+    #[must_use]
     pub fn calculate(&self, total_width: usize) -> HashMap<String, usize> {
         let mut result = HashMap::new();
 

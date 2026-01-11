@@ -22,14 +22,15 @@ pub fn render_scrollbar(
     }
 
     // Calculate thumb position and size
-    let track_height = area.height as f32;
-    let thumb_height = (viewport_height as f32 / content_height as f32 * track_height)
+    let track_height = f32::from(area.height);
+    let thumb_height = (f32::from(viewport_height) / f32::from(content_height) * track_height)
         .max(1.0)
         .min(track_height) as u16;
 
     let max_offset = content_height.saturating_sub(viewport_height);
     let thumb_position = if max_offset > 0 {
-        (offset as f32 / max_offset as f32 * (track_height - thumb_height as f32)) as u16
+        (f32::from(offset) / f32::from(max_offset) * (track_height - f32::from(thumb_height)))
+            as u16
     } else {
         0
     };

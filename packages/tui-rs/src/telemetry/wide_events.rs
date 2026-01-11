@@ -1,6 +1,6 @@
 //! Wide Events Implementation
 //!
-//! Canonical turn event types and the TurnCollector for accumulating
+//! Canonical turn event types and the `TurnCollector` for accumulating
 //! context during a turn and emitting a single wide event at completion.
 
 use std::collections::HashMap;
@@ -259,6 +259,7 @@ impl Default for TailSamplingConfig {
 
 impl TailSamplingConfig {
     /// Create config from environment variables.
+    #[must_use]
     pub fn from_env() -> Self {
         let mut config = Self::default();
 
@@ -480,6 +481,7 @@ impl TurnCollector {
 
     /// Complete the turn and emit the canonical event.
     /// Applies tail sampling logic to decide whether to persist.
+    #[must_use]
     pub fn complete(
         self,
         status: TurnStatus,

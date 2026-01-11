@@ -54,7 +54,7 @@
 //! communication between the TUI and agent:
 //!
 //! 1. **Command channel** (`mpsc::UnboundedSender<AgentCommand>`):
-//!    - TUI sends commands (prompt, cancel, set_model, etc.)
+//!    - TUI sends commands (prompt, cancel, `set_model`, etc.)
 //!    - Agent receives and processes in order
 //!
 //! 2. **Event channel** (`mpsc::UnboundedSender<FromAgent>`):
@@ -141,7 +141,7 @@ pub struct NativeAgentConfig {
     /// Model to use (e.g., "claude-opus-4-5-20251101", "gpt-5.1-codex-max")
     ///
     /// The model string is parsed by `UnifiedClient` to determine the provider
-    /// (Anthropic, OpenAI, etc.) and model variant.
+    /// (Anthropic, `OpenAI`, etc.) and model variant.
     pub model: String,
 
     /// Maximum tokens for responses
@@ -184,8 +184,7 @@ impl Default for NativeAgentConfig {
             thinking_enabled: false,
             thinking_budget: 10000,
             cwd: std::env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| ".".to_string()),
+                .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
         }
     }
 }
@@ -326,7 +325,7 @@ pub struct NativeAgent {
     /// via this channel. The agent waits for these responses before proceeding.
     tool_response_tx: mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>,
 
-    /// Channel to send events to the TUI (for send_ready)
+    /// Channel to send events to the TUI (for `send_ready`)
     ///
     /// Used by helper methods like `send_ready()` and `send_session_info()` to
     /// emit events without going through the background task.
@@ -340,7 +339,7 @@ pub struct NativeAgent {
 
     /// Provider name
     ///
-    /// Cached provider identifier (e.g., "Anthropic", "OpenAI"). Used for
+    /// Cached provider identifier (e.g., "Anthropic", "`OpenAI`"). Used for
     /// status displays and debugging.
     provider_name: String,
 }
@@ -445,13 +444,14 @@ impl NativeAgent {
             tool_response_tx,
             event_tx,
             model_name: config.model,
-            provider_name: format!("{:?}", provider),
+            provider_name: format!("{provider:?}"),
         };
 
         Ok((agent, event_rx))
     }
 
     /// Get the sender for tool responses
+    #[must_use]
     pub fn tool_response_sender(
         &self,
     ) -> mpsc::UnboundedSender<(String, bool, Option<ToolResult>)> {
@@ -521,7 +521,7 @@ impl NativeAgent {
                 kind,
                 queue_id,
             })
-            .map_err(|e| anyhow::anyhow!("Failed to send prompt: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to send prompt: {e}"))?;
         Ok(())
     }
 
@@ -553,7 +553,7 @@ impl NativeAgent {
         let model = model.into();
         self.command_tx
             .send(AgentCommand::SetModel { model })
-            .map_err(|e| anyhow::anyhow!("Failed to set model: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to set model: {e}"))?;
         Ok(())
     }
 
@@ -561,7 +561,7 @@ impl NativeAgent {
     pub fn set_thinking(&self, enabled: bool, budget: u32) -> Result<()> {
         self.command_tx
             .send(AgentCommand::SetThinking { enabled, budget })
-            .map_err(|e| anyhow::anyhow!("Failed to set thinking: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to set thinking: {e}"))?;
         Ok(())
     }
 
@@ -578,7 +578,7 @@ impl NativeAgent {
     pub fn continue_execution(&self) -> Result<()> {
         self.command_tx
             .send(AgentCommand::Continue)
-            .map_err(|e| anyhow::anyhow!("Failed to send continue: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to send continue: {e}"))?;
         Ok(())
     }
 }
@@ -593,8 +593,8 @@ impl NativeAgent {
 ///
 /// The runner is moved into `tokio::spawn` and owns:
 /// - Conversation history (Vec<Message>)
-/// - Configuration (NativeAgentConfig)
-/// - AI client (UnifiedClient)
+/// - Configuration (`NativeAgentConfig`)
+/// - AI client (`UnifiedClient`)
 /// - All channel receivers
 ///
 /// This ensures exclusive ownership and prevents data races - only the background
@@ -617,7 +617,7 @@ impl NativeAgent {
 struct NativeAgentRunner {
     /// AI client
     ///
-    /// Handles communication with AI providers (Anthropic, OpenAI, etc.).
+    /// Handles communication with AI providers (Anthropic, `OpenAI`, etc.).
     /// Can be swapped at runtime via `SetModel` commands.
     client: UnifiedClient,
 
@@ -771,14 +771,14 @@ impl NativeAgentRunner {
             match firewall.check_file_read(raw) {
                 FirewallVerdict::Block { reason } => {
                     let _ = self.event_tx.send(FromAgent::Error {
-                        message: format!("Attachment blocked: {}", reason),
+                        message: format!("Attachment blocked: {reason}"),
                         fatal: false,
                     });
                     continue;
                 }
                 FirewallVerdict::RequireApproval { reason } => {
                     let _ = self.event_tx.send(FromAgent::Status {
-                        message: format!("Attachment is sensitive: {} (attaching anyway)", reason),
+                        message: format!("Attachment is sensitive: {reason} (attaching anyway)"),
                     });
                 }
                 FirewallVerdict::Allow => {}
@@ -790,7 +790,7 @@ impl NativeAgentRunner {
                 Ok(m) => m,
                 Err(e) => {
                     let _ = self.event_tx.send(FromAgent::Error {
-                        message: format!("Failed to read attachment metadata for {}: {}", raw, e),
+                        message: format!("Failed to read attachment metadata for {raw}: {e}"),
                         fatal: false,
                     });
                     continue;
@@ -799,7 +799,7 @@ impl NativeAgentRunner {
 
             if !meta.is_file() {
                 let _ = self.event_tx.send(FromAgent::Error {
-                    message: format!("Attachment is not a file: {}", raw),
+                    message: format!("Attachment is not a file: {raw}"),
                     fatal: false,
                 });
                 continue;
@@ -808,7 +808,7 @@ impl NativeAgentRunner {
             if meta.len() > Self::MAX_ATTACHMENT_BYTES {
                 let size_mb = meta.len().div_ceil(1024 * 1024);
                 let _ = self.event_tx.send(FromAgent::Error {
-                    message: format!("Attachment too large ({}MB): {}", size_mb, raw),
+                    message: format!("Attachment too large ({size_mb}MB): {raw}"),
                     fatal: false,
                 });
                 continue;
@@ -827,7 +827,7 @@ impl NativeAgentRunner {
                     }
                     Err(e) => {
                         let _ = self.event_tx.send(FromAgent::Error {
-                            message: format!("Failed to read image attachment {}: {}", raw, e),
+                            message: format!("Failed to read image attachment {raw}: {e}"),
                             fatal: false,
                         });
                     }
@@ -843,15 +843,12 @@ impl NativeAgentRunner {
                         .and_then(|n| n.to_str())
                         .unwrap_or(raw.as_str());
                     blocks.push(ContentBlock::Text {
-                        text: format!("\n\n[Document: {}]\n{}", file_name, truncated),
+                        text: format!("\n\n[Document: {file_name}]\n{truncated}"),
                     });
                 }
                 Err(e) => {
                     let _ = self.event_tx.send(FromAgent::Error {
-                        message: format!(
-                            "Unsupported attachment (not image/utf8 text) {}: {}",
-                            raw, e
-                        ),
+                        message: format!("Unsupported attachment (not image/utf8 text) {raw}: {e}"),
                         fatal: false,
                     });
                 }
@@ -901,7 +898,7 @@ impl NativeAgentRunner {
                         let label = kind.label();
                         let _ = self.event_tx.send(FromAgent::Status {
                             message: if stats.pending_count == 1 {
-                                format!("Queued {} #{} (1 pending)", label, id)
+                                format!("Queued {label} #{id} (1 pending)")
                             } else {
                                 format!(
                                     "Queued {} #{} ({} pending)",
@@ -945,7 +942,7 @@ impl NativeAgentRunner {
                     loop {
                         let result = tokio::select! {
                             res = self.run_loop() => res,
-                            _ = cancel_token.cancelled() => {
+                            () = cancel_token.cancelled() => {
                                 Err(anyhow::anyhow!("Request cancelled"))
                             }
                         };
@@ -987,7 +984,7 @@ impl NativeAgentRunner {
                                     super::retry::RetryDecision::GiveUp { reason } => {
                                         // Not retryable or exhausted retries
                                         let _ = self.event_tx.send(FromAgent::Error {
-                                            message: format!("Agent error: {} ({})", msg, reason),
+                                            message: format!("Agent error: {msg} ({reason})"),
                                             fatal: false,
                                         });
                                         break;
@@ -1037,7 +1034,7 @@ impl NativeAgentRunner {
                         loop {
                             let result = tokio::select! {
                                 res = self.run_loop() => res,
-                                _ = cancel_token.cancelled() => {
+                                () = cancel_token.cancelled() => {
                                     Err(anyhow::anyhow!("Request cancelled"))
                                 }
                             };
@@ -1079,10 +1076,7 @@ impl NativeAgentRunner {
                                         }
                                         super::retry::RetryDecision::GiveUp { reason } => {
                                             let _ = self.event_tx.send(FromAgent::Error {
-                                                message: format!(
-                                                    "Agent error: {} ({})",
-                                                    msg, reason
-                                                ),
+                                                message: format!("Agent error: {msg} ({reason})"),
                                                 fatal: false,
                                             });
                                             break;
@@ -1129,7 +1123,7 @@ impl NativeAgentRunner {
                         });
                     } else {
                         let _ = self.event_tx.send(FromAgent::Status {
-                            message: format!("No queued prompt found with id #{}", id),
+                            message: format!("No queued prompt found with id #{id}"),
                         });
                     }
                 }
@@ -1140,7 +1134,7 @@ impl NativeAgentRunner {
                     }
                     Err(e) => {
                         let _ = self.event_tx.send(FromAgent::Error {
-                            message: format!("Failed to set model: {}", e),
+                            message: format!("Failed to set model: {e}"),
                             fatal: false,
                         });
                     }
@@ -1181,7 +1175,7 @@ impl NativeAgentRunner {
                     // Run the agent loop without adding a user message
                     let result = tokio::select! {
                         res = self.run_loop() => res,
-                        _ = cancel_token.cancelled() => {
+                        () = cancel_token.cancelled() => {
                             Err(anyhow::anyhow!("Request cancelled"))
                         }
                     };
@@ -1190,7 +1184,7 @@ impl NativeAgentRunner {
                         let msg = e.to_string();
                         if msg != "Request cancelled" {
                             let _ = self.event_tx.send(FromAgent::Error {
-                                message: format!("Agent error: {}", e),
+                                message: format!("Agent error: {e}"),
                                 fatal: false,
                             });
                         }
@@ -1505,7 +1499,7 @@ impl NativeAgentRunner {
                             });
                             tool_results.push(ContentBlock::ToolResult {
                                 tool_use_id: call_id,
-                                content: format!("Tool blocked by hook: {}", reason),
+                                content: format!("Tool blocked by hook: {reason}"),
                                 is_error: Some(true),
                             });
                             continue;
@@ -1544,7 +1538,7 @@ impl NativeAgentRunner {
                         });
                         tool_results.push(ContentBlock::ToolResult {
                             tool_use_id: call_id,
-                            content: format!("Tool blocked by action firewall: {}", reason),
+                            content: format!("Tool blocked by action firewall: {reason}"),
                             is_error: Some(true),
                         });
                         continue;
@@ -1607,7 +1601,7 @@ impl NativeAgentRunner {
 
                             // Append injected context if any
                             let mut final_content = if let Some(ref ctx) = extra_context {
-                                format!("{}\n\n{}", content, ctx)
+                                format!("{content}\n\n{ctx}")
                             } else {
                                 content
                             };
@@ -1659,10 +1653,7 @@ impl NativeAgentRunner {
             // Check for auto-compaction before the next turn
             if self.compactor.should_auto_compact(&self.messages) {
                 let usage_pct = self.compactor.usage_percentage(&self.messages);
-                eprintln!(
-                    "[agent] Auto-compaction triggered at {:.1}% capacity",
-                    usage_pct
-                );
+                eprintln!("[agent] Auto-compaction triggered at {usage_pct:.1}% capacity");
                 let result = self.compactor.compact_with_tokens(&self.messages);
                 if result.was_compacted() {
                     let split_note = if result.was_turn_split() {
@@ -1702,7 +1693,7 @@ impl NativeAgentRunner {
         Ok(())
     }
 
-    /// Execute a tool using the ToolExecutor
+    /// Execute a tool using the `ToolExecutor`
     async fn execute_tool(
         &self,
         tool_name: &str,
@@ -1719,12 +1710,8 @@ fn parse_tool_input(tool_name: &str, json: &str) -> Result<serde_json::Value, St
     if json.trim().is_empty() {
         return Ok(serde_json::json!({}));
     }
-    serde_json::from_str(json).map_err(|err| {
-        format!(
-            "Failed to parse tool input JSON for '{}': {}",
-            tool_name, err
-        )
-    })
+    serde_json::from_str(json)
+        .map_err(|err| format!("Failed to parse tool input JSON for '{tool_name}': {err}"))
 }
 
 async fn wait_for_tool_response(

@@ -72,11 +72,13 @@ impl FieldFormatter {
     }
 
     /// Format a label/value pair as a single line.
+    #[must_use]
     pub fn line(&self, label: &str, value_spans: Vec<Span<'static>>) -> Line<'static> {
         Line::from(self.full_spans(label, value_spans))
     }
 
     /// Format a continuation line (for wrapped values).
+    #[must_use]
     pub fn continuation(&self, mut spans: Vec<Span<'static>>) -> Line<'static> {
         let mut all_spans = Vec::with_capacity(spans.len() + 1);
         all_spans.push(Span::from(self.value_indent.clone()).dim());
@@ -85,16 +87,19 @@ impl FieldFormatter {
     }
 
     /// Calculate the available width for values.
+    #[must_use]
     pub fn value_width(&self, available_width: usize) -> usize {
         available_width.saturating_sub(self.value_offset)
     }
 
     /// Get the total offset from start to value column.
+    #[must_use]
     pub fn value_offset(&self) -> usize {
         self.value_offset
     }
 
     /// Build the full spans for a label/value pair.
+    #[must_use]
     pub fn full_spans(
         &self,
         label: &str,
@@ -129,6 +134,7 @@ impl FieldFormatter {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Calculate the display width of a line (sum of span widths).
+#[must_use]
 pub fn line_display_width(line: &Line<'_>) -> usize {
     line.spans
         .iter()
@@ -139,6 +145,7 @@ pub fn line_display_width(line: &Line<'_>) -> usize {
 /// Truncate a line to fit within a maximum width.
 ///
 /// Handles Unicode characters properly, truncating at character boundaries.
+#[must_use]
 pub fn truncate_line_to_width(line: Line<'static>, max_width: usize) -> Line<'static> {
     if max_width == 0 {
         return Line::from(Vec::<Span<'static>>::new());
@@ -192,6 +199,7 @@ pub fn truncate_line_to_width(line: Line<'static>, max_width: usize) -> Line<'st
 }
 
 /// Truncate a line and add ellipsis if truncated.
+#[must_use]
 pub fn truncate_line_with_ellipsis(line: Line<'static>, max_width: usize) -> Line<'static> {
     let current_width = line_display_width(&line);
     if current_width <= max_width {
@@ -205,6 +213,7 @@ pub fn truncate_line_with_ellipsis(line: Line<'static>, max_width: usize) -> Lin
 }
 
 /// Check if a line contains only spaces (no other content).
+#[must_use]
 pub fn is_blank_line(line: &Line<'_>) -> bool {
     line.spans
         .iter()
@@ -212,6 +221,7 @@ pub fn is_blank_line(line: &Line<'_>) -> bool {
 }
 
 /// Convert a borrowed line to an owned 'static line.
+#[must_use]
 pub fn line_to_static(line: &Line<'_>) -> Line<'static> {
     Line {
         spans: line

@@ -1,6 +1,6 @@
-//! Turn Tracker - Integrates TurnCollector with Agent Events
+//! Turn Tracker - Integrates `TurnCollector` with Agent Events
 //!
-//! Tracks agent turns by observing FromAgent events and emits canonical
+//! Tracks agent turns by observing `FromAgent` events and emits canonical
 //! wide events at turn completion.
 
 use crate::agent::{FromAgent, TokenUsage};
@@ -47,6 +47,7 @@ pub struct TurnTracker {
 
 impl TurnTracker {
     /// Create a new turn tracker.
+    #[must_use]
     pub fn new(config: TurnTrackerConfig) -> Self {
         Self {
             config,
@@ -72,6 +73,7 @@ impl TurnTracker {
     }
 
     /// Get the current turn number.
+    #[must_use]
     pub fn turn_number(&self) -> u32 {
         self.turn_number
     }

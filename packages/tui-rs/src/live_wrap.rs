@@ -35,7 +35,7 @@
 use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
-/// A single visual row produced by RowBuilder.
+/// A single visual row produced by `RowBuilder`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     /// The text content of this row
@@ -46,6 +46,7 @@ pub struct Row {
 
 impl Row {
     /// Get the display width of this row in terminal columns
+    #[must_use]
     pub fn width(&self) -> usize {
         self.text.width()
     }
@@ -64,7 +65,8 @@ pub struct RowBuilder {
 }
 
 impl RowBuilder {
-    /// Create a new RowBuilder with the specified target width
+    /// Create a new `RowBuilder` with the specified target width
+    #[must_use]
     pub fn new(target_width: usize) -> Self {
         Self {
             target_width: target_width.max(1),
@@ -74,6 +76,7 @@ impl RowBuilder {
     }
 
     /// Get the current target width
+    #[must_use]
     pub fn width(&self) -> usize {
         self.target_width
     }
@@ -127,11 +130,13 @@ impl RowBuilder {
     }
 
     /// Return a snapshot of produced rows (non-draining)
+    #[must_use]
     pub fn rows(&self) -> &[Row] {
         &self.rows
     }
 
     /// Rows suitable for display, including the current partial line if any
+    #[must_use]
     pub fn display_rows(&self) -> Vec<Row> {
         let mut out = self.rows.clone();
         if !self.current_line.is_empty() {
@@ -147,7 +152,7 @@ impl RowBuilder {
     /// (including the current partial line, if any).
     /// Returns the drained rows in order.
     pub fn drain_commit_ready(&mut self, max_keep: usize) -> Vec<Row> {
-        let display_count = self.rows.len() + if self.current_line.is_empty() { 0 } else { 1 };
+        let display_count = self.rows.len() + usize::from(!self.current_line.is_empty());
         if display_count <= max_keep {
             return Vec::new();
         }
@@ -211,20 +216,20 @@ impl RowBuilder {
             if suffix.is_empty() {
                 // Fits entirely; keep in buffer (do not push yet) so we can append more later
                 break;
-            } else {
-                // Emit wrapped prefix as a non-explicit row and continue with the remainder
-                self.rows.push(Row {
-                    text: prefix,
-                    explicit_break: false,
-                });
-                self.current_line = suffix.to_string();
             }
+            // Emit wrapped prefix as a non-explicit row and continue with the remainder
+            self.rows.push(Row {
+                text: prefix,
+                explicit_break: false,
+            });
+            self.current_line = suffix.to_string();
         }
     }
 }
 
 /// Take a prefix of `text` whose visible width is at most `max_cols`.
-/// Returns (prefix, suffix, prefix_width).
+/// Returns (prefix, suffix, `prefix_width`).
+#[must_use]
 pub fn take_prefix_by_width(text: &str, max_cols: usize) -> (String, &str, usize) {
     if max_cols == 0 || text.is_empty() {
         return (String::new(), text, 0);

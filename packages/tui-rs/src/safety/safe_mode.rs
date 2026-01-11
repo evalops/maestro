@@ -4,7 +4,6 @@
 //! - Require a plan before mutating operations (write/edit/bash/background tasks)
 //! - Run configured validators after file mutations
 
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,32 +30,32 @@ struct SafeModeConfig {
 
 static PLAN_SATISFIED: AtomicBool = AtomicBool::new(false);
 
-static SAFE_MODE_CONFIG: Lazy<Mutex<SafeModeConfig>> = Lazy::new(|| {
-    let enabled = std::env::var("COMPOSER_SAFE_MODE").ok().as_deref() == Some("1");
-    let require_plan = if !enabled {
-        false
-    } else {
-        std::env::var("COMPOSER_SAFE_REQUIRE_PLAN").ok().as_deref() != Some("0")
-    };
-    let validators_raw = std::env::var("COMPOSER_SAFE_VALIDATORS").unwrap_or_default();
-    let validators = validators_raw
-        .split(',')
-        .map(|entry| entry.trim().to_string())
-        .filter(|entry| !entry.is_empty())
-        .collect();
-    let lsp_blocking_severity = std::env::var("COMPOSER_SAFE_LSP_SEVERITY")
-        .ok()
-        .and_then(|value| value.parse::<u8>().ok())
-        .map(|value| value.clamp(1, 4))
-        .unwrap_or_else(lsp::blocking_severity);
+static SAFE_MODE_CONFIG: std::sync::LazyLock<Mutex<SafeModeConfig>> =
+    std::sync::LazyLock::new(|| {
+        let enabled = std::env::var("COMPOSER_SAFE_MODE").ok().as_deref() == Some("1");
+        let require_plan = if enabled {
+            std::env::var("COMPOSER_SAFE_REQUIRE_PLAN").ok().as_deref() != Some("0")
+        } else {
+            false
+        };
+        let validators_raw = std::env::var("COMPOSER_SAFE_VALIDATORS").unwrap_or_default();
+        let validators = validators_raw
+            .split(',')
+            .map(|entry| entry.trim().to_string())
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        let lsp_blocking_severity = std::env::var("COMPOSER_SAFE_LSP_SEVERITY")
+            .ok()
+            .and_then(|value| value.parse::<u8>().ok())
+            .map_or_else(lsp::blocking_severity, |value| value.clamp(1, 4));
 
-    Mutex::new(SafeModeConfig {
-        enabled,
-        require_plan,
-        validators,
-        lsp_blocking_severity,
-    })
-});
+        Mutex::new(SafeModeConfig {
+            enabled,
+            require_plan,
+            validators,
+            lsp_blocking_severity,
+        })
+    });
 
 /// Mark plan requirement as satisfied/unsatisfied.
 pub fn set_plan_satisfied(value: bool) {
@@ -86,12 +85,11 @@ pub fn require_plan(tool_name: &str) -> Result<(), String> {
     }
 
     Err(format!(
-        "Safe mode requires a plan before executing {}. Create or update a todo checklist first.",
-        tool_name
+        "Safe mode requires a plan before executing {tool_name}. Create or update a todo checklist first."
     ))
 }
 
-/// Run validators configured via COMPOSER_SAFE_VALIDATORS.
+/// Run validators configured via `COMPOSER_SAFE_VALIDATORS`.
 pub async fn run_validators(paths: &[String]) -> Result<Vec<ValidatorResult>, String> {
     run_validators_with_diagnostics(paths, None).await
 }
@@ -126,8 +124,7 @@ pub async fn run_validators_with_diagnostics(
                 .collect::<Vec<_>>()
                 .join("\n");
             return Err(format!(
-                "LSP diagnostics blocked safe-mode validators:\n{}",
-                summary
+                "LSP diagnostics blocked safe-mode validators:\n{summary}"
             ));
         }
     }
@@ -137,7 +134,7 @@ pub async fn run_validators_with_diagnostics(
     }
 
     let (shell, shell_args) = resolve_shell_config()
-        .map_err(|e| format!("Failed to resolve shell for validators: {}", e))?;
+        .map_err(|e| format!("Failed to resolve shell for validators: {e}"))?;
 
     let mut results = Vec::new();
     for command in cfg.validators {
@@ -149,7 +146,7 @@ pub async fn run_validators_with_diagnostics(
         let output = cmd
             .output()
             .await
-            .map_err(|e| format!("Failed to run validator '{}': {}", command, e))?;
+            .map_err(|e| format!("Failed to run validator '{command}': {e}"))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();

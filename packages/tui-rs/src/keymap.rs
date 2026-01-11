@@ -24,26 +24,31 @@ pub struct Key {
 
 impl Key {
     /// Create a new key.
+    #[must_use]
     pub fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
         Self { code, modifiers }
     }
 
     /// Create a key with no modifiers.
+    #[must_use]
     pub fn plain(code: KeyCode) -> Self {
         Self::new(code, KeyModifiers::NONE)
     }
 
     /// Create a Ctrl+key combination.
+    #[must_use]
     pub fn ctrl(c: char) -> Self {
         Self::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
     /// Create an Alt+key combination.
+    #[must_use]
     pub fn alt(c: char) -> Self {
         Self::new(KeyCode::Char(c), KeyModifiers::ALT)
     }
 
     /// Create a Ctrl+Shift+key combination.
+    #[must_use]
     pub fn ctrl_shift(c: char) -> Self {
         Self::new(
             KeyCode::Char(c),
@@ -52,6 +57,7 @@ impl Key {
     }
 
     /// Parse a key from string notation like "Ctrl+K" or "Alt+X".
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
         let parts: Vec<&str> = s.split('+').collect();
@@ -123,11 +129,13 @@ pub struct KeySequence(pub Vec<Key>);
 
 impl KeySequence {
     /// Create a new key sequence.
+    #[must_use]
     pub fn new(keys: Vec<Key>) -> Self {
         Self(keys)
     }
 
     /// Create a single-key sequence.
+    #[must_use]
     pub fn single(key: Key) -> Self {
         Self(vec![key])
     }
@@ -139,6 +147,7 @@ impl KeySequence {
     }
 
     /// Check if this sequence starts with another.
+    #[must_use]
     pub fn starts_with(&self, prefix: &KeySequence) -> bool {
         if prefix.0.len() > self.0.len() {
             return false;
@@ -147,11 +156,13 @@ impl KeySequence {
     }
 
     /// Length of the sequence.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
     /// Check if empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -179,6 +190,7 @@ pub struct KeyBinding {
 
 impl KeyBinding {
     /// Create a new binding.
+    #[must_use]
     pub fn new(sequence: KeySequence, action: ActionId) -> Self {
         Self {
             sequence,
@@ -195,12 +207,14 @@ impl KeyBinding {
     }
 
     /// Restrict to specific modes.
+    #[must_use]
     pub fn with_modes(mut self, modes: Vec<String>) -> Self {
         self.modes = modes;
         self
     }
 
     /// Check if this binding is active in a mode.
+    #[must_use]
     pub fn active_in_mode(&self, mode: &str) -> bool {
         self.modes.is_empty() || self.modes.iter().any(|m| m == mode)
     }
@@ -214,6 +228,7 @@ pub struct Keymap {
 
 impl Keymap {
     /// Create a new empty keymap.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -240,6 +255,7 @@ impl Keymap {
     }
 
     /// Find bindings that match a sequence in a mode.
+    #[must_use]
     pub fn find_matches(&self, sequence: &KeySequence, mode: &str) -> Vec<&KeyBinding> {
         self.bindings
             .iter()
@@ -248,6 +264,7 @@ impl Keymap {
     }
 
     /// Find bindings that could match with more keys (partial matches).
+    #[must_use]
     pub fn find_partial_matches(&self, prefix: &KeySequence, mode: &str) -> Vec<&KeyBinding> {
         self.bindings
             .iter()
@@ -260,6 +277,7 @@ impl Keymap {
     }
 
     /// Get all bindings for a mode (for help display).
+    #[must_use]
     pub fn bindings_for_mode(&self, mode: &str) -> Vec<&KeyBinding> {
         self.bindings
             .iter()
@@ -305,6 +323,7 @@ impl KeyBuffer {
     pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(500);
 
     /// Create a new key buffer with a keymap.
+    #[must_use]
     pub fn new(keymap: Keymap) -> Self {
         Self {
             buffer: Vec::new(),
@@ -316,6 +335,7 @@ impl KeyBuffer {
     }
 
     /// Set the chord timeout.
+    #[must_use]
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -327,6 +347,7 @@ impl KeyBuffer {
     }
 
     /// Get the current mode.
+    #[must_use]
     pub fn mode(&self) -> &str {
         &self.mode
     }
@@ -416,16 +437,19 @@ impl KeyBuffer {
     }
 
     /// Check if there are pending keys.
+    #[must_use]
     pub fn is_pending(&self) -> bool {
         !self.buffer.is_empty()
     }
 
     /// Get the current buffer contents.
+    #[must_use]
     pub fn pending_keys(&self) -> &[Key] {
         &self.buffer
     }
 
     /// Get reference to the keymap.
+    #[must_use]
     pub fn keymap(&self) -> &Keymap {
         &self.keymap
     }
@@ -441,6 +465,7 @@ impl KeyBuffer {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Create a default editor keymap.
+#[must_use]
 pub fn default_editor_keymap() -> Keymap {
     let mut km = Keymap::new();
 
@@ -478,6 +503,7 @@ pub fn default_editor_keymap() -> Keymap {
 }
 
 /// Create a vim-style keymap for normal mode.
+#[must_use]
 pub fn vim_normal_keymap() -> Keymap {
     let mut km = Keymap::new();
 

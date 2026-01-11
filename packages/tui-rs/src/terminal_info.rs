@@ -45,6 +45,7 @@ impl TerminalInfo {
     }
 
     /// Format as a user-agent string for API requests.
+    #[must_use]
     pub fn user_agent(&self) -> String {
         let name = sanitize_header_value(&self.name);
         match &self.version {
@@ -168,6 +169,7 @@ fn sanitize_header_value(value: &str) -> String {
 /// - `SSH_CLIENT` environment variable
 /// - `SSH_TTY` environment variable
 /// - `SSH_CONNECTION` environment variable
+#[must_use]
 pub fn is_ssh_session() -> bool {
     std::env::var("SSH_CLIENT").is_ok()
         || std::env::var("SSH_TTY").is_ok()
@@ -176,7 +178,8 @@ pub fn is_ssh_session() -> bool {
 
 /// Get SSH connection info if available.
 ///
-/// Returns (client_ip, client_port, server_port) if SSH_CONNECTION is set.
+/// Returns (`client_ip`, `client_port`, `server_port`) if `SSH_CONNECTION` is set.
+#[must_use]
 pub fn ssh_connection_info() -> Option<(String, String, String)> {
     let conn = std::env::var("SSH_CONNECTION").ok()?;
     let parts: Vec<&str> = conn.split_whitespace().collect();
@@ -216,6 +219,7 @@ pub fn is_wsl() -> bool {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[must_use]
 pub fn is_wsl() -> bool {
     false
 }
@@ -270,6 +274,7 @@ pub fn convert_windows_path_to_wsl(input: &str) -> Option<PathBuf> {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[must_use]
 pub fn convert_windows_path_to_wsl(_input: &str) -> Option<PathBuf> {
     None
 }
@@ -299,13 +304,9 @@ pub fn normalize_pasted_path(pasted: &str) -> Option<PathBuf> {
         let drive = pasted
             .chars()
             .next()
-            .map(|c| c.is_ascii_alphabetic())
-            .unwrap_or(false)
+            .is_some_and(|c| c.is_ascii_alphabetic())
             && pasted.get(1..2) == Some(":")
-            && pasted
-                .get(2..3)
-                .map(|s| s == "\\" || s == "/")
-                .unwrap_or(false);
+            && pasted.get(2..3).is_some_and(|s| s == "\\" || s == "/");
         // UNC path: \\server\share
         let unc = pasted.starts_with("\\\\");
         drive || unc
@@ -337,18 +338,21 @@ pub fn normalize_pasted_path(pasted: &str) -> Option<PathBuf> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Check if stdin is a terminal (TTY).
+#[must_use]
 pub fn is_stdin_tty() -> bool {
     use std::io::IsTerminal;
     std::io::stdin().is_terminal()
 }
 
 /// Check if stdout is a terminal (TTY).
+#[must_use]
 pub fn is_stdout_tty() -> bool {
     use std::io::IsTerminal;
     std::io::stdout().is_terminal()
 }
 
 /// Check if stderr is a terminal (TTY).
+#[must_use]
 pub fn is_stderr_tty() -> bool {
     use std::io::IsTerminal;
     std::io::stderr().is_terminal()
@@ -357,6 +361,7 @@ pub fn is_stderr_tty() -> bool {
 /// Check if running in a fully interactive terminal session.
 ///
 /// Returns true if both stdin and stdout are TTYs.
+#[must_use]
 pub fn is_interactive() -> bool {
     is_stdin_tty() && is_stdout_tty()
 }

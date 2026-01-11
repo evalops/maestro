@@ -30,6 +30,7 @@ pub struct Padding {
 }
 
 impl Padding {
+    #[must_use]
     pub fn uniform(size: u16) -> Self {
         Self {
             top: size,
@@ -39,6 +40,7 @@ impl Padding {
         }
     }
 
+    #[must_use]
     pub fn horizontal(size: u16) -> Self {
         Self {
             left: size,
@@ -47,6 +49,7 @@ impl Padding {
         }
     }
 
+    #[must_use]
     pub fn vertical(size: u16) -> Self {
         Self {
             top: size,
@@ -70,10 +73,12 @@ pub struct KeyModifiers {
 }
 
 impl KeyModifiers {
+    #[must_use]
     pub fn none() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn ctrl() -> Self {
         Self {
             ctrl: true,
@@ -81,6 +86,7 @@ impl KeyModifiers {
         }
     }
 
+    #[must_use]
     pub fn shift() -> Self {
         Self {
             shift: true,
@@ -88,6 +94,7 @@ impl KeyModifiers {
         }
     }
 
+    #[must_use]
     pub fn alt() -> Self {
         Self {
             alt: true,

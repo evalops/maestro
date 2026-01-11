@@ -154,10 +154,12 @@ impl HotReloader {
         })
     }
 
+    #[must_use]
     pub fn poll(&self) -> Vec<HotReloadEvent> {
         Vec::new()
     }
 
+    #[must_use]
     pub fn watched_paths(&self) -> &[PathBuf] {
         &self.watched_paths
     }
@@ -187,7 +189,7 @@ pub async fn watch_and_reload(
                 eprintln!("[hot-reload] Shutting down");
                 break;
             }
-            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+            () = tokio::time::sleep(Duration::from_millis(500)) => {
                 let events = reloader.poll();
                 if !events.is_empty() {
                     eprintln!("[hot-reload] Detected {} file changes, reloading hooks", events.len());
@@ -200,7 +202,7 @@ pub async fn watch_and_reload(
                             );
                         }
                         Err(e) => {
-                            eprintln!("[hot-reload] Error reloading hooks: {}", e);
+                            eprintln!("[hot-reload] Error reloading hooks: {e}");
                         }
                     }
                 }

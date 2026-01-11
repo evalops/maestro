@@ -8,7 +8,7 @@
 //!
 //! The reader uses Rust's standard library I/O abstractions for efficient file access:
 //!
-//! ## Buffered Reading with BufReader
+//! ## Buffered Reading with `BufReader`
 //!
 //! Files are read using [`BufReader`] which wraps a [`File`] handle and provides
 //! efficient buffering. This reduces system calls by reading larger chunks of data
@@ -147,7 +147,7 @@
 //! - Validates JSON syntax
 //! - Checks for required fields
 //! - Applies default values for missing optional fields
-//! - Converts field names (camelCase <-> snake_case)
+//! - Converts field names (camelCase <-> `snake_case`)
 //! - Handles type discriminators for enums
 //!
 //! # Statistics Computation
@@ -308,9 +308,9 @@ fn apply_attachment_extracts(
 ///
 /// # Error Categories
 ///
-/// - **IoError**: File system problems (missing file, permissions, disk full)
-/// - **ParseError**: Invalid JSON syntax or schema violations
-/// - **InvalidFormat**: Logical validation failures (missing header, duplicate entries)
+/// - **`IoError`**: File system problems (missing file, permissions, disk full)
+/// - **`ParseError`**: Invalid JSON syntax or schema violations
+/// - **`InvalidFormat`**: Logical validation failures (missing header, duplicate entries)
 ///
 /// # From Trait
 ///
@@ -339,9 +339,9 @@ pub enum SessionReadError {
 impl std::fmt::Display for SessionReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SessionReadError::IoError(e) => write!(f, "IO error: {}", e),
-            SessionReadError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            SessionReadError::InvalidFormat(msg) => write!(f, "Invalid format: {}", msg),
+            SessionReadError::IoError(e) => write!(f, "IO error: {e}"),
+            SessionReadError::ParseError(msg) => write!(f, "Parse error: {msg}"),
+            SessionReadError::InvalidFormat(msg) => write!(f, "Invalid format: {msg}"),
         }
     }
 }
@@ -433,7 +433,7 @@ impl ParsedSession {
 
     /// Check if this session is a favorite
     pub fn is_favorite(&self) -> bool {
-        self.meta.as_ref().map(|m| m.favorite).unwrap_or(false)
+        self.meta.as_ref().is_some_and(|m| m.favorite)
     }
 }
 
@@ -451,7 +451,7 @@ impl ParsedSession {
 /// # Design Rationale
 ///
 /// Using a unit struct rather than free functions provides:
-/// - Clear namespace organization (SessionReader::method vs reader_method)
+/// - Clear namespace organization (`SessionReader::method` vs `reader_method`)
 /// - Consistent API with other reader types in the ecosystem
 /// - Easier discoverability through IDE autocomplete
 pub struct SessionReader;

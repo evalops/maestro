@@ -232,6 +232,7 @@ impl Theme {
     }
 
     /// Get a color by name
+    #[must_use]
     pub fn get_color(&self, name: &str) -> Option<Color> {
         let hex = match name {
             "accent" => &self.colors.accent,
@@ -260,6 +261,7 @@ impl Theme {
     }
 
     /// Get a style with foreground color
+    #[must_use]
     pub fn fg(&self, color_name: &str) -> Style {
         match self.get_color(color_name) {
             Some(color) => Style::default().fg(color),
@@ -268,6 +270,7 @@ impl Theme {
     }
 
     /// Get a style with background color
+    #[must_use]
     pub fn bg(&self, color_name: &str) -> Style {
         match self.get_color(color_name) {
             Some(color) => Style::default().bg(color),
@@ -309,9 +312,9 @@ pub enum ThemeError {
 impl std::fmt::Display for ThemeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ThemeError::IoError(msg) => write!(f, "IO error: {}", msg),
-            ThemeError::ParseError(msg) => write!(f, "Parse error: {}", msg),
-            ThemeError::NotFound(msg) => write!(f, "Theme not found: {}", msg),
+            ThemeError::IoError(msg) => write!(f, "IO error: {msg}"),
+            ThemeError::ParseError(msg) => write!(f, "Parse error: {msg}"),
+            ThemeError::NotFound(msg) => write!(f, "Theme not found: {msg}"),
         }
     }
 }
@@ -323,11 +326,13 @@ impl std::error::Error for ThemeError {}
 // =============================================================================
 
 /// Get the dark theme (default)
+#[must_use]
 pub fn dark_theme() -> Theme {
     Theme::new("dark")
 }
 
 /// Get the light theme
+#[must_use]
 pub fn light_theme() -> Theme {
     let mut theme = Theme::new("light");
     theme.colors = ThemeColors {
@@ -373,6 +378,7 @@ pub fn light_theme() -> Theme {
 }
 
 /// Get the high contrast theme
+#[must_use]
 pub fn high_contrast_theme() -> Theme {
     let mut theme = Theme::new("high-contrast");
     theme.colors = ThemeColors {
@@ -422,6 +428,7 @@ pub fn high_contrast_theme() -> Theme {
 // =============================================================================
 
 /// Get all available theme names
+#[must_use]
 pub fn available_themes() -> Vec<String> {
     let mut themes = vec![
         "dark".to_string(),
@@ -477,14 +484,14 @@ pub fn load_theme(name: &str) -> Result<Theme, ThemeError> {
         let path = home
             .join(".composer")
             .join("themes")
-            .join(format!("{}.json", name));
+            .join(format!("{name}.json"));
         if path.exists() {
             return Theme::load_from_file(&path);
         }
     }
 
     // Try project themes directory
-    let path = std::path::Path::new(".composer/themes").join(format!("{}.json", name));
+    let path = std::path::Path::new(".composer/themes").join(format!("{name}.json"));
     if path.exists() {
         return Theme::load_from_file(&path);
     }
@@ -517,6 +524,7 @@ pub fn current_theme() -> Theme {
 }
 
 /// Get the current theme name
+#[must_use]
 pub fn current_theme_name() -> String {
     current_theme().name
 }

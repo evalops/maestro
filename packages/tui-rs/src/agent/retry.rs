@@ -74,6 +74,7 @@ impl Default for RetryConfig {
 
 impl RetryConfig {
     /// Create a config for aggressive retrying (more attempts, shorter delays)
+    #[must_use]
     pub fn aggressive() -> Self {
         Self {
             max_retries: 5,
@@ -86,6 +87,7 @@ impl RetryConfig {
     }
 
     /// Create a config for conservative retrying (fewer attempts, longer delays)
+    #[must_use]
     pub fn conservative() -> Self {
         Self {
             max_retries: 2,
@@ -98,6 +100,7 @@ impl RetryConfig {
     }
 
     /// Create a config that never retries
+    #[must_use]
     pub fn no_retry() -> Self {
         Self {
             max_retries: 0,
@@ -127,7 +130,8 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    /// Classify an error message into an ErrorKind
+    /// Classify an error message into an `ErrorKind`
+    #[must_use]
     pub fn classify(error_message: &str) -> Self {
         let lower = error_message.to_lowercase();
 
@@ -256,6 +260,7 @@ impl ErrorKind {
     }
 
     /// Check if this error kind is retryable
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         matches!(self, ErrorKind::Transient | ErrorKind::RateLimited { .. })
     }
@@ -299,6 +304,7 @@ impl Default for RetryPolicy {
 
 impl RetryPolicy {
     /// Create a new retry policy with the given configuration
+    #[must_use]
     pub fn new(config: RetryConfig) -> Self {
         Self {
             config,
@@ -308,6 +314,7 @@ impl RetryPolicy {
     }
 
     /// Create a retry policy with default configuration
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::default()
     }
@@ -319,11 +326,13 @@ impl RetryPolicy {
     }
 
     /// Get the current attempt number (0 = initial, 1+ = retries)
+    #[must_use]
     pub fn current_attempt(&self) -> u32 {
         self.current_attempt
     }
 
     /// Get the total delay accumulated across all retries
+    #[must_use]
     pub fn total_delay(&self) -> Duration {
         self.total_delay
     }
@@ -411,6 +420,7 @@ impl RetryPolicy {
     }
 
     /// Create a human-readable status message for the current retry state
+    #[must_use]
     pub fn status_message(&self) -> String {
         if self.current_attempt == 0 {
             "Initial request".to_string()

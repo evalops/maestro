@@ -53,6 +53,7 @@ pub struct SkillRegistry {
 
 impl SkillRegistry {
     /// Create a new empty registry
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -66,6 +67,7 @@ impl SkillRegistry {
     }
 
     /// Get a skill by ID
+    #[must_use]
     pub fn get(&self, id: &str) -> Option<&ActiveSkill> {
         self.skills.get(id)
     }
@@ -76,11 +78,13 @@ impl SkillRegistry {
     }
 
     /// List all registered skills
+    #[must_use]
     pub fn list(&self) -> Vec<&ActiveSkill> {
         self.skills.values().collect()
     }
 
     /// List all active skills
+    #[must_use]
     pub fn active_skills(&self) -> Vec<&ActiveSkill> {
         self.skills.values().filter(|s| s.is_active()).collect()
     }
@@ -95,7 +99,7 @@ impl SkillRegistry {
                 });
                 Ok(())
             }
-            None => Err(format!("Skill not found: {}", id)),
+            None => Err(format!("Skill not found: {id}")),
         }
     }
 
@@ -109,11 +113,12 @@ impl SkillRegistry {
                 });
                 Ok(())
             }
-            None => Err(format!("Skill not found: {}", id)),
+            None => Err(format!("Skill not found: {id}")),
         }
     }
 
     /// Get combined system prompt additions from all active skills
+    #[must_use]
     pub fn active_system_prompt_additions(&self) -> String {
         self.active_skills()
             .iter()
@@ -124,6 +129,7 @@ impl SkillRegistry {
     }
 
     /// Get all tools provided by active skills
+    #[must_use]
     pub fn active_skill_tools(&self) -> Vec<String> {
         self.active_skills()
             .iter()
@@ -132,6 +138,7 @@ impl SkillRegistry {
     }
 
     /// Check if any skill matches the given input
+    #[must_use]
     pub fn match_triggers(&self, input: &str) -> Vec<&ActiveSkill> {
         let input_lower = input.to_lowercase();
         self.skills
@@ -169,6 +176,7 @@ impl SkillRegistry {
     }
 
     /// Get event history
+    #[must_use]
     pub fn events(&self) -> &[SkillEvent] {
         &self.events
     }

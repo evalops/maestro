@@ -27,7 +27,7 @@
 //! Uses OSC 9 escape sequences supported by:
 //! - iTerm2
 //! - Ghostty
-//! - WezTerm
+//! - `WezTerm`
 //! - Windows Terminal
 
 use serde::{Deserialize, Serialize};
@@ -56,6 +56,7 @@ pub enum NotifyEventType {
 impl NotifyEventType {
     /// Parse from string
     #[allow(clippy::should_implement_trait)]
+    #[must_use]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().replace('_', "-").as_str() {
             "turn-complete" => Some(Self::TurnComplete),
@@ -68,6 +69,7 @@ impl NotifyEventType {
     }
 
     /// All event types
+    #[must_use]
     pub fn all() -> Vec<Self> {
         vec![
             Self::TurnComplete,
@@ -115,6 +117,7 @@ pub struct NotifyPayload {
 
 impl NotifyPayload {
     /// Create a new payload with timestamp
+    #[must_use]
     pub fn new(event_type: NotifyEventType, cwd: &str) -> Self {
         Self {
             event_type,
@@ -131,12 +134,14 @@ impl NotifyPayload {
     }
 
     /// Set session ID
+    #[must_use]
     pub fn with_session(mut self, session_id: Option<String>) -> Self {
         self.thread_id = session_id;
         self
     }
 
     /// Set tool info
+    #[must_use]
     pub fn with_tool(mut self, name: &str, result: Option<&str>) -> Self {
         self.tool_name = Some(name.to_string());
         self.tool_result = result.map(|r| r.chars().take(1000).collect());
@@ -144,12 +149,14 @@ impl NotifyPayload {
     }
 
     /// Set error message
+    #[must_use]
     pub fn with_error(mut self, error: &str) -> Self {
         self.error = Some(error.to_string());
         self
     }
 
     /// Set assistant message
+    #[must_use]
     pub fn with_assistant_message(mut self, message: &str) -> Self {
         self.last_assistant_message = Some(message.to_string());
         self
@@ -243,13 +250,14 @@ impl NotifyConfig {
                                         .filter_map(NotifyEventType::from_str)
                                         .collect();
                                 }
-                                if let Some(terminal) =
-                                    notify.get("terminalNotify").and_then(|v| v.as_bool())
+                                if let Some(terminal) = notify
+                                    .get("terminalNotify")
+                                    .and_then(serde_json::Value::as_bool)
                                 {
                                     config.terminal_notify = terminal;
                                 }
                                 if let Some(timeout) =
-                                    notify.get("timeout").and_then(|v| v.as_u64())
+                                    notify.get("timeout").and_then(serde_json::Value::as_u64)
                                 {
                                     config.timeout = Duration::from_millis(timeout);
                                 }
@@ -264,6 +272,7 @@ impl NotifyConfig {
     }
 
     /// Check if notifications are enabled for an event type
+    #[must_use]
     pub fn is_enabled(&self, event_type: NotifyEventType) -> bool {
         self.program.is_some() && self.events.contains(&event_type)
     }
@@ -276,6 +285,7 @@ pub struct Notifier {
 
 impl Notifier {
     /// Create a new notifier with loaded configuration
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: NotifyConfig::load(),
@@ -283,16 +293,19 @@ impl Notifier {
     }
 
     /// Create with custom configuration
+    #[must_use]
     pub fn with_config(config: NotifyConfig) -> Self {
         Self { config }
     }
 
     /// Check if notifications are enabled for an event
+    #[must_use]
     pub fn is_enabled(&self, event_type: NotifyEventType) -> bool {
         self.config.is_enabled(event_type)
     }
 
     /// Check if terminal notifications are enabled
+    #[must_use]
     pub fn terminal_enabled(&self) -> bool {
         self.config.terminal_notify
     }
@@ -312,7 +325,7 @@ impl Notifier {
 
     /// Send OSC 9 terminal notification
     ///
-    /// Supported by iTerm2, Ghostty, WezTerm, Windows Terminal
+    /// Supported by iTerm2, Ghostty, `WezTerm`, Windows Terminal
     pub fn send_terminal_notification(&self, payload: &NotifyPayload) {
         let title = match payload.event_type {
             NotifyEventType::TurnComplete => "Turn Complete",
@@ -331,7 +344,7 @@ impl Notifier {
             NotifyEventType::ToolExecution => payload
                 .tool_name
                 .as_ref()
-                .map(|n| format!("Ran {}", n))
+                .map(|n| format!("Ran {n}"))
                 .unwrap_or_default(),
             NotifyEventType::Error => payload.error.clone().unwrap_or_default(),
             _ => String::new(),
@@ -340,11 +353,11 @@ impl Notifier {
         let message = if body.is_empty() {
             title.to_string()
         } else {
-            format!("{}: {}", title, body)
+            format!("{title}: {body}")
         };
 
         // OSC 9: ESC ] 9 ; message BEL
-        let osc9 = format!("\x1b]9;{}\x07", message);
+        let osc9 = format!("\x1b]9;{message}\x07");
         let _ = std::io::stdout().write_all(osc9.as_bytes());
         let _ = std::io::stdout().flush();
     }
@@ -358,7 +371,7 @@ impl Notifier {
         let json = match serde_json::to_string(payload) {
             Ok(j) => j,
             Err(e) => {
-                eprintln!("[notify] Failed to serialize payload: {}", e);
+                eprintln!("[notify] Failed to serialize payload: {e}");
                 return;
             }
         };
@@ -460,7 +473,7 @@ impl Default for Notifier {
     }
 }
 
-/// Extension trait for wait_timeout on Child
+/// Extension trait for `wait_timeout` on Child
 trait ChildExt {
     fn wait_timeout(
         &mut self,
@@ -475,15 +488,13 @@ impl ChildExt for std::process::Child {
     ) -> std::io::Result<Option<std::process::ExitStatus>> {
         let start = std::time::Instant::now();
         loop {
-            match self.try_wait()? {
-                Some(status) => return Ok(Some(status)),
-                None => {
-                    if start.elapsed() >= timeout {
-                        return Ok(None);
-                    }
-                    std::thread::sleep(Duration::from_millis(50));
-                }
+            if let Some(status) = self.try_wait()? {
+                return Ok(Some(status));
             }
+            if start.elapsed() >= timeout {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 }

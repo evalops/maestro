@@ -56,7 +56,7 @@ impl HttpConnection {
         // Build HTTP client with timeout
         let timeout = Duration::from_millis(config.timeout.unwrap_or(30_000));
         let client = Client::builder().timeout(timeout).build().map_err(|e| {
-            McpError::ConnectionFailed(format!("Failed to create HTTP client: {}", e))
+            McpError::ConnectionFailed(format!("Failed to create HTTP client: {e}"))
         })?;
 
         Ok(Self {
@@ -115,7 +115,7 @@ impl HttpConnection {
             let response = match request.send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("[mcp/sse] Connection failed: {}", e);
+                    eprintln!("[mcp/sse] Connection failed: {e}");
                     return;
                 }
             };
@@ -140,7 +140,7 @@ impl HttpConnection {
                         }
                     }
                     Err(e) => {
-                        eprintln!("[mcp/sse] Stream error: {}", e);
+                        eprintln!("[mcp/sse] Stream error: {e}");
                         break;
                     }
                 }
@@ -161,7 +161,7 @@ impl HttpConnection {
 
         let _init_result: InitializeResult = response
             .result_as()
-            .map_err(|e| McpError::Protocol(format!("Invalid initialize response: {}", e)))?;
+            .map_err(|e| McpError::Protocol(format!("Invalid initialize response: {e}")))?;
 
         // Send initialized notification
         let notification = serde_json::json!({
@@ -186,7 +186,7 @@ impl HttpConnection {
 
         let tools_result: ToolsListResult = response
             .result_as()
-            .map_err(|e| McpError::Protocol(format!("Invalid tools/list response: {}", e)))?;
+            .map_err(|e| McpError::Protocol(format!("Invalid tools/list response: {e}")))?;
 
         self.tools = tools_result.tools;
         Ok(())
@@ -199,7 +199,7 @@ impl HttpConnection {
 
         let resources_result: ResourcesListResult = response
             .result_as()
-            .map_err(|e| McpError::Protocol(format!("Invalid resources/list response: {}", e)))?;
+            .map_err(|e| McpError::Protocol(format!("Invalid resources/list response: {e}")))?;
 
         self.resources = resources_result.resources;
         Ok(())
@@ -240,7 +240,7 @@ impl HttpConnection {
 
         let result: McpToolResult = response
             .result_as()
-            .map_err(|e| McpError::Protocol(format!("Invalid tool result: {}", e)))?;
+            .map_err(|e| McpError::Protocol(format!("Invalid tool result: {e}")))?;
 
         Ok(result)
     }
@@ -256,7 +256,7 @@ impl HttpConnection {
 
         let result: ResourceReadResult = response
             .result_as()
-            .map_err(|e| McpError::Protocol(format!("Invalid resource read result: {}", e)))?;
+            .map_err(|e| McpError::Protocol(format!("Invalid resource read result: {e}")))?;
 
         Ok(result)
     }
@@ -290,7 +290,7 @@ impl HttpConnection {
         let response = req
             .send()
             .await
-            .map_err(|e| McpError::RequestFailed(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| McpError::RequestFailed(format!("HTTP request failed: {e}")))?;
 
         if !response.status().is_success() {
             return Err(McpError::RequestFailed(format!(
@@ -302,7 +302,7 @@ impl HttpConnection {
         let mcp_response: McpResponse = response
             .json()
             .await
-            .map_err(|e| McpError::Protocol(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| McpError::Protocol(format!("Failed to parse response: {e}")))?;
 
         Ok(mcp_response)
     }
@@ -337,7 +337,7 @@ impl HttpConnection {
             Err(e) => {
                 let mut pending = self.pending_sse.lock().await;
                 pending.remove(&id);
-                return Err(McpError::RequestFailed(format!("SSE send failed: {}", e)));
+                return Err(McpError::RequestFailed(format!("SSE send failed: {e}")));
             }
         };
 
@@ -387,7 +387,7 @@ impl HttpConnection {
 
         req.send()
             .await
-            .map_err(|e| McpError::RequestFailed(format!("Notification failed: {}", e)))?;
+            .map_err(|e| McpError::RequestFailed(format!("Notification failed: {e}")))?;
 
         Ok(())
     }

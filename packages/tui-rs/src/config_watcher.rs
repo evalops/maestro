@@ -50,6 +50,7 @@ pub enum ConfigEvent {
 
 impl ConfigEvent {
     /// Get the path associated with this event (if any)
+    #[must_use]
     pub fn path(&self) -> Option<&Path> {
         match self {
             ConfigEvent::Changed(p) | ConfigEvent::Created(p) | ConfigEvent::Deleted(p) => Some(p),
@@ -58,6 +59,7 @@ impl ConfigEvent {
     }
 
     /// Check if this is an error event
+    #[must_use]
     pub fn is_error(&self) -> bool {
         matches!(self, ConfigEvent::Error(_))
     }
@@ -108,6 +110,7 @@ impl ConfigWatcher {
     }
 
     /// Set the debounce duration
+    #[must_use]
     pub fn with_debounce(mut self, duration: Duration) -> Self {
         self.debounce_duration = duration;
         self
@@ -255,6 +258,7 @@ impl ConfigWatcher {
     }
 
     /// Check if any paths are being watched
+    #[must_use]
     pub fn is_watching(&self) -> bool {
         !self.watched_paths.is_empty()
     }
@@ -266,6 +270,7 @@ impl ConfigWatcher {
     }
 
     /// Get count of watched paths
+    #[must_use]
     pub fn watch_count(&self) -> usize {
         self.watched_paths.len()
     }
@@ -276,8 +281,7 @@ impl Default for ConfigWatcher {
         Self::new().unwrap_or_else(|err| {
             let (event_tx, event_rx) = mpsc::channel();
             let _ = event_tx.send(ConfigEvent::Error(format!(
-                "Failed to initialize config watcher: {}",
-                err
+                "Failed to initialize config watcher: {err}"
             )));
             Self {
                 watched_paths: HashSet::new(),
@@ -292,7 +296,7 @@ impl Default for ConfigWatcher {
     }
 }
 
-/// Builder for ConfigWatcher with common config file paths
+/// Builder for `ConfigWatcher` with common config file paths
 pub struct ConfigWatcherBuilder {
     paths: Vec<PathBuf>,
     debounce: Duration,
@@ -300,6 +304,7 @@ pub struct ConfigWatcherBuilder {
 
 impl ConfigWatcherBuilder {
     /// Create a new builder
+    #[must_use]
     pub fn new() -> Self {
         Self {
             paths: Vec::new(),
@@ -325,6 +330,7 @@ impl ConfigWatcherBuilder {
     /// - .composer/hooks.lua
     /// - AGENT.md
     /// - CLAUDE.md
+    #[must_use]
     pub fn watch_composer_configs(mut self) -> Self {
         // User config
         if let Some(home) = dirs::home_dir() {
@@ -347,6 +353,7 @@ impl ConfigWatcherBuilder {
     }
 
     /// Set debounce duration
+    #[must_use]
     pub fn debounce(mut self, duration: Duration) -> Self {
         self.debounce = duration;
         self
@@ -358,7 +365,7 @@ impl ConfigWatcherBuilder {
 
         for path in self.paths {
             // Only watch files that exist or whose parent exists
-            if path.exists() || path.parent().map(|p| p.exists()).unwrap_or(false) {
+            if path.exists() || path.parent().is_some_and(std::path::Path::exists) {
                 let _ = watcher.watch(&path);
             }
         }

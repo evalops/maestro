@@ -75,18 +75,21 @@ impl Default for BatchConfig {
 
 impl BatchConfig {
     /// Create a new batch config with max concurrency
+    #[must_use]
     pub fn with_concurrency(mut self, max: usize) -> Self {
         self.max_concurrency = max.max(1);
         self
     }
 
     /// Configure whether to continue after errors
+    #[must_use]
     pub fn continue_on_error(mut self, cont: bool) -> Self {
         self.continue_on_error = cont;
         self
     }
 
     /// Configure event emission
+    #[must_use]
     pub fn emit_events(mut self, emit: bool) -> Self {
         self.emit_events = emit;
         self
@@ -95,7 +98,7 @@ impl BatchConfig {
 
 /// Batch executor for running multiple tools in parallel
 ///
-/// Note: The BatchExecutor caches a ToolExecutor for validation operations.
+/// Note: The `BatchExecutor` caches a `ToolExecutor` for validation operations.
 /// For parallel execution, it spawns independent executors per task.
 pub struct BatchExecutor {
     /// Working directory for tool execution
@@ -251,7 +254,7 @@ impl BatchExecutor {
         let results: Vec<BatchToolResult> = join_all(handles)
             .await
             .into_iter()
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
 
         // Send batch end event
@@ -421,7 +424,7 @@ impl BatchExecutor {
         let task_results: Vec<_> = join_all(handles)
             .await
             .into_iter()
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
             .collect();
 
         // Separate results from durations

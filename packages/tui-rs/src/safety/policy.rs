@@ -2,7 +2,6 @@
 //!
 //! Reads ~/.composer/policy.json and enforces tool/path restrictions.
 
-use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -28,7 +27,8 @@ pub struct EnterprisePolicy {
     pub network: Option<NetworkPolicy>,
 }
 
-static POLICY: Lazy<Option<EnterprisePolicy>> = Lazy::new(load_policy_file);
+static POLICY: std::sync::LazyLock<Option<EnterprisePolicy>> =
+    std::sync::LazyLock::new(load_policy_file);
 
 fn load_policy_file() -> Option<EnterprisePolicy> {
     let home = dirs::home_dir()?;
@@ -52,8 +52,7 @@ pub fn check_tool_allowed(tool_name: &str) -> Option<String> {
     if let Some(blocked) = &tools.blocked {
         if matches_pattern_list(tool_name, blocked) {
             return Some(format!(
-                "Tool '{}' is blocked by enterprise policy",
-                tool_name
+                "Tool '{tool_name}' is blocked by enterprise policy"
             ));
         }
     }
@@ -61,8 +60,7 @@ pub fn check_tool_allowed(tool_name: &str) -> Option<String> {
     if let Some(allowed) = &tools.allowed {
         if !matches_pattern_list(tool_name, allowed) {
             return Some(format!(
-                "Tool '{}' is not in the enterprise allowlist",
-                tool_name
+                "Tool '{tool_name}' is not in the enterprise allowlist"
             ));
         }
     }
@@ -78,18 +76,14 @@ pub fn check_path_allowed(path: &Path) -> Option<String> {
 
     if let Some(blocked) = &paths.blocked {
         if matches_pattern_list(&path_str, blocked) {
-            return Some(format!(
-                "Path '{}' is blocked by enterprise policy",
-                path_str
-            ));
+            return Some(format!("Path '{path_str}' is blocked by enterprise policy"));
         }
     }
 
     if let Some(allowed) = &paths.allowed {
         if !matches_pattern_list(&path_str, allowed) {
             return Some(format!(
-                "Path '{}' is not in the enterprise allowlist",
-                path_str
+                "Path '{path_str}' is not in the enterprise allowlist"
             ));
         }
     }
@@ -144,15 +138,12 @@ pub fn check_url_allowed(url: &str) -> Option<String> {
 
     if let Some(blocked) = &network.blocked_hosts {
         if matches_pattern_list(&host, blocked) {
-            return Some(format!("Host '{}' is blocked by enterprise policy", host));
+            return Some(format!("Host '{host}' is blocked by enterprise policy"));
         }
     }
     if let Some(allowed) = &network.allowed_hosts {
         if !matches_pattern_list(&host, allowed) {
-            return Some(format!(
-                "Host '{}' is not in the enterprise allowlist",
-                host
-            ));
+            return Some(format!("Host '{host}' is not in the enterprise allowlist"));
         }
     }
 

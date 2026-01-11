@@ -1,6 +1,5 @@
 //! Workflow state tracking for PII redaction and tool-tag egress policy.
 
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -53,6 +52,7 @@ impl WorkflowStateTracker {
         self.orphaned_redactions.clear();
     }
 
+    #[must_use]
     pub fn snapshot(&self) -> WorkflowStateSnapshot {
         WorkflowStateSnapshot {
             pending_pii: self
@@ -103,6 +103,7 @@ impl WorkflowStateTracker {
         Ok(removed)
     }
 
+    #[must_use]
     pub fn find_artifact_id_by_label(&self, label: &str) -> Option<String> {
         self.pending_pii
             .iter()
@@ -110,6 +111,7 @@ impl WorkflowStateTracker {
             .map(|(id, _)| id.clone())
     }
 
+    #[must_use]
     pub fn get_singleton_pending_artifact_id(&self) -> Option<String> {
         if self.pending_pii.len() == 1 {
             return self.pending_pii.keys().next().cloned();
@@ -117,6 +119,7 @@ impl WorkflowStateTracker {
         None
     }
 
+    #[must_use]
     pub fn pending_summaries(&self) -> Vec<(String, String)> {
         self.pending_pii
             .iter()
@@ -139,6 +142,7 @@ pub struct RedactionParams {
     pub allow_missing: bool,
 }
 
+#[must_use]
 pub fn is_workflow_tracked_tool(tool_name: &str) -> bool {
     matches!(tool_name, "collect_customer_context" | "redact_transcript")
 }
@@ -164,7 +168,7 @@ pub fn apply_workflow_state_hooks(
                 v.as_array().map(|items| {
                     items
                         .iter()
-                        .filter_map(|entry| entry.as_str().map(|s| s.to_string()))
+                        .filter_map(|entry| entry.as_str().map(std::string::ToString::to_string))
                         .collect::<Vec<_>>()
                 })
             });
@@ -178,12 +182,12 @@ pub fn apply_workflow_state_hooks(
         "redact_transcript" => {
             let allow_missing = args
                 .get("allowMissing")
-                .and_then(|v| v.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
             let artifact_id = args
                 .get("artifactId")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
             let subject_hint = args.get("subject").and_then(|v| v.as_str()).and_then(|s| {
                 if s.is_empty() {
                     None
@@ -214,7 +218,7 @@ pub fn apply_workflow_state_hooks(
                 let pending = tracker
                     .pending_summaries()
                     .iter()
-                    .map(|(id, label)| format!("{} ({})", label, id))
+                    .map(|(id, label)| format!("{label} ({id})"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let message = if let Some(subject) = subject_hint {
@@ -250,38 +254,40 @@ pub struct ToolTag {
     pub egress: Option<ToolEgress>,
 }
 
-pub static TOOL_TAGS: Lazy<HashMap<&'static str, ToolTag>> = Lazy::new(|| {
-    let mut map = HashMap::new();
-    map.insert(
-        "handoff_to_human",
-        ToolTag {
-            egress: Some(ToolEgress::Human),
-        },
-    );
-    map.insert(
-        "send_email_update",
-        ToolTag {
-            egress: Some(ToolEgress::External),
-        },
-    );
-    map.insert(
-        "post_customer_update",
-        ToolTag {
-            egress: Some(ToolEgress::External),
-        },
-    );
-    map.insert(
-        "notify_account_team",
-        ToolTag {
-            egress: Some(ToolEgress::Human),
-        },
-    );
-    map
-});
+pub static TOOL_TAGS: std::sync::LazyLock<HashMap<&'static str, ToolTag>> =
+    std::sync::LazyLock::new(|| {
+        let mut map = HashMap::new();
+        map.insert(
+            "handoff_to_human",
+            ToolTag {
+                egress: Some(ToolEgress::Human),
+            },
+        );
+        map.insert(
+            "send_email_update",
+            ToolTag {
+                egress: Some(ToolEgress::External),
+            },
+        );
+        map.insert(
+            "post_customer_update",
+            ToolTag {
+                egress: Some(ToolEgress::External),
+            },
+        );
+        map.insert(
+            "notify_account_team",
+            ToolTag {
+                egress: Some(ToolEgress::Human),
+            },
+        );
+        map
+    });
 
-static UNTAGGED_EGRESS_WARNINGS: Lazy<Mutex<HashSet<String>>> =
-    Lazy::new(|| Mutex::new(HashSet::new()));
+static UNTAGGED_EGRESS_WARNINGS: std::sync::LazyLock<Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
 
+#[must_use]
 pub fn looks_like_egress(tool_name: &str) -> bool {
     let lower = tool_name.to_lowercase();
     lower.contains("handoff")
@@ -296,17 +302,13 @@ pub fn looks_like_egress(tool_name: &str) -> bool {
 pub fn is_human_facing_tool(tool_name: &str) -> bool {
     if let Some(tag) = TOOL_TAGS.get(tool_name) {
         // Both Human and External egress tools must be gated for PII
-        return matches!(
-            tag.egress,
-            Some(ToolEgress::Human) | Some(ToolEgress::External)
-        );
+        return matches!(tag.egress, Some(ToolEgress::Human | ToolEgress::External));
     }
     if looks_like_egress(tool_name) {
         if let Ok(mut seen) = UNTAGGED_EGRESS_WARNINGS.lock() {
             if seen.insert(tool_name.to_string()) {
                 eprintln!(
-                    "[safety] Untagged egress-like tool encountered; treating as human-facing: {}",
-                    tool_name
+                    "[safety] Untagged egress-like tool encountered; treating as human-facing: {tool_name}"
                 );
             }
         }

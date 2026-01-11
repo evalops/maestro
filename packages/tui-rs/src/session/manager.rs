@@ -351,6 +351,7 @@ pub struct SessionInfo {
 
 impl SessionInfo {
     /// Get the display title
+    #[must_use]
     pub fn title(&self) -> String {
         if let Some(ref meta) = self.meta {
             if let Some(ref title) = meta.title {
@@ -368,11 +369,13 @@ impl SessionInfo {
     }
 
     /// Check if this is a favorite
+    #[must_use]
     pub fn is_favorite(&self) -> bool {
-        self.meta.as_ref().map(|m| m.favorite).unwrap_or(false)
+        self.meta.as_ref().is_some_and(|m| m.favorite)
     }
 
     /// Get the short ID (first 8 chars)
+    #[must_use]
     pub fn short_id(&self) -> &str {
         &self.id[..8.min(self.id.len())]
     }
@@ -448,16 +451,19 @@ impl SessionManager {
     }
 
     /// Get the current working directory
+    #[must_use]
     pub fn cwd(&self) -> &str {
         &self.cwd
     }
 
     /// Get the sessions directory
+    #[must_use]
     pub fn sessions_dir(&self) -> &Path {
         &self.sessions_dir
     }
 
     /// Get the current session ID
+    #[must_use]
     pub fn current_session_id(&self) -> Option<&str> {
         self.current_session_id.as_deref()
     }
@@ -479,7 +485,7 @@ impl SessionManager {
             let entry = entry?;
             let path = entry.path();
 
-            if path.extension().map(|e| e == "jsonl").unwrap_or(false) {
+            if path.extension().is_some_and(|e| e == "jsonl") {
                 match SessionReader::read_header(&path) {
                     Ok((header, stats, meta)) => {
                         let modified = entry.metadata().ok().and_then(|m| m.modified().ok());
@@ -572,8 +578,7 @@ impl SessionManager {
         }
 
         Err(SessionReadError::InvalidFormat(format!(
-            "Session not found: {}",
-            id
+            "Session not found: {id}"
         )))
     }
 
@@ -581,7 +586,7 @@ impl SessionManager {
     pub fn load_session_by_index(&self, index: usize) -> Result<ParsedSession, SessionReadError> {
         let sessions = self.list_sessions()?;
         let session = sessions.get(index.saturating_sub(1)).ok_or_else(|| {
-            SessionReadError::InvalidFormat(format!("No session at index {}", index))
+            SessionReadError::InvalidFormat(format!("No session at index {index}"))
         })?;
         SessionReader::read_file(&session.path)
     }

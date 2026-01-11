@@ -53,11 +53,13 @@ impl Default for KillRing {
 
 impl KillRing {
     /// Create a new kill ring with default size.
+    #[must_use]
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_KILL_RING_SIZE)
     }
 
     /// Create a kill ring with specified capacity.
+    #[must_use]
     pub fn with_capacity(max_size: usize) -> Self {
         Self {
             entries: VecDeque::with_capacity(max_size.min(100)),
@@ -124,7 +126,9 @@ impl KillRing {
         }
 
         self.in_rotation = true;
-        self.entries.get(self.position).map(|s| s.as_str())
+        self.entries
+            .get(self.position)
+            .map(std::string::String::as_str)
     }
 
     /// Yank and record position for later replacement.
@@ -166,6 +170,7 @@ impl KillRing {
     }
 
     /// Get the last yank info for replacement.
+    #[must_use]
     pub fn last_yank_info(&self) -> Option<YankInfo> {
         self.last_yank
     }
@@ -178,16 +183,19 @@ impl KillRing {
     }
 
     /// Check if currently in rotation mode.
+    #[must_use]
     pub fn is_rotating(&self) -> bool {
         self.in_rotation
     }
 
     /// Get number of entries in the ring.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Check if ring is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -201,18 +209,20 @@ impl KillRing {
     }
 
     /// Get the most recent killed text without changing state.
+    #[must_use]
     pub fn peek(&self) -> Option<&str> {
-        self.entries.front().map(|s| s.as_str())
+        self.entries.front().map(std::string::String::as_str)
     }
 
     /// Get entry at index (0 = most recent).
+    #[must_use]
     pub fn get(&self, index: usize) -> Option<&str> {
-        self.entries.get(index).map(|s| s.as_str())
+        self.entries.get(index).map(std::string::String::as_str)
     }
 
     /// Iterate over all entries (most recent first).
     pub fn iter(&self) -> impl Iterator<Item = &str> {
-        self.entries.iter().map(|s| s.as_str())
+        self.entries.iter().map(std::string::String::as_str)
     }
 }
 
@@ -224,6 +234,7 @@ impl KillRing {
 pub const WORD_SEPARATORS: &str = " \t\n\r.,;:!?\"'`()[]{}|/<>@#$%^&*-+=~\\";
 
 /// Check if a character is a word separator.
+#[must_use]
 pub fn is_word_separator(c: char) -> bool {
     WORD_SEPARATORS.contains(c)
 }
@@ -231,6 +242,7 @@ pub fn is_word_separator(c: char) -> bool {
 /// Find the start of the previous word from a position.
 ///
 /// Returns the byte offset of the word start.
+#[must_use]
 pub fn previous_word_start(text: &str, pos: usize) -> usize {
     if pos == 0 {
         return 0;
@@ -264,6 +276,7 @@ pub fn previous_word_start(text: &str, pos: usize) -> usize {
 /// Find the end of the next word from a position.
 ///
 /// Returns the byte offset past the word end.
+#[must_use]
 pub fn next_word_end(text: &str, pos: usize) -> usize {
     let len = text.len();
     if pos >= len {
@@ -294,6 +307,7 @@ pub fn next_word_end(text: &str, pos: usize) -> usize {
 }
 
 /// Find the start of the current word (for word selection).
+#[must_use]
 pub fn current_word_start(text: &str, pos: usize) -> usize {
     if pos == 0 {
         return 0;
@@ -323,6 +337,7 @@ pub fn current_word_start(text: &str, pos: usize) -> usize {
 }
 
 /// Find the end of the current word (for word selection).
+#[must_use]
 pub fn current_word_end(text: &str, pos: usize) -> usize {
     let len = text.len();
     if pos >= len {
@@ -372,16 +387,14 @@ pub struct KillResult {
 }
 
 /// Kill from cursor to end of line.
+#[must_use]
 pub fn kill_to_end(text: &str, cursor: usize) -> Option<KillResult> {
     if cursor >= text.len() {
         return None;
     }
 
     // Find end of current line
-    let end = text[cursor..]
-        .find('\n')
-        .map(|i| cursor + i)
-        .unwrap_or(text.len());
+    let end = text[cursor..].find('\n').map_or(text.len(), |i| cursor + i);
 
     if end == cursor {
         // At end of line, kill the newline
@@ -401,13 +414,14 @@ pub fn kill_to_end(text: &str, cursor: usize) -> Option<KillResult> {
 }
 
 /// Kill from start of line to cursor.
+#[must_use]
 pub fn kill_to_start(text: &str, cursor: usize) -> Option<KillResult> {
     if cursor == 0 {
         return None;
     }
 
     // Find start of current line
-    let start = text[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let start = text[..cursor].rfind('\n').map_or(0, |i| i + 1);
 
     if start == cursor {
         return None;
@@ -420,6 +434,7 @@ pub fn kill_to_start(text: &str, cursor: usize) -> Option<KillResult> {
 }
 
 /// Kill word backward (like Alt+Backspace).
+#[must_use]
 pub fn kill_word_backward(text: &str, cursor: usize) -> Option<KillResult> {
     if cursor == 0 {
         return None;
@@ -437,6 +452,7 @@ pub fn kill_word_backward(text: &str, cursor: usize) -> Option<KillResult> {
 }
 
 /// Kill word forward (like Alt+Delete).
+#[must_use]
 pub fn kill_word_forward(text: &str, cursor: usize) -> Option<KillResult> {
     if cursor >= text.len() {
         return None;
@@ -456,6 +472,7 @@ pub fn kill_word_forward(text: &str, cursor: usize) -> Option<KillResult> {
 /// Transpose characters at cursor (Ctrl+T).
 ///
 /// Swaps character before cursor with character at cursor.
+#[must_use]
 pub fn transpose_chars(text: &str, cursor: usize) -> Option<(String, usize)> {
     if cursor == 0 || cursor >= text.len() {
         // At end of text, transpose last two chars
@@ -487,6 +504,7 @@ pub fn transpose_chars(text: &str, cursor: usize) -> Option<(String, usize)> {
 }
 
 /// Transpose words at cursor (Alt+T).
+#[must_use]
 pub fn transpose_words(text: &str, cursor: usize) -> Option<(String, usize)> {
     // Find current/previous word boundaries
     let word1_end = current_word_end(text, cursor);

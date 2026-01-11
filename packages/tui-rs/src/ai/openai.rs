@@ -1,6 +1,6 @@
-//! OpenAI API Client
+//! `OpenAI` API Client
 //!
-//! Implements streaming communication with OpenAI's APIs, supporting two different endpoints:
+//! Implements streaming communication with `OpenAI`'s APIs, supporting two different endpoints:
 //!
 //! # API Endpoints
 //!
@@ -17,13 +17,13 @@
 //!
 //! Used by advanced models like gpt-5.1-codex-max, gpt-5.1-codex-lite, o3:
 //!
-//! - Request format: Array of ResponseItems (messages, function calls, outputs)
+//! - Request format: Array of `ResponseItems` (messages, function calls, outputs)
 //! - Streaming: Structured SSE with distinct event types
-//! - Tool calls: Sent as separate function_call items
+//! - Tool calls: Sent as separate `function_call` items
 //! - Reasoning: Native reasoning/thinking support with encrypted content
 //! - Schema restrictions: No oneOf/anyOf/allOf at top level
 //!
-//! Note: Responses API models may require ChatGPT Plus authentication.
+//! Note: Responses API models may require `ChatGPT` Plus authentication.
 //!
 //! # Rust Concepts
 //!
@@ -109,9 +109,11 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use super::client::{AiClient, AiProvider};
-use super::types::*;
+use super::types::{
+    ContentBlock, ImageSource, Message, MessageContent, RequestConfig, Role, StreamEvent, Tool,
+};
 
-/// SSE event structure for Responses API (matches OpenAI's format)
+/// SSE event structure for Responses API (matches `OpenAI`'s format)
 ///
 /// # Serde Field Attributes
 ///
@@ -133,7 +135,7 @@ use super::types::*;
 /// - `response.failed`: Error occurred
 #[derive(Debug, Deserialize)]
 struct ResponsesSseEvent {
-    /// Event type (e.g., "response.created", "response.output_text.delta")
+    /// Event type (e.g., "response.created", "`response.output_text.delta`")
     #[serde(rename = "type")]
     kind: String,
     /// Response metadata (present in some events)
@@ -204,7 +206,7 @@ pub enum ApiError {
     Fatal { message: String },
 }
 
-/// Extract function call from a ResponseItem
+/// Extract function call from a `ResponseItem`
 ///
 /// # Pattern: Option Chaining
 ///
@@ -217,7 +219,7 @@ pub enum ApiError {
 ///
 /// # Returns
 ///
-/// `Some((call_id, name, arguments))` if this is a function_call item,
+/// `Some((call_id, name, arguments))` if this is a `function_call` item,
 /// `None` otherwise.
 fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, serde_json::Value)> {
     let item_type = item.get("type")?.as_str()?;
@@ -238,8 +240,7 @@ fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, se
             serde_json::Value::Object(_) => "object",
         };
         eprintln!(
-            "[openai] function_call.arguments was {}; expected string (call_id={}, name={})",
-            kind, call_id, name
+            "[openai] function_call.arguments was {kind}; expected string (call_id={call_id}, name={name})"
         );
     }
     let arguments_value = match arguments {
@@ -261,12 +262,12 @@ fn extract_function_call(item: &serde_json::Value) -> Option<(String, String, se
 /// # Supported Providers
 ///
 /// - **Anthropic**: "prompt is too long: X tokens > Y maximum"
-/// - **OpenAI**: "exceeds the context window"
+/// - **`OpenAI`**: "exceeds the context window"
 /// - **Google Gemini**: "input token count exceeds the maximum"
 /// - **xAI (Grok)**: "maximum prompt length is X but request contains Y"
 /// - **Groq**: "reduce the length of the messages"
 /// - **Cerebras/Mistral**: 400/413 status code (no body)
-/// - **OpenRouter**: "maximum context length is X tokens"
+/// - **`OpenRouter`**: "maximum context length is X tokens"
 /// - **llama.cpp**: "exceeds the available context size"
 /// - **LM Studio**: "greater than the context length"
 ///
@@ -353,18 +354,14 @@ fn classify_error(error: &serde_json::Value) -> ApiError {
             ApiError::RateLimited { retry_after }
         }
         // Fatal errors that should not be retried
-        Some("invalid_api_key") | Some("model_not_found") | Some("invalid_request_error") => {
+        Some("invalid_api_key" | "model_not_found" | "invalid_request_error") => {
             ApiError::Fatal { message }
         }
         _ => {
             // Check error type for additional classification
             match error_type {
-                Some("authentication_error") | Some("permission_error") => {
-                    ApiError::Fatal { message }
-                }
-                Some("server_error") | Some("service_unavailable") => {
-                    ApiError::Retryable { message }
-                }
+                Some("authentication_error" | "permission_error") => ApiError::Fatal { message },
+                Some("server_error" | "service_unavailable") => ApiError::Retryable { message },
                 _ => {
                     // Default: check if message suggests retryable
                     if message.contains("overloaded") || message.contains("temporarily") {
@@ -394,10 +391,9 @@ fn parse_retry_after(message: &str) -> Option<std::time::Duration> {
             let rest = &after[num_str.len()..].trim_start();
             if rest.starts_with("ms") {
                 return Some(std::time::Duration::from_millis(num as u64));
-            } else {
-                // Assume seconds
-                return Some(std::time::Duration::from_secs_f64(num));
             }
+            // Assume seconds
+            return Some(std::time::Duration::from_secs_f64(num));
         }
     }
     None
@@ -457,7 +453,7 @@ fn filter_responses_api_tools(tools: &[Tool]) -> Vec<Tool> {
         .collect()
 }
 
-/// Extract text from a ResponseItem (Message type with output_text content)
+/// Extract text from a `ResponseItem` (Message type with `output_text` content)
 fn extract_text_from_item(item: &serde_json::Value) -> Option<String> {
     let item_type = item.get("type")?.as_str()?;
     if item_type != "message" {
@@ -514,7 +510,7 @@ fn is_mistral_model(model: &str, base_url: Option<&str>) -> bool {
 /// Check if this is a Groq-hosted model
 ///
 /// Groq provides fast inference using their LPU (Language Processing Unit).
-/// They host models like Llama, Mixtral, Gemma, DeepSeek, and Qwen.
+/// They host models like Llama, Mixtral, Gemma, `DeepSeek`, and Qwen.
 /// Groq uses OpenAI-compatible API format with no special handling required.
 fn is_groq_model(model: &str, base_url: Option<&str>) -> bool {
     let model_lower = model.to_lowercase();
@@ -552,7 +548,7 @@ fn normalize_mistral_tool_id(id: &str) -> String {
 
     // Ensure exactly 9 characters
     if normalized.len() < 9 {
-        format!("{:0<9}", normalized)
+        format!("{normalized:0<9}")
     } else if normalized.len() > 9 {
         normalized[..9].to_string()
     } else {
@@ -569,9 +565,9 @@ fn api_url_for_model(model: &str) -> &'static str {
     }
 }
 
-/// OpenAI API client
+/// `OpenAI` API client
 ///
-/// Handles communication with OpenAI's APIs (Chat Completions and Responses).
+/// Handles communication with `OpenAI`'s APIs (Chat Completions and Responses).
 /// Automatically selects the appropriate API endpoint based on model name.
 /// Also supports Mistral API through OpenAI-compatible endpoint with special
 /// tool ID handling.
@@ -591,7 +587,7 @@ pub struct OpenAiClient {
 }
 
 impl OpenAiClient {
-    /// Create a new OpenAI client
+    /// Create a new `OpenAI` client
     pub fn new(api_key: impl Into<String>) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
@@ -655,7 +651,7 @@ impl OpenAiClient {
         headers
     }
 
-    /// Convert internal messages to OpenAI format
+    /// Convert internal messages to `OpenAI` format
     ///
     /// When `is_mistral` is true, applies Mistral-specific transformations:
     /// - Tool call IDs are normalized to 9 alphanumeric characters
@@ -731,7 +727,7 @@ impl OpenAiClient {
                                     ImageSource::Base64 { media_type, data } => {
                                         Some(OpenAiContentPart::ImageUrl {
                                             image_url: ImageUrlData {
-                                                url: format!("data:{};base64,{}", media_type, data),
+                                                url: format!("data:{media_type};base64,{data}"),
                                                 detail: None,
                                             },
                                         })
@@ -805,7 +801,7 @@ impl OpenAiClient {
         map
     }
 
-    /// Convert internal tools to OpenAI format
+    /// Convert internal tools to `OpenAI` format
     fn convert_tools(&self, tools: &[Tool]) -> Vec<OpenAiTool> {
         tools
             .iter()
@@ -1128,7 +1124,7 @@ impl AiClient for OpenAiClient {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
             let _ = tx.send(StreamEvent::Error {
-                message: format!("API error {}: {}", status, error_text),
+                message: format!("API error {status}: {error_text}"),
             });
             return Ok(rx);
         }
@@ -1286,22 +1282,22 @@ impl AiClient for OpenAiClient {
                                         if let Some(usage) = resp.get("usage") {
                                             let input = usage
                                                 .get("input_tokens")
-                                                .and_then(|v| v.as_u64())
+                                                .and_then(serde_json::Value::as_u64)
                                                 .unwrap_or(0);
                                             let output = usage
                                                 .get("output_tokens")
-                                                .and_then(|v| v.as_u64())
+                                                .and_then(serde_json::Value::as_u64)
                                                 .unwrap_or(0);
                                             // Extract cached tokens from input_tokens_details
                                             let cache_read = usage
                                                 .get("input_tokens_details")
                                                 .and_then(|d| d.get("cached_tokens"))
-                                                .and_then(|v| v.as_u64());
+                                                .and_then(serde_json::Value::as_u64);
                                             // Extract reasoning tokens from output_tokens_details
                                             let _reasoning_tokens = usage
                                                 .get("output_tokens_details")
                                                 .and_then(|d| d.get("reasoning_tokens"))
-                                                .and_then(|v| v.as_u64());
+                                                .and_then(serde_json::Value::as_u64);
                                             let _ = tx.send(StreamEvent::Usage {
                                                 input_tokens: input,
                                                 output_tokens: output,
@@ -1332,8 +1328,7 @@ impl AiClient for OpenAiClient {
                                                 ApiError::RateLimited { retry_after } => {
                                                     if let Some(delay) = retry_after {
                                                         format!(
-                                                            "Rate limited - retry after {:?}",
-                                                            delay
+                                                            "Rate limited - retry after {delay:?}"
                                                         )
                                                     } else {
                                                         "Rate limited - please try again"
@@ -1361,7 +1356,7 @@ impl AiClient for OpenAiClient {
                         }
                         Err(e) => {
                             let _ = tx.send(StreamEvent::Error {
-                                message: format!("SSE stream error: {}", e),
+                                message: format!("SSE stream error: {e}"),
                             });
                             return;
                         }
@@ -1555,7 +1550,7 @@ impl AiClient for OpenAiClient {
                         }
                         Err(e) => {
                             let _ = tx.send(StreamEvent::Error {
-                                message: format!("Stream error: {}", e),
+                                message: format!("Stream error: {e}"),
                             });
                             break;
                         }
@@ -1581,7 +1576,7 @@ impl AiClient for OpenAiClient {
 // - `#[serde(untagged)]`: Serialize enum as the inner type (no type field)
 // - `#[serde(tag = "type")]`: Add a type discriminator field for enums
 
-/// Message in OpenAI format (role + content)
+/// Message in `OpenAI` format (role + content)
 ///
 /// # Serde Conditional Serialization
 ///
@@ -1620,7 +1615,7 @@ struct OpenAiMessage {
 /// [{"type": "text", "text": "Hi"}]     -> Parts([...])
 /// ```
 ///
-/// This matches OpenAI's API which accepts both formats.
+/// This matches `OpenAI`'s API which accepts both formats.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum OpenAiContent {

@@ -1,7 +1,7 @@
 //! Shimmer animation effect
 //!
 //! Creates a wave-like highlight effect that sweeps across text.
-//! Inspired by OpenAI Codex TUI.
+//! Inspired by `OpenAI` Codex TUI.
 
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -19,9 +19,9 @@ fn elapsed_since_start() -> Duration {
 /// Blend two RGB colors together with a given ratio (0.0 = a, 1.0 = b)
 fn blend(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
     let t = t.clamp(0.0, 1.0);
-    let r = (a.0 as f32 * (1.0 - t) + b.0 as f32 * t) as u8;
-    let g = (a.1 as f32 * (1.0 - t) + b.1 as f32 * t) as u8;
-    let b_out = (a.2 as f32 * (1.0 - t) + b.2 as f32 * t) as u8;
+    let r = (f32::from(a.0) * (1.0 - t) + f32::from(b.0) * t) as u8;
+    let g = (f32::from(a.1) * (1.0 - t) + f32::from(b.1) * t) as u8;
+    let b_out = (f32::from(a.2) * (1.0 - t) + f32::from(b.2) * t) as u8;
     (r, g, b_out)
 }
 
@@ -35,6 +35,7 @@ fn has_true_color() -> bool {
 
 /// Create shimmer effect spans for the given text.
 /// The shimmer is a wave of brightness that sweeps across the text.
+#[must_use]
 pub fn shimmer_spans(text: &str) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {

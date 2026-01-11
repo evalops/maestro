@@ -39,16 +39,19 @@ pub struct NotificationPayload {
 }
 
 /// Load notification configuration.
+#[must_use]
 pub fn load_config() -> NotificationConfig {
     NotificationConfig::default()
 }
 
 /// Check if notifications are enabled.
+#[must_use]
 pub fn is_enabled() -> bool {
     false
 }
 
 /// Check if terminal notifications are enabled.
+#[must_use]
 pub fn is_terminal_enabled() -> bool {
     false
 }

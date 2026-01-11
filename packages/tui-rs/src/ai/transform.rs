@@ -4,7 +4,7 @@
 //! Key transformations include:
 //!
 //! 1. Converting thinking blocks to text when crossing provider boundaries
-//!    (e.g., Claude thinking → <thinking> tags for OpenAI)
+//!    (e.g., Claude thinking → <thinking> tags for `OpenAI`)
 //! 2. Filtering out orphaned tool calls (tool calls without results)
 //!
 //! # Example
@@ -35,6 +35,7 @@ use std::collections::HashSet;
 /// # Returns
 ///
 /// Transformed messages compatible with the target provider
+#[must_use]
 pub fn transform_messages(
     messages: &[Message],
     source_provider: Option<AiProvider>,
@@ -62,7 +63,7 @@ pub fn transform_messages(
                         .iter()
                         .map(|block| match block {
                             ContentBlock::Thinking { thinking, .. } => ContentBlock::Text {
-                                text: format!("<thinking>\n{}\n</thinking>", thinking),
+                                text: format!("<thinking>\n{thinking}\n</thinking>"),
                             },
                             other => other.clone(),
                         })
@@ -130,6 +131,7 @@ fn filter_orphaned_tool_calls(messages: Vec<Message>) -> Vec<Message> {
 /// Transform messages with full orphan filtering.
 ///
 /// This version scans forward through messages to find matching tool results.
+#[must_use]
 pub fn transform_messages_full(
     messages: &[Message],
     source_provider: Option<AiProvider>,
@@ -154,7 +156,7 @@ pub fn transform_messages_full(
                         .iter()
                         .map(|block| match block {
                             ContentBlock::Thinking { thinking, .. } => ContentBlock::Text {
-                                text: format!("<thinking>\n{}\n</thinking>", thinking),
+                                text: format!("<thinking>\n{thinking}\n</thinking>"),
                             },
                             other => other.clone(),
                         })

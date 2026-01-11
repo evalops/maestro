@@ -40,7 +40,6 @@
 //! // `lines` contains styled ratatui Line instances ready for rendering
 //! ```
 
-use once_cell::sync::Lazy;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use syntect::easy::HighlightLines;
@@ -54,15 +53,16 @@ use syntect::parsing::SyntaxSet;
 ///
 /// Lazy initialization avoids the ~10-20ms startup cost if syntax highlighting is
 /// never used (e.g., when rendering plain text conversations).
-static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
+static SYNTAX_SET: std::sync::LazyLock<SyntaxSet> =
+    std::sync::LazyLock::new(SyntaxSet::load_defaults_newlines);
 
 /// Global theme set loaded lazily on first use.
 ///
 /// Contains syntect's default themes including the "base16-eighties.dark" theme
 /// used by this module. Lazy initialization keeps it out of the hot path.
-static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
+static THEME_SET: std::sync::LazyLock<ThemeSet> = std::sync::LazyLock::new(ThemeSet::load_defaults);
 
-/// Convert syntect FontStyle bitflags to ratatui Modifier.
+/// Convert syntect `FontStyle` bitflags to ratatui Modifier.
 ///
 /// Syntect uses bitflags for text styling (bold, italic, underline), while ratatui
 /// uses its own `Modifier` type. This function bridges between the two representations.
@@ -88,6 +88,7 @@ fn font_style_to_modifier(font_style: FontStyle) -> Modifier {
 ///
 /// # Returns
 /// A vector of styled lines suitable for ratatui
+#[must_use]
 pub fn highlight_code(code: &str, language: Option<&str>) -> Vec<Line<'static>> {
     // Try to find syntax for the language
     let syntax = language
@@ -138,7 +139,7 @@ pub fn highlight_code(code: &str, language: Option<&str>) -> Vec<Line<'static>> 
                             Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
                         let modifier = font_style_to_modifier(style.font_style);
                         Span::styled(
-                            text.to_string(),
+                            (*text).to_string(),
                             Style::default().fg(fg).add_modifier(modifier),
                         )
                     })
@@ -180,7 +181,7 @@ pub fn has_syntax(language: &str) -> bool {
 /// default syntect syntax set. Useful for autocomplete or language selection UIs.
 ///
 /// Note: The returned references have static lifetime because they point into
-/// the lazy-loaded SYNTAX_SET.
+/// the lazy-loaded `SYNTAX_SET`.
 pub fn supported_languages() -> Vec<&'static str> {
     SYNTAX_SET
         .syntaxes()

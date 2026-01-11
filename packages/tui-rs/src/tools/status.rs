@@ -21,7 +21,7 @@ fn normalize_paths(paths: Option<Value>) -> Vec<String> {
         Some(Value::String(s)) => vec![s],
         Some(Value::Array(values)) => values
             .into_iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
             .collect(),
         _ => Vec::new(),
     }
@@ -30,7 +30,7 @@ fn normalize_paths(paths: Option<Value>) -> Vec<String> {
 pub async fn git_status(args: Value, cwd: &str) -> ToolResult {
     let parsed: StatusArgs = match serde_json::from_value(args) {
         Ok(val) => val,
-        Err(err) => return ToolResult::failure(format!("Invalid status arguments: {}", err)),
+        Err(err) => return ToolResult::failure(format!("Invalid status arguments: {err}")),
     };
 
     let branch_summary = parsed.branch_summary.unwrap_or(true);
@@ -56,7 +56,7 @@ pub async fn git_status(args: Value, cwd: &str) -> ToolResult {
 
     let output = match cmd.output().await {
         Ok(out) => out,
-        Err(err) => return ToolResult::failure(format!("Failed to run git status: {}", err)),
+        Err(err) => return ToolResult::failure(format!("Failed to run git status: {err}")),
     };
 
     if !output.status.success() {
@@ -117,7 +117,7 @@ pub async fn git_status(args: Value, cwd: &str) -> ToolResult {
                 .unwrap_or_else(|| "(detached)".to_string())
         );
         if let Some(upstream) = &branch_upstream {
-            branch_line.push_str(&format!(" -> {}", upstream));
+            branch_line.push_str(&format!(" -> {upstream}"));
         }
         if ahead.is_some() || behind.is_some() {
             branch_line.push_str(&format!(
@@ -128,7 +128,7 @@ pub async fn git_status(args: Value, cwd: &str) -> ToolResult {
         }
         summary_lines.push(branch_line);
     }
-    summary_lines.push(format!("Files: {}", file_count));
+    summary_lines.push(format!("Files: {file_count}"));
 
     let details = serde_json::json!({
         "command": "git status --porcelain=v2 -z",

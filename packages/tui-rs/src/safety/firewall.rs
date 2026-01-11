@@ -28,8 +28,6 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use once_cell::sync::Lazy;
-
 use super::bash_analyzer::{analyze_bash_command, CommandRisk};
 use super::dangerous_patterns::{check_dangerous_patterns, Severity};
 use super::path_containment::{
@@ -65,21 +63,25 @@ pub struct FirewallContext<'a> {
 
 impl FirewallVerdict {
     /// Check if the verdict allows the operation
+    #[must_use]
     pub fn is_allowed(&self) -> bool {
         matches!(self, FirewallVerdict::Allow)
     }
 
     /// Check if the verdict blocks the operation
+    #[must_use]
     pub fn is_blocked(&self) -> bool {
         matches!(self, FirewallVerdict::Block { .. })
     }
 
     /// Check if the verdict requires approval
+    #[must_use]
     pub fn requires_approval(&self) -> bool {
         matches!(self, FirewallVerdict::RequireApproval { .. })
     }
 
     /// Get the reason if blocked or requires approval
+    #[must_use]
     pub fn reason(&self) -> Option<&str> {
         match self {
             FirewallVerdict::Allow => None,
@@ -126,7 +128,7 @@ pub struct ActionFirewall {
 }
 
 /// Tools that are always safe (read-only, no network)
-static SAFE_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+static SAFE_TOOLS: std::sync::LazyLock<HashSet<&'static str>> = std::sync::LazyLock::new(|| {
     [
         "read",
         "glob",
@@ -148,7 +150,7 @@ static SAFE_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 });
 
 /// Network tools that need URL policy checks before being allowed
-static NETWORK_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+static NETWORK_TOOLS: std::sync::LazyLock<HashSet<&'static str>> = std::sync::LazyLock::new(|| {
     [
         "websearch",
         "codesearch",
@@ -161,7 +163,7 @@ static NETWORK_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 });
 
 /// Tools that require path checking
-static PATH_TOOLS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+static PATH_TOOLS: std::sync::LazyLock<HashSet<&'static str>> = std::sync::LazyLock::new(|| {
     [
         "write",
         "edit",
@@ -205,11 +207,13 @@ impl ActionFirewall {
     }
 
     /// Create a firewall with custom configuration
+    #[must_use]
     pub fn with_config(config: FirewallConfig) -> Self {
         Self { config }
     }
 
     /// Get the workspace path
+    #[must_use]
     pub fn workspace(&self) -> &Path {
         &self.config.workspace
     }
@@ -225,6 +229,7 @@ impl ActionFirewall {
     }
 
     /// Check a bash command for safety
+    #[must_use]
     pub fn check_bash(&self, command: &str) -> FirewallVerdict {
         // Check for dangerous patterns first (highest priority)
         let patterns = check_dangerous_patterns(command);
@@ -265,11 +270,12 @@ impl ActionFirewall {
     }
 
     /// Check a file write operation
+    #[must_use]
     pub fn check_file_write(&self, path: &str, _content: &str) -> FirewallVerdict {
         // Check for path traversal attempts first (before any path parsing)
         if has_path_traversal(path) {
             return FirewallVerdict::Block {
-                reason: format!("Path traversal detected in: {}", path),
+                reason: format!("Path traversal detected in: {path}"),
             };
         }
 
@@ -326,17 +332,18 @@ impl ActionFirewall {
                 }
             }
             PathContainment::SystemProtected { protected_path } => FirewallVerdict::Block {
-                reason: format!("Cannot write to system-protected path: {}", protected_path),
+                reason: format!("Cannot write to system-protected path: {protected_path}"),
             },
         }
     }
 
     /// Check a file read operation
+    #[must_use]
     pub fn check_file_read(&self, path: &str) -> FirewallVerdict {
         // Check for path traversal attempts first
         if has_path_traversal(path) {
             return FirewallVerdict::Block {
-                reason: format!("Path traversal detected in: {}", path),
+                reason: format!("Path traversal detected in: {path}"),
             };
         }
 
@@ -361,6 +368,7 @@ impl ActionFirewall {
     }
 
     /// Check a tool call
+    #[must_use]
     pub fn check_tool(&self, tool_name: &str, args: &serde_json::Value) -> FirewallVerdict {
         self.check_tool_with_context(FirewallContext {
             tool_name,
@@ -410,8 +418,7 @@ impl ActionFirewall {
                         .join("; ");
                     return FirewallVerdict::RequireApproval {
                         reason: format!(
-                            "Unredacted PII ({}) detected before executing human-facing tool \"{}\". Run your redaction tool on the listed artifacts, then retry.",
-                            offenders, tool_name
+                            "Unredacted PII ({offenders}) detected before executing human-facing tool \"{tool_name}\". Run your redaction tool on the listed artifacts, then retry."
                         ),
                     };
                 }
@@ -450,8 +457,7 @@ impl ActionFirewall {
                 {
                     return FirewallVerdict::RequireApproval {
                         reason: format!(
-                            "MCP tool \"{}\" is marked as destructive and requires approval",
-                            tool_name
+                            "MCP tool \"{tool_name}\" is marked as destructive and requires approval"
                         ),
                     };
                 }
@@ -487,7 +493,10 @@ impl ActionFirewall {
             "background_tasks" => {
                 let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("");
                 if action == "start" {
-                    let shell = args.get("shell").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let shell = args
+                        .get("shell")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
                     if shell
                         && std::env::var("COMPOSER_BACKGROUND_SHELL_DISABLE")
                             .ok()
@@ -574,7 +583,7 @@ impl ActionFirewall {
                         serde_json::Value::String(path) => vec![path.clone()],
                         serde_json::Value::Array(values) => values
                             .iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
                             .collect(),
                         _ => Vec::new(),
                     };
@@ -606,7 +615,7 @@ impl ActionFirewall {
             _ => {
                 // Unknown tools require approval
                 FirewallVerdict::RequireApproval {
-                    reason: format!("Unknown tool: {}", tool_name),
+                    reason: format!("Unknown tool: {tool_name}"),
                 }
             }
         }

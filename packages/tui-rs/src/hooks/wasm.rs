@@ -2,7 +2,7 @@
 //!
 //! Provides sandboxed execution of WASM plugins for hooks. WASM plugins offer:
 //! - Strong sandboxing (no filesystem/network access by default)
-//! - Language agnostic (write hooks in Rust, Go, C, AssemblyScript, etc.)
+//! - Language agnostic (write hooks in Rust, Go, C, `AssemblyScript`, etc.)
 //! - Fast startup and execution
 //!
 //! # Feature Flag
@@ -31,7 +31,7 @@
 //! extern "C" fn dealloc(ptr: i32, size: i32);
 //! ```
 
-use super::types::*;
+use super::types::{HookEventType, HookResult, PostToolUseInput, PreToolUseInput};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -86,6 +86,7 @@ pub struct WasmHookExecutor {
 
 #[cfg(not(feature = "wasm"))]
 impl WasmHookExecutor {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             plugins: Vec::new(),
@@ -116,6 +117,7 @@ impl WasmHookExecutor {
         Ok(())
     }
 
+    #[must_use]
     pub fn execute_pre_tool_use(&self, input: &PreToolUseInput) -> HookResult {
         for plugin in &self.plugins {
             if plugin.event != HookEventType::PreToolUse {
@@ -135,6 +137,7 @@ impl WasmHookExecutor {
         HookResult::Continue
     }
 
+    #[must_use]
     pub fn execute_post_tool_use(&self, input: &PostToolUseInput) -> HookResult {
         for plugin in &self.plugins {
             if plugin.event != HookEventType::PostToolUse {
@@ -154,14 +157,17 @@ impl WasmHookExecutor {
         HookResult::Continue
     }
 
+    #[must_use]
     pub fn has_plugins(&self) -> bool {
         !self.plugins.is_empty()
     }
 
+    #[must_use]
     pub fn plugin_count(&self) -> usize {
         self.plugins.len()
     }
 
+    #[must_use]
     pub fn plugin_paths(&self) -> Vec<&Path> {
         self.plugins.iter().map(|p| p.path.as_path()).collect()
     }

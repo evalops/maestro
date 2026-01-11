@@ -157,7 +157,7 @@ pub struct App {
 
     /// Channel sender for tool execution results back to the agent.
     /// When a tool completes, we send the result through this channel.
-    /// Tuple: (call_id, success, optional_result)
+    /// Tuple: (`call_id`, success, `optional_result`)
     tool_response_tx: Option<mpsc::UnboundedSender<(String, bool, Option<ToolResult>)>>,
 
     /// Executes tools (bash commands, file reads, etc.) requested by the agent.
@@ -221,7 +221,7 @@ pub struct App {
     /// Prompts submitted while running (queued in the agent).
     queued_prompts: VecDeque<QueuedPrompt>,
 
-    /// Queued prompt reserved by the agent (between ResponseEnd and ResponseStart).
+    /// Queued prompt reserved by the agent (between `ResponseEnd` and `ResponseStart`).
     queued_prompt_inflight: Option<QueuedPromptCursor>,
 
     /// Queued prompt currently being processed.
@@ -284,8 +284,7 @@ impl App {
         // Get current working directory, defaulting to "." if it fails.
         // `unwrap_or_else` takes a closure that's only called on Err.
         let cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string());
+            .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
 
         let mut state = AppState::new();
         let queue_modes = crate::ui_state::load_queue_modes();
@@ -345,7 +344,7 @@ impl App {
     /// # Rust Concept: `mut self`
     ///
     /// Taking `mut self` (not `&mut self`) means this function takes ownership
-    /// of the App and can modify it. The App is consumed when run() completes.
+    /// of the App and can modify it. The App is consumed when `run()` completes.
     /// This is appropriate because the terminal needs cleanup on exit.
     ///
     /// # Returns
@@ -394,7 +393,7 @@ impl App {
         // Cleanup background processes before exit
         let process_count = crate::tools::cleanup_background_processes();
         if process_count > 0 {
-            eprintln!("[app] Cleaned up {} background process(es)", process_count);
+            eprintln!("[app] Cleaned up {process_count} background process(es)");
         }
 
         // Cleanup terminal
@@ -439,7 +438,7 @@ impl App {
             cwd: cwd.clone(),
         };
 
-        self.state.status = Some(format!("Initializing agent ({})...", model));
+        self.state.status = Some(format!("Initializing agent ({model})..."));
 
         match NativeAgent::new(config) {
             Ok((agent, event_rx)) => {
@@ -457,10 +456,10 @@ impl App {
 
                 // Ensure busy is false so user can type
                 self.state.busy = false;
-                self.state.status = Some(format!("Ready: {}", model));
+                self.state.status = Some(format!("Ready: {model}"));
             }
             Err(e) => {
-                self.state.error = Some(format!("Failed to create agent: {}", e));
+                self.state.error = Some(format!("Failed to create agent: {e}"));
             }
         }
 
@@ -470,13 +469,12 @@ impl App {
     /// Build the system prompt for the agent
     fn build_system_prompt(&self) -> String {
         let cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string());
+            .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
 
         format!(
             r#"You are an AI assistant helping with software development tasks.
 
-Current working directory: {}
+Current working directory: {cwd}
 
 You have access to the following tools:
 - bash: Execute shell commands. REQUIRED arg: {{\"command\":\"<cmd>\"}}. Do not send empty commands.
@@ -490,8 +488,7 @@ Tool-calling rules:
 - Never emit a tool call without all required fields.
 - If a tool call is denied, immediately retry with corrected arguments instead of responding without action.
 
-Always use tools when they would be helpful. Be concise and direct in your responses."#,
-            cwd
+Always use tools when they would be helpful. Be concise and direct in your responses."#
         )
     }
 
@@ -529,10 +526,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         }
         match &msg {
             FromAgent::Ready { model, provider } => {
-                self.state.status = Some(format!("Connected: {} via {}", model, provider));
+                self.state.status = Some(format!("Connected: {model} via {provider}"));
             }
             FromAgent::SessionInfo { cwd, .. } => {
-                self.state.status = Some(format!("Session in: {}", cwd));
+                self.state.status = Some(format!("Session in: {cwd}"));
             }
             FromAgent::ResponseEnd { .. } => {
                 // Clear busy state when response completes
@@ -1005,10 +1002,10 @@ Add the required fields and retry.",
                             }
 
                             self.state.session_id = Some(session_id.clone());
-                            self.state.status = Some(format!("Resumed session: {}", session_id));
+                            self.state.status = Some(format!("Resumed session: {session_id}"));
                         }
                         Err(e) => {
-                            self.state.error = Some(format!("Failed to load session: {}", e));
+                            self.state.error = Some(format!("Failed to load session: {e}"));
                         }
                     }
                 }
@@ -1046,7 +1043,7 @@ Add the required fields and retry.",
             KeyCode::Enter => {
                 if let Some(cmd_name) = self.command_palette.confirm() {
                     // Set input to the command
-                    self.state.set_input(&format!("/{}", cmd_name));
+                    self.state.set_input(&format!("/{cmd_name}"));
                     // Execute it
                     self.execute_slash_command().await?;
                 }
@@ -1078,7 +1075,7 @@ Add the required fields and retry.",
     /// Handle keys in approval modal
     async fn handle_approval_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
-            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => {
                 if let Some((request, _decision)) =
                     self.approval_controller.decide(ApprovalDecision::Approve)
                 {
@@ -1091,7 +1088,7 @@ Add the required fields and retry.",
                     self.active_modal = ActiveModal::None;
                 }
             }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
                 if let Some((request, _decision)) =
                     self.approval_controller.decide(ApprovalDecision::Deny)
                 {
@@ -1104,7 +1101,7 @@ Add the required fields and retry.",
                     self.active_modal = ActiveModal::None;
                 }
             }
-            KeyCode::Char('a') | KeyCode::Char('A') => {
+            KeyCode::Char('a' | 'A') => {
                 // Approve all
                 while let Some((request, _decision)) =
                     self.approval_controller.decide(ApprovalDecision::Approve)
@@ -1131,9 +1128,9 @@ Add the required fields and retry.",
                     // Set the new model
                     if let Some(agent) = &self.native_agent {
                         if let Err(e) = agent.set_model(&model_id) {
-                            self.state.error = Some(format!("Failed to set model: {}", e));
+                            self.state.error = Some(format!("Failed to set model: {e}"));
                         } else {
-                            self.state.status = Some(format!("Model: {}", model_id));
+                            self.state.status = Some(format!("Model: {model_id}"));
                         }
                     }
                 }
@@ -1173,9 +1170,9 @@ Add the required fields and retry.",
                 if let Some(theme_name) = self.theme_selector.confirm() {
                     // Set the new theme
                     if crate::themes::set_theme_by_name(&theme_name).is_ok() {
-                        self.state.status = Some(format!("Theme: {}", theme_name));
+                        self.state.status = Some(format!("Theme: {theme_name}"));
                     } else {
-                        self.state.error = Some(format!("Unknown theme: {}", theme_name));
+                        self.state.error = Some(format!("Unknown theme: {theme_name}"));
                     }
                 }
                 self.active_modal = ActiveModal::None;
@@ -1242,11 +1239,11 @@ Add the required fields and retry.",
 
     /// Handle tab for slash command completion
     fn handle_slash_tab(&mut self) {
-        if !self.slash_state.has_completions() {
+        if self.slash_state.has_completions() {
+            self.slash_state.cycle_next();
+        } else {
             let query = &self.state.input()[1..];
             self.slash_state.set_query(query, &self.slash_matcher);
-        } else {
-            self.slash_state.cycle_next();
         }
         self.apply_slash_completion();
     }
@@ -1254,7 +1251,7 @@ Add the required fields and retry.",
     /// Apply the current slash completion to input
     fn apply_slash_completion(&mut self) {
         if let Some(cmd) = self.slash_state.current() {
-            self.state.set_input(&format!("/{}", cmd));
+            self.state.set_input(&format!("/{cmd}"));
         }
     }
 
@@ -1332,8 +1329,7 @@ Add the required fields and retry.",
                     self.state.approval_mode = m;
                 } else {
                     self.state.error = Some(format!(
-                        "Unknown approval mode: {}. Use: yolo, selective, safe",
-                        mode
+                        "Unknown approval mode: {mode}. Use: yolo, selective, safe"
                     ));
                     return;
                 }
@@ -1347,7 +1343,7 @@ Add the required fields and retry.",
                     let (enabled, budget) = level.to_config();
                     if let Some(agent) = &self.native_agent {
                         if let Err(e) = agent.set_thinking(enabled, budget) {
-                            self.state.error = Some(format!("Failed to set thinking: {}", e));
+                            self.state.error = Some(format!("Failed to set thinking: {e}"));
                             return;
                         }
                     }
@@ -1355,8 +1351,7 @@ Add the required fields and retry.",
                         Some(format!("Thinking: {} (budget: {})", level.label(), budget));
                 } else {
                     self.state.error = Some(format!(
-                        "Unknown thinking level: {}. Use: off, minimal, low, medium, high, max",
-                        level_str
+                        "Unknown thinking level: {level_str}. Use: off, minimal, low, medium, high, max"
                     ));
                 }
             }
@@ -1376,17 +1371,17 @@ Add the required fields and retry.",
                     .find(|m| m.role == MessageRole::Assistant && !m.content.is_empty())
                 {
                     match self.clipboard.copy(&msg.content) {
-                        Ok(_) => {
+                        Ok(()) => {
                             let chars: Vec<char> = msg.content.chars().collect();
                             let preview = if chars.len() > 50 {
                                 format!("{}...", chars[..47].iter().collect::<String>())
                             } else {
                                 msg.content.clone()
                             };
-                            self.state.status = Some(format!("Copied: {}", preview));
+                            self.state.status = Some(format!("Copied: {preview}"));
                         }
                         Err(e) => {
-                            self.state.error = Some(format!("Failed to copy: {}", e));
+                            self.state.error = Some(format!("Failed to copy: {e}"));
                         }
                     }
                 } else {
@@ -1424,7 +1419,7 @@ Add the required fields and retry.",
                 }
 
                 if let Some(ref instr) = instructions {
-                    summary.push_str(&format!("\n*Focus: {}*\n", instr));
+                    summary.push_str(&format!("\n*Focus: {instr}*\n"));
                 }
 
                 // Remove old messages and add summary
@@ -1433,8 +1428,7 @@ Add the required fields and retry.",
                 self.state.add_system_message(summary);
                 self.state.messages.extend(kept);
 
-                self.state.status =
-                    Some(format!("Compacted {} messages into summary", to_summarize));
+                self.state.status = Some(format!("Compacted {to_summarize} messages into summary"));
             }
             CommandAction::ShowMcpStatus => {
                 // Show MCP server status
@@ -1493,12 +1487,12 @@ Add the required fields and retry.",
             UsageAction::Summary => {
                 let summary = self.usage_tracker.summary();
                 self.state
-                    .add_system_message(format!("## Usage Summary\n\n{}", summary));
+                    .add_system_message(format!("## Usage Summary\n\n{summary}"));
             }
             UsageAction::Detailed => {
                 let detailed = self.usage_tracker.detailed_summary();
                 self.state
-                    .add_system_message(format!("## Usage Details\n\n```\n{}\n```", detailed));
+                    .add_system_message(format!("## Usage Details\n\n```\n{detailed}\n```"));
             }
             UsageAction::Reset => {
                 self.usage_tracker.reset();
@@ -1582,11 +1576,11 @@ Add the required fields and retry.",
             HistoryAction::Search(query) => {
                 let results = self.prompt_history.search(&query);
                 if results.matches.is_empty() {
-                    self.state.status = Some(format!("No matches for '{}'", query));
+                    self.state.status = Some(format!("No matches for '{query}'"));
                     return;
                 }
 
-                let mut msg = format!("## Search Results for '{}'\n\n", query);
+                let mut msg = format!("## Search Results for '{query}'\n\n");
                 for (i, m) in results.matches.iter().take(10).enumerate() {
                     let chars: Vec<char> = m.entry.prompt.chars().collect();
                     let preview = if chars.len() > 60 {
@@ -1623,8 +1617,7 @@ Add the required fields and retry.",
                     let status = if exec.success { "✓" } else { "✗" };
                     let duration = exec
                         .duration
-                        .map(|d| format!("{:.0}ms", d.as_millis()))
-                        .unwrap_or_else(|| "?".to_string());
+                        .map_or_else(|| "?".to_string(), |d| format!("{:.0}ms", d.as_millis()));
                     msg.push_str(&format!(
                         "{} **{}** ({})\n",
                         status, exec.tool_name, duration
@@ -1635,22 +1628,21 @@ Add the required fields and retry.",
             ToolHistoryAction::Stats => {
                 let summary = self.tool_history.summary();
                 self.state
-                    .add_system_message(format!("## Tool Statistics\n\n```\n{}\n```", summary));
+                    .add_system_message(format!("## Tool Statistics\n\n```\n{summary}\n```"));
             }
             ToolHistoryAction::ForTool(name) => {
                 let execs = self.tool_history.for_tool(&name);
                 if execs.is_empty() {
-                    self.state.status = Some(format!("No history for tool '{}'", name));
+                    self.state.status = Some(format!("No history for tool '{name}'"));
                     return;
                 }
 
-                let mut msg = format!("## History for '{}'\n\n", name);
+                let mut msg = format!("## History for '{name}'\n\n");
                 for exec in execs.iter().take(10) {
                     let status = if exec.success { "✓" } else { "✗" };
                     let duration = exec
                         .duration
-                        .map(|d| format!("{:.0}ms", d.as_millis()))
-                        .unwrap_or_else(|| "?".to_string());
+                        .map_or_else(|| "?".to_string(), |d| format!("{:.0}ms", d.as_millis()));
                     msg.push_str(&format!(
                         "{} {} - {}\n",
                         status,
@@ -1751,7 +1743,7 @@ Add the required fields and retry.",
                         let skill = &loaded.definition;
                         let tools_count = skill.provided_tools.len();
                         let tools = if tools_count > 0 {
-                            format!("{}", tools_count)
+                            format!("{tools_count}")
                         } else {
                             "-".to_string()
                         };
@@ -1773,7 +1765,7 @@ Add the required fields and retry.",
                         errors.len()
                     ));
                     for err in errors.iter().take(5) {
-                        msg.push_str(&format!("- {}\n", err));
+                        msg.push_str(&format!("- {err}\n"));
                     }
                 }
 
@@ -1782,16 +1774,15 @@ Add the required fields and retry.",
             SkillsAction::Activate(name) => {
                 // For now, just show a status message
                 // Full implementation would activate the skill in the registry
-                self.state.status = Some(format!("Skill '{}' activated", name));
+                self.state.status = Some(format!("Skill '{name}' activated"));
                 self.state.add_system_message(format!(
-                    "Activated skill **{}**. System prompt will include skill instructions.",
-                    name
+                    "Activated skill **{name}**. System prompt will include skill instructions."
                 ));
             }
             SkillsAction::Deactivate(name) => {
-                self.state.status = Some(format!("Skill '{}' deactivated", name));
+                self.state.status = Some(format!("Skill '{name}' deactivated"));
                 self.state
-                    .add_system_message(format!("Deactivated skill **{}**.", name));
+                    .add_system_message(format!("Deactivated skill **{name}**."));
             }
             SkillsAction::Reload => {
                 let loader = SkillLoader::new();
@@ -1836,14 +1827,13 @@ Add the required fields and retry.",
                     if let Some(ref prompt) = skill.system_prompt_additions {
                         let preview: String = prompt.chars().take(200).collect();
                         msg.push_str(&format!(
-                            "**Instructions preview:**\n```\n{}...\n```\n",
-                            preview
+                            "**Instructions preview:**\n```\n{preview}...\n```\n"
                         ));
                     }
 
                     self.state.add_system_message(msg);
                 } else {
-                    self.state.error = Some(format!("Skill '{}' not found", name));
+                    self.state.error = Some(format!("Skill '{name}' not found"));
                 }
             }
         }
@@ -1865,11 +1855,10 @@ Add the required fields and retry.",
                     "**Follow-up mode:** {}\n",
                     self.state.follow_up_mode.label()
                 ));
-                msg.push_str(&format!("**Pending:** {}\n", total));
+                msg.push_str(&format!("**Pending:** {total}\n"));
                 if total > 0 {
                     msg.push_str(&format!(
-                        "- steer: {}, follow-up: {}\n",
-                        steer_count, follow_up_count
+                        "- steer: {steer_count}, follow-up: {follow_up_count}\n"
                     ));
                 }
                 if let Some(active) = &self.queued_prompt_active {
@@ -1914,7 +1903,7 @@ Add the required fields and retry.",
                 {
                     self.state
                         .status
-                        .replace(format!("Queued prompt #{} is already processing.", id));
+                        .replace(format!("Queued prompt #{id} is already processing."));
                     return;
                 }
                 if self
@@ -1922,8 +1911,7 @@ Add the required fields and retry.",
                     .is_some_and(|prompt| prompt.id == id)
                 {
                     self.state.status.replace(format!(
-                        "Queued prompt #{} is starting; try again if it re-queues.",
-                        id
+                        "Queued prompt #{id} is starting; try again if it re-queues."
                     ));
                     return;
                 }
@@ -1941,7 +1929,7 @@ Add the required fields and retry.",
                     None => {
                         self.state
                             .status
-                            .replace(format!("No queued prompt found with id #{}.", id));
+                            .replace(format!("No queued prompt found with id #{id}."));
                     }
                 }
             }
@@ -2019,9 +2007,9 @@ Add the required fields and retry.",
             "theme" => {
                 if let Some(theme_name) = args.first() {
                     if let Err(e) = crate::themes::set_theme_by_name(theme_name) {
-                        self.state.error = Some(format!("Failed to set theme: {}", e));
+                        self.state.error = Some(format!("Failed to set theme: {e}"));
                     } else {
-                        self.state.status = Some(format!("Theme set to: {}", theme_name));
+                        self.state.status = Some(format!("Theme set to: {theme_name}"));
                     }
                 } else {
                     // Open theme selector
@@ -2034,9 +2022,9 @@ Add the required fields and retry.",
                     // Set model directly
                     if let Some(agent) = &self.native_agent {
                         if let Err(e) = agent.set_model(model_id) {
-                            self.state.error = Some(format!("Failed to set model: {}", e));
+                            self.state.error = Some(format!("Failed to set model: {e}"));
                         } else {
-                            self.state.status = Some(format!("Model: {}", model_id));
+                            self.state.status = Some(format!("Model: {model_id}"));
                         }
                     }
                 } else {
@@ -2051,7 +2039,7 @@ Add the required fields and retry.",
                         let (enabled, budget) = level.to_config();
                         if let Some(agent) = &self.native_agent {
                             if let Err(e) = agent.set_thinking(enabled, budget) {
-                                self.state.error = Some(format!("Failed to set thinking: {}", e));
+                                self.state.error = Some(format!("Failed to set thinking: {e}"));
                             } else {
                                 self.state.status = Some(format!(
                                     "Thinking: {} (budget: {})",
@@ -2062,8 +2050,7 @@ Add the required fields and retry.",
                         }
                     } else {
                         self.state.error = Some(format!(
-                            "Unknown thinking level: {}. Use: off, minimal, low, medium, high, max",
-                            level_str
+                            "Unknown thinking level: {level_str}. Use: off, minimal, low, medium, high, max"
                         ));
                     }
                 } else {
@@ -2088,8 +2075,7 @@ Add the required fields and retry.",
                         self.state.status = Some(format!("Approval mode: {}", mode.label()));
                     } else {
                         self.state.error = Some(format!(
-                            "Unknown approval mode: {}. Use: yolo, selective, safe",
-                            mode_str
+                            "Unknown approval mode: {mode_str}. Use: yolo, selective, safe"
                         ));
                     }
                 } else {
@@ -2151,7 +2137,7 @@ Add the required fields and retry.",
 
                 // Terminal info
                 if let Ok((cols, rows)) = crossterm::terminal::size() {
-                    diag.push_str(&format!("**Terminal:** {}x{}\n", cols, rows));
+                    diag.push_str(&format!("**Terminal:** {cols}x{rows}\n"));
                 }
 
                 // Message count
@@ -2185,17 +2171,17 @@ Add the required fields and retry.",
                     .find(|m| m.role == MessageRole::Assistant && !m.content.is_empty())
                 {
                     match self.clipboard.copy(&msg.content) {
-                        Ok(_) => {
+                        Ok(()) => {
                             let chars: Vec<char> = msg.content.chars().collect();
                             let preview = if chars.len() > 50 {
                                 format!("{}...", chars[..47].iter().collect::<String>())
                             } else {
                                 msg.content.clone()
                             };
-                            self.state.status = Some(format!("Copied: {}", preview));
+                            self.state.status = Some(format!("Copied: {preview}"));
                         }
                         Err(e) => {
-                            self.state.error = Some(format!("Failed to copy: {}", e));
+                            self.state.error = Some(format!("Failed to copy: {e}"));
                         }
                     }
                 } else {
@@ -2205,10 +2191,10 @@ Add the required fields and retry.",
             _ => {
                 // Unknown command - try to send to agent
                 if let Some(agent) = &self.native_agent {
-                    let _ = agent.prompt(format!("/{}", cmd_line), vec![]).await;
+                    let _ = agent.prompt(format!("/{cmd_line}"), vec![]).await;
                     self.state.busy = true;
                 } else {
-                    self.state.error = Some(format!("Unknown command: /{}", cmd_name));
+                    self.state.error = Some(format!("Unknown command: /{cmd_name}"));
                 }
             }
         }
@@ -2219,7 +2205,7 @@ Add the required fields and retry.",
 
     /// Show help message
     fn show_help(&mut self) {
-        let help_text = r#"
+        let help_text = r"
 Composer TUI - Keyboard Shortcuts
 
 Navigation:
@@ -2265,7 +2251,7 @@ Slash Commands:
   /files        Search files
   /commands     Open command palette
   /quit         Exit
-"#;
+";
         self.state.add_system_message(help_text.trim().to_string());
     }
 
@@ -2326,7 +2312,7 @@ Slash Commands:
             .prompt_with_kind(content.clone(), vec![], kind, Some(queue_id))
             .await
         {
-            self.state.error = Some(format!("Failed to queue prompt: {}", e));
+            self.state.error = Some(format!("Failed to queue prompt: {e}"));
             return Ok(false);
         }
 
@@ -2437,7 +2423,7 @@ Slash Commands:
             // Send the prompt - returns immediately, actual work happens in background task
             // Events will be received via poll_agent in the main loop
             if let Err(e) = agent.prompt_with_kind(content, vec![], kind, None).await {
-                self.state.error = Some(format!("Failed to send prompt: {}", e));
+                self.state.error = Some(format!("Failed to send prompt: {e}"));
                 self.state.busy = false;
                 return Ok(false);
             }
@@ -2514,7 +2500,7 @@ Slash Commands:
             // Layout: [Messages(Min), Input(auto), Status(1)]
             if active_modal == ActiveModal::None {
                 // Calculate input area position (same layout as ChatView)
-                let status_height = if state.zen_mode { 0 } else { 1 };
+                let status_height = u16::from(!state.zen_mode);
                 let input_height = calculate_input_height(state, area);
                 let input_area = Rect {
                     x: area.x,
@@ -2624,13 +2610,10 @@ impl Default for App {
         match Self::new() {
             Ok(app) => app,
             Err(err) => {
-                eprintln!("[app] Warning: Failed to initialize terminal: {}", err);
+                eprintln!("[app] Warning: Failed to initialize terminal: {err}");
                 let (terminal, capabilities) =
                     terminal::init_fallback().unwrap_or_else(|fallback_err| {
-                        panic!(
-                            "Failed to create App: {}; fallback failed: {}",
-                            err, fallback_err
-                        );
+                        panic!("Failed to create App: {err}; fallback failed: {fallback_err}");
                     });
                 Self::new_with_terminal(terminal, capabilities)
             }

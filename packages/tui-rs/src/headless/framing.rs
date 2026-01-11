@@ -134,12 +134,12 @@ pub enum FramingError {
 impl std::fmt::Display for FramingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FramingError::Io(e) => write!(f, "IO error: {}", e),
-            FramingError::Json(e) => write!(f, "JSON error: {}", e),
+            FramingError::Io(e) => write!(f, "IO error: {e}"),
+            FramingError::Json(e) => write!(f, "JSON error: {e}"),
             FramingError::MessageTooLarge { size, max } => {
-                write!(f, "Message too large: {} bytes (max: {})", size, max)
+                write!(f, "Message too large: {size} bytes (max: {max})")
             }
-            FramingError::InvalidFrame(msg) => write!(f, "Invalid frame: {}", msg),
+            FramingError::InvalidFrame(msg) => write!(f, "Invalid frame: {msg}"),
             FramingError::ConnectionClosed => write!(f, "Connection closed"),
         }
     }

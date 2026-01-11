@@ -77,7 +77,7 @@ async fn ensure_gh_available() -> Result<(), String> {
         .arg("--version")
         .output()
         .await
-        .map_err(|e| format!("Failed to run gh: {}", e))?;
+        .map_err(|e| format!("Failed to run gh: {e}"))?;
     if !output.status.success() {
         return Err("GitHub CLI (gh) is not available".to_string());
     }
@@ -88,19 +88,19 @@ fn append_field(args: &mut Vec<String>, key: &str, value: &Value) {
     match value {
         Value::String(s) => {
             args.push("-f".to_string());
-            args.push(format!("{}={}", key, s));
+            args.push(format!("{key}={s}"));
         }
         Value::Number(n) => {
             args.push("-F".to_string());
-            args.push(format!("{}={}", key, n));
+            args.push(format!("{key}={n}"));
         }
         Value::Bool(b) => {
             args.push("-F".to_string());
-            args.push(format!("{}={}", key, b));
+            args.push(format!("{key}={b}"));
         }
         Value::Array(values) => {
             for item in values {
-                append_field(args, &format!("{}[]", key), item);
+                append_field(args, &format!("{key}[]"), item);
             }
         }
         Value::Null => {}
@@ -138,7 +138,7 @@ async fn run_gh_api(
     let output = cmd
         .output()
         .await
-        .map_err(|e| format!("Failed to run gh api: {}", e))?;
+        .map_err(|e| format!("Failed to run gh api: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         return Err(if stderr.is_empty() {
@@ -158,7 +158,7 @@ async fn git_current_branch(cwd: &str) -> Result<String, String> {
         .current_dir(cwd)
         .output()
         .await
-        .map_err(|e| format!("Failed to run git: {}", e))?;
+        .map_err(|e| format!("Failed to run git: {e}"))?;
     if !output.status.success() {
         return Err("Unable to determine current branch".to_string());
     }
@@ -177,7 +177,7 @@ async fn resolve_default_branch(gh_repo: Option<&str>) -> Result<String, String>
     let json: Value = serde_json::from_str(&output).map_err(|e| e.to_string())?;
     json.get("default_branch")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .ok_or_else(|| "Failed to read default_branch".to_string())
 }
 
@@ -196,14 +196,14 @@ async fn resolve_repo_full_name(gh_repo: Option<&str>) -> Result<String, String>
     let json: Value = serde_json::from_str(&output).map_err(|e| e.to_string())?;
     json.get("full_name")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .ok_or_else(|| "Failed to read repo name".to_string())
 }
 
 pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
     let parsed: GhPrArgs = match serde_json::from_value(args) {
         Ok(val) => val,
-        Err(err) => return ToolResult::failure(format!("Invalid gh_pr arguments: {}", err)),
+        Err(err) => return ToolResult::failure(format!("Invalid gh_pr arguments: {err}")),
     };
 
     if let Err(err) = ensure_gh_available().await {
@@ -265,7 +265,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
                 None => return ToolResult::failure("number required for checkout".to_string()),
             };
             let output = match run_gh_api(
-                &format!("repos/{{owner}}/{{repo}}/pulls/{}", number),
+                &format!("repos/{{owner}}/{{repo}}/pulls/{number}"),
                 "GET",
                 Vec::new(),
                 Vec::new(),
@@ -278,7 +278,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
             };
             let json: Value = match serde_json::from_str(&output) {
                 Ok(val) => val,
-                Err(err) => return ToolResult::failure(format!("Invalid PR response: {}", err)),
+                Err(err) => return ToolResult::failure(format!("Invalid PR response: {err}")),
             };
             let head_ref = json
                 .get("head")
@@ -300,7 +300,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
                 Err(err) => return ToolResult::failure(err),
             };
 
-            let branch_name = format!("pr-{}", number);
+            let branch_name = format!("pr-{number}");
             let status = tokio::process::Command::new("git")
                 .arg("fetch")
                 .arg(&repo_url)
@@ -309,7 +309,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
                 .status()
                 .await;
             if let Err(err) = status {
-                return ToolResult::failure(format!("git fetch failed: {}", err));
+                return ToolResult::failure(format!("git fetch failed: {err}"));
             }
 
             let checkout_status = tokio::process::Command::new("git")
@@ -322,16 +322,16 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
                 .await;
             match checkout_status {
                 Ok(status) if status.success() => {
-                    ToolResult::success(format!("Checked out PR #{} as {}", number, branch_name))
+                    ToolResult::success(format!("Checked out PR #{number} as {branch_name}"))
                 }
                 Ok(_) => ToolResult::failure("git checkout failed".to_string()),
-                Err(err) => ToolResult::failure(format!("git checkout failed: {}", err)),
+                Err(err) => ToolResult::failure(format!("git checkout failed: {err}")),
             }
         }
         "view" => {
             let number = parsed.number;
             let endpoint = if let Some(num) = number {
-                format!("repos/{{owner}}/{{repo}}/pulls/{}", num)
+                format!("repos/{{owner}}/{{repo}}/pulls/{num}")
             } else {
                 "repos/{owner}/{repo}/pulls".to_string()
             };
@@ -354,22 +354,22 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
                     Ok(name) => name,
                     Err(err) => return ToolResult::failure(err),
                 };
-                let mut query = format!("repo:{} is:pr", repo_name);
+                let mut query = format!("repo:{repo_name} is:pr");
                 if let Some(state) = parsed.state {
                     if state != "all" {
-                        query.push_str(&format!(" state:{}", state));
+                        query.push_str(&format!(" state:{state}"));
                     }
                 }
                 if let Some(author) = parsed.author {
-                    query.push_str(&format!(" author:{}", author));
+                    query.push_str(&format!(" author:{author}"));
                 }
                 if let Some(labels) = parsed.label {
                     for label in labels {
-                        query.push_str(&format!(" label:\"{}\"", label));
+                        query.push_str(&format!(" label:\"{label}\""));
                     }
                 }
                 if let Some(milestone) = parsed.milestone {
-                    query.push_str(&format!(" milestone:\"{}\"", milestone));
+                    query.push_str(&format!(" milestone:\"{milestone}\""));
                 }
                 let fields = vec![
                     ("q".to_string(), Value::String(query)),
@@ -405,7 +405,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
             };
             let fields = vec![("body".to_string(), Value::String(body))];
             match run_gh_api(
-                &format!("repos/{{owner}}/{{repo}}/issues/{}/comments", number),
+                &format!("repos/{{owner}}/{{repo}}/issues/{number}/comments"),
                 "POST",
                 fields,
                 Vec::new(),
@@ -423,7 +423,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
                 None => return ToolResult::failure("number required for checks".to_string()),
             };
             let pr_output = match run_gh_api(
-                &format!("repos/{{owner}}/{{repo}}/pulls/{}", number),
+                &format!("repos/{{owner}}/{{repo}}/pulls/{number}"),
                 "GET",
                 Vec::new(),
                 Vec::new(),
@@ -436,7 +436,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
             };
             let json: Value = match serde_json::from_str(&pr_output) {
                 Ok(val) => val,
-                Err(err) => return ToolResult::failure(format!("Invalid PR response: {}", err)),
+                Err(err) => return ToolResult::failure(format!("Invalid PR response: {err}")),
             };
             let sha = json
                 .get("head")
@@ -448,7 +448,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
                 Err(err) => return ToolResult::failure(err),
             };
             match run_gh_api(
-                &format!("repos/{{owner}}/{{repo}}/commits/{}/check-runs", sha),
+                &format!("repos/{{owner}}/{{repo}}/commits/{sha}/check-runs"),
                 "GET",
                 Vec::new(),
                 Vec::new(),
@@ -467,7 +467,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
             };
             if parsed.name_only.unwrap_or(false) {
                 match run_gh_api(
-                    &format!("repos/{{owner}}/{{repo}}/pulls/{}/files", number),
+                    &format!("repos/{{owner}}/{{repo}}/pulls/{number}/files"),
                     "GET",
                     vec![("per_page".to_string(), Value::Number(100.into()))],
                     Vec::new(),
@@ -481,7 +481,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
                             let names: Vec<String> = files
                                 .iter()
                                 .filter_map(|f| f.get("filename").and_then(|v| v.as_str()))
-                                .map(|s| s.to_string())
+                                .map(std::string::ToString::to_string)
                                 .collect();
                             ToolResult::success(names.join("\n"))
                         } else {
@@ -492,7 +492,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
                 }
             } else {
                 match run_gh_api(
-                    &format!("repos/{{owner}}/{{repo}}/pulls/{}", number),
+                    &format!("repos/{{owner}}/{{repo}}/pulls/{number}"),
                     "GET",
                     Vec::new(),
                     vec!["Accept: application/vnd.github.v3.diff".to_string()],
@@ -512,7 +512,7 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
 pub async fn gh_issue(args: Value) -> ToolResult {
     let parsed: GhIssueArgs = match serde_json::from_value(args) {
         Ok(val) => val,
-        Err(err) => return ToolResult::failure(format!("Invalid gh_issue arguments: {}", err)),
+        Err(err) => return ToolResult::failure(format!("Invalid gh_issue arguments: {err}")),
     };
 
     if let Err(err) = ensure_gh_available().await {
@@ -556,7 +556,7 @@ pub async fn gh_issue(args: Value) -> ToolResult {
                 None => return ToolResult::failure("number required for view".to_string()),
             };
             match run_gh_api(
-                &format!("repos/{{owner}}/{{repo}}/issues/{}", number),
+                &format!("repos/{{owner}}/{{repo}}/issues/{number}"),
                 "GET",
                 Vec::new(),
                 Vec::new(),
@@ -606,7 +606,7 @@ pub async fn gh_issue(args: Value) -> ToolResult {
             };
             let fields = vec![("body".to_string(), Value::String(body))];
             match run_gh_api(
-                &format!("repos/{{owner}}/{{repo}}/issues/{}/comments", number),
+                &format!("repos/{{owner}}/{{repo}}/issues/{number}/comments"),
                 "POST",
                 fields,
                 Vec::new(),
@@ -625,7 +625,7 @@ pub async fn gh_issue(args: Value) -> ToolResult {
             };
             let fields = vec![("state".to_string(), Value::String("closed".to_string()))];
             match run_gh_api(
-                &format!("repos/{{owner}}/{{repo}}/issues/{}", number),
+                &format!("repos/{{owner}}/{{repo}}/issues/{number}"),
                 "PATCH",
                 fields,
                 Vec::new(),
@@ -644,7 +644,7 @@ pub async fn gh_issue(args: Value) -> ToolResult {
 pub async fn gh_repo(args: Value, cwd: &str) -> ToolResult {
     let parsed: GhRepoArgs = match serde_json::from_value(args) {
         Ok(val) => val,
-        Err(err) => return ToolResult::failure(format!("Invalid gh_repo arguments: {}", err)),
+        Err(err) => return ToolResult::failure(format!("Invalid gh_repo arguments: {err}")),
     };
 
     if let Err(err) = ensure_gh_available().await {
@@ -685,7 +685,7 @@ pub async fn gh_repo(args: Value, cwd: &str) -> ToolResult {
                 };
             let json: Value = match serde_json::from_str(&output) {
                 Ok(val) => val,
-                Err(err) => return ToolResult::failure(format!("Invalid repo response: {}", err)),
+                Err(err) => return ToolResult::failure(format!("Invalid repo response: {err}")),
             };
             let clone_url = json
                 .get("clone_url")
@@ -711,10 +711,10 @@ pub async fn gh_repo(args: Value, cwd: &str) -> ToolResult {
                 .await;
             match status {
                 Ok(status) if status.success() => {
-                    ToolResult::success(format!("Cloned {} to {}", repo_name, dir))
+                    ToolResult::success(format!("Cloned {repo_name} to {dir}"))
                 }
                 Ok(_) => ToolResult::failure("git clone failed".to_string()),
-                Err(err) => ToolResult::failure(format!("git clone failed: {}", err)),
+                Err(err) => ToolResult::failure(format!("git clone failed: {err}")),
             }
         }
         _ => ToolResult::failure("Unsupported gh_repo action".to_string()),

@@ -1,7 +1,7 @@
 //! Skill Loader
 //!
 //! Provides filesystem-based skill discovery and loading from SKILL.md files
-//! following the Agent Skills specification (https://agentskills.io/specification).
+//! following the Agent Skills specification (<https://agentskills.io/specification>).
 //!
 //! # SKILL.md Format
 //!
@@ -194,6 +194,7 @@ pub struct SkillResources {
 
 impl SkillResources {
     /// Check if the skill has any resources
+    #[must_use]
     pub fn has_resources(&self) -> bool {
         self.scripts_dir.is_some() || self.references_dir.is_some() || self.assets_dir.is_some()
     }
@@ -203,6 +204,7 @@ impl LoadedSkill {
     /// Convert to a JSON-serializable dictionary (per Agent Skills SDK)
     ///
     /// Excludes None values to match the Python SDK behavior.
+    #[must_use]
     pub fn to_dict(&self) -> serde_json::Value {
         let mut result = serde_json::Map::new();
 
@@ -245,6 +247,7 @@ impl LoadedSkill {
     }
 
     /// Convert to JSON string
+    #[must_use]
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(&self.to_dict()).unwrap_or_default()
     }
@@ -259,6 +262,7 @@ pub struct SkillLoader {
 
 impl SkillLoader {
     /// Create a new skill loader with default search paths
+    #[must_use]
     pub fn new() -> Self {
         let mut search_paths = Vec::new();
 
@@ -274,6 +278,7 @@ impl SkillLoader {
     }
 
     /// Create a loader with custom search paths
+    #[must_use]
     pub fn with_paths(paths: Vec<PathBuf>) -> Self {
         Self {
             search_paths: paths,
@@ -286,6 +291,7 @@ impl SkillLoader {
     }
 
     /// Get the search paths
+    #[must_use]
     pub fn search_paths(&self) -> &[PathBuf] {
         &self.search_paths
     }
@@ -315,8 +321,7 @@ impl SkillLoader {
                     path: path.to_path_buf(),
                     name: name.to_string(),
                     reason: format!(
-                        "Invalid character '{}'. Only lowercase letters, digits, and hyphens allowed",
-                        c
+                        "Invalid character '{c}'. Only lowercase letters, digits, and hyphens allowed"
                     ),
                 });
             }
@@ -363,6 +368,7 @@ impl SkillLoader {
     }
 
     /// Load all skills from all search paths
+    #[must_use]
     pub fn load_all(&self) -> Vec<Result<LoadedSkill, SkillLoadError>> {
         let mut results = Vec::new();
 
@@ -376,6 +382,7 @@ impl SkillLoader {
     }
 
     /// Load skills from a specific directory
+    #[must_use]
     pub fn load_from_directory(&self, dir: &Path) -> Vec<Result<LoadedSkill, SkillLoadError>> {
         let mut results = Vec::new();
 
@@ -387,7 +394,7 @@ impl SkillLoader {
 
         // Look for subdirectories containing SKILL.md
         if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
+            for entry in entries.filter_map(std::result::Result::ok) {
                 let path = entry.path();
                 if path.is_dir() {
                     if let Some(skill_file) = Self::find_skill_md(&path) {
@@ -668,6 +675,7 @@ impl SkillLoader {
     }
 
     /// Load skills returning both successful loads and errors
+    #[must_use]
     pub fn load_all_with_paths(&self) -> (Vec<LoadedSkill>, Vec<SkillLoadError>) {
         let mut skills = Vec::new();
         let mut errors = Vec::new();
@@ -699,6 +707,7 @@ impl SkillLoader {
 /// </skill>
 /// </available_skills>
 /// ```
+#[must_use]
 pub fn skills_to_prompt(skills: &[LoadedSkill]) -> String {
     if skills.is_empty() {
         return "<available_skills>\n</available_skills>".to_string();
@@ -714,9 +723,9 @@ pub fn skills_to_prompt(skills: &[LoadedSkill]) -> String {
         let location = html_escape(&skill.source_path.display().to_string());
 
         output.push_str("<skill>\n");
-        output.push_str(&format!("  <name>{}</name>\n", name));
-        output.push_str(&format!("  <description>{}</description>\n", description));
-        output.push_str(&format!("  <location>{}</location>\n", location));
+        output.push_str(&format!("  <name>{name}</name>\n"));
+        output.push_str(&format!("  <description>{description}</description>\n"));
+        output.push_str(&format!("  <location>{location}</location>\n"));
         output.push_str("</skill>\n");
     }
 

@@ -132,6 +132,7 @@ impl Default for BorderStyle {
 /// │ Line 2   │
 /// ╰──────────╯
 /// ```
+#[must_use]
 pub fn with_border(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     with_border_style(lines, BorderStyle::ROUNDED, None)
 }
@@ -140,11 +141,13 @@ pub fn with_border(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 ///
 /// This ensures the box is at least `inner_width` characters wide,
 /// regardless of content width.
+#[must_use]
 pub fn with_border_width(lines: Vec<Line<'static>>, inner_width: usize) -> Vec<Line<'static>> {
     with_border_style(lines, BorderStyle::ROUNDED, Some(inner_width))
 }
 
 /// Wrap lines in a border with custom style.
+#[must_use]
 pub fn with_border_style(
     lines: Vec<Line<'static>>,
     style: BorderStyle,
@@ -210,6 +213,7 @@ pub fn with_border_style(
 /// Calculate the inner width for a bordered card.
 ///
 /// Returns None if the width is too small to contain a border.
+#[must_use]
 pub fn card_inner_width(width: u16, max_inner_width: usize) -> Option<usize> {
     if width < 4 {
         return None;
@@ -232,6 +236,7 @@ fn line_display_width(line: &Line<'_>) -> usize {
 }
 
 /// Create a horizontal separator line.
+#[must_use]
 pub fn horizontal_separator(width: usize) -> Line<'static> {
     Line::from(rounded::HORIZONTAL.repeat(width).dim())
 }
@@ -239,6 +244,7 @@ pub fn horizontal_separator(width: usize) -> Line<'static> {
 /// Create a horizontal separator with text.
 ///
 /// Example: `──── Title ────`
+#[must_use]
 pub fn separator_with_text(text: &str, width: usize) -> Line<'static> {
     let text_width = text.width();
     if text_width + 6 > width {
@@ -263,6 +269,7 @@ pub fn separator_with_text(text: &str, width: usize) -> Line<'static> {
 ///
 /// Uses a hair space (U+200A) after the emoji for consistent visual appearance
 /// across terminals.
+#[must_use]
 pub fn padded_emoji(emoji: &str) -> String {
     format!("{emoji}\u{200A}")
 }

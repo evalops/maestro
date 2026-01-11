@@ -33,7 +33,7 @@
 //! wasm = "~/.composer/plugins/safety.wasm"
 //! ```
 
-use super::types::*;
+use super::types::HookEventType;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -327,7 +327,7 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
     if let Some(hooks) = raw.hooks {
         for (event_name, matchers) in hooks {
             let Some(event) = parse_event_type(&event_name) else {
-                eprintln!("[hooks] Unknown event type: {}", event_name);
+                eprintln!("[hooks] Unknown event type: {event_name}");
                 continue;
             };
 
@@ -341,12 +341,11 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                     if hook.hook_type.as_deref() == Some("agent") {
                         continue;
                     }
-                    let command = match hook.command {
-                        Some(cmd) => cmd,
-                        None => {
-                            eprintln!("[hooks] Command hook missing command field");
-                            continue;
-                        }
+                    let command = if let Some(cmd) = hook.command {
+                        cmd
+                    } else {
+                        eprintln!("[hooks] Command hook missing command field");
+                        continue;
                     };
                     config.hooks.push(HookDefinition {
                         event,

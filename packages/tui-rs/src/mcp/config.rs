@@ -105,6 +105,7 @@ impl McpServerConfig {
     }
 
     /// Check if this server is effectively enabled
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled && !self.disabled
     }
@@ -146,11 +147,13 @@ pub struct McpConfig {
 
 impl McpConfig {
     /// Create an empty configuration
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Get a server by name
+    #[must_use]
     pub fn get_server(&self, name: &str) -> Option<&McpServerConfig> {
         self.servers.iter().find(|s| s.name == name)
     }
@@ -170,6 +173,7 @@ impl McpConfig {
 /// # Returns
 ///
 /// Merged configuration from all sources with proper precedence
+#[must_use]
 pub fn load_mcp_config(project_root: Option<&Path>) -> McpConfig {
     let mut merged: HashMap<String, McpServerConfig> = HashMap::new();
 

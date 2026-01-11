@@ -87,6 +87,7 @@ pub struct DiffStats {
 }
 
 impl DiffStats {
+    #[must_use]
     pub fn total_changes(&self) -> usize {
         self.added + self.removed
     }
@@ -110,6 +111,7 @@ pub enum DiffLineKind {
 }
 
 /// Generate a diff between two strings
+#[must_use]
 pub fn generate_diff(old: &str, new: &str, context_lines: usize) -> Diff {
     let text_diff = TextDiff::from_lines(old, new);
     let mut lines = Vec::new();
@@ -128,10 +130,7 @@ pub fn generate_diff(old: &str, new: &str, context_lines: usize) -> Diff {
 
             lines.push(DiffLine {
                 kind: DiffLineKind::HunkHeader,
-                content: format!(
-                    "@@ -{},{} +{},{} @@",
-                    old_start, old_len, new_start, new_len
-                ),
+                content: format!("@@ -{old_start},{old_len} +{new_start},{new_len} @@"),
                 old_line_num: None,
                 new_line_num: None,
             });
@@ -185,11 +184,13 @@ pub fn generate_diff(old: &str, new: &str, context_lines: usize) -> Diff {
 }
 
 /// Render a diff to ratatui Text
+#[must_use]
 pub fn render_diff(diff: &Diff) -> Text<'static> {
     render_diff_with_styles(diff, &DiffStyles::default())
 }
 
 /// Render a diff with custom styles
+#[must_use]
 pub fn render_diff_with_styles(diff: &Diff, styles: &DiffStyles) -> Text<'static> {
     let mut output = Vec::new();
 
@@ -242,12 +243,10 @@ pub fn render_diff_with_styles(diff: &Diff, styles: &DiffStyles) -> Text<'static
         if line.kind != DiffLineKind::HunkHeader && line.kind != DiffLineKind::Header {
             let old_num = line
                 .old_line_num
-                .map(|n| format!("{:4}", n))
-                .unwrap_or_else(|| "    ".to_string());
+                .map_or_else(|| "    ".to_string(), |n| format!("{n:4}"));
             let new_num = line
                 .new_line_num
-                .map(|n| format!("{:4}", n))
-                .unwrap_or_else(|| "    ".to_string());
+                .map_or_else(|| "    ".to_string(), |n| format!("{n:4}"));
 
             spans.push(Span::styled(old_num, styles.line_number));
             spans.push(Span::styled(" ", styles.line_number));
@@ -265,6 +264,7 @@ pub fn render_diff_with_styles(diff: &Diff, styles: &DiffStyles) -> Text<'static
 }
 
 /// Render a compact diff summary
+#[must_use]
 pub fn render_diff_summary(diff: &Diff, path: &str) -> Line<'static> {
     let mut spans = Vec::new();
 
@@ -310,6 +310,7 @@ pub fn render_diff_summary(diff: &Diff, path: &str) -> Line<'static> {
 /// - Continuation: `      content continues...`
 ///
 /// This keeps the gutter aligned and shows the +/- sign only on the first line.
+#[must_use]
 pub fn render_wrapped_diff_line(
     line_number: usize,
     kind: DiffLineKind,
@@ -343,8 +344,7 @@ pub fn render_wrapped_diff_line(
         let split_at = remaining_text
             .char_indices()
             .nth(available_cols)
-            .map(|(i, _)| i)
-            .unwrap_or(remaining_text.len());
+            .map_or(remaining_text.len(), |(i, _)| i);
 
         let (chunk, rest) = remaining_text.split_at(split_at);
         remaining_text = rest;
@@ -377,6 +377,7 @@ pub fn render_wrapped_diff_line(
 }
 
 /// Calculate the width needed for line numbers.
+#[must_use]
 pub fn calculate_line_number_width(max_line: usize) -> usize {
     if max_line == 0 {
         1
@@ -388,11 +389,13 @@ pub fn calculate_line_number_width(max_line: usize) -> usize {
 /// Render a diff with wrapping support.
 ///
 /// This is like `render_diff` but wraps long lines properly.
+#[must_use]
 pub fn render_diff_wrapped(diff: &Diff, width: usize) -> Text<'static> {
     render_diff_wrapped_with_styles(diff, width, &DiffStyles::default())
 }
 
 /// Render a diff with wrapping and custom styles.
+#[must_use]
 pub fn render_diff_wrapped_with_styles(
     diff: &Diff,
     width: usize,
@@ -469,6 +472,7 @@ pub fn render_diff_wrapped_with_styles(
 }
 
 /// Render a hunk separator line.
+#[must_use]
 pub fn render_hunk_separator(line_number_width: usize, styles: &DiffStyles) -> Line<'static> {
     let spacer = format!("{:width$} ", "", width = line_number_width.max(1));
     Line::from(vec![
@@ -478,6 +482,7 @@ pub fn render_hunk_separator(line_number_width: usize, styles: &DiffStyles) -> L
 }
 
 /// Render a line count summary like "(+5 -3)".
+#[must_use]
 pub fn render_line_count_summary(added: usize, removed: usize) -> Vec<Span<'static>> {
     use ratatui::style::Stylize;
     vec![

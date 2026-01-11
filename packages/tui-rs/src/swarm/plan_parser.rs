@@ -1,6 +1,6 @@
 //! Plan Parser
 //!
-//! Parses AI-generated execution plans into structured SwarmPlan objects.
+//! Parses AI-generated execution plans into structured `SwarmPlan` objects.
 //! Supports markdown-style task lists and dependency notation.
 
 use anyhow::Result;
@@ -103,7 +103,7 @@ fn parse_tasks(markdown: &str) -> Result<Vec<SwarmTask>> {
 
         // Generate ID if not explicit
         task_id_counter += 1;
-        let id = explicit_id.unwrap_or_else(|| format!("task-{}", task_id_counter));
+        let id = explicit_id.unwrap_or_else(|| format!("task-{task_id_counter}"));
 
         // Map title to ID for dependency resolution
         id_map.insert(title.to_lowercase(), id.clone());
@@ -145,7 +145,7 @@ fn extract_task_metadata(markdown: &str, title: &str, mut task: SwarmTask) -> Sw
             if trimmed.starts_with('#')
                 || trimmed.starts_with("- [")
                 || trimmed.starts_with("* [")
-                || (trimmed.len() > 2 && trimmed.chars().next().is_some_and(|c| c.is_numeric()))
+                || (trimmed.len() > 2 && trimmed.chars().next().is_some_and(char::is_numeric))
             {
                 break;
             }
@@ -194,7 +194,7 @@ fn extract_task_metadata(markdown: &str, title: &str, mut task: SwarmTask) -> Sw
     task
 }
 
-/// Parse priority string to TaskPriority
+/// Parse priority string to `TaskPriority`
 fn parse_priority(s: &str) -> TaskPriority {
     match s.to_lowercase().as_str() {
         "low" | "1" => TaskPriority::Low,
@@ -229,7 +229,7 @@ pub fn parse_simple_list(text: &str) -> Result<Vec<SwarmTask>> {
             let deps_str = &line[arrow_pos + 2..];
             let deps: Vec<TaskId> = deps_str
                 .split(',')
-                .map(|d| d.trim())
+                .map(str::trim)
                 .filter(|d| !d.is_empty())
                 .filter_map(|d| task_titles.get(&d.to_lowercase()).cloned())
                 .collect();

@@ -47,6 +47,7 @@ pub struct StyledTextWidget {
 }
 
 impl StyledTextWidget {
+    #[must_use]
     pub fn new(spans: Vec<crate::protocol::StyledSpan>) -> Self {
         Self { spans }
     }

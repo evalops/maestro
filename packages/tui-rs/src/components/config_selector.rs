@@ -44,7 +44,7 @@ impl ConfigOption {
             name: name.to_string(),
             value: options
                 .get(current)
-                .map(|s| s.to_string())
+                .map(|s| (*s).to_string())
                 .unwrap_or_default(),
             options: options.into_iter().map(String::from).collect(),
             current_option: current,
@@ -129,6 +129,7 @@ impl Default for ConfigSelector {
 
 impl ConfigSelector {
     /// Create a new config selector with default settings
+    #[must_use]
     pub fn new() -> Self {
         let options = Self::default_options();
         Self {
@@ -233,6 +234,7 @@ impl ConfigSelector {
     }
 
     /// Check if visible
+    #[must_use]
     pub fn is_visible(&self) -> bool {
         self.visible
     }
@@ -276,11 +278,13 @@ impl ConfigSelector {
     }
 
     /// Get the selected option
+    #[must_use]
     pub fn selected_option(&self) -> Option<&ConfigOption> {
         self.options.get(self.selected)
     }
 
     /// Get all options
+    #[must_use]
     pub fn options(&self) -> &[ConfigOption] {
         &self.options
     }
@@ -414,8 +418,7 @@ impl ConfigSelector {
 
         let description = self
             .selected_option()
-            .map(|o| o.description.as_str())
-            .unwrap_or("");
+            .map_or("", |o| o.description.as_str());
 
         let help_text = Line::from(vec![
             Span::styled(description, Style::default().fg(Color::Gray)),

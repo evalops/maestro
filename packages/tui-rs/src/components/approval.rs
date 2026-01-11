@@ -8,7 +8,7 @@
 //!
 //! The approval system has three main components:
 //!
-//! ## ApprovalRequest
+//! ## `ApprovalRequest`
 //!
 //! Represents a pending approval request with:
 //! - `call_id`: Unique identifier for the tool call
@@ -26,7 +26,7 @@
 //!     .shell();
 //! ```
 //!
-//! ## ApprovalModal
+//! ## `ApprovalModal`
 //!
 //! A stateless widget that renders the approval UI:
 //! - Centered modal with amber border (warning color)
@@ -37,7 +37,7 @@
 //! The modal uses `Clear` widget to render over the main UI and draw a bordered
 //! panel in the center of the screen.
 //!
-//! ## ApprovalController
+//! ## `ApprovalController`
 //!
 //! Stateful controller managing the approval queue:
 //! - Maintains a FIFO queue of pending approvals
@@ -183,12 +183,14 @@ impl ApprovalRequest {
         self
     }
 
+    #[must_use]
     pub fn shell(mut self) -> Self {
         self.is_shell = true;
         self
     }
 
     /// Extract a displayable command from args
+    #[must_use]
     pub fn display_command(&self) -> String {
         if let Some(ref cmd) = self.command {
             return cmd.clone();
@@ -241,6 +243,7 @@ pub struct ApprovalModal<'a> {
 }
 
 impl<'a> ApprovalModal<'a> {
+    #[must_use]
     pub fn new(request: &'a ApprovalRequest) -> Self {
         Self {
             request,
@@ -249,11 +252,13 @@ impl<'a> ApprovalModal<'a> {
         }
     }
 
+    #[must_use]
     pub fn queue_size(mut self, size: usize) -> Self {
         self.queue_size = size;
         self
     }
 
+    #[must_use]
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
         self
@@ -270,10 +275,11 @@ impl<'a> ApprovalModal<'a> {
     ///
     /// This is a static method since the modal itself is stateless. The app's
     /// event loop should call this and process the result through `ApprovalController`.
+    #[must_use]
     pub fn handle_key(code: KeyCode) -> Option<ApprovalDecision> {
         match code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => Some(ApprovalDecision::Approve),
-            KeyCode::Char('n') | KeyCode::Char('N') => Some(ApprovalDecision::Deny),
+            KeyCode::Char('y' | 'Y') => Some(ApprovalDecision::Approve),
+            KeyCode::Char('n' | 'N') => Some(ApprovalDecision::Deny),
             KeyCode::Esc => Some(ApprovalDecision::Cancel),
             _ => None,
         }
@@ -446,6 +452,7 @@ pub struct ApprovalController {
 }
 
 impl ApprovalController {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             queue: Vec::new(),
@@ -462,11 +469,13 @@ impl ApprovalController {
     }
 
     /// Get the current request (if any)
+    #[must_use]
     pub fn current(&self) -> Option<&ApprovalRequest> {
         self.queue.first()
     }
 
     /// Get the number of pending approvals (excluding current)
+    #[must_use]
     pub fn pending_count(&self) -> usize {
         self.queue.len().saturating_sub(1)
     }
@@ -490,6 +499,7 @@ impl ApprovalController {
     }
 
     /// Check if the modal should be visible
+    #[must_use]
     pub fn is_visible(&self) -> bool {
         self.visible && !self.queue.is_empty()
     }
@@ -501,6 +511,7 @@ impl ApprovalController {
     }
 
     /// Get total queue size
+    #[must_use]
     pub fn total_count(&self) -> usize {
         self.queue.len()
     }

@@ -8,9 +8,9 @@
 //!
 //! The registry system consists of two main components:
 //!
-//! - **ToolRegistry**: A HashMap-based registry of tool definitions with JSON schemas.
+//! - **`ToolRegistry`**: A HashMap-based registry of tool definitions with JSON schemas.
 //!   It validates arguments, checks required fields, and determines approval requirements.
-//! - **ToolExecutor**: The execution dispatcher that routes tool calls to implementations.
+//! - **`ToolExecutor`**: The execution dispatcher that routes tool calls to implementations.
 //!   It manages event streams, handles errors, and ensures consistent result reporting.
 //!
 //! # Tool Definition System
@@ -60,15 +60,15 @@
 //!
 //! Tools emit events via an unbounded mpsc channel (`mpsc::UnboundedSender<FromAgent>`):
 //!
-//! 1. **ToolStart**: Emitted when execution begins (contains call_id)
-//! 2. **ToolOutput**: Emitted for progress/partial output (optional, repeatable)
-//! 3. **ToolEnd**: Emitted when execution completes (contains success flag)
+//! 1. **`ToolStart`**: Emitted when execution begins (contains `call_id`)
+//! 2. **`ToolOutput`**: Emitted for progress/partial output (optional, repeatable)
+//! 3. **`ToolEnd`**: Emitted when execution completes (contains success flag)
 //!
 //! These events enable real-time UI updates and streaming output display.
 //!
 //! # Error Handling
 //!
-//! Errors are returned in the ToolResult structure, never panicked:
+//! Errors are returned in the `ToolResult` structure, never panicked:
 //! - **Validation errors**: Missing required fields, invalid JSON
 //! - **Execution errors**: File not found, permission denied, timeout
 //! - **Unknown tools**: Tool name not found in registry
@@ -305,7 +305,7 @@ fn is_probably_binary(data: &[u8]) -> bool {
 ///
 /// # Thread Safety
 ///
-/// ToolExecutor is `Send` but not `Sync` because it contains `BashTool` which uses
+/// `ToolExecutor` is `Send` but not `Sync` because it contains `BashTool` which uses
 /// non-Sync primitives. However, it can be moved across async tasks and used within
 /// a single-threaded context safely.
 pub struct ToolExecutor {
@@ -349,7 +349,7 @@ pub struct ToolExecutor {
     /// Cache for tool results
     ///
     /// Caches results from read-only tools (read, glob, grep) to avoid redundant
-    /// operations. Uses RwLock for thread-safe access across async tasks.
+    /// operations. Uses `RwLock` for thread-safe access across async tasks.
     cache: RwLock<ToolResultCache>,
 
     /// MCP client for resource tools (lazy-initialized)
@@ -365,7 +365,7 @@ impl ToolExecutor {
     /// # Arguments
     ///
     /// - `cwd`: Working directory for all tool operations. Accepts any type that
-    ///   converts to String (String, &str, PathBuf via display, etc.)
+    ///   converts to String (String, &str, `PathBuf` via display, etc.)
     ///
     /// # Examples
     ///
@@ -478,7 +478,10 @@ impl ToolExecutor {
     ///
     /// Returns statistics about cache performance including hit rate, entries, etc.
     pub fn cache_stats(&self) -> CacheStats {
-        self.cache.read().unwrap_or_else(|e| e.into_inner()).stats()
+        self.cache
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stats()
     }
 
     /// Clear the tool result cache
@@ -656,11 +659,11 @@ impl ToolExecutor {
     ///
     /// 1. Match on tool name (case-insensitive)
     /// 2. Deserialize JSON args to tool-specific argument struct
-    /// 3. Send ToolStart event (if event_tx provided)
+    /// 3. Send `ToolStart` event (if `event_tx` provided)
     /// 4. Execute tool implementation
-    /// 5. Send ToolOutput event for any output (if event_tx provided)
-    /// 6. Send ToolEnd event with success status (if event_tx provided)
-    /// 7. Return ToolResult
+    /// 5. Send `ToolOutput` event for any output (if `event_tx` provided)
+    /// 6. Send `ToolEnd` event with success status (if `event_tx` provided)
+    /// 7. Return `ToolResult`
     ///
     /// # Arguments
     ///
@@ -671,7 +674,7 @@ impl ToolExecutor {
     ///
     /// # Returns
     ///
-    /// A ToolResult containing:
+    /// A `ToolResult` containing:
     /// - `success`: Whether the tool executed successfully
     /// - `output`: Tool output (stdout, file contents, etc.)
     /// - `error`: Optional error message if success is false
@@ -679,13 +682,13 @@ impl ToolExecutor {
     /// # Event Streaming
     ///
     /// If `event_tx` is provided, the executor sends events for real-time updates:
-    /// - **ToolStart**: Sent before execution begins
-    /// - **ToolOutput**: Sent when output is available (may be sent multiple times)
-    /// - **ToolEnd**: Sent after execution completes
+    /// - **`ToolStart`**: Sent before execution begins
+    /// - **`ToolOutput`**: Sent when output is available (may be sent multiple times)
+    /// - **`ToolEnd`**: Sent after execution completes
     ///
     /// # Error Handling
     ///
-    /// Errors are never panicked. Instead, they are returned in the ToolResult:
+    /// Errors are never panicked. Instead, they are returned in the `ToolResult`:
     /// - Invalid arguments: Deserialization errors
     /// - Tool errors: File not found, permission denied, etc.
     /// - Unknown tool: Tool name not found in registry
@@ -736,7 +739,7 @@ impl ToolExecutor {
         call_id: &str,
     ) -> ToolResult {
         if let FirewallVerdict::Block { reason } = self.firewall_verdict(tool_name, args) {
-            return ToolResult::failure(format!("Blocked by action firewall: {}", reason));
+            return ToolResult::failure(format!("Blocked by action firewall: {reason}"));
         }
 
         // Check cache for cacheable tools
@@ -816,7 +819,7 @@ impl ToolExecutor {
             Some(Value::String(path)) => vec![path.clone()],
             Some(Value::Array(arr)) => arr
                 .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
                 .collect(),
             _ => Vec::new(),
         };
@@ -833,39 +836,46 @@ impl ToolExecutor {
         }
         if args
             .get("ignoreCase")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
             cmd.push_str(" -i");
         }
         if args
             .get("literal")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
             cmd.push_str(" -F");
         }
-        if args.get("word").and_then(|v| v.as_bool()).unwrap_or(false) {
+        if args
+            .get("word")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
             cmd.push_str(" -w");
         }
         if args
             .get("multiline")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
             cmd.push_str(" --multiline");
         }
-        if let Some(max_results) = args.get("maxResults").and_then(|v| v.as_u64()) {
-            cmd.push_str(&format!(" -m {}", max_results));
+        if let Some(max_results) = args.get("maxResults").and_then(serde_json::Value::as_u64) {
+            cmd.push_str(&format!(" -m {max_results}"));
         }
-        if let Some(context) = args.get("context").and_then(|v| v.as_u64()) {
-            cmd.push_str(&format!(" -C {}", context));
+        if let Some(context) = args.get("context").and_then(serde_json::Value::as_u64) {
+            cmd.push_str(&format!(" -C {context}"));
         } else {
-            if let Some(before) = args.get("beforeContext").and_then(|v| v.as_u64()) {
-                cmd.push_str(&format!(" -B {}", before));
+            if let Some(before) = args
+                .get("beforeContext")
+                .and_then(serde_json::Value::as_u64)
+            {
+                cmd.push_str(&format!(" -B {before}"));
             }
-            if let Some(after) = args.get("afterContext").and_then(|v| v.as_u64()) {
-                cmd.push_str(&format!(" -A {}", after));
+            if let Some(after) = args.get("afterContext").and_then(serde_json::Value::as_u64) {
+                cmd.push_str(&format!(" -A {after}"));
             }
         }
         if let Some(glob) = args.get("glob").and_then(|v| v.as_str()) {
@@ -873,29 +883,28 @@ impl ToolExecutor {
         }
         if args
             .get("includeHidden")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
             cmd.push_str(" --hidden");
         }
         if args
             .get("useGitIgnore")
-            .and_then(|v| v.as_bool())
-            .map(|v| !v)
-            .unwrap_or(false)
+            .and_then(serde_json::Value::as_bool)
+            .is_some_and(|v| !v)
         {
             cmd.push_str(" --no-ignore");
         }
         if args
             .get("invertMatch")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
             cmd.push_str(" --invert-match");
         }
         if args
             .get("onlyMatching")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
         {
             cmd.push_str(" --only-matching");
@@ -908,11 +917,10 @@ impl ToolExecutor {
 
         let head_limit = args
             .get("headLimit")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(MAX_GREP_LINES as u64) as usize;
         cmd.push_str(&format!(
-            " | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ] || [ $status -eq 1 ]; then exit 0; else exit $status; fi",
-            head_limit
+            " | head -{head_limit}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ] || [ $status -eq 1 ]; then exit 0; else exit $status; fi"
         ));
 
         let result = self
@@ -976,11 +984,11 @@ impl ToolExecutor {
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    let output = if !text_output.is_empty() {
-                        text_output
-                    } else {
+                    let output = if text_output.is_empty() {
                         serde_json::to_string_pretty(&result.content)
                             .unwrap_or_else(|_| "MCP tool returned non-text content".to_string())
+                    } else {
+                        text_output
                     };
                     let details = serde_json::json!({
                         "server": server_name,
@@ -991,7 +999,7 @@ impl ToolExecutor {
                     return ToolResult::success(output).with_details(details);
                 }
                 Err(err) => {
-                    return ToolResult::failure(format!("MCP tool error: {}", err));
+                    return ToolResult::failure(format!("MCP tool error: {err}"));
                 }
             }
         }
@@ -1001,7 +1009,7 @@ impl ToolExecutor {
                 let bash_args: BashArgs = match serde_json::from_value(args.clone()) {
                     Ok(a) => a,
                     Err(e) => {
-                        return ToolResult::failure(format!("Invalid bash arguments: {}", e));
+                        return ToolResult::failure(format!("Invalid bash arguments: {e}"));
                     }
                 };
 
@@ -1051,19 +1059,18 @@ impl ToolExecutor {
                 let extension = path_buf
                     .extension()
                     .and_then(|e| e.to_str())
-                    .map(|s| s.to_ascii_lowercase());
+                    .map(str::to_ascii_lowercase);
 
                 // Optional line offset (1-indexed, defaults to 1)
                 let offset = args
                     .get("offset")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v.max(1) as usize)
-                    .unwrap_or(1);
+                    .and_then(serde_json::Value::as_u64)
+                    .map_or(1, |v| v.max(1) as usize);
 
                 // Optional line limit (defaults to reading all)
                 let limit = args
                     .get("limit")
-                    .and_then(|v| v.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                     .map(|v| v as usize);
 
                 let mode = args
@@ -1074,25 +1081,25 @@ impl ToolExecutor {
                 let line_numbers = args
                     .get("lineNumbers")
                     .or_else(|| args.get("line_numbers"))
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true);
 
                 let wrap_in_code_fence = args
                     .get("wrapInCodeFence")
                     .or_else(|| args.get("wrap_in_code_fence"))
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true);
 
                 let as_base64 = args
                     .get("asBase64")
                     .or_else(|| args.get("as_base64"))
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
 
                 let with_diagnostics = args
                     .get("withDiagnostics")
                     .or_else(|| args.get("diagnostics"))
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true);
 
                 let language = args.get("language").and_then(|v| v.as_str());
@@ -1116,7 +1123,7 @@ impl ToolExecutor {
                             Err(err) => {
                                 let details = ReadDetails::new(path.clone())
                                     .with_duration(start_time.elapsed().as_millis() as u64);
-                                return ToolResult::failure(format!("Failed to read PDF: {}", err))
+                                return ToolResult::failure(format!("Failed to read PDF: {err}"))
                                     .with_details(details.to_json());
                             }
                         };
@@ -1127,8 +1134,7 @@ impl ToolExecutor {
                                     .with_duration(start_time.elapsed().as_millis() as u64)
                                     .with_mime_type("application/pdf");
                                 return ToolResult::failure(format!(
-                                    "Failed to extract PDF: {}",
-                                    err
+                                    "Failed to extract PDF: {err}"
                                 ))
                                 .with_details(details.to_json());
                             }
@@ -1136,7 +1142,7 @@ impl ToolExecutor {
                         let mut output = text;
                         if wrap_in_code_fence {
                             let fence_language = language.unwrap_or("");
-                            output = format!("```{}\n{}\n```", fence_language, output);
+                            output = format!("```{fence_language}\n{output}\n```");
                         }
                         let details = ReadDetails::new(path.clone())
                             .with_size(bytes.len() as u64)
@@ -1154,8 +1160,7 @@ impl ToolExecutor {
                                 let details = ReadDetails::new(path.clone())
                                     .with_duration(start_time.elapsed().as_millis() as u64);
                                 return ToolResult::failure(format!(
-                                    "Failed to read notebook: {}",
-                                    err
+                                    "Failed to read notebook: {err}"
                                 ))
                                 .with_details(details.to_json());
                             }
@@ -1166,8 +1171,7 @@ impl ToolExecutor {
                                 let details = ReadDetails::new(path.clone())
                                     .with_duration(start_time.elapsed().as_millis() as u64);
                                 return ToolResult::failure(format!(
-                                    "Failed to parse notebook: {}",
-                                    err
+                                    "Failed to parse notebook: {err}"
                                 ))
                                 .with_details(details.to_json());
                             }
@@ -1207,9 +1211,8 @@ impl ToolExecutor {
                             } else {
                                 ""
                             };
-                            let id_suffix = cell_id
-                                .map(|id| format!(" (id: {})", id))
-                                .unwrap_or_default();
+                            let id_suffix =
+                                cell_id.map(|id| format!(" (id: {id})")).unwrap_or_default();
                             lines.push(format!(
                                 "[{}] {}{}:\n{}{}",
                                 idx,
@@ -1236,8 +1239,7 @@ impl ToolExecutor {
                             .with_size(size_bytes)
                             .with_duration(start_time.elapsed().as_millis() as u64);
                         return ToolResult::failure(format!(
-                            "File is too large ({:.2}MB). Maximum size is 10MB. Use offset/limit or bash head/tail for large files.",
-                            size_mb
+                            "File is too large ({size_mb:.2}MB). Maximum size is 10MB. Use offset/limit or bash head/tail for large files."
                         ))
                         .with_details(details.to_json());
                     }
@@ -1248,7 +1250,7 @@ impl ToolExecutor {
                     Err(e) => {
                         let details = ReadDetails::new(path.clone())
                             .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::failure(format!("Failed to read file: {}", e))
+                        return ToolResult::failure(format!("Failed to read file: {e}"))
                             .with_details(details.to_json());
                     }
                 };
@@ -1271,16 +1273,15 @@ impl ToolExecutor {
                     return ToolResult::success(encoded).with_details(details.to_json());
                 }
 
-                let content = match String::from_utf8(bytes) {
-                    Ok(text) => text,
-                    Err(_) => {
-                        let details = ReadDetails::new(path.clone())
-                            .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::failure(
-                            "File is not valid UTF-8. Re-run with asBase64=true or use the bash tool.",
-                        )
-                        .with_details(details.to_json());
-                    }
+                let content = if let Ok(text) = String::from_utf8(bytes) {
+                    text
+                } else {
+                    let details = ReadDetails::new(path.clone())
+                        .with_duration(start_time.elapsed().as_millis() as u64);
+                    return ToolResult::failure(
+                        "File is not valid UTF-8. Re-run with asBase64=true or use the bash tool.",
+                    )
+                    .with_details(details.to_json());
                 };
 
                 let lines: Vec<&str> = content.lines().collect();
@@ -1326,7 +1327,7 @@ impl ToolExecutor {
 
                 if wrap_in_code_fence {
                     let fence_language = language.unwrap_or("");
-                    output = format!("```{}\n{}\n```", fence_language, output);
+                    output = format!("```{fence_language}\n{output}\n```");
                 }
 
                 if with_diagnostics {
@@ -1422,9 +1423,12 @@ impl ToolExecutor {
                     .to_string();
                 let preview_diff = args
                     .get("previewDiff")
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true);
-                let backup = args.get("backup").and_then(|v| v.as_bool()).unwrap_or(true);
+                let backup = args
+                    .get("backup")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true);
 
                 let file_existed = std::path::Path::new(&path).exists();
                 let mut previous_content: Option<String> = None;
@@ -1438,7 +1442,7 @@ impl ToolExecutor {
                     if let Err(e) = tokio::fs::create_dir_all(parent).await {
                         let details = WriteDetails::new(path.clone())
                             .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::failure(format!("Failed to create directory: {}", e))
+                        return ToolResult::failure(format!("Failed to create directory: {e}"))
                             .with_details(details.to_json());
                     }
                 }
@@ -1446,7 +1450,7 @@ impl ToolExecutor {
                 let mut backup_path: Option<String> = None;
                 let mut backup_renamed = false;
                 if file_existed && backup {
-                    let backup_target = format!("{}.bak", path);
+                    let backup_target = format!("{path}.bak");
                     if tokio::fs::rename(&path, &backup_target).await.is_ok() {
                         backup_renamed = true;
                     } else if let Some(prev) = &previous_content {
@@ -1466,13 +1470,13 @@ impl ToolExecutor {
                 if let Err(e) = write_result {
                     let _ = tokio::fs::remove_file(&tmp_path).await;
                     if backup_renamed {
-                        let _ = tokio::fs::rename(format!("{}.bak", path), &path).await;
+                        let _ = tokio::fs::rename(format!("{path}.bak"), &path).await;
                     } else if let Some(prev) = &previous_content {
                         let _ = tokio::fs::write(&path, prev).await;
                     }
                     let details = WriteDetails::new(path.clone())
                         .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::failure(format!("Failed to write file: {}", e))
+                    return ToolResult::failure(format!("Failed to write file: {e}"))
                         .with_details(details.to_json());
                 }
 
@@ -1512,7 +1516,7 @@ impl ToolExecutor {
                     Ok(results) => Some(results),
                     Err(err) => {
                         if backup_renamed {
-                            let _ = tokio::fs::rename(format!("{}.bak", path), &path).await;
+                            let _ = tokio::fs::rename(format!("{path}.bak"), &path).await;
                         } else if let Some(prev) = &previous_content {
                             let _ = tokio::fs::write(&path, prev).await;
                         }
@@ -1536,7 +1540,7 @@ impl ToolExecutor {
                     details = details.with_validators(validators);
                 }
 
-                let mut summary = format!("File written successfully: {}", path);
+                let mut summary = format!("File written successfully: {path}");
                 if !linter_output.is_empty() {
                     summary.push_str(&linter_output);
                 }
@@ -1588,7 +1592,7 @@ impl ToolExecutor {
                         let details = GlobDetails::new(pattern)
                             .with_base_path(base_path)
                             .with_duration(start_time.elapsed().as_millis() as u64);
-                        ToolResult::failure(format!("Glob error: {}", e))
+                        ToolResult::failure(format!("Glob error: {e}"))
                             .with_details(details.to_json())
                     }
                 }
@@ -1678,13 +1682,15 @@ impl ToolExecutor {
                 let replace_all = args
                     .get("replaceAll")
                     .or_else(|| args.get("replace_all"))
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
-                let occurrence =
-                    args.get("occurrence").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+                let occurrence = args
+                    .get("occurrence")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(1) as usize;
                 let dry_run = args
                     .get("dryRun")
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
 
                 let edits_value = args.get("edits").and_then(|v| v.as_array());
@@ -1739,14 +1745,14 @@ impl ToolExecutor {
                     Err(e) => {
                         let details = EditDetails::new(path.clone())
                             .with_duration(start_time.elapsed().as_millis() as u64);
-                        return ToolResult::failure(format!("Failed to read file: {}", e))
+                        return ToolResult::failure(format!("Failed to read file: {e}"))
                             .with_details(details.to_json());
                     }
                 };
 
                 let mut new_content = content.clone();
                 let mut replacements_total = 0;
-                for (old_text, new_text) in edits.iter() {
+                for (old_text, new_text) in &edits {
                     let positions: Vec<usize> = new_content
                         .match_indices(old_text)
                         .map(|(i, _)| i)
@@ -1810,7 +1816,7 @@ impl ToolExecutor {
                     let _ = tokio::fs::remove_file(&tmp_path).await;
                     let details = EditDetails::new(path.clone())
                         .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::failure(format!("Failed to write file: {}", e))
+                    return ToolResult::failure(format!("Failed to write file: {e}"))
                         .with_details(details.to_json());
                 }
 
@@ -1856,10 +1862,8 @@ impl ToolExecutor {
                     details = details.with_validators(validators);
                 }
 
-                let mut summary = format!(
-                    "Successfully replaced {} occurrence(s) in {}",
-                    replacements_total, path
-                );
+                let mut summary =
+                    format!("Successfully replaced {replacements_total} occurrence(s) in {path}");
                 if !linter_output.is_empty() {
                     summary.push_str(&linter_output);
                 }
@@ -1966,7 +1970,7 @@ impl ToolExecutor {
 
                 let recursive = args
                     .get("recursive")
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false);
 
                 let cmd = if recursive {
@@ -2031,10 +2035,13 @@ impl ToolExecutor {
                     Ok(result) => result,
                     Err(message) => return ToolResult::failure(message),
                 };
-                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
+                let limit = args
+                    .get("limit")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(1000) as usize;
                 let include_hidden = args
                     .get("includeHidden")
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true);
 
                 let mut cmd = String::from("rg --files --color=never");
@@ -2047,8 +2054,7 @@ impl ToolExecutor {
                     shell_escape(&shell_path)
                 ));
                 cmd.push_str(&format!(
-                    " | head -{}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi",
-                    limit
+                    " | head -{limit}; status=${{PIPESTATUS[0]}}; if [ $status -eq 141 ]; then exit 0; else exit $status; fi"
                 ));
 
                 let result = self
@@ -2139,7 +2145,10 @@ impl ToolExecutor {
                             .and_then(|v| v.as_str())
                             .unwrap_or(&self.cwd)
                             .to_string();
-                        let shell = args.get("shell").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let shell = args
+                            .get("shell")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
                         let env = args.get("env").and_then(|v| v.as_object()).map(|map| {
                             map.iter()
                                 .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
@@ -2178,8 +2187,10 @@ impl ToolExecutor {
                                 return ToolResult::failure("taskId required for logs".to_string())
                             }
                         };
-                        let lines =
-                            args.get("lines").and_then(|v| v.as_u64()).unwrap_or(40) as usize;
+                        let lines = args
+                            .get("lines")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(40) as usize;
                         match background_tasks::logs(id, lines) {
                             Ok(logs) => ToolResult::success(logs),
                             Err(err) => ToolResult::failure(err),
@@ -2258,11 +2269,11 @@ impl ToolExecutor {
                         .get("name")
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown");
-                    lines.push(format!("## {}", name));
+                    lines.push(format!("## {name}"));
                     if let Some(resources) = server.get("resources").and_then(|v| v.as_array()) {
                         for uri in resources {
                             if let Some(uri_str) = uri.as_str() {
-                                lines.push(format!("- {}", uri_str));
+                                lines.push(format!("- {uri_str}"));
                             }
                         }
                     }
@@ -2293,7 +2304,7 @@ impl ToolExecutor {
                 match client.read_resource(server, uri).await {
                     Ok(result) => {
                         if result.contents.is_empty() {
-                            return ToolResult::success(format!("Resource '{}' is empty.", uri))
+                            return ToolResult::success(format!("Resource '{uri}' is empty."))
                                 .with_details(serde_json::json!({
                                     "server": server,
                                     "uri": uri,
@@ -2307,12 +2318,12 @@ impl ToolExecutor {
                             .filter_map(|content| content.text.clone())
                             .collect::<Vec<_>>()
                             .join("\n---\n");
-                        let output = if !text_output.is_empty() {
-                            text_output
-                        } else {
+                        let output = if text_output.is_empty() {
                             serde_json::to_string_pretty(&result.contents).unwrap_or_else(|_| {
                                 "MCP resource returned non-text content".to_string()
                             })
+                        } else {
+                            text_output
                         };
 
                         ToolResult::success(output).with_details(serde_json::json!({
@@ -2321,9 +2332,7 @@ impl ToolExecutor {
                             "contents": result.contents
                         }))
                     }
-                    Err(err) => {
-                        ToolResult::failure(format!("Failed to read MCP resource: {}", err))
-                    }
+                    Err(err) => ToolResult::failure(format!("Failed to read MCP resource: {err}")),
                 }
             }
             "vscode_get_diagnostics"
@@ -2340,7 +2349,7 @@ impl ToolExecutor {
                 let fetch_args: WebFetchArgs = match serde_json::from_value(args.clone()) {
                     Ok(a) => a,
                     Err(e) => {
-                        return ToolResult::failure(format!("Invalid web_fetch arguments: {}", e));
+                        return ToolResult::failure(format!("Invalid web_fetch arguments: {e}"));
                     }
                 };
 
@@ -2374,7 +2383,7 @@ impl ToolExecutor {
                 let image_args: ReadImageArgs = match serde_json::from_value(args.clone()) {
                     Ok(a) => a,
                     Err(e) => {
-                        return ToolResult::failure(format!("Invalid read_image arguments: {}", e));
+                        return ToolResult::failure(format!("Invalid read_image arguments: {e}"));
                     }
                 };
 
@@ -2408,7 +2417,7 @@ impl ToolExecutor {
                 let screenshot_args: ScreenshotArgs = match serde_json::from_value(args.clone()) {
                     Ok(a) => a,
                     Err(e) => {
-                        return ToolResult::failure(format!("Invalid screenshot arguments: {}", e));
+                        return ToolResult::failure(format!("Invalid screenshot arguments: {e}"));
                     }
                 };
 
@@ -2471,7 +2480,7 @@ impl ToolExecutor {
 
                     result
                 } else {
-                    ToolResult::failure(format!("Unknown tool: {}", tool_name))
+                    ToolResult::failure(format!("Unknown tool: {tool_name}"))
                 }
             }
         }
@@ -2531,7 +2540,7 @@ impl ToolExecutor {
 /// assert!(!registry.requires_approval("bash", &safe_args));
 /// ```
 pub struct ToolRegistry {
-    /// HashMap of tool definitions keyed by lowercase tool name
+    /// `HashMap` of tool definitions keyed by lowercase tool name
     ///
     /// Keys are normalized to lowercase for case-insensitive lookups.
     /// Values contain the full tool definition with schema and approval logic.
@@ -2540,6 +2549,7 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     /// Create a new tool registry with default tools
+    #[must_use]
     pub fn new() -> Self {
         let mut tools = HashMap::new();
 
@@ -3304,7 +3314,7 @@ impl ToolRegistry {
     /// # Schema Processing
     ///
     /// 1. Look up tool definition by name (lowercase)
-    /// 2. Extract "required" array from tool's input_schema
+    /// 2. Extract "required" array from tool's `input_schema`
     /// 3. For each required field, check if:
     ///    - Field exists in args
     ///    - Field value is not an empty string (for string types)
@@ -3338,6 +3348,7 @@ impl ToolRegistry {
     /// let missing = registry.missing_required("edit", &args);
     /// assert!(missing.is_empty());
     /// ```
+    #[must_use]
     pub fn missing_required(&self, name: &str, args: &serde_json::Value) -> Vec<String> {
         let mut missing = Vec::new();
         let key = name.to_lowercase();
@@ -3353,19 +3364,16 @@ impl ToolRegistry {
                         && !args
                             .get(field)
                             .and_then(|v| v.as_str())
-                            .map(|s| s.trim().is_empty())
-                            .unwrap_or(false);
+                            .is_some_and(|s| s.trim().is_empty());
                     let alias_present = match field {
                         "file_path" => args
                             .get("path")
                             .and_then(|v| v.as_str())
-                            .map(|s| !s.trim().is_empty())
-                            .unwrap_or(false),
+                            .is_some_and(|s| !s.trim().is_empty()),
                         "path" => args
                             .get("file_path")
                             .and_then(|v| v.as_str())
-                            .map(|s| !s.trim().is_empty())
-                            .unwrap_or(false),
+                            .is_some_and(|s| !s.trim().is_empty()),
                         _ => false,
                     };
                     if !present && !alias_present {
@@ -3379,8 +3387,8 @@ impl ToolRegistry {
 
     /// Get an iterator over all registered tool definitions
     ///
-    /// Returns an iterator that yields immutable references to all ToolDefinitions
-    /// in the registry. The order is undefined (HashMap iteration order).
+    /// Returns an iterator that yields immutable references to all `ToolDefinitions`
+    /// in the registry. The order is undefined (`HashMap` iteration order).
     ///
     /// # Examples
     ///
@@ -3427,6 +3435,7 @@ impl ToolRegistry {
     /// // Unknown tool
     /// assert!(registry.get("unknown").is_none());
     /// ```
+    #[must_use]
     pub fn get(&self, name: &str) -> Option<&ToolDefinition> {
         self.tools.get(&name.to_lowercase())
     }
@@ -3479,6 +3488,7 @@ impl ToolRegistry {
     /// let args = json!({});
     /// assert!(registry.requires_approval("unknown_tool", &args));
     /// ```
+    #[must_use]
     pub fn requires_approval(&self, name: &str, args: &serde_json::Value) -> bool {
         match name {
             "bash" | "Bash" => {
@@ -3491,8 +3501,7 @@ impl ToolRegistry {
             _ => self
                 .tools
                 .get(&name.to_lowercase())
-                .map(|d| d.requires_approval)
-                .unwrap_or(true),
+                .is_none_or(|d| d.requires_approval),
         }
     }
 

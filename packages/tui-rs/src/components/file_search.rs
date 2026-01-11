@@ -30,6 +30,7 @@ pub struct FileSearchModal {
 
 impl FileSearchModal {
     /// Create a new file search modal
+    #[must_use]
     pub fn new() -> Self {
         Self {
             query: String::new(),
@@ -62,6 +63,7 @@ impl FileSearchModal {
     }
 
     /// Check if visible
+    #[must_use]
     pub fn is_visible(&self) -> bool {
         self.visible
     }
@@ -79,8 +81,7 @@ impl FileSearchModal {
             let prev = self.query[..self.cursor]
                 .chars()
                 .last()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.query.remove(self.cursor - prev);
             self.cursor -= prev;
             self.search();
@@ -93,8 +94,7 @@ impl FileSearchModal {
             let prev = self.query[..self.cursor]
                 .chars()
                 .last()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.cursor -= prev;
         }
     }
@@ -105,8 +105,7 @@ impl FileSearchModal {
             let next = self.query[self.cursor..]
                 .chars()
                 .next()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.cursor += next;
         }
     }
@@ -126,6 +125,7 @@ impl FileSearchModal {
     }
 
     /// Get the selected file
+    #[must_use]
     pub fn selected_file(&self) -> Option<&WorkspaceFile> {
         self.results.matches.get(self.selected).map(|m| &m.file)
     }

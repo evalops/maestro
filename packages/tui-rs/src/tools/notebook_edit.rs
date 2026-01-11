@@ -46,12 +46,11 @@ fn find_cell_index(
         let idx = cells.iter().position(|cell| {
             cell.get("id")
                 .and_then(|v| v.as_str())
-                .map(|s| s == id)
-                .unwrap_or(false)
+                .is_some_and(|s| s == id)
         });
         return idx
             .map(|v| v as isize)
-            .ok_or_else(|| format!("Cell with ID \"{}\" not found", id));
+            .ok_or_else(|| format!("Cell with ID \"{id}\" not found"));
     }
     if let Some(idx) = cell_index {
         if idx >= cells.len() {
@@ -88,7 +87,7 @@ fn build_cell(cell_type: &str, source: &str) -> Value {
 pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
     let parsed: NotebookEditArgs = match serde_json::from_value(raw_args) {
         Ok(val) => val,
-        Err(err) => return ToolResult::failure(format!("Invalid notebook_edit args: {}", err)),
+        Err(err) => return ToolResult::failure(format!("Invalid notebook_edit args: {err}")),
     };
 
     let edit_mode = parsed.edit_mode.unwrap_or_else(|| "replace".to_string());
@@ -113,10 +112,7 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
     };
 
     if !path.to_lowercase().ends_with(".ipynb") {
-        return ToolResult::failure(format!(
-            "File must be a Jupyter notebook (.ipynb): {}",
-            path
-        ));
+        return ToolResult::failure(format!("File must be a Jupyter notebook (.ipynb): {path}"));
     }
 
     let path_buf = std::path::PathBuf::from(&path);
@@ -146,7 +142,7 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
         if let Err(err) =
             tokio::fs::write(&path_buf, serde_json::to_string_pretty(&notebook).unwrap()).await
         {
-            return ToolResult::failure(format!("Failed to write notebook: {}", err));
+            return ToolResult::failure(format!("Failed to write notebook: {err}"));
         }
 
         let details = json!({
@@ -155,8 +151,7 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
             "totalCells": 1
         });
         return ToolResult::success(format!(
-            "Created new notebook with 1 {} cell: {}",
-            cell_type, path
+            "Created new notebook with 1 {cell_type} cell: {path}"
         ))
         .with_details(details);
     }
@@ -164,13 +159,13 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
     let content = match tokio::fs::read_to_string(&path_buf).await {
         Ok(text) => text,
         Err(err) => {
-            return ToolResult::failure(format!("Failed to read notebook: {}", err));
+            return ToolResult::failure(format!("Failed to read notebook: {err}"));
         }
     };
 
     let mut notebook: Value = match serde_json::from_str(&content) {
         Ok(val) => val,
-        Err(err) => return ToolResult::failure(format!("Failed to parse notebook: {}", err)),
+        Err(err) => return ToolResult::failure(format!("Failed to parse notebook: {err}")),
     };
 
     let cells = notebook
@@ -215,7 +210,7 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
             let result_cell_id = new_cell
                 .get("id")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
             cells[idx] = new_cell;
             (result_cell_id, "replace")
         }
@@ -234,7 +229,7 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
             let result_cell_id = new_cell
                 .get("id")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
             (result_cell_id, "insert")
         }
         "delete" => {
@@ -251,7 +246,7 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
             let result_cell_id = removed
                 .get("id")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+                .map(std::string::ToString::to_string);
             (result_cell_id, "delete")
         }
         _ => {
@@ -265,7 +260,7 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
 
     let updated = serde_json::to_string_pretty(&notebook).unwrap_or_else(|_| content.clone());
     if let Err(err) = tokio::fs::write(&path_buf, updated).await {
-        return ToolResult::failure(format!("Failed to write notebook: {}", err));
+        return ToolResult::failure(format!("Failed to write notebook: {err}"));
     }
 
     if let Err(err) = run_validators(std::slice::from_ref(&path)).await {
@@ -280,8 +275,7 @@ pub async fn notebook_edit(raw_args: Value, cwd: &str) -> ToolResult {
     });
 
     ToolResult::success(format!(
-        "Notebook updated ({}). Total cells: {}",
-        mode, total_cells
+        "Notebook updated ({mode}). Total cells: {total_cells}"
     ))
     .with_details(details)
 }

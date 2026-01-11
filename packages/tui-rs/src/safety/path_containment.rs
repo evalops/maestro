@@ -102,6 +102,7 @@ fn system_paths() -> Vec<PathBuf> {
 /// # Returns
 ///
 /// `PathContainment` indicating whether the path is safe
+#[must_use]
 pub fn is_path_contained(
     target: &Path,
     workspace: &Path,
@@ -118,13 +119,13 @@ pub fn is_path_contained(
                     Ok(p) => p.join(target.file_name().unwrap_or_default()),
                     Err(_) => {
                         return PathContainment::Escaped {
-                            reason: format!("Cannot resolve path: {}", e),
+                            reason: format!("Cannot resolve path: {e}"),
                         }
                     }
                 }
             } else {
                 return PathContainment::Escaped {
-                    reason: format!("Cannot resolve path: {}", e),
+                    reason: format!("Cannot resolve path: {e}"),
                 };
             }
         }
@@ -298,10 +299,10 @@ fn normalize_path(path: &Path) -> PathBuf {
     for component in path.components() {
         match component {
             std::path::Component::ParentDir => match components.last() {
-                Some(std::path::Component::Normal(_)) | Some(std::path::Component::CurDir) => {
+                Some(std::path::Component::Normal(_) | std::path::Component::CurDir) => {
                     components.pop();
                 }
-                Some(std::path::Component::RootDir) | Some(std::path::Component::Prefix(_)) => {
+                Some(std::path::Component::RootDir | std::path::Component::Prefix(_)) => {
                     // Don't traverse above root/prefix.
                 }
                 Some(std::path::Component::ParentDir) | None => {
@@ -365,6 +366,7 @@ fn normalize_path_for_compare(path: &Path) -> Cow<'_, str> {
 }
 
 /// Check if a path is in a system-protected directory
+#[must_use]
 pub fn is_system_path(path: &Path) -> bool {
     // First check if path is in temp directory (which may be under /var on macOS)
     // Temp should NOT be considered a system path
@@ -402,6 +404,7 @@ pub fn is_system_path(path: &Path) -> bool {
 }
 
 /// Check for path traversal attempts in a path string
+#[must_use]
 pub fn has_path_traversal(path: &str) -> bool {
     Path::new(path)
         .components()

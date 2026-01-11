@@ -195,7 +195,7 @@ struct Args {
 /// - **`Result<()>`**: Returns either `Ok(())` (success with unit type) or an
 ///   error. The `?` operator propagates errors up the call stack automatically.
 ///
-/// - **Error Propagation with `?`**: When you see `foo()?`, it means "if foo()
+/// - **Error Propagation with `?`**: When you see `foo()?`, it means "if `foo()`
 ///   returns an error, return that error from this function; otherwise, unwrap
 ///   the Ok value and continue."
 #[tokio::main]
@@ -207,7 +207,7 @@ async fn main() -> Result<()> {
         // Clean up background processes before panicking
         let count = cleanup_background_processes();
         if count > 0 {
-            eprintln!("[panic] Cleaned up {} background process(es)", count);
+            eprintln!("[panic] Cleaned up {count} background process(es)");
         }
         // Call the default panic hook to print the panic message
         default_hook(panic_info);
@@ -280,7 +280,7 @@ async fn main() -> Result<()> {
     // This catches cases where the app returned without going through its normal exit path.
     let remaining = cleanup_background_processes();
     if remaining > 0 {
-        eprintln!("[main] Final cleanup: {} background process(es)", remaining);
+        eprintln!("[main] Final cleanup: {remaining} background process(es)");
     }
 
     // Exit with the appropriate code.

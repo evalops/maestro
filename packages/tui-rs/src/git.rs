@@ -47,6 +47,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// Get the current git branch name, if in a git repository
+#[must_use]
 pub fn current_branch(cwd: &Path) -> Option<String> {
     // Run `git rev-parse --abbrev-ref HEAD` to get the current branch
     let output = Command::new("git")
@@ -61,7 +62,7 @@ pub fn current_branch(cwd: &Path) -> Option<String> {
             Some(branch)
         } else {
             // Detached HEAD state - get the short commit hash
-            short_commit_hash(cwd).map(|hash| format!("({})", hash))
+            short_commit_hash(cwd).map(|hash| format!("({hash})"))
         }
     } else {
         None
@@ -78,10 +79,10 @@ fn short_commit_hash(cwd: &Path) -> Option<String> {
 
     if output.status.success() {
         let hash = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !hash.is_empty() {
-            Some(hash)
-        } else {
+        if hash.is_empty() {
             None
+        } else {
+            Some(hash)
         }
     } else {
         None
@@ -89,6 +90,7 @@ fn short_commit_hash(cwd: &Path) -> Option<String> {
 }
 
 /// Check if a directory is inside a git repository
+#[must_use]
 pub fn is_git_repo(cwd: &Path) -> bool {
     Command::new("git")
         .args(["rev-parse", "--git-dir"])
@@ -99,6 +101,7 @@ pub fn is_git_repo(cwd: &Path) -> bool {
 }
 
 /// Get the repository root directory
+#[must_use]
 pub fn repo_root(cwd: &Path) -> Option<String> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
@@ -108,10 +111,10 @@ pub fn repo_root(cwd: &Path) -> Option<String> {
 
     if output.status.success() {
         let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !root.is_empty() {
-            Some(root)
-        } else {
+        if root.is_empty() {
             None
+        } else {
+            Some(root)
         }
     } else {
         None
@@ -131,11 +134,13 @@ pub struct GitStatus {
 
 impl GitStatus {
     /// Check if the working tree is clean
+    #[must_use]
     pub fn is_clean(&self) -> bool {
         self.staged == 0 && self.modified == 0 && self.untracked == 0
     }
 
     /// Get a short status string (e.g., "+2 ~3 ?1")
+    #[must_use]
     pub fn short_status(&self) -> Option<String> {
         if self.is_clean() {
             return None;
@@ -155,6 +160,7 @@ impl GitStatus {
 }
 
 /// Get git status counts
+#[must_use]
 pub fn get_status(cwd: &Path) -> Option<GitStatus> {
     let output = Command::new("git")
         .args(["status", "--porcelain"])

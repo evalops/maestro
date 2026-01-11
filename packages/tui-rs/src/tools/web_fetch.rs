@@ -76,19 +76,16 @@ fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
         let mut remaining_chars = remaining.chars();
 
         for needle_char in &needle_chars {
-            match remaining_chars.next() {
-                Some(hay_char) => {
-                    // Compare lowercased characters
-                    let hay_lower = hay_char.to_lowercase().next().unwrap_or(hay_char);
-                    if hay_lower != *needle_char {
-                        matched = false;
-                        break;
-                    }
-                }
-                None => {
+            if let Some(hay_char) = remaining_chars.next() {
+                // Compare lowercased characters
+                let hay_lower = hay_char.to_lowercase().next().unwrap_or(hay_char);
+                if hay_lower != *needle_char {
                     matched = false;
                     break;
                 }
+            } else {
+                matched = false;
+                break;
             }
         }
 
@@ -132,7 +129,8 @@ pub struct WebFetchTool {
 }
 
 impl WebFetchTool {
-    /// Create a new WebFetchTool instance
+    /// Create a new `WebFetchTool` instance
+    #[must_use]
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
@@ -153,6 +151,7 @@ impl WebFetchTool {
     }
 
     /// Get the tool definition for registration
+    #[must_use]
     pub fn definition() -> Tool {
         Tool::new(
             "web_fetch",
@@ -193,7 +192,7 @@ impl WebFetchTool {
 
         // Ensure URL has a scheme
         let url = if !url.starts_with("http://") && !url.starts_with("https://") {
-            format!("https://{}", url)
+            format!("https://{url}")
         } else {
             url.to_string()
         };
@@ -204,7 +203,7 @@ impl WebFetchTool {
             Err(e) => {
                 let details = WebFetchDetails::new(&url)
                     .with_duration(start_time.elapsed().as_millis() as u64);
-                return ToolResult::failure(format!("Invalid URL: {}", e))
+                return ToolResult::failure(format!("Invalid URL: {e}"))
                     .with_details(details.to_json());
             }
         };
@@ -215,7 +214,7 @@ impl WebFetchTool {
             Err(e) => {
                 let details = WebFetchDetails::new(&url)
                     .with_duration(start_time.elapsed().as_millis() as u64);
-                return ToolResult::failure(format!("Failed to fetch URL: {}", e))
+                return ToolResult::failure(format!("Failed to fetch URL: {e}"))
                     .with_details(details.to_json());
             }
         };
@@ -255,8 +254,7 @@ impl WebFetchTool {
                     .with_body_size(length as usize)
                     .with_duration(start_time.elapsed().as_millis() as u64);
                 return ToolResult::failure(format!(
-                    "Response too large: {} bytes (max {})",
-                    length, MAX_BODY_SIZE
+                    "Response too large: {length} bytes (max {MAX_BODY_SIZE})"
                 ))
                 .with_details(details.to_json());
             }
@@ -276,8 +274,7 @@ impl WebFetchTool {
                             .with_body_size(new_size)
                             .with_duration(start_time.elapsed().as_millis() as u64);
                         return ToolResult::failure(format!(
-                            "Response too large: {} bytes (max {})",
-                            new_size, MAX_BODY_SIZE
+                            "Response too large: {new_size} bytes (max {MAX_BODY_SIZE})"
                         ))
                         .with_details(details.to_json());
                     }
@@ -288,7 +285,7 @@ impl WebFetchTool {
                         .with_status(status.as_u16())
                         .with_content_type(&content_type)
                         .with_duration(start_time.elapsed().as_millis() as u64);
-                    return ToolResult::failure(format!("Failed to read response body: {}", e))
+                    return ToolResult::failure(format!("Failed to read response body: {e}"))
                         .with_details(details.to_json());
                 }
             }
@@ -342,9 +339,9 @@ impl WebFetchTool {
         }
 
         // Add URL header and optional prompt context
-        let mut result = format!("# Content from {}\n\n", parsed_url);
+        let mut result = format!("# Content from {parsed_url}\n\n");
         if let Some(prompt) = &args.prompt {
-            result.push_str(&format!("*Looking for: {}*\n\n", prompt));
+            result.push_str(&format!("*Looking for: {prompt}*\n\n"));
         }
         result.push_str(&output);
 
@@ -358,7 +355,7 @@ impl WebFetchTool {
             .init_error
             .as_deref()
             .unwrap_or("HTTP client unavailable");
-        ToolResult::failure(format!("Web fetch unavailable: {}", error))
+        ToolResult::failure(format!("Web fetch unavailable: {error}"))
             .with_details(details.to_json())
     }
 }
@@ -435,7 +432,7 @@ fn html_to_markdown(html: &str) -> String {
     // Clean up whitespace
     let lines: Vec<&str> = html
         .lines()
-        .map(|l| l.trim())
+        .map(str::trim)
         .filter(|l| !l.is_empty())
         .collect();
 
@@ -445,8 +442,8 @@ fn html_to_markdown(html: &str) -> String {
 /// Remove an HTML tag along with its contents
 fn remove_tag_with_content(html: &str, tag: &str) -> String {
     let mut result = html.to_string();
-    let open_tag = format!("<{}", tag);
-    let close_tag = format!("</{}>", tag);
+    let open_tag = format!("<{tag}");
+    let close_tag = format!("</{tag}>");
 
     while let Some(start) = find_case_insensitive(&result, &open_tag) {
         if let Some(end_pos) = find_case_insensitive(&result[start..], &close_tag) {
@@ -464,8 +461,8 @@ fn remove_tag_with_content(html: &str, tag: &str) -> String {
 /// Convert an HTML heading to markdown
 fn convert_heading(html: &str, tag: &str, prefix: &str) -> String {
     let mut result = html.to_string();
-    let open_tag = format!("<{}", tag);
-    let close_tag = format!("</{}>", tag);
+    let open_tag = format!("<{tag}");
+    let close_tag = format!("</{tag}>");
 
     while let Some(start) = find_case_insensitive(&result, &open_tag) {
         // Find the end of the opening tag (> is ASCII, so regular find is safe here)
@@ -490,14 +487,14 @@ fn convert_heading(html: &str, tag: &str, prefix: &str) -> String {
 /// Convert inline tags like <strong> to markdown
 fn convert_tag(html: &str, tag: &str, marker: &str) -> String {
     let mut result = html.to_string();
-    let open_tag = format!("<{}>", tag);
-    let close_tag = format!("</{}>", tag);
+    let open_tag = format!("<{tag}>");
+    let close_tag = format!("</{tag}>");
 
     result = result.replace(&open_tag, marker);
     result = result.replace(&close_tag, marker);
 
     // Handle tags with attributes
-    let open_pattern = format!("<{} ", tag);
+    let open_pattern = format!("<{tag} ");
     while let Some(start) = find_case_insensitive(&result, &open_pattern) {
         // > is ASCII, so regular find is safe after we have the correct start position
         if let Some(end) = result[start..].find('>') {
@@ -536,13 +533,11 @@ fn convert_links(html: &str) -> String {
                     if quote_char == '"' || quote_char == '\'' {
                         href_content[1..]
                             .find(quote_char)
-                            .map(|end| &href_content[1..1 + end])
-                            .unwrap_or("")
+                            .map_or("", |end| &href_content[1..=end])
                     } else {
                         href_content
                             .find(|c: char| c.is_whitespace() || c == '>')
-                            .map(|end| &href_content[..end])
-                            .unwrap_or("")
+                            .map_or("", |end| &href_content[..end])
                     }
                 }
             } else {

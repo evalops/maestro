@@ -8,8 +8,8 @@
 //!
 //! The protocol consists of two main message categories:
 //!
-//! - **ToAgentMessage** - Messages sent from the TUI to the agent (commands)
-//! - **FromAgentMessage** - Messages received from the agent (events)
+//! - **`ToAgentMessage`** - Messages sent from the TUI to the agent (commands)
+//! - **`FromAgentMessage`** - Messages received from the agent (events)
 //!
 //! All messages are tagged enums, meaning each variant includes a `type` field in the
 //! JSON representation. This allows the receiver to determine the message type before
@@ -274,6 +274,7 @@ pub struct TokenUsage {
 }
 
 impl TokenUsage {
+    #[must_use]
     pub fn total_tokens(&self) -> u64 {
         self.input_tokens + self.output_tokens
     }
@@ -362,6 +363,7 @@ pub struct StreamingResponse {
 }
 
 impl StreamingResponse {
+    #[must_use]
     pub fn new(response_id: String) -> Self {
         Self {
             response_id,
@@ -493,8 +495,7 @@ impl AgentState {
                     .pending_approvals
                     .iter()
                     .find(|p| p.call_id == call_id)
-                    .map(|p| p.tool.clone())
-                    .unwrap_or_else(|| "unknown".to_string());
+                    .map_or_else(|| "unknown".to_string(), |p| p.tool.clone());
 
                 self.active_tools.insert(
                     call_id.clone(),

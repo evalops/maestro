@@ -55,8 +55,8 @@
 //! Rust's `std::sync::mpsc` (multi-producer, single-consumer) channels provide
 //! thread-safe communication:
 //!
-//! - **to_agent_tx/rx** - Main thread sends messages; writer thread receives
-//! - **from_agent_tx/rx** - Reader thread sends events; main thread receives
+//! - **`to_agent_tx/rx`** - Main thread sends messages; writer thread receives
+//! - **`from_agent_tx/rx`** - Reader thread sends events; main thread receives
 //!
 //! Benefits:
 //! - **Type-safe** - Compiler enforces correct message types
@@ -103,13 +103,13 @@ pub enum TransportError {
 impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TransportError::SpawnFailed(e) => write!(f, "Failed to spawn agent: {}", e),
-            TransportError::SendFailed(e) => write!(f, "Failed to send to agent: {}", e),
-            TransportError::ParseFailed(e) => write!(f, "Failed to parse agent message: {}", e),
+            TransportError::SpawnFailed(e) => write!(f, "Failed to spawn agent: {e}"),
+            TransportError::SendFailed(e) => write!(f, "Failed to send to agent: {e}"),
+            TransportError::ParseFailed(e) => write!(f, "Failed to parse agent message: {e}"),
             TransportError::ProcessExited(code) => {
-                write!(f, "Agent process exited with code: {:?}", code)
+                write!(f, "Agent process exited with code: {code:?}")
             }
-            TransportError::ChannelError(msg) => write!(f, "Channel error: {}", msg),
+            TransportError::ChannelError(msg) => write!(f, "Channel error: {msg}"),
         }
     }
 }
@@ -281,7 +281,7 @@ impl AgentTransport {
                 }
             };
 
-            if let Err(e) = writeln!(stdin, "{}", json) {
+            if let Err(e) = writeln!(stdin, "{json}") {
                 let _ = error_tx.send(Err(TransportError::SendFailed(e)));
                 break;
             }
@@ -316,7 +316,7 @@ impl AgentTransport {
                         }
                         Err(e) => {
                             // Log parse error but continue
-                            eprintln!("Failed to parse agent message: {} - {}", e, line);
+                            eprintln!("Failed to parse agent message: {e} - {line}");
                         }
                     }
                 }
@@ -451,37 +451,43 @@ impl AgentTransport {
     }
 
     /// Get a reference to the current agent state
+    #[must_use]
     pub fn state(&self) -> &AgentState {
         &self.state
     }
 
     /// Check if the agent is ready
+    #[must_use]
     pub fn is_ready(&self) -> bool {
         self.state.is_ready
     }
 
     /// Check if the agent is currently responding
+    #[must_use]
     pub fn is_responding(&self) -> bool {
         self.state.is_responding
     }
 
     /// Get the model name
+    #[must_use]
     pub fn model(&self) -> Option<&str> {
         self.state.model.as_deref()
     }
 
     /// Get the provider name
+    #[must_use]
     pub fn provider(&self) -> Option<&str> {
         self.state.provider.as_deref()
     }
 }
 
-/// Builder for creating an AgentTransport
+/// Builder for creating an `AgentTransport`
 pub struct AgentTransportBuilder {
     config: TransportConfig,
 }
 
 impl AgentTransportBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: TransportConfig::default(),

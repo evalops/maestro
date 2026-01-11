@@ -112,6 +112,7 @@ pub struct AgentSupervisor {
 
 impl AgentSupervisor {
     /// Create a new supervisor
+    #[must_use]
     pub fn new(config: SupervisorConfig) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         Self {
@@ -128,6 +129,7 @@ impl AgentSupervisor {
     }
 
     /// Attach a session recorder
+    #[must_use]
     pub fn with_session_recorder(mut self, recorder: SessionRecorder) -> Self {
         self.session_recorder = Some(recorder);
         self
@@ -266,7 +268,7 @@ impl AgentSupervisor {
         // Clone the cancel token to avoid borrow conflict
         let cancel_token = self.cancel_token.clone();
         tokio::select! {
-            _ = cancel_token.cancelled() => {
+            () = cancel_token.cancelled() => {
                 Some(SupervisorEvent::ShuttingDown)
             }
             event = self.recv_internal() => {
@@ -306,16 +308,19 @@ impl AgentSupervisor {
     }
 
     /// Check current health status
+    #[must_use]
     pub fn health(&self) -> HealthStatus {
         self.health_status
     }
 
     /// Check if connected
+    #[must_use]
     pub fn is_connected(&self) -> bool {
         self.transport.is_some()
     }
 
     /// Get the underlying transport (if connected)
+    #[must_use]
     pub fn transport(&self) -> Option<&AsyncAgentTransport> {
         self.transport.as_ref()
     }
@@ -341,7 +346,7 @@ impl AgentSupervisor {
     }
 }
 
-/// Convert an AgentEvent back to a FromAgentMessage for recording
+/// Convert an `AgentEvent` back to a `FromAgentMessage` for recording
 fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMessage> {
     use super::messages::FromAgentMessage;
     match event {
@@ -419,13 +424,14 @@ fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMess
     }
 }
 
-/// Builder for AgentSupervisor
+/// Builder for `AgentSupervisor`
 pub struct SupervisorBuilder {
     config: SupervisorConfig,
     session_recorder: Option<SessionRecorder>,
 }
 
 impl SupervisorBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: SupervisorConfig::default(),
@@ -452,30 +458,35 @@ impl SupervisorBuilder {
     }
 
     /// Set max reconnection attempts
+    #[must_use]
     pub fn max_reconnect_attempts(mut self, attempts: u32) -> Self {
         self.config.max_reconnect_attempts = attempts;
         self
     }
 
     /// Set initial reconnection delay
+    #[must_use]
     pub fn reconnect_delay(mut self, delay: Duration) -> Self {
         self.config.reconnect_delay = delay;
         self
     }
 
     /// Enable/disable auto reconnect
+    #[must_use]
     pub fn auto_reconnect(mut self, enabled: bool) -> Self {
         self.config.auto_reconnect = enabled;
         self
     }
 
     /// Attach a session recorder
+    #[must_use]
     pub fn session_recorder(mut self, recorder: SessionRecorder) -> Self {
         self.session_recorder = Some(recorder);
         self
     }
 
     /// Build the supervisor
+    #[must_use]
     pub fn build(self) -> AgentSupervisor {
         let mut supervisor = AgentSupervisor::new(self.config);
         if let Some(recorder) = self.session_recorder {

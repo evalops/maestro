@@ -181,7 +181,7 @@ pub enum ToolCallStatus {
     Failed,
 
     /// Tool was blocked by a hook.
-    /// A PreToolUse hook prevented execution (e.g., safety check).
+    /// A `PreToolUse` hook prevented execution (e.g., safety check).
     Blocked,
 }
 
@@ -226,6 +226,7 @@ impl ApprovalMode {
     /// Returning `&'static str` means we return a reference to a string
     /// that lives forever (it's compiled into the binary). This is more
     /// efficient than returning `String` because there's no allocation.
+    #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
             ApprovalMode::Yolo => "YOLO (auto-approve all)",
@@ -248,6 +249,7 @@ impl ApprovalMode {
     /// `Option<Self>`. The caller must handle both cases, which the
     /// compiler enforces. This prevents runtime crashes from unhandled
     /// invalid input.
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         // Convert to lowercase for case-insensitive matching
         match s.to_lowercase().as_str() {
@@ -267,6 +269,7 @@ impl ApprovalMode {
     /// Taking `&self` (borrowed reference) means we don't consume the value.
     /// We can call this method and still use the original value afterward.
     /// Taking `self` (owned) would consume the value.
+    #[must_use]
     pub fn next(&self) -> Self {
         match self {
             ApprovalMode::Yolo => ApprovalMode::Selective,
@@ -293,6 +296,7 @@ pub enum QueueMode {
 
 impl QueueMode {
     /// Human-readable label for display in the UI.
+    #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
             QueueMode::All => "all (queue while running)",
@@ -301,6 +305,7 @@ impl QueueMode {
     }
 
     /// Short label for compact UI badges.
+    #[must_use]
     pub fn short_label(&self) -> &'static str {
         match self {
             QueueMode::All => "all",
@@ -309,6 +314,7 @@ impl QueueMode {
     }
 
     /// Parse a queue mode from user input.
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "all" => Some(QueueMode::All),
@@ -318,6 +324,7 @@ impl QueueMode {
     }
 
     /// Whether queueing is allowed under this mode.
+    #[must_use]
     pub fn allows_queue(&self) -> bool {
         matches!(self, QueueMode::All)
     }
@@ -468,6 +475,7 @@ impl AppState {
     /// Create a new `AppState` with default values.
     ///
     /// This is the primary constructor. All fields start empty/default.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),      // Empty message list
@@ -506,9 +514,7 @@ impl AppState {
     ///
     /// This pattern avoids explicit `if let Some(x) = ...` blocks.
     pub fn elapsed_busy_secs(&self) -> u64 {
-        self.busy_since
-            .map(|since| since.elapsed().as_secs())
-            .unwrap_or(0)
+        self.busy_since.map_or(0, |since| since.elapsed().as_secs())
     }
 
     /// Handle a message from the agent.
@@ -628,7 +634,7 @@ impl AppState {
             FromAgent::ToolOutput { call_id, content } => {
                 // Find and append to the tool call's output
                 for msg in self.messages.iter_mut().rev() {
-                    for tc in msg.tool_calls.iter_mut() {
+                    for tc in &mut msg.tool_calls {
                         if tc.call_id == call_id {
                             tc.output.push_str(&content);
                             return; // Early return once found
@@ -651,7 +657,7 @@ impl AppState {
 
             // Batch execution events (informational, handled by individual tool events)
             FromAgent::BatchStart { total } => {
-                self.status = Some(format!("Executing {} tools in parallel...", total));
+                self.status = Some(format!("Executing {total} tools in parallel..."));
             }
             FromAgent::BatchEnd {
                 total,
@@ -660,11 +666,10 @@ impl AppState {
             } => {
                 if failures > 0 {
                     self.status = Some(format!(
-                        "Batch complete: {}/{} succeeded, {} failed",
-                        successes, total, failures
+                        "Batch complete: {successes}/{total} succeeded, {failures} failed"
                     ));
                 } else {
-                    self.status = Some(format!("Batch complete: {} tools succeeded", total));
+                    self.status = Some(format!("Batch complete: {total} tools succeeded"));
                 }
             }
 
@@ -701,10 +706,7 @@ impl AppState {
                 self.update_tool_status(&call_id, ToolCallStatus::Blocked);
 
                 // Log the blocking for debugging
-                eprintln!(
-                    "[hooks] Tool '{}' blocked: {} (call_id: {})",
-                    tool, reason, call_id
-                );
+                eprintln!("[hooks] Tool '{tool}' blocked: {reason} (call_id: {call_id})");
             }
         }
     }
@@ -716,7 +718,7 @@ impl AppState {
     fn update_tool_status(&mut self, call_id: &str, status: ToolCallStatus) {
         // Search in reverse (most recent messages first) for efficiency
         for msg in self.messages.iter_mut().rev() {
-            for tc in msg.tool_calls.iter_mut() {
+            for tc in &mut msg.tool_calls {
                 if tc.call_id == call_id {
                     tc.status = status;
                     return; // Found it, done
@@ -730,7 +732,7 @@ impl AppState {
     /// Used when we reject a tool call locally (e.g., user declined approval).
     pub fn fail_tool_call(&mut self, call_id: &str, note: &str) {
         for msg in self.messages.iter_mut().rev() {
-            for tc in msg.tool_calls.iter_mut() {
+            for tc in &mut msg.tool_calls {
                 if tc.call_id == call_id {
                     tc.status = ToolCallStatus::Failed;
                     if !note.is_empty() {
@@ -829,8 +831,7 @@ impl AppState {
             let prev = text[..cursor]
                 .chars()
                 .last() // Get the last char before cursor
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             let mut new_text = text.to_string();
             new_text.remove(cursor - prev);
             self.textarea.set_text(&new_text);
@@ -855,11 +856,7 @@ impl AppState {
         if cursor > 0 {
             let text = self.textarea.text();
             // Find byte length of previous character for proper UTF-8 handling
-            let prev = text[..cursor]
-                .chars()
-                .last()
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+            let prev = text[..cursor].chars().last().map_or(0, char::len_utf8);
             self.textarea.set_cursor(cursor - prev);
         }
     }
@@ -873,8 +870,7 @@ impl AppState {
             let next = text[cursor..]
                 .chars()
                 .next() // Get the first char after cursor
-                .map(|c| c.len_utf8())
-                .unwrap_or(0);
+                .map_or(0, char::len_utf8);
             self.textarea.set_cursor(cursor + next);
         }
     }

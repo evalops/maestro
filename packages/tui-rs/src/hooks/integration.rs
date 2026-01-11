@@ -9,7 +9,11 @@ use super::{
     lua::LuaHookExecutor,
     overflow::{OverflowDetector, OverflowStatus},
     registry::{HookRegistry, SafetyHook},
-    types::*,
+    types::{
+        EvalGateInput, HookEventType, HookResult, OnErrorInput, OverflowInput,
+        PermissionRequestInput, PostMessageInput, PostToolUseInput, PreMessageInput,
+        PreToolUseInput, SessionEndInput, SessionStartInput, SubagentStartInput, SubagentStopInput,
+    },
     wasm::WasmHookExecutor,
 };
 use anyhow::Result;
@@ -69,6 +73,7 @@ impl IntegratedHookSystem {
     ///
     /// This is extremely fast (~200ns) because Lua and WASM executors
     /// are lazily initialized only when scripts/plugins are actually loaded.
+    #[must_use]
     pub fn new(cwd: &str) -> Self {
         Self {
             registry: HookRegistry::new(),
@@ -99,6 +104,7 @@ impl IntegratedHookSystem {
     }
 
     /// Create and load hooks from configuration files
+    #[must_use]
     pub fn load_from_config(cwd: &str) -> Self {
         let mut system = Self::new(cwd);
 
@@ -119,7 +125,7 @@ impl IntegratedHookSystem {
                 }
             }
             Err(e) => {
-                eprintln!("[hooks] Warning: Failed to load config: {}", e);
+                eprintln!("[hooks] Warning: Failed to load config: {e}");
             }
         }
 
@@ -139,7 +145,7 @@ impl IntegratedHookSystem {
                         hook.definition.event,
                         hook.definition.tools.clone(),
                     ) {
-                        eprintln!("[hooks] Failed to load Lua script: {}", e);
+                        eprintln!("[hooks] Failed to load Lua script: {e}");
                     }
                 }
                 HookSource::LuaFile(path) => {
@@ -212,13 +218,13 @@ impl IntegratedHookSystem {
         let lua_reloaded = self
             .lua_executor
             .as_mut()
-            .map(|e| e.reload())
+            .map(super::lua::LuaHookExecutor::reload)
             .transpose()?
             .unwrap_or(0);
         let wasm_reloaded = self
             .wasm_executor
             .as_mut()
-            .map(|e| e.reload())
+            .map(super::wasm::WasmHookExecutor::reload)
             .transpose()?
             .unwrap_or(0);
 
@@ -251,6 +257,7 @@ impl IntegratedHookSystem {
     }
 
     /// Check overflow status
+    #[must_use]
     pub fn check_overflow(&self) -> OverflowStatus {
         self.overflow_detector.check_status()
     }
@@ -287,8 +294,7 @@ impl IntegratedHookSystem {
 
         let duration_ms = self
             .session_start
-            .map(|s| s.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+            .map_or(0, |s| s.elapsed().as_millis() as u64);
 
         let input = SessionEndInput {
             hook_event_name: "SessionEnd".to_string(),
@@ -312,11 +318,11 @@ impl IntegratedHookSystem {
         self.turn_count += 1;
     }
 
-    /// Execute PreToolUse hooks (sync version - no IPC)
+    /// Execute `PreToolUse` hooks (sync version - no IPC)
     ///
     /// Returns the hook result which may block, modify, or continue execution.
     /// Note: This sync version does not execute TypeScript hooks via IPC.
-    /// Use execute_pre_tool_use_async for full hook support.
+    /// Use `execute_pre_tool_use_async` for full hook support.
     pub fn execute_pre_tool_use(
         &mut self,
         tool_name: &str,
@@ -339,10 +345,7 @@ impl IntegratedHookSystem {
             tool_input: tool_input.clone(),
         };
 
-        self.log_event(
-            "PreToolUse",
-            &format!("tool={} id={}", tool_name, tool_call_id),
-        );
+        self.log_event("PreToolUse", &format!("tool={tool_name} id={tool_call_id}"));
 
         // Execute with timeout protection
         let result = self.execute_with_timeout(|| {
@@ -381,7 +384,7 @@ impl IntegratedHookSystem {
         result
     }
 
-    /// Execute PreToolUse hooks (async version - includes IPC)
+    /// Execute `PreToolUse` hooks (async version - includes IPC)
     ///
     /// This version also executes TypeScript hooks via the IPC bridge.
     pub async fn execute_pre_tool_use_async(
@@ -427,7 +430,7 @@ impl IntegratedHookSystem {
                         }
                     }
                     Err(e) => {
-                        eprintln!("[hooks] TypeScript hook error: {}", e);
+                        eprintln!("[hooks] TypeScript hook error: {e}");
                     }
                 }
             }
@@ -436,7 +439,7 @@ impl IntegratedHookSystem {
         HookResult::Continue
     }
 
-    /// Execute PostToolUse hooks
+    /// Execute `PostToolUse` hooks
     pub fn execute_post_tool_use(
         &mut self,
         tool_name: &str,
@@ -463,10 +466,7 @@ impl IntegratedHookSystem {
             is_error,
         };
 
-        self.log_event(
-            "PostToolUse",
-            &format!("tool={} error={}", tool_name, is_error),
-        );
+        self.log_event("PostToolUse", &format!("tool={tool_name} error={is_error}"));
 
         let result = self.registry.execute_post_tool_use(&input);
 
@@ -503,14 +503,14 @@ impl IntegratedHookSystem {
             Err(panic_info) => {
                 // Extract panic message if possible
                 let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                    s.to_string()
+                    (*s).to_string()
                 } else if let Some(s) = panic_info.downcast_ref::<String>() {
                     s.clone()
                 } else {
                     "Unknown panic".to_string()
                 };
 
-                eprintln!("[hooks] Error: Hook panicked: {}", panic_msg);
+                eprintln!("[hooks] Error: Hook panicked: {panic_msg}");
                 self.log_event("HookPanic", &panic_msg);
 
                 // Continue execution despite the panic
@@ -531,14 +531,14 @@ impl IntegratedHookSystem {
             Ok(result) => result,
             Err(panic_info) => {
                 let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                    format!("{}: {}", name, s)
+                    format!("{name}: {s}")
                 } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                    format!("{}: {}", name, s)
+                    format!("{name}: {s}")
                 } else {
-                    format!("{}: Unknown panic", name)
+                    format!("{name}: Unknown panic")
                 };
 
-                eprintln!("[hooks] PANIC in {}", msg);
+                eprintln!("[hooks] PANIC in {msg}");
                 HookResult::Continue
             }
         }
@@ -548,7 +548,7 @@ impl IntegratedHookSystem {
     fn log_event(&self, event_type: &str, details: &str) {
         if let Some(ref log_path) = self.log_file {
             let timestamp = chrono::Utc::now().to_rfc3339();
-            let log_line = format!("[{}] {} {}\n", timestamp, event_type, details);
+            let log_line = format!("[{timestamp}] {event_type} {details}\n");
 
             // Try to append to log file
             if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -563,6 +563,7 @@ impl IntegratedHookSystem {
     }
 
     /// Check if a stop reason indicates overflow
+    #[must_use]
     pub fn is_overflow_stop(&self, stop_reason: &str) -> bool {
         self.overflow_detector.check_stop_reason(stop_reason)
     }
@@ -593,7 +594,7 @@ impl IntegratedHookSystem {
         matches!(result, HookResult::Continue)
     }
 
-    /// Execute PreMessage hooks - called before sending user message to model
+    /// Execute `PreMessage` hooks - called before sending user message to model
     pub fn execute_pre_message(
         &mut self,
         message: &str,
@@ -619,7 +620,7 @@ impl IntegratedHookSystem {
         self.execute_with_timeout(|| self.registry.execute_pre_message(&input))
     }
 
-    /// Execute PostMessage hooks - called after assistant response
+    /// Execute `PostMessage` hooks - called after assistant response
     pub fn execute_post_message(
         &mut self,
         response: &str,
@@ -646,16 +647,13 @@ impl IntegratedHookSystem {
 
         self.log_event(
             "PostMessage",
-            &format!(
-                "tokens={}+{} duration={}ms",
-                input_tokens, output_tokens, duration_ms
-            ),
+            &format!("tokens={input_tokens}+{output_tokens} duration={duration_ms}ms"),
         );
 
         self.registry.execute_post_message(&input)
     }
 
-    /// Execute OnError hooks - called when an error occurs
+    /// Execute `OnError` hooks - called when an error occurs
     pub fn execute_on_error(
         &mut self,
         error: &str,
@@ -680,13 +678,13 @@ impl IntegratedHookSystem {
 
         self.log_event(
             "OnError",
-            &format!("kind={} recoverable={}", error_kind, recoverable),
+            &format!("kind={error_kind} recoverable={recoverable}"),
         );
 
         self.registry.execute_on_error(&input)
     }
 
-    /// Execute EvalGate hooks - called after tool execution for evaluation
+    /// Execute `EvalGate` hooks - called after tool execution for evaluation
     pub fn execute_eval_gate(
         &mut self,
         tool_name: &str,
@@ -709,12 +707,12 @@ impl IntegratedHookSystem {
             tool_output: tool_output.to_string(),
         };
 
-        self.log_event("EvalGate", &format!("tool={}", tool_name));
+        self.log_event("EvalGate", &format!("tool={tool_name}"));
 
         self.registry.execute_eval_gate(&input)
     }
 
-    /// Execute SubagentStart hooks - called before spawning a subagent
+    /// Execute `SubagentStart` hooks - called before spawning a subagent
     pub fn execute_subagent_start(
         &mut self,
         subagent_type: &str,
@@ -735,12 +733,12 @@ impl IntegratedHookSystem {
             parent_agent_id: parent_agent_id.map(String::from),
         };
 
-        self.log_event("SubagentStart", &format!("type={}", subagent_type));
+        self.log_event("SubagentStart", &format!("type={subagent_type}"));
 
         self.registry.execute_subagent_start(&input)
     }
 
-    /// Execute SubagentStop hooks - called when a subagent completes
+    /// Execute `SubagentStop` hooks - called when a subagent completes
     pub fn execute_subagent_stop(
         &mut self,
         subagent_type: &str,
@@ -767,16 +765,13 @@ impl IntegratedHookSystem {
 
         self.log_event(
             "SubagentStop",
-            &format!(
-                "type={} success={} duration={}ms",
-                subagent_type, success, duration_ms
-            ),
+            &format!("type={subagent_type} success={success} duration={duration_ms}ms"),
         );
 
         self.registry.execute_subagent_stop(&input)
     }
 
-    /// Execute PermissionRequest hooks - called when permission is required
+    /// Execute `PermissionRequest` hooks - called when permission is required
     pub fn execute_permission_request(
         &mut self,
         tool_name: &str,
@@ -801,37 +796,38 @@ impl IntegratedHookSystem {
 
         self.log_event(
             "PermissionRequest",
-            &format!("tool={} reason={}", tool_name, reason),
+            &format!("tool={tool_name} reason={reason}"),
         );
 
         self.registry.execute_permission_request(&input)
     }
 
     /// Get hook statistics
+    #[must_use]
     pub fn stats(&self) -> HookStats {
         HookStats {
-            native_hooks: self.registry.has_hooks(HookEventType::PreToolUse) as usize,
+            native_hooks: usize::from(self.registry.has_hooks(HookEventType::PreToolUse)),
             lua_scripts: self
                 .lua_executor
                 .as_ref()
-                .map(|e| e.script_count())
-                .unwrap_or(0),
+                .map_or(0, super::lua::LuaHookExecutor::script_count),
             wasm_plugins: self
                 .wasm_executor
                 .as_ref()
-                .map(|e| e.plugin_count())
-                .unwrap_or(0),
+                .map_or(0, super::wasm::WasmHookExecutor::plugin_count),
             typescript_hooks: self.typescript_hooks.len(),
             enabled: self.enabled,
         }
     }
 
     /// Check if IPC bridge is available
+    #[must_use]
     pub fn has_bridge(&self) -> bool {
         self.node_bridge.is_some()
     }
 
     /// Get execution metrics
+    #[must_use]
     pub fn metrics(&self) -> &HookMetrics {
         &self.metrics
     }
@@ -852,16 +848,19 @@ impl IntegratedHookSystem {
     }
 
     /// Check if hooks are enabled
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
     /// Get session duration
+    #[must_use]
     pub fn session_duration(&self) -> Option<Duration> {
         self.session_start.map(|s| s.elapsed())
     }
 
     /// Get turn count
+    #[must_use]
     pub fn turn_count(&self) -> u32 {
         self.turn_count
     }
@@ -879,6 +878,7 @@ pub struct HookStats {
 
 impl HookStats {
     /// Total number of hooks
+    #[must_use]
     pub fn total(&self) -> usize {
         self.native_hooks + self.lua_scripts + self.wasm_plugins + self.typescript_hooks
     }
@@ -887,9 +887,9 @@ impl HookStats {
 /// Execution metrics for hooks
 #[derive(Debug, Clone, Default)]
 pub struct HookMetrics {
-    /// Number of PreToolUse hooks executed
+    /// Number of `PreToolUse` hooks executed
     pub pre_tool_use_count: u64,
-    /// Number of PostToolUse hooks executed
+    /// Number of `PostToolUse` hooks executed
     pub post_tool_use_count: u64,
     /// Number of overflow events
     pub overflow_count: u64,
@@ -901,6 +901,7 @@ pub struct HookMetrics {
 
 impl HookMetrics {
     /// Average hook execution time
+    #[must_use]
     pub fn average_duration(&self) -> Duration {
         let total_calls = self.pre_tool_use_count + self.post_tool_use_count;
         if total_calls == 0 {
@@ -919,6 +920,7 @@ pub struct ReloadResult {
 }
 
 impl ReloadResult {
+    #[must_use]
     pub fn total(&self) -> usize {
         self.lua_scripts + self.wasm_plugins
     }

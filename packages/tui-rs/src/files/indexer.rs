@@ -51,7 +51,7 @@ impl Default for IndexerConfig {
             "vendor",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .map(|s| (*s).to_string())
         .collect();
 
         Self {
@@ -67,20 +67,23 @@ impl Default for IndexerConfig {
 
 impl IndexerConfig {
     /// Create config with custom max files
+    #[must_use]
     pub fn with_max_files(mut self, max: usize) -> Self {
         self.max_files = max;
         self
     }
 
     /// Add a directory to skip
+    #[must_use]
     pub fn skip_dir(mut self, dir: &str) -> Self {
         self.skip_dirs.insert(dir.to_string());
         self
     }
 
     /// Only include files with these extensions
+    #[must_use]
     pub fn include_only(mut self, extensions: &[&str]) -> Self {
-        self.include_extensions = extensions.iter().map(|s| s.to_string()).collect();
+        self.include_extensions = extensions.iter().map(|s| (*s).to_string()).collect();
         self
     }
 }
@@ -141,6 +144,7 @@ impl Default for FileIndexer {
 
 impl FileIndexer {
     /// Create a new file indexer with config
+    #[must_use]
     pub fn new(config: IndexerConfig) -> Self {
         Self {
             config,
@@ -152,6 +156,7 @@ impl FileIndexer {
     }
 
     /// Get current status
+    #[must_use]
     pub fn status(&self) -> IndexStatus {
         IndexStatus {
             indexing: self.indexing.load(Ordering::Relaxed),
@@ -163,6 +168,7 @@ impl FileIndexer {
     }
 
     /// Get indexed files, using cache if valid
+    #[must_use]
     pub fn get_files(&self, root: &Path) -> Vec<WorkspaceFile> {
         // Check cache first
         if let Ok(cache) = self.cache.read() {
@@ -178,6 +184,7 @@ impl FileIndexer {
     }
 
     /// Index files synchronously (blocks until complete)
+    #[must_use]
     pub fn index_sync(&self, root: &Path) -> Vec<WorkspaceFile> {
         self.indexing.store(true, Ordering::Relaxed);
         self.files_found.store(0, Ordering::Relaxed);
@@ -432,13 +439,11 @@ impl FileIndexer {
             return true;
         }
 
-        path.extension()
-            .map(|ext| {
-                self.config
-                    .include_extensions
-                    .contains(&ext.to_string_lossy().to_lowercase())
-            })
-            .unwrap_or(false)
+        path.extension().is_some_and(|ext| {
+            self.config
+                .include_extensions
+                .contains(&ext.to_string_lossy().to_lowercase())
+        })
     }
 
     /// Clear the cache
@@ -449,6 +454,7 @@ impl FileIndexer {
     }
 
     /// Check if cache is valid for a path
+    #[must_use]
     pub fn has_valid_cache(&self, root: &Path) -> bool {
         if let Ok(cache) = self.cache.read() {
             if let Some(ref cached) = *cache {
