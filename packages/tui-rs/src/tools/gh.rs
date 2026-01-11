@@ -1,10 +1,30 @@
 //! GitHub CLI helpers using `gh api`.
+//!
+//! This module provides wrappers around the GitHub CLI (`gh`) for common
+//! repository operations like managing pull requests, issues, and repositories.
+//!
+//! # Requirements
+//!
+//! The `gh` CLI must be installed and authenticated. See <https://cli.github.com/>
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use composer_tui::tools::gh::{gh_pr, GhPrArgs};
+//! use serde_json::json;
+//!
+//! // List open pull requests
+//! let result = gh_pr(json!({"action": "list", "state": "open"}), ".").await;
+//! ```
 
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::agent::ToolResult;
 
+/// Arguments for GitHub Pull Request operations.
+///
+/// Used by [`gh_pr`] to perform PR actions like create, list, view, checkout, etc.
 #[derive(Debug, Deserialize)]
 pub struct GhPrArgs {
     action: String,
@@ -38,6 +58,9 @@ pub struct GhPrArgs {
     repository: Option<String>,
 }
 
+/// Arguments for GitHub Issue operations.
+///
+/// Used by [`gh_issue`] to perform issue actions like create, list, view, comment, etc.
 #[derive(Debug, Deserialize)]
 pub struct GhIssueArgs {
     action: String,
@@ -61,6 +84,9 @@ pub struct GhIssueArgs {
     repository: Option<String>,
 }
 
+/// Arguments for GitHub Repository operations.
+///
+/// Used by [`gh_repo`] to perform repo actions like view, fork, and clone.
 #[derive(Debug, Deserialize)]
 pub struct GhRepoArgs {
     action: String,
@@ -200,6 +226,22 @@ async fn resolve_repo_full_name(gh_repo: Option<&str>) -> Result<String, String>
         .ok_or_else(|| "Failed to read repo name".to_string())
 }
 
+/// Execute a GitHub Pull Request operation.
+///
+/// # Supported Actions
+///
+/// - `create` - Create a new PR (requires `title`, optional `body`, `branch`, `base`, `draft`)
+/// - `list` - List PRs (optional `state`, `author`, `label`, `milestone`, `limit`)
+/// - `view` - View a specific PR (requires `number`) or list all
+/// - `checkout` - Checkout a PR branch locally (requires `number`)
+/// - `comment` - Add a comment to a PR (requires `number`, `body`)
+/// - `checks` - View CI check status (requires `number`)
+/// - `diff` - Get PR diff (requires `number`, optional `nameOnly`)
+///
+/// # Arguments
+///
+/// * `args` - JSON value containing [`GhPrArgs`] fields
+/// * `cwd` - Current working directory for git operations
 pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
     let parsed: GhPrArgs = match serde_json::from_value(args) {
         Ok(val) => val,
@@ -509,6 +551,19 @@ pub async fn gh_pr(args: Value, cwd: &str) -> ToolResult {
     }
 }
 
+/// Execute a GitHub Issue operation.
+///
+/// # Supported Actions
+///
+/// - `create` - Create a new issue (requires `title`, optional `body`, `labels`)
+/// - `list` - List issues (optional `state`, `author`, `labels`, `limit`)
+/// - `view` - View a specific issue (requires `number`)
+/// - `comment` - Add a comment to an issue (requires `number`, `body`)
+/// - `close` - Close an issue (requires `number`)
+///
+/// # Arguments
+///
+/// * `args` - JSON value containing [`GhIssueArgs`] fields
 pub async fn gh_issue(args: Value) -> ToolResult {
     let parsed: GhIssueArgs = match serde_json::from_value(args) {
         Ok(val) => val,
@@ -641,6 +696,18 @@ pub async fn gh_issue(args: Value) -> ToolResult {
     }
 }
 
+/// Execute a GitHub Repository operation.
+///
+/// # Supported Actions
+///
+/// - `view` - View repository information
+/// - `fork` - Fork the repository to your account
+/// - `clone` - Clone the repository locally (optional `directory`)
+///
+/// # Arguments
+///
+/// * `args` - JSON value containing [`GhRepoArgs`] fields
+/// * `cwd` - Current working directory for clone operations
 pub async fn gh_repo(args: Value, cwd: &str) -> ToolResult {
     let parsed: GhRepoArgs = match serde_json::from_value(args) {
         Ok(val) => val,
@@ -718,5 +785,218 @@ pub async fn gh_repo(args: Value, cwd: &str) -> ToolResult {
             }
         }
         _ => ToolResult::failure("Unsupported gh_repo action".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // GhPrArgs Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_gh_pr_args_minimal() {
+        let json = serde_json::json!({"action": "list"});
+        let args: GhPrArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.action, "list");
+        assert!(args.number.is_none());
+        assert!(args.title.is_none());
+        assert!(args.repository.is_none());
+    }
+
+    #[test]
+    fn test_gh_pr_args_create() {
+        let json = serde_json::json!({
+            "action": "create",
+            "title": "Add new feature",
+            "body": "This PR adds...",
+            "branch": "feature-branch",
+            "base": "main",
+            "draft": true
+        });
+        let args: GhPrArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.action, "create");
+        assert_eq!(args.title.unwrap(), "Add new feature");
+        assert_eq!(args.body.unwrap(), "This PR adds...");
+        assert_eq!(args.branch.unwrap(), "feature-branch");
+        assert_eq!(args.base.unwrap(), "main");
+        assert!(args.draft.unwrap());
+    }
+
+    #[test]
+    fn test_gh_pr_args_with_labels() {
+        let json = serde_json::json!({
+            "action": "list",
+            "label": ["bug", "priority"],
+            "state": "open",
+            "limit": 50
+        });
+        let args: GhPrArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.action, "list");
+        assert_eq!(args.label.unwrap(), vec!["bug", "priority"]);
+        assert_eq!(args.state.unwrap(), "open");
+        assert_eq!(args.limit.unwrap(), 50);
+    }
+
+    #[test]
+    fn test_gh_pr_args_name_only_alias() {
+        let json = serde_json::json!({
+            "action": "diff",
+            "number": 123,
+            "nameOnly": true
+        });
+        let args: GhPrArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.action, "diff");
+        assert_eq!(args.number.unwrap(), 123);
+        assert!(args.name_only.unwrap());
+    }
+
+    // ========================================================================
+    // GhIssueArgs Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_gh_issue_args_minimal() {
+        let json = serde_json::json!({"action": "list"});
+        let args: GhIssueArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.action, "list");
+        assert!(args.number.is_none());
+    }
+
+    #[test]
+    fn test_gh_issue_args_create() {
+        let json = serde_json::json!({
+            "action": "create",
+            "title": "Bug report",
+            "body": "Steps to reproduce...",
+            "labels": ["bug", "critical"]
+        });
+        let args: GhIssueArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.action, "create");
+        assert_eq!(args.title.unwrap(), "Bug report");
+        assert_eq!(args.body.unwrap(), "Steps to reproduce...");
+        assert_eq!(args.labels.unwrap(), vec!["bug", "critical"]);
+    }
+
+    #[test]
+    fn test_gh_issue_args_with_filters() {
+        let json = serde_json::json!({
+            "action": "list",
+            "state": "closed",
+            "author": "octocat",
+            "limit": 25,
+            "repository": "owner/repo"
+        });
+        let args: GhIssueArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.action, "list");
+        assert_eq!(args.state.unwrap(), "closed");
+        assert_eq!(args.author.unwrap(), "octocat");
+        assert_eq!(args.limit.unwrap(), 25);
+        assert_eq!(args.repository.unwrap(), "owner/repo");
+    }
+
+    // ========================================================================
+    // GhRepoArgs Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_gh_repo_args_minimal() {
+        let json = serde_json::json!({"action": "view"});
+        let args: GhRepoArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.action, "view");
+        assert!(args.repository.is_none());
+        assert!(args.directory.is_none());
+    }
+
+    #[test]
+    fn test_gh_repo_args_clone() {
+        let json = serde_json::json!({
+            "action": "clone",
+            "repository": "owner/repo",
+            "directory": "my-local-dir"
+        });
+        let args: GhRepoArgs = serde_json::from_value(json).unwrap();
+        assert_eq!(args.action, "clone");
+        assert_eq!(args.repository.unwrap(), "owner/repo");
+        assert_eq!(args.directory.unwrap(), "my-local-dir");
+    }
+
+    // ========================================================================
+    // append_field Tests
+    // ========================================================================
+
+    #[test]
+    fn test_append_field_string() {
+        let mut args = Vec::new();
+        append_field(&mut args, "title", &Value::String("Hello".to_string()));
+        assert_eq!(args, vec!["-f", "title=Hello"]);
+    }
+
+    #[test]
+    fn test_append_field_number() {
+        let mut args = Vec::new();
+        append_field(&mut args, "count", &serde_json::json!(42));
+        assert_eq!(args, vec!["-F", "count=42"]);
+    }
+
+    #[test]
+    fn test_append_field_bool() {
+        let mut args = Vec::new();
+        append_field(&mut args, "draft", &Value::Bool(true));
+        assert_eq!(args, vec!["-F", "draft=true"]);
+    }
+
+    #[test]
+    fn test_append_field_array() {
+        let mut args = Vec::new();
+        append_field(
+            &mut args,
+            "labels",
+            &serde_json::json!(["bug", "enhancement"]),
+        );
+        assert_eq!(
+            args,
+            vec!["-f", "labels[]=bug", "-f", "labels[]=enhancement"]
+        );
+    }
+
+    #[test]
+    fn test_append_field_null() {
+        let mut args = Vec::new();
+        append_field(&mut args, "optional", &Value::Null);
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn test_append_field_object_ignored() {
+        let mut args = Vec::new();
+        append_field(
+            &mut args,
+            "complex",
+            &serde_json::json!({"nested": "value"}),
+        );
+        assert!(args.is_empty());
+    }
+
+    // ========================================================================
+    // Error Cases Tests
+    // ========================================================================
+
+    #[test]
+    fn test_gh_pr_args_invalid_json() {
+        let json = serde_json::json!({"wrong_field": "value"});
+        let result: Result<GhPrArgs, _> = serde_json::from_value(json);
+        // Missing required "action" field
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_gh_issue_args_invalid_json() {
+        let json = serde_json::json!({"number": 123});
+        let result: Result<GhIssueArgs, _> = serde_json::from_value(json);
+        // Missing required "action" field
+        assert!(result.is_err());
     }
 }
