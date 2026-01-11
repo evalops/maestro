@@ -390,6 +390,7 @@ pub enum SwarmEvent {
     Completed {
         successful: usize,
         failed: usize,
+        #[serde(default)]
         skipped: usize,
         duration_ms: u64,
     },
@@ -2070,6 +2071,32 @@ mod tests {
                 assert_eq!(failed, 1);
                 assert_eq!(skipped, 2);
                 assert_eq!(duration_ms, 60_000);
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[test]
+    fn test_swarm_event_completed_default_skipped() {
+        let json = r#"{
+            "type": "completed",
+            "successful": 2,
+            "failed": 0,
+            "duration_ms": 500
+        }"#;
+
+        let event: SwarmEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SwarmEvent::Completed {
+                successful,
+                failed,
+                skipped,
+                duration_ms,
+            } => {
+                assert_eq!(successful, 2);
+                assert_eq!(failed, 0);
+                assert_eq!(skipped, 0);
+                assert_eq!(duration_ms, 500);
             }
             _ => panic!("Wrong event type"),
         }
