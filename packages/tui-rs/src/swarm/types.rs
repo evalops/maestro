@@ -2055,7 +2055,7 @@ mod tests {
             "successful": 8,
             "failed": 1,
             "skipped": 2,
-            "duration_ms": 60_000
+            "duration_ms": 60000
         }"#;
 
         let event: SwarmEvent = serde_json::from_str(json).unwrap();

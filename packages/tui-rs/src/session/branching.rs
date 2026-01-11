@@ -1192,7 +1192,7 @@ mod tests {
             "id": "branch-test",
             "fork_message_id": "msg-1",
             "fork_index": 5,
-            "created_at": 1_234_567_890,
+            "created_at": 1234567890,
             "description": null,
             "tags": []
         }"#;

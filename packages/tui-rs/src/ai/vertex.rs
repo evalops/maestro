@@ -1185,7 +1185,7 @@ mod tests {
 
     #[test]
     fn test_usage_metadata_large_token_counts() {
-        let json_str = r#"{"usageMetadata": {"promptTokenCount": 999_999_999, "candidatesTokenCount": 888_888_888}}"#;
+        let json_str = r#"{"usageMetadata": {"promptTokenCount": 999999999, "candidatesTokenCount": 888888888}}"#;
         let response: VertexResponse = serde_json::from_str(json_str).unwrap();
         let metadata = response.usage_metadata.unwrap();
         assert_eq!(metadata.prompt_token_count, Some(999_999_999));
@@ -1414,7 +1414,7 @@ mod tests {
         };
         let json_max = serde_json::to_string(&config_max).unwrap();
         assert!(json_max.contains("\"temperature\":2"));
-        assert!(json_max.contains("\"maxOutputTokens\":1_000_000"));
+        assert!(json_max.contains("\"maxOutputTokens\":1000000"));
     }
 
     #[test]
