@@ -197,6 +197,7 @@ missing_fields_in_debug = "allow"       # Some fields can't be debugged (closure
 naive_bytecount = "allow"               # bytecount crate not worth adding
 doc_link_with_quotes = "allow"          # Quotes in doc examples are OK
 comparison_chain = "allow"              # if-else chains are often clearer
+large_stack_arrays = "allow"            # Test fixtures may use large arrays
 
 [lints.rust]
 # Unsafe code is allowed only for low-level system operations

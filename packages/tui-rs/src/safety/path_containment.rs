@@ -529,7 +529,7 @@ mod tests {
             .iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect();
-        let mut actual: Vec<String> = SYSTEM_PATHS.iter().map(|s| s.to_string()).collect();
+        let mut actual: Vec<String> = SYSTEM_PATHS.iter().map(|s| (*s).to_string()).collect();
 
         expected.sort();
         actual.sort();

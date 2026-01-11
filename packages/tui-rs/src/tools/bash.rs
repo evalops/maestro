@@ -1405,7 +1405,7 @@ mod tests {
         assert!(stats.is_some());
         // Should keep last 5 lines: 6, 7, 8, 9, 10
         assert!(output.contains("10"));
-        assert!(output.contains("6"));
+        assert!(output.contains('6'));
         assert!(!output.contains("\n1\n")); // "1" alone shouldn't be in output
     }
 
@@ -1850,7 +1850,7 @@ mod tests {
             .await;
 
         assert!(result.success);
-        assert!(result.output.trim().contains("2"));
+        assert!(result.output.trim().contains('2'));
     }
 
     // ============================================================

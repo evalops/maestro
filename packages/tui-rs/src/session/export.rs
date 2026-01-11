@@ -687,7 +687,7 @@ mod tests {
         vec![
             AppMessage::User {
                 content: MessageContent::Text("Hello!".to_string()),
-                timestamp: 1705318201000,
+                timestamp: 1_705_318_201_000,
                 attachments: None,
             },
             AppMessage::Assistant {
@@ -699,7 +699,7 @@ mod tests {
                 model: None,
                 usage: None,
                 stop_reason: None,
-                timestamp: 1705318202000,
+                timestamp: 1_705_318_202_000,
             },
         ]
     }

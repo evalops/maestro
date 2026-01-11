@@ -473,7 +473,7 @@ mod tests {
         let mut executor = LuaHookExecutor::new();
         executor
             .load_script(
-                r#"return { continue = true }"#,
+                r"return { continue = true }",
                 HookEventType::PreToolUse,
                 vec![],
             )
@@ -519,7 +519,7 @@ mod tests {
         let mut executor = LuaHookExecutor::new();
         executor
             .load_script(
-                r#"return { continue = true }"#,
+                r"return { continue = true }",
                 HookEventType::PreToolUse,
                 vec![],
             )

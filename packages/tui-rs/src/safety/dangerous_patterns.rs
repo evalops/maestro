@@ -291,6 +291,7 @@ pub fn most_severe_match(input: &str) -> Option<PatternMatch> {
 }
 
 #[cfg(test)]
+#[allow(clippy::no_effect_underscore_binding)]
 mod tests {
     use super::*;
 

@@ -1143,7 +1143,7 @@ mod tests {
     #[test]
     fn test_vertex_response_missing_required_fields() {
         // Response with missing optional fields should still parse
-        let json_str = r#"{}"#;
+        let json_str = r"{}";
         let response: VertexResponse = serde_json::from_str(json_str).unwrap();
         assert!(response.candidates.is_none());
         assert!(response.usage_metadata.is_none());
@@ -1185,11 +1185,11 @@ mod tests {
 
     #[test]
     fn test_usage_metadata_large_token_counts() {
-        let json_str = r#"{"usageMetadata": {"promptTokenCount": 999999999, "candidatesTokenCount": 888888888}}"#;
+        let json_str = r#"{"usageMetadata": {"promptTokenCount": 999_999_999, "candidatesTokenCount": 888_888_888}}"#;
         let response: VertexResponse = serde_json::from_str(json_str).unwrap();
         let metadata = response.usage_metadata.unwrap();
-        assert_eq!(metadata.prompt_token_count, Some(999999999));
-        assert_eq!(metadata.candidates_token_count, Some(888888888));
+        assert_eq!(metadata.prompt_token_count, Some(999_999_999));
+        assert_eq!(metadata.candidates_token_count, Some(888_888_888));
     }
 
     #[test]
@@ -1408,13 +1408,13 @@ mod tests {
         // Test max reasonable values
         let config_max = GenerationConfig {
             temperature: Some(2.0),
-            max_output_tokens: Some(1000000),
+            max_output_tokens: Some(1_000_000),
             top_p: Some(1.0),
             top_k: Some(1000),
         };
         let json_max = serde_json::to_string(&config_max).unwrap();
         assert!(json_max.contains("\"temperature\":2"));
-        assert!(json_max.contains("\"maxOutputTokens\":1000000"));
+        assert!(json_max.contains("\"maxOutputTokens\":1_000_000"));
     }
 
     #[test]
@@ -1831,7 +1831,7 @@ mod tests {
         let lines = vec![
             r#"{"candidates": invalid}"#,           // Invalid JSON
             r#"{"candidates": [{"content": {}}]}"#, // Valid but missing parts
-            r#"not json at all"#,
+            r"not json at all",
         ];
 
         let mut parsed_count = 0;

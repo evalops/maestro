@@ -848,7 +848,7 @@ mod tests {
     #[test]
     fn test_missing_tools_array() {
         let temp = TempDir::new().unwrap();
-        create_test_config(temp.path(), r#"{}"#);
+        create_test_config(temp.path(), r"{}");
 
         let tools = load_inline_tools(temp.path());
         assert!(tools.is_empty());

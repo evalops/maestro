@@ -314,7 +314,7 @@ mod tests {
         assert!(!frame1.is_empty());
 
         // Different start times should potentially give different frames
-        let different_start = start - Duration::from_millis(160);
+        let different_start = start.checked_sub(Duration::from_millis(160)).unwrap();
         let frame2 = spinner_frame(Some(different_start), SPINNER_FRAMES, 80);
         assert!(!frame2.is_empty());
     }

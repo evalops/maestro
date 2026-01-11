@@ -12,7 +12,7 @@ fn bench_batch_executor_creation(c: &mut Criterion) {
         b.iter(|| {
             let executor = BatchExecutor::new(black_box("/tmp"));
             black_box(executor)
-        })
+        });
     });
 }
 
@@ -25,7 +25,7 @@ fn bench_batch_config(c: &mut Criterion) {
                 .continue_on_error(black_box(false))
                 .emit_events(black_box(true));
             black_box(config)
-        })
+        });
     });
 }
 
@@ -39,7 +39,7 @@ fn bench_batch_tool_call_creation(c: &mut Criterion) {
                 black_box(json!({"file_path": "/tmp/test.txt"})),
             );
             black_box(call)
-        })
+        });
     });
 }
 
@@ -49,7 +49,7 @@ fn bench_check_approvals(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("check_approvals");
 
-    for size in [1, 5, 10, 25, 50].iter() {
+    for size in &[1, 5, 10, 25, 50] {
         let calls: Vec<BatchToolCall> = (0..*size)
             .map(|i| {
                 if i % 2 == 0 {
@@ -72,7 +72,7 @@ fn bench_check_approvals(c: &mut Criterion) {
             b.iter(|| {
                 let approvals = executor.check_approvals(black_box(calls));
                 black_box(approvals)
-            })
+            });
         });
     }
 
@@ -85,7 +85,7 @@ fn bench_validate_calls(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("validate_calls");
 
-    for size in [1, 5, 10, 25, 50].iter() {
+    for size in &[1, 5, 10, 25, 50] {
         let calls: Vec<BatchToolCall> = (0..*size)
             .map(|i| {
                 BatchToolCall::new(
@@ -100,7 +100,7 @@ fn bench_validate_calls(c: &mut Criterion) {
             b.iter(|| {
                 let errors = executor.validate_calls(black_box(calls));
                 black_box(errors)
-            })
+            });
         });
     }
 
@@ -134,7 +134,7 @@ fn bench_filter_needs_approval(c: &mut Criterion) {
         b.iter(|| {
             let filtered = executor.filter_needs_approval(black_box(&calls));
             black_box(filtered)
-        })
+        });
     });
 }
 
@@ -149,7 +149,7 @@ fn bench_execute_empty(c: &mut Criterion) {
                 let results = executor.execute(black_box(vec![]), None).await;
                 black_box(results)
             })
-        })
+        });
     });
 }
 

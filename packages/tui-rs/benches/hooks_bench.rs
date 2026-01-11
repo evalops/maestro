@@ -14,7 +14,7 @@ fn bench_registry_creation(c: &mut Criterion) {
         b.iter(|| {
             let registry = HookRegistry::new();
             black_box(registry)
-        })
+        });
     });
 }
 
@@ -25,7 +25,7 @@ fn bench_hook_registration(c: &mut Criterion) {
             let mut registry = HookRegistry::new();
             registry.register_pre_tool_use(Arc::new(SafetyHook));
             black_box(registry)
-        })
+        });
     });
 }
 
@@ -46,7 +46,7 @@ fn bench_pre_tool_use_empty(c: &mut Criterion) {
         b.iter(|| {
             let result = registry.execute_pre_tool_use(black_box(&input));
             black_box(result)
-        })
+        });
     });
 }
 
@@ -69,7 +69,7 @@ fn bench_pre_tool_use_safety(c: &mut Criterion) {
         b.iter(|| {
             let result = registry.execute_pre_tool_use(black_box(&input));
             black_box(result)
-        })
+        });
     });
 }
 
@@ -92,7 +92,7 @@ fn bench_pre_tool_use_blocked(c: &mut Criterion) {
         b.iter(|| {
             let result = registry.execute_pre_tool_use(black_box(&input));
             black_box(result)
-        })
+        });
     });
 }
 
@@ -134,7 +134,7 @@ fn bench_pre_tool_use_multiple_hooks(c: &mut Criterion) {
         b.iter(|| {
             let result = registry.execute_pre_tool_use(black_box(&input));
             black_box(result)
-        })
+        });
     });
 }
 
@@ -144,7 +144,7 @@ fn bench_integrated_system_creation(c: &mut Criterion) {
         b.iter(|| {
             let system = IntegratedHookSystem::new(black_box("/tmp"));
             black_box(system)
-        })
+        });
     });
 }
 
@@ -160,7 +160,7 @@ fn bench_integrated_system_pre_tool_use(c: &mut Criterion) {
                 black_box(&serde_json::json!({"command": "ls"})),
             );
             black_box(result)
-        })
+        });
     });
 }
 
@@ -178,7 +178,7 @@ fn bench_integrated_system_post_tool_use(c: &mut Criterion) {
                 black_box(false),
             );
             black_box(result)
-        })
+        });
     });
 }
 
@@ -192,7 +192,7 @@ fn bench_session_lifecycle(c: &mut Criterion) {
             system.increment_turn();
             system.on_session_end(black_box("complete"));
             black_box(system)
-        })
+        });
     });
 }
 
@@ -208,7 +208,7 @@ fn bench_metrics(c: &mut Criterion) {
         b.iter(|| {
             let metrics = system.metrics();
             black_box(metrics)
-        })
+        });
     });
 }
 
@@ -223,7 +223,7 @@ fn bench_has_hooks(c: &mut Criterion) {
         b.iter(|| {
             let has = registry.has_hooks(black_box(HookEventType::PreToolUse));
             black_box(has)
-        })
+        });
     });
 }
 

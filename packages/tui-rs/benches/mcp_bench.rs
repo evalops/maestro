@@ -16,7 +16,7 @@ fn bench_mcp_client_creation(c: &mut Criterion) {
         b.iter(|| {
             let client = McpClient::new();
             black_box(client)
-        })
+        });
     });
 }
 
@@ -26,14 +26,14 @@ fn bench_is_mcp_tool(c: &mut Criterion) {
         b.iter(|| {
             let is_mcp = McpClient::is_mcp_tool(black_box("mcp_server_tool"));
             black_box(is_mcp)
-        })
+        });
     });
 
     c.bench_function("is_mcp_tool_false", |b| {
         b.iter(|| {
             let is_mcp = McpClient::is_mcp_tool(black_box("bash"));
             black_box(is_mcp)
-        })
+        });
     });
 }
 
@@ -47,14 +47,14 @@ fn bench_mcp_request_creation(c: &mut Criterion) {
                 black_box(Some(json!({"key": "value"}))),
             );
             black_box(req)
-        })
+        });
     });
 
     c.bench_function("mcp_request_list_tools", |b| {
         b.iter(|| {
             let req = McpRequest::list_tools(black_box(1));
             black_box(req)
-        })
+        });
     });
 
     c.bench_function("mcp_request_call_tool", |b| {
@@ -65,7 +65,7 @@ fn bench_mcp_request_creation(c: &mut Criterion) {
                 black_box(json!({"arg": "value"})),
             );
             black_box(req)
-        })
+        });
     });
 }
 
@@ -77,7 +77,7 @@ fn bench_mcp_request_serialize(c: &mut Criterion) {
         b.iter(|| {
             let json = serde_json::to_string(black_box(&req)).unwrap();
             black_box(json)
-        })
+        });
     });
 }
 
@@ -91,14 +91,14 @@ fn bench_mcp_response_deserialize(c: &mut Criterion) {
         b.iter(|| {
             let resp: McpResponse = serde_json::from_str(black_box(json_success)).unwrap();
             black_box(resp)
-        })
+        });
     });
 
     c.bench_function("mcp_response_deserialize_error", |b| {
         b.iter(|| {
             let resp: McpResponse = serde_json::from_str(black_box(json_error)).unwrap();
             black_box(resp)
-        })
+        });
     });
 }
 
@@ -120,7 +120,7 @@ fn bench_mcp_server_config(c: &mut Criterion) {
                 disabled: false,
             };
             black_box(config)
-        })
+        });
     });
 
     c.bench_function("mcp_server_config_validate", |b| {
@@ -141,7 +141,7 @@ fn bench_mcp_server_config(c: &mut Criterion) {
         b.iter(|| {
             let result = config.validate();
             black_box(result)
-        })
+        });
     });
 }
 
@@ -165,7 +165,7 @@ fn bench_mcp_tool_conversion(c: &mut Criterion) {
         b.iter(|| {
             let tool = mcp_tool.to_tool(black_box("myserver"));
             black_box(tool)
-        })
+        });
     });
 }
 
@@ -190,7 +190,7 @@ fn bench_mcp_tool_result(c: &mut Criterion) {
         b.iter(|| {
             let s = result.to_string();
             black_box(s)
-        })
+        });
     });
 }
 
@@ -200,7 +200,7 @@ fn bench_mcp_config_load(c: &mut Criterion) {
         b.iter(|| {
             let config = load_mcp_config(black_box(None));
             black_box(config)
-        })
+        });
     });
 }
 
@@ -213,14 +213,14 @@ fn bench_mcp_config_operations(c: &mut Criterion) {
         b.iter(|| {
             let server = config.get_server(black_box("nonexistent"));
             black_box(server)
-        })
+        });
     });
 
     c.bench_function("mcp_config_enabled_servers", |b| {
         b.iter(|| {
             let servers: Vec<_> = config.enabled_servers().collect();
             black_box(servers)
-        })
+        });
     });
 }
 

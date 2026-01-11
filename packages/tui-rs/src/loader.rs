@@ -561,7 +561,7 @@ mod tests {
         let initial_frame = loader.frame_index;
 
         // Force time advancement
-        loader.last_update = Instant::now() - Duration::from_secs(1);
+        loader.last_update = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
         assert!(loader.tick());
         assert_ne!(loader.frame_index, initial_frame);
     }

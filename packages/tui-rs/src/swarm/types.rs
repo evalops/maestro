@@ -768,7 +768,7 @@ mod tests {
             successful: 8,
             failed: 1,
             skipped: 1,
-            duration_ms: 60000,
+            duration_ms: 60_000,
         };
 
         let json = serde_json::to_string(&event).unwrap();
@@ -1415,8 +1415,8 @@ mod tests {
 
         assert!(state.started_at.is_none());
 
-        state.started_at = Some(1234567890);
-        assert_eq!(state.started_at, Some(1234567890));
+        state.started_at = Some(1_234_567_890);
+        assert_eq!(state.started_at, Some(1_234_567_890));
     }
 
     // ========== Debug Trait Tests ==========
@@ -2055,7 +2055,7 @@ mod tests {
             "successful": 8,
             "failed": 1,
             "skipped": 2,
-            "duration_ms": 60000
+            "duration_ms": 60_000
         }"#;
 
         let event: SwarmEvent = serde_json::from_str(json).unwrap();
@@ -2069,7 +2069,7 @@ mod tests {
                 assert_eq!(successful, 8);
                 assert_eq!(failed, 1);
                 assert_eq!(skipped, 2);
-                assert_eq!(duration_ms, 60000);
+                assert_eq!(duration_ms, 60_000);
             }
             _ => panic!("Wrong event type"),
         }
@@ -2096,7 +2096,7 @@ mod tests {
 
         let json = serde_json::to_string(&task).unwrap();
         let deserialized: SwarmTask = serde_json::from_str(&json).unwrap();
-        assert!(deserialized.description.contains("\n"));
+        assert!(deserialized.description.contains('\n'));
     }
 
     #[test]

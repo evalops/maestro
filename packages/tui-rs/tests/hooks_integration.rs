@@ -417,7 +417,7 @@ fn test_lua_executor_load_script() {
 
     let mut executor = LuaHookExecutor::new();
     let result = executor.load_script(
-        r#"return { continue = true }"#,
+        r"return { continue = true }",
         HookEventType::PreToolUse,
         vec![],
     );
@@ -982,8 +982,8 @@ fn test_registry_overflow_hook() {
         cwd: "/tmp".to_string(),
         session_id: None,
         timestamp: "2024-01-01T00:00:00Z".to_string(),
-        token_count: 150000,
-        max_tokens: 100000,
+        token_count: 150_000,
+        max_tokens: 100_000,
     };
     assert!(matches!(
         registry.execute_overflow(&over_input),
@@ -997,7 +997,7 @@ fn test_registry_overflow_hook() {
         session_id: None,
         timestamp: "2024-01-01T00:00:00Z".to_string(),
         token_count: 50000,
-        max_tokens: 100000,
+        max_tokens: 100_000,
     };
     assert!(matches!(
         registry.execute_overflow(&under_input),
@@ -1040,7 +1040,7 @@ fn test_registry_eval_gate_hook() {
         tool_name: "Bash".to_string(),
         tool_call_id: "1".to_string(),
         tool_input: serde_json::json!({"command": "true"}),
-        tool_output: "".to_string(),
+        tool_output: String::new(),
     };
     assert!(matches!(
         registry.execute_eval_gate(&empty_input),

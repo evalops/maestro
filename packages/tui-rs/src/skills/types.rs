@@ -528,9 +528,9 @@ mod tests {
 
     #[test]
     fn test_skill_definition_long_description() {
-        let long_desc = "A".repeat(10000);
+        let long_desc = "A".repeat(10_000);
         let skill = SkillDefinition::new("test", "Test").with_description(&long_desc);
-        assert_eq!(skill.description.len(), 10000);
+        assert_eq!(skill.description.len(), 10_000);
     }
 
     #[test]
@@ -1040,9 +1040,9 @@ mod tests {
 
     #[test]
     fn test_skill_definition_very_long_id() {
-        let long_id = "a".repeat(10000);
+        let long_id = "a".repeat(10_000);
         let skill = SkillDefinition::new(&long_id, "Test");
-        assert_eq!(skill.id.len(), 10000);
+        assert_eq!(skill.id.len(), 10_000);
     }
 
     #[test]
@@ -1088,11 +1088,11 @@ mod tests {
         let definition = SkillDefinition::new("test", "Test");
         let mut active = ActiveSkill::from_definition(definition);
 
-        for _ in 0..10000 {
+        for _ in 0..10_000 {
             active.record_usage();
         }
 
-        assert_eq!(active.usage_count, 10000);
+        assert_eq!(active.usage_count, 10_000);
     }
 
     #[test]
@@ -1130,9 +1130,9 @@ mod tests {
 
         let ts = active.activated_at.unwrap();
         // Should be after year 2020
-        assert!(ts > 1577836800000);
+        assert!(ts > 1_577_836_800_000);
         // Should be before year 2100
-        assert!(ts < 4102444800000);
+        assert!(ts < 4_102_444_800_000);
     }
 
     #[test]
@@ -1172,8 +1172,8 @@ mod tests {
     #[test]
     fn test_skill_event_empty_strings() {
         let event = SkillEvent::Used {
-            skill_id: "".to_string(),
-            context: "".to_string(),
+            skill_id: String::new(),
+            context: String::new(),
         };
 
         let json = serde_json::to_string(&event).unwrap();
@@ -1221,7 +1221,7 @@ mod tests {
             SkillEvent::ActivationFailed { skill_id, error } => {
                 assert_eq!(skill_id, "skill/with:special");
                 assert!(error.contains("\"quotes\""));
-                assert!(error.contains("\n"));
+                assert!(error.contains('\n'));
             }
             _ => panic!("Wrong event type"),
         }
@@ -1229,7 +1229,7 @@ mod tests {
 
     #[test]
     fn test_skill_event_very_long_error() {
-        let long_error = "e".repeat(100000);
+        let long_error = "e".repeat(10_0000);
         let event = SkillEvent::ActivationFailed {
             skill_id: "test".to_string(),
             error: long_error.clone(),
@@ -1240,7 +1240,7 @@ mod tests {
 
         match deserialized {
             SkillEvent::ActivationFailed { error, .. } => {
-                assert_eq!(error.len(), 100000);
+                assert_eq!(error.len(), 10_0000);
             }
             _ => panic!("Wrong event type"),
         }

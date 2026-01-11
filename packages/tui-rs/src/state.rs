@@ -1832,14 +1832,14 @@ mod tests {
         let mut state = AppState::new();
 
         state.handle_agent_message(FromAgent::BatchStart { total: 5 });
-        assert!(state.status.as_ref().unwrap().contains("5"));
+        assert!(state.status.as_ref().unwrap().contains('5'));
 
         state.handle_agent_message(FromAgent::BatchEnd {
             total: 5,
             successes: 4,
             failures: 1,
         });
-        assert!(state.status.as_ref().unwrap().contains("4"));
+        assert!(state.status.as_ref().unwrap().contains('4'));
         assert!(state.status.as_ref().unwrap().contains("failed"));
     }
 

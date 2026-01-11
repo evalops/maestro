@@ -3408,12 +3408,12 @@ mod tests {
     #[test]
     fn test_system_prompt_contains_tools() {
         // Test that system prompts mention available tools
-        let prompt_template = r#"You have access to the following tools:
+        let prompt_template = r"You have access to the following tools:
 - bash: Execute shell commands
 - read: Read file contents
 - write: Write to files
 - glob: Find files by pattern
-- grep: Search file contents"#;
+- grep: Search file contents";
 
         assert!(prompt_template.contains("bash"));
         assert!(prompt_template.contains("read"));

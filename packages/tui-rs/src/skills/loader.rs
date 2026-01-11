@@ -785,7 +785,7 @@ mod tests {
 
     #[test]
     fn test_parse_basic_skill() {
-        let content = r#"---
+        let content = r"---
 name: test-skill
 description: A test skill for testing purposes
 allowed-tools: read write
@@ -793,7 +793,7 @@ allowed-tools: read write
 # Test Instructions
 
 This is the system prompt for the test skill.
-"#;
+";
 
         let loader = SkillLoader::new();
         let skill = loader
@@ -814,7 +814,7 @@ This is the system prompt for the test skill.
 
     #[test]
     fn test_parse_skill_with_all_fields() {
-        let content = r#"---
+        let content = r"---
 name: full-skill
 description: A complete skill with all fields
 license: MIT
@@ -825,7 +825,7 @@ metadata:
   category: development
 ---
 Full skill content.
-"#;
+";
 
         let loader = SkillLoader::new();
         let skill = loader
@@ -850,11 +850,11 @@ Full skill content.
 
     #[test]
     fn test_parse_skill_no_body() {
-        let content = r#"---
+        let content = r"---
 name: no-body-skill
 description: A skill without a body
 ---
-"#;
+";
 
         let loader = SkillLoader::new();
         let skill = loader
@@ -884,12 +884,12 @@ Content.
     fn test_name_validation_too_long() {
         let long_name = "a".repeat(65);
         let content = format!(
-            r#"---
+            r"---
 name: {}
 description: Too long name
 ---
 Content.
-"#,
+",
             long_name
         );
 
@@ -901,12 +901,12 @@ Content.
 
     #[test]
     fn test_name_validation_uppercase() {
-        let content = r#"---
+        let content = r"---
 name: UpperCase
 description: Uppercase name
 ---
 Content.
-"#;
+";
 
         let loader = SkillLoader::new();
         let result = loader.parse_skill_content(content, Path::new("test.md"), SkillSource::User);
@@ -916,12 +916,12 @@ Content.
 
     #[test]
     fn test_name_validation_leading_hyphen() {
-        let content = r#"---
+        let content = r"---
 name: -leading-hyphen
 description: Leading hyphen
 ---
 Content.
-"#;
+";
 
         let loader = SkillLoader::new();
         let result = loader.parse_skill_content(content, Path::new("test.md"), SkillSource::User);
@@ -931,12 +931,12 @@ Content.
 
     #[test]
     fn test_name_validation_trailing_hyphen() {
-        let content = r#"---
+        let content = r"---
 name: trailing-hyphen-
 description: Trailing hyphen
 ---
 Content.
-"#;
+";
 
         let loader = SkillLoader::new();
         let result = loader.parse_skill_content(content, Path::new("test.md"), SkillSource::User);
@@ -946,12 +946,12 @@ Content.
 
     #[test]
     fn test_name_validation_consecutive_hyphens() {
-        let content = r#"---
+        let content = r"---
 name: double--hyphen
 description: Consecutive hyphens
 ---
 Content.
-"#;
+";
 
         let loader = SkillLoader::new();
         let result = loader.parse_skill_content(content, Path::new("test.md"), SkillSource::User);
@@ -973,12 +973,12 @@ Content.
 
         for name in valid_names {
             let content = format!(
-                r#"---
+                r"---
 name: {}
 description: Valid name test
 ---
 Content.
-"#,
+",
                 name
             );
 
@@ -1063,10 +1063,10 @@ Content.
 
     #[test]
     fn test_missing_end_delimiter() {
-        let content = r#"---
+        let content = r"---
 name: broken
 description: Missing end delimiter
-"#;
+";
 
         let loader = SkillLoader::new();
         let result = loader.parse_skill_content(content, Path::new("test.md"), SkillSource::User);
@@ -1079,12 +1079,12 @@ description: Missing end delimiter
 
     #[test]
     fn test_invalid_yaml() {
-        let content = r#"---
+        let content = r"---
 name: [invalid yaml
 description: test
 ---
 Content.
-"#;
+";
 
         let loader = SkillLoader::new();
         let result = loader.parse_skill_content(content, Path::new("test.md"), SkillSource::User);
@@ -1100,12 +1100,12 @@ Content.
         let skill_dir = temp_dir.path().join("file-test");
         fs::create_dir(&skill_dir).unwrap();
 
-        let skill_content = r#"---
+        let skill_content = r"---
 name: file-test
 description: Testing file loading
 ---
 File loaded successfully.
-"#;
+";
         let skill_path = skill_dir.join("SKILL.md");
         fs::write(&skill_path, skill_content).unwrap();
 
@@ -1135,12 +1135,12 @@ File loaded successfully.
         fs::create_dir(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: my-skill
 description: A test skill
 ---
 Skill content.
-"#,
+",
         )
         .unwrap();
 
@@ -1161,12 +1161,12 @@ Skill content.
             fs::write(
                 skill_dir.join("SKILL.md"),
                 format!(
-                    r#"---
+                    r"---
 name: {}
 description: Skill description for {}
 ---
 Content.
-"#,
+",
                     name, name
                 ),
             )
@@ -1195,12 +1195,12 @@ Content.
         fs::create_dir(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: test-skill
 description: A test skill
 ---
 Content.
-"#,
+",
         )
         .unwrap();
 
@@ -1218,12 +1218,12 @@ Content.
         fs::create_dir(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: registry-skill
 description: A skill for registry testing
 ---
 Registered content.
-"#,
+",
         )
         .unwrap();
 
@@ -1245,12 +1245,12 @@ Registered content.
         fs::create_dir(&valid_dir).unwrap();
         fs::write(
             valid_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: valid-skill
 description: A valid skill
 ---
 Content.
-"#,
+",
         )
         .unwrap();
 
@@ -1277,12 +1277,12 @@ Content.
         // Create SKILL.md
         fs::write(
             skill_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: resource-skill
 description: A skill with resources
 ---
 Content.
-"#,
+",
         )
         .unwrap();
 
@@ -1310,12 +1310,12 @@ Content.
 
         fs::write(
             skill_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: partial-resource
 description: A skill with partial resources
 ---
 Content.
-"#,
+",
         )
         .unwrap();
 
@@ -1335,12 +1335,12 @@ Content.
 
     #[test]
     fn test_skill_source_detection() {
-        let content = r#"---
+        let content = r"---
 name: source-test
 description: Source test
 ---
 Content.
-"#;
+";
 
         let loader = SkillLoader::new();
 
@@ -1357,7 +1357,7 @@ Content.
 
     #[test]
     fn test_multiline_body() {
-        let content = r#"---
+        let content = r"---
 name: multiline-skill
 description: Skill with multiline body
 ---
@@ -1371,7 +1371,7 @@ More content.
 
 - List item 1
 - List item 2
-"#;
+";
 
         let loader = SkillLoader::new();
         let skill = loader
@@ -1427,12 +1427,12 @@ More content.
 
         fs::write(
             skills_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: root-skill
 description: Root skill in skills directory
 ---
 Root skill content.
-"#,
+",
         )
         .unwrap();
 
@@ -1454,11 +1454,11 @@ Root skill content.
         fs::create_dir(&valid_dir).unwrap();
         fs::write(
             valid_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: valid
 description: Valid skill
 ---
-"#,
+",
         )
         .unwrap();
 
@@ -1476,13 +1476,13 @@ description: Valid skill
 
     #[test]
     fn test_allowed_tools_parsing() {
-        let content = r#"---
+        let content = r"---
 name: tools-skill
 description: Skill with multiple tools
 allowed-tools: read write bash edit glob grep
 ---
 Content.
-"#;
+";
 
         let loader = SkillLoader::new();
         let skill = loader
@@ -1504,12 +1504,12 @@ Content.
         fs::create_dir(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: correct-name
 description: Skill with mismatched directory
 ---
 Content.
-"#,
+",
         )
         .unwrap();
 
@@ -1528,12 +1528,12 @@ Content.
         fs::create_dir(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: my-skill
 description: Skill with matching directory
 ---
 Content.
-"#,
+",
         )
         .unwrap();
 
@@ -1556,12 +1556,12 @@ Content.
         fs::create_dir(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: test-skill
 description: A test skill for prompt generation
 ---
 Content.
-"#,
+",
         )
         .unwrap();
 
@@ -1620,11 +1620,11 @@ Content.
             fs::write(
                 skill_dir.join("SKILL.md"),
                 format!(
-                    r#"---
+                    r"---
 name: {}
 description: Description for {}
 ---
-"#,
+",
                     name, name
                 ),
             )
@@ -1661,12 +1661,12 @@ description: Description for {}
         // Use lowercase skill.md instead of SKILL.md
         fs::write(
             skill_dir.join("skill.md"),
-            r#"---
+            r"---
 name: lowercase-skill
 description: A skill with lowercase filename
 ---
 Content.
-"#,
+",
         )
         .unwrap();
 
@@ -1691,21 +1691,21 @@ Content.
         // Create both uppercase and lowercase - uppercase should be preferred
         fs::write(
             skill_dir.join("SKILL.md"),
-            r#"---
+            r"---
 name: prefer-skill
 description: From uppercase SKILL.md
 ---
-"#,
+",
         )
         .unwrap();
 
         fs::write(
             skill_dir.join("skill.md"),
-            r#"---
+            r"---
 name: prefer-skill
 description: From lowercase skill.md
 ---
-"#,
+",
         )
         .unwrap();
 
@@ -1723,14 +1723,14 @@ description: From lowercase skill.md
 
     #[test]
     fn test_unexpected_fields_rejected() {
-        let content = r#"---
+        let content = r"---
 name: field-test
 description: Testing field validation
 unknown_field: should fail
 another_bad_field: also fails
 ---
 Content.
-"#;
+";
 
         let loader = SkillLoader::new();
         let result = loader.parse_skill_content(content, Path::new("test.md"), SkillSource::User);
@@ -1748,7 +1748,7 @@ Content.
 
     #[test]
     fn test_allowed_fields_accepted() {
-        let content = r#"---
+        let content = r"---
 name: all-fields-skill
 description: Testing all allowed fields
 license: MIT
@@ -1759,7 +1759,7 @@ metadata:
   priority: high
 ---
 Content.
-"#;
+";
 
         let loader = SkillLoader::new();
         let result = loader.parse_skill_content(content, Path::new("test.md"), SkillSource::User);

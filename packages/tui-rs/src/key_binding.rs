@@ -221,7 +221,7 @@ mod tests {
         let binding = ctrl(KeyCode::Char('c'));
         let span: Span = binding.into();
         assert!(span.content.contains("ctrl"));
-        assert!(span.content.contains("c"));
+        assert!(span.content.contains('c'));
     }
 
     #[test]
@@ -236,6 +236,6 @@ mod tests {
     fn test_format_key_hint() {
         let hint = format_key_hint(&ctrl(KeyCode::Char('s')));
         assert!(hint.contains("ctrl"));
-        assert!(hint.contains("s"));
+        assert!(hint.contains('s'));
     }
 }

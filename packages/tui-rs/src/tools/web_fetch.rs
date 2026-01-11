@@ -715,7 +715,7 @@ mod tests {
         let tool = WebFetchTool::new();
         let result = tool
             .execute(WebFetchArgs {
-                url: "".to_string(),
+                url: String::new(),
                 prompt: None,
             })
             .await;

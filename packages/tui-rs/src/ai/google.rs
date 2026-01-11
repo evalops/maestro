@@ -694,7 +694,7 @@ mod tests {
         let client = GoogleClient::new("test");
         let msg = Message {
             role: Role::User,
-            content: MessageContent::Text("".to_string()),
+            content: MessageContent::Text(String::new()),
         };
 
         let content = client.message_to_content(&msg);

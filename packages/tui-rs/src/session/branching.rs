@@ -521,7 +521,7 @@ mod tests {
             id: "branch-123".to_string(),
             description: Some("Test".to_string()),
             fork_index: 5,
-            created_at: 1234567890,
+            created_at: 1_234_567_890,
             is_active: true,
         };
 
@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn test_branch_point_with_empty_string_description() {
         let branch = BranchPoint::new("msg-1", 0).with_description("");
-        assert_eq!(branch.description, Some("".to_string()));
+        assert_eq!(branch.description, Some(String::new()));
     }
 
     #[test]
@@ -941,9 +941,9 @@ mod tests {
     fn test_timestamp_is_in_reasonable_range() {
         let branch = BranchPoint::new("msg-1", 0);
         // Should be after year 2020 (in ms)
-        let year_2020_ms = 1577836800000u64; // Jan 1, 2020
-                                             // Should be before year 2100
-        let year_2100_ms = 4102444800000u64;
+        let year_2020_ms = 1_577_836_800_000_u64; // Jan 1, 2020
+                                                  // Should be before year 2100
+        let year_2100_ms = 4_102_444_800_000_u64;
         assert!(
             branch.created_at > year_2020_ms,
             "Timestamp too early: {}",
@@ -1192,7 +1192,7 @@ mod tests {
             "id": "branch-test",
             "fork_message_id": "msg-1",
             "fork_index": 5,
-            "created_at": 1234567890,
+            "created_at": 1_234_567_890,
             "description": null,
             "tags": []
         }"#;

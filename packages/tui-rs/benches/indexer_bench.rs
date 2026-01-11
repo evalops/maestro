@@ -39,7 +39,7 @@ fn bench_indexer_config(c: &mut Criterion) {
         b.iter(|| {
             let config = IndexerConfig::default();
             black_box(config)
-        })
+        });
     });
 
     c.bench_function("indexer_config_builder", |b| {
@@ -49,7 +49,7 @@ fn bench_indexer_config(c: &mut Criterion) {
                 .skip_dir(black_box("vendor"))
                 .include_only(black_box(&["rs", "ts"]));
             black_box(config)
-        })
+        });
     });
 }
 
@@ -59,7 +59,7 @@ fn bench_indexer_creation(c: &mut Criterion) {
         b.iter(|| {
             let indexer = FileIndexer::default();
             black_box(indexer)
-        })
+        });
     });
 
     c.bench_function("indexer_new_custom", |b| {
@@ -67,7 +67,7 @@ fn bench_indexer_creation(c: &mut Criterion) {
             let config = IndexerConfig::default().with_max_files(1000);
             let indexer = FileIndexer::new(config);
             black_box(indexer)
-        })
+        });
     });
 }
 
@@ -76,7 +76,7 @@ fn bench_index_sync(c: &mut Criterion) {
     let mut group = c.benchmark_group("index_sync");
     group.sample_size(20); // Fewer samples for I/O-bound benchmarks
 
-    for (num_files, depth) in [(10, 2), (50, 3), (100, 4), (500, 5)].iter() {
+    for (num_files, depth) in &[(10, 2), (50, 3), (100, 4), (500, 5)] {
         let dir = create_test_structure(*num_files, *depth);
         let indexer = FileIndexer::default();
 
@@ -88,7 +88,7 @@ fn bench_index_sync(c: &mut Criterion) {
                     indexer.clear_cache();
                     let files = indexer.get_files(black_box(dir.path()));
                     black_box(files)
-                })
+                });
             },
         );
     }
@@ -108,7 +108,7 @@ fn bench_cache_hit(c: &mut Criterion) {
         b.iter(|| {
             let files = indexer.get_files(black_box(dir.path()));
             black_box(files)
-        })
+        });
     });
 }
 
@@ -124,7 +124,7 @@ fn bench_cache_check(c: &mut Criterion) {
         b.iter(|| {
             let valid = indexer.has_valid_cache(black_box(dir.path()));
             black_box(valid)
-        })
+        });
     });
 }
 
@@ -138,8 +138,8 @@ fn bench_clear_cache(c: &mut Criterion) {
             // Prime then clear
             let _ = indexer.get_files(dir.path());
             indexer.clear_cache();
-            black_box(())
-        })
+            black_box(());
+        });
     });
 }
 
@@ -151,7 +151,7 @@ fn bench_status(c: &mut Criterion) {
         b.iter(|| {
             let status = indexer.status();
             black_box(status)
-        })
+        });
     });
 }
 
@@ -169,7 +169,7 @@ fn bench_extension_filter(c: &mut Criterion) {
             indexer_all.clear_cache();
             let files = indexer_all.get_files(black_box(dir.path()));
             black_box(files)
-        })
+        });
     });
 
     // Filter to only .rs files
@@ -180,7 +180,7 @@ fn bench_extension_filter(c: &mut Criterion) {
             indexer_rs.clear_cache();
             let files = indexer_rs.get_files(black_box(dir.path()));
             black_box(files)
-        })
+        });
     });
 
     group.finish();
@@ -201,7 +201,7 @@ fn bench_index_async(c: &mut Criterion) {
                     .await;
                 black_box(files)
             })
-        })
+        });
     });
 }
 

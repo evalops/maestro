@@ -605,7 +605,7 @@ mod tests {
     fn test_registry_match_triggers_empty_trigger_pattern() {
         let mut registry = SkillRegistry::new();
         registry.register(
-            SkillDefinition::new("catch-all", "Catch All").with_triggers(vec!["".into()]), // Empty trigger - should NOT match (security fix)
+            SkillDefinition::new("catch-all", "Catch All").with_triggers(vec![String::new()]), // Empty trigger - should NOT match (security fix)
         );
 
         // Empty triggers are now skipped to prevent accidental catch-all behavior
@@ -793,7 +793,7 @@ mod tests {
     fn test_empty_trigger_does_not_match() {
         let mut registry = SkillRegistry::new();
         registry.register(
-            SkillDefinition::new("catch-all", "Catch All").with_triggers(vec!["".into()]),
+            SkillDefinition::new("catch-all", "Catch All").with_triggers(vec![String::new()]),
         );
 
         // Empty trigger no longer matches (fixed security issue)
@@ -819,7 +819,7 @@ mod tests {
         let mut registry = SkillRegistry::new();
         registry.register(
             SkillDefinition::new("mixed", "Mixed")
-                .with_triggers(vec!["specific".into(), "".into()]),
+                .with_triggers(vec!["specific".into(), String::new()]),
         );
 
         // Empty trigger is ignored, only "specific" matches
@@ -830,7 +830,7 @@ mod tests {
     #[test]
     fn test_validate_skill_empty_trigger() {
         let skill =
-            SkillDefinition::new("test", "Test").with_triggers(vec!["valid".into(), "".into()]);
+            SkillDefinition::new("test", "Test").with_triggers(vec!["valid".into(), String::new()]);
 
         let result = SkillRegistry::validate_skill(&skill);
         assert!(result.is_err());
@@ -1103,7 +1103,7 @@ mod tests {
     #[test]
     fn test_very_long_skill_id() {
         let mut registry = SkillRegistry::new();
-        let long_id = "x".repeat(10000);
+        let long_id = "x".repeat(10_000);
         registry.register(SkillDefinition::new(&long_id, "Long ID"));
 
         assert!(registry.get(&long_id).is_some());
@@ -1265,12 +1265,12 @@ mod tests {
     #[test]
     fn test_system_prompt_very_long() {
         let mut registry = SkillRegistry::new();
-        let long_prompt = "x".repeat(100000);
+        let long_prompt = "x".repeat(100_000);
         registry.register(SkillDefinition::new("long", "Long").with_system_prompt(&long_prompt));
         registry.activate("long").unwrap();
 
         let additions = registry.active_system_prompt_additions();
-        assert_eq!(additions.len(), 100000);
+        assert_eq!(additions.len(), 100_000);
     }
 
     // ============================================================
@@ -1280,7 +1280,7 @@ mod tests {
     #[test]
     fn test_tools_with_empty_tool_name() {
         let mut registry = SkillRegistry::new();
-        registry.register(SkillDefinition::new("test", "Test").with_tools(vec!["".into()]));
+        registry.register(SkillDefinition::new("test", "Test").with_tools(vec![String::new()]));
         registry.activate("test").unwrap();
 
         let tools = registry.active_skill_tools();

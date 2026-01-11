@@ -900,8 +900,8 @@ data: {"type":"error","error":{"type":"rate_limit_error","message":"Rate limit e
 
     #[test]
     fn parse_ping_returns_none() {
-        let data = r#"event: ping
-data: {}"#;
+        let data = r"event: ping
+data: {}";
 
         let mut state = new_state();
         let event = parse_sse_event(data, &mut state);

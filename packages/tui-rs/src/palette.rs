@@ -519,6 +519,7 @@ const XTERM_COLORS: [(u8, u8, u8); 256] = [
 ];
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 

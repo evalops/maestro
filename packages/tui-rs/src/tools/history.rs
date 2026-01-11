@@ -1390,6 +1390,7 @@ impl Default for ToolHistory {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -1643,7 +1644,7 @@ mod tests {
         let details = json!({
             "path": "/screenshot.png",
             "mime_type": "image/png",
-            "size_bytes": 50000,
+            "size_bytes": 50_000,
             "dimensions": {"width": 1920, "height": 1080}
         });
 
@@ -1707,7 +1708,7 @@ mod tests {
             "duration_ms": 10
         });
 
-        exec.complete_with_details("".to_string(), Duration::from_millis(10), Some(details));
+        exec.complete_with_details(String::new(), Duration::from_millis(10), Some(details));
 
         assert_eq!(exec.exit_code(), Some(1));
     }
@@ -1727,12 +1728,12 @@ mod tests {
         let details = json!({
             "command": "sleep 100",
             "timed_out": true,
-            "duration_ms": 30000
+            "duration_ms": 30_000
         });
 
         exec.fail_with_details(
-            "Command timed out after 30000ms".to_string(),
-            Duration::from_millis(30000),
+            "Command timed out after 30_000ms".to_string(),
+            Duration::from_millis(30_000),
             Some(details),
         );
 
@@ -2712,7 +2713,7 @@ mod tests {
 
     #[test]
     fn test_large_history() {
-        let mut history = ToolHistory::new(10000);
+        let mut history = ToolHistory::new(10_000);
 
         // Add many executions
         for i in 0..1000 {

@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn test_parse_plan_basic() {
-        let markdown = r#"
+        let markdown = r"
 # Implementation Plan
 
 Goal: Add user authentication
@@ -317,7 +317,7 @@ Goal: Add user authentication
 2. [auth] Implement auth module (depends on: setup)
    Add authentication logic
    Files: src/auth.rs
-"#;
+";
 
         let plan = parse_plan(markdown).unwrap();
         assert_eq!(plan.title, "Implementation Plan");
@@ -336,11 +336,11 @@ Goal: Add user authentication
 
     #[test]
     fn test_parse_simple_list() {
-        let text = r#"
+        let text = r"
 Setup project
 Add authentication -> Setup project
 Add tests -> Setup project, Add authentication
-"#;
+";
 
         let tasks = parse_simple_list(text).unwrap();
         assert_eq!(tasks.len(), 3);

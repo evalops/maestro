@@ -600,6 +600,7 @@ impl Default for SharedCache {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -1322,7 +1323,7 @@ mod tests {
             output: "test with\nnewlines\tand\ttabs".to_string(),
             is_error: true,
             created_at: None,
-            created_timestamp: Some(1234567890),
+            created_timestamp: Some(1_234_567_890),
         };
 
         let json = serde_json::to_string(&original).unwrap();
@@ -1601,7 +1602,11 @@ mod tests {
 
         let mut cache = ToolResultCache::new(config);
         let mut expired = CachedResult::new("content", false);
-        expired.created_at = Some(Instant::now() - Duration::from_millis(150));
+        expired.created_at = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(150))
+                .unwrap(),
+        );
         cache.put(key.clone(), expired);
         assert!(cache.get(&key).is_none());
     }
@@ -2689,7 +2694,7 @@ mod tests {
             ),
         ];
 
-        for (key, result) in entries.iter() {
+        for (key, result) in &entries {
             cache.put(key.clone(), result.clone());
         }
 

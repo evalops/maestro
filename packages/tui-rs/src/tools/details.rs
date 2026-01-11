@@ -1119,6 +1119,7 @@ impl ToolDetails {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -1569,7 +1570,7 @@ mod tests {
             .with_exit_code(0)
             .with_duration(1500)
             .with_source("project")
-            .with_timeout_config(60000);
+            .with_timeout_config(60_000);
 
         assert_eq!(details.tool_name, "deploy");
         assert_eq!(details.command, "./deploy.sh --env prod");
@@ -1577,7 +1578,7 @@ mod tests {
         assert_eq!(details.exit_code, Some(0));
         assert_eq!(details.duration_ms, Some(1500));
         assert_eq!(details.source, Some("project".to_string()));
-        assert_eq!(details.timeout_ms, Some(60000));
+        assert_eq!(details.timeout_ms, Some(60_000));
         assert!(!details.timed_out);
         assert!(!details.truncated);
     }
@@ -1585,14 +1586,14 @@ mod tests {
     #[test]
     fn test_inline_tool_details_timeout() {
         let details = InlineToolDetails::new("slow_task", "sleep 1000")
-            .with_duration(120000)
+            .with_duration(120_000)
             .with_timeout()
-            .with_timeout_config(120000);
+            .with_timeout_config(120_000);
 
         assert!(details.timed_out);
         assert!(!details.truncated);
-        assert_eq!(details.duration_ms, Some(120000));
-        assert_eq!(details.timeout_ms, Some(120000));
+        assert_eq!(details.duration_ms, Some(120_000));
+        assert_eq!(details.timeout_ms, Some(120_000));
     }
 
     #[test]
