@@ -102,3 +102,103 @@ fn ui_state_path() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     Some(home.join(".composer").join("agent").join("ui-state.json"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // UiStateFile Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_ui_state_file_empty() {
+        let json = "{}";
+        let state: UiStateFile = serde_json::from_str(json).unwrap();
+        assert!(state.queue_mode.is_none());
+        assert!(state.steering_mode.is_none());
+        assert!(state.follow_up_mode.is_none());
+    }
+
+    #[test]
+    fn test_ui_state_file_legacy_queue_mode() {
+        let json = r#"{"queueMode": "all"}"#;
+        let state: UiStateFile = serde_json::from_str(json).unwrap();
+        assert_eq!(state.queue_mode, Some(QueueMode::All));
+        assert!(state.steering_mode.is_none());
+    }
+
+    #[test]
+    fn test_ui_state_file_new_modes() {
+        let json = r#"{"steeringMode": "one", "followUpMode": "all"}"#;
+        let state: UiStateFile = serde_json::from_str(json).unwrap();
+        assert_eq!(state.steering_mode, Some(QueueMode::One));
+        assert_eq!(state.follow_up_mode, Some(QueueMode::All));
+    }
+
+    #[test]
+    fn test_ui_state_file_all_modes() {
+        let json = r#"{"queueMode": "one", "steeringMode": "all", "followUpMode": "one"}"#;
+        let state: UiStateFile = serde_json::from_str(json).unwrap();
+        assert_eq!(state.queue_mode, Some(QueueMode::One));
+        assert_eq!(state.steering_mode, Some(QueueMode::All));
+        assert_eq!(state.follow_up_mode, Some(QueueMode::One));
+    }
+
+    // ========================================================================
+    // QueueModeState Tests
+    // ========================================================================
+
+    #[test]
+    fn test_queue_mode_state_default() {
+        let state = QueueModeState::default();
+        assert!(state.steering_mode.is_none());
+        assert!(state.follow_up_mode.is_none());
+    }
+
+    // ========================================================================
+    // UI State Path Tests
+    // ========================================================================
+
+    #[test]
+    fn test_ui_state_path_default() {
+        // Clear env var to test default behavior
+        std::env::remove_var("COMPOSER_UI_STATE");
+        let path = ui_state_path();
+        if let Some(p) = path {
+            assert!(p.ends_with("ui-state.json"));
+            assert!(p.to_string_lossy().contains(".composer"));
+        }
+    }
+
+    #[test]
+    fn test_ui_state_path_from_env() {
+        std::env::set_var("COMPOSER_UI_STATE", "/tmp/custom-ui-state.json");
+        let path = ui_state_path();
+        assert_eq!(path, Some(PathBuf::from("/tmp/custom-ui-state.json")));
+        std::env::remove_var("COMPOSER_UI_STATE");
+    }
+
+    #[test]
+    fn test_ui_state_path_empty_env() {
+        std::env::set_var("COMPOSER_UI_STATE", "   ");
+        let path = ui_state_path();
+        // Should fall back to default when env var is empty/whitespace
+        if let Some(p) = path {
+            assert!(p.ends_with("ui-state.json"));
+        }
+        std::env::remove_var("COMPOSER_UI_STATE");
+    }
+
+    #[test]
+    fn test_ui_state_path_tilde_expansion() {
+        std::env::set_var("COMPOSER_UI_STATE", "~/my-ui-state.json");
+        let path = ui_state_path();
+        if let Some(p) = path {
+            // Should not start with ~ after expansion
+            assert!(!p.to_string_lossy().starts_with('~'));
+            assert!(p.to_string_lossy().ends_with("my-ui-state.json"));
+        }
+        std::env::remove_var("COMPOSER_UI_STATE");
+    }
+}

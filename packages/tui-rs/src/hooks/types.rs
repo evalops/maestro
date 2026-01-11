@@ -459,3 +459,276 @@ impl From<HookResult> for HookOutput {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ========================================================================
+    // HookResult Tests
+    // ========================================================================
+
+    #[test]
+    fn test_hook_result_default() {
+        let result = HookResult::default();
+        assert!(matches!(result, HookResult::Continue));
+    }
+
+    #[test]
+    fn test_hook_result_block() {
+        let result = HookResult::Block {
+            reason: "Test reason".to_string(),
+        };
+        if let HookResult::Block { reason } = result {
+            assert_eq!(reason, "Test reason");
+        } else {
+            panic!("Expected Block variant");
+        }
+    }
+
+    #[test]
+    fn test_hook_result_modify_input() {
+        let new_input = json!({"key": "value"});
+        let result = HookResult::ModifyInput {
+            new_input: new_input.clone(),
+        };
+        if let HookResult::ModifyInput { new_input: val } = result {
+            assert_eq!(val, new_input);
+        } else {
+            panic!("Expected ModifyInput variant");
+        }
+    }
+
+    #[test]
+    fn test_hook_result_inject_context() {
+        let result = HookResult::InjectContext {
+            context: "Extra context".to_string(),
+        };
+        if let HookResult::InjectContext { context } = result {
+            assert_eq!(context, "Extra context");
+        } else {
+            panic!("Expected InjectContext variant");
+        }
+    }
+
+    // ========================================================================
+    // HookEventType Tests
+    // ========================================================================
+
+    #[test]
+    fn test_hook_event_type_serialization() {
+        assert_eq!(
+            serde_json::to_string(&HookEventType::PreToolUse).unwrap(),
+            "\"PreToolUse\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HookEventType::PostToolUse).unwrap(),
+            "\"PostToolUse\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HookEventType::SessionStart).unwrap(),
+            "\"SessionStart\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HookEventType::EvalGate).unwrap(),
+            "\"EvalGate\""
+        );
+    }
+
+    #[test]
+    fn test_hook_event_type_deserialization() {
+        assert_eq!(
+            serde_json::from_str::<HookEventType>("\"PreToolUse\"").unwrap(),
+            HookEventType::PreToolUse
+        );
+        assert_eq!(
+            serde_json::from_str::<HookEventType>("\"SubagentStart\"").unwrap(),
+            HookEventType::SubagentStart
+        );
+        assert_eq!(
+            serde_json::from_str::<HookEventType>("\"PermissionRequest\"").unwrap(),
+            HookEventType::PermissionRequest
+        );
+    }
+
+    #[test]
+    fn test_hook_event_type_equality() {
+        assert_eq!(HookEventType::PreToolUse, HookEventType::PreToolUse);
+        assert_ne!(HookEventType::PreToolUse, HookEventType::PostToolUse);
+    }
+
+    // ========================================================================
+    // HookOutput Tests
+    // ========================================================================
+
+    #[test]
+    fn test_hook_output_default() {
+        let output = HookOutput::default();
+        assert!(!output.should_continue);
+        assert!(output.decision.is_none());
+        assert!(output.block_reason.is_none());
+    }
+
+    #[test]
+    fn test_hook_output_from_continue() {
+        let output = HookOutput::from(HookResult::Continue);
+        assert!(output.should_continue);
+        assert_eq!(output.decision.as_deref(), Some("approve"));
+        assert!(output.block_reason.is_none());
+    }
+
+    #[test]
+    fn test_hook_output_from_block() {
+        let output = HookOutput::from(HookResult::Block {
+            reason: "Not allowed".to_string(),
+        });
+        assert!(!output.should_continue);
+        assert_eq!(output.decision.as_deref(), Some("block"));
+        assert_eq!(output.block_reason.as_deref(), Some("Not allowed"));
+    }
+
+    #[test]
+    fn test_hook_output_from_modify_input() {
+        let new_input = json!({"modified": true});
+        let output = HookOutput::from(HookResult::ModifyInput {
+            new_input: new_input.clone(),
+        });
+        assert!(output.should_continue);
+        assert_eq!(output.decision.as_deref(), Some("approve"));
+        assert_eq!(output.modified_input, Some(new_input));
+    }
+
+    #[test]
+    fn test_hook_output_from_inject_context() {
+        let output = HookOutput::from(HookResult::InjectContext {
+            context: "Injected".to_string(),
+        });
+        assert!(output.should_continue);
+        assert_eq!(output.decision.as_deref(), Some("approve"));
+        assert_eq!(output.additional_context.as_deref(), Some("Injected"));
+    }
+
+    #[test]
+    fn test_hook_output_serialization() {
+        let output = HookOutput {
+            should_continue: true,
+            decision: Some("approve".to_string()),
+            additional_context: None,
+            block_reason: None,
+            modified_input: None,
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["continue"], true);
+        assert_eq!(json["decision"], "approve");
+        // None fields should be skipped
+        assert!(json.get("blockReason").is_none());
+    }
+
+    // ========================================================================
+    // Input Types Serialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_pre_tool_use_input_serialization() {
+        let input = PreToolUseInput {
+            hook_event_name: "PreToolUse".to_string(),
+            cwd: "/home/user".to_string(),
+            session_id: Some("sess-123".to_string()),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            tool_name: "bash".to_string(),
+            tool_call_id: "call-456".to_string(),
+            tool_input: json!({"command": "ls"}),
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["hook_event_name"], "PreToolUse");
+        assert_eq!(json["tool_name"], "bash");
+        assert_eq!(json["tool_input"]["command"], "ls");
+    }
+
+    #[test]
+    fn test_post_tool_use_input_serialization() {
+        let input = PostToolUseInput {
+            hook_event_name: "PostToolUse".to_string(),
+            cwd: "/home/user".to_string(),
+            session_id: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            tool_name: "read".to_string(),
+            tool_call_id: "call-789".to_string(),
+            tool_input: json!({"path": "/tmp/file"}),
+            tool_output: "file contents".to_string(),
+            is_error: false,
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["tool_output"], "file contents");
+        assert_eq!(json["is_error"], false);
+    }
+
+    #[test]
+    fn test_session_end_input_serialization() {
+        let input = SessionEndInput {
+            hook_event_name: "SessionEnd".to_string(),
+            cwd: "/home/user".to_string(),
+            session_id: Some("sess-123".to_string()),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            reason: "user_exit".to_string(),
+            duration_ms: 5000,
+            turn_count: 10,
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["duration_ms"], 5000);
+        assert_eq!(json["turn_count"], 10);
+    }
+
+    #[test]
+    fn test_overflow_input_serialization() {
+        let input = OverflowInput {
+            hook_event_name: "Overflow".to_string(),
+            cwd: "/home/user".to_string(),
+            session_id: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            token_count: 150_000,
+            max_tokens: 128_000,
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["token_count"], 150_000);
+        assert_eq!(json["max_tokens"], 128_000);
+    }
+
+    #[test]
+    fn test_on_error_input_serialization() {
+        let input = OnErrorInput {
+            hook_event_name: "OnError".to_string(),
+            cwd: "/home/user".to_string(),
+            session_id: Some("sess-123".to_string()),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            error: "Connection failed".to_string(),
+            error_kind: "NetworkError".to_string(),
+            context: Some("API call".to_string()),
+            recoverable: true,
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["error"], "Connection failed");
+        assert_eq!(json["error_kind"], "NetworkError");
+        assert_eq!(json["recoverable"], true);
+    }
+
+    #[test]
+    fn test_subagent_stop_input_serialization() {
+        let input = SubagentStopInput {
+            hook_event_name: "SubagentStop".to_string(),
+            cwd: "/home/user".to_string(),
+            session_id: None,
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            subagent_type: "explorer".to_string(),
+            subagent_id: "agent-001".to_string(),
+            result: Some("Found 5 files".to_string()),
+            duration_ms: 1500,
+            success: true,
+        };
+        let json = serde_json::to_value(&input).unwrap();
+        assert_eq!(json["subagent_type"], "explorer");
+        assert_eq!(json["success"], true);
+        assert_eq!(json["duration_ms"], 1500);
+    }
+}

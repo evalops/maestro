@@ -305,3 +305,298 @@ pub fn sanitize_diagnostic_message(raw: &str) -> String {
     }
     cleaned
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // parse_env_bool Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_env_bool_true_values() {
+        assert_eq!(parse_env_bool("1"), Some(true));
+        assert_eq!(parse_env_bool("true"), Some(true));
+        assert_eq!(parse_env_bool("TRUE"), Some(true));
+        assert_eq!(parse_env_bool("on"), Some(true));
+        assert_eq!(parse_env_bool("ON"), Some(true));
+    }
+
+    #[test]
+    fn test_parse_env_bool_false_values() {
+        assert_eq!(parse_env_bool("0"), Some(false));
+        assert_eq!(parse_env_bool("false"), Some(false));
+        assert_eq!(parse_env_bool("FALSE"), Some(false));
+        assert_eq!(parse_env_bool("off"), Some(false));
+        assert_eq!(parse_env_bool("OFF"), Some(false));
+    }
+
+    #[test]
+    fn test_parse_env_bool_invalid_values() {
+        assert_eq!(parse_env_bool(""), None);
+        assert_eq!(parse_env_bool("yes"), None);
+        assert_eq!(parse_env_bool("no"), None);
+        assert_eq!(parse_env_bool("2"), None);
+        assert_eq!(parse_env_bool("random"), None);
+    }
+
+    // ========================================================================
+    // LspPosition Tests
+    // ========================================================================
+
+    #[test]
+    fn test_lsp_position_serialization() {
+        let pos = LspPosition {
+            line: 10,
+            character: 5,
+        };
+        let json = serde_json::to_value(&pos).unwrap();
+        assert_eq!(json["line"], 10);
+        assert_eq!(json["character"], 5);
+    }
+
+    #[test]
+    fn test_lsp_position_deserialization() {
+        let json = r#"{"line": 15, "character": 20}"#;
+        let pos: LspPosition = serde_json::from_str(json).unwrap();
+        assert_eq!(pos.line, 15);
+        assert_eq!(pos.character, 20);
+    }
+
+    // ========================================================================
+    // LspRange Tests
+    // ========================================================================
+
+    #[test]
+    fn test_lsp_range_serialization() {
+        let range = LspRange {
+            start: LspPosition {
+                line: 1,
+                character: 0,
+            },
+            end: LspPosition {
+                line: 1,
+                character: 10,
+            },
+        };
+        let json = serde_json::to_value(&range).unwrap();
+        assert_eq!(json["start"]["line"], 1);
+        assert_eq!(json["end"]["character"], 10);
+    }
+
+    // ========================================================================
+    // LspDiagnostic Tests
+    // ========================================================================
+
+    #[test]
+    fn test_lsp_diagnostic_serialization() {
+        let diag = LspDiagnostic {
+            severity: Some(1),
+            message: "Error message".to_string(),
+            range: LspRange {
+                start: LspPosition {
+                    line: 5,
+                    character: 0,
+                },
+                end: LspPosition {
+                    line: 5,
+                    character: 10,
+                },
+            },
+            source: Some("eslint".to_string()),
+        };
+        let json = serde_json::to_value(&diag).unwrap();
+        assert_eq!(json["severity"], 1);
+        assert_eq!(json["message"], "Error message");
+        assert_eq!(json["source"], "eslint");
+    }
+
+    #[test]
+    fn test_lsp_diagnostic_deserialization_minimal() {
+        let json = r#"{
+            "message": "Test",
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 5}
+            }
+        }"#;
+        let diag: LspDiagnostic = serde_json::from_str(json).unwrap();
+        assert_eq!(diag.message, "Test");
+        assert!(diag.severity.is_none());
+        assert!(diag.source.is_none());
+    }
+
+    // ========================================================================
+    // format_lsp_summary Tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_lsp_summary_empty() {
+        let summary = format_lsp_summary("test.rs", &[]);
+        assert!(summary.is_empty());
+    }
+
+    #[test]
+    fn test_format_lsp_summary_single_error() {
+        let diagnostics = vec![LspDiagnostic {
+            severity: Some(1),
+            message: "Undefined variable".to_string(),
+            range: LspRange {
+                start: LspPosition {
+                    line: 4,
+                    character: 0,
+                },
+                end: LspPosition {
+                    line: 4,
+                    character: 10,
+                },
+            },
+            source: None,
+        }];
+        let summary = format_lsp_summary("test.rs", &diagnostics);
+        assert!(summary.contains("test.rs"));
+        assert!(summary.contains("[Error]"));
+        assert!(summary.contains("Line 5")); // 0-indexed + 1
+        assert!(summary.contains("Undefined variable"));
+    }
+
+    #[test]
+    fn test_format_lsp_summary_multiple_severities() {
+        let diagnostics = vec![
+            LspDiagnostic {
+                severity: Some(2),
+                message: "Warning message".to_string(),
+                range: LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 5,
+                    },
+                },
+                source: None,
+            },
+            LspDiagnostic {
+                severity: Some(3),
+                message: "Info message".to_string(),
+                range: LspRange {
+                    start: LspPosition {
+                        line: 1,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: 1,
+                        character: 5,
+                    },
+                },
+                source: None,
+            },
+            LspDiagnostic {
+                severity: Some(4),
+                message: "Hint message".to_string(),
+                range: LspRange {
+                    start: LspPosition {
+                        line: 2,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: 2,
+                        character: 5,
+                    },
+                },
+                source: None,
+            },
+        ];
+        let summary = format_lsp_summary("test.rs", &diagnostics);
+        assert!(summary.contains("[Warning]"));
+        assert!(summary.contains("[Info]"));
+        assert!(summary.contains("[Hint]"));
+    }
+
+    #[test]
+    fn test_format_lsp_summary_more_than_five() {
+        let diagnostics: Vec<LspDiagnostic> = (0..10)
+            .map(|i| LspDiagnostic {
+                severity: Some(2),
+                message: format!("Warning {i}"),
+                range: LspRange {
+                    start: LspPosition {
+                        line: i,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: i,
+                        character: 5,
+                    },
+                },
+                source: None,
+            })
+            .collect();
+        let summary = format_lsp_summary("test.rs", &diagnostics);
+        assert!(summary.contains("...and 5 more"));
+    }
+
+    // ========================================================================
+    // sanitize_diagnostic_message Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sanitize_diagnostic_message_clean() {
+        let message = "This is a clean message";
+        assert_eq!(sanitize_diagnostic_message(message), message);
+    }
+
+    #[test]
+    fn test_sanitize_diagnostic_message_backticks() {
+        let message = "Use `const` instead of `let`";
+        let sanitized = sanitize_diagnostic_message(message);
+        assert!(!sanitized.contains('`'));
+        assert!(sanitized.contains("const"));
+    }
+
+    #[test]
+    fn test_sanitize_diagnostic_message_newlines() {
+        let message = "Line 1\nLine 2\rLine 3";
+        let sanitized = sanitize_diagnostic_message(message);
+        assert!(!sanitized.contains('\n'));
+        assert!(!sanitized.contains('\r'));
+        assert!(sanitized.contains("Line 1"));
+    }
+
+    #[test]
+    fn test_sanitize_diagnostic_message_control_chars() {
+        let message = "Message with \x00 null and \x1b escape";
+        let sanitized = sanitize_diagnostic_message(message);
+        assert!(!sanitized.contains('\x00'));
+        assert!(!sanitized.contains('\x1b'));
+    }
+
+    #[test]
+    fn test_sanitize_diagnostic_message_truncation() {
+        let long_message = "a".repeat(1000);
+        let sanitized = sanitize_diagnostic_message(&long_message);
+        assert_eq!(sanitized.len(), 500);
+    }
+
+    // ========================================================================
+    // normalize_path Tests
+    // ========================================================================
+
+    #[test]
+    fn test_normalize_path_absolute() {
+        let cwd = Path::new("/home/user");
+        let result = normalize_path(cwd, "/tmp/test.rs");
+        assert_eq!(result, PathBuf::from("/tmp/test.rs"));
+    }
+
+    #[test]
+    fn test_normalize_path_relative() {
+        let cwd = Path::new("/home/user");
+        let result = normalize_path(cwd, "src/main.rs");
+        // Should join with cwd
+        assert!(result.to_string_lossy().contains("src/main.rs"));
+    }
+}

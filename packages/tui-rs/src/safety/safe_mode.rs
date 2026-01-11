@@ -202,3 +202,217 @@ fn find_blocking_diagnostics(
     }
     blocking
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lsp::{LspPosition, LspRange};
+
+    // ========================================================================
+    // ValidatorResult Tests
+    // ========================================================================
+
+    #[test]
+    fn test_validator_result_serialization() {
+        let result = ValidatorResult {
+            command: "npm test".to_string(),
+            stdout: "All tests passed".to_string(),
+            stderr: String::new(),
+            exit_code: 0,
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["command"], "npm test");
+        assert_eq!(json["exit_code"], 0);
+    }
+
+    #[test]
+    fn test_validator_result_with_error() {
+        let result = ValidatorResult {
+            command: "cargo clippy".to_string(),
+            stdout: String::new(),
+            stderr: "error: unused variable".to_string(),
+            exit_code: 1,
+        };
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stderr.contains("unused variable"));
+    }
+
+    // ========================================================================
+    // Plan Satisfied Tests
+    // ========================================================================
+
+    #[test]
+    fn test_set_plan_satisfied() {
+        // Reset to known state
+        set_plan_satisfied(false);
+        assert!(!PLAN_SATISFIED.load(std::sync::atomic::Ordering::Relaxed));
+
+        set_plan_satisfied(true);
+        assert!(PLAN_SATISFIED.load(std::sync::atomic::Ordering::Relaxed));
+
+        set_plan_satisfied(false);
+        assert!(!PLAN_SATISFIED.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    // ========================================================================
+    // BlockingDiagnostic Tests
+    // ========================================================================
+
+    #[test]
+    fn test_find_blocking_diagnostics_empty() {
+        let diagnostics: HashMap<String, Vec<LspDiagnostic>> = HashMap::new();
+        let blocking = find_blocking_diagnostics(&diagnostics, 2);
+        assert!(blocking.is_empty());
+    }
+
+    #[test]
+    fn test_find_blocking_diagnostics_with_error() {
+        let mut diagnostics = HashMap::new();
+        diagnostics.insert(
+            "src/main.rs".to_string(),
+            vec![LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 10,
+                        character: 5,
+                    },
+                    end: LspPosition {
+                        line: 10,
+                        character: 15,
+                    },
+                },
+                message: "undefined variable".to_string(),
+                severity: Some(1), // Error
+                source: None,
+            }],
+        );
+
+        // Threshold 2 (warning) should include errors (severity 1)
+        let blocking = find_blocking_diagnostics(&diagnostics, 2);
+        assert_eq!(blocking.len(), 1);
+        assert_eq!(blocking[0].file, "src/main.rs");
+        assert_eq!(blocking[0].line, 10);
+        assert_eq!(blocking[0].character, 5);
+        assert_eq!(blocking[0].message, "undefined variable");
+    }
+
+    #[test]
+    fn test_find_blocking_diagnostics_filters_by_severity() {
+        let mut diagnostics = HashMap::new();
+        diagnostics.insert(
+            "src/lib.rs".to_string(),
+            vec![
+                LspDiagnostic {
+                    range: LspRange {
+                        start: LspPosition {
+                            line: 1,
+                            character: 0,
+                        },
+                        end: LspPosition {
+                            line: 1,
+                            character: 10,
+                        },
+                    },
+                    message: "error message".to_string(),
+                    severity: Some(1), // Error
+                    source: None,
+                },
+                LspDiagnostic {
+                    range: LspRange {
+                        start: LspPosition {
+                            line: 5,
+                            character: 0,
+                        },
+                        end: LspPosition {
+                            line: 5,
+                            character: 20,
+                        },
+                    },
+                    message: "hint message".to_string(),
+                    severity: Some(4), // Hint
+                    source: None,
+                },
+            ],
+        );
+
+        // Threshold 1 (error only) should only include the error
+        let blocking = find_blocking_diagnostics(&diagnostics, 1);
+        assert_eq!(blocking.len(), 1);
+        assert_eq!(blocking[0].message, "error message");
+
+        // Threshold 4 should include both
+        let all = find_blocking_diagnostics(&diagnostics, 4);
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_find_blocking_diagnostics_default_severity() {
+        let mut diagnostics = HashMap::new();
+        diagnostics.insert(
+            "src/test.rs".to_string(),
+            vec![LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 0,
+                    },
+                },
+                message: "no severity".to_string(),
+                severity: None, // Will default to u8::MAX
+                source: None,
+            }],
+        );
+
+        // With any normal threshold, diagnostics without severity should not block
+        let blocking = find_blocking_diagnostics(&diagnostics, 4);
+        assert!(blocking.is_empty());
+    }
+
+    #[test]
+    fn test_find_blocking_diagnostics_multiple_files() {
+        let mut diagnostics = HashMap::new();
+        diagnostics.insert(
+            "src/a.rs".to_string(),
+            vec![LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 1,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: 1,
+                        character: 5,
+                    },
+                },
+                message: "error in a".to_string(),
+                severity: Some(1),
+                source: None,
+            }],
+        );
+        diagnostics.insert(
+            "src/b.rs".to_string(),
+            vec![LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 2,
+                        character: 0,
+                    },
+                    end: LspPosition {
+                        line: 2,
+                        character: 5,
+                    },
+                },
+                message: "error in b".to_string(),
+                severity: Some(1),
+                source: None,
+            }],
+        );
+
+        let blocking = find_blocking_diagnostics(&diagnostics, 2);
+        assert_eq!(blocking.len(), 2);
+    }
+}

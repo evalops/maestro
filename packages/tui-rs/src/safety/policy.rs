@@ -149,3 +149,165 @@ pub fn check_url_allowed(url: &str) -> Option<String> {
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // Pattern Matching Tests
+    // ========================================================================
+
+    #[test]
+    fn test_matches_pattern_list_exact() {
+        let patterns = vec!["bash".to_string(), "read".to_string()];
+        assert!(matches_pattern_list("bash", &patterns));
+        assert!(matches_pattern_list("read", &patterns));
+        assert!(!matches_pattern_list("write", &patterns));
+    }
+
+    #[test]
+    fn test_matches_pattern_list_glob_star() {
+        let patterns = vec!["bash*".to_string()];
+        assert!(matches_pattern_list("bash", &patterns));
+        assert!(matches_pattern_list("bash_script", &patterns));
+        assert!(!matches_pattern_list("read", &patterns));
+    }
+
+    #[test]
+    fn test_matches_pattern_list_glob_question() {
+        let patterns = vec!["re?d".to_string()];
+        assert!(matches_pattern_list("read", &patterns));
+        assert!(matches_pattern_list("reed", &patterns));
+        assert!(!matches_pattern_list("red", &patterns));
+        assert!(!matches_pattern_list("reaad", &patterns));
+    }
+
+    #[test]
+    fn test_matches_pattern_list_glob_brackets() {
+        let patterns = vec!["[rw]ead".to_string()];
+        assert!(matches_pattern_list("read", &patterns));
+        assert!(matches_pattern_list("wead", &patterns));
+        assert!(!matches_pattern_list("bead", &patterns));
+    }
+
+    #[test]
+    fn test_matches_pattern_list_empty() {
+        let patterns: Vec<String> = vec![];
+        assert!(!matches_pattern_list("bash", &patterns));
+    }
+
+    // ========================================================================
+    // Private IP Detection Tests
+    // ========================================================================
+
+    #[test]
+    fn test_is_private_ip_class_a() {
+        // 10.0.0.0/8 range
+        assert!(is_private_ip(&"10.0.0.1".parse().unwrap()));
+        assert!(is_private_ip(&"10.255.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ip_class_b() {
+        // 172.16.0.0/12 range
+        assert!(is_private_ip(&"172.16.0.1".parse().unwrap()));
+        assert!(is_private_ip(&"172.31.255.255".parse().unwrap()));
+        assert!(!is_private_ip(&"172.15.0.1".parse().unwrap()));
+        assert!(!is_private_ip(&"172.32.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ip_class_c() {
+        // 192.168.0.0/16 range
+        assert!(is_private_ip(&"192.168.0.1".parse().unwrap()));
+        assert!(is_private_ip(&"192.168.255.255".parse().unwrap()));
+        assert!(!is_private_ip(&"192.167.0.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ip_loopback() {
+        // 127.0.0.0/8 range
+        assert!(is_private_ip(&"127.0.0.1".parse().unwrap()));
+        assert!(is_private_ip(&"127.255.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ip_link_local() {
+        // 169.254.0.0/16 range
+        assert!(is_private_ip(&"169.254.0.1".parse().unwrap()));
+        assert!(is_private_ip(&"169.254.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_is_private_ip_public() {
+        // Public IPs should not be private
+        assert!(!is_private_ip(&"8.8.8.8".parse().unwrap()));
+        assert!(!is_private_ip(&"1.1.1.1".parse().unwrap()));
+        assert!(!is_private_ip(&"142.250.80.110".parse().unwrap())); // google.com
+    }
+
+    #[test]
+    fn test_is_private_ip_ipv6_loopback() {
+        assert!(is_private_ip(&"::1".parse().unwrap()));
+    }
+
+    // ========================================================================
+    // PolicyList Deserialization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_policy_list_deserialization() {
+        let json = r#"{"allowed": ["bash", "read"], "blocked": ["rm"]}"#;
+        let policy: PolicyList = serde_json::from_str(json).unwrap();
+        assert_eq!(policy.allowed.as_ref().unwrap().len(), 2);
+        assert_eq!(policy.blocked.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_policy_list_partial() {
+        let json = r#"{"allowed": ["bash"]}"#;
+        let policy: PolicyList = serde_json::from_str(json).unwrap();
+        assert!(policy.allowed.is_some());
+        assert!(policy.blocked.is_none());
+    }
+
+    #[test]
+    fn test_network_policy_deserialization() {
+        let json = r#"{
+            "allowed_hosts": ["example.com"],
+            "blocked_hosts": ["evil.com"],
+            "block_localhost": true,
+            "block_private_ips": false
+        }"#;
+        let policy: NetworkPolicy = serde_json::from_str(json).unwrap();
+        assert_eq!(policy.allowed_hosts.as_ref().unwrap().len(), 1);
+        assert_eq!(policy.blocked_hosts.as_ref().unwrap().len(), 1);
+        assert!(policy.block_localhost.unwrap());
+        assert!(!policy.block_private_ips.unwrap());
+    }
+
+    #[test]
+    fn test_enterprise_policy_deserialization() {
+        let json = r#"{
+            "tools": {"allowed": ["bash", "read"]},
+            "paths": {"blocked": ["/etc/*"]},
+            "network": {"block_localhost": true}
+        }"#;
+        let policy: EnterprisePolicy = serde_json::from_str(json).unwrap();
+        assert!(policy.tools.is_some());
+        assert!(policy.paths.is_some());
+        assert!(policy.network.is_some());
+    }
+
+    #[test]
+    fn test_policy_file_path() {
+        let path = policy_file_path();
+        // Should return Some path if home dir exists
+        if dirs::home_dir().is_some() {
+            assert!(path.is_some());
+            let p = path.unwrap();
+            assert!(p.ends_with("policy.json"));
+        }
+    }
+}
