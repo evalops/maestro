@@ -138,7 +138,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.3",
-    "@nrwl/tao": "19.7.3",
+    "@nrwl/tao": "19.8.4",
     "@opentelemetry/resources": "^2.3.0",
     "@smithy/types": "^4.9.0",
     "@types/bcrypt": "^6.0.0",
