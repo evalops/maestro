@@ -143,6 +143,14 @@ describe("guardian heuristic scan", () => {
 				"Database URL with credentials",
 			);
 		});
+
+		it("does not flag query-parameter credentials", () => {
+			const contents =
+				"DATABASE_URL=postgresql://localhost:5432/composer?user=app&password=secret\n";
+			expect(detectHeuristicFindings(contents)).not.toContain(
+				"Database URL with credentials",
+			);
+		});
 	});
 
 	describe("JWT token", () => {
