@@ -338,7 +338,7 @@ This preserves: message history, favorites, summaries, model selections, timesta
 
 ```bash
 COMPOSER_MULTI_TENANT=true
-COMPOSER_DATABASE_URL=postgresql://user:pass@host/composer
+COMPOSER_DATABASE_URL=postgresql://host/composer?user=user&password=pass
 COMPOSER_JWT_SECRET=$(openssl rand -hex 32)
 ```
 

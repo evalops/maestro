@@ -10,10 +10,10 @@
 	"types": "./dist/index.d.ts",
 	"files": ["dist", "README.md"],
 	"scripts": {
-		"clean": "rm -rf dist",
-		"build": "tsc -b tsconfig.build.json && bun build ./src/index.ts --target node --packages external --outfile dist/index.js && bun build ./src/main.ts --target node --packages external --outfile dist/main.js && chmod +x dist/main.js",
-		"dev": "tsc -b tsconfig.build.json --watch --preserveWatchOutput",
-		"check": "tsc -b tsconfig.build.json --pretty false",
+		"clean": "rm -rf dist ../../tmp/tsbuildinfo/slack-agent.tsbuildinfo",
+		"build": "rm -rf dist && mkdir -p ../../tmp/tsbuildinfo && tsc -b tsconfig.build.json && bun build ./src/index.ts --target node --packages external --outfile dist/index.js && bun build ./src/main.ts --target node --packages external --outfile dist/main.js && chmod +x dist/main.js",
+		"dev": "mkdir -p ../../tmp/tsbuildinfo && tsc -b tsconfig.build.json --watch --preserveWatchOutput",
+		"check": "mkdir -p ../../tmp/tsbuildinfo && tsc -b tsconfig.build.json --pretty false",
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
