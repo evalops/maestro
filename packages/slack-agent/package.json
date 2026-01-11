@@ -11,7 +11,7 @@
 	"files": ["dist", "README.md"],
 	"scripts": {
 		"clean": "rm -rf dist ../../tmp/tsbuildinfo/slack-agent.tsbuildinfo",
-		"build": "node -e \"require('fs').mkdirSync('../../tmp/tsbuildinfo', { recursive: true })\" && tsc -b tsconfig.build.json && bun build ./src/index.ts --target node --packages external --outfile dist/index.js && bun build ./src/main.ts --target node --packages external --outfile dist/main.js && chmod +x dist/main.js",
+		"build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && node -e \"require('fs').mkdirSync('../../tmp/tsbuildinfo', { recursive: true })\" && tsc -b tsconfig.build.json && bun build ./src/index.ts --target node --packages external --outfile dist/index.js && bun build ./src/main.ts --target node --packages external --outfile dist/main.js && chmod +x dist/main.js",
 		"dev": "node -e \"require('fs').mkdirSync('../../tmp/tsbuildinfo', { recursive: true })\" && tsc -b tsconfig.build.json --watch --preserveWatchOutput",
 		"check": "node -e \"require('fs').mkdirSync('../../tmp/tsbuildinfo', { recursive: true })\" && tsc -b tsconfig.build.json --pretty false",
 		"test": "vitest --run",
