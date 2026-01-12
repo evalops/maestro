@@ -11,7 +11,7 @@
 	"files": ["dist", "README.md"],
 	"scripts": {
 		"clean": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/slack-agent.tsbuildinfo",
-		"build": "node ../../scripts/clean-paths.js dist && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -b tsconfig.build.json && bun build ./src/index.ts --target node --packages external --outfile dist/index.js && bun build ./src/main.ts --target node --packages external --outfile dist/main.js && chmod +x dist/main.js",
+		"build": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/slack-agent.tsbuildinfo && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -b tsconfig.build.json && bun build ./src/index.ts --target node --packages external --outfile dist/index.js && bun build ./src/main.ts --target node --packages external --outfile dist/main.js && chmod +x dist/main.js",
 		"dev": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -b tsconfig.build.json --watch --preserveWatchOutput",
 		"check": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -b tsconfig.build.json --pretty false",
 		"test": "vitest --run",

@@ -10,8 +10,8 @@
 	"types": "./dist/index.d.ts",
 	"files": ["dist", "README.md"],
 	"scripts": {
-		"clean": "node ../../scripts/clean-paths.js dist",
-		"build": "node ../../scripts/clean-paths.js dist && tsc -b tsconfig.build.json && bun build ./src/index.ts --target node --packages external --outfile dist/index.js && bun build ./src/main.ts --target node --packages external --outfile dist/main.js && chmod +x dist/main.js",
+		"clean": "node ../../scripts/clean-paths.js dist tsconfig.build.tsbuildinfo",
+		"build": "node ../../scripts/clean-paths.js dist tsconfig.build.tsbuildinfo && tsc -b tsconfig.build.json && bun build ./src/index.ts --target node --packages external --outfile dist/index.js && bun build ./src/main.ts --target node --packages external --outfile dist/main.js && chmod +x dist/main.js",
 		"dev": "tsc -b tsconfig.build.json --watch --preserveWatchOutput",
 		"check": "tsc -b tsconfig.build.json --pretty false",
 		"test": "vitest --run",
