@@ -2136,18 +2136,28 @@ export class ComposerChat extends LitElement {
 
 							// Tool call tracking
 							else if (msgEvent.type === "toolcall_start") {
-								const partial = Array.isArray(msgEvent.partial.content)
-									? msgEvent.partial.content[msgEvent.contentIndex]
+								const partial = Array.isArray(msgEvent.partial?.content)
+									? msgEvent.partial?.content[msgEvent.contentIndex]
 									: undefined;
-								if (partial?.type === "toolCall" && partial.id) {
-									const args = partial.arguments ?? {};
-									const name = partial.name || "tool";
+								const toolCallId =
+									partial?.type === "toolCall"
+										? partial.id
+										: msgEvent.toolCallId;
+								if (toolCallId) {
+									const args =
+										partial?.type === "toolCall"
+											? (partial.arguments ?? {})
+											: (msgEvent.toolCallArgs ?? {});
+									const name =
+										partial?.type === "toolCall"
+											? partial.name || "tool"
+											: msgEvent.toolCallName || "tool";
 									if (!assistantMessage.tools) assistantMessage.tools = [];
 									const existingIndex = assistantMessage.tools.findIndex(
-										(t) => t.toolCallId === partial.id,
+										(t) => t.toolCallId === toolCallId,
 									);
 									const entry: ExtendedToolCall = {
-										toolCallId: partial.id,
+										toolCallId,
 										name,
 										status: "pending",
 										args,
@@ -2161,7 +2171,7 @@ export class ComposerChat extends LitElement {
 									} else {
 										assistantMessage.tools.push(entry);
 									}
-									activeTools.set(partial.id, {
+									activeTools.set(toolCallId, {
 										name,
 										args,
 										index:
@@ -2172,14 +2182,21 @@ export class ComposerChat extends LitElement {
 									this.messages = [...this.messages];
 								}
 							} else if (msgEvent.type === "toolcall_delta") {
-								const partial = Array.isArray(msgEvent.partial.content)
-									? msgEvent.partial.content[msgEvent.contentIndex]
+								const partial = Array.isArray(msgEvent.partial?.content)
+									? msgEvent.partial?.content[msgEvent.contentIndex]
 									: undefined;
-								if (partial?.type === "toolCall" && partial.id) {
-									const args = partial.arguments ?? {};
+								const toolCallId =
+									partial?.type === "toolCall"
+										? partial.id
+										: msgEvent.toolCallId;
+								if (toolCallId) {
+									const args =
+										partial?.type === "toolCall"
+											? (partial.arguments ?? {})
+											: (msgEvent.toolCallArgs ?? {});
 									if (!assistantMessage.tools) assistantMessage.tools = [];
 									const existingIndex = assistantMessage.tools.findIndex(
-										(t) => t.toolCallId === partial.id,
+										(t) => t.toolCallId === toolCallId,
 									);
 									if (existingIndex >= 0) {
 										const existingTool = assistantMessage.tools[existingIndex]!;
@@ -2190,14 +2207,20 @@ export class ComposerChat extends LitElement {
 										};
 									} else {
 										assistantMessage.tools.push({
-											toolCallId: partial.id,
-											name: partial.name || "tool",
+											toolCallId,
+											name:
+												partial?.type === "toolCall"
+													? partial.name || "tool"
+													: msgEvent.toolCallName || "tool",
 											status: "pending",
 											args,
 										});
 									}
-									activeTools.set(partial.id, {
-										name: partial.name || "tool",
+									activeTools.set(toolCallId, {
+										name:
+											partial?.type === "toolCall"
+												? partial.name || "tool"
+												: msgEvent.toolCallName || "tool",
 										args,
 										index:
 											existingIndex >= 0

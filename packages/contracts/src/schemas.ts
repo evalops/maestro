@@ -247,19 +247,25 @@ export const ComposerAssistantMessageEventSchema = Type.Union([
 	Type.Object({
 		type: Type.Literal("toolcall_start"),
 		contentIndex: Type.Number(),
-		partial: ComposerMessageSchema,
+		partial: Type.Optional(ComposerMessageSchema),
+		toolCallId: Type.Optional(Type.String()),
+		toolCallName: Type.Optional(Type.String()),
+		toolCallArgs: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 	}),
 	Type.Object({
 		type: Type.Literal("toolcall_delta"),
 		contentIndex: Type.Number(),
 		delta: Type.String(),
-		partial: ComposerMessageSchema,
+		partial: Type.Optional(ComposerMessageSchema),
+		toolCallId: Type.Optional(Type.String()),
+		toolCallName: Type.Optional(Type.String()),
+		toolCallArgs: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 	}),
 	Type.Object({
 		type: Type.Literal("toolcall_end"),
 		contentIndex: Type.Number(),
 		toolCall: ComposerToolCallContentSchema,
-		partial: ComposerMessageSchema,
+		partial: Type.Optional(ComposerMessageSchema),
 	}),
 	Type.Object({
 		type: Type.Literal("done"),
