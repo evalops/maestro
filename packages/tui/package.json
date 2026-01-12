@@ -18,9 +18,9 @@
 	"files": ["dist", "README.md"],
 	"scripts": {
 		"clean": "rm -rf dist ../../tmp/tsbuildinfo/tui.tsbuildinfo",
-		"build": "rm -rf dist && mkdir -p ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
-		"dev": "mkdir -p ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --watch --preserveWatchOutput",
-		"check": "mkdir -p ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --noEmit",
+		"build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && node -e \"require('fs').mkdirSync('../../tmp/tsbuildinfo', { recursive: true })\" && tsc -p tsconfig.build.json",
+		"dev": "node -e \"require('fs').mkdirSync('../../tmp/tsbuildinfo', { recursive: true })\" && tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+		"check": "node -e \"require('fs').mkdirSync('../../tmp/tsbuildinfo', { recursive: true })\" && tsc -p tsconfig.build.json --noEmit",
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
