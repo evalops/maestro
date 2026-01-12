@@ -295,6 +295,7 @@ describe("OpenAI Responses SDK streaming", () => {
 		}
 
 		const params = openaiMock.getLastParams() as {
+			reasoning?: { effort?: string; summary?: string };
 			input?: Array<{
 				role?: string;
 				content?: Array<{ type: string; text?: string }>;
@@ -305,6 +306,27 @@ describe("OpenAI Responses SDK streaming", () => {
 				entry.role === "developer" &&
 				entry.content?.some((block) => block.text === "# Juice: 0 !important"),
 		);
+		expect(params.reasoning).toBeUndefined();
 		expect(hasHint).toBe(false);
+	});
+
+	it("does not include a reasoning summary when only effort is provided", async () => {
+		const reasoningModel: Model<"openai-responses"> = {
+			...responsesModel,
+			reasoning: true,
+		};
+
+		for await (const _ of streamResponsesApiSdk(reasoningModel, baseContext, {
+			apiKey: "k",
+			reasoningEffort: "low",
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			reasoning?: { effort?: string; summary?: string };
+		};
+		expect(params.reasoning?.effort).toBe("low");
+		expect(params.reasoning?.summary).toBeUndefined();
 	});
 });

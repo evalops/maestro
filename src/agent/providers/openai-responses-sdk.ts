@@ -105,24 +105,21 @@ export async function* streamResponsesApiSdk(
 		params.temperature = options.temperature;
 	}
 
-	if (
-		model.reasoning &&
-		(options.reasoningEffort || options.reasoningSummary !== undefined)
-	) {
+	const summary = options.reasoningSummary;
+	const shouldIncludeSummary = summary !== undefined && summary !== null;
+
+	if (model.reasoning && (options.reasoningEffort || shouldIncludeSummary)) {
 		// OpenAI SDK only supports up to "high", map "ultra" to "high"
 		const effort = options.reasoningEffort
 			? options.reasoningEffort === "ultra"
 				? "high"
 				: options.reasoningEffort
 			: "medium";
-		const summary =
-			options.reasoningSummary === undefined
-				? "auto"
-				: options.reasoningSummary;
-		params.reasoning = {
-			effort,
-			summary,
-		};
+		if (shouldIncludeSummary) {
+			params.reasoning = { effort, summary };
+		} else {
+			params.reasoning = { effort };
+		}
 	}
 
 	// Add structured outputs via text.format (Responses API format)
