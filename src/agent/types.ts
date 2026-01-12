@@ -76,6 +76,7 @@ export interface OpenAICompatOverrides {
  * - `bedrock` - AWS Bedrock
  * - `google` - Google AI (Gemini models)
  * - `openai` - OpenAI (GPT models)
+ * - `azure-openai` - Azure OpenAI
  * - `writer` - Writer.com
  * - `xai` - xAI (Grok models)
  * - `groq` - Groq
@@ -88,6 +89,7 @@ export type KnownProvider =
 	| "bedrock"
 	| "google"
 	| "openai"
+	| "azure-openai"
 	| "writer"
 	| "xai"
 	| "groq"

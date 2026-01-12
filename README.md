@@ -109,6 +109,14 @@ export ANTHROPIC_API_KEY=sk-ant-...
 # OpenAI (GPT)
 export OPENAI_API_KEY=sk-...
 
+# GitHub Copilot (OAuth)
+# Run /login github-copilot (device flow) — no API key required
+# Tokens are stored in ~/.composer/oauth.json
+# Optional bootstrap: export COPILOT_GITHUB_TOKEN=... or GH_TOKEN=...
+
+# Azure OpenAI (OpenAI-compatible)
+export AZURE_OPENAI_API_KEY=...
+
 # Google (Gemini)
 export GEMINI_API_KEY=...
 
@@ -122,6 +130,9 @@ export GEMINI_API_KEY=...
 
 # Groq
 export GROQ_API_KEY=gsk_...
+
+# Cerebras
+export CEREBRAS_API_KEY=...
 
 # xAI (Grok)
 export XAI_API_KEY=xai-...
@@ -138,11 +149,26 @@ export EXA_API_KEY=...
 ```json
 {
   "anthropic": { "apiKey": "sk-ant-..." },
-  "openai": { "apiKey": "sk-..." }
+  "openai": { "apiKey": "sk-..." },
+  "azure-openai": { "apiKey": "..." }
 }
 ```
 
 Use `composer config init` for interactive provider setup, or `--provider` and `--model` flags to switch providers.
+
+**OpenAI-compatible vendors (Azure/OpenRouter/Groq/Cerebras):** define a provider override with `api: "openai-completions"` (or `"openai-responses"` if supported) and a vendor base URL in `~/.composer/config.json` or `COMPOSER_MODELS_FILE`. See `docs/MODELS.md` for the full schema and `compat` flags.
+
+**GitHub Copilot:** after `/login github-copilot`, select models via `/model` (provider `github-copilot`) or run `composer --provider github-copilot --model <id>`.
+
+Example `~/.composer/config.json` to add a short alias:
+
+```json
+{
+  "aliases": {
+    "copilot-fast": "github-copilot/gpt-5-mini"
+  }
+}
+```
 
 ## Slash Commands
 
@@ -245,6 +271,35 @@ Workaround: wrap the constrained value inside an object:
 References:
 - OpenAI docs: Structured Outputs supported schemas (`https://platform.openai.com/docs/guides/structured-outputs/supported-schemas`)
 - OpenAI docs: unsupported keywords (`https://platform.openai.com/docs/guides/structured-outputs/some-type-specific-keywords-are-not-yet-supported`)
+
+#### Reasoning summary & effort (Responses API only)
+
+Composer enforces these guardrails for OpenAI-compatible providers:
+
+- `reasoningSummary` is only allowed for **Responses API** models (`api: "openai-responses"`) that are marked `reasoning: true`.
+- `reasoningEffort` is only sent when `compat.supportsReasoningEffort` is true.
+- If you enable these on unsupported models, Composer fails fast with a clear error.
+
+For OpenAI-compatible vendors, set compat flags explicitly when needed:
+
+```json
+{
+  "providers": [
+    {
+      "id": "azure-openai",
+      "api": "openai-completions",
+      "baseUrl": "https://my-resource.openai.azure.com/openai/deployments/gpt-4/chat/completions?api-version=2024-02-15-preview",
+      "models": [
+        {
+          "id": "gpt-4o",
+          "name": "GPT-4o (Azure)",
+          "compat": { "supportsReasoningEffort": false }
+        }
+      ]
+    }
+  ]
+}
+```
 
 ### Framework Preference
 

@@ -106,6 +106,11 @@ Supported `compat` fields:
 - `requiresThinkingAsText` (bool) – wraps thinking blocks into `<thinking>` text.
 - `requiresMistralToolIds` (bool) – normalize tool call IDs to Mistral’s 9‑char form.
 
+Common OpenAI-compatible defaults:
+
+- **OpenAI**: `supportsStore=true`, `supportsDeveloperRole=true`, `supportsReasoningEffort=true`, `maxTokensField="max_completion_tokens"`
+- **Azure/OpenRouter/Groq/Cerebras**: `supportsStore=false`, `supportsDeveloperRole=false`, `supportsReasoningEffort=false`, `maxTokensField="max_tokens"`
+
 ### Override-only providers
 
 If a provider entry omits `models`, it is treated as an override for built-in
