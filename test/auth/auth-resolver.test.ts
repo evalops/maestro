@@ -107,6 +107,26 @@ describe("auth resolver", () => {
 		mockedLoadCreds.mockReset();
 	});
 
+	it("uses GitHub Copilot OAuth token when available", async () => {
+		const mockedGetToken = vi.mocked(getOAuthToken);
+		const mockedLoadCreds = vi.mocked(loadOAuthCredentials);
+		mockedGetToken.mockResolvedValue("copilot-token");
+		mockedLoadCreds.mockReturnValue({
+			type: "oauth",
+			access: "copilot-token",
+			refresh: "ref",
+			expires: Date.now() + 60_000,
+			metadata: { scope: "copilot" },
+		});
+		const resolver = createAuthResolver({ mode: "auto" });
+		const credential = await resolver("github-copilot");
+		expect(credential).toBeDefined();
+		expect(credential?.token).toBe("copilot-token");
+		expect(credential?.source).toBe("github_copilot_oauth_file");
+		mockedGetToken.mockReset();
+		mockedLoadCreds.mockReset();
+	});
+
 	it("reads env claude token ahead of file", async () => {
 		process.env.CLAUDE_CODE_TOKEN = "env-token";
 		const resolver = createAuthResolver({ mode: "claude" });

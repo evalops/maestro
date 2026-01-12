@@ -85,4 +85,49 @@ describe("ComposerChat", () => {
 		assert.ok(modelInfo);
 		assert.include(modelInfo?.textContent || "", "anthropic/claude-sonnet-4-5");
 	});
+
+	it("streams thinking deltas into assistant messages", async () => {
+		const stream = async function* () {
+			yield {
+				type: "message_update",
+				assistantMessageEvent: { type: "thinking_start", contentIndex: 0 },
+			};
+			yield {
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "thinking_delta",
+					contentIndex: 0,
+					delta: "Reasoning summary",
+				},
+			};
+			yield {
+				type: "message_update",
+				assistantMessageEvent: { type: "thinking_end", contentIndex: 0 },
+			};
+			yield {
+				type: "message_end",
+				message: { role: "assistant" },
+			};
+		};
+
+		const apiClient = {
+			chatWithEvents: vi.fn().mockReturnValue(stream()),
+			getSessions: vi.fn().mockResolvedValue([]),
+		};
+
+		(element as unknown as { apiClient: unknown }).apiClient = apiClient;
+		(element as unknown as { clientOnline: boolean }).clientOnline = true;
+
+		const event = new CustomEvent("submit", { detail: { text: "Hello" } });
+		await (
+			element as unknown as { handleSubmit: (e: CustomEvent) => Promise<void> }
+		).handleSubmit(event);
+
+		const messages = (
+			element as unknown as { messages: Array<{ thinking?: string }> }
+		).messages;
+		const assistant = messages[messages.length - 1];
+		assert.ok(assistant);
+		assert.include(assistant?.thinking || "", "Reasoning summary");
+	});
 });

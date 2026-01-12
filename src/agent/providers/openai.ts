@@ -482,10 +482,34 @@ export async function* streamOpenAI(
 ): AsyncGenerator<AssistantMessageEvent, void, unknown> {
 	const apiKey = options.apiKey;
 	if (!apiKey) {
-		throw new Error("API key is required for OpenAI");
+		const providerLabel = model.provider || "openai";
+		const hint =
+			providerLabel === "github-copilot"
+				? " Run /login github-copilot to authorize."
+				: "";
+		throw new Error(
+			`API key is required for provider "${providerLabel}".${hint}`,
+		);
 	}
 
 	const compat = resolveOpenAICompat(model);
+	const hasSummaryRequest =
+		options.reasoningSummary !== undefined && options.reasoningSummary !== null;
+	if (hasSummaryRequest && model.api !== "openai-responses") {
+		throw new Error(
+			`Reasoning summaries require the Responses API (model: ${model.provider}/${model.id}).`,
+		);
+	}
+	if (hasSummaryRequest && !model.reasoning) {
+		throw new Error(
+			`Reasoning summaries are not supported for non-reasoning models (model: ${model.provider}/${model.id}).`,
+		);
+	}
+	if (options.reasoningEffort && !compat.supportsReasoningEffort) {
+		throw new Error(
+			`Reasoning effort is not supported by ${model.provider}/${model.id}. Disable thinking or choose another model.`,
+		);
+	}
 	const normalizeToolId = createMistralToolIdNormalizer(
 		compat.requiresMistralToolIds,
 	);
