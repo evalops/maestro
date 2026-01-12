@@ -61,6 +61,7 @@ export interface OpenAICompatOverrides {
 	supportsStore?: boolean;
 	supportsDeveloperRole?: boolean;
 	supportsReasoningEffort?: boolean;
+	supportsResponsesApi?: boolean;
 	maxTokensField?: "max_tokens" | "max_completion_tokens";
 	requiresToolResultName?: boolean;
 	requiresAssistantAfterToolResult?: boolean;
