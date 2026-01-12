@@ -50,12 +50,19 @@ export async function* streamResponsesApiSdk(
 	}
 
 	const baseUrl = normalizeLLMBaseUrl(model.baseUrl, model.provider, model.api);
+	const headers = options.headers ? { ...options.headers } : {};
+	if (model.provider === "github-copilot") {
+		const messages = context.messages ?? [];
+		const lastMessage = messages[messages.length - 1];
+		const isAgentCall = lastMessage ? lastMessage.role !== "user" : false;
+		headers["X-Initiator"] = isAgentCall ? "agent" : "user";
+	}
 
 	const client = new OpenAI({
 		apiKey: options.apiKey,
 		baseURL: baseUrl.replace("/responses", ""), // SDK adds the endpoint
 		dangerouslyAllowBrowser: true,
-		defaultHeaders: options.headers,
+		defaultHeaders: Object.keys(headers).length > 0 ? headers : undefined,
 	});
 
 	// Build input messages
@@ -95,6 +102,16 @@ export async function* streamResponsesApiSdk(
 			parameters: tool.parameters as Record<string, unknown>,
 			strict: null,
 		}));
+	}
+
+	if (options.toolChoice && validTools.length > 0) {
+		params.tool_choice =
+			typeof options.toolChoice === "string"
+				? options.toolChoice
+				: {
+						type: "function",
+						name: options.toolChoice.function.name,
+					};
 	}
 
 	if (options.maxTokens) {

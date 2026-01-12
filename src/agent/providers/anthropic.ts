@@ -140,6 +140,63 @@ const toolArgumentNormalizer = createToolArgumentNormalizer({
 	providerLabel: "Anthropic",
 });
 
+const ANTHROPIC_TOOL_ID_MAX = 64;
+
+function shortHash(value: string): string {
+	let h1 = 0xdeadbeef;
+	let h2 = 0x41c6ce57;
+	for (let i = 0; i < value.length; i++) {
+		const ch = value.charCodeAt(i);
+		h1 = Math.imul(h1 ^ ch, 2654435761);
+		h2 = Math.imul(h2 ^ ch, 1597334677);
+	}
+	h1 =
+		Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
+		Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+	h2 =
+		Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
+		Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+	return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36);
+}
+
+function createAnthropicToolCallIdNormalizer() {
+	const mapping = new Map<string, string>();
+	const used = new Set<string>();
+
+	return (id: string): string => {
+		const existing = mapping.get(id);
+		if (existing) return existing;
+
+		let sanitized = id.replace(/[^a-zA-Z0-9_-]/g, "_");
+		if (!sanitized) {
+			sanitized = `tool_${shortHash(id)}`;
+		}
+
+		const fitToLimit = (base: string, suffix?: string) => {
+			if (!suffix) return base.slice(0, ANTHROPIC_TOOL_ID_MAX);
+			const maxPrefix = ANTHROPIC_TOOL_ID_MAX - suffix.length - 1;
+			const prefix = maxPrefix > 0 ? base.slice(0, maxPrefix) : "";
+			return `${prefix}_${suffix}`.slice(0, ANTHROPIC_TOOL_ID_MAX);
+		};
+
+		let candidate =
+			sanitized.length <= ANTHROPIC_TOOL_ID_MAX
+				? sanitized
+				: fitToLimit(sanitized, shortHash(sanitized));
+
+		let attempt = 0;
+		while (used.has(candidate)) {
+			attempt += 1;
+			const suffix = shortHash(`${id}:${attempt}`);
+			candidate = fitToLimit(sanitized, suffix);
+		}
+
+		mapping.set(id, candidate);
+		used.add(candidate);
+		return candidate;
+	};
+}
+
 export interface AnthropicOptions extends StreamOptions {
 	thinking?: ReasoningEffort;
 }
@@ -321,6 +378,7 @@ export async function* streamAnthropic(
 	};
 	// Transform messages for cross-provider compatibility
 	const transformedMessages = transformMessages(context.messages, model);
+	const normalizeToolCallId = createAnthropicToolCallIdNormalizer();
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const msg = transformedMessages[i];
@@ -352,7 +410,7 @@ export async function* streamAnthropic(
 				} else if (c.type === "toolCall") {
 					content.push({
 						type: "tool_use",
-						id: c.id,
+						id: normalizeToolCallId(c.id),
 						name: c.name,
 						input: c.arguments,
 					});
@@ -390,7 +448,7 @@ export async function* streamAnthropic(
 			// Add the current tool result
 			toolResults.push({
 				type: "tool_result",
-				tool_use_id: msg.toolCallId,
+				tool_use_id: normalizeToolCallId(msg.toolCallId),
 				content: convertToolResultContent(msg.content),
 				is_error: msg.isError,
 			});
@@ -404,7 +462,7 @@ export async function* streamAnthropic(
 				const nextMsg = context.messages[j] as ToolResultMessage;
 				toolResults.push({
 					type: "tool_result",
-					tool_use_id: nextMsg.toolCallId,
+					tool_use_id: normalizeToolCallId(nextMsg.toolCallId),
 					content: convertToolResultContent(nextMsg.content),
 					is_error: nextMsg.isError,
 				});

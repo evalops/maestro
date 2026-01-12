@@ -9,6 +9,7 @@ import type {
 const openaiMock = vi.hoisted(() => {
 	let streamFactory: () => AsyncIterable<unknown> = async function* () {};
 	let lastParams: unknown;
+	let lastClientOptions: unknown;
 
 	return {
 		setStream(factory: () => AsyncIterable<unknown>) {
@@ -18,17 +19,27 @@ const openaiMock = vi.hoisted(() => {
 			lastParams = params;
 			return streamFactory();
 		},
+		setClientOptions(options: unknown) {
+			lastClientOptions = options;
+		},
 		getLastParams() {
 			return lastParams;
 		},
+		getLastClientOptions() {
+			return lastClientOptions;
+		},
 		reset() {
 			lastParams = undefined;
+			lastClientOptions = undefined;
 		},
 	};
 });
 
 vi.mock("openai", () => ({
 	default: class {
+		constructor(options: unknown) {
+			openaiMock.setClientOptions(options);
+		}
 		responses = {
 			create: (params: unknown) => openaiMock.createStream(params),
 		};
@@ -360,5 +371,85 @@ describe("OpenAI Responses SDK streaming", () => {
 		};
 		expect(params.reasoning?.effort).toBe("low");
 		expect(params.reasoning?.summary).toBeUndefined();
+	});
+
+	it("sets tool_choice when tools are provided", async () => {
+		const context: Context = {
+			...baseContext,
+			tools: [
+				{
+					name: "read",
+					description: "read file",
+					parameters: {
+						type: "object",
+						properties: { path: { type: "string" } },
+						required: ["path"],
+					},
+				},
+			],
+		};
+
+		for await (const _ of streamResponsesApiSdk(responsesModel, context, {
+			apiKey: "k",
+			toolChoice: "none",
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			tool_choice?: string;
+		};
+		expect(params.tool_choice).toBe("none");
+	});
+
+	it("adds X-Initiator header for GitHub Copilot responses", async () => {
+		const copilotModel: Model<"openai-responses"> = {
+			...responsesModel,
+			provider: "github-copilot",
+		};
+
+		const context: Context = {
+			...baseContext,
+			messages: [
+				{
+					role: "user",
+					content: "Hello",
+					timestamp: Date.now(),
+				},
+				{
+					role: "assistant",
+					content: [{ type: "text", text: "Hi" }],
+					api: "openai-responses",
+					provider: "github-copilot",
+					model: "gpt-test",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				},
+			],
+		};
+
+		for await (const _ of streamResponsesApiSdk(copilotModel, context, {
+			apiKey: "k",
+		})) {
+			// drain
+		}
+
+		const clientOptions = openaiMock.getLastClientOptions() as {
+			defaultHeaders?: Record<string, string>;
+		};
+		expect(clientOptions.defaultHeaders?.["X-Initiator"]).toBe("agent");
 	});
 });

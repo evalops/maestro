@@ -171,7 +171,21 @@ function resolveOpenAICompat(
 	const isGrok = baseUrl.includes("api.x.ai") || provider === "xai";
 	const isOpenAIBase = baseUrl.includes("api.openai.com");
 	const isOpenAIProvider = provider === "openai";
-	const isOpenAI = (isOpenAIBase || isOpenAIProvider) && !isMistral && !isGrok;
+	const nonOpenAIHosts = [
+		"mistral.ai",
+		"api.x.ai",
+		"cerebras.ai",
+		"chutes.ai",
+		"openrouter.ai",
+		"api.groq.com",
+		"openai.azure.com",
+	];
+	const isNonOpenAIBase = nonOpenAIHosts.some((host) => baseUrl.includes(host));
+	const isOpenAI =
+		(isOpenAIBase || isOpenAIProvider) &&
+		!isNonOpenAIBase &&
+		!isMistral &&
+		!isGrok;
 
 	const detected: Required<OpenAICompat> = {
 		supportsStore: isOpenAI,
