@@ -8,9 +8,13 @@ Shared Composer AI SDK providing model registry, provider-agnostic transport, an
 |----------|--------|---------------------|
 | **Anthropic** | Claude 3.5, Claude 4, Sonnet, Opus | `ANTHROPIC_API_KEY` |
 | **OpenAI** | GPT-4o, GPT-4o-mini, o1, o3 | `OPENAI_API_KEY` |
+| **GitHub Copilot** | OpenAI-compatible models via Copilot | OAuth (`/login github-copilot`) |
 | **Google** | Gemini 2.0, Gemini 2.5 | `GOOGLE_API_KEY` |
+| **OpenRouter** | OpenAI-compatible aggregator | `OPENROUTER_API_KEY` |
+| **Groq** | OpenAI-compatible models | `GROQ_API_KEY` |
+| **Cerebras** | OpenAI-compatible models | `CEREBRAS_API_KEY` |
 | **AWS Bedrock** | Claude via AWS | AWS credentials |
-| **Azure OpenAI** | GPT-4o via Azure | `AZURE_OPENAI_API_KEY` |
+| **Azure OpenAI** | OpenAI-compatible deployments | `AZURE_OPENAI_API_KEY` |
 
 ## Installation
 
@@ -64,6 +68,31 @@ agent.subscribe((event) => {
 
 // Send a message
 await agent.prompt("Hello, world!");
+```
+
+## OAuth Providers (GitHub Copilot)
+
+GitHub Copilot uses OAuth (stored in `~/.composer/oauth.json`). In SDK usage, use
+`getAuthContext` to supply the token:
+
+```typescript
+import { getOAuthToken } from "@evalops/ai/oauth";
+
+const transport = new ProviderTransport({
+  getAuthContext: async (provider) => {
+    if (provider === "github-copilot") {
+      const token = await getOAuthToken("github-copilot");
+      return token
+        ? {
+            provider,
+            token,
+            type: "oauth",
+            source: "github_copilot_oauth_file",
+          }
+        : undefined;
+    }
+  },
+});
 ```
 
 ## Subpath Entry Points
@@ -217,6 +246,12 @@ if (claude) {
 }
 ```
 
+## OpenAI-Compatible Vendors (Compat Flags)
+
+For Azure/OpenRouter/Groq/Cerebras or custom OpenAI-compatible endpoints, set
+`compat` overrides in your models config when the defaults do not match the
+provider. See `docs/MODELS.md` for the schema and supported compat fields.
+
 ## Extended Thinking
 
 For models that support extended thinking (Claude 4, o1, Gemini 2.5):
@@ -242,6 +277,10 @@ agent.subscribe((event) => {
   }
 });
 ```
+
+For OpenAI Responses API models that support reasoning, you can also request
+`reasoningSummary` (auto/concise/detailed) via `AgentRunConfig`. Composer will
+validate that the model is `openai-responses` and marked `reasoning: true`.
 
 ## Agent State
 

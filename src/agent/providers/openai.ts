@@ -222,6 +222,13 @@ function resolveOpenAICompat(
 	};
 }
 
+// Exported for tests
+export function resolveOpenAICompatForTest(
+	model: Pick<Model<Api>, "baseUrl" | "provider" | "compat">,
+): Required<OpenAICompat> {
+	return resolveOpenAICompat(model);
+}
+
 /**
  * Normalize tool call IDs for Mistral.
  * Mistral requires tool IDs to be exactly 9 alphanumeric characters (a-z, A-Z, 0-9).
