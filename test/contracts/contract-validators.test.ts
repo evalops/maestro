@@ -68,6 +68,46 @@ describe("contracts validators", () => {
 		expect(eventResult.ok).toBe(true);
 	});
 
+	it("accepts slim toolcall updates without partial messages", () => {
+		const startEvent = validateSchema(ComposerAgentEventSchema, {
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "toolcall_start",
+				contentIndex: 0,
+				toolCallId: "call_1",
+				toolCallName: "read_file",
+			},
+		});
+		expect(startEvent.ok).toBe(true);
+
+		const deltaEvent = validateSchema(ComposerAgentEventSchema, {
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "toolcall_delta",
+				contentIndex: 0,
+				delta: '{"path":"/tmp/one.txt"}',
+				toolCallId: "call_1",
+				toolCallName: "read_file",
+			},
+		});
+		expect(deltaEvent.ok).toBe(true);
+
+		const endEvent = validateSchema(ComposerAgentEventSchema, {
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "toolcall_end",
+				contentIndex: 0,
+				toolCall: {
+					type: "toolCall",
+					id: "call_1",
+					name: "read_file",
+					arguments: { path: "/tmp/one.txt" },
+				},
+			},
+		});
+		expect(endEvent.ok).toBe(true);
+	});
+
 	it("accepts a minimal status response", () => {
 		const status = {
 			cwd: "/tmp/project",

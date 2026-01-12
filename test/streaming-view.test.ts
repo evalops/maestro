@@ -6,6 +6,32 @@ import { StreamingView } from "../src/cli-tui/streaming-view.js";
 // Mock the assistant message component so we can inspect the renderable content
 // that StreamingView passes into the UI.
 const updateContentMock = vi.hoisted(() => vi.fn());
+const toolExecutionMock = vi.hoisted(() => {
+	const instances: Array<{
+		name: string;
+		args: Record<string, unknown>;
+		updateArgs: ReturnType<typeof vi.fn>;
+		updatePartialArgs: ReturnType<typeof vi.fn>;
+		updateResult: ReturnType<typeof vi.fn>;
+		updatePartialResult: ReturnType<typeof vi.fn>;
+	}> = [];
+
+	class ToolExecutionComponent {
+		public updateArgs = vi.fn();
+		public updatePartialArgs = vi.fn();
+		public updateResult = vi.fn();
+		public updatePartialResult = vi.fn();
+
+		constructor(
+			public name: string,
+			public args: Record<string, unknown>,
+		) {
+			instances.push(this);
+		}
+	}
+
+	return { ToolExecutionComponent, instances };
+});
 
 vi.mock("../src/cli-tui/assistant-message.js", () => {
 	class AssistantMessageComponent {
@@ -21,6 +47,11 @@ vi.mock("../src/cli-tui/assistant-message.js", () => {
 		updateContentMock,
 	};
 });
+
+vi.mock("../src/cli-tui/tool-execution.js", () => ({
+	__esModule: true,
+	ToolExecutionComponent: toolExecutionMock.ToolExecutionComponent,
+}));
 
 const baseMessage: AssistantMessage = {
 	role: "assistant",
@@ -121,5 +152,57 @@ describe("StreamingView clean mode handling", () => {
 			textBlocks: string[];
 		};
 		expect(finalRenderable.textBlocks[0]).toBe("Alpha\nAlpha\nBeta");
+	});
+
+	it("streams toolcall args into tool components", () => {
+		const chatContainer = new MockContainer();
+		const pendingTools = new Map();
+		const view = new StreamingView({
+			chatContainer,
+			toolOutputView: noopToolOutputView,
+			pendingTools,
+			lowBandwidth: { enabled: false, batchIntervalMs: 0, scrollbackLimit: 10 },
+			getCleanMode: () => "off",
+		});
+
+		const firstMessage: AssistantMessage = {
+			...baseMessage,
+			content: [
+				{
+					type: "toolCall",
+					id: "call_1",
+					name: "read_file",
+					arguments: { path: "/tmp/one.txt" },
+				},
+			],
+		};
+
+		const secondMessage: AssistantMessage = {
+			...baseMessage,
+			content: [
+				{
+					type: "toolCall",
+					id: "call_1",
+					name: "read_file",
+					arguments: { path: "/tmp/two.txt" },
+				},
+			],
+		};
+
+		toolExecutionMock.instances.length = 0;
+		view.beginAssistantMessage(firstMessage);
+		view.updateAssistantMessage(firstMessage);
+
+		expect(toolExecutionMock.instances).toHaveLength(1);
+		const component = toolExecutionMock.instances[0];
+		expect(component.updatePartialArgs).toHaveBeenCalledWith({
+			path: "/tmp/one.txt",
+		});
+
+		view.updateAssistantMessage(secondMessage);
+		expect(component.updateArgs).toHaveBeenCalledWith({ path: "/tmp/two.txt" });
+		expect(component.updatePartialArgs).toHaveBeenCalledWith({
+			path: "/tmp/two.txt",
+		});
 	});
 });
