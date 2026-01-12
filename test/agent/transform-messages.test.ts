@@ -326,5 +326,48 @@ describe("transformMessages", () => {
 			};
 			expect(toolResult.toolCallId).toBe(toolCall.id);
 		});
+
+		it("falls back when normalization strips all characters", () => {
+			const rawId = "||||||||";
+			const messages: Message[] = [
+				createAssistantMessage(
+					[
+						{
+							type: "toolCall",
+							id: rawId,
+							name: "read",
+							arguments: { path: "/tmp/test.txt" },
+						},
+					],
+					"github-copilot",
+					"openai-responses",
+				),
+				{
+					role: "toolResult",
+					toolCallId: rawId,
+					toolName: "read",
+					content: [{ type: "text", text: "file contents here" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			];
+
+			const model = createModel("github-copilot", "openai-completions");
+			const result = transformMessages(messages, model);
+
+			const assistant = result[0] as AssistantMessage;
+			const toolCall = assistant.content[0] as {
+				type: "toolCall";
+				id: string;
+			};
+			expect(toolCall.id.length).toBeGreaterThan(0);
+			expect(toolCall.id).toMatch(/^[a-zA-Z0-9_-]+$/);
+
+			const toolResult = result[1] as {
+				role: "toolResult";
+				toolCallId: string;
+			};
+			expect(toolResult.toolCallId).toBe(toolCall.id);
+		});
 	});
 });

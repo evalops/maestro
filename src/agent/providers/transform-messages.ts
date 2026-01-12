@@ -10,8 +10,21 @@ import type {
  * Normalize tool call ID for GitHub Copilot cross-API compatibility.
  * Copilot Responses API can generate IDs with special characters and very long lengths.
  */
+function hashString(value: string): string {
+	let hash = 2166136261;
+	for (let i = 0; i < value.length; i++) {
+		hash ^= value.charCodeAt(i);
+		hash = Math.imul(hash, 16777619);
+	}
+	return (hash >>> 0).toString(36);
+}
+
 function normalizeCopilotToolCallId(id: string): string {
-	return id.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40);
+	const normalized = id.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40);
+	if (normalized.length === 0) {
+		return `tc_${hashString(id)}`.slice(0, 40);
+	}
+	return normalized;
 }
 
 /**

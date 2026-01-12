@@ -217,6 +217,65 @@ describe("OpenAI streaming", () => {
 		);
 		expect(hasImageFollowup).toBe(true);
 	});
+
+	it("skips tool_choice when tools array is empty", async () => {
+		const lines = [
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+
+		const mockResponse = new Response(makeStream(lines), { status: 200 });
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const toolCallId = "call_tool";
+		const context: Context = {
+			systemPrompt: "",
+			tools: [],
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: toolCallId,
+							name: "read",
+							arguments: { path: "/tmp/test.txt" },
+						},
+					],
+					api: "openai-completions",
+					provider: "openai",
+					model: "gpt-test",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "toolUse",
+					timestamp: Date.now(),
+				},
+			],
+		};
+
+		for await (const _ of streamOpenAI(completionsModel, context, {
+			apiKey: "k",
+			toolChoice: "required",
+		})) {
+			// consume stream
+		}
+
+		const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.tools).toEqual([]);
+		expect(body.tool_choice).toBeUndefined();
+	});
 });
 
 // Note: Responses API SDK tests are integration tests that require actual API calls

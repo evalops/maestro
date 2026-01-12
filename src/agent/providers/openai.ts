@@ -105,6 +105,7 @@ import type {
 	AssistantMessage,
 	AssistantMessageEvent,
 	Context,
+	Message,
 	Model,
 	ReasoningEffort,
 	StreamOptions,
@@ -168,7 +169,9 @@ function resolveOpenAICompat(
 	const provider = (model.provider ?? "").toLowerCase();
 	const isMistral = baseUrl.includes("mistral.ai") || provider === "mistral";
 	const isGrok = baseUrl.includes("api.x.ai") || provider === "xai";
-	const isOpenAI = baseUrl.includes("api.openai.com") || provider === "openai";
+	const isOpenAIBase = baseUrl.includes("api.openai.com");
+	const isOpenAIProvider = provider === "openai";
+	const isOpenAI = (isOpenAIBase || isOpenAIProvider) && !isMistral && !isGrok;
 
 	const detected: Required<OpenAICompat> = {
 		supportsStore: isOpenAI,
@@ -473,6 +476,10 @@ export async function* streamOpenAI(
 		compat.requiresMistralToolIds,
 	);
 	const messages: OpenAIMessage[] = [];
+	const pushMessage = (message: OpenAIMessage) => {
+		messages.push(message);
+		lastSentRole = message.role;
+	};
 
 	// System prompt
 	if (context.systemPrompt) {
@@ -486,16 +493,19 @@ export async function* streamOpenAI(
 
 	// Transform messages for cross-provider compatibility
 	const transformedMessages = transformMessages(context.messages, model);
-	let lastRole: string | null = null;
+	let lastOriginalRole: Message["role"] | null = null;
+	let lastSentRole: OpenAIMessage["role"] | null = null;
 
 	// Convert messages
 	for (const msg of transformedMessages) {
+		let didSend = false;
+
 		if (
 			compat.requiresAssistantAfterToolResult &&
-			lastRole === "toolResult" &&
+			lastOriginalRole === "toolResult" &&
 			msg.role === "user"
 		) {
-			messages.push({
+			pushMessage({
 				role: "assistant",
 				content: "I have processed the tool results.",
 			});
@@ -525,12 +535,13 @@ export async function* streamOpenAI(
 					? content
 					: content.filter((c) => c.type !== "image_url");
 				if (filteredContent.length === 0) {
-					lastRole = msg.role;
 					continue;
 				}
-				messages.push({ role: "user", content: filteredContent });
+				pushMessage({ role: "user", content: filteredContent });
+				didSend = true;
 			} else {
-				messages.push({ role: "user", content });
+				pushMessage({ role: "user", content });
+				didSend = true;
 			}
 		} else if (msg.role === "assistant") {
 			const textContent: Array<{ type: "text"; text: string }> = [];
@@ -607,11 +618,11 @@ export async function* streamOpenAI(
 				? content.length > 0
 				: content.length > 0;
 			if (!hasContent && toolCalls.length === 0 && !hasReasoningSignature) {
-				lastRole = msg.role;
 				continue;
 			}
 
-			messages.push(message);
+			pushMessage(message);
+			didSend = true;
 		} else if (msg.role === "toolResult") {
 			const textResult =
 				typeof msg.content === "string"
@@ -642,7 +653,8 @@ export async function* streamOpenAI(
 				toolMessage.name = msg.toolName;
 			}
 
-			messages.push(toolMessage);
+			pushMessage(toolMessage);
+			didSend = true;
 
 			if (hasImages && model.input.includes("image")) {
 				const contentBlocks: Array<
@@ -668,14 +680,16 @@ export async function* streamOpenAI(
 					}
 				}
 
-				messages.push({
+				pushMessage({
 					role: "user",
 					content: contentBlocks,
 				});
 			}
 		}
 
-		lastRole = msg.role;
+		if (didSend) {
+			lastOriginalRole = msg.role;
+		}
 	}
 
 	if (model.api === "openai-responses") {
@@ -718,7 +732,7 @@ export async function* streamOpenAI(
 	}
 
 	// Set tool_choice if specified
-	if (options.toolChoice && requestBody.tools) {
+	if (options.toolChoice && requestBody.tools && requestBody.tools.length > 0) {
 		requestBody.tool_choice = options.toolChoice;
 	}
 
@@ -749,8 +763,7 @@ export async function* streamOpenAI(
 		...options.headers,
 	};
 	if (model.provider === "github-copilot") {
-		const lastMessage = context.messages?.[context.messages.length - 1];
-		const isAgentCall = lastMessage ? lastMessage.role !== "user" : false;
+		const isAgentCall = lastSentRole ? lastSentRole !== "user" : false;
 		headers["X-Initiator"] = isAgentCall ? "agent" : "user";
 	}
 
