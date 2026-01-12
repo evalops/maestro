@@ -101,9 +101,11 @@ import {
 } from "../../providers/stream-idle-timeout.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
+	Api,
 	AssistantMessage,
 	AssistantMessageEvent,
 	Context,
+	Message,
 	Model,
 	ReasoningEffort,
 	StreamOptions,
@@ -138,6 +140,73 @@ const toolArgumentNormalizer = createToolArgumentNormalizer({
 	logger,
 	providerLabel: "OpenAI",
 });
+
+interface OpenAICompat {
+	supportsStore: boolean;
+	supportsDeveloperRole: boolean;
+	supportsReasoningEffort: boolean;
+	maxTokensField: "max_tokens" | "max_completion_tokens";
+	requiresToolResultName: boolean;
+	requiresAssistantAfterToolResult: boolean;
+	requiresThinkingAsText: boolean;
+	requiresMistralToolIds: boolean;
+}
+
+function resolveOpenAICompat(
+	model: Pick<Model<Api>, "baseUrl" | "provider" | "compat">,
+): Required<OpenAICompat> {
+	const rawBaseUrl = model.baseUrl ?? "";
+	let baseUrl = rawBaseUrl.toLowerCase();
+	try {
+		const parsed = new URL(rawBaseUrl);
+		const upstream = parsed.searchParams.get("url");
+		if (upstream) {
+			baseUrl = upstream.toLowerCase();
+		}
+	} catch {
+		// ignore malformed URLs for compat detection
+	}
+	const provider = (model.provider ?? "").toLowerCase();
+	const isMistral = baseUrl.includes("mistral.ai") || provider === "mistral";
+	const isGrok = baseUrl.includes("api.x.ai") || provider === "xai";
+	const isOpenAIBase = baseUrl.includes("api.openai.com");
+	const isOpenAIProvider = provider === "openai";
+	const isOpenAI = (isOpenAIBase || isOpenAIProvider) && !isMistral && !isGrok;
+
+	const detected: Required<OpenAICompat> = {
+		supportsStore: isOpenAI,
+		supportsDeveloperRole: isOpenAI,
+		supportsReasoningEffort: isOpenAI && !isGrok,
+		maxTokensField: isOpenAI ? "max_completion_tokens" : "max_tokens",
+		requiresToolResultName: isMistral,
+		requiresAssistantAfterToolResult: false,
+		requiresThinkingAsText: isMistral,
+		requiresMistralToolIds: isMistral,
+	};
+
+	const overrides = model.compat;
+	if (!overrides) {
+		return detected;
+	}
+
+	return {
+		supportsStore: overrides.supportsStore ?? detected.supportsStore,
+		supportsDeveloperRole:
+			overrides.supportsDeveloperRole ?? detected.supportsDeveloperRole,
+		supportsReasoningEffort:
+			overrides.supportsReasoningEffort ?? detected.supportsReasoningEffort,
+		maxTokensField: overrides.maxTokensField ?? detected.maxTokensField,
+		requiresToolResultName:
+			overrides.requiresToolResultName ?? detected.requiresToolResultName,
+		requiresAssistantAfterToolResult:
+			overrides.requiresAssistantAfterToolResult ??
+			detected.requiresAssistantAfterToolResult,
+		requiresThinkingAsText:
+			overrides.requiresThinkingAsText ?? detected.requiresThinkingAsText,
+		requiresMistralToolIds:
+			overrides.requiresMistralToolIds ?? detected.requiresMistralToolIds,
+	};
+}
 
 /**
  * Normalize tool call IDs for Mistral.
@@ -184,14 +253,20 @@ function createMistralToolIdNormalizer(isMistral: boolean) {
 }
 
 /**
- * Check if the model is a Mistral model based on baseUrl or provider.
+ * Check if conversation messages contain tool calls or tool results.
+ * Some OpenAI-compatible proxies require the tools param when tool history exists.
  */
-function isMistralModel(model: {
-	baseUrl?: string;
-	provider?: string;
-}): boolean {
-	const baseUrl = model.baseUrl || "";
-	return baseUrl.includes("mistral.ai") || model.provider === "mistral";
+function hasToolHistory(messages: Context["messages"]): boolean {
+	for (const msg of messages ?? []) {
+		if (!msg) continue;
+		if (msg.role === "toolResult") return true;
+		if (msg.role === "assistant") {
+			if (msg.content.some((block) => block.type === "toolCall")) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 // OpenAI API Types
@@ -233,7 +308,8 @@ interface OpenAIResponsesRequestBody {
 interface OpenAICompletionsRequestBody {
 	model: string;
 	messages: OpenAIMessage[];
-	max_tokens: number;
+	max_tokens?: number;
+	max_completion_tokens?: number;
 	stream: boolean;
 	stream_options: { include_usage: boolean };
 	tools?: Array<{
@@ -248,6 +324,7 @@ interface OpenAICompletionsRequestBody {
 	temperature?: number;
 	reasoning_effort?: string;
 	response_format?: OpenAIResponseFormat;
+	store?: boolean;
 }
 
 // =============================================================================
@@ -353,7 +430,7 @@ interface OpenAICompletionsChunk {
 }
 
 interface OpenAIMessage {
-	role: "system" | "user" | "assistant" | "tool";
+	role: "system" | "developer" | "user" | "assistant" | "tool";
 	content:
 		| string
 		| Array<
@@ -394,23 +471,46 @@ export async function* streamOpenAI(
 		throw new Error("API key is required for OpenAI");
 	}
 
-	const isMistral = isMistralModel(model);
-	const normalizeToolId = createMistralToolIdNormalizer(isMistral);
+	const compat = resolveOpenAICompat(model);
+	const normalizeToolId = createMistralToolIdNormalizer(
+		compat.requiresMistralToolIds,
+	);
 	const messages: OpenAIMessage[] = [];
+	const pushMessage = (message: OpenAIMessage) => {
+		messages.push(message);
+		lastSentRole = message.role;
+	};
 
 	// System prompt
 	if (context.systemPrompt) {
+		const role =
+			model.reasoning && compat.supportsDeveloperRole ? "developer" : "system";
 		messages.push({
-			role: "system",
+			role,
 			content: sanitizeSurrogates(context.systemPrompt),
 		});
 	}
 
 	// Transform messages for cross-provider compatibility
 	const transformedMessages = transformMessages(context.messages, model);
+	let lastOriginalRole: Message["role"] | null = null;
+	let lastSentRole: OpenAIMessage["role"] | null = null;
 
 	// Convert messages
 	for (const msg of transformedMessages) {
+		let didSend = false;
+
+		if (
+			compat.requiresAssistantAfterToolResult &&
+			lastOriginalRole === "toolResult" &&
+			msg.role === "user"
+		) {
+			pushMessage({
+				role: "assistant",
+				content: "I have processed the tool results.",
+			});
+		}
+
 		if (msg.role === "user") {
 			const content =
 				typeof msg.content === "string"
@@ -429,7 +529,20 @@ export async function* streamOpenAI(
 								image_url: { url: dataUrl },
 							};
 						});
-			messages.push({ role: "user", content });
+
+			if (Array.isArray(content)) {
+				const filteredContent = model.input.includes("image")
+					? content
+					: content.filter((c) => c.type !== "image_url");
+				if (filteredContent.length === 0) {
+					continue;
+				}
+				pushMessage({ role: "user", content: filteredContent });
+				didSend = true;
+			} else {
+				pushMessage({ role: "user", content });
+				didSend = true;
+			}
 		} else if (msg.role === "assistant") {
 			const textContent: Array<{ type: "text"; text: string }> = [];
 			const toolCalls: Array<{
@@ -457,36 +570,125 @@ export async function* streamOpenAI(
 				}
 			}
 
-			const message: OpenAIMessage = {
+			const message: OpenAIMessage & Record<string, unknown> = {
 				role: "assistant",
 				content: textContent.length > 0 ? textContent : "",
 			};
+
+			let hasReasoningSignature = false;
+			const thinkingBlocks = msg.content.filter(
+				(block) => block.type === "thinking",
+			);
+			if (thinkingBlocks.length > 0) {
+				if (compat.requiresThinkingAsText) {
+					const thinkingText = thinkingBlocks
+						.map((block) =>
+							sanitizeSurrogates(
+								(block.type === "thinking" ? block.thinking : "") ?? "",
+							),
+						)
+						.join("\n");
+					const textBlock = `<thinking>\n${thinkingText}\n</thinking>`;
+					if (Array.isArray(message.content)) {
+						message.content.unshift({ type: "text", text: textBlock });
+					} else {
+						message.content = [{ type: "text", text: textBlock }];
+					}
+				} else if (thinkingBlocks[0]?.type === "thinking") {
+					const signature = thinkingBlocks[0].thinkingSignature;
+					if (signature && signature.length > 0) {
+						message[signature] = thinkingBlocks
+							.map((block) =>
+								sanitizeSurrogates(
+									(block.type === "thinking" ? block.thinking : "") ?? "",
+								),
+							)
+							.join("\n");
+						hasReasoningSignature = true;
+					}
+				}
+			}
 
 			if (toolCalls.length > 0) {
 				message.tool_calls = toolCalls;
 			}
 
-			messages.push(message);
+			const content = message.content;
+			const hasContent = Array.isArray(content)
+				? content.length > 0
+				: content.length > 0;
+			if (!hasContent && toolCalls.length === 0 && !hasReasoningSignature) {
+				continue;
+			}
+
+			pushMessage(message);
+			didSend = true;
 		} else if (msg.role === "toolResult") {
-			const content =
+			const textResult =
 				typeof msg.content === "string"
 					? msg.content
 					: msg.content
-							.map((c) => (c.type === "text" ? c.text : "[Image]"))
+							.filter((c) => c.type === "text")
+							.map((c) => sanitizeSurrogates(c.text))
 							.join("\n");
+			const hasImages =
+				typeof msg.content !== "string" &&
+				msg.content.some((c) => c.type === "image");
+			const hasText = textResult.length > 0;
 
 			const toolMessage: OpenAIMessage & { name?: string } = {
 				role: "tool",
 				tool_call_id: normalizeToolId(msg.toolCallId),
-				content: content || "(empty result)", // Mistral doesn't accept empty content
+				content: sanitizeSurrogates(
+					hasText
+						? textResult
+						: hasImages
+							? "(see attached image)"
+							: "(empty result)",
+				),
 			};
 
-			// Mistral requires the 'name' field in tool results
-			if (isMistral && msg.toolName) {
+			// Some providers (e.g., Mistral) require the 'name' field in tool results
+			if (compat.requiresToolResultName && msg.toolName) {
 				toolMessage.name = msg.toolName;
 			}
 
-			messages.push(toolMessage);
+			pushMessage(toolMessage);
+			didSend = true;
+
+			if (hasImages && model.input.includes("image")) {
+				const contentBlocks: Array<
+					| { type: "text"; text: string }
+					| { type: "image_url"; image_url: { url: string } }
+				> = [];
+
+				contentBlocks.push({
+					type: "text",
+					text: "Attached image(s) from tool result:",
+				});
+
+				if (typeof msg.content !== "string") {
+					for (const block of msg.content) {
+						if (block.type === "image") {
+							contentBlocks.push({
+								type: "image_url",
+								image_url: {
+									url: `data:${block.mimeType};base64,${block.data}`,
+								},
+							});
+						}
+					}
+				}
+
+				pushMessage({
+					role: "user",
+					content: contentBlocks,
+				});
+			}
+		}
+
+		if (didSend) {
+			lastOriginalRole = msg.role;
 		}
 	}
 
@@ -501,10 +703,20 @@ export async function* streamOpenAI(
 	const requestBody: OpenAICompletionsRequestBody = {
 		model: model.id,
 		messages,
-		max_tokens: options.maxTokens ?? model.maxTokens,
 		stream: true,
 		stream_options: { include_usage: true },
 	};
+
+	if (compat.supportsStore) {
+		requestBody.store = false;
+	}
+
+	const maxTokens = options.maxTokens ?? model.maxTokens;
+	if (compat.maxTokensField === "max_tokens") {
+		requestBody.max_tokens = maxTokens;
+	} else {
+		requestBody.max_completion_tokens = maxTokens;
+	}
 
 	if (context.tools && context.tools.length > 0) {
 		requestBody.tools = context.tools.map((tool) => ({
@@ -515,11 +727,13 @@ export async function* streamOpenAI(
 				parameters: tool.parameters,
 			},
 		}));
+	} else if (hasToolHistory(context.messages)) {
+		requestBody.tools = [];
+	}
 
-		// Set tool_choice if specified
-		if (options.toolChoice) {
-			requestBody.tool_choice = options.toolChoice;
-		}
+	// Set tool_choice if specified
+	if (options.toolChoice && requestBody.tools && requestBody.tools.length > 0) {
+		requestBody.tool_choice = options.toolChoice;
 	}
 
 	if (options.temperature !== undefined) {
@@ -532,12 +746,11 @@ export async function* streamOpenAI(
 	}
 
 	// Add reasoning effort for reasoning-capable models
-	// Note: Grok models don't support reasoning_effort parameter
 	// Note: OpenAI API only supports up to "high", so map "ultra" to "high"
 	if (
 		options.reasoningEffort &&
 		model.reasoning &&
-		!model.id.toLowerCase().includes("grok")
+		compat.supportsReasoningEffort
 	) {
 		const effort =
 			options.reasoningEffort === "ultra" ? "high" : options.reasoningEffort;
@@ -549,6 +762,10 @@ export async function* streamOpenAI(
 		Authorization: `Bearer ${apiKey}`,
 		...options.headers,
 	};
+	if (model.provider === "github-copilot") {
+		const isAgentCall = lastSentRole ? lastSentRole !== "user" : false;
+		headers["X-Initiator"] = isAgentCall ? "agent" : "user";
+	}
 
 	const targetUrl = normalizeLLMBaseUrl(
 		model.baseUrl,

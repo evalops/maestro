@@ -62,6 +62,50 @@ Custom config files accept:
 Factory files follow their own schema; Composer maps Factory model IDs to
 providers internally (see `factoryDataCache.modelProviderMap`).
 
+### OpenAI-compat overrides
+
+Some OpenAI-compatible vendors require small request-shape tweaks (token field,
+developer role support, tool result quirks, etc.). You can override Composer’s
+auto-detection per model via `compat`:
+
+```json
+{
+  "providers": [
+    {
+      "id": "mistral",
+      "name": "Mistral",
+      "api": "openai-completions",
+      "baseUrl": "https://api.mistral.ai/v1",
+      "models": [
+        {
+          "id": "mistral-large",
+          "name": "Mistral Large",
+          "contextWindow": 128000,
+          "maxTokens": 8192,
+          "compat": {
+            "maxTokensField": "max_tokens",
+            "requiresToolResultName": true,
+            "requiresThinkingAsText": true,
+            "requiresMistralToolIds": true
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Supported `compat` fields:
+
+- `supportsStore` (bool) – whether to send `store: false` (OpenAI only).
+- `supportsDeveloperRole` (bool) – if false, Composer uses `system` instead.
+- `supportsReasoningEffort` (bool) – gates `reasoning_effort`.
+- `maxTokensField` – `"max_tokens"` vs `"max_completion_tokens"`.
+- `requiresToolResultName` (bool) – include `name` on tool result messages.
+- `requiresAssistantAfterToolResult` (bool) – insert a synthetic assistant bridge.
+- `requiresThinkingAsText` (bool) – wraps thinking blocks into `<thinking>` text.
+- `requiresMistralToolIds` (bool) – normalize tool call IDs to Mistral’s 9‑char form.
+
 ### Override-only providers
 
 If a provider entry omits `models`, it is treated as an override for built-in

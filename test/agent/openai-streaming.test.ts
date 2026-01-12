@@ -108,6 +108,174 @@ describe("OpenAI streaming", () => {
 		>;
 		expect(toolEnd.toolCall.arguments).toEqual({ path: "/tmp/test.txt" });
 	});
+
+	it("uses max_tokens for OpenAI-compatible vendors", async () => {
+		const lines = [
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+
+		const mockResponse = new Response(makeStream(lines), { status: 200 });
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const vendorModel: Model<"openai-completions"> = {
+			...completionsModel,
+			provider: "mistral",
+			baseUrl: "https://api.mistral.ai/v1/chat/completions",
+		};
+
+		for await (const _ of streamOpenAI(vendorModel, baseContext, {
+			apiKey: "k",
+		})) {
+			// consume stream
+		}
+
+		const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.max_tokens).toBe(vendorModel.maxTokens);
+		expect(body.max_completion_tokens).toBeUndefined();
+		expect(body.store).toBeUndefined();
+	});
+
+	it("sends tool stubs for tool history and forwards tool result images", async () => {
+		const lines = [
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+
+		const mockResponse = new Response(makeStream(lines), { status: 200 });
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const toolCallId = "call_image";
+		const context: Context = {
+			systemPrompt: "",
+			tools: [],
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: toolCallId,
+							name: "screenshot",
+							arguments: {},
+						},
+					],
+					api: "openai-completions",
+					provider: "openai",
+					model: "gpt-test",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "toolUse",
+					timestamp: Date.now(),
+				},
+				{
+					role: "toolResult",
+					toolCallId,
+					toolName: "screenshot",
+					content: [
+						{
+							type: "image",
+							data: "AAAA",
+							mimeType: "image/png",
+						},
+					],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			],
+		};
+
+		const visionModel: Model<"openai-completions"> = {
+			...completionsModel,
+			input: ["text", "image"],
+		};
+
+		for await (const _ of streamOpenAI(visionModel, context, { apiKey: "k" })) {
+			// consume stream
+		}
+
+		const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.tools).toEqual([]);
+		const hasImageFollowup = body.messages.some(
+			(message: { role: string; content?: Array<{ type: string }> }) =>
+				message.role === "user" &&
+				Array.isArray(message.content) &&
+				message.content.some((part) => part.type === "image_url"),
+		);
+		expect(hasImageFollowup).toBe(true);
+	});
+
+	it("skips tool_choice when tools array is empty", async () => {
+		const lines = [
+			'data: {"choices":[{"finish_reason":"stop"}]}\n',
+			"data: [DONE]\n",
+		];
+
+		const mockResponse = new Response(makeStream(lines), { status: 200 });
+		mockFetch.mockResolvedValue(mockResponse);
+
+		const toolCallId = "call_tool";
+		const context: Context = {
+			systemPrompt: "",
+			tools: [],
+			messages: [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: toolCallId,
+							name: "read",
+							arguments: { path: "/tmp/test.txt" },
+						},
+					],
+					api: "openai-completions",
+					provider: "openai",
+					model: "gpt-test",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "toolUse",
+					timestamp: Date.now(),
+				},
+			],
+		};
+
+		for await (const _ of streamOpenAI(completionsModel, context, {
+			apiKey: "k",
+			toolChoice: "required",
+		})) {
+			// consume stream
+		}
+
+		const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.tools).toEqual([]);
+		expect(body.tool_choice).toBeUndefined();
+	});
 });
 
 // Note: Responses API SDK tests are integration tests that require actual API calls
