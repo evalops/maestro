@@ -12,7 +12,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Tools Reference](TOOLS_REFERENCE.md) — authoritative slash command and flag definitions.
 - [Safety](SAFETY.md) — approvals, sandboxing, and firewall behavior.
 - [Threat Model](THREAT_MODEL.md) — security architecture, trust boundaries, and attack mitigations.
-- [Models](MODELS.md) — provider/model registry sources, overrides, and defaults.
+- [Models](MODELS.md) — provider/model registry sources, overrides, defaults, and OpenAI-compat quirks.
 - [Sessions](SESSIONS.md) — session formats, storage locations, and management commands.
 - [Prompt Queue](PROMPT_QUEUE.md) — queue lifecycle, prioritization, and diagnostics hooks.
 - [MCP Guide](MCP_GUIDE.md) — Model Context Protocol setup and usage.
