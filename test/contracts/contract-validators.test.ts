@@ -76,6 +76,7 @@ describe("contracts validators", () => {
 				contentIndex: 0,
 				toolCallId: "call_1",
 				toolCallName: "read_file",
+				toolCallArgs: { path: "/tmp/start.txt" },
 			},
 		});
 		expect(startEvent.ok).toBe(true);
@@ -88,6 +89,7 @@ describe("contracts validators", () => {
 				delta: '{"path":"/tmp/one.txt"}',
 				toolCallId: "call_1",
 				toolCallName: "read_file",
+				toolCallArgs: { path: "/tmp/one.txt" },
 			},
 		});
 		expect(deltaEvent.ok).toBe(true);
