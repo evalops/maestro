@@ -279,7 +279,7 @@ describe("OpenAI Responses SDK streaming", () => {
 		expect(hasHint).toBe(true);
 	});
 
-	it("adds a gpt-5 reasoning suppression hint when reasoning summary is null", async () => {
+	it("does not add a gpt-5 reasoning suppression hint when reasoning summary is null", async () => {
 		const gpt5Model: Model<"openai-responses"> = {
 			...responsesModel,
 			id: "gpt-5",
@@ -305,6 +305,6 @@ describe("OpenAI Responses SDK streaming", () => {
 				entry.role === "developer" &&
 				entry.content?.some((block) => block.text === "# Juice: 0 !important"),
 		);
-		expect(hasHint).toBe(true);
+		expect(hasHint).toBe(false);
 	});
 });

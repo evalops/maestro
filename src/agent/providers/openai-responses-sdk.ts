@@ -453,8 +453,7 @@ function buildInput(
 	if (
 		model.reasoning &&
 		!options.reasoningEffort &&
-		(options.reasoningSummary === undefined ||
-			options.reasoningSummary === null) &&
+		options.reasoningSummary === undefined &&
 		model.id.startsWith("gpt-5")
 	) {
 		input.push({
