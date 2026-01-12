@@ -101,6 +101,7 @@ import {
 } from "../../providers/stream-idle-timeout.js";
 import { createLogger } from "../../utils/logger.js";
 import type {
+	Api,
 	AssistantMessage,
 	AssistantMessageEvent,
 	Context,
@@ -150,10 +151,9 @@ interface OpenAICompat {
 	requiresMistralToolIds: boolean;
 }
 
-function resolveOpenAICompat(model: {
-	baseUrl?: string;
-	provider?: string;
-}): Required<OpenAICompat> {
+function resolveOpenAICompat(
+	model: Pick<Model<Api>, "baseUrl" | "provider" | "compat">,
+): Required<OpenAICompat> {
 	const rawBaseUrl = model.baseUrl ?? "";
 	let baseUrl = rawBaseUrl.toLowerCase();
 	try {
@@ -170,7 +170,7 @@ function resolveOpenAICompat(model: {
 	const isGrok = baseUrl.includes("api.x.ai") || provider === "xai";
 	const isOpenAI = baseUrl.includes("api.openai.com") || provider === "openai";
 
-	return {
+	const detected: Required<OpenAICompat> = {
 		supportsStore: isOpenAI,
 		supportsDeveloperRole: isOpenAI,
 		supportsReasoningEffort: isOpenAI && !isGrok,
@@ -179,6 +179,29 @@ function resolveOpenAICompat(model: {
 		requiresAssistantAfterToolResult: false,
 		requiresThinkingAsText: isMistral,
 		requiresMistralToolIds: isMistral,
+	};
+
+	const overrides = model.compat;
+	if (!overrides) {
+		return detected;
+	}
+
+	return {
+		supportsStore: overrides.supportsStore ?? detected.supportsStore,
+		supportsDeveloperRole:
+			overrides.supportsDeveloperRole ?? detected.supportsDeveloperRole,
+		supportsReasoningEffort:
+			overrides.supportsReasoningEffort ?? detected.supportsReasoningEffort,
+		maxTokensField: overrides.maxTokensField ?? detected.maxTokensField,
+		requiresToolResultName:
+			overrides.requiresToolResultName ?? detected.requiresToolResultName,
+		requiresAssistantAfterToolResult:
+			overrides.requiresAssistantAfterToolResult ??
+			detected.requiresAssistantAfterToolResult,
+		requiresThinkingAsText:
+			overrides.requiresThinkingAsText ?? detected.requiresThinkingAsText,
+		requiresMistralToolIds:
+			overrides.requiresMistralToolIds ?? detected.requiresMistralToolIds,
 	};
 }
 
