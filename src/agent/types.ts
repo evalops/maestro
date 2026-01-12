@@ -57,6 +57,17 @@ export type Api =
 	| "bedrock-converse"
 	| "vertex-ai";
 
+export interface OpenAICompatOverrides {
+	supportsStore?: boolean;
+	supportsDeveloperRole?: boolean;
+	supportsReasoningEffort?: boolean;
+	maxTokensField?: "max_tokens" | "max_completion_tokens";
+	requiresToolResultName?: boolean;
+	requiresAssistantAfterToolResult?: boolean;
+	requiresThinkingAsText?: boolean;
+	requiresMistralToolIds?: boolean;
+}
+
 /**
  * Well-known LLM provider identifiers.
  *
@@ -731,6 +742,8 @@ export interface Model<TApi extends Api> {
 	baseUrl: string;
 	/** Optional custom headers to include in API requests */
 	headers?: Record<string, string>;
+	/** Optional OpenAI-compatibility overrides for vendor quirks */
+	compat?: OpenAICompatOverrides;
 	/** Whether the model supports extended thinking */
 	reasoning: boolean;
 	/** Whether the model supports tool use */

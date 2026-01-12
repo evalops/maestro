@@ -123,6 +123,23 @@ const COST_DEFAULT = {
 
 /** Optional custom headers to send with API requests */
 const headersSchema = Type.Optional(Type.Record(Type.String(), Type.String()));
+const compatSchema = Type.Optional(
+	Type.Object({
+		supportsStore: Type.Optional(Type.Boolean()),
+		supportsDeveloperRole: Type.Optional(Type.Boolean()),
+		supportsReasoningEffort: Type.Optional(Type.Boolean()),
+		maxTokensField: Type.Optional(
+			Type.Union([
+				Type.Literal("max_tokens"),
+				Type.Literal("max_completion_tokens"),
+			]),
+		),
+		requiresToolResultName: Type.Optional(Type.Boolean()),
+		requiresAssistantAfterToolResult: Type.Optional(Type.Boolean()),
+		requiresThinkingAsText: Type.Optional(Type.Boolean()),
+		requiresMistralToolIds: Type.Optional(Type.Boolean()),
+	}),
+);
 
 /**
  * Schema for individual model configuration within a provider.
@@ -160,6 +177,7 @@ const modelSchema = Type.Object({
 	contextWindow: Type.Number({ minimum: 1 }),
 	maxTokens: Type.Number({ minimum: 1 }),
 	headers: headersSchema,
+	compat: compatSchema,
 });
 
 const providerSchema = Type.Object({
@@ -701,6 +719,7 @@ function toModel(provider: CustomProvider, model: CustomModel): Model<Api> {
 		cost: model.cost ?? { ...COST_DEFAULT },
 		contextWindow: model.contextWindow,
 		maxTokens: model.maxTokens,
+		compat: model.compat,
 	};
 }
 

@@ -289,28 +289,27 @@ describe("transformMessages", () => {
 		});
 	});
 
-	describe("github-copilot tool call normalization", () => {
-		it("normalizes tool call IDs across copilot APIs and updates tool results", () => {
-			const copilotAssistant = createAssistantMessage(
-				[
-					{
-						type: "toolCall",
-						id: "call|with$weird#chars",
-						name: "read",
-						arguments: { path: "/tmp/test.txt" },
-					},
-				],
-				"github-copilot",
-				"openai-responses",
-			);
-
+	describe("copilot tool ID normalization", () => {
+		it("normalizes tool call IDs across github-copilot API switches", () => {
+			const rawId = `call|${"a".repeat(80)}`;
 			const messages: Message[] = [
-				copilotAssistant,
+				createAssistantMessage(
+					[
+						{
+							type: "toolCall",
+							id: rawId,
+							name: "read",
+							arguments: { path: "/tmp/test.txt" },
+						},
+					],
+					"github-copilot",
+					"openai-responses",
+				),
 				{
 					role: "toolResult",
-					toolCallId: "call|with$weird#chars",
+					toolCallId: rawId,
 					toolName: "read",
-					content: [{ type: "text", text: "ok" }],
+					content: [{ type: "text", text: "file contents here" }],
 					isError: false,
 					timestamp: Date.now(),
 				},
@@ -319,14 +318,63 @@ describe("transformMessages", () => {
 			const model = createModel("github-copilot", "openai-completions");
 			const result = transformMessages(messages, model);
 
-			const normalizedToolCall = (result[0] as AssistantMessage).content[0] as {
+			const assistant = result[0] as AssistantMessage;
+			const toolCall = assistant.content[0] as {
 				type: "toolCall";
 				id: string;
 			};
-			expect(normalizedToolCall.id).not.toBe("call|with$weird#chars");
+			expect(toolCall.id).not.toContain("|");
+			expect(toolCall.id.length).toBeLessThanOrEqual(40);
+			expect(toolCall.id).toMatch(/^[a-zA-Z0-9_-]+$/);
 
-			const toolResult = result[1] as Extract<Message, { role: "toolResult" }>;
-			expect(toolResult.toolCallId).toBe(normalizedToolCall.id);
+			const toolResult = result[1] as {
+				role: "toolResult";
+				toolCallId: string;
+			};
+			expect(toolResult.toolCallId).toBe(toolCall.id);
+		});
+
+		it("falls back when normalization strips all characters", () => {
+			const rawId = "||||||||";
+			const messages: Message[] = [
+				createAssistantMessage(
+					[
+						{
+							type: "toolCall",
+							id: rawId,
+							name: "read",
+							arguments: { path: "/tmp/test.txt" },
+						},
+					],
+					"github-copilot",
+					"openai-responses",
+				),
+				{
+					role: "toolResult",
+					toolCallId: rawId,
+					toolName: "read",
+					content: [{ type: "text", text: "file contents here" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			];
+
+			const model = createModel("github-copilot", "openai-completions");
+			const result = transformMessages(messages, model);
+
+			const assistant = result[0] as AssistantMessage;
+			const toolCall = assistant.content[0] as {
+				type: "toolCall";
+				id: string;
+			};
+			expect(toolCall.id.length).toBeGreaterThan(0);
+			expect(toolCall.id).toMatch(/^[a-zA-Z0-9_-]+$/);
+
+			const toolResult = result[1] as {
+				role: "toolResult";
+				toolCallId: string;
+			};
+			expect(toolResult.toolCallId).toBe(toolCall.id);
 		});
 	});
 });
