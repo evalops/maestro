@@ -52,6 +52,8 @@ export type OpenAIResponseFormat =
  */
 export interface OpenAIOptions extends StreamOptions {
 	reasoningEffort?: ReasoningEffort;
+	/** Controls the level of reasoning summary for Responses API. */
+	reasoningSummary?: "auto" | "detailed" | "concise" | null;
 	/**
 	 * Controls how the model uses tools.
 	 * - "auto": Model decides (default)
