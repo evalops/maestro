@@ -260,6 +260,58 @@ export async function* streamResponsesApiSdk(
 					};
 				}
 			}
+			// Handle reasoning summary deltas
+			else if (event.type === "response.reasoning_summary_part.added") {
+				if (
+					currentItem &&
+					currentItem.type === "reasoning" &&
+					currentBlock &&
+					currentBlock.type === "thinking"
+				) {
+					currentItem.summary = currentItem.summary || [];
+					currentItem.summary.push(event.part);
+				}
+			} else if (event.type === "response.reasoning_summary_text.delta") {
+				if (
+					currentItem &&
+					currentItem.type === "reasoning" &&
+					currentBlock &&
+					currentBlock.type === "thinking"
+				) {
+					currentItem.summary = currentItem.summary || [];
+					const lastPart = currentItem.summary[currentItem.summary.length - 1];
+					if (lastPart && typeof lastPart.text === "string") {
+						lastPart.text += event.delta;
+						currentBlock.thinking += event.delta;
+						yield {
+							type: "thinking_delta",
+							contentIndex: blockIndex(),
+							delta: event.delta,
+							partial: output,
+						};
+					}
+				}
+			} else if (event.type === "response.reasoning_summary_part.done") {
+				if (
+					currentItem &&
+					currentItem.type === "reasoning" &&
+					currentBlock &&
+					currentBlock.type === "thinking"
+				) {
+					currentItem.summary = currentItem.summary || [];
+					const lastPart = currentItem.summary[currentItem.summary.length - 1];
+					if (lastPart && typeof lastPart.text === "string") {
+						lastPart.text += "\n\n";
+						currentBlock.thinking += "\n\n";
+						yield {
+							type: "thinking_delta",
+							contentIndex: blockIndex(),
+							delta: "\n\n",
+							partial: output,
+						};
+					}
+				}
+			}
 			// Handle text deltas
 			else if (event.type === "response.output_text.delta") {
 				if (
