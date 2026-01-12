@@ -366,6 +366,10 @@ const GITHUB_COPILOT_COMPAT = {
 	supportsReasoningEffort: false,
 } as const;
 
+const GITHUB_COPILOT_RESPONSES_COMPAT = {
+	supportsReasoningEffort: true,
+} as const;
+
 // Manual overlay for GitHub Copilot (OpenAI-compatible API).
 const GITHUB_COPILOT_OVERLAY = {
 	"github-copilot": {
@@ -511,6 +515,7 @@ const GITHUB_COPILOT_OVERLAY = {
 			provider: "github-copilot",
 			baseUrl: "https://api.individual.githubcopilot.com",
 			headers: GITHUB_COPILOT_HEADERS,
+			compat: GITHUB_COPILOT_RESPONSES_COMPAT,
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
@@ -525,6 +530,7 @@ const GITHUB_COPILOT_OVERLAY = {
 			provider: "github-copilot",
 			baseUrl: "https://api.individual.githubcopilot.com",
 			headers: GITHUB_COPILOT_HEADERS,
+			compat: GITHUB_COPILOT_RESPONSES_COMPAT,
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
@@ -539,6 +545,7 @@ const GITHUB_COPILOT_OVERLAY = {
 			provider: "github-copilot",
 			baseUrl: "https://api.individual.githubcopilot.com",
 			headers: GITHUB_COPILOT_HEADERS,
+			compat: GITHUB_COPILOT_RESPONSES_COMPAT,
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
@@ -553,6 +560,7 @@ const GITHUB_COPILOT_OVERLAY = {
 			provider: "github-copilot",
 			baseUrl: "https://api.individual.githubcopilot.com",
 			headers: GITHUB_COPILOT_HEADERS,
+			compat: GITHUB_COPILOT_RESPONSES_COMPAT,
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
@@ -567,6 +575,7 @@ const GITHUB_COPILOT_OVERLAY = {
 			provider: "github-copilot",
 			baseUrl: "https://api.individual.githubcopilot.com",
 			headers: GITHUB_COPILOT_HEADERS,
+			compat: GITHUB_COPILOT_RESPONSES_COMPAT,
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
@@ -581,6 +590,7 @@ const GITHUB_COPILOT_OVERLAY = {
 			provider: "github-copilot",
 			baseUrl: "https://api.individual.githubcopilot.com",
 			headers: GITHUB_COPILOT_HEADERS,
+			compat: GITHUB_COPILOT_RESPONSES_COMPAT,
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
@@ -595,6 +605,7 @@ const GITHUB_COPILOT_OVERLAY = {
 			provider: "github-copilot",
 			baseUrl: "https://api.individual.githubcopilot.com",
 			headers: GITHUB_COPILOT_HEADERS,
+			compat: GITHUB_COPILOT_RESPONSES_COMPAT,
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
@@ -609,6 +620,7 @@ const GITHUB_COPILOT_OVERLAY = {
 			provider: "github-copilot",
 			baseUrl: "https://api.individual.githubcopilot.com",
 			headers: GITHUB_COPILOT_HEADERS,
+			compat: GITHUB_COPILOT_RESPONSES_COMPAT,
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
@@ -638,6 +650,7 @@ const GITHUB_COPILOT_OVERLAY = {
 			provider: "github-copilot",
 			baseUrl: "https://api.individual.githubcopilot.com",
 			headers: GITHUB_COPILOT_HEADERS,
+			compat: GITHUB_COPILOT_RESPONSES_COMPAT,
 			reasoning: true,
 			toolUse: true,
 			input: ["text", "image"],
