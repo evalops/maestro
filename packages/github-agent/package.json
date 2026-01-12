@@ -10,7 +10,7 @@
 	"types": "./dist/index.d.ts",
 	"files": ["dist", "README.md"],
 	"scripts": {
-		"clean": "rm -rf dist",
+		"clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
 		"build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -b tsconfig.build.json && bun build ./src/index.ts --target node --packages external --outfile dist/index.js && bun build ./src/main.ts --target node --packages external --outfile dist/main.js && chmod +x dist/main.js",
 		"dev": "tsc -b tsconfig.build.json --watch --preserveWatchOutput",
 		"check": "tsc -b tsconfig.build.json --pretty false",

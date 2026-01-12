@@ -130,7 +130,7 @@
 		}
 	},
 	"scripts": {
-		"clean": "rm -rf dist out *.vsix",
+		"clean": "node -e \"const fs=require('fs'); ['dist','out'].forEach(p=>fs.rmSync(p,{recursive:true,force:true})); for (const entry of fs.readdirSync('.')) if (entry.endsWith('.vsix')) fs.rmSync(entry,{force:true});\"",
 		"build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
 		"watch": "tsc -p tsconfig.json --watch --preserveWatchOutput",
 		"prepackage": "bun run build",
