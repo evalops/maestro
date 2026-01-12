@@ -347,9 +347,9 @@ export async function handleChat(
 		const { enterpriseContext } = await import("../../enterprise/context.js");
 
 		const toolArgsByCallId = new Map<string, Record<string, unknown>>();
-		const slimEvents =
-			req.headers["x-composer-slim-events"] === "1" ||
-			req.headers["x-composer-slim-events"] === "true";
+		const slimHeader = req.headers["x-composer-slim-events"];
+		const slimValue = Array.isArray(slimHeader) ? slimHeader[0] : slimHeader;
+		const slimEvents = slimValue === "1" || slimValue === "true";
 		const maybeSlimEvent = (event: AgentEvent): AgentEvent => {
 			if (!slimEvents || event.type !== "message_update") {
 				return event;
