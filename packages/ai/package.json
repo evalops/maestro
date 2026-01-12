@@ -106,7 +106,7 @@
 	"files": ["dist", "README.md"],
 	"scripts": {
 		"clean": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/ai.tsbuildinfo",
-		"build": "node ../../scripts/clean-paths.js dist && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
+		"build": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/ai.tsbuildinfo && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
 		"dev": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --watch --preserveWatchOutput",
 		"check": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --noEmit",
 		"test": "vitest --run --passWithNoTests",
