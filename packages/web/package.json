@@ -37,6 +37,7 @@
 		"highlight.js": "^11.10.0",
 		"lit": "^3.2.1",
 		"marked": "^17.0.0",
+		"partial-json": "^0.1.7",
 		"pdfjs-dist": "^5.4.449",
 		"xlsx": "^0.18.5"
 	},

@@ -4,6 +4,7 @@
 
 import { LitElement, type PropertyValues, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
+import { parse as parsePartialJson } from "partial-json";
 import {
 	ApiClient,
 	type ComposerToolCall,
@@ -43,6 +44,29 @@ const STATUS_CACHE_KEY = "composer_status_cache";
 const MODELS_CACHE_KEY = "composer_models_cache";
 const USAGE_CACHE_KEY = "composer_usage_cache";
 const MODEL_OVERRIDE_KEY = "composer_model_override";
+
+const parseToolCallArgs = (
+	raw: string,
+): Record<string, unknown> | undefined => {
+	if (!raw || raw.trim() === "") return undefined;
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			return parsed as Record<string, unknown>;
+		}
+		return undefined;
+	} catch {
+		try {
+			const parsed = parsePartialJson(raw) as unknown;
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				return parsed as Record<string, unknown>;
+			}
+		} catch {
+			// ignore partial parse errors during streaming
+		}
+		return undefined;
+	}
+};
 
 interface ExtendedToolCall extends ComposerToolCall {
 	startTime?: number;
@@ -2074,6 +2098,8 @@ export class ComposerChat extends LitElement {
 
 		// Track active tool calls
 		const activeTools = new Map<string, ActiveToolInfo>();
+		const toolCallJsonById = new Map<string, string>();
+		const toolCallArgsById = new Map<string, Record<string, unknown>>();
 		const thinkingBlocks = new Map<number, string>();
 		let currentThinkingIndex: number | null = null;
 
@@ -2147,7 +2173,7 @@ export class ComposerChat extends LitElement {
 									const args =
 										partial?.type === "toolCall"
 											? (partial.arguments ?? {})
-											: (msgEvent.toolCallArgs ?? {});
+											: (toolCallArgsById.get(toolCallId) ?? {});
 									const name =
 										partial?.type === "toolCall"
 											? partial.name || "tool"
@@ -2193,7 +2219,18 @@ export class ComposerChat extends LitElement {
 									const args =
 										partial?.type === "toolCall"
 											? (partial.arguments ?? {})
-											: (msgEvent.toolCallArgs ?? {});
+											: (() => {
+													const current =
+														toolCallJsonById.get(toolCallId) ?? "";
+													const next = current + msgEvent.delta;
+													toolCallJsonById.set(toolCallId, next);
+													const parsed = parseToolCallArgs(next);
+													if (parsed) {
+														toolCallArgsById.set(toolCallId, parsed);
+														return parsed;
+													}
+													return toolCallArgsById.get(toolCallId) ?? {};
+												})();
 									if (!assistantMessage.tools) assistantMessage.tools = [];
 									const existingIndex = assistantMessage.tools.findIndex(
 										(t) => t.toolCallId === toolCallId,
@@ -2231,6 +2268,8 @@ export class ComposerChat extends LitElement {
 								}
 							} else if (msgEvent.type === "toolcall_end") {
 								const toolCall = msgEvent.toolCall;
+								toolCallJsonById.delete(toolCall.id);
+								toolCallArgsById.delete(toolCall.id);
 								if (!assistantMessage.tools) assistantMessage.tools = [];
 								const existingIndex = assistantMessage.tools.findIndex(
 									(t) => t.toolCallId === toolCall.id,
