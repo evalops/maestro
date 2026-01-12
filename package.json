@@ -16,7 +16,7 @@
     "dist"
   ],
   "scripts": {
-    "clean": "rm -rf dist ./tmp/tsbuildinfo/composer.tsbuildinfo",
+    "clean": "node -e \"const fs=require('fs'); ['dist','./tmp/tsbuildinfo/composer.tsbuildinfo'].forEach(p=>fs.rmSync(p,{recursive:true,force:true}));\"",
     "prepare": "husky",
     "install:local": "node ./scripts/install-client.js",
     "prebuild": "node ./scripts/ensure-deps.js",
