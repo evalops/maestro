@@ -146,7 +146,7 @@ describe("transformMessages", () => {
 			expect(assistantContent[1]!.type).toBe("toolCall");
 		});
 
-		it("filters out tool calls without results", () => {
+		it("inserts synthetic tool results when tool calls are orphaned", () => {
 			const messages: Message[] = [
 				createAssistantMessage([
 					{ type: "text", text: "Let me read that file" },
@@ -164,9 +164,11 @@ describe("transformMessages", () => {
 			const model = createModel("anthropic", "anthropic-messages");
 			const result = transformMessages(messages, model);
 
-			const firstContent = (result[0] as AssistantMessage).content;
-			expect(firstContent).toHaveLength(1);
-			expect(firstContent[0]!.type).toBe("text");
+			expect(result).toHaveLength(3);
+			expect(result[1]?.role).toBe("toolResult");
+			const toolResult = result[1] as Extract<Message, { role: "toolResult" }>;
+			expect(toolResult.toolCallId).toBe("call_123");
+			expect(toolResult.isError).toBe(true);
 		});
 
 		it("keeps tool calls in the last message (ongoing turn)", () => {
@@ -236,14 +238,19 @@ describe("transformMessages", () => {
 
 			const firstContent = (result[0] as AssistantMessage).content;
 			const toolCalls = firstContent.filter((b) => b.type === "toolCall");
-			expect(toolCalls).toHaveLength(2);
+			expect(toolCalls).toHaveLength(3);
 
 			const toolCallIds = toolCalls.map(
 				(t) => (t as { type: "toolCall"; id: string }).id,
 			);
 			expect(toolCallIds).toContain("call_1");
+			expect(toolCallIds).toContain("call_2");
 			expect(toolCallIds).toContain("call_3");
-			expect(toolCallIds).not.toContain("call_2");
+
+			const synthetic = result.find(
+				(msg) => msg.role === "toolResult" && msg.toolCallId === "call_2",
+			) as Extract<Message, { role: "toolResult" }> | undefined;
+			expect(synthetic?.isError).toBe(true);
 		});
 	});
 
@@ -279,6 +286,47 @@ describe("transformMessages", () => {
 			const result = transformMessages(messages, model);
 
 			expect(result[0]).toEqual(messages[0]);
+		});
+	});
+
+	describe("github-copilot tool call normalization", () => {
+		it("normalizes tool call IDs across copilot APIs and updates tool results", () => {
+			const copilotAssistant = createAssistantMessage(
+				[
+					{
+						type: "toolCall",
+						id: "call|with$weird#chars",
+						name: "read",
+						arguments: { path: "/tmp/test.txt" },
+					},
+				],
+				"github-copilot",
+				"openai-responses",
+			);
+
+			const messages: Message[] = [
+				copilotAssistant,
+				{
+					role: "toolResult",
+					toolCallId: "call|with$weird#chars",
+					toolName: "read",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			];
+
+			const model = createModel("github-copilot", "openai-completions");
+			const result = transformMessages(messages, model);
+
+			const normalizedToolCall = (result[0] as AssistantMessage).content[0] as {
+				type: "toolCall";
+				id: string;
+			};
+			expect(normalizedToolCall.id).not.toBe("call|with$weird#chars");
+
+			const toolResult = result[1] as Extract<Message, { role: "toolResult" }>;
+			expect(toolResult.toolCallId).toBe(normalizedToolCall.id);
 		});
 	});
 });

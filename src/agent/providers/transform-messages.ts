@@ -4,6 +4,7 @@ import type {
 	Message,
 	Model,
 	ToolCall,
+	ToolResultMessage,
 } from "../types.js";
 
 /**
@@ -18,14 +19,57 @@ import type {
  * @param model Target model to transform messages for
  * @returns Transformed messages compatible with the target model
  */
+/** Fast deterministic hash to shorten long strings. */
+function shortHash(str: string): string {
+	let h1 = 0xdeadbeef;
+	let h2 = 0x41c6ce57;
+	for (let i = 0; i < str.length; i++) {
+		const ch = str.charCodeAt(i);
+		h1 = Math.imul(h1 ^ ch, 2654435761);
+		h2 = Math.imul(h2 ^ ch, 1597334677);
+	}
+	h1 =
+		Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
+		Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+	h2 =
+		Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
+		Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+	return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36);
+}
+
+/**
+ * Normalize tool call ID for GitHub Copilot cross-API compatibility.
+ * OpenAI Responses API generates IDs that can be 450+ chars with special chars like `|`.
+ * Other APIs require max 40 chars and only alphanumeric + underscore + hyphen.
+ */
+function normalizeCopilotToolCallId(id: string): string {
+	const normalized = id.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40);
+	if (normalized.length > 0) {
+		return normalized;
+	}
+	return `copilot_${shortHash(id)}`.slice(0, 40);
+}
+
 export function transformMessages<T extends Message>(
 	messages: T[],
 	model: Model<Api>,
 ): T[] {
-	// First pass: Transform thinking blocks when crossing provider/API boundaries
-	const transformedMessages = messages.map((msg) => {
-		// User and toolResult messages pass through unchanged
-		if (msg.role === "user" || msg.role === "toolResult") {
+	// Build a map of original tool call IDs to normalized IDs for github-copilot cross-API switches
+	const toolCallIdMap = new Map<string, string>();
+
+	// First pass: transform messages (thinking blocks, tool call ID normalization)
+	const transformed = messages.map((msg) => {
+		// User messages pass through unchanged
+		if (msg.role === "user") {
+			return msg;
+		}
+
+		// Handle toolResult messages - normalize toolCallId if we have a mapping
+		if (msg.role === "toolResult") {
+			const normalizedId = toolCallIdMap.get(msg.toolCallId);
+			if (normalizedId && normalizedId !== msg.toolCallId) {
+				return { ...msg, toolCallId: normalizedId };
+			}
 			return msg;
 		}
 
@@ -33,25 +77,42 @@ export function transformMessages<T extends Message>(
 		if (msg.role === "assistant") {
 			const assistantMsg = msg as AssistantMessage;
 
+			// Check if we need to normalize tool call IDs (github-copilot cross-API)
+			const needsToolCallIdNormalization =
+				assistantMsg.provider === "github-copilot" &&
+				model.provider === "github-copilot" &&
+				assistantMsg.api !== model.api;
+
 			// If message is from the same provider and API, keep as is
 			if (
 				assistantMsg.provider === model.provider &&
-				assistantMsg.api === model.api
+				assistantMsg.api === model.api &&
+				!needsToolCallIdNormalization
 			) {
 				return msg;
 			}
 
 			// Transform message from different provider/model
-			const transformedContent = assistantMsg.content.map((block) => {
+			const transformedContent = assistantMsg.content.flatMap((block) => {
 				if (block.type === "thinking") {
 					// Convert thinking block to text block with <thinking> tags
-					// This preserves the reasoning for the target model to see
+					// Skip empty thinking blocks when crossing providers/APIs.
+					if (!block.thinking || block.thinking.trim() === "") return [];
 					return {
 						type: "text" as const,
 						text: `<thinking>\n${block.thinking}\n</thinking>`,
 					};
 				}
-				// All other blocks (text, toolCall) pass through unchanged
+				// Normalize tool call IDs for github-copilot cross-API switches
+				if (block.type === "toolCall" && needsToolCallIdNormalization) {
+					const toolCall = block as ToolCall;
+					const normalizedId = normalizeCopilotToolCallId(toolCall.id);
+					if (normalizedId !== toolCall.id) {
+						toolCallIdMap.set(toolCall.id, normalizedId);
+						return { ...toolCall, id: normalizedId };
+					}
+				}
+				// All other blocks pass through unchanged
 				return block;
 			});
 
@@ -61,63 +122,76 @@ export function transformMessages<T extends Message>(
 				content: transformedContent,
 			} as T;
 		}
-
 		return msg;
 	});
 
-	// Second pass: Filter out tool calls without corresponding tool results
-	// This prevents sending incomplete tool execution sequences to the LLM
-	return transformedMessages.map((msg, index, allMessages) => {
-		if (msg.role !== "assistant") {
-			return msg;
-		}
+	// Second pass: insert synthetic empty tool results for orphaned tool calls
+	// This preserves thinking signatures and satisfies API requirements
+	const result: Message[] = [];
+	let pendingToolCalls: ToolCall[] = [];
+	let existingToolResultIds = new Set<string>();
 
-		const assistantMsg = msg as AssistantMessage;
-		const isLastMessage = index === allMessages.length - 1;
+	for (let i = 0; i < transformed.length; i++) {
+		const msg = transformed[i];
 
-		// If this is the last message, keep all tool calls (ongoing turn)
-		if (isLastMessage) {
-			return msg;
-		}
+		if (!msg) continue;
 
-		// Extract tool call IDs from this message
-		const toolCallIds = assistantMsg.content
-			.filter((block) => block.type === "toolCall")
-			.map((block) => (block as ToolCall).id);
-
-		// If no tool calls, return as is
-		if (toolCallIds.length === 0) {
-			return msg;
-		}
-
-		// Scan forward through subsequent messages to find matching tool results
-		const matchedToolCallIds = new Set<string>();
-		for (let i = index + 1; i < allMessages.length; i++) {
-			const nextMsg = allMessages[i];
-			if (!nextMsg) continue;
-
-			// Stop scanning when we hit another assistant message
-			if (nextMsg.role === "assistant") {
-				break;
+		if (msg.role === "assistant") {
+			// If we have pending orphaned tool calls from a previous assistant, insert synthetic results now
+			if (pendingToolCalls.length > 0) {
+				for (const tc of pendingToolCalls) {
+					if (!existingToolResultIds.has(tc.id)) {
+						result.push({
+							role: "toolResult",
+							toolCallId: tc.id,
+							toolName: tc.name,
+							content: [{ type: "text", text: "No result provided" }],
+							isError: true,
+							timestamp: Date.now(),
+						} as ToolResultMessage);
+					}
+				}
+				pendingToolCalls = [];
+				existingToolResultIds = new Set();
 			}
 
-			// Check tool result messages for matching IDs
-			if (nextMsg.role === "toolResult") {
-				matchedToolCallIds.add(nextMsg.toolCallId);
+			// Track tool calls from this assistant message
+			const assistantMsg = msg as AssistantMessage;
+			const toolCalls = assistantMsg.content.filter(
+				(b) => b.type === "toolCall",
+			) as ToolCall[];
+			if (toolCalls.length > 0) {
+				pendingToolCalls = toolCalls;
+				existingToolResultIds = new Set();
 			}
+
+			result.push(msg);
+		} else if (msg.role === "toolResult") {
+			existingToolResultIds.add(msg.toolCallId);
+			result.push(msg);
+		} else if (msg.role === "user") {
+			// User message interrupts tool flow - insert synthetic results for orphaned calls
+			if (pendingToolCalls.length > 0) {
+				for (const tc of pendingToolCalls) {
+					if (!existingToolResultIds.has(tc.id)) {
+						result.push({
+							role: "toolResult",
+							toolCallId: tc.id,
+							toolName: tc.name,
+							content: [{ type: "text", text: "No result provided" }],
+							isError: true,
+							timestamp: Date.now(),
+						} as ToolResultMessage);
+					}
+				}
+				pendingToolCalls = [];
+				existingToolResultIds = new Set();
+			}
+			result.push(msg);
+		} else {
+			result.push(msg);
 		}
+	}
 
-		// Filter out tool calls that don't have corresponding results
-		const filteredContent = assistantMsg.content.filter((block) => {
-			if (block.type === "toolCall") {
-				return matchedToolCallIds.has((block as ToolCall).id);
-			}
-			return true; // Keep all non-toolCall blocks
-		});
-
-		return {
-			...assistantMsg,
-			content: filteredContent,
-		} as T;
-	}) as T[];
+	return result as T[];
 }

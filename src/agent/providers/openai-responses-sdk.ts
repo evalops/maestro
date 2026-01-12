@@ -428,6 +428,7 @@ function buildInput(
 ): OpenAI.Responses.ResponseInput {
 	const input: OpenAI.Responses.ResponseInput = [];
 	const transformedMessages = transformMessages(context.messages, model);
+	let msgIndex = 0;
 
 	// System prompt
 	if (context.systemPrompt) {
@@ -485,6 +486,12 @@ function buildInput(
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
+					let msgId = block.textSignature;
+					if (!msgId) {
+						msgId = `msg_${msgIndex}`;
+					} else if (msgId.length > 64) {
+						msgId = `msg_${shortHash(msgId)}`;
+					}
 					input.push({
 						type: "message",
 						role: "assistant",
@@ -496,7 +503,7 @@ function buildInput(
 							},
 						],
 						status: "completed",
-						id: `msg_${Math.random().toString(36).substring(2, 15)}`,
+						id: msgId,
 					});
 				} else if (block.type === "thinking" && canIncludeReasoning) {
 					// For reasoning models, include reasoning items ONLY when followed by function_call
@@ -560,9 +567,28 @@ function buildInput(
 				input.push({ role: "user", content: contentParts });
 			}
 		}
+		msgIndex++;
 	}
 
 	return input;
+}
+
+/** Fast deterministic hash to shorten long strings. */
+function shortHash(str: string): string {
+	let h1 = 0xdeadbeef;
+	let h2 = 0x41c6ce57;
+	for (let i = 0; i < str.length; i++) {
+		const ch = str.charCodeAt(i);
+		h1 = Math.imul(h1 ^ ch, 2654435761);
+		h2 = Math.imul(h2 ^ ch, 1597334677);
+	}
+	h1 =
+		Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
+		Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+	h2 =
+		Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
+		Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+	return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36);
 }
 
 function mapStopReason(
