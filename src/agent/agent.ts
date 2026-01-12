@@ -1044,6 +1044,7 @@ export class Agent {
 				tools: this._state.tools,
 				model: this._state.model,
 				reasoning,
+				reasoningSummary: this._state.reasoningSummary,
 				preprocessMessages: this.preprocessMessages,
 				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
 				user: this._state.user,
