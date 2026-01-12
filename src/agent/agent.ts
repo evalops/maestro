@@ -1181,7 +1181,8 @@ export class Agent {
 			tools: [],
 			model: summaryModel,
 			reasoning: undefined,
-			reasoningSummary: this._state.reasoningSummary,
+			// Keep summary generation fast by not requesting reasoning summaries.
+			reasoningSummary: undefined,
 			preprocessMessages: this.preprocessMessages,
 		};
 
