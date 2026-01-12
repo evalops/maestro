@@ -66,7 +66,8 @@ export type AuthCredentialSource =
 	| "anthropic_oauth_env"
 	| "anthropic_oauth_file"
 	| "openai_oauth_file"
-	| "google_oauth_file";
+	| "google_oauth_file"
+	| "github_copilot_oauth_file";
 
 export interface AuthCredential {
 	provider: string;
@@ -106,6 +107,10 @@ function isGoogleGeminiCliProvider(provider: string): boolean {
 	);
 }
 
+function isGitHubCopilotProvider(provider: string): boolean {
+	return provider.toLowerCase() === "github-copilot";
+}
+
 export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 	const explicitKey = options.explicitApiKey?.trim();
 	return async (provider: string): Promise<AuthCredential | undefined> => {
@@ -131,6 +136,20 @@ export function createAuthResolver(options: AuthResolverOptions): AuthResolver {
 					type: "api-key",
 					source: "openai_oauth_file",
 					metadata: { mode: oauthCred.mode },
+				};
+			}
+		}
+
+		if (isGitHubCopilotProvider(provider) && options.mode !== "api-key") {
+			const oauthToken = await getOAuthToken("github-copilot");
+			if (oauthToken) {
+				const credentials = loadOAuthCredentials("github-copilot");
+				return {
+					provider,
+					token: oauthToken,
+					type: "api-key",
+					source: "github_copilot_oauth_file",
+					metadata: credentials?.metadata,
 				};
 			}
 		}
