@@ -875,6 +875,7 @@ export class Agent {
 				tools: this._state.tools,
 				model: this._state.model,
 				reasoning,
+				reasoningSummary: this._state.reasoningSummary,
 				preprocessMessages: this.preprocessMessages,
 				getSteeringMessages: async <T>() => this.dequeueSteeringMessages<T>(),
 				getFollowUpMessages: async <T>() => this.dequeueFollowUpMessages<T>(),

@@ -132,6 +132,7 @@ import {
 } from "./cli/system-prompt.js";
 import { composerManager } from "./composers/index.js";
 import { validateFrameworkPreference } from "./config/framework.js";
+import { loadRuntimeConfig } from "./config/runtime-config.js";
 import {
 	createNotificationFromAgentEvent,
 	isNotificationEnabled,
@@ -759,6 +760,14 @@ export async function main(args: string[]) {
 		await startWebServer(port);
 		return;
 	}
+
+	const runtimeConfig = loadRuntimeConfig(parsed, process.cwd());
+	const reasoningSummary =
+		runtimeConfig.config.model_supports_reasoning_summaries === false
+			? undefined
+			: runtimeConfig.config.model_reasoning_summary === "none"
+				? null
+				: runtimeConfig.config.model_reasoning_summary;
 
 	// If we're about to enter interactive TUI mode (no prompt messages and not RPC/exec),
 	// or headless mode (stdout is JSON-only), redirect all logging/console output to a file.
@@ -1525,6 +1534,7 @@ export async function main(args: string[]) {
 			systemPrompt,
 			model,
 			thinkingLevel: "off", // Extended thinking disabled by default
+			reasoningSummary,
 			tools: allTools,
 			sandbox,
 			sandboxMode: sandboxMode ?? null,

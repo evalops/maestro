@@ -735,6 +735,7 @@ export class ProviderTransport implements AgentTransport {
 						{
 							...streamOptions,
 							reasoningEffort: cfg.reasoning,
+							reasoningSummary: cfg.reasoningSummary,
 						},
 					);
 				} else if (model.api === "google-generative-ai") {
