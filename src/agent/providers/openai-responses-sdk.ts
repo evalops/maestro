@@ -29,6 +29,7 @@ import type { OpenAIOptions } from "./openai-shared.js";
 import { filterResponsesApiTools } from "./openai-shared.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { createToolArgumentNormalizer, isRecord } from "./tool-arguments.js";
+import { transformMessages } from "./transform-messages.js";
 
 const logger = createLogger("agent:providers:openai-responses");
 const toolArgumentNormalizer = createToolArgumentNormalizer({
@@ -426,6 +427,8 @@ function buildInput(
 	model: Model<"openai-responses">,
 ): OpenAI.Responses.ResponseInput {
 	const input: OpenAI.Responses.ResponseInput = [];
+	const transformedMessages = transformMessages(context.messages, model);
+	let msgIndex = 0;
 
 	// System prompt
 	if (context.systemPrompt) {
@@ -437,7 +440,7 @@ function buildInput(
 	}
 
 	// Messages
-	for (const msg of context.messages) {
+	for (const msg of transformedMessages) {
 		if (msg.role === "user") {
 			const content: OpenAI.Responses.ResponseInputContent[] = [];
 			// Handle string content
@@ -463,9 +466,13 @@ function buildInput(
 					}
 				}
 			}
-			if (content.length > 0) {
-				input.push({ role: "user", content });
+			const filteredContent = model.input.includes("image")
+				? content
+				: content.filter((block) => block.type !== "input_image");
+			if (filteredContent.length === 0) {
+				continue;
 			}
+			input.push({ role: "user", content: filteredContent });
 		} else if (msg.role === "assistant") {
 			// Don't include thinking/toolCall if the message was aborted or errored
 			// Reasoning items require their following function_call, so skip both
@@ -479,6 +486,12 @@ function buildInput(
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
+					let msgId = block.textSignature;
+					if (!msgId) {
+						msgId = `msg_${msgIndex}`;
+					} else if (msgId.length > 64) {
+						msgId = `msg_${shortHash(msgId)}`;
+					}
 					input.push({
 						type: "message",
 						role: "assistant",
@@ -490,7 +503,7 @@ function buildInput(
 							},
 						],
 						status: "completed",
-						id: `msg_${Math.random().toString(36).substring(2, 15)}`,
+						id: msgId,
 					});
 				} else if (block.type === "thinking" && canIncludeReasoning) {
 					// For reasoning models, include reasoning items ONLY when followed by function_call
@@ -525,15 +538,57 @@ function buildInput(
 				? msg.toolCallId.split("|")[0]!
 				: msg.toolCallId;
 
+			const hasImages = msg.content.some((c) => c.type === "image");
+			const outputText =
+				textResult || (hasImages ? "(see attached image)" : "(empty result)");
+
 			input.push({
 				type: "function_call_output",
 				call_id: callId,
-				output: sanitizeSurrogates(textResult || "(empty result)"),
+				output: sanitizeSurrogates(outputText),
 			});
+
+			if (hasImages && model.input.includes("image")) {
+				const contentParts: OpenAI.Responses.ResponseInputContent[] = [
+					{
+						type: "input_text",
+						text: "Attached image(s) from tool result:",
+					},
+				];
+				for (const block of msg.content) {
+					if (block.type === "image") {
+						contentParts.push({
+							type: "input_image",
+							image_url: `data:${block.mimeType};base64,${block.data}`,
+							detail: "auto",
+						});
+					}
+				}
+				input.push({ role: "user", content: contentParts });
+			}
 		}
+		msgIndex++;
 	}
 
 	return input;
+}
+
+/** Fast deterministic hash to shorten long strings. */
+function shortHash(str: string): string {
+	let h1 = 0xdeadbeef;
+	let h2 = 0x41c6ce57;
+	for (let i = 0; i < str.length; i++) {
+		const ch = str.charCodeAt(i);
+		h1 = Math.imul(h1 ^ ch, 2654435761);
+		h2 = Math.imul(h2 ^ ch, 1597334677);
+	}
+	h1 =
+		Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
+		Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+	h2 =
+		Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
+		Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+	return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36);
 }
 
 function mapStopReason(

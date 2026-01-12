@@ -8,13 +8,21 @@ import type {
 
 const openaiMock = vi.hoisted(() => {
 	let streamFactory: () => AsyncIterable<unknown> = async function* () {};
+	let lastParams: unknown;
 
 	return {
 		setStream(factory: () => AsyncIterable<unknown>) {
 			streamFactory = factory;
 		},
-		createStream(): AsyncIterable<unknown> {
+		createStream(params?: unknown): AsyncIterable<unknown> {
+			lastParams = params;
 			return streamFactory();
+		},
+		getLastParams() {
+			return lastParams;
+		},
+		reset() {
+			lastParams = undefined;
 		},
 	};
 });
@@ -22,7 +30,7 @@ const openaiMock = vi.hoisted(() => {
 vi.mock("openai", () => ({
 	default: class {
 		responses = {
-			create: () => openaiMock.createStream(),
+			create: (params: unknown) => openaiMock.createStream(params),
 		};
 	},
 }));
@@ -57,6 +65,7 @@ function makeEventStream(events: Array<unknown>): AsyncIterable<unknown> {
 describe("OpenAI Responses SDK streaming", () => {
 	beforeEach(() => {
 		openaiMock.setStream(() => makeEventStream([]));
+		openaiMock.reset();
 	});
 
 	it("handles streaming function_call arguments", async () => {
@@ -153,5 +162,72 @@ describe("OpenAI Responses SDK streaming", () => {
 			{ type: "toolcall_end" }
 		>;
 		expect(toolEnd.toolCall.arguments).toEqual({ path: "/tmp/object.txt" });
+	});
+
+	it("filters user images when the model does not support image input", async () => {
+		const context: Context = {
+			...baseContext,
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "Check this" },
+						{ type: "image", data: "abc", mimeType: "image/png" },
+					],
+					timestamp: Date.now(),
+				},
+			],
+		};
+
+		for await (const _ of streamResponsesApiSdk(responsesModel, context, {
+			apiKey: "k",
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			input?: Array<{ role?: string; content?: Array<{ type: string }> }>;
+		};
+		const user = params.input?.find((entry) => entry.role === "user");
+		expect(user?.content?.some((block) => block.type === "input_image")).toBe(
+			false,
+		);
+	});
+
+	it("adds tool result images as follow-up user content when supported", async () => {
+		const modelWithImages: Model<"openai-responses"> = {
+			...responsesModel,
+			input: ["text", "image"],
+		};
+
+		const context: Context = {
+			...baseContext,
+			messages: [
+				{
+					role: "toolResult",
+					toolCallId: "call_1|tool_1",
+					toolName: "read",
+					content: [{ type: "image", data: "abc", mimeType: "image/png" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			],
+		};
+
+		for await (const _ of streamResponsesApiSdk(modelWithImages, context, {
+			apiKey: "k",
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			input?: Array<{ role?: string; content?: Array<{ type: string }> }>;
+		};
+		const hasImageMessage = params.input?.some(
+			(entry) =>
+				entry.role === "user" &&
+				entry.content?.some((block) => block.type === "input_image"),
+		);
+		expect(hasImageMessage).toBe(true);
 	});
 });

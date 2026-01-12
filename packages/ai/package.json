@@ -105,10 +105,10 @@
 	},
 	"files": ["dist", "README.md"],
 	"scripts": {
-		"clean": "node -e \"const fs=require('fs'); ['dist','../../tmp/tsbuildinfo/ai.tsbuildinfo'].forEach(p=>fs.rmSync(p,{recursive:true,force:true}));\"",
-		"build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && node -e \"require('fs').mkdirSync('../../tmp/tsbuildinfo', { recursive: true })\" && tsc -p tsconfig.build.json",
-		"dev": "node -e \"require('fs').mkdirSync('../../tmp/tsbuildinfo', { recursive: true })\" && tsc -p tsconfig.build.json --watch --preserveWatchOutput",
-		"check": "node -e \"require('fs').mkdirSync('../../tmp/tsbuildinfo', { recursive: true })\" && tsc -p tsconfig.build.json --noEmit",
+		"clean": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/ai.tsbuildinfo",
+		"build": "node ../../scripts/clean-paths.js dist && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
+		"dev": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+		"check": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --noEmit",
 		"test": "vitest --run --passWithNoTests",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
@@ -125,6 +125,7 @@
 	},
 	"dependencies": {
 		"@evalops/contracts": "^0.10.0",
+		"@evalops/tui": "^0.10.0",
 		"@google/genai": "^1.29.1",
 		"@sinclair/typebox": "^0.34.0"
 	},
