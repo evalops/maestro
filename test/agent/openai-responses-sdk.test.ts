@@ -402,6 +402,58 @@ describe("OpenAI Responses SDK streaming", () => {
 		expect(params.tool_choice).toBe("none");
 	});
 
+	it("streams reasoning summary deltas when provided", async () => {
+		openaiMock.setStream(() =>
+			makeEventStream([
+				{
+					type: "response.output_item.added",
+					item: {
+						type: "reasoning",
+						id: "reason_1",
+						summary: [],
+					},
+				},
+				{
+					type: "response.reasoning_summary_part.added",
+					part: { type: "summary_text", text: "" },
+				},
+				{
+					type: "response.reasoning_summary_text.delta",
+					delta: "Reasoning summary",
+				},
+				{
+					type: "response.reasoning_summary_part.done",
+				},
+				{
+					type: "response.output_item.done",
+					item: {
+						type: "reasoning",
+						id: "reason_1",
+						summary: [{ type: "summary_text", text: "Reasoning summary" }],
+					},
+				},
+				{
+					type: "response.completed",
+					response: { status: "completed" },
+				},
+			]),
+		);
+
+		const events: AssistantMessageEvent[] = [];
+		for await (const ev of streamResponsesApiSdk(responsesModel, baseContext, {
+			apiKey: "k",
+		})) {
+			events.push(ev);
+		}
+
+		const deltas = events.filter(
+			(ev) => ev.type === "thinking_delta",
+		) as Extract<AssistantMessageEvent, { type: "thinking_delta" }>[];
+		expect(
+			deltas.some((delta) => delta.delta.includes("Reasoning summary")),
+		).toBe(true);
+	});
+
 	it("adds X-Initiator header for GitHub Copilot responses", async () => {
 		const copilotModel: Model<"openai-responses"> = {
 			...responsesModel,
