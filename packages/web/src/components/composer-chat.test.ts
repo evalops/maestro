@@ -193,4 +193,48 @@ describe("ComposerChat", () => {
 		assert.equal(tools[0]?.name, "read_file");
 		assert.deepEqual(tools[0]?.args, { path: "/tmp/test.txt", mode: "r" });
 	});
+
+	it("accepts slim toolcall args payloads without partial messages", async () => {
+		const stream = async function* () {
+			yield {
+				type: "message_update",
+				assistantMessageEvent: {
+					type: "toolcall_start",
+					contentIndex: 0,
+					toolCallId: "call_1",
+					toolCallName: "read_file",
+					toolCallArgs: { path: "/tmp/toolcall.json" },
+				},
+			};
+			yield {
+				type: "message_end",
+				message: { role: "assistant" },
+			};
+		};
+
+		const apiClient = {
+			chatWithEvents: vi.fn().mockReturnValue(stream()),
+			getSessions: vi.fn().mockResolvedValue([]),
+		};
+
+		(element as unknown as { apiClient: unknown }).apiClient = apiClient;
+		(element as unknown as { clientOnline: boolean }).clientOnline = true;
+
+		const event = new CustomEvent("submit", { detail: { text: "Hello" } });
+		await (
+			element as unknown as { handleSubmit: (e: CustomEvent) => Promise<void> }
+		).handleSubmit(event);
+
+		const messages = (
+			element as unknown as { messages: Array<{ tools?: unknown[] }> }
+		).messages;
+		const assistant = messages.findLast((msg) => Array.isArray(msg.tools));
+		assert.ok(assistant);
+		const tools = (assistant?.tools ?? []) as Array<{
+			args?: Record<string, unknown>;
+			name?: string;
+		}>;
+		assert.equal(tools[0]?.name, "read_file");
+		assert.deepEqual(tools[0]?.args, { path: "/tmp/toolcall.json" });
+	});
 });

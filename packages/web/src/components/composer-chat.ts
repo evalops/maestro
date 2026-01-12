@@ -2165,15 +2165,24 @@ export class ComposerChat extends LitElement {
 								const partial = Array.isArray(msgEvent.partial?.content)
 									? msgEvent.partial?.content[msgEvent.contentIndex]
 									: undefined;
+								const slimArgs =
+									msgEvent.toolCallArgs &&
+									typeof msgEvent.toolCallArgs === "object" &&
+									!Array.isArray(msgEvent.toolCallArgs)
+										? (msgEvent.toolCallArgs as Record<string, unknown>)
+										: undefined;
 								const toolCallId =
 									partial?.type === "toolCall"
 										? partial.id
 										: msgEvent.toolCallId;
 								if (toolCallId) {
+									if (slimArgs) {
+										toolCallArgsById.set(toolCallId, slimArgs);
+									}
 									const args =
 										partial?.type === "toolCall"
 											? (partial.arguments ?? {})
-											: (toolCallArgsById.get(toolCallId) ?? {});
+											: (slimArgs ?? toolCallArgsById.get(toolCallId) ?? {});
 									const name =
 										partial?.type === "toolCall"
 											? partial.name || "tool"
@@ -2211,26 +2220,35 @@ export class ComposerChat extends LitElement {
 								const partial = Array.isArray(msgEvent.partial?.content)
 									? msgEvent.partial?.content[msgEvent.contentIndex]
 									: undefined;
+								const slimArgs =
+									msgEvent.toolCallArgs &&
+									typeof msgEvent.toolCallArgs === "object" &&
+									!Array.isArray(msgEvent.toolCallArgs)
+										? (msgEvent.toolCallArgs as Record<string, unknown>)
+										: undefined;
 								const toolCallId =
 									partial?.type === "toolCall"
 										? partial.id
 										: msgEvent.toolCallId;
 								if (toolCallId) {
-									const args =
-										partial?.type === "toolCall"
-											? (partial.arguments ?? {})
-											: (() => {
-													const current =
-														toolCallJsonById.get(toolCallId) ?? "";
-													const next = current + msgEvent.delta;
-													toolCallJsonById.set(toolCallId, next);
-													const parsed = parseToolCallArgs(next);
-													if (parsed) {
-														toolCallArgsById.set(toolCallId, parsed);
-														return parsed;
-													}
-													return toolCallArgsById.get(toolCallId) ?? {};
-												})();
+									let args: Record<string, unknown>;
+									if (partial?.type === "toolCall") {
+										args = partial.arguments ?? {};
+									} else if (slimArgs) {
+										toolCallArgsById.set(toolCallId, slimArgs);
+										args = slimArgs;
+									} else {
+										const current = toolCallJsonById.get(toolCallId) ?? "";
+										const next = current + msgEvent.delta;
+										toolCallJsonById.set(toolCallId, next);
+										const parsed = parseToolCallArgs(next);
+										if (parsed) {
+											toolCallArgsById.set(toolCallId, parsed);
+											args = parsed;
+										} else {
+											args = toolCallArgsById.get(toolCallId) ?? {};
+										}
+									}
 									if (!assistantMessage.tools) assistantMessage.tools = [];
 									const existingIndex = assistantMessage.tools.findIndex(
 										(t) => t.toolCallId === toolCallId,
