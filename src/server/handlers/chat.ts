@@ -350,30 +350,89 @@ export async function handleChat(
 		const slimHeader = req.headers["x-composer-slim-events"];
 		const slimValue = Array.isArray(slimHeader) ? slimHeader[0] : slimHeader;
 		const slimEvents = slimValue === "1" || slimValue === "true";
+		const extractToolCallInfo = (assistantEvent: {
+			contentIndex?: number;
+			partial?: { content?: unknown[] };
+		}): {
+			toolCallId?: string;
+			toolCallName?: string;
+			toolCallArgs?: Record<string, unknown>;
+		} => {
+			const assistantMessageEvent = assistantEvent.partial;
+			const contentIndex = assistantEvent.contentIndex;
+			if (
+				!assistantMessageEvent ||
+				typeof contentIndex !== "number" ||
+				!Array.isArray(assistantMessageEvent.content)
+			) {
+				return {};
+			}
+			const block = assistantMessageEvent.content[contentIndex];
+			if (!block || typeof block !== "object") {
+				return {};
+			}
+			const maybeToolCall = block as {
+				type?: string;
+				id?: string;
+				name?: string;
+				arguments?: Record<string, unknown>;
+			};
+			if (maybeToolCall.type !== "toolCall") {
+				return {};
+			}
+			return {
+				toolCallId: maybeToolCall.id,
+				toolCallName: maybeToolCall.name,
+			};
+		};
 		const maybeSlimEvent = (event: AgentEvent): AgentEvent => {
 			if (!slimEvents || event.type !== "message_update") {
 				return event;
 			}
 
 			const assistantEvent = event.assistantMessageEvent;
-			if (
-				!assistantEvent ||
-				(assistantEvent.type !== "text_delta" &&
-					assistantEvent.type !== "thinking_delta")
-			) {
-				return event;
+			const slimEvent: Record<string, unknown> = { ...event };
+			delete slimEvent.message;
+
+			if (!assistantEvent) {
+				return slimEvent as AgentEvent;
 			}
 
-			const { partial, ...assistantWithoutPartial } = assistantEvent as {
-				partial?: unknown;
-				[key: string]: unknown;
-			};
+			if (
+				assistantEvent.type === "text_delta" ||
+				assistantEvent.type === "thinking_delta"
+			) {
+				const { partial, ...assistantWithoutPartial } = assistantEvent as {
+					partial?: unknown;
+					[key: string]: unknown;
+				};
 
-			const slimEvent: Record<string, unknown> = {
-				...event,
-				assistantMessageEvent: assistantWithoutPartial,
-			};
-			delete slimEvent.message;
+				slimEvent.assistantMessageEvent = assistantWithoutPartial;
+				return slimEvent as AgentEvent;
+			}
+
+			if (
+				assistantEvent.type === "toolcall_start" ||
+				assistantEvent.type === "toolcall_delta" ||
+				assistantEvent.type === "toolcall_end"
+			) {
+				const { partial, ...assistantWithoutPartial } = assistantEvent as {
+					partial?: unknown;
+					[key: string]: unknown;
+				};
+				const toolCallInfo =
+					assistantEvent.type === "toolcall_end"
+						? {}
+						: extractToolCallInfo(assistantEvent);
+
+				slimEvent.assistantMessageEvent = {
+					...assistantWithoutPartial,
+					...toolCallInfo,
+				};
+				return slimEvent as AgentEvent;
+			}
+
+			slimEvent.assistantMessageEvent = assistantEvent;
 			return slimEvent as AgentEvent;
 		};
 

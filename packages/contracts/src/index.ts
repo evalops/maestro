@@ -423,19 +423,25 @@ export type ComposerAssistantMessageEvent =
 	| {
 			type: "toolcall_start";
 			contentIndex: number;
-			partial: ComposerMessage;
+			partial?: ComposerMessage;
+			toolCallId?: string;
+			toolCallName?: string;
+			toolCallArgs?: Record<string, unknown>;
 	  }
 	| {
 			type: "toolcall_delta";
 			contentIndex: number;
 			delta: string;
-			partial: ComposerMessage;
+			partial?: ComposerMessage;
+			toolCallId?: string;
+			toolCallName?: string;
+			toolCallArgs?: Record<string, unknown>;
 	  }
 	| {
 			type: "toolcall_end";
 			contentIndex: number;
 			toolCall: ComposerToolCallContent;
-			partial: ComposerMessage;
+			partial?: ComposerMessage;
 	  }
 	| {
 			type: "done";
