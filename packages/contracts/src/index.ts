@@ -395,7 +395,7 @@ export type ComposerAssistantMessageEvent =
 			type: "text_delta";
 			contentIndex: number;
 			delta: string;
-			partial: ComposerMessage;
+			partial?: ComposerMessage;
 	  }
 	| {
 			type: "text_end";
@@ -412,7 +412,7 @@ export type ComposerAssistantMessageEvent =
 			type: "thinking_delta";
 			contentIndex: number;
 			delta: string;
-			partial: ComposerMessage;
+			partial?: ComposerMessage;
 	  }
 	| {
 			type: "thinking_end";
@@ -484,7 +484,7 @@ export type ComposerAgentEvent =
 	| { type: "message_start"; message: ComposerMessage }
 	| {
 			type: "message_update";
-			message: ComposerMessage;
+			message?: ComposerMessage;
 			assistantMessageEvent: ComposerAssistantMessageEvent;
 	  }
 	| { type: "message_end"; message: ComposerMessage }
