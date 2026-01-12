@@ -8,7 +8,7 @@
 	"files": ["dist", "README.md"],
 	"scripts": {
 		"clean": "rm -rf dist",
-		"build": "node ../../node_modules/vite/bin/vite.js build",
+		"build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && node ../../node_modules/vite/bin/vite.js build",
 		"dev": "vite",
 		"preview": "vite preview",
 		"check": "tsc --noEmit",
