@@ -7,8 +7,8 @@
 	"types": "./dist/index.d.ts",
 	"files": ["dist", "README.md"],
 	"scripts": {
-		"clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
-		"build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && node ../../node_modules/vite/bin/vite.js build",
+		"clean": "node ../../scripts/clean-paths.js dist",
+		"build": "node ../../scripts/clean-paths.js dist && node ../../node_modules/vite/bin/vite.js build",
 		"dev": "vite",
 		"preview": "vite preview",
 		"check": "tsc --noEmit",

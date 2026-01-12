@@ -16,14 +16,14 @@
     "dist"
   ],
   "scripts": {
-    "clean": "node -e \"const fs=require('fs'); ['dist','./tmp/tsbuildinfo/composer.tsbuildinfo'].forEach(p=>fs.rmSync(p,{recursive:true,force:true}));\"",
+    "clean": "node ./scripts/clean-paths.js dist ./tmp/tsbuildinfo/composer.tsbuildinfo",
     "prepare": "husky",
     "install:local": "node ./scripts/install-client.js",
     "prebuild": "node ./scripts/ensure-deps.js",
-    "build": "node -e \"require('fs').mkdirSync('./tmp/tsbuildinfo', { recursive: true })\" && tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --packages external --external tree-sitter --external tree-sitter-bash --outfile dist/cli.js && chmod +x dist/cli.js && node ./scripts/copy-themes.js",
+    "build": "node ./scripts/ensure-dir.js ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --packages external --external tree-sitter --external tree-sitter-bash --outfile dist/cli.js && chmod +x dist/cli.js && node ./scripts/copy-themes.js",
     "start": "node --enable-source-maps dist/cli.js",
     "start:native": "COMPOSER_AGENT_SCRIPT=\"$(pwd)/dist/cli.js\" ./packages/tui-rs/target/release/composer-tui",
-    "dev": "node -e \"require('fs').mkdirSync('./tmp/tsbuildinfo', { recursive: true })\" && tsc -b tsconfig.build.json --watch --preserveWatchOutput",
+    "dev": "node ./scripts/ensure-dir.js ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --watch --preserveWatchOutput",
     "dev:all": "concurrently --names \"cli,test\" --prefix-colors \"cyan,yellow\" \"npm run dev\" \"npm run test:watch\"",
     "test:watch": "vitest --watch",
     "test:fast": "VITEST_FAST=1 vitest --run",

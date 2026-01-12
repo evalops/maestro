@@ -130,8 +130,8 @@
 		}
 	},
 	"scripts": {
-		"clean": "node -e \"const fs=require('fs'); ['dist','out'].forEach(p=>fs.rmSync(p,{recursive:true,force:true})); for (const entry of fs.readdirSync('.')) if (entry.endsWith('.vsix')) fs.rmSync(entry,{force:true});\"",
-		"build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+		"clean": "node ../../scripts/clean-paths.js dist out && node ../../scripts/clean-vsix.js",
+		"build": "node ../../scripts/clean-paths.js dist && tsc -p tsconfig.json",
 		"watch": "tsc -p tsconfig.json --watch --preserveWatchOutput",
 		"prepackage": "bun run build",
 		"package": "npx @vscode/vsce package --no-dependencies --out composer-$npm_package_version.vsix",
