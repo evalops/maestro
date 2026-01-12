@@ -128,6 +128,7 @@ const compatSchema = Type.Optional(
 		supportsStore: Type.Optional(Type.Boolean()),
 		supportsDeveloperRole: Type.Optional(Type.Boolean()),
 		supportsReasoningEffort: Type.Optional(Type.Boolean()),
+		supportsResponsesApi: Type.Optional(Type.Boolean()),
 		maxTokensField: Type.Optional(
 			Type.Union([
 				Type.Literal("max_tokens"),

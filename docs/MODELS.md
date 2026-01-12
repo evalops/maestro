@@ -100,6 +100,7 @@ Supported `compat` fields:
 - `supportsStore` (bool) – whether to send `store: false` (OpenAI only).
 - `supportsDeveloperRole` (bool) – if false, Composer uses `system` instead.
 - `supportsReasoningEffort` (bool) – gates `reasoning_effort`.
+- `supportsResponsesApi` (bool) – allow `openai-responses` against this endpoint.
 - `maxTokensField` – `"max_tokens"` vs `"max_completion_tokens"`.
 - `requiresToolResultName` (bool) – include `name` on tool result messages.
 - `requiresAssistantAfterToolResult` (bool) – insert a synthetic assistant bridge.

@@ -145,6 +145,7 @@ interface OpenAICompat {
 	supportsStore: boolean;
 	supportsDeveloperRole: boolean;
 	supportsReasoningEffort: boolean;
+	supportsResponsesApi: boolean;
 	maxTokensField: "max_tokens" | "max_completion_tokens";
 	requiresToolResultName: boolean;
 	requiresAssistantAfterToolResult: boolean;
@@ -171,6 +172,13 @@ function resolveOpenAICompat(
 	const isGrok = baseUrl.includes("api.x.ai") || provider === "xai";
 	const isOpenAIBase = baseUrl.includes("api.openai.com");
 	const isOpenAIProvider = provider === "openai";
+	const supportsResponsesApi =
+		isOpenAIBase ||
+		isOpenAIProvider ||
+		baseUrl.includes("openrouter.ai") ||
+		provider === "openrouter" ||
+		baseUrl.includes("api.groq.com") ||
+		provider === "groq";
 	const nonOpenAIHosts = [
 		"mistral.ai",
 		"api.x.ai",
@@ -191,6 +199,7 @@ function resolveOpenAICompat(
 		supportsStore: isOpenAI,
 		supportsDeveloperRole: isOpenAI,
 		supportsReasoningEffort: isOpenAI && !isGrok,
+		supportsResponsesApi,
 		maxTokensField: isOpenAI ? "max_completion_tokens" : "max_tokens",
 		requiresToolResultName: isMistral,
 		requiresAssistantAfterToolResult: false,
@@ -209,6 +218,8 @@ function resolveOpenAICompat(
 			overrides.supportsDeveloperRole ?? detected.supportsDeveloperRole,
 		supportsReasoningEffort:
 			overrides.supportsReasoningEffort ?? detected.supportsReasoningEffort,
+		supportsResponsesApi:
+			overrides.supportsResponsesApi ?? detected.supportsResponsesApi,
 		maxTokensField: overrides.maxTokensField ?? detected.maxTokensField,
 		requiresToolResultName:
 			overrides.requiresToolResultName ?? detected.requiresToolResultName,
@@ -500,6 +511,11 @@ export async function* streamOpenAI(
 	}
 
 	const compat = resolveOpenAICompat(model);
+	if (model.api === "openai-responses" && !compat.supportsResponsesApi) {
+		throw new Error(
+			`Responses API is not supported by ${model.provider}/${model.id}. Use openai-completions or set compat.supportsResponsesApi if your endpoint supports /responses.`,
+		);
+	}
 	const hasSummaryRequest =
 		options.reasoningSummary !== undefined && options.reasoningSummary !== null;
 	if (hasSummaryRequest && model.api !== "openai-responses") {
