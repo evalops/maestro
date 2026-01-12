@@ -1181,6 +1181,7 @@ export class Agent {
 			tools: [],
 			model: summaryModel,
 			reasoning: undefined,
+			reasoningSummary: this._state.reasoningSummary,
 			preprocessMessages: this.preprocessMessages,
 		};
 
