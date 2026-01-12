@@ -219,7 +219,7 @@ export const ComposerAssistantMessageEventSchema = Type.Union([
 		type: Type.Literal("text_delta"),
 		contentIndex: Type.Number(),
 		delta: Type.String(),
-		partial: ComposerMessageSchema,
+		partial: Type.Optional(ComposerMessageSchema),
 	}),
 	Type.Object({
 		type: Type.Literal("text_end"),
@@ -236,7 +236,7 @@ export const ComposerAssistantMessageEventSchema = Type.Union([
 		type: Type.Literal("thinking_delta"),
 		contentIndex: Type.Number(),
 		delta: Type.String(),
-		partial: ComposerMessageSchema,
+		partial: Type.Optional(ComposerMessageSchema),
 	}),
 	Type.Object({
 		type: Type.Literal("thinking_end"),
@@ -325,7 +325,7 @@ export const ComposerAgentEventSchema = Type.Union([
 	}),
 	Type.Object({
 		type: Type.Literal("message_update"),
-		message: ComposerMessageSchema,
+		message: Type.Optional(ComposerMessageSchema),
 		assistantMessageEvent: ComposerAssistantMessageEventSchema,
 	}),
 	Type.Object({

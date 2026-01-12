@@ -139,6 +139,7 @@ export class ApiClient {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
+				"x-composer-slim-events": "1",
 			},
 			body: JSON.stringify({ ...request, stream: true }),
 			signal,
