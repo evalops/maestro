@@ -246,5 +246,8 @@ describe("handleChat", () => {
 		expect(update.assistantMessageEvent.partial).toBeUndefined();
 		expect(update.assistantMessageEvent.toolCallId).toBe("call_1");
 		expect(update.assistantMessageEvent.toolCallName).toBe("read_file");
+		expect(update.assistantMessageEvent.toolCallArgs).toEqual({
+			path: "/tmp/one.txt",
+		});
 	});
 });

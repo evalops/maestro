@@ -380,9 +380,15 @@ export async function handleChat(
 			if (maybeToolCall.type !== "toolCall") {
 				return {};
 			}
+			const maybeArgs = maybeToolCall.arguments;
+			const toolCallArgs =
+				maybeArgs && typeof maybeArgs === "object" && !Array.isArray(maybeArgs)
+					? maybeArgs
+					: undefined;
 			return {
 				toolCallId: maybeToolCall.id,
 				toolCallName: maybeToolCall.name,
+				toolCallArgs,
 			};
 		};
 		const maybeSlimEvent = (event: AgentEvent): AgentEvent => {
