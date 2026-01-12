@@ -869,6 +869,8 @@ export interface AgentState {
 	model: Model<Api>;
 	/** Current thinking level for extended reasoning */
 	thinkingLevel: ThinkingLevel;
+	/** Optional reasoning summary preference for Responses API */
+	reasoningSummary?: "auto" | "detailed" | "concise" | null;
 	/** Available tools for this agent */
 	tools: AgentTool[];
 	/**
@@ -1145,6 +1147,8 @@ export interface AgentRunConfig {
 	model: Model<Api>;
 	/** Optional reasoning effort level */
 	reasoning?: ReasoningEffort;
+	/** Optional reasoning summary preference for Responses API */
+	reasoningSummary?: "auto" | "detailed" | "concise" | null;
 	/** Function to retrieve steering messages for batch sending */
 	getSteeringMessages?: <T>() => Promise<QueuedMessage<T>[]>;
 	/** Function to retrieve follow-up messages for batch sending */

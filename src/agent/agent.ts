@@ -875,6 +875,7 @@ export class Agent {
 				tools: this._state.tools,
 				model: this._state.model,
 				reasoning,
+				reasoningSummary: this._state.reasoningSummary,
 				preprocessMessages: this.preprocessMessages,
 				getSteeringMessages: async <T>() => this.dequeueSteeringMessages<T>(),
 				getFollowUpMessages: async <T>() => this.dequeueFollowUpMessages<T>(),
@@ -1043,6 +1044,7 @@ export class Agent {
 				tools: this._state.tools,
 				model: this._state.model,
 				reasoning,
+				reasoningSummary: this._state.reasoningSummary,
 				preprocessMessages: this.preprocessMessages,
 				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
 				user: this._state.user,
@@ -1179,6 +1181,8 @@ export class Agent {
 			tools: [],
 			model: summaryModel,
 			reasoning: undefined,
+			// Keep summary generation fast by not requesting reasoning summaries.
+			reasoningSummary: undefined,
 			preprocessMessages: this.preprocessMessages,
 		};
 

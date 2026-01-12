@@ -59,7 +59,7 @@ export async function* streamResponsesApiSdk(
 	});
 
 	// Build input messages
-	const input = buildInput(context, model);
+	const input = buildInput(context, model, options);
 
 	// Filter and convert tools
 	const validTools = context.tools
@@ -105,13 +105,21 @@ export async function* streamResponsesApiSdk(
 		params.temperature = options.temperature;
 	}
 
-	if (model.reasoning && options.reasoningEffort) {
+	const summary = options.reasoningSummary;
+	const shouldIncludeSummary = summary !== undefined && summary !== null;
+
+	if (model.reasoning && (options.reasoningEffort || shouldIncludeSummary)) {
 		// OpenAI SDK only supports up to "high", map "ultra" to "high"
-		const effort =
-			options.reasoningEffort === "ultra" ? "high" : options.reasoningEffort;
-		params.reasoning = {
-			effort,
-		};
+		const effort = options.reasoningEffort
+			? options.reasoningEffort === "ultra"
+				? "high"
+				: options.reasoningEffort
+			: "medium";
+		if (shouldIncludeSummary) {
+			params.reasoning = { effort, summary };
+		} else {
+			params.reasoning = { effort };
+		}
 	}
 
 	// Add structured outputs via text.format (Responses API format)
@@ -425,6 +433,7 @@ export async function* streamResponsesApiSdk(
 function buildInput(
 	context: Context,
 	model: Model<"openai-responses">,
+	options: OpenAIOptions,
 ): OpenAI.Responses.ResponseInput {
 	const input: OpenAI.Responses.ResponseInput = [];
 	const transformedMessages = transformMessages(context.messages, model);
@@ -436,6 +445,22 @@ function buildInput(
 		input.push({
 			role,
 			content: sanitizeSurrogates(context.systemPrompt),
+		});
+	}
+	if (
+		model.reasoning &&
+		!options.reasoningEffort &&
+		options.reasoningSummary === undefined &&
+		model.id.startsWith("gpt-5")
+	) {
+		input.push({
+			role: "developer",
+			content: [
+				{
+					type: "input_text",
+					text: "# Juice: 0 !important",
+				},
+			],
 		});
 	}
 

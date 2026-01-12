@@ -230,4 +230,135 @@ describe("OpenAI Responses SDK streaming", () => {
 		);
 		expect(hasImageMessage).toBe(true);
 	});
+
+	it("sets reasoning summary when provided", async () => {
+		const reasoningModel: Model<"openai-responses"> = {
+			...responsesModel,
+			reasoning: true,
+		};
+
+		for await (const _ of streamResponsesApiSdk(reasoningModel, baseContext, {
+			apiKey: "k",
+			reasoningSummary: "detailed",
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			reasoning?: { effort?: string; summary?: string | null };
+		};
+		expect(params.reasoning?.summary).toBe("detailed");
+		expect(params.reasoning?.effort).toBe("medium");
+	});
+
+	it("adds a gpt-5 reasoning suppression hint when no reasoning options are set", async () => {
+		const gpt5Model: Model<"openai-responses"> = {
+			...responsesModel,
+			id: "gpt-5",
+			name: "GPT-5",
+			reasoning: true,
+		};
+
+		for await (const _ of streamResponsesApiSdk(gpt5Model, baseContext, {
+			apiKey: "k",
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			input?: Array<{
+				role?: string;
+				content?: Array<{ type: string; text?: string }>;
+			}>;
+		};
+		const hasHint = params.input?.some(
+			(entry) =>
+				entry.role === "developer" &&
+				entry.content?.some((block) => block.text === "# Juice: 0 !important"),
+		);
+		expect(hasHint).toBe(true);
+	});
+
+	it("does not add a gpt-5 reasoning suppression hint when reasoning summary is set", async () => {
+		const gpt5Model: Model<"openai-responses"> = {
+			...responsesModel,
+			id: "gpt-5",
+			name: "GPT-5",
+			reasoning: true,
+		};
+
+		for await (const _ of streamResponsesApiSdk(gpt5Model, baseContext, {
+			apiKey: "k",
+			reasoningSummary: "detailed",
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			reasoning?: { effort?: string; summary?: string };
+			input?: Array<{
+				role?: string;
+				content?: Array<{ type: string; text?: string }>;
+			}>;
+		};
+		expect(params.reasoning?.summary).toBe("detailed");
+		expect(params.reasoning?.effort).toBe("medium");
+		const hasHint = params.input?.some(
+			(entry) =>
+				entry.role === "developer" &&
+				entry.content?.some((block) => block.text === "# Juice: 0 !important"),
+		);
+		expect(hasHint).toBe(false);
+	});
+
+	it("does not add a gpt-5 reasoning suppression hint when reasoning summary is null", async () => {
+		const gpt5Model: Model<"openai-responses"> = {
+			...responsesModel,
+			id: "gpt-5",
+			name: "GPT-5",
+			reasoning: true,
+		};
+
+		for await (const _ of streamResponsesApiSdk(gpt5Model, baseContext, {
+			apiKey: "k",
+			reasoningSummary: null,
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			reasoning?: { effort?: string; summary?: string };
+			input?: Array<{
+				role?: string;
+				content?: Array<{ type: string; text?: string }>;
+			}>;
+		};
+		const hasHint = params.input?.some(
+			(entry) =>
+				entry.role === "developer" &&
+				entry.content?.some((block) => block.text === "# Juice: 0 !important"),
+		);
+		expect(params.reasoning).toBeUndefined();
+		expect(hasHint).toBe(false);
+	});
+
+	it("does not include a reasoning summary when only effort is provided", async () => {
+		const reasoningModel: Model<"openai-responses"> = {
+			...responsesModel,
+			reasoning: true,
+		};
+
+		for await (const _ of streamResponsesApiSdk(reasoningModel, baseContext, {
+			apiKey: "k",
+			reasoningEffort: "low",
+		})) {
+			// drain
+		}
+
+		const params = openaiMock.getLastParams() as {
+			reasoning?: { effort?: string; summary?: string };
+		};
+		expect(params.reasoning?.effort).toBe("low");
+		expect(params.reasoning?.summary).toBeUndefined();
+	});
 });
