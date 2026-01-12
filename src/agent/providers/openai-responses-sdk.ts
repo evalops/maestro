@@ -364,8 +364,11 @@ export async function* streamResponsesApiSdk(
 					currentBlock &&
 					currentBlock.type === "thinking"
 				) {
-					currentBlock.thinking =
+					const summaryText =
 						item.summary?.map((s) => s.text).join("\n\n") || "";
+					if (!currentBlock.thinking && summaryText) {
+						currentBlock.thinking = summaryText;
+					}
 					// Store the full reasoning item so we can send it back verbatim
 					// This is required for reasoning models like codex
 					currentBlock.thinkingSignature = JSON.stringify(item);
