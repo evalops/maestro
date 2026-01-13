@@ -72,6 +72,10 @@ const DEMO_HTML = `<!doctype html>
           lastSeq = 0;
           replayToken += 1;
           replayInFlight = false;
+          if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+          }
           if (ws) {
             connectToken += 1;
             ws.close();
