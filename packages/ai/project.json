@@ -1,0 +1,44 @@
+{
+	"name": "@evalops/ai",
+	"projectType": "library",
+	"root": "packages/ai",
+	"sourceRoot": "packages/ai/src",
+	"implicitDependencies": ["contracts", "tui"],
+	"targets": {
+		"clean": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/ai && bun run clean",
+				"forwardAllArgs": true
+			}
+		},
+		"build": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/ai && bun run build",
+				"forwardAllArgs": true
+			}
+		},
+		"dev": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/ai && bun run dev",
+				"forwardAllArgs": true
+			}
+		},
+		"check": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/ai && bun run check",
+				"forwardAllArgs": true
+			}
+		},
+		"test": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/ai && bun run test",
+				"forwardAllArgs": true
+			}
+		}
+	}
+}
