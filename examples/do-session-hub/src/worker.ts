@@ -147,7 +147,7 @@ const DEMO_HTML = `<!doctype html>
               typeof data.since === "number" ? data.since : since;
             const untilValue =
               typeof data.until === "number" ? data.until : replaySeq;
-            if (untilValue - sinceValue < limit) {
+            if (events.length === 0 || untilValue - sinceValue < limit) {
               return;
             }
             since = Math.max(replaySeq, untilValue);
@@ -213,14 +213,15 @@ const DEMO_HTML = `<!doctype html>
           }
           const code = event?.code ?? 1006;
           const noReconnectCodes = new Set([
-            1000,
-            1001,
-            1002,
-            1003,
-            1007,
-            1008,
-            1009,
-            1010,
+            1000, // Normal closure
+            1001, // Going Away
+            1002, // Protocol error
+            1003, // Unsupported data
+            1007, // Invalid frame payload
+            1008, // Policy violation
+            1009, // Message too big
+            1010, // Missing extension
+            // 1011 (Internal Error) omitted to allow reconnects on server errors
           ]);
           if (noReconnectCodes.has(code)) {
             log(\`[ws] closed (\${code}); not reconnecting\`);
@@ -230,8 +231,8 @@ const DEMO_HTML = `<!doctype html>
             log("[ws] reconnect limit reached; giving up");
             return;
           }
-          const delay = Math.min(1000 * 2 ** reconnectAttempts, 10000);
           reconnectAttempts += 1;
+          const delay = Math.min(1000 * 2 ** (reconnectAttempts - 1), 10000);
           log(\`[ws] disconnected, retrying in \${delay}ms...\`);
           reconnectTimer = setTimeout(connect, delay);
         };
