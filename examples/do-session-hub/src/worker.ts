@@ -51,6 +51,8 @@ const DEMO_HTML = `<!doctype html>
       let currentSessionId = "demo-session";
       let replayInFlight = false;
       let replayToken = 0;
+      let reconnectAttempts = 0;
+      const maxReconnectAttempts = 5;
 
       function log(message) {
         logEl.textContent += message + "\\n";
@@ -72,6 +74,7 @@ const DEMO_HTML = `<!doctype html>
           lastSeq = 0;
           replayToken += 1;
           replayInFlight = false;
+          reconnectAttempts = 0;
           if (reconnectTimer) {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
@@ -119,6 +122,7 @@ const DEMO_HTML = `<!doctype html>
               log(\`[replay] network error: \${error}\`);
               return;
             }
+            if (token !== replayToken) return;
             if (!res.ok) {
               log(\`Replay failed: \${res.status}\`);
               return;
@@ -130,6 +134,7 @@ const DEMO_HTML = `<!doctype html>
               log(\`[replay] invalid JSON: \${error}\`);
               return;
             }
+            if (token !== replayToken) return;
             const events = Array.isArray(data.events) ? data.events : [];
             for (const event of events) {
               if (token !== replayToken) return;
@@ -165,6 +170,7 @@ const DEMO_HTML = `<!doctype html>
         ws.onopen = () => {
           if (token !== connectToken) return;
           setStatus("Connected");
+          reconnectAttempts = 0;
           log("[ws] connected");
           replay();
         };
@@ -182,11 +188,28 @@ const DEMO_HTML = `<!doctype html>
             log(\`[ws] \${event.data}\`);
           }
         };
-        ws.onclose = () => {
+        ws.onclose = (event) => {
           if (token !== connectToken) return;
           setStatus("Disconnected");
-          log("[ws] disconnected, retrying...");
-          reconnectTimer = setTimeout(connect, 1000);
+          replayToken += 1;
+          replayInFlight = false;
+          if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+          }
+          const code = event?.code ?? 1006;
+          if (code === 1002 || code === 1003 || code === 1008) {
+            log(\`[ws] closed (\${code}); not reconnecting\`);
+            return;
+          }
+          if (reconnectAttempts >= maxReconnectAttempts) {
+            log("[ws] reconnect limit reached; giving up");
+            return;
+          }
+          const delay = Math.min(1000 * 2 ** reconnectAttempts, 10000);
+          reconnectAttempts += 1;
+          log(\`[ws] disconnected, retrying in \${delay}ms...\`);
+          reconnectTimer = setTimeout(connect, delay);
         };
         ws.onerror = () => {
           if (token !== connectToken) return;
