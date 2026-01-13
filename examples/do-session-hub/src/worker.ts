@@ -141,10 +141,14 @@ const DEMO_HTML = `<!doctype html>
               lastSeq = Math.max(lastSeq, event.seq || 0);
               log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
             }
-            if (events.length < limit) {
+            const sinceValue =
+              typeof data.since === "number" ? data.since : since;
+            const untilValue =
+              typeof data.until === "number" ? data.until : lastSeq;
+            if (untilValue - sinceValue < limit) {
               return;
             }
-            since = lastSeq;
+            since = Math.max(lastSeq, untilValue);
             page += 1;
           }
 
@@ -158,7 +162,11 @@ const DEMO_HTML = `<!doctype html>
 
       function connect() {
         const sessionId = normalizeSessionId();
-        if (ws) ws.close();
+        const previousWs = ws;
+        if (previousWs) {
+          ws = null;
+          previousWs.close();
+        }
         if (reconnectTimer) {
           clearTimeout(reconnectTimer);
           reconnectTimer = null;
