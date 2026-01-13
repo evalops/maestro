@@ -108,7 +108,8 @@ const DEMO_HTML = `<!doctype html>
         replayInFlight = true;
         const limit = 100;
         const maxPages = 5;
-        let since = lastSeq;
+        let replaySeq = lastSeq;
+        let since = replaySeq;
         let page = 0;
 
         try {
@@ -138,17 +139,18 @@ const DEMO_HTML = `<!doctype html>
             const events = Array.isArray(data.events) ? data.events : [];
             for (const event of events) {
               if (token !== replayToken) return;
+              replaySeq = Math.max(replaySeq, event.seq || 0);
               lastSeq = Math.max(lastSeq, event.seq || 0);
               log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
             }
             const sinceValue =
               typeof data.since === "number" ? data.since : since;
             const untilValue =
-              typeof data.until === "number" ? data.until : lastSeq;
+              typeof data.until === "number" ? data.until : replaySeq;
             if (untilValue - sinceValue < limit) {
               return;
             }
-            since = Math.max(lastSeq, untilValue);
+            since = Math.max(replaySeq, untilValue);
             page += 1;
           }
 
@@ -160,8 +162,13 @@ const DEMO_HTML = `<!doctype html>
         }
       }
 
-      function connect() {
+      function connect(options = {}) {
+        if (options.manual) {
+          reconnectAttempts = 0;
+        }
         const sessionId = normalizeSessionId();
+        const token = connectToken + 1;
+        connectToken = token;
         const previousWs = ws;
         if (previousWs) {
           ws = null;
@@ -171,7 +178,6 @@ const DEMO_HTML = `<!doctype html>
           clearTimeout(reconnectTimer);
           reconnectTimer = null;
         }
-        const token = ++connectToken;
         ws = new WebSocket(wsUrl(sessionId));
         setStatus("Connecting...");
 
@@ -206,7 +212,17 @@ const DEMO_HTML = `<!doctype html>
             reconnectTimer = null;
           }
           const code = event?.code ?? 1006;
-          if (code === 1002 || code === 1003 || code === 1008) {
+          const noReconnectCodes = new Set([
+            1000,
+            1001,
+            1002,
+            1003,
+            1007,
+            1008,
+            1009,
+            1010,
+          ]);
+          if (noReconnectCodes.has(code)) {
             log(\`[ws] closed (\${code}); not reconnecting\`);
             return;
           }
@@ -225,7 +241,7 @@ const DEMO_HTML = `<!doctype html>
         };
       }
 
-      connectBtn.addEventListener("click", connect);
+      connectBtn.addEventListener("click", () => connect({ manual: true }));
       replayBtn.addEventListener("click", replay);
       sendBtn.addEventListener("click", async () => {
         const sessionId = normalizeSessionId();
