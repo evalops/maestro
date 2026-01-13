@@ -84,6 +84,7 @@ Notes:
 ### HTTP (Runner -> Hub)
 
 - `POST /sessions/:id/events` ingest event (tool calls, deltas, usage updates)
+- `GET /sessions/:id/events?since=<seq>&limit=<n>` replay events
 - `POST /sessions/:id/state` update session metadata
 - `GET /sessions/:id/state` snapshot fetch for reconnection
 
@@ -128,6 +129,7 @@ Notes:
   detect replacement.
 - **Large payloads**: cap payload size; spill to object storage and send references.
 - **Hibernation blocked**: avoid timers/fetches in DO; use alarms for scheduled tasks.
+- **Event gaps**: if `since` is too old, respond with a snapshot + gap marker to force a resync.
 
 ## Rollout Plan
 

@@ -22,6 +22,7 @@ Minimal Durable Objects session hub example for Composer.
 2. `wrangler dev` from this directory
 3. Connect a WebSocket client to `/sessions/<id>/ws`
 4. POST events to `/sessions/<id>/events`
+5. Replay events with `GET /sessions/<id>/events?since=<seq>&limit=<n>`
 
 ## Notes
 

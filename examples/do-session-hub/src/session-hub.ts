@@ -65,6 +65,33 @@ export class SessionHub {
 	}
 
 	private async handleEvents(request: Request): Promise<Response> {
+		if (request.method === "GET") {
+			await this.ensureLoaded();
+			const url = new URL(request.url);
+			const sinceRaw = url.searchParams.get("since") ?? "0";
+			const limitRaw = url.searchParams.get("limit") ?? "100";
+			const since = Number.parseInt(sinceRaw, 10);
+			const limit = Math.min(
+				Math.max(Number.parseInt(limitRaw, 10) || 100, 1),
+				100,
+			);
+			const start = Number.isFinite(since) ? since + 1 : 1;
+			const end = Math.min(this.seq, start + limit - 1);
+			const events: HubEvent[] = [];
+
+			for (let i = start; i <= end; i++) {
+				const event = await this.state.storage.get<HubEvent>(`event:${i}`);
+				if (event) events.push(event);
+			}
+
+			return Response.json({
+				ok: true,
+				since: Number.isFinite(since) ? since : 0,
+				until: end,
+				events,
+			});
+		}
+
 		if (request.method !== "POST") {
 			return new Response("Method not allowed", { status: 405 });
 		}
