@@ -50,6 +50,7 @@ const DEMO_HTML = `<!doctype html>
       let connectToken = 0;
       let currentSessionId = "demo-session";
       let replayInFlight = false;
+      let replayToken = 0;
 
       function log(message) {
         logEl.textContent += message + "\\n";
@@ -69,6 +70,8 @@ const DEMO_HTML = `<!doctype html>
         if (sessionId !== currentSessionId) {
           currentSessionId = sessionId;
           lastSeq = 0;
+          replayToken += 1;
+          replayInFlight = false;
           if (ws) {
             connectToken += 1;
             ws.close();
@@ -95,6 +98,7 @@ const DEMO_HTML = `<!doctype html>
         }
         replayInFlight = true;
         const sessionId = normalizeSessionId();
+        const token = ++replayToken;
         const limit = 100;
         const maxPages = 5;
         let since = lastSeq;
@@ -102,6 +106,7 @@ const DEMO_HTML = `<!doctype html>
 
         try {
           while (page < maxPages) {
+            if (token !== replayToken) return;
             const url = \`\${eventsUrl(sessionId)}?since=\${since}&limit=\${limit}\`;
             let res;
             try {
@@ -123,6 +128,7 @@ const DEMO_HTML = `<!doctype html>
             }
             const events = Array.isArray(data.events) ? data.events : [];
             for (const event of events) {
+              if (token !== replayToken) return;
               lastSeq = Math.max(lastSeq, event.seq || 0);
               log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
             }
@@ -135,7 +141,9 @@ const DEMO_HTML = `<!doctype html>
 
           log("[replay] truncated; click Replay again to continue.");
         } finally {
-          replayInFlight = false;
+          if (token === replayToken) {
+            replayInFlight = false;
+          }
         }
       }
 
