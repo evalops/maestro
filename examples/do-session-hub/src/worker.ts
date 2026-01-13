@@ -103,9 +103,9 @@ const DEMO_HTML = `<!doctype html>
           log("[replay] already running");
           return;
         }
-        replayInFlight = true;
         const sessionId = normalizeSessionId();
         const token = ++replayToken;
+        replayInFlight = true;
         const limit = 100;
         const maxPages = 5;
         let since = lastSeq;
