@@ -71,12 +71,14 @@ const parseToolCallArgs = (
 interface ExtendedToolCall extends ComposerToolCall {
 	startTime?: number;
 	endTime?: number;
+	argsTruncated?: boolean;
 }
 
 interface ActiveToolInfo {
 	name: string;
 	args: unknown;
 	index: number;
+	argsTruncated?: boolean;
 }
 
 /** Extended message type with thinking support for streaming */
@@ -2171,6 +2173,7 @@ export class ComposerChat extends LitElement {
 									!Array.isArray(msgEvent.toolCallArgs)
 										? (msgEvent.toolCallArgs as Record<string, unknown>)
 										: undefined;
+								const argsTruncated = Boolean(msgEvent.toolCallArgsTruncated);
 								const toolCallId =
 									partial?.type === "toolCall"
 										? partial.id
@@ -2196,6 +2199,7 @@ export class ComposerChat extends LitElement {
 										name,
 										status: "pending",
 										args,
+										argsTruncated,
 										startTime: Date.now(),
 									};
 									if (existingIndex >= 0) {
@@ -2213,6 +2217,7 @@ export class ComposerChat extends LitElement {
 											existingIndex >= 0
 												? existingIndex
 												: assistantMessage.tools.length - 1,
+										argsTruncated,
 									});
 									this.messages = [...this.messages];
 								}
@@ -2226,6 +2231,7 @@ export class ComposerChat extends LitElement {
 									!Array.isArray(msgEvent.toolCallArgs)
 										? (msgEvent.toolCallArgs as Record<string, unknown>)
 										: undefined;
+								const argsTruncated = Boolean(msgEvent.toolCallArgsTruncated);
 								const toolCallId =
 									partial?.type === "toolCall"
 										? partial.id
@@ -2237,6 +2243,8 @@ export class ComposerChat extends LitElement {
 									} else if (slimArgs) {
 										toolCallArgsById.set(toolCallId, slimArgs);
 										args = slimArgs;
+									} else if (argsTruncated) {
+										args = toolCallArgsById.get(toolCallId) ?? {};
 									} else {
 										const current = toolCallJsonById.get(toolCallId) ?? "";
 										const next = current + msgEvent.delta;
@@ -2259,6 +2267,8 @@ export class ComposerChat extends LitElement {
 											...existingTool,
 											args,
 											status: "pending",
+											argsTruncated:
+												existingTool.argsTruncated || argsTruncated,
 										};
 									} else {
 										assistantMessage.tools.push({
@@ -2269,6 +2279,7 @@ export class ComposerChat extends LitElement {
 													: msgEvent.toolCallName || "tool",
 											status: "pending",
 											args,
+											argsTruncated,
 										});
 									}
 									activeTools.set(toolCallId, {
@@ -2281,6 +2292,7 @@ export class ComposerChat extends LitElement {
 											existingIndex >= 0
 												? existingIndex
 												: assistantMessage.tools.length - 1,
+										argsTruncated,
 									});
 									this.messages = [...this.messages];
 								}
@@ -2297,6 +2309,7 @@ export class ComposerChat extends LitElement {
 									name: toolCall.name,
 									status: "pending",
 									args: toolCall.arguments,
+									argsTruncated: false,
 								};
 								if (existingIndex >= 0) {
 									assistantMessage.tools[existingIndex] = {

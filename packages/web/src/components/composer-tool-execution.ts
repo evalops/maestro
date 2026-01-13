@@ -208,6 +208,19 @@ export class ComposerToolExecution extends LitElement {
 		flex-wrap: wrap;
 	}
 
+	.args-truncated {
+		font-size: 0.6rem;
+		color: #f2cc60;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.args-truncated-note {
+		margin-bottom: 0.5rem;
+		font-size: 0.7rem;
+		color: #8b949e;
+	}
+
 	.tool-execution.batch .tool-body {
 		padding: 0.6rem 0.75rem;
 	}
@@ -453,6 +466,7 @@ export class ComposerToolExecution extends LitElement {
 	@property({ type: String }) toolName = "";
 	@property({ type: String }) toolCallId = "";
 	@property({ type: Object }) args: Record<string, unknown> = {};
+	@property({ type: Boolean }) argsTruncated = false;
 	@property({ type: Object }) result: ToolResult | string | null = null;
 	@property({ type: Boolean }) isError = false;
 	@property({ type: Boolean }) isRunning = true;
@@ -919,6 +933,7 @@ export class ComposerToolExecution extends LitElement {
 									? html`<span class="metadata-value">${formattedArgs[0]!.key}: ${this.formatValue(formattedArgs[0]!.value)}</span>`
 									: ""
 							}
+							${this.argsTruncated ? html`<span class="args-truncated">Args truncated</span>` : ""}
 							${
 								!this.isRunning
 									? html`<span class="metadata-value">${this.formatDuration()}</span>`
@@ -928,6 +943,13 @@ export class ComposerToolExecution extends LitElement {
 					`
 						: html`
 						<div class="tool-body">
+							${
+								this.argsTruncated
+									? html`<div class="args-truncated-note">
+											Arguments truncated in slim stream.
+										</div>`
+									: ""
+							}
 							${
 								formattedArgs.length > 0
 									? html`
