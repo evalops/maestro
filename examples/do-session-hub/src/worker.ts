@@ -47,6 +47,8 @@ const DEMO_HTML = `<!doctype html>
       let ws = null;
       let lastSeq = 0;
       let reconnectTimer = null;
+      let connectToken = 0;
+      let currentSessionId = "demo-session";
 
       function log(message) {
         logEl.textContent += message + "\\n";
@@ -57,41 +59,89 @@ const DEMO_HTML = `<!doctype html>
         statusEl.textContent = text;
       }
 
-      function wsUrl() {
-        const base = location.origin.replace(/^http/, "ws");
-        return \`\${base}/sessions/\${encodeURIComponent(sessionInput.value)}/ws?client=demo\`;
+      function normalizeSessionId() {
+        const trimmed = sessionInput.value.trim();
+        const sessionId = trimmed || "demo-session";
+        if (!trimmed) {
+          sessionInput.value = sessionId;
+        }
+        if (sessionId !== currentSessionId) {
+          currentSessionId = sessionId;
+          lastSeq = 0;
+        }
+        return sessionId;
       }
 
-      function eventsUrl() {
-        return \`\${location.origin}/sessions/\${encodeURIComponent(sessionInput.value)}/events\`;
+      function wsUrl(sessionId) {
+        const base = location.origin.replace(/^http/, "ws");
+        return \`\${base}/sessions/\${encodeURIComponent(sessionId)}/ws?client=demo\`;
+      }
+
+      function eventsUrl(sessionId) {
+        return \`\${location.origin}/sessions/\${encodeURIComponent(sessionId)}/events\`;
       }
 
       async function replay() {
-        const url = \`\${eventsUrl()}?since=\${lastSeq}&limit=100\`;
-        const res = await fetch(url);
-        if (!res.ok) {
-          log(\`Replay failed: \${res.status}\`);
-          return;
+        const sessionId = normalizeSessionId();
+        const limit = 100;
+        const maxPages = 5;
+        let since = lastSeq;
+        let page = 0;
+
+        while (page < maxPages) {
+          const url = \`\${eventsUrl(sessionId)}?since=\${since}&limit=\${limit}\`;
+          let res;
+          try {
+            res = await fetch(url);
+          } catch (error) {
+            log(\`[replay] network error: \${error}\`);
+            return;
+          }
+          if (!res.ok) {
+            log(\`Replay failed: \${res.status}\`);
+            return;
+          }
+          let data;
+          try {
+            data = await res.json();
+          } catch (error) {
+            log(\`[replay] invalid JSON: \${error}\`);
+            return;
+          }
+          const events = Array.isArray(data.events) ? data.events : [];
+          for (const event of events) {
+            lastSeq = Math.max(lastSeq, event.seq || 0);
+            log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
+          }
+          if (events.length < limit) {
+            return;
+          }
+          since = lastSeq;
+          page += 1;
         }
-        const data = await res.json();
-        for (const event of data.events || []) {
-          lastSeq = Math.max(lastSeq, event.seq || 0);
-          log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
-        }
+
+        log("[replay] truncated; click Replay again to continue.");
       }
 
       function connect() {
+        const sessionId = normalizeSessionId();
         if (ws) ws.close();
-        if (reconnectTimer) clearTimeout(reconnectTimer);
-        ws = new WebSocket(wsUrl());
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        const token = ++connectToken;
+        ws = new WebSocket(wsUrl(sessionId));
         setStatus("Connecting...");
 
         ws.onopen = () => {
+          if (token !== connectToken) return;
           setStatus("Connected");
           log("[ws] connected");
           replay();
         };
         ws.onmessage = (event) => {
+          if (token !== connectToken) return;
           try {
             const data = JSON.parse(event.data);
             if (data.type === "event") {
@@ -105,11 +155,13 @@ const DEMO_HTML = `<!doctype html>
           }
         };
         ws.onclose = () => {
+          if (token !== connectToken) return;
           setStatus("Disconnected");
           log("[ws] disconnected, retrying...");
           reconnectTimer = setTimeout(connect, 1000);
         };
         ws.onerror = () => {
+          if (token !== connectToken) return;
           log("[ws] error");
         };
       }
@@ -117,15 +169,22 @@ const DEMO_HTML = `<!doctype html>
       connectBtn.addEventListener("click", connect);
       replayBtn.addEventListener("click", replay);
       sendBtn.addEventListener("click", async () => {
+        const sessionId = normalizeSessionId();
         const text = payloadInput.value.trim();
         if (!text) return;
         let payload = text;
         try { payload = JSON.parse(text); } catch {}
-        const res = await fetch(eventsUrl(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
+        let res;
+        try {
+          res = await fetch(eventsUrl(sessionId), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+        } catch (error) {
+          log(\`[send] network error: \${error}\`);
+          return;
+        }
         if (!res.ok) {
           log(\`Send failed: \${res.status}\`);
         }
