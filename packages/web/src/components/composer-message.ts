@@ -487,6 +487,7 @@ export class ComposerMessage extends LitElement {
 		name: string;
 		status: string;
 		args?: Record<string, unknown>;
+		argsTruncated?: boolean;
 		result?: unknown;
 	}> = [];
 	@property({ attribute: false })
@@ -750,6 +751,7 @@ export class ComposerMessage extends LitElement {
 										tool.id || tool.toolCallId || `${tool.name}-${index}`
 									}
 									.args=${tool.args || {}}
+									.argsTruncated=${Boolean(tool.argsTruncated)}
 									.result=${tool.result || null}
 									.isError=${tool.status === "error"}
 									.isRunning=${tool.status === "running" || tool.status === "pending"}
