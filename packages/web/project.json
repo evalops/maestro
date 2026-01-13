@@ -3,6 +3,7 @@
 	"projectType": "application",
 	"root": "packages/web",
 	"sourceRoot": "packages/web/src",
+	"implicitDependencies": ["contracts"],
 	"targets": {
 		"build": {
 			"executor": "nx:run-commands",
