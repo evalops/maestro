@@ -49,6 +49,7 @@ const DEMO_HTML = `<!doctype html>
       let reconnectTimer = null;
       let connectToken = 0;
       let currentSessionId = "demo-session";
+      let replayInFlight = false;
 
       function log(message) {
         logEl.textContent += message + "\\n";
@@ -68,6 +69,12 @@ const DEMO_HTML = `<!doctype html>
         if (sessionId !== currentSessionId) {
           currentSessionId = sessionId;
           lastSeq = 0;
+          if (ws) {
+            connectToken += 1;
+            ws.close();
+            ws = null;
+            setStatus("Disconnected");
+          }
         }
         return sessionId;
       }
@@ -82,45 +89,54 @@ const DEMO_HTML = `<!doctype html>
       }
 
       async function replay() {
+        if (replayInFlight) {
+          log("[replay] already running");
+          return;
+        }
+        replayInFlight = true;
         const sessionId = normalizeSessionId();
         const limit = 100;
         const maxPages = 5;
         let since = lastSeq;
         let page = 0;
 
-        while (page < maxPages) {
-          const url = \`\${eventsUrl(sessionId)}?since=\${since}&limit=\${limit}\`;
-          let res;
-          try {
-            res = await fetch(url);
-          } catch (error) {
-            log(\`[replay] network error: \${error}\`);
-            return;
+        try {
+          while (page < maxPages) {
+            const url = \`\${eventsUrl(sessionId)}?since=\${since}&limit=\${limit}\`;
+            let res;
+            try {
+              res = await fetch(url);
+            } catch (error) {
+              log(\`[replay] network error: \${error}\`);
+              return;
+            }
+            if (!res.ok) {
+              log(\`Replay failed: \${res.status}\`);
+              return;
+            }
+            let data;
+            try {
+              data = await res.json();
+            } catch (error) {
+              log(\`[replay] invalid JSON: \${error}\`);
+              return;
+            }
+            const events = Array.isArray(data.events) ? data.events : [];
+            for (const event of events) {
+              lastSeq = Math.max(lastSeq, event.seq || 0);
+              log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
+            }
+            if (events.length < limit) {
+              return;
+            }
+            since = lastSeq;
+            page += 1;
           }
-          if (!res.ok) {
-            log(\`Replay failed: \${res.status}\`);
-            return;
-          }
-          let data;
-          try {
-            data = await res.json();
-          } catch (error) {
-            log(\`[replay] invalid JSON: \${error}\`);
-            return;
-          }
-          const events = Array.isArray(data.events) ? data.events : [];
-          for (const event of events) {
-            lastSeq = Math.max(lastSeq, event.seq || 0);
-            log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
-          }
-          if (events.length < limit) {
-            return;
-          }
-          since = lastSeq;
-          page += 1;
-        }
 
-        log("[replay] truncated; click Replay again to continue.");
+          log("[replay] truncated; click Replay again to continue.");
+        } finally {
+          replayInFlight = false;
+        }
       }
 
       function connect() {
