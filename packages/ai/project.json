@@ -17,7 +17,8 @@
 			"options": {
 				"command": "cd packages/ai && bun run build",
 				"forwardAllArgs": true
-			}
+			},
+			"dependsOn": ["^build"]
 		},
 		"dev": {
 			"executor": "nx:run-commands",
