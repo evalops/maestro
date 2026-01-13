@@ -1,0 +1,10 @@
+name = "composer-do-session-hub"
+main = "src/worker.ts"
+compatibility_date = "2025-12-01"
+
+[durable_objects]
+bindings = [{ name = "SESSION_HUB", class_name = "SessionHub" }]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SessionHub"]
