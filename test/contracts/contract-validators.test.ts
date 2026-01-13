@@ -94,6 +94,19 @@ describe("contracts validators", () => {
 		});
 		expect(deltaEvent.ok).toBe(true);
 
+		const truncatedEvent = validateSchema(ComposerAgentEventSchema, {
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "toolcall_delta",
+				contentIndex: 0,
+				delta: '{"path":"/tmp/large.txt"}',
+				toolCallId: "call_2",
+				toolCallName: "read_file",
+				toolCallArgsTruncated: true,
+			},
+		});
+		expect(truncatedEvent.ok).toBe(true);
+
 		const endEvent = validateSchema(ComposerAgentEventSchema, {
 			type: "message_update",
 			assistantMessageEvent: {
