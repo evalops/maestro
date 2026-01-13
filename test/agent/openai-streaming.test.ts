@@ -106,6 +106,10 @@ describe("OpenAI streaming", () => {
 			AssistantMessageEvent,
 			{ type: "toolcall_end" }
 		>;
+		const toolDelta = events.find(
+			(ev) => ev.type === "toolcall_delta",
+		) as Extract<AssistantMessageEvent, { type: "toolcall_delta" }>;
+		expect(toolDelta.delta).toBe('{"path":"/tmp/test.txt"}');
 		expect(toolEnd.toolCall.arguments).toEqual({ path: "/tmp/test.txt" });
 	});
 

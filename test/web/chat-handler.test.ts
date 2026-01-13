@@ -250,4 +250,92 @@ describe("handleChat", () => {
 			path: "/tmp/one.txt",
 		});
 	});
+
+	it("marks slim toolcall args as truncated when payload is large", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = { "x-composer-slim-events": "true" };
+		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
+
+		const res = makeRes();
+		const largePayload = "x".repeat(5000);
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async () => {
+				type EventCallback = (e: unknown) => void;
+				let subscriber: EventCallback | undefined;
+				return {
+					state: {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					},
+					subscribe: (fn: EventCallback) => {
+						subscriber = fn;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt: async () => {
+						subscriber?.({
+							type: "message_update",
+							message: { role: "assistant", content: [] },
+							assistantMessageEvent: {
+								type: "toolcall_start",
+								contentIndex: 0,
+								partial: {
+									role: "assistant",
+									content: [
+										{
+											type: "toolCall",
+											id: "call_big",
+											name: "write_file",
+											arguments: { data: largePayload },
+										},
+									],
+								},
+							},
+						});
+						subscriber?.({
+							type: "message_end",
+							message: { role: "assistant" },
+						});
+					},
+					abort: () => {},
+				} as unknown as Agent;
+			},
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		const events = res.body
+			.split("\n\n")
+			.map((line) => line.trim())
+			.filter((line) => line.startsWith("data: "))
+			.map((line) => line.replace(/^data:\s*/, ""))
+			.filter((payload) => payload !== "[DONE]")
+			.map((payload) => JSON.parse(payload));
+		const update = events.find((event) => event.type === "message_update");
+
+		expect(update).toBeTruthy();
+		expect(update.assistantMessageEvent.toolCallArgs).toBeUndefined();
+		expect(update.assistantMessageEvent.toolCallArgsTruncated).toBe(true);
+	});
 });

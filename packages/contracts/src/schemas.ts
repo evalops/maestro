@@ -251,6 +251,7 @@ export const ComposerAssistantMessageEventSchema = Type.Union([
 		toolCallId: Type.Optional(Type.String()),
 		toolCallName: Type.Optional(Type.String()),
 		toolCallArgs: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+		toolCallArgsTruncated: Type.Optional(Type.Boolean()),
 	}),
 	Type.Object({
 		type: Type.Literal("toolcall_delta"),
@@ -260,6 +261,7 @@ export const ComposerAssistantMessageEventSchema = Type.Union([
 		toolCallId: Type.Optional(Type.String()),
 		toolCallName: Type.Optional(Type.String()),
 		toolCallArgs: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+		toolCallArgsTruncated: Type.Optional(Type.Boolean()),
 	}),
 	Type.Object({
 		type: Type.Literal("toolcall_end"),

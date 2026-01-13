@@ -350,6 +350,13 @@ export async function handleChat(
 		const slimHeader = req.headers["x-composer-slim-events"];
 		const slimValue = Array.isArray(slimHeader) ? slimHeader[0] : slimHeader;
 		const slimEvents = slimValue === "1" || slimValue === "true";
+		const slimToolCallArgsLimit = (() => {
+			const raw = process.env.COMPOSER_SLIM_TOOLCALL_ARGS_MAX_BYTES;
+			if (!raw) return 4096;
+			const parsed = Number(raw);
+			if (!Number.isFinite(parsed) || parsed <= 0) return 4096;
+			return Math.min(parsed, 1024 * 1024);
+		})();
 		const extractToolCallInfo = (assistantEvent: {
 			contentIndex?: number;
 			partial?: { content?: unknown[] };
@@ -357,6 +364,7 @@ export async function handleChat(
 			toolCallId?: string;
 			toolCallName?: string;
 			toolCallArgs?: Record<string, unknown>;
+			toolCallArgsTruncated?: boolean;
 		} => {
 			const assistantMessageEvent = assistantEvent.partial;
 			const contentIndex = assistantEvent.contentIndex;
@@ -385,6 +393,24 @@ export async function handleChat(
 				maybeArgs && typeof maybeArgs === "object" && !Array.isArray(maybeArgs)
 					? maybeArgs
 					: undefined;
+			if (toolCallArgs) {
+				try {
+					const size = Buffer.byteLength(JSON.stringify(toolCallArgs), "utf8");
+					if (size > slimToolCallArgsLimit) {
+						return {
+							toolCallId: maybeToolCall.id,
+							toolCallName: maybeToolCall.name,
+							toolCallArgsTruncated: true,
+						};
+					}
+				} catch {
+					return {
+						toolCallId: maybeToolCall.id,
+						toolCallName: maybeToolCall.name,
+						toolCallArgsTruncated: true,
+					};
+				}
+			}
 			return {
 				toolCallId: maybeToolCall.id,
 				toolCallName: maybeToolCall.name,

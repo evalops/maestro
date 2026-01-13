@@ -427,6 +427,7 @@ export type ComposerAssistantMessageEvent =
 			toolCallId?: string;
 			toolCallName?: string;
 			toolCallArgs?: Record<string, unknown>;
+			toolCallArgsTruncated?: boolean;
 	  }
 	| {
 			type: "toolcall_delta";
@@ -436,6 +437,7 @@ export type ComposerAssistantMessageEvent =
 			toolCallId?: string;
 			toolCallName?: string;
 			toolCallArgs?: Record<string, unknown>;
+			toolCallArgsTruncated?: boolean;
 	  }
 	| {
 			type: "toolcall_end";
