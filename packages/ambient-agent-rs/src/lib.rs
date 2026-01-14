@@ -63,5 +63,6 @@ pub mod prelude {
     pub use crate::cascader::Cascader;
     pub use crate::checkpoint::CheckpointManager;
     pub use crate::learner::Learner;
+    pub use crate::executor::Executor;
     pub use crate::daemon::AmbientDaemon;
 }

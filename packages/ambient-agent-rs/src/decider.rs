@@ -5,7 +5,14 @@
 
 use crate::types::*;
 use chrono::Utc;
+use regex::Regex;
+use std::sync::LazyLock;
 use tracing::info;
+
+/// Static regex pattern for identifying files in text
+static FILE_PATH_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"`([^`]+\.[a-z]+)`").unwrap()
+});
 
 /// Configuration for the Decider
 #[derive(Debug, Clone)]
@@ -532,9 +539,8 @@ impl Decider {
         let mut files = vec![];
         let body = event.payload.body.as_deref().unwrap_or("");
 
-        // Extract file paths from backticks
-        let re = regex::Regex::new(r"`([^`]+\.[a-z]+)`").unwrap();
-        for cap in re.captures_iter(body) {
+        // Extract file paths from backticks using static pattern
+        for cap in FILE_PATH_PATTERN.captures_iter(body) {
             if let Some(m) = cap.get(1) {
                 files.push(m.as_str().to_string());
             }

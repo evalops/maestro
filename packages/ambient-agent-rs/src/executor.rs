@@ -5,12 +5,25 @@
 
 use crate::cascader::RoutingResult;
 use crate::types::*;
+use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::LazyLock;
 use tokio::fs;
 use tokio::process::Command;
 use tracing::{debug, error, warn};
+
+/// Static regex patterns to avoid recompilation in hot path
+static FILE_CHANGE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?s)<file_change>\s*<action>(\w+)</action>\s*<path>([^<]+)</path>(?:\s*<content>(.*?)</content>)?\s*</file_change>"
+    ).unwrap()
+});
+
+static MARKDOWN_FILE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?s)```(?:\w+)?\n// File: ([^\n]+)\n(.*?)```").unwrap()
+});
 
 /// Configuration for the executor
 #[derive(Debug, Clone)]
@@ -324,12 +337,8 @@ Think step by step about the implementation before writing code."#;
     fn parse_response(&self, response: &str) -> Vec<ParsedChange> {
         let mut changes = vec![];
 
-        // Parse <file_change> blocks
-        let re = regex::Regex::new(
-            r"(?s)<file_change>\s*<action>(\w+)</action>\s*<path>([^<]+)</path>(?:\s*<content>(.*?)</content>)?\s*</file_change>"
-        ).unwrap();
-
-        for cap in re.captures_iter(response) {
+        // Parse <file_change> blocks using static pattern
+        for cap in FILE_CHANGE_PATTERN.captures_iter(response) {
             let action = cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
             let file_path = cap.get(2).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
             let content = cap.get(3).map(|m| m.as_str().trim().to_string());
@@ -343,12 +352,11 @@ Think step by step about the implementation before writing code."#;
             }
         }
 
-        // Fallback: try to parse markdown code blocks with file paths
+        // Fallback: try to parse markdown code blocks with file paths using static pattern
         if changes.is_empty() {
             debug!("No <file_change> blocks found, trying markdown fallback");
-            let md_re = regex::Regex::new(r"(?s)```(?:\w+)?\n// File: ([^\n]+)\n(.*?)```").unwrap();
 
-            for cap in md_re.captures_iter(response) {
+            for cap in MARKDOWN_FILE_PATTERN.captures_iter(response) {
                 let file_path = cap.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
                 let content = cap.get(2).map(|m| m.as_str().to_string());
 

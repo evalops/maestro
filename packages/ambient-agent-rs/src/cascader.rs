@@ -6,6 +6,7 @@
 use crate::types::*;
 use chrono::Utc;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 /// Default model tiers
 fn default_tiers() -> Vec<ModelTier> {
@@ -50,8 +51,8 @@ fn default_tiers() -> Vec<ModelTier> {
     ]
 }
 
-/// Task type to capability mapping
-fn task_type_capabilities() -> HashMap<TaskType, Vec<&'static str>> {
+/// Static task type to capability mapping to avoid recreation on every call
+static TASK_TYPE_CAPABILITIES: LazyLock<HashMap<TaskType, Vec<&'static str>>> = LazyLock::new(|| {
     let mut map = HashMap::new();
     map.insert(TaskType::Implement, vec!["feature-impl", "architecture"]);
     map.insert(TaskType::Fix, vec!["bug-fix", "simple-refactor", "complex-debug"]);
@@ -60,7 +61,7 @@ fn task_type_capabilities() -> HashMap<TaskType, Vec<&'static str>> {
     map.insert(TaskType::Document, vec!["doc-update"]);
     map.insert(TaskType::Security, vec!["security-fix", "complex-debug"]);
     map
-}
+});
 
 /// Routing result
 #[derive(Debug, Clone)]
@@ -121,8 +122,7 @@ impl Cascader {
     pub fn route(&mut self, task: &Task, context: &TaskContext) -> RoutingResult {
         self.stats.total_routings += 1;
 
-        let capabilities = task_type_capabilities();
-        let needed = capabilities.get(&context.task_type).cloned().unwrap_or_default();
+        let needed = TASK_TYPE_CAPABILITIES.get(&context.task_type).cloned().unwrap_or_default();
 
         // Find eligible tiers
         let mut eligible: Vec<_> = self
