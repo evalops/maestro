@@ -262,6 +262,12 @@ impl CheckpointManager {
     /// Cleanup old committed/rolled-back checkpoints
     async fn cleanup_old_checkpoints(&mut self) -> anyhow::Result<()> {
         // Keep only recent checkpoints
+        // Only cleanup if we exceed max checkpoints
+        if self.active_checkpoints.len() <= self.max_checkpoints {
+            return Ok(());
+        }
+
+        // Collect completed checkpoints that can be removed
         let to_remove: Vec<_> = self.active_checkpoints
             .iter()
             .filter(|(_, c)| {
@@ -270,14 +276,16 @@ impl CheckpointManager {
             .map(|(id, _)| id.clone())
             .collect();
 
-        if to_remove.len() + self.active_checkpoints.len() > self.max_checkpoints {
-            for id in to_remove.iter().take(to_remove.len().saturating_sub(self.max_checkpoints / 2)) {
-                self.active_checkpoints.remove(id);
+        // Calculate how many we need to remove to get back under limit
+        let excess = self.active_checkpoints.len().saturating_sub(self.max_checkpoints);
+        let remove_count = excess.min(to_remove.len());
 
-                // Remove from disk
-                let file_path = self.storage_dir.join(format!("{}.json", id));
-                let _ = fs::remove_file(file_path).await;
-            }
+        for id in to_remove.iter().take(remove_count) {
+            self.active_checkpoints.remove(id);
+
+            // Remove from disk
+            let file_path = self.storage_dir.join(format!("{}.json", id));
+            let _ = fs::remove_file(file_path).await;
         }
 
         Ok(())
