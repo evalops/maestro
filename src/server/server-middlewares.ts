@@ -100,7 +100,7 @@ export function createRateLimitMiddleware(
 	trustProxy = false,
 	trustProxyHops = 1,
 ): Middleware {
-	return (req, res, next) => {
+	return async (req, res, next) => {
 		const pathname = getPathname(req);
 		// Skip for static assets and critical health/metrics endpoints
 		const isRateLimited =
@@ -110,7 +110,9 @@ export function createRateLimitMiddleware(
 
 		if (isRateLimited) {
 			const ip = getClientIp(req, trustProxy, trustProxyHops);
-			const { allowed, remaining, reset, limit } = rateLimiter.check(ip);
+			// Use async check to support Redis for distributed rate limiting
+			const { allowed, remaining, reset, limit } =
+				await rateLimiter.checkAsync(ip);
 
 			if (!allowed) {
 				res.writeHead(429, {
@@ -145,7 +147,7 @@ export function createTieredRateLimitMiddleware(
 	trustProxy = false,
 	trustProxyHops = 1,
 ): Middleware {
-	return (req, res, next) => {
+	return async (req, res, next) => {
 		const pathname = getPathname(req);
 		// Skip for static assets and critical health/metrics endpoints
 		const isRateLimited =
@@ -155,10 +157,9 @@ export function createTieredRateLimitMiddleware(
 
 		if (isRateLimited) {
 			const ip = getClientIp(req, trustProxy, trustProxyHops);
-			const { allowed, remaining, reset, limit } = rateLimiter.check(
-				ip,
-				pathname,
-			);
+			// Use async check to support Redis for distributed rate limiting
+			const { allowed, remaining, reset, limit } =
+				await rateLimiter.checkAsync(ip, pathname);
 
 			if (!allowed) {
 				res.writeHead(429, {

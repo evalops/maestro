@@ -489,7 +489,50 @@ export class TieredRateLimiter {
 	}
 
 	/**
-	 * Check rate limit for a specific IP and endpoint.
+	 * Check rate limit for a specific IP and endpoint (async, uses Redis if available).
+	 * Returns the most restrictive result between global and endpoint limits.
+	 *
+	 * Uses peek-then-consume pattern to avoid token leaks:
+	 * - First peeks at both limits without consuming
+	 * - Only consumes tokens if both limits allow the request
+	 */
+	async checkAsync(ip: string, endpoint: string): Promise<RateLimitResult> {
+		// Peek at global limit first (no consumption)
+		const globalPeek = this.globalLimiter.peek(ip);
+		if (!globalPeek.allowed) {
+			return globalPeek;
+		}
+
+		// Find matching endpoint limiter and pattern
+		const match = this.findEndpointLimiter(endpoint);
+		if (!match) {
+			// No endpoint limit - consume global token and return
+			return this.globalLimiter.checkAsync(ip);
+		}
+
+		// Use the matched pattern (not full path) for the key so all sub-routes
+		// share the same bucket. E.g., /api/chat/approval uses key "ip:/api/chat"
+		const endpointKey = `${ip}:${match.pattern}`;
+		const endpointPeek = match.limiter.peek(endpointKey);
+		if (!endpointPeek.allowed) {
+			// Endpoint limit would reject - return without consuming global token
+			return endpointPeek;
+		}
+
+		// Both limits allow - consume tokens from both
+		const [globalResult, endpointResult] = await Promise.all([
+			this.globalLimiter.checkAsync(ip),
+			match.limiter.checkAsync(endpointKey),
+		]);
+
+		// Return the more restrictive result
+		return globalResult.remaining <= endpointResult.remaining
+			? globalResult
+			: endpointResult;
+	}
+
+	/**
+	 * Check rate limit for a specific IP and endpoint (sync, memory only).
 	 * Returns the most restrictive result between global and endpoint limits.
 	 *
 	 * Uses peek-then-consume pattern to avoid token leaks:

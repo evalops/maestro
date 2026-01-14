@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { requireApiAuth } from "../authz.js";
 import { sendJson } from "../server-utils.js";
 
 export async function handleReview(
@@ -11,6 +12,9 @@ export async function handleReview(
 		sendJson(res, 405, { error: "Method not allowed" }, corsHeaders);
 		return;
 	}
+
+	// Require authentication to prevent exposure of repository data
+	if (!(await requireApiAuth(req, res, corsHeaders))) return;
 
 	try {
 		const cwd = process.cwd();

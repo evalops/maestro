@@ -181,9 +181,10 @@ export function isPrivateIP(ip: string): boolean {
 	if (mappedDecimalOctets && isPrivateIPv4(mappedDecimalOctets)) return true;
 
 	// Check IPv6 private ranges
+	// Note: IPv6 allows leading zeros to be omitted (RFC 5952), so fc00:: can be fc0:: or fc::
 	if (
-		/^fe80:/i.test(ip) || // Link-local
-		/^fc[0-9a-f]{2}:/i.test(ip) || // Unique local (fc00::/7 part 1)
+		/^fe[89ab][0-9a-f]?:/i.test(ip) || // Link-local fe80::/10 (fe80-febf)
+		/^fc[0-9a-f]{0,2}:/i.test(ip) || // Unique local (fc00::/8)
 		/^fd[0-9a-f]{0,2}:/i.test(ip) // Unique local (fd00::/8)
 	) {
 		return true;

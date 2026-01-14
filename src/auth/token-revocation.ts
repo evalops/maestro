@@ -38,11 +38,13 @@ const userRevocationTimestamps = new Map<string, number>();
 
 export function isTokenIssuedBeforeRevocation(
 	userId: string,
-	issuedAt: number,
+	issuedAt: number, // JWT iat claim - in seconds per RFC 7519
 ): boolean {
 	const revokedBefore = userRevocationTimestamps.get(userId);
 	if (!revokedBefore) return false;
-	return issuedAt < revokedBefore;
+	// Convert stored milliseconds to seconds for comparison with JWT iat
+	const revokedBeforeSeconds = Math.floor(revokedBefore / 1000);
+	return issuedAt < revokedBeforeSeconds;
 }
 
 export function setUserRevocationTimestamp(

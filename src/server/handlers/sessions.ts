@@ -44,6 +44,7 @@ import { getDb, isDbAvailable } from "../../db/client.js";
 import { sharedSessions as sharedSessionsTable } from "../../db/schema.js";
 import { SessionManager } from "../../session/manager.js";
 import { createLogger } from "../../utils/logger.js";
+import { getAuthSubject } from "../authz.js";
 import { RateLimiter } from "../rate-limiter.js";
 import {
 	buildContentDisposition,
@@ -56,6 +57,34 @@ import { convertAppMessagesToComposer } from "../session-serialization.js";
 const logger = createLogger("sessions-handler");
 const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
 const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
+
+/**
+ * Verify that the authenticated subject has access to the session.
+ * Prevents IDOR attacks by checking session ownership fields.
+ *
+ * Returns true if access is allowed, false otherwise.
+ */
+function verifySessionOwnership(
+	session: Record<string, unknown>,
+	subject: string,
+): boolean {
+	// Check explicit owner field
+	if (typeof session.owner === "string" && session.owner) {
+		return session.owner === subject;
+	}
+
+	// Check subject field (for API-created sessions)
+	if (typeof session.subject === "string" && session.subject) {
+		return session.subject === subject;
+	}
+
+	// For sessions without ownership info:
+	// In strict mode (multi-user), deny access to prevent IDOR attacks.
+	// Sessions created via CLI don't have ownership info, but API access
+	// should be restricted in hosted environments.
+	const strictMode = process.env.COMPOSER_STRICT_SESSION_ACCESS !== "false";
+	return !strictMode;
+}
 
 function findAttachmentInSession(
 	session: { messages?: Array<unknown> },
@@ -380,6 +409,19 @@ export async function handleSessions(
 				return;
 			}
 
+			// Verify session ownership to prevent IDOR attacks
+			const subject = getAuthSubject(req);
+			if (!verifySessionOwnership(session, subject)) {
+				sendJson(
+					res,
+					403,
+					{ error: "Access denied: session belongs to another user" },
+					cors,
+					req,
+				);
+				return;
+			}
+
 			const responseBody: ComposerSession = {
 				id: session.id,
 				title: session.title,
@@ -426,6 +468,19 @@ export async function handleSessions(
 				return;
 			}
 
+			// Verify session ownership to prevent IDOR attacks
+			const subject = getAuthSubject(req);
+			if (!verifySessionOwnership(session, subject)) {
+				sendJson(
+					res,
+					403,
+					{ error: "Access denied: session belongs to another user" },
+					cors,
+					req,
+				);
+				return;
+			}
+
 			const sessionPath = sessionManager.getSessionFileById(sessionId);
 			if (!sessionPath) {
 				sendJson(res, 404, { error: "Session file not found" }, cors, req);
@@ -464,6 +519,27 @@ export async function handleSessions(
 				sendJson(res, 400, { error: "Invalid session id" }, cors, req);
 				return;
 			}
+
+			// Load session to verify ownership before deletion
+			const session = await sessionManager.loadSession(sessionId);
+			if (!session) {
+				sendJson(res, 404, { error: "Session not found" }, cors, req);
+				return;
+			}
+
+			// Verify session ownership to prevent IDOR attacks
+			const subject = getAuthSubject(req);
+			if (!verifySessionOwnership(session, subject)) {
+				sendJson(
+					res,
+					403,
+					{ error: "Access denied: session belongs to another user" },
+					cors,
+					req,
+				);
+				return;
+			}
+
 			await sessionManager.deleteSession(sessionId);
 
 			res.writeHead(204, cors);
@@ -506,6 +582,19 @@ export async function handleSessionShare(
 		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
 			sendJson(res, 404, { error: "Session not found" }, cors, req);
+			return;
+		}
+
+		// Verify session ownership to prevent sharing others' sessions
+		const subject = getAuthSubject(req);
+		if (!verifySessionOwnership(session, subject)) {
+			sendJson(
+				res,
+				403,
+				{ error: "Access denied: session belongs to another user" },
+				cors,
+				req,
+			);
 			return;
 		}
 
@@ -751,6 +840,19 @@ export async function handleSessionExport(
 		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
 			sendJson(res, 404, { error: "Session not found" }, cors, req);
+			return;
+		}
+
+		// Verify session ownership to prevent exporting others' sessions
+		const subject = getAuthSubject(req);
+		if (!verifySessionOwnership(session, subject)) {
+			sendJson(
+				res,
+				403,
+				{ error: "Access denied: session belongs to another user" },
+				cors,
+				req,
+			);
 			return;
 		}
 

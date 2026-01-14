@@ -501,8 +501,14 @@ export class AuditLogger {
 	): string {
 		// Exclude integrityHash from the content being hashed
 		const { integrityHash: _, ...rest } = entry as AuditEntry;
+		// Sort keys for deterministic serialization
 		const keys = Object.keys(rest).sort();
-		const content = JSON.stringify(rest, keys);
+		const sortedObj: Record<string, unknown> = {};
+		for (const key of keys) {
+			sortedObj[key] = rest[key as keyof typeof rest];
+		}
+		// Serialize without replacer to preserve nested objects (e.g., metadata)
+		const content = JSON.stringify(sortedObj);
 		return crypto.createHash("sha256").update(content).digest("hex");
 	}
 }

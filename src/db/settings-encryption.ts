@@ -48,6 +48,11 @@ export function decryptOrgSettings(
 		return settings;
 	}
 
+	// If encryption is not enabled (key missing), return as-is to avoid crash
+	if (!isEncryptionEnabled()) {
+		return settings;
+	}
+
 	const result = { ...settings };
 
 	if (result.webhookSigningSecret && isEncrypted(result.webhookSigningSecret)) {
@@ -92,6 +97,11 @@ export function decryptUserSettings(
 	settings: UserSettings | null | undefined,
 ): UserSettings | null | undefined {
 	if (!settings) {
+		return settings;
+	}
+
+	// If encryption is not enabled (key missing), return as-is to avoid crash
+	if (!isEncryptionEnabled()) {
 		return settings;
 	}
 

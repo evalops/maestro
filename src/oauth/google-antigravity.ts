@@ -253,6 +253,8 @@ export async function loginGoogleAntigravity(
 	onStatus?: (status: string) => void,
 ): Promise<void> {
 	const { verifier, challenge } = generatePkce();
+	// Generate separate state for CSRF protection - verifier must stay secret
+	const state = base64UrlEncode(randomBytes(32));
 
 	onStatus?.("Starting local server for OAuth callback...");
 	const { server, getCode } = await startCallbackServer();
@@ -265,7 +267,7 @@ export async function loginGoogleAntigravity(
 			scope: SCOPES.join(" "),
 			code_challenge: challenge,
 			code_challenge_method: "S256",
-			state: verifier,
+			state,
 			access_type: "offline",
 			prompt: "consent",
 		});
@@ -274,8 +276,8 @@ export async function loginGoogleAntigravity(
 		onAuthUrl(authUrl);
 
 		onStatus?.("Waiting for OAuth callback...");
-		const { code, state } = await getCode();
-		if (!timingSafeEqual(Buffer.from(state), Buffer.from(verifier))) {
+		const { code, state: returnedState } = await getCode();
+		if (!timingSafeEqual(Buffer.from(returnedState), Buffer.from(state))) {
 			throw new Error("OAuth state mismatch - possible CSRF attack");
 		}
 

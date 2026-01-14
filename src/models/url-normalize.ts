@@ -88,12 +88,31 @@ export function normalizeLLMBaseUrl(
 		// Unique local fc00::/7 (fc00::/8 and fd00::/8)
 		if (addr.startsWith("fc") || addr.startsWith("fd")) return true;
 
-		// IPv4-mapped IPv6 addresses ::ffff:x.x.x.x
+		// IPv4-mapped IPv6 addresses ::ffff:x.x.x.x (dotted-decimal format)
 		const ipv4MappedMatch = addr.match(
 			/^(?:::ffff:|0:0:0:0:0:ffff:)(\d+\.\d+\.\d+\.\d+)$/i,
 		);
 		if (ipv4MappedMatch?.[1]) {
 			return isPrivateIpv4(ipv4MappedMatch[1]);
+		}
+
+		// IPv4-mapped IPv6 addresses in hex format (URL.hostname normalizes to this)
+		// e.g., ::ffff:c0a8:101 for 192.168.1.1
+		const ipv4MappedHexMatch = addr.match(
+			/^(?:::ffff:|0:0:0:0:0:ffff:)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i,
+		);
+		if (ipv4MappedHexMatch?.[1] && ipv4MappedHexMatch?.[2]) {
+			const high = Number.parseInt(ipv4MappedHexMatch[1], 16);
+			const low = Number.parseInt(ipv4MappedHexMatch[2], 16);
+			if (!Number.isNaN(high) && !Number.isNaN(low)) {
+				// Convert hex to dotted-decimal for private IP check
+				const octet1 = (high >> 8) & 0xff;
+				const octet2 = high & 0xff;
+				const octet3 = (low >> 8) & 0xff;
+				const octet4 = low & 0xff;
+				const ipv4Addr = `${octet1}.${octet2}.${octet3}.${octet4}`;
+				return isPrivateIpv4(ipv4Addr);
+			}
 		}
 
 		// IPv4-compatible IPv6 (deprecated but still block) ::x.x.x.x

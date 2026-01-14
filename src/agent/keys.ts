@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { PATHS } from "../config/constants.js";
 import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 
@@ -32,7 +32,12 @@ function sanitizePath(pathOverride?: string): string | undefined {
 	const allowedRoots = [getHomeDir(), PATHS.COMPOSER_HOME, process.cwd()].map(
 		(p) => resolve(p),
 	);
-	const isAllowed = allowedRoots.some((root) => resolved.startsWith(root));
+	// Use proper path containment check - require path separator after root
+	// to prevent /home/user-evil matching when root is /home/user
+	const isAllowed = allowedRoots.some((root) => {
+		if (resolved === root) return true;
+		return resolved.startsWith(root + sep);
+	});
 	if (!isAllowed) return undefined;
 	return resolved;
 }

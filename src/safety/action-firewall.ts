@@ -421,6 +421,20 @@ function extractFilePaths(context: ActionApprovalContext): string[] {
 			getStringArg(context, "target_file");
 		if (p) paths.push(p);
 	}
+	// Handle move_file and copy_file - extract both source and destination
+	if (context.toolName === "move_file" || context.toolName === "copy_file") {
+		const source =
+			getStringArg(context, "source") ||
+			getStringArg(context, "source_path") ||
+			getStringArg(context, "from");
+		const dest =
+			getStringArg(context, "destination") ||
+			getStringArg(context, "destination_path") ||
+			getStringArg(context, "dest") ||
+			getStringArg(context, "to");
+		if (source) paths.push(source);
+		if (dest) paths.push(dest);
+	}
 	return paths;
 }
 

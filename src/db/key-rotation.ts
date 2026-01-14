@@ -68,26 +68,28 @@ export async function rotateEncryptionKey(
 
 	logger.info("Starting encryption key rotation");
 
-	// Rotate organization webhook secrets
+	// Wrap all rotation operations in a transaction for atomicity
+	// If any operation fails, the entire rotation is rolled back
 	try {
-		const orgs = await db
-			.select({
-				id: organizations.id,
-				settings: organizations.settings,
-			})
-			.from(organizations);
+		await db.transaction(async (tx) => {
+			// Rotate organization webhook secrets
+			const orgs = await tx
+				.select({
+					id: organizations.id,
+					settings: organizations.settings,
+				})
+				.from(organizations);
 
-		for (const org of orgs) {
-			if (!org.settings?.webhookSigningSecret) continue;
+			for (const org of orgs) {
+				if (!org.settings?.webhookSigningSecret) continue;
 
-			try {
 				const reEncrypted = reEncryptField(
 					org.settings.webhookSigningSecret,
 					oldKey,
 					newKey,
 				);
 
-				await db
+				await tx
 					.update(organizations)
 					.set({
 						settings: {
@@ -98,38 +100,26 @@ export async function rotateEncryptionKey(
 					.where(eq(organizations.id, org.id));
 
 				result.orgsUpdated++;
-			} catch (error) {
-				result.errors.push(
-					`Failed to rotate org ${org.id}: ${error instanceof Error ? error.message : String(error)}`,
-				);
 			}
-		}
-	} catch (error) {
-		result.errors.push(
-			`Failed to query organizations: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
 
-	// Rotate user TOTP secrets
-	try {
-		const allUsers = await db
-			.select({
-				id: users.id,
-				settings: users.settings,
-			})
-			.from(users);
+			// Rotate user TOTP secrets
+			const allUsers = await tx
+				.select({
+					id: users.id,
+					settings: users.settings,
+				})
+				.from(users);
 
-		for (const user of allUsers) {
-			if (!user.settings?.twoFactor?.secret) continue;
+			for (const user of allUsers) {
+				if (!user.settings?.twoFactor?.secret) continue;
 
-			try {
 				const reEncrypted = reEncryptField(
 					user.settings.twoFactor.secret,
 					oldKey,
 					newKey,
 				);
 
-				await db
+				await tx
 					.update(users)
 					.set({
 						settings: {
@@ -143,19 +133,18 @@ export async function rotateEncryptionKey(
 					.where(eq(users.id, user.id));
 
 				result.usersUpdated++;
-			} catch (error) {
-				result.errors.push(
-					`Failed to rotate user ${user.id}: ${error instanceof Error ? error.message : String(error)}`,
-				);
 			}
-		}
-	} catch (error) {
-		result.errors.push(
-			`Failed to query users: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
+		});
 
-	result.success = result.errors.length === 0;
+		result.success = true;
+	} catch (error) {
+		// Transaction failed and was rolled back - no partial state
+		result.errors.push(
+			`Key rotation transaction failed (rolled back): ${error instanceof Error ? error.message : String(error)}`,
+		);
+		result.orgsUpdated = 0;
+		result.usersUpdated = 0;
+	}
 
 	logger.info("Key rotation completed", {
 		success: result.success,

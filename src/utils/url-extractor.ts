@@ -90,6 +90,46 @@ export function extractUrlsFromValue(value: unknown): string[] {
 export function extractUrlsFromShellCommand(command: string): string[] {
 	const urls: string[] = [];
 
+	// Flags that take a value as the next argument
+	const FLAGS_WITH_VALUES = new Set([
+		"-X",
+		"--request",
+		"-o",
+		"-O",
+		"--output",
+		"-H",
+		"--header",
+		"-d",
+		"--data",
+		"--data-raw",
+		"--data-binary",
+		"--data-urlencode",
+		"-F",
+		"--form",
+		"-A",
+		"--user-agent",
+		"-u",
+		"--user",
+		"-T",
+		"--upload-file",
+		"-e",
+		"--referer",
+		"-b",
+		"--cookie",
+		"-c",
+		"--cookie-jar",
+		"-K",
+		"--config",
+		"--resolve",
+		"--connect-to",
+		"--max-time",
+		"-m",
+		"--retry",
+		"--retry-delay",
+		"-w",
+		"--write-out",
+	]);
+
 	const matches = command.matchAll(new RegExp(CURL_WGET_PATTERN));
 	for (const match of matches) {
 		const argsStr = match[1];
@@ -97,13 +137,31 @@ export function extractUrlsFromShellCommand(command: string): string[] {
 		// Split by spaces, respecting quotes
 		const argParts = argsStr.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
 
+		let skipNext = false;
 		for (const arg of argParts) {
-			let url = arg.replace(/^["']|["']$/g, ""); // strip quotes
+			const stripped = arg.replace(/^["']|["']$/g, ""); // strip quotes
 
-			// Skip flags
-			if (url.startsWith("-")) continue;
+			// Skip flag values (arg after a flag that takes a value)
+			if (skipNext) {
+				skipNext = false;
+				continue;
+			}
+
+			// Skip flags, but check if they take a value
+			if (stripped.startsWith("-")) {
+				// Handle both --flag=value and --flag value forms
+				if (stripped.includes("=")) {
+					// Flag with embedded value like --output=file.txt, skip entirely
+					continue;
+				}
+				if (FLAGS_WITH_VALUES.has(stripped)) {
+					skipNext = true;
+				}
+				continue;
+			}
 
 			// Add http:// if no protocol specified
+			let url = stripped;
 			if (url && !/^https?:\/\//i.test(url)) {
 				url = `http://${url}`;
 			}

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { type JWTPayload, createRemoteJWKSet, jwtVerify } from "jose";
 import {
@@ -37,8 +37,9 @@ function verifySharedToken(token: string): string | null {
 	} catch {
 		return null;
 	}
-	const hmac = createHash("sha256");
-	hmac.update(userId + SHARED_SECRET);
+	// Use HMAC instead of plain hash to prevent length-extension attacks
+	const hmac = createHmac("sha256", SHARED_SECRET);
+	hmac.update(userId);
 	const expected = hmac.digest("hex");
 	if (!secureCompare(providedSig, expected)) return null;
 	return userId;

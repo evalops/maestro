@@ -383,16 +383,14 @@ export async function verifyTotpCode(
 		};
 	}
 
-	// Verify with otplib
-	const isValid = authenticator.check(code, secret);
-
-	if (!isValid) {
+	// Single atomic validation + drift calculation to avoid race condition
+	// at time window boundaries (separate check() and checkDelta() calls
+	// could execute in different windows)
+	const delta = authenticator.checkDelta(code, secret);
+	if (delta === null) {
 		await recordAttempt(userId, false);
 		return { valid: false, error: "invalid_code" };
 	}
-
-	// Calculate drift for replay protection
-	const delta = authenticator.checkDelta(code, secret) ?? 0;
 
 	// Check replay
 	const wasUsed = await isCodeUsed(userId, code, delta);
