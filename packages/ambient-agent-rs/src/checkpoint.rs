@@ -62,7 +62,7 @@ impl CheckpointManager {
             None
         };
 
-        let checkpoint_clone = {
+        {
             let checkpoint = self.active_checkpoints
                 .get_mut(checkpoint_id)
                 .ok_or_else(|| anyhow::anyhow!("Checkpoint not found: {}", checkpoint_id))?;
@@ -76,11 +76,11 @@ impl CheckpointManager {
                 content,
             );
             checkpoint.state = CheckpointState::Active;
-            checkpoint.clone()
-        };
+        }
 
-        // Update persisted checkpoint
-        self.persist_checkpoint(&checkpoint_clone).await?;
+        // Persist after releasing the mutable borrow
+        let checkpoint = self.active_checkpoints.get(checkpoint_id).unwrap();
+        self.persist_checkpoint(checkpoint).await?;
 
         Ok(())
     }
@@ -97,15 +97,15 @@ impl CheckpointManager {
         if output.status.success() {
             let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-            let checkpoint_clone = {
+            {
                 let checkpoint = self.active_checkpoints
                     .get_mut(checkpoint_id)
                     .ok_or_else(|| anyhow::anyhow!("Checkpoint not found: {}", checkpoint_id))?;
                 checkpoint.git_state = Some(commit);
-                checkpoint.clone()
-            };
+            }
 
-            self.persist_checkpoint(&checkpoint_clone).await?;
+            let checkpoint = self.active_checkpoints.get(checkpoint_id).unwrap();
+            self.persist_checkpoint(checkpoint).await?;
         }
 
         Ok(())
@@ -113,23 +113,23 @@ impl CheckpointManager {
 
     /// Commit the checkpoint (mark as complete, no rollback needed)
     pub async fn commit(&mut self, checkpoint_id: &str) -> anyhow::Result<()> {
-        let checkpoint_clone = {
+        {
             let checkpoint = self.active_checkpoints
                 .get_mut(checkpoint_id)
                 .ok_or_else(|| anyhow::anyhow!("Checkpoint not found: {}", checkpoint_id))?;
             checkpoint.state = CheckpointState::Committed;
-            checkpoint.clone()
-        };
+        }
 
-        self.persist_checkpoint(&checkpoint_clone).await?;
+        let checkpoint = self.active_checkpoints.get(checkpoint_id).unwrap();
+        self.persist_checkpoint(checkpoint).await?;
 
         Ok(())
     }
 
     /// Rollback to checkpoint state
     pub async fn rollback(&mut self, checkpoint_id: &str) -> anyhow::Result<RollbackResult> {
-        // First, extract info and update state
-        let (file_backups, checkpoint_clone) = {
+        // First, extract file backups and update state
+        let file_backups = {
             let checkpoint = self.active_checkpoints
                 .get_mut(checkpoint_id)
                 .ok_or_else(|| anyhow::anyhow!("Checkpoint not found: {}", checkpoint_id))?;
@@ -143,7 +143,7 @@ impl CheckpointManager {
             }
 
             checkpoint.state = CheckpointState::RolledBack;
-            (checkpoint.file_backups.clone(), checkpoint.clone())
+            checkpoint.file_backups.clone() // Need to clone backups to restore files
         };
 
         let mut restored_files = vec![];
@@ -175,7 +175,8 @@ impl CheckpointManager {
             }
         }
 
-        self.persist_checkpoint(&checkpoint_clone).await?;
+        let checkpoint = self.active_checkpoints.get(checkpoint_id).unwrap();
+        self.persist_checkpoint(checkpoint).await?;
 
         let success = errors.is_empty();
         Ok(RollbackResult {

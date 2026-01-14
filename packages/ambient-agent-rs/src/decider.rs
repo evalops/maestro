@@ -404,7 +404,15 @@ impl Decider {
         )
     }
 
-    /// Create an execution plan
+    /// Create an execution plan for an event
+    /// This is called internally by decide() when action is Execute,
+    /// but can also be called directly when a learner upgrades an action
+    pub async fn create_plan_for_event(&self, event: &NormalizedEvent) -> TaskPlan {
+        let factors = self.calculate_confidence_factors(event).await;
+        self.create_plan(event, &factors).await
+    }
+
+    /// Create an execution plan (internal)
     async fn create_plan(&self, event: &NormalizedEvent, factors: &ConfidenceFactors) -> TaskPlan {
         let task_id = format!(
             "plan_{}_{}",
@@ -587,12 +595,4 @@ impl Decider {
 
         base * tasks.len() as u64
     }
-}
-
-// Need to add async-trait for the traits
-// This is just a declaration to make the code compile
-// In real code, add `async-trait = "0.1"` to Cargo.toml
-#[allow(dead_code)]
-mod async_trait {
-    pub use async_trait::*;
 }

@@ -216,25 +216,30 @@ async fn cmd_start(config_path: &PathBuf, data_dir: Option<PathBuf>, _foreground
     Ok(())
 }
 
+/// TODO: Implement daemon stop via Unix socket or PID file
 async fn cmd_stop() -> anyhow::Result<()> {
     println!("Stopping daemon...");
-    println!("(Not implemented - use Ctrl+C on the running daemon)");
+    println!("Note: Use Ctrl+C on the running daemon to stop it.");
+    println!("      IPC-based stop command not yet implemented.");
     Ok(())
 }
 
+/// TODO: Implement status check via Unix socket or PID file
 async fn cmd_status() -> anyhow::Result<()> {
-    println!("Daemon status: Not running");
-    println!("(Status check not implemented)");
+    println!("Daemon status: Unknown");
+    println!("Note: Status check requires IPC, not yet implemented.");
+    println!("      Run 'ambient start' to start the daemon.");
     Ok(())
 }
 
+/// TODO: Implement stats retrieval via Unix socket
 async fn cmd_stats() -> anyhow::Result<()> {
     println!("Statistics:");
     println!("  Events processed: -");
     println!("  Tasks executed: -");
     println!("  Success rate: -");
     println!("  Total cost: -");
-    println!("(Stats retrieval not implemented)");
+    println!("Note: Stats retrieval requires IPC, not yet implemented.");
     Ok(())
 }
 

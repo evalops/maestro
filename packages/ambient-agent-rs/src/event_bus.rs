@@ -83,19 +83,17 @@ impl EventBus {
             warn!("Failed to create persist directory: {}", e);
         }
 
-        // Load persisted events
-        tokio::spawn({
-            let state = bus.state.clone();
-            let persist_dir = bus.config.persist_dir.clone();
-            let event_ttl_secs = bus.config.event_ttl_secs;
-            async move {
-                if let Err(e) = load_persisted_events(state, persist_dir, event_ttl_secs).await {
-                    error!("Failed to load persisted events: {}", e);
-                }
-            }
-        });
-
         bus
+    }
+
+    /// Initialize by loading persisted events
+    /// Call this after creating the EventBus to restore previous state
+    pub async fn init(&self) -> anyhow::Result<()> {
+        load_persisted_events(
+            self.state.clone(),
+            self.config.persist_dir.clone(),
+            self.config.event_ttl_secs,
+        ).await
     }
 
     /// Subscribe to events
@@ -316,8 +314,9 @@ impl EventBus {
             .recent_hashes
             .retain(|_, timestamp| (now - *timestamp) < self.config.dedupe_window_secs as i64);
 
-        // Cleanup old completed events if over limit
+        // Cleanup events if over limit
         if state.events.len() > self.config.max_in_memory_events {
+            // First, remove completed/skipped events (oldest first)
             let mut completed: Vec<_> = state
                 .events
                 .iter()
@@ -327,12 +326,29 @@ impl EventBus {
 
             completed.sort_by(|a, b| a.1.cmp(&b.1));
 
-            let to_remove = completed.len().saturating_sub(
-                self.config.max_in_memory_events.saturating_sub(state.events.len() - completed.len()),
-            );
+            let excess = state.events.len().saturating_sub(self.config.max_in_memory_events);
+            let to_remove_completed = excess.min(completed.len());
 
-            for (id, _) in completed.into_iter().take(to_remove) {
+            for (id, _) in completed.into_iter().take(to_remove_completed) {
                 state.events.remove(&id);
+            }
+
+            // If still over limit, drop oldest active events to prevent unbounded growth
+            if state.events.len() > self.config.max_in_memory_events {
+                let mut active: Vec<_> = state
+                    .events
+                    .iter()
+                    .filter(|(_, e)| e.status == EventStatus::Pending || e.status == EventStatus::Processing)
+                    .map(|(id, e)| (id.clone(), e.created_at))
+                    .collect();
+
+                active.sort_by(|a, b| a.1.cmp(&b.1));
+
+                let still_excess = state.events.len().saturating_sub(self.config.max_in_memory_events);
+                for (id, _) in active.into_iter().take(still_excess) {
+                    warn!("Dropping active event {} due to memory pressure", id);
+                    state.events.remove(&id);
+                }
             }
         }
     }
@@ -358,7 +374,7 @@ fn compute_hash(raw: &RawEvent) -> String {
         }
     }
 
-    hex::encode(hasher.finalize())[..16].to_string()
+    hex::encode(hasher.finalize())
 }
 
 /// Generate a unique event ID

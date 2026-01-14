@@ -212,19 +212,54 @@ impl AmbientDaemon {
         // Make decision
         let decision = self.decider.read().await.decide(&event).await;
 
-        // Apply learner adjustment
+        // Apply learner adjustment to confidence and re-determine action
         let adjusted_confidence = (decision.confidence + confidence_adj).clamp(0.0, 1.0);
+        let adjusted_action = {
+            let thresholds = &self.config.thresholds;
+
+            // Respect complexity-based execution blocks from the decider
+            // If original decision was Ask despite high confidence, it's due to complexity
+            // (Complex/High tasks are never auto-executed, even with high confidence)
+            let complexity_blocked = decision.action == DecisionAction::Ask
+                && decision.confidence >= thresholds.auto_execute;
+
+            if complexity_blocked {
+                // Don't upgrade to Execute - complexity restriction applies
+                if adjusted_confidence >= thresholds.ask_human {
+                    DecisionAction::Ask
+                } else {
+                    DecisionAction::Skip
+                }
+            } else if adjusted_confidence >= thresholds.auto_execute {
+                DecisionAction::Execute
+            } else if adjusted_confidence >= thresholds.ask_human {
+                DecisionAction::Ask
+            } else {
+                DecisionAction::Skip
+            }
+        };
 
         info!(
-            "Event {} - confidence: {:.2} (adj: {:.2}) -> {:?}",
-            event.id, decision.confidence, adjusted_confidence, decision.action
+            "Event {} - confidence: {:.2} -> {:.2} (learner adj: {:+.2}) -> {:?}",
+            event.id, decision.confidence, adjusted_confidence, confidence_adj, adjusted_action
         );
 
-        match decision.action {
+        match adjusted_action {
             DecisionAction::Execute => {
-                if let Some(plan) = decision.plan {
-                    self.execute_plan(event, plan).await;
-                }
+                // Get plan from decision, or create one if learner upgraded the action
+                let plan = match decision.plan {
+                    Some(plan) => plan,
+                    None => {
+                        // Learner upgraded action to Execute but no plan exists
+                        // Create a plan directly since the decision was for a lower action
+                        info!(
+                            "Learner upgraded action to Execute, creating plan for event {}",
+                            event.id
+                        );
+                        self.decider.read().await.create_plan_for_event(&event).await
+                    }
+                };
+                self.execute_plan(event, plan).await;
             }
             DecisionAction::Ask => {
                 // In a real implementation, this would notify the user
@@ -350,15 +385,15 @@ impl AmbientDaemon {
     }
 
     /// Mock execution (placeholder for real LLM execution)
+    ///
+    /// TODO: Implement real LLM execution:
+    /// 1. Prepare the context/prompt with relevant code context
+    /// 2. Call the LLM via the routed model (cascader)
+    /// 3. Parse the response and extract code changes
+    /// 4. Apply file changes atomically
+    /// 5. Run tests to verify changes
+    /// 6. Return results with actual changes and test outcomes
     async fn mock_execute(&self, plan: &TaskPlan, _routing: &RoutingResult) -> ExecutionResult {
-        // In reality, this would:
-        // 1. Prepare the context/prompt
-        // 2. Call the LLM via the routed model
-        // 3. Parse the response
-        // 4. Apply file changes
-        // 5. Run tests
-        // 6. Return results
-
         ExecutionResult {
             status: ExecutionStatus::Success,
             changes: vec![],
@@ -370,6 +405,11 @@ impl AmbientDaemon {
 
     /// Load persisted state
     async fn load_state(&self) -> anyhow::Result<()> {
+        // Load persisted events
+        if let Err(e) = self.event_bus.read().await.init().await {
+            warn!("Failed to load persisted events: {}", e);
+        }
+
         // Load checkpoints
         let count = self.checkpoint_mgr.write().await.load_checkpoints().await?;
         info!("Loaded {} checkpoints", count);

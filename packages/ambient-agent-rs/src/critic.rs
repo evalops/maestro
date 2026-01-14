@@ -52,6 +52,20 @@ static PERFORMANCE_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::ne
     ]
 });
 
+/// Style patterns to detect
+static STYLE_PATTERNS: LazyLock<StylePatterns> = LazyLock::new(|| StylePatterns {
+    console_log: Regex::new(r"console\.(log|debug|info)\(").unwrap(),
+    todo_comment: Regex::new(r"//\s*(TODO|FIXME|HACK|XXX)").unwrap(),
+    any_type: Regex::new(r":\s*any\b").unwrap(),
+});
+
+/// Style patterns container
+struct StylePatterns {
+    console_log: Regex,
+    todo_comment: Regex,
+    any_type: Regex,
+}
+
 /// Critic evaluates agent outputs
 pub struct Critic {
     config: CriticConfig,
@@ -148,8 +162,8 @@ impl Critic {
 
         let mut issues = vec![];
 
-        // Check for console.log
-        if Regex::new(r"console\.(log|debug|info)\(").unwrap().is_match(content) {
+        // Check for console.log (using static pattern)
+        if STYLE_PATTERNS.console_log.is_match(content) {
             issues.push(CriticIssue {
                 severity: CriticIssueSeverity::Warning,
                 issue_type: CriticIssueType::Style,
@@ -158,8 +172,8 @@ impl Critic {
             });
         }
 
-        // Check for TODO/FIXME
-        if Regex::new(r"//\s*(TODO|FIXME|HACK|XXX)").unwrap().is_match(content) {
+        // Check for TODO/FIXME (using static pattern)
+        if STYLE_PATTERNS.todo_comment.is_match(content) {
             issues.push(CriticIssue {
                 severity: CriticIssueSeverity::Info,
                 issue_type: CriticIssueType::Style,
@@ -168,8 +182,8 @@ impl Critic {
             });
         }
 
-        // Check for 'any' type in TypeScript
-        if file.ends_with(".ts") && Regex::new(r":\s*any\b").unwrap().is_match(content) {
+        // Check for 'any' type in TypeScript (using static pattern)
+        if file.ends_with(".ts") && STYLE_PATTERNS.any_type.is_match(content) {
             issues.push(CriticIssue {
                 severity: CriticIssueSeverity::Warning,
                 issue_type: CriticIssueType::Style,
