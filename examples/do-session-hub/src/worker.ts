@@ -139,11 +139,12 @@ const DEMO_HTML = `<!doctype html>
             const events = Array.isArray(data.events) ? data.events : [];
             for (const event of events) {
               if (token !== replayToken) return;
-              replaySeq = Math.max(replaySeq, event.seq || 0);
+              const eventSeq = event.seq || 0;
+              replaySeq = Math.max(replaySeq, eventSeq);
+              // Update lastSeq immediately so WebSocket filter has accurate state
+              lastSeq = Math.max(lastSeq, eventSeq);
               log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
             }
-            // Update lastSeq after processing all events in this page
-            lastSeq = Math.max(lastSeq, replaySeq);
             const sinceValue =
               typeof data.since === "number" ? data.since : since;
             const untilValue =
@@ -195,9 +196,9 @@ const DEMO_HTML = `<!doctype html>
             const data = JSON.parse(event.data);
             if (data.type === "event") {
               const seq = data.event.seq || 0;
-              // Skip logging if replay is in flight and this event will be/was replayed
-              // to prevent duplicate log entries
-              if (replayInFlight && seq <= lastSeq) {
+              // Skip logging if replay is in flight and this event was already replayed.
+              // Use < (not <=) to avoid dropping new events at the boundary.
+              if (replayInFlight && seq < lastSeq) {
                 return;
               }
               lastSeq = Math.max(lastSeq, seq);
