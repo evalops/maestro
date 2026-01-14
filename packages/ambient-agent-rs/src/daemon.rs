@@ -4,11 +4,12 @@
 //! Watches for events, makes decisions, executes tasks, and learns.
 
 use crate::{
-    cascader::{Cascader, RoutingResult, TaskContext},
+    cascader::{Cascader, TaskContext},
     checkpoint::CheckpointManager,
     critic::{Critic, CriticConfig},
     decider::{Decider, DeciderConfig},
     event_bus::{EventBus, EventBusConfig},
+    executor::{Executor, ExecutorConfig},
     learner::{Learner, Outcome},
     types::*,
 };
@@ -62,6 +63,7 @@ pub struct AmbientDaemon {
     decider: Arc<RwLock<Decider>>,
     critic: Arc<Critic>,
     cascader: Arc<RwLock<Cascader>>,
+    executor: Arc<Executor>,
     checkpoint_mgr: Arc<RwLock<CheckpointManager>>,
     learner: Arc<RwLock<Learner>>,
     status: Arc<RwLock<DaemonStatus>>,
@@ -93,6 +95,14 @@ impl AmbientDaemon {
 
         let cascader = Cascader::new(None);
 
+        // Executor for real LLM calls
+        let executor_config = ExecutorConfig {
+            api_key: std::env::var("ANTHROPIC_API_KEY").unwrap_or_default(),
+            working_dir: data_dir.to_string_lossy().to_string(),
+            ..Default::default()
+        };
+        let executor = Executor::new(executor_config);
+
         let checkpoint_mgr = CheckpointManager::new(data_dir.join("checkpoints"));
 
         let learner = Learner::new(data_dir.join("learner.json"));
@@ -103,6 +113,7 @@ impl AmbientDaemon {
             decider: Arc::new(RwLock::new(decider)),
             critic: Arc::new(critic),
             cascader: Arc::new(RwLock::new(cascader)),
+            executor: Arc::new(executor),
             checkpoint_mgr: Arc::new(RwLock::new(checkpoint_mgr)),
             learner: Arc::new(RwLock::new(learner)),
             status: Arc::new(RwLock::new(DaemonStatus::Starting)),
@@ -314,8 +325,8 @@ impl AmbientDaemon {
             routing.tier.name, routing.model, routing.estimated_cost
         );
 
-        // Execute (placeholder - real implementation would call the LLM)
-        let result = self.mock_execute(&plan, &routing).await;
+        // Execute the plan using the real LLM
+        let result = self.executor.execute(&plan, &routing).await;
 
         // Critique the result
         let critique = self.critic.critique(&plan, &result).await;
@@ -381,25 +392,6 @@ impl AmbientDaemon {
             if let Err(e) = self.checkpoint_mgr.write().await.rollback(&checkpoint_id).await {
                 error!("Failed to rollback: {}", e);
             }
-        }
-    }
-
-    /// Mock execution (placeholder for real LLM execution)
-    ///
-    /// TODO: Implement real LLM execution:
-    /// 1. Prepare the context/prompt with relevant code context
-    /// 2. Call the LLM via the routed model (cascader)
-    /// 3. Parse the response and extract code changes
-    /// 4. Apply file changes atomically
-    /// 5. Run tests to verify changes
-    /// 6. Return results with actual changes and test outcomes
-    async fn mock_execute(&self, plan: &TaskPlan, _routing: &RoutingResult) -> ExecutionResult {
-        ExecutionResult {
-            status: ExecutionStatus::Success,
-            changes: vec![],
-            test_results: vec![],
-            error: None,
-            logs: vec![format!("Mock execution of: {}", plan.summary)],
         }
     }
 

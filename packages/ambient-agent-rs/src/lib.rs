@@ -40,6 +40,7 @@ pub mod critic;
 pub mod cascader;
 pub mod checkpoint;
 pub mod learner;
+pub mod executor;
 pub mod daemon;
 
 pub use types::*;
@@ -49,6 +50,7 @@ pub use critic::Critic;
 pub use cascader::Cascader;
 pub use checkpoint::CheckpointManager;
 pub use learner::Learner;
+pub use executor::Executor;
 pub use daemon::AmbientDaemon;
 
 /// Prelude for convenient imports
