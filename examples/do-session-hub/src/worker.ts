@@ -46,6 +46,7 @@ const DEMO_HTML = `<!doctype html>
 
       let ws = null;
       let lastSeq = 0;
+      let replayHighWaterMark = 0; // Highest seq that replay has processed
       let reconnectTimer = null;
       let connectToken = 0;
       let currentSessionId = "demo-session";
@@ -72,6 +73,7 @@ const DEMO_HTML = `<!doctype html>
         if (sessionId !== currentSessionId) {
           currentSessionId = sessionId;
           lastSeq = 0;
+          replayHighWaterMark = 0;
           replayToken += 1;
           replayInFlight = false;
           reconnectAttempts = 0;
@@ -141,7 +143,8 @@ const DEMO_HTML = `<!doctype html>
               if (token !== replayToken) return;
               const eventSeq = event.seq || 0;
               replaySeq = Math.max(replaySeq, eventSeq);
-              // Update lastSeq immediately so WebSocket filter has accurate state
+              // Update high water mark BEFORE logging so WebSocket filter is accurate
+              replayHighWaterMark = Math.max(replayHighWaterMark, eventSeq);
               lastSeq = Math.max(lastSeq, eventSeq);
               log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
             }
@@ -197,8 +200,8 @@ const DEMO_HTML = `<!doctype html>
             if (data.type === "event") {
               const seq = data.event.seq || 0;
               // Skip logging if replay is in flight and this event was already replayed.
-              // Use < (not <=) to avoid dropping new events at the boundary.
-              if (replayInFlight && seq < lastSeq) {
+              // Use replayHighWaterMark (not lastSeq) to accurately track replay progress.
+              if (replayInFlight && seq <= replayHighWaterMark) {
                 return;
               }
               lastSeq = Math.max(lastSeq, seq);
