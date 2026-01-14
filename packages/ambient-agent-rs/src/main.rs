@@ -4,6 +4,7 @@
 
 use ambient_agent::{
     daemon::{DaemonBuilder, DaemonCommand},
+    ipc::{IpcClient, default_socket_path},
     types::*,
 };
 use clap::{Parser, Subcommand};
@@ -216,31 +217,83 @@ async fn cmd_start(config_path: &PathBuf, data_dir: Option<PathBuf>, _foreground
     Ok(())
 }
 
-/// TODO: Implement daemon stop via Unix socket or PID file
 async fn cmd_stop() -> anyhow::Result<()> {
+    let client = IpcClient::new(default_socket_path());
+
+    if !client.is_daemon_running() {
+        println!("Daemon is not running");
+        return Ok(());
+    }
+
     println!("Stopping daemon...");
-    println!("Note: Use Ctrl+C on the running daemon to stop it.");
-    println!("      IPC-based stop command not yet implemented.");
-    Ok(())
+    match client.stop().await {
+        Ok(()) => {
+            println!("Daemon stopped");
+            Ok(())
+        }
+        Err(e) => {
+            println!("Failed to stop daemon: {}", e);
+            Err(e)
+        }
+    }
 }
 
-/// TODO: Implement status check via Unix socket or PID file
 async fn cmd_status() -> anyhow::Result<()> {
-    println!("Daemon status: Unknown");
-    println!("Note: Status check requires IPC, not yet implemented.");
-    println!("      Run 'ambient start' to start the daemon.");
-    Ok(())
+    let client = IpcClient::new(default_socket_path());
+
+    if !client.is_daemon_running() {
+        println!("Daemon status: Not running");
+        println!("  Run 'ambient start' to start the daemon.");
+        return Ok(());
+    }
+
+    match client.status().await {
+        Ok(status) => {
+            println!("Daemon status: {}", status.status);
+            println!("  Running: {}", status.running);
+            println!("  PID: {}", status.pid);
+            println!("  Uptime: {}s", status.uptime_secs);
+            Ok(())
+        }
+        Err(e) => {
+            println!("Failed to get status: {}", e);
+            Err(e)
+        }
+    }
 }
 
-/// TODO: Implement stats retrieval via Unix socket
 async fn cmd_stats() -> anyhow::Result<()> {
-    println!("Statistics:");
-    println!("  Events processed: -");
-    println!("  Tasks executed: -");
-    println!("  Success rate: -");
-    println!("  Total cost: -");
-    println!("Note: Stats retrieval requires IPC, not yet implemented.");
-    Ok(())
+    let client = IpcClient::new(default_socket_path());
+
+    if !client.is_daemon_running() {
+        println!("Daemon is not running");
+        return Ok(());
+    }
+
+    match client.stats().await {
+        Ok(stats) => {
+            let success_rate = if stats.tasks_executed > 0 {
+                (stats.tasks_succeeded as f64 / stats.tasks_executed as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            println!("Statistics:");
+            println!("  Uptime: {}s", stats.uptime_secs);
+            println!("  Events processed: {}", stats.events_processed);
+            println!("  Tasks executed: {}", stats.tasks_executed);
+            println!("    - Succeeded: {}", stats.tasks_succeeded);
+            println!("    - Failed: {}", stats.tasks_failed);
+            println!("  Success rate: {:.1}%", success_rate);
+            println!("  PRs created: {}", stats.prs_created);
+            println!("  Total cost: ${:.4}", stats.total_cost);
+            Ok(())
+        }
+        Err(e) => {
+            println!("Failed to get stats: {}", e);
+            Err(e)
+        }
+    }
 }
 
 async fn cmd_watch(config_path: &PathBuf, repo: &str) -> anyhow::Result<()> {

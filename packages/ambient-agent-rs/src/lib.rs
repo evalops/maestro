@@ -41,6 +41,7 @@ pub mod cascader;
 pub mod checkpoint;
 pub mod learner;
 pub mod executor;
+pub mod ipc;
 pub mod daemon;
 
 pub use types::*;

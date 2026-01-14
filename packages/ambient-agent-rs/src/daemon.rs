@@ -10,6 +10,7 @@ use crate::{
     decider::{Decider, DeciderConfig},
     event_bus::{EventBus, EventBusConfig},
     executor::{Executor, ExecutorConfig},
+    ipc::{IpcRequest, IpcResponse, IpcServer, StatusResponse, default_socket_path},
     learner::{Learner, Outcome},
     types::*,
 };
@@ -71,6 +72,7 @@ pub struct AmbientDaemon {
     command_tx: mpsc::Sender<DaemonCommand>,
     command_rx: Option<mpsc::Receiver<DaemonCommand>>,
     start_time: chrono::DateTime<Utc>,
+    ipc_server: Option<IpcServer>,
 }
 
 impl AmbientDaemon {
@@ -107,6 +109,9 @@ impl AmbientDaemon {
 
         let learner = Learner::new(data_dir.join("learner.json"));
 
+        // IPC server for CLI communication
+        let ipc_server = IpcServer::new(default_socket_path());
+
         Self {
             config,
             event_bus: Arc::new(RwLock::new(event_bus)),
@@ -121,6 +126,7 @@ impl AmbientDaemon {
             command_tx,
             command_rx: Some(command_rx),
             start_time: Utc::now(),
+            ipc_server: Some(ipc_server),
         }
     }
 
@@ -148,6 +154,11 @@ impl AmbientDaemon {
         // Load persisted state
         self.load_state().await?;
 
+        // Start IPC server
+        let mut ipc_server = self.ipc_server.take()
+            .ok_or_else(|| anyhow::anyhow!("IPC server already taken"))?;
+        ipc_server.bind().await?;
+
         // Update status
         *self.status.write().await = DaemonStatus::Running;
 
@@ -157,6 +168,65 @@ impl AmbientDaemon {
         // Take ownership of command receiver
         let mut command_rx = self.command_rx.take()
             .ok_or_else(|| anyhow::anyhow!("Daemon already running"))?;
+
+        // Clone Arc references for IPC handler
+        let status_ref = self.status.clone();
+        let stats_ref = self.stats.clone();
+        let cmd_tx = self.command_tx.clone();
+        let start_time = self.start_time;
+
+        // Spawn IPC handler task
+        let ipc_handle = tokio::spawn(async move {
+            loop {
+                match ipc_server.accept().await {
+                    Ok(mut stream) => {
+                        let status = status_ref.clone();
+                        let stats = stats_ref.clone();
+                        let cmd_tx = cmd_tx.clone();
+
+                        tokio::spawn(async move {
+                            if let Ok(request) = IpcServer::read_request(&mut stream).await {
+                                let response = match request {
+                                    IpcRequest::Ping => IpcResponse::Pong,
+                                    IpcRequest::Stop => {
+                                        let _ = cmd_tx.send(DaemonCommand::Shutdown).await;
+                                        IpcResponse::Ok(Some("Stopping daemon".to_string()))
+                                    }
+                                    IpcRequest::Status => {
+                                        let status_val = status.read().await;
+                                        IpcResponse::Status(StatusResponse {
+                                            running: *status_val == DaemonStatus::Running,
+                                            status: format!("{:?}", *status_val),
+                                            uptime_secs: (Utc::now() - start_time).num_seconds() as u64,
+                                            pid: std::process::id(),
+                                        })
+                                    }
+                                    IpcRequest::Stats => {
+                                        let mut s = stats.read().await.clone();
+                                        s.uptime_secs = (Utc::now() - start_time).num_seconds() as u64;
+                                        IpcResponse::Stats(s.into())
+                                    }
+                                    IpcRequest::Pause => {
+                                        let _ = cmd_tx.send(DaemonCommand::Pause).await;
+                                        IpcResponse::Ok(Some("Pausing daemon".to_string()))
+                                    }
+                                    IpcRequest::Resume => {
+                                        let _ = cmd_tx.send(DaemonCommand::Resume).await;
+                                        IpcResponse::Ok(Some("Resuming daemon".to_string()))
+                                    }
+                                };
+                                let _ = IpcServer::write_response(&mut stream, &response).await;
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        // Socket closed, exit IPC handler
+                        debug!("IPC accept error (likely shutdown): {}", e);
+                        break;
+                    }
+                }
+            }
+        });
 
         info!("Daemon running, waiting for events");
 
@@ -200,6 +270,7 @@ impl AmbientDaemon {
         }
 
         // Cleanup
+        ipc_handle.abort(); // Stop IPC handler
         self.save_state().await?;
         *self.status.write().await = DaemonStatus::Stopped;
 
