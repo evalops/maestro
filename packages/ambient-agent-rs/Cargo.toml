@@ -1,0 +1,59 @@
+[package]
+name = "ambient-agent"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Always-on GitHub agent that watches repositories and ships code autonomously"
+
+[lib]
+name = "ambient_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ambient"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "fs", "process", "time"] }
+tokio-stream = "0.1"
+futures = "0.3"
+
+# HTTP client for GitHub API and AI
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async traits
+async-trait = "0.1"
+
+# Utilities
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+hex = "0.4"
+regex = "1"
+glob = "0.3"
+dirs = "6"
+
+# GitHub
+octocrab = "0.41"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"
