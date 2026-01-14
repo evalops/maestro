@@ -140,9 +140,10 @@ const DEMO_HTML = `<!doctype html>
             for (const event of events) {
               if (token !== replayToken) return;
               replaySeq = Math.max(replaySeq, event.seq || 0);
-              lastSeq = Math.max(lastSeq, event.seq || 0);
               log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
             }
+            // Update lastSeq after processing all events in this page
+            lastSeq = Math.max(lastSeq, replaySeq);
             const sinceValue =
               typeof data.since === "number" ? data.since : since;
             const untilValue =
@@ -193,7 +194,13 @@ const DEMO_HTML = `<!doctype html>
           try {
             const data = JSON.parse(event.data);
             if (data.type === "event") {
-              lastSeq = Math.max(lastSeq, data.event.seq || 0);
+              const seq = data.event.seq || 0;
+              // Skip logging if replay is in flight and this event will be/was replayed
+              // to prevent duplicate log entries
+              if (replayInFlight && seq <= lastSeq) {
+                return;
+              }
+              lastSeq = Math.max(lastSeq, seq);
               log(\`[event \${data.event.seq}] \${JSON.stringify(data.event.payload)}\`);
             } else {
               log(\`[ws] \${JSON.stringify(data)}\`);
