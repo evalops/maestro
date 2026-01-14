@@ -181,19 +181,23 @@ impl GitHubWatcher {
         for issue in issues {
             let issue_key = format!("{}#{}", repo, issue.number);
 
-            // Check if issue matches our criteria BEFORE marking as seen
-            // This ensures issues that gain trigger labels later will be processed
+            // Check if issue matches our criteria BEFORE marking as seen.
+            // This ensures issues that gain trigger labels later will be processed.
+            // Note: This is safe from race conditions because:
+            // 1. The poll loop is sequential (awaits each poll before starting next)
+            // 2. Even with hypothetical concurrent access, the atomic check+insert
+            //    in the lock block below prevents duplicate processing
             if !self.should_process(&issue) {
                 continue;
             }
 
-            // Check if we've already processed this issue (atomically check and insert)
+            // Atomically check and insert to prevent duplicate processing.
+            // The lock scope intentionally covers both operations.
             {
                 let mut seen = self.seen_ids.write().await;
                 if seen.contains(&issue_key) {
                     continue;
                 }
-                // Mark as seen only after passing criteria check
                 seen.insert(issue_key.clone());
             }
 
