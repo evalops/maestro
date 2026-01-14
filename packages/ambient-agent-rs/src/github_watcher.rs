@@ -179,20 +179,22 @@ impl GitHubWatcher {
         let issues = self.fetch_issues(repo, &since).await?;
 
         for issue in issues {
-            // Check if we've seen this issue in this session (atomically check and insert)
             let issue_key = format!("{}#{}", repo, issue.number);
+
+            // Check if issue matches our criteria BEFORE marking as seen
+            // This ensures issues that gain trigger labels later will be processed
+            if !self.should_process(&issue) {
+                continue;
+            }
+
+            // Check if we've already processed this issue (atomically check and insert)
             {
                 let mut seen = self.seen_ids.write().await;
                 if seen.contains(&issue_key) {
                     continue;
                 }
-                // Mark as seen immediately to prevent race conditions
+                // Mark as seen only after passing criteria check
                 seen.insert(issue_key.clone());
-            }
-
-            // Check if issue matches our criteria
-            if !self.should_process(&issue) {
-                continue;
             }
 
             // Emit event

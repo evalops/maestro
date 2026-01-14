@@ -117,7 +117,13 @@ impl EventBus {
         }
 
         // Normalize the event
-        let normalized = self.normalize(raw).await;
+        let normalized = match self.normalize(raw).await {
+            Ok(event) => event,
+            Err(e) => {
+                error!("Failed to normalize event: {}", e);
+                return None;
+            }
+        };
 
         // Mark hash as seen
         state.recent_hashes.insert(hash, Utc::now().timestamp());
@@ -261,11 +267,11 @@ impl EventBus {
     }
 
     /// Normalize a raw event
-    async fn normalize(&self, raw: RawEvent) -> NormalizedEvent {
+    async fn normalize(&self, raw: RawEvent) -> anyhow::Result<NormalizedEvent> {
         let id = generate_id();
         let event_type = map_event_type(&raw);
         let payload = extract_payload(&raw);
-        let repo = get_repo_context(&raw.repo).await;
+        let repo = get_repo_context(&raw.repo).await?;
         let flags = detect_flags(&payload);
         let priority = compute_priority(&event_type, &payload, &repo);
         let repository = format!("{}/{}", repo.owner, repo.name);
@@ -273,7 +279,7 @@ impl EventBus {
         let body = payload.body.clone();
         let labels = payload.labels.clone();
 
-        NormalizedEvent {
+        Ok(NormalizedEvent {
             id,
             source: raw.source,
             event_type,
@@ -293,7 +299,7 @@ impl EventBus {
             processed_at: None,
             status: EventStatus::Pending,
             flags,
-        }
+        })
     }
 
     /// Persist an event to disk
@@ -548,7 +554,7 @@ fn detect_flags(payload: &EventPayload) -> EventFlags {
 }
 
 /// Get repository context, cloning if necessary
-async fn get_repo_context(repo_name: &str) -> Repository {
+async fn get_repo_context(repo_name: &str) -> anyhow::Result<Repository> {
     let parts: Vec<&str> = repo_name.split('/').collect();
     let (owner, name) = if parts.len() >= 2 {
         (parts[0].to_string(), parts[1].to_string())
@@ -561,12 +567,11 @@ async fn get_repo_context(repo_name: &str) -> Repository {
 
     // Clone repository if it doesn't exist
     if !std::path::Path::new(&repo_path).join(".git").exists() {
-        if let Err(e) = clone_repository(&repo_url, &repo_path).await {
-            warn!("Failed to clone repository {}: {}", repo_name, e);
-        }
+        clone_repository(&repo_url, &repo_path).await
+            .map_err(|e| anyhow::anyhow!("Failed to clone repository {}: {}", repo_name, e))?;
     }
 
-    Repository {
+    Ok(Repository {
         owner: owner.clone(),
         name: name.clone(),
         full_name: repo_name.to_string(),
@@ -577,7 +582,7 @@ async fn get_repo_context(repo_name: &str) -> Repository {
         agent_md: None,
         test_coverage: None,
         codeowners: vec![],
-    }
+    })
 }
 
 /// Clone a repository to the specified path
@@ -699,8 +704,18 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Create a fake git repo at /tmp/repos/test/repo for tests
+    async fn setup_test_repo() {
+        let repo_path = std::path::Path::new("/tmp/repos/test/repo");
+        if !repo_path.join(".git").exists() {
+            tokio::fs::create_dir_all(repo_path).await.ok();
+            tokio::fs::create_dir_all(repo_path.join(".git")).await.ok();
+        }
+    }
+
     #[tokio::test]
     async fn test_event_emission() {
+        setup_test_repo().await;
         let dir = tempdir().unwrap();
         let config = EventBusConfig {
             persist_dir: dir.path().to_path_buf(),
@@ -735,6 +750,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deduplication() {
+        setup_test_repo().await;
         let dir = tempdir().unwrap();
         let config = EventBusConfig {
             persist_dir: dir.path().to_path_buf(),

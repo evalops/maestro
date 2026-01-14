@@ -245,14 +245,22 @@ impl PrCreator {
                     }
                 }
                 ChangeType::Rename => {
-                    // For renames, the old file should be tracked via git mv or separate delete/create
-                    // Here we just ensure the new file exists with content
+                    // Delete old file if old_path is specified
+                    if let Some(old_path) = &change.old_path {
+                        let old_file_path = repo_path.join(old_path);
+                        if old_file_path.exists() {
+                            fs::remove_file(&old_file_path).await?;
+                            debug!("Deleted old file for rename: {}", old_path);
+                        }
+                    }
+                    // Write new file
                     if let Some(parent) = file_path.parent() {
                         fs::create_dir_all(parent).await?;
                     }
                     if let Some(content) = &change.content {
                         fs::write(&file_path, content).await?;
-                        debug!("Wrote renamed file: {}", change.file);
+                        debug!("Wrote renamed file: {} -> {}",
+                            change.old_path.as_deref().unwrap_or("?"), change.file);
                     }
                 }
             }
@@ -276,6 +284,17 @@ impl PrCreator {
                     self.run_git_command(repo_path, &["rm", "--force", &change.file])
                         .await
                         .ok(); // Ignore errors for delete
+                }
+                ChangeType::Rename => {
+                    // Remove old file from git if old_path is specified
+                    if let Some(old_path) = &change.old_path {
+                        self.run_git_command(repo_path, &["rm", "--force", old_path])
+                            .await
+                            .ok(); // Ignore errors if old file not tracked
+                    }
+                    // Add new file
+                    self.run_git_command(repo_path, &["add", &change.file])
+                        .await?;
                 }
                 _ => {
                     self.run_git_command(repo_path, &["add", &change.file])
