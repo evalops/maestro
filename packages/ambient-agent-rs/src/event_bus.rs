@@ -547,7 +547,7 @@ fn detect_flags(payload: &EventPayload) -> EventFlags {
     flags
 }
 
-/// Get repository context
+/// Get repository context, cloning if necessary
 async fn get_repo_context(repo_name: &str) -> Repository {
     let parts: Vec<&str> = repo_name.split('/').collect();
     let (owner, name) = if parts.len() >= 2 {
@@ -556,18 +556,56 @@ async fn get_repo_context(repo_name: &str) -> Repository {
         ("unknown".to_string(), repo_name.to_string())
     };
 
+    let repo_path = format!("/tmp/repos/{}", repo_name);
+    let repo_url = format!("https://github.com/{}", repo_name);
+
+    // Clone repository if it doesn't exist
+    if !std::path::Path::new(&repo_path).join(".git").exists() {
+        if let Err(e) = clone_repository(&repo_url, &repo_path).await {
+            warn!("Failed to clone repository {}: {}", repo_name, e);
+        }
+    }
+
     Repository {
         owner: owner.clone(),
         name: name.clone(),
         full_name: repo_name.to_string(),
         default_branch: "main".to_string(),
-        path: format!("/tmp/repos/{}", repo_name),
-        url: format!("https://github.com/{}", repo_name),
+        path: repo_path,
+        url: repo_url,
         config: None,
         agent_md: None,
         test_coverage: None,
         codeowners: vec![],
     }
+}
+
+/// Clone a repository to the specified path
+async fn clone_repository(url: &str, path: &str) -> anyhow::Result<()> {
+    use std::process::Stdio;
+    use tokio::process::Command;
+
+    // Create parent directory
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+
+    info!("Cloning repository {} to {}", url, path);
+
+    let output = Command::new("git")
+        .args(["clone", "--depth", "1", url, path])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git clone failed: {}", stderr);
+    }
+
+    info!("Successfully cloned repository to {}", path);
+    Ok(())
 }
 
 /// Compute event priority (0-100)

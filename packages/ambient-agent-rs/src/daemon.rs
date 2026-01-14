@@ -12,6 +12,7 @@ use crate::{
     executor::{Executor, ExecutorConfig},
     ipc::{IpcCommand, IpcResponse, IpcServer, StatusResponse, default_socket_path, verify_token_constant_time},
     learner::{Learner, Outcome},
+    pr_creator::{PrCreator, PrCreatorConfig},
     types::*,
 };
 use chrono::Utc;
@@ -67,6 +68,7 @@ pub struct AmbientDaemon {
     executor: Arc<Executor>,
     checkpoint_mgr: Arc<RwLock<CheckpointManager>>,
     learner: Arc<RwLock<Learner>>,
+    pr_creator: Arc<PrCreator>,
     status: Arc<RwLock<DaemonStatus>>,
     stats: Arc<RwLock<DaemonStats>>,
     command_tx: mpsc::Sender<DaemonCommand>,
@@ -109,6 +111,13 @@ impl AmbientDaemon {
 
         let learner = Learner::new(data_dir.join("learner.json"));
 
+        // PR creator for creating pull requests
+        let pr_creator_config = PrCreatorConfig {
+            token: std::env::var("GITHUB_TOKEN").unwrap_or_default(),
+            ..Default::default()
+        };
+        let pr_creator = PrCreator::new(pr_creator_config);
+
         // IPC server for CLI communication
         let ipc_server = IpcServer::new(default_socket_path());
 
@@ -121,6 +130,7 @@ impl AmbientDaemon {
             executor: Arc::new(executor),
             checkpoint_mgr: Arc::new(RwLock::new(checkpoint_mgr)),
             learner: Arc::new(RwLock::new(learner)),
+            pr_creator: Arc::new(pr_creator),
             status: Arc::new(RwLock::new(DaemonStatus::Starting)),
             stats: Arc::new(RwLock::new(DaemonStats::default())),
             command_tx,
@@ -466,8 +476,34 @@ impl AmbientDaemon {
                 error!("Failed to commit checkpoint: {}", e);
             }
 
-            // Would create PR here
-            info!("Would create PR for: {}", plan.summary);
+            // Create PR for the changes
+            let pr_title = format!("[Ambient] {}", plan.summary);
+            let pr_body = self.generate_pr_body(&plan, &result, &critique);
+            let repo_path = std::path::Path::new(&event.repo.path);
+
+            let pr_result = self.pr_creator.create_pr(
+                repo_path,
+                &event.repository,
+                &event.repo.default_branch,
+                &pr_title,
+                &pr_body,
+                &result.changes,
+                &event,
+            ).await;
+
+            if pr_result.success {
+                info!(
+                    "Created PR #{} at {}",
+                    pr_result.pr_number.unwrap_or(0),
+                    pr_result.pr_url.as_deref().unwrap_or("unknown")
+                );
+                self.stats.write().await.prs_created += 1;
+            } else {
+                warn!(
+                    "Failed to create PR: {}",
+                    pr_result.error.as_deref().unwrap_or("unknown error")
+                );
+            }
         } else {
             // Rollback
             warn!("Critique failed, rolling back");
@@ -479,6 +515,63 @@ impl AmbientDaemon {
                 error!("Failed to rollback: {}", e);
             }
         }
+    }
+
+    /// Generate PR body from plan and results
+    fn generate_pr_body(
+        &self,
+        plan: &TaskPlan,
+        result: &ExecutionResult,
+        critique: &CriticResult,
+    ) -> String {
+        let mut body = String::new();
+
+        // Summary
+        body.push_str("## Summary\n\n");
+        body.push_str(&plan.summary);
+        body.push_str("\n\n");
+
+        // Changes
+        body.push_str("## Changes\n\n");
+        for change in &result.changes {
+            let icon = match change.change_type {
+                ChangeType::Create => "➕",
+                ChangeType::Modify => "✏️",
+                ChangeType::Delete => "🗑️",
+                ChangeType::Rename => "📝",
+            };
+            body.push_str(&format!(
+                "- {} `{}` (+{}, -{})\n",
+                icon, change.file, change.additions, change.deletions
+            ));
+        }
+        body.push('\n');
+
+        // Test results
+        if !result.test_results.is_empty() {
+            body.push_str("## Test Results\n\n");
+            for test in &result.test_results {
+                let icon = if test.passed { "✅" } else { "❌" };
+                body.push_str(&format!("- {} {}\n", icon, test.name));
+            }
+            body.push('\n');
+        }
+
+        // Critic assessment
+        body.push_str("## Quality Assessment\n\n");
+        body.push_str(&format!(
+            "**Confidence:** {:.0}%\n\n",
+            critique.confidence * 100.0
+        ));
+
+        if !critique.suggestions.is_empty() {
+            body.push_str("**Suggestions:**\n");
+            for suggestion in &critique.suggestions {
+                body.push_str(&format!("- {}\n", suggestion));
+            }
+        }
+
+        body
     }
 
     /// Load persisted state

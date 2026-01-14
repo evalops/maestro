@@ -415,13 +415,6 @@ pub enum CheckpointState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileSnapshot {
-    pub path: String,
-    pub content: String,
-    pub exists: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
     pub id: String,
     pub task_id: String,
@@ -431,40 +424,6 @@ pub struct Checkpoint {
     pub file_backups: HashMap<String, Option<String>>,
     pub git_state: Option<String>,
     pub metadata: HashMap<String, String>,
-}
-
-// =============================================================================
-// Policy Types
-// =============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PolicyEnforcement {
-    Block,
-    Warn,
-    Log,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolicyContext {
-    pub event: NormalizedEvent,
-    pub plan: Option<TaskPlan>,
-    pub changes: Vec<FileChange>,
-    pub cost: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolicyResult {
-    pub allowed: bool,
-    pub reason: Option<String>,
-    pub suggestions: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PolicyEvaluation {
-    pub allowed: bool,
-    pub violations: Vec<PolicyResult>,
-    pub warnings: Vec<PolicyResult>,
 }
 
 // =============================================================================
@@ -532,120 +491,6 @@ pub struct Pattern {
     pub success_count: u64,
     pub failure_count: u64,
     pub last_updated: DateTime<Utc>,
-}
-
-// =============================================================================
-// Retrainer Types
-// =============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RetrainerConfig {
-    pub quality_threshold: f64,
-    pub max_iterations: u32,
-    pub evaluation_samples: u32,
-    pub improvement_min_delta: f64,
-}
-
-impl Default for RetrainerConfig {
-    fn default() -> Self {
-        Self {
-            quality_threshold: 0.8,
-            max_iterations: 5,
-            evaluation_samples: 10,
-            improvement_min_delta: 0.05,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RetrainingCycle {
-    pub iteration: u32,
-    pub quality_score: f64,
-    pub samples_evaluated: u32,
-    pub improvements: Vec<String>,
-    pub next_actions: Vec<String>,
-    pub timestamp: DateTime<Utc>,
-}
-
-// =============================================================================
-// Failure Detection Types
-// =============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FailureMode {
-    HallucinationCascade,
-    MemoryCorruption,
-    ToolMisuse,
-    PromptDecay,
-    NonAtomicOperations,
-    VerificationFailure,
-    PromptInjection,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FailureDetection {
-    pub mode: FailureMode,
-    pub detected: bool,
-    pub confidence: f64,
-    pub evidence: Option<String>,
-}
-
-// =============================================================================
-// Daemon Types
-// =============================================================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DaemonStatus {
-    Starting,
-    Running,
-    Paused,
-    Stopping,
-    Stopped,
-    Error,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DaemonState {
-    pub id: String,
-    pub status: DaemonStatus,
-    pub started_at: DateTime<Utc>,
-    pub last_activity_at: DateTime<Utc>,
-    pub events_processed: u64,
-    pub prs_opened: u64,
-    pub prs_merged: u64,
-    pub prs_rejected: u64,
-    pub total_cost_usd: f64,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CircuitBreakerState {
-    pub consecutive_failures: u32,
-    pub last_failure_at: Option<DateTime<Utc>>,
-    pub tripped: bool,
-    pub trip_reason: Option<String>,
-    pub cooldown_until: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CircuitBreakerConfig {
-    pub max_consecutive_failures: u32,
-    pub max_daily_cost_usd: f64,
-    pub max_rejection_rate: f64,
-    pub cooldown_minutes: u32,
-}
-
-impl Default for CircuitBreakerConfig {
-    fn default() -> Self {
-        Self {
-            max_consecutive_failures: 3,
-            max_daily_cost_usd: 50.0,
-            max_rejection_rate: 0.5,
-            cooldown_minutes: 60,
-        }
-    }
 }
 
 // =============================================================================

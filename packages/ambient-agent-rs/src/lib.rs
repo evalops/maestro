@@ -43,6 +43,8 @@ pub mod learner;
 pub mod executor;
 pub mod ipc;
 pub mod daemon;
+pub mod github_watcher;
+pub mod pr_creator;
 
 pub use types::*;
 pub use event_bus::EventBus;
@@ -53,6 +55,8 @@ pub use checkpoint::CheckpointManager;
 pub use learner::Learner;
 pub use executor::Executor;
 pub use daemon::AmbientDaemon;
+pub use github_watcher::GitHubWatcher;
+pub use pr_creator::PrCreator;
 
 /// Prelude for convenient imports
 pub mod prelude {
@@ -65,4 +69,6 @@ pub mod prelude {
     pub use crate::learner::Learner;
     pub use crate::executor::Executor;
     pub use crate::daemon::AmbientDaemon;
+    pub use crate::github_watcher::{GitHubWatcher, GitHubWatcherConfig};
+    pub use crate::pr_creator::{PrCreator, PrCreatorConfig};
 }
