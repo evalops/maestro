@@ -360,6 +360,11 @@ impl AmbientDaemon {
     async fn execute_plan(&self, event: NormalizedEvent, plan: TaskPlan) {
         let start_time = Utc::now();
 
+        // Determine the main task type from the plan
+        let main_task_type = plan.tasks.first()
+            .map(|t| t.task_type)
+            .unwrap_or(TaskType::Fix);
+
         // Create checkpoint
         let checkpoint_id = match self.checkpoint_mgr.write().await
             .create(&plan.task_id, &plan.summary).await
@@ -374,7 +379,7 @@ impl AmbientDaemon {
         // Route to appropriate model
         let task = Task {
             id: plan.task_id.clone(),
-            task_type: TaskType::Fix, // Would be determined by analysis
+            task_type: main_task_type,
             prompt: format!("{}\n\n{}", event.title, event.body.as_deref().unwrap_or_default()),
             files: plan.files.clone(),
             depends_on: vec![],
@@ -384,7 +389,7 @@ impl AmbientDaemon {
 
         let context = TaskContext {
             complexity: plan.estimated_complexity,
-            task_type: TaskType::Fix,
+            task_type: main_task_type,
             estimated_tokens: None,
             previous_attempts: 0,
         };
@@ -414,7 +419,7 @@ impl AmbientDaemon {
         let outcome = Outcome {
             task_id: plan.task_id.clone(),
             event_type: event.event_type,
-            task_type: TaskType::Fix,
+            task_type: main_task_type,
             complexity: plan.estimated_complexity,
             model_used: routing.model.clone(),
             success: critique.approved && result.status == ExecutionStatus::Success,
