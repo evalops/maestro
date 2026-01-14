@@ -46,7 +46,14 @@ const DEMO_HTML = `<!doctype html>
 
       let ws = null;
       let lastSeq = 0;
+      let replayHighWaterMark = 0; // Highest seq that replay has processed
       let reconnectTimer = null;
+      let connectToken = 0;
+      let currentSessionId = "demo-session";
+      let replayInFlight = false;
+      let replayToken = 0;
+      let reconnectAttempts = 0;
+      const maxReconnectAttempts = 5;
 
       function log(message) {
         logEl.textContent += message + "\\n";
@@ -57,45 +64,147 @@ const DEMO_HTML = `<!doctype html>
         statusEl.textContent = text;
       }
 
-      function wsUrl() {
-        const base = location.origin.replace(/^http/, "ws");
-        return \`\${base}/sessions/\${encodeURIComponent(sessionInput.value)}/ws?client=demo\`;
+      function normalizeSessionId() {
+        const trimmed = sessionInput.value.trim();
+        const sessionId = trimmed || "demo-session";
+        if (!trimmed) {
+          sessionInput.value = sessionId;
+        }
+        if (sessionId !== currentSessionId) {
+          currentSessionId = sessionId;
+          lastSeq = 0;
+          replayHighWaterMark = 0;
+          replayToken += 1;
+          replayInFlight = false;
+          reconnectAttempts = 0;
+          if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+          }
+          if (ws) {
+            connectToken += 1;
+            ws.close();
+            ws = null;
+            setStatus("Disconnected");
+          }
+        }
+        return sessionId;
       }
 
-      function eventsUrl() {
-        return \`\${location.origin}/sessions/\${encodeURIComponent(sessionInput.value)}/events\`;
+      function wsUrl(sessionId) {
+        const base = location.origin.replace(/^http/, "ws");
+        return \`\${base}/sessions/\${encodeURIComponent(sessionId)}/ws?client=demo\`;
+      }
+
+      function eventsUrl(sessionId) {
+        return \`\${location.origin}/sessions/\${encodeURIComponent(sessionId)}/events\`;
       }
 
       async function replay() {
-        const url = \`\${eventsUrl()}?since=\${lastSeq}&limit=100\`;
-        const res = await fetch(url);
-        if (!res.ok) {
-          log(\`Replay failed: \${res.status}\`);
+        if (replayInFlight) {
+          log("[replay] already running");
           return;
         }
-        const data = await res.json();
-        for (const event of data.events || []) {
-          lastSeq = Math.max(lastSeq, event.seq || 0);
-          log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
+        const sessionId = normalizeSessionId();
+        const token = ++replayToken;
+        replayInFlight = true;
+        const limit = 100;
+        const maxPages = 5;
+        let replaySeq = lastSeq;
+        let since = replaySeq;
+        let page = 0;
+
+        try {
+          while (page < maxPages) {
+            if (token !== replayToken) return;
+            const url = \`\${eventsUrl(sessionId)}?since=\${since}&limit=\${limit}\`;
+            let res;
+            try {
+              res = await fetch(url);
+            } catch (error) {
+              log(\`[replay] network error: \${error}\`);
+              return;
+            }
+            if (token !== replayToken) return;
+            if (!res.ok) {
+              log(\`Replay failed: \${res.status}\`);
+              return;
+            }
+            let data;
+            try {
+              data = await res.json();
+            } catch (error) {
+              log(\`[replay] invalid JSON: \${error}\`);
+              return;
+            }
+            if (token !== replayToken) return;
+            const events = Array.isArray(data.events) ? data.events : [];
+            for (const event of events) {
+              if (token !== replayToken) return;
+              const eventSeq = event.seq || 0;
+              replaySeq = Math.max(replaySeq, eventSeq);
+              // Update high water mark BEFORE logging so WebSocket filter is accurate
+              replayHighWaterMark = Math.max(replayHighWaterMark, eventSeq);
+              lastSeq = Math.max(lastSeq, eventSeq);
+              log(\`[replay \${event.seq}] \${JSON.stringify(event.payload)}\`);
+            }
+            const sinceValue =
+              typeof data.since === "number" ? data.since : since;
+            const untilValue =
+              typeof data.until === "number" ? data.until : replaySeq;
+            if (events.length === 0 || untilValue - sinceValue < limit) {
+              return;
+            }
+            since = Math.max(replaySeq, untilValue);
+            page += 1;
+          }
+
+          log("[replay] truncated; click Replay again to continue.");
+        } finally {
+          if (token === replayToken) {
+            replayInFlight = false;
+          }
         }
       }
 
-      function connect() {
-        if (ws) ws.close();
-        if (reconnectTimer) clearTimeout(reconnectTimer);
-        ws = new WebSocket(wsUrl());
+      function connect(options = {}) {
+        if (options.manual) {
+          reconnectAttempts = 0;
+        }
+        const sessionId = normalizeSessionId();
+        const token = connectToken + 1;
+        connectToken = token;
+        const previousWs = ws;
+        if (previousWs) {
+          ws = null;
+          previousWs.close();
+        }
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        ws = new WebSocket(wsUrl(sessionId));
         setStatus("Connecting...");
 
         ws.onopen = () => {
+          if (token !== connectToken) return;
           setStatus("Connected");
+          reconnectAttempts = 0;
           log("[ws] connected");
           replay();
         };
         ws.onmessage = (event) => {
+          if (token !== connectToken) return;
           try {
             const data = JSON.parse(event.data);
             if (data.type === "event") {
-              lastSeq = Math.max(lastSeq, data.event.seq || 0);
+              const seq = data.event.seq || 0;
+              // Skip logging if replay is in flight and this event was already replayed.
+              // Use replayHighWaterMark (not lastSeq) to accurately track replay progress.
+              if (replayInFlight && seq <= replayHighWaterMark) {
+                return;
+              }
+              lastSeq = Math.max(lastSeq, seq);
               log(\`[event \${data.event.seq}] \${JSON.stringify(data.event.payload)}\`);
             } else {
               log(\`[ws] \${JSON.stringify(data)}\`);
@@ -104,28 +213,65 @@ const DEMO_HTML = `<!doctype html>
             log(\`[ws] \${event.data}\`);
           }
         };
-        ws.onclose = () => {
+        ws.onclose = (event) => {
+          if (token !== connectToken) return;
           setStatus("Disconnected");
-          log("[ws] disconnected, retrying...");
-          reconnectTimer = setTimeout(connect, 1000);
+          replayToken += 1;
+          replayInFlight = false;
+          if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+          }
+          const code = event?.code ?? 1006;
+          const noReconnectCodes = new Set([
+            1000, // Normal closure
+            1001, // Going Away
+            1002, // Protocol error
+            1003, // Unsupported data
+            1007, // Invalid frame payload
+            1008, // Policy violation
+            1009, // Message too big
+            1010, // Missing extension
+            // 1011 (Internal Error) omitted to allow reconnects on server errors
+          ]);
+          if (noReconnectCodes.has(code)) {
+            log(\`[ws] closed (\${code}); not reconnecting\`);
+            return;
+          }
+          if (reconnectAttempts >= maxReconnectAttempts) {
+            log("[ws] reconnect limit reached; giving up");
+            return;
+          }
+          reconnectAttempts += 1;
+          const delay = Math.min(1000 * 2 ** (reconnectAttempts - 1), 10000);
+          log(\`[ws] disconnected, retrying in \${delay}ms...\`);
+          reconnectTimer = setTimeout(connect, delay);
         };
         ws.onerror = () => {
+          if (token !== connectToken) return;
           log("[ws] error");
         };
       }
 
-      connectBtn.addEventListener("click", connect);
+      connectBtn.addEventListener("click", () => connect({ manual: true }));
       replayBtn.addEventListener("click", replay);
       sendBtn.addEventListener("click", async () => {
+        const sessionId = normalizeSessionId();
         const text = payloadInput.value.trim();
         if (!text) return;
         let payload = text;
         try { payload = JSON.parse(text); } catch {}
-        const res = await fetch(eventsUrl(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
+        let res;
+        try {
+          res = await fetch(eventsUrl(sessionId), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+        } catch (error) {
+          log(\`[send] network error: \${error}\`);
+          return;
+        }
         if (!res.ok) {
           log(\`Send failed: \${res.status}\`);
         }
