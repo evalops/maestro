@@ -135,12 +135,24 @@ impl Cascader {
             })
             .collect();
 
-        // Sort by cost
+        // Sort by cost (using total_cmp to avoid NaN panics)
         eligible.sort_by(|a, b| {
             let cost_a = a.cost_per_1k_input + a.cost_per_1k_output;
             let cost_b = b.cost_per_1k_input + b.cost_per_1k_output;
-            cost_a.partial_cmp(&cost_b).unwrap()
+            cost_a.total_cmp(&cost_b)
         });
+
+        // Get default tier safely (first tier, or create a default if empty)
+        let default_tier = || {
+            self.config.tiers.first().cloned().unwrap_or_else(|| ModelTier {
+                name: "fallback".to_string(),
+                model: "claude-sonnet-4-20250514".to_string(),
+                cost_per_1k_input: 0.003,
+                cost_per_1k_output: 0.015,
+                capabilities: vec!["feature-impl".to_string()],
+                max_complexity: Complexity::Medium,
+            })
+        };
 
         let (selected, reason) = if let Some(tier) = eligible.first() {
             (
@@ -152,13 +164,13 @@ impl Cascader {
             )
         } else if self.config.fallback_to_higher {
             (
-                self.config.tiers.last().unwrap().clone(),
+                self.config.tiers.last().cloned().unwrap_or_else(default_tier),
                 "Fallback to advanced tier".to_string(),
             )
         } else {
             (
                 self.config.tiers.iter().find(|t| t.name == "standard").cloned()
-                    .unwrap_or_else(|| self.config.tiers[0].clone()),
+                    .unwrap_or_else(default_tier),
                 "Default to standard tier".to_string(),
             )
         };

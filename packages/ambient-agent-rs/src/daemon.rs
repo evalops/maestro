@@ -10,7 +10,7 @@ use crate::{
     decider::{Decider, DeciderConfig},
     event_bus::{EventBus, EventBusConfig},
     executor::{Executor, ExecutorConfig},
-    ipc::{IpcRequest, IpcResponse, IpcServer, StatusResponse, default_socket_path},
+    ipc::{IpcCommand, IpcResponse, IpcServer, StatusResponse, default_socket_path, verify_token_constant_time},
     learner::{Learner, Outcome},
     types::*,
 };
@@ -175,6 +175,9 @@ impl AmbientDaemon {
         let cmd_tx = self.command_tx.clone();
         let start_time = self.start_time;
 
+        // Get auth token for verification
+        let auth_token = ipc_server.token().to_string();
+
         // Spawn IPC handler task
         let ipc_handle = tokio::spawn(async move {
             loop {
@@ -183,36 +186,43 @@ impl AmbientDaemon {
                         let status = status_ref.clone();
                         let stats = stats_ref.clone();
                         let cmd_tx = cmd_tx.clone();
+                        let token = auth_token.clone();
 
                         tokio::spawn(async move {
                             if let Ok(request) = IpcServer::read_request(&mut stream).await {
-                                let response = match request {
-                                    IpcRequest::Ping => IpcResponse::Pong,
-                                    IpcRequest::Stop => {
-                                        let _ = cmd_tx.send(DaemonCommand::Shutdown).await;
-                                        IpcResponse::Ok(Some("Stopping daemon".to_string()))
-                                    }
-                                    IpcRequest::Status => {
-                                        let status_val = status.read().await;
-                                        IpcResponse::Status(StatusResponse {
-                                            running: *status_val == DaemonStatus::Running,
-                                            status: format!("{:?}", *status_val),
-                                            uptime_secs: (Utc::now() - start_time).num_seconds() as u64,
-                                            pid: std::process::id(),
-                                        })
-                                    }
-                                    IpcRequest::Stats => {
-                                        let mut s = stats.read().await.clone();
-                                        s.uptime_secs = (Utc::now() - start_time).num_seconds() as u64;
-                                        IpcResponse::Stats(s.into())
-                                    }
-                                    IpcRequest::Pause => {
-                                        let _ = cmd_tx.send(DaemonCommand::Pause).await;
-                                        IpcResponse::Ok(Some("Pausing daemon".to_string()))
-                                    }
-                                    IpcRequest::Resume => {
-                                        let _ = cmd_tx.send(DaemonCommand::Resume).await;
-                                        IpcResponse::Ok(Some("Resuming daemon".to_string()))
+                                // Verify authentication token using constant-time comparison
+                                let response = if !verify_token_constant_time(&request.token, &token) {
+                                    warn!("IPC request with invalid token");
+                                    IpcResponse::Unauthorized
+                                } else {
+                                    match request.command {
+                                        IpcCommand::Ping => IpcResponse::Pong,
+                                        IpcCommand::Stop => {
+                                            let _ = cmd_tx.send(DaemonCommand::Shutdown).await;
+                                            IpcResponse::Ok(Some("Stopping daemon".to_string()))
+                                        }
+                                        IpcCommand::Status => {
+                                            let status_val = status.read().await;
+                                            IpcResponse::Status(StatusResponse {
+                                                running: *status_val == DaemonStatus::Running,
+                                                status: format!("{:?}", *status_val),
+                                                uptime_secs: (Utc::now() - start_time).num_seconds() as u64,
+                                                pid: std::process::id(),
+                                            })
+                                        }
+                                        IpcCommand::Stats => {
+                                            let mut s = stats.read().await.clone();
+                                            s.uptime_secs = (Utc::now() - start_time).num_seconds() as u64;
+                                            IpcResponse::Stats(s.into())
+                                        }
+                                        IpcCommand::Pause => {
+                                            let _ = cmd_tx.send(DaemonCommand::Pause).await;
+                                            IpcResponse::Ok(Some("Pausing daemon".to_string()))
+                                        }
+                                        IpcCommand::Resume => {
+                                            let _ = cmd_tx.send(DaemonCommand::Resume).await;
+                                            IpcResponse::Ok(Some("Resuming daemon".to_string()))
+                                        }
                                     }
                                 };
                                 let _ = IpcServer::write_response(&mut stream, &response).await;

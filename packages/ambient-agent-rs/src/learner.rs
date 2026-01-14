@@ -176,7 +176,7 @@ impl Learner {
             .filter(|((pt, _), p)| {
                 *pt == PatternType::Model && p.sample_count >= self.min_samples_for_pattern
             })
-            .max_by(|(_, a), (_, b)| a.success_rate.partial_cmp(&b.success_rate).unwrap())
+            .max_by(|(_, a), (_, b)| a.success_rate.total_cmp(&b.success_rate))
             .map(|((_, key), _)| key.clone())
     }
 
