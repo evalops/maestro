@@ -47,6 +47,13 @@ import { resolve as resolvePath } from "node:path";
 
 import { createLogger } from "../utils/logger.js";
 import { requireNonEmpty, sanitizeString } from "../utils/validation.js";
+import {
+	killProcessTreeGracefully,
+	killProcessTreeImmediate as killTreeImmediate,
+} from "./process-tree.js";
+
+// Re-export for external use
+export { killProcessTreeGracefully };
 import { expandUserPath } from "./tool-dsl.js";
 
 const shellLogger = createLogger("shell-utils");
@@ -88,40 +95,19 @@ export function getShellConfig(): { shell: string; args: string[] } {
 	return { shell: "sh", args: ["-c"] };
 }
 
+/**
+ * Kill a process and all its children
+ *
+ * This function uses the enhanced process tree killing implementation
+ * that properly handles:
+ * - Orphan processes
+ * - Process group escapes
+ * - Cross-platform support (Windows, macOS, Linux)
+ *
+ * @param pid - Process ID to kill
+ */
 export function killProcessTree(pid: number): void {
-	// Safety: never try to kill PID 1 (init) or invalid PIDs
-	if (pid <= 0 || pid === 1) {
-		return;
-	}
-
-	if (process.platform === "win32") {
-		try {
-			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
-				stdio: "ignore",
-				detached: true,
-			});
-		} catch {
-			return;
-		}
-		return;
-	}
-
-	try {
-		process.kill(-pid, "SIGKILL");
-	} catch (error) {
-		shellLogger.warn(
-			"Failed to kill process group; falling back to single PID",
-			{
-				pid,
-				error: error instanceof Error ? error.message : String(error),
-			},
-		);
-		try {
-			process.kill(pid, "SIGKILL");
-		} catch {
-			return;
-		}
-	}
+	killTreeImmediate(pid);
 }
 
 export function validateShellParams(
