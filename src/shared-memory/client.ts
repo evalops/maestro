@@ -290,11 +290,21 @@ function normalizeEventType(eventType: string): string | null {
 function clampEventId(prefix: string, suffix: string): string {
 	const max =
 		capabilitiesCache?.value?.maxEventIdLength ?? DEFAULT_EVENT_ID_LENGTH;
+	if (max <= 0) {
+		return "";
+	}
+	if (suffix.length >= max) {
+		return suffix.slice(0, max);
+	}
 	if (prefix.length + suffix.length + 1 <= max) {
 		return `${prefix}-${suffix}`;
 	}
 	const prefixMax = Math.max(0, max - suffix.length - 1);
-	return `${prefix.slice(0, prefixMax)}-${suffix}`;
+	const clippedPrefix = prefix.slice(0, prefixMax);
+	if (!clippedPrefix) {
+		return suffix;
+	}
+	return `${clippedPrefix}-${suffix}`;
 }
 
 async function getCapabilities(
@@ -787,16 +797,17 @@ async function flushSession(pending: PendingSession): Promise<void> {
 	}
 
 	pending.flushInFlight = true;
+	const config = readConfig();
+	if (!config) {
+		pending.flushInFlight = false;
+		scheduleFlush(pending, pending.retryDelayMs);
+		return;
+	}
+
 	const state = pending.state;
 	const events = pending.events.slice();
 	pending.state = null;
 	pending.events = [];
-
-	const config = readConfig();
-	if (!config) {
-		pending.flushInFlight = false;
-		return;
-	}
 
 	try {
 		const capabilities = await getCapabilities(config);
