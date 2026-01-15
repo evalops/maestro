@@ -58,8 +58,9 @@ import {
 	HUMAN_EGRESS_PII_RULE_ID,
 	defaultActionFirewall,
 } from "../safety/action-firewall.js";
+import { checkSessionLimits } from "../safety/policy.js";
 import {
-	SafetyMiddleware,
+	type SafetyMiddleware,
 	createSafetyMiddleware,
 } from "../safety/safety-middleware.js";
 import {
@@ -67,8 +68,6 @@ import {
 	METRICS,
 } from "../safety/adaptive-thresholds.js";
 import { trackToolBlocked } from "../telemetry/security-events.js";
-import { getOptimalConcurrency } from "../tools/parallel-execution.js";
-import { checkSessionLimits } from "../safety/policy.js";
 import { SemanticJudge } from "../safety/semantic-judge.js";
 import {
 	WorkflowStateError,
@@ -76,6 +75,7 @@ import {
 	applyWorkflowStateHooks,
 	isWorkflowTrackedTool,
 } from "../safety/workflow-state.js";
+import { getOptimalConcurrency } from "../tools/parallel-execution.js";
 import { ToolError } from "../tools/tool-dsl.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import { getTrainingHeaders } from "../training.js";

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { describe, expect, it, afterEach } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	getDescendantPids,
 	isProcessAlive,
@@ -67,11 +67,9 @@ describe("process-tree", () => {
 
 		it("returns children for process with child", () => {
 			// Spawn a shell that spawns a child
-			const child = spawn(
-				"sh",
-				["-c", "sleep 10 & echo $!; wait"],
-				{ detached: true },
-			);
+			const child = spawn("sh", ["-c", "sleep 10 & echo $!; wait"], {
+				detached: true,
+			});
 
 			if (child.pid) {
 				spawnedPids.push(child.pid);

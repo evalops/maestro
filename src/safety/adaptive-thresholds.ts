@@ -31,8 +31,8 @@
  * @module safety/adaptive-thresholds
  */
 
-import { createLogger } from "../utils/logger.js";
 import { trackAdaptiveThresholdAnomaly } from "../telemetry/security-events.js";
+import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("safety:adaptive-thresholds");
 
@@ -310,7 +310,9 @@ export class AdaptiveThresholds {
 		const newVariance = (1 - alpha) * state.variance + alpha * delta * delta;
 
 		// Guard against NaN/Infinity from extreme values
-		state.variance = Number.isFinite(newVariance) ? newVariance : state.variance;
+		state.variance = Number.isFinite(newVariance)
+			? newVariance
+			: state.variance;
 
 		state.count++;
 		state.lastUpdate = now;
@@ -498,8 +500,7 @@ export class AdaptiveThresholds {
 		);
 
 		// Return mean + anomalyThreshold * stdDev
-		const adaptedThreshold =
-			state.mean + this.config.anomalyThreshold * stdDev;
+		const adaptedThreshold = state.mean + this.config.anomalyThreshold * stdDev;
 
 		logger.debug("Adapted threshold calculated", {
 			metric,

@@ -158,8 +158,10 @@ export function createTieredRateLimitMiddleware(
 		if (isRateLimited) {
 			const ip = getClientIp(req, trustProxy, trustProxyHops);
 			// Use async check to support Redis for distributed rate limiting
-			const { allowed, remaining, reset, limit } =
-				await rateLimiter.checkAsync(ip, pathname);
+			const { allowed, remaining, reset, limit } = await rateLimiter.checkAsync(
+				ip,
+				pathname,
+			);
 
 			if (!allowed) {
 				res.writeHead(429, {

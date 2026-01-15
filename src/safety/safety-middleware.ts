@@ -39,25 +39,25 @@
  * @module safety/safety-middleware
  */
 
-import { createLogger } from "../utils/logger.js";
 import {
 	trackContextFirewall,
-	trackToolBlocked,
 	trackLoopDetection,
 	trackSequencePattern,
 	trackToolApprovalRequired,
+	trackToolBlocked,
 } from "../telemetry/security-events.js";
+import { createLogger } from "../utils/logger.js";
 import {
-	type ContextFirewallResult,
 	type ContextFirewallOptions,
+	type ContextFirewallResult,
 	DEFAULT_BLOCKING_CONFIG,
 	checkContextFirewall,
 	sanitizePayload,
 } from "./context-firewall.js";
 import {
 	type LoopDetectionResult,
-	type LoopDetectorConfig,
 	LoopDetector,
+	type LoopDetectorConfig,
 } from "./loop-detector.js";
 import {
 	type SequenceAnalysisResult,
@@ -355,7 +355,7 @@ export class SafetyMiddleware {
 		toolName: string,
 		args: Record<string, unknown>,
 		success: boolean,
-		approved: boolean = true,
+		approved = true,
 	): void {
 		// Record in loop detector
 		if (this.config.enableLoopDetection) {

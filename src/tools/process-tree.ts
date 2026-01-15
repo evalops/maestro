@@ -21,7 +21,7 @@
  */
 
 import { execSync, spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("tools:process-tree");
@@ -175,8 +175,8 @@ function getDescendantPidsLinux(pid: number): number[] {
 				// The comm can contain spaces and parentheses, so parse carefully
 				const match = stat.match(/^\d+\s+\([^)]*\)\s+\S+\s+(\d+)/);
 				if (match) {
-					const ppid = parseInt(match[1]!, 10);
-					const childPid = parseInt(entry, 10);
+					const ppid = Number.parseInt(match[1]!, 10);
+					const childPid = Number.parseInt(entry, 10);
 
 					if (!children.has(ppid)) {
 						children.set(ppid, []);
@@ -229,8 +229,8 @@ function getDescendantPidsMacOS(pid: number): number[] {
 				.trim()
 				.split("\n")
 				.filter((line) => line.length > 0)
-				.map((line) => parseInt(line, 10))
-				.filter((p) => !isNaN(p) && p > 0);
+				.map((line) => Number.parseInt(line, 10))
+				.filter((p) => !Number.isNaN(p) && p > 0);
 
 			descendants.push(...childPids);
 
@@ -279,8 +279,8 @@ export function getDescendantPids(pid: number): number[] {
 			const childPids = result
 				.split("\n")
 				.slice(1) // Skip header
-				.map((line) => parseInt(line.trim(), 10))
-				.filter((p) => !isNaN(p) && p > 0);
+				.map((line) => Number.parseInt(line.trim(), 10))
+				.filter((p) => !Number.isNaN(p) && p > 0);
 
 			const descendants = [...childPids];
 			for (const childPid of childPids) {
@@ -312,10 +312,7 @@ function safeKill(pid: number, signal: NodeJS.Signals): boolean {
 /**
  * Wait for a process to exit, with timeout
  */
-async function waitForExit(
-	pid: number,
-	timeoutMs: number,
-): Promise<boolean> {
+async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
 	const start = Date.now();
 	const checkInterval = 50; // Check every 50ms
 
@@ -461,9 +458,7 @@ export function registerCleanupHandler(): void {
 
 	// Handle uncaught exceptions
 	process.on("uncaughtException", async (error) => {
-		logger.error("Uncaught exception, cleaning up", {
-			error: error.message,
-		});
+		logger.error("Uncaught exception, cleaning up", error);
 		await cleanup();
 		process.exit(1);
 	});
@@ -484,7 +479,7 @@ export function findOrphanedProcesses(): number[] {
 			if (process.platform === "linux") {
 				const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
 				const match = stat.match(/^\d+\s+\([^)]*\)\s+\S+\s+(\d+)/);
-				if (match && parseInt(match[1]!, 10) === 1) {
+				if (match && Number.parseInt(match[1]!, 10) === 1) {
 					orphans.push(pid);
 				}
 			} else if (process.platform === "darwin") {
@@ -492,7 +487,7 @@ export function findOrphanedProcesses(): number[] {
 					encoding: "utf-8",
 					timeout: 1000,
 				});
-				if (result.stdout && parseInt(result.stdout.trim(), 10) === 1) {
+				if (result.stdout && Number.parseInt(result.stdout.trim(), 10) === 1) {
 					orphans.push(pid);
 				}
 			}

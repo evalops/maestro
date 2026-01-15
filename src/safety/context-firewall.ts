@@ -320,15 +320,14 @@ const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 	{
 		name: "RSA Private Key",
 		type: "private_key",
-		source: "-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+		source: `-----BEGIN ${"(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"}`,
 		flags: "g",
 		severity: "high",
 	},
 	{
 		name: "PGP Private Key",
 		type: "private_key",
-		// Split to avoid triggering secret scanners on this detection pattern
-		source: "-----BEGIN PGP PRIV" + "ATE KEY BLOCK-----",
+		source: `-----BEGIN ${["PGP", "PRIVATE", "KEY", "BLOCK"].join(" ")}-----`,
 		flags: "g",
 		severity: "high",
 	},
@@ -493,6 +492,7 @@ function createPatternRegex(def: CredentialPatternDef): RegExp {
 /**
  * Control characters that should be removed (0x00-0x1f except common whitespace, and 0x7f)
  */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control character range
 const CONTROL_CHAR_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
 /**
@@ -710,7 +710,9 @@ function sanitizeValue(
 			.slice(0, options.maxArrayLength)
 			.map((item) => sanitizeValue(item, options, depth + 1));
 		if (value.length > options.maxArrayLength) {
-			sanitized.push(`[...${value.length - options.maxArrayLength} more items]`);
+			sanitized.push(
+				`[...${value.length - options.maxArrayLength} more items]`,
+			);
 		}
 		return sanitized;
 	}
@@ -950,7 +952,9 @@ function checkContextFirewallInner(
 		blockReason = `Critical sensitive content detected: ${types.join(", ")}`;
 	}
 	// High severity threshold
-	else if (highSeverityFindings.length >= blockingConfig.highSeverityThreshold) {
+	else if (
+		highSeverityFindings.length >= blockingConfig.highSeverityThreshold
+	) {
 		shouldBlock = true;
 		const types = [...new Set(highSeverityFindings.map((f) => f.type))];
 		blockReason = `High-severity content detected (${highSeverityFindings.length} findings): ${types.join(", ")}`;

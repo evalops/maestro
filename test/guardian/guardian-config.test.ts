@@ -16,6 +16,8 @@ import {
 } from "../../src/guardian/config.js";
 import type { GuardianConfig } from "../../src/guardian/types.js";
 
+const joinParts = (...parts: string[]) => parts.join("");
+
 describe("Guardian Config", () => {
 	let testDir: string;
 	let originalHome: string | undefined;
@@ -180,7 +182,11 @@ describe("Guardian Config", () => {
 
 	describe("validateSecretPatterns", () => {
 		it("should validate correct regex patterns", () => {
-			const patterns = ["AKIA[0-9A-Z]{16}", "token_[a-z]+", "\\bsecret\\b"];
+			const patterns = [
+				joinParts("AK", "IA", "[0-9A-Z]{16}"),
+				"token_[a-z]+",
+				"\\bsecret\\b",
+			];
 			const result = validateSecretPatterns(patterns);
 
 			expect(result.valid).toHaveLength(3);

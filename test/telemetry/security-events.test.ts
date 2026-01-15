@@ -1,15 +1,15 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	trackLoopDetection,
-	trackSequencePattern,
-	trackContextFirewall,
-	trackToolBlocked,
-	trackToolApprovalRequired,
-	trackSensitiveContent,
-	getRecentEvents,
-	getEventStats,
 	clearEventBuffer,
+	getEventStats,
+	getRecentEvents,
 	onSecurityEvent,
+	trackContextFirewall,
+	trackLoopDetection,
+	trackSensitiveContent,
+	trackSequencePattern,
+	trackToolApprovalRequired,
+	trackToolBlocked,
 } from "../../src/telemetry/security-events.js";
 
 describe("security-events", () => {

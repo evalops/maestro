@@ -95,7 +95,11 @@ export interface SequencePattern {
 		records: ToolCallRecord[],
 		currentTool: string,
 		currentArgs: Record<string, unknown>,
-	) => { matched: boolean; reason?: string; matchingRecords?: ToolCallRecord[] };
+	) => {
+		matched: boolean;
+		reason?: string;
+		matchingRecords?: ToolCallRecord[];
+	};
 }
 
 /**
@@ -109,7 +113,16 @@ const TOOL_TAGS: Record<string, string[]> = {
 	// Delete operations
 	delete: ["delete_file", "rm", "rmdir", "unlink"],
 	// Network egress
-	egress: ["web_fetch", "webfetch", "fetch", "http_request", "curl", "wget", "send_email", "send_message"],
+	egress: [
+		"web_fetch",
+		"webfetch",
+		"fetch",
+		"http_request",
+		"curl",
+		"wget",
+		"send_email",
+		"send_message",
+	],
 	// Execution
 	exec: ["bash", "exec", "run", "spawn", "shell"],
 	// System paths
@@ -141,10 +154,7 @@ function matchesToolPattern(toolName: string, pattern: string): boolean {
 	// Word-boundary match using regex
 	// Match pattern at start, end, or surrounded by word separators (_, -)
 	const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const wordBoundaryRegex = new RegExp(
-		`(?:^|[_-])${escaped}(?:[_-]|$)`,
-		"i",
-	);
+	const wordBoundaryRegex = new RegExp(`(?:^|[_-])${escaped}(?:[_-]|$)`, "i");
 
 	return wordBoundaryRegex.test(toolName);
 }
@@ -230,9 +240,7 @@ const SUSPICIOUS_PATTERNS: SequencePattern[] = [
 			const sensitiveReads = records.filter((r) => {
 				const ageMs = Date.now() - r.timestamp;
 				return (
-					ageMs < 60000 &&
-					r.tags.has("read") &&
-					containsSensitivePath(r.args)
+					ageMs < 60000 && r.tags.has("read") && containsSensitivePath(r.args)
 				);
 			});
 
@@ -434,7 +442,9 @@ const SUSPICIOUS_PATTERNS: SequencePattern[] = [
 			// Look for recent downloads/fetches
 			const recentDownloads = records.filter((r) => {
 				const ageMs = Date.now() - r.timestamp;
-				return ageMs < 60000 && (r.tags.has("egress") || r.tool.includes("fetch"));
+				return (
+					ageMs < 60000 && (r.tags.has("egress") || r.tool.includes("fetch"))
+				);
 			});
 
 			// Check if current command might be executing downloaded content
@@ -524,7 +534,7 @@ const SUSPICIOUS_PATTERNS: SequencePattern[] = [
 			const command = (currentArgs.command as string) || "";
 			const escalationPatterns = [
 				/sudo\s/,
-				/chmod\s+[0-7]*[7][0-7]*/,  // chmod with execute bit
+				/chmod\s+[0-7]*[7][0-7]*/, // chmod with execute bit
 				/chown\s/,
 				/chgrp\s/,
 				/setuid/,
@@ -596,13 +606,13 @@ const SUSPICIOUS_PATTERNS: SequencePattern[] = [
 				// Check if command reads env vars
 				const command = (r.args.command as string) || "";
 				const envPatterns = [
-					/\$\{?\w+\}?/,           // Shell variable access
-					/env\s/,                  // env command
-					/printenv/,               // printenv command
-					/export\s/,               // export (might show vars)
-					/process\.env/,           // Node.js env access
-					/os\.environ/,            // Python env access
-					/ENV\[/,                  // Ruby env access
+					/\$\{?\w+\}?/, // Shell variable access
+					/env\s/, // env command
+					/printenv/, // printenv command
+					/export\s/, // export (might show vars)
+					/process\.env/, // Node.js env access
+					/os\.environ/, // Python env access
+					/ENV\[/, // Ruby env access
 				];
 
 				const pathArg = (r.args.path || r.args.file_path) as string | undefined;
@@ -618,7 +628,7 @@ const SUSPICIOUS_PATTERNS: SequencePattern[] = [
 			if (envAccess.length > 0) {
 				return {
 					matched: true,
-					reason: `Network egress detected after environment variable access`,
+					reason: "Network egress detected after environment variable access",
 					matchingRecords: envAccess,
 				};
 			}
@@ -698,9 +708,7 @@ const SUSPICIOUS_PATTERNS: SequencePattern[] = [
 			// Count recent modifications
 			const recentMods = records.filter((r) => {
 				const ageMs = Date.now() - r.timestamp;
-				return (
-					ageMs < 60000 && (r.tags.has("write") || r.tags.has("edit"))
-				);
+				return ageMs < 60000 && (r.tags.has("write") || r.tags.has("edit"));
 			});
 
 			// Different thresholds for edit vs write
@@ -1018,15 +1026,14 @@ export class ToolSequenceAnalyzer {
 	/**
 	 * Sanitize args for storage (remove large values)
 	 */
-	private sanitizeArgs(
-		args: Record<string, unknown>,
-	): Record<string, unknown> {
+	private sanitizeArgs(args: Record<string, unknown>): Record<string, unknown> {
 		const sanitized: Record<string, unknown> = {};
 
 		for (const [key, value] of Object.entries(args)) {
 			if (typeof value === "string") {
 				// Truncate long strings
-				sanitized[key] = value.length > 200 ? value.slice(0, 200) + "..." : value;
+				sanitized[key] =
+					value.length > 200 ? `${value.slice(0, 200)}...` : value;
 			} else if (typeof value === "number" || typeof value === "boolean") {
 				sanitized[key] = value;
 			} else if (Array.isArray(value)) {
