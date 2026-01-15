@@ -179,6 +179,43 @@ describe("shared-memory client", () => {
 		expect(syncCalls).toBe(2);
 	});
 
+	it("backs off with rate-limit reset when retry-after is missing", async () => {
+		let syncCalls = 0;
+		const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url.endsWith("/capabilities")) {
+				return createCapabilitiesResponse();
+			}
+			if (url.includes("/sync")) {
+				syncCalls += 1;
+				return new Response("rate limit", {
+					status: 429,
+					headers: { "RateLimit-Reset": "1" },
+				});
+			}
+			return new Response("", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		vi.spyOn(Math, "random").mockReturnValue(0);
+
+		const { queueSharedMemoryUpdate } = await import(
+			"../../src/shared-memory/client.js"
+		);
+		queueSharedMemoryUpdate({
+			sessionId: "session-a",
+			state: { foo: "bar" },
+		});
+
+		await vi.advanceTimersByTimeAsync(200);
+		expect(syncCalls).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(900);
+		expect(syncCalls).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(200);
+		expect(syncCalls).toBe(2);
+	});
+
 	it("backs off exponentially after transient failures", async () => {
 		let syncCalls = 0;
 		const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {

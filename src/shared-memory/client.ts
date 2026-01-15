@@ -139,8 +139,15 @@ function parseRetryAfterMs(response: Response): number | null {
 	if (!resetHeader) return null;
 	const resetValue = Number(resetHeader.trim());
 	if (!Number.isFinite(resetValue)) return null;
-	const resetMs = resetValue > 10_000_000_000 ? resetValue : resetValue * 1000;
-	return Math.max(0, resetMs - Date.now());
+	let delayMs: number;
+	if (resetValue >= 10_000_000_000) {
+		delayMs = resetValue - Date.now();
+	} else if (resetValue >= 1_000_000_000) {
+		delayMs = resetValue * 1000 - Date.now();
+	} else {
+		delayMs = resetValue * 1000;
+	}
+	return Math.max(0, delayMs);
 }
 
 function invalidateCapabilitiesCache(
