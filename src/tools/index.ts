@@ -96,6 +96,9 @@ import {
 	jetbrainsTools as jetbrainsToolDefinitions,
 } from "./jetbrains.js";
 
+// Conductor browser-client tools
+import { conductorClientTools } from "./conductor-client.js";
+
 // Web tools (optional - requires EXA_API_KEY)
 import { webfetchTool } from "./webfetch.js";
 import { websearchTool } from "./websearch.js";
@@ -126,6 +129,7 @@ export { writeTool } from "./write.js";
 export { statusTool } from "./status.js";
 export { ghIssueTool, ghPrTool, ghRepoTool } from "./gh.js";
 export { ensureTool, getToolPath } from "./tools-manager.js";
+export { conductorClientTools } from "./conductor-client.js";
 
 // =============================================================================
 // Tool Collections

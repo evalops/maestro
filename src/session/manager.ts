@@ -44,8 +44,8 @@ import {
 } from "../conversation/render-model.js";
 import { getRegisteredModels } from "../models/registry.js";
 import type { RegisteredModel } from "../models/registry.js";
-import { createLogger } from "../utils/logger.js";
 import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
+import { createLogger } from "../utils/logger.js";
 import { SessionFileWriter } from "./file-writer.js";
 import {
 	SessionMetadataCache,

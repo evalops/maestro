@@ -52,7 +52,12 @@ import { configureSafeMode } from "./safety/safe-mode.js";
 import type { WebServerContext } from "./server/app-context.js";
 import { recordApiRequest } from "./telemetry.js";
 import { artifactsClientTool } from "./tools/artifacts-client.js";
-import { codingTools, jetbrainsTools, vscodeTools } from "./tools/index.js";
+import {
+	codingTools,
+	conductorClientTools,
+	jetbrainsTools,
+	vscodeTools,
+} from "./tools/index.js";
 import { javascriptReplClientTool } from "./tools/javascript-repl-client.js";
 import { createLogger } from "./utils/logger.js";
 
@@ -391,6 +396,7 @@ async function createAgent(
 		enableClientTools?: boolean;
 		includeVscodeTools?: boolean;
 		includeJetBrainsTools?: boolean;
+		includeConductorTools?: boolean;
 	},
 ): Promise<Agent> {
 	const sessionTokenCounter = async (sessionId: string) => {
@@ -456,6 +462,9 @@ async function createAgent(
 	if (options?.enableClientTools) {
 		tools.push(artifactsClientTool);
 		tools.push(javascriptReplClientTool);
+		if (options?.includeConductorTools) {
+			tools.push(...conductorClientTools);
+		}
 	}
 
 	const agent = new Agent({
