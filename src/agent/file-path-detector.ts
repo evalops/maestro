@@ -155,40 +155,41 @@ export function detectFilePaths(text: string): DetectedFilePath[] {
 		let match = pattern.exec(text);
 		while (match !== null) {
 			const path = match[1];
-			if (!path || detectedPaths.has(path)) continue;
-			detectedPaths.add(path);
+			if (path && !detectedPaths.has(path)) {
+				detectedPaths.add(path);
 
-			const resolvedPath = expandHomePath(path);
-			const extension = extname(resolvedPath).toLowerCase();
-			const isImage = extension in IMAGE_EXTENSIONS;
-			const isScreenshot = isScreenshotPath(resolvedPath);
-			const mimeType = IMAGE_EXTENSIONS[extension];
+				const resolvedPath = expandHomePath(path);
+				const extension = extname(resolvedPath).toLowerCase();
+				const isImage = extension in IMAGE_EXTENSIONS;
+				const isScreenshot = isScreenshotPath(resolvedPath);
+				const mimeType = IMAGE_EXTENSIONS[extension];
 
-			let exists = false;
-			let size: number | undefined;
+				let exists = false;
+				let size: number | undefined;
 
-			try {
-				if (existsSync(resolvedPath)) {
-					const stats = statSync(resolvedPath);
-					if (stats.isFile()) {
-						exists = true;
-						size = stats.size;
+				try {
+					if (existsSync(resolvedPath)) {
+						const stats = statSync(resolvedPath);
+						if (stats.isFile()) {
+							exists = true;
+							size = stats.size;
+						}
 					}
+				} catch {
+					// File doesn't exist or isn't accessible
 				}
-			} catch {
-				// File doesn't exist or isn't accessible
-			}
 
-			results.push({
-				path,
-				resolvedPath,
-				extension,
-				isImage,
-				isScreenshot,
-				mimeType,
-				size,
-				exists,
-			});
+				results.push({
+					path,
+					resolvedPath,
+					extension,
+					isImage,
+					isScreenshot,
+					mimeType,
+					size,
+					exists,
+				});
+			}
 
 			match = pattern.exec(text);
 		}

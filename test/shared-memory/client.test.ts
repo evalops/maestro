@@ -112,4 +112,49 @@ describe("shared-memory client", () => {
 		expect(eventId).toBeTruthy();
 		expect(eventId?.startsWith("composer-override-session-")).toBe(true);
 	});
+
+	it("merges state updates within a flush window", async () => {
+		let syncBody: unknown = null;
+		const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url.endsWith("/capabilities")) {
+				return new Response(
+					JSON.stringify({
+						supports_sync: true,
+						supports_gzip: false,
+						max_body_bytes: 1024 * 1024,
+						max_events_batch: 50,
+						max_event_payload_bytes: 1024 * 64,
+						max_event_type_length: 128,
+						max_event_id_length: 128,
+					}),
+					{ status: 200 },
+				);
+			}
+			if (url.includes("/sync")) {
+				syncBody = init?.body ?? null;
+				return new Response("", { status: 200 });
+			}
+			return new Response("", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { queueSharedMemoryUpdate } = await import(
+			"../../src/shared-memory/client.js"
+		);
+		queueSharedMemoryUpdate({
+			sessionId: "session-a",
+			state: { foo: "bar" },
+		});
+		queueSharedMemoryUpdate({
+			sessionId: "session-a",
+			state: { baz: "qux" },
+		});
+
+		await vi.advanceTimersByTimeAsync(1000);
+
+		const parsed = syncBody ? JSON.parse(String(syncBody)) : null;
+		expect(parsed?.state?.composer?.foo).toBe("bar");
+		expect(parsed?.state?.composer?.baz).toBe("qux");
+	});
 });

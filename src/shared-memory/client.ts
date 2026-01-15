@@ -79,6 +79,14 @@ const DEFAULT_EVENT_TYPE_LENGTH = 128;
 const DEFAULT_EVENT_ID_LENGTH = 128;
 const MAX_STRING_LENGTH = 4000;
 const MAX_ARRAY_LENGTH = 50;
+const STATE_TRIM_KEYS = [
+	"summary",
+	"content",
+	"preview",
+	"text",
+	"message",
+	"body",
+];
 const PERSIST_DEBOUNCE_MS = 300;
 const PERSIST_TTL_MS = 24 * 60 * 60 * 1000;
 const CAPABILITIES_TTL_MS = 5 * 60 * 1000;
@@ -826,8 +834,25 @@ async function flushSession(pending: PendingSession): Promise<void> {
 		pending.updatedAt = Date.now();
 		schedulePersist();
 	} catch (error) {
-		if (state && !pending.state) {
-			pending.state = state;
+		if (state) {
+			const mergedState = { ...state, ...(pending.state ?? {}) };
+			const fittedState = fitJsonToBytes(
+				mergedState,
+				TARGET_MAX_BODY_BYTES,
+				STATE_TRIM_KEYS,
+			);
+			if (fittedState.trimmed) {
+				queueStats.trimmedStates += 1;
+			}
+			if (
+				fittedState.value &&
+				typeof fittedState.value === "object" &&
+				!Array.isArray(fittedState.value)
+			) {
+				pending.state = fittedState.value as Record<string, JsonValue>;
+			} else {
+				pending.state = state;
+			}
 		}
 		if (events.length) {
 			pending.events = events.concat(pending.events).slice(-MAX_PENDING_EVENTS);
@@ -858,18 +883,32 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 	const pending = getPendingSession(sessionKey);
 
 	if (update.state) {
+		const mergedState = {
+			...(pending.state ?? {}),
+			...update.state,
+			instanceId,
+			source: "composer",
+		};
 		const fitted = fitJsonToBytes(
-			{ ...update.state, instanceId, source: "composer" },
+			mergedState,
 			TARGET_MAX_BODY_BYTES,
-			["summary", "content", "preview", "text", "message", "body"],
+			STATE_TRIM_KEYS,
 		);
 		if (fitted.trimmed) {
 			queueStats.trimmedStates += 1;
 		}
-		if (!fitted.value || typeof fitted.value !== "object") {
-			pending.state = { instanceId, source: "composer" };
-		} else {
+		if (
+			fitted.value &&
+			typeof fitted.value === "object" &&
+			!Array.isArray(fitted.value)
+		) {
 			pending.state = fitted.value as Record<string, JsonValue>;
+		} else {
+			pending.state = {
+				...(pending.state ?? {}),
+				instanceId,
+				source: "composer",
+			};
 		}
 		pending.updatedAt = Date.now();
 	}
