@@ -289,6 +289,16 @@ export const SAFETY_SUBCOMMANDS: SubcommandDef[] = [
 		description: "Guardian scanning",
 		aliases: ["guard", "scan"],
 	},
+	{
+		name: "events",
+		description: "Show recent security events",
+		aliases: ["security", "logs"],
+	},
+	{
+		name: "threats",
+		description: "Show threat level and advisories",
+		aliases: ["threat", "advisory"],
+	},
 ];
 
 export const GIT_SUBCOMMANDS: SubcommandDef[] = [

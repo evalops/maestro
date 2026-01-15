@@ -44,12 +44,16 @@ export interface AdaptiveThresholdsConfig {
 	alpha: number;
 	/** Number of standard deviations for anomaly detection. Default: 2.0 */
 	anomalyThreshold: number;
-	/** Minimum observations before anomaly detection activates. Default: 5 */
+	/** Minimum observations before EWMA anomaly detection activates. Default: 20 */
 	minObservations: number;
 	/** Maximum age of metric data in ms before decay. Default: 3600000 (1 hour) */
 	maxAgeMs: number;
 	/** Floor for standard deviation to prevent division issues. Default: 0.1 */
 	stdDevFloor: number;
+	/** Number of observations to use for anchored baseline. Default: 50 */
+	anchoredBaselineSize: number;
+	/** Whether to enable cold start protection. Default: true */
+	enableColdStartProtection: boolean;
 }
 
 /**
@@ -58,9 +62,35 @@ export interface AdaptiveThresholdsConfig {
 export const DEFAULT_ADAPTIVE_CONFIG: AdaptiveThresholdsConfig = {
 	alpha: 0.3,
 	anomalyThreshold: 2.0,
-	minObservations: 5,
+	minObservations: 20, // Increased from 5 to prevent cold start attacks
 	maxAgeMs: 3600000, // 1 hour
 	stdDevFloor: 0.1,
+	anchoredBaselineSize: 50,
+	enableColdStartProtection: true,
+};
+
+/**
+ * Static limits for cold start protection
+ *
+ * These are used when insufficient observations exist to establish a baseline.
+ * They provide a reasonable upper bound based on typical legitimate usage patterns.
+ */
+export const COLD_START_STATIC_LIMITS: Record<string, number> = {
+	tool_calls_per_minute: 30,
+	reads_per_minute: 20,
+	writes_per_minute: 10,
+	egress_per_minute: 5,
+	failure_rate: 0.5,
+	sensitive_accesses: 5,
+	api_calls_per_minute: 50,
+	avg_response_time_ms: 30000,
+	findings_per_request: 3,
+	cost_per_session: 10, // $10 max per session during cold start
+	token_usage_rate: 100000, // 100k tokens per minute
+	tool_diversity: 50, // Max 50 unique tools per window
+	latency_p95: 60000, // 60 second P95 latency
+	approval_denial_rate: 0.8, // Max 80% denial rate
+	tool_errors_per_minute: 20, // Max 20 errors per minute
 };
 
 /**
@@ -79,6 +109,19 @@ interface MetricState {
 	min: number;
 	/** Maximum observed value */
 	max: number;
+	/** Anchored baseline mean (frozen after anchoredBaselineSize observations) */
+	anchoredMean?: number;
+	/** Anchored baseline variance (frozen after anchoredBaselineSize observations) */
+	anchoredVariance?: number;
+	/** Whether the anchored baseline has been frozen */
+	anchoredFrozen?: boolean;
+	/**
+	 * Whether this metric is in degraded mode (stale EWMA baseline)
+	 * In degraded mode, thresholds are widened but anchored baseline is preserved
+	 */
+	degraded?: boolean;
+	/** Timestamp when metric entered degraded mode */
+	degradedSince?: number;
 }
 
 /**
@@ -198,21 +241,59 @@ export class AdaptiveThresholds {
 			return;
 		}
 
-		// Apply time decay if needed
+		// Apply time decay if needed - implement graceful degradation instead of full reset
 		const age = now - state.lastUpdate;
 		if (age > this.config.maxAgeMs) {
-			// Reset if data is too old
-			logger.debug("Metric reset due to age", { metric, ageMs: age });
-			state = {
-				mean: value,
-				variance: 0,
-				count: 1,
-				lastUpdate: now,
-				min: value,
-				max: value,
-			};
-			this.metrics.set(metric, state);
-			return;
+			// Cache poisoning defense: Degrade gracefully instead of resetting
+			// This preserves the anchored baseline to prevent attackers from manipulating
+			// the system by forcing resets through time manipulation
+
+			if (state.anchoredFrozen && state.anchoredMean !== undefined) {
+				// Enter degraded mode - preserve anchored baseline but reset EWMA
+				logger.warn("Metric entering degraded mode due to staleness", {
+					metric,
+					ageMs: age,
+					anchoredMeanPreserved: state.anchoredMean,
+				});
+
+				// Reset EWMA baseline but keep anchored baseline
+				state.mean = value;
+				state.variance = 0;
+				state.count = 1;
+				state.lastUpdate = now;
+				state.min = Math.min(state.min, value);
+				state.max = Math.max(state.max, value);
+				state.degraded = true;
+				state.degradedSince = now;
+				// Keep: anchoredMean, anchoredVariance, anchoredFrozen
+				return;
+			} else {
+				// No anchored baseline - must reset but use cold start protection
+				logger.debug("Metric reset due to age (no anchored baseline)", {
+					metric,
+					ageMs: age,
+				});
+				state = {
+					mean: value,
+					variance: 0,
+					count: 1,
+					lastUpdate: now,
+					min: value,
+					max: value,
+				};
+				this.metrics.set(metric, state);
+				return;
+			}
+		}
+
+		// Clear degraded mode if we've had enough fresh observations
+		if (state.degraded && state.count >= this.config.minObservations) {
+			logger.info("Metric exiting degraded mode", {
+				metric,
+				degradedDurationMs: now - (state.degradedSince ?? now),
+			});
+			state.degraded = false;
+			state.degradedSince = undefined;
 		}
 
 		// Update using EWMA
@@ -223,12 +304,10 @@ export class AdaptiveThresholds {
 		// Update mean with EWMA
 		state.mean = oldMean + alpha * delta;
 
-		// Update variance with EWMA (Welford's method adapted for EWMA)
-		// Formula: variance = alpha * (value - oldMean) * (value - newMean) + (1 - alpha) * oldVariance
-		// Note: Due to floating-point precision, variance can occasionally go slightly negative.
-		// We clamp to 0 when computing stdDev to handle this edge case.
-		const newVariance =
-			(1 - alpha) * state.variance + alpha * delta * (value - state.mean);
+		// Update variance with EWMA
+		// Using simplified formula: variance = (1 - alpha) * oldVariance + alpha * delta^2
+		// This is more numerically stable than Welford's adaptation and guarantees non-negative variance
+		const newVariance = (1 - alpha) * state.variance + alpha * delta * delta;
 
 		// Guard against NaN/Infinity from extreme values
 		state.variance = Number.isFinite(newVariance) ? newVariance : state.variance;
@@ -237,6 +316,22 @@ export class AdaptiveThresholds {
 		state.lastUpdate = now;
 		state.min = Math.min(state.min, value);
 		state.max = Math.max(state.max, value);
+
+		// Freeze anchored baseline after sufficient observations
+		// This provides a stable reference point for detecting gradual drift attacks
+		if (
+			!state.anchoredFrozen &&
+			state.count >= this.config.anchoredBaselineSize
+		) {
+			state.anchoredMean = state.mean;
+			state.anchoredVariance = state.variance;
+			state.anchoredFrozen = true;
+			logger.debug("Anchored baseline frozen", {
+				metric,
+				anchoredMean: state.anchoredMean,
+				anchoredStdDev: Math.sqrt(Math.max(0, state.anchoredVariance)),
+			});
+		}
 
 		logger.debug("Metric updated", {
 			metric,
@@ -259,19 +354,52 @@ export class AdaptiveThresholds {
 
 	/**
 	 * Check for anomaly with detailed results
+	 *
+	 * This method implements three levels of protection:
+	 * 1. Cold start protection: Uses static limits when insufficient baseline exists
+	 * 2. EWMA-based detection: Detects deviation from current adaptive baseline
+	 * 3. Anchored baseline detection: Detects gradual drift from initial baseline
 	 */
 	checkAnomaly(metric: string, value: number): AnomalyCheckResult {
 		const state = this.metrics.get(metric);
 
-		// No baseline yet - can't detect anomalies
+		// Cold start protection: use static limits before baseline is established
 		if (!state || state.count < this.config.minObservations) {
+			if (this.config.enableColdStartProtection) {
+				const staticLimit = COLD_START_STATIC_LIMITS[metric];
+				if (staticLimit !== undefined && value > staticLimit) {
+					const reason = `Cold start protection: Value ${value} exceeds static limit ${staticLimit} for ${metric}`;
+					logger.warn("Cold start anomaly detected", {
+						metric,
+						value,
+						staticLimit,
+						observationCount: state?.count ?? 0,
+					});
+					trackAdaptiveThresholdAnomaly({
+						metric,
+						value,
+						mean: staticLimit,
+						stdDev: 0,
+						zScore: Infinity,
+						threshold: staticLimit,
+					});
+					return {
+						isAnomaly: true,
+						zScore: Infinity,
+						mean: staticLimit,
+						stdDev: 0,
+						observationCount: state?.count ?? 0,
+						reason,
+					};
+				}
+			}
 			return {
 				isAnomaly: false,
 				zScore: 0,
 				mean: state?.mean ?? value,
 				stdDev: 0,
 				observationCount: state?.count ?? 0,
-				reason: "Insufficient observations for anomaly detection",
+				reason: "Insufficient observations for EWMA detection",
 			};
 		}
 
@@ -284,11 +412,34 @@ export class AdaptiveThresholds {
 		// Calculate z-score (number of std devs from mean)
 		const zScore = Math.abs(value - state.mean) / stdDev;
 
-		const isAnomaly = zScore > this.config.anomalyThreshold;
+		// Check EWMA-based anomaly
+		let isAnomaly = zScore > this.config.anomalyThreshold;
+		let reason = "";
 
 		if (isAnomaly) {
-			const reason = `Value ${value} is ${zScore.toFixed(2)} standard deviations from mean ${state.mean.toFixed(2)} (threshold: ${this.config.anomalyThreshold})`;
+			reason = `EWMA anomaly: Value ${value} is ${zScore.toFixed(2)} std devs from mean ${state.mean.toFixed(2)}`;
+		}
 
+		// Also check against anchored baseline to detect gradual drift attacks
+		// An attacker might slowly shift the EWMA baseline, but the anchored baseline remains fixed
+		if (!isAnomaly && state.anchoredFrozen && state.anchoredMean !== undefined) {
+			const anchoredStdDev = Math.max(
+				Math.sqrt(Math.max(0, state.anchoredVariance ?? 0)),
+				this.config.stdDevFloor,
+			);
+			const anchoredZScore = Math.abs(value - state.anchoredMean) / anchoredStdDev;
+
+			// Use a slightly higher threshold for anchored baseline (3x instead of 2x)
+			// since drift can occur naturally over time
+			const anchoredThreshold = this.config.anomalyThreshold * 1.5;
+
+			if (anchoredZScore > anchoredThreshold) {
+				isAnomaly = true;
+				reason = `Anchored baseline anomaly: Value ${value} is ${anchoredZScore.toFixed(2)} std devs from anchored mean ${state.anchoredMean.toFixed(2)} (possible drift attack)`;
+			}
+		}
+
+		if (isAnomaly) {
 			logger.warn("Anomaly detected", {
 				metric,
 				value,
@@ -296,6 +447,7 @@ export class AdaptiveThresholds {
 				stdDev,
 				zScore,
 				threshold: this.config.anomalyThreshold,
+				anchoredMean: state.anchoredMean,
 			});
 
 			trackAdaptiveThresholdAnomaly({
@@ -461,6 +613,18 @@ export const METRICS = {
 	AVG_RESPONSE_TIME_MS: "avg_response_time_ms",
 	/** Security findings per request */
 	FINDINGS_PER_REQUEST: "findings_per_request",
+	/** Cost per session in dollars */
+	COST_PER_SESSION: "cost_per_session",
+	/** Token usage rate per minute */
+	TOKEN_USAGE_RATE: "token_usage_rate",
+	/** Tool diversity - unique tools per window */
+	TOOL_DIVERSITY: "tool_diversity",
+	/** P95 latency in ms */
+	LATENCY_P95: "latency_p95",
+	/** Approval denial rate (0-1) */
+	APPROVAL_DENIAL_RATE: "approval_denial_rate",
+	/** Tool execution errors per minute */
+	TOOL_ERRORS_PER_MINUTE: "tool_errors_per_minute",
 } as const;
 
 /**

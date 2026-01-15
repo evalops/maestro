@@ -251,6 +251,75 @@ export function onSecurityEvent(listener: SecurityEventListener): () => void {
 }
 
 /**
+ * Sanitize event metadata for safe logging
+ * Removes or hashes potentially sensitive fields while keeping useful summary info
+ */
+function sanitizeMetadataForLogging(
+	metadata?: Record<string, unknown>,
+): Record<string, unknown> {
+	if (!metadata) return {};
+
+	const safeMetadata: Record<string, unknown> = {};
+
+	// Fields that are safe to log directly
+	const safeFields = [
+		"loopType",
+		"repetitions",
+		"action",
+		"patternId",
+		"findingCount",
+		"blocked",
+		"source",
+		"severity",
+		"zScore",
+		"threshold",
+		"observationCount",
+		"fragmentCount",
+		"totalLength",
+	];
+
+	// Fields that should be counted, not logged directly
+	const countFields = ["findingTypes", "matchingTools"];
+
+	// Fields that should be hashed if present
+	const hashFields = ["toolName", "path", "target"];
+
+	for (const [key, value] of Object.entries(metadata)) {
+		if (safeFields.includes(key)) {
+			safeMetadata[key] = value;
+		} else if (countFields.includes(key)) {
+			// Log count instead of values
+			if (Array.isArray(value)) {
+				safeMetadata[`${key}Count`] = value.length;
+			}
+		} else if (hashFields.includes(key) && typeof value === "string") {
+			// Log hash instead of actual value
+			safeMetadata[`${key}Hash`] = hashForLogging(value);
+		} else if (typeof value === "number" || typeof value === "boolean") {
+			// Numbers and booleans are generally safe
+			safeMetadata[key] = value;
+		}
+		// Skip other fields to prevent leaking sensitive data
+	}
+
+	return safeMetadata;
+}
+
+/**
+ * Create a short hash of a value for logging purposes
+ */
+function hashForLogging(value: string): string {
+	// Simple hash for logging - not cryptographic, just for identification
+	let hash = 0;
+	for (let i = 0; i < value.length; i++) {
+		const char = value.charCodeAt(i);
+		hash = (hash << 5) - hash + char;
+		hash = hash & hash; // Convert to 32bit integer
+	}
+	return hash.toString(16).padStart(8, "0");
+}
+
+/**
  * Emit a security event with deduplication and rate limiting
  */
 function emitEvent(event: SecurityEvent): void {
@@ -264,17 +333,21 @@ function emitEvent(event: SecurityEvent): void {
 		return;
 	}
 
-	// Log the event
+	// Log the event with sanitized metadata to prevent leaking sensitive info
 	const logger = getLogger();
 	const logFn =
 		event.severity === "critical" || event.severity === "high"
 			? logger.warn.bind(logger)
 			: logger.info.bind(logger);
 
+	// Sanitize metadata before logging - only include safe summary info
+	const safeMetadata = sanitizeMetadataForLogging(event.metadata);
+
 	logFn(`Security event: ${event.type}`, {
 		severity: event.severity,
-		description: event.description,
-		...event.metadata,
+		// Only log severity distribution, not the actual description which might contain sensitive paths
+		descriptionLength: event.description.length,
+		...safeMetadata,
 	});
 
 	// Add to buffer
@@ -421,7 +494,7 @@ export function trackContextFirewall(params: {
 export function trackToolBlocked(params: {
 	toolName: string;
 	reason: string;
-	source: "loop" | "sequence" | "firewall" | "policy";
+	source: "loop" | "sequence" | "firewall" | "policy" | "adaptive";
 	severity?: SecuritySeverity;
 }): void {
 	const event: SecurityEvent = {

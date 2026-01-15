@@ -62,6 +62,11 @@ import {
 	SafetyMiddleware,
 	createSafetyMiddleware,
 } from "../safety/safety-middleware.js";
+import {
+	AdaptiveThresholds,
+	METRICS,
+} from "../safety/adaptive-thresholds.js";
+import { trackToolBlocked } from "../telemetry/security-events.js";
 import { getOptimalConcurrency } from "../tools/parallel-execution.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import { SemanticJudge } from "../safety/semantic-judge.js";
@@ -365,6 +370,12 @@ export class ProviderTransport implements AgentTransport {
 	private recentToolTimestamps = new Map<string, number[]>();
 	/** Safety middleware for sequence analysis and context sanitization */
 	private readonly safetyMiddleware!: SafetyMiddleware;
+	/** Adaptive thresholds for anomaly-based rate limiting */
+	private readonly adaptiveThresholds!: AdaptiveThresholds;
+	/** Tool call count in current minute window (for adaptive tracking) */
+	private toolCallsThisMinute = 0;
+	/** Last minute window start time */
+	private minuteWindowStart = 0;
 	private readonly clock: Clock;
 	private readonly sessionTokenCounter?: SessionTokenCounter;
 	private readonly auditLogger?: ToolAuditLogger;
@@ -385,6 +396,13 @@ export class ProviderTransport implements AgentTransport {
 		this.clock = options.clock ?? systemClock;
 		this.sessionTokenCounter = options.sessionTokenCounter;
 		this.auditLogger = options.auditLogger;
+		this.minuteWindowStart = this.clock.now();
+		// Initialize adaptive thresholds for anomaly detection
+		this.adaptiveThresholds = new AdaptiveThresholds({
+			alpha: 0.3, // Give more weight to recent observations
+			anomalyThreshold: 2.5, // 2.5 std devs = more aggressive anomaly detection
+			minObservations: 5, // Need at least 5 observations before anomaly detection
+		});
 		// Initialize safety middleware for unified security checks
 		this.safetyMiddleware = createSafetyMiddleware({
 			// Enable loop detection (replaces transport's doom loop detection)
@@ -965,7 +983,78 @@ export class ProviderTransport implements AgentTransport {
 					const recent = timestamps.filter(
 						(ts) => now - ts < ProviderTransport.TOOL_RATE_WINDOW_MS,
 					);
-					if (recent.length >= ProviderTransport.TOOL_RATE_LIMIT) {
+
+					// Track tool calls per minute for adaptive thresholds
+					if (now - this.minuteWindowStart >= 60_000) {
+						// Record the observation at minute boundary
+						this.adaptiveThresholds.recordObservation(
+							METRICS.TOOL_CALLS_PER_MINUTE,
+							this.toolCallsThisMinute,
+						);
+						// Reset for new minute window
+						this.toolCallsThisMinute = 0;
+						this.minuteWindowStart = now;
+					}
+					this.toolCallsThisMinute++;
+
+					// Track tool-specific metrics
+					const toolNameLower = toolCall.name.toLowerCase();
+					if (toolNameLower === "read" || toolNameLower === "glob") {
+						this.adaptiveThresholds.recordObservation(METRICS.READS_PER_MINUTE, 1);
+					} else if (toolNameLower === "write" || toolNameLower === "edit") {
+						this.adaptiveThresholds.recordObservation(METRICS.WRITES_PER_MINUTE, 1);
+					} else if (
+						toolNameLower === "webfetch" ||
+						toolNameLower === "websearch" ||
+						toolNameLower.includes("mcp")
+					) {
+						this.adaptiveThresholds.recordObservation(METRICS.EGRESS_PER_MINUTE, 1);
+					}
+
+					// Check for anomalous tool call rate
+					const anomalyCheck = this.adaptiveThresholds.checkAnomaly(
+						METRICS.TOOL_CALLS_PER_MINUTE,
+						this.toolCallsThisMinute,
+					);
+
+					// Enforce anomaly detection - block when anomaly detected
+					if (anomalyCheck.isAnomaly) {
+						trackToolBlocked({
+							toolName: toolCall.name,
+							reason: `Anomaly detected: ${anomalyCheck.reason ?? "Unusual tool call rate"}`,
+							source: "adaptive",
+						});
+						const anomalyMessage: ToolResultMessage = {
+							role: "toolResult",
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							content: [
+								{
+									type: "text",
+									text: `Blocked "${toolCall.name}" due to anomalous behavior: ${anomalyCheck.reason ?? "Unusual tool call pattern detected"}. Z-score: ${anomalyCheck.zScore.toFixed(2)}, Baseline: ${anomalyCheck.mean.toFixed(2)} ± ${anomalyCheck.stdDev.toFixed(2)}`,
+								},
+							],
+							isError: true,
+							timestamp: now,
+						};
+						for (const evt of emitToolResult(anomalyMessage, toolCall, true)) {
+							yield evt;
+						}
+						await checkSteering();
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+							break;
+						}
+						continue;
+					}
+
+					// Use adaptive threshold if we have enough data, otherwise use static limit
+					const effectiveRateLimit = this.adaptiveThresholds.getAdaptedThreshold(
+						`tool_rate_${toolCall.name}`,
+						ProviderTransport.TOOL_RATE_LIMIT,
+					);
+
+					if (recent.length >= effectiveRateLimit) {
 						const rateMessage: ToolResultMessage = {
 							role: "toolResult",
 							toolCallId: toolCall.id,
@@ -973,7 +1062,11 @@ export class ProviderTransport implements AgentTransport {
 							content: [
 								{
 									type: "text",
-									text: `Blocked "${toolCall.name}" due to rate limit: >${ProviderTransport.TOOL_RATE_LIMIT} calls in ${ProviderTransport.TOOL_RATE_WINDOW_MS / 1000}s window.`,
+									text: `Blocked "${toolCall.name}" due to rate limit: >${effectiveRateLimit} calls in ${ProviderTransport.TOOL_RATE_WINDOW_MS / 1000}s window.${
+										anomalyCheck.isAnomaly
+											? ` (Anomaly detected: ${anomalyCheck.reason})`
+											: ""
+									}`,
 								},
 							],
 							isError: true,
@@ -989,6 +1082,13 @@ export class ProviderTransport implements AgentTransport {
 						}
 						continue;
 					}
+
+					// Record observation for per-tool adaptive rate
+					this.adaptiveThresholds.recordObservation(
+						`tool_rate_${toolCall.name}`,
+						recent.length,
+					);
+
 					recent.push(now);
 					this.recentToolTimestamps.set(toolCall.name, recent);
 
@@ -1402,6 +1502,12 @@ export class ProviderTransport implements AgentTransport {
 									true, // approved
 								);
 
+								// Track failure rate for adaptive thresholds
+								this.adaptiveThresholds.recordObservation(
+									METRICS.FAILURE_RATE,
+									result.isError ? 1 : 0,
+								);
+
 								const toolResultMsg: ToolResultMessage = {
 									role: "toolResult" as const,
 									toolCallId: toolCall.id,
@@ -1554,6 +1660,9 @@ export class ProviderTransport implements AgentTransport {
 									false, // success
 									true, // approved
 								);
+
+								// Track failure rate for adaptive thresholds (failure = 1)
+								this.adaptiveThresholds.recordObservation(METRICS.FAILURE_RATE, 1);
 
 								const toolResultMsg: ToolResultMessage = {
 									role: "toolResult" as const,

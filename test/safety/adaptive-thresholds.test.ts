@@ -267,9 +267,11 @@ describe("adaptive-thresholds", () => {
 		it("has sensible defaults", () => {
 			expect(DEFAULT_ADAPTIVE_CONFIG.alpha).toBe(0.3);
 			expect(DEFAULT_ADAPTIVE_CONFIG.anomalyThreshold).toBe(2.0);
-			expect(DEFAULT_ADAPTIVE_CONFIG.minObservations).toBe(5);
+			expect(DEFAULT_ADAPTIVE_CONFIG.minObservations).toBe(20); // Increased for cold start protection
 			expect(DEFAULT_ADAPTIVE_CONFIG.maxAgeMs).toBe(3600000); // 1 hour
 			expect(DEFAULT_ADAPTIVE_CONFIG.stdDevFloor).toBe(0.1);
+			expect(DEFAULT_ADAPTIVE_CONFIG.anchoredBaselineSize).toBe(50);
+			expect(DEFAULT_ADAPTIVE_CONFIG.enableColdStartProtection).toBe(true);
 		});
 	});
 

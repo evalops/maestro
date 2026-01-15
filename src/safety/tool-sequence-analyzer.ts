@@ -79,7 +79,7 @@ export interface SequenceAnalysisResult {
 /**
  * Pattern definition for suspicious sequences
  */
-interface SequencePattern {
+export interface SequencePattern {
 	/** Unique identifier */
 	id: string;
 	/** Human-readable description */
@@ -109,7 +109,7 @@ const TOOL_TAGS: Record<string, string[]> = {
 	// Delete operations
 	delete: ["delete_file", "rm", "rmdir", "unlink"],
 	// Network egress
-	egress: ["web_fetch", "http_request", "curl", "wget", "send_email", "send_message"],
+	egress: ["web_fetch", "webfetch", "fetch", "http_request", "curl", "wget", "send_email", "send_message"],
 	// Execution
 	exec: ["bash", "exec", "run", "spawn", "shell"],
 	// System paths
@@ -719,6 +719,25 @@ const SUSPICIOUS_PATTERNS: SequencePattern[] = [
 ];
 
 /**
+ * Session-level statistics for temporal evasion detection
+ * These persist for the entire session and don't get pruned by time
+ */
+interface SessionStats {
+	/** Total tool calls in session */
+	totalToolCalls: number;
+	/** Tool call counts by type */
+	toolCounts: Map<string, number>;
+	/** Sensitive file accesses in session */
+	sensitiveAccesses: number;
+	/** Network egress operations in session */
+	egressOperations: number;
+	/** Session start time */
+	sessionStart: number;
+	/** Unique paths accessed */
+	uniquePaths: Set<string>;
+}
+
+/**
  * Tool Sequence Analyzer class
  */
 export class ToolSequenceAnalyzer {
@@ -731,9 +750,163 @@ export class ToolSequenceAnalyzer {
 	/** Maximum age of records (ms) */
 	private maxAgeMs: number;
 
+	/**
+	 * Session-level statistics for temporal evasion detection
+	 * These persist for the entire session to detect slow-burn attacks
+	 */
+	private sessionStats: SessionStats = {
+		totalToolCalls: 0,
+		toolCounts: new Map(),
+		sensitiveAccesses: 0,
+		egressOperations: 0,
+		sessionStart: Date.now(),
+		uniquePaths: new Set(),
+	};
+
+	/**
+	 * Session-level thresholds for temporal evasion detection
+	 */
+	private readonly sessionThresholds = {
+		/** Max total tool calls per session */
+		maxToolCalls: 500,
+		/** Max sensitive file accesses per session */
+		maxSensitiveAccesses: 50,
+		/** Max network egress operations per session */
+		maxEgressOperations: 20,
+		/** Max unique paths to access */
+		maxUniquePaths: 200,
+		/** Alert after this many calls of same tool type */
+		toolTypeThreshold: 100,
+	};
+
 	constructor(options?: { maxRecords?: number; maxAgeMs?: number }) {
 		this.maxRecords = options?.maxRecords ?? 100;
 		this.maxAgeMs = options?.maxAgeMs ?? 600000; // 10 minutes default
+	}
+
+	/**
+	 * Get session statistics for monitoring
+	 */
+	getSessionStats(): Readonly<{
+		totalToolCalls: number;
+		sensitiveAccesses: number;
+		egressOperations: number;
+		uniquePathCount: number;
+		sessionDurationMs: number;
+	}> {
+		return {
+			totalToolCalls: this.sessionStats.totalToolCalls,
+			sensitiveAccesses: this.sessionStats.sensitiveAccesses,
+			egressOperations: this.sessionStats.egressOperations,
+			uniquePathCount: this.sessionStats.uniquePaths.size,
+			sessionDurationMs: Date.now() - this.sessionStats.sessionStart,
+		};
+	}
+
+	/**
+	 * Check session-level patterns for temporal evasion
+	 * This catches attackers who space out operations over time
+	 */
+	private checkSessionPatterns(
+		toolName: string,
+		toolArgs: Record<string, unknown>,
+	): SequenceAnalysisResult | null {
+		const tags = getToolTags(toolName);
+
+		// Track session stats
+		this.sessionStats.totalToolCalls++;
+		const toolCount =
+			(this.sessionStats.toolCounts.get(toolName) ?? 0) + 1;
+		this.sessionStats.toolCounts.set(toolName, toolCount);
+
+		// Track sensitive accesses
+		if (tags.has("sensitive") || tags.has("privesc")) {
+			this.sessionStats.sensitiveAccesses++;
+		}
+
+		// Track egress operations
+		if (tags.has("network") || tags.has("egress")) {
+			this.sessionStats.egressOperations++;
+		}
+
+		// Track unique paths
+		const path = this.extractPath(toolArgs);
+		if (path) {
+			this.sessionStats.uniquePaths.add(path);
+		}
+
+		// Check session-level thresholds
+		if (this.sessionStats.totalToolCalls >= this.sessionThresholds.maxToolCalls) {
+			return {
+				action: "require_approval",
+				patternId: "session-tool-limit",
+				reason: `Session tool call limit reached (${this.sessionStats.totalToolCalls} calls). This may indicate automated abuse.`,
+				severity: "high",
+			};
+		}
+
+		if (
+			this.sessionStats.sensitiveAccesses >=
+			this.sessionThresholds.maxSensitiveAccesses
+		) {
+			return {
+				action: "require_approval",
+				patternId: "session-sensitive-limit",
+				reason: `Session sensitive access limit reached (${this.sessionStats.sensitiveAccesses} accesses). Possible reconnaissance or data harvesting.`,
+				severity: "high",
+			};
+		}
+
+		if (
+			this.sessionStats.egressOperations >=
+			this.sessionThresholds.maxEgressOperations
+		) {
+			return {
+				action: "block",
+				patternId: "session-egress-limit",
+				reason: `Session egress limit reached (${this.sessionStats.egressOperations} operations). Possible data exfiltration.`,
+				severity: "critical",
+			};
+		}
+
+		if (
+			this.sessionStats.uniquePaths.size >=
+			this.sessionThresholds.maxUniquePaths
+		) {
+			return {
+				action: "require_approval",
+				patternId: "session-path-limit",
+				reason: `Session unique path limit reached (${this.sessionStats.uniquePaths.size} paths). Possible filesystem enumeration.`,
+				severity: "high",
+			};
+		}
+
+		// Check for excessive use of single tool type
+		if (toolCount >= this.sessionThresholds.toolTypeThreshold) {
+			return {
+				action: "require_approval",
+				patternId: "session-tool-type-limit",
+				reason: `Excessive use of ${toolName} (${toolCount} calls). May indicate automated abuse.`,
+				severity: "medium",
+			};
+		}
+
+		return null;
+	}
+
+	/**
+	 * Extract file path from tool arguments
+	 */
+	private extractPath(args: Record<string, unknown>): string | null {
+		// Common path argument names
+		const pathKeys = ["path", "file", "file_path", "filePath", "target", "source"];
+		for (const key of pathKeys) {
+			const value = args[key];
+			if (typeof value === "string") {
+				return value;
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -746,31 +919,58 @@ export class ToolSequenceAnalyzer {
 		// Clean old records first
 		this.pruneOldRecords();
 
-		// Check each pattern
+		// Check session-level patterns first (for temporal evasion detection)
+		const sessionResult = this.checkSessionPatterns(toolName, toolArgs);
+		if (sessionResult) {
+			logger.warn("Session-level pattern detected", {
+				patternId: sessionResult.patternId,
+				severity: sessionResult.severity,
+				tool: toolName,
+				reason: sessionResult.reason,
+			});
+			return sessionResult;
+		}
+
+		// Check each pattern with fail-closed error handling
 		for (const pattern of SUSPICIOUS_PATTERNS) {
-			const result = pattern.detect(this.records, toolName, toolArgs);
+			try {
+				const result = pattern.detect(this.records, toolName, toolArgs);
 
-			if (result.matched) {
-				logger.warn("Suspicious tool sequence detected", {
-					patternId: pattern.id,
-					severity: pattern.severity,
-					tool: toolName,
-					reason: result.reason,
-				});
+				if (result.matched) {
+					logger.warn("Suspicious tool sequence detected", {
+						patternId: pattern.id,
+						severity: pattern.severity,
+						tool: toolName,
+						reason: result.reason,
+					});
 
-				const action =
-					pattern.action === "log"
-						? "allow"
-						: pattern.action === "require_approval"
-							? "require_approval"
-							: "block";
+					const action =
+						pattern.action === "log"
+							? "allow"
+							: pattern.action === "require_approval"
+								? "require_approval"
+								: "block";
 
+					return {
+						action,
+						patternId: pattern.id,
+						reason: result.reason ?? pattern.description,
+						severity: pattern.severity,
+						matchingRecords: result.matchingRecords,
+					};
+				}
+			} catch (err) {
+				// Fail-closed: if a pattern detection throws, require approval
+				// This prevents attackers from crafting inputs that crash patterns
+				logger.error(
+					`Pattern detection error - failing closed [pattern=${pattern.id}, tool=${toolName}]`,
+					err instanceof Error ? err : new Error(String(err)),
+				);
 				return {
-					action,
+					action: "require_approval",
 					patternId: pattern.id,
-					reason: result.reason ?? pattern.description,
-					severity: pattern.severity,
-					matchingRecords: result.matchingRecords,
+					reason: `Security pattern check failed: ${pattern.description}. Manual review required.`,
+					severity: "high",
 				};
 			}
 		}
