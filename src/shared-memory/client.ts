@@ -103,6 +103,37 @@ class SharedMemoryError extends Error {
 	}
 }
 
+function invalidateCapabilitiesCache(
+	override?: Partial<Capabilities>,
+): Capabilities {
+	if (!override) {
+		capabilitiesCache = null;
+		capabilitiesPromise = null;
+		return {
+			supportsSync: true,
+			supportsGzip: true,
+			maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
+			maxEventsBatch: DEFAULT_EVENTS_PER_BATCH,
+		};
+	}
+	const base =
+		capabilitiesCache?.value ?? {
+			supportsSync: true,
+			supportsGzip: true,
+			maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
+			maxEventsBatch: DEFAULT_EVENTS_PER_BATCH,
+		};
+	const value = { ...base, ...override };
+	capabilitiesCache = { value, fetchedAt: Date.now() };
+	capabilitiesPromise = null;
+	return value;
+}
+
+function isUnsupportedEncoding(error: SharedMemoryError): boolean {
+	if (error.status === 415) return true;
+	return error.message.toLowerCase().includes("unsupported content-encoding");
+}
+
 function normalizeBaseUrl(value: string): string {
 	return value.replace(/\/+$/, "");
 }
@@ -523,7 +554,13 @@ async function sendSyncBatch(
 		return;
 	} catch (error) {
 		if (error instanceof SharedMemoryError) {
+			if (isUnsupportedEncoding(error) && capabilities.supportsGzip) {
+				const updated = invalidateCapabilitiesCache({ supportsGzip: false });
+				await sendSyncBatch(config, sessionId, state, events, updated, stats);
+				return;
+			}
 			if (error.status === 404 || error.status === 405) {
+				invalidateCapabilitiesCache({ supportsSync: false });
 				await fallbackSync(
 					config,
 					sessionId,
@@ -814,3 +851,7 @@ function prepareRequestBody(
 }
 
 loadPersistedQueue();
+
+export function invalidateSharedMemoryCapabilities(): void {
+	invalidateCapabilitiesCache();
+}
