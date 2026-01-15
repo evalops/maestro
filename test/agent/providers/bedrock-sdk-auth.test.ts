@@ -9,16 +9,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Track BedrockRuntimeClient instantiation
 const mockClientInstances: Array<{ region?: string }> = [];
 const mockSend = vi.fn();
+class MockBedrockRuntimeClient {
+	send = mockSend;
+	constructor(config?: { region?: string }) {
+		mockClientInstances.push({ region: config?.region });
+	}
+}
+class MockConverseStreamCommand {
+	input: unknown;
+	constructor(input: unknown) {
+		this.input = input;
+	}
+}
+const mockBedrockRuntimeClient = vi.fn(MockBedrockRuntimeClient);
+const mockConverseStreamCommand = vi.fn(MockConverseStreamCommand);
 
 vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 	return {
-		BedrockRuntimeClient: vi.fn().mockImplementation((config) => {
-			mockClientInstances.push({ region: config?.region });
-			return { send: mockSend };
-		}),
-		ConverseStreamCommand: vi.fn().mockImplementation((input) => ({
-			input,
-		})),
+		BedrockRuntimeClient: mockBedrockRuntimeClient,
+		ConverseStreamCommand: mockConverseStreamCommand,
 	};
 });
 
