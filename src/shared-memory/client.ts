@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createLogger } from "../utils/logger.js";
 
 type JsonValue =
@@ -28,7 +29,19 @@ type SharedMemoryUpdate = {
 };
 
 const logger = createLogger("shared-memory");
+const FLUSH_DELAY_MS = 150;
 const REQUEST_TIMEOUT_MS = 5000;
+const MAX_PENDING_EVENTS = 50;
+const MAX_BACKOFF_MS = 5000;
+const instanceId = randomUUID();
+
+let pendingSessionKey: string | null = null;
+let pendingState: Record<string, JsonValue> | null = null;
+let pendingEvents: SharedMemoryEvent[] = [];
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+let flushInFlight = false;
+let eventCounter = 0;
+let retryDelayMs = FLUSH_DELAY_MS;
 
 function normalizeBaseUrl(value: string): string {
 	return value.replace(/\/+$/, "");
@@ -72,28 +85,85 @@ async function safeFetch(url: string, init: RequestInit): Promise<void> {
 	}
 }
 
-async function patchState(
+async function syncSession(
 	config: SharedMemoryConfig,
 	sessionId: string,
-	state: Record<string, JsonValue>,
+	state: Record<string, JsonValue> | null,
+	events: SharedMemoryEvent[],
 ): Promise<void> {
-	await safeFetch(`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/state`, {
+	const payload: Record<string, JsonValue> = {};
+	if (state) {
+		payload.state = { composer: state } as JsonValue;
+	}
+	if (events.length) {
+		payload.events = events.map((event) => ({
+			...event,
+			actor: event.actor ?? "composer",
+		})) as JsonValue;
+	}
+	await safeFetch(`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/sync`, {
 		method: "PATCH",
 		headers: buildHeaders(config.apiKey),
-		body: JSON.stringify({ state: { composer: state } }),
+		body: JSON.stringify(payload),
 	});
 }
 
-async function appendEvent(
-	config: SharedMemoryConfig,
-	sessionId: string,
-	event: SharedMemoryEvent,
-): Promise<void> {
-	await safeFetch(`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/events`, {
-		method: "POST",
-		headers: buildHeaders(config.apiKey),
-		body: JSON.stringify({ ...event, actor: "composer" }),
-	});
+function nextEventId(prefix: string): string {
+	eventCounter = (eventCounter + 1) % 1_000_000;
+	return `${prefix}-${Date.now()}-${eventCounter}`;
+}
+
+function scheduleFlush(delayMs = FLUSH_DELAY_MS): void {
+	if (flushTimer) return;
+	flushTimer = setTimeout(() => {
+		flushTimer = null;
+		void flushQueue();
+	}, delayMs);
+}
+
+async function flushQueue(): Promise<void> {
+	if (flushInFlight) {
+		scheduleFlush();
+		return;
+	}
+	if (!pendingSessionKey) return;
+	flushInFlight = true;
+
+	const sessionKey = pendingSessionKey;
+	const state = pendingState;
+	const events = pendingEvents;
+
+	pendingSessionKey = null;
+	pendingState = null;
+	pendingEvents = [];
+
+	const config = readConfig();
+	if (!config) {
+		flushInFlight = false;
+		return;
+	}
+
+	try {
+		if (state || events.length) {
+			await syncSession(config, sessionKey, state, events);
+		}
+		retryDelayMs = FLUSH_DELAY_MS;
+	} catch (error) {
+		if (state) {
+			pendingState = state;
+		}
+		if (events.length) {
+			pendingEvents = events.concat(pendingEvents).slice(-MAX_PENDING_EVENTS);
+		}
+		retryDelayMs = Math.min(MAX_BACKOFF_MS, Math.max(FLUSH_DELAY_MS, retryDelayMs * 2));
+		logger.debug("Shared memory update failed", { error });
+	} finally {
+		flushInFlight = false;
+		if (pendingState || pendingEvents.length) {
+			const jitter = Math.floor(Math.random() * 100);
+			scheduleFlush(retryDelayMs + jitter);
+		}
+	}
 }
 
 export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
@@ -101,26 +171,24 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 	if (!config) return;
 	const sessionKey = config.sessionIdOverride ?? update.sessionId;
 
-	const runner = async () => {
-		try {
-			if (update.state) {
-				await patchState(config, sessionKey, update.state);
-			}
-			if (update.event) {
-				await appendEvent(config, sessionKey, update.event);
-			}
-		} catch (error) {
-			logger.debug("Shared memory update failed", { error });
-		}
-	};
-
-	if (typeof setImmediate === "function") {
-		setImmediate(() => {
-			void runner();
-		});
-	} else {
-		setTimeout(() => {
-			void runner();
-		}, 0);
+	pendingSessionKey = sessionKey;
+	if (update.state) {
+		pendingState = { ...update.state, instanceId, source: "composer" };
 	}
+	if (update.event) {
+		const payload =
+			update.event.payload && typeof update.event.payload === "object" && !Array.isArray(update.event.payload)
+				? { ...(update.event.payload as Record<string, JsonValue>), instanceId, source: "composer" }
+				: { instanceId, source: "composer", value: update.event.payload ?? null };
+		pendingEvents.push({
+			...update.event,
+			payload,
+			id: update.event.id ?? nextEventId(`composer-${update.sessionId}`),
+		});
+		if (pendingEvents.length > MAX_PENDING_EVENTS) {
+			pendingEvents = pendingEvents.slice(-MAX_PENDING_EVENTS);
+		}
+	}
+
+	scheduleFlush();
 }
