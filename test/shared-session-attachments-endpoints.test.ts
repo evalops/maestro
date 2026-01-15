@@ -18,6 +18,7 @@ function createMockSessionManager() {
 		loadSession: vi.fn().mockResolvedValue({
 			id: "test-session-1",
 			title: "Test Session 1",
+			owner: "anon",
 			createdAt: "2024-01-01T00:00:00Z",
 			updatedAt: "2024-01-02T00:00:00Z",
 			messageCount: 1,

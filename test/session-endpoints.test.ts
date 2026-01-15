@@ -34,6 +34,7 @@ function createMockSessionManager() {
 				return Promise.resolve({
 					id: "test-session-1",
 					title: "Test Session 1",
+					owner: "anon",
 					createdAt: "2024-01-01T00:00:00Z",
 					updatedAt: "2024-01-02T00:00:00Z",
 					messageCount: 2,
@@ -49,6 +50,7 @@ function createMockSessionManager() {
 			return Promise.resolve({
 				id,
 				title: `Session ${id}`,
+				owner: "anon",
 				createdAt: "2024-01-01T00:00:00Z",
 				updatedAt: "2024-01-02T00:00:00Z",
 				messageCount: 0,
