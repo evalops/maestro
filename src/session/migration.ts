@@ -389,10 +389,16 @@ export function resetMigrationState(): void {
 	const statePath = getMigrationStatePath();
 	if (existsSync(statePath)) {
 		try {
-			writeFileSync(
-				statePath,
-				JSON.stringify({ version: 0, lastRun: "", reset: true }),
-			);
+			const resetState: SessionMigrationState = {
+				version: 0,
+				lastRun: "",
+				successes: 0,
+				failures: 0,
+				normalized: 0,
+				skipped: 0,
+				total: 0,
+			};
+			writeFileSync(statePath, JSON.stringify(resetState, null, 2));
 		} catch {
 			// Ignore errors
 		}

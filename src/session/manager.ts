@@ -682,6 +682,10 @@ export class SessionManager {
 		this.writer = undefined;
 		this._agentSnapshot = undefined;
 		this.lastModelMetadata = undefined;
+		// Unregister old session file before creating new one
+		if (this.sessionFile) {
+			unregisterActiveSessionFile(this.sessionFile);
+		}
 		this.initNewSession();
 		this.initializeWriter();
 	}
@@ -693,6 +697,11 @@ export class SessionManager {
 		this.writer?.flushSync();
 		this.writer?.dispose();
 		this.writer = undefined;
+
+		// Unregister old session file before creating new one
+		if (this.sessionFile) {
+			unregisterActiveSessionFile(this.sessionFile);
+		}
 
 		this.fileEntries = [];
 		this.byId.clear();
@@ -1456,6 +1465,8 @@ export class SessionManager {
 			this.flushed = true;
 			this.metadataCache.seedFromFile(this.sessionFile);
 		} else {
+			// Unregister the non-existent path before initNewSession registers a new one
+			unregisterActiveSessionFile(this.sessionFile);
 			this.initNewSession();
 		}
 		this.initializeWriter();
