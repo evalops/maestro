@@ -62,6 +62,8 @@ export interface OpenAICompatOverrides {
 	supportsDeveloperRole?: boolean;
 	supportsReasoningEffort?: boolean;
 	supportsResponsesApi?: boolean;
+	/** Supports Anthropic-style cache_control (OpenRouter with Claude models) */
+	supportsCacheControl?: boolean;
 	maxTokensField?: "max_tokens" | "max_completion_tokens";
 	requiresToolResultName?: boolean;
 	requiresAssistantAfterToolResult?: boolean;

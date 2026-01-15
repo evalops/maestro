@@ -146,6 +146,8 @@ interface OpenAICompat {
 	supportsDeveloperRole: boolean;
 	supportsReasoningEffort: boolean;
 	supportsResponsesApi: boolean;
+	/** Supports Anthropic-style cache_control (OpenRouter with Claude models) */
+	supportsCacheControl: boolean;
 	maxTokensField: "max_tokens" | "max_completion_tokens";
 	requiresToolResultName: boolean;
 	requiresAssistantAfterToolResult: boolean;
@@ -154,7 +156,7 @@ interface OpenAICompat {
 }
 
 function resolveOpenAICompat(
-	model: Pick<Model<Api>, "baseUrl" | "provider" | "compat">,
+	model: Pick<Model<Api>, "baseUrl" | "provider" | "compat" | "id">,
 ): Required<OpenAICompat> {
 	const rawBaseUrl = model.baseUrl ?? "";
 	let baseUrl = rawBaseUrl.toLowerCase();
@@ -168,17 +170,23 @@ function resolveOpenAICompat(
 		// ignore malformed URLs for compat detection
 	}
 	const provider = (model.provider ?? "").toLowerCase();
+	const modelId = (model.id ?? "").toLowerCase();
 	const isMistral = baseUrl.includes("mistral.ai") || provider === "mistral";
 	const isGrok = baseUrl.includes("api.x.ai") || provider === "xai";
 	const isOpenAIBase = baseUrl.includes("api.openai.com");
 	const isOpenAIProvider = provider === "openai";
+	const isOpenRouter =
+		baseUrl.includes("openrouter.ai") || provider === "openrouter";
 	const supportsResponsesApi =
 		isOpenAIBase ||
 		isOpenAIProvider ||
-		baseUrl.includes("openrouter.ai") ||
-		provider === "openrouter" ||
+		isOpenRouter ||
 		baseUrl.includes("api.groq.com") ||
 		provider === "groq";
+	// OpenRouter supports cache_control for Anthropic/Claude models
+	const isAnthropicModel =
+		modelId.includes("claude") || modelId.includes("anthropic");
+	const supportsCacheControl = isOpenRouter && isAnthropicModel;
 	const nonOpenAIHosts = [
 		"mistral.ai",
 		"api.x.ai",
@@ -200,6 +208,7 @@ function resolveOpenAICompat(
 		supportsDeveloperRole: isOpenAI,
 		supportsReasoningEffort: isOpenAI && !isGrok,
 		supportsResponsesApi,
+		supportsCacheControl,
 		maxTokensField: isOpenAI ? "max_completion_tokens" : "max_tokens",
 		requiresToolResultName: isMistral,
 		requiresAssistantAfterToolResult: false,
@@ -220,6 +229,8 @@ function resolveOpenAICompat(
 			overrides.supportsReasoningEffort ?? detected.supportsReasoningEffort,
 		supportsResponsesApi:
 			overrides.supportsResponsesApi ?? detected.supportsResponsesApi,
+		supportsCacheControl:
+			overrides.supportsCacheControl ?? detected.supportsCacheControl,
 		maxTokensField: overrides.maxTokensField ?? detected.maxTokensField,
 		requiresToolResultName:
 			overrides.requiresToolResultName ?? detected.requiresToolResultName,
@@ -235,7 +246,7 @@ function resolveOpenAICompat(
 
 // Exported for tests
 export function resolveOpenAICompatForTest(
-	model: Pick<Model<Api>, "baseUrl" | "provider" | "compat">,
+	model: Pick<Model<Api>, "baseUrl" | "provider" | "compat" | "id">,
 ): Required<OpenAICompat> {
 	return resolveOpenAICompat(model);
 }
@@ -303,14 +314,21 @@ function hasToolHistory(messages: Context["messages"]): boolean {
 
 // OpenAI API Types
 
+/** Anthropic-style cache control for OpenRouter */
+interface CacheControl {
+	type: "ephemeral";
+}
+
 interface OpenAITextContentPart {
 	type: "text";
 	text: string;
+	cache_control?: CacheControl;
 }
 
 interface OpenAIImageContentPart {
 	type: "image_url";
 	image_url: { url: string; detail?: "auto" | "low" | "high" };
+	cache_control?: CacheControl;
 }
 
 type OpenAIContentPart = OpenAITextContentPart | OpenAIImageContentPart;
@@ -466,10 +484,11 @@ interface OpenAIMessage {
 	content:
 		| string
 		| Array<
-				| { type: "text"; text: string }
+				| { type: "text"; text: string; cache_control?: CacheControl }
 				| {
 						type: "image_url";
 						image_url: { url: string; detail?: "auto" | "low" | "high" };
+						cache_control?: CacheControl;
 				  }
 		  >;
 	tool_call_id?: string;
@@ -542,14 +561,31 @@ export async function* streamOpenAI(
 		lastSentRole = message.role;
 	};
 
+	// Track cache control items (max 4 for Anthropic compatibility)
+	let cacheAppliedCount = 0;
+	const maxCacheItems = 4;
+
 	// System prompt
 	if (context.systemPrompt) {
 		const role =
 			model.reasoning && compat.supportsDeveloperRole ? "developer" : "system";
-		messages.push({
+		const systemMessage: OpenAIMessage = {
 			role,
 			content: sanitizeSurrogates(context.systemPrompt),
-		});
+		};
+		// Apply cache_control for OpenRouter with Claude models
+		if (compat.supportsCacheControl && cacheAppliedCount < maxCacheItems) {
+			// Wrap content in array format with cache_control
+			systemMessage.content = [
+				{
+					type: "text",
+					text: sanitizeSurrogates(context.systemPrompt),
+					cache_control: { type: "ephemeral" },
+				},
+			];
+			cacheAppliedCount++;
+		}
+		messages.push(systemMessage);
 	}
 
 	// Transform messages for cross-provider compatibility
@@ -761,6 +797,35 @@ export async function* streamOpenAI(
 		);
 	}
 
+	// Apply cache_control to last messages for OpenRouter with Claude
+	if (compat.supportsCacheControl) {
+		// Find last user message and apply cache_control
+		for (let i = messages.length - 1; i >= 0 && cacheAppliedCount < maxCacheItems; i--) {
+			const msg = messages[i];
+			if (!msg) continue;
+			if (msg.role === "user" && typeof msg.content !== "string") {
+				const lastContent = msg.content[msg.content.length - 1];
+				if (lastContent && !lastContent.cache_control) {
+					lastContent.cache_control = { type: "ephemeral" };
+					cacheAppliedCount++;
+				}
+			} else if (msg.role === "user" && typeof msg.content === "string") {
+				// Convert string content to array format with cache_control
+				messages[i] = {
+					role: msg.role,
+					content: [
+						{
+							type: "text",
+							text: msg.content,
+							cache_control: { type: "ephemeral" },
+						},
+					],
+				};
+				cacheAppliedCount++;
+			}
+		}
+	}
+
 	const requestBody: OpenAICompletionsRequestBody = {
 		model: model.id,
 		messages,
@@ -780,14 +845,30 @@ export async function* streamOpenAI(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		requestBody.tools = context.tools.map((tool) => ({
-			type: "function" as const,
-			function: {
-				name: tool.name,
-				description: tool.description,
-				parameters: tool.parameters,
-			},
-		}));
+		requestBody.tools = context.tools.map((tool, idx, arr) => {
+			const toolDef: {
+				type: "function";
+				function: { name: string; description: string; parameters: unknown };
+				cache_control?: CacheControl;
+			} = {
+				type: "function" as const,
+				function: {
+					name: tool.name,
+					description: tool.description,
+					parameters: tool.parameters,
+				},
+			};
+			// Apply cache_control to last tool for OpenRouter with Claude
+			if (
+				compat.supportsCacheControl &&
+				idx === arr.length - 1 &&
+				cacheAppliedCount < maxCacheItems
+			) {
+				toolDef.cache_control = { type: "ephemeral" };
+				cacheAppliedCount++;
+			}
+			return toolDef;
+		});
 	} else if (hasToolHistory(context.messages)) {
 		requestBody.tools = [];
 	}
@@ -843,6 +924,7 @@ export async function* streamOpenAI(
 			signal: options.signal,
 		},
 		model.provider,
+		{ modelId: model.id },
 	);
 
 	if (!response.ok) {

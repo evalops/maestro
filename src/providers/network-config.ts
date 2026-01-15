@@ -21,6 +21,10 @@ import type { Provider } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { parseRetryAfter } from "../utils/retry.js";
+import { httpHooks, HttpHookCancelledError } from "./http-hooks.js";
+
+// Re-export for consumers
+export { httpHooks, HttpHookCancelledError } from "./http-hooks.js";
 
 const logger = createLogger("providers:network");
 
@@ -325,34 +329,103 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Options for fetchWithRetry.
+ */
+export interface FetchWithRetryOptions {
+	/** Model ID for hook correlation */
+	modelId?: string;
+}
+
+/**
  * Retry a fetch operation with exponential backoff.
+ *
+ * Fires HTTP hooks before and after each request attempt.
  */
 export async function fetchWithRetry(
 	url: string,
 	options: RequestInit,
 	provider: Provider,
+	fetchOptions?: FetchWithRetryOptions,
 ): Promise<Response> {
 	const config = getProviderNetworkConfig(provider);
 	let lastError: Error | null = null;
 
+	// Fire request hooks (only once, before first attempt)
+	const startTime = Date.now();
+	const hookResult = await httpHooks.fireRequestHooks(
+		provider,
+		url,
+		options,
+		fetchOptions?.modelId,
+	);
+
+	if (hookResult.cancel) {
+		const error = new HttpHookCancelledError(
+			hookResult.cancelReason,
+			hookResult.requestId,
+		);
+		await httpHooks.fireResponseHooks(
+			provider,
+			url,
+			null,
+			startTime,
+			hookResult.requestId,
+			fetchOptions?.modelId,
+			error,
+		);
+		throw error;
+	}
+
+	// Merge additional headers from hooks
+	const mergedHeaders: Record<string, string> = {};
+	if (options.headers) {
+		if (options.headers instanceof Headers) {
+			options.headers.forEach((value, key) => {
+				mergedHeaders[key] = value;
+			});
+		} else if (Array.isArray(options.headers)) {
+			for (const [key, value] of options.headers) {
+				mergedHeaders[key] = value;
+			}
+		} else {
+			Object.assign(mergedHeaders, options.headers);
+		}
+	}
+	Object.assign(mergedHeaders, hookResult.additionalHeaders);
+
+	const optionsWithHookHeaders: RequestInit = {
+		...options,
+		headers: mergedHeaders,
+	};
+
 	for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+		const attemptStartTime = Date.now();
 		try {
 			const controller = new AbortController();
 			const timeoutId = setTimeout(() => controller.abort(), config.timeout);
 
-			const fetchOptions: RequestInit = {
-				...options,
-				signal: options.signal
+			const fetchOpts: RequestInit = {
+				...optionsWithHookHeaders,
+				signal: optionsWithHookHeaders.signal
 					? // Combine with existing signal
-						anySignal([options.signal, controller.signal])
+						anySignal([optionsWithHookHeaders.signal, controller.signal])
 					: controller.signal,
 			};
 
 			try {
-				const response = await fetch(url, fetchOptions);
+				const response = await fetch(url, fetchOpts);
 				clearTimeout(timeoutId);
 
 				if (response.ok || !isRetryableStatus(response.status)) {
+					// Fire response hooks on success or non-retryable status
+					await httpHooks.fireResponseHooks(
+						provider,
+						url,
+						response,
+						attemptStartTime,
+						hookResult.requestId,
+						fetchOptions?.modelId,
+					);
 					return response;
 				}
 
@@ -370,12 +443,22 @@ export async function fetchWithRetry(
 						status: response.status,
 						attempt: attempt + 1,
 						delay,
+						requestId: hookResult.requestId,
 					});
 
 					await sleep(delay);
 					continue;
 				}
 
+				// Final attempt with retryable status - fire response hooks
+				await httpHooks.fireResponseHooks(
+					provider,
+					url,
+					response,
+					attemptStartTime,
+					hookResult.requestId,
+					fetchOptions?.modelId,
+				);
 				return response;
 			} finally {
 				clearTimeout(timeoutId);
@@ -386,9 +469,18 @@ export async function fetchWithRetry(
 			if (
 				error instanceof Error &&
 				error.name === "AbortError" &&
-				options.signal?.aborted
+				optionsWithHookHeaders.signal?.aborted
 			) {
-				// User-initiated abort, don't retry
+				// User-initiated abort, fire response hooks and don't retry
+				await httpHooks.fireResponseHooks(
+					provider,
+					url,
+					null,
+					attemptStartTime,
+					hookResult.requestId,
+					fetchOptions?.modelId,
+					lastError,
+				);
 				throw error;
 			}
 
@@ -398,11 +490,22 @@ export async function fetchWithRetry(
 					error: lastError.message,
 					attempt: attempt + 1,
 					delay,
+					requestId: hookResult.requestId,
 				});
 				await sleep(delay);
 				continue;
 			}
 
+			// Final error - fire response hooks
+			await httpHooks.fireResponseHooks(
+				provider,
+				url,
+				null,
+				attemptStartTime,
+				hookResult.requestId,
+				fetchOptions?.modelId,
+				lastError,
+			);
 			throw error;
 		}
 	}

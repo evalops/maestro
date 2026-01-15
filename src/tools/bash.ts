@@ -37,6 +37,7 @@ import {
 	shouldGuardCommand,
 } from "../guardian/index.js";
 import { checkCommand } from "../safety/execpolicy.js";
+import { checkBashCommandForNestedAgent } from "../safety/nested-agent-guard.js";
 import { requirePlanCheck } from "../safety/safe-mode.js";
 import { backgroundTaskManager } from "./background-tasks.js";
 import {
@@ -186,6 +187,15 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				.join(", ");
 			return respond.text(
 				`Command blocked by execpolicy: ${interpolatedCommand}\n\nDecision: forbidden\nMatched rules: ${matchInfo || "none"}\n\nTo allow this command, add a prefix_rule to .composer/execpolicy`,
+			);
+		}
+
+		// Step 2.5: Check for nested agent spawning
+		// Prevents CPU exhaustion from recursive agent spawning
+		const nestedAgentError = checkBashCommandForNestedAgent(interpolatedCommand);
+		if (nestedAgentError) {
+			return respond.text(
+				`${nestedAgentError}\n\nCommand: ${interpolatedCommand.slice(0, 100)}...`,
 			);
 		}
 

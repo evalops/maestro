@@ -632,6 +632,7 @@ export async function* streamAnthropic(
 			signal: options.signal,
 		},
 		model.provider,
+		{ modelId: model.id },
 	);
 
 	if (!response.ok) {
