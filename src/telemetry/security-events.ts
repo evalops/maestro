@@ -16,6 +16,7 @@
  */
 
 import { createLogger } from "../utils/logger.js";
+import { persistSecurityEvent } from "./security-event-store.js";
 
 // Lazy logger to avoid module initialization issues in tests
 let _logger: ReturnType<typeof createLogger> | undefined;
@@ -27,6 +28,25 @@ function getLogger() {
 }
 
 /**
+ * Configuration for event emission
+ */
+interface EmitConfig {
+	/** Whether to persist events to disk. Default: true in production */
+	persist: boolean;
+}
+
+let emitConfig: EmitConfig = {
+	persist: process.env.NODE_ENV !== "test",
+};
+
+/**
+ * Configure event emission behavior
+ */
+export function configureSecurityEvents(config: Partial<EmitConfig>): void {
+	emitConfig = { ...emitConfig, ...config };
+}
+
+/**
  * Security event types
  */
 export type SecurityEventType =
@@ -35,7 +55,9 @@ export type SecurityEventType =
 	| "context_firewall_triggered"
 	| "tool_blocked"
 	| "tool_approval_required"
-	| "sensitive_content_detected";
+	| "sensitive_content_detected"
+	| "circuit_breaker_state_change"
+	| "adaptive_threshold_anomaly";
 
 /**
  * Severity levels for security events
@@ -106,28 +128,142 @@ const eventBuffer: SecurityEvent[] = [];
 const MAX_BUFFER_SIZE = 1000;
 
 /**
+ * Event deduplication configuration
+ */
+interface DeduplicationConfig {
+	/** Time window for deduplication in ms. Events with same signature within window are deduplicated. */
+	windowMs: number;
+	/** Maximum entries in dedup cache before pruning */
+	maxCacheSize: number;
+}
+
+const DEDUP_CONFIG: DeduplicationConfig = {
+	windowMs: 5000, // 5 second dedup window
+	maxCacheSize: 500,
+};
+
+/**
+ * Deduplication cache: signature -> last emission timestamp
+ */
+const dedupCache = new Map<string, number>();
+
+/**
+ * Generate a signature for event deduplication
+ * Events with same type, tool, and description within the window are considered duplicates
+ */
+function getEventSignature(event: SecurityEvent): string {
+	return `${event.type}:${event.toolName ?? ""}:${event.description.slice(0, 100)}`;
+}
+
+/**
+ * Check if an event should be deduplicated
+ * Returns true if event is a duplicate and should NOT be emitted
+ */
+function shouldDeduplicate(event: SecurityEvent): boolean {
+	const now = Date.now();
+	const signature = getEventSignature(event);
+
+	// Prune old entries periodically
+	if (dedupCache.size > DEDUP_CONFIG.maxCacheSize) {
+		const cutoff = now - DEDUP_CONFIG.windowMs;
+		for (const [sig, timestamp] of dedupCache) {
+			if (timestamp < cutoff) {
+				dedupCache.delete(sig);
+			}
+		}
+	}
+
+	const lastEmission = dedupCache.get(signature);
+	if (lastEmission && now - lastEmission < DEDUP_CONFIG.windowMs) {
+		// Duplicate within window - skip
+		return true;
+	}
+
+	// Not a duplicate - update cache and emit
+	dedupCache.set(signature, now);
+	return false;
+}
+
+/**
  * Event listeners for external consumers
+ * Using Set for efficient add/remove operations
  */
 type SecurityEventListener = (event: SecurityEvent) => void;
-const listeners: SecurityEventListener[] = [];
+const listeners = new Set<SecurityEventListener>();
+
+/**
+ * Rate limiting state per event type
+ */
+const rateLimitState = new Map<
+	SecurityEventType,
+	{ count: number; windowStart: number; suppressed: number }
+>();
+
+const RATE_LIMIT_CONFIG = {
+	/** Maximum events per type within the window */
+	maxEventsPerWindow: 100,
+	/** Rate limit window in ms */
+	windowMs: 60_000, // 1 minute
+};
+
+/**
+ * Check if an event should be rate limited
+ * Returns true if event exceeds rate limit and should NOT be emitted
+ */
+function shouldRateLimit(event: SecurityEvent): boolean {
+	const now = Date.now();
+	let state = rateLimitState.get(event.type);
+
+	if (!state || now - state.windowStart > RATE_LIMIT_CONFIG.windowMs) {
+		// New window
+		state = { count: 0, windowStart: now, suppressed: 0 };
+		rateLimitState.set(event.type, state);
+	}
+
+	state.count++;
+
+	if (state.count > RATE_LIMIT_CONFIG.maxEventsPerWindow) {
+		state.suppressed++;
+		// Log periodically when suppressing
+		if (state.suppressed === 1 || state.suppressed % 50 === 0) {
+			const logger = getLogger();
+			logger.warn("Rate limiting security events", {
+				type: event.type,
+				suppressed: state.suppressed,
+				windowMs: RATE_LIMIT_CONFIG.windowMs,
+			});
+		}
+		return true;
+	}
+
+	return false;
+}
 
 /**
  * Register a listener for security events
+ * Returns an unsubscribe function
  */
 export function onSecurityEvent(listener: SecurityEventListener): () => void {
-	listeners.push(listener);
+	listeners.add(listener);
 	return () => {
-		const index = listeners.indexOf(listener);
-		if (index > -1) {
-			listeners.splice(index, 1);
-		}
+		listeners.delete(listener);
 	};
 }
 
 /**
- * Emit a security event
+ * Emit a security event with deduplication and rate limiting
  */
 function emitEvent(event: SecurityEvent): void {
+	// Apply deduplication - skip if duplicate within time window
+	if (shouldDeduplicate(event)) {
+		return;
+	}
+
+	// Apply rate limiting - skip if exceeding rate limit
+	if (shouldRateLimit(event)) {
+		return;
+	}
+
 	// Log the event
 	const logger = getLogger();
 	const logFn =
@@ -147,15 +283,37 @@ function emitEvent(event: SecurityEvent): void {
 		eventBuffer.shift();
 	}
 
-	// Notify listeners
-	for (const listener of listeners) {
+	// Persist to disk (async, fire-and-forget with outer error boundary)
+	if (emitConfig.persist) {
+		try {
+			persistSecurityEvent(event).catch((err) => {
+				try {
+					logger.error(
+						"Failed to persist security event",
+						err instanceof Error ? err : new Error(String(err)),
+					);
+				} catch {
+					// Logger itself failed - nothing we can do
+				}
+			});
+		} catch {
+			// persistSecurityEvent threw synchronously - rare but possible
+		}
+	}
+
+	// Notify listeners (use Array.from to snapshot Set for safe iteration)
+	for (const listener of Array.from(listeners)) {
 		try {
 			listener(event);
 		} catch (err) {
-			logger.error(
-				"Error in security event listener",
-				err instanceof Error ? err : new Error(String(err)),
-			);
+			try {
+				logger.error(
+					"Error in security event listener",
+					err instanceof Error ? err : new Error(String(err)),
+				);
+			} catch {
+				// Logger itself failed - nothing we can do
+			}
 		}
 	}
 }
@@ -365,6 +523,8 @@ export function getEventStats(): {
 		tool_blocked: 0,
 		tool_approval_required: 0,
 		sensitive_content_detected: 0,
+		circuit_breaker_state_change: 0,
+		adaptive_threshold_anomaly: 0,
 	};
 
 	const bySeverity: Record<SecuritySeverity, number> = {
@@ -397,8 +557,70 @@ export function getEventStats(): {
 }
 
 /**
- * Clear the event buffer (for testing)
+ * Clear the event buffer and deduplication cache (for testing)
  */
 export function clearEventBuffer(): void {
 	eventBuffer.length = 0;
+	dedupCache.clear();
+	rateLimitState.clear();
+}
+
+/**
+ * Track a circuit breaker state change
+ */
+export function trackCircuitBreakerStateChange(params: {
+	fromState: "closed" | "open" | "half-open";
+	toState: "closed" | "open" | "half-open";
+	toolName?: string;
+	failureCount?: number;
+	reason?: string;
+}): void {
+	const severity: SecuritySeverity =
+		params.toState === "open" ? "high" : "medium";
+
+	const event: SecurityEvent = {
+		type: "circuit_breaker_state_change",
+		severity,
+		timestamp: Date.now(),
+		toolName: params.toolName,
+		description:
+			params.reason ??
+			`Circuit breaker: ${params.fromState} -> ${params.toState}`,
+		metadata: {
+			fromState: params.fromState,
+			toState: params.toState,
+			failureCount: params.failureCount,
+		},
+	};
+
+	emitEvent(event);
+}
+
+/**
+ * Track adaptive threshold anomaly detection
+ */
+export function trackAdaptiveThresholdAnomaly(params: {
+	metric: string;
+	value: number;
+	mean: number;
+	stdDev: number;
+	zScore: number;
+	threshold: number;
+}): void {
+	const event: SecurityEvent = {
+		type: "adaptive_threshold_anomaly",
+		severity: params.zScore > 3 ? "high" : "medium",
+		timestamp: Date.now(),
+		description: `Anomaly detected for metric "${params.metric}": value ${params.value.toFixed(2)} is ${params.zScore.toFixed(2)} std devs from mean ${params.mean.toFixed(2)}`,
+		metadata: {
+			metric: params.metric,
+			value: params.value,
+			mean: params.mean,
+			stdDev: params.stdDev,
+			zScore: params.zScore,
+			threshold: params.threshold,
+		},
+	};
+
+	emitEvent(event);
 }

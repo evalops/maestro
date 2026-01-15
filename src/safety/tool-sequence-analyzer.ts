@@ -123,6 +123,33 @@ const TOOL_TAGS: Record<string, string[]> = {
 };
 
 /**
+ * Check if tool name matches a pattern using word-boundary logic
+ * This handles cases like:
+ * - "read" matches "read" (exact)
+ * - "file_read" matches "read" (ends with pattern)
+ * - "read_file" matches "read" (starts with pattern)
+ * - "my_read_file" matches "read" (pattern in middle at word boundary)
+ * But avoids false positives like:
+ * - "reader" should NOT match "read" (pattern is substring, not word)
+ */
+function matchesToolPattern(toolName: string, pattern: string): boolean {
+	// Exact match
+	if (toolName === pattern) {
+		return true;
+	}
+
+	// Word-boundary match using regex
+	// Match pattern at start, end, or surrounded by word separators (_, -)
+	const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const wordBoundaryRegex = new RegExp(
+		`(?:^|[_-])${escaped}(?:[_-]|$)`,
+		"i",
+	);
+
+	return wordBoundaryRegex.test(toolName);
+}
+
+/**
  * Get tags for a tool based on its name
  */
 function getToolTags(toolName: string): Set<string> {
@@ -131,14 +158,7 @@ function getToolTags(toolName: string): Set<string> {
 	const normalizedName = toolName.toLowerCase();
 
 	for (const [tag, patterns] of Object.entries(TOOL_TAGS)) {
-		if (
-			patterns.some(
-				(p) =>
-					normalizedName.includes(p) ||
-					normalizedName === p ||
-					p.includes(normalizedName),
-			)
-		) {
+		if (patterns.some((p) => matchesToolPattern(normalizedName, p))) {
 			tags.add(tag);
 		}
 	}
@@ -435,6 +455,261 @@ const SUSPICIOUS_PATTERNS: SequencePattern[] = [
 					matched: true,
 					reason: "Execution of potentially downloaded content detected",
 					matchingRecords: recentDownloads,
+				};
+			}
+
+			return { matched: false };
+		},
+	},
+	{
+		id: "data-staging",
+		description: "Multiple file reads followed by write to temporary location",
+		severity: "medium",
+		action: "require_approval",
+		windowMs: 120000, // 2 minutes
+		detect: (records, currentTool, currentArgs) => {
+			const currentTags = getToolTags(currentTool);
+			if (!currentTags.has("write")) {
+				return { matched: false };
+			}
+
+			// Check if writing to temp/staging location
+			const targetPath = (currentArgs.path ||
+				currentArgs.file_path ||
+				currentArgs.target) as string | undefined;
+			const tempPatterns = [
+				/\/tmp\//,
+				/\/var\/tmp\//,
+				/\/temp\//,
+				/\.tmp$/,
+				/staging/i,
+				/upload/i,
+			];
+			const isWriteToTemp =
+				targetPath && tempPatterns.some((p) => p.test(targetPath));
+
+			if (!isWriteToTemp) {
+				return { matched: false };
+			}
+
+			// Look for multiple recent reads
+			const recentReads = records.filter((r) => {
+				const ageMs = Date.now() - r.timestamp;
+				return ageMs < 120000 && r.tags.has("read");
+			});
+
+			if (recentReads.length >= 3) {
+				return {
+					matched: true,
+					reason: `Data staging detected: ${recentReads.length} reads followed by write to ${targetPath}`,
+					matchingRecords: recentReads,
+				};
+			}
+
+			return { matched: false };
+		},
+	},
+	{
+		id: "privilege-escalation-attempt",
+		description: "Privilege escalation command after reading configuration",
+		severity: "high",
+		action: "require_approval",
+		windowMs: 120000, // 2 minutes
+		detect: (records, currentTool, currentArgs) => {
+			const normalizedTool = currentTool.toLowerCase();
+			if (normalizedTool !== "bash") {
+				return { matched: false };
+			}
+
+			const command = (currentArgs.command as string) || "";
+			const escalationPatterns = [
+				/sudo\s/,
+				/chmod\s+[0-7]*[7][0-7]*/,  // chmod with execute bit
+				/chown\s/,
+				/chgrp\s/,
+				/setuid/,
+				/setgid/,
+				/visudo/,
+				/passwd/,
+				/usermod/,
+				/groupadd/,
+				/useradd/,
+			];
+
+			const isEscalationCommand = escalationPatterns.some((p) =>
+				p.test(command),
+			);
+
+			if (!isEscalationCommand) {
+				return { matched: false };
+			}
+
+			// Look for recent config/credential reads
+			const configReads = records.filter((r) => {
+				const ageMs = Date.now() - r.timestamp;
+				if (ageMs > 120000) return false;
+
+				const pathArg = (r.args.path || r.args.file_path) as string | undefined;
+				const configPatterns = [
+					/\/etc\//,
+					/\.conf$/,
+					/\.cfg$/,
+					/config/i,
+					/\.env/,
+					/credentials/i,
+				];
+				return (
+					r.tags.has("read") &&
+					pathArg &&
+					configPatterns.some((p) => p.test(pathArg))
+				);
+			});
+
+			if (configReads.length > 0) {
+				return {
+					matched: true,
+					reason: `Privilege escalation attempt after reading config: ${command.slice(0, 50)}`,
+					matchingRecords: configReads,
+				};
+			}
+
+			return { matched: false };
+		},
+	},
+	{
+		id: "env-exfiltration",
+		description: "Environment variable access followed by network call",
+		severity: "high",
+		action: "require_approval",
+		windowMs: 60000, // 1 minute
+		detect: (records, currentTool, _currentArgs) => {
+			const currentTags = getToolTags(currentTool);
+			if (!currentTags.has("egress")) {
+				return { matched: false };
+			}
+
+			// Look for recent env reads or commands that access env vars
+			const envAccess = records.filter((r) => {
+				const ageMs = Date.now() - r.timestamp;
+				if (ageMs > 60000) return false;
+
+				// Check if command reads env vars
+				const command = (r.args.command as string) || "";
+				const envPatterns = [
+					/\$\{?\w+\}?/,           // Shell variable access
+					/env\s/,                  // env command
+					/printenv/,               // printenv command
+					/export\s/,               // export (might show vars)
+					/process\.env/,           // Node.js env access
+					/os\.environ/,            // Python env access
+					/ENV\[/,                  // Ruby env access
+				];
+
+				const pathArg = (r.args.path || r.args.file_path) as string | undefined;
+				const isEnvFile = pathArg && /\.env/.test(pathArg);
+
+				return (
+					r.tags.has("sensitive") ||
+					isEnvFile ||
+					envPatterns.some((p) => p.test(command))
+				);
+			});
+
+			if (envAccess.length > 0) {
+				return {
+					matched: true,
+					reason: `Network egress detected after environment variable access`,
+					matchingRecords: envAccess,
+				};
+			}
+
+			return { matched: false };
+		},
+	},
+	{
+		id: "systematic-exploration",
+		description: "Systematic directory listing and reading pattern",
+		severity: "medium",
+		action: "log",
+		windowMs: 180000, // 3 minutes
+		detect: (records, currentTool, _currentArgs) => {
+			const normalizedTool = currentTool.toLowerCase();
+			const isListOrRead =
+				normalizedTool.includes("glob") ||
+				normalizedTool.includes("ls") ||
+				normalizedTool.includes("read") ||
+				normalizedTool.includes("list");
+
+			if (!isListOrRead) {
+				return { matched: false };
+			}
+
+			// Count alternating list/read operations
+			const recentOps = records.filter((r) => {
+				const ageMs = Date.now() - r.timestamp;
+				return ageMs < 180000;
+			});
+
+			// Look for list -> read -> list -> read pattern
+			let listCount = 0;
+			let readCount = 0;
+			let alternations = 0;
+			let lastWasRead = false;
+
+			for (const r of recentOps) {
+				const isRead = r.tags.has("read");
+				const isList =
+					r.tool.toLowerCase().includes("glob") ||
+					r.tool.toLowerCase().includes("ls") ||
+					r.tool.toLowerCase().includes("list");
+
+				if (isRead) {
+					readCount++;
+					if (!lastWasRead && listCount > 0) alternations++;
+					lastWasRead = true;
+				} else if (isList) {
+					listCount++;
+					lastWasRead = false;
+				}
+			}
+
+			if (alternations >= 3 && listCount >= 2 && readCount >= 3) {
+				return {
+					matched: true,
+					reason: `Systematic exploration pattern: ${listCount} listings, ${readCount} reads, ${alternations} alternations`,
+				};
+			}
+
+			return { matched: false };
+		},
+	},
+	{
+		id: "mass-modification",
+		description: "Large number of file modifications in short period",
+		severity: "high",
+		action: "require_approval",
+		windowMs: 60000, // 1 minute
+		detect: (records, currentTool, _currentArgs) => {
+			const currentTags = getToolTags(currentTool);
+			if (!currentTags.has("write") && !currentTags.has("edit")) {
+				return { matched: false };
+			}
+
+			// Count recent modifications
+			const recentMods = records.filter((r) => {
+				const ageMs = Date.now() - r.timestamp;
+				return (
+					ageMs < 60000 && (r.tags.has("write") || r.tags.has("edit"))
+				);
+			});
+
+			// Different thresholds for edit vs write
+			const threshold = 10;
+			if (recentMods.length >= threshold) {
+				return {
+					matched: true,
+					reason: `Mass file modification detected (${recentMods.length + 1} modifications in 1 minute)`,
+					matchingRecords: recentMods,
 				};
 			}
 

@@ -79,53 +79,63 @@ export interface SanitizeOptions {
 }
 
 /**
- * Credential patterns for detection
+ * Credential pattern definition (without compiled regex)
  *
  * Each pattern is designed to minimize false positives while catching
- * common credential formats.
+ * common credential formats. Patterns are stored as source strings and
+ * compiled fresh for each check to avoid global regex lastIndex issues.
  */
-const CREDENTIAL_PATTERNS: Array<{
+interface CredentialPatternDef {
 	name: string;
 	type: SensitiveContentFinding["type"];
-	pattern: RegExp;
+	source: string;
+	flags: string;
 	severity: SensitiveContentFinding["severity"];
-}> = [
+}
+
+const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 	// API Keys - various formats
 	{
 		name: "Generic API Key",
 		type: "api_key",
-		pattern:
-			/(?:api[_-]?key|apikey|api[_-]?token)['":\s=]+['"]?([a-zA-Z0-9_\-]{20,})/gi,
+		source:
+			"(?:api[_-]?key|apikey|api[_-]?token)[':\"\\s=]+['\"]?([a-zA-Z0-9_\\-]{20,})",
+		flags: "gi",
 		severity: "high",
 	},
 	{
 		name: "OpenAI API Key",
 		type: "api_key",
-		pattern: /sk-[a-zA-Z0-9]{20,}/g,
+		source: "sk-[a-zA-Z0-9]{20,}",
+		flags: "g",
 		severity: "high",
 	},
 	{
 		name: "Anthropic API Key",
 		type: "api_key",
-		pattern: /sk-ant-[a-zA-Z0-9\-_]{20,}/g,
+		source: "sk-ant-[a-zA-Z0-9\\-_]{20,}",
+		flags: "g",
 		severity: "high",
 	},
 	{
 		name: "GitHub Token",
 		type: "api_key",
-		pattern: /gh[pousr]_[a-zA-Z0-9]{36,}/g,
+		source: "gh[pousr]_[a-zA-Z0-9]{36,}",
+		flags: "g",
 		severity: "high",
 	},
 	{
 		name: "Slack Token",
 		type: "api_key",
-		pattern: /xox[baprs]-[a-zA-Z0-9\-]{10,}/g,
+		source: "xox[baprs]-[a-zA-Z0-9\\-]{10,}",
+		flags: "g",
 		severity: "high",
 	},
 	{
 		name: "Stripe Key",
 		type: "api_key",
-		pattern: /(?:sk|pk)_(?:live|test)_[a-zA-Z0-9]{20,}/g,
+		source: "(?:sk|pk)_(?:live|test)_[a-zA-Z0-9]{20,}",
+		flags: "g",
 		severity: "high",
 	},
 
@@ -133,14 +143,16 @@ const CREDENTIAL_PATTERNS: Array<{
 	{
 		name: "AWS Access Key ID",
 		type: "aws_secret",
-		pattern: /AKIA[A-Z0-9]{16}/g,
+		source: "AKIA[A-Z0-9]{16}",
+		flags: "g",
 		severity: "high",
 	},
 	{
 		name: "AWS Secret Access Key",
 		type: "aws_secret",
-		pattern:
-			/(?:aws[_-]?secret[_-]?(?:access[_-]?)?key|secret[_-]?key)['":\s=]+['"]?([a-zA-Z0-9/+=]{40})/gi,
+		source:
+			"(?:aws[_-]?secret[_-]?(?:access[_-]?)?key|secret[_-]?key)[':\"\\s=]+['\"]?([a-zA-Z0-9/+=]{40})",
+		flags: "gi",
 		severity: "high",
 	},
 
@@ -148,13 +160,15 @@ const CREDENTIAL_PATTERNS: Array<{
 	{
 		name: "RSA Private Key",
 		type: "private_key",
-		pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g,
+		source: "-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+		flags: "g",
 		severity: "high",
 	},
 	{
 		name: "PGP Private Key",
 		type: "private_key",
-		pattern: /-----BEGIN PGP PRIVATE KEY BLOCK-----/g,
+		source: "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+		flags: "g",
 		severity: "high",
 	},
 
@@ -162,7 +176,8 @@ const CREDENTIAL_PATTERNS: Array<{
 	{
 		name: "JWT Token",
 		type: "jwt_token",
-		pattern: /eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/g,
+		source: "eyJ[a-zA-Z0-9_-]*\\.eyJ[a-zA-Z0-9_-]*\\.[a-zA-Z0-9_-]*",
+		flags: "g",
 		severity: "medium",
 	},
 
@@ -170,14 +185,15 @@ const CREDENTIAL_PATTERNS: Array<{
 	{
 		name: "Password in URL",
 		type: "password",
-		pattern: /:\/\/[^:]+:([^@]+)@/g,
+		source: ":\\/\\/[^:]+:([^@]+)@",
+		flags: "g",
 		severity: "high",
 	},
 	{
 		name: "Password Assignment",
 		type: "password",
-		pattern:
-			/(?:password|passwd|pwd|secret)['":\s=]+['"]?([^'"\s]{8,})/gi,
+		source: "(?:password|passwd|pwd|secret)[':\"\\s=]+['\"]?([^'\"\\s]{8,})",
+		flags: "gi",
 		severity: "medium",
 	},
 
@@ -185,16 +201,27 @@ const CREDENTIAL_PATTERNS: Array<{
 	{
 		name: "Bearer Token",
 		type: "generic_secret",
-		pattern: /Bearer\s+[a-zA-Z0-9_\-\.]+/gi,
+		source: "Bearer\\s+[a-zA-Z0-9_\\-\\.]+",
+		flags: "gi",
 		severity: "medium",
 	},
 	{
 		name: "Authorization Header",
 		type: "generic_secret",
-		pattern: /Authorization['":\s]+['"]?(?:Basic|Bearer|Token)\s+[a-zA-Z0-9_\-\./+=]+/gi,
+		source:
+			"Authorization[':\"\\s]+['\"]?(?:Basic|Bearer|Token)\\s+[a-zA-Z0-9_\\-\\./+=]+",
+		flags: "gi",
 		severity: "medium",
 	},
 ];
+
+/**
+ * Create a fresh regex from pattern definition
+ * This avoids global regex lastIndex state issues
+ */
+function createPatternRegex(def: CredentialPatternDef): RegExp {
+	return new RegExp(def.source, def.flags);
+}
 
 /**
  * Control characters that should be removed (0x00-0x1f except common whitespace, and 0x7f)
@@ -286,16 +313,15 @@ function detectInString(
 		});
 	}
 
-	// Check credential patterns
-	for (const { name, type, pattern, severity } of CREDENTIAL_PATTERNS) {
-		// Reset lastIndex for global patterns
-		pattern.lastIndex = 0;
+	// Check credential patterns (create fresh regex to avoid lastIndex issues)
+	for (const def of CREDENTIAL_PATTERN_DEFS) {
+		const pattern = createPatternRegex(def);
 		if (pattern.test(value)) {
 			findings.push({
-				type,
+				type: def.type,
 				path,
-				description: `Possible ${name} detected`,
-				severity,
+				description: `Possible ${def.name} detected`,
+				severity: def.severity,
 			});
 		}
 	}
@@ -361,12 +387,12 @@ function sanitizeString(
 		result = removeControlChars(result);
 	}
 
-	// Redact secrets
+	// Redact secrets (create fresh regex to avoid lastIndex issues)
 	if (options.redactSecrets) {
-		for (const { pattern, type } of CREDENTIAL_PATTERNS) {
-			pattern.lastIndex = 0;
+		for (const def of CREDENTIAL_PATTERN_DEFS) {
+			const pattern = createPatternRegex(def);
 			result = result.replace(pattern, (match) =>
-				redactSensitiveValue(match, type),
+				redactSensitiveValue(match, def.type),
 			);
 		}
 	}
@@ -426,7 +452,17 @@ function sanitizeValue(
 		return sanitized;
 	}
 
-	// For other types (functions, symbols, etc.), return type description
+	// Handle BigInt explicitly
+	if (typeof value === "bigint") {
+		return `[bigint:${value.toString()}]`;
+	}
+
+	// Handle Symbol explicitly
+	if (typeof value === "symbol") {
+		return `[symbol:${value.description ?? "unnamed"}]`;
+	}
+
+	// For other types (functions, etc.), return type description
 	return `[${typeof value}]`;
 }
 
@@ -469,6 +505,34 @@ export function containsHighSeverityContent(payload: unknown): boolean {
 }
 
 /**
+ * Safely stringify a value, handling circular references and other edge cases
+ */
+function safeStringify(value: unknown): string {
+	const seen = new WeakSet();
+	try {
+		return JSON.stringify(value, (_key, val) => {
+			if (typeof val === "object" && val !== null) {
+				if (seen.has(val)) {
+					return "[Circular]";
+				}
+				seen.add(val);
+			}
+			// Handle BigInt
+			if (typeof val === "bigint") {
+				return `[BigInt:${val.toString()}]`;
+			}
+			// Handle Symbol
+			if (typeof val === "symbol") {
+				return `[Symbol:${val.description ?? ""}]`;
+			}
+			return val;
+		});
+	} catch {
+		return "[Unstringifiable]";
+	}
+}
+
+/**
  * Create a sanitization summary for logging
  */
 export function createSanitizationSummary(
@@ -476,8 +540,8 @@ export function createSanitizationSummary(
 	sanitized: unknown,
 ): { changed: boolean; findings: SensitiveContentFinding[] } {
 	const findings = detectSensitiveContent(original);
-	const originalStr = JSON.stringify(original);
-	const sanitizedStr = JSON.stringify(sanitized);
+	const originalStr = safeStringify(original);
+	const sanitizedStr = safeStringify(sanitized);
 	return {
 		changed: originalStr !== sanitizedStr,
 		findings,
@@ -496,38 +560,122 @@ export interface ContextFirewallResult {
 }
 
 /**
+ * Blocking configuration for the context firewall
+ */
+export interface FirewallBlockingConfig {
+	/** Block if this many high-severity findings are detected. Default: 1 */
+	highSeverityThreshold: number;
+	/** Block if total findings exceed this count. Default: 5 */
+	totalFindingsThreshold: number;
+	/** Always block on these finding types */
+	criticalTypes: SensitiveContentFinding["type"][];
+	/** Whether blocking is enabled at all. Default: true */
+	enabled: boolean;
+}
+
+/**
+ * Default blocking configuration - conservative but protective
+ */
+export const DEFAULT_BLOCKING_CONFIG: FirewallBlockingConfig = {
+	highSeverityThreshold: 2,
+	totalFindingsThreshold: 5,
+	criticalTypes: ["private_key", "aws_secret"],
+	enabled: true,
+};
+
+/**
+ * Extended options for context firewall check
+ */
+export interface ContextFirewallOptions extends SanitizeOptions {
+	/** Legacy option: block on any high severity (deprecated, use blocking config) */
+	blockHighSeverity?: boolean;
+	/** Full blocking configuration */
+	blocking?: Partial<FirewallBlockingConfig>;
+}
+
+/**
  * Context Firewall - Main entry point for payload checking
  *
  * This function:
  * 1. Detects sensitive content in the payload
  * 2. Sanitizes the payload for safe usage
- * 3. Optionally blocks payloads with high-severity content
+ * 3. Blocks payloads based on configurable thresholds
  *
  * @param payload - The payload to check
- * @param options - Options including whether to block on high severity
+ * @param options - Options including blocking configuration
  * @returns Result with sanitized payload and findings
  */
 export function checkContextFirewall(
 	payload: unknown,
-	options: SanitizeOptions & { blockHighSeverity?: boolean } = {},
+	options: ContextFirewallOptions = {},
 ): ContextFirewallResult {
 	const findings = detectSensitiveContent(payload);
 	const sanitizedPayload = sanitizePayload(payload, options);
 
-	const highSeverityFindings = findings.filter((f) => f.severity === "high");
+	// Build blocking config from options
+	// Support legacy `blockHighSeverity` option for backward compatibility
+	const useLegacyMode = options.blockHighSeverity === true && !options.blocking;
+	const blockingConfig: FirewallBlockingConfig = {
+		...DEFAULT_BLOCKING_CONFIG,
+		...options.blocking,
+		// Legacy mode: block on ANY high-severity finding (threshold = 1)
+		highSeverityThreshold: useLegacyMode
+			? 1
+			: (options.blocking?.highSeverityThreshold ??
+				DEFAULT_BLOCKING_CONFIG.highSeverityThreshold),
+		enabled:
+			options.blocking?.enabled ??
+			options.blockHighSeverity ??
+			DEFAULT_BLOCKING_CONFIG.enabled,
+	};
 
-	if (options.blockHighSeverity && highSeverityFindings.length > 0) {
+	if (!blockingConfig.enabled) {
+		return {
+			allowed: true,
+			sanitizedPayload,
+			findings,
+		};
+	}
+
+	const highSeverityFindings = findings.filter((f) => f.severity === "high");
+	const criticalFindings = findings.filter((f) =>
+		blockingConfig.criticalTypes.includes(f.type),
+	);
+
+	// Check blocking conditions
+	let shouldBlock = false;
+	let blockReason = "";
+
+	// Critical types always block
+	if (criticalFindings.length > 0) {
+		shouldBlock = true;
+		const types = [...new Set(criticalFindings.map((f) => f.type))];
+		blockReason = `Critical sensitive content detected: ${types.join(", ")}`;
+	}
+	// High severity threshold
+	else if (highSeverityFindings.length >= blockingConfig.highSeverityThreshold) {
+		shouldBlock = true;
 		const types = [...new Set(highSeverityFindings.map((f) => f.type))];
-		logger.warn("Context firewall blocked payload with high-severity content", {
-			types,
-			findingCount: highSeverityFindings.length,
+		blockReason = `High-severity content detected (${highSeverityFindings.length} findings): ${types.join(", ")}`;
+	}
+	// Total findings threshold
+	else if (findings.length >= blockingConfig.totalFindingsThreshold) {
+		shouldBlock = true;
+		blockReason = `Too many sensitive findings (${findings.length} >= ${blockingConfig.totalFindingsThreshold})`;
+	}
+
+	if (shouldBlock) {
+		logger.warn("Context firewall blocking payload", {
+			reason: blockReason,
+			highSeverityCount: highSeverityFindings.length,
+			totalFindings: findings.length,
 		});
 		return {
 			allowed: false,
 			sanitizedPayload,
 			findings,
 			blocked: true,
-			blockReason: `High-severity sensitive content detected: ${types.join(", ")}`,
+			blockReason,
 		};
 	}
 

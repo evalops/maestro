@@ -41,8 +41,16 @@
 
 import { createLogger } from "../utils/logger.js";
 import {
+	trackContextFirewall,
+	trackToolBlocked,
+	trackLoopDetection,
+	trackSequencePattern,
+	trackToolApprovalRequired,
+} from "../telemetry/security-events.js";
+import {
 	type ContextFirewallResult,
-	type SanitizeOptions,
+	type ContextFirewallOptions,
+	DEFAULT_BLOCKING_CONFIG,
 	checkContextFirewall,
 	sanitizePayload,
 } from "./context-firewall.js";
@@ -98,8 +106,8 @@ export interface SafetyMiddlewareConfig {
 	loopDetector?: LoopDetectorConfig;
 	/** Sequence analyzer configuration */
 	sequenceAnalyzer?: ToolSequenceAnalyzerConfig;
-	/** Context firewall options */
-	contextFirewall?: SanitizeOptions & { blockHighSeverity?: boolean };
+	/** Context firewall options including blocking configuration */
+	contextFirewall?: ContextFirewallOptions;
 	/** Whether to enable loop detection (default: true) */
 	enableLoopDetection?: boolean;
 	/** Whether to enable sequence analysis (default: true) */
@@ -122,7 +130,7 @@ export class SafetyMiddleware {
 			"loopDetector" | "sequenceAnalyzer" | "contextFirewall"
 		>
 	> & {
-		contextFirewall: SanitizeOptions & { blockHighSeverity?: boolean };
+		contextFirewall: ContextFirewallOptions;
 	};
 
 	constructor(config?: SafetyMiddlewareConfig) {
@@ -150,7 +158,11 @@ export class SafetyMiddleware {
 				maxStringLength: 1000,
 				removeControlChars: true,
 				truncateLargeBlobs: true,
-				blockHighSeverity: false, // Don't block by default, just sanitize
+				// Enable blocking by default with sensible thresholds
+				blocking: {
+					...DEFAULT_BLOCKING_CONFIG,
+					...config?.contextFirewall?.blocking,
+				},
 				...config?.contextFirewall,
 			},
 		};
@@ -181,12 +193,33 @@ export class SafetyMiddleware {
 				unknown
 			>;
 
+			// Track findings even when not blocking
+			if (firewallResult.findings.length > 0) {
+				trackContextFirewall({
+					findingTypes: [
+						...new Set(firewallResult.findings.map((f) => f.type)),
+					],
+					findingCount: firewallResult.findings.length,
+					blocked: firewallResult.blocked ?? false,
+					toolName,
+					reason: firewallResult.blockReason,
+				});
+			}
+
 			if (firewallResult.blocked) {
 				logger.warn("Context firewall blocked tool execution", {
 					toolName,
 					reason: firewallResult.blockReason,
 					findingsCount: firewallResult.findings.length,
 				});
+
+				trackToolBlocked({
+					toolName,
+					reason: firewallResult.blockReason ?? "Sensitive content detected",
+					source: "firewall",
+					severity: "high",
+				});
+
 				return {
 					allowed: false,
 					requiresApproval: false,
@@ -211,7 +244,22 @@ export class SafetyMiddleware {
 					repetitions: loopResult.repetitions,
 				});
 
+				trackLoopDetection({
+					loopType: loopResult.type ?? "exact",
+					repetitions: loopResult.repetitions ?? 0,
+					toolName,
+					action: loopResult.action ?? "warn",
+					reason: loopResult.reason,
+				});
+
 				if (loopResult.action === "pause" || loopResult.action === "halt") {
+					trackToolBlocked({
+						toolName,
+						reason: loopResult.reason ?? "Loop detected",
+						source: "loop",
+						severity: loopResult.action === "halt" ? "high" : "medium",
+					});
+
 					return {
 						allowed: false,
 						requiresApproval: loopResult.action === "pause",
@@ -238,6 +286,20 @@ export class SafetyMiddleware {
 					reason: sequenceResult.reason,
 				});
 
+				trackSequencePattern({
+					patternId: sequenceResult.patternId ?? "unknown",
+					toolName,
+					action: "require_approval",
+					severity: "medium",
+					reason: sequenceResult.reason,
+				});
+
+				trackToolApprovalRequired({
+					toolName,
+					reason: sequenceResult.reason ?? "Suspicious sequence detected",
+					source: "sequence",
+				});
+
 				return {
 					allowed: false,
 					requiresApproval: true,
@@ -249,6 +311,21 @@ export class SafetyMiddleware {
 			}
 
 			if (sequenceResult.action === "block") {
+				trackSequencePattern({
+					patternId: sequenceResult.patternId ?? "unknown",
+					toolName,
+					action: "block",
+					severity: "high",
+					reason: sequenceResult.reason,
+				});
+
+				trackToolBlocked({
+					toolName,
+					reason: sequenceResult.reason ?? "Blocked by sequence analysis",
+					source: "sequence",
+					severity: "high",
+				});
+
 				return {
 					allowed: false,
 					requiresApproval: false,

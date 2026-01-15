@@ -294,97 +294,6 @@ function calculateCost(
 	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
 }
 
-/**
- * Stable JSON Stringify - Deterministic serialization for signature comparison
- *
- * Produces a canonical JSON string representation of a value, suitable for
- * comparing tool call arguments across invocations. This is used by doom loop
- * detection to identify identical consecutive tool calls.
- *
- * ## Why "Stable"?
- *
- * Standard JSON.stringify doesn't guarantee key ordering:
- * - `{b: 1, a: 2}` might serialize as `{"b":1,"a":2}` or `{"a":2,"b":1}`
- *
- * This function sorts object keys alphabetically at every level, ensuring
- * identical objects always produce identical strings.
- *
- * ## Safety Features
- *
- * - **Circular reference detection**: Uses WeakSet to detect and handle cycles
- * - **Depth limiting**: Prevents stack overflow on deeply nested structures
- * - **Length limiting**: Prevents memory issues with very large objects
- *
- * ## Use in Doom Loop Detection
- *
- * The transport maintains a sliding window of recent tool calls as
- * `{name, signature}` pairs. The signature is this stable JSON string
- * of the arguments. If the last N calls all have identical name+signature,
- * a doom loop is detected and the tool is blocked.
- *
- * @param value - The value to serialize (typically tool arguments)
- * @param maxDepth - Maximum nesting depth before truncation (default: 50)
- * @param maxLength - Maximum output length before error (default: 10,000)
- * @returns Canonical JSON string, or error placeholder if serialization fails
- */
-function stableStringify(
-	value: unknown,
-	maxDepth = 50,
-	maxLength = 10_000,
-): string {
-	// Track seen objects to detect circular references
-	const seen = new WeakSet<object>();
-
-	// Recursive helper that sorts keys and tracks depth
-	const sorter = (input: unknown, depth = 0): unknown => {
-		// Depth guard: prevent stack overflow
-		if (depth > maxDepth) return "[Max Depth]";
-		// Primitives pass through unchanged
-		if (input === null || typeof input !== "object") return input;
-		// Circular reference detection
-		if (seen.has(input)) return "[Circular]";
-		seen.add(input);
-
-		let output: unknown;
-		if (Array.isArray(input)) {
-			// Arrays: preserve order, recurse into elements
-			output = input.map((item) => sorter(item, depth + 1));
-		} else {
-			// Objects: sort keys alphabetically for determinism
-			const sortedKeys = Object.keys(input).sort();
-			const obj: Record<string, unknown> = {};
-			for (const key of sortedKeys) {
-				obj[key] = sorter((input as Record<string, unknown>)[key], depth + 1);
-			}
-			output = obj;
-		}
-		// Allow object to be seen again in sibling branches
-		seen.delete(input);
-		return output;
-	};
-
-	try {
-		const result = JSON.stringify(sorter(value));
-		// Length guard: prevent memory issues with huge payloads
-		if (result.length > maxLength) {
-			return "[SerializationError: Signature too large]";
-		}
-		return result;
-	} catch (error) {
-		// Graceful degradation on serialization failure
-		const message =
-			error instanceof Error
-				? error.message
-				: typeof error === "object" &&
-						error !== null &&
-						"message" in error &&
-						typeof error.message === "string"
-					? error.message
-					: String(error);
-		return `[SerializationError: ${message}]`;
-	}
-}
-
 function formatPendingPii(snapshot: WorkflowStateSnapshot): string {
 	if (snapshot.pendingPii.length === 0) {
 		return "(none tracked)";
@@ -427,16 +336,16 @@ function buildPiiPolicyResult(
  * ## State Management
  *
  * - **workflowState**: Tracks PII artifacts for egress prevention
- * - **recentToolCalls**: Sliding window for doom loop detection
  * - **recentToolTimestamps**: Per-tool timestamps for rate limiting
+ * - **safetyMiddleware**: Unified security (loop detection, sequence analysis, firewall)
  *
  * ## Safety Mechanisms
  *
- * ### Doom Loop Detection
- * If the same tool is called DOOM_LOOP_THRESHOLD times consecutively with
- * identical arguments, it's blocked. This catches infinite loops like:
- * - Reading a file that doesn't exist, getting error, trying again
- * - Editing text that isn't found, retrying with same text
+ * ### SafetyMiddleware Integration
+ * All safety checks are now handled through SafetyMiddleware:
+ * - **Loop Detection**: Catches identical consecutive calls (replaces doom loop)
+ * - **Sequence Analysis**: Detects suspicious behavioral patterns
+ * - **Context Firewall**: Sanitizes arguments and blocks sensitive content
  *
  * ### Rate Limiting
  * Each tool has a per-window rate limit (TOOL_RATE_LIMIT calls per
@@ -452,8 +361,6 @@ export class ProviderTransport implements AgentTransport {
 	private workflowState = new WorkflowStateTracker();
 	/** Prevents repeated warnings about serialized workflow execution */
 	private warnedAboutWorkflowConcurrency = false;
-	/** Sliding window of recent tool calls for doom loop detection */
-	private recentToolCalls: Array<{ name: string; signature: string }> = [];
 	/** Per-tool timestamp arrays for rate limiting enforcement */
 	private recentToolTimestamps = new Map<string, number[]>();
 	/** Safety middleware for sequence analysis and context sanitization */
@@ -461,12 +368,6 @@ export class ProviderTransport implements AgentTransport {
 	private readonly clock: Clock;
 	private readonly sessionTokenCounter?: SessionTokenCounter;
 	private readonly auditLogger?: ToolAuditLogger;
-
-	/**
-	 * Doom Loop Threshold - consecutive identical calls before blocking
-	 * Value of 3 allows for legitimate retries while catching infinite loops
-	 */
-	private static readonly DOOM_LOOP_THRESHOLD = 3;
 
 	/**
 	 * Rate Limit Window - time window for counting tool invocations
@@ -484,13 +385,20 @@ export class ProviderTransport implements AgentTransport {
 		this.clock = options.clock ?? systemClock;
 		this.sessionTokenCounter = options.sessionTokenCounter;
 		this.auditLogger = options.auditLogger;
-		// Initialize safety middleware for sequence analysis and context sanitization
+		// Initialize safety middleware for unified security checks
 		this.safetyMiddleware = createSafetyMiddleware({
-			// Loop detection handled by existing doom loop logic
-			enableLoopDetection: false,
+			// Enable loop detection (replaces transport's doom loop detection)
+			enableLoopDetection: true,
+			// Configure loop detector to match transport's previous behavior
+			loopDetector: {
+				maxIdenticalCalls: 3, // Match DOOM_LOOP_THRESHOLD
+				maxSimilarCalls: 5,
+				maxCallsPerMinute: 30, // More aggressive rate limit than TOOL_RATE_LIMIT
+				autoPause: false, // Transport handles the pause flow
+			},
 			// Enable sequence analysis for behavioral threat detection
 			enableSequenceAnalysis: true,
-			// Enable context firewall for sanitizing audit logs
+			// Enable context firewall with blocking for sanitizing audit logs
 			enableContextFirewall: true,
 		});
 	}
@@ -555,7 +463,6 @@ export class ProviderTransport implements AgentTransport {
 				: undefined);
 
 		this.workflowState.reset();
-		this.recentToolCalls = [];
 
 		let credential: AuthCredential | undefined;
 		if (this.options.getAuthContext) {
@@ -1051,40 +958,8 @@ export class ProviderTransport implements AgentTransport {
 					}
 					const toolCall = toolCallsToExecute[toolIndex];
 					if (!toolCall) continue;
-					const signature = stableStringify(toolCall.arguments);
-					const tail = this.recentToolCalls
-						.concat({ name: toolCall.name, signature })
-						.slice(-ProviderTransport.DOOM_LOOP_THRESHOLD);
-					const doomLoop =
-						tail.length === ProviderTransport.DOOM_LOOP_THRESHOLD &&
-						tail.every(
-							(entry) =>
-								entry.name === toolCall.name && entry.signature === signature,
-						);
-					if (doomLoop) {
-						const doomMessage: ToolResultMessage = {
-							role: "toolResult",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							content: [
-								{
-									type: "text",
-									text: `Blocked "${toolCall.name}" to prevent a possible doom loop: same tool invoked ${ProviderTransport.DOOM_LOOP_THRESHOLD} times with identical arguments.`,
-								},
-							],
-							isError: true,
-							timestamp: this.clock.now(),
-						};
-						for (const evt of emitToolResult(doomMessage, toolCall, true)) {
-							yield evt;
-						}
-						await checkSteering();
-						if (steeringTriggered) {
-							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
-							break;
-						}
-						continue;
-					}
+
+					// Rate limiting check (doom loop detection is now handled by SafetyMiddleware)
 					const now = this.clock.now();
 					const timestamps = this.recentToolTimestamps.get(toolCall.name) ?? [];
 					const recent = timestamps.filter(
@@ -1116,13 +991,6 @@ export class ProviderTransport implements AgentTransport {
 					}
 					recent.push(now);
 					this.recentToolTimestamps.set(toolCall.name, recent);
-					this.recentToolCalls.push({ name: toolCall.name, signature });
-					if (
-						this.recentToolCalls.length >
-						ProviderTransport.DOOM_LOOP_THRESHOLD + 2
-					) {
-						this.recentToolCalls.shift();
-					}
 
 					yield {
 						type: "tool_execution_start",
@@ -1839,27 +1707,6 @@ export class ProviderTransport implements AgentTransport {
 			hasMoreToolCalls = encounteredError ? false : pendingNextTurn;
 		}
 	}
-}
-
-async function waitForNextExecution(
-	pendingExecutions: PendingExecution[],
-): Promise<{
-	execution: PendingExecution;
-	outcome: ToolExecutionOutcome;
-}> {
-	const race = await Promise.race(
-		pendingExecutions.map((entry) =>
-			entry.promise.then((outcome) => ({ entry, outcome })),
-		),
-	);
-	const index = pendingExecutions.indexOf(race.entry);
-	if (index >= 0) {
-		pendingExecutions.splice(index, 1);
-	}
-	return {
-		execution: race.entry,
-		outcome: race.outcome,
-	};
 }
 
 type ToolUpdateEvent = Extract<AgentEvent, { type: "tool_execution_update" }>;
