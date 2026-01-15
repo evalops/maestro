@@ -497,6 +497,11 @@ function runHeuristicScan(files: string[], root: string): GuardianToolResult {
 	const ignorePatterns = [
 		/test\/enterprise\/pii-detector\.test\.ts$/,
 		/test\/guardian\/heuristic-scan\.test\.ts$/,
+		// Tests that intentionally include credential-like fixtures.
+		/test\/integration\/security-middleware\.test\.ts$/,
+		/test\/safety\/context-firewall\.test\.ts$/,
+		/test\/safety\/edge-cases\.test\.ts$/,
+		/test\/safety\/safety-middleware\.test\.ts$/,
 		// The runner itself contains regex patterns that look like secrets
 		/src\/guardian\/runner\.ts$/,
 	];
