@@ -2,10 +2,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { compose } from "../../src/server/middleware.js";
 import {
-	initRedis,
 	RateLimiter,
-	shutdownRedis,
 	TieredRateLimiter,
+	initRedis,
+	shutdownRedis,
 } from "../../src/server/rate-limiter.js";
 import { createRateLimitMiddleware } from "../../src/server/server-middlewares.js";
 

@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { getAgentDir } from "../config/constants.js";
+import { recordSessionMigration } from "../telemetry.js";
 import { createLogger } from "../utils/logger.js";
 import {
 	CURRENT_SESSION_VERSION,
@@ -206,7 +207,7 @@ function migrateV1ToV2(entries: SessionEntry[]): boolean {
 /**
  * Migrate entries to the current version, returning true if any changes were made.
  */
-function migrateToCurrentVersion(entries: SessionEntry[]): boolean {
+export function migrateToCurrentVersion(entries: SessionEntry[]): boolean {
 	const header = entries.find((e) => e.type === "session") as
 		| SessionHeaderEntry
 		| undefined;
@@ -276,6 +277,13 @@ async function runSessionMigrationInternal(): Promise<SessionMigrationState | nu
 			total: 0,
 		};
 		persistMigrationState(state);
+		recordSessionMigration({
+			total: state.total,
+			migrated: state.normalized,
+			skipped: state.skipped,
+			failures: state.failures,
+			version: state.version,
+		});
 		return state;
 	}
 
@@ -342,6 +350,15 @@ async function runSessionMigrationInternal(): Promise<SessionMigrationState | nu
 			failures: state.failures,
 		});
 	}
+
+	// Record telemetry for migration stats
+	recordSessionMigration({
+		total: state.total,
+		migrated: state.normalized,
+		skipped: state.skipped,
+		failures: state.failures,
+		version: state.version,
+	});
 
 	return state;
 }

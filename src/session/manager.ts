@@ -52,6 +52,7 @@ import {
 	type SessionModelMetadata,
 } from "./metadata-cache.js";
 import {
+	migrateToCurrentVersion,
 	registerActiveSessionFile,
 	scheduleSessionMigration,
 	unregisterActiveSessionFile,
@@ -202,69 +203,6 @@ function safeReadSessionEntries(
 		onError?.(error);
 		return [];
 	}
-}
-
-// Mutates entries in place to upgrade legacy session files.
-function migrateV1ToV2(entries: SessionEntry[]): void {
-	const ids = new Set<string>();
-	let prevId: string | null = null;
-	// Include message, custom_message, and branch_summary entries to match
-	// how firstKeptEntryIndex was computed in v1 sessions
-	const messageEntries: SessionTreeEntry[] = [];
-
-	for (const entry of entries) {
-		if (entry.type === "session") {
-			entry.version = CURRENT_SESSION_VERSION;
-			continue;
-		}
-		if (!isSessionTreeEntry(entry)) {
-			continue;
-		}
-		if (!entry.id || ids.has(entry.id)) {
-			entry.id = generateEntryId(ids);
-		}
-		ids.add(entry.id);
-		entry.parentId = prevId;
-		prevId = entry.id;
-		// Collect all entry types that contribute to firstKeptEntryIndex
-		if (
-			entry.type === "message" ||
-			entry.type === "custom_message" ||
-			entry.type === "branch_summary"
-		) {
-			messageEntries.push(entry);
-		}
-	}
-
-	for (const entry of entries) {
-		if (entry.type !== "compaction") continue;
-		const compaction = entry as CompactionEntry & {
-			firstKeptEntryIndex?: number;
-		};
-		if (
-			typeof compaction.firstKeptEntryIndex === "number" &&
-			!compaction.firstKeptEntryId
-		) {
-			const target = messageEntries[compaction.firstKeptEntryIndex];
-			const fallback = messageEntries[0]?.id ?? compaction.id;
-			compaction.firstKeptEntryId = target?.id ?? fallback;
-		}
-		delete compaction.firstKeptEntryIndex;
-	}
-}
-
-function migrateToCurrentVersion(entries: SessionEntry[]): boolean {
-	const header = entries.find((e) => e.type === "session") as
-		| SessionHeaderEntry
-		| undefined;
-	const version = header?.version ?? 1;
-	if (version >= CURRENT_SESSION_VERSION) return false;
-
-	if (version < 2) {
-		migrateV1ToV2(entries);
-	}
-
-	return true;
 }
 
 function buildSessionContextFromEntries(

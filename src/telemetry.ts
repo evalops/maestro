@@ -111,6 +111,7 @@ export interface BusinessMetricTelemetry extends BaseTelemetryEvent {
 	metric:
 		| "session.count"
 		| "session.duration"
+		| "session.migration"
 		| "lines_of_code.count"
 		| "tokens.input"
 		| "tokens.output"
@@ -738,6 +739,24 @@ export function recordModelSwitch(
 		sessionId,
 		model: toModel,
 		previousModel: fromModel,
+	});
+}
+
+/**
+ * Record session migration stats.
+ */
+export function recordSessionMigration(stats: {
+	total: number;
+	migrated: number;
+	skipped: number;
+	failures: number;
+	version: number;
+}): void {
+	recordBusinessMetric("session.migration", stats.total, {
+		migrated: stats.migrated,
+		skipped: stats.skipped,
+		failures: stats.failures,
+		version: stats.version,
 	});
 }
 
