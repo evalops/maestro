@@ -33,20 +33,30 @@ const SAMPLE_RSA_PRIVATE_KEY = joinParts(
 	["RSA", "PRIVATE", "KEY"].join(" "),
 	"-----\nMIIEpAIBAAKCAQEA...",
 );
-const SAMPLE_JWT_TOKEN = joinParts(
-	"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-	".",
-	"eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ",
-	".",
-	"SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+const SAMPLE_JWT_HEADER = joinParts("eyJhbGciOiJ", "IUzI1NiIsInR5cCI6IkpXVCJ9");
+const SAMPLE_JWT_PAYLOAD = joinParts(
+	"eyJzdWIiOiIxMjM0N",
+	"TY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ",
 );
-const SAMPLE_JWT_SHORT = joinParts(
-	"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
-	".",
-	"eyJzdWIiOiIxMjM0NTY3ODkwIn0",
-	".",
-	"dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+const SAMPLE_JWT_SIGNATURE = joinParts(
+	"SflKxwRJSMeKKF2Q",
+	"T4fwpMeJf36POk6yJV_adQssw5c",
 );
+const SAMPLE_JWT_TOKEN = [
+	SAMPLE_JWT_HEADER,
+	SAMPLE_JWT_PAYLOAD,
+	SAMPLE_JWT_SIGNATURE,
+].join(".");
+const SAMPLE_JWT_SHORT_PAYLOAD = joinParts("eyJzdWIiOiIx", "MjM0NTY3ODkwIn0");
+const SAMPLE_JWT_SHORT_SIGNATURE = joinParts(
+	"dozjgNryP4J3jVmNHl0w5N_",
+	"XgL0n3I9PlFUP0THsR8U",
+);
+const SAMPLE_JWT_SHORT = [
+	SAMPLE_JWT_HEADER,
+	SAMPLE_JWT_SHORT_PAYLOAD,
+	SAMPLE_JWT_SHORT_SIGNATURE,
+].join(".");
 
 describe("context-firewall", () => {
 	describe("detectSensitiveContent", () => {
