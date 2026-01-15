@@ -28,6 +28,7 @@ type SharedMemoryUpdate = {
 };
 
 const logger = createLogger("shared-memory");
+const REQUEST_TIMEOUT_MS = 5000;
 
 function normalizeBaseUrl(value: string): string {
 	return value.replace(/\/+$/, "");
@@ -53,12 +54,30 @@ function buildHeaders(apiKey?: string): Headers {
 	return headers;
 }
 
+async function safeFetch(url: string, init: RequestInit): Promise<void> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+	try {
+		const response = await fetch(url, { ...init, signal: controller.signal });
+		if (!response.ok) {
+			const message = await response.text().catch(() => "");
+			throw new Error(
+				message
+					? `Shared memory error: ${response.status} ${message}`
+					: `Shared memory error: ${response.status}`,
+			);
+		}
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
 async function patchState(
 	config: SharedMemoryConfig,
 	sessionId: string,
 	state: Record<string, JsonValue>,
 ): Promise<void> {
-	await fetch(`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/state`, {
+	await safeFetch(`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/state`, {
 		method: "PATCH",
 		headers: buildHeaders(config.apiKey),
 		body: JSON.stringify({ state: { composer: state } }),
@@ -70,7 +89,7 @@ async function appendEvent(
 	sessionId: string,
 	event: SharedMemoryEvent,
 ): Promise<void> {
-	await fetch(`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/events`, {
+	await safeFetch(`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/events`, {
 		method: "POST",
 		headers: buildHeaders(config.apiKey),
 		body: JSON.stringify({ ...event, actor: "composer" }),
