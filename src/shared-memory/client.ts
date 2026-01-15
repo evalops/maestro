@@ -111,12 +111,43 @@ const queueStats = {
 
 class SharedMemoryError extends Error {
 	status?: number;
+	retryAfterMs?: number;
 
-	constructor(message: string, status?: number) {
+	constructor(message: string, status?: number, retryAfterMs?: number) {
 		super(message);
 		this.name = "SharedMemoryError";
 		this.status = status;
+		this.retryAfterMs = retryAfterMs;
 	}
+}
+
+function parseRetryAfterMs(response: Response): number | null {
+	const retryAfter = response.headers.get("Retry-After")?.trim();
+	if (retryAfter) {
+		const asNumber = Number(retryAfter);
+		if (Number.isFinite(asNumber)) {
+			return Math.max(0, asNumber * 1000);
+		}
+		const asDate = Date.parse(retryAfter);
+		if (!Number.isNaN(asDate)) {
+			return Math.max(0, asDate - Date.now());
+		}
+	}
+	const resetHeader =
+		response.headers.get("RateLimit-Reset") ??
+		response.headers.get("X-RateLimit-Reset");
+	if (!resetHeader) return null;
+	const resetValue = Number(resetHeader.trim());
+	if (!Number.isFinite(resetValue)) return null;
+	let delayMs: number;
+	if (resetValue >= 10_000_000_000) {
+		delayMs = resetValue - Date.now();
+	} else if (resetValue >= 1_000_000_000) {
+		delayMs = resetValue * 1000 - Date.now();
+	} else {
+		delayMs = resetValue * 1000;
+	}
+	return Math.max(0, delayMs);
 }
 
 function invalidateCapabilitiesCache(
@@ -196,11 +227,13 @@ async function safeFetch(url: string, init: RequestInit): Promise<void> {
 		const response = await fetch(url, { ...init, signal: controller.signal });
 		if (!response.ok) {
 			const message = await response.text().catch(() => "");
+			const retryAfterMs = parseRetryAfterMs(response);
 			throw new SharedMemoryError(
 				message
 					? `Shared memory error: ${response.status} ${message}`
 					: `Shared memory error: ${response.status}`,
 				response.status,
+				retryAfterMs ?? undefined,
 			);
 		}
 	} finally {
@@ -767,6 +800,19 @@ function nextEventId(prefix: string): string {
 	return clampEventId(prefix, suffix);
 }
 
+function resolveRetryDelayMs(pending: PendingSession, error?: unknown): number {
+	if (error instanceof SharedMemoryError) {
+		const retryAfterMs = error.retryAfterMs;
+		if (typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs)) {
+			return Math.min(MAX_BACKOFF_MS, Math.max(FLUSH_DELAY_MS, retryAfterMs));
+		}
+	}
+	return Math.min(
+		MAX_BACKOFF_MS,
+		Math.max(FLUSH_DELAY_MS, pending.retryDelayMs * 2),
+	);
+}
+
 function getPendingSession(sessionKey: string): PendingSession {
 	const existing = pendingBySession.get(sessionKey);
 	if (existing) return existing;
@@ -857,10 +903,7 @@ async function flushSession(pending: PendingSession): Promise<void> {
 		if (events.length) {
 			pending.events = events.concat(pending.events).slice(-MAX_PENDING_EVENTS);
 		}
-		pending.retryDelayMs = Math.min(
-			MAX_BACKOFF_MS,
-			Math.max(FLUSH_DELAY_MS, pending.retryDelayMs * 2),
-		);
+		pending.retryDelayMs = resolveRetryDelayMs(pending, error);
 		pending.updatedAt = Date.now();
 		schedulePersist();
 		logger.debug("Shared memory update failed", { error });

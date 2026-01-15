@@ -18,8 +18,13 @@ import type { GitHubWatcher } from "./watcher/github.js";
 import type { TaskExecutor } from "./worker/executor.js";
 
 // Mock all dependencies
+let mockMemory: MockMemoryStore;
+
 vi.mock("./memory/store.js", () => ({
-	MemoryStore: vi.fn(),
+	// biome-ignore lint/complexity/useArrowFunction: Vitest requires constructable mock for `new`.
+	MemoryStore: vi.fn().mockImplementation(function () {
+		return mockMemory;
+	}),
 }));
 
 vi.mock("./watcher/github.js", () => ({
@@ -177,7 +182,6 @@ const createMockOutcome = (overrides: Partial<Outcome> = {}): Outcome => ({
 
 describe("Orchestrator", () => {
 	let config: OrchestratorConfig;
-	let mockMemory: MockMemoryStore;
 	let mockWatcher: MockWatcher;
 	let mockPrioritizer: MockPrioritizer;
 	let mockExecutor: MockExecutor;
@@ -262,14 +266,6 @@ describe("Orchestrator", () => {
 		};
 
 		// Wire up mocks to constructors
-		const { MemoryStore } = await import("./memory/store.js");
-		(MemoryStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-			// biome-ignore lint/complexity/useArrowFunction: Vitest requires constructable mock for `new`.
-			function () {
-				return mockMemory;
-			},
-		);
-
 		const { GitHubWatcher } = await import("./watcher/github.js");
 		(GitHubWatcher as unknown as ReturnType<typeof vi.fn>).mockImplementation(
 			// biome-ignore lint/complexity/useArrowFunction: Vitest requires constructable mock for `new`.
