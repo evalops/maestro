@@ -514,6 +514,7 @@ async function persistQueue(): Promise<void> {
 			{
 				state: Record<string, JsonValue> | null;
 				events: SharedMemoryEvent[];
+				blockedUntil: number | null;
 				updatedAt: number;
 			}
 		> = {};
@@ -521,6 +522,7 @@ async function persistQueue(): Promise<void> {
 			sessions[key] = {
 				state: pending.state,
 				events: pending.events,
+				blockedUntil: pending.blockedUntil,
 				updatedAt: pending.updatedAt,
 			};
 		}
@@ -553,6 +555,7 @@ function loadPersistedQueue(): void {
 				{
 					state: Record<string, JsonValue> | null;
 					events: SharedMemoryEvent[];
+					blockedUntil?: number | null;
 					updatedAt?: number;
 				}
 			>;
@@ -581,6 +584,10 @@ function loadPersistedQueue(): void {
 			const pending = getPendingSession(sessionKey);
 			pending.state = entry.state ?? null;
 			pending.events = entry.events ?? [];
+			const blockedUntil =
+				typeof entry.blockedUntil === "number" ? entry.blockedUntil : null;
+			pending.blockedUntil =
+				blockedUntil && blockedUntil > Date.now() ? blockedUntil : null;
 			pending.updatedAt = updatedAt;
 			scheduleFlush(pending);
 		}
@@ -992,6 +999,8 @@ async function flushSession(pending: PendingSession): Promise<void> {
 		} else if (classification === "drop") {
 			if (state) queueStats.droppedStates += 1;
 			if (events.length) queueStats.droppedEvents += events.length;
+			pending.retryDelayMs = FLUSH_DELAY_MS;
+			pending.blockedUntil = null;
 			pending.updatedAt = Date.now();
 			schedulePersist();
 			logger.warn("Dropped shared memory update after non-retriable error", {

@@ -332,6 +332,60 @@ describe("shared-memory client", () => {
 		expect(syncCalls).toBe(2);
 	});
 
+	it("persists auth cooldown timestamps", async () => {
+		let persistedPayload: string | null = null;
+		await vi.doMock("node:fs/promises", async () => {
+			const actual =
+				await vi.importActual<typeof import("node:fs/promises")>(
+					"node:fs/promises",
+				);
+			return {
+				...actual,
+				mkdir: vi.fn(async () => undefined),
+				rename: vi.fn(async () => undefined),
+				writeFile: vi.fn(async (_path, data) => {
+					persistedPayload = String(data);
+				}),
+			};
+		});
+
+		vi.setSystemTime(new Date(1_700_000_000_000));
+		const fetchMock = vi.fn(async (input: RequestInfo) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url.endsWith("/capabilities")) {
+				return createCapabilitiesResponse();
+			}
+			if (url.includes("/sync")) {
+				return new Response("unauthorized", { status: 401 });
+			}
+			return new Response("", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		vi.spyOn(Math, "random").mockReturnValue(0);
+
+		const { queueSharedMemoryUpdate } = await import(
+			"../../src/shared-memory/client.js"
+		);
+		queueSharedMemoryUpdate({
+			sessionId: "session-a",
+			state: { foo: "bar" },
+		});
+
+		await vi.advanceTimersByTimeAsync(200);
+		await Promise.resolve();
+		await vi.advanceTimersByTimeAsync(400);
+		await Promise.resolve();
+
+		expect(persistedPayload).toBeTruthy();
+		const parsed = JSON.parse(persistedPayload ?? "{}") as {
+			sessions?: Record<string, { blockedUntil?: number | null }>;
+		};
+		const blockedUntil = parsed.sessions?.["session-a"]?.blockedUntil;
+		expect(typeof blockedUntil).toBe("number");
+		expect((blockedUntil ?? 0) > Date.now()).toBe(true);
+		vi.doUnmock("node:fs/promises");
+	});
+
 	it("backs off exponentially after transient failures", async () => {
 		let syncCalls = 0;
 		const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
