@@ -14,6 +14,13 @@ type CapabilitiesResponse = {
 	max_body_bytes?: number;
 	max_events_batch?: number;
 	max_events?: number;
+	max_event_payload_bytes?: number;
+	max_event_type_length?: number;
+	max_event_id_length?: number;
+	max_actor_length?: number;
+	max_tag_length?: number;
+	max_tags?: number;
+	max_session_id_length?: number;
 };
 
 type ServiceMetricsResponse = {
@@ -131,7 +138,19 @@ function printCapabilities(cap?: CapabilitiesResponse): void {
 		)}${separator()}${badge(
 			"max_batch",
 			String(cap.max_events_batch ?? "?"),
-		)}${separator()}${badge("max_events", String(cap.max_events ?? "?"))}`,
+		)}${separator()}${badge("max_events", String(cap.max_events ?? "?"))}${separator()}${badge(
+			"event_payload",
+			String(cap.max_event_payload_bytes ?? "?"),
+		)}${separator()}${badge(
+			"event_type",
+			String(cap.max_event_type_length ?? "?"),
+		)}${separator()}${badge(
+			"event_id",
+			String(cap.max_event_id_length ?? "?"),
+		)}${separator()}${badge(
+			"session_id",
+			String(cap.max_session_id_length ?? "?"),
+		)}`,
 	);
 }
 

@@ -49,6 +49,9 @@ type Capabilities = {
 	supportsGzip: boolean;
 	maxBodyBytes: number;
 	maxEventsBatch: number;
+	maxEventPayloadBytes: number;
+	maxEventTypeLength: number;
+	maxEventIdLength: number;
 };
 
 type QueueStatsSnapshot = {
@@ -71,15 +74,20 @@ const MAX_BACKOFF_MS = 5000;
 const DEFAULT_EVENTS_PER_BATCH = 25;
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
 const TARGET_MAX_BODY_BYTES = 220 * 1024;
+const DEFAULT_EVENT_PAYLOAD_BYTES = 32 * 1024;
+const DEFAULT_EVENT_TYPE_LENGTH = 128;
+const DEFAULT_EVENT_ID_LENGTH = 128;
 const MAX_STRING_LENGTH = 4000;
 const MAX_ARRAY_LENGTH = 50;
 const PERSIST_DEBOUNCE_MS = 300;
 const PERSIST_TTL_MS = 24 * 60 * 60 * 1000;
 const CAPABILITIES_TTL_MS = 5 * 60 * 1000;
+const REQUEST_ID_PREFIX = "composer";
 const instanceId = randomUUID();
 
 const pendingBySession = new Map<string, PendingSession>();
 let eventCounter = 0;
+let requestCounter = 0;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let capabilitiesCache: { value: Capabilities; fetchedAt: number } | null = null;
 let capabilitiesPromise: Promise<Capabilities> | null = null;
@@ -114,6 +122,9 @@ function invalidateCapabilitiesCache(
 			supportsGzip: true,
 			maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
 			maxEventsBatch: DEFAULT_EVENTS_PER_BATCH,
+			maxEventPayloadBytes: DEFAULT_EVENT_PAYLOAD_BYTES,
+			maxEventTypeLength: DEFAULT_EVENT_TYPE_LENGTH,
+			maxEventIdLength: DEFAULT_EVENT_ID_LENGTH,
 		};
 	}
 	const base = capabilitiesCache?.value ?? {
@@ -121,6 +132,9 @@ function invalidateCapabilitiesCache(
 		supportsGzip: true,
 		maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
 		maxEventsBatch: DEFAULT_EVENTS_PER_BATCH,
+		maxEventPayloadBytes: DEFAULT_EVENT_PAYLOAD_BYTES,
+		maxEventTypeLength: DEFAULT_EVENT_TYPE_LENGTH,
+		maxEventIdLength: DEFAULT_EVENT_ID_LENGTH,
 	};
 	const value = { ...base, ...override };
 	capabilitiesCache = { value, fetchedAt: Date.now() };
@@ -149,11 +163,21 @@ function readConfig(): SharedMemoryConfig | null {
 	};
 }
 
-function buildHeaders(apiKey?: string): Headers {
+function nextRequestId(prefix: string): string {
+	try {
+		return `${prefix}-${randomUUID()}`;
+	} catch {
+		requestCounter = (requestCounter + 1) % 1_000_000;
+		return `${prefix}-${Date.now()}-${requestCounter}`;
+	}
+}
+
+function buildHeaders(apiKey?: string, requestId?: string): Headers {
 	const headers = new Headers({
 		"Content-Type": "application/json; charset=utf-8",
 	});
 	if (apiKey) headers.set("Authorization", `Bearer ${apiKey}`);
+	if (requestId) headers.set("X-Request-Id", requestId);
 	return headers;
 }
 
@@ -247,6 +271,32 @@ function fitJsonToBytes(
 	return { value: {}, trimmed: true };
 }
 
+function currentEventPayloadLimit(): number {
+	const max =
+		capabilitiesCache?.value?.maxEventPayloadBytes ??
+		DEFAULT_EVENT_PAYLOAD_BYTES;
+	return Math.min(max, TARGET_MAX_BODY_BYTES);
+}
+
+function normalizeEventType(eventType: string): string | null {
+	const trimmed = eventType.trim();
+	if (!trimmed) return null;
+	const max =
+		capabilitiesCache?.value?.maxEventTypeLength ?? DEFAULT_EVENT_TYPE_LENGTH;
+	if (trimmed.length > max) return null;
+	return trimmed;
+}
+
+function clampEventId(prefix: string, suffix: string): string {
+	const max =
+		capabilitiesCache?.value?.maxEventIdLength ?? DEFAULT_EVENT_ID_LENGTH;
+	if (prefix.length + suffix.length + 1 <= max) {
+		return `${prefix}-${suffix}`;
+	}
+	const prefixMax = Math.max(0, max - suffix.length - 1);
+	return `${prefix.slice(0, prefixMax)}-${suffix}`;
+}
+
 async function getCapabilities(
 	config: SharedMemoryConfig,
 ): Promise<Capabilities> {
@@ -260,6 +310,9 @@ async function getCapabilities(
 		supportsGzip: true,
 		maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
 		maxEventsBatch: DEFAULT_EVENTS_PER_BATCH,
+		maxEventPayloadBytes: DEFAULT_EVENT_PAYLOAD_BYTES,
+		maxEventTypeLength: DEFAULT_EVENT_TYPE_LENGTH,
+		maxEventIdLength: DEFAULT_EVENT_ID_LENGTH,
 	};
 
 	capabilitiesPromise = (async () => {
@@ -268,7 +321,7 @@ async function getCapabilities(
 		try {
 			const response = await fetch(`${config.baseUrl}/capabilities`, {
 				method: "GET",
-				headers: buildHeaders(config.apiKey),
+				headers: buildHeaders(config.apiKey, nextRequestId(REQUEST_ID_PREFIX)),
 				signal: controller.signal,
 			});
 			if (!response.ok) {
@@ -282,6 +335,9 @@ async function getCapabilities(
 				supports_gzip: boolean;
 				max_body_bytes: number;
 				max_events_batch: number;
+				max_event_payload_bytes: number;
+				max_event_type_length: number;
+				max_event_id_length: number;
 			}>;
 			const supportsSync = data.supports_sync !== false;
 			const supportsGzip = data.supports_gzip !== false;
@@ -293,11 +349,26 @@ async function getCapabilities(
 				typeof data.max_events_batch === "number"
 					? data.max_events_batch
 					: DEFAULT_EVENTS_PER_BATCH;
+			const maxEventPayloadBytes =
+				typeof data.max_event_payload_bytes === "number"
+					? data.max_event_payload_bytes
+					: DEFAULT_EVENT_PAYLOAD_BYTES;
+			const maxEventTypeLength =
+				typeof data.max_event_type_length === "number"
+					? data.max_event_type_length
+					: DEFAULT_EVENT_TYPE_LENGTH;
+			const maxEventIdLength =
+				typeof data.max_event_id_length === "number"
+					? data.max_event_id_length
+					: DEFAULT_EVENT_ID_LENGTH;
 			return {
 				supportsSync,
 				supportsGzip,
 				maxBodyBytes,
 				maxEventsBatch,
+				maxEventPayloadBytes,
+				maxEventTypeLength,
+				maxEventIdLength,
 			};
 		} catch {
 			return fallback;
@@ -454,11 +525,13 @@ async function trySync(
 	if (stats) {
 		payload.stats = stats as JsonValue;
 	}
+	const requestId = nextRequestId(REQUEST_ID_PREFIX);
 	const { body, headers } = prepareRequestBody(
 		payload,
 		Math.min(capabilities.maxBodyBytes, TARGET_MAX_BODY_BYTES),
 		capabilities.supportsGzip,
 		config.apiKey,
+		requestId,
 	);
 	await safeFetch(
 		`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/sync`,
@@ -479,11 +552,13 @@ async function fallbackSync(
 ): Promise<void> {
 	if (state) {
 		try {
+			const requestId = nextRequestId(REQUEST_ID_PREFIX);
 			const { body, headers } = prepareRequestBody(
 				{ state: { composer: state } },
 				TARGET_MAX_BODY_BYTES,
 				supportsGzip,
 				config.apiKey,
+				requestId,
 			);
 			await safeFetch(
 				`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/state`,
@@ -503,11 +578,13 @@ async function fallbackSync(
 	}
 	for (const event of events) {
 		try {
+			const requestId = nextRequestId(REQUEST_ID_PREFIX);
 			const { body, headers } = prepareRequestBody(
 				event as Record<string, JsonValue>,
 				TARGET_MAX_BODY_BYTES,
 				supportsGzip,
 				config.apiKey,
+				requestId,
 			);
 			await safeFetch(
 				`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/events`,
@@ -668,7 +745,8 @@ async function sendSyncBatches(
 
 function nextEventId(prefix: string): string {
 	eventCounter = (eventCounter + 1) % 1_000_000;
-	return `${prefix}-${Date.now()}-${eventCounter}`;
+	const suffix = `${Date.now()}-${eventCounter}`;
+	return clampEventId(prefix, suffix);
 }
 
 function getPendingSession(sessionKey: string): PendingSession {
@@ -781,6 +859,17 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 		pending.updatedAt = Date.now();
 	}
 	if (update.event) {
+		const normalizedType = normalizeEventType(update.event.type);
+		if (!normalizedType) {
+			queueStats.droppedEvents += 1;
+			pending.updatedAt = Date.now();
+			scheduleFlush(pending);
+			schedulePersist();
+			logger.debug("Dropped shared memory event with invalid type", {
+				type: update.event.type,
+			});
+			return;
+		}
 		const payload: Record<string, JsonValue> =
 			update.event.payload &&
 			typeof update.event.payload === "object" &&
@@ -795,25 +884,22 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 						source: "composer",
 						value: update.event.payload ?? null,
 					};
-		const fittedPayload = fitJsonToBytes(
-			payload,
-			Math.min(32 * 1024, TARGET_MAX_BODY_BYTES),
-			[
-				"summary",
-				"content",
-				"preview",
-				"text",
-				"message",
-				"body",
-				"markdown",
-				"html",
-			],
-		);
+		const fittedPayload = fitJsonToBytes(payload, currentEventPayloadLimit(), [
+			"summary",
+			"content",
+			"preview",
+			"text",
+			"message",
+			"body",
+			"markdown",
+			"html",
+		]);
 		if (fittedPayload.trimmed) {
 			queueStats.trimmedEvents += 1;
 		}
 		pending.events.push({
 			...update.event,
+			type: normalizedType,
 			payload: fittedPayload.value as JsonValue,
 			id: update.event.id ?? nextEventId(`composer-${update.sessionId}`),
 		});
@@ -832,10 +918,11 @@ function prepareRequestBody(
 	maxBytes: number,
 	supportsGzip: boolean,
 	apiKey?: string,
+	requestId?: string,
 ): { body: Buffer | string; headers: Headers } {
 	const trimmed = fitJsonToBytes(payload, maxBytes, ["events", "state"]).value;
 	const json = JSON.stringify(trimmed);
-	const headers = buildHeaders(apiKey);
+	const headers = buildHeaders(apiKey, requestId);
 	if (!supportsGzip) {
 		return { body: json, headers };
 	}
