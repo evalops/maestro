@@ -46,8 +46,21 @@ type PendingSession = {
 
 type Capabilities = {
 	supportsSync: boolean;
+	supportsGzip: boolean;
 	maxBodyBytes: number;
 	maxEventsBatch: number;
+};
+
+type QueueStatsSnapshot = {
+	trimmed_states: number;
+	trimmed_events: number;
+	dropped_states: number;
+	dropped_events: number;
+	batch_splits: number;
+	gzip_requests: number;
+	last_sent_at: string;
+	source: "composer";
+	instance_id: string;
 };
 
 const logger = createLogger("shared-memory");
@@ -62,13 +75,23 @@ const MAX_STRING_LENGTH = 4000;
 const MAX_ARRAY_LENGTH = 50;
 const PERSIST_DEBOUNCE_MS = 300;
 const PERSIST_TTL_MS = 24 * 60 * 60 * 1000;
+const CAPABILITIES_TTL_MS = 5 * 60 * 1000;
 const instanceId = randomUUID();
 
 const pendingBySession = new Map<string, PendingSession>();
 let eventCounter = 0;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
-let capabilitiesCache: Capabilities | null = null;
+let capabilitiesCache: { value: Capabilities; fetchedAt: number } | null = null;
 let capabilitiesPromise: Promise<Capabilities> | null = null;
+const queueStats = {
+	trimmedStates: 0,
+	trimmedEvents: 0,
+	droppedStates: 0,
+	droppedEvents: 0,
+	batchSplits: 0,
+	gzipRequests: 0,
+	lastSentAt: null as string | null,
+};
 
 class SharedMemoryError extends Error {
 	status?: number;
@@ -172,13 +195,13 @@ function fitJsonToBytes(
 	value: unknown,
 	maxBytes: number,
 	dropList: string[],
-): unknown {
+): { value: unknown; trimmed: boolean } {
 	const shrunk = shrinkValue(value);
 	let serialized = JSON.stringify(shrunk);
-	if (byteLength(serialized) <= maxBytes) return shrunk;
+	if (byteLength(serialized) <= maxBytes) return { value: shrunk, trimmed: false };
 	const dropped = dropKeys(shrunk, dropList, maxBytes);
 	serialized = JSON.stringify(dropped);
-	if (byteLength(serialized) <= maxBytes) return dropped;
+	if (byteLength(serialized) <= maxBytes) return { value: dropped, trimmed: true };
 	if (Array.isArray(dropped)) {
 		let trimmed = dropped.slice(0, Math.max(1, Math.floor(dropped.length / 2)));
 		while (
@@ -187,18 +210,22 @@ function fitJsonToBytes(
 		) {
 			trimmed = trimmed.slice(0, Math.max(1, Math.floor(trimmed.length / 2)));
 		}
-		return trimmed;
+		return { value: trimmed, trimmed: true };
 	}
-	return {};
+	return { value: {}, trimmed: true };
 }
 
 async function getCapabilities(
 	config: SharedMemoryConfig,
 ): Promise<Capabilities> {
-	if (capabilitiesCache) return capabilitiesCache;
+	const cachedAt = capabilitiesCache?.fetchedAt ?? 0;
+	if (capabilitiesCache && Date.now() - cachedAt < CAPABILITIES_TTL_MS) {
+		return capabilitiesCache.value;
+	}
 	if (capabilitiesPromise) return capabilitiesPromise;
 	const fallback: Capabilities = {
 		supportsSync: true,
+		supportsGzip: true,
 		maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
 		maxEventsBatch: DEFAULT_EVENTS_PER_BATCH,
 	};
@@ -220,10 +247,12 @@ async function getCapabilities(
 			}
 			const data = (await response.json()) as Partial<{
 				supports_sync: boolean;
+				supports_gzip: boolean;
 				max_body_bytes: number;
 				max_events_batch: number;
 			}>;
 			const supportsSync = data.supports_sync !== false;
+			const supportsGzip = data.supports_gzip !== false;
 			const maxBodyBytes =
 				typeof data.max_body_bytes === "number"
 					? data.max_body_bytes
@@ -234,6 +263,7 @@ async function getCapabilities(
 					: DEFAULT_EVENTS_PER_BATCH;
 			return {
 				supportsSync,
+				supportsGzip,
 				maxBodyBytes,
 				maxEventsBatch,
 			};
@@ -244,8 +274,10 @@ async function getCapabilities(
 		}
 	})();
 
-	capabilitiesCache = await capabilitiesPromise;
-	return capabilitiesCache;
+	const value = await capabilitiesPromise;
+	capabilitiesCache = { value, fetchedAt: Date.now() };
+	capabilitiesPromise = null;
+	return value;
 }
 
 function schedulePersist(): void {
@@ -288,6 +320,7 @@ async function persistQueue(): Promise<void> {
 			version: 1,
 			updatedAt: Date.now(),
 			sessions,
+			stats: queueStats,
 		};
 		await mkdir(PATHS.COMPOSER_HOME, { recursive: true });
 		const tmp = `${path}.tmp`;
@@ -315,7 +348,17 @@ function loadPersistedQueue(): void {
 					updatedAt?: number;
 				}
 			>;
+			stats?: Partial<typeof queueStats>;
 		};
+		if (parsed.stats) {
+			queueStats.trimmedStates = parsed.stats.trimmedStates ?? queueStats.trimmedStates;
+			queueStats.trimmedEvents = parsed.stats.trimmedEvents ?? queueStats.trimmedEvents;
+			queueStats.droppedStates = parsed.stats.droppedStates ?? queueStats.droppedStates;
+			queueStats.droppedEvents = parsed.stats.droppedEvents ?? queueStats.droppedEvents;
+			queueStats.batchSplits = parsed.stats.batchSplits ?? queueStats.batchSplits;
+			queueStats.gzipRequests = parsed.stats.gzipRequests ?? queueStats.gzipRequests;
+			queueStats.lastSentAt = parsed.stats.lastSentAt ?? queueStats.lastSentAt;
+		}
 		const sessions = parsed.sessions ?? {};
 		const cutoff = Date.now() - PERSIST_TTL_MS;
 		for (const [sessionKey, entry] of Object.entries(sessions)) {
@@ -339,12 +382,29 @@ function normalizeEvent(event: SharedMemoryEvent): SharedMemoryEvent {
 	};
 }
 
+function buildStatsSnapshot(): QueueStatsSnapshot {
+	const sentAt = new Date().toISOString();
+	queueStats.lastSentAt = sentAt;
+	return {
+		trimmed_states: queueStats.trimmedStates,
+		trimmed_events: queueStats.trimmedEvents,
+		dropped_states: queueStats.droppedStates,
+		dropped_events: queueStats.droppedEvents,
+		batch_splits: queueStats.batchSplits,
+		gzip_requests: queueStats.gzipRequests,
+		last_sent_at: sentAt,
+		source: "composer",
+		instance_id: instanceId,
+	};
+}
+
 async function trySync(
 	config: SharedMemoryConfig,
 	sessionId: string,
 	state: Record<string, JsonValue> | null,
 	events: SharedMemoryEvent[],
 	capabilities: Capabilities,
+	stats?: QueueStatsSnapshot,
 ): Promise<void> {
 	const payload: Record<string, JsonValue> = {};
 	if (state) {
@@ -353,9 +413,13 @@ async function trySync(
 	if (events.length) {
 		payload.events = events as JsonValue;
 	}
+	if (stats) {
+		payload.stats = stats as JsonValue;
+	}
 	const { body, headers } = prepareRequestBody(
 		payload,
 		Math.min(capabilities.maxBodyBytes, TARGET_MAX_BODY_BYTES),
+		capabilities.supportsGzip,
 		config.apiKey,
 	);
 	await safeFetch(
@@ -373,12 +437,14 @@ async function fallbackSync(
 	sessionId: string,
 	state: Record<string, JsonValue> | null,
 	events: SharedMemoryEvent[],
+	supportsGzip: boolean,
 ): Promise<void> {
 	if (state) {
 		try {
 			const { body, headers } = prepareRequestBody(
 				{ state: { composer: state } },
 				TARGET_MAX_BODY_BYTES,
+				supportsGzip,
 				config.apiKey,
 			);
 			await safeFetch(
@@ -402,6 +468,7 @@ async function fallbackSync(
 			const { body, headers } = prepareRequestBody(
 				event as Record<string, JsonValue>,
 				TARGET_MAX_BODY_BYTES,
+				supportsGzip,
 				config.apiKey,
 			);
 			await safeFetch(
@@ -430,35 +497,51 @@ async function sendSyncBatch(
 	state: Record<string, JsonValue> | null,
 	events: SharedMemoryEvent[],
 	capabilities: Capabilities,
+	stats?: QueueStatsSnapshot,
 ): Promise<void> {
 	if (!state && events.length === 0) return;
 	try {
 		if (capabilities.supportsSync) {
-			await trySync(config, sessionId, state, events, capabilities);
+			await trySync(config, sessionId, state, events, capabilities, stats);
 			return;
 		}
-		await fallbackSync(config, sessionId, state, events);
+		await fallbackSync(
+			config,
+			sessionId,
+			state,
+			events,
+			capabilities.supportsGzip,
+		);
 		return;
 	} catch (error) {
 		if (error instanceof SharedMemoryError) {
 			if (error.status === 404 || error.status === 405) {
-				await fallbackSync(config, sessionId, state, events);
+				await fallbackSync(
+					config,
+					sessionId,
+					state,
+					events,
+					capabilities.supportsGzip,
+				);
 				return;
 			}
 			if (error.status === 413) {
 				if (state && events.length > 0) {
-					await sendSyncBatch(config, sessionId, state, [], capabilities);
+					queueStats.batchSplits += 1;
+					await sendSyncBatch(config, sessionId, state, [], capabilities, stats);
 					await sendSyncBatch(config, sessionId, null, events, capabilities);
 					return;
 				}
 				if (events.length > 1) {
 					const mid = Math.ceil(events.length / 2);
+					queueStats.batchSplits += 1;
 					await sendSyncBatch(
 						config,
 						sessionId,
 						state,
 						events.slice(0, mid),
 						capabilities,
+						stats,
 					);
 					await sendSyncBatch(
 						config,
@@ -472,6 +555,7 @@ async function sendSyncBatch(
 				if (events.length === 1) {
 					const [firstEvent] = events;
 					if (firstEvent) {
+						queueStats.droppedEvents += 1;
 						logger.debug("Dropped oversized shared memory event", {
 							type: firstEvent.type,
 						});
@@ -479,6 +563,7 @@ async function sendSyncBatch(
 					return;
 				}
 				if (state) {
+					queueStats.droppedStates += 1;
 					logger.debug("Dropped oversized shared memory state payload");
 					return;
 				}
@@ -498,10 +583,18 @@ async function sendSyncBatches(
 	if (!state && events.length === 0) return;
 	const normalizedEvents = events.map(normalizeEvent);
 	if (!normalizedEvents.length) {
-		await sendSyncBatch(config, sessionId, state, [], capabilities);
+		await sendSyncBatch(
+			config,
+			sessionId,
+			state,
+			[],
+			capabilities,
+			buildStatsSnapshot(),
+		);
 		return;
 	}
 
+	let stats: QueueStatsSnapshot | undefined = buildStatsSnapshot();
 	let includeState = state;
 	const maxEventsPerBatch = Math.max(
 		1,
@@ -509,7 +602,15 @@ async function sendSyncBatches(
 	);
 	for (let i = 0; i < normalizedEvents.length; i += maxEventsPerBatch) {
 		const batch = normalizedEvents.slice(i, i + maxEventsPerBatch);
-		await sendSyncBatch(config, sessionId, includeState, batch, capabilities);
+		await sendSyncBatch(
+			config,
+			sessionId,
+			includeState,
+			batch,
+			capabilities,
+			stats,
+		);
+		stats = undefined;
 		includeState = null;
 	}
 }
@@ -618,10 +719,13 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 			TARGET_MAX_BODY_BYTES,
 			["summary", "content", "preview", "text", "message", "body"],
 		);
-		if (!fitted || typeof fitted !== "object") {
+		if (fitted.trimmed) {
+			queueStats.trimmedStates += 1;
+		}
+		if (!fitted.value || typeof fitted.value !== "object") {
 			pending.state = { instanceId, source: "composer" };
 		} else {
-			pending.state = fitted as Record<string, JsonValue>;
+			pending.state = fitted.value as Record<string, JsonValue>;
 		}
 		pending.updatedAt = Date.now();
 	}
@@ -653,10 +757,13 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 				"markdown",
 				"html",
 			],
-		) as JsonValue;
+		);
+		if (fittedPayload.trimmed) {
+			queueStats.trimmedEvents += 1;
+		}
 		pending.events.push({
 			...update.event,
-			payload: fittedPayload,
+			payload: fittedPayload.value as JsonValue,
 			id: update.event.id ?? nextEventId(`composer-${update.sessionId}`),
 		});
 		if (pending.events.length > MAX_PENDING_EVENTS) {
@@ -672,14 +779,19 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 function prepareRequestBody(
 	payload: Record<string, JsonValue>,
 	maxBytes: number,
+	supportsGzip: boolean,
 	apiKey?: string,
 ): { body: Buffer | string; headers: Headers } {
-	const trimmed = fitJsonToBytes(payload, maxBytes, ["events", "state"]);
+	const trimmed = fitJsonToBytes(payload, maxBytes, ["events", "state"]).value;
 	const json = JSON.stringify(trimmed);
 	const headers = buildHeaders(apiKey);
+	if (!supportsGzip) {
+		return { body: json, headers };
+	}
 	try {
 		const zipped = gzipSync(Buffer.from(json));
 		headers.set("Content-Encoding", "gzip");
+		queueStats.gzipRequests += 1;
 		return { body: zipped, headers };
 	} catch {
 		return { body: json, headers };
