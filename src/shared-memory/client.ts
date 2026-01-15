@@ -796,14 +796,18 @@ async function flushSession(pending: PendingSession): Promise<void> {
 		return;
 	}
 
-	pending.flushInFlight = true;
 	const config = readConfig();
 	if (!config) {
-		pending.flushInFlight = false;
-		scheduleFlush(pending, pending.retryDelayMs);
+		pending.retryDelayMs = Math.min(
+			MAX_BACKOFF_MS,
+			Math.max(FLUSH_DELAY_MS, pending.retryDelayMs * 2),
+		);
+		const jitter = Math.floor(Math.random() * 100);
+		scheduleFlush(pending, pending.retryDelayMs + jitter);
 		return;
 	}
 
+	pending.flushInFlight = true;
 	const state = pending.state;
 	const events = pending.events.slice();
 	pending.state = null;
@@ -912,7 +916,7 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 			...update.event,
 			type: normalizedType,
 			payload: fittedPayload.value as JsonValue,
-			id: update.event.id ?? nextEventId(`composer-${update.sessionId}`),
+			id: update.event.id ?? nextEventId(`composer-${sessionKey}`),
 		});
 		if (pending.events.length > MAX_PENDING_EVENTS) {
 			pending.events = pending.events.slice(-MAX_PENDING_EVENTS);
@@ -931,8 +935,18 @@ function prepareRequestBody(
 	apiKey?: string,
 	requestId?: string,
 ): { body: Buffer | string; headers: Headers } {
-	const trimmed = fitJsonToBytes(payload, maxBytes, ["events", "state"]).value;
-	const json = JSON.stringify(trimmed);
+	const shrunk = shrinkValue(payload) as Record<string, JsonValue>;
+	let candidate = shrunk;
+	let json = JSON.stringify(candidate);
+	if (byteLength(json) > maxBytes && "stats" in candidate) {
+		const { stats: _stats, ...rest } = candidate;
+		const withoutStats = rest as Record<string, JsonValue>;
+		const withoutStatsJson = JSON.stringify(withoutStats);
+		if (byteLength(withoutStatsJson) <= maxBytes) {
+			candidate = withoutStats;
+			json = withoutStatsJson;
+		}
+	}
 	const headers = buildHeaders(apiKey, requestId);
 	if (!supportsGzip) {
 		return { body: json, headers };
