@@ -220,22 +220,21 @@ interface AnthropicToolUseContent {
 	input: Record<string, unknown>;
 }
 
+interface AnthropicToolResultContentBlock {
+	type: "text" | "image";
+	text?: string;
+	source?: {
+		type: "base64";
+		media_type: string;
+		data: string;
+	};
+	cache_control?: PromptCacheControl;
+}
+
 interface AnthropicToolResultContent {
 	type: "tool_result";
 	tool_use_id: string;
-	content:
-		| string
-		| Array<
-				| { type: "text"; text: string }
-				| {
-						type: "image";
-						source: {
-							type: "base64";
-							media_type: string;
-							data: string;
-						};
-				  }
-		  >;
+	content: string | AnthropicToolResultContentBlock[];
 	is_error?: boolean;
 	cache_control?: PromptCacheControl;
 }
@@ -549,6 +548,8 @@ export async function* streamAnthropic(
 	}
 
 	// Cache messages (mark breakpoints from end)
+	// For tool_results containing images, set cache_control on the image inside,
+	// not on the tool_result itself (per Anthropic caching docs)
 	for (
 		let i = messages.length - 1;
 		i >= 0 && cacheAppliedCount < maxCacheItems;
@@ -557,12 +558,43 @@ export async function* streamAnthropic(
 		const msg = messages[i];
 		if (msg?.role === "user" && Array.isArray(msg.content)) {
 			const lastContent = msg.content[msg.content.length - 1];
-			if (
-				lastContent &&
-				(lastContent.type === "text" || lastContent.type === "image")
-			) {
+			if (!lastContent) continue;
+
+			if (lastContent.type === "text" || lastContent.type === "image") {
+				// Direct text/image content - cache it
 				lastContent.cache_control = { type: "ephemeral" };
 				cacheAppliedCount++;
+			} else if (lastContent.type === "tool_result") {
+				// Tool result - cache the image inside if present, otherwise the tool_result
+				const toolResult = lastContent as AnthropicToolResultContent;
+				if (Array.isArray(toolResult.content)) {
+					// Find last image in tool result (screenshots are common)
+					let lastImageIdx = -1;
+					for (let j = toolResult.content.length - 1; j >= 0; j--) {
+						if (toolResult.content[j]?.type === "image") {
+							lastImageIdx = j;
+							break;
+						}
+					}
+					if (lastImageIdx >= 0) {
+						// Cache the image inside the tool_result
+						toolResult.content[lastImageIdx]!.cache_control = {
+							type: "ephemeral",
+						};
+						cacheAppliedCount++;
+					} else if (toolResult.content.length > 0) {
+						// No image, cache last content block
+						const lastBlock = toolResult.content[toolResult.content.length - 1];
+						if (lastBlock) {
+							lastBlock.cache_control = { type: "ephemeral" };
+							cacheAppliedCount++;
+						}
+					}
+				} else if (typeof toolResult.content === "string") {
+					// String content - cache the tool_result itself
+					toolResult.cache_control = { type: "ephemeral" };
+					cacheAppliedCount++;
+				}
 			}
 		}
 	}
