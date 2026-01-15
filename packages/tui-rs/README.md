@@ -79,6 +79,20 @@ export OPENAI_API_KEY=sk-...
 | `OPENAI_API_KEY` | OpenAI API key (for GPT models) |
 | `COMPOSER_MODEL` | Override default model |
 
+## Conductor Bridge Helpers
+
+The Rust crate exposes helper types for probing a Composer web server bridge:
+
+```rust
+use composer_tui::bridge::fetch_bridge_status;
+
+let status = fetch_bridge_status("http://localhost:8080").await?;
+println!("Composer version: {:?}", status.version);
+```
+
+This is useful for tooling or diagnostics that need to confirm the bridge is
+online before connecting from Conductor.
+
 ## Module Structure
 
 ```

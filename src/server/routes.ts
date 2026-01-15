@@ -9,6 +9,7 @@ import { handleApprovals } from "./handlers/approvals.js";
 import { handleAttachmentExtract } from "./handlers/attachments.js";
 import { handleBackground } from "./handlers/background.js";
 import { handleBranch } from "./handlers/branch.js";
+import { handleBridgeStatus } from "./handlers/bridge.js";
 import { handleChat } from "./handlers/chat.js";
 import { handleClientToolResult } from "./handlers/client-tools.js";
 import { handleCommandPrefs } from "./handlers/command-prefs.js";
@@ -153,6 +154,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 				handleStatus(req, res, corsHeaders, {
 					staticCacheMaxAge: context.staticMaxAge,
 				}),
+		},
+		{
+			method: "GET",
+			path: "/api/bridge/status",
+			handler: (req, res) => handleBridgeStatus(req, res, context),
 		},
 		{
 			method: "GET",

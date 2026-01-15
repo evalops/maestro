@@ -7,6 +7,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) — day-one flow for contributors (build, lint, verify).
 - [Feature Guide](FEATURES.md) — user-facing capabilities across the TUI and CLI with power-user tips.
 - [Web UI Guide](WEB_UI.md) — browser workflow and TUI/Web parity appendix.
+- [Conductor Bridge](CONDUCTOR_BRIDGE.md) — connect the Conductor extension to a local Composer server.
 
 ## Core Reference
 - [Tools Reference](TOOLS_REFERENCE.md) — authoritative slash command and flag definitions.
