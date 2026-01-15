@@ -99,7 +99,7 @@ export function printHelp(version: string) {
   COMPOSER_TUI_MINIMAL    - Set to 1/true to disable animations and reduce TUI effects (SSH-friendly)
   COMPOSER_TUI_TOOL_MAX_CHARS - Max chars shown per tool output panel (0 = unlimited)
   COMPOSER_TUI_TOOL_MAX_LINES - Max lines shown per tool output panel (0 = unlimited)
-  COMPOSER_SHARED_MEMORY_BASE - Shared memory base URL for Conductor/Composer sync
+  COMPOSER_SHARED_MEMORY_BASE - Shared memory base URL (Cloudflare Durable Objects worker)
   COMPOSER_SHARED_MEMORY_API_KEY - API key for shared memory service
   CODING_AGENT_DIR        - Legacy session directory override (fallback)`,
 	)}`;

@@ -45,7 +45,7 @@
  * ### Session Configuration
  * - COMPOSER_NO_SESSION - Disable session persistence (1 to disable)
  * - COMPOSER_SESSION_DIR - Custom session storage directory
- * - COMPOSER_SHARED_MEMORY_BASE - Shared memory base URL for Conductor/Composer sync
+ * - COMPOSER_SHARED_MEMORY_BASE - Shared memory base URL (Cloudflare Durable Objects worker)
  * - COMPOSER_SHARED_MEMORY_API_KEY - API key for shared memory service
  * - COMPOSER_SHARED_MEMORY_SESSION_ID - Override session ID for shared memory sync
  *
