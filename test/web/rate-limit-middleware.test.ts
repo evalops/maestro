@@ -1,8 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { compose } from "../../src/server/middleware.js";
 import {
+	initRedis,
 	RateLimiter,
+	shutdownRedis,
 	TieredRateLimiter,
 } from "../../src/server/rate-limiter.js";
 import { createRateLimitMiddleware } from "../../src/server/server-middlewares.js";
@@ -21,6 +23,14 @@ function trackLimiter<T extends RateLimiter | TieredRateLimiter>(
 function createLimiter(config: { windowMs: number; max: number }): RateLimiter {
 	return trackLimiter(new RateLimiter(config, `test-rl-${limiterId++}`));
 }
+
+beforeAll(async () => {
+	await initRedis();
+});
+
+afterAll(async () => {
+	await shutdownRedis();
+});
 
 afterEach(() => {
 	for (const limiter of activeLimiters) {
