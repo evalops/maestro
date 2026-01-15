@@ -190,6 +190,7 @@ const NOISE_PATTERNS: RegExp[] = [
 	/^\s*$/,
 
 	// ANSI escape sequences (already handled but just in case)
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional escape sequence pattern
 	/\x1b\[[0-9;]*m/g,
 ];
 
@@ -232,7 +233,11 @@ function extractErrorsWithContext(
 	// Collect error lines with context, avoiding duplicates
 	const includedIndices = new Set<number>();
 	for (const idx of errorIndices) {
-		for (let i = Math.max(startIdx, idx - contextLines); i <= Math.min(endIdx - 1, idx + contextLines); i++) {
+		for (
+			let i = Math.max(startIdx, idx - contextLines);
+			i <= Math.min(endIdx - 1, idx + contextLines);
+			i++
+		) {
 			includedIndices.add(i);
 		}
 	}
@@ -331,16 +336,12 @@ export function filterOutput(
 			...tailSection,
 		].join("\n");
 	} else {
-		result = [
-			...headSection,
-			truncationMarker,
-			...tailSection,
-		].join("\n");
+		result = [...headSection, truncationMarker, ...tailSection].join("\n");
 	}
 
 	// Enforce character limit
 	if (result.length > maxChars) {
-		result = result.slice(0, maxChars) + "\n... [output truncated at character limit]";
+		result = `${result.slice(0, maxChars)}\n... [output truncated at character limit]`;
 	}
 
 	const summary = `Output truncated: ${originalLines} → ${headSection.length + tailSection.length + errorSection.length} lines`;
@@ -357,7 +358,8 @@ export function filterOutput(
 		output: result,
 		truncated: true,
 		originalLines,
-		filteredLines: headSection.length + tailSection.length + errorSection.length,
+		filteredLines:
+			headSection.length + tailSection.length + errorSection.length,
 		errorLinesExtracted,
 		summary,
 	};
@@ -398,10 +400,7 @@ export function summarizeOutput(output: string): string {
 	const errorLines = lines.filter(isErrorLine);
 	const hasErrors = errorLines.length > 0;
 
-	const parts = [
-		`${lines.length} lines`,
-		`${output.length} chars`,
-	];
+	const parts = [`${lines.length} lines`, `${output.length} chars`];
 
 	if (hasErrors) {
 		parts.push(`${errorLines.length} error lines`);

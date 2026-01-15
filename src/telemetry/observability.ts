@@ -152,7 +152,8 @@ class ObservabilityManager {
 		if (config.langSmith?.enabled) {
 			logger.info("LangSmith enabled", {
 				project: config.langSmith.project || "composer-agent",
-				endpoint: config.langSmith.endpoint || "https://api.smith.langchain.com",
+				endpoint:
+					config.langSmith.endpoint || "https://api.smith.langchain.com",
 			});
 		}
 	}
@@ -287,9 +288,9 @@ class ObservabilityManager {
 			logger.debug("Span completed", {
 				traceId: span.traceId,
 				spanId: span.spanId,
-				name: attributes["name"],
+				name: attributes.name,
 				durationMs,
-				error: attributes["error"],
+				error: attributes.error,
 			});
 		}
 	}
@@ -302,14 +303,16 @@ class ObservabilityManager {
 		attributes: Record<string, unknown>,
 		durationMs: number,
 	): void {
-		const endpoint = this.config.openTelemetry?.endpoint || "http://localhost:4318";
-		const serviceName = this.config.openTelemetry?.serviceName || "composer-agent";
+		const endpoint =
+			this.config.openTelemetry?.endpoint || "http://localhost:4318";
+		const serviceName =
+			this.config.openTelemetry?.serviceName || "composer-agent";
 
 		const otlpSpan = {
 			traceId: span.traceId,
 			spanId: span.spanId,
 			parentSpanId: span.parentSpanId,
-			name: String(attributes["name"] || "unknown"),
+			name: String(attributes.name || "unknown"),
 			kind: 1, // SPAN_KIND_INTERNAL
 			startTimeUnixNano: span.startTime * 1_000_000,
 			endTimeUnixNano: (span.startTime + durationMs) * 1_000_000,
@@ -319,8 +322,8 @@ class ObservabilityManager {
 					key,
 					value: { stringValue: String(value) },
 				})),
-			status: attributes["error"]
-				? { code: 2, message: String(attributes["errorMessage"]) }
+			status: attributes.error
+				? { code: 2, message: String(attributes.errorMessage) }
 				: { code: 1 },
 		};
 
@@ -330,12 +333,12 @@ class ObservabilityManager {
 					resource: {
 						attributes: [
 							{ key: "service.name", value: { stringValue: serviceName } },
-							...Object.entries(this.config.openTelemetry?.resourceAttributes || {}).map(
-								([key, value]) => ({
-									key,
-									value: { stringValue: value },
-								}),
-							),
+							...Object.entries(
+								this.config.openTelemetry?.resourceAttributes || {},
+							).map(([key, value]) => ({
+								key,
+								value: { stringValue: value },
+							})),
 						],
 					},
 					scopeSpans: [
@@ -366,8 +369,10 @@ class ObservabilityManager {
 		attributes: Record<string, unknown>,
 		durationMs: number,
 	): void {
-		const endpoint = this.config.langSmith?.endpoint || "https://api.smith.langchain.com";
-		const apiKey = this.config.langSmith?.apiKey || process.env["LANGSMITH_API_KEY"];
+		const endpoint =
+			this.config.langSmith?.endpoint || "https://api.smith.langchain.com";
+		const apiKey =
+			this.config.langSmith?.apiKey || process.env.LANGSMITH_API_KEY;
 		const project = this.config.langSmith?.project || "composer-agent";
 
 		if (!apiKey) {
@@ -379,13 +384,13 @@ class ObservabilityManager {
 			id: span.spanId,
 			trace_id: span.traceId,
 			parent_run_id: span.parentSpanId,
-			name: String(attributes["name"] || "unknown"),
+			name: String(attributes.name || "unknown"),
 			run_type: this.inferRunType(attributes),
 			start_time: new Date(span.startTime).toISOString(),
 			end_time: new Date(span.startTime + durationMs).toISOString(),
 			inputs: this.extractInputs(attributes),
 			outputs: this.extractOutputs(attributes),
-			error: attributes["error"] ? String(attributes["errorMessage"]) : undefined,
+			error: attributes.error ? String(attributes.errorMessage) : undefined,
 			extra: {
 				metadata: attributes,
 			},
@@ -409,21 +414,23 @@ class ObservabilityManager {
 	 * Infer LangSmith run type from attributes
 	 */
 	private inferRunType(attributes: Record<string, unknown>): string {
-		if (attributes["model"]) return "llm";
-		if (attributes["toolName"]) return "tool";
+		if (attributes.model) return "llm";
+		if (attributes.toolName) return "tool";
 		return "chain";
 	}
 
 	/**
 	 * Extract inputs for LangSmith
 	 */
-	private extractInputs(attributes: Record<string, unknown>): Record<string, unknown> {
+	private extractInputs(
+		attributes: Record<string, unknown>,
+	): Record<string, unknown> {
 		const inputs: Record<string, unknown> = {};
 
-		if (attributes["messages"]) inputs["messages"] = attributes["messages"];
-		if (attributes["args"]) inputs["args"] = attributes["args"];
-		if (attributes["prompt"]) inputs["prompt"] = attributes["prompt"];
-		if (attributes["model"]) inputs["model"] = attributes["model"];
+		if (attributes.messages) inputs.messages = attributes.messages;
+		if (attributes.args) inputs.args = attributes.args;
+		if (attributes.prompt) inputs.prompt = attributes.prompt;
+		if (attributes.model) inputs.model = attributes.model;
 
 		return inputs;
 	}
@@ -431,12 +438,14 @@ class ObservabilityManager {
 	/**
 	 * Extract outputs for LangSmith
 	 */
-	private extractOutputs(attributes: Record<string, unknown>): Record<string, unknown> {
+	private extractOutputs(
+		attributes: Record<string, unknown>,
+	): Record<string, unknown> {
 		const outputs: Record<string, unknown> = {};
 
-		if (attributes["result"]) outputs["result"] = attributes["result"];
-		if (attributes["response"]) outputs["response"] = attributes["response"];
-		if (attributes["outputTokens"]) outputs["tokens"] = attributes["outputTokens"];
+		if (attributes.result) outputs.result = attributes.result;
+		if (attributes.response) outputs.response = attributes.response;
+		if (attributes.outputTokens) outputs.tokens = attributes.outputTokens;
 
 		return outputs;
 	}
@@ -461,7 +470,11 @@ class ObservabilityManager {
 			});
 			return result;
 		} catch (error) {
-			this.endSpan(span.spanId, {}, error instanceof Error ? error : new Error(String(error)));
+			this.endSpan(
+				span.spanId,
+				{},
+				error instanceof Error ? error : new Error(String(error)),
+			);
 			throw error;
 		}
 	}
@@ -491,7 +504,11 @@ class ObservabilityManager {
 			});
 			return result;
 		} catch (error) {
-			this.endSpan(span.spanId, {}, error instanceof Error ? error : new Error(String(error)));
+			this.endSpan(
+				span.spanId,
+				{},
+				error instanceof Error ? error : new Error(String(error)),
+			);
 			throw error;
 		}
 	}
@@ -499,10 +516,7 @@ class ObservabilityManager {
 	/**
 	 * Record a custom event
 	 */
-	recordEvent(
-		name: string,
-		attributes?: Record<string, unknown>,
-	): void {
+	recordEvent(name: string, attributes?: Record<string, unknown>): void {
 		const span = this.startSpan(`event:${name}`, attributes);
 		this.endSpan(span.spanId);
 	}
@@ -515,17 +529,19 @@ class ObservabilityManager {
 
 		for (const [key, value] of Object.entries(args)) {
 			// Skip sensitive fields
-			if (key.toLowerCase().includes("key") ||
-					key.toLowerCase().includes("secret") ||
-					key.toLowerCase().includes("password") ||
-					key.toLowerCase().includes("token")) {
+			if (
+				key.toLowerCase().includes("key") ||
+				key.toLowerCase().includes("secret") ||
+				key.toLowerCase().includes("password") ||
+				key.toLowerCase().includes("token")
+			) {
 				sanitized[key] = "[REDACTED]";
 				continue;
 			}
 
 			// Truncate long strings
 			if (typeof value === "string" && value.length > 1000) {
-				sanitized[key] = value.slice(0, 1000) + "...[truncated]";
+				sanitized[key] = `${value.slice(0, 1000)}...[truncated]`;
 				continue;
 			}
 
@@ -540,13 +556,13 @@ class ObservabilityManager {
 	 */
 	private sanitizeResult(result: unknown): unknown {
 		if (typeof result === "string" && result.length > 2000) {
-			return result.slice(0, 2000) + "...[truncated]";
+			return `${result.slice(0, 2000)}...[truncated]`;
 		}
 
 		if (typeof result === "object" && result !== null) {
 			const json = JSON.stringify(result);
 			if (json.length > 2000) {
-				return JSON.parse(json.slice(0, 2000) + '"}');
+				return JSON.parse(`${json.slice(0, 2000)}"}`);
 			}
 		}
 
@@ -595,11 +611,11 @@ export const observability = new ObservabilityManager();
  * Decorator for tracing methods
  */
 export function traced(name?: string) {
-	return function <T>(
+	return <T>(
 		_target: unknown,
 		propertyKey: string,
 		descriptor: TypedPropertyDescriptor<(...args: unknown[]) => Promise<T>>,
-	): TypedPropertyDescriptor<(...args: unknown[]) => Promise<T>> {
+	): TypedPropertyDescriptor<(...args: unknown[]) => Promise<T>> => {
 		const originalMethod = descriptor.value!;
 		const spanName = name || propertyKey;
 
@@ -633,19 +649,19 @@ export function traced(name?: string) {
 export function configureFromEnv(): void {
 	observability.configure({
 		openTelemetry: {
-			enabled: process.env["OTEL_ENABLED"] === "true",
-			endpoint: process.env["OTEL_EXPORTER_OTLP_ENDPOINT"],
-			serviceName: process.env["OTEL_SERVICE_NAME"],
+			enabled: process.env.OTEL_ENABLED === "true",
+			endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+			serviceName: process.env.OTEL_SERVICE_NAME,
 		},
 		langSmith: {
-			enabled: process.env["LANGSMITH_TRACING"] === "true",
-			apiKey: process.env["LANGSMITH_API_KEY"],
-			project: process.env["LANGSMITH_PROJECT"],
-			endpoint: process.env["LANGSMITH_ENDPOINT"],
+			enabled: process.env.LANGSMITH_TRACING === "true",
+			apiKey: process.env.LANGSMITH_API_KEY,
+			project: process.env.LANGSMITH_PROJECT,
+			endpoint: process.env.LANGSMITH_ENDPOINT,
 		},
-		consoleLogging: process.env["TRACE_LOGGING"] === "true",
-		sampleRate: process.env["TRACE_SAMPLE_RATE"]
-			? parseFloat(process.env["TRACE_SAMPLE_RATE"])
+		consoleLogging: process.env.TRACE_LOGGING === "true",
+		sampleRate: process.env.TRACE_SAMPLE_RATE
+			? Number.parseFloat(process.env.TRACE_SAMPLE_RATE)
 			: 1.0,
 	});
 }

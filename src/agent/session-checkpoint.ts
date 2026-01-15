@@ -125,7 +125,10 @@ class SessionCheckpointManager {
 	/**
 	 * Initialize checkpoint system for a session
 	 */
-	async initialize(sessionId: string, config?: Partial<CheckpointConfig>): Promise<void> {
+	async initialize(
+		sessionId: string,
+		config?: Partial<CheckpointConfig>,
+	): Promise<void> {
 		this.sessionId = sessionId;
 		this.config = { ...DEFAULT_CONFIG, ...config };
 
@@ -177,7 +180,9 @@ class SessionCheckpointManager {
 			}
 		}, this.config.intervalMs);
 
-		logger.info("Auto-checkpoint started", { intervalMs: this.config.intervalMs });
+		logger.info("Auto-checkpoint started", {
+			intervalMs: this.config.intervalMs,
+		});
 	}
 
 	/**
@@ -404,7 +409,10 @@ class SessionCheckpointManager {
 			.filter((f) => f.endsWith(".json"))
 			.sort();
 
-		const toRemove = files.slice(0, Math.max(0, files.length - this.config.maxCheckpoints));
+		const toRemove = files.slice(
+			0,
+			Math.max(0, files.length - this.config.maxCheckpoints),
+		);
 
 		for (const file of toRemove) {
 			try {

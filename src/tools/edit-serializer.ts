@@ -138,7 +138,11 @@ class EditSerializer {
 				if (idx >= 0) {
 					lock!.queue.splice(idx, 1);
 				}
-				reject(new Error(`Lock timeout for ${filepath} after ${this.config.lockTimeoutMs}ms`));
+				reject(
+					new Error(
+						`Lock timeout for ${filepath} after ${this.config.lockTimeoutMs}ms`,
+					),
+				);
 			}, this.config.lockTimeoutMs);
 
 			lock!.queue.push({ resolve, reject, timeoutId });
@@ -233,7 +237,11 @@ class EditSerializer {
 		let cleaned = 0;
 
 		for (const [filepath, lock] of Array.from(this.locks.entries())) {
-			if (!lock.locked && lock.queue.length === 0 && lock.lastEdit < staleThreshold) {
+			if (
+				!lock.locked &&
+				lock.queue.length === 0 &&
+				lock.lastEdit < staleThreshold
+			) {
 				this.locks.delete(filepath);
 				cleaned++;
 			}
@@ -309,11 +317,11 @@ export const editSerializer = new EditSerializer();
  * Decorator for serialized file operations
  */
 export function serialized(filepath: string) {
-	return function <T>(
+	return <T>(
 		_target: unknown,
 		_propertyKey: string,
 		descriptor: TypedPropertyDescriptor<(...args: unknown[]) => Promise<T>>,
-	): TypedPropertyDescriptor<(...args: unknown[]) => Promise<T>> {
+	): TypedPropertyDescriptor<(...args: unknown[]) => Promise<T>> => {
 		const originalMethod = descriptor.value!;
 
 		descriptor.value = async function (...args: unknown[]): Promise<T> {
