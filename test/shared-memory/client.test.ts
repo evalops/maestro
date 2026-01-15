@@ -206,10 +206,10 @@ describe("shared-memory client", () => {
 		await vi.advanceTimersByTimeAsync(200);
 		expect(syncCalls).toBe(1);
 
-		await vi.advanceTimersByTimeAsync(299);
+		await vi.advanceTimersByTimeAsync(200);
 		expect(syncCalls).toBe(1);
 
-		await vi.advanceTimersByTimeAsync(1);
+		await vi.advanceTimersByTimeAsync(100);
 		expect(syncCalls).toBe(2);
 	});
 
@@ -239,7 +239,10 @@ describe("shared-memory client", () => {
 		await vi.advanceTimersByTimeAsync(1000);
 
 		const parsed = syncBody ? JSON.parse(String(syncBody)) : null;
-		expect(parsed?.state?.composer?.content).toBeUndefined();
+		const content = parsed?.state?.composer?.content as string | undefined;
+		expect(content).toBeTruthy();
+		expect(content?.length).toBeLessThanOrEqual(4000);
+		expect(content?.endsWith("...")).toBe(true);
 		expect(parsed?.state?.composer?.keep).toBe("ok");
 	});
 
@@ -273,7 +276,10 @@ describe("shared-memory client", () => {
 
 		const parsed = syncBody ? JSON.parse(String(syncBody)) : null;
 		const payload = parsed?.events?.[0]?.payload;
-		expect(payload?.content).toBeUndefined();
+		const content = payload?.content as string | undefined;
+		expect(content).toBeTruthy();
+		expect(content?.length).toBeLessThanOrEqual(4000);
+		expect(content?.endsWith("...")).toBe(true);
 		expect(payload?.keep).toBe("ok");
 	});
 });

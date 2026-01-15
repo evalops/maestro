@@ -21,6 +21,7 @@ import type { TaskExecutor } from "./worker/executor.js";
 let mockMemory: MockMemoryStore;
 
 vi.mock("./memory/store.js", () => ({
+	// biome-ignore lint/complexity/useArrowFunction: Vitest requires constructable mock for `new`.
 	MemoryStore: vi.fn().mockImplementation(function () {
 		return mockMemory;
 	}),

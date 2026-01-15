@@ -16,7 +16,7 @@ ensure_sha "$NX_BASE"
 ensure_sha "$NX_HEAD"
 
 run_shared_memory_tests() {
-	if git diff --name-only "$NX_BASE" "$NX_HEAD" | grep -qE '^(src/shared-memory/|test/shared-memory/)'; then
+	if git diff --name-only "$NX_BASE" "$NX_HEAD" | grep -qE '^(src/shared-memory/|test/shared-memory/|src/config/env-vars\.ts|src/cli/commands/memory\.ts|src/cli/help\.ts|src/session/manager\.ts)'; then
 		echo "Running shared memory tests..."
 		bunx vitest --run test/shared-memory/ --reporter=verbose
 	fi

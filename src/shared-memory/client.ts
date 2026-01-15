@@ -139,8 +139,7 @@ function parseRetryAfterMs(response: Response): number | null {
 	if (!resetHeader) return null;
 	const resetValue = Number(resetHeader.trim());
 	if (!Number.isFinite(resetValue)) return null;
-	const resetMs =
-		resetValue > 10_000_000_000 ? resetValue : resetValue * 1000;
+	const resetMs = resetValue > 10_000_000_000 ? resetValue : resetValue * 1000;
 	return Math.max(0, resetMs - Date.now());
 }
 
@@ -794,17 +793,11 @@ function nextEventId(prefix: string): string {
 	return clampEventId(prefix, suffix);
 }
 
-function resolveRetryDelayMs(
-	pending: PendingSession,
-	error?: unknown,
-): number {
+function resolveRetryDelayMs(pending: PendingSession, error?: unknown): number {
 	if (error instanceof SharedMemoryError) {
 		const retryAfterMs = error.retryAfterMs;
 		if (typeof retryAfterMs === "number" && Number.isFinite(retryAfterMs)) {
-			return Math.min(
-				MAX_BACKOFF_MS,
-				Math.max(FLUSH_DELAY_MS, retryAfterMs),
-			);
+			return Math.min(MAX_BACKOFF_MS, Math.max(FLUSH_DELAY_MS, retryAfterMs));
 		}
 	}
 	return Math.min(
