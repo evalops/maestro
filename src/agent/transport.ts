@@ -58,17 +58,12 @@ import {
 	HUMAN_EGRESS_PII_RULE_ID,
 	defaultActionFirewall,
 } from "../safety/action-firewall.js";
+import { AdaptiveThresholds, METRICS } from "../safety/adaptive-thresholds.js";
+import { checkSessionLimits } from "../safety/policy.js";
 import {
-	SafetyMiddleware,
+	type SafetyMiddleware,
 	createSafetyMiddleware,
 } from "../safety/safety-middleware.js";
-import {
-	AdaptiveThresholds,
-	METRICS,
-} from "../safety/adaptive-thresholds.js";
-import { trackToolBlocked } from "../telemetry/security-events.js";
-import { getOptimalConcurrency } from "../tools/parallel-execution.js";
-import { checkSessionLimits } from "../safety/policy.js";
 import { SemanticJudge } from "../safety/semantic-judge.js";
 import {
 	WorkflowStateError,
@@ -76,6 +71,8 @@ import {
 	applyWorkflowStateHooks,
 	isWorkflowTrackedTool,
 } from "../safety/workflow-state.js";
+import { trackToolBlocked } from "../telemetry/security-events.js";
+import { getOptimalConcurrency } from "../tools/parallel-execution.js";
 import { ToolError } from "../tools/tool-dsl.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import { getTrainingHeaders } from "../training.js";
@@ -1000,15 +997,24 @@ export class ProviderTransport implements AgentTransport {
 					// Track tool-specific metrics
 					const toolNameLower = toolCall.name.toLowerCase();
 					if (toolNameLower === "read" || toolNameLower === "glob") {
-						this.adaptiveThresholds.recordObservation(METRICS.READS_PER_MINUTE, 1);
+						this.adaptiveThresholds.recordObservation(
+							METRICS.READS_PER_MINUTE,
+							1,
+						);
 					} else if (toolNameLower === "write" || toolNameLower === "edit") {
-						this.adaptiveThresholds.recordObservation(METRICS.WRITES_PER_MINUTE, 1);
+						this.adaptiveThresholds.recordObservation(
+							METRICS.WRITES_PER_MINUTE,
+							1,
+						);
 					} else if (
 						toolNameLower === "webfetch" ||
 						toolNameLower === "websearch" ||
 						toolNameLower.includes("mcp")
 					) {
-						this.adaptiveThresholds.recordObservation(METRICS.EGRESS_PER_MINUTE, 1);
+						this.adaptiveThresholds.recordObservation(
+							METRICS.EGRESS_PER_MINUTE,
+							1,
+						);
 					}
 
 					// Check for anomalous tool call rate
@@ -1049,10 +1055,11 @@ export class ProviderTransport implements AgentTransport {
 					}
 
 					// Use adaptive threshold if we have enough data, otherwise use static limit
-					const effectiveRateLimit = this.adaptiveThresholds.getAdaptedThreshold(
-						`tool_rate_${toolCall.name}`,
-						ProviderTransport.TOOL_RATE_LIMIT,
-					);
+					const effectiveRateLimit =
+						this.adaptiveThresholds.getAdaptedThreshold(
+							`tool_rate_${toolCall.name}`,
+							ProviderTransport.TOOL_RATE_LIMIT,
+						);
 
 					if (recent.length >= effectiveRateLimit) {
 						const rateMessage: ToolResultMessage = {
@@ -1662,7 +1669,10 @@ export class ProviderTransport implements AgentTransport {
 								);
 
 								// Track failure rate for adaptive thresholds (failure = 1)
-								this.adaptiveThresholds.recordObservation(METRICS.FAILURE_RATE, 1);
+								this.adaptiveThresholds.recordObservation(
+									METRICS.FAILURE_RATE,
+									1,
+								);
 
 								const toolResultMsg: ToolResultMessage = {
 									role: "toolResult" as const,

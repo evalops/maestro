@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
+import type { AgentTool } from "../../src/agent/types.js";
 import {
 	READ_ONLY_TOOLS,
 	WRITE_TOOLS,
+	getOptimalConcurrency,
 	isReadOnlyTool,
 	isWriteTool,
-	getOptimalConcurrency,
-	partitionToolCalls,
-	markReadOnly,
 	markDestructive,
+	markReadOnly,
+	partitionToolCalls,
 } from "../../src/tools/parallel-execution.js";
-import type { AgentTool } from "../../src/agent/types.js";
 
 describe("parallel-execution", () => {
 	describe("READ_ONLY_TOOLS", () => {
@@ -165,7 +165,11 @@ describe("parallel-execution", () => {
 
 	describe("markReadOnly", () => {
 		it("adds readOnlyHint annotation", () => {
-			const tool = { name: "test", description: "", parameters: {} } as AgentTool;
+			const tool = {
+				name: "test",
+				description: "",
+				parameters: {},
+			} as AgentTool;
 			const marked = markReadOnly(tool);
 			expect(marked.annotations?.readOnlyHint).toBe(true);
 		});
@@ -185,7 +189,11 @@ describe("parallel-execution", () => {
 
 	describe("markDestructive", () => {
 		it("adds destructiveHint annotation", () => {
-			const tool = { name: "test", description: "", parameters: {} } as AgentTool;
+			const tool = {
+				name: "test",
+				description: "",
+				parameters: {},
+			} as AgentTool;
 			const marked = markDestructive(tool);
 			expect(marked.annotations?.destructiveHint).toBe(true);
 		});

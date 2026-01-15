@@ -45,6 +45,9 @@
  * ### Session Configuration
  * - COMPOSER_NO_SESSION - Disable session persistence (1 to disable)
  * - COMPOSER_SESSION_DIR - Custom session storage directory
+ * - COMPOSER_SHARED_MEMORY_BASE - Shared memory base URL (Cloudflare Durable Objects worker)
+ * - COMPOSER_SHARED_MEMORY_API_KEY - API key for shared memory service
+ * - COMPOSER_SHARED_MEMORY_SESSION_ID - Override session ID for shared memory sync
  *
  * ### Feature Flags
  * - COMPOSER_ENABLE_* - Enable specific features
@@ -100,6 +103,9 @@ export const ENV_VARS = {
 	// Session configuration
 	NO_SESSION: "COMPOSER_NO_SESSION",
 	SESSION_DIR: "COMPOSER_SESSION_DIR",
+	SHARED_MEMORY_BASE: "COMPOSER_SHARED_MEMORY_BASE",
+	SHARED_MEMORY_API_KEY: "COMPOSER_SHARED_MEMORY_API_KEY",
+	SHARED_MEMORY_SESSION_ID: "COMPOSER_SHARED_MEMORY_SESSION_ID",
 } as const;
 
 export type EnvVarName = (typeof ENV_VARS)[keyof typeof ENV_VARS];

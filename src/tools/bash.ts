@@ -192,7 +192,8 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 
 		// Step 2.5: Check for nested agent spawning
 		// Prevents CPU exhaustion from recursive agent spawning
-		const nestedAgentError = checkBashCommandForNestedAgent(interpolatedCommand);
+		const nestedAgentError =
+			checkBashCommandForNestedAgent(interpolatedCommand);
 		if (nestedAgentError) {
 			return respond.text(
 				`${nestedAgentError}\n\nCommand: ${interpolatedCommand.slice(0, 100)}...`,

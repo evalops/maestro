@@ -44,6 +44,7 @@ import {
 } from "../conversation/render-model.js";
 import { getRegisteredModels } from "../models/registry.js";
 import type { RegisteredModel } from "../models/registry.js";
+import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
 import { createLogger } from "../utils/logger.js";
 import { SessionFileWriter } from "./file-writer.js";
 import {
@@ -796,6 +797,25 @@ export class SessionManager {
 		this.sessionInitialized = true;
 
 		this.persistEntry(entry);
+
+		queueSharedMemoryUpdate({
+			sessionId: this.sessionId,
+			state: {
+				sessionId: this.sessionId,
+				cwd: process.cwd(),
+				model: sessionModelKey,
+				updatedAt: entry.timestamp,
+				source: "composer",
+			},
+			event: {
+				type: "composer.session.started",
+				payload: {
+					sessionId: this.sessionId,
+					model: sessionModelKey,
+					timestamp: entry.timestamp,
+				},
+			},
+		});
 	}
 
 	saveMessage(message: AppMessage): void {
@@ -809,6 +829,26 @@ export class SessionManager {
 		};
 
 		this.appendTreeEntry(entry);
+
+		queueSharedMemoryUpdate({
+			sessionId: this.sessionId,
+			state: {
+				sessionId: this.sessionId,
+				updatedAt: entry.timestamp,
+				lastMessageId: entry.id,
+				lastMessageRole: message.role,
+				source: "composer",
+			},
+			event: {
+				type: "composer.message.saved",
+				payload: {
+					sessionId: this.sessionId,
+					messageId: entry.id,
+					role: message.role,
+					timestamp: entry.timestamp,
+				},
+			},
+		});
 	}
 
 	saveThinkingLevelChange(thinkingLevel: string): void {
@@ -1071,6 +1111,24 @@ export class SessionManager {
 		const target = sessionPath ?? this.sessionFile;
 		if (!target || !existsSync(target)) return;
 		this.appendSessionMetaEntry(target, { summary: trimmed });
+		if (target === this.sessionFile) {
+			queueSharedMemoryUpdate({
+				sessionId: this.sessionId,
+				state: {
+					sessionId: this.sessionId,
+					updatedAt: new Date().toISOString(),
+					summary: trimmed,
+					source: "composer",
+				},
+				event: {
+					type: "composer.session.summary",
+					payload: {
+						sessionId: this.sessionId,
+						length: trimmed.length,
+					},
+				},
+			});
+		}
 	}
 
 	setSessionFavorite(sessionPath: string, favorite: boolean): void {

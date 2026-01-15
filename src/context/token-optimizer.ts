@@ -89,21 +89,10 @@ const DEFAULT_PRIORITY_PATTERNS = [
  * Code comment patterns by language
  */
 const COMMENT_PATTERNS: Record<string, RegExp[]> = {
-	javascript: [
-		/\/\/[^\n]*/g,
-		/\/\*[\s\S]*?\*\//g,
-	],
-	python: [
-		/#[^\n]*/g,
-		/'''[\s\S]*?'''/g,
-		/"""[\s\S]*?"""/g,
-	],
-	html: [
-		/<!--[\s\S]*?-->/g,
-	],
-	css: [
-		/\/\*[\s\S]*?\*\//g,
-	],
+	javascript: [/\/\/[^\n]*/g, /\/\*[\s\S]*?\*\//g],
+	python: [/#[^\n]*/g, /'''[\s\S]*?'''/g, /"""[\s\S]*?"""/g],
+	html: [/<!--[\s\S]*?-->/g],
+	css: [/\/\*[\s\S]*?\*\//g],
 };
 
 /**
@@ -152,19 +141,24 @@ function stripComments(content: string, language: string): string {
  * Normalize whitespace
  */
 function normalizeWhitespace(content: string): string {
-	return content
-		// Collapse multiple blank lines to single
-		.replace(/\n{3,}/g, "\n\n")
-		// Remove trailing whitespace
-		.replace(/[ \t]+$/gm, "")
-		// Collapse multiple spaces (but preserve indentation)
-		.replace(/([^\n])[ \t]{2,}/g, "$1 ");
+	return (
+		content
+			// Collapse multiple blank lines to single
+			.replace(/\n{3,}/g, "\n\n")
+			// Remove trailing whitespace
+			.replace(/[ \t]+$/gm, "")
+			// Collapse multiple spaces (but preserve indentation)
+			.replace(/([^\n])[ \t]{2,}/g, "$1 ")
+	);
 }
 
 /**
  * Find and deduplicate similar content blocks
  */
-function deduplicateContent(content: string): { content: string; removed: number } {
+function deduplicateContent(content: string): {
+	content: string;
+	removed: number;
+} {
 	const lines = content.split("\n");
 	const seen = new Map<string, number>();
 	const result: string[] = [];
@@ -230,7 +224,7 @@ function summarizeLongOutput(
 		"",
 		...importantLines,
 		"",
-		`... [continuing to tail] ...`,
+		"... [continuing to tail] ...",
 		"",
 		...tail,
 	].join("\n");
@@ -239,17 +233,20 @@ function summarizeLongOutput(
 /**
  * Extract code blocks from markdown
  */
-function extractCodeBlocks(content: string): Array<{ start: number; end: number; content: string }> {
+function extractCodeBlocks(
+	content: string,
+): Array<{ start: number; end: number; content: string }> {
 	const blocks: Array<{ start: number; end: number; content: string }> = [];
 	const regex = /```[\s\S]*?```/g;
-	let match;
+	let match: RegExpExecArray | null = regex.exec(content);
 
-	while ((match = regex.exec(content)) !== null) {
+	while (match) {
 		blocks.push({
 			start: match.index,
 			end: match.index + match[0].length,
 			content: match[0],
 		});
+		match = regex.exec(content);
 	}
 
 	return blocks;
@@ -292,9 +289,7 @@ class TokenOptimizer {
 			// Replace code blocks with placeholders
 			for (let i = codeBlocks.length - 1; i >= 0; i--) {
 				const block = codeBlocks[i]!;
-				result = result.slice(0, block.start) +
-					`__CODE_BLOCK_${i}__` +
-					result.slice(block.end);
+				result = `${result.slice(0, block.start)}__CODE_BLOCK_${i}__${result.slice(block.end)}`;
 			}
 		}
 
@@ -354,15 +349,20 @@ class TokenOptimizer {
 			if (tokens > cfg.maxTokens) {
 				const ratio = cfg.maxTokens / tokens;
 				const targetLength = Math.floor(result.length * ratio * 0.95);
-				result = this.smartTruncate(result, targetLength, cfg.priorityPatterns || []);
+				result = this.smartTruncate(
+					result,
+					targetLength,
+					cfg.priorityPatterns || [],
+				);
 				techniques.push("smart-truncation");
 			}
 		}
 
 		const optimizedTokens = estimateTokens(result);
-		const reductionPercent = originalTokens > 0
-			? Math.round((1 - optimizedTokens / originalTokens) * 100)
-			: 0;
+		const reductionPercent =
+			originalTokens > 0
+				? Math.round((1 - optimizedTokens / originalTokens) * 100)
+				: 0;
 
 		if (techniques.length > 0) {
 			logger.debug("Content optimized", {
@@ -410,7 +410,7 @@ class TokenOptimizer {
 		}
 
 		// Start with all priority lines
-		let result = priorityLines.map((l) => l.line).join("\n");
+		const result = priorityLines.map((l) => l.line).join("\n");
 
 		// Add normal lines from head and tail until we hit limit
 		const headLines: string[] = [];
@@ -457,18 +457,22 @@ class TokenOptimizer {
 	): string[] {
 		const tokensPerContent = Math.floor(totalMaxTokens / contents.length);
 
-		return contents.map((content) =>
-			this.optimize(content, {
-				...config,
-				maxTokens: tokensPerContent,
-			}).content,
+		return contents.map(
+			(content) =>
+				this.optimize(content, {
+					...config,
+					maxTokens: tokensPerContent,
+				}).content,
 		);
 	}
 
 	/**
 	 * Calculate compression stats
 	 */
-	getCompressionStats(original: string, optimized: string): {
+	getCompressionStats(
+		original: string,
+		optimized: string,
+	): {
 		originalTokens: number;
 		optimizedTokens: number;
 		savedTokens: number;
@@ -481,7 +485,8 @@ class TokenOptimizer {
 			originalTokens,
 			optimizedTokens,
 			savedTokens: originalTokens - optimizedTokens,
-			compressionRatio: originalTokens > 0 ? optimizedTokens / originalTokens : 1,
+			compressionRatio:
+				originalTokens > 0 ? optimizedTokens / originalTokens : 1,
 		};
 	}
 }
@@ -494,9 +499,6 @@ export const tokenOptimizer = new TokenOptimizer();
 /**
  * Quick function to optimize content
  */
-export function optimizeTokens(
-	content: string,
-	maxTokens?: number,
-): string {
+export function optimizeTokens(content: string, maxTokens?: number): string {
 	return tokenOptimizer.optimize(content, { maxTokens }).content;
 }

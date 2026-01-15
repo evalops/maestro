@@ -57,19 +57,39 @@ const DEFAULT_LIMITS: Record<string, ToolRateLimit> = {
 	Edit: { perMinute: 40, perHour: 300, burstLimit: 10, burstCooldownMs: 5000 },
 
 	// Read operations - more lenient
-	Read: { perMinute: 100, perHour: 1000, burstLimit: 20, burstCooldownMs: 2000 },
+	Read: {
+		perMinute: 100,
+		perHour: 1000,
+		burstLimit: 20,
+		burstCooldownMs: 2000,
+	},
 	Glob: { perMinute: 60, perHour: 500, burstLimit: 15, burstCooldownMs: 3000 },
 	Grep: { perMinute: 60, perHour: 500, burstLimit: 15, burstCooldownMs: 3000 },
 
 	// Network operations - moderate limits
-	WebFetch: { perMinute: 20, perHour: 100, burstLimit: 5, burstCooldownMs: 10000 },
-	WebSearch: { perMinute: 10, perHour: 50, burstLimit: 3, burstCooldownMs: 15000 },
+	WebFetch: {
+		perMinute: 20,
+		perHour: 100,
+		burstLimit: 5,
+		burstCooldownMs: 10000,
+	},
+	WebSearch: {
+		perMinute: 10,
+		perHour: 50,
+		burstLimit: 3,
+		burstCooldownMs: 15000,
+	},
 
 	// Agent tools - strict limits
 	Task: { perMinute: 10, perHour: 50, burstLimit: 3, burstCooldownMs: 30000 },
 
 	// Default for unknown tools
-	_default: { perMinute: 30, perHour: 200, burstLimit: 10, burstCooldownMs: 5000 },
+	_default: {
+		perMinute: 30,
+		perHour: 200,
+		burstLimit: 10,
+		burstCooldownMs: 5000,
+	},
 };
 
 /**
@@ -105,7 +125,10 @@ interface CallRecord {
  */
 class ToolRateLimiter {
 	private calls: CallRecord[] = [];
-	private burstTracking = new Map<string, { count: number; windowStart: number }>();
+	private burstTracking = new Map<
+		string,
+		{ count: number; windowStart: number }
+	>();
 	private cooldowns = new Map<string, number>();
 	private customLimits = new Map<string, ToolRateLimit>();
 	private enabled = true;
@@ -130,7 +153,11 @@ class ToolRateLimiter {
 	 * Get rate limit config for a tool
 	 */
 	getLimit(tool: string): ToolRateLimit {
-		return this.customLimits.get(tool) || DEFAULT_LIMITS[tool] || DEFAULT_LIMITS["_default"]!;
+		return (
+			this.customLimits.get(tool) ||
+			DEFAULT_LIMITS[tool] ||
+			DEFAULT_LIMITS._default!
+		);
 	}
 
 	/**
@@ -138,7 +165,7 @@ class ToolRateLimiter {
 	 */
 	checkLimit(tool: string): RateLimitResult {
 		if (!this.enabled) {
-			return { allowed: true, currentRate: 0, limit: Infinity };
+			return { allowed: true, currentRate: 0, limit: Number.POSITIVE_INFINITY };
 		}
 
 		const now = Date.now();
@@ -161,7 +188,10 @@ class ToolRateLimiter {
 
 		// Check burst limit
 		if (limit.burstLimit) {
-			const burst = this.burstTracking.get(tool) || { count: 0, windowStart: now };
+			const burst = this.burstTracking.get(tool) || {
+				count: 0,
+				windowStart: now,
+			};
 			const burstWindowMs = 5000; // 5 second burst window
 
 			if (now - burst.windowStart < burstWindowMs) {
@@ -264,7 +294,10 @@ class ToolRateLimiter {
 		this.calls.push({ tool, timestamp: now });
 
 		// Update burst tracking
-		const burst = this.burstTracking.get(tool) || { count: 0, windowStart: now };
+		const burst = this.burstTracking.get(tool) || {
+			count: 0,
+			windowStart: now,
+		};
 		if (now - burst.windowStart < 5000) {
 			burst.count++;
 		} else {
@@ -285,7 +318,8 @@ class ToolRateLimiter {
 	 */
 	getToolRate(tool: string, windowMs: number): number {
 		const cutoff = Date.now() - windowMs;
-		return this.calls.filter((c) => c.tool === tool && c.timestamp > cutoff).length;
+		return this.calls.filter((c) => c.tool === tool && c.timestamp > cutoff)
+			.length;
 	}
 
 	/**

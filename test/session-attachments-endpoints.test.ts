@@ -2,8 +2,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import { handleSessionAttachment } from "../src/server/handlers/session-attachments.js";
 
-vi.mock("../src/session/manager.js", () => ({
-	SessionManager: vi.fn().mockImplementation(() => ({
+function createMockSessionManager() {
+	return {
 		loadSession: vi.fn().mockResolvedValue({
 			id: "test-session-1",
 			messages: [
@@ -21,7 +21,13 @@ vi.mock("../src/session/manager.js", () => ({
 				},
 			],
 		}),
-	})),
+	};
+}
+
+vi.mock("../src/session/manager.js", () => ({
+	SessionManager: vi.fn(function MockSessionManager() {
+		return createMockSessionManager();
+	}),
 }));
 
 function createMockRequest(url: string): IncomingMessage {

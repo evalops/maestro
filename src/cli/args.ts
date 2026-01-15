@@ -55,6 +55,7 @@ const COMMANDS = new Set([
 	"anthropic",
 	"openai",
 	"hooks",
+	"memory",
 ]);
 const SUBCOMMAND_COMMANDS = new Set([
 	"config",
@@ -64,6 +65,7 @@ const SUBCOMMAND_COMMANDS = new Set([
 	"anthropic",
 	"openai",
 	"hooks",
+	"memory",
 ]);
 
 export function parseArgs(args: string[]): Args {

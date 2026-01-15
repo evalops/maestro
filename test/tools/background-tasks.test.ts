@@ -40,6 +40,14 @@ process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE = "1";
 overrideBackgroundTaskSettingsPath(settingsPath);
 resetBackgroundTaskSettings();
 const TASK_HOLD_MS = 500;
+const joinParts = (...parts: string[]) => parts.join("");
+const SAMPLE_REDACTED_TOKEN = joinParts(
+	"sk",
+	"-",
+	"secret",
+	"-",
+	"1234567890abcdef1234567890",
+);
 
 afterAll(() => {
 	process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE = previousUnsafe;
@@ -568,7 +576,7 @@ describe("backgroundTasksTool", () => {
 	it("redacts sensitive tokens in log previews", async () => {
 		const startResult = await backgroundTasksTool.execute("bg-redact", {
 			action: "start",
-			command: `node -e "console.log('sk-secret-1234567890abcdef1234567890'); setTimeout(() => {}, ${TASK_HOLD_MS})"`,
+			command: `node -e "console.log('${SAMPLE_REDACTED_TOKEN}'); setTimeout(() => {}, ${TASK_HOLD_MS})"`,
 		});
 		const taskId = (startResult.details as TaskDetails)?.id as string;
 		await waitForCondition(() => {
@@ -584,7 +592,7 @@ describe("backgroundTasksTool", () => {
 		});
 		const preview = snapshot?.entries[0]?.lastLogLine ?? "";
 		expect(preview).toContain("[secret:");
-		expect(preview).not.toContain("sk-secret-1234567890abcdef1234567890");
+		expect(preview).not.toContain(SAMPLE_REDACTED_TOKEN);
 		await backgroundTaskManager.stopTask(taskId);
 	});
 

@@ -38,7 +38,12 @@ const logger = createLogger("agent:smart-model-router");
 /**
  * Task types for model routing
  */
-export type TaskType = "reasoning" | "execution" | "tools" | "embedding" | "default";
+export type TaskType =
+	| "reasoning"
+	| "execution"
+	| "tools"
+	| "embedding"
+	| "default";
 
 /**
  * Model configuration for each task type
@@ -98,12 +103,7 @@ const SIMPLE_TOOLS = new Set([
 /**
  * Tools that typically require more reasoning
  */
-const COMPLEX_TOOLS = new Set([
-	"Edit",
-	"Write",
-	"Bash",
-	"Task",
-]);
+const COMPLEX_TOOLS = new Set(["Edit", "Write", "Bash", "Task"]);
 
 /**
  * Default model configurations by provider preference
@@ -157,7 +157,7 @@ export interface RoutingDecision {
  * Smart model router
  */
 class SmartModelRouter {
-	private config: ModelConfig = DEFAULT_CONFIGS["anthropic"]!;
+	private config: ModelConfig = DEFAULT_CONFIGS.anthropic!;
 	private enabled = true;
 	private stats = {
 		reasoning: 0,
@@ -230,7 +230,10 @@ class SmartModelRouter {
 			.join(" ");
 
 		// Check for reasoning signals
-		const reasoningScore = this.scoreSignals(recentUserMessages, REASONING_SIGNALS);
+		const reasoningScore = this.scoreSignals(
+			recentUserMessages,
+			REASONING_SIGNALS,
+		);
 
 		// Check for simple tool signals
 		const toolScore = this.scoreSignals(recentUserMessages, TOOL_SIGNALS);
@@ -238,8 +241,12 @@ class SmartModelRouter {
 		// Check pending tools
 		let toolComplexity = 0;
 		if (pendingTools && pendingTools.length > 0) {
-			const simpleCount = pendingTools.filter((t) => SIMPLE_TOOLS.has(t)).length;
-			const complexCount = pendingTools.filter((t) => COMPLEX_TOOLS.has(t)).length;
+			const simpleCount = pendingTools.filter((t) =>
+				SIMPLE_TOOLS.has(t),
+			).length;
+			const complexCount = pendingTools.filter((t) =>
+				COMPLEX_TOOLS.has(t),
+			).length;
 			toolComplexity = complexCount - simpleCount;
 		}
 
@@ -251,7 +258,10 @@ class SmartModelRouter {
 		if (reasoningScore >= 2 || toolComplexity >= 2) {
 			taskType = "reasoning";
 			reason = `High reasoning signals (score: ${reasoningScore}, complexity: ${toolComplexity})`;
-			confidence = Math.min(0.9, 0.5 + reasoningScore * 0.1 + toolComplexity * 0.1);
+			confidence = Math.min(
+				0.9,
+				0.5 + reasoningScore * 0.1 + toolComplexity * 0.1,
+			);
 		} else if (toolScore >= 2 && toolComplexity <= 0) {
 			taskType = "tools";
 			reason = `Simple tool operation (score: ${toolScore}, complexity: ${toolComplexity})`;
@@ -327,8 +337,13 @@ export function needsReasoning(userMessage: string): boolean {
 /**
  * Helper to determine if a task is likely simple tool usage
  */
-export function isSimpleToolTask(userMessage: string, tools?: string[]): boolean {
-	const hasToolSignals = TOOL_SIGNALS.some((pattern) => pattern.test(userMessage));
+export function isSimpleToolTask(
+	userMessage: string,
+	tools?: string[],
+): boolean {
+	const hasToolSignals = TOOL_SIGNALS.some((pattern) =>
+		pattern.test(userMessage),
+	);
 	const hasOnlySimpleTools = tools?.every((t) => SIMPLE_TOOLS.has(t)) ?? true;
 	return hasToolSignals && hasOnlySimpleTools;
 }

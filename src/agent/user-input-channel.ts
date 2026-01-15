@@ -390,7 +390,8 @@ class UserInputChannel {
 			this.isPaused = true;
 			logger.info("Agent paused by user request");
 			return true;
-		} else if (message.type === "resume") {
+		}
+		if (message.type === "resume") {
 			this.isPaused = false;
 			logger.info("Agent resumed by user request");
 			return true;

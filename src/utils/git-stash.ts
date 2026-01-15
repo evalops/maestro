@@ -200,14 +200,18 @@ class GitStashManager {
 
 			// Track in session
 			if (this.currentSessionId) {
-				const sessionStashes = this.sessionStashes.get(this.currentSessionId) || [];
+				const sessionStashes =
+					this.sessionStashes.get(this.currentSessionId) || [];
 				sessionStashes.push(entry);
 				this.sessionStashes.set(this.currentSessionId, sessionStashes);
 
 				// Limit stashes per session
 				const maxStashes = this.config.maxStashesPerSession || 10;
 				if (sessionStashes.length > maxStashes) {
-					const toRemove = sessionStashes.slice(0, sessionStashes.length - maxStashes);
+					const toRemove = sessionStashes.slice(
+						0,
+						sessionStashes.length - maxStashes,
+					);
 					for (const old of toRemove) {
 						await this.dropStash(old.id);
 					}
@@ -393,7 +397,10 @@ class GitStashManager {
 	/**
 	 * Find current git ref for a stash by message
 	 */
-	private async findStashRef(message: string, _cwd: string): Promise<string | null> {
+	private async findStashRef(
+		message: string,
+		_cwd: string,
+	): Promise<string | null> {
 		const stashes = await this.listGitStashes();
 		const match = stashes.find((s) => s.message.includes(message));
 		return match?.ref || null;
@@ -413,7 +420,7 @@ class GitStashManager {
 
 		return {
 			sessionStashCount: this.currentSessionId
-				? (this.sessionStashes.get(this.currentSessionId)?.length || 0)
+				? this.sessionStashes.get(this.currentSessionId)?.length || 0
 				: 0,
 			totalTrackedStashes: totalTracked,
 		};

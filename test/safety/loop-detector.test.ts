@@ -1,8 +1,5 @@
-import { describe, expect, it, beforeEach } from "vitest";
-import {
-	LoopDetector,
-	checkForLoop,
-} from "../../src/safety/loop-detector.js";
+import { beforeEach, describe, expect, it } from "vitest";
+import { LoopDetector, checkForLoop } from "../../src/safety/loop-detector.js";
 
 describe("loop-detector", () => {
 	let detector: LoopDetector;
@@ -113,7 +110,9 @@ describe("loop-detector", () => {
 			similarDetector.record("read", { path: "/tmp/file_ee.txt" });
 
 			// Sixth similar read should trigger (same path length)
-			const result = similarDetector.check("read", { path: "/tmp/file_zz.txt" });
+			const result = similarDetector.check("read", {
+				path: "/tmp/file_zz.txt",
+			});
 			expect(result.detected).toBe(true);
 			expect(result.type).toBe("similar");
 		});
@@ -132,7 +131,10 @@ describe("loop-detector", () => {
 			structDetector.record("read", { path: "/tmp/b.txt" });
 
 			// Call with different args structure - adds new key
-			const result = structDetector.check("read", { path: "/tmp/d.txt", encoding: "utf8" });
+			const result = structDetector.check("read", {
+				path: "/tmp/d.txt",
+				encoding: "utf8",
+			});
 			// Should not trigger with just 2 prior reads (mixed with writes)
 			expect(result.detected).toBe(false);
 		});
@@ -248,14 +250,21 @@ describe("loop-detector", () => {
 	describe("checkForLoop helper", () => {
 		it("allows normal calls", () => {
 			const freshDetector = new LoopDetector({ autoPause: false });
-			const result = checkForLoop("read", { path: "/tmp/test.txt" }, freshDetector);
+			const result = checkForLoop(
+				"read",
+				{ path: "/tmp/test.txt" },
+				freshDetector,
+			);
 
 			expect(result.shouldProceed).toBe(true);
 			expect(result.requiresConfirmation).toBe(false);
 		});
 
 		it("requires confirmation on pause", () => {
-			const pauseDetector = new LoopDetector({ maxIdenticalCalls: 1, autoPause: true });
+			const pauseDetector = new LoopDetector({
+				maxIdenticalCalls: 1,
+				autoPause: true,
+			});
 			pauseDetector.record("read", { x: 1 });
 
 			const result = checkForLoop("read", { x: 1 }, pauseDetector);

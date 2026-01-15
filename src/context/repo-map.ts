@@ -28,7 +28,7 @@
  * ```
  */
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, extname, join, relative } from "node:path";
 import { createLogger } from "../utils/logger.js";
 
@@ -39,7 +39,14 @@ const logger = createLogger("context:repo-map");
  */
 export interface ExtractedSymbol {
 	name: string;
-	kind: "class" | "function" | "interface" | "type" | "const" | "export" | "import";
+	kind:
+		| "class"
+		| "function"
+		| "interface"
+		| "type"
+		| "const"
+		| "export"
+		| "import";
 	line: number;
 	exported: boolean;
 }
@@ -166,7 +173,9 @@ function extractTSSymbols(content: string): ExtractedSymbol[] {
 		const lineNum = i + 1;
 
 		// Classes
-		const classMatch = line.match(/^(export\s+)?(class|abstract\s+class)\s+(\w+)/);
+		const classMatch = line.match(
+			/^(export\s+)?(class|abstract\s+class)\s+(\w+)/,
+		);
 		if (classMatch) {
 			symbols.push({
 				name: classMatch[3]!,
@@ -190,7 +199,9 @@ function extractTSSymbols(content: string): ExtractedSymbol[] {
 		}
 
 		// Arrow functions assigned to const
-		const arrowMatch = line.match(/^(export\s+)?const\s+(\w+)\s*=\s*(async\s+)?\(/);
+		const arrowMatch = line.match(
+			/^(export\s+)?const\s+(\w+)\s*=\s*(async\s+)?\(/,
+		);
 		if (arrowMatch) {
 			symbols.push({
 				name: arrowMatch[2]!,
@@ -348,7 +359,10 @@ class RepoMapGenerator {
 			maxContentSize = 2000,
 		} = config;
 
-		const allExclude = [...DEFAULT_EXCLUDE, ...excludePatterns.map((p) => new RegExp(p))];
+		const allExclude = [
+			...DEFAULT_EXCLUDE,
+			...excludePatterns.map((p) => new RegExp(p)),
+		];
 		const entries: RepoMapEntry[] = [];
 
 		// Recursively scan directory
@@ -386,7 +400,11 @@ class RepoMapGenerator {
 								symbols = extractPySymbols(content);
 							}
 
-							const importance = calculateImportance(relativePath, symbols, focusFiles);
+							const importance = calculateImportance(
+								relativePath,
+								symbols,
+								focusFiles,
+							);
 
 							const entry: RepoMapEntry = {
 								path: fullPath,
@@ -398,7 +416,11 @@ class RepoMapGenerator {
 							};
 
 							// Include contents for small, important files
-							if (includeContents && stat.size <= maxContentSize && importance > 10) {
+							if (
+								includeContents &&
+								stat.size <= maxContentSize &&
+								importance > 10
+							) {
 								entry.summary = content.slice(0, maxContentSize);
 							}
 
@@ -537,7 +559,9 @@ class RepoMapGenerator {
 				const searchText = [
 					entry.relativePath,
 					...entry.symbols.map((s) => s.name),
-				].join(" ").toLowerCase();
+				]
+					.join(" ")
+					.toLowerCase();
 
 				return terms.some((term) => searchText.includes(term));
 			})

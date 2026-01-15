@@ -165,7 +165,11 @@ export const ATTACK_PATTERN_METADATA: Record<string, AttackPatternMetadata> = {
 		mitreId: "T1574.006",
 		attackDescription:
 			"Attacker sets LD_PRELOAD to inject malicious shared library at runtime.",
-		iocs: ["LD_PRELOAD injection", "shared library hijacking", "profile modification"],
+		iocs: [
+			"LD_PRELOAD injection",
+			"shared library hijacking",
+			"profile modification",
+		],
 	},
 	"cred-proc-memory": {
 		category: "credential_harvesting",
@@ -244,7 +248,8 @@ export const CREDENTIAL_HARVESTING_PATTERNS: SequencePattern[] = [
 			if (envReads.length > 0) {
 				return {
 					matched: true,
-					reason: `Network egress after environment variable access - possible credential exfiltration`,
+					reason:
+						"Network egress after environment variable access - possible credential exfiltration",
 					matchingRecords: envReads,
 				};
 			}
@@ -271,10 +276,7 @@ export const CREDENTIAL_HARVESTING_PATTERNS: SequencePattern[] = [
 			const credReads = records.filter((r) => {
 				const ageMs = Date.now() - r.timestamp;
 				if (ageMs > 180_000) return false;
-				return (
-					r.tags.has("read") &&
-					pathMatches(r.args, credFilePattern)
-				);
+				return r.tags.has("read") && pathMatches(r.args, credFilePattern);
 			});
 
 			if (credReads.length > 0) {
@@ -312,7 +314,7 @@ export const CREDENTIAL_HARVESTING_PATTERNS: SequencePattern[] = [
 			if (gitReads.length > 0) {
 				return {
 					matched: true,
-					reason: `Network egress after reading git credentials`,
+					reason: "Network egress after reading git credentials",
 					matchingRecords: gitReads,
 				};
 			}
@@ -335,7 +337,7 @@ export const CREDENTIAL_HARVESTING_PATTERNS: SequencePattern[] = [
 			if (commandMatches(currentArgs, keychainPattern)) {
 				return {
 					matched: true,
-					reason: `Keychain/secret store access attempt detected`,
+					reason: "Keychain/secret store access attempt detected",
 				};
 			}
 			return { matched: false };
@@ -349,13 +351,15 @@ export const CREDENTIAL_HARVESTING_PATTERNS: SequencePattern[] = [
 		windowMs: 60_000,
 		detect: (_records, currentTool, currentArgs) => {
 			// Check for metadata service access in URLs or curl commands
-			const metadataPattern = /169\.254\.169\.254|metadata\.google\.internal|169\.254\.170\.2/i;
+			const metadataPattern =
+				/169\.254\.169\.254|metadata\.google\.internal|169\.254\.170\.2/i;
 
 			if (currentTool.toLowerCase() === "bash") {
 				if (commandMatches(currentArgs, metadataPattern)) {
 					return {
 						matched: true,
-						reason: `Cloud metadata service access detected - possible credential theft`,
+						reason:
+							"Cloud metadata service access detected - possible credential theft",
 					};
 				}
 			}
@@ -367,7 +371,8 @@ export const CREDENTIAL_HARVESTING_PATTERNS: SequencePattern[] = [
 				if (url && metadataPattern.test(url)) {
 					return {
 						matched: true,
-						reason: `Cloud metadata service access via HTTP - possible credential theft`,
+						reason:
+							"Cloud metadata service access via HTTP - possible credential theft",
 					};
 				}
 			}
@@ -386,11 +391,13 @@ export const CREDENTIAL_HARVESTING_PATTERNS: SequencePattern[] = [
 			}
 
 			// Detect process memory theft attempts
-			const procMemPattern = /gdb\s+(attach|-p)|\/proc\/\d+\/mem|strings\s+\/proc|cat\s+\/proc\/\d+/i;
+			const procMemPattern =
+				/gdb\s+(attach|-p)|\/proc\/\d+\/mem|strings\s+\/proc|cat\s+\/proc\/\d+/i;
 			if (commandMatches(currentArgs, procMemPattern)) {
 				return {
 					matched: true,
-					reason: `Process memory access detected - possible credential extraction`,
+					reason:
+						"Process memory access detected - possible credential extraction",
 				};
 			}
 			return { matched: false };
@@ -428,7 +435,8 @@ export const DATA_EXFILTRATION_PATTERNS: SequencePattern[] = [
 			if (archiveOps.length > 0) {
 				return {
 					matched: true,
-					reason: `Network egress after creating archive - possible data exfiltration`,
+					reason:
+						"Network egress after creating archive - possible data exfiltration",
 					matchingRecords: archiveOps,
 				};
 			}
@@ -461,7 +469,8 @@ export const DATA_EXFILTRATION_PATTERNS: SequencePattern[] = [
 			if (dbDumps.length > 0) {
 				return {
 					matched: true,
-					reason: `Network egress after database dump - critical data exfiltration risk`,
+					reason:
+						"Network egress after database dump - critical data exfiltration risk",
 					matchingRecords: dbDumps,
 				};
 			}
@@ -494,7 +503,8 @@ export const DATA_EXFILTRATION_PATTERNS: SequencePattern[] = [
 			if (sensitiveReads.length > 0) {
 				return {
 					matched: true,
-					reason: `Curl POST after reading sensitive files - possible credential exfiltration`,
+					reason:
+						"Curl POST after reading sensitive files - possible credential exfiltration",
 					matchingRecords: sensitiveReads,
 				};
 			}
@@ -522,7 +532,8 @@ export const PRIVILEGE_ESCALATION_PATTERNS: SequencePattern[] = [
 			if (commandMatches(currentArgs, suidPattern)) {
 				return {
 					matched: true,
-					reason: `SUID binary search detected - possible privilege escalation reconnaissance`,
+					reason:
+						"SUID binary search detected - possible privilege escalation reconnaissance",
 				};
 			}
 			return { matched: false };
@@ -543,7 +554,8 @@ export const PRIVILEGE_ESCALATION_PATTERNS: SequencePattern[] = [
 				if (pathMatches(currentArgs, cronPattern)) {
 					return {
 						matched: true,
-						reason: `Cron job modification detected - possible privilege escalation or persistence`,
+						reason:
+							"Cron job modification detected - possible privilege escalation or persistence",
 					};
 				}
 			}
@@ -552,19 +564,22 @@ export const PRIVILEGE_ESCALATION_PATTERNS: SequencePattern[] = [
 	},
 	{
 		id: "privesc-docker-socket",
-		description: "Access Docker socket for container escape or privilege escalation",
+		description:
+			"Access Docker socket for container escape or privilege escalation",
 		severity: "critical",
 		action: "block",
 		windowMs: 60_000,
 		detect: (_records, currentTool, currentArgs) => {
 			// Detect Docker socket access
-			const dockerSocketPattern = /docker\.sock|\/var\/run\/docker|docker\s+run.*--privileged|docker\s+exec/i;
+			const dockerSocketPattern =
+				/docker\.sock|\/var\/run\/docker|docker\s+run.*--privileged|docker\s+exec/i;
 
 			if (currentTool.toLowerCase() === "bash") {
 				if (commandMatches(currentArgs, dockerSocketPattern)) {
 					return {
 						matched: true,
-						reason: `Docker socket access detected - possible container escape or privilege escalation`,
+						reason:
+							"Docker socket access detected - possible container escape or privilege escalation",
 					};
 				}
 			}
@@ -575,7 +590,8 @@ export const PRIVILEGE_ESCALATION_PATTERNS: SequencePattern[] = [
 				if (pathMatches(currentArgs, sockPattern)) {
 					return {
 						matched: true,
-						reason: `Docker socket read detected - possible privilege escalation`,
+						reason:
+							"Docker socket read detected - possible privilege escalation",
 					};
 				}
 			}
@@ -603,7 +619,8 @@ export const RECONNAISSANCE_PATTERNS: SequencePattern[] = [
 			if (commandMatches(currentArgs, networkScanPattern)) {
 				return {
 					matched: true,
-					reason: `Network scanning detected - possible reconnaissance activity`,
+					reason:
+						"Network scanning detected - possible reconnaissance activity",
 				};
 			}
 			return { matched: false };
@@ -637,7 +654,8 @@ export const RECONNAISSANCE_PATTERNS: SequencePattern[] = [
 			if (sshKeyReads.length > 0) {
 				return {
 					matched: true,
-					reason: `SSH connection attempt after reading SSH keys - possible lateral movement`,
+					reason:
+						"SSH connection attempt after reading SSH keys - possible lateral movement",
 					matchingRecords: sshKeyReads,
 				};
 			}
@@ -665,7 +683,8 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 				if (pathMatches(currentArgs, sshPattern)) {
 					return {
 						matched: true,
-						reason: `SSH key installation detected - possible unauthorized access persistence`,
+						reason:
+							"SSH key installation detected - possible unauthorized access persistence",
 					};
 				}
 			}
@@ -688,7 +707,8 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 				if (pathMatches(currentArgs, profilePattern)) {
 					return {
 						matched: true,
-						reason: `Shell profile modification detected - may establish persistence`,
+						reason:
+							"Shell profile modification detected - may establish persistence",
 					};
 				}
 			}
@@ -710,7 +730,8 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 				if (pathMatches(currentArgs, systemdPattern)) {
 					return {
 						matched: true,
-						reason: `Systemd service creation detected - possible persistence mechanism`,
+						reason:
+							"Systemd service creation detected - possible persistence mechanism",
 					};
 				}
 			}
@@ -732,13 +753,15 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 			) {
 				// Check for LD_PRELOAD in command or file content
 				const ldPreloadPattern = /LD_PRELOAD/i;
-				const profilePattern = /\.bashrc|\.bash_profile|\.zshrc|\.profile|\/etc\/environment|\/etc\/ld\.so\.preload/i;
+				const profilePattern =
+					/\.bashrc|\.bash_profile|\.zshrc|\.profile|\/etc\/environment|\/etc\/ld\.so\.preload/i;
 
 				if (currentTool.toLowerCase() === "bash") {
 					if (commandMatches(currentArgs, ldPreloadPattern)) {
 						return {
 							matched: true,
-							reason: `LD_PRELOAD injection attempt detected - possible persistence mechanism`,
+							reason:
+								"LD_PRELOAD injection attempt detected - possible persistence mechanism",
 						};
 					}
 				} else if (pathMatches(currentArgs, profilePattern)) {
@@ -747,7 +770,8 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 					if (content && ldPreloadPattern.test(content)) {
 						return {
 							matched: true,
-							reason: `LD_PRELOAD written to shell profile - possible persistence mechanism`,
+							reason:
+								"LD_PRELOAD written to shell profile - possible persistence mechanism",
 						};
 					}
 				}
@@ -770,7 +794,8 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 				if (pathMatches(currentArgs, gitHooksPattern)) {
 					return {
 						matched: true,
-						reason: `Git hooks modification detected - possible persistence mechanism`,
+						reason:
+							"Git hooks modification detected - possible persistence mechanism",
 					};
 				}
 			}
@@ -792,7 +817,8 @@ export const PERSISTENCE_PATTERNS: SequencePattern[] = [
 				if (pathMatches(currentArgs, pamPattern)) {
 					return {
 						matched: true,
-						reason: `PAM configuration modification detected - possible authentication backdoor`,
+						reason:
+							"PAM configuration modification detected - possible authentication backdoor",
 					};
 				}
 			}
@@ -821,7 +847,8 @@ export const DEFENSE_EVASION_PATTERNS: SequencePattern[] = [
 			if (commandMatches(currentArgs, logClearPattern)) {
 				return {
 					matched: true,
-					reason: `Log clearing attempt detected - possible evidence destruction`,
+					reason:
+						"Log clearing attempt detected - possible evidence destruction",
 				};
 			}
 			return { matched: false };

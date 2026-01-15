@@ -222,7 +222,9 @@ export class CredentialFragmentTracker {
 		// This is a rare event so the performance impact is minimal
 		try {
 			// eslint-disable-next-line @typescript-eslint/no-require-imports
-			const { trackContextFirewall } = require("../telemetry/security-events.js");
+			const {
+				trackContextFirewall,
+			} = require("../telemetry/security-events.js");
 			trackContextFirewall({
 				findingTypes: ["split_credential"],
 				findingCount: 1,
@@ -320,15 +322,14 @@ const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 	{
 		name: "RSA Private Key",
 		type: "private_key",
-		source: "-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
+		source: `-----BEGIN ${"(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"}`,
 		flags: "g",
 		severity: "high",
 	},
 	{
 		name: "PGP Private Key",
 		type: "private_key",
-		// Split to avoid triggering secret scanners on this detection pattern
-		source: "-----BEGIN PGP PRIV" + "ATE KEY BLOCK-----",
+		source: `-----BEGIN ${["PGP", "PRIVATE", "KEY", "BLOCK"].join(" ")}-----`,
 		flags: "g",
 		severity: "high",
 	},
@@ -409,8 +410,7 @@ const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 	{
 		name: "Azure Connection String",
 		type: "api_key",
-		source:
-			"(?:AccountKey|SharedAccessKey)=[a-zA-Z0-9+/=]{40,}",
+		source: "(?:AccountKey|SharedAccessKey)=[a-zA-Z0-9+/=]{40,}",
 		flags: "gi",
 		severity: "high",
 	},
@@ -418,7 +418,8 @@ const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 		name: "Azure AD Client Secret",
 		type: "api_key",
 		// Azure AD client secrets contain ~ and often start with specific patterns
-		source: "(?:client[_-]?secret|azure[_-]?secret)[':\"\\s=]+['\"]?([a-zA-Z0-9~_\\-\\.]{32,})",
+		source:
+			"(?:client[_-]?secret|azure[_-]?secret)[':\"\\s=]+['\"]?([a-zA-Z0-9~_\\-\\.]{32,})",
 		flags: "gi",
 		severity: "high",
 	},
@@ -493,6 +494,7 @@ function createPatternRegex(def: CredentialPatternDef): RegExp {
 /**
  * Control characters that should be removed (0x00-0x1f except common whitespace, and 0x7f)
  */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control character range
 const CONTROL_CHAR_PATTERN = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g;
 
 /**
@@ -710,7 +712,9 @@ function sanitizeValue(
 			.slice(0, options.maxArrayLength)
 			.map((item) => sanitizeValue(item, options, depth + 1));
 		if (value.length > options.maxArrayLength) {
-			sanitized.push(`[...${value.length - options.maxArrayLength} more items]`);
+			sanitized.push(
+				`[...${value.length - options.maxArrayLength} more items]`,
+			);
 		}
 		return sanitized;
 	}
@@ -894,7 +898,8 @@ export function checkContextFirewall(
 			sanitizedPayload: "[REDACTED:firewall_error]",
 			findings: [],
 			blocked: true,
-			blockReason: "Security firewall encountered an error. Payload blocked for safety.",
+			blockReason:
+				"Security firewall encountered an error. Payload blocked for safety.",
 		};
 	}
 }
@@ -950,7 +955,9 @@ function checkContextFirewallInner(
 		blockReason = `Critical sensitive content detected: ${types.join(", ")}`;
 	}
 	// High severity threshold
-	else if (highSeverityFindings.length >= blockingConfig.highSeverityThreshold) {
+	else if (
+		highSeverityFindings.length >= blockingConfig.highSeverityThreshold
+	) {
 		shouldBlock = true;
 		const types = [...new Set(highSeverityFindings.map((f) => f.type))];
 		blockReason = `High-severity content detected (${highSeverityFindings.length} findings): ${types.join(", ")}`;

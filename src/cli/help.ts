@@ -99,6 +99,8 @@ export function printHelp(version: string) {
   COMPOSER_TUI_MINIMAL    - Set to 1/true to disable animations and reduce TUI effects (SSH-friendly)
   COMPOSER_TUI_TOOL_MAX_CHARS - Max chars shown per tool output panel (0 = unlimited)
   COMPOSER_TUI_TOOL_MAX_LINES - Max lines shown per tool output panel (0 = unlimited)
+  COMPOSER_SHARED_MEMORY_BASE - Shared memory base URL (Cloudflare Durable Objects worker)
+  COMPOSER_SHARED_MEMORY_API_KEY - API key for shared memory service
   CODING_AGENT_DIR        - Legacy session directory override (fallback)`,
 	)}`;
 	const execSection = `${sectionHeading("composer exec")}${muted(
@@ -119,6 +121,13 @@ export function printHelp(version: string) {
 
   # Use a custom port
   composer web --port 3000`,
+	)}`;
+	const memorySection = `${sectionHeading("composer memory")}${muted(
+		`  composer memory [status]         Show shared memory service status
+  composer memory session <id>     Show per-session metrics
+  composer memory audit <id> [n]   Show recent sync audit entries
+  composer memory export <id>      Export metrics log as JSONL
+  composer memory watch [id] [ms]  Poll status/metrics continuously`,
 	)}`;
 	const sessionsSection = `${sectionHeading("Session Metadata")}${muted(
 		`  /session favorite|unfavorite      Toggle favorite for current session
@@ -162,6 +171,7 @@ export function printHelp(version: string) {
 			env,
 			execSection,
 			webSection,
+			memorySection,
 			sessionsSection,
 			sessionsDiscovery,
 			`${sectionHeading("Tips")}${badge(

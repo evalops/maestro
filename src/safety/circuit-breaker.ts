@@ -40,8 +40,8 @@
  * @module safety/circuit-breaker
  */
 
-import { createLogger } from "../utils/logger.js";
 import { trackCircuitBreakerStateChange } from "../telemetry/security-events.js";
+import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("safety:circuit-breaker");
 

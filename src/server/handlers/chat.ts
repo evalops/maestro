@@ -292,6 +292,7 @@ export async function handleChat(
 						enableClientTools: true,
 						includeVscodeTools: clientHeader === "vscode",
 						includeJetBrainsTools: clientHeader === "jetbrains",
+						includeConductorTools: clientHeader === "conductor",
 					}
 				: undefined,
 		);

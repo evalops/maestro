@@ -30,7 +30,7 @@
  * ```
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { createLogger } from "../utils/logger.js";
 
@@ -120,7 +120,12 @@ function generateDiff(
 	contextLines = 3,
 ): DiffHunk[] {
 	const dp = computeLCS(oldLines, newLines);
-	const operations: Array<{ type: "keep" | "add" | "remove"; line: string; oldIdx?: number; newIdx?: number }> = [];
+	const operations: Array<{
+		type: "keep" | "add" | "remove";
+		line: string;
+		oldIdx?: number;
+		newIdx?: number;
+	}> = [];
 
 	// Backtrack to find the diff
 	let i = oldLines.length;
@@ -128,14 +133,30 @@ function generateDiff(
 
 	while (i > 0 || j > 0) {
 		if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-			operations.unshift({ type: "keep", line: oldLines[i - 1]!, oldIdx: i - 1, newIdx: j - 1 });
+			operations.unshift({
+				type: "keep",
+				line: oldLines[i - 1]!,
+				oldIdx: i - 1,
+				newIdx: j - 1,
+			});
 			i--;
 			j--;
-		} else if (j > 0 && (i === 0 || (dp[i]?.[j - 1] || 0) >= (dp[i - 1]?.[j] || 0))) {
-			operations.unshift({ type: "add", line: newLines[j - 1]!, newIdx: j - 1 });
+		} else if (
+			j > 0 &&
+			(i === 0 || (dp[i]?.[j - 1] || 0) >= (dp[i - 1]?.[j] || 0))
+		) {
+			operations.unshift({
+				type: "add",
+				line: newLines[j - 1]!,
+				newIdx: j - 1,
+			});
 			j--;
 		} else {
-			operations.unshift({ type: "remove", line: oldLines[i - 1]!, oldIdx: i - 1 });
+			operations.unshift({
+				type: "remove",
+				line: oldLines[i - 1]!,
+				oldIdx: i - 1,
+			});
 			i--;
 		}
 	}
@@ -143,7 +164,7 @@ function generateDiff(
 	// Convert operations to hunks
 	const hunks: DiffHunk[] = [];
 	let currentHunk: DiffHunk | null = null;
-	let lastChangeIdx = -Infinity;
+	let lastChangeIdx = Number.NEGATIVE_INFINITY;
 
 	for (let opIdx = 0; opIdx < operations.length; opIdx++) {
 		const op = operations[opIdx]!;
@@ -367,9 +388,11 @@ class DiffPreviewManager {
 
 		// Header
 		const leftHeader = `Old (${preview.deletions} deletions)`.padEnd(halfWidth);
-		const rightHeader = `New (${preview.additions} additions)`.padEnd(halfWidth);
+		const rightHeader = `New (${preview.additions} additions)`.padEnd(
+			halfWidth,
+		);
 		lines.push(`${leftHeader} │ ${rightHeader}`);
-		lines.push("─".repeat(halfWidth) + "─┼─" + "─".repeat(halfWidth));
+		lines.push(`${"─".repeat(halfWidth)}─┼─${"─".repeat(halfWidth)}`);
 
 		for (const hunk of preview.hunks) {
 			const oldLines: Array<{ num: number; content: string }> = [];
@@ -398,13 +421,17 @@ class DiffPreviewManager {
 				const leftNum = oldLine.num ? String(oldLine.num).padStart(4) : "    ";
 				const rightNum = newLine.num ? String(newLine.num).padStart(4) : "    ";
 
-				const leftContent = oldLine.content.slice(0, halfWidth - 6).padEnd(halfWidth - 5);
-				const rightContent = newLine.content.slice(0, halfWidth - 6).padEnd(halfWidth - 5);
+				const leftContent = oldLine.content
+					.slice(0, halfWidth - 6)
+					.padEnd(halfWidth - 5);
+				const rightContent = newLine.content
+					.slice(0, halfWidth - 6)
+					.padEnd(halfWidth - 5);
 
 				lines.push(`${leftNum} ${leftContent} │ ${rightNum} ${rightContent}`);
 			}
 
-			lines.push("─".repeat(halfWidth) + "─┼─" + "─".repeat(halfWidth));
+			lines.push(`${"─".repeat(halfWidth)}─┼─${"─".repeat(halfWidth)}`);
 		}
 
 		return lines.join("\n");
@@ -442,7 +469,8 @@ class DiffPreviewManager {
 	} {
 		let totalAdditions = 0;
 		let totalDeletions = 0;
-		const files: Array<{ path: string; additions: number; deletions: number }> = [];
+		const files: Array<{ path: string; additions: number; deletions: number }> =
+			[];
 
 		for (const [path, preview] of Array.from(this.pendingPreviews)) {
 			totalAdditions += preview.additions;
@@ -465,10 +493,7 @@ class DiffPreviewManager {
 	/**
 	 * Apply specific hunks from a preview
 	 */
-	applyHunks(
-		preview: DiffPreviewResult,
-		hunkIndices: number[],
-	): string {
+	applyHunks(preview: DiffPreviewResult, hunkIndices: number[]): string {
 		const oldLines = preview.originalContent.split("\n");
 		const result = [...oldLines];
 		let offset = 0;

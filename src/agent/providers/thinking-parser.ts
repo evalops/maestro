@@ -175,27 +175,26 @@ export function parseThinkingContent(
 			});
 
 			break;
-		} else {
-			// Opening tag without closing - content might be truncated
-			// Include everything after opening tag as thinking
-			const thinkStart = openMatch.index + openMatch[0].length;
-			thinking = content.slice(thinkStart).trim();
-			cleanContent = content.slice(0, openMatch.index).trim();
-			tagType = config.tagNames[0];
-
-			logger.debug("Extracted partial thinking content (no closing tag)", {
-				modelId,
-				tagType,
-				thinkingLength: thinking.length,
-			});
-
-			return {
-				thinking,
-				content: cleanContent,
-				tagType,
-				truncated: true,
-			};
 		}
+		// Opening tag without closing - content might be truncated
+		// Include everything after opening tag as thinking
+		const thinkStart = openMatch.index + openMatch[0].length;
+		thinking = content.slice(thinkStart).trim();
+		cleanContent = content.slice(0, openMatch.index).trim();
+		tagType = config.tagNames[0];
+
+		logger.debug("Extracted partial thinking content (no closing tag)", {
+			modelId,
+			tagType,
+			thinkingLength: thinking.length,
+		});
+
+		return {
+			thinking,
+			content: cleanContent,
+			tagType,
+			truncated: true,
+		};
 	}
 
 	return { thinking, content: cleanContent, tagType };
@@ -235,7 +234,10 @@ export function processThinkingStreamChunk(
 		if (state.inThinkingBlock) {
 			// Look for closing tag
 			for (const config of THINKING_TAG_CONFIGS) {
-				if (state.activeTagType && !config.tagNames.includes(state.activeTagType)) {
+				if (
+					state.activeTagType &&
+					!config.tagNames.includes(state.activeTagType)
+				) {
 					continue;
 				}
 
@@ -246,7 +248,9 @@ export function processThinkingStreamChunk(
 					// Found closing tag
 					thinking += state.buffer.slice(0, closeMatch.index);
 					state.thinkingContent += state.buffer.slice(0, closeMatch.index);
-					state.buffer = state.buffer.slice(closeMatch.index + closeMatch[0].length);
+					state.buffer = state.buffer.slice(
+						closeMatch.index + closeMatch[0].length,
+					);
 					state.inThinkingBlock = false;
 					state.activeTagType = undefined;
 					break;
@@ -274,7 +278,9 @@ export function processThinkingStreamChunk(
 					// Found opening tag
 					content += state.buffer.slice(0, openMatch.index);
 					state.mainContent += state.buffer.slice(0, openMatch.index);
-					state.buffer = state.buffer.slice(openMatch.index + openMatch[0].length);
+					state.buffer = state.buffer.slice(
+						openMatch.index + openMatch[0].length,
+					);
 					state.inThinkingBlock = true;
 					state.activeTagType = config.tagNames[0];
 					foundOpen = true;
@@ -301,9 +307,10 @@ export function processThinkingStreamChunk(
 /**
  * Finalize stream parsing and return any remaining content
  */
-export function finalizeThinkingStream(
-	state: ThinkingStreamState,
-): { thinking: string; content: string } {
+export function finalizeThinkingStream(state: ThinkingStreamState): {
+	thinking: string;
+	content: string;
+} {
 	let thinking = "";
 	let content = "";
 
@@ -328,7 +335,7 @@ export function finalizeThinkingStream(
  */
 export function formatThinkingForDisplay(
 	thinking: string,
-	maxLength: number = 2000,
+	maxLength = 2000,
 ): string {
 	if (!thinking) return "";
 
@@ -337,7 +344,7 @@ export function formatThinkingForDisplay(
 	}
 
 	// Truncate with ellipsis
-	return thinking.slice(0, maxLength) + "\n...[truncated]";
+	return `${thinking.slice(0, maxLength)}\n...[truncated]`;
 }
 
 /**

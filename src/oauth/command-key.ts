@@ -99,7 +99,8 @@ function executeCommand(command: string): string {
 				// Clear potentially sensitive env vars that could interfere
 				AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
 				AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
-				GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+				GOOGLE_APPLICATION_CREDENTIALS:
+					process.env.GOOGLE_APPLICATION_CREDENTIALS,
 				AZURE_CLIENT_ID: process.env.AZURE_CLIENT_ID,
 				AZURE_CLIENT_SECRET: process.env.AZURE_CLIENT_SECRET,
 				OP_SERVICE_ACCOUNT_TOKEN: process.env.OP_SERVICE_ACCOUNT_TOKEN,
@@ -151,7 +152,9 @@ export function resolveCommandKey(value: string, useCache = true): string {
 	const result = executeCommand(command);
 
 	if (!result) {
-		throw new Error(`Command returned empty result: ${command.slice(0, 30)}...`);
+		throw new Error(
+			`Command returned empty result: ${command.slice(0, 30)}...`,
+		);
 	}
 
 	// Cache result
@@ -222,7 +225,10 @@ export function resolveApiKeys(
  * Validate that a command-based key can be resolved
  * Useful for config validation
  */
-export function validateCommandKey(value: string): { valid: boolean; error?: string } {
+export function validateCommandKey(value: string): {
+	valid: boolean;
+	error?: string;
+} {
 	if (!isCommandKey(value)) {
 		return { valid: true };
 	}

@@ -8,31 +8,31 @@
  * 4. Security advisor → threat aggregation → CLI display
  */
 
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import {
-	getRecentEvents,
-	getEventStats,
-	clearEventBuffer,
-	onSecurityEvent,
-	trackToolBlocked,
-	trackLoopDetection,
-	trackContextFirewall,
-	trackCircuitBreakerStateChange,
-} from "../../src/telemetry/security-events.js";
-import { SafetyMiddleware } from "../../src/safety/safety-middleware.js";
-import {
-	CircuitBreaker,
-	CircuitOpenError,
-} from "../../src/safety/circuit-breaker.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	AdaptiveThresholds,
 	METRICS,
 } from "../../src/safety/adaptive-thresholds.js";
+import { ALL_ATTACK_PATTERNS } from "../../src/safety/attack-patterns.js";
+import {
+	CircuitBreaker,
+	CircuitOpenError,
+} from "../../src/safety/circuit-breaker.js";
+import { SafetyMiddleware } from "../../src/safety/safety-middleware.js";
 import {
 	SecurityAdvisor,
 	formatAdvisory,
 } from "../../src/safety/security-advisor.js";
-import { ALL_ATTACK_PATTERNS } from "../../src/safety/attack-patterns.js";
+import {
+	clearEventBuffer,
+	getEventStats,
+	getRecentEvents,
+	onSecurityEvent,
+	trackCircuitBreakerStateChange,
+	trackContextFirewall,
+	trackLoopDetection,
+	trackToolBlocked,
+} from "../../src/telemetry/security-events.js";
 
 describe("Security Pipeline E2E", () => {
 	beforeEach(() => {
@@ -270,7 +270,9 @@ describe("Security Pipeline E2E", () => {
 			thresholds.recordObservation(METRICS.TOOL_CALLS_PER_MINUTE, 5);
 			thresholds.recordObservation(METRICS.TOOL_CALLS_PER_MINUTE, 7);
 
-			const summary = thresholds.getMetricSummary(METRICS.TOOL_CALLS_PER_MINUTE);
+			const summary = thresholds.getMetricSummary(
+				METRICS.TOOL_CALLS_PER_MINUTE,
+			);
 			expect(summary).toBeDefined();
 			expect(summary?.count).toBe(4);
 			expect(summary?.mean).toBeGreaterThan(0);

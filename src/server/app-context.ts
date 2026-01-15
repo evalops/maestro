@@ -22,6 +22,7 @@ export interface WebServerServices {
 			enableClientTools?: boolean;
 			includeVscodeTools?: boolean;
 			includeJetBrainsTools?: boolean;
+			includeConductorTools?: boolean;
 		},
 	) => Promise<Agent>;
 	getRegisteredModel: (

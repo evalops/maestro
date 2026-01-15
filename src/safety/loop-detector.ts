@@ -80,7 +80,10 @@ interface CallRecord {
  * Generate a hash for a tool call
  */
 function hashCall(tool: string, args: Record<string, unknown>): string {
-	const normalized = JSON.stringify({ tool, args }, Object.keys({ tool, args }).sort());
+	const normalized = JSON.stringify(
+		{ tool, args },
+		Object.keys({ tool, args }).sort(),
+	);
 	return createHash("md5").update(normalized).digest("hex").slice(0, 16);
 }
 
@@ -113,7 +116,11 @@ function getArgsSignature(args: Record<string, unknown>): string {
  * Detect cyclic patterns in a sequence
  * Returns the cycle length if found, 0 otherwise
  */
-function detectCycle(sequence: string[], minCycleLength = 2, maxCycleLength = 10): number {
+function detectCycle(
+	sequence: string[],
+	minCycleLength = 2,
+	maxCycleLength = 10,
+): number {
 	if (sequence.length < minCycleLength * 2) {
 		return 0;
 	}
@@ -436,8 +443,6 @@ export function checkForLoop(
 				requiresConfirmation: true,
 				message: `${result.reason}. ${result.suggestion ?? ""}`,
 			};
-
-		case "warn":
 		default:
 			// Record and continue with warning
 			detector.record(tool, args);

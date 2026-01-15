@@ -1088,6 +1088,12 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	if (parsed.command === "memory") {
+		const { handleMemoryCommand } = await import("./cli/commands/memory.js");
+		await handleMemoryCommand(parsed.subcommand, parsed.messages);
+		return;
+	}
+
 	if (parsed.command === "anthropic") {
 		const { handleAnthropicCommand } = await import(
 			"./cli/commands/anthropic.js"

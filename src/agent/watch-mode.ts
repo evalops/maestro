@@ -29,9 +29,9 @@
  * ```
  */
 
-import { watch, type FSWatcher } from "node:fs";
+import { type FSWatcher, watch } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
-import { join, relative, extname } from "node:path";
+import { extname, join, relative } from "node:path";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("agent:watch-mode");
@@ -114,14 +114,33 @@ const DEFAULT_EXCLUDES = [
  * Supported file extensions for watching
  */
 const WATCHED_EXTENSIONS = new Set([
-	".ts", ".tsx", ".js", ".jsx",
-	".py", ".rb", ".go", ".rs",
-	".java", ".kt", ".swift",
-	".c", ".cpp", ".h", ".hpp",
-	".css", ".scss", ".less",
-	".html", ".vue", ".svelte",
-	".json", ".yaml", ".yml", ".toml",
-	".md", ".mdx",
+	".ts",
+	".tsx",
+	".js",
+	".jsx",
+	".py",
+	".rb",
+	".go",
+	".rs",
+	".java",
+	".kt",
+	".swift",
+	".c",
+	".cpp",
+	".h",
+	".hpp",
+	".css",
+	".scss",
+	".less",
+	".html",
+	".vue",
+	".svelte",
+	".json",
+	".yaml",
+	".yml",
+	".toml",
+	".md",
+	".mdx",
 ]);
 
 /**
@@ -232,7 +251,10 @@ class WatchModeManager {
 	/**
 	 * Watch a directory recursively
 	 */
-	private async watchDirectory(dirPath: string, rootDir: string): Promise<void> {
+	private async watchDirectory(
+		dirPath: string,
+		rootDir: string,
+	): Promise<void> {
 		try {
 			const entries = await readdir(dirPath, { withFileTypes: true });
 
@@ -309,7 +331,10 @@ class WatchModeManager {
 		}
 
 		// Check include patterns if specified
-		if (this.config?.includePatterns && this.config.includePatterns.length > 0) {
+		if (
+			this.config?.includePatterns &&
+			this.config.includePatterns.length > 0
+		) {
 			const included = this.config.includePatterns.some((pattern) =>
 				new RegExp(pattern).test(relativePath),
 			);
@@ -382,8 +407,10 @@ class WatchModeManager {
 
 		try {
 			// Get batch of changes
-			const files = Array.from(this.state.pendingFiles.values())
-				.slice(0, this.config?.maxBatchSize || 50);
+			const files = Array.from(this.state.pendingFiles.values()).slice(
+				0,
+				this.config?.maxBatchSize || 50,
+			);
 
 			// Clear processed files
 			for (const file of files) {
@@ -432,11 +459,9 @@ class WatchModeManager {
 				await this.executeAction(action);
 				this.config?.onActionComplete?.(action, true);
 			} catch (err) {
-				logger.error(
-					"Action failed",
-					err instanceof Error ? err : undefined,
-					{ action },
-				);
+				logger.error("Action failed", err instanceof Error ? err : undefined, {
+					action,
+				});
 				this.config?.onActionComplete?.(action, false);
 			}
 		}

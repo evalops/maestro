@@ -39,18 +39,24 @@ vi.mock("./github/auth.js", () => ({
 }));
 
 vi.mock("./github/client.js", () => ({
-	GitHubApiClient: vi.fn().mockImplementation(() => ({
-		listPullRequestReviewThreads: vi.fn().mockResolvedValue([]),
-		supportsCheckRuns: vi.fn().mockResolvedValue(false),
-		updateCheckRun: vi.fn().mockResolvedValue(undefined),
-		createCommitStatus: vi.fn().mockResolvedValue(undefined),
-	})),
+	// biome-ignore lint/complexity/useArrowFunction: Vitest requires constructable mock for `new`.
+	GitHubApiClient: vi.fn().mockImplementation(function () {
+		return {
+			listPullRequestReviewThreads: vi.fn().mockResolvedValue([]),
+			supportsCheckRuns: vi.fn().mockResolvedValue(false),
+			updateCheckRun: vi.fn().mockResolvedValue(undefined),
+			createCommitStatus: vi.fn().mockResolvedValue(undefined),
+		};
+	}),
 }));
 
 vi.mock("./github/reporter.js", () => ({
-	GitHubReporter: vi.fn().mockImplementation(() => ({
-		upsertIssueComment: vi.fn(),
-	})),
+	// biome-ignore lint/complexity/useArrowFunction: Vitest requires constructable mock for `new`.
+	GitHubReporter: vi.fn().mockImplementation(function () {
+		return {
+			upsertIssueComment: vi.fn(),
+		};
+	}),
 }));
 
 vi.mock("./webhooks/server.js", () => ({
@@ -258,29 +264,40 @@ describe("Orchestrator", () => {
 		// Wire up mocks to constructors
 		const { MemoryStore } = await import("./memory/store.js");
 		(MemoryStore as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-			() => mockMemory,
+			// biome-ignore lint/complexity/useArrowFunction: Vitest requires constructable mock for `new`.
+			function () {
+				return mockMemory;
+			},
 		);
 
 		const { GitHubWatcher } = await import("./watcher/github.js");
 		(GitHubWatcher as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-			(
+			// biome-ignore lint/complexity/useArrowFunction: Vitest requires constructable mock for `new`.
+			function (
 				_client: unknown,
 				_config: unknown,
 				callbacks: typeof watcherCallbacks,
-			) => {
+			) {
 				watcherCallbacks = callbacks;
 				return mockWatcher;
 			},
 		);
 
 		const { IssuePrioritizer } = await import("./triage/prioritizer.js");
-		(
-			IssuePrioritizer as unknown as ReturnType<typeof vi.fn>
-		).mockImplementation(() => mockPrioritizer);
+		const issuePrioritizerCtor = IssuePrioritizer as unknown as ReturnType<
+			typeof vi.fn
+		>;
+		// biome-ignore lint/complexity/useArrowFunction: Vitest requires constructable mock for `new`.
+		issuePrioritizerCtor.mockImplementation(function () {
+			return mockPrioritizer;
+		});
 
 		const { TaskExecutor } = await import("./worker/executor.js");
 		(TaskExecutor as unknown as ReturnType<typeof vi.fn>).mockImplementation(
-			() => mockExecutor,
+			// biome-ignore lint/complexity/useArrowFunction: Vitest requires constructable mock for `new`.
+			function () {
+				return mockExecutor;
+			},
 		);
 	});
 

@@ -7,14 +7,14 @@
  * @module safety/security-advisor
  */
 
-import { createLogger } from "../utils/logger.js";
 import {
 	type SecurityEvent,
 	type SecurityEventType,
-	getRecentEvents,
 	getEventStats,
+	getRecentEvents,
 	onSecurityEvent,
 } from "../telemetry/security-events.js";
+import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("safety:security-advisor");
 
@@ -278,7 +278,9 @@ export class SecurityAdvisor {
 		}
 	}
 
-	private checkReconnaissance(events: SecurityEvent[]): SecurityAdvisory | null {
+	private checkReconnaissance(
+		events: SecurityEvent[],
+	): SecurityAdvisory | null {
 		// Count Read and Glob events (possible reconnaissance)
 		const readEvents = events.filter(
 			(e) =>
@@ -304,7 +306,9 @@ export class SecurityAdvisor {
 		return null;
 	}
 
-	private checkRepeatedBlocks(events: SecurityEvent[]): SecurityAdvisory | null {
+	private checkRepeatedBlocks(
+		events: SecurityEvent[],
+	): SecurityAdvisory | null {
 		const blockedEvents = events.filter((e) => e.type === "tool_blocked");
 
 		if (blockedEvents.length >= this.config.repeatedBlockThreshold) {
@@ -367,7 +371,9 @@ export class SecurityAdvisor {
 			const findingTypes = new Set<string>();
 			for (const e of firewallEvents) {
 				const types = (e.metadata?.findingTypes as string[]) ?? [];
-				types.forEach((t) => findingTypes.add(t));
+				for (const type of types) {
+					findingTypes.add(type);
+				}
 			}
 
 			return {
@@ -389,7 +395,9 @@ export class SecurityAdvisor {
 		return null;
 	}
 
-	private checkCircuitBreaker(events: SecurityEvent[]): SecurityAdvisory | null {
+	private checkCircuitBreaker(
+		events: SecurityEvent[],
+	): SecurityAdvisory | null {
 		const circuitEvents = events.filter(
 			(e) =>
 				e.type === "circuit_breaker_state_change" &&

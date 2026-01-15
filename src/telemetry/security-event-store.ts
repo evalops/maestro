@@ -7,17 +7,17 @@
  * @module telemetry/security-event-store
  */
 
+import { createReadStream, existsSync } from "node:fs";
 import {
 	appendFile,
-	stat,
-	rename,
-	unlink,
 	mkdir,
 	open,
+	rename,
+	stat,
+	unlink,
 	writeFile,
 } from "node:fs/promises";
-import { existsSync, createReadStream } from "node:fs";
-import { join, dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
@@ -194,7 +194,7 @@ export async function persistSecurityEvent(
 			await rotateIfNeededInternal(fullConfig);
 
 			// Append event as JSONL
-			const line = JSON.stringify(event) + "\n";
+			const line = `${JSON.stringify(event)}\n`;
 			await appendFile(filePath, line, "utf-8");
 		});
 	} catch (err) {
@@ -223,7 +223,7 @@ export async function persistSecurityEvents(
 
 		await withFileLock(filePath, async () => {
 			await rotateIfNeededInternal(fullConfig);
-			const lines = events.map((e) => JSON.stringify(e)).join("\n") + "\n";
+			const lines = `${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
 			await appendFile(filePath, lines, "utf-8");
 		});
 	} catch (err) {
@@ -351,7 +351,7 @@ async function readEventsFromFile(filePath: string): Promise<SecurityEvent[]> {
 	const fileStream = createReadStream(filePath, { encoding: "utf-8" });
 	const rl = createInterface({
 		input: fileStream,
-		crlfDelay: Infinity,
+		crlfDelay: Number.POSITIVE_INFINITY,
 	});
 
 	for await (const line of rl) {

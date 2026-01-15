@@ -800,7 +800,11 @@ export async function* streamOpenAI(
 	// Apply cache_control to last messages for OpenRouter with Claude
 	if (compat.supportsCacheControl) {
 		// Find last user message and apply cache_control
-		for (let i = messages.length - 1; i >= 0 && cacheAppliedCount < maxCacheItems; i--) {
+		for (
+			let i = messages.length - 1;
+			i >= 0 && cacheAppliedCount < maxCacheItems;
+			i--
+		) {
 			const msg = messages[i];
 			if (!msg) continue;
 			if (msg.role === "user" && typeof msg.content !== "string") {

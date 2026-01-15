@@ -8,16 +8,16 @@
  * @module cli-tui/security-status
  */
 
-import { createLogger } from "../utils/logger.js";
+import {
+	type AdvisoryLevel,
+	SecurityAdvisor,
+	type SecurityAdvisory,
+} from "../safety/security-advisor.js";
 import {
 	type SecurityEvent,
 	onSecurityEvent,
 } from "../telemetry/security-events.js";
-import {
-	SecurityAdvisor,
-	type SecurityAdvisory,
-	type AdvisoryLevel,
-} from "../safety/security-advisor.js";
+import { createLogger } from "../utils/logger.js";
 import type { FooterComponent } from "./footer.js";
 
 const logger = createLogger("cli-tui:security-status");
@@ -205,7 +205,12 @@ export class SecurityStatus {
 	 */
 	private handleAdvisory(advisory: SecurityAdvisory): void {
 		// Filter based on minimum advisory level
-		const levelOrder: AdvisoryLevel[] = ["info", "warning", "alert", "critical"];
+		const levelOrder: AdvisoryLevel[] = [
+			"info",
+			"warning",
+			"alert",
+			"critical",
+		];
 		const minIndex = levelOrder.indexOf(this.config.minAdvisoryLevel);
 		const advIndex = levelOrder.indexOf(advisory.level);
 

@@ -101,7 +101,10 @@ export interface HttpResponseEvent {
 
 export type HttpRequestHandler = (
 	event: HttpRequestEvent,
-) => Promise<HttpRequestHookResult | void> | HttpRequestHookResult | void;
+) =>
+	| Promise<HttpRequestHookResult | undefined>
+	| HttpRequestHookResult
+	| undefined;
 
 export type HttpResponseHandler = (
 	event: HttpResponseEvent,
@@ -180,15 +183,12 @@ class HttpHooksManager {
 				const idx = this.requestHandlers.indexOf(handler as HttpRequestHandler);
 				if (idx >= 0) this.requestHandlers.splice(idx, 1);
 			};
-		} else {
-			this.responseHandlers.push(handler as HttpResponseHandler);
-			return () => {
-				const idx = this.responseHandlers.indexOf(
-					handler as HttpResponseHandler,
-				);
-				if (idx >= 0) this.responseHandlers.splice(idx, 1);
-			};
 		}
+		this.responseHandlers.push(handler as HttpResponseHandler);
+		return () => {
+			const idx = this.responseHandlers.indexOf(handler as HttpResponseHandler);
+			if (idx >= 0) this.responseHandlers.splice(idx, 1);
+		};
 	}
 
 	/**
@@ -360,7 +360,9 @@ export class HttpHookCancelledError extends Error {
 		public readonly reason?: string,
 		public readonly requestId?: string,
 	) {
-		super(reason ? `Request cancelled: ${reason}` : "Request cancelled by hook");
+		super(
+			reason ? `Request cancelled: ${reason}` : "Request cancelled by hook",
+		);
 		this.name = "HttpHookCancelledError";
 	}
 }

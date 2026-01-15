@@ -7,9 +7,8 @@ import {
 	handleSharedSession,
 } from "../src/server/handlers/sessions.js";
 
-// Mock the SessionManager
-vi.mock("../src/session/manager.js", () => ({
-	SessionManager: vi.fn().mockImplementation(() => ({
+function createMockSessionManager() {
+	return {
 		listSessions: vi.fn().mockResolvedValue([
 			{
 				id: "test-session-1",
@@ -35,6 +34,7 @@ vi.mock("../src/session/manager.js", () => ({
 				return Promise.resolve({
 					id: "test-session-1",
 					title: "Test Session 1",
+					owner: "anon",
 					createdAt: "2024-01-01T00:00:00Z",
 					updatedAt: "2024-01-02T00:00:00Z",
 					messageCount: 2,
@@ -50,6 +50,7 @@ vi.mock("../src/session/manager.js", () => ({
 			return Promise.resolve({
 				id,
 				title: `Session ${id}`,
+				owner: "anon",
 				createdAt: "2024-01-01T00:00:00Z",
 				updatedAt: "2024-01-02T00:00:00Z",
 				messageCount: 0,
@@ -75,7 +76,14 @@ vi.mock("../src/session/manager.js", () => ({
 		setSessionFavorite: vi.fn(),
 		setSessionTitle: vi.fn(),
 		setSessionTags: vi.fn(),
-	})),
+	};
+}
+
+// Mock the SessionManager
+vi.mock("../src/session/manager.js", () => ({
+	SessionManager: vi.fn(function MockSessionManager() {
+		return createMockSessionManager();
+	}),
 }));
 
 // Mock session-serialization
