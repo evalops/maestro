@@ -97,6 +97,7 @@ const pendingBySession = new Map<string, PendingSession>();
 let eventCounter = 0;
 let requestCounter = 0;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let missingConfigLogged = false;
 let capabilitiesCache: { value: Capabilities; fetchedAt: number } | null = null;
 let capabilitiesPromise: Promise<Capabilities> | null = null;
 const queueStats = {
@@ -121,18 +122,8 @@ class SharedMemoryError extends Error {
 	}
 }
 
-function parseRetryAfterMs(response: Response): number | null {
-	const retryAfter = response.headers.get("Retry-After")?.trim();
-	if (retryAfter) {
-		const asNumber = Number(retryAfter);
-		if (Number.isFinite(asNumber)) {
-			return Math.max(0, asNumber * 1000);
-		}
-		const asDate = Date.parse(retryAfter);
-		if (!Number.isNaN(asDate)) {
-			return Math.max(0, asDate - Date.now());
-		}
-	}
+// Keep in sync with Conductor's shared-memory retry parsing.
+function parseRateLimitResetMs(response: Response): number | null {
 	const resetHeader =
 		response.headers.get("RateLimit-Reset") ??
 		response.headers.get("X-RateLimit-Reset");
@@ -148,6 +139,21 @@ function parseRetryAfterMs(response: Response): number | null {
 		delayMs = resetValue * 1000;
 	}
 	return Math.max(0, delayMs);
+}
+
+function parseRetryAfterMs(response: Response): number | null {
+	const retryAfter = response.headers.get("Retry-After")?.trim();
+	if (retryAfter) {
+		const asNumber = Number(retryAfter);
+		if (Number.isFinite(asNumber)) {
+			return Math.max(0, asNumber * 1000);
+		}
+		const asDate = Date.parse(retryAfter);
+		if (!Number.isNaN(asDate)) {
+			return Math.max(0, asDate - Date.now());
+		}
+	}
+	return parseRateLimitResetMs(response);
 }
 
 function invalidateCapabilitiesCache(
@@ -921,7 +927,14 @@ async function flushSession(pending: PendingSession): Promise<void> {
 
 export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 	const config = readConfig();
-	if (!config) return;
+	if (!config) {
+		if (!missingConfigLogged) {
+			missingConfigLogged = true;
+			logger.debug("Shared memory update skipped: missing config");
+		}
+		return;
+	}
+	missingConfigLogged = false;
 	const sessionKey = config.sessionIdOverride ?? update.sessionId;
 	const pending = getPendingSession(sessionKey);
 

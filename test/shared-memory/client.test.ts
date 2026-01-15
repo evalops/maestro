@@ -216,6 +216,84 @@ describe("shared-memory client", () => {
 		expect(syncCalls).toBe(2);
 	});
 
+	it("backs off with rate-limit reset epoch seconds", async () => {
+		let syncCalls = 0;
+		vi.setSystemTime(new Date(1_700_000_000_850));
+		const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url.endsWith("/capabilities")) {
+				return createCapabilitiesResponse();
+			}
+			if (url.includes("/sync")) {
+				syncCalls += 1;
+				const resetSeconds = Math.floor((Date.now() + 1000) / 1000);
+				return new Response("rate limit", {
+					status: 429,
+					headers: { "RateLimit-Reset": String(resetSeconds) },
+				});
+			}
+			return new Response("", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		vi.spyOn(Math, "random").mockReturnValue(0);
+
+		const { queueSharedMemoryUpdate } = await import(
+			"../../src/shared-memory/client.js"
+		);
+		queueSharedMemoryUpdate({
+			sessionId: "session-a",
+			state: { foo: "bar" },
+		});
+
+		await vi.advanceTimersByTimeAsync(200);
+		expect(syncCalls).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(900);
+		expect(syncCalls).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(200);
+		expect(syncCalls).toBe(2);
+	});
+
+	it("backs off with rate-limit reset epoch milliseconds", async () => {
+		let syncCalls = 0;
+		vi.setSystemTime(new Date(1_700_000_000_850));
+		const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url.endsWith("/capabilities")) {
+				return createCapabilitiesResponse();
+			}
+			if (url.includes("/sync")) {
+				syncCalls += 1;
+				const resetMs = Date.now() + 1000;
+				return new Response("rate limit", {
+					status: 429,
+					headers: { "RateLimit-Reset": String(resetMs) },
+				});
+			}
+			return new Response("", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		vi.spyOn(Math, "random").mockReturnValue(0);
+
+		const { queueSharedMemoryUpdate } = await import(
+			"../../src/shared-memory/client.js"
+		);
+		queueSharedMemoryUpdate({
+			sessionId: "session-a",
+			state: { foo: "bar" },
+		});
+
+		await vi.advanceTimersByTimeAsync(200);
+		expect(syncCalls).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(900);
+		expect(syncCalls).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(200);
+		expect(syncCalls).toBe(2);
+	});
+
 	it("backs off exponentially after transient failures", async () => {
 		let syncCalls = 0;
 		const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
