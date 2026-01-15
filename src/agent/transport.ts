@@ -62,6 +62,7 @@ import {
 	SafetyMiddleware,
 	createSafetyMiddleware,
 } from "../safety/safety-middleware.js";
+import { getOptimalConcurrency } from "../tools/parallel-execution.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import { SemanticJudge } from "../safety/semantic-judge.js";
 import {
@@ -904,7 +905,19 @@ export class ProviderTransport implements AgentTransport {
 				);
 				const requiresSerializedTurn =
 					hasWorkflowTrackedTool && toolCallsToExecute.length > 1;
-				let concurrencyLimit = configuredConcurrency;
+
+				// Calculate optimal concurrency - higher for read-only batches
+				let concurrencyLimit = getOptimalConcurrency(
+					toolCallsToExecute,
+					tools,
+					{
+						baseConcurrency: configuredConcurrency,
+						maxReadOnlyConcurrency: 8, // Allow up to 8x parallel for read-only
+						enabled: true,
+					},
+				);
+
+				// Override: workflow-tracked tools require serialization
 				if (configuredConcurrency > 1 && requiresSerializedTurn) {
 					concurrencyLimit = 1;
 					if (!this.warnedAboutWorkflowConcurrency) {
