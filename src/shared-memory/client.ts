@@ -1,4 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { gzipSync } from "node:zlib";
+import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 
 type JsonValue =
@@ -29,20 +34,51 @@ type SharedMemoryUpdate = {
 	event?: SharedMemoryEvent;
 };
 
+type PendingSession = {
+	sessionKey: string;
+	state: Record<string, JsonValue> | null;
+	events: SharedMemoryEvent[];
+	flushTimer: ReturnType<typeof setTimeout> | null;
+	flushInFlight: boolean;
+	retryDelayMs: number;
+	updatedAt: number;
+};
+
+type Capabilities = {
+	supportsSync: boolean;
+	maxBodyBytes: number;
+	maxEventsBatch: number;
+};
+
 const logger = createLogger("shared-memory");
 const FLUSH_DELAY_MS = 150;
 const REQUEST_TIMEOUT_MS = 5000;
 const MAX_PENDING_EVENTS = 50;
 const MAX_BACKOFF_MS = 5000;
+const DEFAULT_EVENTS_PER_BATCH = 25;
+const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
+const TARGET_MAX_BODY_BYTES = 220 * 1024;
+const MAX_STRING_LENGTH = 4000;
+const MAX_ARRAY_LENGTH = 50;
+const PERSIST_DEBOUNCE_MS = 300;
+const PERSIST_TTL_MS = 24 * 60 * 60 * 1000;
 const instanceId = randomUUID();
 
-let pendingSessionKey: string | null = null;
-let pendingState: Record<string, JsonValue> | null = null;
-let pendingEvents: SharedMemoryEvent[] = [];
-let flushTimer: ReturnType<typeof setTimeout> | null = null;
-let flushInFlight = false;
+const pendingBySession = new Map<string, PendingSession>();
 let eventCounter = 0;
-let retryDelayMs = FLUSH_DELAY_MS;
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let capabilitiesCache: Capabilities | null = null;
+let capabilitiesPromise: Promise<Capabilities> | null = null;
+
+class SharedMemoryError extends Error {
+	status?: number;
+
+	constructor(message: string, status?: number) {
+		super(message);
+		this.name = "SharedMemoryError";
+		this.status = status;
+	}
+}
 
 function normalizeBaseUrl(value: string): string {
 	return value.replace(/\/+$/, "");
@@ -75,10 +111,11 @@ async function safeFetch(url: string, init: RequestInit): Promise<void> {
 		const response = await fetch(url, { ...init, signal: controller.signal });
 		if (!response.ok) {
 			const message = await response.text().catch(() => "");
-			throw new Error(
+			throw new SharedMemoryError(
 				message
 					? `Shared memory error: ${response.status} ${message}`
 					: `Shared memory error: ${response.status}`,
+				response.status,
 			);
 		}
 	} finally {
@@ -86,30 +123,393 @@ async function safeFetch(url: string, init: RequestInit): Promise<void> {
 	}
 }
 
-async function syncSession(
+function byteLength(value: string): number {
+	return Buffer.byteLength(value);
+}
+
+function truncateString(value: string, maxLength: number): string {
+	if (value.length <= maxLength) return value;
+	return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function shrinkValue(value: unknown): unknown {
+	if (typeof value === "string") {
+		return truncateString(value, MAX_STRING_LENGTH);
+	}
+	if (Array.isArray(value)) {
+		if (value.length > MAX_ARRAY_LENGTH) {
+			return value.slice(0, MAX_ARRAY_LENGTH).map(shrinkValue);
+		}
+		return value.map(shrinkValue);
+	}
+	if (value && typeof value === "object") {
+		const record = value as Record<string, unknown>;
+		const out: Record<string, unknown> = {};
+		for (const [key, entry] of Object.entries(record)) {
+			out[key] = shrinkValue(entry);
+		}
+		return out;
+	}
+	return value;
+}
+
+function dropKeys(
+	value: unknown,
+	keys: string[],
+	maxBytes: number,
+): unknown {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+	const record = { ...(value as Record<string, unknown>) };
+	for (const key of keys) {
+		if (key in record) {
+			delete record[key];
+			const size = byteLength(JSON.stringify(record));
+			if (size <= maxBytes) {
+				return record;
+			}
+		}
+	}
+	return record;
+}
+
+function fitJsonToBytes(
+	value: unknown,
+	maxBytes: number,
+	dropList: string[],
+): unknown {
+	const shrunk = shrinkValue(value);
+	let serialized = JSON.stringify(shrunk);
+	if (byteLength(serialized) <= maxBytes) return shrunk;
+	const dropped = dropKeys(shrunk, dropList, maxBytes);
+	serialized = JSON.stringify(dropped);
+	if (byteLength(serialized) <= maxBytes) return dropped;
+	if (Array.isArray(dropped)) {
+		let trimmed = dropped.slice(0, Math.max(1, Math.floor(dropped.length / 2)));
+		while (trimmed.length > 1 && byteLength(JSON.stringify(trimmed)) > maxBytes) {
+			trimmed = trimmed.slice(0, Math.max(1, Math.floor(trimmed.length / 2)));
+		}
+		return trimmed;
+	}
+	return {};
+}
+
+async function getCapabilities(
+	config: SharedMemoryConfig,
+): Promise<Capabilities> {
+	if (capabilitiesCache) return capabilitiesCache;
+	if (capabilitiesPromise) return capabilitiesPromise;
+	const fallback: Capabilities = {
+		supportsSync: true,
+		maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
+		maxEventsBatch: DEFAULT_EVENTS_PER_BATCH,
+	};
+
+	capabilitiesPromise = (async () => {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+		try {
+			const response = await fetch(`${config.baseUrl}/capabilities`, {
+				method: "GET",
+				headers: buildHeaders(config.apiKey),
+				signal: controller.signal,
+			});
+			if (!response.ok) {
+				if (response.status === 404 || response.status === 405) {
+					return { ...fallback, supportsSync: false };
+				}
+				return fallback;
+			}
+			const data = (await response.json()) as Partial<{
+				supports_sync: boolean;
+				max_body_bytes: number;
+				max_events_batch: number;
+			}>;
+			const supportsSync = data.supports_sync !== false;
+			const maxBodyBytes =
+				typeof data.max_body_bytes === "number"
+					? data.max_body_bytes
+					: DEFAULT_MAX_BODY_BYTES;
+			const maxEventsBatch =
+				typeof data.max_events_batch === "number"
+					? data.max_events_batch
+					: DEFAULT_EVENTS_PER_BATCH;
+			return {
+				supportsSync,
+				maxBodyBytes,
+				maxEventsBatch,
+			};
+		} catch {
+			return fallback;
+		} finally {
+			clearTimeout(timeout);
+		}
+	})();
+
+	capabilitiesCache = await capabilitiesPromise;
+	return capabilitiesCache;
+}
+
+function schedulePersist(): void {
+	if (persistTimer) return;
+	persistTimer = setTimeout(() => {
+		persistTimer = null;
+		void persistQueue();
+	}, PERSIST_DEBOUNCE_MS);
+}
+
+function getQueueFilePath(): string {
+	return join(PATHS.COMPOSER_HOME, "shared-memory-queue.json");
+}
+
+async function persistQueue(): Promise<void> {
+	try {
+		const path = getQueueFilePath();
+		if (!pendingBySession.size) {
+			if (existsSync(path)) {
+				await writeFile(path, "");
+			}
+			return;
+		}
+		const sessions: Record<
+			string,
+			{
+				state: Record<string, JsonValue> | null;
+				events: SharedMemoryEvent[];
+				updatedAt: number;
+			}
+		> = {};
+		for (const [key, pending] of pendingBySession) {
+			sessions[key] = {
+				state: pending.state,
+				events: pending.events,
+				updatedAt: pending.updatedAt,
+			};
+		}
+		const payload = {
+			version: 1,
+			updatedAt: Date.now(),
+			sessions,
+		};
+		await mkdir(PATHS.COMPOSER_HOME, { recursive: true });
+		const tmp = `${path}.tmp`;
+		await writeFile(tmp, JSON.stringify(payload), "utf8");
+		await rename(tmp, path);
+	} catch {
+		// ignore persistence failures
+	}
+}
+
+function loadPersistedQueue(): void {
+	try {
+		const path = getQueueFilePath();
+		if (!existsSync(path)) return;
+		const raw = readFileSync(path, "utf8").trim();
+		if (!raw) return;
+		const parsed = JSON.parse(raw) as {
+			version?: number;
+			updatedAt?: number;
+			sessions?: Record<
+				string,
+				{
+					state: Record<string, JsonValue> | null;
+					events: SharedMemoryEvent[];
+					updatedAt?: number;
+				}
+			>;
+		};
+		const sessions = parsed.sessions ?? {};
+		const cutoff = Date.now() - PERSIST_TTL_MS;
+		for (const [sessionKey, entry] of Object.entries(sessions)) {
+			const updatedAt = entry.updatedAt ?? parsed.updatedAt ?? Date.now();
+			if (updatedAt < cutoff) continue;
+			const pending = getPendingSession(sessionKey);
+			pending.state = entry.state ?? null;
+			pending.events = entry.events ?? [];
+			pending.updatedAt = updatedAt;
+			scheduleFlush(pending);
+		}
+	} catch {
+		// ignore malformed cache
+	}
+}
+
+function normalizeEvent(event: SharedMemoryEvent): SharedMemoryEvent {
+	return {
+		...event,
+		actor: event.actor ?? "composer",
+	};
+}
+
+async function trySync(
 	config: SharedMemoryConfig,
 	sessionId: string,
 	state: Record<string, JsonValue> | null,
 	events: SharedMemoryEvent[],
+	capabilities: Capabilities,
 ): Promise<void> {
 	const payload: Record<string, JsonValue> = {};
 	if (state) {
 		payload.state = { composer: state } as JsonValue;
 	}
 	if (events.length) {
-		payload.events = events.map((event) => ({
-			...event,
-			actor: event.actor ?? "composer",
-		})) as JsonValue;
+		payload.events = events as JsonValue;
 	}
+	const { body, headers } = prepareRequestBody(
+		payload,
+		Math.min(capabilities.maxBodyBytes, TARGET_MAX_BODY_BYTES),
+		config.apiKey,
+	);
 	await safeFetch(
 		`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/sync`,
 		{
 			method: "PATCH",
-			headers: buildHeaders(config.apiKey),
-			body: JSON.stringify(payload),
+			headers,
+			body,
 		},
 	);
+}
+
+async function fallbackSync(
+	config: SharedMemoryConfig,
+	sessionId: string,
+	state: Record<string, JsonValue> | null,
+	events: SharedMemoryEvent[],
+): Promise<void> {
+	if (state) {
+		try {
+			const { body, headers } = prepareRequestBody(
+				{ state: { composer: state } },
+				TARGET_MAX_BODY_BYTES,
+				config.apiKey,
+			);
+			await safeFetch(
+				`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/state`,
+				{
+					method: "PATCH",
+					headers,
+					body,
+				},
+			);
+		} catch (error) {
+			if (error instanceof SharedMemoryError && error.status === 413) {
+				logger.debug("Dropped oversized shared memory state payload");
+			} else {
+				throw error;
+			}
+		}
+	}
+	for (const event of events) {
+		try {
+			const { body, headers } = prepareRequestBody(
+				event as Record<string, JsonValue>,
+				TARGET_MAX_BODY_BYTES,
+				config.apiKey,
+			);
+			await safeFetch(
+				`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/events`,
+				{
+					method: "POST",
+					headers,
+					body,
+				},
+			);
+		} catch (error) {
+			if (error instanceof SharedMemoryError && error.status === 413) {
+				logger.debug("Dropped oversized shared memory event", {
+					type: event.type,
+				});
+			} else {
+				throw error;
+			}
+		}
+	}
+}
+
+async function sendSyncBatch(
+	config: SharedMemoryConfig,
+	sessionId: string,
+	state: Record<string, JsonValue> | null,
+	events: SharedMemoryEvent[],
+	capabilities: Capabilities,
+): Promise<void> {
+	if (!state && events.length === 0) return;
+	try {
+		if (capabilities.supportsSync) {
+			await trySync(config, sessionId, state, events, capabilities);
+			return;
+		}
+		await fallbackSync(config, sessionId, state, events);
+		return;
+	} catch (error) {
+		if (error instanceof SharedMemoryError) {
+			if (error.status === 404 || error.status === 405) {
+				await fallbackSync(config, sessionId, state, events);
+				return;
+			}
+			if (error.status === 413) {
+				if (state && events.length > 0) {
+					await sendSyncBatch(config, sessionId, state, [], capabilities);
+					await sendSyncBatch(config, sessionId, null, events, capabilities);
+					return;
+				}
+				if (events.length > 1) {
+					const mid = Math.ceil(events.length / 2);
+					await sendSyncBatch(
+						config,
+						sessionId,
+						state,
+						events.slice(0, mid),
+						capabilities,
+					);
+					await sendSyncBatch(
+						config,
+						sessionId,
+						null,
+						events.slice(mid),
+						capabilities,
+					);
+					return;
+				}
+				if (events.length === 1) {
+					logger.debug("Dropped oversized shared memory event", {
+						type: events[0].type,
+					});
+					return;
+				}
+				if (state) {
+					logger.debug("Dropped oversized shared memory state payload");
+					return;
+				}
+			}
+		}
+		throw error;
+	}
+}
+
+async function sendSyncBatches(
+	config: SharedMemoryConfig,
+	sessionId: string,
+	state: Record<string, JsonValue> | null,
+	events: SharedMemoryEvent[],
+	capabilities: Capabilities,
+): Promise<void> {
+	if (!state && events.length === 0) return;
+	const normalizedEvents = events.map(normalizeEvent);
+	if (!normalizedEvents.length) {
+		await sendSyncBatch(config, sessionId, state, [], capabilities);
+		return;
+	}
+
+	let includeState = state;
+	const maxEventsPerBatch = Math.max(
+		1,
+		Math.min(DEFAULT_EVENTS_PER_BATCH, capabilities.maxEventsBatch),
+	);
+	for (let i = 0; i < normalizedEvents.length; i += maxEventsPerBatch) {
+		const batch = normalizedEvents.slice(i, i + maxEventsPerBatch);
+		await sendSyncBatch(config, sessionId, includeState, batch, capabilities);
+		includeState = null;
+	}
 }
 
 function nextEventId(prefix: string): string {
@@ -117,58 +517,83 @@ function nextEventId(prefix: string): string {
 	return `${prefix}-${Date.now()}-${eventCounter}`;
 }
 
-function scheduleFlush(delayMs = FLUSH_DELAY_MS): void {
-	if (flushTimer) return;
-	flushTimer = setTimeout(() => {
-		flushTimer = null;
-		void flushQueue();
+function getPendingSession(sessionKey: string): PendingSession {
+	const existing = pendingBySession.get(sessionKey);
+	if (existing) return existing;
+	const pending: PendingSession = {
+		sessionKey,
+		state: null,
+		events: [],
+		flushTimer: null,
+		flushInFlight: false,
+		retryDelayMs: FLUSH_DELAY_MS,
+		updatedAt: Date.now(),
+	};
+	pendingBySession.set(sessionKey, pending);
+	return pending;
+}
+
+function scheduleFlush(
+	pending: PendingSession,
+	delayMs = FLUSH_DELAY_MS,
+): void {
+	if (pending.flushTimer) return;
+	pending.flushTimer = setTimeout(() => {
+		pending.flushTimer = null;
+		void flushSession(pending);
 	}, delayMs);
 }
 
-async function flushQueue(): Promise<void> {
-	if (flushInFlight) {
-		scheduleFlush();
+async function flushSession(pending: PendingSession): Promise<void> {
+	if (pending.flushInFlight) {
+		scheduleFlush(pending);
 		return;
 	}
-	if (!pendingSessionKey) return;
-	flushInFlight = true;
+	if (!pending.state && pending.events.length === 0) {
+		pendingBySession.delete(pending.sessionKey);
+		return;
+	}
 
-	const sessionKey = pendingSessionKey;
-	const state = pendingState;
-	const events = pendingEvents;
-
-	pendingSessionKey = null;
-	pendingState = null;
-	pendingEvents = [];
+	pending.flushInFlight = true;
+	const state = pending.state;
+	const events = pending.events.slice();
+	pending.state = null;
+	pending.events = [];
 
 	const config = readConfig();
 	if (!config) {
-		flushInFlight = false;
+		pending.flushInFlight = false;
 		return;
 	}
 
 	try {
-		if (state || events.length) {
-			await syncSession(config, sessionKey, state, events);
-		}
-		retryDelayMs = FLUSH_DELAY_MS;
+		const capabilities = await getCapabilities(config);
+		await sendSyncBatches(config, pending.sessionKey, state, events, capabilities);
+		pending.retryDelayMs = FLUSH_DELAY_MS;
+		pending.updatedAt = Date.now();
+		schedulePersist();
 	} catch (error) {
-		if (state) {
-			pendingState = state;
+		if (state && !pending.state) {
+			pending.state = state;
 		}
 		if (events.length) {
-			pendingEvents = events.concat(pendingEvents).slice(-MAX_PENDING_EVENTS);
+			pending.events = events.concat(pending.events).slice(-MAX_PENDING_EVENTS);
 		}
-		retryDelayMs = Math.min(
+		pending.retryDelayMs = Math.min(
 			MAX_BACKOFF_MS,
-			Math.max(FLUSH_DELAY_MS, retryDelayMs * 2),
+			Math.max(FLUSH_DELAY_MS, pending.retryDelayMs * 2),
 		);
+		pending.updatedAt = Date.now();
+		schedulePersist();
 		logger.debug("Shared memory update failed", { error });
 	} finally {
-		flushInFlight = false;
-		if (pendingState || pendingEvents.length) {
+		pending.flushInFlight = false;
+		if (pending.state || pending.events.length) {
 			const jitter = Math.floor(Math.random() * 100);
-			scheduleFlush(retryDelayMs + jitter);
+			scheduleFlush(pending, pending.retryDelayMs + jitter);
+		} else {
+			pendingBySession.delete(pending.sessionKey);
+			schedulePersist();
 		}
 	}
 }
@@ -177,10 +602,20 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 	const config = readConfig();
 	if (!config) return;
 	const sessionKey = config.sessionIdOverride ?? update.sessionId;
+	const pending = getPendingSession(sessionKey);
 
-	pendingSessionKey = sessionKey;
 	if (update.state) {
-		pendingState = { ...update.state, instanceId, source: "composer" };
+		const fitted = fitJsonToBytes(
+			{ ...update.state, instanceId, source: "composer" },
+			TARGET_MAX_BODY_BYTES,
+			["summary", "content", "preview", "text", "message", "body"],
+		);
+		if (!fitted || typeof fitted !== "object") {
+			pending.state = { instanceId, source: "composer" };
+		} else {
+			pending.state = fitted as Record<string, JsonValue>;
+		}
+		pending.updatedAt = Date.now();
 	}
 	if (update.event) {
 		const payload: Record<string, JsonValue> =
@@ -197,15 +632,41 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 						source: "composer",
 						value: update.event.payload ?? null,
 					};
-		pendingEvents.push({
-			...update.event,
+		const fittedPayload = fitJsonToBytes(
 			payload,
+			Math.min(32 * 1024, TARGET_MAX_BODY_BYTES),
+			["summary", "content", "preview", "text", "message", "body", "markdown", "html"],
+		) as JsonValue;
+		pending.events.push({
+			...update.event,
+			payload: fittedPayload,
 			id: update.event.id ?? nextEventId(`composer-${update.sessionId}`),
 		});
-		if (pendingEvents.length > MAX_PENDING_EVENTS) {
-			pendingEvents = pendingEvents.slice(-MAX_PENDING_EVENTS);
+		if (pending.events.length > MAX_PENDING_EVENTS) {
+			pending.events = pending.events.slice(-MAX_PENDING_EVENTS);
 		}
+		pending.updatedAt = Date.now();
 	}
 
-	scheduleFlush();
+	scheduleFlush(pending);
+	schedulePersist();
 }
+
+function prepareRequestBody(
+	payload: Record<string, JsonValue>,
+	maxBytes: number,
+	apiKey?: string,
+): { body: Buffer | string; headers: Headers } {
+	const trimmed = fitJsonToBytes(payload, maxBytes, ["events", "state"]);
+	const json = JSON.stringify(trimmed);
+	const headers = buildHeaders(apiKey);
+	try {
+		const zipped = gzipSync(Buffer.from(json));
+		headers.set("Content-Encoding", "gzip");
+		return { body: zipped, headers };
+	} catch {
+		return { body: json, headers };
+	}
+}
+
+loadPersistedQueue();
