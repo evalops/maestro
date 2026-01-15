@@ -116,13 +116,12 @@ function invalidateCapabilitiesCache(
 			maxEventsBatch: DEFAULT_EVENTS_PER_BATCH,
 		};
 	}
-	const base =
-		capabilitiesCache?.value ?? {
-			supportsSync: true,
-			supportsGzip: true,
-			maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
-			maxEventsBatch: DEFAULT_EVENTS_PER_BATCH,
-		};
+	const base = capabilitiesCache?.value ?? {
+		supportsSync: true,
+		supportsGzip: true,
+		maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
+		maxEventsBatch: DEFAULT_EVENTS_PER_BATCH,
+	};
 	const value = { ...base, ...override };
 	capabilitiesCache = { value, fetchedAt: Date.now() };
 	capabilitiesPromise = null;

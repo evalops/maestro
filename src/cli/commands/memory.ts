@@ -314,6 +314,7 @@ export async function handleMemoryCommand(
 				}
 				await new Promise((resolve) => setTimeout(resolve, intervalMs));
 			}
+			return;
 		}
 		default:
 			console.error(chalk.red(`Unknown memory subcommand: ${subcommand}`));
