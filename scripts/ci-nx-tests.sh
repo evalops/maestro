@@ -15,6 +15,13 @@ ensure_sha() {
 ensure_sha "$NX_BASE"
 ensure_sha "$NX_HEAD"
 
+run_shared_memory_tests() {
+	if git diff --name-only "$NX_BASE" "$NX_HEAD" | grep -qE '^(src/shared-memory/|test/shared-memory/)'; then
+		echo "Running shared memory tests..."
+		bunx vitest --run test/shared-memory/ --reporter=verbose
+	fi
+}
+
 if git diff --name-only "$NX_BASE" "$NX_HEAD" | grep -qE '^(nx\.json|project\.json|tsconfig\.base\.json|package\.json|bun\.lockb|package-lock\.json|packages/.*/project\.json)$'; then
 	cmd=(npx nx run-many -t test --all --parallel=3)
 else
@@ -82,6 +89,7 @@ append_unhandled_error_summary() {
 
 if run_attempt 1; then
 	rm -f nx-tests-attempt-1.log || true
+	run_shared_memory_tests
 	exit 0
 fi
 
