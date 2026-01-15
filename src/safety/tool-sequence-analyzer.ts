@@ -823,8 +823,7 @@ export class ToolSequenceAnalyzer {
 
 		// Track session stats
 		this.sessionStats.totalToolCalls++;
-		const toolCount =
-			(this.sessionStats.toolCounts.get(toolName) ?? 0) + 1;
+		const toolCount = (this.sessionStats.toolCounts.get(toolName) ?? 0) + 1;
 		this.sessionStats.toolCounts.set(toolName, toolCount);
 
 		// Track sensitive accesses
@@ -844,7 +843,9 @@ export class ToolSequenceAnalyzer {
 		}
 
 		// Check session-level thresholds
-		if (this.sessionStats.totalToolCalls >= this.sessionThresholds.maxToolCalls) {
+		if (
+			this.sessionStats.totalToolCalls >= this.sessionThresholds.maxToolCalls
+		) {
 			return {
 				action: "require_approval",
 				patternId: "session-tool-limit",
@@ -907,7 +908,14 @@ export class ToolSequenceAnalyzer {
 	 */
 	private extractPath(args: Record<string, unknown>): string | null {
 		// Common path argument names
-		const pathKeys = ["path", "file", "file_path", "filePath", "target", "source"];
+		const pathKeys = [
+			"path",
+			"file",
+			"file_path",
+			"filePath",
+			"target",
+			"source",
+		];
 		for (const key of pathKeys) {
 			const value = args[key];
 			if (typeof value === "string") {

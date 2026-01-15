@@ -188,7 +188,8 @@ class NestedAgentGuard {
 				});
 				return {
 					allowed: false,
-					reason: `Blocked: Command matches high-risk recursive agent spawn pattern. This could cause CPU exhaustion.`,
+					reason:
+						"Blocked: Command matches high-risk recursive agent spawn pattern. This could cause CPU exhaustion.",
 					severity: "error",
 					pattern: pattern.source,
 				};
@@ -238,7 +239,7 @@ class NestedAgentGuard {
 
 				return {
 					allowed: true,
-					reason: `Warning: This command may spawn a nested agent instance.`,
+					reason: "Warning: This command may spawn a nested agent instance.",
 					severity: "warning",
 					pattern: pattern.source,
 				};
@@ -320,9 +321,7 @@ class NestedAgentGuard {
 	 * Check if spawning another agent is allowed.
 	 */
 	canSpawnAgent(): boolean {
-		return (
-			!this.isAtMaxDepth() && this.agentSpawnCount < this.maxAgentSpawns
-		);
+		return !this.isAtMaxDepth() && this.agentSpawnCount < this.maxAgentSpawns;
 	}
 }
 
@@ -335,9 +334,7 @@ export const nestedAgentGuard = new NestedAgentGuard();
  * Utility function to check if a bash command should be allowed.
  * Returns an error message if blocked, or null if allowed.
  */
-export function checkBashCommandForNestedAgent(
-	command: string,
-): string | null {
+export function checkBashCommandForNestedAgent(command: string): string | null {
 	const result = nestedAgentGuard.checkCommand(command);
 	if (!result.allowed) {
 		return result.reason ?? "Command blocked due to nested agent detection";

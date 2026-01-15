@@ -55,18 +55,50 @@ interface ModelPricing {
  */
 const MODEL_PRICING: Record<string, ModelPricing> = {
 	// Anthropic Claude 4
-	"claude-sonnet-4-20250514": { inputPerMillion: 3, outputPerMillion: 15, cachedInputPerMillion: 0.3 },
-	"claude-opus-4-20250514": { inputPerMillion: 15, outputPerMillion: 75, cachedInputPerMillion: 1.5 },
-	"claude-opus-4-5-20251101": { inputPerMillion: 15, outputPerMillion: 75, cachedInputPerMillion: 1.5 },
+	"claude-sonnet-4-20250514": {
+		inputPerMillion: 3,
+		outputPerMillion: 15,
+		cachedInputPerMillion: 0.3,
+	},
+	"claude-opus-4-20250514": {
+		inputPerMillion: 15,
+		outputPerMillion: 75,
+		cachedInputPerMillion: 1.5,
+	},
+	"claude-opus-4-5-20251101": {
+		inputPerMillion: 15,
+		outputPerMillion: 75,
+		cachedInputPerMillion: 1.5,
+	},
 
 	// Anthropic Claude 3.5
-	"claude-3-5-sonnet-20241022": { inputPerMillion: 3, outputPerMillion: 15, cachedInputPerMillion: 0.3 },
-	"claude-3-5-haiku-20241022": { inputPerMillion: 0.8, outputPerMillion: 4, cachedInputPerMillion: 0.08 },
+	"claude-3-5-sonnet-20241022": {
+		inputPerMillion: 3,
+		outputPerMillion: 15,
+		cachedInputPerMillion: 0.3,
+	},
+	"claude-3-5-haiku-20241022": {
+		inputPerMillion: 0.8,
+		outputPerMillion: 4,
+		cachedInputPerMillion: 0.08,
+	},
 
 	// Anthropic Claude 3
-	"claude-3-opus-20240229": { inputPerMillion: 15, outputPerMillion: 75, cachedInputPerMillion: 1.5 },
-	"claude-3-sonnet-20240229": { inputPerMillion: 3, outputPerMillion: 15, cachedInputPerMillion: 0.3 },
-	"claude-3-haiku-20240307": { inputPerMillion: 0.25, outputPerMillion: 1.25, cachedInputPerMillion: 0.025 },
+	"claude-3-opus-20240229": {
+		inputPerMillion: 15,
+		outputPerMillion: 75,
+		cachedInputPerMillion: 1.5,
+	},
+	"claude-3-sonnet-20240229": {
+		inputPerMillion: 3,
+		outputPerMillion: 15,
+		cachedInputPerMillion: 0.3,
+	},
+	"claude-3-haiku-20240307": {
+		inputPerMillion: 0.25,
+		outputPerMillion: 1.25,
+		cachedInputPerMillion: 0.025,
+	},
 
 	// OpenAI GPT-4
 	"gpt-4-turbo": { inputPerMillion: 10, outputPerMillion: 30 },
@@ -76,7 +108,7 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
 	"gpt-4": { inputPerMillion: 30, outputPerMillion: 60 },
 
 	// OpenAI o1
-	"o1": { inputPerMillion: 15, outputPerMillion: 60 },
+	o1: { inputPerMillion: 15, outputPerMillion: 60 },
 	"o1-mini": { inputPerMillion: 3, outputPerMillion: 12 },
 	"o1-preview": { inputPerMillion: 15, outputPerMillion: 60 },
 	"o3-mini": { inputPerMillion: 1.1, outputPerMillion: 4.4 },
@@ -231,12 +263,14 @@ class CostTracker {
 		const pricing = this.getPricing(usage.model);
 
 		const inputCost = (usage.inputTokens / 1_000_000) * pricing.inputPerMillion;
-		const outputCost = (usage.outputTokens / 1_000_000) * pricing.outputPerMillion;
+		const outputCost =
+			(usage.outputTokens / 1_000_000) * pricing.outputPerMillion;
 
 		// Cached tokens are charged at reduced rate
 		let cachedCost = 0;
 		if (usage.cachedTokens && pricing.cachedInputPerMillion) {
-			cachedCost = (usage.cachedTokens / 1_000_000) * pricing.cachedInputPerMillion;
+			cachedCost =
+				(usage.cachedTokens / 1_000_000) * pricing.cachedInputPerMillion;
 		}
 
 		return inputCost + outputCost + cachedCost;
@@ -254,7 +288,10 @@ class CostTracker {
 		// Try partial match
 		const normalizedId = modelId.toLowerCase();
 		for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-			if (normalizedId.includes(key.toLowerCase()) || key.toLowerCase().includes(normalizedId)) {
+			if (
+				normalizedId.includes(key.toLowerCase()) ||
+				key.toLowerCase().includes(normalizedId)
+			) {
 				return pricing;
 			}
 		}
@@ -267,7 +304,10 @@ class CostTracker {
 	 * Get total cost for the session
 	 */
 	getTotalCost(): number {
-		return this.records.reduce((sum, record) => sum + this.calculateCost(record), 0);
+		return this.records.reduce(
+			(sum, record) => sum + this.calculateCost(record),
+			0,
+		);
 	}
 
 	/**
@@ -302,13 +342,17 @@ class CostTracker {
 			}
 
 			// Input/output breakdown
-			breakdown.inputCost += (record.inputTokens / 1_000_000) * pricing.inputPerMillion;
-			breakdown.outputCost += (record.outputTokens / 1_000_000) * pricing.outputPerMillion;
+			breakdown.inputCost +=
+				(record.inputTokens / 1_000_000) * pricing.inputPerMillion;
+			breakdown.outputCost +=
+				(record.outputTokens / 1_000_000) * pricing.outputPerMillion;
 
 			// Calculate savings from caching
 			if (record.cachedTokens && pricing.cachedInputPerMillion) {
-				const fullCost = (record.cachedTokens / 1_000_000) * pricing.inputPerMillion;
-				const cachedCost = (record.cachedTokens / 1_000_000) * pricing.cachedInputPerMillion;
+				const fullCost =
+					(record.cachedTokens / 1_000_000) * pricing.inputPerMillion;
+				const cachedCost =
+					(record.cachedTokens / 1_000_000) * pricing.cachedInputPerMillion;
 				breakdown.cachedSavings += fullCost - cachedCost;
 			}
 		}
@@ -406,9 +450,18 @@ class CostTracker {
 		totalCachedTokens: number;
 		avgCostPerRequest: number;
 	} {
-		const totalInputTokens = this.records.reduce((sum, r) => sum + r.inputTokens, 0);
-		const totalOutputTokens = this.records.reduce((sum, r) => sum + r.outputTokens, 0);
-		const totalCachedTokens = this.records.reduce((sum, r) => sum + (r.cachedTokens || 0), 0);
+		const totalInputTokens = this.records.reduce(
+			(sum, r) => sum + r.inputTokens,
+			0,
+		);
+		const totalOutputTokens = this.records.reduce(
+			(sum, r) => sum + r.outputTokens,
+			0,
+		);
+		const totalCachedTokens = this.records.reduce(
+			(sum, r) => sum + (r.cachedTokens || 0),
+			0,
+		);
 		const totalCost = this.getTotalCost();
 
 		return {
@@ -417,7 +470,8 @@ class CostTracker {
 			totalInputTokens,
 			totalOutputTokens,
 			totalCachedTokens,
-			avgCostPerRequest: this.records.length > 0 ? totalCost / this.records.length : 0,
+			avgCostPerRequest:
+				this.records.length > 0 ? totalCost / this.records.length : 0,
 		};
 	}
 
@@ -435,12 +489,16 @@ class CostTracker {
 		];
 
 		if (stats.totalCachedTokens > 0) {
-			lines.push(`Cached: ${stats.totalCachedTokens.toLocaleString()} tokens (saved $${breakdown.cachedSavings.toFixed(4)})`);
+			lines.push(
+				`Cached: ${stats.totalCachedTokens.toLocaleString()} tokens (saved $${breakdown.cachedSavings.toFixed(4)})`,
+			);
 		}
 
 		if (this.budget.hardLimit) {
 			const remaining = this.getRemainingBudget();
-			lines.push(`Budget: $${remaining?.toFixed(2)} remaining of $${this.budget.hardLimit.toFixed(2)}`);
+			lines.push(
+				`Budget: $${remaining?.toFixed(2)} remaining of $${this.budget.hardLimit.toFixed(2)}`,
+			);
 		}
 
 		return lines.join("\n");

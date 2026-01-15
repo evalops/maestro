@@ -222,7 +222,9 @@ export class CredentialFragmentTracker {
 		// This is a rare event so the performance impact is minimal
 		try {
 			// eslint-disable-next-line @typescript-eslint/no-require-imports
-			const { trackContextFirewall } = require("../telemetry/security-events.js");
+			const {
+				trackContextFirewall,
+			} = require("../telemetry/security-events.js");
 			trackContextFirewall({
 				findingTypes: ["split_credential"],
 				findingCount: 1,
@@ -408,8 +410,7 @@ const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 	{
 		name: "Azure Connection String",
 		type: "api_key",
-		source:
-			"(?:AccountKey|SharedAccessKey)=[a-zA-Z0-9+/=]{40,}",
+		source: "(?:AccountKey|SharedAccessKey)=[a-zA-Z0-9+/=]{40,}",
 		flags: "gi",
 		severity: "high",
 	},
@@ -417,7 +418,8 @@ const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 		name: "Azure AD Client Secret",
 		type: "api_key",
 		// Azure AD client secrets contain ~ and often start with specific patterns
-		source: "(?:client[_-]?secret|azure[_-]?secret)[':\"\\s=]+['\"]?([a-zA-Z0-9~_\\-\\.]{32,})",
+		source:
+			"(?:client[_-]?secret|azure[_-]?secret)[':\"\\s=]+['\"]?([a-zA-Z0-9~_\\-\\.]{32,})",
 		flags: "gi",
 		severity: "high",
 	},
@@ -896,7 +898,8 @@ export function checkContextFirewall(
 			sanitizedPayload: "[REDACTED:firewall_error]",
 			findings: [],
 			blocked: true,
-			blockReason: "Security firewall encountered an error. Payload blocked for safety.",
+			blockReason:
+				"Security firewall encountered an error. Payload blocked for safety.",
 		};
 	}
 }

@@ -12,17 +12,17 @@
  *   /safety threats            - Show threat level and advisories
  */
 
-import type { CommandExecutionContext } from "../types.js";
-import { isHelpRequest, parseSubcommand } from "./utils.js";
-import {
-	getRecentEvents,
-	getEventStats,
-	type SecurityEvent,
-} from "../../../telemetry/security-events.js";
 import {
 	SecurityAdvisor,
 	formatAdvisory,
 } from "../../../safety/security-advisor.js";
+import {
+	type SecurityEvent,
+	getEventStats,
+	getRecentEvents,
+} from "../../../telemetry/security-events.js";
+import type { CommandExecutionContext } from "../types.js";
+import { isHelpRequest, parseSubcommand } from "./utils.js";
 
 export interface SafetyCommandDeps {
 	handleApprovals: (ctx: CommandExecutionContext) => void;
@@ -140,7 +140,7 @@ function showSecurityEvents(
 	// Parse limit from arguments
 	const args = ctx.argumentText.split(/\s+/).filter(Boolean);
 	const subArg = args[1]; // Skip "events" subcommand
-	const limit = subArg ? parseInt(subArg, 10) || 10 : 10;
+	const limit = subArg ? Number.parseInt(subArg, 10) || 10 : 10;
 
 	const events = getRecentEvents(limit);
 	const stats = getEventStats();
@@ -196,10 +196,10 @@ function showThreatLevel(deps: SafetyCommandDeps): void {
 			output += `\n${formatAdvisory(adv)}\n`;
 		}
 	} else {
-		output += `\n  No active advisories.\n`;
+		output += "\n  No active advisories.\n";
 	}
 
-	output += `\nUse /safety events [N] to see recent events.`;
+	output += "\nUse /safety events [N] to see recent events.";
 
 	deps.showInfo(output);
 	advisor.dispose();

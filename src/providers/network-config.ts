@@ -21,7 +21,7 @@ import type { Provider } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { parseRetryAfter } from "../utils/retry.js";
-import { httpHooks, HttpHookCancelledError } from "./http-hooks.js";
+import { HttpHookCancelledError, httpHooks } from "./http-hooks.js";
 
 // Re-export for consumers
 export { httpHooks, HttpHookCancelledError } from "./http-hooks.js";

@@ -152,8 +152,8 @@ export function detectFilePaths(text: string): DetectedFilePath[] {
 	for (const pattern of FILE_PATH_PATTERNS) {
 		// Reset lastIndex for global patterns
 		pattern.lastIndex = 0;
-		let match;
-		while ((match = pattern.exec(text)) !== null) {
+		let match = pattern.exec(text);
+		while (match !== null) {
 			const path = match[1];
 			if (!path || detectedPaths.has(path)) continue;
 			detectedPaths.add(path);
@@ -189,6 +189,8 @@ export function detectFilePaths(text: string): DetectedFilePath[] {
 				size,
 				exists,
 			});
+
+			match = pattern.exec(text);
 		}
 	}
 
@@ -283,7 +285,9 @@ export function formatDetectedPaths(paths: DetectedFilePath[]): string {
 	for (const p of paths) {
 		const status = p.exists ? "✓" : "✗";
 		const type = p.isScreenshot ? "screenshot" : p.isImage ? "image" : "file";
-		lines.push(`  ${status} ${p.path} (${type}${p.size ? `, ${Math.round(p.size / 1024)}KB` : ""})`);
+		lines.push(
+			`  ${status} ${p.path} (${type}${p.size ? `, ${Math.round(p.size / 1024)}KB` : ""})`,
+		);
 	}
 	return lines.join("\n");
 }

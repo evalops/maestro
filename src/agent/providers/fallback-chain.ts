@@ -92,11 +92,7 @@ const DEFAULT_CHAINS: Record<string, string[]> = {
 	],
 
 	// OpenAI fallbacks
-	"gpt-4o": [
-		"claude-sonnet-4-20250514",
-		"gemini-1.5-pro",
-		"gpt-4-turbo",
-	],
+	"gpt-4o": ["claude-sonnet-4-20250514", "gemini-1.5-pro", "gpt-4-turbo"],
 	"gpt-4o-mini": [
 		"claude-3-5-haiku-20241022",
 		"gemini-1.5-flash",
@@ -104,11 +100,7 @@ const DEFAULT_CHAINS: Record<string, string[]> = {
 	],
 
 	// Google fallbacks
-	"gemini-1.5-pro": [
-		"claude-sonnet-4-20250514",
-		"gpt-4o",
-		"gemini-2.0-flash",
-	],
+	"gemini-1.5-pro": ["claude-sonnet-4-20250514", "gpt-4o", "gemini-2.0-flash"],
 	"gemini-1.5-flash": [
 		"gpt-4o-mini",
 		"claude-3-5-haiku-20241022",
@@ -116,16 +108,8 @@ const DEFAULT_CHAINS: Record<string, string[]> = {
 	],
 
 	// Reasoning models
-	"o1": [
-		"claude-opus-4-5-20251101",
-		"o1-preview",
-		"deepseek-r1",
-	],
-	"deepseek-r1": [
-		"o1",
-		"claude-opus-4-5-20251101",
-		"deepseek-reasoner",
-	],
+	o1: ["claude-opus-4-5-20251101", "o1-preview", "deepseek-r1"],
+	"deepseek-r1": ["o1", "claude-opus-4-5-20251101", "deepseek-reasoner"],
 };
 
 /**
@@ -264,7 +248,7 @@ class ModelFallbackChain {
 		}
 
 		// Track attempt number
-		const attempt = (this.currentAttempts.get(primaryModel) || 0);
+		const attempt = this.currentAttempts.get(primaryModel) || 0;
 		this.currentAttempts.set(primaryModel, attempt + 1);
 
 		// First attempt - try primary if healthy
@@ -311,8 +295,22 @@ class ModelFallbackChain {
 	/**
 	 * Get health status for all tracked models
 	 */
-	getHealthStatus(): Record<string, { healthy: boolean; consecutiveFailures: number; lastFailureType: FailureType | null }> {
-		const status: Record<string, { healthy: boolean; consecutiveFailures: number; lastFailureType: FailureType | null }> = {};
+	getHealthStatus(): Record<
+		string,
+		{
+			healthy: boolean;
+			consecutiveFailures: number;
+			lastFailureType: FailureType | null;
+		}
+	> {
+		const status: Record<
+			string,
+			{
+				healthy: boolean;
+				consecutiveFailures: number;
+				lastFailureType: FailureType | null;
+			}
+		> = {};
 
 		for (const [model, health] of this.health.entries()) {
 			status[model] = {
@@ -401,10 +399,18 @@ function categorizeError(error: Error): FailureType {
 	if (message.includes("timeout") || message.includes("timed out")) {
 		return "timeout";
 	}
-	if (message.includes("500") || message.includes("502") || message.includes("503")) {
+	if (
+		message.includes("500") ||
+		message.includes("502") ||
+		message.includes("503")
+	) {
 		return "server_error";
 	}
-	if (message.includes("401") || message.includes("403") || message.includes("auth")) {
+	if (
+		message.includes("401") ||
+		message.includes("403") ||
+		message.includes("auth")
+	) {
 		return "auth_error";
 	}
 	if (message.includes("capacity") || message.includes("overloaded")) {

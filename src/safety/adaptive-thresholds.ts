@@ -267,23 +267,22 @@ export class AdaptiveThresholds {
 				state.degradedSince = now;
 				// Keep: anchoredMean, anchoredVariance, anchoredFrozen
 				return;
-			} else {
-				// No anchored baseline - must reset but use cold start protection
-				logger.debug("Metric reset due to age (no anchored baseline)", {
-					metric,
-					ageMs: age,
-				});
-				state = {
-					mean: value,
-					variance: 0,
-					count: 1,
-					lastUpdate: now,
-					min: value,
-					max: value,
-				};
-				this.metrics.set(metric, state);
-				return;
 			}
+			// No anchored baseline - must reset but use cold start protection
+			logger.debug("Metric reset due to age (no anchored baseline)", {
+				metric,
+				ageMs: age,
+			});
+			state = {
+				mean: value,
+				variance: 0,
+				count: 1,
+				lastUpdate: now,
+				min: value,
+				max: value,
+			};
+			this.metrics.set(metric, state);
+			return;
 		}
 
 		// Clear degraded mode if we've had enough fresh observations
@@ -382,12 +381,12 @@ export class AdaptiveThresholds {
 						value,
 						mean: staticLimit,
 						stdDev: 0,
-						zScore: Infinity,
+						zScore: Number.POSITIVE_INFINITY,
 						threshold: staticLimit,
 					});
 					return {
 						isAnomaly: true,
-						zScore: Infinity,
+						zScore: Number.POSITIVE_INFINITY,
 						mean: staticLimit,
 						stdDev: 0,
 						observationCount: state?.count ?? 0,
@@ -424,12 +423,17 @@ export class AdaptiveThresholds {
 
 		// Also check against anchored baseline to detect gradual drift attacks
 		// An attacker might slowly shift the EWMA baseline, but the anchored baseline remains fixed
-		if (!isAnomaly && state.anchoredFrozen && state.anchoredMean !== undefined) {
+		if (
+			!isAnomaly &&
+			state.anchoredFrozen &&
+			state.anchoredMean !== undefined
+		) {
 			const anchoredStdDev = Math.max(
 				Math.sqrt(Math.max(0, state.anchoredVariance ?? 0)),
 				this.config.stdDevFloor,
 			);
-			const anchoredZScore = Math.abs(value - state.anchoredMean) / anchoredStdDev;
+			const anchoredZScore =
+				Math.abs(value - state.anchoredMean) / anchoredStdDev;
 
 			// Use a slightly higher threshold for anchored baseline (3x instead of 2x)
 			// since drift can occur naturally over time

@@ -32,7 +32,13 @@
  * AES-256-GCM encrypted file storage with a machine-derived key.
  */
 
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
+import { execSync } from "node:child_process";
+import {
+	createCipheriv,
+	createDecipheriv,
+	randomBytes,
+	scryptSync,
+} from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -42,7 +48,6 @@ import {
 } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { join } from "node:path";
-import { execSync } from "node:child_process";
 import { getAgentDir } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -146,7 +151,10 @@ function saveEncryptedStore(store: EncryptedStore): void {
 /**
  * Encrypt a value using AES-256-GCM
  */
-function encryptValue(value: string, key: Buffer): { iv: string; authTag: string; data: string } {
+function encryptValue(
+	value: string,
+	key: Buffer,
+): { iv: string; authTag: string; data: string } {
 	const iv = randomBytes(IV_LENGTH);
 	const cipher = createCipheriv(ENCRYPTION_ALGORITHM, key, iv);
 
@@ -164,7 +172,10 @@ function encryptValue(value: string, key: Buffer): { iv: string; authTag: string
 /**
  * Decrypt a value using AES-256-GCM
  */
-function decryptValue(encrypted: { iv: string; authTag: string; data: string }, key: Buffer): string {
+function decryptValue(
+	encrypted: { iv: string; authTag: string; data: string },
+	key: Buffer,
+): string {
 	const iv = Buffer.from(encrypted.iv, "hex");
 	const authTag = Buffer.from(encrypted.authTag, "hex");
 	const decipher = createDecipheriv(ENCRYPTION_ALGORITHM, key, iv);
@@ -183,7 +194,7 @@ const macOSKeychain = {
 		try {
 			const result = execSync(
 				`security find-generic-password -s "${SERVICE_NAME}" -a "${key}" -w 2>/dev/null`,
-				{ encoding: "utf8" }
+				{ encoding: "utf8" },
 			);
 			return result.trim();
 		} catch {
@@ -196,7 +207,7 @@ const macOSKeychain = {
 		try {
 			execSync(
 				`security delete-generic-password -s "${SERVICE_NAME}" -a "${key}" 2>/dev/null`,
-				{ stdio: "ignore" }
+				{ stdio: "ignore" },
 			);
 		} catch {
 			// Ignore - entry might not exist
@@ -205,7 +216,7 @@ const macOSKeychain = {
 		// Add new entry
 		execSync(
 			`security add-generic-password -s "${SERVICE_NAME}" -a "${key}" -w "${value.replace(/"/g, '\\"')}"`,
-			{ stdio: "ignore" }
+			{ stdio: "ignore" },
 		);
 	},
 
@@ -213,7 +224,7 @@ const macOSKeychain = {
 		try {
 			execSync(
 				`security delete-generic-password -s "${SERVICE_NAME}" -a "${key}" 2>/dev/null`,
-				{ stdio: "ignore" }
+				{ stdio: "ignore" },
 			);
 		} catch {
 			// Ignore - entry might not exist
@@ -224,7 +235,7 @@ const macOSKeychain = {
 		try {
 			const result = execSync(
 				`security dump-keychain 2>/dev/null | grep -A4 'svce.*="${SERVICE_NAME}"' | grep 'acct' | sed 's/.*="\\(.*\\)"/\\1/'`,
-				{ encoding: "utf8" }
+				{ encoding: "utf8" },
 			);
 			return result.trim().split("\n").filter(Boolean);
 		} catch {
