@@ -20,6 +20,7 @@ type SharedMemoryEvent = {
 	payload?: JsonValue;
 	tags?: string[];
 	id?: string;
+	actor?: string;
 };
 
 type SharedMemoryUpdate = {
@@ -101,11 +102,14 @@ async function syncSession(
 			actor: event.actor ?? "composer",
 		})) as JsonValue;
 	}
-	await safeFetch(`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/sync`, {
-		method: "PATCH",
-		headers: buildHeaders(config.apiKey),
-		body: JSON.stringify(payload),
-	});
+	await safeFetch(
+		`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/sync`,
+		{
+			method: "PATCH",
+			headers: buildHeaders(config.apiKey),
+			body: JSON.stringify(payload),
+		},
+	);
 }
 
 function nextEventId(prefix: string): string {
@@ -155,7 +159,10 @@ async function flushQueue(): Promise<void> {
 		if (events.length) {
 			pendingEvents = events.concat(pendingEvents).slice(-MAX_PENDING_EVENTS);
 		}
-		retryDelayMs = Math.min(MAX_BACKOFF_MS, Math.max(FLUSH_DELAY_MS, retryDelayMs * 2));
+		retryDelayMs = Math.min(
+			MAX_BACKOFF_MS,
+			Math.max(FLUSH_DELAY_MS, retryDelayMs * 2),
+		);
 		logger.debug("Shared memory update failed", { error });
 	} finally {
 		flushInFlight = false;
@@ -176,10 +183,20 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 		pendingState = { ...update.state, instanceId, source: "composer" };
 	}
 	if (update.event) {
-		const payload =
-			update.event.payload && typeof update.event.payload === "object" && !Array.isArray(update.event.payload)
-				? { ...(update.event.payload as Record<string, JsonValue>), instanceId, source: "composer" }
-				: { instanceId, source: "composer", value: update.event.payload ?? null };
+		const payload: Record<string, JsonValue> =
+			update.event.payload &&
+			typeof update.event.payload === "object" &&
+			!Array.isArray(update.event.payload)
+				? {
+						...(update.event.payload as Record<string, JsonValue>),
+						instanceId,
+						source: "composer",
+					}
+				: {
+						instanceId,
+						source: "composer",
+						value: update.event.payload ?? null,
+					};
 		pendingEvents.push({
 			...update.event,
 			payload,
