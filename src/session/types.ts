@@ -160,6 +160,27 @@ export interface SessionSummary {
 	tags?: string[];
 }
 
+/**
+ * Tracks the state of session migrations across the session directory.
+ * Persisted to disk to avoid re-running migrations on every startup.
+ */
+export interface SessionMigrationState {
+	/** Migration version that was run */
+	version: number;
+	/** ISO timestamp of when migration last ran */
+	lastRun: string;
+	/** Number of sessions successfully migrated */
+	successes: number;
+	/** Number of sessions that failed migration */
+	failures: number;
+	/** Number of sessions that required normalization */
+	normalized: number;
+	/** Number of sessions skipped (already up to date) */
+	skipped: number;
+	/** Total sessions processed */
+	total: number;
+}
+
 export function parseSessionEntry(line: string): SessionEntry {
 	const trimmed = line.trim();
 	if (!trimmed) {

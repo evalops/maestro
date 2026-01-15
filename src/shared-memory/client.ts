@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { DEFAULT_CAPABILITIES, SHARED_MEMORY_CONFIG } from "./contract.js";
 
 type JsonValue =
 	| string
@@ -67,18 +68,28 @@ type QueueStatsSnapshot = {
 };
 
 const logger = createLogger("shared-memory");
-const FLUSH_DELAY_MS = 150;
-const REQUEST_TIMEOUT_MS = 5000;
-const MAX_PENDING_EVENTS = 50;
-const MAX_BACKOFF_MS = 5000;
-const DEFAULT_EVENTS_PER_BATCH = 25;
-const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
-const TARGET_MAX_BODY_BYTES = 220 * 1024;
-const DEFAULT_EVENT_PAYLOAD_BYTES = 32 * 1024;
-const DEFAULT_EVENT_TYPE_LENGTH = 128;
-const DEFAULT_EVENT_ID_LENGTH = 128;
-const MAX_STRING_LENGTH = 4000;
-const MAX_ARRAY_LENGTH = 50;
+
+// Configuration constants from shared contract (cast to number to avoid literal type issues)
+const FLUSH_DELAY_MS: number = SHARED_MEMORY_CONFIG.FLUSH_DELAY_MS;
+const REQUEST_TIMEOUT_MS: number = SHARED_MEMORY_CONFIG.REQUEST_TIMEOUT_MS;
+const MAX_PENDING_EVENTS: number = SHARED_MEMORY_CONFIG.MAX_PENDING_EVENTS;
+const MAX_BACKOFF_MS: number = SHARED_MEMORY_CONFIG.MAX_BACKOFF_MS;
+const DEFAULT_EVENTS_PER_BATCH: number =
+	SHARED_MEMORY_CONFIG.DEFAULT_EVENTS_PER_BATCH;
+const TARGET_MAX_BODY_BYTES: number =
+	SHARED_MEMORY_CONFIG.TARGET_MAX_BODY_BYTES;
+const MAX_STRING_LENGTH: number = SHARED_MEMORY_CONFIG.MAX_STRING_LENGTH;
+const MAX_ARRAY_LENGTH: number = SHARED_MEMORY_CONFIG.MAX_ARRAY_LENGTH;
+const PERSIST_DEBOUNCE_MS: number = SHARED_MEMORY_CONFIG.PERSIST_DEBOUNCE_MS;
+const PERSIST_TTL_MS: number = SHARED_MEMORY_CONFIG.PERSIST_TTL_MS;
+const CAPABILITIES_TTL_MS: number = SHARED_MEMORY_CONFIG.CAPABILITIES_TTL_MS;
+
+// Default capability values from shared contract
+const DEFAULT_MAX_BODY_BYTES = DEFAULT_CAPABILITIES.maxBodyBytes;
+const DEFAULT_EVENT_PAYLOAD_BYTES = DEFAULT_CAPABILITIES.maxEventPayloadBytes;
+const DEFAULT_EVENT_TYPE_LENGTH = DEFAULT_CAPABILITIES.maxEventTypeLength;
+const DEFAULT_EVENT_ID_LENGTH = DEFAULT_CAPABILITIES.maxEventIdLength;
+
 const STATE_TRIM_KEYS = [
 	"summary",
 	"content",
@@ -87,9 +98,6 @@ const STATE_TRIM_KEYS = [
 	"message",
 	"body",
 ];
-const PERSIST_DEBOUNCE_MS = 300;
-const PERSIST_TTL_MS = 24 * 60 * 60 * 1000;
-const CAPABILITIES_TTL_MS = 5 * 60 * 1000;
 const REQUEST_ID_PREFIX = "composer";
 const instanceId = randomUUID();
 

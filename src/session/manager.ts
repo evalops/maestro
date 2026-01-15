@@ -52,6 +52,11 @@ import {
 	type SessionModelMetadata,
 } from "./metadata-cache.js";
 import {
+	registerActiveSessionFile,
+	scheduleSessionMigration,
+	unregisterActiveSessionFile,
+} from "./migration.js";
+import {
 	type AttachmentExtractedEntry,
 	type BranchSummaryEntry,
 	CURRENT_SESSION_VERSION,
@@ -203,7 +208,9 @@ function safeReadSessionEntries(
 function migrateV1ToV2(entries: SessionEntry[]): void {
 	const ids = new Set<string>();
 	let prevId: string | null = null;
-	const messageEntries: SessionMessageEntry[] = [];
+	// Include message, custom_message, and branch_summary entries to match
+	// how firstKeptEntryIndex was computed in v1 sessions
+	const messageEntries: SessionTreeEntry[] = [];
 
 	for (const entry of entries) {
 		if (entry.type === "session") {
@@ -219,7 +226,12 @@ function migrateV1ToV2(entries: SessionEntry[]): void {
 		ids.add(entry.id);
 		entry.parentId = prevId;
 		prevId = entry.id;
-		if (entry.type === "message") {
+		// Collect all entry types that contribute to firstKeptEntryIndex
+		if (
+			entry.type === "message" ||
+			entry.type === "custom_message" ||
+			entry.type === "branch_summary"
+		) {
 			messageEntries.push(entry);
 		}
 	}
@@ -504,10 +516,20 @@ export type {
 	SessionHeaderEntry,
 	SessionMessageEntry,
 	SessionMetaEntry,
+	SessionMigrationState,
 	SessionToolInfo,
 	SessionTreeEntry,
 	SessionTreeNode,
 } from "./types.js";
+
+export {
+	getMigrationState,
+	registerActiveSessionFile,
+	resetMigrationState,
+	runSessionMigration,
+	scheduleSessionMigration,
+	unregisterActiveSessionFile,
+} from "./migration.js";
 
 export function toSessionModelMetadata(
 	model: RegisteredModel,
@@ -599,6 +621,10 @@ export class SessionManager {
 	/** Disable session saving (for --no-session mode) */
 	disable() {
 		this.enabled = false;
+		// Unregister session file before disabling
+		if (this.sessionFile) {
+			unregisterActiveSessionFile(this.sessionFile);
+		}
 		this.writer?.flushSync();
 		this.writer?.dispose();
 		this.writer = undefined;
@@ -635,6 +661,8 @@ export class SessionManager {
 			this.sessionDir,
 			`${timestamp}_${this.sessionId}.jsonl`,
 		);
+		// Register new session file to prevent migration race conditions
+		registerActiveSessionFile(this.sessionFile);
 		this.fileEntries = [];
 		this.byId.clear();
 		this.labelsById.clear();
@@ -1333,6 +1361,7 @@ export class SessionManager {
 	 */
 	loadAllSessions(): SessionMetadata[] {
 		this.writer?.flushSync();
+		scheduleSessionMigration();
 		const sessions: SessionMetadata[] = [];
 
 		try {
@@ -1401,10 +1430,18 @@ export class SessionManager {
 	 * Set the session file to an existing session
 	 */
 	setSessionFile(path: string): void {
+		// Unregister old session file before disposing writer
+		if (this.sessionFile) {
+			unregisterActiveSessionFile(this.sessionFile);
+		}
 		this.writer?.flushSync();
 		this.writer?.dispose();
 
 		this.sessionFile = resolve(path);
+		// Register new session file to prevent migration race conditions
+		registerActiveSessionFile(this.sessionFile);
+		scheduleSessionMigration();
+
 		if (existsSync(this.sessionFile)) {
 			const entries = safeReadSessionEntries(this.sessionFile);
 			const migrated = migrateToCurrentVersion(entries);
