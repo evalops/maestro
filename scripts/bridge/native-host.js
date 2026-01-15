@@ -143,6 +143,11 @@ async function ensureComposerWeb(baseUrl) {
 			webProcess.on("exit", () => {
 				webProcess = null;
 			});
+			webProcess.on("error", (_err) => {
+				// Handle spawn errors (e.g., ENOENT when command not found)
+				// The error is logged but not thrown to avoid crashing the host
+				webProcess = null;
+			});
 		} catch (error) {
 			return {
 				reachable: false,
@@ -258,7 +263,7 @@ function handleMessage(message) {
 		return;
 	}
 	const { id, type } = message;
-	if (!id || typeof type !== "string") {
+	if (id == null || typeof type !== "string") {
 		sendNativeMessage({
 			type: "error",
 			ok: false,
