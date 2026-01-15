@@ -41,6 +41,7 @@ type PendingSession = {
 	events: SharedMemoryEvent[];
 	flushTimer: ReturnType<typeof setTimeout> | null;
 	flushInFlight: boolean;
+	blockedUntil: number | null;
 	retryDelayMs: number;
 	updatedAt: number;
 };
@@ -74,6 +75,8 @@ const FLUSH_DELAY_MS: number = SHARED_MEMORY_CONFIG.FLUSH_DELAY_MS;
 const REQUEST_TIMEOUT_MS: number = SHARED_MEMORY_CONFIG.REQUEST_TIMEOUT_MS;
 const MAX_PENDING_EVENTS: number = SHARED_MEMORY_CONFIG.MAX_PENDING_EVENTS;
 const MAX_BACKOFF_MS: number = SHARED_MEMORY_CONFIG.MAX_BACKOFF_MS;
+const MIN_GZIP_BYTES = 1024;
+const AUTH_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const DEFAULT_EVENTS_PER_BATCH: number =
 	SHARED_MEMORY_CONFIG.DEFAULT_EVENTS_PER_BATCH;
 const TARGET_MAX_BODY_BYTES: number =
@@ -89,7 +92,6 @@ const DEFAULT_MAX_BODY_BYTES = DEFAULT_CAPABILITIES.maxBodyBytes;
 const DEFAULT_EVENT_PAYLOAD_BYTES = DEFAULT_CAPABILITIES.maxEventPayloadBytes;
 const DEFAULT_EVENT_TYPE_LENGTH = DEFAULT_CAPABILITIES.maxEventTypeLength;
 const DEFAULT_EVENT_ID_LENGTH = DEFAULT_CAPABILITIES.maxEventIdLength;
-
 const STATE_TRIM_KEYS = [
 	"summary",
 	"content",
@@ -106,6 +108,7 @@ let eventCounter = 0;
 let requestCounter = 0;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 let missingConfigLogged = false;
+let authFailureSignature: string | null = null;
 let capabilitiesCache: { value: Capabilities; fetchedAt: number } | null = null;
 let capabilitiesPromise: Promise<Capabilities> | null = null;
 const queueStats = {
@@ -121,12 +124,19 @@ const queueStats = {
 class SharedMemoryError extends Error {
 	status?: number;
 	retryAfterMs?: number;
+	requestId?: string;
 
-	constructor(message: string, status?: number, retryAfterMs?: number) {
+	constructor(
+		message: string,
+		status?: number,
+		retryAfterMs?: number,
+		requestId?: string,
+	) {
 		super(message);
 		this.name = "SharedMemoryError";
 		this.status = status;
 		this.retryAfterMs = retryAfterMs;
+		this.requestId = requestId;
 	}
 }
 
@@ -200,6 +210,34 @@ function isUnsupportedEncoding(error: SharedMemoryError): boolean {
 	return error.message.toLowerCase().includes("unsupported content-encoding");
 }
 
+function authSignature(config: SharedMemoryConfig): string {
+	const keyLength = config.apiKey ? config.apiKey.length : 0;
+	return `${config.baseUrl}|${config.sessionIdOverride ?? ""}|${keyLength}`;
+}
+
+function logAuthFailureOnce(
+	config: SharedMemoryConfig,
+	error: SharedMemoryError,
+): void {
+	const signature = authSignature(config);
+	if (authFailureSignature === signature) return;
+	authFailureSignature = signature;
+	logger.warn("Shared memory auth failed; backing off", {
+		status: error.status,
+		requestId: error.requestId,
+	});
+}
+
+function classifyError(error: unknown): "retriable" | "auth" | "drop" {
+	if (!(error instanceof SharedMemoryError)) return "retriable";
+	if (error.status === 401 || error.status === 403) return "auth";
+	if (error.status === undefined) return "retriable";
+	if (error.status >= 500 || error.status === 408 || error.status === 429) {
+		return "retriable";
+	}
+	return "drop";
+}
+
 function normalizeBaseUrl(value: string): string {
 	return value.replace(/\/+$/, "");
 }
@@ -242,12 +280,14 @@ async function safeFetch(url: string, init: RequestInit): Promise<void> {
 		if (!response.ok) {
 			const message = await response.text().catch(() => "");
 			const retryAfterMs = parseRetryAfterMs(response);
+			const requestId = response.headers.get("x-request-id") ?? undefined;
 			throw new SharedMemoryError(
 				message
 					? `Shared memory error: ${response.status} ${message}`
 					: `Shared memory error: ${response.status}`,
 				response.status,
 				retryAfterMs ?? undefined,
+				requestId ?? undefined,
 			);
 		}
 	} finally {
@@ -836,6 +876,7 @@ function getPendingSession(sessionKey: string): PendingSession {
 		events: [],
 		flushTimer: null,
 		flushInFlight: false,
+		blockedUntil: null,
 		retryDelayMs: FLUSH_DELAY_MS,
 		updatedAt: Date.now(),
 	};
@@ -848,10 +889,47 @@ function scheduleFlush(
 	delayMs = FLUSH_DELAY_MS,
 ): void {
 	if (pending.flushTimer) return;
+	const now = Date.now();
+	const blockedDelay =
+		pending.blockedUntil && pending.blockedUntil > now
+			? pending.blockedUntil - now
+			: 0;
+	const actualDelay = Math.max(delayMs, blockedDelay);
 	pending.flushTimer = setTimeout(() => {
 		pending.flushTimer = null;
 		void flushSession(pending);
-	}, delayMs);
+	}, actualDelay);
+}
+
+function requeueState(
+	pending: PendingSession,
+	state: Record<string, JsonValue>,
+): void {
+	const mergedState = { ...state, ...(pending.state ?? {}) };
+	const fittedState = fitJsonToBytes(
+		mergedState,
+		TARGET_MAX_BODY_BYTES,
+		STATE_TRIM_KEYS,
+	);
+	if (fittedState.trimmed) {
+		queueStats.trimmedStates += 1;
+	}
+	if (
+		fittedState.value &&
+		typeof fittedState.value === "object" &&
+		!Array.isArray(fittedState.value)
+	) {
+		pending.state = fittedState.value as Record<string, JsonValue>;
+	} else {
+		pending.state = state;
+	}
+}
+
+function requeueEvents(
+	pending: PendingSession,
+	events: SharedMemoryEvent[],
+): void {
+	pending.events = events.concat(pending.events).slice(-MAX_PENDING_EVENTS);
 }
 
 async function flushSession(pending: PendingSession): Promise<void> {
@@ -859,6 +937,12 @@ async function flushSession(pending: PendingSession): Promise<void> {
 		scheduleFlush(pending);
 		return;
 	}
+	const now = Date.now();
+	if (pending.blockedUntil && pending.blockedUntil > now) {
+		scheduleFlush(pending, pending.blockedUntil - now);
+		return;
+	}
+	pending.blockedUntil = null;
 	if (!pending.state && pending.events.length === 0) {
 		pendingBySession.delete(pending.sessionKey);
 		return;
@@ -894,33 +978,33 @@ async function flushSession(pending: PendingSession): Promise<void> {
 		pending.updatedAt = Date.now();
 		schedulePersist();
 	} catch (error) {
-		if (state) {
-			const mergedState = { ...state, ...(pending.state ?? {}) };
-			const fittedState = fitJsonToBytes(
-				mergedState,
-				TARGET_MAX_BODY_BYTES,
-				STATE_TRIM_KEYS,
-			);
-			if (fittedState.trimmed) {
-				queueStats.trimmedStates += 1;
+		const classification = classifyError(error);
+		if (classification === "auth") {
+			if (state) requeueState(pending, state);
+			if (events.length) requeueEvents(pending, events);
+			pending.retryDelayMs = AUTH_FAILURE_COOLDOWN_MS;
+			pending.blockedUntil = Date.now() + AUTH_FAILURE_COOLDOWN_MS;
+			pending.updatedAt = Date.now();
+			if (error instanceof SharedMemoryError) {
+				logAuthFailureOnce(config, error);
 			}
-			if (
-				fittedState.value &&
-				typeof fittedState.value === "object" &&
-				!Array.isArray(fittedState.value)
-			) {
-				pending.state = fittedState.value as Record<string, JsonValue>;
-			} else {
-				pending.state = state;
-			}
+			schedulePersist();
+		} else if (classification === "drop") {
+			if (state) queueStats.droppedStates += 1;
+			if (events.length) queueStats.droppedEvents += events.length;
+			pending.updatedAt = Date.now();
+			schedulePersist();
+			logger.warn("Dropped shared memory update after non-retriable error", {
+				error,
+			});
+		} else {
+			if (state) requeueState(pending, state);
+			if (events.length) requeueEvents(pending, events);
+			pending.retryDelayMs = resolveRetryDelayMs(pending, error);
+			pending.updatedAt = Date.now();
+			schedulePersist();
+			logger.debug("Shared memory update failed", { error });
 		}
-		if (events.length) {
-			pending.events = events.concat(pending.events).slice(-MAX_PENDING_EVENTS);
-		}
-		pending.retryDelayMs = resolveRetryDelayMs(pending, error);
-		pending.updatedAt = Date.now();
-		schedulePersist();
-		logger.debug("Shared memory update failed", { error });
 	} finally {
 		pending.flushInFlight = false;
 		if (pending.state || pending.events.length) {
@@ -940,6 +1024,7 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 			missingConfigLogged = true;
 			logger.debug("Shared memory update skipped: missing config");
 		}
+		authFailureSignature = null;
 		return;
 	}
 	missingConfigLogged = false;
@@ -1051,7 +1136,7 @@ function prepareRequestBody(
 		}
 	}
 	const headers = buildHeaders(apiKey, requestId);
-	if (!supportsGzip) {
+	if (!supportsGzip || byteLength(json) < MIN_GZIP_BYTES) {
 		return { body: json, headers };
 	}
 	try {

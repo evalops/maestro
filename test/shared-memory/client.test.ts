@@ -12,6 +12,7 @@ const defaultCapabilities = {
 	max_event_type_length: 128,
 	max_event_id_length: 128,
 } as const;
+const AUTH_COOLDOWN_MS = 5 * 60 * 1000;
 
 const createCapabilitiesResponse = (
 	overrides: Partial<typeof defaultCapabilities> = {},
@@ -291,6 +292,43 @@ describe("shared-memory client", () => {
 		expect(syncCalls).toBe(1);
 
 		await vi.advanceTimersByTimeAsync(200);
+		expect(syncCalls).toBe(2);
+	});
+
+	it("cools down after auth failures before retrying", async () => {
+		let syncCalls = 0;
+		const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url.endsWith("/capabilities")) {
+				return createCapabilitiesResponse();
+			}
+			if (url.includes("/sync")) {
+				syncCalls += 1;
+				if (syncCalls === 1) {
+					return new Response("unauthorized", { status: 401 });
+				}
+				return new Response("", { status: 200 });
+			}
+			return new Response("", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		vi.spyOn(Math, "random").mockReturnValue(0);
+
+		const { queueSharedMemoryUpdate } = await import(
+			"../../src/shared-memory/client.js"
+		);
+		queueSharedMemoryUpdate({
+			sessionId: "session-a",
+			state: { foo: "bar" },
+		});
+
+		await vi.advanceTimersByTimeAsync(200);
+		expect(syncCalls).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(AUTH_COOLDOWN_MS - 1000);
+		expect(syncCalls).toBe(1);
+
+		await vi.advanceTimersByTimeAsync(2000);
 		expect(syncCalls).toBe(2);
 	});
 
