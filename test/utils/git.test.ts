@@ -171,7 +171,8 @@ describe("getGitRoot", () => {
 		const root = getGitRoot();
 
 		expect(root).toBeDefined();
-		expect(root?.endsWith("composer")).toBe(true);
+		// Match "composer" or worktree variants like "composer-improvements"
+		expect(root).toMatch(/composer(-\w+)?$/);
 	});
 
 	it("returns undefined for non-git directory", () => {

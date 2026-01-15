@@ -76,7 +76,7 @@ const DEFAULT_CONFIG: SerializerConfig = {
 /**
  * Edit serializer for preventing race conditions
  */
-class EditSerializer {
+export class EditSerializer {
 	private locks = new Map<string, FileLock>();
 	private config: SerializerConfig = DEFAULT_CONFIG;
 	private cleanupTimer: ReturnType<typeof setInterval> | null = null;
