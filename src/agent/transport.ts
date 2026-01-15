@@ -58,6 +58,10 @@ import {
 	HUMAN_EGRESS_PII_RULE_ID,
 	defaultActionFirewall,
 } from "../safety/action-firewall.js";
+import {
+	SafetyMiddleware,
+	createSafetyMiddleware,
+} from "../safety/safety-middleware.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import { SemanticJudge } from "../safety/semantic-judge.js";
 import {
@@ -451,6 +455,8 @@ export class ProviderTransport implements AgentTransport {
 	private recentToolCalls: Array<{ name: string; signature: string }> = [];
 	/** Per-tool timestamp arrays for rate limiting enforcement */
 	private recentToolTimestamps = new Map<string, number[]>();
+	/** Safety middleware for sequence analysis and context sanitization */
+	private readonly safetyMiddleware!: SafetyMiddleware;
 	private readonly clock: Clock;
 	private readonly sessionTokenCounter?: SessionTokenCounter;
 	private readonly auditLogger?: ToolAuditLogger;
@@ -477,6 +483,15 @@ export class ProviderTransport implements AgentTransport {
 		this.clock = options.clock ?? systemClock;
 		this.sessionTokenCounter = options.sessionTokenCounter;
 		this.auditLogger = options.auditLogger;
+		// Initialize safety middleware for sequence analysis and context sanitization
+		this.safetyMiddleware = createSafetyMiddleware({
+			// Loop detection handled by existing doom loop logic
+			enableLoopDetection: false,
+			// Enable sequence analysis for behavioral threat detection
+			enableSequenceAnalysis: true,
+			// Enable context firewall for sanitizing audit logs
+			enableContextFirewall: true,
+		});
 	}
 
 	/**
@@ -1129,7 +1144,9 @@ export class ProviderTransport implements AgentTransport {
 							await logToolExecutionAudit(
 								this.auditLogger,
 								toolCall.name,
-								toolCall.arguments as Record<string, unknown>,
+								this.safetyMiddleware.sanitizeForLogging(
+									toolCall.arguments as Record<string, unknown>,
+								),
 								"denied",
 								0,
 								hookResult.blockReason,
@@ -1163,8 +1180,59 @@ export class ProviderTransport implements AgentTransport {
 						}
 					}
 
+					// Run safety middleware sequence analysis
+					const safetyCheck = this.safetyMiddleware.preExecution(
+						effectiveToolCall.name,
+						effectiveToolCall.arguments as Record<string, unknown>,
+					);
+
+					if (!safetyCheck.allowed && !safetyCheck.requiresApproval) {
+						// Hard block from safety middleware
+						const safetyBlockedResult: ToolResultMessage = {
+							role: "toolResult",
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							content: [
+								{
+									type: "text",
+									text: `Blocked by safety check: ${safetyCheck.reason ?? "Safety policy violation"}`,
+								},
+							],
+							isError: true,
+							timestamp: this.clock.now(),
+						};
+						await logToolExecutionAudit(
+							this.auditLogger,
+							toolCall.name,
+							safetyCheck.sanitizedArgs,
+							"denied",
+							0,
+							safetyCheck.reason,
+						);
+						for (const event of emitToolResult(
+							safetyBlockedResult,
+							toolCall,
+							true,
+						)) {
+							yield event;
+						}
+						await checkSteering();
+						if (steeringTriggered) {
+							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
+							break;
+						}
+						continue;
+					}
+
 					let approvalAllowed = true;
 					let approvalReason: string | undefined;
+
+					// Check if safety middleware requires approval
+					if (safetyCheck.requiresApproval) {
+						approvalAllowed = false;
+						approvalReason = safetyCheck.reason;
+					}
+
 					const workflowSnapshot = this.workflowState.snapshot();
 					// Look up tool to get annotations for firewall decisions
 					const toolDef = tools.find((t) => t.name === effectiveToolCall.name);
@@ -1204,7 +1272,9 @@ export class ProviderTransport implements AgentTransport {
 						await logToolExecutionAudit(
 							this.auditLogger,
 							toolCall.name,
-							toolCall.arguments as Record<string, unknown>,
+							this.safetyMiddleware.sanitizeForLogging(
+								toolCall.arguments as Record<string, unknown>,
+							),
 							"denied",
 							0,
 							verdict.reason,
@@ -1279,7 +1349,9 @@ export class ProviderTransport implements AgentTransport {
 						await logToolExecutionAudit(
 							this.auditLogger,
 							toolCall.name,
-							toolCall.arguments as Record<string, unknown>,
+							this.safetyMiddleware.sanitizeForLogging(
+								toolCall.arguments as Record<string, unknown>,
+							),
 							"denied",
 							0,
 							approvalReason,
@@ -1436,9 +1508,17 @@ export class ProviderTransport implements AgentTransport {
 								await logToolExecutionAudit(
 									this.auditLogger,
 									toolCall.name,
-									validatedArgs,
+									this.safetyMiddleware.sanitizeForLogging(validatedArgs),
 									result.isError ? "failure" : "success",
 									this.clock.now() - startTime,
+								);
+
+								// Record execution in safety middleware for sequence analysis
+								this.safetyMiddleware.postExecution(
+									toolCall.name,
+									validatedArgs,
+									!result.isError,
+									true, // approved
 								);
 
 								const toolResultMsg: ToolResultMessage = {
@@ -1580,10 +1660,18 @@ export class ProviderTransport implements AgentTransport {
 								await logToolExecutionAudit(
 									this.auditLogger,
 									toolCall.name,
-									validatedArgs,
+									this.safetyMiddleware.sanitizeForLogging(validatedArgs),
 									"failure",
 									this.clock.now() - startTime,
 									errorMessage,
+								);
+
+								// Record failure in safety middleware for sequence analysis
+								this.safetyMiddleware.postExecution(
+									toolCall.name,
+									validatedArgs,
+									false, // success
+									true, // approved
 								);
 
 								const toolResultMsg: ToolResultMessage = {
