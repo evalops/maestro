@@ -153,11 +153,7 @@ function shrinkValue(value: unknown): unknown {
 	return value;
 }
 
-function dropKeys(
-	value: unknown,
-	keys: string[],
-	maxBytes: number,
-): unknown {
+function dropKeys(value: unknown, keys: string[], maxBytes: number): unknown {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
 	const record = { ...(value as Record<string, unknown>) };
 	for (const key of keys) {
@@ -185,7 +181,10 @@ function fitJsonToBytes(
 	if (byteLength(serialized) <= maxBytes) return dropped;
 	if (Array.isArray(dropped)) {
 		let trimmed = dropped.slice(0, Math.max(1, Math.floor(dropped.length / 2)));
-		while (trimmed.length > 1 && byteLength(JSON.stringify(trimmed)) > maxBytes) {
+		while (
+			trimmed.length > 1 &&
+			byteLength(JSON.stringify(trimmed)) > maxBytes
+		) {
 			trimmed = trimmed.slice(0, Math.max(1, Math.floor(trimmed.length / 2)));
 		}
 		return trimmed;
@@ -471,9 +470,12 @@ async function sendSyncBatch(
 					return;
 				}
 				if (events.length === 1) {
-					logger.debug("Dropped oversized shared memory event", {
-						type: events[0].type,
-					});
+					const [firstEvent] = events;
+					if (firstEvent) {
+						logger.debug("Dropped oversized shared memory event", {
+							type: firstEvent.type,
+						});
+					}
 					return;
 				}
 				if (state) {
@@ -568,7 +570,13 @@ async function flushSession(pending: PendingSession): Promise<void> {
 
 	try {
 		const capabilities = await getCapabilities(config);
-		await sendSyncBatches(config, pending.sessionKey, state, events, capabilities);
+		await sendSyncBatches(
+			config,
+			pending.sessionKey,
+			state,
+			events,
+			capabilities,
+		);
 		pending.retryDelayMs = FLUSH_DELAY_MS;
 		pending.updatedAt = Date.now();
 		schedulePersist();
@@ -635,7 +643,16 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 		const fittedPayload = fitJsonToBytes(
 			payload,
 			Math.min(32 * 1024, TARGET_MAX_BODY_BYTES),
-			["summary", "content", "preview", "text", "message", "body", "markdown", "html"],
+			[
+				"summary",
+				"content",
+				"preview",
+				"text",
+				"message",
+				"body",
+				"markdown",
+				"html",
+			],
 		) as JsonValue;
 		pending.events.push({
 			...update.event,
