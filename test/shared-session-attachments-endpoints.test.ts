@@ -13,8 +13,8 @@ vi.mock("../src/db/client.js", () => ({
 	isDbAvailable: vi.fn(() => false),
 }));
 
-vi.mock("../src/session/manager.js", () => ({
-	SessionManager: vi.fn().mockImplementation(() => ({
+function createMockSessionManager() {
+	return {
 		loadSession: vi.fn().mockResolvedValue({
 			id: "test-session-1",
 			title: "Test Session 1",
@@ -37,7 +37,13 @@ vi.mock("../src/session/manager.js", () => ({
 				},
 			],
 		}),
-	})),
+	};
+}
+
+vi.mock("../src/session/manager.js", () => ({
+	SessionManager: vi.fn(function MockSessionManager() {
+		return createMockSessionManager();
+	}),
 }));
 
 function createMockRequest(

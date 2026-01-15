@@ -6,23 +6,33 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Track BedrockRuntimeClient instantiation
-const mockClientInstances: Array<{ region?: string }> = [];
-const mockSend = vi.fn();
-class MockBedrockRuntimeClient {
-	send = mockSend;
-	constructor(config?: { region?: string }) {
-		mockClientInstances.push({ region: config?.region });
+const {
+	mockClientInstances,
+	mockSend,
+	mockBedrockRuntimeClient,
+	mockConverseStreamCommand,
+} = vi.hoisted(() => {
+	const mockClientInstances: Array<{ region?: string }> = [];
+	const mockSend = vi.fn();
+	class MockBedrockRuntimeClient {
+		send = mockSend;
+		constructor(config?: { region?: string }) {
+			mockClientInstances.push({ region: config?.region });
+		}
 	}
-}
-class MockConverseStreamCommand {
-	input: unknown;
-	constructor(input: unknown) {
-		this.input = input;
+	class MockConverseStreamCommand {
+		input: unknown;
+		constructor(input: unknown) {
+			this.input = input;
+		}
 	}
-}
-const mockBedrockRuntimeClient = vi.fn(MockBedrockRuntimeClient);
-const mockConverseStreamCommand = vi.fn(MockConverseStreamCommand);
+	return {
+		mockClientInstances,
+		mockSend,
+		mockBedrockRuntimeClient: vi.fn(MockBedrockRuntimeClient),
+		mockConverseStreamCommand: vi.fn(MockConverseStreamCommand),
+	};
+});
 
 vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 	return {

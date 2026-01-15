@@ -198,10 +198,12 @@ function fitJsonToBytes(
 ): { value: unknown; trimmed: boolean } {
 	const shrunk = shrinkValue(value);
 	let serialized = JSON.stringify(shrunk);
-	if (byteLength(serialized) <= maxBytes) return { value: shrunk, trimmed: false };
+	if (byteLength(serialized) <= maxBytes)
+		return { value: shrunk, trimmed: false };
 	const dropped = dropKeys(shrunk, dropList, maxBytes);
 	serialized = JSON.stringify(dropped);
-	if (byteLength(serialized) <= maxBytes) return { value: dropped, trimmed: true };
+	if (byteLength(serialized) <= maxBytes)
+		return { value: dropped, trimmed: true };
 	if (Array.isArray(dropped)) {
 		let trimmed = dropped.slice(0, Math.max(1, Math.floor(dropped.length / 2)));
 		while (
@@ -351,12 +353,18 @@ function loadPersistedQueue(): void {
 			stats?: Partial<typeof queueStats>;
 		};
 		if (parsed.stats) {
-			queueStats.trimmedStates = parsed.stats.trimmedStates ?? queueStats.trimmedStates;
-			queueStats.trimmedEvents = parsed.stats.trimmedEvents ?? queueStats.trimmedEvents;
-			queueStats.droppedStates = parsed.stats.droppedStates ?? queueStats.droppedStates;
-			queueStats.droppedEvents = parsed.stats.droppedEvents ?? queueStats.droppedEvents;
-			queueStats.batchSplits = parsed.stats.batchSplits ?? queueStats.batchSplits;
-			queueStats.gzipRequests = parsed.stats.gzipRequests ?? queueStats.gzipRequests;
+			queueStats.trimmedStates =
+				parsed.stats.trimmedStates ?? queueStats.trimmedStates;
+			queueStats.trimmedEvents =
+				parsed.stats.trimmedEvents ?? queueStats.trimmedEvents;
+			queueStats.droppedStates =
+				parsed.stats.droppedStates ?? queueStats.droppedStates;
+			queueStats.droppedEvents =
+				parsed.stats.droppedEvents ?? queueStats.droppedEvents;
+			queueStats.batchSplits =
+				parsed.stats.batchSplits ?? queueStats.batchSplits;
+			queueStats.gzipRequests =
+				parsed.stats.gzipRequests ?? queueStats.gzipRequests;
 			queueStats.lastSentAt = parsed.stats.lastSentAt ?? queueStats.lastSentAt;
 		}
 		const sessions = parsed.sessions ?? {};
@@ -528,7 +536,14 @@ async function sendSyncBatch(
 			if (error.status === 413) {
 				if (state && events.length > 0) {
 					queueStats.batchSplits += 1;
-					await sendSyncBatch(config, sessionId, state, [], capabilities, stats);
+					await sendSyncBatch(
+						config,
+						sessionId,
+						state,
+						[],
+						capabilities,
+						stats,
+					);
 					await sendSyncBatch(config, sessionId, null, events, capabilities);
 					return;
 				}

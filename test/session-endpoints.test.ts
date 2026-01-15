@@ -7,9 +7,8 @@ import {
 	handleSharedSession,
 } from "../src/server/handlers/sessions.js";
 
-// Mock the SessionManager
-vi.mock("../src/session/manager.js", () => ({
-	SessionManager: vi.fn().mockImplementation(() => ({
+function createMockSessionManager() {
+	return {
 		listSessions: vi.fn().mockResolvedValue([
 			{
 				id: "test-session-1",
@@ -75,7 +74,14 @@ vi.mock("../src/session/manager.js", () => ({
 		setSessionFavorite: vi.fn(),
 		setSessionTitle: vi.fn(),
 		setSessionTags: vi.fn(),
-	})),
+	};
+}
+
+// Mock the SessionManager
+vi.mock("../src/session/manager.js", () => ({
+	SessionManager: vi.fn(function MockSessionManager() {
+		return createMockSessionManager();
+	}),
 }));
 
 // Mock session-serialization

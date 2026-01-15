@@ -2,19 +2,24 @@ import { Type } from "@sinclair/typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Context, Model } from "../../../src/agent/types.js";
 
-// Mock the AWS SDK
-const mockSend = vi.fn();
-class MockBedrockRuntimeClient {
-	send = mockSend;
-}
-class MockConverseStreamCommand {
-	input: unknown;
-	constructor(input: unknown) {
-		this.input = input;
-	}
-}
-const mockBedrockRuntimeClient = vi.fn(MockBedrockRuntimeClient);
-const mockConverseStreamCommand = vi.fn(MockConverseStreamCommand);
+const { mockSend, mockBedrockRuntimeClient, mockConverseStreamCommand } =
+	vi.hoisted(() => {
+		const mockSend = vi.fn();
+		class MockBedrockRuntimeClient {
+			send = mockSend;
+		}
+		class MockConverseStreamCommand {
+			input: unknown;
+			constructor(input: unknown) {
+				this.input = input;
+			}
+		}
+		return {
+			mockSend,
+			mockBedrockRuntimeClient: vi.fn(MockBedrockRuntimeClient),
+			mockConverseStreamCommand: vi.fn(MockConverseStreamCommand),
+		};
+	});
 vi.mock("@aws-sdk/client-bedrock-runtime", () => {
 	return {
 		BedrockRuntimeClient: mockBedrockRuntimeClient,

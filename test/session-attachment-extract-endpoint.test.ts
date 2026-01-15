@@ -8,8 +8,8 @@ let tempDir: string | null = null;
 let sessionFilePath = "";
 let loadedSession: unknown = null;
 
-vi.mock("../src/session/manager.js", () => ({
-	SessionManager: vi.fn().mockImplementation(() => ({
+function createMockSessionManager() {
+	return {
 		loadSession: vi.fn().mockImplementation(async () => loadedSession),
 		getSessionFileById: vi.fn().mockImplementation(() => sessionFilePath),
 		saveAttachmentExtraction: vi
@@ -26,7 +26,13 @@ vi.mock("../src/session/manager.js", () => ({
 					writeFileSync(sessionFilePath, `${existing}${line}\n`, "utf8");
 				},
 			),
-	})),
+	};
+}
+
+vi.mock("../src/session/manager.js", () => ({
+	SessionManager: vi.fn(function MockSessionManager() {
+		return createMockSessionManager();
+	}),
 }));
 
 import { handleSessionAttachmentExtract } from "../src/server/handlers/session-attachments.js";
