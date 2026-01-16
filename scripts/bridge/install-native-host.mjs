@@ -8,7 +8,7 @@
  * 3) Scan Chrome profiles for an installed Conductor extension
  */
 
-import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir, chmod } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import os from "node:os";
@@ -195,6 +195,12 @@ async function main() {
   };
 
   await writeFile(manifestPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+
+  // Chrome requires the native host script to be executable on Unix-like systems
+  if (process.platform !== "win32") {
+    await chmod(HOST_PATH, 0o755);
+  }
+
   console.log(`Installed native host manifest at ${manifestPath}`);
   console.log(`Allowed extension: ${extensionId}`);
 }
