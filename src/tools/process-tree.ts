@@ -54,6 +54,10 @@ class ProcessRegistry {
 	constructor() {
 		// Periodically clean up dead processes
 		this.cleanupInterval = setInterval(() => this.cleanup(), 30000);
+		// Don't keep the event loop alive just for background cleanup.
+		if (this.cleanupInterval.unref) {
+			this.cleanupInterval.unref();
+		}
 	}
 
 	/**
