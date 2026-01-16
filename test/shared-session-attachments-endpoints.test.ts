@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	handleSessionShare,
 	handleSharedSessionAttachment,
@@ -116,7 +116,13 @@ function createMockResponse(): {
 const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 
 describe("Shared session attachments", () => {
+	beforeEach(() => {
+		// Disable strict session access for tests (sessions without ownership info)
+		process.env.COMPOSER_STRICT_SESSION_ACCESS = "false";
+	});
+
 	afterEach(async () => {
+		delete process.env.COMPOSER_STRICT_SESSION_ACCESS;
 		await resetShareRateLimit();
 	});
 

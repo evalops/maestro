@@ -36,16 +36,26 @@ The host supports:
 
 ### Install the native host manifest
 
-1. Copy the example manifest:
+1. (Recommended) Run the installer script:
+
+```
+node composer/scripts/bridge/install-native-host.mjs --extension-id <CONDUCTOR_EXTENSION_ID>
+```
+
+This attempts to auto-detect the extension ID (via `CONDUCTOR_EXTENSION_ID`,
+`CONDUCTOR_PEM_PATH`, or an installed Chrome profile) and writes the manifest to
+the correct OS location.
+
+2. Or copy the example manifest:
 
 ```
 composer/scripts/bridge/native-host-manifest.example.json
 ```
 
-2. Replace `path` with the absolute path to `native-host.js`.
-3. Replace `YOUR_EXTENSION_ID` with the Conductor extension ID.
+3. Replace `path` with the absolute path to `native-host.js`.
+4. Replace `YOUR_EXTENSION_ID` with the Conductor extension ID.
 
-Place the manifest in the standard Chrome location:
+Place the manifest in the standard Chrome location (if you did not use the script):
 
 - macOS: `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`
 - Linux: `~/.config/google-chrome/NativeMessagingHosts/`
