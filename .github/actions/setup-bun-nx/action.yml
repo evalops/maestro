@@ -49,6 +49,7 @@ runs:
     - uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
       with:
         bun-version: ${{ inputs.bun-version }}
+        no-cache: ${{ startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '' }}
 
     - name: Cache Bun (Blacksmith)
       if: ${{ inputs.cache-bun == 'true' && (startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '') }}
