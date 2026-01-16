@@ -32,6 +32,8 @@ jobs:
       - uses: ./.github/actions/setup-bun-nx
         with:
           ensure-ripgrep: "true"
+          cache-bun: ${{ !(startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '') }}
+          cache-nx: ${{ !(startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '') }}
 
       - name: Cache pip (GitHub)
         if: ${{ !(startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '') }}
