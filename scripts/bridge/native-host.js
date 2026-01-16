@@ -202,8 +202,8 @@ function statusSignature(payload) {
 
 function startStatusPolling() {
 	if (statusTimer) return;
-  statusTimer = setInterval(async () => {
-    if (polling) return;
+	statusTimer = setInterval(async () => {
+		if (polling) return;
 		polling = true;
 		try {
 			const status = await probeBridgeStatus(currentBaseUrl);
@@ -223,8 +223,8 @@ function startStatusPolling() {
 		} finally {
 			polling = false;
 		}
-  }, STATUS_POLL_INTERVAL_MS);
-  statusTimer.unref?.();
+	}, STATUS_POLL_INTERVAL_MS);
+	statusTimer.unref?.();
 }
 
 function stopStatusPolling() {
