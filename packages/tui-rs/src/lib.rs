@@ -87,6 +87,9 @@ pub mod headless;
 /// Type definitions for messages exchanged between Rust and Node.js.
 pub mod protocol;
 
+/// Composer <-> Conductor bridge status types and helpers.
+pub mod bridge;
+
 /// Session persistence (save/load conversations).
 /// JSONL-based session storage for resuming previous conversations.
 pub mod session;
@@ -413,6 +416,14 @@ pub use diff::{
     render_diff,   // Renders diff as colored terminal output
     Diff,          // Represents a single diff change
     DiffStats,     // Summary statistics (lines added/removed)
+};
+
+// Bridge status types
+pub use bridge::{
+    fetch_bridge_status, // Fetches bridge status from a Composer web server
+    BridgeClientTools,
+    BridgeDefaults,
+    BridgeStatus,
 };
 
 // Headless protocol types - extensive as it's the IPC contract
