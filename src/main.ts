@@ -734,13 +734,13 @@ export async function main(args: string[]) {
 	// Handle --version early exit (before any async operations)
 	if (parsed.version) {
 		console.log(`Composer v${VERSION}`);
-		return;
+		process.exit(0);
 	}
 
 	// Handle --help early exit (before any logging redirection or heavy init)
 	if (parsed.help) {
 		printHelp(VERSION);
-		return;
+		process.exit(0);
 	}
 
 	// Handle `composer web` early exit (start the bundled web server + UI).

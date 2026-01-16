@@ -50,8 +50,17 @@ runs:
       with:
         bun-version: ${{ inputs.bun-version }}
 
-    - name: Cache Bun
-      if: ${{ inputs.cache-bun == 'true' }}
+    - name: Cache Bun (Blacksmith)
+      if: ${{ inputs.cache-bun == 'true' && env.BLACKSMITH_CACHE_URL != '' }}
+      uses: useblacksmith/cache@71c7c918062ba3861252d84b07fe5ab2a6b467a6 # v5
+      with:
+        path: ~/.bun/install/cache
+        key: ${{ runner.os }}-bun-${{ hashFiles('bun.lockb') }}
+        restore-keys: |
+          ${{ runner.os }}-bun-
+
+    - name: Cache Bun (GitHub)
+      if: ${{ inputs.cache-bun == 'true' && env.BLACKSMITH_CACHE_URL == '' }}
       uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: ~/.bun/install/cache
@@ -59,8 +68,17 @@ runs:
         restore-keys: |
           ${{ runner.os }}-bun-
 
-    - name: Cache Nx
-      if: ${{ inputs.cache-nx == 'true' }}
+    - name: Cache Nx (Blacksmith)
+      if: ${{ inputs.cache-nx == 'true' && env.BLACKSMITH_CACHE_URL != '' }}
+      uses: useblacksmith/cache@71c7c918062ba3861252d84b07fe5ab2a6b467a6 # v5
+      with:
+        path: .nx/cache
+        key: ${{ runner.os }}-nx-${{ hashFiles('bun.lockb', 'nx.json', 'project.json', 'packages/**/project.json') }}
+        restore-keys: |
+          ${{ runner.os }}-nx-
+
+    - name: Cache Nx (GitHub)
+      if: ${{ inputs.cache-nx == 'true' && env.BLACKSMITH_CACHE_URL == '' }}
       uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
       with:
         path: .nx/cache

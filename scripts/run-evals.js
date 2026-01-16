@@ -56,6 +56,7 @@ async function runScenario(scenario) {
 		[command, ...launchArgs] = scenario.command;
 	}
 
+	const timeoutMs = getScenarioTimeoutMs(scenario);
 	const { exitCode, stdout, stderr } = await new Promise((resolve) => {
 		const child = spawn(command, launchArgs, {
 			cwd: projectRoot,
@@ -63,8 +64,20 @@ async function runScenario(scenario) {
 			env,
 		});
 
+		let resolved = false;
 		let capturedStdout = "";
 		let capturedStderr = "";
+		let timeoutId;
+		let killTimeoutId;
+		let timedOut = false;
+
+		const finalize = (result) => {
+			if (resolved) return;
+			resolved = true;
+			if (timeoutId) clearTimeout(timeoutId);
+			if (killTimeoutId) clearTimeout(killTimeoutId);
+			resolve(result);
+		};
 
 		child.stdout?.on("data", (chunk) => {
 			capturedStdout += chunk.toString();
@@ -74,9 +87,31 @@ async function runScenario(scenario) {
 			capturedStderr += chunk.toString();
 		});
 
+		child.on("error", (error) => {
+			capturedStderr += `\n[evals] Failed to spawn scenario: ${error.message}`;
+			finalize({
+				exitCode: 127,
+				stdout: capturedStdout,
+				stderr: capturedStderr,
+			});
+		});
+
+		if (timeoutMs > 0) {
+			timeoutId = setTimeout(() => {
+				timedOut = true;
+				capturedStderr += `\n[evals] Scenario timed out after ${timeoutMs}ms`;
+				child.kill("SIGTERM");
+				killTimeoutId = setTimeout(() => {
+					child.kill("SIGKILL");
+				}, 5000);
+				killTimeoutId.unref();
+			}, timeoutMs);
+			timeoutId.unref();
+		}
+
 		child.on("close", (code) => {
-			resolve({
-				exitCode: code ?? 0,
+			finalize({
+				exitCode: timedOut ? 124 : code ?? 0,
 				stdout: capturedStdout,
 				stderr: capturedStderr,
 			});
@@ -217,6 +252,20 @@ function getChunkConfig() {
 		chunkCount,
 		chunkIndex: safeIndex,
 	};
+}
+
+const DEFAULT_SCENARIO_TIMEOUT_MS = 60000;
+const MAX_TIMEOUT_MS = 2147483647;
+
+function getScenarioTimeoutMs(scenario) {
+	if (scenario && Number.isFinite(scenario.timeoutMs)) {
+		return clamp(Math.trunc(scenario.timeoutMs), 0, MAX_TIMEOUT_MS);
+	}
+	const envTimeout = parseNumber(process.env.COMPOSER_EVAL_SCENARIO_TIMEOUT_MS);
+	if (envTimeout !== undefined) {
+		return clamp(envTimeout, 0, MAX_TIMEOUT_MS);
+	}
+	return DEFAULT_SCENARIO_TIMEOUT_MS;
 }
 
 function parseChunkArgs(args) {
