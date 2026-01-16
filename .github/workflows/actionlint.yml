@@ -32,7 +32,7 @@ jobs:
           go-version: "stable"
 
       - name: Cache Go (Blacksmith)
-        if: ${{ env.BLACKSMITH_CACHE_URL != '' }}
+        if: ${{ startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '' }}
         uses: useblacksmith/cache@71c7c918062ba3861252d84b07fe5ab2a6b467a6 # v5
         with:
           path: |
@@ -43,7 +43,7 @@ jobs:
             ${{ runner.os }}-go-actionlint-
 
       - name: Cache Go (GitHub)
-        if: ${{ env.BLACKSMITH_CACHE_URL == '' }}
+        if: ${{ !(startsWith(runner.name, 'blacksmith-') || env.BLACKSMITH_ACTIONS_RESULTS_URL != '') }}
         uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: |
