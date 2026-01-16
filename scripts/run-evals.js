@@ -10,6 +10,8 @@ const projectRoot = join(__dirname, "..");
 const cliPath = join(projectRoot, "dist", "cli.js");
 const scenariosPath = join(projectRoot, "evals", "scenarios.json");
 const cliArgs = process.argv.slice(2);
+const DEFAULT_SCENARIO_TIMEOUT_MS = 60000;
+const MAX_TIMEOUT_MS = 2147483647;
 
 let recordEvaluationResult;
 try {
@@ -253,9 +255,6 @@ function getChunkConfig() {
 		chunkIndex: safeIndex,
 	};
 }
-
-const DEFAULT_SCENARIO_TIMEOUT_MS = 60000;
-const MAX_TIMEOUT_MS = 2147483647;
 
 function getScenarioTimeoutMs(scenario) {
 	if (scenario && Number.isFinite(scenario.timeoutMs)) {
