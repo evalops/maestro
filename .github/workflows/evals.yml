@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   run-evals:
@@ -51,6 +51,7 @@ jobs:
         timeout-minutes: 3
         run: bunx vitest --run --reporter=verbose --no-file-parallelism --shard=${{ matrix.chunkIndex }}/2
       - name: Run evals chunk
+        timeout-minutes: 45
         env:
           COMPOSER_EVAL_CHUNK_COUNT: 2
           COMPOSER_EVAL_CHUNK_INDEX: ${{ matrix.chunkIndex }}
