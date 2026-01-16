@@ -150,6 +150,12 @@ const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 describe("Session Endpoints", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		// Disable strict session access for tests (sessions without ownership info)
+		process.env.COMPOSER_STRICT_SESSION_ACCESS = "false";
+	});
+
+	afterEach(() => {
+		delete process.env.COMPOSER_STRICT_SESSION_ACCESS;
 	});
 
 	describe("handleSessions - GET (list)", () => {
@@ -264,6 +270,15 @@ describe("Session Endpoints", () => {
 describe("Session Sharing", () => {
 	let shareToken: string;
 
+	beforeEach(() => {
+		// Disable strict session access for tests (sessions without ownership info)
+		process.env.COMPOSER_STRICT_SESSION_ACCESS = "false";
+	});
+
+	afterEach(() => {
+		delete process.env.COMPOSER_STRICT_SESSION_ACCESS;
+	});
+
 	describe("handleSessionShare", () => {
 		it("should generate a share link", async () => {
 			const req = createMockRequest("POST", { expiresInHours: 48 });
@@ -325,6 +340,15 @@ describe("Session Sharing", () => {
 });
 
 describe("Session Export", () => {
+	beforeEach(() => {
+		// Disable strict session access for tests (sessions without ownership info)
+		process.env.COMPOSER_STRICT_SESSION_ACCESS = "false";
+	});
+
+	afterEach(() => {
+		delete process.env.COMPOSER_STRICT_SESSION_ACCESS;
+	});
+
 	describe("handleSessionExport", () => {
 		it("should export session as JSON", async () => {
 			const req = createMockRequest("POST", { format: "json" });
