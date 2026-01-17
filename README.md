@@ -1,6 +1,6 @@
 # Composer by EvalOps
 
-Composer is a deterministic coding agent with multi-model support, featuring terminal (TUI/CLI), web, IDE (VS Code, JetBrains), Slack, and GitHub interfaces for AI-assisted development.
+Composer is a deterministic coding agent with multi-model support, featuring terminal (TUI/CLI), web, IDE (VS Code, JetBrains), browser (Conductor), Slack, and GitHub interfaces for AI-assisted development.
 
 ---
 
@@ -58,6 +58,8 @@ The terminal is home for many developers—fast, scriptable, distraction-free. B
 **Slack** meets teams where they already communicate. Deploy a shared coding agent that your whole team can @mention. Queue up tasks asynchronously—ask the bot to run tests while you're in a meeting, check results when you're back. Scheduled tasks, approval workflows, and persistent memory mean the agent can operate as a background teammate rather than a tool you have to babysit.
 
 **GitHub Agent** runs autonomously. Label an issue with `composer-task` and walk away—it'll implement the feature, run tests, and open a PR. Useful for self-improvement pipelines, batch refactoring, or delegating routine tasks.
+
+**Conductor** brings browser automation to Composer. The Chrome extension connects to Composer's web server, giving the agent eyes and hands in the browser—read pages, click elements, fill forms, capture screenshots. Useful for web scraping, testing workflows, or any task that requires interacting with web applications.
 
 Same agent, same tools, same deterministic behavior—just different surfaces optimized for different contexts.
 
