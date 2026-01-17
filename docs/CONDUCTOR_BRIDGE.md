@@ -21,6 +21,22 @@ http://localhost:8080
 Conductor will fetch `/api/models` and stream `/api/chat` responses from the
 Composer server.
 
+## Capabilities (Client-Side Tools)
+
+When the Conductor extension is connected, Composer can delegate browser actions
+to the client. These tools execute inside the browser context and return results
+to the server.
+
+| Category | Examples |
+| --- | --- |
+| Read & search | `read_page`, `search_page`, `find_on_page`, `extract_links`, `extract_table_data`, `extract_document` |
+| Navigation & tabs | `navigate_to`, `open_links_in_tabs`, `wait_for_selector`, `scroll_page` |
+| Interaction | `click_element`, `type_text`, `select_element`, `highlight_element`, `mouse_action`, `pointer_action`, `keyboard_action` |
+| Diagnostics | `capture_screenshot`, `capture_network`, `capture_console_errors`, `collect_diagnostics` |
+| Native actions (CDP) | `native_click`, `native_type`, `native_press`, `native_key_down`, `native_key_up` |
+| Skills & artifacts | `run_skill`, `manage_artifact`, `patch_artifact` |
+| MCP bridging | `list_mcp_servers`, `list_mcp_tools`, `list_mcp_resources`, `read_mcp_resource` |
+
 ## Optional: Native Messaging Host (Auto-Launch + Status)
 
 Composer ships a local native messaging host script at:
@@ -86,3 +102,14 @@ Unless those variables are already set.
 - The HTTP bridge supports Conductor client tools (browser automation) because
   the Composer web server exposes the client tool API.
 - For production, use explicit API keys and locked CORS origins instead of `*`.
+
+## Security & CORS Guidance
+
+For local development, the quick-start command disables API keys and allows all
+origins. For shared or production deployments, tighten these settings:
+
+- Set `COMPOSER_WEB_REQUIRE_KEY=1` and configure an API key.
+- Lock CORS to your extension origin (and any other approved origins):
+  - `COMPOSER_WEB_ORIGIN="chrome-extension://<extension-id>"`
+  - Add any additional allowed origins as needed.
+- Keep the bridge on localhost unless you explicitly need remote access.

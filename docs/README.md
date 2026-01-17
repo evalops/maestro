@@ -8,6 +8,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Feature Guide](FEATURES.md) — user-facing capabilities across the TUI and CLI with power-user tips.
 - [Web UI Guide](WEB_UI.md) — browser workflow and TUI/Web parity appendix.
 - [Conductor Bridge](CONDUCTOR_BRIDGE.md) — connect the Conductor extension to a local Composer server.
+- [Ambient Agent Design](design/AMBIENT_AGENT.md) — always-on GitHub agent daemon architecture.
 
 ## Core Reference
 - [Tools Reference](TOOLS_REFERENCE.md) — authoritative slash command and flag definitions.
