@@ -6,13 +6,18 @@ This repo is a Bun + Nx monorepo with multiple user surfaces that all drive the 
 
 - `src/` – TypeScript CLI application and core runtime.
   - `src/runtime/agent-runtime.ts` wires the Agent to a renderer and the prompt queue.
-  - `src/cli-tui/` is the TypeScript terminal UI app (see below).
+- `src/cli-tui/` is the TypeScript terminal UI app (see below).
 - `packages/ai/` – provider clients, model routing, and AI utilities for TS surfaces.
 - `packages/slack-agent/` – Slack bot/agent surface.
+- `packages/github-agent/` – autonomous GitHub agent surface.
+- `packages/ambient-agent-rs/` – always-on GitHub agent daemon (Ambient Composer).
 - `packages/tui/` – reusable TypeScript terminal UI library (`@evalops/tui`).
 - `packages/tui-rs/` – standalone Rust TUI binary (`composer-tui`).
 - `packages/web/` – web UI surface.
 - `packages/contracts/` – shared schemas/types.
+
+Conductor (Chrome extension) connects to the web server via the Conductor Bridge
+and runs client-side browser automation tools. See `docs/CONDUCTOR_BRIDGE.md`.
 
 ## Terminal UIs
 
@@ -84,4 +89,3 @@ For selector/modal commands (e.g., `/theme`, `/model`, `/thinking`):
 - Prefer adding small controllers/views over growing `tui-renderer.ts`.
 - Put reusable widgets or rendering fixes in `packages/tui`.
 - Keep Rust parity changes local to `packages/tui-rs` unless the behavior is shared.
-
