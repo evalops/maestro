@@ -3,7 +3,7 @@
 Audience: users running the browser UI; contributors touching web server/client.  
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md) · [Features](FEATURES.md)
 
-Contents: [Features](#features) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Configuration](#configuration) · [API Endpoints](#api-endpoints) · [Parity Appendix](#parity-appendix)
+Contents: [Features](#features) · [Architecture](#architecture) · [Conductor (Chrome Extension)](#conductor-chrome-extension) · [Quick Start](#quick-start) · [Configuration](#configuration) · [API Endpoints](#api-endpoints) · [Parity Appendix](#parity-appendix)
 
 A browser-based interface for the Composer AI coding assistant with core parity to the TUI. Parity is documented once—in the appendix below—to keep a single source of truth.
 
@@ -37,6 +37,24 @@ Parity at a glance:
                                                   ├─> Tool Execution
                                                   └─> LLM Providers
 ```
+
+## Conductor (Chrome Extension)
+
+Conductor connects to the Composer web server and executes browser automation
+tools inside the active tab. This turns the Web UI into a browser-aware surface
+that can read pages, click elements, type into inputs, and capture diagnostics.
+
+Setup and bridge details live in `docs/CONDUCTOR_BRIDGE.md`. In short:
+
+- Run the web server (`composer web`).
+- Enable the Conductor Bridge in the extension and point it at your server URL.
+- Send client tool headers so the server includes Conductor tools:
+  - `X-Composer-Client-Tools: 1`
+  - `X-Composer-Client: conductor`
+
+Security notes:
+- For local dev, you can use `COMPOSER_WEB_REQUIRE_KEY=0` and `COMPOSER_WEB_ORIGIN="*"`.
+- For shared/hosted setups, lock CORS to your extension origin and require API keys.
 
 ### Components
 
