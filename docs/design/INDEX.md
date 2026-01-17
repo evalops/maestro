@@ -36,6 +36,12 @@ This directory contains detailed design documentation for each major feature and
 | [LSP Integration](LSP_INTEGRATION.md) | Language Server Protocol for IDE features |
 | [Telemetry & Cost Tracking](TELEMETRY_COST.md) | Usage tracking, cost calculation, and analytics |
 
+## Autonomous Agents
+
+| Document | Description |
+|----------|-------------|
+| [Ambient Agent](AMBIENT_AGENT.md) | Always-on GitHub agent daemon (Ambient Composer) |
+
 ## How to Use These Documents
 
 1. **New Contributors**: Start with [Agent State Machine](AGENT_STATE_MACHINE.md) to understand the core event flow

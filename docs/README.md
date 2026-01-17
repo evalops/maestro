@@ -21,6 +21,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 ## Architecture & Patterns
 - [Architecture Diagram](ARCHITECTURE_DIAGRAM.md) — high-level system layout.
 - [VS Code Architecture](VSCODE_ARCHITECTURE.md) — extension-specific architecture and flows.
+- [Ambient Agent Design](design/AMBIENT_AGENT.md) — always-on GitHub agent daemon architecture.
 - [Patterns](patterns/INDEX.md) — implementation patterns (e.g., event suppression, tool error handling).
 - [Upstreams: pi-mono](upstreams/pi-mono.md) — notes on upstream inspirations/adaptations.
 

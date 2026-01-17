@@ -11,6 +11,8 @@ Navigation: [Interfaces](#interfaces) · [TUI essentials](#tui-essentials) · [C
 - **TUI** — launch `composer` with no arguments (or `bun run cli --` from source). Rich editor, slash command palette, and footer telemetry.
 - **CLI** — pass one or more messages as arguments (`composer "Read package.json" "Summarize dependencies"`). Supports JSON/RPC output for automation.
 - **Web UI** — start with `composer web`; see [Web UI Guide](WEB_UI.md) for parity notes and shortcuts.
+- **Conductor (Chrome extension)** — browser-automation surface that connects to the Composer web server via the Conductor Bridge (`CONDUCTOR_BRIDGE.md`).
+- **Ambient Agent** — always-on GitHub daemon that watches repos and ships PRs (see [Ambient Agent Design](design/AMBIENT_AGENT.md)).
 
 ## TUI essentials
 The layout has four regions: chat timeline, status indicators, editor input, and footer. Key workflows:

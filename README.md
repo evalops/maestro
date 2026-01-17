@@ -39,10 +39,12 @@ Composer exposes every capability through slash commands and git-aware helpers s
 Choose your interface:
 - **Terminal (TUI/CLI)**: Rich interactive terminal interface with keyboard shortcuts, file search, and command palette
 - **Web UI**: Modern browser-based interface for those who prefer a graphical environment (core parity; see parity appendix in `docs/WEB_UI.md`)
+- **Conductor (Chrome Extension)**: Browser-automation surface that connects to the Composer web server via the Conductor Bridge (`docs/CONDUCTOR_BRIDGE.md`)
 - **VS Code**: Native extension with inline chat, diagnostics integration, and go-to-definition ([VS Code Extension](packages/vscode-extension/README.md))
 - **JetBrains IDEs**: Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs ([JetBrains Plugin](packages/jetbrains-plugin/README.md))
 - **Slack Bot**: Deploy as a Slack bot with Docker sandbox isolation ([`@evalops/slack-agent`](packages/slack-agent/README.md))
 - **GitHub Agent**: Autonomous agent that watches repos, implements issues, and creates PRs ([`@evalops/github-agent`](packages/github-agent/README.md))
+- **Ambient Agent**: Always-on GitHub daemon that watches repos and ships PRs ([Ambient Composer design](docs/design/AMBIENT_AGENT.md))
 - **Headless**: Scriptable automation for CI/CD and evaluation pipelines
 
 ### Why Multiple Interfaces?
@@ -883,6 +885,7 @@ Sessions are JSONL in `~/.composer/agent/sessions/`. Use:
 | [`@evalops/contracts`](packages/contracts/README.md) | Shared TypeScript definitions |
 | [`@evalops/slack-agent`](packages/slack-agent/README.md) | Slack bot with Docker sandbox isolation |
 | [`@evalops/github-agent`](packages/github-agent/README.md) | Autonomous GitHub agent for self-improvement pipelines |
+| [`ambient-agent-rs`](packages/ambient-agent-rs/README.md) | Always-on GitHub agent daemon (Ambient Composer) |
 | [Composer for VS Code](packages/vscode-extension/README.md) | VS Code extension with inline chat and IDE integration |
 | [Composer for JetBrains](packages/jetbrains-plugin/README.md) | Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs |
 
