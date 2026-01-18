@@ -2440,12 +2440,12 @@ Slash Commands:
         let state = &self.state;
         let active_modal = self.active_modal;
         let slash_state = &mut self.slash_state;
-        let file_search = &self.file_search;
-        let session_switcher = &self.session_switcher;
+        let file_search = &mut self.file_search;
+        let session_switcher = &mut self.session_switcher;
         let command_palette = &mut self.command_palette;
         let approval_controller = &self.approval_controller;
-        let model_selector = &self.model_selector;
-        let theme_selector = &self.theme_selector;
+        let model_selector = &mut self.model_selector;
+        let theme_selector = &mut self.theme_selector;
 
         self.terminal.draw(|frame| {
             let area = frame.area();

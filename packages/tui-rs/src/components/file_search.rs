@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -26,6 +26,8 @@ pub struct FileSearchModal {
     selected: usize,
     /// Whether the modal is visible
     visible: bool,
+    /// List state for scrolling
+    list_state: ListState,
 }
 
 impl FileSearchModal {
@@ -39,6 +41,7 @@ impl FileSearchModal {
             results: FileSearchResult::default(),
             selected: 0,
             visible: false,
+            list_state: ListState::default(),
         }
     }
 
@@ -114,6 +117,7 @@ impl FileSearchModal {
     pub fn move_up(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
+            self.list_state.select(Some(self.selected));
         }
     }
 
@@ -121,6 +125,7 @@ impl FileSearchModal {
     pub fn move_down(&mut self) {
         if self.selected + 1 < self.results.matches.len() {
             self.selected += 1;
+            self.list_state.select(Some(self.selected));
         }
     }
 
@@ -145,10 +150,16 @@ impl FileSearchModal {
         if self.selected >= self.results.matches.len() {
             self.selected = 0;
         }
+        // Sync list state
+        if self.results.matches.is_empty() {
+            self.list_state.select(None);
+        } else {
+            self.list_state.select(Some(self.selected));
+        }
     }
 
     /// Render the modal
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         if !self.visible {
             return;
         }
@@ -189,7 +200,7 @@ impl FileSearchModal {
         self.render_results(frame, chunks[1]);
     }
 
-    fn render_input(&self, frame: &mut Frame, area: Rect) {
+    fn render_input(&mut self, frame: &mut Frame, area: Rect) {
         let input_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray));
@@ -208,7 +219,7 @@ impl FileSearchModal {
         frame.set_cursor_position((inner_x + col, inner_y));
     }
 
-    fn render_results(&self, frame: &mut Frame, area: Rect) {
+    fn render_results(&mut self, frame: &mut Frame, area: Rect) {
         if self.results.matches.is_empty() {
             let empty_msg = if self.query.is_empty() {
                 format!("Type to search {} files", self.results.total_files)
@@ -224,15 +235,15 @@ impl FileSearchModal {
             .results
             .matches
             .iter()
-            .enumerate()
-            .map(|(i, m)| self.render_match(m, i == self.selected))
+            .map(|m| self.render_match(m))
             .collect();
 
-        let list = List::new(items);
-        frame.render_widget(list, area);
+        let list = List::new(items)
+            .highlight_style(Style::default().bg(Color::DarkGray));
+        frame.render_stateful_widget(list, area, &mut self.list_state);
     }
 
-    fn render_match(&self, file_match: &FileMatch, selected: bool) -> ListItem<'static> {
+    fn render_match(&self, file_match: &FileMatch) -> ListItem<'static> {
         let file = &file_match.file;
 
         // Build highlighted name using highlight_matches utility
@@ -291,13 +302,7 @@ impl FileSearchModal {
             ));
         }
 
-        let style = if selected {
-            Style::default().bg(Color::DarkGray)
-        } else {
-            Style::default()
-        };
-
-        ListItem::new(Line::from(line_spans)).style(style)
+        ListItem::new(Line::from(line_spans))
     }
 }
 

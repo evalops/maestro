@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -30,6 +30,8 @@ pub struct SessionSwitcher {
     loading: bool,
     /// Error message
     error: Option<String>,
+    /// List state for scrolling
+    list_state: ListState,
 }
 
 impl SessionSwitcher {
@@ -44,6 +46,7 @@ impl SessionSwitcher {
             filtered: Vec::new(),
             loading: false,
             error: None,
+            list_state: ListState::default(),
         }
     }
 
@@ -122,12 +125,19 @@ impl SessionSwitcher {
         if self.selected >= self.filtered.len() {
             self.selected = 0;
         }
+        // Sync list state
+        if self.filtered.is_empty() {
+            self.list_state.select(None);
+        } else {
+            self.list_state.select(Some(self.selected));
+        }
     }
 
     /// Move selection up
     pub fn move_up(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
+            self.list_state.select(Some(self.selected));
         }
     }
 
@@ -135,6 +145,7 @@ impl SessionSwitcher {
     pub fn move_down(&mut self) {
         if self.selected + 1 < self.filtered.len() {
             self.selected += 1;
+            self.list_state.select(Some(self.selected));
         }
     }
 
@@ -165,7 +176,7 @@ impl SessionSwitcher {
     }
 
     /// Render the modal
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         if !self.visible {
             return;
         }
@@ -254,7 +265,7 @@ impl SessionSwitcher {
         frame.render_widget(filter, area);
     }
 
-    fn render_sessions(&self, frame: &mut Frame, area: Rect) {
+    fn render_sessions(&mut self, frame: &mut Frame, area: Rect) {
         if self.filtered.is_empty() {
             let empty_msg = if self.query.is_empty() {
                 "No sessions found"
@@ -266,22 +277,20 @@ impl SessionSwitcher {
             return;
         }
 
+        // Collect items first to avoid borrowing self during iteration
         let items: Vec<ListItem> = self
             .filtered
             .iter()
-            .enumerate()
-            .filter_map(|(i, &idx)| {
-                self.sessions
-                    .get(idx)
-                    .map(|s| self.render_session(s, i == self.selected))
-            })
+            .filter_map(|&idx| self.sessions.get(idx))
+            .map(|s| Self::render_session_item(s))
             .collect();
 
-        let list = List::new(items);
-        frame.render_widget(list, area);
+        let list = List::new(items)
+            .highlight_style(Style::default().bg(Color::DarkGray));
+        frame.render_stateful_widget(list, area, &mut self.list_state);
     }
 
-    fn render_session(&self, session: &SessionInfo, selected: bool) -> ListItem<'_> {
+    fn render_session_item(session: &SessionInfo) -> ListItem<'static> {
         let mut spans = Vec::new();
 
         // Favorite indicator
@@ -293,11 +302,7 @@ impl SessionSwitcher {
         let title: String = session.title().chars().take(30).collect();
         spans.push(Span::styled(
             title,
-            Style::default().fg(Color::White).add_modifier(if selected {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            }),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
         ));
 
         // Timestamp
@@ -313,13 +318,7 @@ impl SessionSwitcher {
             Style::default().fg(Color::Cyan),
         ));
 
-        let style = if selected {
-            Style::default().bg(Color::DarkGray)
-        } else {
-            Style::default()
-        };
-
-        ListItem::new(Line::from(spans)).style(style)
+        ListItem::new(Line::from(spans))
     }
 
     fn render_help(&self, frame: &mut Frame, area: Rect) {
