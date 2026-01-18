@@ -2439,10 +2439,10 @@ Slash Commands:
         // Extract needed data to avoid borrow conflicts
         let state = &self.state;
         let active_modal = self.active_modal;
-        let slash_state = &self.slash_state;
+        let slash_state = &mut self.slash_state;
         let file_search = &self.file_search;
         let session_switcher = &self.session_switcher;
-        let command_palette = &self.command_palette;
+        let command_palette = &mut self.command_palette;
         let approval_controller = &self.approval_controller;
         let model_selector = &self.model_selector;
         let theme_selector = &self.theme_selector;
@@ -2553,7 +2553,7 @@ Slash Commands:
 
     /// Render slash command completions popup (static version for closure)
     fn render_slash_completions_static(
-        slash_state: &SlashCycleState,
+        slash_state: &mut SlashCycleState,
         frame: &mut ratatui::Frame,
         area: Rect,
     ) {
@@ -2563,8 +2563,6 @@ Slash Commands:
         if completions.is_empty() {
             return;
         }
-
-        let current_idx = slash_state.current_index();
 
         // Position above the input
         let popup_height = (completions.len() as u16 + 2).min(10);
@@ -2582,26 +2580,22 @@ Slash Commands:
 
         let items: Vec<ListItem> = completions
             .iter()
-            .enumerate()
-            .map(|(i, cmd)| {
-                let style = if i == current_idx {
-                    Style::default().bg(Color::DarkGray).fg(Color::Cyan)
-                } else {
-                    Style::default().fg(Color::White)
-                };
+            .map(|cmd| {
                 // Completions already include the slash
-                ListItem::new(cmd.clone()).style(style)
+                ListItem::new(cmd.clone()).style(Style::default().fg(Color::White))
             })
             .collect();
 
-        let list = List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .style(Style::default().bg(Color::Black)),
-        );
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .style(Style::default().bg(Color::Black)),
+            )
+            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Cyan));
 
-        frame.render_widget(list, popup_area);
+        frame.render_stateful_widget(list, popup_area, slash_state.list_state_mut());
     }
 }
 
