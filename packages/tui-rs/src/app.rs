@@ -48,7 +48,9 @@ use anyhow::{Context, Result};
 // - `Result` is shorthand for `Result<T, anyhow::Error>`
 // - `.context("msg")` adds context to errors for better debugging
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers, MouseEventKind,
+};
 // `crossterm` is a cross-platform terminal manipulation library.
 // It handles raw mode, events, and cursor control across Windows/Mac/Linux.
 
@@ -73,7 +75,7 @@ use crate::commands::{
 use crate::components::{
     calculate_input_height, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest,
     ChatInputWidget, ChatView, CommandPalette, FileSearchModal, ModelSelector, SessionSwitcher,
-    ThemeSelector,
+    ShortcutsHelp, ThemeSelector,
 };
 use crate::files::get_workspace_files;
 use crate::git;
@@ -107,6 +109,8 @@ pub enum ActiveModal {
     ModelSelector,
     /// Color theme selector
     ThemeSelector,
+    /// Keyboard shortcuts help overlay
+    ShortcutsHelp,
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +212,9 @@ pub struct App {
 
     /// Color theme selection modal.
     theme_selector: ThemeSelector,
+
+    /// Keyboard shortcuts help overlay.
+    shortcuts_help: ShortcutsHelp,
 
     /// Token usage and cost tracker.
     usage_tracker: crate::usage::UsageTracker,
@@ -318,6 +325,7 @@ impl App {
             clipboard: ClipboardManager::new(),
             model_selector: ModelSelector::new(),
             theme_selector: ThemeSelector::new(),
+            shortcuts_help: ShortcutsHelp::new(),
             usage_tracker: crate::usage::UsageTracker::new(),
             prompt_history,
             tool_history: crate::tools::ToolHistory::default(),
@@ -371,12 +379,27 @@ impl App {
             // `event::poll()` returns true if an event is available.
             // The timeout prevents blocking forever on input.
             if event::poll(std::time::Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
-                    // Only handle key press events (not release).
-                    // Some terminals send both press and release events.
-                    if key.kind == KeyEventKind::Press {
-                        self.handle_key(key.code, key.modifiers).await?;
+                match event::read()? {
+                    Event::Key(key) => {
+                        // Only handle key press events (not release).
+                        // Some terminals send both press and release events.
+                        if key.kind == KeyEventKind::Press {
+                            self.handle_key(key.code, key.modifiers).await?;
+                        }
                     }
+                    Event::Mouse(mouse) => {
+                        // Handle mouse scroll wheel
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                self.state.scroll_up(3);
+                            }
+                            MouseEventKind::ScrollDown => {
+                                self.state.scroll_down(3);
+                            }
+                            _ => {} // Ignore other mouse events
+                        }
+                    }
+                    _ => {} // Ignore other events (resize, focus, paste handled elsewhere)
                 }
             }
 
@@ -723,6 +746,7 @@ Add the required fields and retry.",
             ActiveModal::Approval => return self.handle_approval_key(code).await,
             ActiveModal::ModelSelector => return self.handle_model_selector_key(code, ctrl).await,
             ActiveModal::ThemeSelector => return self.handle_theme_selector_key(code, ctrl).await,
+            ActiveModal::ShortcutsHelp => return self.handle_shortcuts_help_key(code).await,
             ActiveModal::None => {}
         }
 
@@ -762,6 +786,16 @@ Add the required fields and retry.",
                 // Session switcher
                 self.session_switcher.show();
                 self.active_modal = ActiveModal::SessionSwitcher;
+            }
+            KeyCode::Char('?') if self.state.input().is_empty() => {
+                // Keyboard shortcuts help
+                self.shortcuts_help.show();
+                self.active_modal = ActiveModal::ShortcutsHelp;
+            }
+            KeyCode::F(1) => {
+                // Keyboard shortcuts help (alternate)
+                self.shortcuts_help.show();
+                self.active_modal = ActiveModal::ShortcutsHelp;
             }
 
             // @ trigger for file search
@@ -1194,6 +1228,30 @@ Add the required fields and retry.",
             }
             KeyCode::Right => {
                 self.theme_selector.move_right();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle keyboard shortcuts help key events
+    async fn handle_shortcuts_help_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1) => {
+                self.shortcuts_help.hide();
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.shortcuts_help.scroll_up(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.shortcuts_help.scroll_down(1);
+            }
+            KeyCode::PageUp => {
+                self.shortcuts_help.scroll_up(10);
+            }
+            KeyCode::PageDown => {
+                self.shortcuts_help.scroll_down(10);
             }
             _ => {}
         }
@@ -2446,6 +2504,7 @@ Slash Commands:
         let approval_controller = &self.approval_controller;
         let model_selector = &mut self.model_selector;
         let theme_selector = &mut self.theme_selector;
+        let shortcuts_help = &self.shortcuts_help;
 
         self.terminal.draw(|frame| {
             let area = frame.area();
@@ -2492,6 +2551,9 @@ Slash Commands:
                 }
                 ActiveModal::ThemeSelector => {
                     theme_selector.render(frame, area);
+                }
+                ActiveModal::ShortcutsHelp => {
+                    frame.render_widget(shortcuts_help.clone(), area);
                 }
                 ActiveModal::None => {}
             }
