@@ -787,13 +787,8 @@ Add the required fields and retry.",
                 self.session_switcher.show();
                 self.active_modal = ActiveModal::SessionSwitcher;
             }
-            KeyCode::Char('?') if self.state.input().is_empty() => {
-                // Keyboard shortcuts help
-                self.shortcuts_help.show();
-                self.active_modal = ActiveModal::ShortcutsHelp;
-            }
             KeyCode::F(1) => {
-                // Keyboard shortcuts help (alternate)
+                // Keyboard shortcuts help
                 self.shortcuts_help.show();
                 self.active_modal = ActiveModal::ShortcutsHelp;
             }
@@ -1237,7 +1232,7 @@ Add the required fields and retry.",
     /// Handle keyboard shortcuts help key events
     async fn handle_shortcuts_help_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
-            KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1) => {
+            KeyCode::Esc | KeyCode::F(1) => {
                 self.shortcuts_help.hide();
                 self.active_modal = ActiveModal::None;
             }

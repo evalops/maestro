@@ -2493,13 +2493,15 @@ mod tests {
         let mut history = ToolHistory::new(100);
         let _before_all = SystemTime::now();
 
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(50));
 
         history.start("1", "read", json!({}));
         history.complete("1", "ok".to_string());
 
+        // Sleep enough to ensure timestamp difference is measurable
+        std::thread::sleep(Duration::from_millis(50));
         let after_first = SystemTime::now();
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(50));
 
         history.start("2", "read", json!({}));
         history.complete("2", "ok".to_string());
