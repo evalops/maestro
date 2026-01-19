@@ -203,6 +203,20 @@ fn is_mcp_tool_name(tool_name: &str) -> bool {
     tool_name.starts_with("mcp__") || tool_name.starts_with("mcp_")
 }
 
+fn normalize_uri_input(input: &str) -> String {
+    if let Some(rest) = input.strip_prefix("file://") {
+        let mut path = rest.to_string();
+        #[cfg(windows)]
+        {
+            if path.len() >= 3 && path.as_bytes()[0] == b'/' && path.as_bytes()[2] == b':' {
+                path = path[1..].to_string();
+            }
+        }
+        return path;
+    }
+    input.to_string()
+}
+
 impl ActionFirewall {
     /// Create a new firewall with the given workspace
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
@@ -560,7 +574,8 @@ impl ActionFirewall {
             }
             "vscode_get_diagnostics" | "jetbrains_get_diagnostics" => {
                 if let Some(path) = args.get("uri").and_then(|v| v.as_str()) {
-                    self.check_file_read(path)
+                    let normalized = normalize_uri_input(path);
+                    self.check_file_read(&normalized)
                 } else {
                     FirewallVerdict::Allow
                 }
@@ -572,7 +587,8 @@ impl ActionFirewall {
             | "jetbrains_find_references"
             | "jetbrains_read_file_range" => {
                 if let Some(path) = args.get("uri").and_then(|v| v.as_str()) {
-                    self.check_file_read(path)
+                    let normalized = normalize_uri_input(path);
+                    self.check_file_read(&normalized)
                 } else {
                     FirewallVerdict::Block {
                         reason: "IDE tool missing uri argument".to_string(),

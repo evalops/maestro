@@ -40,7 +40,8 @@ This is a **pure Rust implementation** - no subprocess communication, no Node.js
 - **Session Management**: Ctrl+O to browse/switch sessions, auto-save
 - **Tool Approval**: Interactive approve/deny for tool calls (`/approvals`)
 - **Themes**: Built-in themes with custom theme support
-- **Multi-line Input**: Shift+Enter for newlines, clipboard paste support
+- **Multi-line Input**: Shift+Enter for newlines
+- **Clipboard Copy/Paste**: Enable with `cargo build --features clipboard`
 - **Native Cursor**: Proper terminal cursor positioning (adapted from Codex)
 
 ## Building

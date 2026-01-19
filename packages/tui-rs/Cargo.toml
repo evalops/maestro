@@ -104,7 +104,7 @@ landlock = "0.4"
 seccompiler = "0.4"
 
 [features]
-default = ["clipboard"]
+default = []
 clipboard = ["arboard"]
 # Hook backends
 lua = ["mlua"]
