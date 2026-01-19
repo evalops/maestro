@@ -865,7 +865,6 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     .map(|pending| pending.model == *model)
                     .unwrap_or(false);
 
-                self.pending_model_change = None;
                 self.current_model = model.clone();
                 self.state.model = Some(model.clone());
                 self.state.provider = Some(provider.clone());
@@ -873,6 +872,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.state.status = Some(format!("Model: {model}"));
 
                 if pending_matches {
+                    self.pending_model_change = None;
                     self.record_model_change(model);
                 }
             }
