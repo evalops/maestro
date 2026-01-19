@@ -787,25 +787,15 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         self.usage_tracker = crate::usage::UsageTracker::with_session(session.id());
         self.usage_tracker.set_model(session.header.model.clone());
 
-        for message in &session.messages {
-            if let AppMessage::Assistant {
-                usage: Some(usage),
-                model,
-                ..
-            } = message
-            {
-                let model_id = model
-                    .clone()
-                    .unwrap_or_else(|| session.header.model.clone());
-                let usage = crate::agent::TokenUsage {
-                    input_tokens: usage.input,
-                    output_tokens: usage.output,
-                    cache_read_tokens: usage.cache_read,
-                    cache_write_tokens: usage.cache_write,
-                    cost: usage.cost.as_ref().map(|c| c.total),
-                };
-                let _ = self.usage_tracker.add_turn_for_model(&model_id, &usage);
-            }
+        for entry in &session.usage_entries {
+            let usage = crate::agent::TokenUsage {
+                input_tokens: entry.usage.input,
+                output_tokens: entry.usage.output,
+                cache_read_tokens: entry.usage.cache_read,
+                cache_write_tokens: entry.usage.cache_write,
+                cost: entry.usage.cost.as_ref().map(|c| c.total),
+            };
+            let _ = self.usage_tracker.add_turn_for_model(&entry.model, &usage);
         }
     }
 
@@ -1500,12 +1490,6 @@ Add the required fields and retry.",
             }
             KeyCode::Enter => {
                 if let Some(model_id) = self.model_selector.confirm() {
-                    let policy_model = policy_model_id(&model_id);
-                    if let Some(reason) = check_model_allowed(&policy_model) {
-                        self.state.error = Some(reason);
-                        self.active_modal = ActiveModal::None;
-                        return Ok(());
-                    }
                     // Set the new model
                     if let Some(agent) = &self.native_agent {
                         if let Err(e) = agent.set_model(&model_id) {
@@ -1793,11 +1777,6 @@ Add the required fields and retry.",
                 }
             }
             CommandAction::SetModel(model_id) => {
-                let policy_model = policy_model_id(&model_id);
-                if let Some(reason) = check_model_allowed(&policy_model) {
-                    self.state.error = Some(reason);
-                    return;
-                }
                 if let Some(agent) = &self.native_agent {
                     if let Err(e) = agent.set_model(&model_id) {
                         self.state.error = Some(format!("Failed to set model: {e}"));
