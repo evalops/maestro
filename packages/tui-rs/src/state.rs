@@ -361,6 +361,12 @@ pub struct AppState {
     /// Supports multi-line editing with cursor movement.
     pub textarea: TextArea,
 
+    /// Cached inner width for input cursor movement (in columns).
+    pub input_width: u16,
+
+    /// Preferred cursor column when moving up/down.
+    input_preferred_col: Option<u16>,
+
     /// Currently selected AI model name (e.g., "claude-3-opus").
     /// `Option` because it may not be known until the agent is ready.
     pub model: Option<String>,
@@ -480,15 +486,17 @@ impl AppState {
         Self {
             messages: Vec::new(),      // Empty message list
             textarea: TextArea::new(), // Empty input area
-            model: None,               // No model selected yet
-            provider: None,            // No provider yet
-            cwd: None,                 // No working directory
-            git_branch: None,          // Not in a git repo (yet)
-            session_id: None,          // No session yet
-            busy: false,               // Not processing
-            busy_since: None,          // No timer running
-            status: None,              // No status message
-            scroll_offset: 0,          // At bottom of messages
+            input_width: 1,            // Default width until first render
+            input_preferred_col: None,
+            model: None,      // No model selected yet
+            provider: None,   // No provider yet
+            cwd: None,        // No working directory
+            git_branch: None, // Not in a git repo (yet)
+            session_id: None, // No session yet
+            busy: false,      // Not processing
+            busy_since: None, // No timer running
+            status: None,     // No status message
+            scroll_offset: 0, // At bottom of messages
             expanded_tool_calls: std::collections::HashSet::new(),
             error: None,           // No error
             thinking_header: None, // No thinking in progress
@@ -501,6 +509,11 @@ impl AppState {
             queued_steering_count: 0,               // No queued steering prompts
             queued_follow_up_count: 0,              // No queued follow-up prompts
         }
+    }
+
+    /// Update cached input width (inner width of the input box).
+    pub fn set_input_width(&mut self, width: u16) {
+        self.input_width = width.max(1);
     }
 
     /// Get elapsed time since the agent became busy (in seconds).
@@ -536,6 +549,16 @@ impl AppState {
                 self.provider = Some(provider);
                 self.busy = false;
                 self.busy_since = None;
+            }
+
+            FromAgent::ModelChanged { model, provider } => {
+                self.status = Some(format!("Model: {model}"));
+                self.model = Some(model);
+                self.provider = Some(provider);
+            }
+
+            FromAgent::ModelChangeFailed { reason, .. } => {
+                self.error = Some(reason);
             }
 
             // Agent started generating a response
@@ -809,6 +832,7 @@ impl AppState {
         text.insert(cursor, c);
         self.textarea.set_text(&text);
         self.textarea.set_cursor(cursor + c.len_utf8());
+        self.input_preferred_col = None;
     }
 
     /// Insert a string at the cursor position.
@@ -818,6 +842,7 @@ impl AppState {
         text.insert_str(cursor, s);
         self.textarea.set_text(&text);
         self.textarea.set_cursor(cursor + s.len());
+        self.input_preferred_col = None;
     }
 
     /// Delete the character before the cursor (Backspace key).
@@ -836,6 +861,7 @@ impl AppState {
             new_text.remove(cursor - prev);
             self.textarea.set_text(&new_text);
             self.textarea.set_cursor(cursor - prev);
+            self.input_preferred_col = None;
         }
     }
 
@@ -847,6 +873,7 @@ impl AppState {
             let mut new_text = text.to_string();
             new_text.remove(cursor);
             self.textarea.set_text(&new_text);
+            self.input_preferred_col = None;
         }
     }
 
@@ -858,6 +885,7 @@ impl AppState {
             // Find byte length of previous character for proper UTF-8 handling
             let prev = text[..cursor].chars().last().map_or(0, char::len_utf8);
             self.textarea.set_cursor(cursor - prev);
+            self.input_preferred_col = None;
         }
     }
 
@@ -872,18 +900,58 @@ impl AppState {
                 .next() // Get the first char after cursor
                 .map_or(0, char::len_utf8);
             self.textarea.set_cursor(cursor + next);
+            self.input_preferred_col = None;
         }
     }
 
     /// Move cursor to the start of input (Home key).
     pub fn move_home(&mut self) {
         self.textarea.set_cursor(0);
+        self.input_preferred_col = None;
     }
 
     /// Move cursor to the end of input (End key).
     pub fn move_end(&mut self) {
         let len = self.textarea.text().len();
         self.textarea.set_cursor(len);
+        self.input_preferred_col = None;
+    }
+
+    /// Move cursor one wrapped line up.
+    pub fn move_up(&mut self) {
+        self.move_vertical(-1);
+    }
+
+    /// Move cursor one wrapped line down.
+    pub fn move_down(&mut self) {
+        self.move_vertical(1);
+    }
+
+    fn move_vertical(&mut self, delta: i32) {
+        let width = self.input_width.max(1);
+        let Some((line_idx, col)) = self.textarea.cursor_line_col(width) else {
+            return;
+        };
+        let target_col = self.input_preferred_col.unwrap_or(col);
+        if self.input_preferred_col.is_none() {
+            self.input_preferred_col = Some(target_col);
+        }
+
+        let new_line = if delta.is_negative() {
+            if line_idx == 0 {
+                return;
+            }
+            line_idx.saturating_sub(delta.wrapping_abs() as usize)
+        } else {
+            line_idx.saturating_add(delta as usize)
+        };
+
+        if let Some(new_pos) = self
+            .textarea
+            .byte_pos_for_line_col(width, new_line, target_col)
+        {
+            self.textarea.set_cursor(new_pos);
+        }
     }
 
     /// Take the current input and clear it.
@@ -898,6 +966,7 @@ impl AppState {
         let input = self.textarea.text().to_string();
         self.textarea.set_text("");
         self.textarea.set_cursor(0);
+        self.input_preferred_col = None;
         input
     }
 
@@ -905,6 +974,7 @@ impl AppState {
     pub fn set_input(&mut self, text: &str) {
         self.textarea.set_text(text);
         self.textarea.set_cursor(text.len()); // Cursor at end
+        self.input_preferred_col = None;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1306,6 +1376,18 @@ mod tests {
         assert_eq!(state.cursor(), 0);
         state.move_end();
         assert_eq!(state.cursor(), 11);
+    }
+
+    #[test]
+    fn test_move_up_down_wrapped_lines() {
+        let mut state = AppState::new();
+        state.set_input_width(5);
+        state.set_input("0123456789");
+        assert_eq!(state.cursor(), 10);
+        state.move_up();
+        assert_eq!(state.cursor(), 5);
+        state.move_down();
+        assert_eq!(state.cursor(), 10);
     }
 
     #[test]

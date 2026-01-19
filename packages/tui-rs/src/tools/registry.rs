@@ -98,6 +98,7 @@ use std::time::Instant;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::Value;
+use tokio::io::AsyncBufReadExt;
 use tokio::sync::mpsc;
 
 use super::ask_user;
@@ -175,6 +176,66 @@ fn resolve_tool_path(cwd: &str, input: &str) -> Result<String, String> {
     };
 
     Ok(resolved.to_string_lossy().to_string())
+}
+
+fn normalize_uri_input(input: &str) -> String {
+    if let Some(rest) = input.strip_prefix("file://") {
+        let mut path = rest.to_string();
+        let mut stripped_localhost = false;
+        if let Some(stripped) = path.strip_prefix("localhost/") {
+            path = stripped.to_string();
+            stripped_localhost = true;
+        }
+        #[cfg(not(windows))]
+        if stripped_localhost && !path.starts_with('/') {
+            path = format!("/{path}");
+        }
+        #[cfg(windows)]
+        {
+            if path.len() >= 3 && path.as_bytes()[0] == b'/' && path.as_bytes()[2] == b':' {
+                path = path[1..].to_string();
+            }
+        }
+        return path;
+    }
+    input.to_string()
+}
+
+async fn read_file_range(
+    path: &str,
+    start_line: usize,
+    end_line: usize,
+) -> Result<(String, usize), String> {
+    if start_line > end_line {
+        return Err("startLine must be <= endLine".to_string());
+    }
+
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| format!("Failed to open file: {e}"))?;
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines = reader.lines();
+    let mut output = String::new();
+    let mut index: usize = 0;
+    let mut lines_read = 0;
+
+    while let Some(line) = lines
+        .next_line()
+        .await
+        .map_err(|e| format!("Failed to read file: {e}"))?
+    {
+        if index >= start_line && index <= end_line {
+            output.push_str(&line);
+            output.push('\n');
+            lines_read += 1;
+        }
+        if index >= end_line {
+            break;
+        }
+        index += 1;
+    }
+
+    Ok((output, lines_read))
 }
 
 fn to_shell_path(path: &str) -> String {
@@ -280,6 +341,16 @@ fn extract_grep_path(line: &str) -> Option<&str> {
 
 fn is_probably_binary(data: &[u8]) -> bool {
     data.iter().take(2048).any(|byte| *byte == 0)
+}
+
+/// MCP server status snapshot for UI rendering
+#[derive(Debug, Clone)]
+pub struct McpServerStatus {
+    pub name: String,
+    pub connected: bool,
+    pub tools: Vec<String>,
+    pub resources: Vec<String>,
+    pub prompts: Vec<String>,
 }
 
 /// Tool executor that dispatches and runs agent tools
@@ -514,6 +585,73 @@ impl ToolExecutor {
             *guard = Some(client);
         }
         Ok(guard)
+    }
+
+    /// Get MCP server status snapshots for UI display
+    pub async fn mcp_status(&self) -> Result<Vec<McpServerStatus>, String> {
+        let config = load_mcp_config(Some(Path::new(&self.cwd)));
+        let guard = self.ensure_mcp_client().await?;
+        let client = match guard.as_ref() {
+            Some(client) => client,
+            None => return Ok(Vec::new()),
+        };
+
+        let connected: std::collections::HashSet<_> =
+            client.connected_servers().await.into_iter().collect();
+        let tools_map: HashMap<String, Vec<String>> =
+            client.list_tools_by_server().await.into_iter().collect();
+        let resources_map: HashMap<String, Vec<String>> =
+            client.list_all_resources().await.into_iter().collect();
+        let prompts_map: HashMap<String, Vec<String>> =
+            client.list_all_prompts().await.into_iter().collect();
+
+        let mut statuses = Vec::new();
+        for server in config.enabled_servers() {
+            let name = server.name.clone();
+            let status = McpServerStatus {
+                name: name.clone(),
+                connected: connected.contains(&name),
+                tools: tools_map.get(&name).cloned().unwrap_or_default(),
+                resources: resources_map.get(&name).cloned().unwrap_or_default(),
+                prompts: prompts_map.get(&name).cloned().unwrap_or_default(),
+            };
+            statuses.push(status);
+        }
+
+        Ok(statuses)
+    }
+
+    /// Read an MCP resource via the configured client
+    pub async fn mcp_read_resource(
+        &self,
+        server: &str,
+        uri: &str,
+    ) -> Result<crate::mcp::protocol::ResourceReadResult, String> {
+        let guard = self.ensure_mcp_client().await?;
+        let client = guard
+            .as_ref()
+            .ok_or_else(|| "No MCP servers configured".to_string())?;
+        client
+            .read_resource(server, uri)
+            .await
+            .map_err(|err| err.to_string())
+    }
+
+    /// Get an MCP prompt via the configured client
+    pub async fn mcp_get_prompt(
+        &self,
+        server: &str,
+        name: &str,
+        arguments: Option<HashMap<String, String>>,
+    ) -> Result<crate::mcp::PromptGetResult, String> {
+        let guard = self.ensure_mcp_client().await?;
+        let client = guard
+            .as_ref()
+            .ok_or_else(|| "No MCP servers configured".to_string())?;
+        client
+            .get_prompt(server, name, arguments)
+            .await
+            .map_err(|err| err.to_string())
     }
 
     /// Invalidate cache entries for a specific file path
@@ -2283,6 +2421,67 @@ impl ToolExecutor {
                 ToolResult::success(lines.join("\n"))
                     .with_details(serde_json::json!({ "servers": servers }))
             }
+            "mcp_list_prompts" => {
+                let server_filter = args.get("server").and_then(|v| v.as_str());
+                let guard = match self.ensure_mcp_client().await {
+                    Ok(guard) => guard,
+                    Err(err) => return ToolResult::failure(err),
+                };
+                let client = match guard.as_ref() {
+                    Some(client) => client,
+                    None => {
+                        return ToolResult::success(
+                            "No MCP prompts available. Either no servers are connected or they don't expose prompts.".to_string(),
+                        )
+                        .with_details(serde_json::json!({ "servers": [] }));
+                    }
+                };
+
+                let mut prompts = client.list_all_prompts().await;
+                if let Some(filter) = server_filter {
+                    prompts.retain(|(name, _)| name == filter);
+                }
+
+                let mut servers = Vec::new();
+                for (name, names) in prompts {
+                    if names.is_empty() {
+                        continue;
+                    }
+                    servers.push(serde_json::json!({
+                        "name": name,
+                        "prompts": names
+                    }));
+                }
+
+                if servers.is_empty() {
+                    return ToolResult::success(
+                        "No MCP prompts available. Either no servers are connected or they don't expose prompts.".to_string(),
+                    )
+                    .with_details(serde_json::json!({ "servers": [] }));
+                }
+
+                let mut lines = Vec::new();
+                lines.push("# Available MCP Prompts".to_string());
+                lines.push(String::new());
+                for server in &servers {
+                    let name = server
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    lines.push(format!("## {name}"));
+                    if let Some(prompts) = server.get("prompts").and_then(|v| v.as_array()) {
+                        for prompt in prompts {
+                            if let Some(prompt_str) = prompt.as_str() {
+                                lines.push(format!("- {prompt_str}"));
+                            }
+                        }
+                    }
+                    lines.push(String::new());
+                }
+
+                ToolResult::success(lines.join("\n"))
+                    .with_details(serde_json::json!({ "servers": servers }))
+            }
             "mcp_read_resource" => {
                 let server = args.get("server").and_then(|v| v.as_str()).unwrap_or("");
                 let uri = args.get("uri").and_then(|v| v.as_str()).unwrap_or("");
@@ -2335,16 +2534,239 @@ impl ToolExecutor {
                     Err(err) => ToolResult::failure(format!("Failed to read MCP resource: {err}")),
                 }
             }
-            "vscode_get_diagnostics"
-            | "vscode_get_definition"
-            | "vscode_find_references"
-            | "vscode_read_file_range"
-            | "jetbrains_get_diagnostics"
-            | "jetbrains_get_definition"
-            | "jetbrains_find_references"
-            | "jetbrains_read_file_range" => ToolResult::failure(
-                "IDE integration is only available in the TypeScript CLI".to_string(),
-            ),
+            "mcp_get_prompt" => {
+                let server = args.get("server").and_then(|v| v.as_str()).unwrap_or("");
+                let name = args.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                if server.is_empty() || name.is_empty() {
+                    return ToolResult::failure("server and name are required".to_string());
+                }
+
+                let arguments = args
+                    .get("arguments")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| {
+                        obj.iter()
+                            .map(|(key, value)| {
+                                let value = match value {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    other => other.to_string(),
+                                };
+                                (key.clone(), value)
+                            })
+                            .collect::<HashMap<String, String>>()
+                    });
+
+                let guard = match self.ensure_mcp_client().await {
+                    Ok(guard) => guard,
+                    Err(err) => return ToolResult::failure(err),
+                };
+                let client = match guard.as_ref() {
+                    Some(client) => client,
+                    None => {
+                        return ToolResult::failure("No MCP servers configured".to_string());
+                    }
+                };
+
+                match client.get_prompt(server, name, arguments).await {
+                    Ok(result) => {
+                        let description = result.description.clone();
+                        let messages = result.messages;
+                        let mut lines = Vec::new();
+                        lines.push(format!("Prompt: {name}"));
+                        if let Some(desc) = &description {
+                            lines.push(String::new());
+                            lines.push(format!("Description: {desc}"));
+                        }
+                        lines.push(String::new());
+                        for msg in &messages {
+                            lines.push(format!("[{}]", msg.role));
+                            let content = msg.content.as_text().unwrap_or("[non-text content]");
+                            lines.push(content.to_string());
+                            lines.push(String::new());
+                        }
+
+                        ToolResult::success(lines.join("\n")).with_details(serde_json::json!({
+                            "server": server,
+                            "name": name,
+                            "description": description,
+                            "messages": messages,
+                        }))
+                    }
+                    Err(err) => ToolResult::failure(format!("Failed to get MCP prompt: {err}")),
+                }
+            }
+            "vscode_get_diagnostics" | "jetbrains_get_diagnostics" => {
+                let uri = args.get("uri").and_then(|v| v.as_str());
+                let diagnostics = if let Some(uri) = uri {
+                    let uri = normalize_uri_input(uri);
+                    let path = match resolve_tool_path(&self.cwd, &uri) {
+                        Ok(resolved) => resolved,
+                        Err(message) => return ToolResult::failure(message),
+                    };
+                    match lsp::diagnostics_for_file(&self.cwd, &path).await {
+                        Ok(entries) => entries,
+                        Err(err) => return ToolResult::failure(err),
+                    }
+                } else {
+                    match lsp::collect_workspace_diagnostics(&self.cwd).await {
+                        Ok(map) => map.values().flat_map(|entries| entries.clone()).collect(),
+                        Err(err) => return ToolResult::failure(err),
+                    }
+                };
+
+                let output =
+                    serde_json::to_string_pretty(&diagnostics).unwrap_or_else(|_| "[]".to_string());
+                ToolResult::success(output)
+            }
+            "vscode_get_definition" | "jetbrains_get_definition" => {
+                let raw_uri = args.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+                if raw_uri.is_empty() {
+                    return ToolResult::failure("uri is required".to_string());
+                }
+                let line = match args.get("line").and_then(serde_json::Value::as_i64) {
+                    Some(value) if value >= 0 => value as u32,
+                    _ => {
+                        return ToolResult::failure(
+                            "line must be a non-negative integer".to_string(),
+                        )
+                    }
+                };
+                let character = match args.get("character").and_then(serde_json::Value::as_i64) {
+                    Some(value) if value >= 0 => value as u32,
+                    _ => {
+                        return ToolResult::failure(
+                            "character must be a non-negative integer".to_string(),
+                        )
+                    }
+                };
+
+                let uri = normalize_uri_input(raw_uri);
+                let path = match resolve_tool_path(&self.cwd, &uri) {
+                    Ok(resolved) => resolved,
+                    Err(message) => return ToolResult::failure(message),
+                };
+
+                let locations =
+                    match lsp::definition_for_position(&self.cwd, &path, line, character).await {
+                        Ok(entries) => entries,
+                        Err(err) => return ToolResult::failure(err),
+                    };
+                let normalized: Vec<_> = locations
+                    .into_iter()
+                    .map(|mut location| {
+                        location.uri = normalize_uri_input(&location.uri);
+                        location
+                    })
+                    .collect();
+
+                let output =
+                    serde_json::to_string_pretty(&normalized).unwrap_or_else(|_| "[]".to_string());
+                ToolResult::success(output)
+            }
+            "vscode_find_references" | "jetbrains_find_references" => {
+                let raw_uri = args.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+                if raw_uri.is_empty() {
+                    return ToolResult::failure("uri is required".to_string());
+                }
+                let line = match args.get("line").and_then(serde_json::Value::as_i64) {
+                    Some(value) if value >= 0 => value as u32,
+                    _ => {
+                        return ToolResult::failure(
+                            "line must be a non-negative integer".to_string(),
+                        )
+                    }
+                };
+                let character = match args.get("character").and_then(serde_json::Value::as_i64) {
+                    Some(value) if value >= 0 => value as u32,
+                    _ => {
+                        return ToolResult::failure(
+                            "character must be a non-negative integer".to_string(),
+                        )
+                    }
+                };
+                let include_declaration = args
+                    .get("includeDeclaration")
+                    .or_else(|| args.get("include_declaration"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true);
+
+                let uri = normalize_uri_input(raw_uri);
+                let path = match resolve_tool_path(&self.cwd, &uri) {
+                    Ok(resolved) => resolved,
+                    Err(message) => return ToolResult::failure(message),
+                };
+
+                let locations = match lsp::references_for_position(
+                    &self.cwd,
+                    &path,
+                    line,
+                    character,
+                    include_declaration,
+                )
+                .await
+                {
+                    Ok(entries) => entries,
+                    Err(err) => return ToolResult::failure(err),
+                };
+                let normalized: Vec<_> = locations
+                    .into_iter()
+                    .map(|mut location| {
+                        location.uri = normalize_uri_input(&location.uri);
+                        location
+                    })
+                    .collect();
+
+                let output =
+                    serde_json::to_string_pretty(&normalized).unwrap_or_else(|_| "[]".to_string());
+                ToolResult::success(output)
+            }
+            "vscode_read_file_range" | "jetbrains_read_file_range" => {
+                let start_time = Instant::now();
+                let raw_uri = args.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+                if raw_uri.is_empty() {
+                    return ToolResult::failure("uri is required".to_string());
+                }
+                let start_line = match args.get("startLine").and_then(serde_json::Value::as_i64) {
+                    Some(value) if value >= 0 => value as usize,
+                    _ => {
+                        return ToolResult::failure(
+                            "startLine must be a non-negative integer".to_string(),
+                        )
+                    }
+                };
+                let end_line = match args.get("endLine").and_then(serde_json::Value::as_i64) {
+                    Some(value) if value >= 0 => value as usize,
+                    _ => {
+                        return ToolResult::failure(
+                            "endLine must be a non-negative integer".to_string(),
+                        )
+                    }
+                };
+
+                let uri = normalize_uri_input(raw_uri);
+                let path = match resolve_tool_path(&self.cwd, &uri) {
+                    Ok(resolved) => resolved,
+                    Err(message) => return ToolResult::failure(message),
+                };
+
+                let (output, lines_read) = match read_file_range(&path, start_line, end_line).await
+                {
+                    Ok(result) => result,
+                    Err(err) => return ToolResult::failure(err),
+                };
+
+                let size_bytes = tokio::fs::metadata(&path).await.ok().map(|m| m.len());
+                let mut details = ReadDetails::new(path.clone())
+                    .with_lines(lines_read)
+                    .with_offset(Some(start_line + 1))
+                    .with_limit(Some(end_line.saturating_sub(start_line) + 1))
+                    .with_duration(start_time.elapsed().as_millis() as u64);
+                if let Some(size) = size_bytes {
+                    details = details.with_size(size);
+                }
+
+                ToolResult::success(output).with_details(details.to_json())
+            }
             "web_fetch" | "WebFetch" | "webfetch" => {
                 let fetch_args: WebFetchArgs = match serde_json::from_value(args.clone()) {
                     Ok(a) => a,
@@ -3243,6 +3665,21 @@ impl ToolRegistry {
             },
         );
         tools.insert(
+            "mcp_list_prompts".to_string(),
+            ToolDefinition {
+                tool: Tool::new("mcp_list_prompts", "List available MCP prompts.").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "server": {"type": "string"}
+                        },
+                        "required": []
+                    }),
+                ),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
             "mcp_read_resource".to_string(),
             ToolDefinition {
                 tool: Tool::new("mcp_read_resource", "Read an MCP resource by URI.").with_schema(
@@ -3258,38 +3695,151 @@ impl ToolRegistry {
                 requires_approval: false,
             },
         );
+        tools.insert(
+            "mcp_get_prompt".to_string(),
+            ToolDefinition {
+                tool: Tool::new("mcp_get_prompt", "Get an MCP prompt by name.").with_schema(
+                    serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "server": {"type": "string"},
+                            "name": {"type": "string"},
+                            "arguments": {
+                                "type": "object",
+                                "additionalProperties": {"type": "string"}
+                            }
+                        },
+                        "required": ["server", "name"]
+                    }),
+                ),
+                requires_approval: false,
+            },
+        );
 
-        // IDE tools (stubs for parity)
-        for name in [
-            "vscode_get_diagnostics",
-            "vscode_get_definition",
-            "vscode_find_references",
-            "vscode_read_file_range",
-            "jetbrains_get_diagnostics",
-            "jetbrains_get_definition",
-            "jetbrains_find_references",
-            "jetbrains_read_file_range",
-        ] {
-            tools.insert(
-                name.to_string(),
-                ToolDefinition {
-                    tool: Tool::new(name, "IDE integration tool (client-side).").with_schema(
-                        serde_json::json!({
-                            "type": "object",
-                            "properties": {
-                                "uri": {"type": "string"},
-                                "line": {"type": "number"},
-                                "character": {"type": "number"},
-                                "startLine": {"type": "number"},
-                                "endLine": {"type": "number"}
-                            },
-                            "required": []
-                        }),
-                    ),
-                    requires_approval: false,
-                },
-            );
-        }
+        // IDE tools (LSP-backed)
+        let diagnostics_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "uri": {"type": "string"}
+            },
+            "required": []
+        });
+        let definition_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "uri": {"type": "string"},
+                "line": {"type": "number", "minimum": 0},
+                "character": {"type": "number", "minimum": 0}
+            },
+            "required": ["uri", "line", "character"]
+        });
+        let references_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "uri": {"type": "string"},
+                "line": {"type": "number", "minimum": 0},
+                "character": {"type": "number", "minimum": 0}
+            },
+            "required": ["uri", "line", "character"]
+        });
+        let read_range_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "uri": {"type": "string"},
+                "startLine": {"type": "number", "minimum": 0, "maximum": 10000},
+                "endLine": {"type": "number", "minimum": 0, "maximum": 10000}
+            },
+            "required": ["uri", "startLine", "endLine"]
+        });
+
+        tools.insert(
+            "vscode_get_diagnostics".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "vscode_get_diagnostics",
+                    "Get diagnostic errors/warnings from the workspace (LSP-backed).",
+                )
+                .with_schema(diagnostics_schema.clone()),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "vscode_get_definition".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "vscode_get_definition",
+                    "Go to definition for a symbol at a position (LSP-backed).",
+                )
+                .with_schema(definition_schema.clone()),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "vscode_find_references".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "vscode_find_references",
+                    "Find references for a symbol at a position (LSP-backed).",
+                )
+                .with_schema(references_schema.clone()),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "vscode_read_file_range".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "vscode_read_file_range",
+                    "Read a specific range of lines from a file (LSP-backed).",
+                )
+                .with_schema(read_range_schema.clone()),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "jetbrains_get_diagnostics".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "jetbrains_get_diagnostics",
+                    "Get diagnostic errors/warnings from the workspace (LSP-backed).",
+                )
+                .with_schema(diagnostics_schema.clone()),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "jetbrains_get_definition".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "jetbrains_get_definition",
+                    "Go to definition for a symbol at a position (LSP-backed).",
+                )
+                .with_schema(definition_schema.clone()),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "jetbrains_find_references".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "jetbrains_find_references",
+                    "Find references for a symbol at a position (LSP-backed).",
+                )
+                .with_schema(references_schema.clone()),
+                requires_approval: false,
+            },
+        );
+        tools.insert(
+            "jetbrains_read_file_range".to_string(),
+            ToolDefinition {
+                tool: Tool::new(
+                    "jetbrains_read_file_range",
+                    "Read a specific range of lines from a file (LSP-backed).",
+                )
+                .with_schema(read_range_schema.clone()),
+                requires_approval: false,
+            },
+        );
 
         Self { tools }
     }

@@ -119,6 +119,21 @@ pub struct OverflowInput {
     pub max_tokens: u64,
 }
 
+/// Input data for `UserPromptSubmit` hooks
+///
+/// Called when the user submits a prompt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserPromptSubmitInput {
+    pub hook_event_name: String,
+    pub cwd: String,
+    pub session_id: Option<String>,
+    pub timestamp: String,
+    /// The user's prompt text
+    pub prompt: String,
+    /// Number of attachments included with the prompt
+    pub attachment_count: u32,
+}
+
 /// Input data for `PreMessage` hooks
 ///
 /// Called before a user message is sent to the model.
@@ -316,6 +331,20 @@ pub trait OverflowHook: Send + Sync {
     /// # Returns
     /// A `HookResult` - typically Continue to allow auto-compaction
     fn on_overflow(&self, input: &OverflowInput) -> HookResult;
+}
+
+/// Trait for `UserPromptSubmit` hooks
+///
+/// Called when the user submits a prompt.
+pub trait UserPromptSubmitHook: Send + Sync {
+    /// Called when user submits a prompt
+    ///
+    /// # Returns
+    /// - `Continue`: Proceed normally
+    /// - `Block`: Prevent sending the prompt
+    /// - `ModifyInput`: Modify the prompt content
+    /// - `InjectContext`: Add context to the prompt
+    fn on_user_prompt_submit(&self, input: &UserPromptSubmitInput) -> HookResult;
 }
 
 /// Trait for `PreMessage` hooks

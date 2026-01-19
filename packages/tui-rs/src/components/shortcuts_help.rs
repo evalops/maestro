@@ -206,12 +206,14 @@ impl ShortcutsHelp {
             "Page Up/Down",
             "Scroll half page",
         ));
-        self.add(Shortcut::new(
-            ShortcutCategory::Navigation,
-            "g / G",
-            "Jump to oldest/newest",
-        )
-        .with_context("when input empty"));
+        self.add(
+            Shortcut::new(
+                ShortcutCategory::Navigation,
+                "g / G",
+                "Jump to oldest/newest",
+            )
+            .with_context("when input empty"),
+        );
         self.add(Shortcut::new(
             ShortcutCategory::Navigation,
             "Mouse Scroll",
@@ -251,18 +253,14 @@ impl ShortcutsHelp {
         ));
 
         // Commands
-        self.add(Shortcut::new(
-            ShortcutCategory::Commands,
-            "/",
-            "Start slash command",
-        )
-        .with_context("when input empty"));
-        self.add(Shortcut::new(
-            ShortcutCategory::Commands,
-            "Tab",
-            "Complete slash command",
-        )
-        .with_context("after /"));
+        self.add(
+            Shortcut::new(ShortcutCategory::Commands, "/", "Start slash command")
+                .with_context("when input empty"),
+        );
+        self.add(
+            Shortcut::new(ShortcutCategory::Commands, "Tab", "Complete slash command")
+                .with_context("after /"),
+        );
         self.add(Shortcut::new(
             ShortcutCategory::Commands,
             "Ctrl+P",
@@ -316,12 +314,10 @@ impl ShortcutsHelp {
             "Ctrl+T",
             "Toggle last tool call expand",
         ));
-        self.add(Shortcut::new(
-            ShortcutCategory::Tools,
-            "Tab",
-            "Toggle last thinking block",
-        )
-        .with_context("when not busy"));
+        self.add(
+            Shortcut::new(ShortcutCategory::Tools, "Tab", "Toggle last thinking block")
+                .with_context("when not busy"),
+        );
 
         // View
         self.add(Shortcut::new(
@@ -329,13 +325,15 @@ impl ShortcutsHelp {
             "Ctrl+L",
             "Clear screen",
         ));
-        self.add(Shortcut::new(ShortcutCategory::View, "F1", "Show this help"));
         self.add(Shortcut::new(
             ShortcutCategory::View,
-            "j / k",
-            "Scroll help (vim style)",
-        )
-        .with_context("in this help"));
+            "F1",
+            "Show this help",
+        ));
+        self.add(
+            Shortcut::new(ShortcutCategory::View, "j / k", "Scroll help (vim style)")
+                .with_context("in this help"),
+        );
 
         // System
         self.add(Shortcut::new(
@@ -343,11 +341,7 @@ impl ShortcutsHelp {
             "Ctrl+C",
             "Cancel / Quit",
         ));
-        self.add(Shortcut::new(
-            ShortcutCategory::System,
-            "Ctrl+D",
-            "Quit",
-        ));
+        self.add(Shortcut::new(ShortcutCategory::System, "Ctrl+D", "Quit"));
     }
 
     /// Add a shortcut

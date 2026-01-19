@@ -12,8 +12,8 @@ use std::io::{self, Write};
 use chrono::DateTime;
 
 use super::entries::{
-    AppMessage, ContentBlock, MessageContent, SessionHeader, SessionMeta, SessionStats,
-    ThinkingLevel,
+    AppMessage, CompactionEntry, ContentBlock, MessageContent, ModelChange, SessionHeader,
+    SessionMeta, SessionStats, ThinkingLevel, ThinkingLevelChange,
 };
 use super::reader::{ParsedSession, SessionReader};
 
@@ -152,17 +152,24 @@ pub struct SessionExporter<'a> {
     messages: &'a [AppMessage],
     meta: Option<&'a SessionMeta>,
     stats: &'a SessionStats,
+    thinking_level_changes: &'a [ThinkingLevelChange],
+    model_changes: &'a [ModelChange],
+    compactions: &'a [CompactionEntry],
     options: ExportOptions,
 }
 
 impl<'a> SessionExporter<'a> {
     /// Create a new exporter for a session
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         header: &'a SessionHeader,
         messages: &'a [AppMessage],
         meta: Option<&'a SessionMeta>,
         stats: &'a SessionStats,
+        thinking_level_changes: &'a [ThinkingLevelChange],
+        model_changes: &'a [ModelChange],
+        compactions: &'a [CompactionEntry],
         options: ExportOptions,
     ) -> Self {
         Self {
@@ -170,6 +177,9 @@ impl<'a> SessionExporter<'a> {
             messages,
             meta,
             stats,
+            thinking_level_changes,
+            model_changes,
+            compactions,
             options,
         }
     }
@@ -182,6 +192,9 @@ impl<'a> SessionExporter<'a> {
             messages: &session.messages,
             meta: session.meta.as_ref(),
             stats: &session.stats,
+            thinking_level_changes: &session.thinking_level_changes,
+            model_changes: &session.model_changes,
+            compactions: &session.compactions,
             options,
         }
     }
@@ -551,6 +564,11 @@ impl<'a> SessionExporter<'a> {
                 "model": self.header.model,
                 "thinking_level": self.header.thinking_level,
             },
+            "events": {
+                "thinking_level_changes": self.thinking_level_changes,
+                "model_changes": self.model_changes,
+                "compactions": self.compactions,
+            },
             "meta": self.meta.map(|m| serde_json::json!({
                 "title": m.title,
                 "summary": m.summary,
@@ -722,8 +740,16 @@ mod tests {
         let messages = sample_messages();
         let stats = sample_stats();
 
-        let exporter =
-            SessionExporter::new(&header, &messages, None, &stats, ExportOptions::markdown());
+        let exporter = SessionExporter::new(
+            &header,
+            &messages,
+            None,
+            &stats,
+            &[],
+            &[],
+            &[],
+            ExportOptions::markdown(),
+        );
         let md = exporter.export_to_string();
 
         assert!(md.contains("# Conversation"));
@@ -740,8 +766,16 @@ mod tests {
         let messages = sample_messages();
         let stats = sample_stats();
 
-        let exporter =
-            SessionExporter::new(&header, &messages, None, &stats, ExportOptions::html());
+        let exporter = SessionExporter::new(
+            &header,
+            &messages,
+            None,
+            &stats,
+            &[],
+            &[],
+            &[],
+            ExportOptions::html(),
+        );
         let html = exporter.export_to_string();
 
         assert!(html.contains("<!DOCTYPE html>"));
@@ -755,8 +789,16 @@ mod tests {
         let messages = sample_messages();
         let stats = sample_stats();
 
-        let exporter =
-            SessionExporter::new(&header, &messages, None, &stats, ExportOptions::json());
+        let exporter = SessionExporter::new(
+            &header,
+            &messages,
+            None,
+            &stats,
+            &[],
+            &[],
+            &[],
+            ExportOptions::json(),
+        );
         let json = exporter.export_to_string();
 
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -775,6 +817,9 @@ mod tests {
             &messages,
             None,
             &stats,
+            &[],
+            &[],
+            &[],
             ExportOptions::plain_text(),
         );
         let txt = exporter.export_to_string();
@@ -791,7 +836,8 @@ mod tests {
         let stats = sample_stats();
 
         let options = ExportOptions::markdown().with_title("My Custom Title");
-        let exporter = SessionExporter::new(&header, &messages, None, &stats, options);
+        let exporter =
+            SessionExporter::new(&header, &messages, None, &stats, &[], &[], &[], options);
         let md = exporter.export_to_string();
 
         assert!(md.contains("# My Custom Title"));

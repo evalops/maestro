@@ -15,8 +15,9 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use super::config::{expand_env_vars, McpServerConfig, McpTransport};
 use super::http::HttpConnection;
 use super::protocol::{
-    ClientInfo, InitializeResult, McpRequest, McpResource, McpResponse, McpTool,
-    McpToolAnnotations, McpToolResult, ResourceReadResult, ResourcesListResult, ToolsListResult,
+    ClientInfo, InitializeResult, McpPrompt, McpRequest, McpResource, McpResponse, McpTool,
+    McpToolAnnotations, McpToolResult, PromptGetResult, PromptsListResult, ResourceReadResult,
+    ResourcesListResult, ToolsListResult,
 };
 
 /// Error type for MCP operations
@@ -56,6 +57,7 @@ pub enum McpError {
 }
 
 /// Connection backend type
+#[allow(clippy::large_enum_variant)]
 enum ConnectionBackend {
     /// Stdio subprocess
     Stdio {
@@ -83,6 +85,8 @@ pub struct McpConnection {
     tools: Vec<McpTool>,
     /// Available resources
     resources: Vec<McpResource>,
+    /// Available prompts
+    prompts: Vec<McpPrompt>,
     /// Whether initialized
     initialized: bool,
 
@@ -104,6 +108,7 @@ impl McpConnection {
             pending: Arc::new(Mutex::new(HashMap::new())),
             tools: Vec::new(),
             resources: Vec::new(),
+            prompts: Vec::new(),
             initialized: false,
             reconnecting: false,
         }
@@ -130,6 +135,7 @@ impl McpConnection {
         // Copy tools from HTTP connection
         self.tools = http_conn.tools().to_vec();
         self.resources = http_conn.resources().to_vec();
+        self.prompts = http_conn.prompts().to_vec();
         self.initialized = true;
         self.backend = Some(ConnectionBackend::Http(http_conn));
 
@@ -279,6 +285,8 @@ impl McpConnection {
         self.refresh_tools().await?;
         // List resources (best effort)
         let _ = self.refresh_resources().await;
+        // List prompts (best effort)
+        let _ = self.refresh_prompts().await;
 
         self.initialized = true;
         Ok(())
@@ -310,6 +318,19 @@ impl McpConnection {
         Ok(())
     }
 
+    /// Refresh the list of available prompts
+    pub async fn refresh_prompts(&mut self) -> Result<(), McpError> {
+        let request = McpRequest::list_prompts(self.next_id());
+        let response = self.send_request(request).await?;
+
+        let prompts_result: PromptsListResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid prompts/list response: {e}")))?;
+
+        self.prompts = prompts_result.prompts;
+        Ok(())
+    }
+
     /// Get available tools
     pub fn tools(&self) -> &[McpTool] {
         &self.tools
@@ -318,6 +339,11 @@ impl McpConnection {
     /// Get available resources
     pub fn resources(&self) -> &[McpResource] {
         &self.resources
+    }
+
+    /// Get available prompts
+    pub fn prompts(&self) -> &[McpPrompt] {
+        &self.prompts
     }
 
     /// Call a tool
@@ -371,6 +397,32 @@ impl McpConnection {
         let result: ResourceReadResult = response
             .result_as()
             .map_err(|e| McpError::Protocol(format!("Invalid resource read result: {e}")))?;
+
+        Ok(result)
+    }
+
+    /// Get a prompt by name
+    pub async fn get_prompt(
+        &mut self,
+        name: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> Result<PromptGetResult, McpError> {
+        self.ensure_stdio_connected().await?;
+
+        if let Some(ConnectionBackend::Http(ref mut http)) = self.backend {
+            return http.get_prompt(name, arguments).await;
+        }
+
+        let request = McpRequest::get_prompt(self.next_id(), name, arguments);
+        let response = self.send_request(request).await?;
+
+        if let Some(error) = response.error {
+            return Err(McpError::RequestFailed(error.message));
+        }
+
+        let result: PromptGetResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid prompt get result: {e}")))?;
 
         Ok(result)
     }
@@ -592,6 +644,24 @@ impl McpClient {
         tools
     }
 
+    /// Get tool names grouped by server
+    pub async fn list_tools_by_server(&self) -> Vec<(String, Vec<String>)> {
+        let connections = self.connections.read().await;
+        let mut results = Vec::new();
+
+        for (name, conn) in connections.iter() {
+            let conn = conn.lock().await;
+            let tools = conn
+                .tools()
+                .iter()
+                .map(|t| t.name.clone())
+                .collect::<Vec<_>>();
+            results.push((name.clone(), tools));
+        }
+
+        results
+    }
+
     /// Get tool annotations for all connected servers
     pub async fn list_tool_annotations(&self) -> HashMap<String, McpToolAnnotations> {
         let connections = self.connections.read().await;
@@ -626,6 +696,41 @@ impl McpClient {
         }
 
         results
+    }
+
+    /// Get available prompts from all connected servers
+    pub async fn list_all_prompts(&self) -> Vec<(String, Vec<String>)> {
+        let connections = self.connections.read().await;
+        let mut results = Vec::new();
+
+        for (name, conn) in connections.iter() {
+            let conn = conn.lock().await;
+            let prompts = conn
+                .prompts()
+                .iter()
+                .map(|p| p.name.clone())
+                .collect::<Vec<_>>();
+            results.push((name.clone(), prompts));
+        }
+
+        results
+    }
+
+    /// Get a prompt from a connected server
+    pub async fn get_prompt(
+        &self,
+        server_name: &str,
+        name: &str,
+        arguments: Option<HashMap<String, String>>,
+    ) -> Result<PromptGetResult, McpError> {
+        let connections = self.connections.read().await;
+        let conn = connections
+            .get(server_name)
+            .ok_or_else(|| McpError::ServerNotFound(server_name.to_string()))?;
+        let mut conn = conn.lock().await;
+        let args_value = arguments
+            .map(|args| serde_json::to_value(args).unwrap_or_else(|_| serde_json::json!({})));
+        conn.get_prompt(name, args_value).await
     }
 
     /// Call a tool (parses server name from prefixed tool name)
@@ -720,7 +825,11 @@ impl McpClient {
     /// Check if a tool name is an MCP tool
     #[must_use]
     pub fn is_mcp_tool(name: &str) -> bool {
-        if name == "mcp_list_resources" || name == "mcp_read_resource" {
+        if name == "mcp_list_resources"
+            || name == "mcp_read_resource"
+            || name == "mcp_list_prompts"
+            || name == "mcp_get_prompt"
+        {
             return false;
         }
         name.starts_with("mcp__") || name.starts_with("mcp_")
@@ -780,6 +889,8 @@ mod tests {
         assert!(McpClient::is_mcp_tool("mcp_server_tool"));
         assert!(!McpClient::is_mcp_tool("mcp_list_resources"));
         assert!(!McpClient::is_mcp_tool("mcp_read_resource"));
+        assert!(!McpClient::is_mcp_tool("mcp_list_prompts"));
+        assert!(!McpClient::is_mcp_tool("mcp_get_prompt"));
         assert!(!McpClient::is_mcp_tool("bash"));
         assert!(!McpClient::is_mcp_tool("read"));
     }

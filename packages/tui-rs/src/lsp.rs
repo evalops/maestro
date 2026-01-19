@@ -22,6 +22,12 @@ pub struct LspRange {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspLocation {
+    pub uri: String,
+    pub range: LspRange,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LspDiagnostic {
     pub severity: Option<u8>,
     pub message: String,
@@ -181,17 +187,19 @@ fn normalize_path(cwd: &Path, raw: &str) -> PathBuf {
 
 async fn run_cli_diagnostics(
     cwd: &Path,
-    path: &Path,
+    path: Option<&Path>,
 ) -> Result<HashMap<String, Vec<LspDiagnostic>>, String> {
     let Some(cli_path) = resolve_cli_path(cwd) else {
         return Ok(HashMap::new());
     };
 
     let runtime = resolve_runtime();
-    let output = Command::new(runtime)
-        .arg(cli_path)
-        .arg("diagnostics")
-        .arg(path)
+    let mut command = Command::new(runtime);
+    command.arg(cli_path).arg("diagnostics");
+    if let Some(path) = path {
+        command.arg(path);
+    }
+    let output = command
         .current_dir(cwd)
         .output()
         .await
@@ -212,6 +220,51 @@ async fn run_cli_diagnostics(
     Ok(map)
 }
 
+async fn run_cli_locations(
+    cwd: &Path,
+    command_name: &str,
+    path: &Path,
+    line: u32,
+    character: u32,
+    include_declaration: Option<bool>,
+) -> Result<Vec<LspLocation>, String> {
+    let Some(cli_path) = resolve_cli_path(cwd) else {
+        return Ok(Vec::new());
+    };
+
+    let runtime = resolve_runtime();
+    let mut command = Command::new(runtime);
+    command
+        .arg(cli_path)
+        .arg(command_name)
+        .arg(path)
+        .arg(line.to_string())
+        .arg(character.to_string());
+    if let Some(include) = include_declaration {
+        command.arg(if include { "true" } else { "false" });
+    }
+
+    let output = command
+        .current_dir(cwd)
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run LSP {command_name}: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "LSP {command_name} command failed (status {:?}): {}",
+            output.status.code(),
+            stderr.trim()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let locations: Vec<LspLocation> = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse LSP {command_name} output: {e}"))?;
+    Ok(locations)
+}
+
 pub async fn collect_diagnostics_for_paths(
     cwd: &str,
     paths: &[String],
@@ -229,13 +282,24 @@ pub async fn collect_diagnostics_for_paths(
         if !seen.insert(normalized.clone()) {
             continue;
         }
-        let map = run_cli_diagnostics(cwd_path, &normalized).await?;
+        let map = run_cli_diagnostics(cwd_path, Some(&normalized)).await?;
         for (file, diagnostics) in map {
             combined.entry(file).or_default().extend(diagnostics);
         }
     }
 
     Ok(combined)
+}
+
+pub async fn collect_workspace_diagnostics(
+    cwd: &str,
+) -> Result<HashMap<String, Vec<LspDiagnostic>>, String> {
+    if !is_lsp_enabled() {
+        return Ok(HashMap::new());
+    }
+
+    let cwd_path = Path::new(cwd);
+    run_cli_diagnostics(cwd_path, None).await
 }
 
 pub async fn diagnostics_for_file(cwd: &str, path: &str) -> Result<Vec<LspDiagnostic>, String> {
@@ -245,7 +309,7 @@ pub async fn diagnostics_for_file(cwd: &str, path: &str) -> Result<Vec<LspDiagno
 
     let cwd_path = Path::new(cwd);
     let normalized = normalize_path(cwd_path, path);
-    let map = run_cli_diagnostics(cwd_path, &normalized).await?;
+    let map = run_cli_diagnostics(cwd_path, Some(&normalized)).await?;
 
     if let Some(entries) = map.get(&normalized.to_string_lossy().to_string()) {
         return Ok(entries.clone());
@@ -256,6 +320,45 @@ pub async fn diagnostics_for_file(cwd: &str, path: &str) -> Result<Vec<LspDiagno
     }
 
     Ok(Vec::new())
+}
+
+pub async fn definition_for_position(
+    cwd: &str,
+    path: &str,
+    line: u32,
+    character: u32,
+) -> Result<Vec<LspLocation>, String> {
+    if !is_lsp_enabled() {
+        return Ok(Vec::new());
+    }
+
+    let cwd_path = Path::new(cwd);
+    let normalized = normalize_path(cwd_path, path);
+    run_cli_locations(cwd_path, "definition", &normalized, line, character, None).await
+}
+
+pub async fn references_for_position(
+    cwd: &str,
+    path: &str,
+    line: u32,
+    character: u32,
+    include_declaration: bool,
+) -> Result<Vec<LspLocation>, String> {
+    if !is_lsp_enabled() {
+        return Ok(Vec::new());
+    }
+
+    let cwd_path = Path::new(cwd);
+    let normalized = normalize_path(cwd_path, path);
+    run_cli_locations(
+        cwd_path,
+        "references",
+        &normalized,
+        line,
+        character,
+        Some(include_declaration),
+    )
+    .await
 }
 
 #[must_use]
