@@ -6,6 +6,7 @@ import {
 	sanitizeSessionScope,
 } from "../session/scope.js";
 import { getAuthSubject } from "./authz.js";
+import { getRequestToken } from "./server-utils.js";
 
 const SESSION_SCOPE_MODE = (
 	process.env.COMPOSER_SESSION_SCOPE ||
@@ -22,6 +23,7 @@ const SESSION_SCOPE_ENABLED =
 
 export function resolveSessionScope(req: IncomingMessage): string | null {
 	if (!SESSION_SCOPE_ENABLED) return null;
+	if (!getRequestToken(req)) return null;
 	const subject = getAuthSubject(req);
 	if (!subject) return null;
 	return sanitizeSessionScope(subject) || null;
