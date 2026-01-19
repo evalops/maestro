@@ -2274,16 +2274,26 @@ export class ComposerChat extends LitElement {
 					if (!requireWritableSession("Config")) break;
 					if (args.startsWith("set ")) {
 						const jsonText = args.replace(/^set\s+/, "");
+						let config: Record<string, unknown>;
 						try {
-							const config = JSON.parse(jsonText) as Record<string, unknown>;
-							await this.apiClient.saveConfig({ config });
-							this.appendCommandOutput(command, "Config updated.");
-						} catch (e) {
+							config = JSON.parse(jsonText) as Record<string, unknown>;
+						} catch {
 							this.appendCommandOutput(
 								command,
 								'Usage: /config set {"key":"value"}',
 								true,
 							);
+							break;
+						}
+						try {
+							await this.apiClient.saveConfig({ config });
+							this.appendCommandOutput(command, "Config updated.");
+						} catch (e) {
+							const message =
+								e instanceof Error && e.message
+									? e.message
+									: "Failed to update config.";
+							this.appendCommandOutput(command, message, true);
 						}
 						break;
 					}
