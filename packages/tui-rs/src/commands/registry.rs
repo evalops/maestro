@@ -1000,25 +1000,6 @@ pub fn build_command_registry() -> CommandRegistry {
         Box::new(|_| Ok(CommandOutput::Message("Saved plans...".to_string()))),
     ));
 
-    // Thinking command
-    registry.register(
-        Command::new(
-            "thinking",
-            "Set thinking level",
-            CommandCategory::Config,
-            Box::new(|ctx| {
-                let level = ctx.get_string("level").unwrap_or("medium");
-                Ok(CommandOutput::Message(format!("Thinking level: {level}")))
-            }),
-        )
-        .arg(CommandArgument::choice(
-            "level",
-            "Thinking level",
-            vec!["off", "low", "medium", "high"],
-        ))
-        .usage("/thinking [off|low|medium|high]"),
-    );
-
     // Continue command
     registry.register(
         Command::new(
