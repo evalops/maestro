@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerMessage } from "@evalops/contracts";
 import { lookup as lookupMimeType } from "mime-types";
-import { SessionManager } from "../../session/manager.js";
 import { createLogger } from "../../utils/logger.js";
 import { subscribeArtifactUpdates } from "../artifacts-live-reload.js";
 import {
@@ -9,6 +8,7 @@ import {
 	buildContentDisposition,
 	sendJson,
 } from "../server-utils.js";
+import { createSessionManagerForRequest } from "../session-scope.js";
 import { convertAppMessagesToComposer } from "../session-serialization.js";
 
 const logger = createLogger("session-artifacts");
@@ -175,9 +175,10 @@ function reconstructArtifactsFromMessages(
 }
 
 async function loadComposerMessages(
+	req: IncomingMessage,
 	sessionId: string,
 ): Promise<ComposerMessage[]> {
-	const sessionManager = new SessionManager(true);
+	const sessionManager = createSessionManagerForRequest(req, true);
 	const session = await sessionManager.loadSession(sessionId);
 	if (!session) {
 		throw new ApiError(404, "Session not found");
@@ -214,7 +215,7 @@ export async function handleSessionArtifactsIndex(
 			return;
 		}
 
-		const messages = await loadComposerMessages(sessionId);
+		const messages = await loadComposerMessages(req, sessionId);
 		const artifacts = reconstructArtifactsFromMessages(messages);
 		sendJson(
 			res,
@@ -256,7 +257,7 @@ export async function handleSessionArtifactFile(
 		}
 		validateFilename(filename);
 
-		const messages = await loadComposerMessages(sessionId);
+		const messages = await loadComposerMessages(req, sessionId);
 		const artifacts = reconstructArtifactsFromMessages(messages);
 		const content = artifacts.get(filename);
 		if (content === undefined) {
@@ -328,7 +329,7 @@ export async function handleSessionArtifactViewer(
 		}
 		validateFilename(filename);
 
-		const messages = await loadComposerMessages(sessionId);
+		const messages = await loadComposerMessages(req, sessionId);
 		const artifacts = reconstructArtifactsFromMessages(messages);
 		const content = artifacts.get(filename);
 		if (content === undefined) {
@@ -551,7 +552,7 @@ export async function handleSessionArtifactsZip(
 			return;
 		}
 
-		const messages = await loadComposerMessages(sessionId);
+		const messages = await loadComposerMessages(req, sessionId);
 		const artifacts = reconstructArtifactsFromMessages(messages);
 
 		// Lazy import to keep startup cost low.

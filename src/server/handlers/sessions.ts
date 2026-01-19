@@ -42,7 +42,6 @@ import type {
 import { and, eq, gt, lt, or, sql } from "drizzle-orm";
 import { getDb, isDbAvailable } from "../../db/client.js";
 import { sharedSessions as sharedSessionsTable } from "../../db/schema.js";
-import { SessionManager } from "../../session/manager.js";
 import { createLogger } from "../../utils/logger.js";
 import { getAuthSubject } from "../authz.js";
 import { RateLimiter } from "../rate-limiter.js";
@@ -52,6 +51,13 @@ import {
 	respondWithApiError,
 	sendJson,
 } from "../server-utils.js";
+import {
+	createSessionManagerForRequest,
+	createSessionManagerForScope,
+	decodeScopedSessionId,
+	encodeScopedSessionId,
+	resolveSessionScope,
+} from "../session-scope.js";
 import { convertAppMessagesToComposer } from "../session-serialization.js";
 
 const logger = createLogger("sessions-handler");
@@ -67,6 +73,7 @@ const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
 function verifySessionOwnership(
 	session: Record<string, unknown>,
 	subject: string,
+	scope?: string | null,
 ): boolean {
 	// Check explicit owner field
 	if (typeof session.owner === "string" && session.owner) {
@@ -79,6 +86,9 @@ function verifySessionOwnership(
 	}
 
 	// For sessions without ownership info:
+	// If sessions are scoped by auth subject, directory isolation already applies.
+	if (scope) return true;
+
 	// In strict mode (multi-user), deny access to prevent IDOR attacks.
 	// Sessions created via CLI don't have ownership info, but API access
 	// should be restricted in hosted environments.
@@ -372,7 +382,7 @@ export async function handleSessions(
 	params: { id?: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
+	const sessionManager = createSessionManagerForRequest(req, true);
 	const sessionId = params.id;
 	const url = new URL(req.url || "/api/sessions", "http://localhost");
 	const limitParam = url.searchParams.get("limit");
@@ -411,7 +421,7 @@ export async function handleSessions(
 
 			// Verify session ownership to prevent IDOR attacks
 			const subject = getAuthSubject(req);
-			if (!verifySessionOwnership(session, subject)) {
+			if (!verifySessionOwnership(session, subject, resolveSessionScope(req))) {
 				sendJson(
 					res,
 					403,
@@ -470,7 +480,7 @@ export async function handleSessions(
 
 			// Verify session ownership to prevent IDOR attacks
 			const subject = getAuthSubject(req);
-			if (!verifySessionOwnership(session, subject)) {
+			if (!verifySessionOwnership(session, subject, resolveSessionScope(req))) {
 				sendJson(
 					res,
 					403,
@@ -529,7 +539,7 @@ export async function handleSessions(
 
 			// Verify session ownership to prevent IDOR attacks
 			const subject = getAuthSubject(req);
-			if (!verifySessionOwnership(session, subject)) {
+			if (!verifySessionOwnership(session, subject, resolveSessionScope(req))) {
 				sendJson(
 					res,
 					403,
@@ -565,7 +575,7 @@ export async function handleSessionShare(
 	params: { id: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
+	const sessionManager = createSessionManagerForRequest(req, true);
 	const sessionId = params.id;
 
 	try {
@@ -587,7 +597,7 @@ export async function handleSessionShare(
 
 		// Verify session ownership to prevent sharing others' sessions
 		const subject = getAuthSubject(req);
-		if (!verifySessionOwnership(session, subject)) {
+		if (!verifySessionOwnership(session, subject, resolveSessionScope(req))) {
 			sendJson(
 				res,
 				403,
@@ -609,9 +619,12 @@ export async function handleSessionShare(
 		const shareToken = crypto.randomBytes(32).toString("base64url");
 		const expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
 
+		const scope = resolveSessionScope(req);
+		const scopedSessionId = encodeScopedSessionId(scope, sessionId);
+
 		// Store in database (or fallback to memory)
 		await createSharedSessionInDb(
-			sessionId,
+			scopedSessionId,
 			shareToken,
 			expiresAt,
 			maxAccesses,
@@ -649,7 +662,6 @@ export async function handleSharedSession(
 	params: { token: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
 	const shareToken = params.token;
 
 	try {
@@ -708,9 +720,11 @@ export async function handleSharedSession(
 			}
 		}
 
-		const session = await sessionManager.loadSession(
+		const { scope, sessionId } = decodeScopedSessionId(
 			accessResult.sessionId as string,
 		);
+		const sessionManager = createSessionManagerForScope(scope, true);
+		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
 			sendJson(res, 404, { error: "Session not found" }, cors, req);
 			return;
@@ -748,7 +762,6 @@ export async function handleSharedSessionAttachment(
 	params: { token: string; attachmentId: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
 	const shareToken = params.token;
 	const attachmentId = params.attachmentId;
 
@@ -780,7 +793,9 @@ export async function handleSharedSessionAttachment(
 			return;
 		}
 
-		const session = await sessionManager.loadSession(share.sessionId);
+		const { scope, sessionId } = decodeScopedSessionId(share.sessionId);
+		const sessionManager = createSessionManagerForScope(scope, true);
+		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
 			sendJson(res, 404, { error: "Session not found" }, cors, req);
 			return;
@@ -823,7 +838,7 @@ export async function handleSessionExport(
 	params: { id: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
+	const sessionManager = createSessionManagerForRequest(req, true);
 	const sessionId = params.id;
 
 	try {
@@ -845,7 +860,7 @@ export async function handleSessionExport(
 
 		// Verify session ownership to prevent exporting others' sessions
 		const subject = getAuthSubject(req);
-		if (!verifySessionOwnership(session, subject)) {
+		if (!verifySessionOwnership(session, subject, resolveSessionScope(req))) {
 			sendJson(
 				res,
 				403,

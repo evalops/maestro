@@ -1,11 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { SessionManager } from "../../session/manager.js";
 import { extractDocumentText } from "../../utils/document-extractor.js";
 import {
 	buildContentDisposition,
 	respondWithApiError,
 	sendJson,
 } from "../server-utils.js";
+import { createSessionManagerForRequest } from "../session-scope.js";
 
 const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
 const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
@@ -64,7 +64,7 @@ export async function handleSessionAttachment(
 	params: { id: string; attachmentId: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
+	const sessionManager = createSessionManagerForRequest(req, true);
 
 	try {
 		if (req.method !== "GET") {
@@ -125,7 +125,7 @@ export async function handleSessionAttachmentExtract(
 	params: { id: string; attachmentId: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
+	const sessionManager = createSessionManagerForRequest(req, true);
 
 	try {
 		if (req.method !== "POST") {

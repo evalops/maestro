@@ -13,6 +13,18 @@ export const WEB_SLASH_COMMANDS: WebSlashCommand[] = [
 		tags: ["support"],
 	},
 	{
+		name: "status",
+		description: "Show workspace status",
+		usage: "/status",
+		tags: ["diagnostics"],
+	},
+	{
+		name: "diag",
+		description: "Show diagnostics",
+		usage: "/diag [status|background|hooks|sandbox]",
+		tags: ["diagnostics"],
+	},
+	{
 		name: "run",
 		description: "Run npm script",
 		usage: "/run <script>",
@@ -37,6 +49,12 @@ export const WEB_SLASH_COMMANDS: WebSlashCommand[] = [
 		tags: ["planning"],
 	},
 	{
+		name: "branch",
+		description: "Create session branch",
+		usage: "/branch [list|<message#>]",
+		tags: ["session"],
+	},
+	{
 		name: "model",
 		description: "Select model",
 		usage: "/model",
@@ -44,10 +62,40 @@ export const WEB_SLASH_COMMANDS: WebSlashCommand[] = [
 	},
 	{ name: "theme", description: "Select theme", usage: "/theme", tags: ["ui"] },
 	{
+		name: "zen",
+		description: "Toggle zen mode",
+		usage: "/zen [on|off]",
+		tags: ["ui"],
+	},
+	{
+		name: "clean",
+		description: "Set clean mode",
+		usage: "/clean [off|soft|aggressive]",
+		tags: ["ui"],
+	},
+	{
+		name: "footer",
+		description: "Set footer mode",
+		usage: "/footer [ensemble|solo]",
+		tags: ["ui"],
+	},
+	{
 		name: "config",
 		description: "Inspect config",
 		usage: "/config",
 		tags: ["config"],
+	},
+	{
+		name: "files",
+		description: "List workspace files",
+		usage: "/files [pattern]",
+		tags: ["workspace"],
+	},
+	{
+		name: "commands",
+		description: "Open command palette",
+		usage: "/commands",
+		tags: ["ui"],
 	},
 	{
 		name: "cost",
@@ -72,6 +120,12 @@ export const WEB_SLASH_COMMANDS: WebSlashCommand[] = [
 		description: "Manage prompt queue",
 		usage: "/queue [list|mode]",
 		tags: ["planning"],
+	},
+	{
+		name: "transport",
+		description: "Set streaming transport",
+		usage: "/transport [auto|sse|ws]",
+		tags: ["diagnostics"],
 	},
 	{ name: "new", description: "New session", usage: "/new", tags: ["session"] },
 ];

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { SessionManager } from "../../session/manager.js";
 import { getAuthSubject, requireApiAuth } from "../authz.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
+import { createSessionManagerForRequest } from "../session-scope.js";
 import { redactPii } from "../utils/redact.js";
 import { checkSessionRateLimitAsync } from "../utils/session-rate-limit.js";
 import {
@@ -86,7 +86,7 @@ export async function handleContext(
 			sendJson(res, 429, { error: "Too many context requests" }, corsHeaders);
 			return;
 		}
-		const sessionManager = new SessionManager(false);
+		const sessionManager = createSessionManagerForRequest(req, false);
 		const sessionFile = sessionManager.getSessionFileById(sessionId);
 		if (!sessionFile) {
 			sendJson(

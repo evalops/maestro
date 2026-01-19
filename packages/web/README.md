@@ -10,6 +10,7 @@ Beautiful, modern web interface for Composer AI coding assistant.
 - **Smooth animations** and micro-interactions
 - **Modern color palette** with consistent theming
 - **Responsive layout** that works on mobile and desktop
+- **Theme toggle** with light/dark presets
 
 ### 💬 Session Management
 - **Session sidebar** showing all your conversations
@@ -17,6 +18,8 @@ Beautiful, modern web interface for Composer AI coding assistant.
 - **Resume previous sessions** from the sidebar
 - **Session metadata** showing date and message count
 - **Persistent history** across page reloads
+- **Session filtering** via quick search
+- **Export sessions** as JSON/Markdown/Text
 
 ### ⚡ Enhanced Messages
 - **Rich markdown rendering** with syntax highlighting
@@ -32,13 +35,14 @@ Beautiful, modern web interface for Composer AI coding assistant.
 - **Keyboard shortcuts**: Enter to send, Shift+Enter for new line
 - **Visual feedback** with focus states and animations
 - **Disabled state** while AI is thinking
+- **Voice input** (speech-to-text where supported)
 
 ### 🤖 AI Integration
-- **Streaming responses** with real-time updates
+- **Streaming responses** with real-time updates (SSE + WebSocket)
 - **Model selector** in header
 - **Error handling** with beautiful error messages
 - **Loading states** with animated spinners
-- **Tool usage tracking** (coming soon)
+- **Tool usage tracking** with tool execution cards
 
 ## Getting Started
 
@@ -113,6 +117,7 @@ The web UI communicates with these backend endpoints:
     "sessionId": "optional-session-id"
   }
   ```
+- `WS /api/chat/ws` - WebSocket alternative to streaming chat
 
 ### Models
 - `GET /api/models` - List available AI models
@@ -124,6 +129,7 @@ The web UI communicates with these backend endpoints:
 - `GET /api/sessions/:id` - Get specific session
 - `POST /api/sessions` - Create new session
 - `DELETE /api/sessions/:id` - Delete session
+- `POST /api/sessions/:id/export` - Export session (json/markdown/text)
 
 ## Customization
 
@@ -133,11 +139,17 @@ Edit CSS variables in `index.html`:
 
 ```css
 :root {
-  --bg-primary: #0a0e14;
-  --bg-secondary: #161b22;
-  --text-primary: #e6edf3;
-  --accent-color: #2f81f7;
+  --bg-primary: #09090b;
+  --bg-secondary: #18181b;
+  --text-primary: #f4f4f5;
+  --accent-amber: #d4a012;
   /* ... more variables */
+}
+
+:root[data-theme="light"] {
+  --bg-primary: #f7f7f8;
+  --text-primary: #14161a;
+  --accent-amber: #c58a05;
 }
 ```
 
@@ -180,13 +192,7 @@ Requires:
 
 ## Roadmap
 
-- [ ] Dark/light theme toggle
-- [ ] Session search and filtering
-- [ ] Export sessions as Markdown/HTML
-- [ ] Voice input support
-- [ ] File upload for context
 - [ ] Collaborative sessions
-- [ ] Keyboard shortcuts panel
 - [ ] Accessibility improvements
 - [ ] Offline support with Service Worker
 

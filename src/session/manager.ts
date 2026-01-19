@@ -36,7 +36,7 @@ import type {
 	TextContent,
 	UserMessageWithAttachments,
 } from "../agent/types.js";
-import { getAgentDir } from "../config/constants.js";
+import { SESSION_CONFIG, getAgentDir } from "../config/constants.js";
 import {
 	buildConversationModel,
 	isRenderableUserMessage,
@@ -46,6 +46,7 @@ import { getRegisteredModels } from "../models/registry.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
 import { createLogger } from "../utils/logger.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 import { SessionFileWriter } from "./file-writer.js";
 import {
 	SessionMetadataCache,
@@ -57,6 +58,7 @@ import {
 	scheduleSessionMigration,
 	unregisterActiveSessionFile,
 } from "./migration.js";
+import { sanitizeSessionScope } from "./scope.js";
 import {
 	type AttachmentExtractedEntry,
 	type BranchSummaryEntry,
@@ -78,6 +80,13 @@ import {
 	isSessionTreeEntry,
 	tryParseSessionEntry,
 } from "./types.js";
+
+export interface SessionManagerOptions {
+	/** Override the base session directory (before per-cwd scoping). */
+	sessionDir?: string;
+	/** Optional scope key (e.g., auth subject) for per-user session isolation. */
+	sessionScope?: string;
+}
 
 const logger = createLogger("session-manager");
 
@@ -505,6 +514,10 @@ export class SessionManager {
 	private sessionFile!: string;
 	/** Directory containing all session files for current project */
 	private sessionDir: string;
+	/** Optional scope for per-user session isolation */
+	private sessionScope?: string;
+	/** Optional override for base session directory */
+	private sessionDirOverride?: string;
 	/** Whether session persistence is enabled (disabled by --no-session) */
 	private enabled = true;
 	/** Whether the session header has been written */
@@ -530,8 +543,15 @@ export class SessionManager {
 	 *
 	 * @param continueSession - If true, loads the most recently modified session
 	 * @param customSessionPath - Optional specific session file to load
+	 * @param options - Optional session directory/scope overrides
 	 */
-	constructor(continueSession = false, customSessionPath?: string) {
+	constructor(
+		continueSession = false,
+		customSessionPath?: string,
+		options: SessionManagerOptions = {},
+	) {
+		this.sessionScope = options.sessionScope;
+		this.sessionDirOverride = options.sessionDir;
 		this.sessionDir = this.getSessionDirectory();
 
 		if (customSessionPath) {
@@ -584,8 +604,20 @@ export class SessionManager {
 		const cwd = process.cwd();
 		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 
-		const configDir = resolve(getAgentDir());
-		const sessionDir = join(configDir, "sessions", safePath);
+		const baseOverride =
+			resolveEnvPath(this.sessionDirOverride) ??
+			resolveEnvPath(process.env.COMPOSER_SESSION_DIR);
+		const baseDir =
+			baseOverride ??
+			SESSION_CONFIG.DEFAULT_DIR ??
+			join(getAgentDir(), "sessions");
+
+		const scope = this.sessionScope
+			? sanitizeSessionScope(this.sessionScope)
+			: "";
+		const sessionDir = scope
+			? join(baseDir, scope, safePath)
+			: join(baseDir, safePath);
 		if (!existsSync(sessionDir)) {
 			mkdirSync(sessionDir, { recursive: true });
 		}

@@ -11,6 +11,7 @@ import {
 import type { Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, parse } from "node:url";
+import { WebSocketServer } from "ws";
 import {
 	ActionApprovalService,
 	type ApprovalMode,
@@ -96,7 +97,9 @@ const getDbModule = (() => {
 	};
 })();
 import { WebActionApprovalService } from "./server/approval-service.js";
+import { checkApiAuth } from "./server/authz.js";
 import { clientToolService } from "./server/client-tools-service.js";
+import { handleChatWebSocket } from "./server/handlers/chat-ws.js";
 import {
 	isOverloaded,
 	logError,
@@ -515,7 +518,7 @@ const SECURITY_HEADERS: Record<string, string> =
 					].join("; "),
 				"Referrer-Policy": "no-referrer",
 				"X-Content-Type-Options": "nosniff",
-				"Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+				"Permissions-Policy": "geolocation=(), microphone=(self), camera=()",
 			}
 		: {};
 
@@ -759,6 +762,7 @@ export async function startWebServer(port = 8080) {
 	}
 
 	const server = createServer(handleRequest);
+	const wsServer = new WebSocketServer({ noServer: true });
 	const sockets = new Set<Socket>();
 	let shuttingDown = false;
 	let drainTimeout: NodeJS.Timeout | null = null;
@@ -768,6 +772,36 @@ export async function startWebServer(port = 8080) {
 		sockets.add(socket);
 		socket.on("close", () => {
 			sockets.delete(socket);
+		});
+	});
+
+	server.on("upgrade", async (req, socket, head) => {
+		const url = new URL(
+			req.url || "/",
+			`http://${req.headers.host || "localhost"}`,
+		);
+		if (url.pathname !== "/api/chat/ws") {
+			socket.destroy();
+			return;
+		}
+
+		if (ALLOWED_ORIGIN !== "*" && req.headers.origin) {
+			if (req.headers.origin !== ALLOWED_ORIGIN) {
+				socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+				socket.destroy();
+				return;
+			}
+		}
+
+		const auth = await checkApiAuth(req);
+		if (!auth.ok) {
+			socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+			socket.destroy();
+			return;
+		}
+
+		wsServer.handleUpgrade(req, socket, head, (ws) => {
+			handleChatWebSocket(ws, req, context);
 		});
 	});
 
