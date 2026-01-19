@@ -2932,11 +2932,22 @@ Slash Commands:
             SystemTime::now()
         };
 
-        if let Some(reason) = check_session_limits(
-            started_at,
-            Some(self.usage_tracker.total_tokens()),
-            active_sessions,
-        ) {
+        let token_count = if self.usage_tracker.turn_count() == 0 {
+            let has_assistant = self
+                .state
+                .messages
+                .iter()
+                .any(|message| message.role == MessageRole::Assistant);
+            if has_assistant {
+                None
+            } else {
+                Some(0)
+            }
+        } else {
+            Some(self.usage_tracker.total_tokens())
+        };
+
+        if let Some(reason) = check_session_limits(started_at, token_count, active_sessions) {
             self.state.error = Some(reason);
             return Ok(false);
         }
