@@ -44,7 +44,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // Multiple owners can share the same data. The data is freed when the last
 // Arc is dropped. Unlike `Rc`, `Arc` is safe to use across threads.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 // `anyhow` provides ergonomic error handling:
 // - `Result` is shorthand for `Result<T, anyhow::Error>`
 // - `.context("msg")` adds context to errors for better debugging
@@ -569,6 +569,12 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     }
 
     fn ensure_session_started(&mut self) -> Result<()> {
+        if self.session_resume_failed {
+            self.state.error =
+                Some("Session resume failed; use /new to start a new session.".to_string());
+            bail!("Session resume failed");
+        }
+
         if self.session_manager.writer().is_some() {
             return Ok(());
         }
@@ -588,6 +594,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             self.current_model = model.clone();
         }
         let policy_model = policy_model_id(&model);
+        if let Some(reason) = check_model_allowed(&policy_model) {
+            self.state.error = Some(reason.clone());
+            bail!(reason);
+        }
         let tools = ToolRegistry::new()
             .tools()
             .map(|tool| ToolInfo {
@@ -1583,7 +1593,10 @@ Add the required fields and retry.",
                 if let Some(model_id) = self.model_selector.confirm() {
                     // Set the new model
                     if let Some(agent) = &self.native_agent {
-                        if let Err(e) = agent.set_model(&model_id) {
+                        let policy_model = policy_model_id(&model_id);
+                        if let Some(reason) = check_model_allowed(&policy_model) {
+                            self.state.error = Some(reason);
+                        } else if let Err(e) = agent.set_model(&model_id) {
                             self.state.error = Some(format!("Failed to set model: {e}"));
                         } else {
                             self.pending_model_change = Some(PendingModelChange {
@@ -1869,6 +1882,11 @@ Add the required fields and retry.",
             }
             CommandAction::SetModel(model_id) => {
                 if let Some(agent) = &self.native_agent {
+                    let policy_model = policy_model_id(&model_id);
+                    if let Some(reason) = check_model_allowed(&policy_model) {
+                        self.state.error = Some(reason);
+                        return;
+                    }
                     if let Err(e) = agent.set_model(&model_id) {
                         self.state.error = Some(format!("Failed to set model: {e}"));
                     } else {
