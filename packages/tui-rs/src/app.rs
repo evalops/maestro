@@ -1354,25 +1354,37 @@ Add the required fields and retry.",
                             self.state.session_id = Some(session_id.clone());
                             self.state.status = Some(format!("Resumed session: {session_id}"));
 
+                            let mut model_applied = true;
+                            let mut thinking_applied = true;
                             if let Some(agent) = &self.native_agent {
                                 if let Err(e) = agent.set_model(&session.header.model) {
                                     self.state.error = Some(format!("Failed to set model: {e}"));
+                                    model_applied = false;
+                                    thinking_applied = false;
                                 } else {
                                     let (enabled, budget) =
                                         session.header.thinking_level.to_config();
                                     if let Err(e) = agent.set_thinking(enabled, budget) {
                                         self.state.error =
                                             Some(format!("Failed to set thinking: {e}"));
+                                        thinking_applied = false;
                                     }
                                 }
                             }
 
-                            self.current_model = session.header.model.clone();
-                            self.current_thinking_level = session.header.thinking_level;
-                            self.state.model = Some(session.header.model.clone());
                             self.session_started_at = SystemTime::now();
-                            self.usage_tracker.set_model(session.header.model.clone());
                             self.hydrate_usage_from_session(&session);
+
+                            if model_applied {
+                                self.current_model = session.header.model.clone();
+                                self.state.model = Some(session.header.model.clone());
+                                self.usage_tracker.set_model(session.header.model.clone());
+                                if thinking_applied {
+                                    self.current_thinking_level = session.header.thinking_level;
+                                }
+                            } else if !self.current_model.is_empty() {
+                                self.usage_tracker.set_model(self.current_model.clone());
+                            }
 
                             if let Err(err) = self.session_manager.resume_session_by_path(
                                 session_id.clone(),
