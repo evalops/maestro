@@ -383,19 +383,36 @@ export async function handleSessions(
 	const url = new URL(req.url || "/api/sessions", "http://localhost");
 	const limitParam = url.searchParams.get("limit");
 	const offsetParam = url.searchParams.get("offset");
-	const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
-	const offset = offsetParam ? Number.parseInt(offsetParam, 10) : undefined;
+	const parsedLimit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
+	const parsedOffset = offsetParam
+		? Number.parseInt(offsetParam, 10)
+		: undefined;
+	const limit =
+		typeof parsedLimit === "number" && Number.isFinite(parsedLimit)
+			? Math.max(1, parsedLimit)
+			: undefined;
+	const offset =
+		typeof parsedOffset === "number" && Number.isFinite(parsedOffset)
+			? Math.max(0, parsedOffset)
+			: undefined;
 
 	try {
 		if (req.method === "GET" && !sessionId) {
 			const subject = getAuthSubject(req);
+			const paginationRequested =
+				typeof limit === "number" || typeof offset === "number";
 			const sessions = (
-				await sessionManager.listSessions({
-					limit,
-					offset,
-				})
+				await sessionManager.listSessions(
+					paginationRequested ? undefined : { limit, offset },
+				)
 			).filter((s) => verifySessionOwnership(s, subject));
-			const sessionList: ComposerSessionSummary[] = sessions.map((s) => ({
+			const pagedSessions = paginationRequested
+				? sessions.slice(
+						offset ?? 0,
+						(offset ?? 0) + (limit ?? sessions.length),
+					)
+				: sessions;
+			const sessionList: ComposerSessionSummary[] = pagedSessions.map((s) => ({
 				id: s.id,
 				title: s.title || `Session ${s.id.slice(0, 8)}`,
 				createdAt: s.createdAt || new Date().toISOString(),
