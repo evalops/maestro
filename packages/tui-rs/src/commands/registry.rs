@@ -75,7 +75,7 @@ use std::sync::Arc;
 use super::types::{
     ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory, CommandContext,
     CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction,
-    ModalType, QueueAction, QueueModeKind, SkillsAction, ToolHistoryAction, UsageAction,
+    McpAction, ModalType, QueueAction, QueueModeKind, SkillsAction, ToolHistoryAction, UsageAction,
 };
 use crate::state::QueueMode;
 
@@ -686,9 +686,8 @@ pub fn build_command_registry() -> CommandRegistry {
                 if ctx.raw_args.is_empty() {
                     Ok(CommandOutput::OpenModal(ModalType::ThemeSelector))
                 } else {
-                    Ok(CommandOutput::Message(format!(
-                        "Setting theme to: {}",
-                        ctx.raw_args
+                    Ok(CommandOutput::Action(CommandAction::SetTheme(
+                        ctx.raw_args.clone(),
                     )))
                 }
             }),
@@ -707,9 +706,8 @@ pub fn build_command_registry() -> CommandRegistry {
                 if ctx.raw_args.is_empty() {
                     Ok(CommandOutput::OpenModal(ModalType::ModelSelector))
                 } else {
-                    Ok(CommandOutput::Message(format!(
-                        "Setting model to: {}",
-                        ctx.raw_args
+                    Ok(CommandOutput::Action(CommandAction::SetModel(
+                        ctx.raw_args.clone(),
                     )))
                 }
             }),
@@ -736,6 +734,20 @@ pub fn build_command_registry() -> CommandRegistry {
         "List and manage sessions",
         CommandCategory::Session,
         Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::SessionList))),
+    ));
+
+    registry.register(Command::new(
+        "files",
+        "Search workspace files",
+        CommandCategory::Navigation,
+        Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::FileSearch))),
+    ));
+
+    registry.register(Command::new(
+        "commands",
+        "Open command palette",
+        CommandCategory::Navigation,
+        Box::new(|_| Ok(CommandOutput::OpenModal(ModalType::CommandPalette))),
     ));
 
     // Compact command
@@ -821,17 +833,7 @@ pub fn build_command_registry() -> CommandRegistry {
         "status",
         "Show current status",
         CommandCategory::Diagnostics,
-        Box::new(|ctx| {
-            let mut info = String::new();
-            info.push_str(&format!("Working directory: {}\n", ctx.cwd));
-            if let Some(ref session) = ctx.session_id {
-                info.push_str(&format!("Session: {session}\n"));
-            }
-            if let Some(ref model) = ctx.model {
-                info.push_str(&format!("Model: {model}\n"));
-            }
-            Ok(CommandOutput::Message(info))
-        }),
+        Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowDiagnostics))),
     ));
 
     // Diagnostics command
@@ -840,7 +842,7 @@ pub fn build_command_registry() -> CommandRegistry {
             "diag",
             "System diagnostics",
             CommandCategory::Diagnostics,
-            Box::new(|_| Ok(CommandOutput::Message("Running diagnostics...".to_string()))),
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowDiagnostics))),
         )
         .group(vec!["status", "about", "context", "stats", "lsp", "mcp"]),
     );
@@ -861,7 +863,42 @@ pub fn build_command_registry() -> CommandRegistry {
         "mcp",
         "Show MCP server status and configuration",
         CommandCategory::Tools,
-        Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowMcpStatus))),
+        Box::new(|ctx| {
+            let raw = ctx.raw_args.trim();
+            let mut parts = raw.split_whitespace();
+            let subcommand = parts.next().unwrap_or("").to_lowercase();
+
+            let action = match subcommand.as_str() {
+                "" => McpAction::Status,
+                "resources" => {
+                    let server = parts.next().map(|s| s.to_string());
+                    let uri = if server.is_some() {
+                        let rest = parts.collect::<Vec<_>>().join(" ");
+                        if rest.is_empty() {
+                            None
+                        } else {
+                            Some(rest)
+                        }
+                    } else {
+                        None
+                    };
+                    McpAction::Resources { server, uri }
+                }
+                "prompts" => {
+                    let server = parts.next().map(|s| s.to_string());
+                    let name = parts.next().map(|s| s.to_string());
+                    McpAction::Prompts { server, name }
+                }
+                other => {
+                    return Err(
+                        CommandError::new(format!("Unknown mcp subcommand: {other}"))
+                            .with_hint("Available: resources, prompts"),
+                    );
+                }
+            };
+
+            Ok(CommandOutput::Action(CommandAction::Mcp(action)))
+        }),
     ));
 
     // Hooks command

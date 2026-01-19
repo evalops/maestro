@@ -39,6 +39,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // `Arc` (Atomic Reference Counted) is a thread-safe reference-counted pointer.
 // Multiple owners can share the same data. The data is freed when the last
 // Arc is dropped. Unlike `Rc`, `Arc` is safe to use across threads.
@@ -48,7 +49,10 @@ use anyhow::{Context, Result};
 // - `Result` is shorthand for `Result<T, anyhow::Error>`
 // - `.context("msg")` adds context to errors for better debugging
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers, MouseEvent,
+    MouseEventKind,
+};
 // `crossterm` is a cross-platform terminal manipulation library.
 // It handles raw mode, events, and cursor control across Windows/Mac/Linux.
 
@@ -65,6 +69,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::MAX_PENDING_MESSAGES;
 use crate::agent::{FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult};
+use crate::ai::AiProvider;
 use crate::clipboard::ClipboardManager;
 use crate::commands::{
     build_command_registry, CommandAction, CommandOutput, CommandRegistry, ModalType, QueueAction,
@@ -77,11 +82,18 @@ use crate::components::{
 };
 use crate::files::get_workspace_files;
 use crate::git;
-use crate::safety::FirewallVerdict;
-use crate::session::{AppMessage, SessionManager, ThinkingLevel};
+use crate::safety::{
+    check_model_allowed, check_path_allowed, check_session_limits, FirewallVerdict,
+};
+use crate::session::{
+    AppMessage, CompactionEntry, ContentBlock as SessionContentBlock, MessageContent, MessageEntry,
+    ModelChange, ParsedSession, SessionEntry, SessionExporter, SessionHeader, SessionManager,
+    ThinkingLevel, ThinkingLevelChange, TokenCost, TokenUsage as SessionTokenUsage, ToolInfo,
+};
 use crate::state::{AppState, ApprovalMode, Message, MessageRole};
 use crate::terminal::{self, TerminalCapabilities};
-use crate::tools::ToolExecutor;
+use crate::tools::{ToolExecutor, ToolRegistry};
+use chrono::Utc;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -229,6 +241,18 @@ pub struct App {
 
     /// Next id for queued prompts.
     next_queue_id: u64,
+
+    /// When the current session started (for policy limits).
+    session_started_at: SystemTime,
+
+    /// Current model in use (for session headers and usage tracking).
+    current_model: String,
+
+    /// Current thinking level (for session headers/changes).
+    current_thinking_level: ThinkingLevel,
+
+    /// Cached git branch for session info updates.
+    current_git_branch: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -325,6 +349,10 @@ impl App {
             queued_prompt_inflight: None,
             queued_prompt_active: None,
             next_queue_id: 1,
+            session_started_at: SystemTime::now(),
+            current_model: String::new(),
+            current_thinking_level: ThinkingLevel::Off,
+            current_git_branch: None,
         }
     }
 
@@ -371,12 +399,21 @@ impl App {
             // `event::poll()` returns true if an event is available.
             // The timeout prevents blocking forever on input.
             if event::poll(std::time::Duration::from_millis(50))? {
-                if let Event::Key(key) = event::read()? {
-                    // Only handle key press events (not release).
-                    // Some terminals send both press and release events.
-                    if key.kind == KeyEventKind::Press {
-                        self.handle_key(key.code, key.modifiers).await?;
+                match event::read()? {
+                    Event::Key(key) => {
+                        // Only handle key press events (not release).
+                        // Some terminals send both press and release events.
+                        if key.kind == KeyEventKind::Press {
+                            self.handle_key(key.code, key.modifiers).await?;
+                        }
                     }
+                    Event::Mouse(mouse) => {
+                        self.handle_mouse(mouse);
+                    }
+                    Event::Resize(_width, height) => {
+                        self.handle_resize(height);
+                    }
+                    _ => {}
                 }
             }
 
@@ -416,6 +453,7 @@ impl App {
 
         // Detect git branch
         let git_branch = git::current_branch(&cwd_path);
+        self.current_git_branch = git_branch.clone();
 
         // Determine model from environment or default (prefer Claude)
         let model = std::env::var("COMPOSER_MODEL").unwrap_or_else(|_| {
@@ -438,6 +476,16 @@ impl App {
             cwd: cwd.clone(),
         };
 
+        let policy_model = policy_model_id(&model);
+        if let Some(reason) = check_model_allowed(&policy_model) {
+            self.state.error = Some(reason);
+            return Ok(());
+        }
+
+        self.current_model = model.clone();
+        self.current_thinking_level = ThinkingLevel::Off;
+        self.usage_tracker.set_model(model.clone());
+
         self.state.status = Some(format!("Initializing agent ({model})..."));
 
         match NativeAgent::new(config) {
@@ -456,6 +504,7 @@ impl App {
 
                 // Ensure busy is false so user can type
                 self.state.busy = false;
+                self.state.model = Some(model.clone());
                 self.state.status = Some(format!("Ready: {model}"));
             }
             Err(e) => {
@@ -492,6 +541,274 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         )
     }
 
+    fn active_session_count(&self) -> Option<usize> {
+        let sessions = self.session_manager.list_all_sessions().ok()?;
+        let cutoff = SystemTime::now().checked_sub(Duration::from_secs(60 * 60))?;
+        let mut count = 0usize;
+        for session in sessions {
+            if let Some(modified) = session.modified {
+                if modified >= cutoff {
+                    count += 1;
+                }
+            }
+        }
+        Some(count)
+    }
+
+    fn ensure_session_started(&mut self) -> Result<()> {
+        if self.session_manager.writer().is_some() {
+            return Ok(());
+        }
+
+        let cwd = std::env::current_dir()
+            .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let model = if !self.current_model.is_empty() {
+            self.current_model.clone()
+        } else {
+            self.state
+                .model
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string())
+        };
+        if self.current_model.is_empty() {
+            self.current_model = model.clone();
+        }
+        let policy_model = policy_model_id(&model);
+        let tools = ToolRegistry::new()
+            .tools()
+            .map(|tool| ToolInfo {
+                name: tool.tool.name.clone(),
+                label: None,
+                description: Some(tool.tool.description.clone()),
+            })
+            .collect::<Vec<_>>();
+
+        let header = SessionHeader {
+            id: session_id.clone(),
+            timestamp: Utc::now().to_rfc3339(),
+            cwd,
+            model: policy_model,
+            model_metadata: None,
+            thinking_level: self.current_thinking_level,
+            system_prompt: None,
+            tools,
+            branched_from: None,
+        };
+
+        self.session_manager
+            .start_session(header)
+            .context("Failed to start session")?;
+        let _ = self.session_manager.flush();
+
+        self.state.session_id = Some(session_id.clone());
+        self.session_started_at = SystemTime::now();
+        self.usage_tracker = crate::usage::UsageTracker::with_session(session_id.clone());
+        self.usage_tracker.set_model(self.current_model.clone());
+
+        if let Some(agent) = &self.native_agent {
+            agent.send_session_info(
+                &std::env::current_dir()
+                    .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string()),
+                Some(session_id),
+                self.current_git_branch.clone(),
+            );
+        }
+
+        Ok(())
+    }
+
+    fn write_session_entry(&mut self, entry: SessionEntry) {
+        let error = {
+            let Some(writer) = self.session_manager.writer() else {
+                return;
+            };
+            writer.write_entry(entry).err()
+        };
+        if let Some(err) = error {
+            self.state.error = Some(format!("Failed to write session entry: {err}"));
+        }
+    }
+
+    fn record_user_message(&mut self, content: &str) {
+        if self.ensure_session_started().is_err() {
+            return;
+        }
+
+        let entry = SessionEntry::Message(MessageEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            message: AppMessage::User {
+                content: MessageContent::Text(content.to_string()),
+                attachments: None,
+                timestamp: system_time_to_millis(SystemTime::now()),
+            },
+        });
+        self.write_session_entry(entry);
+        let _ = self.session_manager.flush();
+    }
+
+    fn record_assistant_message(
+        &mut self,
+        response_id: &str,
+        usage: Option<crate::agent::TokenUsage>,
+    ) {
+        if self.ensure_session_started().is_err() {
+            return;
+        }
+
+        let Some(message) = self
+            .state
+            .messages
+            .iter()
+            .find(|m| m.id == response_id && m.role == MessageRole::Assistant)
+            .cloned()
+        else {
+            return;
+        };
+
+        let mut blocks = Vec::new();
+        if !message.thinking.is_empty() {
+            blocks.push(SessionContentBlock::Thinking {
+                text: message.thinking.clone(),
+                signature: None,
+            });
+        }
+        if !message.content.is_empty() {
+            blocks.push(SessionContentBlock::Text {
+                text: message.content.clone(),
+            });
+        }
+        for call in &message.tool_calls {
+            blocks.push(SessionContentBlock::ToolCall {
+                id: call.call_id.clone(),
+                name: call.tool.clone(),
+                args: call.args.clone(),
+            });
+        }
+
+        let usage = usage
+            .as_ref()
+            .map(to_session_usage)
+            .or_else(|| message.usage.as_ref().map(to_session_usage));
+
+        let entry = SessionEntry::Message(MessageEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            message: AppMessage::Assistant {
+                content: blocks,
+                api: self.state.provider.clone(),
+                provider: self.state.provider.clone(),
+                model: Some(policy_model_id(&self.current_model)),
+                usage,
+                stop_reason: None,
+                timestamp: system_time_to_millis(message.timestamp),
+            },
+        });
+        self.write_session_entry(entry);
+        let _ = self.session_manager.flush();
+    }
+
+    fn record_tool_result(&mut self, call_id: &str, tool: &str, result: &ToolResult) {
+        if self.ensure_session_started().is_err() {
+            return;
+        }
+
+        let content = if result.success {
+            result.output.clone()
+        } else {
+            result
+                .error
+                .clone()
+                .unwrap_or_else(|| result.output.clone())
+        };
+
+        let entry = SessionEntry::Message(MessageEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            message: AppMessage::ToolResult {
+                tool_call_id: call_id.to_string(),
+                tool_name: tool.to_string(),
+                content,
+                details: result.details.clone(),
+                is_error: !result.success,
+                timestamp: system_time_to_millis(SystemTime::now()),
+            },
+        });
+        self.write_session_entry(entry);
+        let _ = self.session_manager.flush();
+    }
+
+    fn record_model_change(&mut self, model: &str) {
+        if self.session_manager.writer().is_none() {
+            return;
+        }
+
+        let entry = SessionEntry::ModelChange(ModelChange {
+            timestamp: Utc::now().to_rfc3339(),
+            model: policy_model_id(model),
+            model_metadata: None,
+        });
+        self.write_session_entry(entry);
+    }
+
+    fn record_thinking_level_change(&mut self, level: ThinkingLevel) {
+        if self.session_manager.writer().is_none() {
+            return;
+        }
+
+        let entry = SessionEntry::ThinkingLevelChange(ThinkingLevelChange {
+            timestamp: Utc::now().to_rfc3339(),
+            thinking_level: level,
+        });
+        self.write_session_entry(entry);
+    }
+
+    fn record_compaction_entry(
+        &mut self,
+        summary: String,
+        first_kept_entry_index: usize,
+        tokens_before: u64,
+        custom_instructions: Option<String>,
+    ) {
+        if self.ensure_session_started().is_err() {
+            return;
+        }
+
+        let entry = SessionEntry::Compaction(CompactionEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            summary,
+            first_kept_entry_index,
+            tokens_before,
+            auto: false,
+            custom_instructions,
+        });
+        self.write_session_entry(entry);
+    }
+
+    fn hydrate_usage_from_session(&mut self, session: &ParsedSession) {
+        self.usage_tracker = crate::usage::UsageTracker::with_session(session.id());
+        self.usage_tracker.set_model(session.header.model.clone());
+
+        for message in &session.messages {
+            if let AppMessage::Assistant {
+                usage: Some(usage),
+                model,
+                ..
+            } = message
+            {
+                let model_id = model
+                    .clone()
+                    .unwrap_or_else(|| session.header.model.clone());
+                let usage = crate::agent::TokenUsage {
+                    input_tokens: usage.input,
+                    output_tokens: usage.output,
+                    cache_read_tokens: usage.cache_read,
+                    cache_write_tokens: usage.cache_write,
+                    cost: usage.cost.as_ref().map(|c| c.total),
+                };
+                let _ = self.usage_tracker.add_turn_for_model(&model_id, &usage);
+            }
+        }
+    }
+
     /// Poll for messages from the agent
     async fn poll_agent(&mut self) -> Result<()> {
         // Collect messages first to avoid borrow issues
@@ -510,6 +827,13 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
     /// Handle an agent message (common for both backends)
     async fn handle_agent_message(&mut self, msg: FromAgent) -> Result<()> {
+        let response_end_info = match &msg {
+            FromAgent::ResponseEnd { response_id, usage } => {
+                Some((response_id.clone(), usage.clone()))
+            }
+            _ => None,
+        };
+
         if matches!(msg, FromAgent::ResponseStart { .. }) {
             let was_busy = self.state.busy;
             self.state.busy = true;
@@ -527,6 +851,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         match &msg {
             FromAgent::Ready { model, provider } => {
                 self.state.status = Some(format!("Connected: {model} via {provider}"));
+                self.current_model = model.clone();
+                self.usage_tracker.set_model(model.clone());
             }
             FromAgent::SessionInfo { cwd, .. } => {
                 self.state.status = Some(format!("Session in: {cwd}"));
@@ -668,6 +994,16 @@ Add the required fields and retry.",
             _ => {}
         }
         self.state.handle_agent_message(msg);
+
+        if let Some((response_id, usage)) = response_end_info {
+            if let Some(ref usage) = usage {
+                let alerts = self.usage_tracker.add_turn(usage);
+                for alert in alerts {
+                    self.state.add_system_message(alert);
+                }
+            }
+            self.record_assistant_message(&response_id, usage);
+        }
         Ok(())
     }
 
@@ -683,6 +1019,8 @@ Add the required fields and retry.",
             .tool_executor
             .execute(&tool, &args, None, &call_id)
             .await;
+
+        self.record_tool_result(&call_id, &tool, &result);
 
         if tool.eq_ignore_ascii_case("extract_document") && result.success {
             let attachment_id = result
@@ -787,6 +1125,8 @@ Add the required fields and retry.",
                 if self.state.input().starts_with('/') && self.slash_state.has_completions() {
                     self.slash_state.cycle_prev();
                     self.apply_slash_completion();
+                } else if !self.state.input().is_empty() {
+                    self.state.move_up();
                 } else {
                     self.state.scroll_up(1);
                 }
@@ -795,6 +1135,8 @@ Add the required fields and retry.",
                 if self.state.input().starts_with('/') && self.slash_state.has_completions() {
                     self.slash_state.cycle_next();
                     self.apply_slash_completion();
+                } else if !self.state.input().is_empty() {
+                    self.state.move_down();
                 } else {
                     self.state.scroll_down(1);
                 }
@@ -926,6 +1268,24 @@ Add the required fields and retry.",
         Ok(())
     }
 
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                self.state.scroll_up(3);
+            }
+            MouseEventKind::ScrollDown => {
+                self.state.scroll_down(3);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_resize(&mut self, height: u16) {
+        let (viewport_top, viewport_height) = terminal::calculate_viewport(height);
+        self.capabilities.viewport_top = viewport_top;
+        self.capabilities.viewport_height = viewport_height;
+    }
+
     /// Handle keys in file search modal
     async fn handle_file_search_key(&mut self, code: KeyCode, ctrl: bool) -> Result<()> {
         match code {
@@ -1003,6 +1363,21 @@ Add the required fields and retry.",
 
                             self.state.session_id = Some(session_id.clone());
                             self.state.status = Some(format!("Resumed session: {session_id}"));
+
+                            self.current_model = session.header.model.clone();
+                            self.current_thinking_level = session.header.thinking_level;
+                            self.state.model = Some(session.header.model.clone());
+                            self.session_started_at = SystemTime::now();
+                            self.usage_tracker.set_model(session.header.model.clone());
+                            self.hydrate_usage_from_session(&session);
+
+                            if let Err(err) = self.session_manager.resume_session_by_path(
+                                session_id.clone(),
+                                session.file_path.as_str(),
+                            ) {
+                                self.state.error =
+                                    Some(format!("Failed to resume session writer: {err}"));
+                            }
                         }
                         Err(e) => {
                             self.state.error = Some(format!("Failed to load session: {e}"));
@@ -1125,12 +1500,22 @@ Add the required fields and retry.",
             }
             KeyCode::Enter => {
                 if let Some(model_id) = self.model_selector.confirm() {
+                    let policy_model = policy_model_id(&model_id);
+                    if let Some(reason) = check_model_allowed(&policy_model) {
+                        self.state.error = Some(reason);
+                        self.active_modal = ActiveModal::None;
+                        return Ok(());
+                    }
                     // Set the new model
                     if let Some(agent) = &self.native_agent {
                         if let Err(e) = agent.set_model(&model_id) {
                             self.state.error = Some(format!("Failed to set model: {e}"));
                         } else {
                             self.state.status = Some(format!("Model: {model_id}"));
+                            self.state.model = Some(model_id.clone());
+                            self.current_model = model_id.clone();
+                            self.usage_tracker.set_model(model_id.clone());
+                            self.record_model_change(&model_id);
                         }
                     }
                 }
@@ -1313,6 +1698,13 @@ Add the required fields and retry.",
             CommandAction::ClearMessages => {
                 self.state.messages.clear();
                 self.state.scroll_offset = 0;
+                self.session_manager.reset_session();
+                self.state.session_id = None;
+                self.session_started_at = SystemTime::now();
+                self.usage_tracker = crate::usage::UsageTracker::new();
+                if !self.current_model.is_empty() {
+                    self.usage_tracker.set_model(self.current_model.clone());
+                }
             }
             CommandAction::ToggleZenMode => {
                 self.state.zen_mode = !self.state.zen_mode;
@@ -1347,6 +1739,8 @@ Add the required fields and retry.",
                             return;
                         }
                     }
+                    self.current_thinking_level = level;
+                    self.record_thinking_level_change(level);
                     self.state.status =
                         Some(format!("Thinking: {} (budget: {})", level.label(), budget));
                 } else {
@@ -1388,6 +1782,33 @@ Add the required fields and retry.",
                     self.state.status = Some("No message to copy".to_string());
                 }
             }
+            CommandAction::SetTheme(theme_name) => {
+                if let Err(e) = crate::themes::set_theme_by_name(&theme_name) {
+                    self.state.error = Some(format!("Failed to set theme: {e}"));
+                } else {
+                    self.state.status = Some(format!("Theme set to: {theme_name}"));
+                }
+            }
+            CommandAction::SetModel(model_id) => {
+                let policy_model = policy_model_id(&model_id);
+                if let Some(reason) = check_model_allowed(&policy_model) {
+                    self.state.error = Some(reason);
+                    return;
+                }
+                if let Some(agent) = &self.native_agent {
+                    if let Err(e) = agent.set_model(&model_id) {
+                        self.state.error = Some(format!("Failed to set model: {e}"));
+                    } else {
+                        self.state.status = Some(format!("Model: {model_id}"));
+                        self.state.model = Some(model_id.clone());
+                        self.current_model = model_id.clone();
+                        self.usage_tracker.set_model(model_id.clone());
+                        self.record_model_change(&model_id);
+                    }
+                } else {
+                    self.state.error = Some("No agent available to set model".to_string());
+                }
+            }
             CommandAction::CompactConversation(instructions) => {
                 // Compact conversation by summarizing older messages
                 let msg_count = self.state.messages.len();
@@ -1399,6 +1820,7 @@ Add the required fields and retry.",
                 // Keep last 2 messages, summarize the rest
                 let keep_count = 2;
                 let to_summarize = msg_count - keep_count;
+                let tokens_before = self.usage_tracker.total_tokens();
 
                 // Build summary of compacted messages
                 let mut summary = String::new();
@@ -1425,32 +1847,21 @@ Add the required fields and retry.",
                 // Remove old messages and add summary
                 let kept: Vec<_> = self.state.messages.drain(to_summarize..).collect();
                 self.state.messages.clear();
+                let summary_clone = summary.clone();
                 self.state.add_system_message(summary);
                 self.state.messages.extend(kept);
 
+                self.record_compaction_entry(
+                    summary_clone,
+                    to_summarize,
+                    tokens_before,
+                    instructions.clone(),
+                );
+
                 self.state.status = Some(format!("Compacted {to_summarize} messages into summary"));
             }
-            CommandAction::ShowMcpStatus => {
-                // Show MCP server status
-                let mut status = String::new();
-                status.push_str("## MCP Servers\n\n");
-                status.push_str("*No MCP servers configured*\n\n");
-                status.push_str(
-                    "To add MCP servers, create `~/.composer/mcp.json` or `.composer/mcp.json`:\n",
-                );
-                status.push_str("```json\n");
-                status.push_str("{\n");
-                status.push_str("  \"servers\": [\n");
-                status.push_str("    {\n");
-                status.push_str("      \"name\": \"example\",\n");
-                status.push_str("      \"transport\": \"stdio\",\n");
-                status.push_str("      \"command\": \"npx\",\n");
-                status.push_str("      \"args\": [\"-y\", \"@example/mcp-server\"]\n");
-                status.push_str("    }\n");
-                status.push_str("  ]\n");
-                status.push_str("}\n");
-                status.push_str("```\n");
-                self.state.add_system_message(status);
+            CommandAction::Mcp(action) => {
+                self.handle_mcp_action(action).await;
             }
             CommandAction::HooksManage(hooks_action) => {
                 self.handle_hooks_action(hooks_action);
@@ -1475,6 +1886,64 @@ Add the required fields and retry.",
             }
             CommandAction::Steer(text) => {
                 let _ = self.handle_steer_submit(text).await;
+            }
+            CommandAction::ShowDiagnostics => {
+                let mut diag = String::new();
+                diag.push_str("## Diagnostics\n\n");
+
+                // Model & Provider
+                diag.push_str(&format!(
+                    "**Model:** {}\n",
+                    self.state.model.as_deref().unwrap_or("(none)")
+                ));
+                diag.push_str(&format!(
+                    "**Provider:** {}\n",
+                    self.state.provider.as_deref().unwrap_or("(none)")
+                ));
+
+                // Working directory & Git
+                diag.push_str(&format!(
+                    "**CWD:** {}\n",
+                    self.state.cwd.as_deref().unwrap_or("(unknown)")
+                ));
+                diag.push_str(&format!(
+                    "**Git Branch:** {}\n",
+                    self.state.git_branch.as_deref().unwrap_or("(not a repo)")
+                ));
+
+                // Session
+                diag.push_str(&format!(
+                    "**Session:** {}\n",
+                    self.state.session_id.as_deref().unwrap_or("(ephemeral)")
+                ));
+
+                // Modes
+                diag.push_str(&format!(
+                    "**Approval Mode:** {}\n",
+                    self.state.approval_mode.label()
+                ));
+                diag.push_str(&format!(
+                    "**Zen Mode:** {}\n",
+                    if self.state.zen_mode { "on" } else { "off" }
+                ));
+                diag.push_str(&format!(
+                    "**Steering Mode:** {}\n",
+                    self.state.steering_mode.label()
+                ));
+                diag.push_str(&format!(
+                    "**Follow-up Mode:** {}\n",
+                    self.state.follow_up_mode.label()
+                ));
+
+                // Terminal info
+                if let Ok((cols, rows)) = crossterm::terminal::size() {
+                    diag.push_str(&format!("**Terminal:** {cols}x{rows}\n"));
+                }
+
+                // Message count
+                diag.push_str(&format!("**Messages:** {}\n", self.state.messages.len()));
+
+                self.state.add_system_message(diag);
             }
         }
     }
@@ -1504,7 +1973,7 @@ Add the required fields and retry.",
     /// Handle session export actions
     fn handle_export_action(&mut self, action: crate::commands::ExportAction) {
         use crate::commands::ExportAction;
-        use crate::session::{ExportFormat, ExportOptions};
+        use crate::session::{ExportFormat, ExportOptions, SessionReader};
 
         let (format, path) = match action {
             ExportAction::Markdown(p) => (ExportFormat::Markdown, p),
@@ -1529,24 +1998,79 @@ Add the required fields and retry.",
             }
         };
 
-        // For now, just show a message since we don't have actual session data
-        let _options = ExportOptions {
+        let options = ExportOptions {
             format,
             ..Default::default()
         };
 
-        if let Some(ref file_path) = path {
-            self.state.status = Some(format!(
-                "Export to {} not yet implemented (would write to {})",
-                format.extension(),
-                file_path
-            ));
+        let _ = self.session_manager.flush();
+
+        let session_path = self.session_manager.current_session_path().or_else(|| {
+            let session_id = self.state.session_id.as_ref()?;
+            self.session_manager
+                .list_all_sessions()
+                .ok()?
+                .into_iter()
+                .find(|s| &s.id == session_id)
+                .map(|s| s.path)
+        });
+
+        let Some(session_path) = session_path else {
+            self.state.error = Some("No active session to export".to_string());
+            return;
+        };
+
+        let output_path = if let Some(path) = path {
+            let expanded = if let Some(stripped) = path.strip_prefix("~/") {
+                let home = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+                home.join(stripped)
+            } else {
+                std::path::PathBuf::from(path)
+            };
+            if expanded.is_absolute() {
+                expanded
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .join(expanded)
+            }
         } else {
-            self.state.status = Some(format!(
-                "Export as {} not yet implemented",
-                format.extension()
-            ));
+            let mut default_path = session_path.clone();
+            default_path.set_extension(format.extension());
+            default_path
+        };
+
+        if let Some(reason) = check_path_allowed(&output_path) {
+            self.state.error = Some(reason);
+            return;
         }
+
+        if let Some(parent) = output_path.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                self.state.error = Some(format!("Failed to create export directory: {err}"));
+                return;
+            }
+        }
+
+        let session = match SessionReader::read_file(&session_path) {
+            Ok(session) => session,
+            Err(err) => {
+                self.state.error = Some(format!("Failed to read session: {err}"));
+                return;
+            }
+        };
+
+        let exporter = SessionExporter::from_session(&session, options);
+        let output = exporter.export_to_string();
+        if let Err(err) = std::fs::write(&output_path, output) {
+            self.state.error = Some(format!("Failed to write export: {err}"));
+            return;
+        }
+
+        self.state.status = Some(format!(
+            "Session exported to {}",
+            output_path.to_string_lossy()
+        ));
     }
 
     /// Handle prompt history actions
@@ -1655,6 +2179,202 @@ Add the required fields and retry.",
             ToolHistoryAction::Clear => {
                 self.tool_history.clear();
                 self.state.status = Some("Tool history cleared".to_string());
+            }
+        }
+    }
+
+    /// Handle MCP actions
+    async fn handle_mcp_action(&mut self, action: crate::commands::McpAction) {
+        use crate::commands::McpAction;
+
+        match action {
+            McpAction::Status => match self.tool_executor.mcp_status().await {
+                Ok(servers) => {
+                    let mut lines = Vec::new();
+                    lines.push("Model Context Protocol".to_string());
+                    lines.push(String::new());
+
+                    if servers.is_empty() {
+                        lines.push("No MCP servers configured.".to_string());
+                        lines.push(String::new());
+                        lines.push(
+                            "Add servers to ~/.composer/mcp.json or .composer/mcp.json:"
+                                .to_string(),
+                        );
+                        lines.push(String::new());
+                        lines.push(
+                            "{ \"mcpServers\": { \"my-server\": { \"command\": \"npx\", \"args\": [\"-y\", \"@example/mcp-server\"] } } }".to_string(),
+                        );
+                    } else {
+                        for server in servers {
+                            let status = if server.connected {
+                                "connected"
+                            } else {
+                                "disconnected"
+                            };
+                            lines.push(format!("- {} ({})", server.name, status));
+                            if server.connected {
+                                if !server.tools.is_empty() {
+                                    lines.push(format!("  Tools: {}", server.tools.join(", ")));
+                                }
+                                if !server.resources.is_empty() {
+                                    lines.push(format!("  Resources: {}", server.resources.len()));
+                                }
+                                if !server.prompts.is_empty() {
+                                    lines.push(format!("  Prompts: {}", server.prompts.join(", ")));
+                                }
+                            } else {
+                                lines.push("  Not connected".to_string());
+                            }
+                        }
+                        lines.push(String::new());
+                        lines.push("Subcommands: /mcp resources, /mcp prompts".to_string());
+                    }
+
+                    self.state.add_system_message(lines.join("\n"));
+                }
+                Err(err) => {
+                    self.state
+                        .add_system_message(format!("Failed to load MCP status: {err}"));
+                }
+            },
+            McpAction::Resources { server, uri } => {
+                let servers = match self.tool_executor.mcp_status().await {
+                    Ok(servers) => servers,
+                    Err(err) => {
+                        self.state
+                            .add_system_message(format!("Failed to load MCP status: {err}"));
+                        return;
+                    }
+                };
+
+                if let (Some(server), Some(uri)) = (server, uri) {
+                    let status = servers.iter().find(|s| s.name == server);
+                    if let Some(status) = status {
+                        if !status.connected {
+                            self.state
+                                .add_system_message(format!("Server '{server}' not connected"));
+                            return;
+                        }
+                    }
+
+                    match self.tool_executor.mcp_read_resource(&server, &uri).await {
+                        Ok(result) => {
+                            let mut lines = Vec::new();
+                            lines.push(format!("Resource: {uri}"));
+                            lines.push(String::new());
+                            for content in &result.contents {
+                                if let Some(text) = &content.text {
+                                    lines.push(text.clone());
+                                } else {
+                                    let mime = content.mime_type.as_deref().unwrap_or("unknown");
+                                    lines.push(format!("[Binary data: {mime}]"));
+                                }
+                            }
+                            self.state.add_system_message(lines.join("\n"));
+                        }
+                        Err(err) => {
+                            self.state
+                                .add_system_message(format!("Failed to read resource: {err}"));
+                        }
+                    }
+                    return;
+                }
+
+                let mut lines = vec!["MCP Resources".to_string(), String::new()];
+                let mut has_resources = false;
+                for server in servers {
+                    if !server.connected || server.resources.is_empty() {
+                        continue;
+                    }
+                    has_resources = true;
+                    lines.push(format!("{}:", server.name));
+                    for uri in server.resources {
+                        lines.push(format!("  {uri}"));
+                    }
+                    lines.push(String::new());
+                }
+                if !has_resources {
+                    lines.push("No resources available from connected servers.".to_string());
+                }
+                lines.push(String::new());
+                lines.push("Usage: /mcp resources <server> <uri>".to_string());
+                self.state.add_system_message(lines.join("\n"));
+            }
+            McpAction::Prompts { server, name } => {
+                let servers = match self.tool_executor.mcp_status().await {
+                    Ok(servers) => servers,
+                    Err(err) => {
+                        self.state
+                            .add_system_message(format!("Failed to load MCP status: {err}"));
+                        return;
+                    }
+                };
+
+                if let (Some(server), Some(name)) = (server, name) {
+                    let status = servers.iter().find(|s| s.name == server);
+                    if let Some(status) = status {
+                        if !status.connected {
+                            self.state
+                                .add_system_message(format!("Server '{server}' not connected"));
+                            return;
+                        }
+                        if !status.prompts.contains(&name) {
+                            self.state.add_system_message(format!(
+                                "Prompt '{name}' not found on server '{server}'"
+                            ));
+                            return;
+                        }
+                    }
+
+                    match self
+                        .tool_executor
+                        .mcp_get_prompt(&server, &name, None)
+                        .await
+                    {
+                        Ok(result) => {
+                            let mut lines = Vec::new();
+                            lines.push(format!("Prompt: {name}"));
+                            if let Some(desc) = result.description {
+                                lines.push(String::new());
+                                lines.push(format!("Description: {desc}"));
+                            }
+                            lines.push(String::new());
+                            for msg in result.messages {
+                                lines.push(format!("[{}]", msg.role));
+                                let content = msg.content.as_text().unwrap_or("[non-text content]");
+                                lines.push(content.to_string());
+                                lines.push(String::new());
+                            }
+                            self.state.add_system_message(lines.join("\n"));
+                        }
+                        Err(err) => {
+                            self.state
+                                .add_system_message(format!("Failed to get prompt: {err}"));
+                        }
+                    }
+                    return;
+                }
+
+                let mut lines = vec!["MCP Prompts".to_string(), String::new()];
+                let mut has_prompts = false;
+                for server in servers {
+                    if !server.connected || server.prompts.is_empty() {
+                        continue;
+                    }
+                    has_prompts = true;
+                    lines.push(format!("{}:", server.name));
+                    for prompt in server.prompts {
+                        lines.push(format!("  {prompt}"));
+                    }
+                    lines.push(String::new());
+                }
+                if !has_prompts {
+                    lines.push("No prompts available from connected servers.".to_string());
+                }
+                lines.push(String::new());
+                lines.push("Usage: /mcp prompts <server> <name>".to_string());
+                self.state.add_system_message(lines.join("\n"));
             }
         }
     }
@@ -1970,231 +2690,20 @@ Add the required fields and retry.",
         {
             Ok(output) => {
                 self.handle_command_output(output).await;
+                self.slash_state.reset();
                 return Ok(());
             }
             Err(e) => {
-                // Check if it's an unknown command - if so, try legacy handling or agent passthrough
                 if e.message.contains("Unknown command") {
-                    // Fall through to legacy handling below
+                    if let Some(agent) = &self.native_agent {
+                        let _ = agent.prompt(input.clone(), vec![]).await;
+                        self.state.busy = true;
+                    } else {
+                        self.state.error = Some(format!("Unknown command: {input}"));
+                    }
                 } else {
                     // Other errors (like missing args) should be shown to user
                     self.state.error = Some(e.to_string());
-                    return Ok(());
-                }
-            }
-        }
-
-        // Legacy handling for commands not yet in registry
-        let cmd_line = input.trim_start_matches('/');
-
-        // Parse command and args
-        let mut parts = cmd_line.split_whitespace();
-        let cmd_name = parts.next().unwrap_or("");
-        let args: Vec<&str> = parts.collect();
-
-        // Handle built-in commands
-        match cmd_name {
-            "help" => {
-                self.show_help();
-            }
-            "clear" => {
-                self.state.messages.clear();
-                self.state.scroll_offset = 0;
-            }
-            "quit" | "exit" => {
-                self.should_quit = true;
-            }
-            "theme" => {
-                if let Some(theme_name) = args.first() {
-                    if let Err(e) = crate::themes::set_theme_by_name(theme_name) {
-                        self.state.error = Some(format!("Failed to set theme: {e}"));
-                    } else {
-                        self.state.status = Some(format!("Theme set to: {theme_name}"));
-                    }
-                } else {
-                    // Open theme selector
-                    self.theme_selector.show();
-                    self.active_modal = ActiveModal::ThemeSelector;
-                }
-            }
-            "model" => {
-                if let Some(&model_id) = args.first() {
-                    // Set model directly
-                    if let Some(agent) = &self.native_agent {
-                        if let Err(e) = agent.set_model(model_id) {
-                            self.state.error = Some(format!("Failed to set model: {e}"));
-                        } else {
-                            self.state.status = Some(format!("Model: {model_id}"));
-                        }
-                    }
-                } else {
-                    // Open model selector
-                    self.model_selector.show();
-                    self.active_modal = ActiveModal::ModelSelector;
-                }
-            }
-            "thinking" => {
-                if let Some(&level_str) = args.first() {
-                    if let Some(level) = ThinkingLevel::parse(level_str) {
-                        let (enabled, budget) = level.to_config();
-                        if let Some(agent) = &self.native_agent {
-                            if let Err(e) = agent.set_thinking(enabled, budget) {
-                                self.state.error = Some(format!("Failed to set thinking: {e}"));
-                            } else {
-                                self.state.status = Some(format!(
-                                    "Thinking: {} (budget: {})",
-                                    level.label(),
-                                    budget
-                                ));
-                            }
-                        }
-                    } else {
-                        self.state.error = Some(format!(
-                            "Unknown thinking level: {level_str}. Use: off, minimal, low, medium, high, max"
-                        ));
-                    }
-                } else {
-                    self.state.status = Some(
-                        "Usage: /thinking <level>\nLevels: off, minimal, low, medium, high, max"
-                            .to_string(),
-                    );
-                }
-            }
-            "zen" => {
-                self.state.zen_mode = !self.state.zen_mode;
-                if self.state.zen_mode {
-                    self.state.status = Some("Zen mode enabled".to_string());
-                } else {
-                    self.state.status = Some("Zen mode disabled".to_string());
-                }
-            }
-            "approvals" => {
-                if let Some(&mode_str) = args.first() {
-                    if let Some(mode) = ApprovalMode::parse(mode_str) {
-                        self.state.approval_mode = mode;
-                        self.state.status = Some(format!("Approval mode: {}", mode.label()));
-                    } else {
-                        self.state.error = Some(format!(
-                            "Unknown approval mode: {mode_str}. Use: yolo, selective, safe"
-                        ));
-                    }
-                } else {
-                    // Toggle to next mode
-                    self.state.approval_mode = self.state.approval_mode.next();
-                    self.state.status = Some(format!(
-                        "Approval mode: {}",
-                        self.state.approval_mode.label()
-                    ));
-                }
-            }
-            "diag" | "status" => {
-                let mut diag = String::new();
-                diag.push_str("## Diagnostics\n\n");
-
-                // Model & Provider
-                diag.push_str(&format!(
-                    "**Model:** {}\n",
-                    self.state.model.as_deref().unwrap_or("(none)")
-                ));
-                diag.push_str(&format!(
-                    "**Provider:** {}\n",
-                    self.state.provider.as_deref().unwrap_or("(none)")
-                ));
-
-                // Working directory & Git
-                diag.push_str(&format!(
-                    "**CWD:** {}\n",
-                    self.state.cwd.as_deref().unwrap_or("(unknown)")
-                ));
-                diag.push_str(&format!(
-                    "**Git Branch:** {}\n",
-                    self.state.git_branch.as_deref().unwrap_or("(not a repo)")
-                ));
-
-                // Session
-                diag.push_str(&format!(
-                    "**Session:** {}\n",
-                    self.state.session_id.as_deref().unwrap_or("(ephemeral)")
-                ));
-
-                // Modes
-                diag.push_str(&format!(
-                    "**Approval Mode:** {}\n",
-                    self.state.approval_mode.label()
-                ));
-                diag.push_str(&format!(
-                    "**Zen Mode:** {}\n",
-                    if self.state.zen_mode { "on" } else { "off" }
-                ));
-                diag.push_str(&format!(
-                    "**Steering Mode:** {}\n",
-                    self.state.steering_mode.label()
-                ));
-                diag.push_str(&format!(
-                    "**Follow-up Mode:** {}\n",
-                    self.state.follow_up_mode.label()
-                ));
-
-                // Terminal info
-                if let Ok((cols, rows)) = crossterm::terminal::size() {
-                    diag.push_str(&format!("**Terminal:** {cols}x{rows}\n"));
-                }
-
-                // Message count
-                diag.push_str(&format!("**Messages:** {}\n", self.state.messages.len()));
-
-                self.state.add_system_message(diag);
-            }
-            "sessions" | "resume" => {
-                self.session_switcher.show();
-                self.active_modal = ActiveModal::SessionSwitcher;
-            }
-            "files" => {
-                self.file_search.show();
-                self.active_modal = ActiveModal::FileSearch;
-            }
-            "commands" => {
-                self.command_palette.show();
-                self.active_modal = ActiveModal::CommandPalette;
-            }
-            "refresh" => {
-                self.load_workspace_files();
-                self.state.status = Some("Workspace files refreshed".to_string());
-            }
-            "copy" => {
-                // Copy last assistant message to clipboard
-                if let Some(msg) = self
-                    .state
-                    .messages
-                    .iter()
-                    .rev()
-                    .find(|m| m.role == MessageRole::Assistant && !m.content.is_empty())
-                {
-                    match self.clipboard.copy(&msg.content) {
-                        Ok(()) => {
-                            let chars: Vec<char> = msg.content.chars().collect();
-                            let preview = if chars.len() > 50 {
-                                format!("{}...", chars[..47].iter().collect::<String>())
-                            } else {
-                                msg.content.clone()
-                            };
-                            self.state.status = Some(format!("Copied: {preview}"));
-                        }
-                        Err(e) => {
-                            self.state.error = Some(format!("Failed to copy: {e}"));
-                        }
-                    }
-                } else {
-                    self.state.status = Some("No message to copy".to_string());
-                }
-            }
-            _ => {
-                // Unknown command - try to send to agent
-                if let Some(agent) = &self.native_agent {
-                    let _ = agent.prompt(format!("/{cmd_line}"), vec![]).await;
-                    self.state.busy = true;
-                } else {
-                    self.state.error = Some(format!("Unknown command: /{cmd_name}"));
                 }
             }
         }
@@ -2415,9 +2924,37 @@ Slash Commands:
     }
 
     async fn submit_prompt_with_kind(&mut self, content: String, kind: PromptKind) -> Result<bool> {
+        let active_sessions = if self.session_manager.writer().is_some() {
+            self.active_session_count()
+        } else {
+            self.active_session_count()
+                .map(|count| count.saturating_add(1))
+        };
+
+        let started_at = if self.session_manager.writer().is_some() {
+            self.session_started_at
+        } else {
+            SystemTime::now()
+        };
+
+        if let Some(reason) = check_session_limits(
+            started_at,
+            Some(self.usage_tracker.total_tokens()),
+            active_sessions,
+        ) {
+            self.state.error = Some(reason);
+            return Ok(false);
+        }
+
+        if let Err(err) = self.ensure_session_started() {
+            self.state.error = Some(format!("Failed to start session: {err}"));
+            return Ok(false);
+        }
+
         // Add user message to state
         self.state.add_user_message(content.clone());
         self.state.busy = true;
+        self.record_user_message(&content);
 
         if let Some(agent) = &self.native_agent {
             // Send the prompt - returns immediately, actual work happens in background task
@@ -2436,6 +2973,11 @@ Slash Commands:
 
     /// Render the UI
     fn render(&mut self) -> Result<()> {
+        if let Ok(area) = self.terminal.size() {
+            let inner_width = area.width.saturating_sub(2).max(1);
+            self.state.set_input_width(inner_width);
+        }
+
         // Extract needed data to avoid borrow conflicts
         let state = &self.state;
         let active_modal = self.active_modal;
@@ -2618,6 +3160,45 @@ impl Default for App {
                 Self::new_with_terminal(terminal, capabilities)
             }
         }
+    }
+}
+
+fn system_time_to_millis(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn to_session_usage(usage: &crate::agent::TokenUsage) -> SessionTokenUsage {
+    SessionTokenUsage {
+        input: usage.input_tokens,
+        output: usage.output_tokens,
+        cache_read: usage.cache_read_tokens,
+        cache_write: usage.cache_write_tokens,
+        cost: usage.cost.map(|total| TokenCost {
+            total,
+            ..Default::default()
+        }),
+    }
+}
+
+fn provider_id(provider: AiProvider) -> &'static str {
+    match provider {
+        AiProvider::Anthropic => "anthropic",
+        AiProvider::OpenAI => "openai",
+        AiProvider::Mistral => "mistral",
+        AiProvider::Google => "google",
+        AiProvider::Groq => "groq",
+        AiProvider::VertexAi => "vertex-ai",
+    }
+}
+
+fn policy_model_id(model: &str) -> String {
+    if model.contains('/') {
+        model.to_string()
+    } else {
+        let provider = AiProvider::from_model(model);
+        format!("{}/{}", provider_id(provider), model)
     }
 }
 

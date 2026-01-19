@@ -82,6 +82,27 @@ impl McpRequest {
             })),
         )
     }
+
+    /// Create a prompts/list request
+    #[must_use]
+    pub fn list_prompts(id: u64) -> Self {
+        Self::new(id, "prompts/list", None)
+    }
+
+    /// Create a prompts/get request
+    #[must_use]
+    pub fn get_prompt(id: u64, name: &str, arguments: Option<Value>) -> Self {
+        let params = match arguments {
+            Some(args) => serde_json::json!({
+                "name": name,
+                "arguments": args
+            }),
+            None => serde_json::json!({
+                "name": name
+            }),
+        };
+        Self::new(id, "prompts/get", Some(params))
+    }
 }
 
 /// JSON-RPC response message
@@ -276,6 +297,77 @@ pub struct McpResource {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourcesListResult {
     pub resources: Vec<McpResource>,
+}
+
+/// MCP prompt definition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPrompt {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<Value>,
+}
+
+/// Prompts list response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptsListResult {
+    pub prompts: Vec<McpPrompt>,
+}
+
+/// Prompt message content
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum McpPromptContent {
+    /// Plain string content
+    Text(String),
+    /// Structured content (e.g., type/text blocks)
+    Structured(McpPromptContentBlock),
+    /// Any other content shape
+    Other(Value),
+}
+
+impl McpPromptContent {
+    #[must_use]
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text.as_str()),
+            Self::Structured(block) => block.text.as_deref(),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+/// Structured prompt content block
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPromptContentBlock {
+    #[serde(rename = "type")]
+    pub content_type: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub data: Option<String>,
+    #[serde(default, rename = "mimeType")]
+    pub mime_type: Option<String>,
+}
+
+/// Prompt message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpPromptMessage {
+    pub role: String,
+    pub content: McpPromptContent,
+}
+
+/// Prompt get response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptGetResult {
+    #[serde(default)]
+    pub description: Option<String>,
+    pub messages: Vec<McpPromptMessage>,
 }
 
 /// Resource content

@@ -8,6 +8,7 @@ use super::types::{
     PostMessageInput, PostToolUseHook, PostToolUseInput, PreMessageHook, PreMessageInput,
     PreToolUseHook, PreToolUseInput, SessionEndHook, SessionEndInput, SessionStartHook,
     SessionStartInput, SubagentStartHook, SubagentStartInput, SubagentStopHook, SubagentStopInput,
+    UserPromptSubmitHook, UserPromptSubmitInput,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -21,6 +22,7 @@ pub struct HookRegistry {
     session_start_hooks: Vec<Arc<dyn SessionStartHook>>,
     session_end_hooks: Vec<Arc<dyn SessionEndHook>>,
     overflow_hooks: Vec<Arc<dyn OverflowHook>>,
+    user_prompt_submit_hooks: Vec<Arc<dyn UserPromptSubmitHook>>,
     pre_message_hooks: Vec<Arc<dyn PreMessageHook>>,
     post_message_hooks: Vec<Arc<dyn PostMessageHook>>,
     on_error_hooks: Vec<Arc<dyn OnErrorHook>>,
@@ -46,6 +48,7 @@ impl HookRegistry {
             session_start_hooks: Vec::new(),
             session_end_hooks: Vec::new(),
             overflow_hooks: Vec::new(),
+            user_prompt_submit_hooks: Vec::new(),
             pre_message_hooks: Vec::new(),
             post_message_hooks: Vec::new(),
             on_error_hooks: Vec::new(),
@@ -79,6 +82,11 @@ impl HookRegistry {
     /// Register an Overflow hook
     pub fn register_overflow(&mut self, hook: Arc<dyn OverflowHook>) {
         self.overflow_hooks.push(hook);
+    }
+
+    /// Register a `UserPromptSubmit` hook
+    pub fn register_user_prompt_submit(&mut self, hook: Arc<dyn UserPromptSubmitHook>) {
+        self.user_prompt_submit_hooks.push(hook);
     }
 
     /// Register a `PreMessage` hook
@@ -189,6 +197,19 @@ impl HookRegistry {
         HookResult::Continue
     }
 
+    /// Execute `UserPromptSubmit` hooks
+    #[must_use]
+    pub fn execute_user_prompt_submit(&self, input: &UserPromptSubmitInput) -> HookResult {
+        for hook in &self.user_prompt_submit_hooks {
+            let result = hook.on_user_prompt_submit(input);
+            match &result {
+                HookResult::Continue => continue,
+                _ => return result,
+            }
+        }
+        HookResult::Continue
+    }
+
     /// Execute `PreMessage` hooks
     #[must_use]
     pub fn execute_pre_message(&self, input: &PreMessageInput) -> HookResult {
@@ -289,6 +310,7 @@ impl HookRegistry {
             HookEventType::SessionStart => !self.session_start_hooks.is_empty(),
             HookEventType::SessionEnd => !self.session_end_hooks.is_empty(),
             HookEventType::Overflow => !self.overflow_hooks.is_empty(),
+            HookEventType::UserPromptSubmit => !self.user_prompt_submit_hooks.is_empty(),
             HookEventType::PreMessage => !self.pre_message_hooks.is_empty(),
             HookEventType::PostMessage => !self.post_message_hooks.is_empty(),
             HookEventType::OnError => !self.on_error_hooks.is_empty(),
@@ -298,7 +320,6 @@ impl HookRegistry {
             HookEventType::PermissionRequest => !self.permission_request_hooks.is_empty(),
             // These don't have dedicated hook vectors yet
             HookEventType::PostToolUseFailure
-            | HookEventType::UserPromptSubmit
             | HookEventType::PreCompact
             | HookEventType::Notification
             | HookEventType::SessionSwitch
@@ -316,6 +337,7 @@ impl HookRegistry {
             + self.session_start_hooks.len()
             + self.session_end_hooks.len()
             + self.overflow_hooks.len()
+            + self.user_prompt_submit_hooks.len()
             + self.pre_message_hooks.len()
             + self.post_message_hooks.len()
             + self.on_error_hooks.len()
@@ -364,6 +386,12 @@ impl SharedHookRegistry {
         registry.register_post_tool_use(hook);
     }
 
+    /// Register a `UserPromptSubmit` hook
+    pub async fn register_user_prompt_submit(&self, hook: Arc<dyn UserPromptSubmitHook>) {
+        let mut registry = self.inner.write().await;
+        registry.register_user_prompt_submit(hook);
+    }
+
     /// Execute `PreToolUse` hooks
     pub async fn execute_pre_tool_use(&self, input: &PreToolUseInput) -> HookResult {
         let registry = self.inner.read().await;
@@ -380,6 +408,12 @@ impl SharedHookRegistry {
     pub async fn execute_overflow(&self, input: &OverflowInput) -> HookResult {
         let registry = self.inner.read().await;
         registry.execute_overflow(input)
+    }
+
+    /// Execute `UserPromptSubmit` hooks
+    pub async fn execute_user_prompt_submit(&self, input: &UserPromptSubmitInput) -> HookResult {
+        let registry = self.inner.read().await;
+        registry.execute_user_prompt_submit(input)
     }
 }
 

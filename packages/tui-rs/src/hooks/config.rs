@@ -104,6 +104,10 @@ pub struct HookDefinition {
     #[serde(default)]
     pub command: Option<String>,
 
+    /// Prompt template (static context)
+    #[serde(default)]
+    pub prompt: Option<String>,
+
     /// Inline Lua script
     #[serde(default)]
     pub lua: Option<String>,
@@ -188,6 +192,8 @@ pub struct LoadedHook {
 pub enum HookSource {
     /// Shell command
     Command(String),
+    /// Prompt template
+    Prompt(String),
     /// Inline Lua script
     LuaInline(String),
     /// Lua script file
@@ -334,11 +340,29 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
             for matcher in matchers {
                 let tools = parse_matcher_tools(matcher.matcher.as_deref());
                 for hook in matcher.hooks {
-                    if hook.hook_type.as_deref() == Some("prompt") || hook.prompt.is_some() {
-                        eprintln!("[hooks] Prompt hooks are not supported in Rust TUI config");
+                    if hook.hook_type.as_deref() == Some("agent") {
                         continue;
                     }
-                    if hook.hook_type.as_deref() == Some("agent") {
+                    if hook.hook_type.as_deref() == Some("prompt") || hook.prompt.is_some() {
+                        let prompt = if let Some(prompt) = hook.prompt {
+                            prompt
+                        } else {
+                            eprintln!("[hooks] Prompt hook missing prompt field");
+                            continue;
+                        };
+                        config.hooks.push(HookDefinition {
+                            event,
+                            tools: tools.clone(),
+                            command: None,
+                            prompt: Some(prompt),
+                            lua: None,
+                            lua_file: None,
+                            wasm: None,
+                            typescript: None,
+                            timeout_ms: hook.timeout,
+                            enabled: true,
+                            description: None,
+                        });
                         continue;
                     }
                     let command = if let Some(cmd) = hook.command {
@@ -351,6 +375,7 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                         event,
                         tools: tools.clone(),
                         command: Some(command),
+                        prompt: None,
                         lua: None,
                         lua_file: None,
                         wasm: None,
@@ -407,6 +432,10 @@ fn parse_event_type(name: &str) -> Option<HookEventType> {
 
 /// Determine the source type for a hook definition
 fn determine_hook_source(def: &HookDefinition, cwd: &Path) -> Option<HookSource> {
+    if let Some(ref prompt) = def.prompt {
+        return Some(HookSource::Prompt(prompt.clone()));
+    }
+
     if let Some(ref cmd) = def.command {
         return Some(HookSource::Command(cmd.clone()));
     }

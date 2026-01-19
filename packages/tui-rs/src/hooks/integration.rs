@@ -13,6 +13,7 @@ use super::{
         EvalGateInput, HookEventType, HookResult, OnErrorInput, OverflowInput,
         PermissionRequestInput, PostMessageInput, PostToolUseInput, PreMessageInput,
         PreToolUseInput, SessionEndInput, SessionStartInput, SubagentStartInput, SubagentStopInput,
+        UserPromptSubmitHook, UserPromptSubmitInput,
     },
     wasm::WasmHookExecutor,
 };
@@ -66,6 +67,19 @@ struct TypeScriptHookConfig {
     path: PathBuf,
     event: HookEventType,
     tools: Vec<String>,
+}
+
+/// Prompt hook that injects static context on user prompt submission
+struct PromptHook {
+    prompt: String,
+}
+
+impl UserPromptSubmitHook for PromptHook {
+    fn on_user_prompt_submit(&self, _input: &UserPromptSubmitInput) -> HookResult {
+        HookResult::InjectContext {
+            context: self.prompt.clone(),
+        }
+    }
 }
 
 impl IntegratedHookSystem {
@@ -139,6 +153,18 @@ impl IntegratedHookSystem {
     fn load_hooks_from_config(&mut self, config: &LoadedHookConfig) {
         for hook in &config.hooks {
             match &hook.source {
+                HookSource::Prompt(prompt) => {
+                    if hook.definition.event == HookEventType::UserPromptSubmit {
+                        self.registry
+                            .register_user_prompt_submit(Arc::new(PromptHook {
+                                prompt: prompt.clone(),
+                            }));
+                    } else {
+                        eprintln!(
+                            "[hooks] Prompt hooks are only supported for UserPromptSubmit in Rust TUI"
+                        );
+                    }
+                }
                 HookSource::LuaInline(script) => {
                     if let Err(e) = self.lua_executor_mut().load_script(
                         script,
@@ -594,6 +620,33 @@ impl IntegratedHookSystem {
         matches!(result, HookResult::Continue)
     }
 
+    /// Execute `UserPromptSubmit` hooks - called when user submits a prompt
+    pub fn execute_user_prompt_submit(
+        &mut self,
+        prompt: &str,
+        attachment_count: u32,
+    ) -> HookResult {
+        if !self.enabled {
+            return HookResult::Continue;
+        }
+
+        let input = UserPromptSubmitInput {
+            hook_event_name: "UserPromptSubmit".to_string(),
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.clone(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            prompt: prompt.to_string(),
+            attachment_count,
+        };
+
+        self.log_event(
+            "UserPromptSubmit",
+            &format!("len={} attachments={attachment_count}", prompt.len()),
+        );
+
+        self.execute_with_timeout(|| self.registry.execute_user_prompt_submit(&input))
+    }
+
     /// Execute `PreMessage` hooks - called before sending user message to model
     pub fn execute_pre_message(
         &mut self,
@@ -806,7 +859,7 @@ impl IntegratedHookSystem {
     #[must_use]
     pub fn stats(&self) -> HookStats {
         HookStats {
-            native_hooks: usize::from(self.registry.has_hooks(HookEventType::PreToolUse)),
+            native_hooks: self.registry.total_hook_count(),
             lua_scripts: self
                 .lua_executor
                 .as_ref()

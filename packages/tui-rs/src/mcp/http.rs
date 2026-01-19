@@ -16,8 +16,9 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use super::client::McpError;
 use super::config::{expand_env_vars, McpServerConfig, McpTransport};
 use super::protocol::{
-    ClientInfo, InitializeResult, McpRequest, McpResource, McpResponse, McpTool, McpToolResult,
-    ResourceReadResult, ResourcesListResult, ToolsListResult,
+    ClientInfo, InitializeResult, McpPrompt, McpRequest, McpResource, McpResponse, McpTool,
+    McpToolResult, PromptGetResult, PromptsListResult, ResourceReadResult, ResourcesListResult,
+    ToolsListResult,
 };
 
 /// HTTP-based MCP connection
@@ -36,6 +37,8 @@ pub struct HttpConnection {
     tools: Vec<McpTool>,
     /// Available resources
     resources: Vec<McpResource>,
+    /// Available prompts
+    prompts: Vec<McpPrompt>,
     /// Whether initialized
     initialized: bool,
     /// SSE event receiver (for SSE transport)
@@ -67,6 +70,7 @@ impl HttpConnection {
             next_id: AtomicU64::new(1),
             tools: Vec::new(),
             resources: Vec::new(),
+            prompts: Vec::new(),
             initialized: false,
             sse_rx: None,
             pending_sse: Arc::new(Mutex::new(HashMap::new())),
@@ -174,6 +178,8 @@ impl HttpConnection {
         self.refresh_tools().await?;
         // List resources (best effort)
         let _ = self.refresh_resources().await;
+        // List prompts (best effort)
+        let _ = self.refresh_prompts().await;
 
         self.initialized = true;
         Ok(())
@@ -205,6 +211,19 @@ impl HttpConnection {
         Ok(())
     }
 
+    /// Refresh the list of available prompts
+    pub async fn refresh_prompts(&mut self) -> Result<(), McpError> {
+        let request = McpRequest::list_prompts(self.next_id());
+        let response = self.send_request(request).await?;
+
+        let prompts_result: PromptsListResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid prompts/list response: {e}")))?;
+
+        self.prompts = prompts_result.prompts;
+        Ok(())
+    }
+
     /// Get available tools
     pub fn tools(&self) -> &[McpTool] {
         &self.tools
@@ -213,6 +232,11 @@ impl HttpConnection {
     /// Get available resources
     pub fn resources(&self) -> &[McpResource] {
         &self.resources
+    }
+
+    /// Get available prompts
+    pub fn prompts(&self) -> &[McpPrompt] {
+        &self.prompts
     }
 
     /// Get server name
@@ -257,6 +281,26 @@ impl HttpConnection {
         let result: ResourceReadResult = response
             .result_as()
             .map_err(|e| McpError::Protocol(format!("Invalid resource read result: {e}")))?;
+
+        Ok(result)
+    }
+
+    /// Get a prompt by name
+    pub async fn get_prompt(
+        &mut self,
+        name: &str,
+        arguments: Option<serde_json::Value>,
+    ) -> Result<PromptGetResult, McpError> {
+        let request = McpRequest::get_prompt(self.next_id(), name, arguments);
+        let response = self.send_request(request).await?;
+
+        if let Some(error) = response.error {
+            return Err(McpError::RequestFailed(error.message));
+        }
+
+        let result: PromptGetResult = response
+            .result_as()
+            .map_err(|e| McpError::Protocol(format!("Invalid prompt get result: {e}")))?;
 
         Ok(result)
     }

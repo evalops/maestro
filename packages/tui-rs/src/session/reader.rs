@@ -249,7 +249,10 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use super::entries::{AppMessage, SessionEntry, SessionHeader, SessionMeta, SessionStats};
+use super::entries::{
+    AppMessage, CompactionEntry, ModelChange, SessionEntry, SessionHeader, SessionMeta,
+    SessionStats, ThinkingLevelChange,
+};
 
 fn apply_attachment_extracts(
     message: AppMessage,
@@ -389,6 +392,15 @@ pub struct ParsedSession {
     /// Aggregated statistics computed during file reading.
     pub stats: SessionStats,
 
+    /// Recorded thinking level changes.
+    pub thinking_level_changes: Vec<ThinkingLevelChange>,
+
+    /// Recorded model changes.
+    pub model_changes: Vec<ModelChange>,
+
+    /// Recorded compaction events.
+    pub compactions: Vec<CompactionEntry>,
+
     /// Absolute path to the source session file.
     pub file_path: String,
 }
@@ -468,6 +480,9 @@ impl SessionReader {
         let mut meta: Option<SessionMeta> = None;
         let mut stats = SessionStats::default();
         let mut extracted_by_id: HashMap<String, String> = HashMap::new();
+        let mut thinking_level_changes: Vec<ThinkingLevelChange> = Vec::new();
+        let mut model_changes: Vec<ModelChange> = Vec::new();
+        let mut compactions: Vec<CompactionEntry> = Vec::new();
 
         for (line_num, line) in reader.lines().enumerate() {
             let line = line?;
@@ -518,10 +533,14 @@ impl SessionReader {
                 SessionEntry::SessionMeta(m) => {
                     meta = Some(m);
                 }
-                SessionEntry::ThinkingLevelChange(_)
-                | SessionEntry::ModelChange(_)
-                | SessionEntry::Compaction(_) => {
-                    // Track but don't store for now
+                SessionEntry::ThinkingLevelChange(change) => {
+                    thinking_level_changes.push(change);
+                }
+                SessionEntry::ModelChange(change) => {
+                    model_changes.push(change);
+                }
+                SessionEntry::Compaction(entry) => {
+                    compactions.push(entry);
                 }
             }
         }
@@ -541,6 +560,9 @@ impl SessionReader {
             messages,
             meta,
             stats,
+            thinking_level_changes,
+            model_changes,
+            compactions,
             file_path: path.to_string_lossy().to_string(),
         })
     }

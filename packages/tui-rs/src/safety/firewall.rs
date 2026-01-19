@@ -33,7 +33,9 @@ use super::dangerous_patterns::{check_dangerous_patterns, Severity};
 use super::path_containment::{
     has_path_traversal, is_path_contained, is_system_path, PathContainment,
 };
-use super::policy::{check_path_allowed, check_tool_allowed, check_url_allowed};
+use super::policy::{
+    check_command_policy, check_path_allowed, check_tool_allowed, check_url_allowed,
+};
 use super::workflow_state::{has_tool_tags, is_human_facing_tool, WorkflowStateSnapshot};
 use crate::mcp::McpToolAnnotations;
 
@@ -144,6 +146,8 @@ static SAFE_TOOLS: std::sync::LazyLock<HashSet<&'static str>> = std::sync::LazyL
         "read_image",
         "mcp_list_resources",
         "mcp_read_resource",
+        "mcp_list_prompts",
+        "mcp_get_prompt",
     ]
     .into_iter()
     .collect()
@@ -189,7 +193,11 @@ fn has_egress_primitives(command: &str) -> bool {
 }
 
 fn is_mcp_tool_name(tool_name: &str) -> bool {
-    if tool_name == "mcp_list_resources" || tool_name == "mcp_read_resource" {
+    if tool_name == "mcp_list_resources"
+        || tool_name == "mcp_read_resource"
+        || tool_name == "mcp_list_prompts"
+        || tool_name == "mcp_get_prompt"
+    {
         return false;
     }
     tool_name.starts_with("mcp__") || tool_name.starts_with("mcp_")
@@ -349,6 +357,10 @@ impl ActionFirewall {
 
         let path = Path::new(path);
 
+        if let Some(reason) = check_path_allowed(path) {
+            return FirewallVerdict::Block { reason };
+        }
+
         // Reading is generally allowed, but we block certain sensitive files
         if self.is_sensitive_file(path) {
             return FirewallVerdict::RequireApproval {
@@ -383,6 +395,10 @@ impl ActionFirewall {
         let tool_name = context.tool_name;
         let args = context.args;
         if let Some(reason) = check_tool_allowed(tool_name) {
+            return FirewallVerdict::Block { reason };
+        }
+
+        if let Some(reason) = check_command_policy(tool_name, args) {
             return FirewallVerdict::Block { reason };
         }
 
@@ -539,6 +555,27 @@ impl ActionFirewall {
                 } else {
                     FirewallVerdict::Block {
                         reason: "read_image tool missing file_path argument".to_string(),
+                    }
+                }
+            }
+            "vscode_get_diagnostics" | "jetbrains_get_diagnostics" => {
+                if let Some(path) = args.get("uri").and_then(|v| v.as_str()) {
+                    self.check_file_read(path)
+                } else {
+                    FirewallVerdict::Allow
+                }
+            }
+            "vscode_get_definition"
+            | "vscode_find_references"
+            | "vscode_read_file_range"
+            | "jetbrains_get_definition"
+            | "jetbrains_find_references"
+            | "jetbrains_read_file_range" => {
+                if let Some(path) = args.get("uri").and_then(|v| v.as_str()) {
+                    self.check_file_read(path)
+                } else {
+                    FirewallVerdict::Block {
+                        reason: "IDE tool missing uri argument".to_string(),
                     }
                 }
             }

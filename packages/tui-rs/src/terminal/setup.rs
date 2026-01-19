@@ -60,8 +60,9 @@ use std::sync::Mutex;
 use crossterm::{
     cursor,
     event::{
-        DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
-        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+        EnableFocusChange, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement},
@@ -221,6 +222,9 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
     // Enable focus change events
     let _ = execute!(tty, EnableFocusChange);
 
+    // Enable mouse capture for scroll support
+    let _ = execute!(tty, EnableMouseCapture);
+
     // Move cursor to bottom of screen and print enough newlines to create
     // space for the inline viewport. This ensures the viewport starts at
     // the correct position for history push.
@@ -319,6 +323,9 @@ fn restore_impl() -> io::Result<()> {
 
         // Disable focus change
         let _ = execute!(tty, DisableFocusChange);
+
+        // Disable mouse capture
+        let _ = execute!(tty, DisableMouseCapture);
 
         // Show cursor
         let _ = execute!(tty, cursor::Show);

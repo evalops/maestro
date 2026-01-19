@@ -8,7 +8,7 @@
 //!
 //! The event stream automatically filters:
 //!
-//! - Mouse events (not currently used by the application)
+//! - Mouse events (except scroll wheel, which is forwarded)
 //! - Key release and repeat events (only key press events are processed)
 //! - Lock key events (`CapsLock`, `NumLock`, `ScrollLock`)
 //! - Media and modifier-only key events
@@ -25,7 +25,9 @@
 //! them to string representations (e.g., "Enter", "Backspace", "F1") that are easier
 //! to work with in the application layer and can be serialized for IPC communication.
 
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind,
+};
 use tokio_stream::StreamExt;
 
 use crate::protocol::KeyModifiers;
@@ -73,6 +75,10 @@ pub enum TerminalEvent {
     ///
     /// Only sent if the terminal supports focus change events.
     FocusLost,
+    /// Mouse wheel scroll.
+    ///
+    /// Negative = scroll up, positive = scroll down.
+    MouseScroll { delta: i16 },
 }
 
 /// Async stream of terminal events.
@@ -148,7 +154,15 @@ fn convert_event(event: Event) -> Option<TerminalEvent> {
         Event::Resize(width, height) => Some(TerminalEvent::Resize { width, height }),
         Event::FocusGained => Some(TerminalEvent::FocusGained),
         Event::FocusLost => Some(TerminalEvent::FocusLost),
-        Event::Mouse(_) => None, // Ignore mouse events for now
+        Event::Mouse(mouse) => convert_mouse_event(mouse),
+    }
+}
+
+fn convert_mouse_event(mouse: MouseEvent) -> Option<TerminalEvent> {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => Some(TerminalEvent::MouseScroll { delta: -1 }),
+        MouseEventKind::ScrollDown => Some(TerminalEvent::MouseScroll { delta: 1 }),
+        _ => None,
     }
 }
 

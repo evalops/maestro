@@ -36,11 +36,11 @@
 //!
 //! Wrapping is performed by the `textwrap` crate using the `FirstFit` algorithm:
 //! - Breaks at word boundaries when possible
-//! - Preserves trailing spaces + sentinel byte for cursor positioning
+//! - Preserves trailing spaces for accurate cursor positioning
 //! - Returns byte ranges (`Range<usize>`) for each wrapped line
 //!
-//! The sentinel byte hack allows the cursor to be positioned "at the end" of a line,
-//! which is technically one byte past the last visible character.
+//! Cursor positioning supports "end of line" without sentinel bytes by treating
+//! the end of each wrapped range as a valid cursor position.
 //!
 //! # Usage Pattern
 //!
@@ -68,7 +68,7 @@
 //! 1. Rendering placeholder if text is empty
 //! 2. Computing wrapped lines for the given area width
 //! 3. Rendering each wrapped line with `buf.set_string()`
-//! 4. Handling sentinel byte truncation (subtracting 1 from range end)
+//! 4. Rendering wrapped ranges as-is (end-of-line is range.end)
 //!
 //! # Cursor Position Calculation
 //!
@@ -203,12 +203,7 @@ impl TextArea {
             return None;
         }
 
-        let lines = self.wrapped_lines(area.width);
-        let line_idx = Self::wrapped_line_index(&lines, self.cursor_pos)?;
-        let line_range = &lines[line_idx];
-
-        // Calculate column based on unicode display width
-        let col = self.text[line_range.start..self.cursor_pos].width() as u16;
+        let (line_idx, col) = self.cursor_line_col(area.width)?;
 
         // Clamp to visible area
         let row = line_idx as u16;
@@ -217,6 +212,50 @@ impl TextArea {
         }
 
         Some((area.x + col.min(area.width.saturating_sub(1)), area.y + row))
+    }
+
+    /// Get the cursor's wrapped line index and display column.
+    pub fn cursor_line_col(&self, width: u16) -> Option<(usize, u16)> {
+        if width == 0 {
+            return None;
+        }
+        let lines = self.wrapped_lines(width);
+        let line_idx = Self::wrapped_line_index(&lines, self.cursor_pos)?;
+        let line_range = &lines[line_idx];
+        let slice_end = self.cursor_pos.min(line_range.end);
+        let col = self.text[line_range.start..slice_end].width() as u16;
+        Some((line_idx, col))
+    }
+
+    /// Convert a wrapped line index + display column into a byte offset.
+    pub fn byte_pos_for_line_col(&self, width: u16, line_idx: usize, col: u16) -> Option<usize> {
+        if width == 0 {
+            return None;
+        }
+        let lines = self.wrapped_lines(width);
+        let range = lines.get(line_idx)?;
+        if col == 0 {
+            return Some(range.start);
+        }
+
+        let slice = &self.text[range.start..range.end];
+        let mut acc_width: u16 = 0;
+        let mut byte_pos = range.start;
+
+        for (offset, ch) in slice.char_indices() {
+            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+            if acc_width.saturating_add(w) > col {
+                break;
+            }
+            acc_width = acc_width.saturating_add(w);
+            byte_pos = range.start + offset + ch.len_utf8();
+        }
+
+        if acc_width < col {
+            Some(range.end)
+        } else {
+            Some(byte_pos)
+        }
     }
 
     /// Find which wrapped line contains the given byte position
@@ -260,11 +299,8 @@ impl Default for TextArea {
 /// This function uses the `textwrap` crate to wrap text at the given width, then
 /// converts the wrapped string slices to byte ranges into the original text.
 ///
-/// # Sentinel Byte Hack
-///
-/// Each range includes a sentinel byte at the end (range.end + 1) to allow the
-/// cursor to be positioned "at the end" of a line. Without this, the cursor
-/// couldn't be placed after the last character on a wrapped line.
+/// Ranges are precise byte spans into the original buffer. Cursor positions are
+/// allowed at `range.end` to represent end-of-line positions without sentinel bytes.
 ///
 /// # Returns
 ///
@@ -277,24 +313,28 @@ fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     }
 
     let opts = Options::new(width.max(1)).wrap_algorithm(textwrap::WrapAlgorithm::FirstFit);
-
     let mut lines: Vec<Range<usize>> = Vec::new();
 
-    for line in textwrap::wrap(text, opts) {
-        match line {
-            std::borrow::Cow::Borrowed(slice) => {
-                // SAFETY: slice is borrowed from text, so pointer arithmetic is valid
-                let start = unsafe { slice.as_ptr().offset_from(text.as_ptr()) as usize };
-                let end = start + slice.len();
-                // Include trailing space + sentinel byte for cursor positioning
-                let trailing_spaces = text[end..].chars().take_while(|c| *c == ' ').count();
-                lines.push(start..end + trailing_spaces + 1);
-            }
-            std::borrow::Cow::Owned(_) => {
-                // textwrap shouldn't return owned strings for simple wrapping
-                // but handle gracefully
-                lines.push(0..text.len());
-            }
+    let mut offset = 0usize;
+    while offset <= text.len() {
+        let remaining = &text[offset..];
+        let Some(next_break) = remaining.find('\n') else {
+            // Last line (no newline)
+            let line = remaining;
+            append_wrapped_line_ranges(line, offset, &opts, &mut lines);
+            break;
+        };
+
+        let line_end = offset + next_break;
+        let line = &text[offset..line_end];
+        append_wrapped_line_ranges(line, offset, &opts, &mut lines);
+
+        // Skip the newline character
+        offset = line_end + 1;
+        if offset == text.len() {
+            // Trailing newline: add empty line
+            lines.push(offset..offset);
+            break;
         }
     }
 
@@ -303,6 +343,43 @@ fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
     }
 
     lines
+}
+
+fn append_wrapped_line_ranges(
+    line: &str,
+    line_start: usize,
+    opts: &Options<'_>,
+    out: &mut Vec<Range<usize>>,
+) {
+    let start_len = out.len();
+    if line.is_empty() {
+        out.push(line_start..line_start);
+        return;
+    }
+
+    let mut local_cursor = 0usize;
+    for wrapped in textwrap::wrap(line, opts.clone()) {
+        let piece = wrapped.as_ref();
+        if piece.is_empty() {
+            continue;
+        }
+
+        if let Some(pos) = line[local_cursor..].find(piece) {
+            let start = line_start + local_cursor + pos;
+            let end = start + piece.len();
+            out.push(start..end);
+            local_cursor = (start - line_start) + piece.len();
+        } else {
+            let start = line_start + local_cursor;
+            let end = (start + piece.len()).min(line_start + line.len());
+            out.push(start..end);
+            local_cursor = (start - line_start) + piece.len();
+        }
+    }
+
+    if out.len() == start_len {
+        out.push(line_start..(line_start + line.len()));
+    }
 }
 
 /// A stateless widget for rendering a `TextArea`.
@@ -375,8 +452,8 @@ impl Widget for TextAreaWidget<'_> {
             if row as u16 >= area.height {
                 break;
             }
-            let end = range.end.saturating_sub(1).min(self.textarea.text.len());
-            if range.start < end {
+            let end = range.end.min(self.textarea.text.len());
+            if range.start <= end {
                 let line_text = &self.textarea.text[range.start..end];
                 buf.set_string(area.x, area.y + row as u16, line_text, self.style);
             }
@@ -442,5 +519,14 @@ mod tests {
     fn wrap_ranges_empty() {
         let ranges = wrap_ranges("", 10);
         assert_eq!(ranges.len(), 1);
+    }
+
+    #[test]
+    fn wrap_ranges_preserves_newlines() {
+        let ranges = wrap_ranges("one\ntwo\n", 10);
+        assert!(ranges.len() >= 3);
+        assert_eq!(ranges[0], 0..3);
+        assert_eq!(ranges[1], 4..7);
+        assert_eq!(ranges[2], 8..8);
     }
 }
