@@ -71,9 +71,8 @@ const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
  * Returns true if access is allowed, false otherwise.
  */
 function verifySessionOwnership(
-	session: Record<string, unknown>,
+	session: { owner?: unknown; subject?: unknown },
 	subject: string,
-	scope?: string | null,
 ): boolean {
 	// Check explicit owner field
 	if (typeof session.owner === "string" && session.owner) {
@@ -86,9 +85,6 @@ function verifySessionOwnership(
 	}
 
 	// For sessions without ownership info:
-	// If sessions are scoped by auth subject, directory isolation already applies.
-	if (scope) return true;
-
 	// In strict mode (multi-user), deny access to prevent IDOR attacks.
 	// Sessions created via CLI don't have ownership info, but API access
 	// should be restricted in hosted environments.
@@ -392,10 +388,13 @@ export async function handleSessions(
 
 	try {
 		if (req.method === "GET" && !sessionId) {
-			const sessions = await sessionManager.listSessions({
-				limit,
-				offset,
-			});
+			const subject = getAuthSubject(req);
+			const sessions = (
+				await sessionManager.listSessions({
+					limit,
+					offset,
+				})
+			).filter((s) => verifySessionOwnership(s, subject));
 			const sessionList: ComposerSessionSummary[] = sessions.map((s) => ({
 				id: s.id,
 				title: s.title || `Session ${s.id.slice(0, 8)}`,
@@ -421,7 +420,7 @@ export async function handleSessions(
 
 			// Verify session ownership to prevent IDOR attacks
 			const subject = getAuthSubject(req);
-			if (!verifySessionOwnership(session, subject, resolveSessionScope(req))) {
+			if (!verifySessionOwnership(session, subject)) {
 				sendJson(
 					res,
 					403,
@@ -480,7 +479,7 @@ export async function handleSessions(
 
 			// Verify session ownership to prevent IDOR attacks
 			const subject = getAuthSubject(req);
-			if (!verifySessionOwnership(session, subject, resolveSessionScope(req))) {
+			if (!verifySessionOwnership(session, subject)) {
 				sendJson(
 					res,
 					403,
@@ -539,7 +538,7 @@ export async function handleSessions(
 
 			// Verify session ownership to prevent IDOR attacks
 			const subject = getAuthSubject(req);
-			if (!verifySessionOwnership(session, subject, resolveSessionScope(req))) {
+			if (!verifySessionOwnership(session, subject)) {
 				sendJson(
 					res,
 					403,
@@ -597,7 +596,7 @@ export async function handleSessionShare(
 
 		// Verify session ownership to prevent sharing others' sessions
 		const subject = getAuthSubject(req);
-		if (!verifySessionOwnership(session, subject, resolveSessionScope(req))) {
+		if (!verifySessionOwnership(session, subject)) {
 			sendJson(
 				res,
 				403,
@@ -860,7 +859,7 @@ export async function handleSessionExport(
 
 		// Verify session ownership to prevent exporting others' sessions
 		const subject = getAuthSubject(req);
-		if (!verifySessionOwnership(session, subject, resolveSessionScope(req))) {
+		if (!verifySessionOwnership(session, subject)) {
 			sendJson(
 				res,
 				403,

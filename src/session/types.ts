@@ -26,6 +26,7 @@ export interface SessionHeaderEntry {
 	id: string;
 	timestamp: string;
 	cwd: string;
+	subject?: string;
 	model?: string;
 	modelMetadata?: SessionModelMetadata;
 	thinkingLevel?: string;
@@ -140,6 +141,7 @@ export interface SessionTreeNode {
 export interface SessionMetadata {
 	path: string;
 	id: string;
+	subject?: string;
 	created: Date;
 	modified: Date;
 	size: number;
@@ -152,6 +154,7 @@ export interface SessionMetadata {
 
 export interface SessionSummary {
 	id: string;
+	subject?: string;
 	title?: string;
 	createdAt: string;
 	updatedAt: string;

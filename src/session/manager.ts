@@ -92,6 +92,7 @@ const logger = createLogger("session-manager");
 
 interface SessionFileInfo {
 	id: string;
+	subject?: string;
 	created: Date;
 	messages: AppMessage[];
 	messageCount: number;
@@ -377,6 +378,7 @@ function buildSessionFileInfo(
 	migrateToCurrentVersion(entries);
 
 	let sessionId = "";
+	let subject: string | undefined;
 	let created = stats.birthtime;
 	let summary: string | undefined;
 	let title: string | undefined;
@@ -390,6 +392,9 @@ function buildSessionFileInfo(
 				if (!sessionId) {
 					sessionId = entry.id;
 					created = new Date(entry.timestamp);
+				}
+				if (typeof entry.subject === "string" && entry.subject) {
+					subject = entry.subject;
 				}
 				break;
 			case "attachment_extract":
@@ -441,6 +446,7 @@ function buildSessionFileInfo(
 
 	return {
 		id: sessionId || "unknown",
+		subject,
 		created,
 		messages: normalizedMessages,
 		messageCount,
@@ -770,7 +776,7 @@ export class SessionManager {
 		return generateEntryId(this.byId);
 	}
 
-	startSession(state: AgentState): void {
+	startSession(state: AgentState, options?: { subject?: string }): void {
 		if (!this.enabled || this.sessionInitialized) return;
 
 		const modelKeyFromState = `${state.model.provider}/${state.model.id}`;
@@ -789,6 +795,7 @@ export class SessionManager {
 			id: this.sessionId,
 			timestamp: new Date().toISOString(),
 			cwd: process.cwd(),
+			subject: options?.subject || undefined,
 			model: sessionModelKey,
 			modelMetadata: primaryMetadata ?? fallbackMetadata,
 			thinkingLevel: latestThinkingLevel ?? state.thinkingLevel,
@@ -1372,6 +1379,7 @@ export class SessionManager {
 					sessions.push({
 						path: file,
 						id: info.id,
+						subject: info.subject,
 						created: info.created,
 						modified: stats.mtime,
 						size: stats.size,
@@ -1643,6 +1651,7 @@ export class SessionManager {
 
 				sessions.push({
 					id: info.id,
+					subject: info.subject,
 					title: info.title ?? info.summary,
 					createdAt: info.created.toISOString(),
 					updatedAt: stats.mtime.toISOString(),
@@ -1663,6 +1672,7 @@ export class SessionManager {
 	 */
 	async loadSession(sessionId: string): Promise<{
 		id: string;
+		subject?: string;
 		title?: string;
 		messages: AppMessage[];
 		createdAt: string;
@@ -1686,6 +1696,7 @@ export class SessionManager {
 
 		return {
 			id: info.id,
+			subject: info.subject,
 			title: info.title ?? info.summary,
 			messages: info.messages,
 			createdAt: info.created.toISOString(),

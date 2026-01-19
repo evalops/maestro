@@ -21,6 +21,7 @@ import { toSessionModelMetadata } from "../../session/manager.js";
 import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
 import { publishArtifactUpdate } from "../artifacts-live-reload.js";
+import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { createSessionManagerForRequest } from "../session-scope.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
@@ -376,6 +377,7 @@ export function handleChatWebSocket(
 			}
 
 			const sessionManager = createSessionManagerForRequest(req, false);
+			const subject = getAuthSubject(req);
 			if (chatReq.sessionId) {
 				const sessionFile = sessionManager.getSessionFileById(
 					chatReq.sessionId,
@@ -663,7 +665,7 @@ export function handleChatWebSocket(
 							return;
 						}
 
-						sessionManager.startSession(agent.state);
+						sessionManager.startSession(agent.state, { subject });
 
 						if (enterpriseContext.isEnterprise()) {
 							enterpriseContext.startSession(
