@@ -50,8 +50,7 @@ use anyhow::{bail, Context, Result};
 // - `.context("msg")` adds context to errors for better debugging
 
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers, MouseEvent,
-    MouseEventKind,
+    self, Event, KeyCode, KeyEventKind, KeyModifiers as CrosstermModifiers, MouseEventKind,
 };
 // `crossterm` is a cross-platform terminal manipulation library.
 // It handles raw mode, events, and cursor control across Windows/Mac/Linux.
@@ -824,7 +823,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         self.usage_tracker.set_model(session.header.model.clone());
 
         for entry in &session.usage_entries {
-            let usage = crate::agent::TokenUsage {
+            let usage = crate::headless::TokenUsage {
                 input_tokens: entry.usage.input,
                 output_tokens: entry.usage.output,
                 cache_read_tokens: entry.usage.cache_read,
@@ -1051,7 +1050,8 @@ Add the required fields and retry.",
 
         if let Some((response_id, usage)) = response_end_info {
             if let Some(ref usage) = usage {
-                let alerts = self.usage_tracker.add_turn(usage);
+                let headless_usage = to_headless_usage(usage);
+                let alerts = self.usage_tracker.add_turn(&headless_usage);
                 for alert in alerts {
                     self.state.add_system_message(alert);
                 }
@@ -1326,24 +1326,6 @@ Add the required fields and retry.",
         }
 
         Ok(())
-    }
-
-    fn handle_mouse(&mut self, mouse: MouseEvent) {
-        match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                self.state.scroll_up(3);
-            }
-            MouseEventKind::ScrollDown => {
-                self.state.scroll_down(3);
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_resize(&mut self, height: u16) {
-        let (viewport_top, viewport_height) = terminal::calculate_viewport(height);
-        self.capabilities.viewport_top = viewport_top;
-        self.capabilities.viewport_height = viewport_height;
     }
 
     /// Handle keys in file search modal
@@ -3326,6 +3308,16 @@ fn to_session_usage(usage: &crate::agent::TokenUsage) -> SessionTokenUsage {
             total,
             ..Default::default()
         }),
+    }
+}
+
+fn to_headless_usage(usage: &crate::agent::TokenUsage) -> crate::headless::TokenUsage {
+    crate::headless::TokenUsage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cache_read_tokens: usage.cache_read_tokens,
+        cache_write_tokens: usage.cache_write_tokens,
+        cost: usage.cost,
     }
 }
 

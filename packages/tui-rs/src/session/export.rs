@@ -161,6 +161,7 @@ pub struct SessionExporter<'a> {
 impl<'a> SessionExporter<'a> {
     /// Create a new exporter for a session
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         header: &'a SessionHeader,
         messages: &'a [AppMessage],

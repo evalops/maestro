@@ -41,6 +41,7 @@ pub struct LimitsPolicy {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EnterprisePolicy {
+    #[allow(dead_code)]
     pub org_id: Option<String>,
     pub tools: Option<PolicyList>,
     pub dependencies: Option<PolicyList>,
@@ -183,11 +184,9 @@ fn resolve_real_path(path: &Path) -> PathBuf {
 }
 
 fn normalize_for_match(path: &Path) -> String {
-    let mut value = path.to_string_lossy().replace('\\', "/");
+    let value = path.to_string_lossy().replace('\\', "/");
     #[cfg(windows)]
-    {
-        value = value.to_lowercase();
-    }
+    let value = value.to_lowercase();
     value
 }
 
@@ -217,10 +216,10 @@ fn matches_path_pattern(path: &Path, patterns: &[String]) -> bool {
                 }
             }
 
-            if !is_glob {
-                if path_str == pattern_str || path_str.starts_with(&format!("{pattern_str}/")) {
-                    return true;
-                }
+            if !is_glob
+                && (path_str == pattern_str || path_str.starts_with(&format!("{pattern_str}/")))
+            {
+                return true;
             }
         }
     }
@@ -290,18 +289,14 @@ fn check_network_restrictions(url: &str, network: &NetworkPolicy) -> Option<Stri
         }
     }
 
-    if network.block_localhost.unwrap_or(false) {
-        if is_localhost_alias(host) || resolved_ips.iter().any(|ip| ip.is_loopback()) {
-            return Some("Access to localhost is blocked by enterprise policy.".to_string());
-        }
+    if network.block_localhost.unwrap_or(false)
+        && (is_localhost_alias(host) || resolved_ips.iter().any(|ip| ip.is_loopback()))
+    {
+        return Some("Access to localhost is blocked by enterprise policy.".to_string());
     }
 
-    if network.block_private_ips.unwrap_or(false) {
-        if resolved_ips.iter().any(is_private_ip) {
-            return Some(
-                "Access to private IP addresses is blocked by enterprise policy.".to_string(),
-            );
-        }
+    if network.block_private_ips.unwrap_or(false) && resolved_ips.iter().any(is_private_ip) {
+        return Some("Access to private IP addresses is blocked by enterprise policy.".to_string());
     }
 
     if let Some(blocked) = &network.blocked_hosts {
@@ -339,7 +334,7 @@ fn clean_package_spec(spec: &str) -> String {
         return format!("@{rest}");
     }
 
-    spec.split(|c| c == '@' || c == '=' || c == '<' || c == '>')
+    spec.split(['@', '=', '<', '>'])
         .next()
         .unwrap_or(spec)
         .to_string()
@@ -578,9 +573,7 @@ fn extract_paths_from_command(command: &str, paths: &mut Vec<String>, depth: usi
 }
 
 fn check_paths_against_policy(paths: &[String], policy: &EnterprisePolicy) -> Option<String> {
-    let Some(path_policy) = policy.paths.as_ref() else {
-        return None;
-    };
+    let path_policy = policy.paths.as_ref()?;
 
     for path in paths {
         let path_buf = Path::new(path);
@@ -600,9 +593,7 @@ fn check_paths_against_policy(paths: &[String], policy: &EnterprisePolicy) -> Op
 }
 
 fn check_dependencies_against_policy(command: &str, policy: &EnterprisePolicy) -> Option<String> {
-    let Some(dep_policy) = policy.dependencies.as_ref() else {
-        return None;
-    };
+    let dep_policy = policy.dependencies.as_ref()?;
 
     let deps = extract_dependencies(command);
     let is_install = has_package_install(command);
@@ -660,9 +651,7 @@ fn check_network_against_policy(
     command: Option<&str>,
     policy: &EnterprisePolicy,
 ) -> Option<String> {
-    let Some(network) = policy.network.as_ref() else {
-        return None;
-    };
+    let network = policy.network.as_ref()?;
 
     let mut urls = Vec::new();
     extract_urls_from_value(args, &mut urls);

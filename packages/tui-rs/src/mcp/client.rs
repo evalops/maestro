@@ -57,6 +57,7 @@ pub enum McpError {
 }
 
 /// Connection backend type
+#[allow(clippy::large_enum_variant)]
 enum ConnectionBackend {
     /// Stdio subprocess
     Stdio {
