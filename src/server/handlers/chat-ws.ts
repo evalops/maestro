@@ -6,7 +6,7 @@
 
 import type { IncomingMessage } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
-import type { WebSocket } from "ws";
+import type { RawData, WebSocket } from "ws";
 import type {
 	Attachment as AgentAttachment,
 	AgentEvent,
@@ -147,6 +147,42 @@ function parseBoolean(input?: string | null): boolean | undefined {
 	return undefined;
 }
 
+function getRawDataSize(data: RawData): number {
+	if (typeof data === "string") {
+		return Buffer.byteLength(data, "utf8");
+	}
+	if (Buffer.isBuffer(data)) {
+		return data.length;
+	}
+	if (data instanceof ArrayBuffer) {
+		return data.byteLength;
+	}
+	if (Array.isArray(data)) {
+		return data.reduce((total, chunk) => total + chunk.length, 0);
+	}
+	return 0;
+}
+
+function rawDataToString(data: RawData, maxPayload: number): string {
+	const size = getRawDataSize(data);
+	if (size > maxPayload) {
+		throw new Error("Payload too large");
+	}
+	if (typeof data === "string") {
+		return data;
+	}
+	if (Buffer.isBuffer(data)) {
+		return data.toString("utf8");
+	}
+	if (Array.isArray(data)) {
+		return Buffer.concat(data).toString("utf8");
+	}
+	if (data instanceof ArrayBuffer) {
+		return Buffer.from(data).toString("utf8");
+	}
+	return "";
+}
+
 export function handleChatWebSocket(
 	ws: WebSocket,
 	req: IncomingMessage,
@@ -189,13 +225,11 @@ export function handleChatWebSocket(
 	const maxPayload =
 		Number.parseInt(process.env.COMPOSER_WS_MAX_PAYLOAD || "1048576", 10) ||
 		1048576;
-	const parseRequest = (data: string): ComposerChatRequest => {
-		if (Buffer.byteLength(data, "utf8") > maxPayload) {
-			throw new Error("Payload too large");
-		}
+	const parseRequest = (data: RawData): ComposerChatRequest => {
+		const raw = rawDataToString(data, maxPayload);
 		let parsed: unknown;
 		try {
-			parsed = JSON.parse(data);
+			parsed = JSON.parse(raw);
 		} catch {
 			throw new Error("Invalid JSON payload");
 		}
@@ -205,7 +239,7 @@ export function handleChatWebSocket(
 	ws.on("message", async (data) => {
 		if (requestHandled) {
 			try {
-				const raw = data.toString();
+				const raw = rawDataToString(data, maxPayload);
 				const parsed = JSON.parse(raw);
 				if (parsed && typeof parsed === "object" && parsed.type === "abort") {
 					ws.close();
@@ -219,20 +253,12 @@ export function handleChatWebSocket(
 		try {
 			let chatReq: ComposerChatRequest;
 			try {
-				chatReq = parseRequest(data.toString());
+				chatReq = parseRequest(data);
 			} catch (error) {
 				sendErrorAndClose(
 					error instanceof Error ? error.message : "Invalid chat request",
 				);
 				return;
-			}
-
-			if (acquireSse) {
-				sseLease = acquireSse();
-				if (!sseLease) {
-					sendErrorAndClose("Too many active streaming connections");
-					return;
-				}
 			}
 
 			const incomingMessages = Array.isArray(chatReq.messages)
@@ -339,6 +365,14 @@ export function handleChatWebSocket(
 			if (!userInput && !attachmentsToSend) {
 				sendErrorAndClose("User message cannot be empty");
 				return;
+			}
+
+			if (acquireSse) {
+				sseLease = acquireSse();
+				if (!sseLease) {
+					sendErrorAndClose("Too many active streaming connections");
+					return;
+				}
 			}
 
 			const sessionManager = createSessionManagerForRequest(req, false);

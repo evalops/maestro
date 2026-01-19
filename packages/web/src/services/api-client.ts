@@ -941,10 +941,18 @@ export class ApiClient {
 			yield* this.chatWithSse(request);
 			return;
 		}
+		let sawEvent = false;
 		try {
-			yield* this.chatWithSse(request);
+			for await (const event of this.chatWithSse(request)) {
+				sawEvent = true;
+				yield event;
+			}
 		} catch (err) {
-			yield* this.chatWithWebSocket(request);
+			if (!sawEvent) {
+				yield* this.chatWithWebSocket(request);
+				return;
+			}
+			throw err;
 		}
 	}
 

@@ -2220,10 +2220,12 @@ export class ComposerChat extends LitElement {
 					const next =
 						args === "on" ? true : args === "off" ? false : !this.zenMode;
 					const res = await this.apiClient.setZenMode(sessionId, next);
-					this.applyZenMode(Boolean(res?.enabled));
+					const enabled =
+						typeof res?.enabled === "boolean" ? res.enabled : next;
+					this.applyZenMode(enabled);
 					this.appendCommandOutput(
 						command,
-						`Zen mode ${next ? "enabled" : "disabled"}.`,
+						`Zen mode ${enabled ? "enabled" : "disabled"}.`,
 					);
 					break;
 				}

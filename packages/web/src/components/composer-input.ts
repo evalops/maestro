@@ -665,7 +665,7 @@ export class ComposerInput extends LitElement {
 			this.syncTextareaValue(next);
 		};
 
-		recognizer.onerror = () => {
+		recognizer.onerror = (_event: Event) => {
 			this.voiceActive = false;
 			this.speechRecognizer = null;
 			this.notifyVoiceError(
@@ -683,10 +683,14 @@ export class ComposerInput extends LitElement {
 
 		try {
 			recognizer.start();
-		} catch {
+		} catch (error) {
 			this.voiceActive = false;
 			this.speechRecognizer = null;
-			this.notifyVoiceError("Unable to start voice input.");
+			const message =
+				error instanceof Error && error.message
+					? error.message
+					: "Unable to start voice input.";
+			this.notifyVoiceError(message);
 		}
 	}
 

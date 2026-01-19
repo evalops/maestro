@@ -21,15 +21,18 @@ export function decodeScopedSessionId(value: string): {
 	sessionId: string;
 } {
 	const separatorIndex = value.indexOf(SESSION_SCOPE_SEPARATOR);
-	if (separatorIndex <= 0) {
+	if (separatorIndex === -1) {
 		return { scope: null, sessionId: value };
 	}
 	const scope = value.slice(0, separatorIndex);
 	const sessionId = value.slice(
 		separatorIndex + SESSION_SCOPE_SEPARATOR.length,
 	);
-	if (!scope || !sessionId) {
-		return { scope: null, sessionId: value };
+	if (!scope) {
+		return { scope: null, sessionId };
+	}
+	if (!sessionId) {
+		return { scope: null, sessionId: "" };
 	}
 	return { scope, sessionId };
 }

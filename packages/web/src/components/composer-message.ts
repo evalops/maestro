@@ -52,7 +52,8 @@ function cleanStreamingText(value: string, mode: CleanMode): string {
 	if (mode === "off") return value;
 	const windowSize = mode === "aggressive" ? 120 : 40;
 	const lines = value.split("\n");
-	const history: string[] = [];
+	const history = new Set<string>();
+	const historyOrder: string[] = [];
 	const out: string[] = [];
 
 	for (const line of lines) {
@@ -61,13 +62,17 @@ function cleanStreamingText(value: string, mode: CleanMode): string {
 			out.push(line);
 			continue;
 		}
-		if (history.includes(normalized)) {
+		if (history.has(normalized)) {
 			continue;
 		}
 		out.push(line);
-		history.push(normalized);
-		if (history.length > windowSize) {
-			history.shift();
+		history.add(normalized);
+		historyOrder.push(normalized);
+		if (historyOrder.length > windowSize) {
+			const removed = historyOrder.shift();
+			if (removed) {
+				history.delete(removed);
+			}
 		}
 	}
 
