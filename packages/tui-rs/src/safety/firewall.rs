@@ -206,8 +206,14 @@ fn is_mcp_tool_name(tool_name: &str) -> bool {
 fn normalize_uri_input(input: &str) -> String {
     if let Some(rest) = input.strip_prefix("file://") {
         let mut path = rest.to_string();
+        let mut stripped_localhost = false;
         if let Some(stripped) = path.strip_prefix("localhost/") {
             path = stripped.to_string();
+            stripped_localhost = true;
+        }
+        #[cfg(not(windows))]
+        if stripped_localhost && !path.starts_with('/') {
+            path = format!("/{path}");
         }
         #[cfg(windows)]
         {

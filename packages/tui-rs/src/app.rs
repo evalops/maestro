@@ -1354,6 +1354,19 @@ Add the required fields and retry.",
                             self.state.session_id = Some(session_id.clone());
                             self.state.status = Some(format!("Resumed session: {session_id}"));
 
+                            if let Some(agent) = &self.native_agent {
+                                if let Err(e) = agent.set_model(&session.header.model) {
+                                    self.state.error = Some(format!("Failed to set model: {e}"));
+                                } else {
+                                    let (enabled, budget) =
+                                        session.header.thinking_level.to_config();
+                                    if let Err(e) = agent.set_thinking(enabled, budget) {
+                                        self.state.error =
+                                            Some(format!("Failed to set thinking: {e}"));
+                                    }
+                                }
+                            }
+
                             self.current_model = session.header.model.clone();
                             self.current_thinking_level = session.header.thinking_level;
                             self.state.model = Some(session.header.model.clone());

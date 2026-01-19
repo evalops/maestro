@@ -181,6 +181,15 @@ fn resolve_tool_path(cwd: &str, input: &str) -> Result<String, String> {
 fn normalize_uri_input(input: &str) -> String {
     if let Some(rest) = input.strip_prefix("file://") {
         let mut path = rest.to_string();
+        let mut stripped_localhost = false;
+        if let Some(stripped) = path.strip_prefix("localhost/") {
+            path = stripped.to_string();
+            stripped_localhost = true;
+        }
+        #[cfg(not(windows))]
+        if stripped_localhost && !path.starts_with('/') {
+            path = format!("/{path}");
+        }
         #[cfg(windows)]
         {
             if path.len() >= 3 && path.as_bytes()[0] == b'/' && path.as_bytes()[2] == b':' {
