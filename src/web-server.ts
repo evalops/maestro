@@ -762,7 +762,13 @@ export async function startWebServer(port = 8080) {
 	}
 
 	const server = createServer(handleRequest);
-	const wsServer = new WebSocketServer({ noServer: true });
+	const wsMaxPayload =
+		Number.parseInt(process.env.COMPOSER_WS_MAX_PAYLOAD || "1048576", 10) ||
+		1048576;
+	const wsServer = new WebSocketServer({
+		noServer: true,
+		maxPayload: wsMaxPayload,
+	});
 	const sockets = new Set<Socket>();
 	let shuttingDown = false;
 	let drainTimeout: NodeJS.Timeout | null = null;

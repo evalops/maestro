@@ -2801,11 +2801,11 @@ export class ComposerChat extends LitElement {
 		messages: UiMessage[],
 	): Promise<Message[]> {
 		const sessionId = this.currentSessionId;
-		if (!sessionId) return messages;
+		const filtered = messages.filter((msg) => !msg.localOnly);
+		if (!sessionId) return filtered;
 
 		const out: Message[] = [];
-		for (const msg of messages) {
-			if (msg.localOnly) continue;
+		for (const msg of filtered) {
 			const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
 			if (msg.role !== "user" || atts.length === 0) {
 				out.push(msg);

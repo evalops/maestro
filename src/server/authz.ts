@@ -160,7 +160,7 @@ export function getAuthSubject(req: IncomingMessage): string {
 		const user = verifySharedToken(token);
 		if (user) return `user:${user}`;
 	}
-	if (!token) return "anon";
+	if (!token) return "";
 	const digest = createHash("sha256").update(token).digest("hex");
 	return `key:${digest.slice(0, 16)}`;
 }

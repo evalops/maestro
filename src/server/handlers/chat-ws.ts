@@ -186,7 +186,13 @@ export function handleChatWebSocket(
 		}
 	};
 
+	const maxPayload =
+		Number.parseInt(process.env.COMPOSER_WS_MAX_PAYLOAD || "1048576", 10) ||
+		1048576;
 	const parseRequest = (data: string): ComposerChatRequest => {
+		if (Buffer.byteLength(data, "utf8") > maxPayload) {
+			throw new Error("Payload too large");
+		}
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(data);

@@ -242,6 +242,8 @@ data: [DONE]
 
 WebSocket alternative to SSE. Send the same JSON payload as `/api/chat` after the upgrade. Messages are JSON-encoded `AgentEvent` frames; the server terminates the stream with `{ "type": "done" }`.
 
+Note: WebSocket requests must include authentication headers when `COMPOSER_WEB_API_KEY`/JWT/shared secret auth is enabled. Browsers cannot set custom headers during the WebSocket handshake; use an authenticated reverse proxy or configure `COMPOSER_WEB_REQUIRE_KEY=0` for local-only development.
+
 ## Tool Execution
 
 Tools run with **auto-approval** in web mode:
