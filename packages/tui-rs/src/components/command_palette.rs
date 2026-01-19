@@ -148,7 +148,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -211,6 +211,8 @@ pub struct CommandPalette {
     selected: usize,
     /// Whether the modal is visible
     visible: bool,
+    /// List state for scrolling
+    list_state: ListState,
 }
 
 impl CommandPalette {
@@ -224,6 +226,7 @@ impl CommandPalette {
             matches: Vec::new(),
             selected: 0,
             visible: false,
+            list_state: ListState::default(),
         }
     }
 
@@ -304,6 +307,7 @@ impl CommandPalette {
     pub fn move_up(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
+            self.sync_list_state();
         }
     }
 
@@ -311,6 +315,7 @@ impl CommandPalette {
     pub fn move_down(&mut self) {
         if self.selected + 1 < self.matches.len() {
             self.selected += 1;
+            self.sync_list_state();
         }
     }
 
@@ -344,6 +349,16 @@ impl CommandPalette {
         if self.selected >= self.matches.len() {
             self.selected = 0;
         }
+        self.sync_list_state();
+    }
+
+    /// Sync the list state with the current selection
+    fn sync_list_state(&mut self) {
+        if self.matches.is_empty() {
+            self.list_state.select(None);
+        } else {
+            self.list_state.select(Some(self.selected));
+        }
     }
 
     /// Render the command palette modal to the frame.
@@ -356,7 +371,7 @@ impl CommandPalette {
     /// 5. Sets cursor position for the input field
     ///
     /// Does nothing if the modal is not visible.
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         if !self.visible {
             return;
         }
@@ -417,7 +432,7 @@ impl CommandPalette {
         frame.set_cursor_position((inner_x + col, inner_y));
     }
 
-    fn render_results(&self, frame: &mut Frame, area: Rect) {
+    fn render_results(&mut self, frame: &mut Frame, area: Rect) {
         if self.matches.is_empty() {
             let empty_msg = if self.query.is_empty() {
                 "Type to search commands..."
@@ -436,8 +451,8 @@ impl CommandPalette {
             .map(|(i, m)| self.render_command(m, i == self.selected))
             .collect();
 
-        let list = List::new(items);
-        frame.render_widget(list, area);
+        let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
+        frame.render_stateful_widget(list, area, &mut self.list_state);
     }
 
     fn render_command(&self, m: &CommandMatch, selected: bool) -> ListItem<'static> {

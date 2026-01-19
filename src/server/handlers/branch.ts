@@ -2,9 +2,9 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { type Static, Type } from "@sinclair/typebox";
 import { isUserMessage } from "../../agent/type-guards.js";
 import type { UserMessageWithAttachments } from "../../agent/types.js";
-import { SessionManager } from "../../session/manager.js";
 import { getAuthSubject, requireApiAuth, requireCsrf } from "../authz.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
+import { createSessionManagerForRequest } from "../session-scope.js";
 import { checkSessionRateLimitAsync } from "../utils/session-rate-limit.js";
 import { parseAndValidateJson } from "../validation.js";
 
@@ -82,7 +82,7 @@ export async function handleBranch(
 					return;
 				}
 
-				const sessionManager = new SessionManager(false);
+				const sessionManager = createSessionManagerForRequest(req, false);
 				const sessionFile = sessionManager.getSessionFileById(sessionId);
 				if (!sessionFile) {
 					sendJson(
@@ -152,7 +152,7 @@ export async function handleBranch(
 				return;
 			}
 
-			const sessionManager = new SessionManager(false);
+			const sessionManager = createSessionManagerForRequest(req, false);
 			const sessionFile = sessionManager.getSessionFileById(data.sessionId);
 			if (!sessionFile) {
 				sendJson(
@@ -298,7 +298,7 @@ export async function handleBranch(
 				targetIndex,
 			);
 
-			const sessionManager2 = new SessionManager(false);
+			const sessionManager2 = createSessionManagerForRequest(req, false);
 			sessionManager2.setSessionFile(newSessionFile);
 			const newSessionId = sessionManager2.getSessionId();
 

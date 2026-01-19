@@ -222,7 +222,7 @@ pub fn init() -> io::Result<(Terminal, TerminalCapabilities)> {
     // Enable focus change events
     let _ = execute!(tty, EnableFocusChange);
 
-    // Enable mouse capture for scroll support
+    // Enable mouse capture for scroll wheel support
     let _ = execute!(tty, EnableMouseCapture);
 
     // Move cursor to bottom of screen and print enough newlines to create

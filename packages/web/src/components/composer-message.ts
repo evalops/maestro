@@ -10,6 +10,8 @@ import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import { marked } from "marked";
 import "./composer-sandboxed-iframe.js";
 
+type CleanMode = "off" | "soft" | "aggressive";
+
 type HljsApi = {
 	getLanguage: (name: string) => unknown;
 	highlight: (code: string, options: { language: string }) => { value: string };
@@ -44,6 +46,37 @@ function contentToPlainText(content: string | ComposerContentBlock[]): string {
 		.filter((block) => block.type === "text")
 		.map((block) => block.text)
 		.join("");
+}
+
+function cleanStreamingText(value: string, mode: CleanMode): string {
+	if (mode === "off") return value;
+	const windowSize = mode === "aggressive" ? 120 : 40;
+	const lines = value.split("\n");
+	const history = new Set<string>();
+	const historyOrder: string[] = [];
+	const out: string[] = [];
+
+	for (const line of lines) {
+		const normalized = line.trim();
+		if (!normalized) {
+			out.push(line);
+			continue;
+		}
+		if (history.has(normalized)) {
+			continue;
+		}
+		out.push(line);
+		history.add(normalized);
+		historyOrder.push(normalized);
+		if (historyOrder.length > windowSize) {
+			const removed = historyOrder.shift();
+			if (removed) {
+				history.delete(removed);
+			}
+		}
+	}
+
+	return out.join("\n");
 }
 
 function ensureHljsLoaded(): void {
@@ -481,6 +514,8 @@ export class ComposerMessage extends LitElement {
 	@property({ attribute: false }) content: string | ComposerContentBlock[] = "";
 	@property() timestamp = "";
 	@property() thinking = "";
+	@property({ type: String }) cleanMode: CleanMode = "off";
+	@property({ type: Boolean }) streaming = false;
 	@property() tools: Array<{
 		id?: string;
 		toolCallId?: string;
@@ -621,7 +656,11 @@ export class ComposerMessage extends LitElement {
 	}
 
 	private renderContent() {
-		const textContent = contentToPlainText(this.content);
+		const rawText = contentToPlainText(this.content);
+		const textContent =
+			this.streaming && this.cleanMode !== "off"
+				? cleanStreamingText(rawText, this.cleanMode)
+				: rawText;
 		if (this.role === "user") {
 			// User messages are plain text with basic formatting
 			const escaped = textContent
@@ -696,8 +735,11 @@ export class ComposerMessage extends LitElement {
 	}
 
 	override render() {
-		// Check if message has thinking or tools
-		const hasThinking = this.thinking && this.thinking.length > 0;
+		const thinkingText =
+			this.streaming && this.cleanMode !== "off"
+				? cleanStreamingText(this.thinking, this.cleanMode)
+				: this.thinking;
+		const hasThinking = thinkingText && thinkingText.length > 0;
 		const hasTools = this.tools && this.tools.length > 0;
 
 		return html`
@@ -730,8 +772,8 @@ export class ComposerMessage extends LitElement {
 							hasThinking
 								? html`
 							<composer-thinking
-								.content=${this.thinking}
-								.isStreaming=${false}
+								.content=${thinkingText}
+								.isStreaming=${this.streaming}
 							></composer-thinking>
 						`
 								: ""

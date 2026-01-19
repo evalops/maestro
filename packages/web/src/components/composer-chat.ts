@@ -44,6 +44,8 @@ const STATUS_CACHE_KEY = "composer_status_cache";
 const MODELS_CACHE_KEY = "composer_models_cache";
 const USAGE_CACHE_KEY = "composer_usage_cache";
 const MODEL_OVERRIDE_KEY = "composer_model_override";
+const THEME_KEY = "composer_theme";
+const TRANSPORT_KEY = "composer_transport";
 
 const parseToolCallArgs = (
 	raw: string,
@@ -85,6 +87,8 @@ interface ActiveToolInfo {
 interface MessageWithThinking extends Message {
 	thinking?: string;
 }
+
+type UiMessage = Message & { localOnly?: boolean };
 
 @customElement("composer-chat")
 export class ComposerChat extends LitElement {
@@ -130,6 +134,22 @@ export class ComposerChat extends LitElement {
 			color: var(--text-tertiary, #5c5e62);
 			text-transform: uppercase;
 			letter-spacing: 0.1em;
+		}
+
+		.session-search {
+			margin-top: 0.4rem;
+			width: 100%;
+			padding: 0.35rem 0.5rem;
+			background: var(--bg-primary, #0a0e14);
+			border: 1px solid var(--border-secondary, #30363d);
+			color: var(--text-primary, #e6edf3);
+			border-radius: 3px;
+			font-family: var(--font-mono, "SF Mono", "Menlo", "Monaco", monospace);
+			font-size: 0.75rem;
+		}
+
+		.session-search::placeholder {
+			color: var(--text-tertiary, #5c5e62);
 		}
 
 		.new-session-btn {
@@ -214,6 +234,18 @@ export class ComposerChat extends LitElement {
 			position: relative;
 			min-width: 0;
 			background: var(--bg-primary, #0c0d0f);
+		}
+
+		:host([zen]) .sidebar {
+			display: none;
+		}
+
+		:host([zen]) .header {
+			display: none;
+		}
+
+		:host([zen]) .messages {
+			padding-top: 2.5rem;
 		}
 
 		.header {
@@ -648,6 +680,94 @@ export class ComposerChat extends LitElement {
 			margin: 0.5rem 0;
 		}
 
+		.side-panel {
+			position: absolute;
+			top: 0;
+			right: 0;
+			height: 100%;
+			background: var(--bg-primary, #0a0e14);
+			border-left: 2px solid var(--border-primary, #21262d);
+			z-index: 100;
+		}
+
+		.side-panel.settings {
+			width: min(500px, 92vw);
+		}
+
+		.side-panel.admin {
+			width: min(800px, 95vw);
+			z-index: 110;
+		}
+
+		.health-popover {
+			position: fixed;
+			top: 64px;
+			right: 12px;
+			width: 260px;
+			background: var(--bg-secondary, #0d1117);
+			border: 1px solid var(--border-secondary, #30363d);
+			padding: 0.75rem;
+			z-index: 120;
+			box-shadow: var(--shadow-md, 0 10px 24px rgba(0, 0, 0, 0.4));
+			font-family: var(--font-mono, "SF Mono", "Menlo", "Monaco", monospace);
+			font-size: 0.75rem;
+			color: var(--text-primary, #e6edf3);
+		}
+
+		.health-popover-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-bottom: 0.5rem;
+		}
+
+		.health-popover-label {
+			color: var(--text-tertiary, #6e7681);
+			letter-spacing: 0.05em;
+		}
+
+		.health-popover-row {
+			margin: 0.25rem 0;
+		}
+
+		.health-popover-row span {
+			color: var(--text-tertiary, #6e7681);
+		}
+
+		.shortcuts-modal {
+			position: fixed;
+			top: 30%;
+			left: 50%;
+			transform: translateX(-50%);
+			width: min(420px, 90vw);
+			background: var(--bg-secondary, #0d1117);
+			border: 1px solid var(--border-secondary, #30363d);
+			padding: 1rem;
+			z-index: 140;
+			box-shadow: var(--shadow-lg, 0 18px 40px rgba(0, 0, 0, 0.5));
+			font-family: var(--font-mono, "SF Mono", "Menlo", "Monaco", monospace);
+			font-size: 0.78rem;
+			color: var(--text-primary, #e6edf3);
+		}
+
+		.shortcuts-modal-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-bottom: 0.75rem;
+		}
+
+		.shortcuts-modal-title {
+			letter-spacing: 0.08em;
+			color: var(--text-tertiary, #8b949e);
+		}
+
+		.shortcuts-grid {
+			display: grid;
+			grid-template-columns: auto 1fr;
+			gap: 0.35rem 0.75rem;
+		}
+
 		/* Empty State */
 		.empty-state {
 			flex: 1;
@@ -750,15 +870,70 @@ export class ComposerChat extends LitElement {
 				grid-template-columns: 1fr;
 			}
 		}
+
+		.sidebar-overlay {
+			position: fixed;
+			inset: 0;
+			background: rgba(0, 0, 0, 0.4);
+			z-index: 15;
+			display: none;
+		}
+
+		@media (max-width: 960px) {
+			.header {
+				grid-template-columns: 1fr;
+				gap: 0.5rem;
+				padding: 0.6rem 0.85rem;
+			}
+			.status-bar {
+				flex-wrap: wrap;
+				row-gap: 0.4rem;
+				justify-content: flex-start;
+			}
+			.header-right {
+				flex-wrap: wrap;
+				justify-content: flex-start;
+				gap: 0.35rem;
+			}
+			.messages {
+				padding: 1.1rem 1.25rem;
+			}
+		}
+
+		@media (max-width: 640px) {
+			.header {
+				padding: 0.55rem 0.75rem;
+			}
+			.header h1 {
+				font-size: 0.9rem;
+			}
+			.status-bar {
+				display: none;
+			}
+			.messages {
+				padding: 0.9rem 0.9rem;
+			}
+			.sidebar {
+				width: min(82vw, 320px);
+			}
+		}
+
+		@media (max-width: 768px) {
+			.sidebar-overlay.active {
+				display: block;
+			}
+		}
 	`;
 
 	@property() apiEndpoint = "";
 	@property() model = "claude-sonnet-4-5";
 
-	@state() private messages: Message[] = [];
+	@state() private messages: UiMessage[] = [];
 	@state() private loading = false;
 	@state() private error: string | null = null;
 	@state() private currentModel = "";
+	@state() private theme: "dark" | "light" = "dark";
+	@state() private transportPreference: "auto" | "sse" | "ws" = "auto";
 	@state() private sidebarOpen = true;
 	@state() private sessions: SessionSummary[] = [];
 	@state() private currentSessionId: string | null = null;
@@ -788,6 +963,10 @@ export class ComposerChat extends LitElement {
 	@state() private currentModelTokens: string | null = null;
 	@state() private models: Model[] = [];
 	@state() private usage: UsageSummary | null = null;
+	@state() private cleanMode: "off" | "soft" | "aggressive" = "off";
+	@state() private footerMode: "ensemble" | "solo" = "ensemble";
+	@state() private zenMode = false;
+	@state() private queueMode: "one" | "all" = "all";
 	@state() private shareDialogOpen = false;
 	@state() private shareDialogLoading = false;
 	@state() private shareDialogError: string | null = null;
@@ -881,6 +1060,12 @@ export class ComposerChat extends LitElement {
 	private closeShortcuts() {
 		this.showShortcuts = false;
 	}
+
+	private handleVoiceError = (event: CustomEvent<{ message?: string }>) => {
+		const message =
+			event.detail?.message || "Voice input failed. Check microphone settings.";
+		this.showToast(message, "error", 2400);
+	};
 
 	private getMessagesScroller(): HTMLElement | null {
 		return (
@@ -1308,20 +1493,21 @@ export class ComposerChat extends LitElement {
 	}
 
 	private toggleCompact() {
-		this.compactMode = !this.compactMode;
+		const next = !this.compactMode;
+		this.compactMode = next;
 		try {
-			localStorage.setItem(
-				ComposerChat.COMPACT_KEY,
-				this.compactMode ? "true" : "false",
-			);
+			localStorage.setItem(ComposerChat.COMPACT_KEY, next ? "true" : "false");
 		} catch {
 			/* ignore storage errors */
 		}
-		this.showToast(
-			this.compactMode ? "Compact mode on" : "Compact mode off",
-			"info",
-			1500,
-		);
+		if (!this.shareToken && this.currentSessionId) {
+			this.apiClient
+				.setCompactTools(next, this.currentSessionId)
+				.catch((err) => {
+					console.warn("Failed to persist compact mode", err);
+				});
+		}
+		this.showToast(next ? "Compact mode on" : "Compact mode off", "info", 1500);
 	}
 
 	private closeCommandDrawer() {
@@ -1391,6 +1577,65 @@ export class ComposerChat extends LitElement {
 			"info",
 			1500,
 		);
+	}
+
+	private applyTheme(theme: "dark" | "light", persist = true) {
+		this.theme = theme;
+		if (typeof document !== "undefined") {
+			document.documentElement.dataset.theme = theme;
+		}
+		if (persist) {
+			try {
+				localStorage.setItem(THEME_KEY, theme);
+			} catch {
+				/* ignore storage errors */
+			}
+		}
+	}
+
+	private toggleTheme() {
+		const next = this.theme === "dark" ? "light" : "dark";
+		this.applyTheme(next);
+		this.showToast(`${next === "dark" ? "Dark" : "Light"} theme`, "info", 1500);
+	}
+
+	private setTransportPreference(mode: "auto" | "sse" | "ws", persist = true) {
+		this.transportPreference = mode;
+		this.apiClient.setTransportPreference(mode);
+		if (persist) {
+			try {
+				localStorage.setItem(TRANSPORT_KEY, mode);
+			} catch {
+				/* ignore storage errors */
+			}
+		}
+	}
+
+	private applyZenMode(enabled: boolean) {
+		this.zenMode = enabled;
+		this.toggleAttribute("zen", enabled);
+		if (enabled) {
+			this.sidebarOpen = false;
+		}
+	}
+
+	private async refreshUiState(sessionId?: string) {
+		const targetId = sessionId ?? this.currentSessionId;
+		if (!targetId || this.shareToken) return;
+		try {
+			const ui = await this.apiClient.getUIStatus(targetId);
+			if (ui.cleanMode) this.cleanMode = ui.cleanMode;
+			if (ui.footerMode) this.footerMode = ui.footerMode;
+			if (ui.queueMode) this.queueMode = ui.queueMode;
+			if (typeof ui.compactTools === "boolean") {
+				this.compactMode = ui.compactTools;
+			}
+			if (typeof ui.zenMode === "boolean") {
+				this.applyZenMode(ui.zenMode);
+			}
+		} catch (e) {
+			console.warn("Failed to load UI status", e);
+		}
 	}
 
 	override connectedCallback() {
@@ -1496,7 +1741,7 @@ export class ComposerChat extends LitElement {
 		}
 
 		if (changed.has("messages")) {
-			const prev = changed.get("messages") as Message[] | undefined;
+			const prev = changed.get("messages") as UiMessage[] | undefined;
 			const prevLen = Array.isArray(prev)
 				? prev.length
 				: this.lastMessagesLength;
@@ -1542,6 +1787,10 @@ export class ComposerChat extends LitElement {
 				});
 			}
 		}
+
+		if (changed.has("currentSessionId") && this.currentSessionId) {
+			void this.refreshUiState(this.currentSessionId);
+		}
 	}
 
 	private hydrateDisplayPrefs() {
@@ -1551,6 +1800,19 @@ export class ComposerChat extends LitElement {
 			if (compact) this.compactMode = compact === "true";
 			const rm = localStorage.getItem(ComposerChat.REDUCED_MOTION_KEY);
 			if (rm) this.reducedMotion = rm === "true";
+			const theme = localStorage.getItem(THEME_KEY);
+			if (theme === "dark" || theme === "light") {
+				this.applyTheme(theme, false);
+			} else if (window.matchMedia) {
+				const prefersLight = window.matchMedia(
+					"(prefers-color-scheme: light)",
+				).matches;
+				this.applyTheme(prefersLight ? "light" : "dark", false);
+			}
+			const transport = localStorage.getItem(TRANSPORT_KEY);
+			if (transport === "auto" || transport === "sse" || transport === "ws") {
+				this.setTransportPreference(transport, false);
+			}
 		} catch {
 			/* ignore storage errors */
 		}
@@ -1646,8 +1908,532 @@ export class ComposerChat extends LitElement {
 		};
 	}
 
-	private normalizeMessages(messages: Message[]): Message[] {
+	private normalizeMessages(messages: Message[]): UiMessage[] {
 		return messages.map((message) => this.normalizeMessage(message));
+	}
+
+	private isSlashCommand(text: string): boolean {
+		const trimmed = text.trim();
+		if (!trimmed.startsWith("/")) return false;
+		if (trimmed.startsWith("//")) return false;
+		return trimmed.length > 1;
+	}
+
+	private appendLocalMessage(message: UiMessage) {
+		const next = [...this.messages, message];
+		this.messages = next;
+		this.autoScroll = true;
+		this.unseenMessages = 0;
+		this.renderEndIndex = next.length;
+		this.lastMessagesLength = next.length;
+		this.scrollToBottom({ force: true });
+	}
+
+	private appendCommandOutput(
+		command: string,
+		output: string,
+		isError = false,
+	) {
+		const label = isError ? "Command failed" : "Command output";
+		const content = `/${command}\n\n${output}`;
+		this.appendLocalMessage({
+			role: "assistant",
+			content: content || label,
+			timestamp: new Date().toISOString(),
+			localOnly: true,
+		});
+	}
+
+	private formatCodeBlock(
+		content: string,
+		language = "text",
+		maxLen = 20000,
+	): string {
+		const trimmed =
+			content.length > maxLen
+				? `${content.slice(0, maxLen)}\n... (truncated)`
+				: content;
+		return `\`\`\`${language}\n${trimmed}\n\`\`\``;
+	}
+
+	private formatJsonBlock(data: unknown): string {
+		return this.formatCodeBlock(JSON.stringify(data, null, 2), "json");
+	}
+
+	private async handleSlashCommand(
+		rawText: string,
+		attachments?: Message["attachments"],
+	) {
+		const text = rawText.trim();
+		const [, ...rest] = text.split(/\s+/);
+		const command = text.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
+		const args = rest.join(" ").trim();
+
+		this.appendLocalMessage({
+			role: "user",
+			content: text,
+			timestamp: new Date().toISOString(),
+			localOnly: true,
+		});
+
+		if (command) {
+			const recents = [
+				command,
+				...this.commandPrefs.recents.filter((n) => n !== command),
+			].slice(0, 20);
+			void this.saveCommandPrefs({
+				favorites: this.commandPrefs.favorites,
+				recents,
+			});
+		}
+
+		if (attachments && attachments.length > 0) {
+			this.appendCommandOutput(
+				command,
+				"Attachments are not supported for slash commands.",
+				true,
+			);
+			return;
+		}
+
+		const sessionId = this.currentSessionId ?? "default";
+
+		const requireWritableSession = (label: string): boolean => {
+			if (!this.shareToken) return true;
+			this.appendCommandOutput(
+				command,
+				`${label} is disabled in shared sessions.`,
+				true,
+			);
+			return false;
+		};
+
+		try {
+			switch (command) {
+				case "help": {
+					const lines = WEB_SLASH_COMMANDS.map(
+						(cmd) => `/${cmd.name} — ${cmd.description}`,
+					);
+					const output = this.formatCodeBlock(lines.join("\n"));
+					this.appendCommandOutput(command, output);
+					break;
+				}
+				case "status": {
+					const status = await this.apiClient.getStatus();
+					this.appendCommandOutput(command, this.formatJsonBlock(status));
+					break;
+				}
+				case "diag": {
+					const sub = args || "status";
+					const diag = await this.apiClient.getDiagnostics(sub);
+					this.appendCommandOutput(command, this.formatJsonBlock(diag));
+					break;
+				}
+				case "run": {
+					if (!requireWritableSession("Run commands")) break;
+					if (!args) {
+						const scripts = await this.apiClient.getRunScripts();
+						const output = scripts.length
+							? this.formatCodeBlock(scripts.join("\n"))
+							: "No scripts found in package.json.";
+						this.appendCommandOutput(command, output);
+						break;
+					}
+					const [script, ...argParts] = args.split(/\s+/);
+					if (!script) {
+						this.appendCommandOutput(
+							command,
+							"Usage: /run <script> [-- args]",
+							true,
+						);
+						break;
+					}
+					const result = await this.apiClient.runScript(
+						script,
+						argParts.join(" ").trim() || undefined,
+					);
+					const outputParts = [
+						`Command: ${result.command ?? `npm run ${script}`}`,
+						`Exit: ${result.exitCode}`,
+					];
+					if (result.stdout) {
+						outputParts.push("", "stdout:", result.stdout);
+					}
+					if (result.stderr) {
+						outputParts.push("", "stderr:", result.stderr);
+					}
+					this.appendCommandOutput(
+						command,
+						this.formatCodeBlock(outputParts.join("\n")),
+						!result.success,
+					);
+					break;
+				}
+				case "diff": {
+					if (!requireWritableSession("Diff")) break;
+					if (args) {
+						const preview = await this.apiClient.getPreview(args);
+						const diffText =
+							typeof preview?.diff === "string" && preview.diff.length > 0
+								? preview.diff
+								: (preview?.message ?? "No changes.");
+						this.appendCommandOutput(
+							command,
+							this.formatCodeBlock(diffText, "diff"),
+						);
+					} else {
+						const review = await this.apiClient.getReview();
+						const parts = [
+							review.status ? `Status: ${review.status}` : "",
+							review.diffStat ? `Diff stat:\n${review.diffStat}` : "",
+							review.worktreeDiff
+								? `Worktree diff:\n${review.worktreeDiff}`
+								: "",
+						].filter(Boolean);
+						this.appendCommandOutput(
+							command,
+							this.formatCodeBlock(parts.join("\n\n")),
+						);
+					}
+					break;
+				}
+				case "review": {
+					if (!requireWritableSession("Review")) break;
+					const review = await this.apiClient.getReview();
+					const parts = [
+						review.status ? `Status:\n${review.status}` : "",
+						review.diffStat ? `Diff stat:\n${review.diffStat}` : "",
+						review.stagedDiff ? `Staged diff:\n${review.stagedDiff}` : "",
+						review.worktreeDiff ? `Worktree diff:\n${review.worktreeDiff}` : "",
+					].filter(Boolean);
+					this.appendCommandOutput(
+						command,
+						this.formatCodeBlock(parts.join("\n\n")),
+					);
+					break;
+				}
+				case "plan": {
+					if (!requireWritableSession("Plan")) break;
+					const tokens = args.split(/\s+/).filter(Boolean);
+					if (tokens[0] === "on" || tokens[0] === "enter") {
+						const name = tokens.slice(1).join(" ") || undefined;
+						const res = await this.apiClient.enterPlanMode(name, sessionId);
+						this.appendCommandOutput(command, this.formatJsonBlock(res));
+						break;
+					}
+					if (tokens[0] === "off" || tokens[0] === "exit") {
+						const res = await this.apiClient.exitPlanMode();
+						this.appendCommandOutput(command, this.formatJsonBlock(res));
+						break;
+					}
+					if (tokens[0] === "update") {
+						const content = tokens.slice(1).join(" ");
+						if (!content) {
+							this.appendCommandOutput(
+								command,
+								"Usage: /plan update <content>",
+								true,
+							);
+							break;
+						}
+						const res = await this.apiClient.updatePlan(content);
+						this.appendCommandOutput(command, this.formatJsonBlock(res));
+						break;
+					}
+					const plan = await this.apiClient.getPlan();
+					const summary = [
+						plan.state?.active
+							? `Active: ${plan.state.name ?? plan.state.filePath}`
+							: "Inactive",
+						plan.content ? plan.content : "",
+					].filter(Boolean);
+					this.appendCommandOutput(
+						command,
+						this.formatCodeBlock(summary.join("\n\n")),
+					);
+					break;
+				}
+				case "branch": {
+					if (!requireWritableSession("Branching")) break;
+					if (!this.currentSessionId) {
+						this.appendCommandOutput(command, "Select a session first.", true);
+						break;
+					}
+					if (!args || args === "list") {
+						const options = await this.apiClient.listBranchOptions(
+							this.currentSessionId,
+						);
+						const lines = options.userMessages.map(
+							(entry) => `#${entry.number} (${entry.index}): ${entry.snippet}`,
+						);
+						this.appendCommandOutput(
+							command,
+							lines.length
+								? this.formatCodeBlock(lines.join("\n"))
+								: "No branch points found.",
+						);
+						break;
+					}
+					const parsed = Number.parseInt(args, 10);
+					if (Number.isNaN(parsed)) {
+						this.appendCommandOutput(
+							command,
+							"Usage: /branch [list|<message#>]",
+							true,
+						);
+						break;
+					}
+					const res = await this.apiClient.createBranch(this.currentSessionId, {
+						userMessageNumber: parsed,
+					});
+					this.appendCommandOutput(command, this.formatJsonBlock(res));
+					if (res?.newSessionId) {
+						await this.selectSession(res.newSessionId);
+					}
+					break;
+				}
+				case "model": {
+					if (!requireWritableSession("Model selection")) break;
+					if (args) {
+						await this.apiClient.setModel(args);
+						this.currentModel = args;
+						this.updateModelMeta();
+						this.appendCommandOutput(command, `Model set to ${args}`);
+					} else {
+						this.openModelSelector();
+					}
+					break;
+				}
+				case "theme": {
+					const next =
+						args === "light" || args === "dark"
+							? (args as "light" | "dark")
+							: this.theme === "dark"
+								? "light"
+								: "dark";
+					this.applyTheme(next);
+					this.appendCommandOutput(command, `Theme set to ${next}.`);
+					break;
+				}
+				case "zen": {
+					if (!requireWritableSession("Zen mode")) break;
+					const next =
+						args === "on" ? true : args === "off" ? false : !this.zenMode;
+					const res = await this.apiClient.setZenMode(sessionId, next);
+					const enabled =
+						typeof res?.enabled === "boolean" ? res.enabled : next;
+					this.applyZenMode(enabled);
+					this.appendCommandOutput(
+						command,
+						`Zen mode ${enabled ? "enabled" : "disabled"}.`,
+					);
+					break;
+				}
+				case "clean": {
+					if (!requireWritableSession("Clean mode")) break;
+					const mode = (args || "off").toLowerCase() as
+						| "off"
+						| "soft"
+						| "aggressive";
+					if (!["off", "soft", "aggressive"].includes(mode)) {
+						this.appendCommandOutput(
+							command,
+							"Usage: /clean [off|soft|aggressive]",
+							true,
+						);
+						break;
+					}
+					const res = await this.apiClient.setCleanMode(mode, sessionId);
+					this.cleanMode = res.cleanMode;
+					this.appendCommandOutput(
+						command,
+						`Clean mode set to ${res.cleanMode}.`,
+					);
+					break;
+				}
+				case "footer": {
+					if (!requireWritableSession("Footer mode")) break;
+					const mode = (args || "").toLowerCase() as "ensemble" | "solo";
+					if (!["ensemble", "solo"].includes(mode)) {
+						this.appendCommandOutput(
+							command,
+							"Usage: /footer [ensemble|solo]",
+							true,
+						);
+						break;
+					}
+					const res = await this.apiClient.setFooterMode(mode, sessionId);
+					this.footerMode = res.footerMode;
+					this.appendCommandOutput(
+						command,
+						`Footer mode set to ${res.footerMode}.`,
+					);
+					break;
+				}
+				case "config": {
+					if (!requireWritableSession("Config")) break;
+					if (args.startsWith("set ")) {
+						const jsonText = args.replace(/^set\s+/, "");
+						let config: Record<string, unknown>;
+						try {
+							config = JSON.parse(jsonText) as Record<string, unknown>;
+						} catch {
+							this.appendCommandOutput(
+								command,
+								'Usage: /config set {"key":"value"}',
+								true,
+							);
+							break;
+						}
+						try {
+							await this.apiClient.saveConfig({ config });
+							this.appendCommandOutput(command, "Config updated.");
+						} catch (e) {
+							const message =
+								e instanceof Error && e.message
+									? e.message
+									: "Failed to update config.";
+							this.appendCommandOutput(command, message, true);
+						}
+						break;
+					}
+					const cfg = await this.apiClient.getConfig();
+					const output = [
+						`Config path: ${cfg.configPath}`,
+						"",
+						JSON.stringify(cfg.config, null, 2),
+					].join("\n");
+					this.appendCommandOutput(
+						command,
+						this.formatCodeBlock(output, "json"),
+					);
+					break;
+				}
+				case "files": {
+					const files = await this.apiClient.getFiles();
+					const listed = args
+						? files.filter((f) => f.toLowerCase().includes(args.toLowerCase()))
+						: files;
+					const limited = listed.slice(0, 200);
+					const output = limited.length
+						? this.formatCodeBlock(limited.join("\n"))
+						: "No files found.";
+					this.appendCommandOutput(command, output);
+					break;
+				}
+				case "commands": {
+					this.commandDrawerOpen = true;
+					break;
+				}
+				case "cost": {
+					const usage = await this.apiClient.getUsage();
+					this.appendCommandOutput(
+						command,
+						usage ? this.formatJsonBlock(usage) : "No usage data.",
+					);
+					break;
+				}
+				case "telemetry": {
+					if (!requireWritableSession("Telemetry")) break;
+					if (args === "on" || args === "off" || args === "reset") {
+						const res = await this.apiClient.setTelemetry(args);
+						this.appendCommandOutput(command, this.formatJsonBlock(res));
+					} else {
+						const status = await this.apiClient.getTelemetryStatus();
+						this.appendCommandOutput(command, this.formatJsonBlock(status));
+					}
+					break;
+				}
+				case "approvals": {
+					if (!requireWritableSession("Approvals")) break;
+					if (args === "auto" || args === "prompt" || args === "fail") {
+						const res = await this.apiClient.setApprovalMode(
+							args,
+							this.currentSessionId ?? "default",
+						);
+						this.appendCommandOutput(command, this.formatJsonBlock(res));
+					} else {
+						const status = await this.apiClient.getApprovalMode(
+							this.currentSessionId ?? "default",
+						);
+						this.appendCommandOutput(command, this.formatJsonBlock(status));
+					}
+					break;
+				}
+				case "queue": {
+					if (!requireWritableSession("Queue")) break;
+					const tokens = args.split(/\s+/).filter(Boolean);
+					if (tokens[0] === "list") {
+						const list = await this.apiClient.listQueue(sessionId);
+						const lines = list.pending.map((item) =>
+							`#${item.id} ${item.text ?? ""}`.trim(),
+						);
+						this.appendCommandOutput(
+							command,
+							lines.length
+								? this.formatCodeBlock(lines.join("\n"))
+								: "Queue empty.",
+						);
+						break;
+					}
+					if (tokens[0] === "mode" && tokens[1]) {
+						const mode = tokens[1] === "one" ? "one" : "all";
+						const res = await this.apiClient.setQueueMode(mode, sessionId);
+						this.queueMode = res.mode;
+						this.appendCommandOutput(command, this.formatJsonBlock(res));
+						break;
+					}
+					if (tokens[0] === "cancel" && tokens[1]) {
+						const id = Number.parseInt(tokens[1], 10);
+						if (Number.isNaN(id)) {
+							this.appendCommandOutput(
+								command,
+								"Usage: /queue cancel <id>",
+								true,
+							);
+							break;
+						}
+						const res = await this.apiClient.cancelQueuedPrompt(id, sessionId);
+						this.appendCommandOutput(command, this.formatJsonBlock(res));
+						break;
+					}
+					const status = await this.apiClient.getQueueStatus(sessionId);
+					this.queueMode = status.mode;
+					this.appendCommandOutput(command, this.formatJsonBlock(status));
+					break;
+				}
+				case "transport": {
+					const mode = (args || "auto").toLowerCase();
+					if (!["auto", "sse", "ws"].includes(mode)) {
+						this.appendCommandOutput(
+							command,
+							"Usage: /transport [auto|sse|ws]",
+							true,
+						);
+						break;
+					}
+					this.setTransportPreference(mode as "auto" | "sse" | "ws");
+					this.appendCommandOutput(command, `Transport set to ${mode}.`);
+					break;
+				}
+				case "new": {
+					if (!requireWritableSession("New session")) break;
+					await this.createNewSession();
+					this.appendCommandOutput(command, "New session created.");
+					break;
+				}
+				default: {
+					this.appendCommandOutput(
+						command,
+						`Unknown command: /${command}. Try /help for a list.`,
+						true,
+					);
+				}
+			}
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : "Command failed";
+			this.appendCommandOutput(command, msg, true);
+		}
 	}
 
 	private async loadSessions() {
@@ -1667,6 +2453,8 @@ export class ComposerChat extends LitElement {
 			| "globe"
 			| "share"
 			| "settings"
+			| "sun"
+			| "moon"
 			| "grid"
 			| "file"
 			| "reduce"
@@ -1684,6 +2472,8 @@ export class ComposerChat extends LitElement {
 				"M18 8a3 3 0 1 0-2.83-4H15a3 3 0 0 0 0 6Zm-12 4a3 3 0 1 0 2.83 4H9a3 3 0 0 0 0-6Zm12 0a3 3 0 1 0 2.83 4H21a3 3 0 0 0 0-6Zm-4.59-1.51L8.59 15.5M15.41 8.5 8.59 11.5",
 			settings:
 				"M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm7.4-2.63a1 1 0 0 0 0-1.74l-1.17-.68a1 1 0 0 1-.46-.86l.05-1.35a1 1 0 0 0-1.17-1.01l-1.35.23a1 1 0 0 1-.9-.26L13.2 6a1 1 0 0 0-1.4 0l-.9.9a1 1 0 0 1-.9.26l-1.35-.23a1 1 0 0 0-1.17 1.01l.05 1.35a1 1 0 0 1-.46.86l-1.17.68a1 1 0 0 0 0 1.74l1.17.68a1 1 0 0 1 .46.86l-.05 1.35a1 1 0 0 0 1.17 1.01l1.35-.23a1 1 0 0 1 .9.26l.9.9a1 1 0 0 0 1.4 0l.9-.9a1 1 0 0 1 .9-.26l1.35.23a1 1 0 0 0 1.17-1.01l-.05-1.35a1 1 0 0 1 .46-.86Z",
+			sun: "M12 4.5V3M12 21v-1.5M4.5 12H3m18 0h-1.5M6.75 6.75 5.7 5.7m12.6 12.6-1.05-1.05M6.75 17.25 5.7 18.3m12.6-12.6-1.05 1.05M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z",
+			moon: "M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z",
 			grid: "M4 4h7v7H4Zm9 0h7v7h-7ZM4 13h7v7H4Zm9 7v-7h7v7Z",
 			file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6",
 			reduce: "M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18Zm-5-9h10",
@@ -1893,6 +2683,7 @@ export class ComposerChat extends LitElement {
 			this.attachmentContentCache.clear();
 			this.artifactsState = createEmptyArtifactsState();
 			this.activeArtifact = null;
+			await this.refreshUiState(session.id);
 			await this.loadSessions();
 			this.showToast("New session created", "success");
 		} catch (e) {
@@ -1920,6 +2711,7 @@ export class ComposerChat extends LitElement {
 			this.artifactsState = reconstructArtifactsFromMessages(this.messages);
 			this.activeArtifact = null;
 			this.error = null;
+			await this.refreshUiState(session.id);
 			this.requestUpdate(); // Force update
 			await this.updateComplete; // Wait for render
 			this.scrollToBottom({ force: true });
@@ -2018,13 +2810,14 @@ export class ComposerChat extends LitElement {
 	}
 
 	private async buildMessagesForChatRequest(
-		messages: Message[],
+		messages: UiMessage[],
 	): Promise<Message[]> {
 		const sessionId = this.currentSessionId;
-		if (!sessionId) return messages;
+		const filtered = messages.filter((msg) => !msg.localOnly);
+		if (!sessionId) return filtered;
 
 		const out: Message[] = [];
-		for (const msg of messages) {
+		for (const msg of filtered) {
 			const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
 			if (msg.role !== "user" || atts.length === 0) {
 				out.push(msg);
@@ -2054,12 +2847,18 @@ export class ComposerChat extends LitElement {
 		if ((!text && !attachments) || this.loading || !this.clientOnline) {
 			return;
 		}
+		this.lastSendFailed = null;
+		this.lastApiError = null;
+
+		if (!event.detail.retry && this.isSlashCommand(text)) {
+			await this.handleSlashCommand(text, attachments);
+			return;
+		}
+
 		if (this.shareToken) {
 			this.showToast("Shared sessions are read-only", "info", 1800);
 			return;
 		}
-		this.lastSendFailed = null;
-		this.lastApiError = null;
 
 		const enrichedAttachments = attachments
 			? await this.ensureExtractedTextForAttachments(attachments)
@@ -2124,6 +2923,7 @@ export class ComposerChat extends LitElement {
 						if (agentEvent.sessionId) {
 							this.currentSessionId = agentEvent.sessionId;
 							this.requestUpdate();
+							void this.refreshUiState(agentEvent.sessionId);
 						}
 						break;
 					case "message_update":
@@ -2826,23 +3626,30 @@ export class ComposerChat extends LitElement {
 		const visibleCount = visibleMessages.length;
 		const hiddenOldCount = windowStart;
 		const hiddenNewCount = totalMessages - windowEnd;
-		const renderedMessages = virtualMessages.map(
-			(msg, idx) => html`
+		const renderedMessages = virtualMessages.map((msg, idx) => {
+			const globalIndex = shouldVirtualize
+				? resolvedVirtualStart + idx
+				: windowStart + idx;
+			const isStreaming =
+				this.loading &&
+				globalIndex === this.messages.length - 1 &&
+				msg.role === "assistant";
+			return html`
 				<composer-message
-					data-index=${
-						shouldVirtualize ? resolvedVirtualStart + idx : windowStart + idx
-					}
+					data-index=${globalIndex}
 					role=${msg.role}
 					content=${msg.content}
 					timestamp=${msg.timestamp || ""}
 					.attachments=${msg.attachments || []}
 					.thinking=${(msg as MessageWithThinking).thinking || ""}
 					.tools=${msg.tools || []}
+					.cleanMode=${this.cleanMode}
+					.streaming=${isStreaming}
 					.compact=${this.compactMode}
 					.reducedMotion=${this.reducedMotion}
 				></composer-message>
-			`,
-		);
+			`;
+		});
 		const topSpacer =
 			shouldVirtualize && this.virtualPaddingTop > 0
 				? html`<div
@@ -2921,6 +3728,16 @@ export class ComposerChat extends LitElement {
 					: ""
 			}
 			${
+				this.sidebarOpen
+					? html`<div
+							class="sidebar-overlay active"
+							@click=${() => {
+								this.sidebarOpen = false;
+							}}
+						></div>`
+					: ""
+			}
+			${
 				isShared
 					? html`<div class="sidebar ${this.sidebarOpen ? "" : "collapsed"}">
 							<div class="sidebar-header">
@@ -2954,7 +3771,7 @@ export class ComposerChat extends LitElement {
 										).value.toLowerCase();
 										this.sessionSearch = value;
 									}}
-									style="margin-top:0.4rem; width:100%; padding:0.35rem 0.5rem; background:#0a0e14; border:1px solid #30363d; color:#e6edf3; border-radius:3px; font-family:'SF Mono','Menlo','Monaco',monospace; font-size:0.75rem;"
+									class="session-search"
 								/>
 							</div>
 							<div class="sessions-list">
@@ -3070,6 +3887,13 @@ export class ComposerChat extends LitElement {
 							?disabled=${isShared || !this.currentSessionId}
 						>
 							⤓
+						</button>
+						<button
+							class="icon-btn"
+							title="Toggle theme"
+							@click=${this.toggleTheme}
+						>
+							${this.renderIcon(this.theme === "dark" ? "sun" : "moon")}
 						</button>
 						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${this.renderIcon("settings")}</button>
 						<button class="icon-btn" title="Admin Settings" @click=${this.toggleAdminSettings}>🛡️</button>
@@ -3218,7 +4042,9 @@ export class ComposerChat extends LitElement {
 				<div class="input-container">
 					<composer-input
 						@submit=${this.handleSubmit}
+						@voice-error=${this.handleVoiceError}
 						?disabled=${this.loading || isShared}
+						.showHint=${this.footerMode !== "solo"}
 					></composer-input>
 				</div>
 
@@ -3243,7 +4069,7 @@ export class ComposerChat extends LitElement {
 			${
 				this.settingsOpen
 					? html`
-				<div style="position: absolute; top: 0; right: 0; width: 500px; height: 100%; background: #0a0e14; border-left: 2px solid #21262d; z-index: 100;">
+				<div class="side-panel settings">
 					<composer-settings
 						.apiClient=${this.apiClient}
 						.currentModel=${this.currentModel}
@@ -3258,7 +4084,7 @@ export class ComposerChat extends LitElement {
 			${
 				this.adminSettingsOpen
 					? html`
-				<div style="position: absolute; top: 0; right: 0; width: 800px; height: 100%; background: var(--bg-primary, #09090b); border-left: 2px solid var(--border-primary, #27272a); z-index: 110;">
+				<div class="side-panel admin">
 					<admin-settings
 						@close=${this.toggleAdminSettings}
 					></admin-settings>
@@ -3297,15 +4123,15 @@ export class ComposerChat extends LitElement {
 			${
 				this.showHealth
 					? html`
-						<div style="position: fixed; top: 64px; right: 12px; width: 260px; background: #0d1117; border: 1px solid #30363d; padding: 0.75rem; z-index: 120; box-shadow: 0 10px 24px rgba(0,0,0,0.4); font-family: 'SF Mono','Menlo','Monaco', monospace; font-size: 0.75rem; color: #e6edf3;">
-							<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
-								<span style="color:#6e7681; letter-spacing:0.05em;">API HEALTH</span>
+						<div class="health-popover">
+							<div class="health-popover-header">
+								<span class="health-popover-label">API HEALTH</span>
 								<button class="icon-btn" @click=${this.closeHealth}>${this.renderIcon("close")}</button>
 							</div>
-							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Base:</span> ${this.apiClient.baseUrl}</div>
-							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Latency:</span> ${latency ? `${Math.round(latency)}ms` : "n/a"}</div>
-							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Last updated:</span> ${lastUpdated ? new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "n/a"}</div>
-							<div style="margin:0.25rem 0;"><span style="color:#6e7681;">Last error:</span> ${this.lastApiError || "none"}</div>
+							<div class="health-popover-row"><span>Base:</span> ${this.apiClient.baseUrl}</div>
+							<div class="health-popover-row"><span>Latency:</span> ${latency ? `${Math.round(latency)}ms` : "n/a"}</div>
+							<div class="health-popover-row"><span>Last updated:</span> ${lastUpdated ? new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "n/a"}</div>
+							<div class="health-popover-row"><span>Last error:</span> ${this.lastApiError || "none"}</div>
 						</div>
 				  `
 					: ""
@@ -3462,12 +4288,12 @@ export class ComposerChat extends LitElement {
 			${
 				this.showShortcuts
 					? html`
-						<div style="position: fixed; top: 30%; left: 50%; transform: translateX(-50%); width: 420px; background: #0d1117; border: 1px solid #30363d; padding: 1rem; z-index: 140; box-shadow: 0 18px 40px rgba(0,0,0,0.5); font-family: 'SF Mono','Menlo','Monaco', monospace; font-size: 0.78rem; color: #e6edf3;">
-							<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
-								<span style="letter-spacing:0.08em; color:#8b949e;">Keyboard shortcuts</span>
+						<div class="shortcuts-modal">
+							<div class="shortcuts-modal-header">
+								<span class="shortcuts-modal-title">Keyboard shortcuts</span>
 								<button class="icon-btn" @click=${this.closeShortcuts}>${this.renderIcon("close")}</button>
 							</div>
-						<div style="display:grid; grid-template-columns: auto 1fr; gap: 0.35rem 0.75rem;">
+						<div class="shortcuts-grid">
 							<span class="pill">Enter</span><span>Send message</span>
 							<span class="pill">Shift+Enter</span><span>New line</span>
 							<span class="pill">?</span><span>Toggle this help</span>

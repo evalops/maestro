@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -119,6 +119,8 @@ pub struct ConfigSelector {
     visible: bool,
     /// Pending changes (key -> new value)
     changes: Vec<ConfigChangeEvent>,
+    /// List state for scrolling
+    list_state: ListState,
 }
 
 impl Default for ConfigSelector {
@@ -137,6 +139,7 @@ impl ConfigSelector {
             selected: 0,
             visible: false,
             changes: Vec::new(),
+            list_state: ListState::default(),
         }
     }
 
@@ -226,6 +229,12 @@ impl ConfigSelector {
     pub fn show(&mut self) {
         self.visible = true;
         self.changes.clear();
+        self.selected = 0;
+        if self.options.is_empty() {
+            self.list_state.select(None);
+        } else {
+            self.list_state.select(Some(0));
+        }
     }
 
     /// Hide the modal
@@ -243,6 +252,7 @@ impl ConfigSelector {
     pub fn move_up(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
+            self.list_state.select(Some(self.selected));
         }
     }
 
@@ -250,6 +260,7 @@ impl ConfigSelector {
     pub fn move_down(&mut self) {
         if self.selected + 1 < self.options.len() {
             self.selected += 1;
+            self.list_state.select(Some(self.selected));
         }
     }
 
@@ -317,7 +328,7 @@ impl ConfigSelector {
     }
 
     /// Render the modal
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         if !self.visible {
             return;
         }
@@ -408,8 +419,8 @@ impl ConfigSelector {
             items.push(ListItem::new(line));
         }
 
-        let list = List::new(items);
-        frame.render_widget(list, chunks[0]);
+        let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
+        frame.render_stateful_widget(list, chunks[0], &mut self.list_state);
 
         // Description area
         let desc_block = Block::default()

@@ -3,31 +3,35 @@
 Audience: users running the browser UI; contributors touching web server/client.  
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md) · [Features](FEATURES.md)
 
-Contents: [Features](#features) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Configuration](#configuration) · [API Endpoints](#api-endpoints) · [Parity Appendix](#parity-appendix)
+Contents: [Features](#features) · [Architecture](#architecture) · [Conductor (Chrome Extension)](#conductor-chrome-extension) · [Quick Start](#quick-start) · [Configuration](#configuration) · [API Endpoints](#api-endpoints) · [Parity Appendix](#parity-appendix)
 
 A browser-based interface for the Composer AI coding assistant with core parity to the TUI. Parity is documented once—in the appendix below—to keep a single source of truth.
 
 Parity at a glance:
 - Full: chat, sessions, models, config, usage, approvals, attachments, artifacts, share links (read-only), document extraction.
-- Not included by design: git operations, some diagnostics/LSP/MCP workflows, guardian controls, and other terminal-only UX.
+- Not included by design: destructive undo/clear, deep diagnostics (LSP/MCP control), guardian controls, OAuth login/logout, and other terminal-only UX.
 
 ## Features
 
-- **Real-time Streaming**: Live response streaming from LLM providers via Server-Sent Events
+- **Real-time Streaming**: Live response streaming via SSE with WebSocket fallback
 - **Full Tool Execution**: All Composer tools work (bash, read, write, edit, etc.)
 - **Modern Design**: GitHub-inspired dark theme with smooth animations
+- **Theme Toggle**: Light/dark themes with persisted preference
 - **Model Selection**: Switch between different AI models
 - **Syntax Highlighting**: Code blocks with highlight.js
 - **Markdown Rendering**: Rich text formatting with marked
 - **Attachments**: Upload images/documents; preview (PDF/DOCX/XLSX/PPTX text), download, and lazy-load bytes for session history
 - **Artifacts**: View generated artifacts with sandboxed HTML rendering and downloads
 - **Share Links**: Generate `/share/:token` read-only links for sessions
+- **Export Sessions**: Download JSON/Markdown/Text exports
+- **Voice Input**: Speech-to-text (when supported by the browser)
+- **Responsive Layout**: Mobile + desktop layouts with sidebar overlay
 - **Auto-approval**: Tools execute automatically in web mode for seamless experience
 
 ## Architecture
 
 ```
-┌─────────────┐         HTTP/SSE          ┌──────────────┐
+┌─────────────┐       HTTP/SSE/WS         ┌──────────────┐
 │  Web UI     │ ────────────────────────> │  Web Server  │
 │  (Browser)  │ <──────────────────────── │  (Node.js)   │
 └─────────────┘                           └──────────────┘
@@ -37,6 +41,24 @@ Parity at a glance:
                                                   ├─> Tool Execution
                                                   └─> LLM Providers
 ```
+
+## Conductor (Chrome Extension)
+
+Conductor connects to the Composer web server and executes browser automation
+tools inside the active tab. This turns the Web UI into a browser-aware surface
+that can read pages, click elements, type into inputs, and capture diagnostics.
+
+Setup and bridge details live in `docs/CONDUCTOR_BRIDGE.md`. In short:
+
+- Run the web server (`composer web`).
+- Enable the Conductor Bridge in the extension and point it at your server URL.
+- Send client tool headers so the server includes Conductor tools:
+  - `X-Composer-Client-Tools: 1`
+  - `X-Composer-Client: conductor`
+
+Security notes:
+- For local dev, you can use `COMPOSER_WEB_REQUIRE_KEY=0` and `COMPOSER_WEB_ORIGIN="*"`.
+- For shared/hosted setups, lock CORS to your extension origin and require API keys.
 
 ### Components
 
@@ -50,6 +72,7 @@ Parity at a glance:
 2. **Web Server** (`src/web-server.ts`) - HTTP API server
    - `/api/models` - List available models
    - `/api/chat` - Streaming chat endpoint (POST)
+   - `/api/chat/ws` - WebSocket chat endpoint (upgrade)
    - `/api/sessions` - Session management
    - `/` - Serves static web UI files
 
@@ -105,6 +128,8 @@ export GOOGLE_API_KEY="..."
 export PORT=8080                                    # Server port
 export COMPOSER_SESSION_DIR="~/.composer/sessions"  # Session storage
 export COMPOSER_AGENT_DIR="~/.composer/agent"       # Context files
+export COMPOSER_SESSION_SCOPE="auth"                # Scope sessions by auth subject
+export COMPOSER_MULTI_USER="1"                      # Alias for COMPOSER_SESSION_SCOPE
 
 # Proxy Configuration (when behind nginx, CloudFlare, etc.)
 export COMPOSER_TRUST_PROXY="true"                  # Trust X-Forwarded-For headers
@@ -157,6 +182,15 @@ export COMPOSER_TRUST_PROXY=true
 export COMPOSER_TRUST_PROXY_HOPS=1  # Only nginx in front
 ```
 
+#### COMPOSER_SESSION_SCOPE / COMPOSER_MULTI_USER
+
+Enable per-user session isolation (recommended for hosted deployments):
+
+- Set `COMPOSER_SESSION_SCOPE=auth` (or `true`/`1`) to scope sessions by the authenticated subject.
+- `COMPOSER_MULTI_USER` is an alias for the same behavior.
+
+When enabled, sessions are stored under per-subject subdirectories, and share links embed the scope automatically. Requests without a valid auth subject will fall back to the unscoped session directory.
+
 ### API Endpoints
 
 #### GET /api/models
@@ -203,6 +237,12 @@ data: {"type":"content_block_delta","text":" a"}
 ...
 data: [DONE]
 ```
+
+#### WS /api/chat/ws
+
+WebSocket alternative to SSE. Send the same JSON payload as `/api/chat` after the upgrade. Messages are JSON-encoded `AgentEvent` frames; the server terminates the stream with `{ "type": "done" }`.
+
+Note: WebSocket requests must include authentication headers when `COMPOSER_WEB_API_KEY`/JWT/shared secret auth is enabled. Browsers cannot set custom headers during the WebSocket handshake; use an authenticated reverse proxy or configure `COMPOSER_WEB_REQUIRE_KEY=0` for local-only development.
 
 ## Tool Execution
 
@@ -411,6 +451,7 @@ curl -N -X POST http://localhost:8080/api/chat \
   -H "Content-Type: application/json" \
   -d '{"model":"anthropic:claude-opus-4-5-20251101","messages":[{"role":"user","content":"hi"}]}'
 ```
+4. Try WebSocket transport from the UI (`/transport ws`) and confirm `/api/chat/ws` upgrades successfully.
 
 ### Tools not executing
 
@@ -418,27 +459,25 @@ curl -N -X POST http://localhost:8080/api/chat \
 2. Verify tool is in `codingTools` array
 3. Check server logs for tool execution events
 
-## Future Enhancements
-
 ## Parity Appendix (summary)
 
-Full parity (Web + TUI): chat streaming, session create/list/load/delete, model select/list, thinking level, config get/set, cost/usage, status/health, approval mode, policy validation, file list, commands list, queue mode/status, zen/clean/footer/compact toggles, branching, attachments, artifacts, share links (read-only).
+Full parity (Web + TUI): chat streaming, session create/list/load/delete, model select/list, thinking level, config get/set, cost/usage, status/health, approval mode, policy validation, file list, commands list, queue mode/status, zen/clean/footer/compact toggles, branching, attachments, artifacts, share links (read-only), export, run scripts, git diff/review.
 
-TUI-only (by design): git operations (`/diff`, `/review`, `/undo`), deep diagnostics/LSP/MCP/telemetry, guardian scans and plan-mode prompts, OAuth login/logout, workspace script runner, tools list/failures/clear, Ollama/local model control.
+TUI-only (by design): destructive undo/clear, deep diagnostics (LSP/MCP control), guardian scans and plan-mode prompts, OAuth login/logout, tools failures/clear, Ollama/local model control.
 
 Security note: Web API stays stateless and limits filesystem/git access; keep using TUI for those workflows.
 
 - [x] Authentication (JWT/shared-secret). OAuth still pending
 - [x] Session persistence and resume
 - [x] File upload for attachments
-- [ ] Multi-user support
+- [x] Multi-user support
 - [x] Rate limiting (session/IP)
-- [ ] WebSocket alternative to SSE
-- [ ] Dark/Light theme toggle
-- [ ] Mobile responsive design
-- [ ] Export conversations (web UI)
+- [x] WebSocket alternative to SSE
+- [x] Dark/Light theme toggle
+- [x] Mobile responsive design
+- [x] Export conversations (web UI)
 - [x] Keyboard shortcuts
-- [ ] Voice input
+- [x] Voice input
 
 ## Contributing
 

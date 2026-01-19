@@ -6,6 +6,19 @@
     <title>Composer - AI Coding Assistant</title>
     <meta name="description" content="Modern web interface for Composer AI coding assistant with session management, tool integration, and beautiful design">
 
+    <script>
+        (function () {
+            try {
+                var stored = localStorage.getItem("composer_theme");
+                var prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+                var theme = stored === "light" || stored === "dark" ? stored : (prefersLight ? "light" : "dark");
+                document.documentElement.dataset.theme = theme;
+            } catch (e) {
+                document.documentElement.dataset.theme = "dark";
+            }
+        })();
+    </script>
+
     <!-- Preconnect to API -->
     <link rel="preconnect" href="http://localhost:8080">
 
@@ -20,9 +33,14 @@
         }
 
         :root {
+            color-scheme: dark;
+
             /* Matte Pro Theme - Enterprise Lean */
             --bg-primary: #09090b; /* Zinc 950 */
             --bg-secondary: #18181b; /* Zinc 900 */
+            --bg-deep: #08090a;
+            --bg-elevated: #161719;
+            --bg-surface: #1a1b1e;
             --bg-panel: #27272a; /* Zinc 800 */
             --bg-panel-alt: #3f3f46; /* Zinc 700 */
 
@@ -32,8 +50,11 @@
 
             --border-primary: #27272a; /* Zinc 800 */
             --border-secondary: #3f3f46; /* Zinc 700 */
+            --border-subtle: #141517;
 
             /* Refined Accents */
+            --accent-amber: #d4a012;
+            --accent-amber-dim: rgba(212, 160, 18, 0.12);
             --accent-blue: #3b82f6; /* Blue 500 */
             --accent-blue-dim: rgba(59, 130, 246, 0.1);
             --accent-cyan: #06b6d4; /* Cyan 500 */
@@ -50,6 +71,40 @@
             --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
             --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
             --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -2px rgba(0, 0, 0, 0.3);
+        }
+
+        :root[data-theme="light"] {
+            color-scheme: light;
+
+            --bg-primary: #f7f7f8;
+            --bg-secondary: #ffffff;
+            --bg-deep: #f0f1f3;
+            --bg-elevated: #ffffff;
+            --bg-surface: #f3f4f6;
+            --bg-panel: #f1f2f4;
+            --bg-panel-alt: #e7e9ec;
+
+            --text-primary: #14161a;
+            --text-secondary: #4b5563;
+            --text-tertiary: #6b7280;
+
+            --border-primary: #e5e7eb;
+            --border-secondary: #d1d5db;
+            --border-subtle: #eceff3;
+
+            --accent-amber: #c58a05;
+            --accent-amber-dim: rgba(197, 138, 5, 0.12);
+            --accent-blue: #2563eb;
+            --accent-blue-dim: rgba(37, 99, 235, 0.12);
+            --accent-cyan: #0891b2;
+            --accent-purple: #7c3aed;
+            --accent-green: #059669;
+            --accent-yellow: #d97706;
+            --accent-red: #dc2626;
+
+            --shadow-sm: 0 1px 2px 0 rgba(15, 23, 42, 0.08);
+            --shadow-md: 0 4px 8px -2px rgba(15, 23, 42, 0.12);
+            --shadow-lg: 0 10px 24px -6px rgba(15, 23, 42, 0.18);
         }
 
         body {
@@ -158,8 +213,7 @@
     <!-- Main app -->
     <composer-chat
         api-endpoint="http://localhost:8080"
-        model="claude-sonnet-4-5"
-        theme="dark">
+        model="claude-sonnet-4-5">
     </composer-chat>
 
     <script type="module" src="/src/index.ts"></script>

@@ -198,23 +198,26 @@ impl ShortcutsHelp {
         ));
         self.add(Shortcut::new(
             ShortcutCategory::Navigation,
+            "Ctrl+K / Ctrl+J",
+            "Scroll up/down (vim style)",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Navigation,
             "Page Up/Down",
-            "Scroll one page",
+            "Scroll half page",
         ));
+        self.add(
+            Shortcut::new(
+                ShortcutCategory::Navigation,
+                "g / G",
+                "Jump to oldest/newest",
+            )
+            .with_context("when input empty"),
+        );
         self.add(Shortcut::new(
             ShortcutCategory::Navigation,
-            "Home / End",
-            "Jump to start/end",
-        ));
-        self.add(Shortcut::new(
-            ShortcutCategory::Navigation,
-            "Tab",
-            "Focus next element",
-        ));
-        self.add(Shortcut::new(
-            ShortcutCategory::Navigation,
-            "Shift+Tab",
-            "Focus previous element",
+            "Mouse Scroll",
+            "Scroll messages",
         ));
 
         // Input
@@ -235,31 +238,29 @@ impl ShortcutsHelp {
         ));
         self.add(Shortcut::new(
             ShortcutCategory::Input,
-            "Ctrl+C",
-            "Cancel current operation",
-        ));
-        self.add(Shortcut::new(
-            ShortcutCategory::Input,
-            "Ctrl+L",
-            "Clear screen",
-        ));
-        self.add(Shortcut::new(
-            ShortcutCategory::Input,
             "Ctrl+U",
             "Clear input line",
         ));
         self.add(Shortcut::new(
             ShortcutCategory::Input,
-            "Ctrl+W",
-            "Delete word backward",
+            "Ctrl+Y",
+            "Paste from clipboard",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Input,
+            "@",
+            "Mention file (opens file search)",
         ));
 
         // Commands
-        self.add(Shortcut::new(
-            ShortcutCategory::Commands,
-            "/",
-            "Start slash command",
-        ));
+        self.add(
+            Shortcut::new(ShortcutCategory::Commands, "/", "Start slash command")
+                .with_context("when input empty"),
+        );
+        self.add(
+            Shortcut::new(ShortcutCategory::Commands, "Tab", "Complete slash command")
+                .with_context("after /"),
+        );
         self.add(Shortcut::new(
             ShortcutCategory::Commands,
             "Ctrl+P",
@@ -267,8 +268,8 @@ impl ShortcutsHelp {
         ));
         self.add(Shortcut::new(
             ShortcutCategory::Commands,
-            "Ctrl+K",
-            "Quick command",
+            "Ctrl+O",
+            "Open file search",
         ));
 
         // Modal
@@ -282,86 +283,65 @@ impl ShortcutsHelp {
             "Enter",
             "Confirm selection",
         ));
-        self.add(
-            Shortcut::new(ShortcutCategory::Modal, "y / n", "Approve / reject")
-                .with_context("approval dialog"),
-        );
+        self.add(Shortcut::new(
+            ShortcutCategory::Modal,
+            "↑ / ↓",
+            "Navigate list items",
+        ));
 
         // Session
         self.add(Shortcut::new(
             ShortcutCategory::Session,
-            "Ctrl+N",
-            "New session",
-        ));
-        self.add(Shortcut::new(
-            ShortcutCategory::Session,
-            "Ctrl+O",
-            "Open session list",
-        ));
-        self.add(Shortcut::new(
-            ShortcutCategory::Session,
-            "Ctrl+S",
-            "Save session",
-        ));
-        self.add(Shortcut::new(
-            ShortcutCategory::Session,
-            "Ctrl+R",
-            "Resume last session",
+            "Ctrl+Alt+R",
+            "Open session switcher",
         ));
 
         // Tools
         self.add(
-            Shortcut::new(ShortcutCategory::Tools, "a", "Approve tool")
+            Shortcut::new(ShortcutCategory::Tools, "y / Enter", "Approve tool")
                 .with_context("tool approval"),
         );
         self.add(
-            Shortcut::new(ShortcutCategory::Tools, "r", "Reject tool")
+            Shortcut::new(ShortcutCategory::Tools, "n / Esc", "Reject tool")
                 .with_context("tool approval"),
         );
         self.add(
-            Shortcut::new(ShortcutCategory::Tools, "e", "Edit before run")
+            Shortcut::new(ShortcutCategory::Tools, "a", "Approve all pending")
                 .with_context("tool approval"),
         );
         self.add(Shortcut::new(
             ShortcutCategory::Tools,
-            "Space",
-            "Toggle tool output expand",
+            "Ctrl+T",
+            "Toggle last tool call expand",
         ));
+        self.add(
+            Shortcut::new(ShortcutCategory::Tools, "Tab", "Toggle last thinking block")
+                .with_context("when not busy"),
+        );
 
         // View
         self.add(Shortcut::new(
             ShortcutCategory::View,
-            "Ctrl+T",
-            "Toggle theme",
+            "Ctrl+L",
+            "Clear screen",
         ));
-        self.add(Shortcut::new(
-            ShortcutCategory::View,
-            "Ctrl+M",
-            "Select model",
-        ));
-        self.add(Shortcut::new(ShortcutCategory::View, "?", "Show this help"));
         self.add(Shortcut::new(
             ShortcutCategory::View,
             "F1",
-            "Show help (alternate)",
+            "Show this help",
         ));
+        self.add(
+            Shortcut::new(ShortcutCategory::View, "j / k", "Scroll help (vim style)")
+                .with_context("in this help"),
+        );
 
         // System
         self.add(Shortcut::new(
             ShortcutCategory::System,
-            "Ctrl+Q",
-            "Quit Composer",
+            "Ctrl+C",
+            "Cancel / Quit",
         ));
-        self.add(Shortcut::new(
-            ShortcutCategory::System,
-            "Ctrl+D",
-            "Quit (alternate)",
-        ));
-        self.add(Shortcut::new(
-            ShortcutCategory::System,
-            "Ctrl+Z",
-            "Suspend to background",
-        ));
+        self.add(Shortcut::new(ShortcutCategory::System, "Ctrl+D", "Quit"));
     }
 
     /// Add a shortcut
@@ -577,7 +557,7 @@ impl Widget for ShortcutsHelp {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             )
-            .title_bottom(" Press ? or Esc to close ")
+            .title_bottom(" Press F1 or Esc to close ")
             .padding(Padding::horizontal(1));
 
         let inner = block.inner(modal_area);
@@ -693,7 +673,7 @@ mod tests {
 
     #[test]
     fn test_shortcut_with_context() {
-        let shortcut = Shortcut::new(ShortcutCategory::Tools, "a", "Approve tool")
+        let shortcut = Shortcut::new(ShortcutCategory::Tools, "y", "Approve tool")
             .with_context("tool approval");
 
         assert_eq!(shortcut.context_hint.as_deref(), Some("tool approval"));

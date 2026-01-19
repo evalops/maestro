@@ -30,7 +30,10 @@ export const SESSION_CONFIG = {
 	),
 	/** Default session directory path */
 	get DEFAULT_DIR(): string {
-		return join(getAgentDir(), "sessions");
+		return (
+			resolveEnvPath(process.env.COMPOSER_SESSION_DIR) ??
+			join(getAgentDir(), "sessions")
+		);
 	},
 } as const;
 

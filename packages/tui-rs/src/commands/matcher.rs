@@ -492,6 +492,8 @@ pub struct SlashCycleState {
     index: usize,
     /// Cached completions from matcher (invalidated when query changes)
     completions: Vec<String>,
+    /// List state for scroll tracking in the UI
+    list_state: ratatui::widgets::ListState,
 }
 
 impl SlashCycleState {
@@ -502,6 +504,7 @@ impl SlashCycleState {
             query: None,
             index: 0,
             completions: Vec::new(),
+            list_state: ratatui::widgets::ListState::default(),
         }
     }
 
@@ -516,6 +519,12 @@ impl SlashCycleState {
             self.query = Some(query.to_string());
             self.completions = matcher.get_completions(query);
             self.index = 0;
+            // Reset list state and select first item if there are completions
+            if self.completions.is_empty() {
+                self.list_state.select(None);
+            } else {
+                self.list_state.select(Some(0));
+            }
         }
     }
 
@@ -525,6 +534,7 @@ impl SlashCycleState {
             return None;
         }
         self.index = (self.index + 1) % self.completions.len();
+        self.list_state.select(Some(self.index));
         Some(&self.completions[self.index])
     }
 
@@ -538,6 +548,7 @@ impl SlashCycleState {
         } else {
             self.index -= 1;
         }
+        self.list_state.select(Some(self.index));
         Some(&self.completions[self.index])
     }
 
@@ -554,6 +565,7 @@ impl SlashCycleState {
         self.query = None;
         self.index = 0;
         self.completions.clear();
+        self.list_state.select(None);
     }
 
     /// Check if there are completions available
@@ -572,6 +584,11 @@ impl SlashCycleState {
     #[must_use]
     pub fn current_index(&self) -> usize {
         self.index
+    }
+
+    /// Get mutable reference to list state for rendering
+    pub fn list_state_mut(&mut self) -> &mut ratatui::widgets::ListState {
+        &mut self.list_state
     }
 }
 

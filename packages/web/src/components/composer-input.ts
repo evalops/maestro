@@ -8,6 +8,30 @@ import { customElement, property, state } from "lit/decorators.js";
 import { ApiClient } from "../services/api-client.js";
 import { WEB_SLASH_COMMANDS, type WebSlashCommand } from "./slash-commands.js";
 
+type SpeechRecognitionConstructor = new () => SpeechRecognition;
+
+interface SpeechRecognitionEvent extends Event {
+	resultIndex: number;
+	results: SpeechRecognitionResultList;
+}
+
+interface SpeechRecognition extends EventTarget {
+	continuous: boolean;
+	interimResults: boolean;
+	lang: string;
+	onresult: ((event: SpeechRecognitionEvent) => void) | null;
+	onerror: ((event: Event) => void) | null;
+	onend: ((event: Event) => void) | null;
+	start(): void;
+	stop(): void;
+}
+
+declare global {
+	interface Window {
+		webkitSpeechRecognition?: SpeechRecognitionConstructor;
+	}
+}
+
 @customElement("composer-input")
 export class ComposerInput extends LitElement {
 	static override styles = css`
@@ -32,6 +56,11 @@ export class ComposerInput extends LitElement {
 		.input-wrapper:focus-within {
 			border-color: var(--accent-amber, #d4a012);
 			box-shadow: 0 0 0 1px var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
+		}
+
+		.input-wrapper.recording {
+			border-color: var(--accent-red, #ef4444);
+			box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.25);
 		}
 
 		textarea {
@@ -152,6 +181,31 @@ export class ComposerInput extends LitElement {
 		.attach-button:hover:not(:disabled) {
 			background: var(--bg-elevated, #161719);
 			color: var(--text-primary, #e8e9eb);
+		}
+
+		.voice-button {
+			width: 34px;
+			height: 34px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-tertiary, #5c5e62);
+			cursor: pointer;
+			transition: all 0.15s ease;
+		}
+
+		.voice-button:hover:not(:disabled) {
+			background: var(--bg-elevated, #161719);
+			color: var(--text-primary, #e8e9eb);
+		}
+
+		.voice-button.active {
+			border-color: var(--accent-red, #ef4444);
+			color: var(--accent-red, #ef4444);
+			background: rgba(239, 68, 68, 0.08);
 		}
 
 		.attachments {
@@ -325,6 +379,7 @@ export class ComposerInput extends LitElement {
 	`;
 
 	@property({ type: Boolean }) disabled = false;
+	@property({ type: Boolean }) showHint = true;
 	@state() private value = "";
 	@state() private showSuggestions = false;
 	@state() private suggestionIndex = 0;
@@ -333,6 +388,8 @@ export class ComposerInput extends LitElement {
 	@state() private slashMatches: WebSlashCommand[] = [];
 	@state() private slashIndex = 0;
 	@state() private attachments: ComposerAttachment[] = [];
+	@state() private voiceSupported = false;
+	@state() private voiceActive = false;
 
 	private maxLength = 10000;
 	private allFiles: string[] = [];
@@ -341,6 +398,23 @@ export class ComposerInput extends LitElement {
 		null;
 	private checkMentionCounter = 0;
 	private slashDebounce?: number;
+	private speechRecognizer: SpeechRecognition | null = null;
+	private voiceBaseValue = "";
+
+	override connectedCallback(): void {
+		super.connectedCallback();
+		this.voiceSupported = Boolean(this.getSpeechRecognitionCtor());
+	}
+
+	override disconnectedCallback(): void {
+		this.stopVoiceRecognition();
+		super.disconnectedCallback();
+	}
+
+	private getSpeechRecognitionCtor(): SpeechRecognitionConstructor | null {
+		if (typeof window === "undefined") return null;
+		return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
+	}
 
 	private async handleInput(e: Event) {
 		const target = e.target as HTMLTextAreaElement;
@@ -523,6 +597,109 @@ export class ComposerInput extends LitElement {
 			e.preventDefault();
 			this.submit();
 		}
+	}
+
+	private notifyVoiceError(message: string) {
+		this.dispatchEvent(
+			new CustomEvent("voice-error", {
+				detail: { message },
+				bubbles: true,
+				composed: true,
+			}),
+		);
+	}
+
+	private stopVoiceRecognition() {
+		if (this.speechRecognizer) {
+			try {
+				this.speechRecognizer.stop();
+			} catch {
+				// ignore stop errors
+			}
+		}
+		this.speechRecognizer = null;
+		this.voiceActive = false;
+	}
+
+	private startVoiceRecognition() {
+		if (this.disabled) return;
+		const ctor = this.getSpeechRecognitionCtor();
+		if (!ctor) {
+			this.notifyVoiceError("Voice input not supported in this browser.");
+			this.voiceSupported = false;
+			return;
+		}
+
+		const recognizer = new ctor();
+		this.speechRecognizer = recognizer;
+		this.voiceActive = true;
+
+		const base = this.value;
+		const spacer = base && !base.endsWith(" ") ? " " : "";
+		this.voiceBaseValue = base + spacer;
+		let finalTranscript = "";
+
+		recognizer.continuous = false;
+		recognizer.interimResults = true;
+		recognizer.lang =
+			typeof navigator !== "undefined" && navigator.language
+				? navigator.language
+				: "en-US";
+
+		recognizer.onresult = (event) => {
+			let interim = "";
+			for (let i = event.resultIndex; i < event.results.length; i += 1) {
+				const result = event.results[i];
+				const transcript = result?.[0]?.transcript ?? "";
+				if (result?.isFinal) {
+					finalTranscript += transcript;
+				} else {
+					interim += transcript;
+				}
+			}
+
+			const next = `${this.voiceBaseValue}${finalTranscript}${
+				interim ? ` ${interim}` : ""
+			}`.trimStart();
+			this.value = next;
+			this.syncTextareaValue(next);
+		};
+
+		recognizer.onerror = (_event: Event) => {
+			this.voiceActive = false;
+			this.speechRecognizer = null;
+			this.notifyVoiceError(
+				"Voice input failed. Check microphone permissions.",
+			);
+		};
+
+		recognizer.onend = () => {
+			this.voiceActive = false;
+			this.speechRecognizer = null;
+			const next = `${this.voiceBaseValue}${finalTranscript}`.trimStart();
+			this.value = next;
+			this.syncTextareaValue(next);
+		};
+
+		try {
+			recognizer.start();
+		} catch (error) {
+			this.voiceActive = false;
+			this.speechRecognizer = null;
+			const message =
+				error instanceof Error && error.message
+					? error.message
+					: "Unable to start voice input.";
+			this.notifyVoiceError(message);
+		}
+	}
+
+	private toggleVoice() {
+		if (this.voiceActive) {
+			this.stopVoiceRecognition();
+			return;
+		}
+		this.startVoiceRecognition();
 	}
 
 	private scrollSelectedIntoView() {
@@ -751,15 +928,18 @@ export class ComposerInput extends LitElement {
 		}
 	}
 
+	private syncTextareaValue(text: string) {
+		const textarea = this.shadowRoot?.querySelector("textarea");
+		if (!textarea) return;
+		textarea.value = text;
+		textarea.style.height = "auto";
+		textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
+	}
+
 	public setValue(text: string) {
 		this.value = text;
-		const textarea = this.shadowRoot?.querySelector("textarea");
-		if (textarea) {
-			textarea.value = text;
-			textarea.style.height = "auto";
-			textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
-			textarea.focus();
-		}
+		this.syncTextareaValue(text);
+		this.shadowRoot?.querySelector("textarea")?.focus();
 	}
 
 	private getCharCountClass(): string {
@@ -818,7 +998,7 @@ export class ComposerInput extends LitElement {
 				`
 						: ""
 				}
-				<div class="input-wrapper">
+				<div class="input-wrapper ${this.voiceActive ? "recording" : ""}">
 					<textarea
 						.value=${this.value}
 						@input=${this.handleInput}
@@ -849,6 +1029,15 @@ export class ComposerInput extends LitElement {
 							title="Attach files"
 						>
 							＋
+						</button>
+						<button
+							class="voice-button ${this.voiceActive ? "active" : ""}"
+							?disabled=${this.disabled || !this.voiceSupported}
+							@click=${this.toggleVoice}
+							title=${this.voiceSupported ? (this.voiceActive ? "Stop voice input" : "Voice input") : "Voice input not supported"}
+							aria-pressed=${this.voiceActive ? "true" : "false"}
+						>
+							${this.voiceActive ? "REC" : "MIC"}
 						</button>
 						<button
 							@click=${this.submit}
@@ -896,9 +1085,13 @@ export class ComposerInput extends LitElement {
 						: ""
 				}
 			</div>
-			<div class="hint">
-				<kbd>↵</kbd> send • <kbd>⇧</kbd> + <kbd>↵</kbd> newline • <kbd>@</kbd> mention file
-			</div>
+			${
+				this.showHint
+					? html`<div class="hint">
+							<kbd>↵</kbd> send • <kbd>⇧</kbd> + <kbd>↵</kbd> newline • <kbd>@</kbd> mention file
+					  </div>`
+					: null
+			}
 		`;
 	}
 }

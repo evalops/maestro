@@ -78,7 +78,7 @@ use crate::commands::{
 use crate::components::{
     calculate_input_height, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest,
     ChatInputWidget, ChatView, CommandPalette, FileSearchModal, ModelSelector, SessionSwitcher,
-    ThemeSelector,
+    ShortcutsHelp, ThemeSelector,
 };
 use crate::files::get_workspace_files;
 use crate::git;
@@ -119,6 +119,8 @@ pub enum ActiveModal {
     ModelSelector,
     /// Color theme selector
     ThemeSelector,
+    /// Keyboard shortcuts help overlay
+    ShortcutsHelp,
 }
 
 #[derive(Debug, Clone)]
@@ -225,6 +227,9 @@ pub struct App {
 
     /// Color theme selection modal.
     theme_selector: ThemeSelector,
+
+    /// Keyboard shortcuts help overlay.
+    shortcuts_help: ShortcutsHelp,
 
     /// Token usage and cost tracker.
     usage_tracker: crate::usage::UsageTracker,
@@ -353,6 +358,7 @@ impl App {
             clipboard: ClipboardManager::new(),
             model_selector: ModelSelector::new(),
             theme_selector: ThemeSelector::new(),
+            shortcuts_help: ShortcutsHelp::new(),
             usage_tracker: crate::usage::UsageTracker::new(),
             prompt_history,
             tool_history: crate::tools::ToolHistory::default(),
@@ -421,12 +427,18 @@ impl App {
                         }
                     }
                     Event::Mouse(mouse) => {
-                        self.handle_mouse(mouse);
+                        // Handle mouse scroll wheel
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                self.state.scroll_up(3);
+                            }
+                            MouseEventKind::ScrollDown => {
+                                self.state.scroll_down(3);
+                            }
+                            _ => {} // Ignore other mouse events
+                        }
                     }
-                    Event::Resize(_width, height) => {
-                        self.handle_resize(height);
-                    }
-                    _ => {}
+                    _ => {} // Ignore other events (resize, focus, paste handled elsewhere)
                 }
             }
 
@@ -1103,6 +1115,7 @@ Add the required fields and retry.",
             ActiveModal::Approval => return self.handle_approval_key(code).await,
             ActiveModal::ModelSelector => return self.handle_model_selector_key(code, ctrl).await,
             ActiveModal::ThemeSelector => return self.handle_theme_selector_key(code, ctrl).await,
+            ActiveModal::ShortcutsHelp => return self.handle_shortcuts_help_key(code).await,
             ActiveModal::None => {}
         }
 
@@ -1142,6 +1155,11 @@ Add the required fields and retry.",
                 // Session switcher
                 self.session_switcher.show();
                 self.active_modal = ActiveModal::SessionSwitcher;
+            }
+            KeyCode::F(1) => {
+                // Keyboard shortcuts help
+                self.shortcuts_help.show();
+                self.active_modal = ActiveModal::ShortcutsHelp;
             }
 
             // @ trigger for file search
@@ -1666,6 +1684,30 @@ Add the required fields and retry.",
             }
             KeyCode::Right => {
                 self.theme_selector.move_right();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Handle keyboard shortcuts help key events
+    async fn handle_shortcuts_help_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Esc | KeyCode::F(1) => {
+                self.shortcuts_help.hide();
+                self.active_modal = ActiveModal::None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.shortcuts_help.scroll_up(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.shortcuts_help.scroll_down(1);
+            }
+            KeyCode::PageUp => {
+                self.shortcuts_help.scroll_up(10);
+            }
+            KeyCode::PageDown => {
+                self.shortcuts_help.scroll_down(10);
             }
             _ => {}
         }
@@ -3088,13 +3130,14 @@ Slash Commands:
         // Extract needed data to avoid borrow conflicts
         let state = &self.state;
         let active_modal = self.active_modal;
-        let slash_state = &self.slash_state;
-        let file_search = &self.file_search;
-        let session_switcher = &self.session_switcher;
-        let command_palette = &self.command_palette;
+        let slash_state = &mut self.slash_state;
+        let file_search = &mut self.file_search;
+        let session_switcher = &mut self.session_switcher;
+        let command_palette = &mut self.command_palette;
         let approval_controller = &self.approval_controller;
-        let model_selector = &self.model_selector;
-        let theme_selector = &self.theme_selector;
+        let model_selector = &mut self.model_selector;
+        let theme_selector = &mut self.theme_selector;
+        let shortcuts_help = &self.shortcuts_help;
 
         self.terminal.draw(|frame| {
             let area = frame.area();
@@ -3141,6 +3184,9 @@ Slash Commands:
                 }
                 ActiveModal::ThemeSelector => {
                     theme_selector.render(frame, area);
+                }
+                ActiveModal::ShortcutsHelp => {
+                    frame.render_widget(shortcuts_help.clone(), area);
                 }
                 ActiveModal::None => {}
             }
@@ -3202,7 +3248,7 @@ Slash Commands:
 
     /// Render slash command completions popup (static version for closure)
     fn render_slash_completions_static(
-        slash_state: &SlashCycleState,
+        slash_state: &mut SlashCycleState,
         frame: &mut ratatui::Frame,
         area: Rect,
     ) {
@@ -3212,8 +3258,6 @@ Slash Commands:
         if completions.is_empty() {
             return;
         }
-
-        let current_idx = slash_state.current_index();
 
         // Position above the input
         let popup_height = (completions.len() as u16 + 2).min(10);
@@ -3231,26 +3275,22 @@ Slash Commands:
 
         let items: Vec<ListItem> = completions
             .iter()
-            .enumerate()
-            .map(|(i, cmd)| {
-                let style = if i == current_idx {
-                    Style::default().bg(Color::DarkGray).fg(Color::Cyan)
-                } else {
-                    Style::default().fg(Color::White)
-                };
+            .map(|cmd| {
                 // Completions already include the slash
-                ListItem::new(cmd.clone()).style(style)
+                ListItem::new(cmd.clone()).style(Style::default().fg(Color::White))
             })
             .collect();
 
-        let list = List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .style(Style::default().bg(Color::Black)),
-        );
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .style(Style::default().bg(Color::Black)),
+            )
+            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::Cyan));
 
-        frame.render_widget(list, popup_area);
+        frame.render_stateful_widget(list, popup_area, slash_state.list_state_mut());
     }
 }
 

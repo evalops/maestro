@@ -75,10 +75,14 @@ pub enum TerminalEvent {
     ///
     /// Only sent if the terminal supports focus change events.
     FocusLost,
-    /// Mouse wheel scroll.
+    /// Mouse scroll wheel event.
     ///
-    /// Negative = scroll up, positive = scroll down.
-    MouseScroll { delta: i16 },
+    /// Sent when the user scrolls the mouse wheel. Positive delta means scroll up,
+    /// negative delta means scroll down.
+    MouseScroll {
+        /// Scroll direction: positive = up, negative = down
+        delta: i8,
+    },
 }
 
 /// Async stream of terminal events.
@@ -158,11 +162,14 @@ fn convert_event(event: Event) -> Option<TerminalEvent> {
     }
 }
 
+/// Convert crossterm mouse event to our format.
+///
+/// Only scroll wheel events are converted; other mouse events are ignored.
 fn convert_mouse_event(mouse: MouseEvent) -> Option<TerminalEvent> {
     match mouse.kind {
-        MouseEventKind::ScrollUp => Some(TerminalEvent::MouseScroll { delta: -1 }),
-        MouseEventKind::ScrollDown => Some(TerminalEvent::MouseScroll { delta: 1 }),
-        _ => None,
+        MouseEventKind::ScrollUp => Some(TerminalEvent::MouseScroll { delta: 1 }),
+        MouseEventKind::ScrollDown => Some(TerminalEvent::MouseScroll { delta: -1 }),
+        _ => None, // Ignore other mouse events (clicks, movement, etc.)
     }
 }
 

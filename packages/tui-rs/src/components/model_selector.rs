@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -85,6 +85,8 @@ pub struct ModelSelector {
     visible: bool,
     /// Current model ID (for highlighting)
     current_model: Option<String>,
+    /// List state for scrolling
+    list_state: ListState,
 }
 
 impl Default for ModelSelector {
@@ -107,6 +109,7 @@ impl ModelSelector {
             selected: 0,
             visible: false,
             current_model: None,
+            list_state: ListState::default(),
         }
     }
 
@@ -181,6 +184,7 @@ impl ModelSelector {
     pub fn move_up(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
+            self.list_state.select(Some(self.selected));
         }
     }
 
@@ -188,6 +192,7 @@ impl ModelSelector {
     pub fn move_down(&mut self) {
         if self.selected + 1 < self.filtered.len() {
             self.selected += 1;
+            self.list_state.select(Some(self.selected));
         }
     }
 
@@ -228,10 +233,16 @@ impl ModelSelector {
         if self.selected >= self.filtered.len() {
             self.selected = 0;
         }
+        // Sync list state
+        if self.filtered.is_empty() {
+            self.list_state.select(None);
+        } else {
+            self.list_state.select(Some(self.selected));
+        }
     }
 
     /// Render the modal
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         if !self.visible {
             return;
         }
@@ -287,21 +298,16 @@ impl ModelSelector {
         let items: Vec<ListItem> = self
             .filtered
             .iter()
-            .enumerate()
-            .map(|(i, &model_idx)| {
+            .map(|&model_idx| {
                 let model = &self.models[model_idx];
-                let is_selected = i == self.selected;
                 let is_current = self.current_model.as_ref().is_some_and(|c| c == &model.id);
 
-                let style = if is_selected {
-                    Style::default().bg(Color::DarkGray).fg(Color::White)
-                } else {
-                    Style::default()
-                };
-
                 let mut spans = vec![
-                    Span::styled(&model.name, style.add_modifier(Modifier::BOLD)),
-                    Span::styled(format!(" ({}) ", model.provider), style.fg(Color::DarkGray)),
+                    Span::styled(&model.name, Style::default().add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        format!(" ({}) ", model.provider),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 ];
 
                 if is_current {
@@ -312,8 +318,9 @@ impl ModelSelector {
             })
             .collect();
 
-        let list = List::new(items);
-        frame.render_widget(list, chunks[1]);
+        let list =
+            List::new(items).highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+        frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
     }
 }
 
