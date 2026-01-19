@@ -91,6 +91,8 @@ use ratatui::style::Style;
 use ratatui::widgets::Widget;
 use std::cell::RefCell;
 use std::ops::Range;
+use textwrap::core::break_words;
+use textwrap::word_splitters::split_words;
 use textwrap::Options;
 use unicode_width::UnicodeWidthStr;
 
@@ -357,24 +359,49 @@ fn append_wrapped_line_ranges(
         return;
     }
 
-    let mut local_cursor = 0usize;
-    for wrapped in textwrap::wrap(line, opts.clone()) {
-        let piece = wrapped.as_ref();
-        if piece.is_empty() {
+    if UnicodeWidthStr::width(line) <= opts.width {
+        out.push(line_start..(line_start + line.len()));
+        return;
+    }
+
+    let initial_width = opts
+        .width
+        .saturating_sub(UnicodeWidthStr::width(opts.initial_indent));
+    let subsequent_width = opts
+        .width
+        .saturating_sub(UnicodeWidthStr::width(opts.subsequent_indent));
+    let line_widths = [initial_width, subsequent_width];
+
+    let words = opts.word_separator.find_words(line);
+    let split_words = split_words(words, &opts.word_splitter);
+    let broken_words = if opts.break_words {
+        break_words(split_words, line_widths[1])
+    } else {
+        split_words.collect::<Vec<_>>()
+    };
+
+    let wrapped_words = opts.wrap_algorithm.wrap(&broken_words, &line_widths);
+    let mut idx = 0usize;
+
+    for words in wrapped_words {
+        if words.is_empty() {
+            out.push(line_start + idx..line_start + idx);
             continue;
         }
 
-        if let Some(pos) = line[local_cursor..].find(piece) {
-            let start = line_start + local_cursor + pos;
-            let end = start + piece.len();
-            out.push(start..end);
-            local_cursor = (start - line_start) + piece.len();
-        } else {
-            let start = line_start + local_cursor;
-            let end = (start + piece.len()).min(line_start + line.len());
-            out.push(start..end);
-            local_cursor = (start - line_start) + piece.len();
-        }
+        let last_word = words
+            .last()
+            .expect("wrapped word list cannot be empty here");
+        let len = words
+            .iter()
+            .map(|word| word.len() + word.whitespace.len())
+            .sum::<usize>()
+            .saturating_sub(last_word.whitespace.len());
+
+        let start = line_start + idx;
+        let end = (start + len).min(line_start + line.len());
+        out.push(start..end);
+        idx = (end - line_start) + last_word.whitespace.len();
     }
 
     if out.len() == start_len {

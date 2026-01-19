@@ -1705,6 +1705,9 @@ Add the required fields and retry.",
                 if !self.current_model.is_empty() {
                     self.usage_tracker.set_model(self.current_model.clone());
                 }
+                if let Some(agent) = &self.native_agent {
+                    agent.clear_history();
+                }
             }
             CommandAction::ToggleZenMode => {
                 self.state.zen_mode = !self.state.zen_mode;

@@ -344,11 +344,12 @@ fn parse_raw_hooks_config(raw: RawHooksConfig, base_dir: &Path) -> Result<HookCo
                         continue;
                     }
                     if hook.hook_type.as_deref() == Some("prompt") || hook.prompt.is_some() {
-                        let prompt = if let Some(prompt) = hook.prompt {
-                            prompt
-                        } else {
-                            eprintln!("[hooks] Prompt hook missing prompt field");
-                            continue;
+                        let prompt = match hook.prompt {
+                            Some(prompt) if !prompt.trim().is_empty() => prompt,
+                            _ => {
+                                eprintln!("[hooks] Prompt hook missing prompt field");
+                                continue;
+                            }
                         };
                         config.hooks.push(HookDefinition {
                             event,

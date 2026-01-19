@@ -206,6 +206,9 @@ fn is_mcp_tool_name(tool_name: &str) -> bool {
 fn normalize_uri_input(input: &str) -> String {
     if let Some(rest) = input.strip_prefix("file://") {
         let mut path = rest.to_string();
+        if let Some(stripped) = path.strip_prefix("localhost/") {
+            path = stripped.to_string();
+        }
         #[cfg(windows)]
         {
             if path.len() >= 3 && path.as_bytes()[0] == b'/' && path.as_bytes()[2] == b':' {
@@ -740,6 +743,37 @@ mod tests {
 
     fn test_firewall() -> ActionFirewall {
         ActionFirewall::new(workspace_root())
+    }
+
+    #[test]
+    fn normalize_file_uri_localhost() {
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                normalize_uri_input("file://localhost/C:/tmp/file.txt"),
+                "C:/tmp/file.txt"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(
+                normalize_uri_input("file://localhost/Users/test/file.txt"),
+                "/Users/test/file.txt"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn normalize_file_uri_drive_letter() {
+        assert_eq!(
+            normalize_uri_input("file://C:/tmp/file.txt"),
+            "C:/tmp/file.txt"
+        );
+        assert_eq!(
+            normalize_uri_input("file:///C:/tmp/file.txt"),
+            "C:/tmp/file.txt"
+        );
     }
 
     // ========================================================================
