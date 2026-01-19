@@ -250,6 +250,9 @@ pub struct App {
     /// When the current session started (for policy limits).
     session_started_at: SystemTime,
 
+    /// True when a session was loaded but the writer failed to resume.
+    session_resume_failed: bool,
+
     /// Current model in use (for session headers and usage tracking).
     current_model: String,
 
@@ -358,6 +361,7 @@ impl App {
             queued_prompt_active: None,
             next_queue_id: 1,
             session_started_at: SystemTime::now(),
+            session_resume_failed: false,
             current_model: String::new(),
             current_thinking_level: ThinkingLevel::Off,
             pending_model_change: None,
@@ -612,6 +616,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
         self.state.session_id = Some(session_id.clone());
         self.session_started_at = SystemTime::now();
+        self.session_resume_failed = false;
         self.usage_tracker = crate::usage::UsageTracker::with_session(session_id.clone());
         self.usage_tracker.set_model(self.current_model.clone());
 
@@ -1444,8 +1449,15 @@ Add the required fields and retry.",
                                 session_id.clone(),
                                 session.file_path.as_str(),
                             ) {
+                                self.session_manager.reset_session();
+                                self.session_resume_failed = true;
                                 self.state.error =
                                     Some(format!("Failed to resume session writer: {err}"));
+                                self.state.status = Some(format!(
+                                    "Session resume failed ({session_id}); use /new to continue"
+                                ));
+                            } else {
+                                self.session_resume_failed = false;
                             }
                         }
                         Err(e) => {
@@ -1763,6 +1775,7 @@ Add the required fields and retry.",
                 self.session_manager.reset_session();
                 self.state.session_id = None;
                 self.session_started_at = SystemTime::now();
+                self.session_resume_failed = false;
                 self.usage_tracker = crate::usage::UsageTracker::new();
                 if !self.current_model.is_empty() {
                     self.usage_tracker.set_model(self.current_model.clone());
@@ -2983,6 +2996,12 @@ Slash Commands:
     }
 
     async fn submit_prompt_with_kind(&mut self, content: String, kind: PromptKind) -> Result<bool> {
+        if self.session_resume_failed {
+            self.state.error =
+                Some("Session resume failed; use /new to start a new session.".to_string());
+            return Ok(false);
+        }
+
         let mut active_sessions = self.active_session_count();
         if self.session_manager.writer().is_none() {
             // Count the session we're about to start.
