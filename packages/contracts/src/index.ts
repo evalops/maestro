@@ -552,7 +552,8 @@ export type ComposerAgentEvent =
 	  }
 	| { type: "session_update"; sessionId: string }
 	| { type: "heartbeat" }
-	| { type: "aborted" };
+	| { type: "aborted" }
+	| { type: "done" };
 
 /**
  * Error severity levels for API payloads.

@@ -1123,6 +1123,18 @@ export type AgentEvent =
 	  };
 
 /**
+ * Events emitted over streaming transports (SSE/WebSocket).
+ *
+ * Includes core agent events plus transport-level signals.
+ */
+export type AgentStreamEvent =
+	| AgentEvent
+	| { type: "session_update"; sessionId: string }
+	| { type: "heartbeat" }
+	| { type: "aborted" }
+	| { type: "done" };
+
+/**
  * Message queued for sending to the LLM.
  *
  * Wraps the original message with an optional LLM-formatted version,

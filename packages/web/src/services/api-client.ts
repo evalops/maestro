@@ -864,6 +864,12 @@ export class ApiClient {
 				const parsed = JSON.parse(raw);
 				if (parsed && typeof parsed === "object" && parsed.type === "done") {
 					done = true;
+					if (VALIDATE_AGENT_EVENTS && !isComposerAgentEvent(parsed)) {
+						console.warn("Invalid agent event payload:", parsed);
+						if (notify) notify();
+						return;
+					}
+					queue.push(parsed as AgentEvent);
 					if (notify) notify();
 					return;
 				}

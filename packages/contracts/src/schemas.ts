@@ -403,6 +403,7 @@ export const ComposerAgentEventSchema = Type.Union([
 	}),
 	Type.Object({ type: Type.Literal("heartbeat") }),
 	Type.Object({ type: Type.Literal("aborted") }),
+	Type.Object({ type: Type.Literal("done") }),
 ]);
 
 export const ComposerSessionListResponseSchema = Type.Object({

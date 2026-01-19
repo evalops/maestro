@@ -240,6 +240,10 @@ export function handleChatWebSocket(
 	ws.on("message", async (data) => {
 		if (requestHandled) {
 			try {
+				const size = getRawDataSize(data);
+				if (size > maxPayload) {
+					return;
+				}
 				const raw = rawDataToString(data, maxPayload);
 				const parsed = JSON.parse(raw);
 				if (parsed && typeof parsed === "object" && parsed.type === "abort") {
