@@ -128,6 +128,11 @@ struct QueuedPrompt {
     kind: PromptKind,
 }
 
+#[derive(Debug, Clone)]
+struct PendingModelChange {
+    model: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct QueuedPromptCursor {
     id: u64,
@@ -251,6 +256,9 @@ pub struct App {
     /// Current thinking level (for session headers/changes).
     current_thinking_level: ThinkingLevel,
 
+    /// Pending model change awaiting agent confirmation.
+    pending_model_change: Option<PendingModelChange>,
+
     /// Cached git branch for session info updates.
     current_git_branch: Option<String>,
 }
@@ -352,6 +360,7 @@ impl App {
             session_started_at: SystemTime::now(),
             current_model: String::new(),
             current_thinking_level: ThinkingLevel::Off,
+            pending_model_change: None,
             current_git_branch: None,
         }
     }
@@ -843,6 +852,34 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.state.status = Some(format!("Connected: {model} via {provider}"));
                 self.current_model = model.clone();
                 self.usage_tracker.set_model(model.clone());
+            }
+            FromAgent::ModelChanged { model, provider } => {
+                let pending_matches = self
+                    .pending_model_change
+                    .as_ref()
+                    .map(|pending| pending.model == *model)
+                    .unwrap_or(false);
+
+                self.pending_model_change = None;
+                self.current_model = model.clone();
+                self.state.model = Some(model.clone());
+                self.state.provider = Some(provider.clone());
+                self.usage_tracker.set_model(model.clone());
+                self.state.status = Some(format!("Model: {model}"));
+
+                if pending_matches {
+                    self.record_model_change(model);
+                }
+            }
+            FromAgent::ModelChangeFailed { model, .. } => {
+                if self
+                    .pending_model_change
+                    .as_ref()
+                    .map(|pending| pending.model == *model)
+                    .unwrap_or(false)
+                {
+                    self.pending_model_change = None;
+                }
             }
             FromAgent::SessionInfo { cwd, .. } => {
                 self.state.status = Some(format!("Session in: {cwd}"));
@@ -1372,7 +1409,24 @@ Add the required fields and retry.",
                                 }
                             }
 
-                            self.session_started_at = SystemTime::now();
+                            self.session_started_at =
+                                chrono::DateTime::parse_from_rfc3339(&session.header.timestamp)
+                                    .ok()
+                                    .and_then(|dt| {
+                                        let secs = dt.timestamp();
+                                        if secs < 0 {
+                                            None
+                                        } else {
+                                            Some(
+                                                UNIX_EPOCH
+                                                    + Duration::new(
+                                                        secs as u64,
+                                                        dt.timestamp_subsec_nanos(),
+                                                    ),
+                                            )
+                                        }
+                                    })
+                                    .unwrap_or_else(SystemTime::now);
                             self.hydrate_usage_from_session(&session);
 
                             if model_applied {
@@ -1520,11 +1574,10 @@ Add the required fields and retry.",
                         if let Err(e) = agent.set_model(&model_id) {
                             self.state.error = Some(format!("Failed to set model: {e}"));
                         } else {
-                            self.state.status = Some(format!("Model: {model_id}"));
-                            self.state.model = Some(model_id.clone());
-                            self.current_model = model_id.clone();
-                            self.usage_tracker.set_model(model_id.clone());
-                            self.record_model_change(&model_id);
+                            self.pending_model_change = Some(PendingModelChange {
+                                model: model_id.clone(),
+                            });
+                            self.state.status = Some(format!("Switching model: {model_id}"));
                         }
                     }
                 }
@@ -1806,11 +1859,10 @@ Add the required fields and retry.",
                     if let Err(e) = agent.set_model(&model_id) {
                         self.state.error = Some(format!("Failed to set model: {e}"));
                     } else {
-                        self.state.status = Some(format!("Model: {model_id}"));
-                        self.state.model = Some(model_id.clone());
-                        self.current_model = model_id.clone();
-                        self.usage_tracker.set_model(model_id.clone());
-                        self.record_model_change(&model_id);
+                        self.pending_model_change = Some(PendingModelChange {
+                            model: model_id.clone(),
+                        });
+                        self.state.status = Some(format!("Switching model: {model_id}"));
                     }
                 } else {
                     self.state.error = Some("No agent available to set model".to_string());
@@ -2931,12 +2983,11 @@ Slash Commands:
     }
 
     async fn submit_prompt_with_kind(&mut self, content: String, kind: PromptKind) -> Result<bool> {
-        let active_sessions = if self.session_manager.writer().is_some() {
-            self.active_session_count()
-        } else {
-            self.active_session_count()
-                .map(|count| count.saturating_add(1))
-        };
+        let mut active_sessions = self.active_session_count();
+        if self.session_manager.writer().is_none() {
+            // Count the session we're about to start.
+            active_sessions = active_sessions.map(|count| count.saturating_add(1));
+        }
 
         let started_at = if self.session_manager.writer().is_some() {
             self.session_started_at
@@ -2951,6 +3002,7 @@ Slash Commands:
                 .iter()
                 .any(|message| message.role == MessageRole::Assistant);
             if has_assistant {
+                // We don't have usage entries for this session; fail closed.
                 None
             } else {
                 Some(0)

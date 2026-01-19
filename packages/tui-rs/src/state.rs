@@ -551,6 +551,16 @@ impl AppState {
                 self.busy_since = None;
             }
 
+            FromAgent::ModelChanged { model, provider } => {
+                self.status = Some(format!("Model: {model}"));
+                self.model = Some(model);
+                self.provider = Some(provider);
+            }
+
+            FromAgent::ModelChangeFailed { reason, .. } => {
+                self.error = Some(reason);
+            }
+
             // Agent started generating a response
             FromAgent::ResponseStart { response_id } => {
                 self.busy = true;

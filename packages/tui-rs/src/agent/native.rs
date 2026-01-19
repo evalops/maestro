@@ -1379,22 +1379,34 @@ impl NativeAgentRunner {
                     let policy_id = policy_model_id(&model);
                     if let Some(reason) = check_model_allowed(&policy_id) {
                         let _ = self.event_tx.send(FromAgent::Error {
-                            message: reason,
+                            message: reason.clone(),
                             fatal: false,
                         });
+                        let _ = self
+                            .event_tx
+                            .send(FromAgent::ModelChangeFailed { model, reason });
                         continue;
                     }
 
                     match UnifiedClient::from_model(&model) {
                         Ok(client) => {
+                            let provider = format!("{:?}", client.provider());
                             self.client = client;
                             self.config.model = model.clone();
                             self.hooks.set_model(&model);
+                            let _ = self
+                                .event_tx
+                                .send(FromAgent::ModelChanged { model, provider });
                         }
                         Err(e) => {
+                            let message = format!("Failed to set model: {e}");
                             let _ = self.event_tx.send(FromAgent::Error {
-                                message: format!("Failed to set model: {e}"),
+                                message: message.clone(),
                                 fatal: false,
+                            });
+                            let _ = self.event_tx.send(FromAgent::ModelChangeFailed {
+                                model,
+                                reason: message,
                             });
                         }
                     }
