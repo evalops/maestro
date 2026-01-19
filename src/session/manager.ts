@@ -36,7 +36,7 @@ import type {
 	TextContent,
 	UserMessageWithAttachments,
 } from "../agent/types.js";
-import { getAgentDir } from "../config/constants.js";
+import { SESSION_CONFIG, getAgentDir } from "../config/constants.js";
 import {
 	buildConversationModel,
 	isRenderableUserMessage,
@@ -46,6 +46,7 @@ import { getRegisteredModels } from "../models/registry.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
 import { createLogger } from "../utils/logger.js";
+import { resolveEnvPath } from "../utils/path-expansion.js";
 import { SessionFileWriter } from "./file-writer.js";
 import {
 	SessionMetadataCache,
@@ -57,6 +58,7 @@ import {
 	scheduleSessionMigration,
 	unregisterActiveSessionFile,
 } from "./migration.js";
+import { sanitizeSessionScope } from "./scope.js";
 import {
 	type AttachmentExtractedEntry,
 	type BranchSummaryEntry,
@@ -79,10 +81,18 @@ import {
 	tryParseSessionEntry,
 } from "./types.js";
 
+export interface SessionManagerOptions {
+	/** Override the base session directory (before per-cwd scoping). */
+	sessionDir?: string;
+	/** Optional scope key (e.g., auth subject) for per-user session isolation. */
+	sessionScope?: string;
+}
+
 const logger = createLogger("session-manager");
 
 interface SessionFileInfo {
 	id: string;
+	subject?: string;
 	created: Date;
 	messages: AppMessage[];
 	messageCount: number;
@@ -368,6 +378,7 @@ function buildSessionFileInfo(
 	migrateToCurrentVersion(entries);
 
 	let sessionId = "";
+	let subject: string | undefined;
 	let created = stats.birthtime;
 	let summary: string | undefined;
 	let title: string | undefined;
@@ -381,6 +392,9 @@ function buildSessionFileInfo(
 				if (!sessionId) {
 					sessionId = entry.id;
 					created = new Date(entry.timestamp);
+				}
+				if (typeof entry.subject === "string" && entry.subject) {
+					subject = entry.subject;
 				}
 				break;
 			case "attachment_extract":
@@ -432,6 +446,7 @@ function buildSessionFileInfo(
 
 	return {
 		id: sessionId || "unknown",
+		subject,
 		created,
 		messages: normalizedMessages,
 		messageCount,
@@ -505,6 +520,10 @@ export class SessionManager {
 	private sessionFile!: string;
 	/** Directory containing all session files for current project */
 	private sessionDir: string;
+	/** Optional scope for per-user session isolation */
+	private sessionScope?: string;
+	/** Optional override for base session directory */
+	private sessionDirOverride?: string;
 	/** Whether session persistence is enabled (disabled by --no-session) */
 	private enabled = true;
 	/** Whether the session header has been written */
@@ -530,8 +549,15 @@ export class SessionManager {
 	 *
 	 * @param continueSession - If true, loads the most recently modified session
 	 * @param customSessionPath - Optional specific session file to load
+	 * @param options - Optional session directory/scope overrides
 	 */
-	constructor(continueSession = false, customSessionPath?: string) {
+	constructor(
+		continueSession = false,
+		customSessionPath?: string,
+		options: SessionManagerOptions = {},
+	) {
+		this.sessionScope = options.sessionScope;
+		this.sessionDirOverride = options.sessionDir;
 		this.sessionDir = this.getSessionDirectory();
 
 		if (customSessionPath) {
@@ -584,8 +610,20 @@ export class SessionManager {
 		const cwd = process.cwd();
 		const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 
-		const configDir = resolve(getAgentDir());
-		const sessionDir = join(configDir, "sessions", safePath);
+		const baseOverride =
+			resolveEnvPath(this.sessionDirOverride) ??
+			resolveEnvPath(process.env.COMPOSER_SESSION_DIR);
+		const baseDir =
+			baseOverride ??
+			SESSION_CONFIG.DEFAULT_DIR ??
+			join(getAgentDir(), "sessions");
+
+		const scope = this.sessionScope
+			? sanitizeSessionScope(this.sessionScope)
+			: "";
+		const sessionDir = scope
+			? join(baseDir, scope, safePath)
+			: join(baseDir, safePath);
 		if (!existsSync(sessionDir)) {
 			mkdirSync(sessionDir, { recursive: true });
 		}
@@ -738,7 +776,7 @@ export class SessionManager {
 		return generateEntryId(this.byId);
 	}
 
-	startSession(state: AgentState): void {
+	startSession(state: AgentState, options?: { subject?: string }): void {
 		if (!this.enabled || this.sessionInitialized) return;
 
 		const modelKeyFromState = `${state.model.provider}/${state.model.id}`;
@@ -757,6 +795,7 @@ export class SessionManager {
 			id: this.sessionId,
 			timestamp: new Date().toISOString(),
 			cwd: process.cwd(),
+			subject: options?.subject || undefined,
 			model: sessionModelKey,
 			modelMetadata: primaryMetadata ?? fallbackMetadata,
 			thinkingLevel: latestThinkingLevel ?? state.thinkingLevel,
@@ -1340,6 +1379,7 @@ export class SessionManager {
 					sessions.push({
 						path: file,
 						id: info.id,
+						subject: info.subject,
 						created: info.created,
 						modified: stats.mtime,
 						size: stats.size,
@@ -1611,6 +1651,7 @@ export class SessionManager {
 
 				sessions.push({
 					id: info.id,
+					subject: info.subject,
 					title: info.title ?? info.summary,
 					createdAt: info.created.toISOString(),
 					updatedAt: stats.mtime.toISOString(),
@@ -1631,6 +1672,7 @@ export class SessionManager {
 	 */
 	async loadSession(sessionId: string): Promise<{
 		id: string;
+		subject?: string;
 		title?: string;
 		messages: AppMessage[];
 		createdAt: string;
@@ -1654,6 +1696,7 @@ export class SessionManager {
 
 		return {
 			id: info.id,
+			subject: info.subject,
 			title: info.title ?? info.summary,
 			messages: info.messages,
 			createdAt: info.created.toISOString(),

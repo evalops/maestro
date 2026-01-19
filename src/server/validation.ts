@@ -84,6 +84,14 @@ export async function parseAndValidateJson<T>(
 	} catch {
 		throw new ApiError(400, "Invalid JSON payload");
 	}
+	return validatePayload<T>(parsed, schema, "body");
+}
+
+export function validatePayload<T>(
+	payload: unknown,
+	schema: AnySchema,
+	label = "body",
+): T {
 	const validate =
 		typeof schema === "object" && schema !== null
 			? (validatorCache.get(schema) ??
@@ -93,14 +101,14 @@ export async function parseAndValidateJson<T>(
 					return compiled;
 				})())
 			: ajvInstance.compile<T>(schema);
-	if (!validate(parsed)) {
+	if (!validate(payload)) {
 		const message =
 			validate.errors
 				?.map(
-					(err: ErrorObject) => `${err.instancePath || "body"} ${err.message}`,
+					(err: ErrorObject) => `${err.instancePath || label} ${err.message}`,
 				)
 				.join("; ") || "Invalid request body";
 		throw new ApiError(400, message);
 	}
-	return parsed as T;
+	return payload as T;
 }

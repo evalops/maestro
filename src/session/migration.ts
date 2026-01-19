@@ -17,7 +17,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { getAgentDir } from "../config/constants.js";
+import { SESSION_CONFIG, getAgentDir } from "../config/constants.js";
 import { recordSessionMigration } from "../telemetry.js";
 import { createLogger } from "../utils/logger.js";
 import {
@@ -61,8 +61,8 @@ export function unregisterActiveSessionFile(filePath: string): void {
 function getSessionDirectory(): string {
 	const cwd = process.cwd();
 	const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-	const agentDir = getAgentDir();
-	return join(agentDir, "sessions", safePath);
+	const baseDir = SESSION_CONFIG.DEFAULT_DIR || join(getAgentDir(), "sessions");
+	return join(baseDir, safePath);
 }
 
 function getMigrationStatePath(): string {

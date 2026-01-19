@@ -104,7 +104,7 @@ monorepo `src` files:
 ```typescript
 import { Agent } from "@evalops/ai/agent";
 import { ProviderTransport } from "@evalops/ai/transport";
-import type { AgentEvent, Message } from "@evalops/ai/types";
+import type { AgentEvent, AgentStreamEvent, Message } from "@evalops/ai/types";
 import { getModel, getModels } from "@evalops/ai/models";
 ```
 
@@ -185,6 +185,10 @@ agent.subscribe((event) => {
       break;
   }
 });
+
+When you forward events over a transport (SSE/WebSocket), use
+`AgentStreamEvent` to include transport-level signals like
+`session_update`, `heartbeat`, `aborted`, and `done`.
 ```
 
 ## Tool Calling

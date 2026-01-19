@@ -95,6 +95,9 @@ tui.addChild(status);
 tui.setInterruptHandler(() => abortCurrentTask());
 ```
 
+Tip: update `status.setMessage(...)` as streaming transports emit heartbeat or
+completion signals to keep users oriented.
+
 #### SelectList
 Interactive list selector with keyboard navigation.
 

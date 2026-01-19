@@ -42,7 +42,6 @@ import type {
 import { and, eq, gt, lt, or, sql } from "drizzle-orm";
 import { getDb, isDbAvailable } from "../../db/client.js";
 import { sharedSessions as sharedSessionsTable } from "../../db/schema.js";
-import { SessionManager } from "../../session/manager.js";
 import { createLogger } from "../../utils/logger.js";
 import { getAuthSubject } from "../authz.js";
 import { RateLimiter } from "../rate-limiter.js";
@@ -52,6 +51,13 @@ import {
 	respondWithApiError,
 	sendJson,
 } from "../server-utils.js";
+import {
+	createSessionManagerForRequest,
+	createSessionManagerForScope,
+	decodeScopedSessionId,
+	encodeScopedSessionId,
+	resolveSessionScope,
+} from "../session-scope.js";
 import { convertAppMessagesToComposer } from "../session-serialization.js";
 
 const logger = createLogger("sessions-handler");
@@ -65,7 +71,7 @@ const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
  * Returns true if access is allowed, false otherwise.
  */
 function verifySessionOwnership(
-	session: Record<string, unknown>,
+	session: { owner?: unknown; subject?: unknown },
 	subject: string,
 ): boolean {
 	// Check explicit owner field
@@ -372,21 +378,41 @@ export async function handleSessions(
 	params: { id?: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
+	const sessionManager = createSessionManagerForRequest(req, true);
 	const sessionId = params.id;
 	const url = new URL(req.url || "/api/sessions", "http://localhost");
 	const limitParam = url.searchParams.get("limit");
 	const offsetParam = url.searchParams.get("offset");
-	const limit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
-	const offset = offsetParam ? Number.parseInt(offsetParam, 10) : undefined;
+	const parsedLimit = limitParam ? Number.parseInt(limitParam, 10) : undefined;
+	const parsedOffset = offsetParam
+		? Number.parseInt(offsetParam, 10)
+		: undefined;
+	const limit =
+		typeof parsedLimit === "number" && Number.isFinite(parsedLimit)
+			? Math.max(1, parsedLimit)
+			: undefined;
+	const offset =
+		typeof parsedOffset === "number" && Number.isFinite(parsedOffset)
+			? Math.max(0, parsedOffset)
+			: undefined;
 
 	try {
 		if (req.method === "GET" && !sessionId) {
-			const sessions = await sessionManager.listSessions({
-				limit,
-				offset,
-			});
-			const sessionList: ComposerSessionSummary[] = sessions.map((s) => ({
+			const subject = getAuthSubject(req);
+			const paginationRequested =
+				typeof limit === "number" || typeof offset === "number";
+			const sessions = (
+				await sessionManager.listSessions(
+					paginationRequested ? undefined : { limit, offset },
+				)
+			).filter((s) => verifySessionOwnership(s, subject));
+			const pagedSessions = paginationRequested
+				? sessions.slice(
+						offset ?? 0,
+						(offset ?? 0) + (limit ?? sessions.length),
+					)
+				: sessions;
+			const sessionList: ComposerSessionSummary[] = pagedSessions.map((s) => ({
 				id: s.id,
 				title: s.title || `Session ${s.id.slice(0, 8)}`,
 				createdAt: s.createdAt || new Date().toISOString(),
@@ -565,7 +591,7 @@ export async function handleSessionShare(
 	params: { id: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
+	const sessionManager = createSessionManagerForRequest(req, true);
 	const sessionId = params.id;
 
 	try {
@@ -609,9 +635,12 @@ export async function handleSessionShare(
 		const shareToken = crypto.randomBytes(32).toString("base64url");
 		const expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
 
+		const scope = resolveSessionScope(req);
+		const scopedSessionId = encodeScopedSessionId(scope, sessionId);
+
 		// Store in database (or fallback to memory)
 		await createSharedSessionInDb(
-			sessionId,
+			scopedSessionId,
 			shareToken,
 			expiresAt,
 			maxAccesses,
@@ -649,7 +678,6 @@ export async function handleSharedSession(
 	params: { token: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
 	const shareToken = params.token;
 
 	try {
@@ -708,9 +736,11 @@ export async function handleSharedSession(
 			}
 		}
 
-		const session = await sessionManager.loadSession(
+		const { scope, sessionId } = decodeScopedSessionId(
 			accessResult.sessionId as string,
 		);
+		const sessionManager = createSessionManagerForScope(scope, true);
+		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
 			sendJson(res, 404, { error: "Session not found" }, cors, req);
 			return;
@@ -748,7 +778,6 @@ export async function handleSharedSessionAttachment(
 	params: { token: string; attachmentId: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
 	const shareToken = params.token;
 	const attachmentId = params.attachmentId;
 
@@ -780,7 +809,9 @@ export async function handleSharedSessionAttachment(
 			return;
 		}
 
-		const session = await sessionManager.loadSession(share.sessionId);
+		const { scope, sessionId } = decodeScopedSessionId(share.sessionId);
+		const sessionManager = createSessionManagerForScope(scope, true);
+		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
 			sendJson(res, 404, { error: "Session not found" }, cors, req);
 			return;
@@ -823,7 +854,7 @@ export async function handleSessionExport(
 	params: { id: string },
 	cors: Record<string, string>,
 ) {
-	const sessionManager = new SessionManager(true);
+	const sessionManager = createSessionManagerForRequest(req, true);
 	const sessionId = params.id;
 
 	try {
