@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::safety::is_safe_mode_enabled;
 use crate::sandbox::SANDBOX_ENV_VAR;
-use crate::session::entries::ThinkingLevel;
+use crate::session::ThinkingLevel;
 use crate::state::ApprovalMode;
 use crate::terminal_info::{is_ssh_session, is_wsl};
 use crate::tools::background_process_count;

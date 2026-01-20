@@ -126,7 +126,7 @@ use ratatui::{
 use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
 use crate::runtime_badges::{build_runtime_badges, RuntimeBadgeParams};
-use crate::session::entries::ThinkingLevel;
+use crate::session::ThinkingLevel;
 use crate::state::{ApprovalMode, Message, MessageRole, ToolCallStatus};
 use crate::tool_output::{clamp_tool_output, format_tool_output_truncation, tool_output_limits};
 use crate::wrapping::{word_wrap_lines, RtOptions};
