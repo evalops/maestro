@@ -47,6 +47,9 @@ pub fn build_runtime_badges(approval_mode: ApprovalMode) -> RuntimeBadges {
     if is_flatpak_env() {
         env_badges.push("env:flatpak".to_string());
     }
+    if is_bubblewrap_env() {
+        env_badges.push("env:bwrap".to_string());
+    }
     if is_musl_env() {
         env_badges.push("env:musl".to_string());
     }
@@ -123,6 +126,13 @@ fn is_flatpak_env() -> bool {
         return true;
     }
     Path::new("/.flatpak-info").exists()
+}
+
+fn is_bubblewrap_env() -> bool {
+    env::var("BWRAP_ARGS")
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn is_tmux_env() -> bool {

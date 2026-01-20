@@ -5,6 +5,7 @@ import { mcpManager } from "../../mcp/index.js";
 import { isSafeModeEnabled } from "../../safety/safe-mode.js";
 import { backgroundTaskManager } from "../../tools/background-tasks.js";
 import {
+	isBubblewrapEnv,
 	isDockerEnv,
 	isFlatpakEnv,
 	isJetBrainsTerminal,
@@ -108,6 +109,9 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 	}
 	if (isFlatpakEnv()) {
 		badges.push("env:flatpak");
+	}
+	if (isBubblewrapEnv()) {
+		badges.push("env:bwrap");
 	}
 	if (isMuslEnv()) {
 		badges.push("env:musl");
