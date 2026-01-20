@@ -4127,7 +4127,7 @@ mod tests {
     fn test_registry_tool_count() {
         let registry = ToolRegistry::new();
         let count = registry.tools().count();
-        assert_eq!(count, 36); // includes parity tools + IDE stubs
+        assert_eq!(count, 38); // includes parity tools + IDE stubs
     }
 
     #[test]
