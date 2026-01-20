@@ -37,6 +37,7 @@ export interface CommandHandlers {
 	access(context: CommandExecutionContext): void;
 	pii(context: CommandExecutionContext): void;
 	audit(context: CommandExecutionContext): void;
+	limits(context: CommandExecutionContext): void;
 	help(context: CommandExecutionContext): void;
 	update(context: CommandExecutionContext): Promise<void> | void;
 	changelog(context: CommandExecutionContext): void;

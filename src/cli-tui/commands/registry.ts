@@ -110,6 +110,18 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "limits",
+				description: "Show configurable runtime limits",
+				usage: "/limits [all|tool|tui|api|session|runtime|help]",
+				tags: ["config", "diagnostics"],
+				examples: ["/limits", "/limits tool", "/limits runtime"],
+			},
+			withArgs("limits"),
+			handlers.limits,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "approvals",
 				description:
 					"Show approval status or switch between auto/prompt/fail modes",

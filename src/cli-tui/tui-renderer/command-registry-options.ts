@@ -13,6 +13,7 @@ import type { ChangelogView } from "../changelog-view.js";
 import { handleAccessCommand } from "../commands/access-command.js";
 import { handleAuditCommand } from "../commands/audit-command.js";
 import type { GroupedCommandHandlers } from "../commands/grouped-command-handlers.js";
+import { handleLimitsCommand } from "../commands/limits-command.js";
 import { handleOtelCommand as otelHandler } from "../commands/otel-handlers.js";
 import { handlePiiCommand } from "../commands/pii-command.js";
 import {
@@ -174,6 +175,7 @@ export function buildTuiCommandRegistryOptions(
 		handleAccess: (context) => handleAccessCommand(context),
 		handlePii: (context) => handlePiiCommand(context),
 		handleAudit: (context) => handleAuditCommand(context),
+		handleLimits: (context) => handleLimitsCommand(context),
 		showHelp: (_context) => deps.infoView.showHelp(),
 		handleUpdate: (_context) => deps.updateView.handleUpdateCommand(),
 		handleChangelog: (_context) => deps.changelogView.handleChangelogCommand(),

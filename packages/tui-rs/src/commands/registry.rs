@@ -77,7 +77,9 @@ use super::types::{
     CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction,
     McpAction, ModalType, QueueAction, QueueModeKind, SkillsAction, ToolHistoryAction, UsageAction,
 };
+use crate::lsp::max_diagnostics_per_file;
 use crate::state::QueueMode;
+use crate::tool_output::tool_output_limits;
 
 /// Registry of all available commands with efficient lookup and execution
 ///
@@ -859,6 +861,80 @@ pub fn build_command_registry() -> CommandRegistry {
         Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowDiagnostics))),
     ));
 
+    // Limits command
+    registry.register(
+        Command::new(
+            "limits",
+            "Show configurable runtime limits",
+            CommandCategory::Config,
+            Box::new(|ctx| {
+                let subcommand = ctx
+                    .raw_args
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("all")
+                    .to_lowercase();
+                if matches!(subcommand.as_str(), "help" | "?" | "-h" | "--help") {
+                    return Ok(CommandOutput::Message(
+                        "Usage: /limits [all|tool|lsp|help]".to_string(),
+                    ));
+                }
+
+                let tool_limits = tool_output_limits();
+                let lsp_limit = max_diagnostics_per_file();
+
+                let mut sections: Vec<(&str, Vec<String>)> = Vec::new();
+                sections.push((
+                    "Tool output (TUI):",
+                    vec![
+                        format!(
+                            "  TUI_TOOL_MAX_CHARS: {} (env: COMPOSER_TUI_TOOL_MAX_CHARS)",
+                            tool_limits.max_chars
+                        ),
+                        format!(
+                            "  TUI_TOOL_MAX_LINES: {} (env: COMPOSER_TUI_TOOL_MAX_LINES)",
+                            tool_limits.max_lines
+                        ),
+                    ],
+                ));
+                sections.push((
+                    "LSP diagnostics:",
+                    vec![format!(
+                        "  MAX_DIAGNOSTICS_PER_FILE: {} (env: COMPOSER_LSP_MAX_DIAGNOSTICS)",
+                        lsp_limit
+                    )],
+                ));
+
+                let selected: Vec<(&str, Vec<String>)> = match subcommand.as_str() {
+                    "all" | "" => sections.clone(),
+                    "tool" | "tui" => sections
+                        .get(0)
+                        .map(|(title, lines)| (*title, lines.clone()))
+                        .into_iter()
+                        .collect(),
+                    "lsp" => sections
+                        .get(1)
+                        .map(|(title, lines)| (*title, lines.clone()))
+                        .into_iter()
+                        .collect(),
+                    _ => {
+                        return Err(CommandError::new("Usage: /limits [all|tool|lsp|help]"));
+                    }
+                };
+
+                let mut lines = vec!["Limits (restart after changing env vars):".to_string()];
+                for (title, entries) in selected {
+                    lines.push(String::new());
+                    lines.push(title.to_string());
+                    lines.extend(entries);
+                }
+
+                Ok(CommandOutput::Message(lines.join("\n")))
+            }),
+        )
+        .usage("/limits [all|tool|lsp|help]"),
+    );
+
     // Diagnostics command
     registry.register(
         Command::new(
@@ -1305,6 +1381,7 @@ mod tests {
         assert!(registry.get("theme").is_some());
         assert!(registry.get("model").is_some());
         assert!(registry.get("quit").is_some());
+        assert!(registry.get("limits").is_some());
     }
 
     #[test]

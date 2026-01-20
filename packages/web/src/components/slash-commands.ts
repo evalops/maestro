@@ -86,6 +86,12 @@ export const WEB_SLASH_COMMANDS: WebSlashCommand[] = [
 		tags: ["config"],
 	},
 	{
+		name: "limits",
+		description: "Show runtime limits",
+		usage: "/limits [all|tool|tui|api|session|runtime|help]",
+		tags: ["config", "diagnostics"],
+	},
+	{
 		name: "files",
 		description: "List workspace files",
 		usage: "/files [pattern]",

@@ -39,6 +39,7 @@ export interface CommandRegistryOptions {
 	handleAccess: (context: CommandExecutionContext) => void;
 	handlePii: (context: CommandExecutionContext) => void;
 	handleAudit: (context: CommandExecutionContext) => void;
+	handleLimits: (context: CommandExecutionContext) => void;
 	showHelp: (context: CommandExecutionContext) => void;
 	handleUpdate: (context: CommandExecutionContext) => void | Promise<void>;
 	handleChangelog: (context: CommandExecutionContext) => void;
@@ -138,6 +139,7 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			access: opts.handleAccess,
 			pii: opts.handlePii,
 			audit: opts.handleAudit,
+			limits: opts.handleLimits,
 			help: opts.showHelp,
 			update: opts.handleUpdate,
 			changelog: opts.handleChangelog,
