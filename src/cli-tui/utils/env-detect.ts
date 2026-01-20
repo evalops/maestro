@@ -78,7 +78,9 @@ export function isFlatpakEnv(): boolean {
 }
 
 export function isBubblewrapEnv(): boolean {
-	return Boolean(process.env.BWRAP_ARGS);
+	const args = process.env.BWRAP_ARGS;
+	if (!args) return false;
+	return args.trim().length > 0;
 }
 
 export function isMuslEnv(): boolean {
