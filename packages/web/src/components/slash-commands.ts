@@ -49,6 +49,18 @@ export const WEB_SLASH_COMMANDS: WebSlashCommand[] = [
 		tags: ["git"],
 	},
 	{
+		name: "git",
+		description: "Git status, diff, and review",
+		usage: "/git [status|diff <path>|review]",
+		tags: ["git"],
+	},
+	{
+		name: "history",
+		description: "Show prompt history",
+		usage: "/history [count|search query|clear]",
+		tags: ["session"],
+	},
+	{
 		name: "plan",
 		description: "Show saved plans",
 		usage: "/plan",
@@ -108,6 +120,18 @@ export const WEB_SLASH_COMMANDS: WebSlashCommand[] = [
 		description: "Open command palette",
 		usage: "/commands",
 		tags: ["ui"],
+	},
+	{
+		name: "toolhistory",
+		description: "Show tool execution history",
+		usage: "/toolhistory [count|stats|clear|tool <name>]",
+		tags: ["tools"],
+	},
+	{
+		name: "skills",
+		description: "List or manage skills",
+		usage: "/skills [list|activate|deactivate|reload|info] [skill-name]",
+		tags: ["tools"],
 	},
 	{
 		name: "cost",

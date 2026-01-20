@@ -1,9 +1,15 @@
+import type { ToolResultMessage } from "../../agent/types.js";
+import { PromptHistoryStore } from "../history/prompt-history.js";
+import { ToolHistoryStore } from "../history/tool-history.js";
+
 export class SessionContext {
 	private lastUserMessage?: string;
 	private lastAssistantMessage?: string;
 	private currentRunTools: string[] = [];
 	private lastRunTools: string[] = [];
 	private artifacts: SessionArtifacts = {};
+	private promptHistory = new PromptHistoryStore();
+	private toolHistory = new ToolHistoryStore();
 
 	setLastUserMessage(text: string): void {
 		this.lastUserMessage = text;
@@ -19,6 +25,23 @@ export class SessionContext {
 
 	recordToolUsage(toolName: string): void {
 		this.currentRunTools.push(toolName);
+	}
+
+	recordPrompt(text: string): void {
+		this.promptHistory.add(text);
+	}
+
+	recordToolStart(toolCallId: string, toolName: string): void {
+		this.toolHistory.recordStart(toolCallId, toolName);
+	}
+
+	recordToolEnd(
+		toolCallId: string,
+		toolName: string,
+		result: ToolResultMessage,
+		isError: boolean,
+	): void {
+		this.toolHistory.recordEnd(toolCallId, toolName, result, isError);
 	}
 
 	completeTurn(lastAssistantText?: string): void {
@@ -39,6 +62,14 @@ export class SessionContext {
 
 	getLastRunToolNames(): string[] {
 		return this.lastRunTools;
+	}
+
+	getPromptHistory(): PromptHistoryStore {
+		return this.promptHistory;
+	}
+
+	getToolHistory(): ToolHistoryStore {
+		return this.toolHistory;
 	}
 
 	recordShareArtifact(filePath: string): void {

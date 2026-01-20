@@ -198,6 +198,80 @@ pub fn get_status(cwd: &Path) -> Option<GitStatus> {
     Some(status)
 }
 
+/// Get a short git status summary (`git status -sb`).
+#[must_use]
+pub fn status_short(cwd: &Path) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["status", "-sb"])
+        .current_dir(cwd)
+        .output()
+        .map_err(|err| format!("Failed to run git status: {err}"))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "git status failed".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+/// Get git diff output for the working tree (optionally scoped to a path).
+#[must_use]
+pub fn diff(cwd: &Path, path: Option<&str>) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("diff");
+    if let Some(path) = path {
+        if !path.trim().is_empty() {
+            cmd.arg("--").arg(path);
+        }
+    }
+    let output = cmd
+        .current_dir(cwd)
+        .output()
+        .map_err(|err| format!("Failed to run git diff: {err}"))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "git diff failed".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+/// Get git diff --stat output (staged or unstaged).
+#[must_use]
+pub fn diff_stat(cwd: &Path, staged: bool) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("diff");
+    if staged {
+        cmd.arg("--cached");
+    }
+    cmd.arg("--stat");
+    let output = cmd
+        .current_dir(cwd)
+        .output()
+        .map_err(|err| format!("Failed to run git diff --stat: {err}"))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "git diff --stat failed".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

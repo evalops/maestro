@@ -110,6 +110,20 @@ export const PATHS = {
 			join(getComposerHome(), "bash-history.json")
 		);
 	},
+	/** Prompt history file path */
+	get PROMPT_HISTORY_FILE(): string {
+		return (
+			resolveEnvPath(process.env.COMPOSER_PROMPT_HISTORY_FILE) ??
+			join(getComposerHome(), "history", "prompts.jsonl")
+		);
+	},
+	/** Tool history file path */
+	get TOOL_HISTORY_FILE(): string {
+		return (
+			resolveEnvPath(process.env.COMPOSER_TOOL_HISTORY_FILE) ??
+			join(getComposerHome(), "history", "tools.jsonl")
+		);
+	},
 	/** Tools install directory */
 	get TOOLS_DIR(): string {
 		return join(getComposerHome(), "tools");

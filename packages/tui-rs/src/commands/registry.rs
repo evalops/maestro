@@ -70,6 +70,7 @@
 //! See `CommandArgument` in `types.rs` for argument definition details.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use super::types::{
@@ -77,6 +78,7 @@ use super::types::{
     CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction,
     McpAction, ModalType, QueueAction, QueueModeKind, SkillsAction, ToolHistoryAction, UsageAction,
 };
+use crate::git;
 use crate::lsp::max_diagnostics_per_file;
 use crate::state::QueueMode;
 use crate::tool_output::tool_output_limits;
@@ -861,6 +863,28 @@ pub fn build_command_registry() -> CommandRegistry {
         Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowDiagnostics))),
     ));
 
+    // About command
+    registry.register(
+        Command::new(
+            "about",
+            "Show build and environment info",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| Ok(CommandOutput::Message(build_diag_about(ctx)))),
+        )
+        .usage("/about"),
+    );
+
+    // Context command
+    registry.register(
+        Command::new(
+            "context",
+            "Show context summary",
+            CommandCategory::Context,
+            Box::new(|ctx| Ok(CommandOutput::Message(build_diag_context(ctx)))),
+        )
+        .usage("/context"),
+    );
+
     // Limits command
     registry.register(
         Command::new(
@@ -935,6 +959,70 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/limits [all|tool|lsp|help]"),
     );
 
+    // Git diff command
+    registry.register(
+        Command::new(
+            "diff",
+            "Show git diff for working tree or a path",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| {
+                let path = ctx.raw_args.trim();
+                Ok(CommandOutput::Message(build_git_diff_message(
+                    &ctx.cwd,
+                    if path.is_empty() { None } else { Some(path) },
+                )))
+            }),
+        )
+        .arg(CommandArgument::string("path", "Optional path to diff"))
+        .usage("/diff [path]"),
+    );
+
+    // Git review command
+    registry.register(
+        Command::new(
+            "review",
+            "Summarize git status and diff stats",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| Ok(CommandOutput::Message(build_git_review_message(&ctx.cwd)))),
+        )
+        .usage("/review"),
+    );
+
+    // Git command (grouped)
+    registry.register(
+        Command::new(
+            "git",
+            "Git operations: status, diff, review",
+            CommandCategory::Diagnostics,
+            Box::new(|ctx| {
+                let mut parts = ctx.raw_args.split_whitespace();
+                let sub = parts.next().unwrap_or("").to_lowercase();
+                let rest_joined = parts.collect::<Vec<_>>().join(" ");
+                let rest = if rest_joined.trim().is_empty() {
+                    None
+                } else {
+                    Some(rest_joined.trim())
+                };
+
+                let message = match sub.as_str() {
+                    "" | "status" | "st" => build_git_status_message(&ctx.cwd),
+                    "diff" | "d" => build_git_diff_message(&ctx.cwd, rest),
+                    "review" | "summary" => build_git_review_message(&ctx.cwd),
+                    "help" | "?" | "-h" | "--help" => git_help_message(),
+                    _ => {
+                        let mut msg = String::new();
+                        msg.push_str("Unknown git subcommand.\n\n");
+                        msg.push_str(&git_help_message());
+                        msg
+                    }
+                };
+
+                Ok(CommandOutput::Message(message))
+            }),
+        )
+        .usage("/git [status|diff <path>|review]"),
+    );
+
     // Status command
     registry.register(
         Command::new(
@@ -982,16 +1070,18 @@ pub fn build_command_registry() -> CommandRegistry {
                     ])),
                     "mcp" => Ok(CommandOutput::Action(CommandAction::Mcp(McpAction::Status))),
                     "help" | "?" | "-h" | "--help" => Ok(CommandOutput::Message(
-                        "Usage: /diag [status|stats|mcp|help]".to_string(),
+                        "Usage: /diag [status|stats|about|context|mcp|help]".to_string(),
                     )),
-                    "about" | "context" | "lsp" => Ok(CommandOutput::Message(
-                        "Not supported in the Rust TUI yet. Try /status or /stats.".to_string(),
+                    "about" => Ok(CommandOutput::Message(build_diag_about(ctx))),
+                    "context" => Ok(CommandOutput::Message(build_diag_context(ctx))),
+                    "lsp" => Ok(CommandOutput::Message(
+                        "LSP diagnostics are not supported in the Rust TUI yet.".to_string(),
                     )),
                     _ => Ok(CommandOutput::Action(CommandAction::ShowDiagnostics)),
                 }
             }),
         )
-        .group(vec!["status", "stats", "mcp"]),
+        .group(vec!["status", "stats", "about", "context", "mcp"]),
     );
 
     // Tools command
@@ -1369,6 +1459,191 @@ pub fn build_command_registry() -> CommandRegistry {
     registry
 }
 
+fn build_diag_about(ctx: &CommandContext) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let cwd = ctx.cwd.clone();
+    let branch =
+        git::current_branch(Path::new(&ctx.cwd)).unwrap_or_else(|| "(not a repo)".to_string());
+    let session = ctx
+        .session_id
+        .clone()
+        .unwrap_or_else(|| "(ephemeral)".to_string());
+    let model = ctx.model.clone().unwrap_or_else(|| "(unknown)".to_string());
+
+    let mut lines = Vec::new();
+    lines.push("## About".to_string());
+    lines.push(String::new());
+    lines.push(format!("**Version:** {version}"));
+    lines.push(format!("**OS:** {os}/{arch}"));
+    lines.push(format!("**CWD:** {cwd}"));
+    lines.push(format!("**Session:** {session}"));
+    lines.push(format!("**Model:** {model}"));
+    lines.push(format!("**Git:** {branch}"));
+    lines.join("\n")
+}
+
+fn build_diag_context(ctx: &CommandContext) -> String {
+    let session = ctx
+        .session_id
+        .clone()
+        .unwrap_or_else(|| "(ephemeral)".to_string());
+    let model = ctx.model.clone().unwrap_or_else(|| "(unknown)".to_string());
+
+    let mut lines = Vec::new();
+    lines.push("## Context".to_string());
+    lines.push(String::new());
+    lines.push(format!("**Model:** {model}"));
+    lines.push(format!("**Session:** {session}"));
+    lines.push(format!("**CWD:** {}", ctx.cwd));
+    lines.push(String::new());
+    lines.push("Token usage details are not available in the Rust TUI yet.".to_string());
+    lines.join("\n")
+}
+
+fn git_help_message() -> String {
+    let mut msg = String::new();
+    msg.push_str("Git Commands:\n");
+    msg.push_str("  /git                 Show git status summary\n");
+    msg.push_str("  /git status          Show git status\n");
+    msg.push_str("  /git diff [path]     Show diff for file\n");
+    msg.push_str("  /git review          Summarize status and diff stats\n\n");
+    msg.push_str("Direct shortcuts still work: /diff, /review");
+    msg
+}
+
+fn build_git_status_message(cwd: &str) -> String {
+    let cwd_path = Path::new(cwd);
+    if !git::is_git_repo(cwd_path) {
+        return "Not a git repository.".to_string();
+    }
+    match git::status_short(cwd_path) {
+        Ok(status) => {
+            if status.is_empty() {
+                "Working tree clean.".to_string()
+            } else {
+                format!("## Git Status\n\n```\n{status}\n```")
+            }
+        }
+        Err(err) => format!("Git status failed: {err}"),
+    }
+}
+
+fn build_git_review_message(cwd: &str) -> String {
+    let cwd_path = Path::new(cwd);
+    if !git::is_git_repo(cwd_path) {
+        return "Not a git repository.".to_string();
+    }
+
+    let status =
+        git::status_short(cwd_path).unwrap_or_else(|err| format!("git status failed: {err}"));
+    let staged = git::diff_stat(cwd_path, true)
+        .unwrap_or_else(|err| format!("git diff --cached --stat failed: {err}"));
+    let worktree = git::diff_stat(cwd_path, false)
+        .unwrap_or_else(|err| format!("git diff --stat failed: {err}"));
+
+    let mut msg = String::from("## Git Review\n\n");
+    msg.push_str("**Status:**\n```\n");
+    msg.push_str(if status.is_empty() {
+        "Working tree clean."
+    } else {
+        status.as_str()
+    });
+    msg.push_str("\n```\n\n");
+
+    msg.push_str("**Staged diff stats:**\n");
+    if staged.is_empty() {
+        msg.push_str("No staged changes.\n\n");
+    } else {
+        msg.push_str("```\n");
+        msg.push_str(&staged);
+        msg.push_str("\n```\n\n");
+    }
+
+    msg.push_str("**Worktree diff stats:**\n");
+    if worktree.is_empty() {
+        msg.push_str("No unstaged changes.");
+    } else {
+        msg.push_str("```\n");
+        msg.push_str(&worktree);
+        msg.push_str("\n```");
+    }
+
+    msg
+}
+
+fn build_git_diff_message(cwd: &str, path: Option<&str>) -> String {
+    let cwd_path = Path::new(cwd);
+    if !git::is_git_repo(cwd_path) {
+        return "Not a git repository.".to_string();
+    }
+
+    match git::diff(cwd_path, path) {
+        Ok(diff) => {
+            if diff.is_empty() {
+                return "Working tree clean.".to_string();
+            }
+            let (truncated, was_truncated) = truncate_text(&diff, 200, 20_000);
+            let mut msg = String::from("## Git Diff\n\n```diff\n");
+            msg.push_str(&truncated);
+            msg.push_str("\n```");
+            if was_truncated {
+                msg.push_str("\n\n(Truncated. Run git diff in your shell for full output.)");
+            }
+            msg
+        }
+        Err(err) => format!("Git diff failed: {err}"),
+    }
+}
+
+fn truncate_text(text: &str, max_lines: usize, max_chars: usize) -> (String, bool) {
+    if text.is_empty() {
+        return (String::new(), false);
+    }
+
+    let mut out = String::new();
+    let mut total_chars = 0usize;
+    let mut lines_used = 0usize;
+    let mut truncated = false;
+
+    for line in text.lines() {
+        if lines_used >= max_lines {
+            truncated = true;
+            break;
+        }
+
+        if !out.is_empty() {
+            out.push('\n');
+            total_chars += 1;
+        }
+
+        let line_len = line.chars().count();
+        if total_chars + line_len > max_chars {
+            let remaining = max_chars.saturating_sub(total_chars);
+            if remaining > 0 {
+                out.push_str(&line.chars().take(remaining).collect::<String>());
+            }
+            truncated = true;
+            break;
+        }
+
+        out.push_str(line);
+        total_chars += line_len;
+        lines_used += 1;
+    }
+
+    if !truncated {
+        let total_lines = text.lines().count();
+        let total_chars_all = text.chars().count();
+        if total_lines > lines_used || total_chars_all > total_chars {
+            truncated = true;
+        }
+    }
+
+    (out, truncated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1432,6 +1707,11 @@ mod tests {
         assert!(registry.get("limits").is_some());
         assert!(registry.get("status").is_some());
         assert!(registry.get("stats").is_some());
+        assert!(registry.get("about").is_some());
+        assert!(registry.get("context").is_some());
+        assert!(registry.get("git").is_some());
+        assert!(registry.get("diff").is_some());
+        assert!(registry.get("review").is_some());
     }
 
     #[test]

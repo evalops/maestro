@@ -24,12 +24,15 @@ export interface CommandRegistryOptions {
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
 	handleTools: (context: CommandExecutionContext) => void | Promise<void>;
+	handleToolHistory: (context: CommandExecutionContext) => void | Promise<void>;
+	handleSkills: (context: CommandExecutionContext) => void | Promise<void>;
 	handleImportConfig: (
 		context: CommandExecutionContext,
 	) => void | Promise<void>;
 	handleSession: (context: CommandExecutionContext) => void;
 	handleSessions: (context: CommandExecutionContext) => void | Promise<void>;
 	handleAbout: (context: CommandExecutionContext) => void;
+	handleHistory: (context: CommandExecutionContext) => void;
 	handleClear: (context: CommandExecutionContext) => Promise<void> | void;
 	showStatus: (context: CommandExecutionContext) => void;
 	handleReview: (context: CommandExecutionContext) => void;
@@ -126,11 +129,14 @@ export function buildCommandRegistry(opts: CommandRegistryOptions): {
 			exportSession: opts.handleExportSession,
 			shareSession: opts.handleShareSession,
 			tools: opts.handleTools,
+			toolHistory: opts.handleToolHistory,
+			skills: opts.handleSkills,
 			importConfig: opts.handleImportConfig,
 			session: opts.handleSession,
 			sessions: opts.handleSessions,
 			report: opts.handleReport,
 			about: opts.handleAbout,
+			history: opts.handleHistory,
 			clear: opts.handleClear,
 			status: opts.showStatus,
 			review: opts.handleReview,

@@ -105,6 +105,9 @@ export interface TuiCommandRegistryDeps {
 		parsedArgs?: Record<string, unknown>;
 	}) => CommandExecutionContext;
 	handleReviewCommand: (context: CommandExecutionContext) => void;
+	handleHistoryCommand: (context: CommandExecutionContext) => void;
+	handleToolHistoryCommand: (context: CommandExecutionContext) => void;
+	handleSkillsCommand: (context: CommandExecutionContext) => void;
 	handleEnhancedUndoCommand: (context: CommandExecutionContext) => void;
 	handleFooterCommand: (context: CommandExecutionContext) => void;
 	handleCompactToolsCommand: (rawInput: string) => void;
@@ -152,6 +155,8 @@ export function buildTuiCommandRegistryOptions(
 			deps.importExportView.handleShareCommand(context.rawInput),
 		handleTools: (context) =>
 			deps.toolStatusView.handleToolsCommand(context.rawInput),
+		handleToolHistory: (context) => deps.handleToolHistoryCommand(context),
+		handleSkills: (context) => deps.handleSkillsCommand(context),
 		handleImportConfig: (context) =>
 			deps.importExportView.handleImportCommand(context.rawInput),
 		handleSession: (context) =>
@@ -165,6 +170,7 @@ export function buildTuiCommandRegistryOptions(
 				showReportSelector: () => deps.reportSelectorView.show(),
 			}),
 		handleAbout: (_context) => deps.aboutView.handleAboutCommand(),
+		handleHistory: (context) => deps.handleHistoryCommand(context),
 		handleClear: async (_context) =>
 			await deps.clearController.handleClearCommand(),
 		showStatus: (_context) => deps.diagnosticsView.handleStatusCommand(),

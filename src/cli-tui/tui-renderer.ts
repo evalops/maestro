@@ -44,6 +44,14 @@ import {
 	toSessionModelMetadata,
 } from "../session/manager.js";
 import type { SessionManager } from "../session/manager.js";
+import {
+	type LoadedSkill,
+	type SkillLoadError,
+	findSkill,
+	formatSkillListItem,
+	loadSkills,
+	searchSkills,
+} from "../skills/loader.js";
 import { getTelemetryStatus } from "../telemetry.js";
 import {
 	type Theme,
@@ -101,6 +109,11 @@ import { EditorView } from "./editor-view.js";
 import { FeedbackView } from "./feedback-view.js";
 import { FooterComponent } from "./footer.js";
 import { GitView } from "./git/git-view.js";
+import type { PromptHistoryEntry } from "./history/prompt-history.js";
+import type {
+	ToolHistoryEntry,
+	ToolHistoryStore,
+} from "./history/tool-history.js";
 import { HotkeysView } from "./hotkeys-view.js";
 import { ImportExportView } from "./import-view.js";
 import { InfoView } from "./info-view.js";
@@ -395,6 +408,7 @@ export class TuiRenderer {
 	};
 	private agentEventRouter!: AgentEventRouter;
 	private sessionContext = new SessionContext();
+	private activeSkills = new Set<string>();
 	private queueController: QueueController;
 	private queuePanelController?: QueuePanelController;
 	// Default to soft deduplication so repeated streamed lines don't appear in the TUI.
@@ -1271,6 +1285,10 @@ export class TuiRenderer {
 				getMessages: () => this.agent.state.messages,
 				createCommandContext: (ctx) => this.createCommandContext(ctx),
 				handleReviewCommand: (context) => this.handleReviewCommand(context),
+				handleHistoryCommand: (context) => this.handleHistoryCommand(context),
+				handleToolHistoryCommand: (context) =>
+					this.handleToolHistoryCommand(context),
+				handleSkillsCommand: (context) => this.handleSkillsCommand(context),
 				handleEnhancedUndoCommand: (context) =>
 					this.handleEnhancedUndoCommand(context),
 				handleFooterCommand: (context) => this.handleFooterCommand(context),
@@ -1887,6 +1905,354 @@ export class TuiRenderer {
 		}
 	}
 
+	private handleHistoryCommand(context: CommandExecutionContext): void {
+		const raw = context.argumentText.trim();
+		const history = this.sessionContext.getPromptHistory();
+		if (["help", "?", "-h", "--help"].includes(raw.toLowerCase())) {
+			context.renderHelp();
+			return;
+		}
+
+		if (!raw) {
+			this.renderPromptHistory(history.recent(20), "Recent Prompts");
+			return;
+		}
+
+		if (raw.toLowerCase() === "clear") {
+			history.clear();
+			context.showInfo("Prompt history cleared.");
+			return;
+		}
+
+		if (/^\d+$/.test(raw)) {
+			const count = Number.parseInt(raw, 10);
+			this.renderPromptHistory(history.recent(count), "Recent Prompts");
+			return;
+		}
+
+		const results = history.search(raw, 10);
+		if (results.length === 0) {
+			context.showInfo(`No matches for "${raw}".`);
+			return;
+		}
+		this.renderPromptHistory(results, `Search Results for "${raw}"`);
+	}
+
+	private handleToolHistoryCommand(context: CommandExecutionContext): void {
+		const raw = context.argumentText.trim();
+		const toolHistory = this.sessionContext.getToolHistory();
+		if (["help", "?", "-h", "--help"].includes(raw.toLowerCase())) {
+			context.renderHelp();
+			return;
+		}
+
+		const parts = raw.split(/\s+/).filter(Boolean);
+		const primary = parts[0]?.toLowerCase();
+
+		if (!primary) {
+			this.renderToolHistoryList(
+				toolHistory.recent(10),
+				"Recent Tool Executions",
+			);
+			return;
+		}
+
+		if (primary === "clear") {
+			toolHistory.clear();
+			context.showInfo("Tool history cleared.");
+			return;
+		}
+
+		if (primary === "stats" || primary === "statistics") {
+			this.renderToolHistoryStats(toolHistory);
+			return;
+		}
+
+		if (primary === "tool") {
+			const name = parts.slice(1).join(" ").trim();
+			if (!name) {
+				context.showError("Usage: /toolhistory tool <name>");
+				return;
+			}
+			this.renderToolHistoryForTool(toolHistory, name);
+			return;
+		}
+
+		if (/^\d+$/.test(primary)) {
+			const count = Number.parseInt(primary, 10);
+			this.renderToolHistoryList(
+				toolHistory.recent(count),
+				"Recent Tool Executions",
+			);
+			return;
+		}
+
+		this.renderToolHistoryForTool(toolHistory, primary);
+	}
+
+	private handleSkillsCommand(context: CommandExecutionContext): void {
+		const raw = context.argumentText.trim();
+		const parts = raw.split(/\s+/).filter(Boolean);
+		const subcommand = (parts[0] ?? "list").toLowerCase();
+
+		if (["help", "?", "-h", "--help"].includes(subcommand)) {
+			context.renderHelp();
+			return;
+		}
+
+		const { skills, errors } = loadSkills(process.cwd());
+
+		switch (subcommand) {
+			case "list":
+			case "ls":
+			case "": {
+				this.renderSkillsList(skills, errors);
+				return;
+			}
+			case "reload":
+			case "refresh": {
+				this.renderSkillsList(skills, errors, "Reloaded skills from disk.");
+				return;
+			}
+			case "activate":
+			case "enable":
+			case "on": {
+				const target = parts.slice(1).join(" ").trim();
+				if (!target) {
+					context.showError("Usage: /skills activate <skill-name>");
+					return;
+				}
+				const resolved = this.resolveSkillTarget(skills, target, context);
+				if (!resolved) return;
+				this.activeSkills.add(resolved.name);
+				context.showInfo(`Activated skill "${resolved.name}".`);
+				return;
+			}
+			case "deactivate":
+			case "disable":
+			case "off": {
+				const target = parts.slice(1).join(" ").trim();
+				if (!target) {
+					context.showError("Usage: /skills deactivate <skill-name>");
+					return;
+				}
+				const resolved = this.resolveSkillTarget(skills, target, context);
+				if (!resolved) return;
+				this.activeSkills.delete(resolved.name);
+				context.showInfo(`Deactivated skill "${resolved.name}".`);
+				return;
+			}
+			case "info":
+			case "show": {
+				const target = parts.slice(1).join(" ").trim();
+				if (!target) {
+					context.showError("Usage: /skills info <skill-name>");
+					return;
+				}
+				const resolved = this.resolveSkillTarget(skills, target, context);
+				if (!resolved) return;
+				this.renderSkillInfo(resolved);
+				return;
+			}
+			default: {
+				const resolved = this.resolveSkillTarget(skills, subcommand, context);
+				if (!resolved) return;
+				this.renderSkillInfo(resolved);
+			}
+		}
+	}
+
+	private renderPromptHistory(
+		entries: PromptHistoryEntry[],
+		title: string,
+	): void {
+		if (!entries.length) {
+			this.notificationView.showInfo("No prompt history.");
+			return;
+		}
+		const lines = [`## ${title}`, ""];
+		for (let i = 0; i < entries.length; i++) {
+			const entry = entries[i];
+			if (!entry) continue;
+			lines.push(`${i + 1}. ${this.formatPreview(entry.prompt, 80)}`);
+		}
+		this.pushCommandOutput(lines.join("\n"));
+	}
+
+	private renderToolHistoryList(
+		entries: ToolHistoryEntry[],
+		title: string,
+	): void {
+		if (!entries.length) {
+			this.notificationView.showInfo("No tool history.");
+			return;
+		}
+		const lines = [`## ${title}`, ""];
+		for (const entry of entries) {
+			const status = entry.isError ? "✗" : "✓";
+			lines.push(
+				`${status} ${entry.tool} (${this.formatDuration(entry.durationMs)})`,
+			);
+		}
+		this.pushCommandOutput(lines.join("\n"));
+	}
+
+	private renderToolHistoryStats(toolHistory: ToolHistoryStore): void {
+		const stats = toolHistory.stats();
+		if (stats.total === 0) {
+			this.notificationView.showInfo("No tool history.");
+			return;
+		}
+		const entries = Array.from(stats.byTool.entries()).sort(
+			(a, b) => b[1].total - a[1].total,
+		);
+		const lines = [
+			"## Tool Statistics",
+			"",
+			`Total executions: ${stats.total}`,
+			"",
+		];
+		for (const [tool, summary] of entries) {
+			const errorRate =
+				summary.total > 0
+					? `${Math.round((summary.errors / summary.total) * 100)}%`
+					: "0%";
+			lines.push(
+				`${tool}: ${summary.total} run${summary.total === 1 ? "" : "s"} (${summary.errors} error${summary.errors === 1 ? "" : "s"}, ${errorRate} error rate)`,
+			);
+		}
+		this.pushCommandOutput(lines.join("\n"));
+	}
+
+	private renderToolHistoryForTool(
+		toolHistory: ToolHistoryStore,
+		name: string,
+	): void {
+		const entries = toolHistory.forTool(name, 10);
+		if (!entries.length) {
+			this.notificationView.showInfo(`No history for tool "${name}".`);
+			return;
+		}
+		const lines = [`## History for "${name}"`, ""];
+		for (const entry of entries) {
+			const status = entry.isError ? "✗" : "✓";
+			const preview = entry.preview
+				? this.formatPreview(entry.preview, 80)
+				: "(no output)";
+			lines.push(
+				`${status} ${this.formatDuration(entry.durationMs)} - ${preview}`,
+			);
+		}
+		this.pushCommandOutput(lines.join("\n"));
+	}
+
+	private renderSkillsList(
+		skills: LoadedSkill[],
+		errors: SkillLoadError[],
+		statusMessage?: string,
+	): void {
+		const lines: string[] = ["## Available Skills", ""];
+		if (statusMessage) {
+			lines.push(statusMessage, "");
+		}
+		if (skills.length === 0 && errors.length === 0) {
+			lines.push("*No skills found*");
+			lines.push("");
+			lines.push("Skills are loaded from:");
+			lines.push("- `~/.composer/skills/` (global)");
+			lines.push("- `.composer/skills/` (project)");
+		} else {
+			for (const skill of skills) {
+				const isActive = this.activeSkills.has(skill.name);
+				const suffix = isActive ? " (active)" : "";
+				lines.push(`- ${formatSkillListItem(skill)}${suffix}`);
+			}
+			lines.push("");
+			lines.push(`*${skills.length} skill(s) found*`);
+			if (this.activeSkills.size > 0) {
+				lines.push(
+					`Active: ${Array.from(this.activeSkills.values()).join(", ")}`,
+				);
+			}
+		}
+		if (errors.length > 0) {
+			lines.push("");
+			lines.push(`**${errors.length} error(s) loading skills:**`);
+			for (const err of errors.slice(0, 5)) {
+				lines.push(`- ${err.message ?? "Unknown error"}`);
+			}
+		}
+		this.pushCommandOutput(lines.join("\n"));
+	}
+
+	private renderSkillInfo(skill: LoadedSkill): void {
+		const lines: string[] = [`## Skill: ${skill.name}`, ""];
+		lines.push(`**Description:** ${skill.description}`);
+		lines.push("");
+		lines.push(`**Source:** ${skill.sourceType}`);
+		lines.push("");
+		lines.push(`**Path:** \`${skill.sourcePath}\``);
+		if (skill.resources.length > 0) {
+			lines.push("");
+			lines.push("**Resources:**");
+			for (const resource of skill.resources.slice(0, 5)) {
+				lines.push(`- \`${resource.path}\` (${resource.type})`);
+			}
+			if (skill.resources.length > 5) {
+				lines.push(`- …and ${skill.resources.length - 5} more`);
+			}
+		}
+		if (skill.content) {
+			lines.push("");
+			lines.push("**Instructions preview:**");
+			lines.push("```");
+			lines.push(this.formatPreviewBlock(skill.content, 200));
+			lines.push("```");
+		}
+		this.pushCommandOutput(lines.join("\n"));
+	}
+
+	private resolveSkillTarget(
+		skills: LoadedSkill[],
+		target: string,
+		context: CommandExecutionContext,
+	): LoadedSkill | null {
+		let skill = findSkill(skills, target);
+		if (!skill) {
+			const matches = searchSkills(skills, target);
+			if (matches.length === 1) {
+				skill = matches[0];
+			} else if (matches.length > 1) {
+				const list = matches.map((match) => match.name).join(", ");
+				context.showError(`Multiple skills match "${target}": ${list}`);
+				return null;
+			}
+		}
+		if (!skill) {
+			context.showError(`Skill "${target}" not found.`);
+			return null;
+		}
+		return skill;
+	}
+
+	private formatPreview(text: string, limit: number): string {
+		const normalized = text.replace(/\s+/g, " ").trim();
+		if (normalized.length <= limit) return normalized;
+		return `${normalized.slice(0, limit - 1)}…`;
+	}
+
+	private formatPreviewBlock(text: string, limit: number): string {
+		const trimmed = text.trim();
+		if (trimmed.length <= limit) return trimmed;
+		return `${trimmed.slice(0, limit - 1)}…`;
+	}
+
+	private formatDuration(durationMs?: number): string {
+		if (!durationMs && durationMs !== 0) return "?";
+		if (durationMs < 1000) return `${durationMs}ms`;
+		return `${(durationMs / 1000).toFixed(1)}s`;
+	}
+
 	private async handleStatsCommand(
 		_context: CommandExecutionContext,
 	): Promise<void> {
@@ -2258,6 +2624,12 @@ export class TuiRenderer {
 		const help = formatCommandHelp(command);
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(help, 1, 0));
+		this.ui.requestRender();
+	}
+
+	private pushCommandOutput(text: string): void {
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(text, 1, 0));
 		this.ui.requestRender();
 	}
 

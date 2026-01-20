@@ -381,6 +381,19 @@ export function createCommandRegistry({
 		),
 		buildEntry(
 			{
+				name: "history",
+				description: "Show or search prompt history",
+				usage: "/history [count|search query|clear]",
+				tags: ["session"],
+				aliases: ["hist"],
+				examples: ["/history", "/history 25", "/history clear"],
+			},
+			withArgs("history", ["hist"]),
+			handlers.history,
+			createContext,
+		),
+		buildEntry(
+			{
 				name: "branch",
 				description:
 					"Create a new session from an earlier user message (keeps history up to that point)",
@@ -1222,6 +1235,36 @@ export function createCommandRegistry({
 			},
 			withArgs("tools", ["t"]),
 			handlers.toolsCommand,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "toolhistory",
+				description: "Show tool execution history and stats",
+				usage: "/toolhistory [count|stats|clear|tool <name>]",
+				tags: ["tools"],
+				aliases: ["th"],
+				examples: ["/toolhistory", "/toolhistory stats", "/toolhistory read"],
+			},
+			withArgs("toolhistory", ["th"]),
+			handlers.toolHistory,
+			createContext,
+		),
+		buildEntry(
+			{
+				name: "skills",
+				description: "List or manage skills from SKILL.md",
+				usage: "/skills [list|activate|deactivate|reload|info] [skill-name]",
+				tags: ["tools"],
+				aliases: ["skill"],
+				examples: [
+					"/skills",
+					"/skills info my-skill",
+					"/skills activate my-skill",
+				],
+			},
+			withArgs("skills", ["skill"]),
+			handlers.skills,
 			createContext,
 		),
 	];

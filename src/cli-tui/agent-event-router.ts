@@ -69,6 +69,10 @@ export class AgentEventRouter {
 					event.toolName,
 				);
 				this.options.sessionContext.recordToolUsage(event.toolName);
+				this.options.sessionContext.recordToolStart(
+					event.toolCallId,
+					event.toolName,
+				);
 				this.options.streamingView.ensureToolComponent(
 					event.toolCallId,
 					event.toolName,
@@ -81,6 +85,12 @@ export class AgentEventRouter {
 				this.options.streamingView.resolveToolResult(
 					event.toolCallId,
 					event.result,
+				);
+				this.options.sessionContext.recordToolEnd(
+					event.toolCallId,
+					event.toolName,
+					event.result,
+					event.isError,
 				);
 				this.options.requestRender();
 				this.options.loaderView.markToolComplete(event.toolCallId);
@@ -110,9 +120,9 @@ export class AgentEventRouter {
 		event: AgentEvent & { type: "message_start" },
 	): void {
 		if (event.message.role === "user") {
-			this.options.sessionContext.setLastUserMessage(
-				this.options.extractText(event.message as AppMessage),
-			);
+			const text = this.options.extractText(event.message as AppMessage);
+			this.options.sessionContext.setLastUserMessage(text);
+			this.options.sessionContext.recordPrompt(text);
 			this.options.messageView.addMessage(event.message as AppMessage);
 			this.options.clearEditor();
 			this.options.requestRender();

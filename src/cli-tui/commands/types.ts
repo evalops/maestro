@@ -24,11 +24,14 @@ export interface CommandHandlers {
 	exportSession(context: CommandExecutionContext): Promise<void> | void;
 	shareSession(context: CommandExecutionContext): Promise<void> | void;
 	tools(context: CommandExecutionContext): void;
+	toolHistory(context: CommandExecutionContext): void;
+	skills(context: CommandExecutionContext): void;
 	importConfig(context: CommandExecutionContext): Promise<void> | void;
 	session(context: CommandExecutionContext): void;
 	sessions(context: CommandExecutionContext): void;
 	report(context: CommandExecutionContext): void;
 	about(context: CommandExecutionContext): void;
+	history(context: CommandExecutionContext): void;
 	clear(context: CommandExecutionContext): Promise<void> | void;
 	status(context: CommandExecutionContext): void;
 	review(context: CommandExecutionContext): void;
