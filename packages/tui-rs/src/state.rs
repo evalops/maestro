@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::{FromAgent, TokenUsage};
 use crate::kill_ring::{next_word_start, previous_word_start, KillRing};
-use crate::session::entries::ThinkingLevel;
+use crate::session::ThinkingLevel;
 // Import from our own crate using `crate::` prefix
 // `FromAgent` is an enum of all messages the agent can send us
 

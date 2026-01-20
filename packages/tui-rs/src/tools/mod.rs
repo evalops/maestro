@@ -112,5 +112,5 @@ pub use inline::{
 pub use process_registry::{
     cleanup_all as cleanup_background_processes, count as background_process_count,
 };
-pub use registry::{ToolExecutor, ToolRegistry};
+pub use registry::{McpServerStatus, ToolExecutor, ToolRegistry};
 pub use web_fetch::WebFetchTool;

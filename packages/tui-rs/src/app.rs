@@ -858,7 +858,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         Ok(())
     }
 
-    fn update_mcp_badge_counts(&mut self, servers: &[crate::tools::registry::McpServerStatus]) {
+    fn update_mcp_badge_counts(&mut self, servers: &[crate::tools::McpServerStatus]) {
         let connected = servers.iter().filter(|server| server.connected).count();
         let tool_count: usize = servers.iter().map(|server| server.tools.len()).sum();
         self.state.mcp_connected = connected;
