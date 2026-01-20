@@ -46,6 +46,14 @@ describe("write tool", () => {
 
 	afterEach(() => {
 		rmSync(testDir, { recursive: true, force: true });
+		// Clean up tilde expansion test file
+		const tildeTestFile = join(
+			process.env.HOME || "",
+			"test-write-tool-temp-file-delete-me.txt",
+		);
+		if (existsSync(tildeTestFile)) {
+			rmSync(tildeTestFile, { force: true });
+		}
 	});
 
 	describe("basic file writing", () => {
