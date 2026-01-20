@@ -77,6 +77,10 @@ export function isFlatpakEnv(): boolean {
 	return existsSync("/.flatpak-info");
 }
 
+export function isBubblewrapEnv(): boolean {
+	return Boolean(process.env.BWRAP_ARGS);
+}
+
 export function isMuslEnv(): boolean {
 	if (process.platform !== "linux") return false;
 	const report = process.report?.getReport?.() as
