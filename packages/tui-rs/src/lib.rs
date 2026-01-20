@@ -200,6 +200,7 @@ pub mod usage;
 /// Stores and retrieves previous prompts for easy recall.
 pub mod history;
 
+pub mod runtime_badges;
 /// Persistent UI state (queue modes, preferences).
 pub mod ui_state;
 
@@ -210,6 +211,7 @@ pub mod config_watcher;
 /// Text formatting utilities (truncation, JSON compacting).
 /// Ported from OpenAI Codex CLI (MIT licensed).
 pub mod text_format;
+pub mod tool_output;
 
 /// Live/incremental text wrapping for streaming content.
 /// Allows text to be pushed in fragments and wrapped correctly.

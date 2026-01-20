@@ -125,10 +125,13 @@ use ratatui::{
 
 use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
-use crate::state::{Message, MessageRole, ToolCallStatus};
+use crate::runtime_badges::build_runtime_badges;
+use crate::state::{ApprovalMode, Message, MessageRole, ToolCallStatus};
+use crate::tool_output::{clamp_tool_output, format_tool_output_truncation, tool_output_limits};
 use crate::wrapping::{word_wrap_lines, RtOptions};
 use std::collections::HashSet;
 use std::time::SystemTime;
+use unicode_width::UnicodeWidthStr;
 
 /// Parse markdown text into styled lines
 /// Supports: **bold**, `code`, ```code blocks```, [links](url)
@@ -372,33 +375,46 @@ pub fn calculate_message_height(
     // Tool calls
     for tc in &message.tool_calls {
         let expanded = expanded_tools.contains(&tc.call_id);
+        let args_preview =
+            get_tool_args_preview(&tc.tool, &tc.args, width.saturating_sub(20) as usize);
+
         // header line
         height += 1;
-        if expanded {
-            // args lines (pretty printed)
-            let args_str = serde_json::to_string_pretty(&tc.args).unwrap_or_default();
-            let args_lines = args_str
-                .lines()
-                .map(|l| (l.len() / content_width + 1) as u16)
-                .sum::<u16>()
-                .max(1);
-            height += args_lines;
 
-            // output lines (limit to 10 lines max for display)
-            if !tc.output.is_empty() {
-                let out_lines = tc
-                    .output
-                    .lines()
-                    .take(10)
+        if !args_preview.is_empty() {
+            height += 1;
+        }
+
+        if !tc.output.is_empty() {
+            let clamp = clamp_tool_output(&tc.output, tool_output_limits());
+            let output_lines: Vec<&str> = clamp.text.lines().collect();
+            let max_output_lines = if expanded { 50 } else { 5 };
+            let total_lines = output_lines.len();
+            let truncated = total_lines > max_output_lines;
+
+            if !output_lines.is_empty() {
+                let out_lines = output_lines
+                    .iter()
+                    .take(max_output_lines)
                     .map(|l| (l.len() / content_width + 1) as u16)
                     .sum::<u16>()
                     .max(1);
-                height += out_lines + 1; // +1 for "Output:" header
+
+                height += out_lines;
+
+                if truncated {
+                    height += 1;
+                }
+                if clamp.truncated {
+                    height += 1;
+                }
+            } else if clamp.truncated {
+                height += 1;
             }
-        } else {
-            // collapsed preview
-            height += 1;
         }
+
+        // Spacer after each tool call
+        height += 1;
     }
 
     height
@@ -741,7 +757,9 @@ impl Widget for MessageWidget<'_> {
 
             // Output block (truncated to max 5 lines when collapsed)
             if y < max_y && !tool_call.output.is_empty() {
-                let output_lines: Vec<&str> = tool_call.output.lines().collect();
+                let clamp = clamp_tool_output(&tool_call.output, tool_output_limits());
+                let banner = format_tool_output_truncation(&clamp);
+                let output_lines: Vec<&str> = clamp.text.lines().collect();
                 let max_output_lines = if expanded { 50 } else { 5 };
                 let total_lines = output_lines.len();
                 let truncated = total_lines > max_output_lines;
@@ -799,6 +817,30 @@ impl Widget for MessageWidget<'_> {
                         buf,
                     );
                     y += 1;
+                }
+
+                if let Some(banner) = banner {
+                    if y < max_y {
+                        let banner_line = Line::from(vec![
+                            Span::styled("    ", Style::default()),
+                            Span::styled(
+                                banner,
+                                Style::default()
+                                    .fg(Color::DarkGray)
+                                    .add_modifier(Modifier::DIM),
+                            ),
+                        ]);
+                        Paragraph::new(banner_line).render(
+                            Rect {
+                                x: area.x,
+                                y,
+                                width: area.width,
+                                height: 1,
+                            },
+                            buf,
+                        );
+                        y += 1;
+                    }
                 }
             }
 
@@ -1243,6 +1285,7 @@ pub struct StatusBarWidget<'a> {
     /// Number of active hooks (None = hooks disabled)
     hook_count: Option<usize>,
     queue_badge: Option<&'a str>,
+    approval_mode: Option<ApprovalMode>,
 }
 
 impl<'a> StatusBarWidget<'a> {
@@ -1261,6 +1304,7 @@ impl<'a> StatusBarWidget<'a> {
             usage: UsageSummary::default(),
             hook_count: None,
             queue_badge: None,
+            approval_mode: None,
         }
     }
 
@@ -1280,6 +1324,12 @@ impl<'a> StatusBarWidget<'a> {
     #[must_use]
     pub fn with_queue_badge(mut self, badge: Option<&'a str>) -> Self {
         self.queue_badge = badge;
+        self
+    }
+
+    #[must_use]
+    pub fn with_approval_mode(mut self, approval_mode: ApprovalMode) -> Self {
+        self.approval_mode = Some(approval_mode);
         self
     }
 }
@@ -1339,48 +1389,130 @@ impl Widget for StatusBarWidget<'_> {
         }
 
         let line = Line::from(spans);
+        let left_width = line.width() as u16;
         let para = Paragraph::new(line).style(Style::default().fg(Color::DarkGray));
         para.render(area, buf);
 
         // Build right-side info (usage + terminal size)
-        let mut right_spans = Vec::new();
+        let mut usage_text: Option<String> = None;
 
         // Token usage
         let total_tokens = self.usage.input_tokens + self.usage.output_tokens;
         if total_tokens > 0 {
-            right_spans.push(Span::styled(
-                format!(
-                    "↑{} ↓{} ",
-                    UsageSummary::format_tokens(self.usage.input_tokens),
-                    UsageSummary::format_tokens(self.usage.output_tokens)
-                ),
-                Style::default().fg(Color::DarkGray),
+            usage_text = Some(format!(
+                "↑{} ↓{}",
+                UsageSummary::format_tokens(self.usage.input_tokens),
+                UsageSummary::format_tokens(self.usage.output_tokens)
             ));
         }
 
-        if let Some(badge) = self.queue_badge {
-            right_spans.push(Span::styled(
-                format!("{badge} "),
-                Style::default().fg(Color::DarkGray),
-            ));
+        let badges = self.approval_mode.map(build_runtime_badges);
+        let core_badges = badges
+            .as_ref()
+            .and_then(|b| (!b.core.is_empty()).then(|| b.core.join(" ")));
+        let env_badges = badges
+            .as_ref()
+            .and_then(|b| (!b.env.is_empty()).then(|| b.env.join(" ")));
+
+        let queue_text = self.queue_badge.map(|badge| badge.to_string());
+
+        let term_text = crate::terminal::size()
+            .ok()
+            .map(|(cols, rows)| format!("{cols}x{rows}"));
+
+        let available_width = area.width.saturating_sub(left_width + 1);
+
+        let mut include_core = core_badges.is_some();
+        let mut include_env = env_badges.is_some();
+
+        let mut right_text = build_right_text(
+            usage_text.as_deref(),
+            core_badges.as_deref(),
+            env_badges.as_deref(),
+            queue_text.as_deref(),
+            term_text.as_deref(),
+            include_core,
+            include_env,
+        );
+
+        if !right_text.is_empty()
+            && UnicodeWidthStr::width(right_text.as_str()) > available_width as usize
+        {
+            include_env = false;
+            right_text = build_right_text(
+                usage_text.as_deref(),
+                core_badges.as_deref(),
+                env_badges.as_deref(),
+                queue_text.as_deref(),
+                term_text.as_deref(),
+                include_core,
+                include_env,
+            );
         }
 
-        // Terminal size
-        if let Ok((cols, rows)) = crate::terminal::size() {
-            right_spans.push(Span::styled(
-                format!("{cols}x{rows}"),
-                Style::default().fg(Color::DarkGray),
-            ));
+        if !right_text.is_empty()
+            && UnicodeWidthStr::width(right_text.as_str()) > available_width as usize
+        {
+            include_core = false;
+            right_text = build_right_text(
+                usage_text.as_deref(),
+                core_badges.as_deref(),
+                env_badges.as_deref(),
+                queue_text.as_deref(),
+                term_text.as_deref(),
+                include_core,
+                include_env,
+            );
         }
 
         // Render right-side info
-        if !right_spans.is_empty() {
-            let right_line = Line::from(right_spans);
+        if !right_text.is_empty() {
+            let right_line = Line::from(Span::styled(
+                right_text,
+                Style::default().fg(Color::DarkGray),
+            ));
             let right_width = right_line.width() as u16;
             let right_x = area.right().saturating_sub(right_width);
             buf.set_line(right_x, area.y, &right_line, right_width);
         }
     }
+}
+
+fn build_right_text(
+    usage_text: Option<&str>,
+    core_badges: Option<&str>,
+    env_badges: Option<&str>,
+    queue_text: Option<&str>,
+    term_text: Option<&str>,
+    include_core: bool,
+    include_env: bool,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(usage) = usage_text {
+        parts.push(usage.to_string());
+    }
+    if include_core {
+        if let Some(core) = core_badges {
+            if !core.is_empty() {
+                parts.push(core.to_string());
+            }
+        }
+    }
+    if include_env {
+        if let Some(env) = env_badges {
+            if !env.is_empty() {
+                parts.push(env.to_string());
+            }
+        }
+    }
+    if let Some(queue) = queue_text {
+        parts.push(queue.to_string());
+    }
+    if let Some(term) = term_text {
+        parts.push(term.to_string());
+    }
+
+    parts.join(" ")
 }
 
 /// The main chat view widget containing messages, input, and status bar.
@@ -1504,7 +1636,8 @@ impl Widget for ChatView<'_> {
                 self.state.git_branch.as_deref(),
             )
             .with_usage(usage)
-            .with_queue_badge(queue_badge.as_deref());
+            .with_queue_badge(queue_badge.as_deref())
+            .with_approval_mode(self.state.approval_mode);
             status_widget.render(chunks[2], buf);
         }
     }
