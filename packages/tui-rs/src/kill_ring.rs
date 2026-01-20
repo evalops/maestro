@@ -231,7 +231,7 @@ impl KillRing {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Characters that separate words (Readline-style).
-pub const WORD_SEPARATORS: &str = " \t\n\r.,;:!?\"'`()[]{}|/<>@#$%^&*-+=~\\`";
+pub const WORD_SEPARATORS: &str = " \t\n\r.,;:!?\"'()[]{}|/<>@#$%^&*-+=~\\`";
 
 /// Check if a character is a word separator.
 #[must_use]

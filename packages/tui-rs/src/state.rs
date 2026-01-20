@@ -1155,10 +1155,10 @@ impl AppState {
     pub fn yank_kill_ring(&mut self) {
         let cursor = self.textarea.cursor();
         if self.kill_ring.is_rotating() {
-            if let (Some(info), Some(next)) =
-                (self.kill_ring.last_yank_info(), self.kill_ring.yank_pop())
-            {
-                self.replace_range_internal(info.start, info.start + info.length, next, false);
+            let info = self.kill_ring.last_yank_info();
+            let next = self.kill_ring.yank_pop().map(str::to_string);
+            if let (Some(info), Some(next)) = (info, next) {
+                self.replace_range_internal(info.start, info.start + info.length, &next, false);
             }
             return;
         }
@@ -1699,7 +1699,7 @@ mod tests {
         let mut state = AppState::new();
         state.set_input("hi 🙂 there");
         state.move_word_left();
-        let text = state.input();
+        let text = state.input().to_string();
         assert_eq!(&text[state.cursor()..], "there");
         state.move_word_left();
         assert_eq!(state.cursor(), text.find('🙂').unwrap());

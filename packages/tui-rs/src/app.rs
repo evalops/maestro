@@ -4142,21 +4142,22 @@ mod tests {
         let mut state = AppState::new();
         let call_id = "call-123";
 
-        // Initially not expanded
-        assert!(!state.is_tool_call_expanded(call_id));
-
-        // Toggle on
-        state.toggle_tool_call(call_id);
+        // Default: expanded when compact mode is off
         assert!(state.is_tool_call_expanded(call_id));
 
         // Toggle off
         state.toggle_tool_call(call_id);
         assert!(!state.is_tool_call_expanded(call_id));
+
+        // Toggle on
+        state.toggle_tool_call(call_id);
+        assert!(state.is_tool_call_expanded(call_id));
     }
 
     #[test]
     fn test_multiple_tool_calls_expansion() {
         let mut state = AppState::new();
+        state.compact_tool_outputs = true;
 
         state.toggle_tool_call("call-1");
         state.toggle_tool_call("call-2");
