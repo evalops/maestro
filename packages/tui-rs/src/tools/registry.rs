@@ -3949,7 +3949,7 @@ impl ToolRegistry {
     ///
     /// // Count tools
     /// let count = registry.tools().count();
-    /// assert_eq!(count, 36);  // includes search/parity tools + IDE stubs
+    /// assert_eq!(count, 38);  // includes search/parity tools + IDE stubs
     ///
     /// // List tool names
     /// for tool_def in registry.tools() {
