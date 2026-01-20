@@ -212,6 +212,8 @@ pub enum CommandAction {
     ClearMessages,
     /// Toggle zen mode (minimal UI)
     ToggleZenMode,
+    /// Toggle tool output compact mode (collapse by default)
+    SetCompactTools(Option<bool>),
     /// Set approval mode (yolo, selective, safe)
     SetApprovalMode(String),
     /// Set extended thinking level (off, low, medium, high, max)

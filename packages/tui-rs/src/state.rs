@@ -30,6 +30,7 @@ use std::time::{Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{FromAgent, TokenUsage};
+use crate::session::entries::ThinkingLevel;
 // Import from our own crate using `crate::` prefix
 // `FromAgent` is an enum of all messages the agent can send us
 
@@ -416,6 +417,9 @@ pub struct AppState {
     /// Shown while the model is thinking to indicate what it's working on.
     pub thinking_header: Option<String>,
 
+    /// Current thinking level for runtime badges and UI hints.
+    pub thinking_level: ThinkingLevel,
+
     /// Full thinking buffer for the current response.
     /// Private because it's only used internally for header extraction.
     /// Public API uses the `thinking` field on individual messages.
@@ -424,6 +428,9 @@ pub struct AppState {
     /// Zen mode - minimal UI.
     /// When enabled, hides status bar, hints, and other chrome.
     pub zen_mode: bool,
+
+    /// Whether tool outputs should be collapsed by default.
+    pub compact_tool_outputs: bool,
 
     /// Current approval mode for tool execution.
     /// Controls whether tools run automatically or require approval.
@@ -443,6 +450,12 @@ pub struct AppState {
 
     /// Number of queued follow-up prompts.
     pub queued_follow_up_count: usize,
+
+    /// Cached MCP connected server count for runtime badges.
+    pub mcp_connected: usize,
+
+    /// Cached MCP tool count for runtime badges.
+    pub mcp_tool_count: usize,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -500,14 +513,18 @@ impl AppState {
             expanded_tool_calls: std::collections::HashSet::new(),
             error: None,           // No error
             thinking_header: None, // No thinking in progress
+            thinking_level: ThinkingLevel::Off,
             thinking_buffer: String::new(),
             zen_mode: false,                        // Full UI by default
+            compact_tool_outputs: false,            // Expanded tool output by default
             approval_mode: ApprovalMode::default(), // Selective mode
             steering_mode: QueueMode::default(),    // Queue steering by default
             follow_up_mode: QueueMode::default(),   // Queue follow-ups by default
             queued_prompt_count: 0,                 // No queued prompts
             queued_steering_count: 0,               // No queued steering prompts
             queued_follow_up_count: 0,              // No queued follow-up prompts
+            mcp_connected: 0,
+            mcp_tool_count: 0,
         }
     }
 
@@ -1051,7 +1068,12 @@ impl AppState {
 
     /// Check if a tool call is expanded.
     pub fn is_tool_call_expanded(&self, call_id: &str) -> bool {
-        self.expanded_tool_calls.contains(call_id)
+        let toggled = self.expanded_tool_calls.contains(call_id);
+        if self.compact_tool_outputs {
+            toggled
+        } else {
+            !toggled
+        }
     }
 }
 
@@ -1554,18 +1576,28 @@ mod tests {
         let mut state = AppState::new();
         let call_id = "call-123";
 
+        // Default: expanded when compact mode is off
+        assert!(state.is_tool_call_expanded(call_id));
+
+        state.toggle_tool_call(call_id);
         assert!(!state.is_tool_call_expanded(call_id));
 
         state.toggle_tool_call(call_id);
         assert!(state.is_tool_call_expanded(call_id));
 
-        state.toggle_tool_call(call_id);
+        // Compact mode flips default to collapsed
+        state.compact_tool_outputs = true;
+        state.expanded_tool_calls.clear();
         assert!(!state.is_tool_call_expanded(call_id));
+
+        state.toggle_tool_call(call_id);
+        assert!(state.is_tool_call_expanded(call_id));
     }
 
     #[test]
     fn test_multiple_tool_calls_expanded() {
         let mut state = AppState::new();
+        state.compact_tool_outputs = true;
 
         state.toggle_tool_call("call-1");
         state.toggle_tool_call("call-2");

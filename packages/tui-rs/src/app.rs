@@ -39,7 +39,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // `Arc` (Atomic Reference Counted) is a thread-safe reference-counted pointer.
 // Multiple owners can share the same data. The data is freed when the last
 // Arc is dropped. Unlike `Rc`, `Arc` is safe to use across threads.
@@ -263,6 +263,9 @@ pub struct App {
     /// Current thinking level (for session headers/changes).
     current_thinking_level: ThinkingLevel,
 
+    /// Last time we refreshed MCP status for runtime badges.
+    last_mcp_status_refresh: Option<Instant>,
+
     /// Pending model change awaiting agent confirmation.
     pending_model_change: Option<PendingModelChange>,
 
@@ -369,6 +372,7 @@ impl App {
             session_resume_failed: false,
             current_model: String::new(),
             current_thinking_level: ThinkingLevel::Off,
+            last_mcp_status_refresh: None,
             pending_model_change: None,
             current_git_branch: None,
         }
@@ -445,6 +449,9 @@ impl App {
             // This handles streaming responses, tool calls, etc.
             self.poll_agent().await?;
 
+            // Refresh MCP badge counts periodically without blocking the UI.
+            self.refresh_mcp_badges().await;
+
             // Check exit condition.
             if self.should_quit {
                 break;
@@ -508,6 +515,7 @@ impl App {
 
         self.current_model = model.clone();
         self.current_thinking_level = ThinkingLevel::Off;
+        self.state.thinking_level = self.current_thinking_level;
         self.usage_tracker.set_model(model.clone());
 
         self.state.status = Some(format!("Initializing agent ({model})..."));
@@ -848,6 +856,27 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             self.handle_agent_message(msg).await?;
         }
         Ok(())
+    }
+
+    fn update_mcp_badge_counts(&mut self, servers: &[crate::tools::registry::McpServerStatus]) {
+        let connected = servers.iter().filter(|server| server.connected).count();
+        let tool_count: usize = servers.iter().map(|server| server.tools.len()).sum();
+        self.state.mcp_connected = connected;
+        self.state.mcp_tool_count = tool_count;
+    }
+
+    async fn refresh_mcp_badges(&mut self) {
+        let now = Instant::now();
+        if self.last_mcp_status_refresh.map_or(false, |last| {
+            now.duration_since(last) < Duration::from_secs(5)
+        }) {
+            return;
+        }
+        self.last_mcp_status_refresh = Some(now);
+
+        if let Ok(servers) = self.tool_executor.mcp_status().await {
+            self.update_mcp_badge_counts(&servers);
+        }
     }
 
     /// Handle an agent message (common for both backends)
@@ -1450,6 +1479,7 @@ Add the required fields and retry.",
                                 self.usage_tracker.set_model(session.header.model.clone());
                                 if thinking_applied {
                                     self.current_thinking_level = session.header.thinking_level;
+                                    self.state.thinking_level = self.current_thinking_level;
                                 }
                             } else if !self.current_model.is_empty() {
                                 self.usage_tracker.set_model(self.current_model.clone());
@@ -1829,6 +1859,16 @@ Add the required fields and retry.",
                     self.state.status = Some("Zen mode disabled".to_string());
                 }
             }
+            CommandAction::SetCompactTools(mode) => {
+                let next = mode.unwrap_or(!self.state.compact_tool_outputs);
+                self.state.compact_tool_outputs = next;
+                self.state.expanded_tool_calls.clear();
+                self.state.status = Some(if next {
+                    "Tool outputs will collapse by default.".to_string()
+                } else {
+                    "Tool outputs will show full content.".to_string()
+                });
+            }
             CommandAction::SetApprovalMode(mode) => {
                 if mode == "next" {
                     self.state.approval_mode = self.state.approval_mode.next();
@@ -1855,6 +1895,7 @@ Add the required fields and retry.",
                         }
                     }
                     self.current_thinking_level = level;
+                    self.state.thinking_level = self.current_thinking_level;
                     self.record_thinking_level_change(level);
                     self.state.status =
                         Some(format!("Thinking: {} (budget: {})", level.label(), budget));
@@ -2304,6 +2345,7 @@ Add the required fields and retry.",
         match action {
             McpAction::Status => match self.tool_executor.mcp_status().await {
                 Ok(servers) => {
+                    self.update_mcp_badge_counts(&servers);
                     let mut lines = Vec::new();
                     lines.push("Model Context Protocol".to_string());
                     lines.push(String::new());
@@ -2361,6 +2403,7 @@ Add the required fields and retry.",
                         return;
                     }
                 };
+                self.update_mcp_badge_counts(&servers);
 
                 if let (Some(server), Some(uri)) = (server, uri) {
                     let status = servers.iter().find(|s| s.name == server);
@@ -2424,6 +2467,7 @@ Add the required fields and retry.",
                         return;
                     }
                 };
+                self.update_mcp_badge_counts(&servers);
 
                 if let (Some(server), Some(name)) = (server, name) {
                     let status = servers.iter().find(|s| s.name == server);

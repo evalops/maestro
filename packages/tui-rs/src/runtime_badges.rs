@@ -8,15 +8,25 @@ use std::path::Path;
 
 use crate::safety::is_safe_mode_enabled;
 use crate::sandbox::SANDBOX_ENV_VAR;
+use crate::session::entries::ThinkingLevel;
 use crate::state::ApprovalMode;
 use crate::terminal_info::{is_ssh_session, is_wsl};
+use crate::tools::background_process_count;
 
 pub struct RuntimeBadges {
     pub core: Vec<String>,
     pub env: Vec<String>,
 }
 
-pub fn build_runtime_badges(approval_mode: ApprovalMode) -> RuntimeBadges {
+pub struct RuntimeBadgeParams {
+    pub approval_mode: ApprovalMode,
+    pub thinking_level: ThinkingLevel,
+    pub mcp_connected: usize,
+    pub mcp_tool_count: usize,
+    pub alert_count: usize,
+}
+
+pub fn build_runtime_badges(params: RuntimeBadgeParams) -> RuntimeBadges {
     let mut core = Vec::new();
     let mut env_badges = Vec::new();
 
@@ -24,13 +34,40 @@ pub fn build_runtime_badges(approval_mode: ApprovalMode) -> RuntimeBadges {
         core.push("safe:on".to_string());
     }
 
-    core.push(format!("approvals:{}", approval_label(approval_mode)));
+    if env::var("COMPOSER_PLAN_MODE").ok().as_deref() == Some("1") {
+        core.push("plan:on".to_string());
+    }
+
+    core.push(format!(
+        "approvals:{}",
+        approval_label(params.approval_mode)
+    ));
 
     if let Ok(value) = env::var(SANDBOX_ENV_VAR) {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
             core.push(format!("sandbox:{trimmed}"));
         }
+    }
+
+    if params.alert_count > 0 {
+        core.push(format!("alerts:{}", params.alert_count));
+    }
+
+    if let Some(label) = thinking_badge_label(params.thinking_level) {
+        core.push(format!("think:{label}"));
+    }
+
+    if params.mcp_connected > 0 {
+        core.push(format!(
+            "mcp:{}({})",
+            params.mcp_connected, params.mcp_tool_count
+        ));
+    }
+
+    let background_count = background_process_count();
+    if background_count > 0 {
+        core.push(format!("bg:{background_count}"));
     }
 
     if is_podman_env() {
@@ -75,6 +112,17 @@ fn approval_label(mode: ApprovalMode) -> &'static str {
         ApprovalMode::Yolo => "yolo",
         ApprovalMode::Selective => "selective",
         ApprovalMode::Safe => "safe",
+    }
+}
+
+fn thinking_badge_label(level: ThinkingLevel) -> Option<&'static str> {
+    match level {
+        ThinkingLevel::Off => None,
+        ThinkingLevel::Minimal => Some("minimal"),
+        ThinkingLevel::Low => Some("low"),
+        ThinkingLevel::Medium => Some("medium"),
+        ThinkingLevel::High => Some("high"),
+        ThinkingLevel::Max => Some("max"),
     }
 }
 
