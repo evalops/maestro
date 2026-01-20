@@ -89,7 +89,6 @@
  * @module safety/policy
  */
 
-import { lookup } from "node:dns/promises";
 import {
 	type FSWatcher,
 	existsSync,
@@ -102,27 +101,17 @@ import { Type } from "@sinclair/typebox";
 import type { ActionApprovalContext } from "../agent/action-approval.js";
 import { PATHS } from "../config/constants.js";
 import { extractDependencies } from "../utils/dependency-extractor.js";
-import {
-	isLocalhostAlias,
-	isLoopbackIP,
-	isPrivateIP,
-	parseIPv4,
-	parseIPv4MappedHex,
-} from "../utils/ip-address-parser.js";
 import { safeJsonParse } from "../utils/json.js";
 import { createLogger } from "../utils/logger.js";
-import {
-	expandHomeDir,
-	matchesModelPattern,
-	matchesPathPattern,
-	resolveRealPath,
-} from "../utils/path-matcher.js";
+import { expandHomeDir, resolveRealPath } from "../utils/path-matcher.js";
 import { compileTypeboxSchema } from "../utils/typebox-ajv.js";
+import { dangerousPatterns as shellDangerousPatterns } from "./bash-safety-analyzer.js";
+import { checkModelAccess } from "./validators/model-policy-validator.js";
+import { checkNetworkPolicy } from "./validators/network-policy-validator.js";
 import {
-	extractUrlsFromShellCommand,
-	extractUrlsFromValue,
-} from "../utils/url-extractor.js";
-import { dangerousPatterns as shellDangerousPatterns } from "./dangerous-patterns.js";
+	checkPathPolicy,
+	extractPolicyFilePaths,
+} from "./validators/path-policy-validator.js";
 
 const logger = createLogger("safety:policy");
 
@@ -343,262 +332,6 @@ function getCommandArg(context: ActionApprovalContext): string | null {
 	return getStringArg(context, "command");
 }
 
-/**
- * Extract file paths from tool arguments
- */
-function extractFilePaths(context: ActionApprovalContext): string[] {
-	const args = getArgsObject(context);
-	if (!args) return [];
-
-	const paths: string[] = [];
-
-	// Common file path argument names (expanded list)
-	const pathKeys = [
-		"path",
-		"file_path",
-		"filePath",
-		"file",
-		"files",
-		"directory",
-		"dir",
-		"target",
-		"source",
-		"destination",
-		"cwd",
-		"output",
-		"input",
-		"src",
-		"dest",
-		"config",
-		"workspace",
-		"folder",
-		"target_file",
-		"target_directory",
-	];
-
-	for (const key of pathKeys) {
-		const value = args[key];
-		if (typeof value === "string" && value.length > 0) {
-			paths.push(value);
-		}
-		// Handle array values
-		if (Array.isArray(value)) {
-			for (const item of value) {
-				if (typeof item === "string" && item.length > 0) {
-					paths.push(item);
-				}
-			}
-		}
-	}
-
-	// For bash commands, extract paths from common commands
-	if (context.toolName === "bash" || context.toolName === "background_tasks") {
-		const command = getCommandArg(context);
-		if (command) {
-			// Extract ALL path-like arguments from file manipulation commands
-			// This captures both source and destination paths, and handles multiple arguments
-			const fileCommands =
-				/(?:cd|cat|rm|mv|cp|mkdir|touch|nano|vim|vi|less|more|head|tail|chmod|chown|strings|hexdump|dd|tee|ln|readlink|stat|file|wc|grep|sed|awk|sort|uniq|diff|patch|tar|gzip|gunzip|zip|unzip|find|rsync|scp)\s+((?:[^\s;&|<>`$()]|\\.)+(?:\s+(?:[^\s;&|<>`$()]|\\.)+)*)/gi;
-
-			const matches = command.matchAll(fileCommands);
-			for (const match of matches) {
-				const argsStr = match[1];
-				if (!argsStr) continue;
-				// Split by spaces, respecting quotes
-				const argParts = argsStr.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
-				for (const arg of argParts) {
-					const cleaned = arg.replace(/^["']|["']$/g, "");
-					// Skip flags, empty strings, and shell operators
-					if (
-						cleaned &&
-						!cleaned.startsWith("-") &&
-						cleaned.length > 0 &&
-						!/^[<>|&;]/.test(cleaned)
-					) {
-						paths.push(cleaned);
-					}
-				}
-			}
-
-			// Also extract paths from redirections: < /path, > /path, >> /path
-			const redirectPattern = /[<>]{1,2}\s*([^\s<>|&;]+)/g;
-			const redirectMatches = command.matchAll(redirectPattern);
-			for (const match of redirectMatches) {
-				const rawPath = match[1];
-				if (!rawPath) continue;
-				const path = rawPath.replace(/^["']|["']$/g, "");
-				if (path && path.length > 0) {
-					paths.push(path);
-				}
-			}
-
-			// Extract paths from command substitution: $(cat /path), `cat /path`, or <(cat /path)
-			const cmdSubPattern = /(?:\$\(|<\()([^)]+)\)|`([^`]+)`/g;
-			const cmdSubMatches = command.matchAll(cmdSubPattern);
-			for (const match of cmdSubMatches) {
-				const innerCmd = match[1] || match[2];
-				if (innerCmd) {
-					// Recursively extract paths from the inner command
-					// We re-use the same regex logic for inner commands
-					// Note: This is a simplified recursion, not infinite
-					const innerMatches = innerCmd.matchAll(fileCommands);
-					for (const innerMatch of innerMatches) {
-						const innerArgsStr = innerMatch[1];
-						if (!innerArgsStr) continue;
-						const innerArgParts =
-							innerArgsStr.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
-						for (const arg of innerArgParts) {
-							const cleaned = arg.replace(/^["']|["']$/g, "");
-							if (
-								cleaned &&
-								!cleaned.startsWith("-") &&
-								cleaned.length > 0 &&
-								!/^[<>|&;]/.test(cleaned)
-							) {
-								paths.push(cleaned);
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return paths;
-}
-
-/**
- * Check if a URL/host matches network restrictions
- * NOTE: This validates at approval time. DNS rebinding attacks could theoretically
- * resolve to different IPs at execution time. For maximum security, network
- * restrictions should also be enforced at the HTTP client level.
- */
-async function checkNetworkRestrictions(
-	url: string,
-	network: NonNullable<EnterprisePolicy["network"]>,
-): Promise<{ allowed: boolean; reason?: string }> {
-	try {
-		const parsed = new URL(url);
-		const host = parsed.hostname.toLowerCase();
-
-		// Normalize bracketed IPv6 addresses: [::1] -> ::1
-		const normalizedHost = host.replace(/^\[|\]$/g, "");
-
-		// Resolve hostname to IP to prevent DNS rebinding/bypass
-		// We check both the hostname AND the resolved IP
-		const resolvedIPs: string[] = [];
-		// Don't try to resolve if it's already an IP
-		const isIP =
-			parseIPv4(normalizedHost) !== null ||
-			parseIPv4MappedHex(normalizedHost) !== null ||
-			normalizedHost.includes(":"); // Rough IPv6 check
-
-		if (!isIP) {
-			try {
-				const { address } = await lookup(normalizedHost);
-				resolvedIPs.push(address);
-			} catch (e) {
-				// Failed to resolve - might be internal or invalid
-				// If IP-based policies are enabled (blockPrivateIPs or blockLocalhost), we cannot enforce them without resolution.
-				// Fail closed to prevent bypass via DNS rebinding or unresolvable internal names.
-				if (network.blockPrivateIPs || network.blockLocalhost) {
-					return {
-						allowed: false,
-						reason: `DNS resolution failed for "${host}" and network policy requires IP validation (blockPrivateIPs/blockLocalhost enabled). Access blocked.`,
-					};
-				}
-				// If we are only checking lists of hostnames, we can proceed with just the hostname check.
-			}
-		} else {
-			resolvedIPs.push(normalizedHost);
-		}
-
-		// Check localhost blocking (full 127.0.0.0/8 range + IPv6 loopback + common aliases)
-		if (network.blockLocalhost) {
-			if (isLocalhostAlias(normalizedHost) || resolvedIPs.some(isLoopbackIP)) {
-				return {
-					allowed: false,
-					reason: "Access to localhost is blocked by enterprise policy.",
-				};
-			}
-		}
-
-		// Check private IP blocking (IPv4 + IPv6)
-		if (network.blockPrivateIPs) {
-			if (resolvedIPs.some(isPrivateIP)) {
-				return {
-					allowed: false,
-					reason:
-						"Access to private IP addresses is blocked by enterprise policy.",
-				};
-			}
-		}
-
-		// Check blocked hosts
-		if (network.blockedHosts?.length) {
-			for (const blockedHost of network.blockedHosts) {
-				if (
-					host === blockedHost.toLowerCase() ||
-					host.endsWith(`.${blockedHost.toLowerCase()}`)
-				) {
-					return {
-						allowed: false,
-						reason: `Host "${host}" is blocked by enterprise policy.`,
-					};
-				}
-			}
-		}
-
-		// Check allowed hosts (if specified - empty array means block all)
-		if (network.allowedHosts) {
-			if (network.allowedHosts.length === 0) {
-				return {
-					allowed: false,
-					reason: `Host "${host}" is not in the allowed hosts list.`,
-				};
-			}
-			const isAllowed = network.allowedHosts.some((allowedHost) => {
-				const lowerAllowed = allowedHost.toLowerCase();
-				return host === lowerAllowed || host.endsWith(`.${lowerAllowed}`);
-			});
-			if (!isAllowed) {
-				return {
-					allowed: false,
-					reason: `Host "${host}" is not in the allowed hosts list.`,
-				};
-			}
-		}
-	} catch {
-		// Fail-secure: reject unparseable URLs
-		return {
-			allowed: false,
-			reason: "Invalid URL format - cannot validate against network policy.",
-		};
-	}
-	return { allowed: true };
-}
-
-/**
- * Extract URLs from tool arguments (recursively checks nested objects)
- * Also extracts URLs from curl/wget commands in bash
- */
-function extractUrls(context: ActionApprovalContext): string[] {
-	const args = getArgsObject(context);
-	if (!args) return [];
-
-	const urls = extractUrlsFromValue(args);
-
-	// For bash commands, also extract URLs from curl/wget that may not have http:// prefix
-	if (context.toolName === "bash" || context.toolName === "background_tasks") {
-		const command = getStringArg(context, "command");
-		if (command) {
-			urls.push(...extractUrlsFromShellCommand(command));
-		}
-	}
-
-	return urls;
-}
-
 export async function checkPolicy(context: ActionApprovalContext): Promise<{
 	allowed: boolean;
 	reason?: string;
@@ -719,41 +452,18 @@ export async function checkPolicy(context: ActionApprovalContext): Promise<{
 
 	// 3. Path Constraints
 	if (policy.paths) {
-		const filePaths = extractFilePaths(context);
-		for (const filePath of filePaths) {
-			// Check blocked paths first
-			if (
-				policy.paths.blocked?.length &&
-				matchesPathPattern(filePath, policy.paths.blocked)
-			) {
-				return {
-					allowed: false,
-					reason: `Path "${filePath}" is blocked by enterprise policy.`,
-				};
-			}
-			// Check allowed paths (if specified - empty array means block all)
-			if (policy.paths.allowed) {
-				if (
-					policy.paths.allowed.length === 0 ||
-					!matchesPathPattern(filePath, policy.paths.allowed)
-				) {
-					return {
-						allowed: false,
-						reason: `Path "${filePath}" is not in the allowed paths list.`,
-					};
-				}
-			}
+		const filePaths = extractPolicyFilePaths(context);
+		const pathCheck = checkPathPolicy(filePaths, policy.paths);
+		if (!pathCheck.allowed) {
+			return pathCheck;
 		}
 	}
 
 	// 4. Network Constraints
 	if (policy.network) {
-		const urls = extractUrls(context);
-		for (const url of urls) {
-			const check = await checkNetworkRestrictions(url, policy.network);
-			if (!check.allowed) {
-				return check;
-			}
+		const networkCheck = await checkNetworkPolicy(context, policy.network);
+		if (!networkCheck.allowed) {
+			return networkCheck;
 		}
 	}
 
@@ -804,27 +514,7 @@ export function checkModelPolicy(modelId: string): {
 		return { allowed: true };
 	}
 
-	const { allowed, blocked } = policy.models;
-
-	// Check blocked models first
-	if (blocked?.length && matchesModelPattern(modelId, blocked)) {
-		return {
-			allowed: false,
-			reason: `Model "${modelId}" is blocked by enterprise policy.`,
-		};
-	}
-
-	// Check allowed models (if specified - empty array means block all)
-	if (allowed) {
-		if (allowed.length === 0 || !matchesModelPattern(modelId, allowed)) {
-			return {
-				allowed: false,
-				reason: `Model "${modelId}" is not in the approved models list.`,
-			};
-		}
-	}
-
-	return { allowed: true };
+	return checkModelAccess(modelId, policy.models);
 }
 
 /**
