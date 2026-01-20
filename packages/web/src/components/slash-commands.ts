@@ -19,6 +19,12 @@ export const WEB_SLASH_COMMANDS: WebSlashCommand[] = [
 		tags: ["diagnostics"],
 	},
 	{
+		name: "stats",
+		description: "Show status and usage summary",
+		usage: "/stats",
+		tags: ["diagnostics", "usage"],
+	},
+	{
 		name: "diag",
 		description: "Show diagnostics",
 		usage: "/diag [status|background|hooks|sandbox]",

@@ -935,15 +935,63 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/limits [all|tool|lsp|help]"),
     );
 
+    // Status command
+    registry.register(
+        Command::new(
+            "status",
+            "Show system health overview",
+            CommandCategory::Diagnostics,
+            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowDiagnostics))),
+        )
+        .alias("health"),
+    );
+
+    // Stats command
+    registry.register(Command::new(
+        "stats",
+        "Show combined status and usage summary",
+        CommandCategory::Diagnostics,
+        Box::new(|_| {
+            Ok(CommandOutput::Multi(vec![
+                CommandOutput::Action(CommandAction::ShowDiagnostics),
+                CommandOutput::Action(CommandAction::ShowUsage(UsageAction::Summary)),
+            ]))
+        }),
+    ));
+
     // Diagnostics command
     registry.register(
         Command::new(
             "diag",
             "System diagnostics",
             CommandCategory::Diagnostics,
-            Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowDiagnostics))),
+            Box::new(|ctx| {
+                let subcommand = ctx
+                    .raw_args
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
+                match subcommand.as_str() {
+                    "" | "status" | "health" => {
+                        Ok(CommandOutput::Action(CommandAction::ShowDiagnostics))
+                    }
+                    "stats" | "overview" => Ok(CommandOutput::Multi(vec![
+                        CommandOutput::Action(CommandAction::ShowDiagnostics),
+                        CommandOutput::Action(CommandAction::ShowUsage(UsageAction::Summary)),
+                    ])),
+                    "mcp" => Ok(CommandOutput::Action(CommandAction::Mcp(McpAction::Status))),
+                    "help" | "?" | "-h" | "--help" => Ok(CommandOutput::Message(
+                        "Usage: /diag [status|stats|mcp|help]".to_string(),
+                    )),
+                    "about" | "context" | "lsp" => Ok(CommandOutput::Message(
+                        "Not supported in the Rust TUI yet. Try /status or /stats.".to_string(),
+                    )),
+                    _ => Ok(CommandOutput::Action(CommandAction::ShowDiagnostics)),
+                }
+            }),
         )
-        .group(vec!["status", "about", "context", "stats", "lsp", "mcp"]),
+        .group(vec!["status", "stats", "mcp"]),
     );
 
     // Tools command
@@ -1382,6 +1430,8 @@ mod tests {
         assert!(registry.get("model").is_some());
         assert!(registry.get("quit").is_some());
         assert!(registry.get("limits").is_some());
+        assert!(registry.get("status").is_some());
+        assert!(registry.get("stats").is_some());
     }
 
     #[test]
