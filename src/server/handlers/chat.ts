@@ -48,15 +48,14 @@ function getComposerTextContent(content: ComposerMessage["content"]): string {
 
 // SessionManager type import for annotations, value import for instantiation
 import type { SessionManager } from "../../session/manager.js";
-import {
-	SessionManager as SessionManagerImpl,
-	toSessionModelMetadata,
-} from "../../session/manager.js";
+import { toSessionModelMetadata } from "../../session/manager.js";
 import { recordSseSkip } from "../../telemetry.js";
 import type { WebServerContext } from "../app-context.js";
 import { publishArtifactUpdate } from "../artifacts-live-reload.js";
+import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
 import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
+import { createSessionManagerForRequest } from "../session-scope.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import { SseSession, sendSSE, sendSessionUpdate } from "../sse-session.js";
 import {
@@ -236,7 +235,8 @@ export async function handleChat(
 
 		// ===== Phase 3: Session and Agent Setup =====
 		// Create session manager (false = don't auto-initialize from disk)
-		const sessionManager = new SessionManagerImpl(false);
+		const sessionManager = createSessionManagerForRequest(req, false);
+		const subject = getAuthSubject(req);
 
 		// Resume existing session if sessionId provided
 		if (chatReq.sessionId) {
@@ -553,7 +553,7 @@ export async function handleChat(
 						return;
 					}
 
-					sessionManager.startSession(agent.state);
+					sessionManager.startSession(agent.state, { subject });
 
 					// Record session start in enterprise context for audit logging
 					if (enterpriseContext.isEnterprise()) {

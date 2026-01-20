@@ -65,6 +65,8 @@ pub struct PendingMessage {
     pub id: u64,
     /// The message content
     pub content: String,
+    /// Attachment paths to include with the message
+    pub attachments: Vec<String>,
     /// What kind of prompt this is
     pub kind: PromptKind,
     /// Timestamp when the message was queued (milliseconds since epoch)
@@ -81,14 +83,25 @@ impl PendingMessage {
 
     /// Create a new pending message with an explicit kind
     pub fn with_kind(content: impl Into<String>, kind: PromptKind) -> Self {
-        Self::with_kind_and_id(content, kind, 0)
+        Self::with_kind_and_id_and_attachments(content, kind, 0, Vec::new())
     }
 
     /// Create a new pending message with an explicit kind and id
     pub fn with_kind_and_id(content: impl Into<String>, kind: PromptKind, id: u64) -> Self {
+        Self::with_kind_and_id_and_attachments(content, kind, id, Vec::new())
+    }
+
+    /// Create a new pending message with kind, id, and attachments
+    pub fn with_kind_and_id_and_attachments(
+        content: impl Into<String>,
+        kind: PromptKind,
+        id: u64,
+        attachments: Vec<String>,
+    ) -> Self {
         Self {
             id,
             content: content.into(),
+            attachments,
             kind,
             queued_at: current_timestamp_ms(),
             priority: 0,
@@ -102,14 +115,25 @@ impl PendingMessage {
 
     /// Create a high-priority pending message with an explicit kind
     pub fn urgent_with_kind(content: impl Into<String>, kind: PromptKind) -> Self {
-        Self::urgent_with_kind_and_id(content, kind, 0)
+        Self::urgent_with_kind_and_id_and_attachments(content, kind, 0, Vec::new())
     }
 
     /// Create a high-priority pending message with an explicit kind and id
     pub fn urgent_with_kind_and_id(content: impl Into<String>, kind: PromptKind, id: u64) -> Self {
+        Self::urgent_with_kind_and_id_and_attachments(content, kind, id, Vec::new())
+    }
+
+    /// Create a high-priority pending message with kind, id, and attachments
+    pub fn urgent_with_kind_and_id_and_attachments(
+        content: impl Into<String>,
+        kind: PromptKind,
+        id: u64,
+        attachments: Vec<String>,
+    ) -> Self {
         Self {
             id,
             content: content.into(),
+            attachments,
             kind,
             queued_at: current_timestamp_ms(),
             priority: 100,

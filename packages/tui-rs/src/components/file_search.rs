@@ -238,8 +238,7 @@ impl FileSearchModal {
             .map(|m| self.render_match(m))
             .collect();
 
-        let list = List::new(items)
-            .highlight_style(Style::default().bg(Color::DarkGray));
+        let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
         frame.render_stateful_widget(list, area, &mut self.list_state);
     }
 

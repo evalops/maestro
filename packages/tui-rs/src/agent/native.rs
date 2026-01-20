@@ -90,6 +90,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -98,7 +99,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use super::message_queue::{MessageQueue, PromptKind, MAX_PENDING_MESSAGES};
+use super::message_queue::{MessageQueue, PendingMessage, PromptKind, MAX_PENDING_MESSAGES};
 use super::safety::{SafetyController, SafetyVerdict};
 use super::{FromAgent, TokenUsage, ToolResult};
 use crate::ai::{
@@ -107,10 +108,30 @@ use crate::ai::{
 };
 use crate::hooks::{HookResult, IntegratedHookSystem};
 use crate::safety::{
-    apply_workflow_state_hooks, ActionFirewall, FirewallContext, FirewallVerdict,
-    WorkflowStateTracker,
+    apply_workflow_state_hooks, check_model_allowed, ActionFirewall, FirewallContext,
+    FirewallVerdict, WorkflowStateTracker,
 };
 use crate::tools::{ToolExecutor, ToolRegistry};
+
+fn provider_id(provider: AiProvider) -> &'static str {
+    match provider {
+        AiProvider::Anthropic => "anthropic",
+        AiProvider::OpenAI => "openai",
+        AiProvider::Mistral => "mistral",
+        AiProvider::Google => "google",
+        AiProvider::Groq => "groq",
+        AiProvider::VertexAi => "vertex-ai",
+    }
+}
+
+fn policy_model_id(model: &str) -> String {
+    if model.contains('/') {
+        model.to_string()
+    } else {
+        let provider = AiProvider::from_model(model);
+        format!("{}/{}", provider_id(provider), model)
+    }
+}
 
 /// Configuration for the native agent
 ///
@@ -379,6 +400,11 @@ impl NativeAgent {
     /// agent.send_ready();
     /// ```
     pub fn new(config: NativeAgentConfig) -> Result<(Self, mpsc::UnboundedReceiver<FromAgent>)> {
+        let policy_id = policy_model_id(&config.model);
+        if let Some(reason) = check_model_allowed(&policy_id) {
+            return Err(anyhow::anyhow!(reason));
+        }
+
         let client = UnifiedClient::from_model(&config.model)?;
         let provider = client.provider();
 
@@ -432,6 +458,7 @@ impl NativeAgent {
             retry_policy,
             pending_messages,
             pending_tool_approvals: HashMap::new(),
+            prompt_context: None,
         };
 
         // Spawn the background task
@@ -712,6 +739,11 @@ struct NativeAgentRunner {
 
     /// Buffered tool approvals that arrived out of order
     pending_tool_approvals: HashMap<String, (bool, Option<ToolResult>)>,
+
+    /// Extra system prompt context for the current request
+    ///
+    /// Set by prompt-related hooks and cleared after each request completes.
+    prompt_context: Option<String>,
 }
 
 impl NativeAgentRunner {
@@ -757,6 +789,60 @@ impl NativeAgentRunner {
             return text.to_string();
         }
         text.chars().take(max_chars).collect()
+    }
+
+    fn apply_message_hook_modification(
+        prompt: &mut String,
+        attachments: &mut Vec<String>,
+        new_input: serde_json::Value,
+    ) {
+        match new_input {
+            serde_json::Value::String(text) => {
+                *prompt = text;
+            }
+            serde_json::Value::Object(map) => {
+                if let Some(serde_json::Value::String(text)) =
+                    map.get("message").or_else(|| map.get("prompt"))
+                {
+                    *prompt = text.clone();
+                }
+                if let Some(serde_json::Value::Array(items)) = map.get("attachments") {
+                    let mut next = Vec::new();
+                    for item in items {
+                        match item {
+                            serde_json::Value::String(value) => next.push(value.clone()),
+                            other => next.push(other.to_string()),
+                        }
+                    }
+                    *attachments = next;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn merge_prompt_context(target: &mut Option<String>, context: String) {
+        if context.trim().is_empty() {
+            return;
+        }
+        match target {
+            Some(existing) => {
+                existing.push('\n');
+                existing.push_str(&context);
+            }
+            None => {
+                *target = Some(context);
+            }
+        }
+    }
+
+    fn stop_reason_label(reason: crate::ai::StopReason) -> &'static str {
+        match reason {
+            crate::ai::StopReason::EndTurn => "end_turn",
+            crate::ai::StopReason::MaxTokens => "max_tokens",
+            crate::ai::StopReason::StopSequence => "stop_sequence",
+            crate::ai::StopReason::ToolUse => "tool_use",
+        }
     }
 
     async fn load_attachment_blocks(&self, raw_paths: &[String]) -> Vec<ContentBlock> {
@@ -870,21 +956,23 @@ impl NativeAgentRunner {
                 } => {
                     if self.busy {
                         // Queue the message instead of rejecting it
-                        // Note: attachments are not supported for queued messages yet
-                        if !attachments.is_empty() {
-                            let _ = self.event_tx.send(FromAgent::Status {
-                                message: "Warning: attachments will be ignored for queued message"
-                                    .to_string(),
-                            });
-                        }
                         let id = queue_id.unwrap_or_else(|| self.pending_messages.reserve_id());
-                        let dropped = if kind == PromptKind::Steer {
-                            self.pending_messages
-                                .push_urgent_with_kind_and_id(&content, kind, id)
+                        let pending = if kind == PromptKind::Steer {
+                            PendingMessage::urgent_with_kind_and_id_and_attachments(
+                                content,
+                                kind,
+                                id,
+                                attachments,
+                            )
                         } else {
-                            self.pending_messages
-                                .push_with_kind_and_id(&content, kind, id)
+                            PendingMessage::with_kind_and_id_and_attachments(
+                                content,
+                                kind,
+                                id,
+                                attachments,
+                            )
                         };
+                        let dropped = self.pending_messages.push_message(pending);
                         if let Some(dropped) = dropped {
                             let _ = self.event_tx.send(FromAgent::Status {
                                 message: format!(
@@ -912,12 +1000,84 @@ impl NativeAgentRunner {
                     self.busy = true;
                     self.workflow_state.reset();
 
+                    let mut prompt = content;
+                    let mut attachments = attachments;
+                    let mut prompt_context: Option<String> = None;
+
+                    // Execute UserPromptSubmit hooks
+                    let hook_result = self
+                        .hooks
+                        .execute_user_prompt_submit(&prompt, attachments.len() as u32);
+                    match hook_result {
+                        HookResult::Block { reason } => {
+                            let _ = self.event_tx.send(FromAgent::Error {
+                                message: format!("Prompt blocked by hook: {reason}"),
+                                fatal: false,
+                            });
+                            let _ = self.event_tx.send(FromAgent::ResponseEnd {
+                                response_id: "blocked".to_string(),
+                                usage: None,
+                            });
+                            self.busy = false;
+                            self.cancel_token = None;
+                            self.prompt_context = None;
+                            continue;
+                        }
+                        HookResult::ModifyInput { new_input } => {
+                            Self::apply_message_hook_modification(
+                                &mut prompt,
+                                &mut attachments,
+                                new_input,
+                            );
+                        }
+                        HookResult::InjectContext { context } => {
+                            Self::merge_prompt_context(&mut prompt_context, context);
+                        }
+                        HookResult::Continue => {}
+                    }
+
+                    // Execute PreMessage hooks
+                    let hook_result = self.hooks.execute_pre_message(
+                        &prompt,
+                        &attachments,
+                        Some(&self.config.model),
+                    );
+                    match hook_result {
+                        HookResult::Block { reason } => {
+                            let _ = self.event_tx.send(FromAgent::Error {
+                                message: format!("Prompt blocked by hook: {reason}"),
+                                fatal: false,
+                            });
+                            let _ = self.event_tx.send(FromAgent::ResponseEnd {
+                                response_id: "blocked".to_string(),
+                                usage: None,
+                            });
+                            self.busy = false;
+                            self.cancel_token = None;
+                            self.prompt_context = None;
+                            continue;
+                        }
+                        HookResult::ModifyInput { new_input } => {
+                            Self::apply_message_hook_modification(
+                                &mut prompt,
+                                &mut attachments,
+                                new_input,
+                            );
+                        }
+                        HookResult::InjectContext { context } => {
+                            Self::merge_prompt_context(&mut prompt_context, context);
+                        }
+                        HookResult::Continue => {}
+                    }
+
+                    self.prompt_context = prompt_context;
+
                     // Create cancellation token for this request
                     let cancel_token = CancellationToken::new();
                     self.cancel_token = Some(cancel_token.clone());
 
                     let mut blocks = Vec::new();
-                    blocks.push(ContentBlock::Text { text: content });
+                    blocks.push(ContentBlock::Text { text: prompt });
                     let attachment_blocks = self.load_attachment_blocks(&attachments).await;
                     blocks.extend(attachment_blocks);
 
@@ -996,6 +1156,7 @@ impl NativeAgentRunner {
 
                     self.busy = false;
                     self.cancel_token = None;
+                    self.prompt_context = None;
 
                     // Signal that we're done (TUI can clear busy state)
                     let _ = self.event_tx.send(FromAgent::ResponseEnd {
@@ -1019,13 +1180,98 @@ impl NativeAgentRunner {
                         });
 
                         self.busy = true;
+                        let mut prompt = pending.content.clone();
+                        let mut attachments = pending.attachments.clone();
+                        let mut prompt_context: Option<String> = None;
+
+                        // Execute UserPromptSubmit hooks
+                        let hook_result = self
+                            .hooks
+                            .execute_user_prompt_submit(&prompt, attachments.len() as u32);
+                        match hook_result {
+                            HookResult::Block { reason } => {
+                                let _ = self.event_tx.send(FromAgent::Error {
+                                    message: format!("Prompt blocked by hook: {reason}"),
+                                    fatal: false,
+                                });
+                                let _ = self.event_tx.send(FromAgent::ResponseEnd {
+                                    response_id: "blocked".to_string(),
+                                    usage: None,
+                                });
+                                self.busy = false;
+                                self.cancel_token = None;
+                                self.prompt_context = None;
+                                continue;
+                            }
+                            HookResult::ModifyInput { new_input } => {
+                                Self::apply_message_hook_modification(
+                                    &mut prompt,
+                                    &mut attachments,
+                                    new_input,
+                                );
+                            }
+                            HookResult::InjectContext { context } => {
+                                Self::merge_prompt_context(&mut prompt_context, context);
+                            }
+                            HookResult::Continue => {}
+                        }
+
+                        // Execute PreMessage hooks
+                        let hook_result = self.hooks.execute_pre_message(
+                            &prompt,
+                            &attachments,
+                            Some(&self.config.model),
+                        );
+                        match hook_result {
+                            HookResult::Block { reason } => {
+                                let _ = self.event_tx.send(FromAgent::Error {
+                                    message: format!("Prompt blocked by hook: {reason}"),
+                                    fatal: false,
+                                });
+                                let _ = self.event_tx.send(FromAgent::ResponseEnd {
+                                    response_id: "blocked".to_string(),
+                                    usage: None,
+                                });
+                                self.busy = false;
+                                self.cancel_token = None;
+                                self.prompt_context = None;
+                                continue;
+                            }
+                            HookResult::ModifyInput { new_input } => {
+                                Self::apply_message_hook_modification(
+                                    &mut prompt,
+                                    &mut attachments,
+                                    new_input,
+                                );
+                            }
+                            HookResult::InjectContext { context } => {
+                                Self::merge_prompt_context(&mut prompt_context, context);
+                            }
+                            HookResult::Continue => {}
+                        }
+
+                        self.prompt_context = prompt_context;
+
                         let cancel_token = CancellationToken::new();
                         self.cancel_token = Some(cancel_token.clone());
 
                         // Add the pending message to conversation history
+                        let mut blocks = Vec::new();
+                        blocks.push(ContentBlock::Text { text: prompt });
+                        let attachment_blocks = self.load_attachment_blocks(&attachments).await;
+                        blocks.extend(attachment_blocks);
+
+                        let content = if blocks.len() == 1 {
+                            match &blocks[0] {
+                                ContentBlock::Text { text } => MessageContent::text(text.clone()),
+                                _ => MessageContent::Blocks(blocks),
+                            }
+                        } else {
+                            MessageContent::Blocks(blocks)
+                        };
                         self.messages.push(Message {
                             role: Role::User,
-                            content: MessageContent::text(pending.content),
+                            content,
                         });
 
                         self.retry_policy.reset();
@@ -1088,6 +1334,7 @@ impl NativeAgentRunner {
 
                         self.busy = false;
                         self.cancel_token = None;
+                        self.prompt_context = None;
 
                         let _ = self.event_tx.send(FromAgent::ResponseEnd {
                             response_id: "queued".to_string(),
@@ -1101,6 +1348,7 @@ impl NativeAgentRunner {
                     }
                     self.clear_pending_on_cancel = clear_pending;
                     self.busy = false;
+                    self.prompt_context = None;
                     if clear_pending {
                         // Also clear any pending messages on cancel
                         let cleared = self.pending_messages.clear();
@@ -1127,18 +1375,42 @@ impl NativeAgentRunner {
                         });
                     }
                 }
-                AgentCommand::SetModel { model } => match UnifiedClient::from_model(&model) {
-                    Ok(client) => {
-                        self.client = client;
-                        self.config.model = model;
-                    }
-                    Err(e) => {
+                AgentCommand::SetModel { model } => {
+                    let policy_id = policy_model_id(&model);
+                    if let Some(reason) = check_model_allowed(&policy_id) {
                         let _ = self.event_tx.send(FromAgent::Error {
-                            message: format!("Failed to set model: {e}"),
+                            message: reason.clone(),
                             fatal: false,
                         });
+                        let _ = self
+                            .event_tx
+                            .send(FromAgent::ModelChangeFailed { model, reason });
+                        continue;
                     }
-                },
+
+                    match UnifiedClient::from_model(&model) {
+                        Ok(client) => {
+                            let provider = format!("{:?}", client.provider());
+                            self.client = client;
+                            self.config.model = model.clone();
+                            self.hooks.set_model(&model);
+                            let _ = self
+                                .event_tx
+                                .send(FromAgent::ModelChanged { model, provider });
+                        }
+                        Err(e) => {
+                            let message = format!("Failed to set model: {e}");
+                            let _ = self.event_tx.send(FromAgent::Error {
+                                message: message.clone(),
+                                fatal: false,
+                            });
+                            let _ = self.event_tx.send(FromAgent::ModelChangeFailed {
+                                model,
+                                reason: message,
+                            });
+                        }
+                    }
+                }
                 AgentCommand::SetThinking { enabled, budget } => {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
@@ -1192,6 +1464,7 @@ impl NativeAgentRunner {
 
                     self.busy = false;
                     self.cancel_token = None;
+                    self.prompt_context = None;
 
                     let _ = self.event_tx.send(FromAgent::ResponseEnd {
                         response_id: "continue".to_string(),
@@ -1212,6 +1485,15 @@ impl NativeAgentRunner {
             None
         };
 
+        let system = match (&self.config.system_prompt, &self.prompt_context) {
+            (Some(base), Some(extra)) if !extra.trim().is_empty() => {
+                Some(format!("{base}\n\n{extra}"))
+            }
+            (Some(base), _) => Some(base.clone()),
+            (None, Some(extra)) if !extra.trim().is_empty() => Some(extra.clone()),
+            _ => None,
+        };
+
         RequestConfig {
             model: self.config.model.clone(),
             max_tokens: self.config.max_tokens,
@@ -1220,7 +1502,7 @@ impl NativeAgentRunner {
             } else {
                 Some(0.7)
             },
-            system: self.config.system_prompt.clone(),
+            system,
             tools,
             thinking,
             // Enable prompt caching for Anthropic models
@@ -1232,6 +1514,8 @@ impl NativeAgentRunner {
     async fn run_loop(&mut self) -> Result<()> {
         loop {
             let response_id = Uuid::new_v4().to_string();
+            let start_time = Instant::now();
+            let mut stop_reason: Option<crate::ai::StopReason> = None;
 
             // Signal response start
             let _ = self.event_tx.send(FromAgent::ResponseStart {
@@ -1353,7 +1637,10 @@ impl NativeAgentRunner {
                         usage.cache_read_tokens = cache_read_tokens.unwrap_or(0);
                         usage.cache_write_tokens = cache_creation_tokens.unwrap_or(0);
                     }
-                    StreamEvent::MessageStop { stop_reason } => {
+                    StreamEvent::MessageStop {
+                        stop_reason: reason,
+                    } => {
+                        stop_reason = reason;
                         // Check for context overflow
                         if matches!(stop_reason, Some(crate::ai::StopReason::MaxTokens)) {
                             eprintln!("[agent] Context overflow detected (MaxTokens)");
@@ -1407,6 +1694,15 @@ impl NativeAgentRunner {
                 }
             }
 
+            let response_text = assistant_content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+
             // Add assistant message to history
             if !assistant_content.is_empty() {
                 self.messages.push(Message {
@@ -1414,6 +1710,16 @@ impl NativeAgentRunner {
                     content: MessageContent::Blocks(assistant_content),
                 });
             }
+
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+            let stop_reason_label = stop_reason.map(Self::stop_reason_label);
+            let _ = self.hooks.execute_post_message(
+                &response_text,
+                usage.input_tokens,
+                usage.output_tokens,
+                duration_ms,
+                stop_reason_label,
+            );
 
             // Signal response end
             let _ = self.event_tx.send(FromAgent::ResponseEnd {

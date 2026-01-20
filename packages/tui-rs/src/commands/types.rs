@@ -185,7 +185,7 @@ pub enum CommandOutput {
 /// - **`RefreshWorkspace`**: Reload workspace file listing
 /// - **`CopyLastMessage`**: Copy the last message to clipboard
 /// - **`CompactConversation`**: Compress conversation history, optionally with custom instructions
-/// - **`ShowMcpStatus`**: Display Model Context Protocol server status
+/// - **`Mcp`**: Display Model Context Protocol status or resources/prompts
 /// - **`HooksManage`**: Hook system management action (list, toggle, reload, metrics)
 ///
 /// # Example
@@ -222,10 +222,14 @@ pub enum CommandAction {
     RefreshWorkspace,
     /// Copy the last message to system clipboard
     CopyLastMessage,
+    /// Set the current UI theme
+    SetTheme(String),
+    /// Set the current model
+    SetModel(String),
     /// Compact conversation history (with optional custom instructions)
     CompactConversation(Option<String>),
-    /// Show MCP (Model Context Protocol) server status
-    ShowMcpStatus,
+    /// MCP (Model Context Protocol) actions
+    Mcp(McpAction),
     /// Hook system management action
     HooksManage(HooksAction),
     /// Show usage and cost statistics
@@ -242,6 +246,8 @@ pub enum CommandAction {
     Queue(QueueAction),
     /// Submit a steering prompt
     Steer(String),
+    /// Show diagnostics/status summary
+    ShowDiagnostics,
 }
 
 /// Queue mode target for queue commands.
@@ -313,6 +319,23 @@ pub enum ToolHistoryAction {
     ForTool(String),
     /// Clear history
     Clear,
+}
+
+/// Actions for MCP commands
+#[derive(Debug, Clone)]
+pub enum McpAction {
+    /// Show MCP server status
+    Status,
+    /// List or read MCP resources
+    Resources {
+        server: Option<String>,
+        uri: Option<String>,
+    },
+    /// List or fetch MCP prompts
+    Prompts {
+        server: Option<String>,
+        name: Option<String>,
+    },
 }
 
 /// Actions for managing the hook system

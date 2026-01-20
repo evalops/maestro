@@ -396,7 +396,5 @@ pub enum SessionEntry {
 
 ## Known Issues / TODOs
 
-1. Multi-line input doesn't fully support cursor movement across wrapped lines yet
-2. Headless protocol integration is partial
-3. MCP support exists, but parity and UX with the TypeScript surfaces is still evolving
-4. Some dead code warnings for future features (textarea.rs utilities)
+1. Headless protocol integration is partial (not wired into the default TUI runtime yet)
+2. MCP support exists, but parity and UX with the TypeScript surfaces is still evolving

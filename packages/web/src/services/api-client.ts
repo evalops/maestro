@@ -491,6 +491,15 @@ export interface BranchListResponse {
  * ```
  */
 export class ApiClient {
+	private transportPreference: "auto" | "sse" | "ws" = "auto";
+
+	setTransportPreference(mode: "auto" | "sse" | "ws") {
+		this.transportPreference = mode;
+	}
+
+	getTransportPreference(): "auto" | "sse" | "ws" {
+		return this.transportPreference;
+	}
 	/** Resolved base URL for API requests */
 	public readonly baseUrl: string;
 
@@ -743,10 +752,21 @@ export class ApiClient {
 		}
 	}
 
-	/**
-	 * Send a chat message and stream ALL agent events (text deltas, tool calls, thinking, etc.)
-	 */
-	async *chatWithEvents(
+	private buildWebSocketUrl(
+		path: string,
+		params?: Record<string, string>,
+	): string {
+		const url = new URL(path, this.baseUrl);
+		url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+		if (params) {
+			for (const [key, value] of Object.entries(params)) {
+				url.searchParams.set(key, value);
+			}
+		}
+		return url.toString();
+	}
+
+	private async *chatWithSse(
 		request: ChatRequest,
 	): AsyncGenerator<AgentEvent, void, unknown> {
 		if (VALIDATE_CHAT_REQUESTS && !isComposerChatRequest(request)) {
@@ -805,6 +825,140 @@ export class ApiClient {
 			}
 		} finally {
 			reader.releaseLock();
+		}
+	}
+
+	private async *chatWithWebSocket(
+		request: ChatRequest,
+	): AsyncGenerator<AgentEvent, void, unknown> {
+		if (VALIDATE_CHAT_REQUESTS && !isComposerChatRequest(request)) {
+			throw new Error("Invalid chat request payload");
+		}
+
+		const url = this.buildWebSocketUrl("/api/chat/ws", {
+			clientTools: "1",
+			slim: "1",
+			client: "web",
+		});
+
+		const ws = new WebSocket(url);
+		const queue: AgentEvent[] = [];
+		let done = false;
+		let error: Error | null = null;
+		let notify: (() => void) | null = null;
+
+		const waitForNext = () =>
+			new Promise<void>((resolve) => {
+				notify = resolve;
+			});
+
+		ws.addEventListener("message", (event) => {
+			try {
+				const raw =
+					typeof event.data === "string"
+						? event.data
+						: event.data instanceof ArrayBuffer
+							? new TextDecoder().decode(event.data)
+							: "";
+				if (!raw) return;
+				const parsed = JSON.parse(raw);
+				if (parsed && typeof parsed === "object" && parsed.type === "done") {
+					done = true;
+					if (VALIDATE_AGENT_EVENTS && !isComposerAgentEvent(parsed)) {
+						console.warn("Invalid agent event payload:", parsed);
+						if (notify) notify();
+						return;
+					}
+					queue.push(parsed as AgentEvent);
+					if (notify) notify();
+					return;
+				}
+				if (
+					parsed &&
+					typeof parsed === "object" &&
+					parsed.type === "heartbeat"
+				) {
+					return;
+				}
+				if (VALIDATE_AGENT_EVENTS && !isComposerAgentEvent(parsed)) {
+					console.warn("Invalid agent event payload:", parsed);
+					return;
+				}
+				queue.push(parsed as AgentEvent);
+				if (notify) notify();
+			} catch (e) {
+				console.warn("Failed to parse WebSocket data:", event.data);
+			}
+		});
+
+		ws.addEventListener("error", () => {
+			error = new Error("WebSocket error");
+			done = true;
+			if (notify) notify();
+		});
+
+		ws.addEventListener("close", () => {
+			done = true;
+			if (notify) notify();
+		});
+
+		await new Promise<void>((resolve, reject) => {
+			ws.addEventListener("open", () => resolve(), { once: true });
+			ws.addEventListener(
+				"error",
+				() => reject(new Error("WebSocket connection failed")),
+				{ once: true },
+			);
+		});
+
+		ws.send(JSON.stringify({ ...request, stream: true }));
+
+		try {
+			while (!done || queue.length > 0) {
+				if (queue.length === 0) {
+					await waitForNext();
+					continue;
+				}
+				const next = queue.shift();
+				if (next) {
+					yield next;
+				}
+			}
+		} finally {
+			if (ws.readyState === WebSocket.OPEN) {
+				ws.close();
+			}
+		}
+
+		if (error) throw error;
+	}
+
+	/**
+	 * Send a chat message and stream ALL agent events (text deltas, tool calls, thinking, etc.)
+	 */
+	async *chatWithEvents(
+		request: ChatRequest,
+	): AsyncGenerator<AgentEvent, void, unknown> {
+		if (this.transportPreference === "ws") {
+			yield* this.chatWithWebSocket(request);
+			return;
+		}
+		if (this.transportPreference === "sse") {
+			yield* this.chatWithSse(request);
+			return;
+		}
+		let sawEvent = false;
+		try {
+			for await (const event of this.chatWithSse(request)) {
+				sawEvent = true;
+				yield event;
+			}
+		} catch (err) {
+			if (!sawEvent) {
+				yield* this.chatWithWebSocket(request);
+				return;
+			}
+			throw err;
 		}
 	}
 
@@ -924,6 +1078,53 @@ export class ApiClient {
 			console.error("Failed to fetch commands:", e);
 			return [];
 		}
+	}
+
+	/**
+	 * Get available npm scripts for /run.
+	 */
+	async getRunScripts(): Promise<string[]> {
+		try {
+			const data = await this.fetchJsonWithFallback("/api/run?action=scripts");
+			if (!data || typeof data !== "object") return [];
+			const scripts = (data as { scripts?: unknown }).scripts;
+			return Array.isArray(scripts)
+				? scripts.filter((s): s is string => typeof s === "string")
+				: [];
+		} catch (e) {
+			console.error("Failed to fetch run scripts:", e);
+			return [];
+		}
+	}
+
+	/**
+	 * Run an npm script via /api/run.
+	 */
+	async runScript(
+		script: string,
+		args?: string,
+	): Promise<{
+		success: boolean;
+		exitCode: number;
+		stdout?: string;
+		stderr?: string;
+		command?: string;
+	}> {
+		const data = await this.fetchJsonWithFallback("/api/run", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ script, args }),
+		});
+		if (!data || typeof data !== "object") {
+			throw new Error("Invalid run response payload");
+		}
+		return data as {
+			success: boolean;
+			exitCode: number;
+			stdout?: string;
+			stderr?: string;
+			command?: string;
+		};
 	}
 
 	/**
@@ -1549,22 +1750,6 @@ export class ApiClient {
 		});
 	}
 
-	// Run (npm scripts)
-	async getRunScripts(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/run?action=scripts");
-	}
-
-	async runScript(
-		script: string,
-		args?: string,
-	): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/run", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ script, args }),
-		});
-	}
-
 	// Ollama
 	async listOllamaModels(): Promise<Record<string, unknown>> {
 		return await this.fetchJsonWithFallback("/api/ollama?action=list");
@@ -1781,51 +1966,67 @@ export class ApiClient {
 	}
 
 	// UI Settings
-	async getUIStatus(): Promise<UIStatusResponse> {
-		return await this.fetchJsonWithFallback("/api/ui?action=status");
+	async getUIStatus(sessionId: string): Promise<UIStatusResponse> {
+		return await this.fetchJsonWithFallback(
+			`/api/ui?action=status&sessionId=${encodeURIComponent(sessionId)}`,
+		);
 	}
 
 	async setCleanMode(
 		mode: "off" | "soft" | "aggressive",
+		sessionId: string,
 	): Promise<{ success: boolean; cleanMode: UIStatusResponse["cleanMode"] }> {
-		return await this.fetchJsonWithFallback("/api/ui", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "clean", cleanMode: mode }),
-		});
+		return await this.fetchJsonWithFallback(
+			`/api/ui?sessionId=${encodeURIComponent(sessionId)}`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ action: "clean", cleanMode: mode }),
+			},
+		);
 	}
 
 	async setFooterMode(
 		mode: "ensemble" | "solo",
+		sessionId: string,
 	): Promise<{ success: boolean; footerMode: UIStatusResponse["footerMode"] }> {
-		return await this.fetchJsonWithFallback("/api/ui", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "footer", footerMode: mode }),
-		});
+		return await this.fetchJsonWithFallback(
+			`/api/ui?sessionId=${encodeURIComponent(sessionId)}`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ action: "footer", footerMode: mode }),
+			},
+		);
 	}
 
-	async setCompactTools(enabled: boolean): Promise<{
+	async setCompactTools(
+		enabled: boolean,
+		sessionId: string,
+	): Promise<{
 		success: boolean;
 		compactTools: boolean;
 	}> {
-		return await this.fetchJsonWithFallback("/api/ui", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "compact", compactTools: enabled }),
-		});
+		return await this.fetchJsonWithFallback(
+			`/api/ui?sessionId=${encodeURIComponent(sessionId)}`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ action: "compact", compactTools: enabled }),
+			},
+		);
 	}
 
 	// Queue
 	async getQueueStatus(sessionId: string): Promise<QueueStatusResponse> {
 		return await this.fetchJsonWithFallback(
-			`/api/queue?action=status&sessionId=${sessionId}`,
+			`/api/queue?action=status&sessionId=${encodeURIComponent(sessionId)}`,
 		);
 	}
 
 	async listQueue(sessionId: string): Promise<QueueListResponse> {
 		return await this.fetchJsonWithFallback(
-			`/api/queue?action=list&sessionId=${sessionId}`,
+			`/api/queue?action=list&sessionId=${encodeURIComponent(sessionId)}`,
 		);
 	}
 
@@ -1852,15 +2053,18 @@ export class ApiClient {
 	}
 
 	// Branch
-	async listBranchOptions(sessionId?: string): Promise<BranchListResponse> {
+	async listBranchOptions(sessionId: string): Promise<BranchListResponse> {
+		if (!sessionId) {
+			throw new Error("sessionId is required to list branches");
+		}
 		return await this.fetchJsonWithFallback(
-			`/api/branch?action=list${sessionId ? `&sessionId=${sessionId}` : ""}`,
+			`/api/branch?action=list&sessionId=${encodeURIComponent(sessionId)}`,
 		);
 	}
 
 	async createBranch(
 		sessionId: string,
-		messageIndex: number,
+		options: { messageIndex?: number; userMessageNumber?: number },
 	): Promise<{
 		success: boolean;
 		newSessionId: string;
@@ -1869,7 +2073,7 @@ export class ApiClient {
 		return await this.fetchJsonWithFallback("/api/branch", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ sessionId, messageIndex }),
+			body: JSON.stringify({ sessionId, ...options }),
 		});
 	}
 }

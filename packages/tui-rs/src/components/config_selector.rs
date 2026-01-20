@@ -419,8 +419,7 @@ impl ConfigSelector {
             items.push(ListItem::new(line));
         }
 
-        let list = List::new(items)
-            .highlight_style(Style::default().bg(Color::DarkGray));
+        let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
         frame.render_stateful_widget(list, chunks[0], &mut self.list_state);
 
         // Description area

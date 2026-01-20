@@ -74,6 +74,9 @@ pub(crate) use path_containment::{expand_tilde, is_tilde_path};
 pub use path_containment::{
     has_path_traversal, is_path_contained, is_system_path, PathContainment,
 };
+pub use policy::{
+    check_model_allowed, check_path_allowed, check_session_limits, get_policy_limits,
+};
 pub use safe_mode::{
     is_safe_mode_enabled, require_plan, run_validators, run_validators_with_diagnostics,
     set_plan_satisfied, ValidatorResult,

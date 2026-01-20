@@ -249,7 +249,10 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use super::entries::{AppMessage, SessionEntry, SessionHeader, SessionMeta, SessionStats};
+use super::entries::{
+    AppMessage, CompactionEntry, ModelChange, SessionEntry, SessionHeader, SessionMeta,
+    SessionStats, ThinkingLevelChange, TokenUsage,
+};
 
 fn apply_attachment_extracts(
     message: AppMessage,
@@ -389,8 +392,27 @@ pub struct ParsedSession {
     /// Aggregated statistics computed during file reading.
     pub stats: SessionStats,
 
+    /// Recorded thinking level changes.
+    pub thinking_level_changes: Vec<ThinkingLevelChange>,
+
+    /// Recorded model changes.
+    pub model_changes: Vec<ModelChange>,
+
+    /// Recorded compaction events.
+    pub compactions: Vec<CompactionEntry>,
+
+    /// Usage entries extracted from assistant messages (for fast usage hydration).
+    pub usage_entries: Vec<UsageEntry>,
+
     /// Absolute path to the source session file.
     pub file_path: String,
+}
+
+/// Compact usage record extracted from assistant messages.
+#[derive(Debug, Clone)]
+pub struct UsageEntry {
+    pub model: String,
+    pub usage: TokenUsage,
 }
 
 impl ParsedSession {
@@ -468,6 +490,10 @@ impl SessionReader {
         let mut meta: Option<SessionMeta> = None;
         let mut stats = SessionStats::default();
         let mut extracted_by_id: HashMap<String, String> = HashMap::new();
+        let mut thinking_level_changes: Vec<ThinkingLevelChange> = Vec::new();
+        let mut model_changes: Vec<ModelChange> = Vec::new();
+        let mut compactions: Vec<CompactionEntry> = Vec::new();
+        let mut usage_entries: Vec<UsageEntry> = Vec::new();
 
         for (line_num, line) in reader.lines().enumerate() {
             let line = line?;
@@ -492,12 +518,26 @@ impl SessionReader {
                     // Update stats
                     match &m.message {
                         AppMessage::User { .. } => stats.user_messages += 1,
-                        AppMessage::Assistant { usage, content, .. } => {
+                        AppMessage::Assistant {
+                            usage,
+                            content,
+                            model,
+                            ..
+                        } => {
                             stats.assistant_messages += 1;
                             if let Some(u) = usage {
                                 stats.total_input_tokens += u.input;
                                 stats.total_output_tokens += u.output;
                                 stats.total_cost += u.total_cost();
+
+                                let model_id = model
+                                    .clone()
+                                    .or_else(|| header.as_ref().map(|h| h.model.clone()))
+                                    .unwrap_or_else(|| "unknown".to_string());
+                                usage_entries.push(UsageEntry {
+                                    model: model_id,
+                                    usage: u.clone(),
+                                });
                             }
                             // Count tool calls
                             for block in content {
@@ -518,10 +558,14 @@ impl SessionReader {
                 SessionEntry::SessionMeta(m) => {
                     meta = Some(m);
                 }
-                SessionEntry::ThinkingLevelChange(_)
-                | SessionEntry::ModelChange(_)
-                | SessionEntry::Compaction(_) => {
-                    // Track but don't store for now
+                SessionEntry::ThinkingLevelChange(change) => {
+                    thinking_level_changes.push(change);
+                }
+                SessionEntry::ModelChange(change) => {
+                    model_changes.push(change);
+                }
+                SessionEntry::Compaction(entry) => {
+                    compactions.push(entry);
                 }
             }
         }
@@ -541,6 +585,10 @@ impl SessionReader {
             messages,
             meta,
             stats,
+            thinking_level_changes,
+            model_changes,
+            compactions,
+            usage_entries,
             file_path: path.to_string_lossy().to_string(),
         })
     }

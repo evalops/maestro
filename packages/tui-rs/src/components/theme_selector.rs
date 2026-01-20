@@ -261,8 +261,8 @@ impl ThemeSelector {
             })
             .collect();
 
-        let list = List::new(items)
-            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+        let list =
+            List::new(items).highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
         frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
     }
 }

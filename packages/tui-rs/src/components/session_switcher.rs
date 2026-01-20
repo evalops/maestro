@@ -285,8 +285,7 @@ impl SessionSwitcher {
             .map(|s| Self::render_session_item(s))
             .collect();
 
-        let list = List::new(items)
-            .highlight_style(Style::default().bg(Color::DarkGray));
+        let list = List::new(items).highlight_style(Style::default().bg(Color::DarkGray));
         frame.render_stateful_widget(list, area, &mut self.list_state);
     }
 
@@ -302,7 +301,9 @@ impl SessionSwitcher {
         let title: String = session.title().chars().take(30).collect();
         spans.push(Span::styled(
             title,
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ));
 
         // Timestamp

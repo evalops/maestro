@@ -32,6 +32,12 @@ const usage: ComposerUsage = {
 payload.usage = usage;
 ```
 
+## Streaming events
+
+`ComposerAgentEvent` models the wire events emitted by Composer's streaming
+endpoints, including transport signals like `session_update`, `heartbeat`,
+`aborted`, and `done`.
+
 ## Runtime validation
 
 Contracts also ship lightweight runtime schemas and validators for boundary checks:

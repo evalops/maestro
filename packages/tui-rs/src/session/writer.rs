@@ -76,6 +76,25 @@ impl SessionWriter {
         Ok(writer)
     }
 
+    /// Open an existing session file for appending (header already present)
+    pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, SessionWriteError> {
+        let path = path.as_ref().to_path_buf();
+
+        if !path.exists() {
+            return Err(SessionWriteError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Session file not found",
+            )));
+        }
+
+        Ok(Self {
+            path,
+            buffer: Vec::new(),
+            batch_size: DEFAULT_BATCH_SIZE,
+            header_written: true,
+        })
+    }
+
     /// Set the batch size
     #[must_use]
     pub fn batch_size(mut self, size: usize) -> Self {

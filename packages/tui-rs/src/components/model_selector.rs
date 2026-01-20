@@ -304,7 +304,10 @@ impl ModelSelector {
 
                 let mut spans = vec![
                     Span::styled(&model.name, Style::default().add_modifier(Modifier::BOLD)),
-                    Span::styled(format!(" ({}) ", model.provider), Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!(" ({}) ", model.provider),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 ];
 
                 if is_current {
@@ -315,8 +318,8 @@ impl ModelSelector {
             })
             .collect();
 
-        let list = List::new(items)
-            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
+        let list =
+            List::new(items).highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White));
         frame.render_stateful_widget(list, chunks[1], &mut self.list_state);
     }
 }

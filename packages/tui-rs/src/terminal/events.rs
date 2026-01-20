@@ -8,7 +8,7 @@
 //!
 //! The event stream automatically filters:
 //!
-//! - Mouse events (not currently used by the application)
+//! - Mouse events (except scroll wheel, which is forwarded)
 //! - Key release and repeat events (only key press events are processed)
 //! - Lock key events (`CapsLock`, `NumLock`, `ScrollLock`)
 //! - Media and modifier-only key events
@@ -25,7 +25,9 @@
 //! them to string representations (e.g., "Enter", "Backspace", "F1") that are easier
 //! to work with in the application layer and can be serialized for IPC communication.
 
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, MouseEvent, MouseEventKind,
+};
 use tokio_stream::StreamExt;
 
 use crate::protocol::KeyModifiers;

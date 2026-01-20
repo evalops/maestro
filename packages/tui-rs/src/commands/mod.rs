@@ -101,6 +101,6 @@ pub use registry::{build_command_registry, CommandRegistry};
 pub use types::{
     Command, CommandAction, CommandArgument, CommandArgumentType, CommandCategory, CommandContext,
     CommandError, CommandHandler, CommandOutput, CommandResult, ExportAction, HistoryAction,
-    HooksAction, ModalType, QueueAction, QueueModeKind, SkillsAction, ToolHistoryAction,
+    HooksAction, McpAction, ModalType, QueueAction, QueueModeKind, SkillsAction, ToolHistoryAction,
     UsageAction,
 };

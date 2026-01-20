@@ -615,6 +615,31 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Resume an existing session file for appending new entries.
+    pub fn resume_session_by_path(
+        &mut self,
+        session_id: impl Into<String>,
+        path: impl AsRef<Path>,
+    ) -> Result<(), super::writer::SessionWriteError> {
+        self.current_session_id = Some(session_id.into());
+        self.writer = Some(SessionWriter::open_existing(path)?);
+        Ok(())
+    }
+
+    /// Reset the active session writer and ID.
+    pub fn reset_session(&mut self) {
+        self.current_session_id = None;
+        self.writer = None;
+    }
+
+    /// Get the current session file path (if active).
+    #[must_use]
+    pub fn current_session_path(&self) -> Option<PathBuf> {
+        self.writer
+            .as_ref()
+            .map(|writer| writer.path().to_path_buf())
+    }
+
     /// Save an attachment extraction entry for the active session.
     pub fn save_attachment_extract(
         &mut self,

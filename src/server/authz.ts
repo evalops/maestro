@@ -74,20 +74,31 @@ async function verifyJwt(token: string): Promise<JWTPayload | null> {
 	}
 }
 
+export async function checkApiAuth(req: IncomingMessage): Promise<{
+	ok: boolean;
+	error?: string;
+}> {
+	const bearer = getRequestToken(req);
+	const jwtPayload = bearer ? await verifyJwt(bearer) : null;
+	const userId = bearer ? verifySharedToken(bearer) : null;
+	if (userId) return { ok: true };
+	if (jwtPayload?.sub) return { ok: true };
+	if (WEB_API_KEY) {
+		if (bearer && secureCompare(bearer, WEB_API_KEY)) {
+			return { ok: true };
+		}
+		return { ok: false, error: "Unauthorized" };
+	}
+	return { ok: true };
+}
+
 export async function requireApiAuth(
 	req: IncomingMessage,
 	res: ServerResponse,
 	corsHeaders: Record<string, string>,
 ): Promise<boolean> {
-	const bearer = getRequestToken(req);
-	const jwtPayload = bearer ? await verifyJwt(bearer) : null;
-	const userId = bearer ? verifySharedToken(bearer) : null;
-	// fast path for API key / shared secret
-	if (userId) return true;
-	if (jwtPayload?.sub) return true;
-	if (WEB_API_KEY && authenticateRequest(req, res, corsHeaders, WEB_API_KEY)) {
-		return true;
-	}
+	const result = await checkApiAuth(req);
+	if (result.ok) return true;
 	sendJson(
 		res,
 		401,

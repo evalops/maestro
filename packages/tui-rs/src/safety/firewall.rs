@@ -33,7 +33,9 @@ use super::dangerous_patterns::{check_dangerous_patterns, Severity};
 use super::path_containment::{
     has_path_traversal, is_path_contained, is_system_path, PathContainment,
 };
-use super::policy::{check_path_allowed, check_tool_allowed, check_url_allowed};
+use super::policy::{
+    check_command_policy, check_path_allowed, check_tool_allowed, check_url_allowed,
+};
 use super::workflow_state::{has_tool_tags, is_human_facing_tool, WorkflowStateSnapshot};
 use crate::mcp::McpToolAnnotations;
 
@@ -144,6 +146,8 @@ static SAFE_TOOLS: std::sync::LazyLock<HashSet<&'static str>> = std::sync::LazyL
         "read_image",
         "mcp_list_resources",
         "mcp_read_resource",
+        "mcp_list_prompts",
+        "mcp_get_prompt",
     ]
     .into_iter()
     .collect()
@@ -189,10 +193,37 @@ fn has_egress_primitives(command: &str) -> bool {
 }
 
 fn is_mcp_tool_name(tool_name: &str) -> bool {
-    if tool_name == "mcp_list_resources" || tool_name == "mcp_read_resource" {
+    if tool_name == "mcp_list_resources"
+        || tool_name == "mcp_read_resource"
+        || tool_name == "mcp_list_prompts"
+        || tool_name == "mcp_get_prompt"
+    {
         return false;
     }
     tool_name.starts_with("mcp__") || tool_name.starts_with("mcp_")
+}
+
+fn normalize_uri_input(input: &str) -> String {
+    if let Some(rest) = input.strip_prefix("file://") {
+        let mut path = rest.to_string();
+        let mut stripped_localhost = false;
+        if let Some(stripped) = path.strip_prefix("localhost/") {
+            path = stripped.to_string();
+            stripped_localhost = true;
+        }
+        #[cfg(not(windows))]
+        if stripped_localhost && !path.starts_with('/') {
+            path = format!("/{path}");
+        }
+        #[cfg(windows)]
+        {
+            if path.len() >= 3 && path.as_bytes()[0] == b'/' && path.as_bytes()[2] == b':' {
+                path = path[1..].to_string();
+            }
+        }
+        return path;
+    }
+    input.to_string()
 }
 
 impl ActionFirewall {
@@ -349,6 +380,10 @@ impl ActionFirewall {
 
         let path = Path::new(path);
 
+        if let Some(reason) = check_path_allowed(path) {
+            return FirewallVerdict::Block { reason };
+        }
+
         // Reading is generally allowed, but we block certain sensitive files
         if self.is_sensitive_file(path) {
             return FirewallVerdict::RequireApproval {
@@ -383,6 +418,10 @@ impl ActionFirewall {
         let tool_name = context.tool_name;
         let args = context.args;
         if let Some(reason) = check_tool_allowed(tool_name) {
+            return FirewallVerdict::Block { reason };
+        }
+
+        if let Some(reason) = check_command_policy(tool_name, args) {
             return FirewallVerdict::Block { reason };
         }
 
@@ -542,6 +581,29 @@ impl ActionFirewall {
                     }
                 }
             }
+            "vscode_get_diagnostics" | "jetbrains_get_diagnostics" => {
+                if let Some(path) = args.get("uri").and_then(|v| v.as_str()) {
+                    let normalized = normalize_uri_input(path);
+                    self.check_file_read(&normalized)
+                } else {
+                    FirewallVerdict::Allow
+                }
+            }
+            "vscode_get_definition"
+            | "vscode_find_references"
+            | "vscode_read_file_range"
+            | "jetbrains_get_definition"
+            | "jetbrains_find_references"
+            | "jetbrains_read_file_range" => {
+                if let Some(path) = args.get("uri").and_then(|v| v.as_str()) {
+                    let normalized = normalize_uri_input(path);
+                    self.check_file_read(&normalized)
+                } else {
+                    FirewallVerdict::Block {
+                        reason: "IDE tool missing uri argument".to_string(),
+                    }
+                }
+            }
             "glob" => {
                 // Read-only, but ensure provided paths/patterns don't escape safety checks.
                 if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
@@ -687,6 +749,37 @@ mod tests {
 
     fn test_firewall() -> ActionFirewall {
         ActionFirewall::new(workspace_root())
+    }
+
+    #[test]
+    fn normalize_file_uri_localhost() {
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                normalize_uri_input("file://localhost/C:/tmp/file.txt"),
+                "C:/tmp/file.txt"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(
+                normalize_uri_input("file://localhost/Users/test/file.txt"),
+                "/Users/test/file.txt"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn normalize_file_uri_drive_letter() {
+        assert_eq!(
+            normalize_uri_input("file://C:/tmp/file.txt"),
+            "C:/tmp/file.txt"
+        );
+        assert_eq!(
+            normalize_uri_input("file:///C:/tmp/file.txt"),
+            "C:/tmp/file.txt"
+        );
     }
 
     // ========================================================================

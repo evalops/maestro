@@ -325,6 +325,28 @@ pub enum FromAgent {
         provider: String,
     },
 
+    /// Agent successfully switched models
+    ///
+    /// Emitted after a model change command has been applied and validated.
+    ModelChanged {
+        /// The newly active model
+        model: String,
+
+        /// Provider name for the active model
+        provider: String,
+    },
+
+    /// Agent failed to switch models
+    ///
+    /// Emitted when a model change is rejected by policy or fails to initialize.
+    ModelChangeFailed {
+        /// The requested model
+        model: String,
+
+        /// Failure reason
+        reason: String,
+    },
+
     /// Agent started generating a response
     ///
     /// Marks the beginning of a new AI response. The `response_id` can be used
