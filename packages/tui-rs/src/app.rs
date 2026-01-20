@@ -867,9 +867,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
     async fn refresh_mcp_badges(&mut self) {
         let now = Instant::now();
-        if self.last_mcp_status_refresh.map_or(false, |last| {
-            now.duration_since(last) < Duration::from_secs(5)
-        }) {
+        if self
+            .last_mcp_status_refresh
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(5))
+        {
             return;
         }
         self.last_mcp_status_refresh = Some(now);
@@ -1232,10 +1233,17 @@ Add the required fields and retry.",
             }
             // Vim-style scrolling: only when input is empty (not typing)
             KeyCode::Char('k') if ctrl => {
-                self.state.scroll_up(1);
+                if self.state.input().is_empty() {
+                    self.state.scroll_up(1);
+                } else {
+                    self.state.delete_to_end_of_line();
+                    self.update_slash_state();
+                }
             }
             KeyCode::Char('j') if ctrl => {
-                self.state.scroll_down(1);
+                if self.state.input().is_empty() {
+                    self.state.scroll_down(1);
+                }
             }
             KeyCode::PageUp => {
                 let step = (self.capabilities.viewport_height as usize).max(5) / 2;
@@ -1264,25 +1272,54 @@ Add the required fields and retry.",
             }
 
             // Input editing
+            KeyCode::Char('a') if ctrl => {
+                self.state.move_home_smart();
+            }
+            KeyCode::Char('b') if alt => {
+                self.state.move_word_left();
+            }
+            KeyCode::Char('f') if alt => {
+                self.state.move_word_right();
+            }
+            KeyCode::Char('w') if ctrl => {
+                self.state.delete_word_backward();
+                self.update_slash_state();
+            }
+            KeyCode::Char('y') if alt => {
+                self.state.yank_kill_ring();
+                self.update_slash_state();
+            }
             KeyCode::Char(c) if !ctrl => {
                 self.state.insert_char(c);
                 self.update_slash_state();
             }
             KeyCode::Backspace => {
-                self.state.backspace();
+                if alt {
+                    self.state.delete_word_backward();
+                } else {
+                    self.state.backspace();
+                }
                 self.update_slash_state();
             }
             KeyCode::Delete => {
                 self.state.delete();
             }
             KeyCode::Left => {
-                self.state.move_left();
+                if ctrl || alt {
+                    self.state.move_word_left();
+                } else {
+                    self.state.move_left();
+                }
             }
             KeyCode::Right => {
-                self.state.move_right();
+                if ctrl || alt {
+                    self.state.move_word_right();
+                } else {
+                    self.state.move_right();
+                }
             }
             KeyCode::Home => {
-                self.state.move_home();
+                self.state.move_home_smart();
             }
             KeyCode::End => {
                 self.state.move_end();
@@ -1319,10 +1356,10 @@ Add the required fields and retry.",
                 }
             }
 
-            // Clear input
+            // Delete to start of line
             KeyCode::Char('u') if ctrl => {
-                self.state.set_input("");
-                self.slash_state.reset();
+                self.state.delete_to_start_of_line();
+                self.update_slash_state();
             }
 
             // Paste from clipboard
@@ -4106,21 +4143,22 @@ mod tests {
         let mut state = AppState::new();
         let call_id = "call-123";
 
-        // Initially not expanded
-        assert!(!state.is_tool_call_expanded(call_id));
-
-        // Toggle on
-        state.toggle_tool_call(call_id);
+        // Default: expanded when compact mode is off
         assert!(state.is_tool_call_expanded(call_id));
 
         // Toggle off
         state.toggle_tool_call(call_id);
         assert!(!state.is_tool_call_expanded(call_id));
+
+        // Toggle on
+        state.toggle_tool_call(call_id);
+        assert!(state.is_tool_call_expanded(call_id));
     }
 
     #[test]
     fn test_multiple_tool_calls_expansion() {
         let mut state = AppState::new();
+        state.compact_tool_outputs = true;
 
         state.toggle_tool_call("call-1");
         state.toggle_tool_call("call-2");

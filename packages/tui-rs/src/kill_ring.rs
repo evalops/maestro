@@ -231,7 +231,7 @@ impl KillRing {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Characters that separate words (Readline-style).
-pub const WORD_SEPARATORS: &str = " \t\n\r.,;:!?\"'`()[]{}|/<>@#$%^&*-+=~\\";
+pub const WORD_SEPARATORS: &str = " \t\n\r.,;:!?\"'()[]{}|/<>@#$%^&*-+=~\\`";
 
 /// Check if a character is a word separator.
 #[must_use]
@@ -298,6 +298,38 @@ pub fn next_word_end(text: &str, pos: usize) -> usize {
     while i < len {
         let c = text[i..].chars().next().unwrap_or(' ');
         if is_word_separator(c) {
+            break;
+        }
+        i += c.len_utf8();
+    }
+
+    i
+}
+
+/// Find the start of the next word from a position.
+///
+/// Returns the byte offset of the next word start.
+#[must_use]
+pub fn next_word_start(text: &str, pos: usize) -> usize {
+    if pos >= text.len() {
+        return text.len();
+    }
+
+    let mut i = pos;
+
+    // Skip current word characters.
+    while i < text.len() {
+        let c = text[i..].chars().next().unwrap_or(' ');
+        if is_word_separator(c) {
+            break;
+        }
+        i += c.len_utf8();
+    }
+
+    // Skip separators to reach the next word.
+    while i < text.len() {
+        let c = text[i..].chars().next().unwrap_or(' ');
+        if !is_word_separator(c) {
             break;
         }
         i += c.len_utf8();
@@ -635,6 +667,20 @@ mod tests {
 
         assert_eq!(previous_word_start(text, 7), 0); // Back to start
         assert_eq!(next_word_end(text, 0), 6); // "héllo" (é is 2 bytes)
+    }
+
+    #[test]
+    fn next_word_start_basic() {
+        let text = "hello world";
+        assert_eq!(next_word_start(text, 0), 6); // start of "world"
+        assert_eq!(next_word_start(text, 5), 6); // from space
+        assert_eq!(next_word_start(text, 6), 11); // end of line
+    }
+
+    #[test]
+    fn next_word_start_with_punctuation() {
+        let text = "foo,bar";
+        assert_eq!(next_word_start(text, 0), 4); // start of "bar"
     }
 
     #[test]

@@ -1149,6 +1149,7 @@ pub use kill_ring::{
     kill_word_backward,  // Kill word backward (Alt+Backspace)
     kill_word_forward,   // Kill word forward (Alt+Delete)
     next_word_end,       // Find end of next word
+    next_word_start,     // Find start of next word
     previous_word_start, // Find start of previous word
     transpose_chars,     // Transpose characters (Ctrl+T)
     transpose_words,     // Transpose words (Alt+T)
