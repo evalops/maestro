@@ -30,6 +30,7 @@ use std::time::{Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{FromAgent, TokenUsage};
+use crate::kill_ring::{next_word_start, previous_word_start, KillRing};
 use crate::session::entries::ThinkingLevel;
 // Import from our own crate using `crate::` prefix
 // `FromAgent` is an enum of all messages the agent can send us
@@ -367,6 +368,8 @@ pub struct AppState {
 
     /// Preferred cursor column when moving up/down.
     input_preferred_col: Option<u16>,
+    /// Emacs-style kill ring for yank/pop behavior.
+    kill_ring: KillRing,
 
     /// Currently selected AI model name (e.g., "claude-3-opus").
     /// `Option` because it may not be known until the agent is ready.
@@ -501,6 +504,7 @@ impl AppState {
             textarea: TextArea::new(), // Empty input area
             input_width: 1,            // Default width until first render
             input_preferred_col: None,
+            kill_ring: KillRing::new(),
             model: None,      // No model selected yet
             provider: None,   // No provider yet
             cwd: None,        // No working directory
@@ -844,6 +848,18 @@ impl AppState {
     /// `char.len_utf8()` to get the byte length for cursor movement.
     /// This ensures we don't split multi-byte characters.
     pub fn insert_char(&mut self, c: char) {
+        self.insert_char_internal(c, true);
+    }
+
+    /// Insert a string at the cursor position.
+    pub fn insert_str(&mut self, s: &str) {
+        self.insert_str_internal(s, true);
+    }
+
+    fn insert_char_internal(&mut self, c: char, reset_kill_ring: bool) {
+        if reset_kill_ring {
+            self.kill_ring.reset_rotation();
+        }
         let cursor = self.textarea.cursor();
         let mut text = self.textarea.text().to_string();
         text.insert(cursor, c);
@@ -852,8 +868,10 @@ impl AppState {
         self.input_preferred_col = None;
     }
 
-    /// Insert a string at the cursor position.
-    pub fn insert_str(&mut self, s: &str) {
+    fn insert_str_internal(&mut self, s: &str, reset_kill_ring: bool) {
+        if reset_kill_ring {
+            self.kill_ring.reset_rotation();
+        }
         let cursor = self.textarea.cursor();
         let mut text = self.textarea.text().to_string();
         text.insert_str(cursor, s);
@@ -866,6 +884,7 @@ impl AppState {
     ///
     /// Handles multi-byte UTF-8 characters correctly.
     pub fn backspace(&mut self) {
+        self.kill_ring.reset_rotation();
         let cursor = self.textarea.cursor();
         if cursor > 0 {
             let text = self.textarea.text();
@@ -884,6 +903,7 @@ impl AppState {
 
     /// Delete the character after the cursor (Delete key).
     pub fn delete(&mut self) {
+        self.kill_ring.reset_rotation();
         let cursor = self.textarea.cursor();
         let text = self.textarea.text();
         if cursor < text.len() {
@@ -896,6 +916,7 @@ impl AppState {
 
     /// Move cursor one character left.
     pub fn move_left(&mut self) {
+        self.kill_ring.reset_rotation();
         let cursor = self.textarea.cursor();
         if cursor > 0 {
             let text = self.textarea.text();
@@ -908,6 +929,7 @@ impl AppState {
 
     /// Move cursor one character right.
     pub fn move_right(&mut self) {
+        self.kill_ring.reset_rotation();
         let cursor = self.textarea.cursor();
         let text = self.textarea.text();
         if cursor < text.len() {
@@ -923,12 +945,14 @@ impl AppState {
 
     /// Move cursor to the start of input (Home key).
     pub fn move_home(&mut self) {
+        self.kill_ring.reset_rotation();
         self.textarea.set_cursor(0);
         self.input_preferred_col = None;
     }
 
     /// Move cursor to the end of input (End key).
     pub fn move_end(&mut self) {
+        self.kill_ring.reset_rotation();
         let len = self.textarea.text().len();
         self.textarea.set_cursor(len);
         self.input_preferred_col = None;
@@ -936,12 +960,212 @@ impl AppState {
 
     /// Move cursor one wrapped line up.
     pub fn move_up(&mut self) {
+        self.kill_ring.reset_rotation();
         self.move_vertical(-1);
     }
 
     /// Move cursor one wrapped line down.
     pub fn move_down(&mut self) {
+        self.kill_ring.reset_rotation();
         self.move_vertical(1);
+    }
+
+    /// Move cursor to the start of the current line (smart Home).
+    ///
+    /// Toggles between the first non-whitespace character and column 0.
+    pub fn move_home_smart(&mut self) {
+        self.kill_ring.reset_rotation();
+        let text = self.textarea.text();
+        let cursor = self.textarea.cursor();
+        let (line_start, line_end, col) = Self::line_bounds(text, cursor);
+        let line = &text[line_start..line_end];
+        let first_non_blank = Self::first_non_whitespace_offset(line);
+        let target = if col == first_non_blank {
+            0
+        } else {
+            first_non_blank
+        };
+        self.textarea.set_cursor(line_start + target);
+        self.input_preferred_col = None;
+    }
+
+    /// Move cursor to the start of the previous word.
+    pub fn move_word_left(&mut self) {
+        self.kill_ring.reset_rotation();
+        let text = self.textarea.text();
+        let cursor = self.textarea.cursor();
+        if cursor == 0 {
+            return;
+        }
+
+        let (line_start, line_end, col) = Self::line_bounds(text, cursor);
+        if col == 0 {
+            if line_start == 0 {
+                return;
+            }
+            let mut prev_end = line_start.saturating_sub(1);
+            loop {
+                let prev_start = text[..prev_end].rfind('\n').map_or(0, |i| i + 1);
+                if prev_end > prev_start {
+                    self.textarea.set_cursor(prev_end);
+                    self.input_preferred_col = None;
+                    return;
+                }
+                if prev_start == 0 {
+                    self.textarea.set_cursor(0);
+                    self.input_preferred_col = None;
+                    return;
+                }
+                prev_end = prev_start.saturating_sub(1);
+            }
+        }
+
+        let line = &text[line_start..line_end];
+        let new_col = previous_word_start(line, col.min(line.len()));
+        self.textarea.set_cursor(line_start + new_col);
+        self.input_preferred_col = None;
+    }
+
+    /// Move cursor to the start of the next word.
+    pub fn move_word_right(&mut self) {
+        self.kill_ring.reset_rotation();
+        let text = self.textarea.text();
+        let mut cursor = self.textarea.cursor();
+        if cursor >= text.len() {
+            return;
+        }
+
+        loop {
+            let (line_start, line_end, col) = Self::line_bounds(text, cursor);
+            let line = &text[line_start..line_end];
+            let new_col = next_word_start(line, col.min(line.len()));
+            if new_col >= line.len() {
+                if line_end >= text.len() {
+                    self.textarea.set_cursor(text.len());
+                    self.input_preferred_col = None;
+                    return;
+                }
+                cursor = line_end + 1;
+                if cursor > text.len() {
+                    self.textarea.set_cursor(text.len());
+                    self.input_preferred_col = None;
+                    return;
+                }
+                continue;
+            }
+            self.textarea.set_cursor(line_start + new_col);
+            self.input_preferred_col = None;
+            return;
+        }
+    }
+
+    /// Delete the word before the cursor.
+    pub fn delete_word_backward(&mut self) {
+        let cursor = self.textarea.cursor();
+        if cursor == 0 {
+            return;
+        }
+        let text = self.textarea.text().to_string();
+        let (line_start, line_end, col) = Self::line_bounds(&text, cursor);
+
+        if col == 0 {
+            if line_start == 0 {
+                return;
+            }
+            let remove_at = line_start.saturating_sub(1);
+            let mut new_text = text;
+            new_text.remove(remove_at);
+            self.textarea.set_text(&new_text);
+            self.textarea.set_cursor(remove_at);
+            self.input_preferred_col = None;
+            self.kill_ring.kill("\n");
+            return;
+        }
+
+        let line = &text[line_start..line_end];
+        let start = previous_word_start(line, col.min(line.len()));
+        if start == col {
+            return;
+        }
+        let killed = line[start..col].to_string();
+        let mut new_text = text;
+        new_text.replace_range(line_start + start..cursor, "");
+        self.textarea.set_text(&new_text);
+        self.textarea.set_cursor(line_start + start);
+        self.input_preferred_col = None;
+        self.kill_ring.kill(killed);
+    }
+
+    /// Delete from cursor to start of line (Ctrl+U).
+    pub fn delete_to_start_of_line(&mut self) {
+        let cursor = self.textarea.cursor();
+        if cursor == 0 {
+            return;
+        }
+        let text = self.textarea.text().to_string();
+        let (line_start, _line_end, col) = Self::line_bounds(&text, cursor);
+        if col == 0 {
+            if line_start == 0 {
+                return;
+            }
+            let remove_at = line_start.saturating_sub(1);
+            let mut new_text = text;
+            new_text.remove(remove_at);
+            self.textarea.set_text(&new_text);
+            self.textarea.set_cursor(remove_at);
+            self.input_preferred_col = None;
+            self.kill_ring.kill("\n");
+            return;
+        }
+        let killed = text[line_start..cursor].to_string();
+        let mut new_text = text;
+        new_text.replace_range(line_start..cursor, "");
+        self.textarea.set_text(&new_text);
+        self.textarea.set_cursor(line_start);
+        self.input_preferred_col = None;
+        self.kill_ring.kill(killed);
+    }
+
+    /// Delete from cursor to end of line (Ctrl+K).
+    pub fn delete_to_end_of_line(&mut self) {
+        let cursor = self.textarea.cursor();
+        let text = self.textarea.text().to_string();
+        let (_line_start, line_end, _col) = Self::line_bounds(&text, cursor);
+        if cursor < line_end {
+            let killed = text[cursor..line_end].to_string();
+            let mut new_text = text;
+            new_text.replace_range(cursor..line_end, "");
+            self.textarea.set_text(&new_text);
+            self.textarea.set_cursor(cursor);
+            self.input_preferred_col = None;
+            self.kill_ring.kill(killed);
+            return;
+        }
+        if line_end < text.len() {
+            let mut new_text = text;
+            new_text.remove(line_end);
+            self.textarea.set_text(&new_text);
+            self.textarea.set_cursor(cursor);
+            self.input_preferred_col = None;
+            self.kill_ring.kill("\n");
+        }
+    }
+
+    /// Yank the most recent kill (Alt+Y), cycling on repeated presses.
+    pub fn yank_kill_ring(&mut self) {
+        let cursor = self.textarea.cursor();
+        if self.kill_ring.is_rotating() {
+            if let (Some(info), Some(next)) =
+                (self.kill_ring.last_yank_info(), self.kill_ring.yank_pop())
+            {
+                self.replace_range_internal(info.start, info.start + info.length, next, false);
+            }
+            return;
+        }
+
+        if let Some((text, _info)) = self.kill_ring.yank_with_info(cursor) {
+            self.insert_str_internal(&text, false);
+        }
     }
 
     fn move_vertical(&mut self, delta: i32) {
@@ -989,6 +1213,7 @@ impl AppState {
         self.textarea.set_text("");
         self.textarea.set_cursor(0);
         self.input_preferred_col = None;
+        self.kill_ring.reset_rotation();
         input
     }
 
@@ -997,6 +1222,41 @@ impl AppState {
         self.textarea.set_text(text);
         self.textarea.set_cursor(text.len()); // Cursor at end
         self.input_preferred_col = None;
+        self.kill_ring.reset_rotation();
+    }
+
+    fn replace_range_internal(
+        &mut self,
+        start: usize,
+        end: usize,
+        replacement: &str,
+        reset_kill_ring: bool,
+    ) {
+        if reset_kill_ring {
+            self.kill_ring.reset_rotation();
+        }
+        let mut text = self.textarea.text().to_string();
+        let start = start.min(text.len());
+        let end = end.min(text.len()).max(start);
+        text.replace_range(start..end, replacement);
+        self.textarea.set_text(&text);
+        self.textarea.set_cursor(start + replacement.len());
+        self.input_preferred_col = None;
+    }
+
+    fn line_bounds(text: &str, cursor: usize) -> (usize, usize, usize) {
+        let cursor = cursor.min(text.len());
+        let line_start = text[..cursor].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = text[cursor..].find('\n').map_or(text.len(), |i| cursor + i);
+        let col = cursor.saturating_sub(line_start);
+        (line_start, line_end, col)
+    }
+
+    fn first_non_whitespace_offset(line: &str) -> usize {
+        line.char_indices()
+            .find(|(_, c)| !c.is_whitespace())
+            .map(|(idx, _)| idx)
+            .unwrap_or(line.len())
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1402,6 +1662,75 @@ mod tests {
         state.move_home();
         assert_eq!(state.cursor(), 0);
         state.move_end();
+        assert_eq!(state.cursor(), 11);
+    }
+
+    #[test]
+    fn test_move_home_smart_toggle() {
+        let mut state = AppState::new();
+        state.set_input("  hello");
+        state.move_end();
+        state.move_home_smart();
+        assert_eq!(state.cursor(), 2);
+        state.move_home_smart();
+        assert_eq!(state.cursor(), 0);
+    }
+
+    #[test]
+    fn test_move_word_left_across_lines() {
+        let mut state = AppState::new();
+        state.set_input("hello\nworld");
+        state.textarea.set_cursor(6); // start of second line
+        state.move_word_left();
+        assert_eq!(state.cursor(), 5); // end of "hello"
+    }
+
+    #[test]
+    fn test_move_word_right_across_lines() {
+        let mut state = AppState::new();
+        state.set_input("hello\nworld");
+        state.textarea.set_cursor(5); // end of first line
+        state.move_word_right();
+        assert_eq!(state.cursor(), 11); // end of "world"
+    }
+
+    #[test]
+    fn test_move_word_left_unicode() {
+        let mut state = AppState::new();
+        state.set_input("hi 🙂 there");
+        state.move_word_left();
+        let text = state.input();
+        assert_eq!(&text[state.cursor()..], "there");
+        state.move_word_left();
+        assert_eq!(state.cursor(), text.find('🙂').unwrap());
+    }
+
+    #[test]
+    fn test_delete_word_backward() {
+        let mut state = AppState::new();
+        state.set_input("hello world");
+        state.delete_word_backward();
+        assert_eq!(state.input(), "hello ");
+        assert_eq!(state.cursor(), 6);
+    }
+
+    #[test]
+    fn test_delete_to_start_of_line_merges() {
+        let mut state = AppState::new();
+        state.set_input("hello\nworld");
+        state.textarea.set_cursor(6); // start of second line
+        state.delete_to_start_of_line();
+        assert_eq!(state.input(), "helloworld");
+        assert_eq!(state.cursor(), 5);
+    }
+
+    #[test]
+    fn test_yank_kill_ring() {
+        let mut state = AppState::new();
+        state.set_input("hello world");
+        state.delete_word_backward();
+        state.yank_kill_ring();
+        assert_eq!(state.input(), "hello world");
         assert_eq!(state.cursor(), 11);
     }
 

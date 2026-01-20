@@ -1232,10 +1232,17 @@ Add the required fields and retry.",
             }
             // Vim-style scrolling: only when input is empty (not typing)
             KeyCode::Char('k') if ctrl => {
-                self.state.scroll_up(1);
+                if self.state.input().is_empty() {
+                    self.state.scroll_up(1);
+                } else {
+                    self.state.delete_to_end_of_line();
+                    self.update_slash_state();
+                }
             }
             KeyCode::Char('j') if ctrl => {
-                self.state.scroll_down(1);
+                if self.state.input().is_empty() {
+                    self.state.scroll_down(1);
+                }
             }
             KeyCode::PageUp => {
                 let step = (self.capabilities.viewport_height as usize).max(5) / 2;
@@ -1264,25 +1271,54 @@ Add the required fields and retry.",
             }
 
             // Input editing
+            KeyCode::Char('a') if ctrl => {
+                self.state.move_home_smart();
+            }
+            KeyCode::Char('b') if alt => {
+                self.state.move_word_left();
+            }
+            KeyCode::Char('f') if alt => {
+                self.state.move_word_right();
+            }
+            KeyCode::Char('w') if ctrl => {
+                self.state.delete_word_backward();
+                self.update_slash_state();
+            }
+            KeyCode::Char('y') if alt => {
+                self.state.yank_kill_ring();
+                self.update_slash_state();
+            }
             KeyCode::Char(c) if !ctrl => {
                 self.state.insert_char(c);
                 self.update_slash_state();
             }
             KeyCode::Backspace => {
-                self.state.backspace();
+                if alt {
+                    self.state.delete_word_backward();
+                } else {
+                    self.state.backspace();
+                }
                 self.update_slash_state();
             }
             KeyCode::Delete => {
                 self.state.delete();
             }
             KeyCode::Left => {
-                self.state.move_left();
+                if ctrl || alt {
+                    self.state.move_word_left();
+                } else {
+                    self.state.move_left();
+                }
             }
             KeyCode::Right => {
-                self.state.move_right();
+                if ctrl || alt {
+                    self.state.move_word_right();
+                } else {
+                    self.state.move_right();
+                }
             }
             KeyCode::Home => {
-                self.state.move_home();
+                self.state.move_home_smart();
             }
             KeyCode::End => {
                 self.state.move_end();
@@ -1319,10 +1355,10 @@ Add the required fields and retry.",
                 }
             }
 
-            // Clear input
+            // Delete to start of line
             KeyCode::Char('u') if ctrl => {
-                self.state.set_input("");
-                self.slash_state.reset();
+                self.state.delete_to_start_of_line();
+                self.update_slash_state();
             }
 
             // Paste from clipboard

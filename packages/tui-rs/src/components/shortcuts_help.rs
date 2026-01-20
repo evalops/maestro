@@ -196,11 +196,14 @@ impl ShortcutsHelp {
             "↑ / ↓",
             "Scroll messages up/down",
         ));
-        self.add(Shortcut::new(
-            ShortcutCategory::Navigation,
-            "Ctrl+K / Ctrl+J",
-            "Scroll up/down (vim style)",
-        ));
+        self.add(
+            Shortcut::new(
+                ShortcutCategory::Navigation,
+                "Ctrl+K / Ctrl+J",
+                "Scroll up/down (vim style)",
+            )
+            .with_context("when input empty"),
+        );
         self.add(Shortcut::new(
             ShortcutCategory::Navigation,
             "Page Up/Down",
@@ -239,7 +242,32 @@ impl ShortcutsHelp {
         self.add(Shortcut::new(
             ShortcutCategory::Input,
             "Ctrl+U",
-            "Clear input line",
+            "Delete to start of line",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Input,
+            "Ctrl+K",
+            "Delete to end of line",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Input,
+            "Alt+B / Alt+F",
+            "Move by word",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Input,
+            "Alt+Backspace / Ctrl+W",
+            "Delete word backward",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Input,
+            "Home / Ctrl+A",
+            "Smart line start",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Input,
+            "Alt+Y",
+            "Yank last kill (cycle)",
         ));
         self.add(Shortcut::new(
             ShortcutCategory::Input,
