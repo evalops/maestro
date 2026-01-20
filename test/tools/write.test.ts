@@ -5,7 +5,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentToolResult } from "../../src/agent/types.js";
@@ -46,6 +46,17 @@ describe("write tool", () => {
 
 	afterEach(() => {
 		rmSync(testDir, { recursive: true, force: true });
+		// Clean up tilde expansion test file and its backup
+		const tildeTestFile = join(
+			homedir(),
+			"test-write-tool-temp-file-delete-me.txt",
+		);
+		if (existsSync(tildeTestFile)) {
+			rmSync(tildeTestFile, { force: true });
+		}
+		if (existsSync(`${tildeTestFile}.bak`)) {
+			rmSync(`${tildeTestFile}.bak`, { force: true });
+		}
 	});
 
 	describe("basic file writing", () => {
