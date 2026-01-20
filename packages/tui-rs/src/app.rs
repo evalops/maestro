@@ -867,9 +867,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
     async fn refresh_mcp_badges(&mut self) {
         let now = Instant::now();
-        if self.last_mcp_status_refresh.map_or(false, |last| {
-            now.duration_since(last) < Duration::from_secs(5)
-        }) {
+        if self
+            .last_mcp_status_refresh
+            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(5))
+        {
             return;
         }
         self.last_mcp_status_refresh = Some(now);
