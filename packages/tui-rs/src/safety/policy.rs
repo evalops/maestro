@@ -27,6 +27,7 @@ pub struct NetworkPolicy {
     pub allowed_hosts: Option<Vec<String>>,
     pub blocked_hosts: Option<Vec<String>>,
     pub block_localhost: Option<bool>,
+    #[serde(alias = "blockPrivateIPs")]
     pub block_private_ips: Option<bool>,
 }
 

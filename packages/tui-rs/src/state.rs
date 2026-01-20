@@ -932,9 +932,14 @@ impl AppState {
         let Some((line_idx, col)) = self.textarea.cursor_line_col(width) else {
             return;
         };
+        let mut line_idx = line_idx;
         let target_col = self.input_preferred_col.unwrap_or(col);
         if self.input_preferred_col.is_none() {
             self.input_preferred_col = Some(target_col);
+        }
+
+        if delta.is_positive() && col == 0 && self.input_preferred_col.is_some() && line_idx > 0 {
+            line_idx = line_idx.saturating_sub(1);
         }
 
         let new_line = if delta.is_negative() {
