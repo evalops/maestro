@@ -564,6 +564,29 @@ pub fn build_command_registry() -> CommandRegistry {
         Box::new(|_| Ok(CommandOutput::Action(CommandAction::ToggleZenMode))),
     ));
 
+    // Tool output compact mode
+    registry.register(
+        Command::new(
+            "compact-tools",
+            "Toggle tool output folding",
+            CommandCategory::Ui,
+            Box::new(|ctx| {
+                let arg = ctx.raw_args.trim().to_lowercase();
+                let mode = if arg.is_empty() || arg == "toggle" {
+                    None
+                } else if arg == "on" || arg == "true" {
+                    Some(true)
+                } else if arg == "off" || arg == "false" {
+                    Some(false)
+                } else {
+                    return Err(CommandError::new("Usage: /compact-tools [on|off|toggle]"));
+                };
+                Ok(CommandOutput::Action(CommandAction::SetCompactTools(mode)))
+            }),
+        )
+        .usage("/compact-tools [on|off|toggle]"),
+    );
+
     // Refresh command
     registry.register(Command::new(
         "refresh",

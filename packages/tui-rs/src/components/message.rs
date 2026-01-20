@@ -125,7 +125,8 @@ use ratatui::{
 
 use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
-use crate::runtime_badges::build_runtime_badges;
+use crate::runtime_badges::{build_runtime_badges, RuntimeBadgeParams};
+use crate::session::entries::ThinkingLevel;
 use crate::state::{ApprovalMode, Message, MessageRole, ToolCallStatus};
 use crate::tool_output::{clamp_tool_output, format_tool_output_truncation, tool_output_limits};
 use crate::wrapping::{word_wrap_lines, RtOptions};
@@ -331,6 +332,7 @@ pub fn calculate_message_height(
     message: &Message,
     width: u16,
     expanded_tools: &HashSet<String>,
+    compact_tool_outputs: bool,
 ) -> u16 {
     if !should_render_message(message) {
         return 0;
@@ -374,7 +376,11 @@ pub fn calculate_message_height(
 
     // Tool calls
     for tc in &message.tool_calls {
-        let expanded = expanded_tools.contains(&tc.call_id);
+        let expanded = if compact_tool_outputs {
+            expanded_tools.contains(&tc.call_id)
+        } else {
+            !expanded_tools.contains(&tc.call_id)
+        };
         let args_preview =
             get_tool_args_preview(&tc.tool, &tc.args, width.saturating_sub(20) as usize);
 
@@ -446,6 +452,7 @@ pub fn calculate_message_height(
 pub struct MessageWidget<'a> {
     message: &'a Message,
     expanded_tools: Option<&'a HashSet<String>>,
+    compact_tool_outputs: bool,
 }
 
 impl<'a> MessageWidget<'a> {
@@ -454,12 +461,19 @@ impl<'a> MessageWidget<'a> {
         Self {
             message,
             expanded_tools: None,
+            compact_tool_outputs: false,
         }
     }
 
     #[must_use]
     pub fn with_expanded_tools(mut self, expanded: &'a HashSet<String>) -> Self {
         self.expanded_tools = Some(expanded);
+        self
+    }
+
+    #[must_use]
+    pub fn with_compact_tool_outputs(mut self, compact: bool) -> Self {
+        self.compact_tool_outputs = compact;
         self
     }
 }
@@ -682,6 +696,11 @@ impl Widget for MessageWidget<'_> {
             let expanded = self
                 .expanded_tools
                 .is_some_and(|s| s.contains(&tool_call.call_id));
+            let expanded = if self.compact_tool_outputs {
+                expanded
+            } else {
+                !expanded
+            };
 
             // Status bullet and verb (Codex style)
             let (bullet, bullet_style, verb) = match tool_call.status {
@@ -1286,6 +1305,10 @@ pub struct StatusBarWidget<'a> {
     hook_count: Option<usize>,
     queue_badge: Option<&'a str>,
     approval_mode: Option<ApprovalMode>,
+    thinking_level: Option<ThinkingLevel>,
+    mcp_connected: usize,
+    mcp_tool_count: usize,
+    alert_count: usize,
 }
 
 impl<'a> StatusBarWidget<'a> {
@@ -1305,6 +1328,10 @@ impl<'a> StatusBarWidget<'a> {
             hook_count: None,
             queue_badge: None,
             approval_mode: None,
+            thinking_level: None,
+            mcp_connected: 0,
+            mcp_tool_count: 0,
+            alert_count: 0,
         }
     }
 
@@ -1330,6 +1357,25 @@ impl<'a> StatusBarWidget<'a> {
     #[must_use]
     pub fn with_approval_mode(mut self, approval_mode: ApprovalMode) -> Self {
         self.approval_mode = Some(approval_mode);
+        self
+    }
+
+    #[must_use]
+    pub fn with_thinking_level(mut self, thinking_level: ThinkingLevel) -> Self {
+        self.thinking_level = Some(thinking_level);
+        self
+    }
+
+    #[must_use]
+    pub fn with_mcp_status(mut self, connected: usize, tool_count: usize) -> Self {
+        self.mcp_connected = connected;
+        self.mcp_tool_count = tool_count;
+        self
+    }
+
+    #[must_use]
+    pub fn with_alert_count(mut self, alert_count: usize) -> Self {
+        self.alert_count = alert_count;
         self
     }
 }
@@ -1406,7 +1452,15 @@ impl Widget for StatusBarWidget<'_> {
             ));
         }
 
-        let badges = self.approval_mode.map(build_runtime_badges);
+        let badges = self.approval_mode.map(|mode| {
+            build_runtime_badges(RuntimeBadgeParams {
+                approval_mode: mode,
+                thinking_level: self.thinking_level.unwrap_or(ThinkingLevel::Off),
+                mcp_connected: self.mcp_connected,
+                mcp_tool_count: self.mcp_tool_count,
+                alert_count: self.alert_count,
+            })
+        });
         let core_badges = badges
             .as_ref()
             .and_then(|b| (!b.core.is_empty()).then(|| b.core.join(" ")));
@@ -1629,6 +1683,8 @@ impl Widget for ChatView<'_> {
                 }
             };
 
+            let alert_count = usize::from(self.state.error.is_some());
+
             let status_widget = StatusBarWidget::new(
                 self.state.model.as_deref(),
                 self.state.provider.as_deref(),
@@ -1637,7 +1693,10 @@ impl Widget for ChatView<'_> {
             )
             .with_usage(usage)
             .with_queue_badge(queue_badge.as_deref())
-            .with_approval_mode(self.state.approval_mode);
+            .with_approval_mode(self.state.approval_mode)
+            .with_thinking_level(self.state.thinking_level)
+            .with_mcp_status(self.state.mcp_connected, self.state.mcp_tool_count)
+            .with_alert_count(alert_count);
             status_widget.render(chunks[2], buf);
         }
     }
@@ -1665,7 +1724,14 @@ impl ChatView<'_> {
         // Calculate heights for all renderable messages
         let msg_heights: Vec<u16> = renderable_messages
             .iter()
-            .map(|m| calculate_message_height(m, area.width, &self.state.expanded_tool_calls))
+            .map(|m| {
+                calculate_message_height(
+                    m,
+                    area.width,
+                    &self.state.expanded_tool_calls,
+                    self.state.compact_tool_outputs,
+                )
+            })
             .collect();
 
         // Calculate total height
@@ -1708,8 +1774,9 @@ impl ChatView<'_> {
                 height: msg_height,
             };
 
-            let widget =
-                MessageWidget::new(message).with_expanded_tools(&self.state.expanded_tool_calls);
+            let widget = MessageWidget::new(message)
+                .with_expanded_tools(&self.state.expanded_tool_calls)
+                .with_compact_tool_outputs(self.state.compact_tool_outputs);
             widget.render(msg_area, buf);
 
             y += msg_height;
