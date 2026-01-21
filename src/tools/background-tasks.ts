@@ -99,6 +99,7 @@ import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { safejoin } from "../utils/path-validation.js";
 import { redactSecrets } from "../utils/secret-redactor.js";
+import { resolveShellEnvironment } from "../utils/shell-env.js";
 import {
 	ResourceMonitor,
 	type RestartPolicy,
@@ -603,7 +604,11 @@ class BackgroundTaskManager extends EventEmitter {
 	}
 
 	private createChildProcess(task: BackgroundTask): ChildProcess {
-		const mergedEnv: NodeJS.ProcessEnv = { ...process.env, ...task.env };
+		const mergedEnv: NodeJS.ProcessEnv =
+			task.env ??
+			resolveShellEnvironment(undefined, {
+				workspaceDir: task.cwd ?? process.cwd(),
+			});
 		const spawnOptions: SpawnOptions = {
 			detached: true,
 			stdio: ["ignore", "pipe", "pipe"],
@@ -1177,13 +1182,16 @@ class BackgroundTaskManager extends EventEmitter {
 		const { cwd, env, useShell = false, restart } = options;
 		const id = this.generateTaskId();
 		const { resolvedCwd } = validateShellParams(command, cwd, env);
+		const resolvedEnv = resolveShellEnvironment(env, {
+			workspaceDir: resolvedCwd ?? process.cwd(),
+		});
 		const logPath = this.createLogPath(id);
 		const taskLimits = this.resolveTaskLimits(options.limits);
 		const task: BackgroundTask = {
 			id,
 			command,
 			cwd: resolvedCwd,
-			env,
+			env: resolvedEnv,
 			startedAt: Date.now(),
 			pid: undefined,
 			status: "running",

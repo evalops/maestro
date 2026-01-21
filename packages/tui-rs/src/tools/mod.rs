@@ -91,6 +91,7 @@ mod notebook_edit;
 pub mod process_registry;
 mod process_utils;
 mod registry;
+mod shell_env;
 mod status;
 mod todo;
 mod web_fetch;

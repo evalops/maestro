@@ -34,6 +34,7 @@ import { exec } from "node:child_process";
 import { constants } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { resolveShellEnvironment } from "../utils/shell-env.js";
 import type { ExecResult, Sandbox } from "./types.js";
 
 const execAsync = promisify(exec);
@@ -47,7 +48,9 @@ export class LocalSandbox implements Sandbox {
 		try {
 			const { stdout, stderr } = await execAsync(command, {
 				cwd,
-				env: { ...process.env, ...env },
+				env: resolveShellEnvironment(env, {
+					workspaceDir: cwd ?? process.cwd(),
+				}),
 			});
 			return {
 				stdout,

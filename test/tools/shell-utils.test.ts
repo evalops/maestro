@@ -8,6 +8,10 @@ import {
 	parseCommandArguments,
 	validateShellParams,
 } from "../../src/tools/shell-utils.js";
+import {
+	applyShellEnvironmentPolicy,
+	resolveShellEnvironment,
+} from "../../src/utils/shell-env.js";
 
 describe("shell-utils", () => {
 	let testDir: string;
@@ -217,6 +221,77 @@ describe("shell-utils", () => {
 		it("preserves empty argument at end", () => {
 			const args = parseCommandArguments('node -e ""');
 			expect(args).toEqual(["node", "-e", ""]);
+		});
+	});
+
+	describe("shell environment policy", () => {
+		it("excludes default secret-like variables by default", () => {
+			const baseEnv = {
+				PATH: "/usr/bin",
+				OPENAI_API_KEY: "sk-test",
+				GITHUB_TOKEN: "ghp-test",
+				NORMAL: "ok",
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv);
+			expect(env.PATH).toBe("/usr/bin");
+			expect(env.NORMAL).toBe("ok");
+			expect(env.OPENAI_API_KEY).toBeUndefined();
+			expect(env.GITHUB_TOKEN).toBeUndefined();
+		});
+
+		it("keeps secret-like variables when ignore_default_excludes is true", () => {
+			const baseEnv = {
+				OPENAI_API_KEY: "sk-test",
+				NORMAL: "ok",
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				ignore_default_excludes: true,
+			});
+			expect(env.OPENAI_API_KEY).toBe("sk-test");
+			expect(env.NORMAL).toBe("ok");
+		});
+
+		it("supports inherit core", () => {
+			const baseEnv = {
+				PATH: "/bin",
+				HOME: "/home/test",
+				OPENAI_API_KEY: "sk-test",
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				inherit: "core",
+				ignore_default_excludes: true,
+			});
+			expect(env.PATH).toBe("/bin");
+			expect(env.HOME).toBe("/home/test");
+			expect(env.OPENAI_API_KEY).toBeUndefined();
+		});
+
+		it("applies include_only patterns", () => {
+			const baseEnv = {
+				PATH: "/bin",
+				HOME: "/home/test",
+				EDITOR: "vim",
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				ignore_default_excludes: true,
+				include_only: ["PATH", "HOME"],
+			});
+			expect(env.PATH).toBe("/bin");
+			expect(env.HOME).toBe("/home/test");
+			expect(env.EDITOR).toBeUndefined();
+		});
+
+		it("merges explicit overrides after policy", () => {
+			const baseEnv = {
+				PATH: "/bin",
+				OPENAI_API_KEY: "sk-test",
+			};
+			const env = resolveShellEnvironment(
+				{ OPENAI_API_KEY: "override" },
+				{ baseEnv },
+			);
+			expect(env.PATH).toBe("/bin");
+			expect(env.OPENAI_API_KEY).toBe("override");
 		});
 	});
 });

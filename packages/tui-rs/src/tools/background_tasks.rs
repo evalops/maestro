@@ -42,6 +42,7 @@ use uuid::Uuid;
 use super::bash::resolve_shell_config;
 use super::process_registry;
 use super::process_utils::set_new_process_group;
+use super::shell_env::resolve_shell_environment;
 
 /// Status of a background task.
 #[derive(Debug, Clone)]
@@ -156,10 +157,9 @@ pub async fn start(
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(stderr);
-
-    if let Some(env) = env {
-        cmd.envs(env);
-    }
+    let resolved_env = resolve_shell_environment(Path::new(&cwd), env.as_ref());
+    cmd.env_clear();
+    cmd.envs(resolved_env);
 
     set_new_process_group(&mut cmd);
 
