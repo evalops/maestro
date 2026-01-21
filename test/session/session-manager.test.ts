@@ -376,6 +376,42 @@ describe("SessionManager - Deferred Session Creation", () => {
 		});
 	});
 
+	describe("Session Sanitization", () => {
+		it("redacts secrets in tool results before persistence", () => {
+			const sessionManager = new SessionManager(false);
+			const state = createMockState();
+			sessionManager.startSession(state);
+
+			const secret = "sk-ant-1234567890abcdef1234";
+			const toolResult = {
+				role: "toolResult" as const,
+				toolCallId: "call_1",
+				toolName: "read",
+				content: [{ type: "text" as const, text: `token=${secret}` }],
+				details: { apiKey: secret },
+				isError: false,
+				timestamp: Date.now(),
+			};
+
+			sessionManager.saveMessage(toolResult);
+
+			const messages = sessionManager.loadMessages();
+			const saved = messages.find((message) => message.role === "toolResult") as
+				| typeof toolResult
+				| undefined;
+
+			expect(saved).toBeTruthy();
+			if (!saved) return;
+			const text = (saved.content[0] as { type: "text"; text: string }).text;
+			expect(text).toContain("[REDACTED:");
+			expect(text).not.toContain(secret);
+
+			const details = saved.details as { apiKey: string };
+			expect(details.apiKey).toContain("[REDACTED:");
+			expect(details.apiKey).not.toContain(secret);
+		});
+	});
+
 	describe("Edge Cases", () => {
 		it("should handle calling startSession multiple times", () => {
 			const sessionManager = new SessionManager(false);

@@ -101,7 +101,10 @@ use uuid::Uuid;
 
 use super::message_queue::{MessageQueue, PendingMessage, PromptKind, MAX_PENDING_MESSAGES};
 use super::safety::{SafetyController, SafetyVerdict};
-use super::{FromAgent, TokenUsage, ToolResult};
+use super::{
+    clear_credentials, resolve_credentials_in_json, vault_credentials_in_json, FromAgent,
+    TokenUsage, ToolResult,
+};
 use crate::ai::{
     AiProvider, ContentBlock, ImageSource, Message, MessageContent, RequestConfig, Role,
     StreamEvent, ThinkingConfig, Tool, UnifiedClient,
@@ -1437,6 +1440,7 @@ impl NativeAgentRunner {
                     self.messages.clear();
                     self.pending_messages.clear();
                     self.safety.reset(); // Reset doom loop / rate limit state
+                    clear_credentials();
                 }
                 AgentCommand::Continue => {
                     // Continue from current context without adding a new user message
@@ -1636,10 +1640,11 @@ impl NativeAgentRunner {
                                 Ok(value) => (value, None),
                                 Err(message) => (serde_json::json!({}), Some(message)),
                             };
+                            let vaulted_input = vault_credentials_in_json(&input);
                             assistant_content.push(ContentBlock::ToolUse {
                                 id: id.clone(),
                                 name: name.clone(),
-                                input: input.clone(),
+                                input: vaulted_input.clone(),
                             });
                             pending_tool_calls.push((id, name, input, parse_error));
                         }
@@ -1778,37 +1783,6 @@ impl NativeAgentRunner {
                         continue;
                     }
 
-                    // Check safety controls (doom loop and rate limiting)
-                    match self.safety.check_tool_call(&tool_name, &args) {
-                        SafetyVerdict::Allow => {
-                            // Proceed with tool execution
-                        }
-                        SafetyVerdict::BlockDoomLoop { reason } => {
-                            let _ = self.event_tx.send(FromAgent::Error {
-                                message: reason.clone(),
-                                fatal: false,
-                            });
-                            tool_results.push(ContentBlock::ToolResult {
-                                tool_use_id: call_id,
-                                content: reason,
-                                is_error: Some(true),
-                            });
-                            continue;
-                        }
-                        SafetyVerdict::BlockRateLimit { reason } => {
-                            let _ = self.event_tx.send(FromAgent::Error {
-                                message: reason.clone(),
-                                fatal: false,
-                            });
-                            tool_results.push(ContentBlock::ToolResult {
-                                tool_use_id: call_id,
-                                content: reason,
-                                is_error: Some(true),
-                            });
-                            continue;
-                        }
-                    }
-
                     // Execute PreToolUse hooks
                     let hook_result = self.hooks.execute_pre_tool_use(&tool_name, &call_id, &args);
 
@@ -1841,6 +1815,40 @@ impl NativeAgentRunner {
                             (args.clone(), None)
                         }
                     };
+
+                    let safe_args = vault_credentials_in_json(&args);
+                    let resolved_args = resolve_credentials_in_json(&safe_args);
+
+                    // Check safety controls (doom loop and rate limiting)
+                    match self.safety.check_tool_call(&tool_name, &safe_args) {
+                        SafetyVerdict::Allow => {
+                            // Proceed with tool execution
+                        }
+                        SafetyVerdict::BlockDoomLoop { reason } => {
+                            let _ = self.event_tx.send(FromAgent::Error {
+                                message: reason.clone(),
+                                fatal: false,
+                            });
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: call_id,
+                                content: reason,
+                                is_error: Some(true),
+                            });
+                            continue;
+                        }
+                        SafetyVerdict::BlockRateLimit { reason } => {
+                            let _ = self.event_tx.send(FromAgent::Error {
+                                message: reason.clone(),
+                                fatal: false,
+                            });
+                            tool_results.push(ContentBlock::ToolResult {
+                                tool_use_id: call_id,
+                                content: reason,
+                                is_error: Some(true),
+                            });
+                            continue;
+                        }
+                    }
 
                     let tool_key = tool_name.to_lowercase();
                     let workflow_snapshot = self.workflow_state.snapshot();
@@ -1877,7 +1885,7 @@ impl NativeAgentRunner {
                     let _ = self.event_tx.send(FromAgent::ToolCall {
                         call_id: call_id.clone(),
                         tool: tool_name.clone(),
-                        args: args.clone(),
+                        args: safe_args.clone(),
                         requires_approval,
                     });
 
@@ -1899,7 +1907,9 @@ impl NativeAgentRunner {
                     } else {
                         // Auto-approved, execute immediately
                         // Note: ToolExecutor sends ToolStart/ToolEnd events internally
-                        let result = self.execute_tool(&tool_name, &args, &call_id).await;
+                        let result = self
+                            .execute_tool(&tool_name, &resolved_args, &call_id)
+                            .await;
 
                         (true, Some(result))
                     };
@@ -1954,7 +1964,7 @@ impl NativeAgentRunner {
                     };
 
                     // Record tool call for safety tracking (doom loop / rate limit)
-                    self.safety.record_tool_call(&tool_name, &args);
+                    self.safety.record_tool_call(&tool_name, &safe_args);
 
                     tool_results.push(ContentBlock::ToolResult {
                         tool_use_id: call_id,
@@ -1968,6 +1978,8 @@ impl NativeAgentRunner {
                     role: Role::User,
                     content: MessageContent::Blocks(tool_results),
                 });
+
+                clear_credentials();
 
                 // Continue the loop to process the tool results
                 continue;

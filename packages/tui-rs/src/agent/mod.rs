@@ -88,6 +88,7 @@
 //! ```
 
 pub mod compaction;
+pub mod credential_store;
 pub mod message_queue;
 mod native;
 mod protocol;
@@ -95,6 +96,10 @@ pub mod retry;
 pub mod safety;
 
 pub use compaction::{CompactionConfig, CompactionResult, ContextCompactor, CutPoint};
+pub use credential_store::{
+    clear_credentials, credential_stats, resolve_credentials, resolve_credentials_in_json,
+    store_credential, vault_credentials_in_json, CredentialStats, CredentialStore, CredentialType,
+};
 pub use message_queue::{
     MessageQueue, PendingMessage, PromptKind, QueueStats, MAX_PENDING_MESSAGES,
 };

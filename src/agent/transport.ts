@@ -45,6 +45,7 @@
  * @module agent/transport
  */
 
+import { isContextFirewallBlockingEnabled } from "../config/env-vars.js";
 import { type ToolHookService, createToolHookService } from "../hooks/index.js";
 import { envApiKeyMap } from "../providers/api-keys.js";
 import { getProviderNetworkConfig } from "../providers/network-config.js";
@@ -59,6 +60,7 @@ import {
 	defaultActionFirewall,
 } from "../safety/action-firewall.js";
 import { AdaptiveThresholds, METRICS } from "../safety/adaptive-thresholds.js";
+import { sanitizeLogMessage } from "../safety/context-firewall.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import {
 	type SafetyMiddleware,
@@ -235,7 +237,14 @@ async function logToolExecutionAudit(
 	}
 
 	try {
-		await auditLogger({ toolName, args, status, durationMs, error });
+		const sanitizedError = error ? sanitizeLogMessage(error) : undefined;
+		await auditLogger({
+			toolName,
+			args,
+			status,
+			durationMs,
+			error: sanitizedError,
+		});
 	} catch (err) {
 		// Log audit failures but fail open (allow legitimate use) per user feedback
 		logger.error(
@@ -415,6 +424,14 @@ export class ProviderTransport implements AgentTransport {
 			enableSequenceAnalysis: true,
 			// Enable context firewall with blocking for sanitizing audit logs
 			enableContextFirewall: true,
+			// Configure context firewall blocking (can be disabled via COMPOSER_CONTEXT_FIREWALL_BLOCKING=0)
+			contextFirewall: {
+				// When blocking is disabled, vault credentials so test keys can pass through safely.
+				vaultCredentials: !isContextFirewallBlockingEnabled(),
+				blocking: {
+					enabled: isContextFirewallBlockingEnabled(),
+				},
+			},
 		});
 	}
 
@@ -910,6 +927,9 @@ export class ProviderTransport implements AgentTransport {
 					}
 				};
 				const emitSkippedToolCall = (toolCall: ToolCall): AgentEvent[] => {
+					const sanitizedSkippedArgs = this.safetyMiddleware.sanitizeForLogging(
+						toolCall.arguments as Record<string, unknown>,
+					);
 					const skippedResult: ToolResultMessage = {
 						role: "toolResult",
 						toolCallId: toolCall.id,
@@ -928,7 +948,7 @@ export class ProviderTransport implements AgentTransport {
 							type: "tool_execution_start",
 							toolCallId: toolCall.id,
 							toolName: toolCall.name,
-							args: toolCall.arguments,
+							args: sanitizedSkippedArgs,
 						} as AgentEvent,
 						...emitToolResult(skippedResult, toolCall, true),
 					];
@@ -1098,12 +1118,15 @@ export class ProviderTransport implements AgentTransport {
 
 					recent.push(now);
 					this.recentToolTimestamps.set(toolCall.name, recent);
+					const sanitizedStartArgs = this.safetyMiddleware.sanitizeForLogging(
+						toolCall.arguments as Record<string, unknown>,
+					);
 
 					yield {
 						type: "tool_execution_start",
 						toolCallId: toolCall.id,
 						toolName: toolCall.name,
-						args: toolCall.arguments,
+						args: sanitizedStartArgs,
 					};
 
 					// Run PreToolUse hooks before firewall check
@@ -1301,10 +1324,14 @@ export class ProviderTransport implements AgentTransport {
 					if (verdict.action === "require_approval") {
 						const approvalService = this.options.approvalService;
 						if (approvalService) {
+							const sanitizedApprovalArgs =
+								this.safetyMiddleware.sanitizeForLogging(
+									effectiveToolCall.arguments as Record<string, unknown>,
+								);
 							const request = {
 								id: toolCall.id,
 								toolName: toolCall.name,
-								args: toolCall.arguments,
+								args: sanitizedApprovalArgs,
 								reason: verdict.reason,
 							};
 							const shouldEmitEvents =
@@ -1395,8 +1422,14 @@ export class ProviderTransport implements AgentTransport {
 
 					let validatedArgs: Record<string, unknown>;
 					try {
-						// Use effectiveToolCall to include any hook-modified arguments
-						validatedArgs = validateToolArguments(tool, effectiveToolCall);
+						// Validate the raw (hook-modified) arguments to preserve schema expectations
+						const rawArgs = validateToolArguments(tool, effectiveToolCall);
+						const vaultedArgs =
+							this.safetyMiddleware.prepareExecutionArgs(rawArgs);
+						// Resolve any credential references (e.g., {{CRED:api_key:abc123}}) to actual values
+						// This allows the agent to use vaulted credentials in tool execution
+						validatedArgs =
+							this.safetyMiddleware.resolveCredentials(vaultedArgs);
 					} catch (error: unknown) {
 						const validationErrorResult: ToolResultMessage = {
 							role: "toolResult",
@@ -1425,6 +1458,8 @@ export class ProviderTransport implements AgentTransport {
 						}
 						continue;
 					}
+					const sanitizedExecutionArgs =
+						this.safetyMiddleware.sanitizeForLogging(validatedArgs);
 
 					// For client tools, set up the execution promise first, then emit event
 					// This prevents race conditions where the client responds before we're listening
@@ -1447,6 +1482,7 @@ export class ProviderTransport implements AgentTransport {
 							type: "client_tool_request",
 							toolCallId: toolCall.id,
 							toolName: toolCall.name,
+							// Client tools execute out-of-process; they need the real args.
 							args: validatedArgs,
 						};
 					}
@@ -1478,7 +1514,7 @@ export class ProviderTransport implements AgentTransport {
 										type: "tool_execution_update",
 										toolCallId: toolCall.id,
 										toolName: toolCall.name,
-										args: validatedArgs,
+										args: sanitizedExecutionArgs,
 										partialResult,
 									});
 								};
@@ -1496,7 +1532,7 @@ export class ProviderTransport implements AgentTransport {
 								await logToolExecutionAudit(
 									this.auditLogger,
 									toolCall.name,
-									this.safetyMiddleware.sanitizeForLogging(validatedArgs),
+									sanitizedExecutionArgs,
 									result.isError ? "failure" : "success",
 									this.clock.now() - startTime,
 								);
@@ -1749,6 +1785,8 @@ export class ProviderTransport implements AgentTransport {
 					}
 					await checkSteering();
 				}
+
+				this.safetyMiddleware.clearCredentials();
 
 				if (steeringTriggered && remainingToolCalls.length > 0) {
 					for (const toolCall of remainingToolCalls) {

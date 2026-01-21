@@ -6,6 +6,7 @@ import {
 	type ValidateFunction,
 } from "ajv";
 import addFormatsModule, { type FormatsPlugin } from "ajv-formats";
+import { sanitizePayload } from "../../safety/context-firewall.js";
 import { createLogger } from "../../utils/logger.js";
 import { resolveDefaultExport } from "../../utils/module-interop.js";
 import type { AgentTool, ToolCall } from "../types.js";
@@ -108,13 +109,17 @@ export function validateToolArguments(
 			})
 			.join("\n") || "Unknown validation error";
 
-	const argsJson = JSON.stringify(toolCall.arguments, null, 2) ?? "{}";
+	const sanitizedArgs = sanitizePayload(toolCall.arguments, {
+		redactSecrets: true,
+		vaultCredentials: false,
+	});
+	const argsJson = JSON.stringify(sanitizedArgs, null, 2) ?? "{}";
 	const trimmedArgsJson =
 		argsJson.length > 2000
 			? `${argsJson.slice(0, 2000)}\n... (truncated ${argsJson.length - 2000} chars)`
 			: argsJson;
 
-	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${trimmedArgsJson}`;
+	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments (sanitized):\n${trimmedArgsJson}`;
 
 	throw new Error(errorMessage);
 }

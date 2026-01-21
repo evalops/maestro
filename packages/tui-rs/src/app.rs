@@ -67,7 +67,9 @@ use tokio::sync::mpsc;
 // - Receiver cannot be cloned (single consumer)
 
 use crate::agent::MAX_PENDING_MESSAGES;
-use crate::agent::{FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult};
+use crate::agent::{
+    resolve_credentials_in_json, FromAgent, NativeAgent, NativeAgentConfig, PromptKind, ToolResult,
+};
 use crate::ai::AiProvider;
 use crate::clipboard::ClipboardManager;
 use crate::commands::{
@@ -1256,10 +1258,12 @@ Add the required fields and retry.",
         tool: String,
         args: serde_json::Value,
     ) -> Result<()> {
+        let resolved_args = resolve_credentials_in_json(&args);
+
         // Execute the tool
         let result = self
             .tool_executor
-            .execute(&tool, &args, None, &call_id)
+            .execute(&tool, &resolved_args, None, &call_id)
             .await;
 
         self.record_tool_result(&call_id, &tool, &result);
@@ -1931,6 +1935,7 @@ Add the required fields and retry.",
     ) -> Result<()> {
         self.tool_history.record_approval(&call_id, approved);
         if approved {
+            // Execute the tool (resolves vaulted credentials internally)
             self.execute_tool_and_respond(call_id, tool, args).await?;
         } else {
             self.tool_history.fail(&call_id, "Denied".to_string());

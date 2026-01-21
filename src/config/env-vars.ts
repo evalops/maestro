@@ -22,6 +22,7 @@
  * - COMPOSER_DISABLE_TELEMETRY - Disable telemetry (1 to disable)
  * - COMPOSER_DISABLE_TERMINAL_TITLE - Don't update terminal title (1 to disable)
  * - COMPOSER_DISABLE_ANIMATIONS - Disable TUI animations (1 to disable)
+ * - COMPOSER_CONTEXT_FIREWALL_BLOCKING - Enable/disable blocking of sensitive content in tool args (default: 1)
  *
  * ### Subagent Configuration
  * - COMPOSER_SUBAGENT_MODEL - Model to use for subagents
@@ -77,6 +78,7 @@ export const ENV_VARS = {
 	DISABLE_TERMINAL_TITLE: "COMPOSER_DISABLE_TERMINAL_TITLE",
 	DISABLE_ANIMATIONS: "COMPOSER_DISABLE_ANIMATIONS",
 	SAFE_MODE: "COMPOSER_SAFE_MODE",
+	CONTEXT_FIREWALL_BLOCKING: "COMPOSER_CONTEXT_FIREWALL_BLOCKING",
 
 	// Subagent configuration
 	SUBAGENT_MODEL: "COMPOSER_SUBAGENT_MODEL",
@@ -223,6 +225,18 @@ export function getProxyConfig(): {
  */
 export function isSafeMode(): boolean {
 	return getEnvBool(ENV_VARS.SAFE_MODE) ?? false;
+}
+
+/**
+ * Check if context firewall blocking is enabled.
+ * Defaults to true (blocking enabled). Set COMPOSER_CONTEXT_FIREWALL_BLOCKING=0 to disable.
+ *
+ * When blocking is disabled, sensitive content (API keys, credentials) can be passed
+ * through tool arguments without being blocked. This is useful for testing scenarios
+ * where you intentionally want to use test API keys.
+ */
+export function isContextFirewallBlockingEnabled(): boolean {
+	return getEnvBool(ENV_VARS.CONTEXT_FIREWALL_BLOCKING) ?? true;
 }
 
 /**

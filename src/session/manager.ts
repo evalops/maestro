@@ -44,6 +44,7 @@ import {
 } from "../conversation/render-model.js";
 import { getRegisteredModels } from "../models/registry.js";
 import type { RegisteredModel } from "../models/registry.js";
+import { sanitizePayload } from "../safety/context-firewall.js";
 import { queueSharedMemoryUpdate } from "../shared-memory/client.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
@@ -121,6 +122,58 @@ function isMessageWithAttachments(
 		"attachments" in message &&
 		Array.isArray((message as { attachments?: unknown }).attachments)
 	);
+}
+
+function sanitizeMessageForSession(message: AppMessage): AppMessage {
+	if (message.role === "assistant") {
+		if (!Array.isArray(message.content)) return message;
+
+		let changed = false;
+		const sanitizedContent = message.content.map((block) => {
+			if (block.type !== "toolCall") return block;
+			const sanitizedArgs = sanitizePayload(block.arguments, {
+				redactSecrets: true,
+				vaultCredentials: false,
+			}) as Record<string, unknown>;
+			changed = true;
+			return { ...block, arguments: sanitizedArgs };
+		});
+
+		return changed ? { ...message, content: sanitizedContent } : message;
+	}
+
+	if (message.role !== "toolResult") return message;
+
+	let changed = false;
+	const sanitizedContent = message.content.map((block) => {
+		if (block.type !== "text") return block;
+		const sanitizedText = sanitizePayload(block.text, {
+			redactSecrets: true,
+			vaultCredentials: false,
+		});
+		if (typeof sanitizedText !== "string") {
+			changed = true;
+			return { ...block, text: String(sanitizedText) };
+		}
+		if (sanitizedText !== block.text) {
+			changed = true;
+			return { ...block, text: sanitizedText };
+		}
+		return block;
+	});
+
+	let sanitizedDetails = message.details;
+	if (sanitizedDetails !== undefined) {
+		sanitizedDetails = sanitizePayload(sanitizedDetails, {
+			redactSecrets: true,
+			vaultCredentials: false,
+		}) as typeof message.details;
+		changed = true;
+	}
+
+	return changed
+		? { ...message, content: sanitizedContent, details: sanitizedDetails }
+		: message;
 }
 
 function applyAttachmentExtracts(
@@ -834,12 +887,13 @@ export class SessionManager {
 
 	saveMessage(message: AppMessage): void {
 		if (!this.enabled) return;
+		const sanitizedMessage = sanitizeMessageForSession(message);
 		const entry: SessionMessageEntry = {
 			type: "message",
 			id: this.createTreeEntryId(),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
-			message,
+			message: sanitizedMessage,
 		};
 
 		this.appendTreeEntry(entry);

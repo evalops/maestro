@@ -53,7 +53,9 @@ import {
 	DEFAULT_BLOCKING_CONFIG,
 	checkContextFirewall,
 	sanitizePayload,
+	vaultCredentialsInPayload,
 } from "./context-firewall.js";
+import { CredentialStore } from "./credential-store.js";
 import {
 	type LoopDetectionResult,
 	LoopDetector,
@@ -124,6 +126,7 @@ export interface SafetyMiddlewareConfig {
 export class SafetyMiddleware {
 	private loopDetector: LoopDetector;
 	private sequenceAnalyzer: ToolSequenceAnalyzer;
+	private credentialStore: CredentialStore;
 	private config: Required<
 		Omit<
 			SafetyMiddlewareConfig,
@@ -134,6 +137,7 @@ export class SafetyMiddleware {
 	};
 
 	constructor(config?: SafetyMiddlewareConfig) {
+		this.credentialStore = new CredentialStore();
 		this.loopDetector = new LoopDetector({
 			// Default: more lenient than standalone for integration
 			maxIdenticalCalls: config?.loopDetector?.maxIdenticalCalls ?? 5,
@@ -158,12 +162,15 @@ export class SafetyMiddleware {
 				maxStringLength: 1000,
 				removeControlChars: true,
 				truncateLargeBlobs: true,
+				...config?.contextFirewall,
+				// Enable credential vaulting - stores credentials securely and replaces with refs
+				vaultCredentials: config?.contextFirewall?.vaultCredentials ?? false,
+				credentialStore: this.credentialStore,
 				// Enable blocking by default with sensible thresholds
 				blocking: {
 					...DEFAULT_BLOCKING_CONFIG,
 					...config?.contextFirewall?.blocking,
 				},
-				...config?.contextFirewall,
 			},
 		};
 	}
@@ -384,6 +391,23 @@ export class SafetyMiddleware {
 	}
 
 	/**
+	 * Prepare arguments for execution when credential vaulting is enabled.
+	 *
+	 * Replaces detected credentials with vault references without mutating
+	 * other argument content.
+	 */
+	prepareExecutionArgs<T>(args: T): T {
+		if (
+			!this.config.enableContextFirewall ||
+			!this.config.contextFirewall.vaultCredentials
+		) {
+			return args;
+		}
+
+		return vaultCredentialsInPayload(args, this.credentialStore) as T;
+	}
+
+	/**
 	 * Resume from paused state (loop detection)
 	 */
 	resumeLoopDetection(): void {
@@ -410,6 +434,7 @@ export class SafetyMiddleware {
 	reset(): void {
 		this.loopDetector.reset();
 		this.sequenceAnalyzer.clear();
+		this.clearCredentials();
 	}
 
 	/**
@@ -423,6 +448,35 @@ export class SafetyMiddleware {
 			loopDetector: this.loopDetector.getStats(),
 			sequenceAnalyzer: this.sequenceAnalyzer.getSummary(),
 		};
+	}
+
+	/**
+	 * Resolve credential references in tool arguments before execution
+	 *
+	 * When vaultCredentials is enabled, credentials detected during sanitization
+	 * are stored securely and replaced with references like `{{CRED:api_key:abc123}}`.
+	 * This method resolves those references back to their original values so tools
+	 * can actually use the credentials.
+	 *
+	 * @param args - Tool arguments that may contain credential references
+	 * @returns New object with credential references resolved to actual values
+	 */
+	resolveCredentials<T>(args: T): T {
+		return this.credentialStore.resolveInObject(args);
+	}
+
+	/**
+	 * Get credential store statistics (for diagnostics)
+	 */
+	getCredentialStats(): ReturnType<CredentialStore["getStats"]> {
+		return this.credentialStore.getStats();
+	}
+
+	/**
+	 * Clear stored credentials (for session reset)
+	 */
+	clearCredentials(): void {
+		this.credentialStore.clear();
 	}
 }
 

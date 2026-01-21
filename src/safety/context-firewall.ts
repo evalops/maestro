@@ -30,6 +30,11 @@
 
 import { createHash } from "node:crypto";
 import { createLogger } from "../utils/logger.js";
+import {
+	type CredentialStore,
+	type CredentialType,
+	credentialStore as defaultCredentialStore,
+} from "./credential-store.js";
 
 const logger = createLogger("safety:context-firewall");
 
@@ -76,6 +81,23 @@ export interface SanitizeOptions {
 	redactSecrets?: boolean;
 	/** Truncate large base64 blobs (default: true) */
 	truncateLargeBlobs?: boolean;
+	/**
+	 * Vault credentials instead of redacting them (default: false)
+	 *
+	 * When enabled, detected credentials are stored securely in the credential
+	 * store and replaced with references like `{{CRED:api_key:abc123}}`.
+	 * These references can be resolved back to the original value at tool
+	 * execution time, allowing safe use of test API keys.
+	 *
+	 * When vaulting is enabled:
+	 * - Credentials are stored in memory (not persisted)
+	 * - References replace raw values in the sanitized payload
+	 * - Tool execution can resolve references to actual values
+	 * - Vaulted credentials don't trigger blocking
+	 */
+	vaultCredentials?: boolean;
+	/** Credential store instance for vaulting (default: in-memory singleton) */
+	credentialStore?: CredentialStore;
 }
 
 /**
@@ -255,6 +277,18 @@ export class CredentialFragmentTracker {
 /** Global credential fragment tracker instance */
 export const credentialFragmentTracker = new CredentialFragmentTracker();
 
+const PEM_PRIVATE_KEY_BEGIN = [
+	"-----BEGIN ",
+	"(?:RSA |EC |DSA |OPENSSH )?PRIVATE",
+	" KEY-----",
+].join("");
+const PEM_PRIVATE_KEY_END = [
+	"-----END ",
+	"(?:RSA |EC |DSA |OPENSSH )?PRIVATE",
+	" KEY-----",
+].join("");
+const PGP_PRIVATE_KEY_BLOCK = ["PGP", " PRIVATE", " KEY", " BLOCK"].join("");
+
 const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 	// API Keys - various formats
 	{
@@ -322,14 +356,14 @@ const CREDENTIAL_PATTERN_DEFS: CredentialPatternDef[] = [
 	{
 		name: "RSA Private Key",
 		type: "private_key",
-		source: `-----BEGIN ${"(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"}`,
+		source: `${PEM_PRIVATE_KEY_BEGIN}[\\s\\S]+?${PEM_PRIVATE_KEY_END}`,
 		flags: "g",
 		severity: "high",
 	},
 	{
 		name: "PGP Private Key",
 		type: "private_key",
-		source: `-----BEGIN ${["PGP", "PRIVATE", "KEY", "BLOCK"].join(" ")}-----`,
+		source: `-----BEGIN ${PGP_PRIVATE_KEY_BLOCK}-----[\\s\\S]+?-----END ${PGP_PRIVATE_KEY_BLOCK}-----`,
 		flags: "g",
 		severity: "high",
 	},
@@ -554,6 +588,45 @@ function redactSensitiveValue(value: string, type: string): string {
 }
 
 /**
+ * Map finding type to credential store type
+ */
+function mapToCredentialType(
+	findingType: SensitiveContentFinding["type"],
+): CredentialType {
+	switch (findingType) {
+		case "api_key":
+			return "api_key";
+		case "aws_secret":
+			return "secret";
+		case "private_key":
+			return "private_key";
+		case "jwt_token":
+			return "token";
+		case "password":
+			return "password";
+		case "generic_secret":
+			return "secret";
+		default:
+			return "unknown";
+	}
+}
+
+/**
+ * Vault a sensitive value in the credential store
+ *
+ * Stores the value securely and returns a reference that can be
+ * resolved at tool execution time.
+ */
+function vaultSensitiveValue(
+	value: string,
+	type: string,
+	store: CredentialStore,
+): string {
+	const credType = mapToCredentialType(type as SensitiveContentFinding["type"]);
+	return store.store(value, credType);
+}
+
+/**
  * Detect sensitive content in a string value
  */
 function detectInString(
@@ -660,8 +733,17 @@ function sanitizeString(
 		result = removeControlChars(result);
 	}
 
-	// Redact secrets (create fresh regex to avoid lastIndex issues)
-	if (options.redactSecrets) {
+	// Handle secrets: vault or redact (create fresh regex to avoid lastIndex issues)
+	if (options.vaultCredentials) {
+		// Vault mode: store credentials securely and replace with references
+		for (const def of CREDENTIAL_PATTERN_DEFS) {
+			const pattern = createPatternRegex(def);
+			result = result.replace(pattern, (match) =>
+				vaultSensitiveValue(match, def.type, options.credentialStore),
+			);
+		}
+	} else if (options.redactSecrets) {
+		// Redact mode: replace with hash-based redaction markers
 		for (const def of CREDENTIAL_PATTERN_DEFS) {
 			const pattern = createPatternRegex(def);
 			result = result.replace(pattern, (match) =>
@@ -766,9 +848,63 @@ export function sanitizePayload(
 		removeControlChars: options.removeControlChars ?? true,
 		redactSecrets: options.redactSecrets ?? true,
 		truncateLargeBlobs: options.truncateLargeBlobs ?? true,
+		vaultCredentials: options.vaultCredentials ?? false,
+		credentialStore: options.credentialStore ?? defaultCredentialStore,
 	};
 
 	return sanitizeValue(payload, fullOptions, 0);
+}
+
+/**
+ * Vault credentials in a payload without altering other content.
+ *
+ * Replaces detected credentials with reference tokens while preserving
+ * the original structure and non-credential data.
+ */
+export function vaultCredentialsInPayload(
+	payload: unknown,
+	store: CredentialStore = defaultCredentialStore,
+): unknown {
+	return vaultCredentialsInValue(payload, 0, store);
+}
+
+function vaultCredentialsInValue(
+	value: unknown,
+	depth: number,
+	store: CredentialStore,
+): unknown {
+	if (depth > MAX_RECURSION_DEPTH) {
+		return value;
+	}
+
+	if (value === null || value === undefined) {
+		return value;
+	}
+
+	if (typeof value === "string") {
+		let result = value;
+		for (const def of CREDENTIAL_PATTERN_DEFS) {
+			const pattern = createPatternRegex(def);
+			result = result.replace(pattern, (match) =>
+				vaultSensitiveValue(match, def.type, store),
+			);
+		}
+		return result;
+	}
+
+	if (Array.isArray(value)) {
+		return value.map((item) => vaultCredentialsInValue(item, depth + 1, store));
+	}
+
+	if (typeof value === "object") {
+		const vaulted: Record<string, unknown> = {};
+		for (const [key, val] of Object.entries(value)) {
+			vaulted[key] = vaultCredentialsInValue(val, depth + 1, store);
+		}
+		return vaulted;
+	}
+
+	return value;
 }
 
 /**
@@ -805,6 +941,28 @@ function safeStringify(value: unknown): string {
 	} catch {
 		return "[Unstringifiable]";
 	}
+}
+
+/**
+ * Sanitize a log message (string) for safe output.
+ *
+ * Ensures secrets are redacted and never vaulted in log output.
+ */
+export function sanitizeLogMessage(
+	message: string,
+	options: SanitizeOptions = {},
+): string {
+	const sanitized = sanitizePayload(message, {
+		...options,
+		redactSecrets: options.redactSecrets ?? true,
+		vaultCredentials: false,
+	});
+
+	if (typeof sanitized === "string") {
+		return sanitized;
+	}
+
+	return safeStringify(sanitized);
 }
 
 /**
@@ -911,6 +1069,7 @@ function checkContextFirewallInner(
 	payload: unknown,
 	options: ContextFirewallOptions,
 ): ContextFirewallResult {
+	const store = options.credentialStore ?? defaultCredentialStore;
 	const findings = detectSensitiveContent(payload);
 	const sanitizedPayload = sanitizePayload(payload, options);
 
@@ -930,6 +1089,20 @@ function checkContextFirewallInner(
 			options.blockHighSeverity ??
 			DEFAULT_BLOCKING_CONFIG.enabled,
 	};
+
+	// When vaultCredentials is enabled, credentials are securely stored and
+	// replaced with references - they're no longer "leaked" so we don't block
+	if (options.vaultCredentials) {
+		logger.debug("Credential vaulting enabled, skipping blocking checks", {
+			findingsCount: findings.length,
+			vaultedCount: store.size,
+		});
+		return {
+			allowed: true,
+			sanitizedPayload,
+			findings,
+		};
+	}
 
 	if (!blockingConfig.enabled) {
 		return {

@@ -3,8 +3,11 @@ import {
 	checkContextFirewall,
 	containsHighSeverityContent,
 	detectSensitiveContent,
+	sanitizeLogMessage,
 	sanitizePayload,
+	vaultCredentialsInPayload,
 } from "../../src/safety/context-firewall.js";
+import { createCredentialStore } from "../../src/safety/credential-store.js";
 
 // Split tokens to avoid triggering secret scanners in the repo.
 const joinParts = (...parts: string[]) => parts.join("");
@@ -31,7 +34,9 @@ const SAMPLE_AWS_ACCESS_KEY = joinParts("AK", "IA", "IOSFODNN7", "EXAMPLE");
 const SAMPLE_RSA_PRIVATE_KEY = joinParts(
 	"-----BEGIN ",
 	["RSA", "PRIVATE", "KEY"].join(" "),
-	"-----\nMIIEpAIBAAKCAQEA...",
+	"-----\n",
+	"MIIEpAIBAAKCAQEA...",
+	"\n-----END RSA PRIVATE KEY-----",
 );
 const SAMPLE_JWT_HEADER = joinParts("eyJhbGciOiJ", "IUzI1NiIsInR5cCI6IkpXVCJ9");
 const SAMPLE_JWT_PAYLOAD = joinParts(
@@ -162,6 +167,14 @@ describe("context-firewall", () => {
 			expect(sanitized.key).not.toContain("abc123def456");
 		});
 
+		it("redacts full private key blocks", () => {
+			const payload = { key: SAMPLE_RSA_PRIVATE_KEY };
+			const sanitized = sanitizePayload(payload) as { key: string };
+			expect(sanitized.key).toContain("[REDACTED:private_key:");
+			expect(sanitized.key).not.toContain("MIIEpAIB");
+			expect(sanitized.key).not.toContain("END RSA PRIVATE KEY");
+		});
+
 		it("truncates long strings", () => {
 			// Use a string that won't match base64 pattern (contains spaces/punctuation)
 			const longString = "Hello world! This is a test. ".repeat(200);
@@ -289,6 +302,32 @@ describe("context-firewall", () => {
 			const result = checkContextFirewall(payload);
 			const sanitized = result.sanitizedPayload as { key: string };
 			expect(sanitized.key).toContain("[REDACTED:");
+		});
+	});
+
+	describe("sanitizeLogMessage", () => {
+		it("redacts secrets in log strings", () => {
+			const message = `Tool failed: ${SAMPLE_OPENAI_KEY}`;
+			const sanitized = sanitizeLogMessage(message);
+			expect(sanitized).toContain("[REDACTED:api_key:");
+			expect(sanitized).not.toContain("abc123def456");
+		});
+	});
+
+	describe("vaultCredentialsInPayload", () => {
+		it("vaults credentials and resolves back to originals", () => {
+			const store = createCredentialStore();
+			const payload = {
+				header: `Authorization: Bearer ${SAMPLE_OPENAI_KEY}`,
+			};
+			const vaulted = vaultCredentialsInPayload(payload, store) as {
+				header: string;
+			};
+			expect(vaulted.header).toContain("{{CRED:");
+			expect(vaulted.header).not.toContain("abc123def456");
+
+			const resolved = store.resolveInObject(vaulted) as { header: string };
+			expect(resolved).toEqual(payload);
 		});
 	});
 });
