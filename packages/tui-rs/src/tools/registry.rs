@@ -2292,7 +2292,9 @@ impl ToolExecutor {
                                 .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
                                 .collect::<std::collections::HashMap<_, _>>()
                         });
-                        match background_tasks::start(command, cwd, shell, env).await {
+                        match background_tasks::start(command, cwd, self.cwd.clone(), shell, env)
+                            .await
+                        {
                             Ok(task) => {
                                 let details = serde_json::json!({
                                     "id": task.id,

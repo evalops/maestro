@@ -17,7 +17,14 @@
 //! use composer_tui::tools::background_tasks::{start, list, stop, logs};
 //!
 //! // Start a dev server
-//! let task = start("npm run dev".to_string(), ".".to_string(), true, None).await?;
+//! let task = start(
+//!     "npm run dev".to_string(),
+//!     ".".to_string(),
+//!     ".".to_string(),
+//!     true,
+//!     None,
+//! )
+//! .await?;
 //!
 //! // Check running tasks
 //! for task in list() {
@@ -109,6 +116,7 @@ fn read_last_lines(path: &Path, lines: usize) -> Result<String, String> {
 ///
 /// * `command` - The command to execute
 /// * `cwd` - Working directory for the process
+/// * `workspace_dir` - Workspace root for config resolution
 /// * `shell` - If true, run through the system shell (enables pipes, redirects)
 /// * `env` - Optional additional environment variables
 ///
@@ -118,6 +126,7 @@ fn read_last_lines(path: &Path, lines: usize) -> Result<String, String> {
 pub async fn start(
     command: String,
     cwd: String,
+    workspace_dir: String,
     shell: bool,
     env: Option<HashMap<String, String>>,
 ) -> Result<BackgroundTask, String> {
@@ -157,7 +166,7 @@ pub async fn start(
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(stderr);
-    let resolved_env = resolve_shell_environment(Path::new(&cwd), env.as_ref());
+    let resolved_env = resolve_shell_environment(Path::new(&workspace_dir), env.as_ref());
     cmd.env_clear();
     cmd.envs(resolved_env);
 

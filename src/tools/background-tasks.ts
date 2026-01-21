@@ -1179,7 +1179,7 @@ class BackgroundTaskManager extends EventEmitter {
 		const id = this.generateTaskId();
 		const { resolvedCwd } = validateShellParams(command, cwd, env);
 		const resolvedEnv = resolveShellEnvironment(env, {
-			workspaceDir: resolvedCwd ?? process.cwd(),
+			workspaceDir: process.cwd(),
 		});
 		const logPath = this.createLogPath(id);
 		const taskLimits = this.resolveTaskLimits(options.limits);

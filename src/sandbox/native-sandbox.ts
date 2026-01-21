@@ -367,7 +367,7 @@ export class NativeSandbox implements Sandbox {
 	): Promise<ExecResult> {
 		const workingDir = cwd ?? this.cwd;
 		const mergedEnv = {
-			...resolveShellEnvironment(env, { workspaceDir: workingDir }),
+			...resolveShellEnvironment(env, { workspaceDir: this.cwd }),
 			[SANDBOX_ENV_VAR]: this.getSandboxType(),
 		};
 

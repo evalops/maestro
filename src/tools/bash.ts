@@ -329,7 +329,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			const { shell, args } = getShellConfig();
 			// Merge custom env vars with process environment
 			const mergedEnv = resolveShellEnvironment(env, {
-				workspaceDir: resolvedCwd ?? process.cwd(),
+				workspaceDir: process.cwd(),
 			});
 
 			// Spawn the child process in detached mode for clean process tree handling

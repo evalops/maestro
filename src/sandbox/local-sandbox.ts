@@ -49,7 +49,7 @@ export class LocalSandbox implements Sandbox {
 			const { stdout, stderr } = await execAsync(command, {
 				cwd,
 				env: resolveShellEnvironment(env, {
-					workspaceDir: cwd ?? process.cwd(),
+					workspaceDir: process.cwd(),
 				}),
 			});
 			return {
