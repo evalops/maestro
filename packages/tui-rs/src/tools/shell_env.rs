@@ -133,7 +133,7 @@ mod tests {
     fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs
             .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect()
     }
 
@@ -146,8 +146,8 @@ mod tests {
         ]);
         let env = build_shell_environment(base, None, None);
         assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
-        assert!(env.get("OPENAI_API_KEY").is_none());
-        assert!(env.get("GITHUB_TOKEN").is_none());
+        assert!(!env.contains_key("OPENAI_API_KEY"));
+        assert!(!env.contains_key("GITHUB_TOKEN"));
     }
 
     #[test]
@@ -177,7 +177,7 @@ mod tests {
         let env = build_shell_environment(base, Some(&policy), None);
         assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
         assert_eq!(env.get("HOME"), Some(&"/home/test".to_string()));
-        assert!(env.get("OPENAI_API_KEY").is_none());
+        assert!(!env.contains_key("OPENAI_API_KEY"));
     }
 
     #[test]
@@ -190,7 +190,7 @@ mod tests {
         };
         let env = build_shell_environment(base, Some(&policy), None);
         assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
-        assert!(env.get("HOME").is_none());
+        assert!(!env.contains_key("HOME"));
     }
 
     #[test]
@@ -207,7 +207,7 @@ mod tests {
         };
         let env = build_shell_environment(base, Some(&policy), None);
         assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
-        assert!(env.get("SECRET_TOKEN").is_none());
+        assert!(!env.contains_key("SECRET_TOKEN"));
     }
 
     #[test]
