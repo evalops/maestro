@@ -281,6 +281,34 @@ describe("shell-utils", () => {
 			expect(env.EDITOR).toBeUndefined();
 		});
 
+		it("filters set values with include_only", () => {
+			const baseEnv = {
+				PATH: "/bin",
+				HOME: "/home/test",
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				ignore_default_excludes: true,
+				include_only: ["PATH"],
+				set: { SECRET_TOKEN: "override" },
+			});
+			expect(env.PATH).toBe("/bin");
+			expect(env.HOME).toBeUndefined();
+			expect(env.SECRET_TOKEN).toBeUndefined();
+		});
+
+		it("keeps set values when included by include_only", () => {
+			const baseEnv = {
+				PATH: "/bin",
+			};
+			const env = applyShellEnvironmentPolicy(baseEnv, {
+				ignore_default_excludes: true,
+				include_only: ["PATH", "SECRET_*"],
+				set: { SECRET_TOKEN: "override" },
+			});
+			expect(env.PATH).toBe("/bin");
+			expect(env.SECRET_TOKEN).toBe("override");
+		});
+
 		it("merges explicit overrides after policy", () => {
 			const baseEnv = {
 				PATH: "/bin",

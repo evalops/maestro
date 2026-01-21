@@ -194,6 +194,40 @@ mod tests {
     }
 
     #[test]
+    fn test_set_filtered_by_include_only() {
+        let base = env(&[("PATH", "/bin")]);
+        let policy = ShellEnvironmentPolicy {
+            include_only: Some(vec!["PATH".to_string()]),
+            ignore_default_excludes: Some(true),
+            set: Some(HashMap::from([(
+                "SECRET_TOKEN".to_string(),
+                "override".to_string(),
+            )])),
+            ..Default::default()
+        };
+        let env = build_shell_environment(base, Some(&policy), None);
+        assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
+        assert!(env.get("SECRET_TOKEN").is_none());
+    }
+
+    #[test]
+    fn test_set_kept_when_included() {
+        let base = env(&[("PATH", "/bin")]);
+        let policy = ShellEnvironmentPolicy {
+            include_only: Some(vec!["PATH".to_string(), "SECRET_*".to_string()]),
+            ignore_default_excludes: Some(true),
+            set: Some(HashMap::from([(
+                "SECRET_TOKEN".to_string(),
+                "override".to_string(),
+            )])),
+            ..Default::default()
+        };
+        let env = build_shell_environment(base, Some(&policy), None);
+        assert_eq!(env.get("PATH"), Some(&"/bin".to_string()));
+        assert_eq!(env.get("SECRET_TOKEN"), Some(&"override".to_string()));
+    }
+
+    #[test]
     fn test_overrides_apply_after_policy() {
         let base = env(&[("OPENAI_API_KEY", "sk-test")]);
         let mut overrides = HashMap::new();
