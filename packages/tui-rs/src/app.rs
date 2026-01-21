@@ -37,7 +37,7 @@
 // IMPORTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // `Arc` (Atomic Reference Counted) is a thread-safe reference-counted pointer.
@@ -89,6 +89,7 @@ use crate::session::{
     ModelChange, ParsedSession, SessionEntry, SessionExporter, SessionHeader, SessionManager,
     ThinkingLevel, ThinkingLevelChange, TokenCost, TokenUsage as SessionTokenUsage, ToolInfo,
 };
+use crate::skills::{skills_to_prompt, LoadedSkill, SkillLoadError, SkillLoader, SkillRegistry};
 use crate::state::{AppState, ApprovalMode, Message, MessageRole};
 use crate::terminal::{self, TerminalCapabilities};
 use crate::tools::{ToolExecutor, ToolRegistry};
@@ -239,6 +240,15 @@ pub struct App {
     /// Tool execution history.
     tool_history: crate::tools::ToolHistory,
 
+    /// Loaded skill definitions (with paths/resources).
+    loaded_skills: Vec<LoadedSkill>,
+
+    /// Skill load errors from last scan.
+    skill_load_errors: Vec<SkillLoadError>,
+
+    /// Runtime skill registry (activation state).
+    skill_registry: SkillRegistry,
+
     /// Prompts submitted while running (queued in the agent).
     queued_prompts: VecDeque<QueuedPrompt>,
 
@@ -305,8 +315,21 @@ impl App {
     }
 
     fn new_with_terminal(terminal: terminal::Terminal, capabilities: TerminalCapabilities) -> Self {
-        let prompt_history = crate::history::PromptHistory::load_or_create()
-            .unwrap_or_else(|_| crate::history::PromptHistory::default());
+        let workspace_dir =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let config = crate::config::load_config(&workspace_dir, None);
+        let mut history_config = crate::history::HistoryConfig::default();
+        if let Some(history_settings) = config.history {
+            if let Some(max_bytes) = history_settings.max_bytes {
+                history_config = history_config.with_max_bytes(max_bytes);
+            }
+            if let Some(persistence) = history_settings.persistence {
+                history_config = history_config.with_persistence(persistence);
+            }
+        }
+        let prompt_history =
+            crate::history::PromptHistory::load_with_config(history_config.clone())
+                .unwrap_or_else(|_| crate::history::PromptHistory::new(history_config));
         Self::new_with_terminal_with_history(terminal, capabilities, prompt_history)
     }
 
@@ -337,6 +360,13 @@ impl App {
             state.follow_up_mode = mode;
         }
 
+        let loader = SkillLoader::new();
+        let (loaded_skills, skill_load_errors) = loader.load_all_with_paths();
+        let mut skill_registry = SkillRegistry::new();
+        for loaded in &loaded_skills {
+            skill_registry.register(loaded.definition.clone());
+        }
+
         // Construct the App with all fields initialized.
         // `Self` is an alias for the type we're implementing (App).
         Self {
@@ -364,6 +394,9 @@ impl App {
             usage_tracker: crate::usage::UsageTracker::new(),
             prompt_history,
             tool_history: crate::tools::ToolHistory::default(),
+            loaded_skills,
+            skill_load_errors,
+            skill_registry,
             queued_prompts: VecDeque::new(),
             queued_prompt_inflight: None,
             queued_prompt_active: None,
@@ -551,8 +584,7 @@ impl App {
     fn build_system_prompt(&self) -> String {
         let cwd = std::env::current_dir()
             .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
-
-        format!(
+        let mut sections = vec![format!(
             r#"You are an AI assistant helping with software development tasks.
 
 Current working directory: {cwd}
@@ -570,7 +602,110 @@ Tool-calling rules:
 - If a tool call is denied, immediately retry with corrected arguments instead of responding without action.
 
 Always use tools when they would be helpful. Be concise and direct in your responses."#
-        )
+        )];
+
+        if !self.loaded_skills.is_empty() {
+            sections.push(skills_to_prompt(&self.loaded_skills));
+        }
+
+        let active_prompt = self.skill_registry.active_system_prompt_additions();
+        if !active_prompt.trim().is_empty() {
+            sections.push(active_prompt);
+        }
+
+        sections.join("\n\n")
+    }
+
+    fn refresh_skills(&mut self, preserve_active: bool) {
+        let active_ids: HashSet<String> = if preserve_active {
+            self.skill_registry
+                .active_skills()
+                .iter()
+                .map(|skill| skill.definition.id.clone())
+                .collect()
+        } else {
+            HashSet::new()
+        };
+
+        let loader = SkillLoader::new();
+        let (loaded_skills, skill_load_errors) = loader.load_all_with_paths();
+        let mut registry = SkillRegistry::new();
+        for loaded in &loaded_skills {
+            registry.register(loaded.definition.clone());
+        }
+        if preserve_active {
+            for id in active_ids {
+                let _ = registry.activate(&id);
+            }
+        }
+
+        self.loaded_skills = loaded_skills;
+        self.skill_load_errors = skill_load_errors;
+        self.skill_registry = registry;
+    }
+
+    fn resolve_skill_id(&self, query: &str) -> Result<String, String> {
+        let normalized = query.trim().to_lowercase();
+        if normalized.is_empty() {
+            return Err("Skill name required".to_string());
+        }
+
+        let mut partial_matches: Vec<String> = Vec::new();
+        for loaded in &self.loaded_skills {
+            let def = &loaded.definition;
+            let id = def.id.clone();
+            let id_lower = id.to_lowercase();
+            let name_lower = def.name.to_lowercase();
+
+            if id_lower == normalized || name_lower == normalized {
+                return Ok(id);
+            }
+            if id_lower.contains(&normalized) || name_lower.contains(&normalized) {
+                partial_matches.push(id);
+            }
+        }
+
+        partial_matches.sort();
+        partial_matches.dedup();
+        match partial_matches.len() {
+            1 => Ok(partial_matches[0].clone()),
+            0 => Err(format!("Skill \"{query}\" not found.")),
+            _ => Err(format!(
+                "Multiple skills match \"{query}\": {}",
+                partial_matches.join(", ")
+            )),
+        }
+    }
+
+    fn find_loaded_skill(&self, id: &str) -> Option<&LoadedSkill> {
+        self.loaded_skills
+            .iter()
+            .find(|skill| skill.definition.id == id || skill.definition.name == id)
+    }
+
+    fn update_agent_system_prompt(&mut self) {
+        let prompt = self.build_system_prompt();
+        if let Some(agent) = &self.native_agent {
+            if let Err(e) = agent.set_system_prompt(prompt) {
+                self.state.error = Some(format!("Failed to update system prompt: {e}"));
+            }
+        }
+    }
+
+    fn clear_active_skills(&mut self) {
+        let active_ids: Vec<String> = self
+            .skill_registry
+            .active_skills()
+            .iter()
+            .map(|skill| skill.definition.id.clone())
+            .collect();
+        if active_ids.is_empty() {
+            return;
+        }
+        for id in active_ids {
+            let _ = self.skill_registry.deactivate(&id);
+        }
+        self.update_agent_system_prompt();
     }
 
     fn active_session_count(&self) -> Option<usize> {
@@ -751,6 +886,21 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     }
 
     fn record_tool_result(&mut self, call_id: &str, tool: &str, result: &ToolResult) {
+        if result.success {
+            self.tool_history.complete_with_details(
+                call_id,
+                result.output.clone(),
+                result.details.clone(),
+            );
+        } else {
+            let error = result
+                .error
+                .clone()
+                .unwrap_or_else(|| result.output.clone());
+            self.tool_history
+                .fail_with_details(call_id, error, result.details.clone());
+        }
+
         if self.ensure_session_started().is_err() {
             return;
         }
@@ -964,8 +1114,14 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 call_id,
                 tool,
                 args,
-                requires_approval: _,
+                requires_approval,
             } => {
+                self.tool_history.start_with_approval(
+                    call_id.clone(),
+                    tool.clone(),
+                    args.clone(),
+                    *requires_approval,
+                );
                 // Unknown tool name -> deny immediately
                 if !self.tool_executor.has_tool(tool) {
                     let note = format!(
@@ -1005,6 +1161,7 @@ Retry with a supported tool (bash/read/write/glob/grep) and valid args."
 
                     // Record tool call
                     self.state.handle_agent_message(msg.clone());
+                    self.tool_history.record_approval(call_id, true);
                     // Run the tool with the filled command (auto-approved)
                     self.execute_tool_and_respond(
                         call_id.clone(),
@@ -1070,6 +1227,7 @@ Add the required fields and retry.",
                     self.active_modal = ActiveModal::Approval;
                 } else {
                     // Auto-approve and execute
+                    self.tool_history.record_approval(call_id, true);
                     self.execute_tool_and_respond(call_id.clone(), tool.clone(), args.clone())
                         .await?;
                 }
@@ -1771,17 +1929,11 @@ Add the required fields and retry.",
         args: serde_json::Value,
         approved: bool,
     ) -> Result<()> {
+        self.tool_history.record_approval(&call_id, approved);
         if approved {
-            // Execute the tool
-            let result = self
-                .tool_executor
-                .execute(&tool, &args, None, &call_id)
-                .await;
-            // Send result back to agent
-            if let Some(tx) = &self.tool_response_tx {
-                let _ = tx.send((call_id, true, Some(result)));
-            }
+            self.execute_tool_and_respond(call_id, tool, args).await?;
         } else {
+            self.tool_history.fail(&call_id, "Denied".to_string());
             // Send denial
             if let Some(tx) = &self.tool_response_tx {
                 let _ = tx.send((call_id, false, None));
@@ -1884,6 +2036,7 @@ Add the required fields and retry.",
                 if !self.current_model.is_empty() {
                     self.usage_tracker.set_model(self.current_model.clone());
                 }
+                self.clear_active_skills();
                 if let Some(agent) = &self.native_agent {
                     agent.clear_history();
                 }
@@ -2634,27 +2787,21 @@ Add the required fields and retry.",
     /// Handle skills system actions
     fn handle_skills_action(&mut self, action: crate::commands::SkillsAction) {
         use crate::commands::SkillsAction;
-        use crate::skills::SkillLoader;
 
         match action {
             SkillsAction::List => {
-                // List all skills from the registry and filesystem
-                let loader = SkillLoader::new();
-                let (skills, errors) = loader.load_all_with_paths();
-
                 let mut msg = String::from("## Available Skills\n\n");
-
-                if skills.is_empty() && errors.is_empty() {
+                if self.loaded_skills.is_empty() && self.skill_load_errors.is_empty() {
                     msg.push_str("*No skills found*\n\n");
                     msg.push_str("Skills are loaded from:\n");
                     msg.push_str("- `~/.composer/skills/` (global)\n");
                     msg.push_str("- `.composer/skills/` (project)\n\n");
                     msg.push_str("Create a `SKILL.md` file following the [Agent Skills spec](https://agentskills.io/specification).\n");
                 } else {
-                    msg.push_str("| Name | Description | Source | Tools |\n");
-                    msg.push_str("|------|-------------|--------|-------|\n");
+                    msg.push_str("| Name | Description | Source | Active | Tools |\n");
+                    msg.push_str("|------|-------------|--------|--------|-------|\n");
 
-                    for loaded in &skills {
+                    for loaded in &self.loaded_skills {
                         let skill = &loaded.definition;
                         let tools_count = skill.provided_tools.len();
                         let tools = if tools_count > 0 {
@@ -2662,24 +2809,43 @@ Add the required fields and retry.",
                         } else {
                             "-".to_string()
                         };
+                        let active = self
+                            .skill_registry
+                            .get(&skill.id)
+                            .map(|s| s.is_active())
+                            .unwrap_or(false);
+                        let active_label = if active { "yes" } else { "no" };
                         msg.push_str(&format!(
-                            "| {} | {} | {:?} | {} |\n",
+                            "| {} | {} | {:?} | {} | {} |\n",
                             skill.name,
                             skill.description.chars().take(40).collect::<String>(),
                             skill.source,
+                            active_label,
                             tools
                         ));
                     }
 
-                    msg.push_str(&format!("\n*{} skill(s) found*\n", skills.len()));
+                    msg.push_str(&format!(
+                        "\n*{} skill(s) found*\n",
+                        self.loaded_skills.len()
+                    ));
+                    let active_ids: Vec<String> = self
+                        .skill_registry
+                        .active_skills()
+                        .iter()
+                        .map(|skill| skill.definition.name.clone())
+                        .collect();
+                    if !active_ids.is_empty() {
+                        msg.push_str(&format!("Active: {}\n", active_ids.join(", ")));
+                    }
                 }
 
-                if !errors.is_empty() {
+                if !self.skill_load_errors.is_empty() {
                     msg.push_str(&format!(
                         "\n**{} error(s) loading skills:**\n",
-                        errors.len()
+                        self.skill_load_errors.len()
                     ));
-                    for err in errors.iter().take(5) {
+                    for err in self.skill_load_errors.iter().take(5) {
                         msg.push_str(&format!("- {err}\n"));
                     }
                 }
@@ -2687,48 +2853,114 @@ Add the required fields and retry.",
                 self.state.add_system_message(msg);
             }
             SkillsAction::Activate(name) => {
-                // For now, just show a status message
-                // Full implementation would activate the skill in the registry
-                self.state.status = Some(format!("Skill '{name}' activated"));
+                let id = match self.resolve_skill_id(&name) {
+                    Ok(id) => id,
+                    Err(err) => {
+                        self.state.error = Some(err);
+                        return;
+                    }
+                };
+                let skill = match self.skill_registry.get(&id) {
+                    Some(skill) => skill,
+                    None => {
+                        self.state.error = Some(format!("Skill '{name}' not found"));
+                        return;
+                    }
+                };
+                let skill_name = skill.definition.name.clone();
+                if skill.is_active() {
+                    self.state.status = Some(format!("Skill '{}' already active", skill_name));
+                    return;
+                }
+                if let Err(err) = self.skill_registry.activate(&id) {
+                    self.state.error = Some(err);
+                    return;
+                }
+                self.update_agent_system_prompt();
+                self.state.status = Some(format!("Activated skill '{}'", skill_name));
                 self.state.add_system_message(format!(
-                    "Activated skill **{name}**. System prompt will include skill instructions."
+                    "Activated skill **{}**. System prompt updated.",
+                    skill_name
                 ));
             }
             SkillsAction::Deactivate(name) => {
-                self.state.status = Some(format!("Skill '{name}' deactivated"));
-                self.state
-                    .add_system_message(format!("Deactivated skill **{name}**."));
-            }
-            SkillsAction::Reload => {
-                let loader = SkillLoader::new();
-                let (skills, errors) = loader.load_all_with_paths();
-
-                if errors.is_empty() {
-                    self.state.status = Some(format!("Loaded {} skill(s)", skills.len()));
-                } else {
-                    self.state.status = Some(format!(
-                        "Loaded {} skill(s), {} error(s)",
-                        skills.len(),
-                        errors.len()
-                    ));
+                let id = match self.resolve_skill_id(&name) {
+                    Ok(id) => id,
+                    Err(err) => {
+                        self.state.error = Some(err);
+                        return;
+                    }
+                };
+                let skill = match self.skill_registry.get(&id) {
+                    Some(skill) => skill,
+                    None => {
+                        self.state.error = Some(format!("Skill '{name}' not found"));
+                        return;
+                    }
+                };
+                let skill_name = skill.definition.name.clone();
+                if !skill.is_active() {
+                    self.state.status = Some(format!("Skill '{}' not active", skill_name));
+                    return;
                 }
-
+                if let Err(err) = self.skill_registry.deactivate(&id) {
+                    self.state.error = Some(err);
+                    return;
+                }
+                self.update_agent_system_prompt();
+                self.state.status = Some(format!("Deactivated skill '{}'", skill_name));
                 self.state.add_system_message(format!(
-                    "Reloaded skills from filesystem. Found {} skill(s).",
-                    skills.len()
+                    "Deactivated skill **{}**. System prompt updated.",
+                    skill_name
                 ));
             }
+            SkillsAction::Reload => {
+                self.refresh_skills(true);
+                self.update_agent_system_prompt();
+                if self.skill_load_errors.is_empty() {
+                    self.state
+                        .status
+                        .replace(format!("Loaded {} skill(s)", self.loaded_skills.len()));
+                } else {
+                    self.state.status.replace(format!(
+                        "Loaded {} skill(s), {} error(s)",
+                        self.loaded_skills.len(),
+                        self.skill_load_errors.len()
+                    ));
+                }
+                let mut msg = format!(
+                    "Reloaded skills from filesystem. Found {} skill(s).",
+                    self.loaded_skills.len()
+                );
+                if !self.skill_load_errors.is_empty() {
+                    msg.push_str("\n\nErrors:\n");
+                    for err in self.skill_load_errors.iter().take(5) {
+                        msg.push_str(&format!("- {err}\n"));
+                    }
+                }
+                self.state.add_system_message(msg);
+            }
             SkillsAction::Info(name) => {
-                let loader = SkillLoader::new();
-                let (skills, _) = loader.load_all_with_paths();
-
-                if let Some(loaded) = skills
-                    .iter()
-                    .find(|s| s.definition.id == name || s.definition.name == name)
-                {
+                let id = match self.resolve_skill_id(&name) {
+                    Ok(id) => id,
+                    Err(err) => {
+                        self.state.error = Some(err);
+                        return;
+                    }
+                };
+                if let Some(loaded) = self.find_loaded_skill(&id) {
                     let skill = &loaded.definition;
                     let mut msg = format!("## Skill: {}\n\n", skill.name);
                     msg.push_str(&format!("**Description:** {}\n\n", skill.description));
+                    let active = self
+                        .skill_registry
+                        .get(&skill.id)
+                        .map(|s| s.is_active())
+                        .unwrap_or(false);
+                    msg.push_str(&format!(
+                        "**Status:** {}\n\n",
+                        if active { "active" } else { "inactive" }
+                    ));
                     msg.push_str(&format!("**Source:** {:?}\n\n", skill.source));
                     msg.push_str(&format!("**Path:** `{}`\n\n", loaded.source_path.display()));
 
@@ -2736,6 +2968,13 @@ Add the required fields and retry.",
                         msg.push_str(&format!(
                             "**Tools:** {}\n\n",
                             skill.provided_tools.join(", ")
+                        ));
+                    }
+
+                    if !skill.trigger_patterns.is_empty() {
+                        msg.push_str(&format!(
+                            "**Triggers:** {}\n\n",
+                            skill.trigger_patterns.join(", ")
                         ));
                     }
 
@@ -3167,6 +3406,12 @@ Slash Commands:
         self.state.add_user_message(content.clone());
         self.state.busy = true;
         self.record_user_message(&content);
+        if let Some(session_id) = self.state.session_id.clone() {
+            self.prompt_history
+                .add_with_session(content.clone(), session_id);
+        } else {
+            self.prompt_history.add(content.clone());
+        }
 
         if let Some(agent) = &self.native_agent {
             // Send the prompt - returns immediately, actual work happens in background task

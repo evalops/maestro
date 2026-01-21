@@ -1,12 +1,16 @@
 //! Prompt history storage and search
 
 use std::collections::VecDeque;
+use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
+
+use crate::config::HistoryPersistence;
+use crate::safety::expand_tilde;
 
 /// Configuration for prompt history
 #[derive(Debug, Clone)]
@@ -19,21 +23,39 @@ pub struct HistoryConfig {
     pub deduplicate: bool,
     /// Minimum prompt length to store
     pub min_length: usize,
+    /// Maximum total bytes to keep (approximate, JSONL size)
+    pub max_bytes: Option<usize>,
+    /// Whether to persist history to disk
+    pub persistence: HistoryPersistence,
 }
 
 impl Default for HistoryConfig {
     fn default() -> Self {
-        let path = dirs::home_dir()
+        let default_path = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".composer")
             .join("history")
             .join("prompts.jsonl");
+        let path = env::var("COMPOSER_PROMPT_HISTORY_FILE")
+            .ok()
+            .and_then(|raw| {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(PathBuf::from(trimmed))
+                }
+            })
+            .map(|raw_path| expand_tilde(&raw_path).unwrap_or(raw_path))
+            .unwrap_or(default_path);
 
         Self {
             max_entries: 10000,
             path,
             deduplicate: true,
             min_length: 2,
+            max_bytes: None,
+            persistence: HistoryPersistence::SaveAll,
         }
     }
 }
@@ -49,6 +71,20 @@ impl HistoryConfig {
     #[must_use]
     pub fn with_max_entries(mut self, max: usize) -> Self {
         self.max_entries = max;
+        self
+    }
+
+    /// Set max bytes
+    #[must_use]
+    pub fn with_max_bytes(mut self, max: usize) -> Self {
+        self.max_bytes = Some(max);
+        self
+    }
+
+    /// Set persistence mode
+    #[must_use]
+    pub fn with_persistence(mut self, persistence: HistoryPersistence) -> Self {
+        self.persistence = persistence;
         self
     }
 }
@@ -152,8 +188,15 @@ impl PromptHistory {
         Ok(history)
     }
 
+    fn should_persist(&self) -> bool {
+        self.config.persistence != HistoryPersistence::None
+    }
+
     /// Load entries from disk
     pub fn load(&mut self) -> std::io::Result<()> {
+        if !self.should_persist() {
+            return Ok(());
+        }
         if !self.config.path.exists() {
             return Ok(());
         }
@@ -172,9 +215,9 @@ impl PromptHistory {
             }
         }
 
-        // Trim to max entries
-        while self.entries.len() > self.config.max_entries {
-            self.entries.pop_front();
+        let trimmed = self.trim_if_needed();
+        if trimmed && self.should_persist() {
+            let _ = self.save();
         }
 
         Ok(())
@@ -182,6 +225,10 @@ impl PromptHistory {
 
     /// Save history to disk
     pub fn save(&mut self) -> std::io::Result<()> {
+        if !self.should_persist() {
+            self.dirty = false;
+            return Ok(());
+        }
         if !self.dirty {
             return Ok(());
         }
@@ -207,6 +254,9 @@ impl PromptHistory {
 
     /// Append a single entry (efficient incremental save)
     fn append_to_file(&self, entry: &HistoryEntry) -> std::io::Result<()> {
+        if !self.should_persist() {
+            return Ok(());
+        }
         if let Some(parent) = self.config.path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -222,6 +272,86 @@ impl PromptHistory {
         }
 
         writer.flush()
+    }
+
+    fn add_entry(&mut self, entry: HistoryEntry) {
+        self.entries.push_back(entry);
+
+        self.trim_if_needed();
+
+        if self.should_persist() {
+            if self.dirty {
+                let _ = self.save();
+            } else if let Some(last) = self.entries.back() {
+                if self.append_to_file(last).is_err() {
+                    self.dirty = true;
+                }
+            }
+        }
+
+        self.position = None;
+    }
+
+    fn trim_if_needed(&mut self) -> bool {
+        let mut trimmed = false;
+
+        while self.entries.len() > self.config.max_entries {
+            self.entries.pop_front();
+            trimmed = true;
+        }
+
+        if let Some(max_bytes) = self.config.max_bytes {
+            if max_bytes > 0 {
+                trimmed |= self.trim_to_max_bytes(max_bytes);
+            }
+        }
+
+        if trimmed {
+            self.dirty = true;
+        }
+
+        trimmed
+    }
+
+    fn trim_to_max_bytes(&mut self, max_bytes: usize) -> bool {
+        if self.entries.is_empty() {
+            return false;
+        }
+
+        let mut total = 0;
+        let mut selected = Vec::new();
+
+        for entry in self.entries.iter().rev() {
+            let size = Self::entry_byte_size(entry);
+            if size > max_bytes {
+                continue;
+            }
+            if total + size > max_bytes {
+                break;
+            }
+            selected.push(entry.clone());
+            total += size;
+        }
+
+        selected.reverse();
+        if selected.is_empty() && !self.entries.is_empty() {
+            if let Some(last) = self.entries.back().cloned() {
+                selected.push(last);
+            }
+        }
+
+        if selected.len() != self.entries.len() {
+            self.entries = VecDeque::from(selected);
+            return true;
+        }
+
+        false
+    }
+
+    fn entry_byte_size(entry: &HistoryEntry) -> usize {
+        serde_json::to_vec(entry)
+            .map(|data| data.len() + 1)
+            .unwrap_or(0)
     }
 
     /// Add a prompt to history
@@ -243,20 +373,7 @@ impl PromptHistory {
         }
 
         let entry = HistoryEntry::new(&prompt);
-
-        // Append to file immediately (for persistence)
-        let _ = self.append_to_file(&entry);
-
-        self.entries.push_back(entry);
-        self.dirty = true;
-
-        // Trim if over limit
-        while self.entries.len() > self.config.max_entries {
-            self.entries.pop_front();
-        }
-
-        // Reset navigation
-        self.position = None;
+        self.add_entry(entry);
     }
 
     /// Add a prompt with session context
@@ -276,16 +393,7 @@ impl PromptHistory {
         }
 
         let entry = HistoryEntry::new(&prompt).with_session(session_id);
-        let _ = self.append_to_file(&entry);
-
-        self.entries.push_back(entry);
-        self.dirty = true;
-
-        while self.entries.len() > self.config.max_entries {
-            self.entries.pop_front();
-        }
-
-        self.position = None;
+        self.add_entry(entry);
     }
 
     /// Start navigation with current input
@@ -424,6 +532,11 @@ impl PromptHistory {
         self.entries.clear();
         self.position = None;
         self.dirty = true;
+        if self.should_persist() {
+            let _ = self.save();
+        } else {
+            let _ = self.delete_file();
+        }
     }
 
     /// Delete history file
@@ -588,6 +701,39 @@ mod tests {
     }
 
     #[test]
+    fn test_max_bytes_trims_recent_entries() {
+        let dir = TempDir::new().unwrap();
+        let mut history = PromptHistory::new(test_config(&dir));
+
+        history.add("one");
+        history.add("two");
+        history.add("three");
+
+        let last = history.entries.back().unwrap().clone();
+        let budget = PromptHistory::entry_byte_size(&last) + 1;
+        history.config.max_bytes = Some(budget);
+        history.trim_if_needed();
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.entries.back().unwrap().prompt, "three");
+    }
+
+    #[test]
+    fn test_max_bytes_keeps_last_when_budget_too_small() {
+        let dir = TempDir::new().unwrap();
+        let mut history = PromptHistory::new(test_config(&dir));
+
+        history.add("first");
+        history.add("second");
+
+        history.config.max_bytes = Some(1);
+        history.trim_if_needed();
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.entries.back().unwrap().prompt, "second");
+    }
+
+    #[test]
     fn test_min_length() {
         let dir = TempDir::new().unwrap();
         let mut history = PromptHistory::new(test_config(&dir));
@@ -610,6 +756,19 @@ mod tests {
         let sess1 = history.for_session("sess-1");
         assert_eq!(sess1.len(), 1);
         assert_eq!(sess1[0].prompt, "session1 prompt");
+    }
+
+    #[test]
+    fn test_persistence_none_skips_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("no_persist.jsonl");
+        let config = HistoryConfig::default()
+            .with_path(path.clone())
+            .with_persistence(HistoryPersistence::None);
+        let mut history = PromptHistory::new(config);
+
+        history.add("hello");
+        assert!(!path.exists());
     }
 
     #[test]

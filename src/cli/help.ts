@@ -57,6 +57,7 @@ export function printHelp(version: string) {
 		"--tools <names>         Comma-separated tool names to enable (e.g., read,search,list,find)",
 		"--api-key <key>         API key (defaults to env vars)",
 		"--system-prompt <text>  System prompt (default: coding assistant prompt)",
+		"--append-system-prompt <text>  Append instructions to the system prompt",
 		"--mode <mode>           Output mode: text (default), json, or rpc",
 		"--auth <mode>           Credential mode: auto (default), api-key, claude",
 		"--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",

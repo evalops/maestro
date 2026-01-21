@@ -283,6 +283,11 @@ enum AgentCommand {
     /// Enables or disables the extended thinking mode and sets the token budget.
     SetThinking { enabled: bool, budget: u32 },
 
+    /// Update the system prompt
+    ///
+    /// Replaces the base system prompt used for subsequent requests.
+    SetSystemPrompt { system_prompt: String },
+
     /// Clear conversation history
     ///
     /// Removes all messages from the conversation, starting fresh. Does not
@@ -592,6 +597,15 @@ impl NativeAgent {
         Ok(())
     }
 
+    /// Replace the base system prompt
+    pub fn set_system_prompt(&self, system_prompt: impl Into<String>) -> Result<()> {
+        let system_prompt = system_prompt.into();
+        self.command_tx
+            .send(AgentCommand::SetSystemPrompt { system_prompt })
+            .map_err(|e| anyhow::anyhow!("Failed to set system prompt: {e}"))?;
+        Ok(())
+    }
+
     /// Continue from current context without a new user message
     ///
     /// Used for:
@@ -637,6 +651,7 @@ impl NativeAgent {
 ///         Prompt => run_loop() to handle AI request,
 ///         Cancel => trigger cancellation token,
 ///         SetModel => update client,
+///         SetSystemPrompt => update base system prompt,
 ///         ClearHistory => clear messages,
 ///     }
 /// }
@@ -650,8 +665,8 @@ struct NativeAgentRunner {
 
     /// Configuration
     ///
-    /// Current agent settings. Updated via commands like `SetModel` and
-    /// `SetThinking`.
+    /// Current agent settings. Updated via commands like `SetModel`,
+    /// `SetThinking`, and `SetSystemPrompt`.
     config: NativeAgentConfig,
 
     /// Conversation history
@@ -1414,6 +1429,9 @@ impl NativeAgentRunner {
                 AgentCommand::SetThinking { enabled, budget } => {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
+                }
+                AgentCommand::SetSystemPrompt { system_prompt } => {
+                    self.config.system_prompt = Some(system_prompt);
                 }
                 AgentCommand::ClearHistory => {
                     self.messages.clear();

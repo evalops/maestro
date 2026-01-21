@@ -612,6 +612,33 @@ function applyEnvOverrides(config: ComposerConfig): ComposerConfig {
 		result.profile = process.env.COMPOSER_PROFILE;
 	}
 
+	// COMPOSER_HISTORY_PERSISTENCE
+	if (process.env.COMPOSER_HISTORY_PERSISTENCE) {
+		const persistence =
+			process.env.COMPOSER_HISTORY_PERSISTENCE.trim().toLowerCase();
+		if (
+			persistence === "save-all" ||
+			persistence === "none" ||
+			persistence === "save"
+		) {
+			result.history = {
+				...(result.history ?? {}),
+				persistence: persistence === "save" ? "save-all" : persistence,
+			};
+		}
+	}
+
+	// COMPOSER_HISTORY_MAX_BYTES
+	if (process.env.COMPOSER_HISTORY_MAX_BYTES) {
+		const parsed = Number.parseInt(process.env.COMPOSER_HISTORY_MAX_BYTES, 10);
+		if (Number.isFinite(parsed) && parsed >= 0) {
+			result.history = {
+				...(result.history ?? {}),
+				max_bytes: parsed,
+			};
+		}
+	}
+
 	return result;
 }
 

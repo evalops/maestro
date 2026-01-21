@@ -370,6 +370,8 @@ pub struct AppState {
     input_preferred_col: Option<u16>,
     /// Emacs-style kill ring for yank/pop behavior.
     kill_ring: KillRing,
+    /// Whether the last edit was a kill (for kill-ring append behavior).
+    kill_chain_active: bool,
 
     /// Currently selected AI model name (e.g., "claude-3-opus").
     /// `Option` because it may not be known until the agent is ready.
@@ -505,6 +507,7 @@ impl AppState {
             input_width: 1,            // Default width until first render
             input_preferred_col: None,
             kill_ring: KillRing::new(),
+            kill_chain_active: false,
             model: None,      // No model selected yet
             provider: None,   // No provider yet
             cwd: None,        // No working directory
@@ -857,6 +860,7 @@ impl AppState {
     }
 
     fn insert_char_internal(&mut self, c: char, reset_kill_ring: bool) {
+        self.kill_chain_active = false;
         if reset_kill_ring {
             self.kill_ring.reset_rotation();
         }
@@ -869,6 +873,7 @@ impl AppState {
     }
 
     fn insert_str_internal(&mut self, s: &str, reset_kill_ring: bool) {
+        self.kill_chain_active = false;
         if reset_kill_ring {
             self.kill_ring.reset_rotation();
         }
@@ -884,7 +889,7 @@ impl AppState {
     ///
     /// Handles multi-byte UTF-8 characters correctly.
     pub fn backspace(&mut self) {
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         let cursor = self.textarea.cursor();
         if cursor > 0 {
             let text = self.textarea.text();
@@ -903,7 +908,7 @@ impl AppState {
 
     /// Delete the character after the cursor (Delete key).
     pub fn delete(&mut self) {
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         let cursor = self.textarea.cursor();
         let text = self.textarea.text();
         if cursor < text.len() {
@@ -916,7 +921,7 @@ impl AppState {
 
     /// Move cursor one character left.
     pub fn move_left(&mut self) {
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         let cursor = self.textarea.cursor();
         if cursor > 0 {
             let text = self.textarea.text();
@@ -929,7 +934,7 @@ impl AppState {
 
     /// Move cursor one character right.
     pub fn move_right(&mut self) {
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         let cursor = self.textarea.cursor();
         let text = self.textarea.text();
         if cursor < text.len() {
@@ -945,14 +950,14 @@ impl AppState {
 
     /// Move cursor to the start of input (Home key).
     pub fn move_home(&mut self) {
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         self.textarea.set_cursor(0);
         self.input_preferred_col = None;
     }
 
     /// Move cursor to the end of input (End key).
     pub fn move_end(&mut self) {
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         let len = self.textarea.text().len();
         self.textarea.set_cursor(len);
         self.input_preferred_col = None;
@@ -960,13 +965,13 @@ impl AppState {
 
     /// Move cursor one wrapped line up.
     pub fn move_up(&mut self) {
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         self.move_vertical(-1);
     }
 
     /// Move cursor one wrapped line down.
     pub fn move_down(&mut self) {
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         self.move_vertical(1);
     }
 
@@ -974,7 +979,7 @@ impl AppState {
     ///
     /// Toggles between the first non-whitespace character and column 0.
     pub fn move_home_smart(&mut self) {
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         let text = self.textarea.text();
         let cursor = self.textarea.cursor();
         let (line_start, line_end, col) = Self::line_bounds(text, cursor);
@@ -991,7 +996,7 @@ impl AppState {
 
     /// Move cursor to the start of the previous word.
     pub fn move_word_left(&mut self) {
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         let text = self.textarea.text();
         let cursor = self.textarea.cursor();
         if cursor == 0 {
@@ -1028,7 +1033,7 @@ impl AppState {
 
     /// Move cursor to the start of the next word.
     pub fn move_word_right(&mut self) {
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         let text = self.textarea.text();
         let mut cursor = self.textarea.cursor();
         if cursor >= text.len() {
@@ -1078,7 +1083,7 @@ impl AppState {
             self.textarea.set_text(&new_text);
             self.textarea.set_cursor(remove_at);
             self.input_preferred_col = None;
-            self.kill_ring.kill("\n");
+            self.record_kill("\n".to_string(), true);
             return;
         }
 
@@ -1093,7 +1098,7 @@ impl AppState {
         self.textarea.set_text(&new_text);
         self.textarea.set_cursor(line_start + start);
         self.input_preferred_col = None;
-        self.kill_ring.kill(killed);
+        self.record_kill(killed, true);
     }
 
     /// Delete from cursor to start of line (Ctrl+U).
@@ -1114,7 +1119,7 @@ impl AppState {
             self.textarea.set_text(&new_text);
             self.textarea.set_cursor(remove_at);
             self.input_preferred_col = None;
-            self.kill_ring.kill("\n");
+            self.record_kill("\n".to_string(), true);
             return;
         }
         let killed = text[line_start..cursor].to_string();
@@ -1123,7 +1128,7 @@ impl AppState {
         self.textarea.set_text(&new_text);
         self.textarea.set_cursor(line_start);
         self.input_preferred_col = None;
-        self.kill_ring.kill(killed);
+        self.record_kill(killed, true);
     }
 
     /// Delete from cursor to end of line (Ctrl+K).
@@ -1138,7 +1143,7 @@ impl AppState {
             self.textarea.set_text(&new_text);
             self.textarea.set_cursor(cursor);
             self.input_preferred_col = None;
-            self.kill_ring.kill(killed);
+            self.record_kill(killed, false);
             return;
         }
         if line_end < text.len() {
@@ -1147,13 +1152,14 @@ impl AppState {
             self.textarea.set_text(&new_text);
             self.textarea.set_cursor(cursor);
             self.input_preferred_col = None;
-            self.kill_ring.kill("\n");
+            self.record_kill("\n".to_string(), false);
         }
     }
 
     /// Yank the most recent kill (Alt+Y), cycling on repeated presses.
     pub fn yank_kill_ring(&mut self) {
         let cursor = self.textarea.cursor();
+        self.kill_chain_active = false;
         if self.kill_ring.is_rotating() {
             let info = self.kill_ring.last_yank_info();
             let next = self.kill_ring.yank_pop().map(str::to_string);
@@ -1213,7 +1219,7 @@ impl AppState {
         self.textarea.set_text("");
         self.textarea.set_cursor(0);
         self.input_preferred_col = None;
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
         input
     }
 
@@ -1222,7 +1228,7 @@ impl AppState {
         self.textarea.set_text(text);
         self.textarea.set_cursor(text.len()); // Cursor at end
         self.input_preferred_col = None;
-        self.kill_ring.reset_rotation();
+        self.reset_kill_state();
     }
 
     fn replace_range_internal(
@@ -1232,6 +1238,7 @@ impl AppState {
         replacement: &str,
         reset_kill_ring: bool,
     ) {
+        self.kill_chain_active = false;
         if reset_kill_ring {
             self.kill_ring.reset_rotation();
         }
@@ -1257,6 +1264,23 @@ impl AppState {
             .find(|(_, c)| !c.is_whitespace())
             .map(|(idx, _)| idx)
             .unwrap_or(line.len())
+    }
+
+    fn reset_kill_state(&mut self) {
+        self.kill_chain_active = false;
+        self.kill_ring.reset_rotation();
+    }
+
+    fn record_kill(&mut self, text: String, prepend: bool) {
+        if text.is_empty() {
+            return;
+        }
+        if self.kill_chain_active {
+            self.kill_ring.kill_append(text, prepend);
+        } else {
+            self.kill_ring.kill(text);
+            self.kill_chain_active = true;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1732,6 +1756,18 @@ mod tests {
         state.yank_kill_ring();
         assert_eq!(state.input(), "hello world");
         assert_eq!(state.cursor(), 11);
+    }
+
+    #[test]
+    fn test_kill_ring_appends_consecutive_kills() {
+        let mut state = AppState::new();
+        state.set_input("hello world test");
+        // Kill "test"
+        state.delete_word_backward();
+        // Consecutive kill should append (prepend for backward kill)
+        state.delete_word_backward();
+        state.yank_kill_ring();
+        assert_eq!(state.input(), "hello world test");
     }
 
     #[test]

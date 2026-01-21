@@ -855,14 +855,6 @@ pub fn build_command_registry() -> CommandRegistry {
         .usage("/thinking <level>"),
     );
 
-    // Status command
-    registry.register(Command::new(
-        "status",
-        "Show current status",
-        CommandCategory::Diagnostics,
-        Box::new(|_| Ok(CommandOutput::Action(CommandAction::ShowDiagnostics))),
-    ));
-
     // About command
     registry.register(
         Command::new(
@@ -932,7 +924,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 let selected: Vec<(&str, Vec<String>)> = match subcommand.as_str() {
                     "all" | "" => sections.clone(),
                     "tool" | "tui" => sections
-                        .get(0)
+                        .first()
                         .map(|(title, lines)| (*title, lines.clone()))
                         .into_iter()
                         .collect(),
@@ -1337,10 +1329,11 @@ pub fn build_command_registry() -> CommandRegistry {
             CommandCategory::Session,
             Box::new(|ctx| {
                 let args = ctx.raw_args.trim();
+                let args_lower = args.to_lowercase();
 
                 let action = if args.is_empty() {
                     HistoryAction::Recent(20)
-                } else if args == "clear" {
+                } else if args_lower == "clear" {
                     HistoryAction::Clear
                 } else if let Ok(n) = args.parse::<usize>() {
                     HistoryAction::Recent(n)
@@ -1366,27 +1359,36 @@ pub fn build_command_registry() -> CommandRegistry {
             "Show tool execution history and statistics",
             CommandCategory::Tools,
             Box::new(|ctx| {
-                let args = ctx.raw_args.trim().to_lowercase();
-                let parts: Vec<&str> = args.split_whitespace().collect();
+                let raw_args = ctx.raw_args.trim();
+                let raw_parts: Vec<&str> = raw_args.split_whitespace().collect();
+                let raw_sub = raw_parts.first().copied().unwrap_or("");
+                let sub = raw_sub.to_lowercase();
+                let rest = raw_parts
+                    .iter()
+                    .skip(1)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let rest_trimmed = rest.trim();
 
-                let action = match parts.first().copied() {
-                    None | Some("") => ToolHistoryAction::Recent(10),
-                    Some("stats" | "statistics") => ToolHistoryAction::Stats,
-                    Some("clear") => ToolHistoryAction::Clear,
-                    Some("tool") => {
-                        let tool_name = (*parts.get(1).unwrap_or(&"")).to_string();
+                let action = match sub.as_str() {
+                    "" => ToolHistoryAction::Recent(10),
+                    "stats" | "statistics" => ToolHistoryAction::Stats,
+                    "clear" => ToolHistoryAction::Clear,
+                    "tool" => {
+                        let tool_name = rest_trimmed.to_string();
                         if tool_name.is_empty() {
                             return Err(CommandError::new("Tool name required")
                                 .with_hint("Usage: /toolhistory tool <name>"));
                         }
                         ToolHistoryAction::ForTool(tool_name)
                     }
-                    Some(other) => {
-                        if let Ok(n) = other.parse::<usize>() {
+                    _ => {
+                        if let Ok(n) = raw_sub.parse::<usize>() {
                             ToolHistoryAction::Recent(n)
                         } else {
                             // Assume it's a tool name
-                            ToolHistoryAction::ForTool(other.to_string())
+                            ToolHistoryAction::ForTool(raw_sub.to_string())
                         }
                     }
                 };
@@ -1408,39 +1410,52 @@ pub fn build_command_registry() -> CommandRegistry {
             "Manage skills (specialized behaviors from SKILL.md files)",
             CommandCategory::Tools,
             Box::new(|ctx| {
-                let args = ctx.raw_args.trim().to_lowercase();
-                let parts: Vec<&str> = args.split_whitespace().collect();
+                let raw_args = ctx.raw_args.trim();
+                let raw_parts: Vec<&str> = raw_args.split_whitespace().collect();
+                let raw_sub = raw_parts.first().copied().unwrap_or("");
+                let sub = raw_sub.to_lowercase();
+                let rest = raw_parts
+                    .iter()
+                    .skip(1)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let rest_trimmed = rest.trim();
 
-                let action = match parts.first().copied() {
-                    None | Some("" | "list") => SkillsAction::List,
-                    Some("reload" | "refresh") => SkillsAction::Reload,
-                    Some("activate" | "enable" | "on") => {
-                        let name = (*parts.get(1).unwrap_or(&"")).to_string();
+                let action = match sub.as_str() {
+                    "" | "list" => SkillsAction::List,
+                    "reload" | "refresh" => SkillsAction::Reload,
+                    "activate" | "enable" | "on" => {
+                        let name = rest_trimmed.to_string();
                         if name.is_empty() {
                             return Err(CommandError::new("Skill name required")
                                 .with_hint("Usage: /skills activate <skill-name>"));
                         }
                         SkillsAction::Activate(name)
                     }
-                    Some("deactivate" | "disable" | "off") => {
-                        let name = (*parts.get(1).unwrap_or(&"")).to_string();
+                    "deactivate" | "disable" | "off" => {
+                        let name = rest_trimmed.to_string();
                         if name.is_empty() {
                             return Err(CommandError::new("Skill name required")
                                 .with_hint("Usage: /skills deactivate <skill-name>"));
                         }
                         SkillsAction::Deactivate(name)
                     }
-                    Some("info" | "show") => {
-                        let name = (*parts.get(1).unwrap_or(&"")).to_string();
+                    "info" | "show" => {
+                        let name = rest_trimmed.to_string();
                         if name.is_empty() {
                             return Err(CommandError::new("Skill name required")
                                 .with_hint("Usage: /skills info <skill-name>"));
                         }
                         SkillsAction::Info(name)
                     }
-                    Some(other) => {
+                    _ => {
                         // Treat unknown as skill name for info
-                        SkillsAction::Info(other.to_string())
+                        if raw_args.is_empty() {
+                            SkillsAction::List
+                        } else {
+                            SkillsAction::Info(raw_sub.to_string())
+                        }
                     }
                 };
 
@@ -1521,10 +1536,17 @@ fn build_git_status_message(cwd: &str) -> String {
     match git::status_short(cwd_path) {
         Ok(status) => {
             if status.is_empty() {
-                "Working tree clean.".to_string()
-            } else {
-                format!("## Git Status\n\n```\n{status}\n```")
+                return "Working tree clean.".to_string();
             }
+            if is_clean_status(&status) {
+                if let Some(branch_line) = status.lines().next() {
+                    return format!(
+                        "## Git Status\n\n```\n{branch_line}\n```\n\nWorking tree clean.",
+                    );
+                }
+                return "Working tree clean.".to_string();
+            }
+            format!("## Git Status\n\n```\n{status}\n```")
         }
         Err(err) => format!("Git status failed: {err}"),
     }
@@ -1543,13 +1565,23 @@ fn build_git_review_message(cwd: &str) -> String {
     let worktree = git::diff_stat(cwd_path, false)
         .unwrap_or_else(|err| format!("git diff --stat failed: {err}"));
 
+    let status_display = if status.is_empty() {
+        "Working tree clean.".to_string()
+    } else if is_clean_status(&status) {
+        let mut display = String::new();
+        if let Some(branch_line) = status.lines().next() {
+            display.push_str(branch_line);
+            display.push('\n');
+        }
+        display.push_str("Working tree clean.");
+        display
+    } else {
+        status.clone()
+    };
+
     let mut msg = String::from("## Git Review\n\n");
     msg.push_str("**Status:**\n```\n");
-    msg.push_str(if status.is_empty() {
-        "Working tree clean."
-    } else {
-        status.as_str()
-    });
+    msg.push_str(&status_display);
     msg.push_str("\n```\n\n");
 
     msg.push_str("**Staged diff stats:**\n");
@@ -1573,6 +1605,12 @@ fn build_git_review_message(cwd: &str) -> String {
     msg
 }
 
+fn is_clean_status(status: &str) -> bool {
+    let mut lines = status.lines();
+    let _ = lines.next();
+    lines.all(|line| line.trim().is_empty())
+}
+
 fn build_git_diff_message(cwd: &str, path: Option<&str>) -> String {
     let cwd_path = Path::new(cwd);
     if !git::is_git_repo(cwd_path) {
@@ -1582,7 +1620,7 @@ fn build_git_diff_message(cwd: &str, path: Option<&str>) -> String {
     match git::diff(cwd_path, path) {
         Ok(diff) => {
             if diff.is_empty() {
-                return "Working tree clean.".to_string();
+                return "No unstaged changes.".to_string();
             }
             let (truncated, was_truncated) = truncate_text(&diff, 200, 20_000);
             let mut msg = String::from("## Git Diff\n\n```diff\n");

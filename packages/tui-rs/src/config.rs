@@ -290,6 +290,16 @@ pub enum HistoryPersistence {
     None,
 }
 
+impl HistoryPersistence {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "save-all" | "save_all" | "saveall" | "all" => Some(Self::SaveAll),
+            _ => None,
+        }
+    }
+}
+
 /// History configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HistoryConfig {
@@ -783,6 +793,22 @@ fn apply_env_overrides(config: &mut ComposerConfig) {
     // COMPOSER_PROFILE
     if let Ok(profile) = env::var("COMPOSER_PROFILE") {
         config.profile = Some(profile);
+    }
+
+    // COMPOSER_HISTORY_PERSISTENCE
+    if let Ok(persistence) = env::var("COMPOSER_HISTORY_PERSISTENCE") {
+        if let Some(parsed) = HistoryPersistence::parse(&persistence) {
+            let history = config.history.get_or_insert_with(Default::default);
+            history.persistence = Some(parsed);
+        }
+    }
+
+    // COMPOSER_HISTORY_MAX_BYTES
+    if let Ok(max_bytes) = env::var("COMPOSER_HISTORY_MAX_BYTES") {
+        if let Ok(parsed) = max_bytes.trim().parse::<usize>() {
+            let history = config.history.get_or_insert_with(Default::default);
+            history.max_bytes = Some(parsed);
+        }
     }
 }
 

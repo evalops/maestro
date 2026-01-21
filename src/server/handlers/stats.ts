@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { sendJson } from "../server-utils.js";
-import { handleStatus } from "./status.js";
-import { handleUsage } from "./usage.js";
+import { getStatusSnapshot } from "./status.js";
+import { getUsageSnapshot } from "./usage.js";
 
 export async function handleStats(
 	req: IncomingMessage,
@@ -13,20 +13,27 @@ export async function handleStats(
 		return;
 	}
 
-	// Combine status and usage data
-	// In a real implementation, we'd call the handlers and combine results
-	// For now, return a structure indicating this combines status + usage
-	sendJson(
-		res,
-		200,
-		{
-			message:
-				"Stats combines /api/status and /api/usage. Call those endpoints separately and combine client-side.",
-			endpoints: {
-				status: "/api/status",
-				usage: "/api/usage",
+	try {
+		const status = getStatusSnapshot();
+		const usage = getUsageSnapshot();
+		sendJson(
+			res,
+			200,
+			{
+				status,
+				usage,
+				updatedAt: Date.now(),
 			},
-		},
-		corsHeaders,
-	);
+			corsHeaders,
+			req,
+		);
+	} catch (error) {
+		sendJson(
+			res,
+			500,
+			{ error: error instanceof Error ? error.message : String(error) },
+			corsHeaders,
+			req,
+		);
+	}
 }

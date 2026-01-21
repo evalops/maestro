@@ -3,10 +3,15 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import { PATHS } from "../../config/constants.js";
+import {
+	type HistoryPersistence,
+	resolveHistorySettings,
+} from "./history-config.js";
 
 export interface PromptHistoryEntry {
 	prompt: string;
@@ -16,6 +21,8 @@ export interface PromptHistoryEntry {
 export interface PromptHistoryConfig {
 	filePath?: string;
 	maxEntries?: number;
+	maxBytes?: number;
+	persistence?: HistoryPersistence;
 }
 
 const DEFAULT_MAX_ENTRIES = 1000;
@@ -24,10 +31,15 @@ export class PromptHistoryStore {
 	private entries: PromptHistoryEntry[] = [];
 	private readonly filePath: string;
 	private readonly maxEntries: number;
+	private readonly maxBytes?: number;
+	private readonly persistence: HistoryPersistence;
 
 	constructor(config: PromptHistoryConfig = {}) {
+		const settings = resolveHistorySettings();
 		this.filePath = config.filePath ?? PATHS.PROMPT_HISTORY_FILE;
 		this.maxEntries = config.maxEntries ?? DEFAULT_MAX_ENTRIES;
+		this.maxBytes = config.maxBytes ?? settings.maxBytes;
+		this.persistence = config.persistence ?? settings.persistence;
 		this.loadFromDisk();
 	}
 
@@ -69,10 +81,15 @@ export class PromptHistoryStore {
 
 	clear(): void {
 		this.entries = [];
-		this.persistAll();
+		if (this.shouldPersist()) {
+			this.persistAll();
+		} else {
+			this.deletePersistedFile();
+		}
 	}
 
 	private loadFromDisk(): void {
+		if (!this.shouldPersist()) return;
 		if (!existsSync(this.filePath)) return;
 		try {
 			const raw = readFileSync(this.filePath, "utf-8");
@@ -101,6 +118,7 @@ export class PromptHistoryStore {
 	}
 
 	private appendEntry(entry: PromptHistoryEntry): void {
+		if (!this.shouldPersist()) return;
 		try {
 			this.ensureDir();
 			appendFileSync(this.filePath, `${JSON.stringify(entry)}\n`, "utf-8");
@@ -110,6 +128,7 @@ export class PromptHistoryStore {
 	}
 
 	private persistAll(): void {
+		if (!this.shouldPersist()) return;
 		try {
 			this.ensureDir();
 			if (this.entries.length === 0) {
@@ -124,9 +143,67 @@ export class PromptHistoryStore {
 	}
 
 	private trimIfNeeded(): void {
-		if (this.entries.length <= this.maxEntries) return;
-		this.entries = this.entries.slice(-this.maxEntries);
-		this.persistAll();
+		let trimmed = false;
+		if (this.entries.length > this.maxEntries) {
+			this.entries = this.entries.slice(-this.maxEntries);
+			trimmed = true;
+		}
+		if (this.maxBytes !== undefined && this.maxBytes > 0) {
+			const limited = this.trimToMaxBytes(this.entries, this.maxBytes);
+			if (limited.length !== this.entries.length) {
+				this.entries = limited;
+				trimmed = true;
+			}
+		}
+		if (trimmed && this.shouldPersist()) {
+			this.persistAll();
+		}
+	}
+
+	private trimToMaxBytes(
+		entries: PromptHistoryEntry[],
+		maxBytes: number,
+	): PromptHistoryEntry[] {
+		if (entries.length === 0) return entries;
+		let total = 0;
+		const selected: PromptHistoryEntry[] = [];
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (!entry) continue;
+			const size = this.entryByteSize(entry);
+			if (size > maxBytes) {
+				continue;
+			}
+			if (total + size > maxBytes) {
+				break;
+			}
+			selected.push(entry);
+			total += size;
+		}
+		const reversed = selected.reverse();
+		if (reversed.length === 0 && entries.length > 0) {
+			const last = entries[entries.length - 1];
+			return last ? [last] : reversed;
+		}
+		return reversed;
+	}
+
+	private entryByteSize(entry: PromptHistoryEntry): number {
+		return Buffer.byteLength(JSON.stringify(entry)) + 1;
+	}
+
+	private shouldPersist(): boolean {
+		return this.persistence !== "none";
+	}
+
+	private deletePersistedFile(): void {
+		try {
+			if (existsSync(this.filePath)) {
+				rmSync(this.filePath, { force: true });
+			}
+		} catch {
+			// best-effort cleanup
+		}
 	}
 
 	private ensureDir(): void {

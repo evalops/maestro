@@ -1398,6 +1398,7 @@ export async function main(args: string[]) {
 	const systemPrompt = buildSystemPrompt(
 		parsed.systemPrompt,
 		systemPromptToolNames,
+		parsed.appendSystemPrompt,
 	);
 
 	// Determine approval mode for tool execution:

@@ -199,7 +199,6 @@ pub fn get_status(cwd: &Path) -> Option<GitStatus> {
 }
 
 /// Get a short git status summary (`git status -sb`).
-#[must_use]
 pub fn status_short(cwd: &Path) -> Result<String, String> {
     let output = Command::new("git")
         .args(["status", "-sb"])
@@ -220,7 +219,6 @@ pub fn status_short(cwd: &Path) -> Result<String, String> {
 }
 
 /// Get git diff output for the working tree (optionally scoped to a path).
-#[must_use]
 pub fn diff(cwd: &Path, path: Option<&str>) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.arg("diff");
@@ -247,7 +245,6 @@ pub fn diff(cwd: &Path, path: Option<&str>) -> Result<String, String> {
 }
 
 /// Get git diff --stat output (staged or unstaged).
-#[must_use]
 pub fn diff_stat(cwd: &Path, staged: bool) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.arg("diff");

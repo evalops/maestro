@@ -2018,6 +2018,35 @@ export class ComposerChat extends LitElement {
 					this.appendCommandOutput(command, output);
 					break;
 				}
+				case "stats": {
+					let stats: Record<string, unknown> | null = null;
+					try {
+						stats = await this.apiClient.getStats();
+					} catch {
+						stats = null;
+					}
+					const hasStats =
+						stats &&
+						typeof stats === "object" &&
+						("status" in stats || "usage" in stats);
+					if (hasStats) {
+						this.appendCommandOutput(command, this.formatJsonBlock(stats));
+						break;
+					}
+					const [status, usage] = await Promise.all([
+						this.apiClient.getStatus(),
+						this.apiClient.getUsage(),
+					]);
+					this.appendCommandOutput(
+						command,
+						this.formatJsonBlock({
+							status,
+							usage,
+							updatedAt: Date.now(),
+						}),
+					);
+					break;
+				}
 				case "status": {
 					const status = await this.apiClient.getStatus();
 					this.appendCommandOutput(command, this.formatJsonBlock(status));
@@ -2109,6 +2138,84 @@ export class ComposerChat extends LitElement {
 					this.appendCommandOutput(
 						command,
 						this.formatCodeBlock(parts.join("\n\n")),
+					);
+					break;
+				}
+				case "git": {
+					if (!requireWritableSession("Git")) break;
+					const tokens = args.split(/\s+/).filter(Boolean);
+					const sub = tokens[0]?.toLowerCase() ?? "status";
+					if (["", "status", "st"].includes(sub)) {
+						const review = await this.apiClient.getReview();
+						const status =
+							typeof review.status === "string" && review.status
+								? review.status
+								: "No git status available.";
+						this.appendCommandOutput(
+							command,
+							this.formatCodeBlock(status, "text"),
+						);
+						break;
+					}
+					if (["diff", "d"].includes(sub)) {
+						const path = tokens.slice(1).join(" ").trim();
+						if (path) {
+							const preview = await this.apiClient.getPreview(path);
+							const diffText =
+								typeof preview?.diff === "string" && preview.diff.length > 0
+									? preview.diff
+									: (preview?.message ?? "No changes.");
+							this.appendCommandOutput(
+								command,
+								this.formatCodeBlock(diffText, "diff"),
+							);
+						} else {
+							const review = await this.apiClient.getReview();
+							const parts = [
+								review.status ? `Status: ${review.status}` : "",
+								review.diffStat ? `Diff stat:\n${review.diffStat}` : "",
+								review.worktreeDiff
+									? `Worktree diff:\n${review.worktreeDiff}`
+									: "",
+							].filter(Boolean);
+							this.appendCommandOutput(
+								command,
+								this.formatCodeBlock(parts.join("\n\n")),
+							);
+						}
+						break;
+					}
+					if (["review", "summary"].includes(sub)) {
+						const review = await this.apiClient.getReview();
+						const parts = [
+							review.status ? `Status:\n${review.status}` : "",
+							review.diffStat ? `Diff stat:\n${review.diffStat}` : "",
+							review.stagedDiff ? `Staged diff:\n${review.stagedDiff}` : "",
+							review.worktreeDiff
+								? `Worktree diff:\n${review.worktreeDiff}`
+								: "",
+						].filter(Boolean);
+						this.appendCommandOutput(
+							command,
+							this.formatCodeBlock(parts.join("\n\n")),
+						);
+						break;
+					}
+					if (["help", "-h", "--help", "?"].includes(sub)) {
+						this.appendCommandOutput(
+							command,
+							this.formatCodeBlock(
+								["/git", "/git status", "/git diff [path]", "/git review"].join(
+									"\n",
+								),
+							),
+						);
+						break;
+					}
+					this.appendCommandOutput(
+						command,
+						"Usage: /git [status|diff <path>|review]",
+						true,
 					);
 					break;
 				}
@@ -2323,6 +2430,17 @@ export class ComposerChat extends LitElement {
 				}
 				case "commands": {
 					this.commandDrawerOpen = true;
+					break;
+				}
+				case "history":
+				case "toolhistory":
+				case "skills":
+				case "limits": {
+					this.appendCommandOutput(
+						command,
+						"Not supported in the web UI yet. Use the CLI/TUI for this command.",
+						true,
+					);
 					break;
 				}
 				case "cost": {

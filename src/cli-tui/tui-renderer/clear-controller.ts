@@ -24,6 +24,8 @@ export interface ClearControllerCallbacks {
 	resetSession: () => void;
 	/** Reset session artifacts */
 	resetArtifacts: () => void;
+	/** Clear active skills */
+	clearActiveSkills?: () => void;
 	/** Clear tool output tracking */
 	clearToolTracking: () => void;
 	/** Clear chat container */
@@ -94,6 +96,7 @@ export class ClearController {
 			// Reset agent and session
 			this.callbacks.resetAgent();
 			this.callbacks.resetSession();
+			this.callbacks.clearActiveSkills?.();
 
 			// Reset session artifacts and tool tracking
 			this.callbacks.resetArtifacts();

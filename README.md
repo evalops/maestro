@@ -473,13 +473,18 @@ Payloads include tool name, success flag, and duration. Transport failures never
 
 ## Context Files
 
-Composer loads `AGENT.md` or `CLAUDE.md` files automatically:
+Composer loads `AGENT.md` / `AGENTS.md` / `CLAUDE.md` files automatically (with `AGENTS.override.md` taking precedence when present):
 
 1. **Global** (`~/.composer/agent/AGENT.md`) – personal defaults
 2. **Parent directories** – inherited settings
 3. **Project root** – most specific wins
 
 Use them for coding conventions, architecture notes, and project-specific instructions.
+
+To append extra instructions without replacing the base system prompt, add:
+- **Project:** `.composer/APPEND_SYSTEM.md`
+- **Global:** `~/.composer/agent/APPEND_SYSTEM.md`
+- Or pass `--append-system-prompt <text|file>` on the CLI
 
 ---
 
@@ -650,12 +655,17 @@ The `Update Nix Hash` workflow runs on pushes to `main` that touch `bun.lockb`, 
 | `/help` | List commands |
 | `/session` | Session info/favorites/summary |
 | `/sessions` | List/load sessions |
+| `/history` | Prompt history (recent/search/clear) |
+| `/toolhistory` | Tool execution history and stats |
+| `/skills` | List or manage skills |
 | `/tools` | Show tools + failures |
 | `/config` | Configuration details |
+| `/limits` | Show configurable runtime limits |
 | `/cost` | Usage/cost breakdown |
 | `/stats` | Quick health check |
 | `/lsp` | Manage Language Server Protocol servers (status/start/stop/restart/detect) |
 | `/plan` | Manage todo plans |
+| `/git` | Git operations: status, diff, review |
 | `/diff <path>` | Git diff |
 | `/run` | Run project scripts |
 | `/diag` | Provider diagnostics |
@@ -697,6 +707,7 @@ composer [options] [messages...]
 | `--model <id>` | Model ID. Default: `claude-opus-4-5-20251101` |
 | `--api-key <key>` | Override API key |
 | `--system-prompt <text\|file>` | Custom system prompt |
+| `--append-system-prompt <text\|file>` | Append instructions to the system prompt |
 | `--mode <text\|json\|rpc>` | Output format |
 | `--no-session` | Ephemeral run |
 | `--session <path>` | Use specific session |

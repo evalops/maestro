@@ -38,6 +38,7 @@ export interface SessionStateControllerDeps {
 	planView: PlanView;
 	footer: FooterComponent;
 	notificationView: NotificationView;
+	clearActiveSkills?: () => void;
 }
 
 export interface SessionStateControllerCallbacks {
@@ -141,6 +142,7 @@ export class SessionStateController {
 		}
 		this.deps.agent.clearMessages();
 		this.deps.sessionContext.resetArtifacts();
+		this.deps.clearActiveSkills?.();
 		this.deps.toolOutputView.clearTrackedComponents();
 		this.deps.chatContainer.clear();
 		this.deps.scrollContainer.clearHistory();

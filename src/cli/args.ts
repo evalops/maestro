@@ -6,6 +6,7 @@ export interface Args {
 	modelsFile?: string;
 	apiKey?: string;
 	systemPrompt?: string;
+	appendSystemPrompt?: string;
 	/** Port for `composer web` (defaults to PORT env or 8080) */
 	port?: number;
 	continue?: boolean;
@@ -131,6 +132,8 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--system-prompt" && i + 1 < args.length) {
 			result.systemPrompt = args[++i];
+		} else if (arg === "--append-system-prompt" && i + 1 < args.length) {
+			result.appendSystemPrompt = args[++i];
 		} else if (arg === "--no-session") {
 			result.noSession = true;
 		} else if (arg === "--session" && i + 1 < args.length) {

@@ -48,6 +48,7 @@ import {
 	type LoadedSkill,
 	type SkillLoadError,
 	findSkill,
+	formatSkillForInjection,
 	formatSkillListItem,
 	loadSkills,
 	searchSkills,
@@ -874,6 +875,7 @@ export class TuiRenderer {
 				planView: this.planView,
 				footer: this.footer,
 				notificationView: this.notificationView,
+				clearActiveSkills: () => this.activeSkills.clear(),
 			},
 			callbacks: {
 				refreshFooterHint: () => this.refreshFooterHint(),
@@ -970,6 +972,7 @@ export class TuiRenderer {
 				resetAgent: () => this.agent.reset(),
 				resetSession: () => this.sessionManager.reset(),
 				resetArtifacts: () => this.sessionContext.resetArtifacts(),
+				clearActiveSkills: () => this.activeSkills.clear(),
 				clearToolTracking: () => this.toolOutputView.clearTrackedComponents(),
 				clearChatContainer: () => this.chatContainer.clear(),
 				clearScrollHistory: () => this.scrollContainer.clearHistory(),
@@ -2024,8 +2027,15 @@ export class TuiRenderer {
 				}
 				const resolved = this.resolveSkillTarget(skills, target, context);
 				if (!resolved) return;
+				if (this.activeSkills.has(resolved.name)) {
+					context.showInfo(`Skill "${resolved.name}" is already active.`);
+					return;
+				}
 				this.activeSkills.add(resolved.name);
-				context.showInfo(`Activated skill "${resolved.name}".`);
+				this.injectSkillMessage(resolved, "activate");
+				context.showInfo(
+					`Activated skill "${resolved.name}" (instructions injected).`,
+				);
 				return;
 			}
 			case "deactivate":
@@ -2038,7 +2048,12 @@ export class TuiRenderer {
 				}
 				const resolved = this.resolveSkillTarget(skills, target, context);
 				if (!resolved) return;
+				if (!this.activeSkills.has(resolved.name)) {
+					context.showInfo(`Skill "${resolved.name}" is not active.`);
+					return;
+				}
 				this.activeSkills.delete(resolved.name);
+				this.injectSkillMessage(resolved, "deactivate");
 				context.showInfo(`Deactivated skill "${resolved.name}".`);
 				return;
 			}
@@ -2210,6 +2225,29 @@ export class TuiRenderer {
 			lines.push("```");
 		}
 		this.pushCommandOutput(lines.join("\n"));
+	}
+
+	private injectSkillMessage(
+		skill: LoadedSkill,
+		action: "activate" | "deactivate",
+	): void {
+		const content =
+			action === "activate"
+				? formatSkillForInjection(skill)
+				: [
+						`# Skill deactivated: ${skill.name}`,
+						"",
+						`Ignore previous instructions from the "${skill.name}" skill unless it is reactivated.`,
+					].join("\n");
+		const message: AppMessage = {
+			role: "hookMessage",
+			customType: action === "activate" ? "skill" : "skill-deactivated",
+			content,
+			display: false,
+			details: { name: skill.name, action },
+			timestamp: Date.now(),
+		};
+		this.agent.injectMessage(message);
 	}
 
 	private resolveSkillTarget(

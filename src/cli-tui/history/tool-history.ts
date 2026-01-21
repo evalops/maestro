@@ -3,11 +3,16 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import type { ToolResultMessage } from "../../agent/types.js";
 import { PATHS } from "../../config/constants.js";
+import {
+	type HistoryPersistence,
+	resolveHistorySettings,
+} from "./history-config.js";
 
 export interface ToolHistoryEntry {
 	tool: string;
@@ -21,6 +26,8 @@ export interface ToolHistoryConfig {
 	filePath?: string;
 	maxEntries?: number;
 	previewChars?: number;
+	maxBytes?: number;
+	persistence?: HistoryPersistence;
 }
 
 interface InFlightToolCall {
@@ -37,11 +44,16 @@ export class ToolHistoryStore {
 	private readonly filePath: string;
 	private readonly maxEntries: number;
 	private readonly previewChars: number;
+	private readonly maxBytes?: number;
+	private readonly persistence: HistoryPersistence;
 
 	constructor(config: ToolHistoryConfig = {}) {
+		const settings = resolveHistorySettings();
 		this.filePath = config.filePath ?? PATHS.TOOL_HISTORY_FILE;
 		this.maxEntries = config.maxEntries ?? DEFAULT_MAX_ENTRIES;
 		this.previewChars = config.previewChars ?? DEFAULT_PREVIEW_CHARS;
+		this.maxBytes = config.maxBytes ?? settings.maxBytes;
+		this.persistence = config.persistence ?? settings.persistence;
 		this.loadFromDisk();
 	}
 
@@ -111,32 +123,56 @@ export class ToolHistoryStore {
 	clear(): void {
 		this.entries = [];
 		this.inflight.clear();
-		this.persistAll();
+		if (this.shouldPersist()) {
+			this.persistAll();
+		} else {
+			this.deletePersistedFile();
+		}
 	}
 
 	private extractPreview(result: ToolResultMessage): string {
 		if (!result || !Array.isArray(result.content)) return "";
-		const parts: string[] = [];
+		const limit = this.previewChars;
+		if (limit <= 0) return "";
+		const rawParts: string[] = [];
+		let collected = 0;
+		let truncated = false;
+
 		for (const chunk of result.content) {
-			if (chunk && typeof chunk === "object") {
-				const type = (chunk as { type?: unknown }).type;
-				if (
-					type === "text" &&
-					typeof (chunk as { text?: unknown }).text === "string"
-				) {
-					parts.push((chunk as { text: string }).text);
-				}
+			if (!chunk || typeof chunk !== "object") continue;
+			const type = (chunk as { type?: unknown }).type;
+			if (type !== "text") continue;
+			const text = (chunk as { text?: unknown }).text;
+			if (typeof text !== "string" || text.length === 0) continue;
+			const remaining = limit + 1 - collected;
+			if (remaining <= 0) {
+				truncated = true;
+				break;
 			}
+			if (text.length > remaining) {
+				rawParts.push(text.slice(0, remaining));
+				collected += remaining;
+				truncated = true;
+				break;
+			}
+			rawParts.push(text);
+			collected += text.length;
 		}
-		const raw = parts.join("\n").replace(/\s+/g, " ").trim();
-		if (raw.length <= this.previewChars) {
-			return raw;
+
+		const normalized = rawParts.join("\n").replace(/\s+/g, " ").trim();
+		if (!normalized) {
+			return "";
 		}
-		const max = Math.max(0, this.previewChars - 3);
-		return `${raw.slice(0, max)}...`;
+		const shouldTruncate = truncated || normalized.length > limit;
+		if (!shouldTruncate) {
+			return normalized;
+		}
+		const max = Math.max(0, limit - 3);
+		return `${normalized.slice(0, max)}...`;
 	}
 
 	private loadFromDisk(): void {
+		if (!this.shouldPersist()) return;
 		if (!existsSync(this.filePath)) return;
 		try {
 			const raw = readFileSync(this.filePath, "utf-8");
@@ -158,6 +194,7 @@ export class ToolHistoryStore {
 	}
 
 	private appendEntry(entry: ToolHistoryEntry): void {
+		if (!this.shouldPersist()) return;
 		try {
 			this.ensureDir();
 			appendFileSync(this.filePath, `${JSON.stringify(entry)}\n`, "utf-8");
@@ -167,6 +204,7 @@ export class ToolHistoryStore {
 	}
 
 	private persistAll(): void {
+		if (!this.shouldPersist()) return;
 		try {
 			this.ensureDir();
 			if (this.entries.length === 0) {
@@ -181,9 +219,67 @@ export class ToolHistoryStore {
 	}
 
 	private trimIfNeeded(): void {
-		if (this.entries.length <= this.maxEntries) return;
-		this.entries = this.entries.slice(-this.maxEntries);
-		this.persistAll();
+		let trimmed = false;
+		if (this.entries.length > this.maxEntries) {
+			this.entries = this.entries.slice(-this.maxEntries);
+			trimmed = true;
+		}
+		if (this.maxBytes !== undefined && this.maxBytes > 0) {
+			const limited = this.trimToMaxBytes(this.entries, this.maxBytes);
+			if (limited.length !== this.entries.length) {
+				this.entries = limited;
+				trimmed = true;
+			}
+		}
+		if (trimmed && this.shouldPersist()) {
+			this.persistAll();
+		}
+	}
+
+	private trimToMaxBytes(
+		entries: ToolHistoryEntry[],
+		maxBytes: number,
+	): ToolHistoryEntry[] {
+		if (entries.length === 0) return entries;
+		let total = 0;
+		const selected: ToolHistoryEntry[] = [];
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (!entry) continue;
+			const size = this.entryByteSize(entry);
+			if (size > maxBytes) {
+				continue;
+			}
+			if (total + size > maxBytes) {
+				break;
+			}
+			selected.push(entry);
+			total += size;
+		}
+		const reversed = selected.reverse();
+		if (reversed.length === 0 && entries.length > 0) {
+			const last = entries[entries.length - 1];
+			return last ? [last] : reversed;
+		}
+		return reversed;
+	}
+
+	private entryByteSize(entry: ToolHistoryEntry): number {
+		return Buffer.byteLength(JSON.stringify(entry)) + 1;
+	}
+
+	private shouldPersist(): boolean {
+		return this.persistence !== "none";
+	}
+
+	private deletePersistedFile(): void {
+		try {
+			if (existsSync(this.filePath)) {
+				rmSync(this.filePath, { force: true });
+			}
+		} catch {
+			// best-effort cleanup
+		}
 	}
 
 	private ensureDir(): void {

@@ -3,18 +3,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadProjectContextFiles } from "../../src/cli/system-prompt.js";
+import {
+	type ComposerConfig,
+	clearConfigCache,
+} from "../../src/config/index.js";
 
 describe("Hierarchical Context File Loading", () => {
 	let testDir: string;
 	let originalEnv: string | undefined;
+	let originalHome: string | undefined;
 
 	beforeEach(() => {
 		// Save original state
 		originalEnv = process.env.COMPOSER_AGENT_DIR;
+		originalHome = process.env.COMPOSER_HOME;
 
 		// Create temp test directory
 		testDir = join(tmpdir(), `composer-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
+
+		const composerHome = join(testDir, "composer-home");
+		process.env.COMPOSER_HOME = composerHome;
+		mkdirSync(composerHome, { recursive: true });
+		clearConfigCache();
 	});
 
 	afterEach(() => {
@@ -24,6 +35,12 @@ describe("Hierarchical Context File Loading", () => {
 		} else {
 			process.env.COMPOSER_AGENT_DIR = originalEnv;
 		}
+		if (originalHome === undefined) {
+			Reflect.deleteProperty(process.env, "COMPOSER_HOME");
+		} else {
+			process.env.COMPOSER_HOME = originalHome;
+		}
+		clearConfigCache();
 
 		// Cleanup test directory
 		if (existsSync(testDir)) {
@@ -291,6 +308,25 @@ describe("Hierarchical Context File Loading", () => {
 		});
 	});
 
+	describe("Context Truncation", () => {
+		it("should avoid splitting UTF-8 characters when truncating", () => {
+			const projectDir = join(testDir, "utf8-project");
+			mkdirSync(projectDir, { recursive: true });
+			writeFileSync(join(projectDir, "AGENT.md"), "A😀B");
+
+			const config: ComposerConfig = { project_doc_max_bytes: 3 };
+			const contextFiles = loadProjectContextFiles(projectDir, { config });
+			const context = contextFiles.find((f) => f.path.includes("AGENT.md"));
+
+			expect(context).toBeDefined();
+			if (!context) {
+				throw new Error("Missing context file");
+			}
+			expect(context.content).toContain("A");
+			expect(context.content).not.toContain("\uFFFD");
+		});
+	});
+
 	describe("Edge Cases", () => {
 		it("should return empty array when no context files exist", () => {
 			const emptyDir = join(testDir, "empty");
@@ -325,6 +361,71 @@ describe("Hierarchical Context File Loading", () => {
 			// Should complete without hanging
 			const contextFiles = loadProjectContextFiles(deepDir);
 			expect(Array.isArray(contextFiles)).toBe(true);
+		});
+	});
+
+	describe("Config-driven context files", () => {
+		it("should load fallback filenames from project config", () => {
+			const projectDir = join(testDir, "project");
+			mkdirSync(projectDir, { recursive: true });
+			mkdirSync(join(projectDir, ".composer"), { recursive: true });
+			writeFileSync(
+				join(projectDir, ".composer", "config.toml"),
+				'project_doc_fallback_filenames = ["CONTEXT.md"]\n',
+			);
+			writeFileSync(join(projectDir, "CONTEXT.md"), "# Context\nFallback file");
+
+			const contextFiles = loadProjectContextFiles(projectDir);
+			const fallback = contextFiles.find((f) => f.path.endsWith("CONTEXT.md"));
+			expect(fallback).toBeDefined();
+			expect(fallback?.content).toContain("Fallback file");
+		});
+
+		it("should truncate context files based on max bytes", () => {
+			const projectDir = join(testDir, "project");
+			mkdirSync(projectDir, { recursive: true });
+			mkdirSync(join(projectDir, ".composer"), { recursive: true });
+			writeFileSync(
+				join(projectDir, ".composer", "config.toml"),
+				"project_doc_max_bytes = 12\n",
+			);
+			const content = "1234567890ABCDEFG";
+			writeFileSync(join(projectDir, "AGENT.md"), content);
+
+			const contextFiles = loadProjectContextFiles(projectDir);
+			const agent = contextFiles.find((f) => f.path.endsWith("AGENT.md"));
+			expect(agent).toBeDefined();
+			expect(agent?.content.startsWith(content.slice(0, 12))).toBe(true);
+			expect(agent?.content).toContain("Truncated to 12 bytes");
+		});
+
+		it("should enforce max bytes across multiple context files", () => {
+			const rootDir = join(testDir, "root");
+			const projectDir = join(rootDir, "project");
+			mkdirSync(projectDir, { recursive: true });
+			mkdirSync(join(projectDir, ".composer"), { recursive: true });
+			writeFileSync(
+				join(projectDir, ".composer", "config.toml"),
+				"project_doc_max_bytes = 16\n",
+			);
+			const rootContent = "ROOT-CONTEXT";
+			const projectContent = "PROJECT-CONTEXT";
+			writeFileSync(join(rootDir, "AGENT.md"), rootContent);
+			writeFileSync(join(projectDir, "AGENT.md"), projectContent);
+
+			const contextFiles = loadProjectContextFiles(projectDir);
+			const rootFile = contextFiles.find(
+				(f) => f.path === join(rootDir, "AGENT.md"),
+			);
+			const projectFile = contextFiles.find(
+				(f) => f.path === join(projectDir, "AGENT.md"),
+			);
+
+			expect(rootFile).toBeDefined();
+			expect(projectFile).toBeDefined();
+			expect(rootFile?.content).toContain(rootContent);
+			expect(projectFile?.content.startsWith("PROJ")).toBe(true);
+			expect(projectFile?.content).toContain("Truncated to 4 bytes");
 		});
 	});
 });
