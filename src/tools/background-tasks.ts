@@ -188,7 +188,7 @@ interface BackgroundTask {
 	id: string;
 	command: string;
 	cwd?: string;
-	env?: Record<string, string>;
+	env: Record<string, string>;
 	startedAt: number;
 	pid?: number;
 	status: BackgroundTaskStatus;
@@ -604,11 +604,7 @@ class BackgroundTaskManager extends EventEmitter {
 	}
 
 	private createChildProcess(task: BackgroundTask): ChildProcess {
-		const mergedEnv: NodeJS.ProcessEnv =
-			task.env ??
-			resolveShellEnvironment(undefined, {
-				workspaceDir: task.cwd ?? process.cwd(),
-			});
+		const mergedEnv: NodeJS.ProcessEnv = task.env;
 		const spawnOptions: SpawnOptions = {
 			detached: true,
 			stdio: ["ignore", "pipe", "pipe"],
