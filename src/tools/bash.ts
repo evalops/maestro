@@ -39,6 +39,7 @@ import {
 import { checkCommand } from "../safety/execpolicy.js";
 import { checkBashCommandForNestedAgent } from "../safety/nested-agent-guard.js";
 import { requirePlanCheck } from "../safety/safe-mode.js";
+import { resolveShellEnvironment } from "../utils/shell-env.js";
 import { backgroundTaskManager } from "./background-tasks.js";
 import {
 	getShellConfig,
@@ -327,7 +328,9 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 			// Get shell configuration (bash -lc on most systems)
 			const { shell, args } = getShellConfig();
 			// Merge custom env vars with process environment
-			const mergedEnv = { ...process.env, ...env } as Record<string, string>;
+			const mergedEnv = resolveShellEnvironment(env, {
+				workspaceDir: process.cwd(),
+			});
 
 			// Spawn the child process in detached mode for clean process tree handling
 			const child = spawn(shell, [...args, interpolatedCommand], {

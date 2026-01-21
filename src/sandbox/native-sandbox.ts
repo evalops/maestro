@@ -25,6 +25,7 @@ import {
 import { platform } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
+import { resolveShellEnvironment } from "../utils/shell-env.js";
 import type { ExecResult, Sandbox } from "./types.js";
 
 const _execAsync = promisify(exec);
@@ -366,8 +367,7 @@ export class NativeSandbox implements Sandbox {
 	): Promise<ExecResult> {
 		const workingDir = cwd ?? this.cwd;
 		const mergedEnv = {
-			...process.env,
-			...env,
+			...resolveShellEnvironment(env, { workspaceDir: this.cwd }),
 			[SANDBOX_ENV_VAR]: this.getSandboxType(),
 		};
 
@@ -450,8 +450,9 @@ export class NativeSandbox implements Sandbox {
 			cwd: this.cwd,
 			...options,
 			env: {
-				...process.env,
-				...options.env,
+				...resolveShellEnvironment(options.env, {
+					workspaceDir: this.cwd,
+				}),
 				[SANDBOX_ENV_VAR]: this.getSandboxType(),
 			},
 		};

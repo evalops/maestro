@@ -43,6 +43,7 @@ import type { AgentTool, ToolAnnotations } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { expandTildePath } from "../utils/path-expansion.js";
+import { resolveShellEnvironment } from "../utils/shell-env.js";
 import { createTool } from "./tool-dsl.js";
 
 const logger = createLogger("inline-tools");
@@ -176,11 +177,9 @@ async function executeCommand(
 			: process.cwd();
 		const timeout = options.timeout ?? 120000; // 2 minute default
 
-		// Merge environment: inherit from process, overlay tool-specific env
-		const env = {
-			...process.env,
-			...options.env,
-		};
+		const env = resolveShellEnvironment(options.env, {
+			workspaceDir: process.cwd(),
+		});
 
 		// Spawn the command in shell mode for compatibility
 		const child = spawn(command, [], {

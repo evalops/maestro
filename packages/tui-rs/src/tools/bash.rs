@@ -134,6 +134,7 @@ use tokio::time::timeout;
 
 use super::details::BashDetails;
 use super::process_utils::{kill_process_tree, set_new_process_group};
+use super::shell_env::resolve_shell_environment;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 use crate::safety::analyze_bash_command;
@@ -986,6 +987,9 @@ impl BashTool {
             .arg(&args.command)
             .current_dir(&self.cwd)
             .stdin(Stdio::null());
+        let env = resolve_shell_environment(Path::new(&self.cwd), None);
+        cmd.env_clear();
+        cmd.envs(env);
         set_new_process_group(&mut cmd);
         if args.run_in_background {
             cmd.stdout(Stdio::null()).stderr(Stdio::null());

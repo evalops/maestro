@@ -65,6 +65,7 @@ use tokio::process::Command;
 
 use super::details::InlineToolDetails;
 use super::process_utils::{kill_process_tree, set_new_process_group};
+use super::shell_env::resolve_shell_environment;
 use crate::agent::ToolResult;
 use crate::ai::Tool;
 use crate::safety::expand_tilde;
@@ -511,11 +512,9 @@ impl InlineToolExecutor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         set_new_process_group(&mut cmd);
-
-        // Set environment variables
-        for (key, value) in &tool.definition.env {
-            cmd.env(key, value);
-        }
+        let env = resolve_shell_environment(&self.workspace_dir, Some(&tool.definition.env));
+        cmd.env_clear();
+        cmd.envs(env);
 
         // Spawn the process
         let mut child = match cmd.spawn() {
