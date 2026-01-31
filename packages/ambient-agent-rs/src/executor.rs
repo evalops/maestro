@@ -5,6 +5,7 @@
 
 use crate::cascader::RoutingResult;
 use crate::types::*;
+use chrono::{Datelike, Utc};
 use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -272,7 +273,9 @@ impl Executor {
 
     /// Build system and user prompts for the LLM
     async fn build_prompts(&self, plan: &TaskPlan) -> (String, String) {
-        let system_prompt = r#"You are an expert software engineer. Your task is to implement code changes based on the given requirements.
+        let current_year = Utc::now().year();
+        let system_prompt = format!(
+            r#"You are an expert software engineer. Your task is to implement code changes based on the given requirements.
 
 When making changes, output them in the following format:
 
@@ -293,8 +296,10 @@ Rules:
 6. Do not include content tags for delete operations
 7. NEVER use absolute paths - always use relative paths from the project root
 8. NEVER modify files outside the project directory
+9. When using websearch/codesearch for up-to-date information, include the current year ({current_year}) in the query unless the user specifies a different year or a historical range
 
 Think step by step about the implementation before writing code."#;
+        );
 
         // Build user prompt with context
         let mut user_prompt = format!("## Task\n{}\n\n", plan.summary);
@@ -326,7 +331,7 @@ Think step by step about the implementation before writing code."#;
             user_prompt.push_str(&format!("{}. {:?}: {}\n", i + 1, task.task_type, task.prompt));
         }
 
-        (system_prompt.to_string(), user_prompt)
+        (system_prompt, user_prompt)
     }
 
     /// Safely truncate a string at character boundaries

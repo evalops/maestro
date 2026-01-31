@@ -418,6 +418,64 @@ impl App {
         self.capabilities.viewport_top
     }
 
+    fn build_base_system_prompt(cwd: &str) -> String {
+        format!(
+            r#"You are an AI assistant helping with software development tasks.
+
+Current working directory: {cwd}
+
+You have access to the following tools:
+- bash: Execute shell commands. REQUIRED arg: {{\"command\":\"<cmd>\"}}. Do not send empty commands.
+- read: Read file contents. REQUIRED: {{\"file_path\":\"/abs/path\"}}.
+- write: Write to files. REQUIRED: {{\"file_path\":\"/abs/path\",\"content\":\"...\"}}.
+- glob: Find files by pattern. REQUIRED: {{\"pattern\":\"*.rs\"}}. Optional: {{\"path\":\"/abs/dir\"}}.
+- grep: Search file contents. REQUIRED: {{\"pattern\":\"regex or text\"}}. Optional: {{\"path\":\"/abs/dir\"}}.
+
+Tool-calling rules:
+- Always prefer read/write/glob/grep for filesystem; use bash only for commands that are not pure file ops.
+- Never emit a tool call without all required fields.
+- If a tool call is denied, immediately retry with corrected arguments instead of responding without action.
+
+Always use tools when they would be helpful. Be concise and direct in your responses."#
+        )
+    }
+
+    fn build_shared_prompt_additions(current_year: i32, active_prompt: &str) -> String {
+        let mut additions = Vec::new();
+        additions.push(format!(
+            "When using websearch/codesearch for up-to-date information, include the current year ({current_year}) in the query unless the user specifies a different year or a historical range."
+        ));
+
+        let trimmed = active_prompt.trim();
+        if !trimmed.is_empty() {
+            additions.push(trimmed.to_string());
+        }
+
+        additions.join("\n\n")
+    }
+
+    fn build_system_prompt_with_context(
+        cwd: &str,
+        current_year: i32,
+        skills_section: Option<String>,
+        active_prompt: &str,
+    ) -> String {
+        let mut sections = vec![Self::build_base_system_prompt(cwd)];
+
+        if let Some(skills) = skills_section {
+            if !skills.trim().is_empty() {
+                sections.push(skills);
+            }
+        }
+
+        let additions = Self::build_shared_prompt_additions(current_year, active_prompt);
+        if !additions.trim().is_empty() {
+            sections.push(additions);
+        }
+
+        sections.join("\n\n")
+    }
+
     /// Run the main event loop.
     ///
     /// # Rust Concept: Async Main Loop
@@ -587,37 +645,14 @@ impl App {
         let cwd = std::env::current_dir()
             .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
         let current_year = Utc::now().year();
-        let mut sections = vec![format!(
-            r#"You are an AI assistant helping with software development tasks.
-
-Current working directory: {cwd}
-
-You have access to the following tools:
-- bash: Execute shell commands. REQUIRED arg: {{\"command\":\"<cmd>\"}}. Do not send empty commands.
-- read: Read file contents. REQUIRED: {{\"file_path\":\"/abs/path\"}}.
-- write: Write to files. REQUIRED: {{\"file_path\":\"/abs/path\",\"content\":\"...\"}}.
-- glob: Find files by pattern. REQUIRED: {{\"pattern\":\"*.rs\"}}. Optional: {{\"path\":\"/abs/dir\"}}.
-- grep: Search file contents. REQUIRED: {{\"pattern\":\"regex or text\"}}. Optional: {{\"path\":\"/abs/dir\"}}.
-
-Tool-calling rules:
-- Always prefer read/write/glob/grep for filesystem; use bash only for commands that are not pure file ops.
-- Never emit a tool call without all required fields.
-- If a tool call is denied, immediately retry with corrected arguments instead of responding without action.
-- When using websearch/codesearch for up-to-date information, include the current year ({current_year}) in the query unless the user specifies a different year or a historical range.
-
-Always use tools when they would be helpful. Be concise and direct in your responses."#
-        )];
-
-        if !self.loaded_skills.is_empty() {
-            sections.push(skills_to_prompt(&self.loaded_skills));
-        }
-
+        let skills_section = if self.loaded_skills.is_empty() {
+            None
+        } else {
+            Some(skills_to_prompt(&self.loaded_skills))
+        };
         let active_prompt = self.skill_registry.active_system_prompt_additions();
-        if !active_prompt.trim().is_empty() {
-            sections.push(active_prompt);
-        }
 
-        sections.join("\n\n")
+        Self::build_system_prompt_with_context(&cwd, current_year, skills_section, &active_prompt)
     }
 
     fn refresh_skills(&mut self, preserve_active: bool) {
@@ -4462,17 +4497,20 @@ mod tests {
     #[test]
     fn test_system_prompt_contains_tools() {
         // Test that system prompts mention available tools
-        let prompt_template = r"You have access to the following tools:
-- bash: Execute shell commands
-- read: Read file contents
-- write: Write to files
-- glob: Find files by pattern
-- grep: Search file contents";
+        let prompt_template = App::build_base_system_prompt("/tmp");
 
         assert!(prompt_template.contains("bash"));
         assert!(prompt_template.contains("read"));
         assert!(prompt_template.contains("write"));
         assert!(prompt_template.contains("glob"));
         assert!(prompt_template.contains("grep"));
+    }
+
+    #[test]
+    fn test_system_prompt_includes_year_hint() {
+        let prompt = App::build_system_prompt_with_context("/tmp", 2026, None, "");
+
+        assert!(prompt.contains("websearch/codesearch"));
+        assert!(prompt.contains("current year (2026)"));
     }
 }
