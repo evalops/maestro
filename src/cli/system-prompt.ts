@@ -78,7 +78,7 @@ function loadAppendSystemPrompt(cwd: string): string | null {
 	return null;
 }
 
-function buildGuidelines(toolNames: Set<string>): string {
+function buildGuidelines(toolNames: Set<string>, currentYear: number): string {
 	const guidelines: string[] = [];
 
 	guidelines.push(
@@ -98,6 +98,12 @@ function buildGuidelines(toolNames: Set<string>): string {
 	) {
 		guidelines.push(
 			"**Use web tools for external information**: websearch for current events/news/research, codesearch for programming examples/docs, webfetch when you have specific URLs",
+		);
+	}
+
+	if (toolNames.has("websearch") || toolNames.has("codesearch")) {
+		guidelines.push(
+			`When using websearch/codesearch for up-to-date information, include the current year (${currentYear}) in the query unless the user specifies a different year or a historical range`,
 		);
 	}
 
@@ -477,6 +483,7 @@ export function buildSystemPrompt(
 		second: "2-digit",
 		timeZoneName: "short",
 	});
+	const currentYear = now.getFullYear();
 
 	// Use provided tool names or default
 	const activeToolNames = toolNames ?? DEFAULT_TOOL_NAMES;
@@ -486,7 +493,7 @@ export function buildSystemPrompt(
 
 ${buildToolsSection(activeToolNames)}
 
-${buildGuidelines(toolNameSet)}`;
+${buildGuidelines(toolNameSet, currentYear)}`;
 
 	const contextFiles = loadProjectContextFiles();
 	if (contextFiles.length > 0) {
