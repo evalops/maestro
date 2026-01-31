@@ -36,14 +36,17 @@
 //! ```
 
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Read;
+use std::fs::{self, File};
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::RwLock;
-use std::time::SystemTime;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant, SystemTime};
 
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
+use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 use super::bash::resolve_shell_config;
@@ -83,6 +86,306 @@ pub struct BackgroundTask {
 static TASKS: std::sync::LazyLock<RwLock<HashMap<String, BackgroundTask>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
+const DEFAULT_LOG_FILE_BYTES: u64 = 5 * 1024 * 1024;
+const DEFAULT_LOG_SEGMENTS: usize = 2;
+const MAX_LOG_SEGMENTS: usize = 10;
+const MIN_LOG_BYTES: u64 = 50_000;
+
+fn read_env_u64(name: &str, default: u64, min: u64) -> u64 {
+    match std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok()) {
+        Some(0) => 0,
+        Some(value) if value < min => min,
+        Some(value) => value,
+        None => default,
+    }
+}
+
+fn read_env_usize(name: &str, default: usize, min: usize, max: usize) -> usize {
+    match std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        Some(value) if value < min => min,
+        Some(value) if value > max => max,
+        Some(value) => value,
+        None => default,
+    }
+}
+
+fn log_limits() -> (u64, usize) {
+    let bytes = read_env_u64(
+        "COMPOSER_BACKGROUND_TASK_LOG_BYTES",
+        DEFAULT_LOG_FILE_BYTES,
+        MIN_LOG_BYTES,
+    );
+    let segments = read_env_usize(
+        "COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS",
+        DEFAULT_LOG_SEGMENTS,
+        0,
+        MAX_LOG_SEGMENTS,
+    );
+    (bytes, segments)
+}
+
+#[derive(Debug, Clone)]
+struct LogRotationInfo {
+    log_path: PathBuf,
+    archive_path: PathBuf,
+    rotated_at: SystemTime,
+}
+
+#[derive(Debug, Default)]
+struct RotationState {
+    last_rotation: Option<LogRotationInfo>,
+    failure_reason: Option<String>,
+}
+
+#[derive(Clone)]
+struct LogRotationObserver {
+    limit: u64,
+    segments: usize,
+    state: Arc<Mutex<RotationState>>,
+    notify: Arc<Notify>,
+}
+
+impl LogRotationObserver {
+    async fn wait_for_rotation(&self, timeout: Duration) -> Result<LogRotationInfo, String> {
+        if self.segments == 0 || self.limit == 0 {
+            return Err("Log rotation is disabled".to_string());
+        }
+
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            {
+                let state = self.state.lock().await;
+                if let Some(info) = state.last_rotation.clone() {
+                    return Ok(info);
+                }
+                if let Some(reason) = &state.failure_reason {
+                    return Err(reason.clone());
+                }
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("Timed out waiting for log rotation".to_string());
+            }
+
+            if tokio::time::timeout(remaining, self.notify.notified())
+                .await
+                .is_err()
+            {
+                return Err("Timed out waiting for log rotation".to_string());
+            }
+        }
+    }
+}
+
+struct RotatingLogWriter {
+    log_path: PathBuf,
+    limit: u64,
+    segments: usize,
+    current_size: u64,
+    drop_all: bool,
+    failed: bool,
+    file: Option<tokio::fs::File>,
+    observer: LogRotationObserver,
+}
+
+impl RotatingLogWriter {
+    async fn new(log_path: PathBuf, limit: u64, segments: usize) -> Result<Self, String> {
+        let state = Arc::new(Mutex::new(RotationState::default()));
+        let notify = Arc::new(Notify::new());
+        let observer = LogRotationObserver {
+            limit,
+            segments,
+            state,
+            notify,
+        };
+
+        let mut writer = Self {
+            log_path,
+            limit,
+            segments,
+            current_size: 0,
+            drop_all: limit == 0,
+            failed: false,
+            file: None,
+            observer,
+        };
+
+        writer.initialize().await?;
+        Ok(writer)
+    }
+
+    fn observer(&self) -> LogRotationObserver {
+        self.observer.clone()
+    }
+
+    async fn initialize(&mut self) -> Result<(), String> {
+        self.ensure_log_file().await?;
+        if self.drop_all {
+            return Ok(());
+        }
+
+        let existing_size = match tokio::fs::metadata(&self.log_path).await {
+            Ok(meta) => meta.len(),
+            Err(_) => 0,
+        };
+        self.current_size = if self.limit > 0 {
+            existing_size.min(self.limit)
+        } else {
+            0
+        };
+
+        if self.limit > 0 && self.current_size >= self.limit {
+            let _ = self.rotate().await?;
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_log_file(&mut self) -> Result<(), String> {
+        ensure_logs_dir()?;
+        if self.file.is_some() {
+            return Ok(());
+        }
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log_path)
+            .await
+            .map_err(|e| format!("Failed to open log file: {e}"))?;
+        self.file = Some(file);
+        Ok(())
+    }
+
+    async fn append(&mut self, mut chunk: &[u8]) -> Result<(), String> {
+        if self.drop_all || self.failed {
+            return Ok(());
+        }
+
+        while !chunk.is_empty() {
+            if self.current_size >= self.limit {
+                let rotated = self.rotate().await?;
+                if !rotated {
+                    return Ok(());
+                }
+                continue;
+            }
+
+            let remaining_capacity = self.limit.saturating_sub(self.current_size);
+            if remaining_capacity == 0 {
+                return Ok(());
+            }
+
+            let to_write = remaining_capacity.min(chunk.len() as u64) as usize;
+            let (head, rest) = chunk.split_at(to_write);
+
+            self.ensure_log_file().await?;
+            if let Some(file) = &mut self.file {
+                file.write_all(head)
+                    .await
+                    .map_err(|e| format!("Failed to write log: {e}"))?;
+            }
+            self.current_size += head.len() as u64;
+            chunk = rest;
+        }
+
+        Ok(())
+    }
+
+    async fn finish(&mut self) {
+        if let Some(mut file) = self.file.take() {
+            let _ = file.flush().await;
+        }
+
+        let mut state = self.observer.state.lock().await;
+        if state.last_rotation.is_none() && state.failure_reason.is_none() {
+            state.failure_reason =
+                Some("Log rotation did not occur before stream ended".to_string());
+            drop(state);
+            self.observer.notify.notify_waiters();
+        }
+    }
+
+    async fn rotate(&mut self) -> Result<bool, String> {
+        if self.segments == 0 {
+            return Ok(false);
+        }
+
+        if let Some(mut file) = self.file.take() {
+            let _ = file.flush().await;
+        }
+
+        self.shift_archives().await?;
+        let archive_path = self.archive_path(1);
+
+        match tokio::fs::rename(&self.log_path, &archive_path).await {
+            Ok(()) => {
+                self.ensure_log_file().await?;
+                self.current_size = 0;
+                let info = LogRotationInfo {
+                    log_path: self.log_path.clone(),
+                    archive_path: archive_path.clone(),
+                    rotated_at: SystemTime::now(),
+                };
+                self.record_rotation(info).await;
+                Ok(true)
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                self.ensure_log_file().await?;
+                self.current_size = 0;
+                Ok(true)
+            }
+            Err(err) => Err(format!("Failed to rotate log: {err}")),
+        }
+    }
+
+    async fn shift_archives(&self) -> Result<(), String> {
+        if self.segments == 0 {
+            return Ok(());
+        }
+        for idx in (1..=self.segments).rev() {
+            let path = self.archive_path(idx);
+            if idx == self.segments {
+                let _ = tokio::fs::remove_file(&path).await;
+                continue;
+            }
+            let next = self.archive_path(idx + 1);
+            let _ = tokio::fs::rename(&path, &next).await;
+        }
+        Ok(())
+    }
+
+    fn archive_path(&self, index: usize) -> PathBuf {
+        PathBuf::from(format!("{}.{}", self.log_path.to_string_lossy(), index))
+    }
+
+    async fn record_rotation(&self, info: LogRotationInfo) {
+        {
+            let mut state = self.observer.state.lock().await;
+            state.last_rotation = Some(info);
+        }
+        self.observer.notify.notify_waiters();
+    }
+
+    async fn record_failure(&mut self, reason: &str) {
+        if self.failed {
+            return;
+        }
+        self.failed = true;
+        {
+            let mut state = self.observer.state.lock().await;
+            if state.failure_reason.is_none() {
+                state.failure_reason = Some(reason.to_string());
+            }
+        }
+        self.observer.notify.notify_waiters();
+    }
+}
+
 fn logs_dir() -> PathBuf {
     dirs::home_dir().map_or_else(
         || std::env::temp_dir().join("composer-logs"),
@@ -110,6 +413,38 @@ fn read_last_lines(path: &Path, lines: usize) -> Result<String, String> {
     Ok(collected.join("\n"))
 }
 
+async fn drain_stream<R>(
+    mut reader: R,
+    writer: Arc<Mutex<RotatingLogWriter>>,
+    remaining: Arc<AtomicUsize>,
+) where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let mut buffer = [0u8; 8192];
+    loop {
+        match reader.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(count) => {
+                let mut guard = writer.lock().await;
+                if let Err(_) = guard.append(&buffer[..count]).await {
+                    guard.record_failure("Log rotation failed").await;
+                    break;
+                }
+            }
+            Err(_) => {
+                let mut guard = writer.lock().await;
+                guard.record_failure("Log rotation failed").await;
+                break;
+            }
+        }
+    }
+
+    if remaining.fetch_sub(1, Ordering::AcqRel) == 1 {
+        let mut guard = writer.lock().await;
+        guard.finish().await;
+    }
+}
+
 /// Start a new background task.
 ///
 /// # Arguments
@@ -133,15 +468,9 @@ pub async fn start(
     ensure_logs_dir()?;
     let id = Uuid::new_v4().to_string();
     let log_path = logs_dir().join(format!("background-{id}.log"));
-
-    let log_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| format!("Failed to open log file: {e}"))?;
-
-    let stdout = Stdio::from(log_file.try_clone().map_err(|e| e.to_string())?);
-    let stderr = Stdio::from(log_file);
+    let (log_limit, log_segments) = log_limits();
+    let log_writer = RotatingLogWriter::new(log_path.clone(), log_limit, log_segments).await?;
+    let log_writer = Arc::new(Mutex::new(log_writer));
 
     let mut cmd = if shell {
         let (shell_path, shell_args) =
@@ -164,8 +493,8 @@ pub async fn start(
 
     cmd.current_dir(&cwd)
         .stdin(Stdio::null())
-        .stdout(stdout)
-        .stderr(stderr);
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let resolved_env = resolve_shell_environment(Path::new(&workspace_dir), env.as_ref());
     cmd.env_clear();
     cmd.envs(resolved_env);
@@ -175,6 +504,22 @@ pub async fn start(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn background task: {e}"))?;
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let stream_count = usize::from(stdout.is_some()) + usize::from(stderr.is_some());
+    let remaining = Arc::new(AtomicUsize::new(stream_count.max(1)));
+
+    if let Some(out) = stdout {
+        tokio::spawn(drain_stream(out, log_writer.clone(), remaining.clone()));
+    }
+    if let Some(err) = stderr {
+        tokio::spawn(drain_stream(err, log_writer.clone(), remaining.clone()));
+    }
+    if stream_count == 0 {
+        let mut guard = log_writer.lock().await;
+        guard.finish().await;
+    }
 
     let pid = child.id();
     if let Some(pid) = pid {
@@ -495,5 +840,72 @@ mod tests {
             dir.exists(),
             "Logs directory should exist after ensure_logs_dir"
         );
+    }
+
+    // ========================================================================
+    // Log Rotation Waiter Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_wait_for_rotation_disabled() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let log_path = temp_dir.path().join("disabled.log");
+        let writer = RotatingLogWriter::new(log_path, 0, 0).await.unwrap();
+
+        let err = writer
+            .observer()
+            .wait_for_rotation(Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Log rotation is disabled"));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_rotation_times_out() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let log_path = temp_dir.path().join("timeout.log");
+        let writer = RotatingLogWriter::new(log_path, 1024, 1).await.unwrap();
+
+        let err = writer
+            .observer()
+            .wait_for_rotation(Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Timed out waiting for log rotation"));
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_rotation_succeeds() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let log_path = temp_dir.path().join("rotate.log");
+        let mut writer = RotatingLogWriter::new(log_path.clone(), 10, 1)
+            .await
+            .unwrap();
+
+        writer.append(b"12345678901").await.unwrap();
+
+        let info = writer
+            .observer()
+            .wait_for_rotation(Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(info.archive_path.exists());
+        assert_eq!(info.log_path, log_path);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_rotation_stream_end() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let log_path = temp_dir.path().join("ended.log");
+        let mut writer = RotatingLogWriter::new(log_path, 1024, 1).await.unwrap();
+        let observer = writer.observer();
+
+        writer.finish().await;
+
+        let err = observer
+            .wait_for_rotation(Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Log rotation did not occur before stream ended"));
     }
 }
