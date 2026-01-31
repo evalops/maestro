@@ -38,6 +38,12 @@ export interface RotatingLogWriterOptions {
 	archivedPath: (index: number) => string;
 }
 
+export interface LogRotationInfo {
+	logPath: string;
+	archivePath: string;
+	rotatedAt: number;
+}
+
 /**
  * A writable stream that rotates logs when they exceed size limits.
  *
@@ -76,6 +82,8 @@ export class RotatingLogWriter extends Writable {
 	private readonly dropAll: boolean;
 	private readonly ready: Promise<void>;
 	private failed = false;
+	private lastRotation: LogRotationInfo | null = null;
+	private rotationWaiters: Array<(info: LogRotationInfo) => void> = [];
 
 	constructor(options: RotatingLogWriterOptions) {
 		super({ decodeStrings: true });
@@ -119,6 +127,15 @@ export class RotatingLogWriter extends Writable {
 			() => callback(),
 			(error) => callback(error),
 		);
+	}
+
+	waitForRotation(): Promise<LogRotationInfo> {
+		if (this.lastRotation) {
+			return Promise.resolve(this.lastRotation);
+		}
+		return new Promise((resolve) => {
+			this.rotationWaiters.push(resolve);
+		});
 	}
 
 	private async writeBuffer(buffer: Buffer): Promise<void> {
@@ -177,6 +194,11 @@ export class RotatingLogWriter extends Writable {
 				createGzip(),
 				createWriteStream(destination),
 			);
+			this.recordRotation({
+				logPath: this.logPath,
+				archivePath: destination,
+				rotatedAt: Date.now(),
+			});
 			await fsPromises.unlink(tmpPath).catch((err) => {
 				this.logger.debug("Failed to unlink temp file after rotation", {
 					tmpPath,
@@ -248,6 +270,16 @@ export class RotatingLogWriter extends Writable {
 
 	private async shiftArchivesAsync(): Promise<void> {
 		await Promise.resolve(this.shiftArchives());
+	}
+
+	private recordRotation(info: LogRotationInfo): void {
+		this.lastRotation = info;
+		const waiters = this.rotationWaiters;
+		this.rotationWaiters = [];
+		for (const resolve of waiters) {
+			resolve(info);
+		}
+		this.emit("rotated", info);
 	}
 
 	private handleWriteError(error: unknown): void {

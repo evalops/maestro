@@ -654,10 +654,11 @@ describe("backgroundTasksTool", () => {
 		});
 		const task = backgroundTaskManager.getTask(taskId);
 		expect(task).toBeTruthy();
-		if (task?.logPath) {
-			const archived = `${task.logPath}.1.gz`;
-			await waitForCondition(() => existsSync(archived));
-			expect(existsSync(archived)).toBe(true);
+		expect(task?.logWriter).toBeTruthy();
+		expect(task?.logPath).toBeTruthy();
+		if (task?.logWriter && task?.logPath) {
+			const rotation = await task.logWriter.waitForRotation();
+			expect(existsSync(rotation.archivePath)).toBe(true);
 		}
 		await backgroundTaskManager.stopTask(taskId);
 	});

@@ -1,5 +1,9 @@
 import { defineConfig } from "vitest/config";
 
+if (process.env.FORCE_COLOR && process.env.NO_COLOR) {
+	Reflect.deleteProperty(process.env, "NO_COLOR");
+}
+
 const fastMode = process.env.VITEST_FAST === "1";
 
 export default defineConfig({
