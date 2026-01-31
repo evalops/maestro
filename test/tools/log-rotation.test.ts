@@ -173,6 +173,47 @@ describe("RotatingLogWriter", () => {
 		});
 	});
 
+	describe("waitForRotation", () => {
+		it("rejects when rotation is disabled", async () => {
+			const writer = createWriter({ limit: 10, segments: 0 });
+
+			await expect(writer.waitForRotation()).rejects.toThrow(
+				"Log rotation is disabled",
+			);
+		});
+
+		it("times out when rotation never occurs", async () => {
+			vi.useFakeTimers();
+			try {
+				const writer = createWriter({ limit: 1000, segments: 1 });
+				const rotation = writer.waitForRotation({ timeoutMs: 10 });
+				const expectation = expect(rotation).rejects.toThrow(
+					"Timed out waiting for log rotation",
+				);
+
+				await vi.advanceTimersByTimeAsync(11);
+				await expectation;
+
+				await new Promise<void>((resolve) => {
+					writer.end(() => resolve());
+				});
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("rejects when the stream ends before rotation", async () => {
+			const writer = createWriter({ limit: 1000, segments: 1 });
+			const rotation = writer.waitForRotation({ timeoutMs: 1000 });
+
+			await writeAndEnd(writer, "small payload");
+
+			await expect(rotation).rejects.toThrow(
+				"Log rotation did not occur before stream ended",
+			);
+		});
+	});
+
 	describe("existing file handling", () => {
 		it("respects existingSize parameter", async () => {
 			// Simulate existing log with 5 bytes

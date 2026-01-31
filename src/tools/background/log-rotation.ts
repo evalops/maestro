@@ -44,6 +44,14 @@ export interface LogRotationInfo {
 	rotatedAt: number;
 }
 
+interface RotationWaiter {
+	resolve: (info: LogRotationInfo) => void;
+	reject: (error: Error) => void;
+	timeoutId?: ReturnType<typeof setTimeout>;
+	signal?: AbortSignal;
+	abortHandler?: () => void;
+}
+
 /**
  * A writable stream that rotates logs when they exceed size limits.
  *
@@ -83,7 +91,7 @@ export class RotatingLogWriter extends Writable {
 	private readonly ready: Promise<void>;
 	private failed = false;
 	private lastRotation: LogRotationInfo | null = null;
-	private rotationWaiters: Array<(info: LogRotationInfo) => void> = [];
+	private rotationWaiters: RotationWaiter[] = [];
 
 	constructor(options: RotatingLogWriterOptions) {
 		super({ decodeStrings: true });
@@ -124,17 +132,59 @@ export class RotatingLogWriter extends Writable {
 
 	override _final(callback: (error?: Error | null) => void): void {
 		this.writeQueue.then(
-			() => callback(),
+			() => {
+				if (!this.lastRotation) {
+					this.rejectRotationWaiters(
+						"Log rotation did not occur before stream ended",
+					);
+				}
+				callback();
+			},
 			(error) => callback(error),
 		);
 	}
 
-	waitForRotation(): Promise<LogRotationInfo> {
+	waitForRotation(options?: {
+		timeoutMs?: number;
+		signal?: AbortSignal;
+	}): Promise<LogRotationInfo> {
 		if (this.lastRotation) {
 			return Promise.resolve(this.lastRotation);
 		}
-		return new Promise((resolve) => {
-			this.rotationWaiters.push(resolve);
+		if (this.segments <= 0 || this.limit <= 0) {
+			return Promise.reject(new Error("Log rotation is disabled"));
+		}
+		const timeoutMs = options?.timeoutMs ?? 5000;
+		return new Promise((resolve, reject) => {
+			const waiter: RotationWaiter = {
+				resolve: (info) => {
+					this.cleanupRotationWaiter(waiter);
+					resolve(info);
+				},
+				reject: (error) => {
+					this.cleanupRotationWaiter(waiter);
+					reject(error);
+				},
+			};
+			if (timeoutMs > 0) {
+				waiter.timeoutId = setTimeout(() => {
+					waiter.reject(new Error("Timed out waiting for log rotation"));
+				}, timeoutMs);
+			}
+			if (options?.signal) {
+				if (options.signal.aborted) {
+					waiter.reject(new Error("Aborted while waiting for log rotation"));
+					return;
+				}
+				waiter.abortHandler = () => {
+					waiter.reject(new Error("Aborted while waiting for log rotation"));
+				};
+				waiter.signal = options.signal;
+				options.signal.addEventListener("abort", waiter.abortHandler, {
+					once: true,
+				});
+			}
+			this.rotationWaiters.push(waiter);
 		});
 	}
 
@@ -276,10 +326,35 @@ export class RotatingLogWriter extends Writable {
 		this.lastRotation = info;
 		const waiters = this.rotationWaiters;
 		this.rotationWaiters = [];
-		for (const resolve of waiters) {
-			resolve(info);
+		for (const waiter of waiters) {
+			waiter.resolve(info);
 		}
 		this.emit("rotated", info);
+	}
+
+	private cleanupRotationWaiter(waiter: RotationWaiter): void {
+		if (waiter.timeoutId) {
+			clearTimeout(waiter.timeoutId);
+		}
+		if (waiter.signal && waiter.abortHandler) {
+			waiter.signal.removeEventListener("abort", waiter.abortHandler);
+			waiter.abortHandler = undefined;
+		}
+		this.rotationWaiters = this.rotationWaiters.filter(
+			(entry) => entry !== waiter,
+		);
+	}
+
+	private rejectRotationWaiters(reason: string): void {
+		if (this.rotationWaiters.length === 0) {
+			return;
+		}
+		const error = new Error(reason);
+		const waiters = this.rotationWaiters;
+		this.rotationWaiters = [];
+		for (const waiter of waiters) {
+			waiter.reject(error);
+		}
 	}
 
 	private handleWriteError(error: unknown): void {
@@ -288,6 +363,7 @@ export class RotatingLogWriter extends Writable {
 		}
 		this.failed = true;
 		this.markTruncated();
+		this.rejectRotationWaiters("Log rotation failed");
 		this.logger.warn("Failed to write to log", {
 			error: error instanceof Error ? error.message : String(error),
 		});
