@@ -197,7 +197,6 @@ fn remove_rotation_observer(id: &str) {
         observers.remove(id);
     }
 }
-
 fn get_rotation_observer(id: &str) -> Result<LogRotationObserver, String> {
     let observers = ROTATION_OBSERVERS
         .read()
@@ -226,7 +225,6 @@ fn mark_log_write_failure(id: &str, reason: &str) {
         }
     }
 }
-
 struct RotatingLogWriter {
     log_path: PathBuf,
     limit: u64,
