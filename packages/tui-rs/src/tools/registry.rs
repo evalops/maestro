@@ -94,7 +94,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::Value;
@@ -2336,6 +2336,42 @@ impl ToolExecutor {
                             Err(err) => ToolResult::failure(err),
                         }
                     }
+                    "waitForRotation" | "wait_for_rotation" => {
+                        let id = match args.get("taskId").and_then(|v| v.as_str()) {
+                            Some(id) => id,
+                            None => {
+                                return ToolResult::failure(
+                                    "taskId required for waitForRotation".to_string(),
+                                )
+                            }
+                        };
+                        let timeout_ms = args
+                            .get("timeoutMs")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(5000);
+                        match background_tasks::wait_for_rotation(
+                            id,
+                            Duration::from_millis(timeout_ms),
+                        )
+                        .await
+                        {
+                            Ok(info) => {
+                                let rotated_at = info
+                                    .rotated_at
+                                    .duration_since(SystemTime::UNIX_EPOCH)
+                                    .ok()
+                                    .map(|duration| duration.as_millis() as u64);
+                                let details = serde_json::json!({
+                                    "logPath": info.log_path.to_string_lossy(),
+                                    "archivePath": info.archive_path.to_string_lossy(),
+                                    "rotatedAt": rotated_at
+                                });
+                                ToolResult::success(format!("Log rotated for task {}", id))
+                                    .with_details(details)
+                            }
+                            Err(err) => ToolResult::failure(err),
+                        }
+                    }
                     _ => {
                         let tasks = background_tasks::list();
                         let summary = tasks
@@ -3422,14 +3458,15 @@ impl ToolRegistry {
                     .with_schema(serde_json::json!({
                         "type": "object",
                         "properties": {
-                            "action": {"type": "string", "description": "start | stop | list | logs"},
+                            "action": {"type": "string", "description": "start | stop | list | logs | waitForRotation"},
                             "command": {"type": "string"},
                             "cwd": {"type": "string"},
                             "env": {"type": "object"},
                             "shell": {"type": "boolean"},
                             "taskId": {"type": "string"},
                             "lines": {"type": "number"},
-                            "restart": {"type": "object"}
+                            "restart": {"type": "object"},
+                            "timeoutMs": {"type": "number"}
                         },
                         "required": ["action"]
                     })),

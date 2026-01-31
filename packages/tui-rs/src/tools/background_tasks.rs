@@ -85,6 +85,8 @@ pub struct BackgroundTask {
 
 static TASKS: std::sync::LazyLock<RwLock<HashMap<String, BackgroundTask>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+static ROTATION_OBSERVERS: std::sync::LazyLock<RwLock<HashMap<String, LogRotationObserver>>> =
+    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
 const DEFAULT_LOG_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_LOG_SEGMENTS: usize = 2;
@@ -128,10 +130,10 @@ fn log_limits() -> (u64, usize) {
 }
 
 #[derive(Debug, Clone)]
-struct LogRotationInfo {
-    log_path: PathBuf,
-    archive_path: PathBuf,
-    rotated_at: SystemTime,
+pub struct LogRotationInfo {
+    pub log_path: PathBuf,
+    pub archive_path: PathBuf,
+    pub rotated_at: SystemTime,
 }
 
 #[derive(Debug, Default)]
@@ -180,6 +182,30 @@ impl LogRotationObserver {
             }
         }
     }
+}
+
+fn store_rotation_observer(id: &str, observer: LogRotationObserver) {
+    if let Ok(mut observers) = ROTATION_OBSERVERS.write() {
+        observers.insert(id.to_string(), observer);
+    }
+}
+
+fn get_rotation_observer(id: &str) -> Result<LogRotationObserver, String> {
+    let observers = ROTATION_OBSERVERS
+        .read()
+        .map_err(|_| "Rotation registry unavailable".to_string())?;
+    if let Some(observer) = observers.get(id).cloned() {
+        return Ok(observer);
+    }
+    drop(observers);
+    let task_known = TASKS
+        .read()
+        .map(|tasks| tasks.contains_key(id))
+        .unwrap_or(false);
+    if task_known {
+        return Err("Log rotation tracking unavailable for task".to_string());
+    }
+    Err("Task not found".to_string())
 }
 
 struct RotatingLogWriter {
@@ -421,19 +447,25 @@ async fn drain_stream<R>(
     R: AsyncRead + Unpin + Send + 'static,
 {
     let mut buffer = [0u8; 8192];
+    let mut write_failed = false;
     loop {
         match reader.read(&mut buffer).await {
             Ok(0) => break,
             Ok(count) => {
+                if write_failed {
+                    continue;
+                }
                 let mut guard = writer.lock().await;
-                if let Err(_) = guard.append(&buffer[..count]).await {
-                    guard.record_failure("Log rotation failed").await;
-                    break;
+                if let Err(err) = guard.append(&buffer[..count]).await {
+                    guard.record_failure(&err).await;
+                    write_failed = true;
                 }
             }
-            Err(_) => {
+            Err(err) => {
                 let mut guard = writer.lock().await;
-                guard.record_failure("Log rotation failed").await;
+                guard
+                    .record_failure(&format!("Log stream read failed: {err}"))
+                    .await;
                 break;
             }
         }
@@ -471,6 +503,7 @@ pub async fn start(
     let (log_limit, log_segments) = log_limits();
     let log_writer = RotatingLogWriter::new(log_path.clone(), log_limit, log_segments).await?;
     let log_writer = Arc::new(Mutex::new(log_writer));
+    let observer = { log_writer.lock().await.observer() };
 
     let mut cmd = if shell {
         let (shell_path, shell_args) =
@@ -541,6 +574,7 @@ pub async fn start(
     if let Ok(mut tasks) = TASKS.write() {
         tasks.insert(id.clone(), task.clone());
     }
+    store_rotation_observer(&id, observer);
 
     // Track completion
     tokio::spawn(async move {
@@ -625,6 +659,11 @@ pub fn logs(id: &str, lines: usize) -> Result<String, String> {
         .map_err(|_| "Task registry unavailable".to_string())?;
     let task = tasks.get(id).ok_or_else(|| "Task not found".to_string())?;
     read_last_lines(Path::new(&task.log_path), lines)
+}
+
+pub async fn wait_for_rotation(id: &str, timeout: Duration) -> Result<LogRotationInfo, String> {
+    let observer = get_rotation_observer(id)?;
+    observer.wait_for_rotation(timeout).await
 }
 
 #[cfg(test)]
