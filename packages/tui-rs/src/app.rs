@@ -95,7 +95,7 @@ use crate::skills::{skills_to_prompt, LoadedSkill, SkillLoadError, SkillLoader, 
 use crate::state::{AppState, ApprovalMode, Message, MessageRole};
 use crate::terminal::{self, TerminalCapabilities};
 use crate::tools::{ToolExecutor, ToolRegistry};
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -586,6 +586,7 @@ impl App {
     fn build_system_prompt(&self) -> String {
         let cwd = std::env::current_dir()
             .map_or_else(|_| ".".to_string(), |p| p.to_string_lossy().to_string());
+        let current_year = Utc::now().year();
         let mut sections = vec![format!(
             r#"You are an AI assistant helping with software development tasks.
 
@@ -602,6 +603,7 @@ Tool-calling rules:
 - Always prefer read/write/glob/grep for filesystem; use bash only for commands that are not pure file ops.
 - Never emit a tool call without all required fields.
 - If a tool call is denied, immediately retry with corrected arguments instead of responding without action.
+- When using websearch/codesearch for up-to-date information, include the current year ({current_year}) in the query unless the user specifies a different year or a historical range.
 
 Always use tools when they would be helpful. Be concise and direct in your responses."#
         )];
