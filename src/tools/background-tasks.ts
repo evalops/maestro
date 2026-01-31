@@ -195,6 +195,7 @@ interface BackgroundTask {
 	exitCode?: number | null;
 	signal?: NodeJS.Signals | null;
 	logPath: string;
+	logWriter?: RotatingLogWriter;
 	process: ChildProcess;
 	completion: Promise<void>;
 	stopRequested?: boolean;
@@ -979,6 +980,7 @@ class BackgroundTaskManager extends EventEmitter {
 				rotateArchives(task.logPath, task.limits.logSegments),
 			archivedPath: (index) => this.getArchivedLogPath(task.logPath, index),
 		});
+		task.logWriter = writer;
 
 		let closed = false;
 		const closeStream = () => {

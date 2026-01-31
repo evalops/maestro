@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Mock all dependencies before importing lifecycle
 vi.mock("../../src/db/client.js", () => ({
 	isDbAvailable: vi.fn(() => false),
+	isDatabaseConfigured: vi.fn(() => false),
 	getDb: vi.fn(),
 }));
 

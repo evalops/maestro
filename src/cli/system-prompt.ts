@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import chalk from "chalk";
+import { buildSearchGuidelines } from "../agent/search-guidance.js";
 import { PATHS, getAgentDir } from "../config/constants.js";
 import { type ComposerConfig, loadConfig } from "../config/index.js";
 
@@ -84,28 +85,7 @@ function buildGuidelines(toolNames: Set<string>, currentYear: number): string {
 	guidelines.push(
 		"You can emit multiple tool calls in a single turn; the runtime will execute independent calls in parallel. No batch tool is needed—just include separate tool calls when parallelism helps.",
 	);
-
-	if (toolNames.has("codesearch")) {
-		guidelines.push(
-			"**Use codesearch FIRST for programming questions**: Before searching local files for examples, use codesearch to find working code from billions of GitHub repos and documentation",
-		);
-	}
-
-	if (
-		toolNames.has("websearch") ||
-		toolNames.has("codesearch") ||
-		toolNames.has("webfetch")
-	) {
-		guidelines.push(
-			"**Use web tools for external information**: websearch for current events/news/research, codesearch for programming examples/docs, webfetch when you have specific URLs",
-		);
-	}
-
-	if (toolNames.has("websearch") || toolNames.has("codesearch")) {
-		guidelines.push(
-			`When using websearch/codesearch for up-to-date information, include the current year (${currentYear}) in the query unless the user specifies a different year or a historical range`,
-		);
-	}
+	guidelines.push(...buildSearchGuidelines(toolNames, currentYear));
 
 	if (toolNames.has("bash")) {
 		guidelines.push(

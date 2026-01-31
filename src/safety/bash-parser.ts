@@ -50,6 +50,8 @@ import { basename } from "node:path";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("safety:bash-parser");
+const isTestEnv =
+	process.env.VITEST === "true" || process.env.NODE_ENV === "test";
 
 // Dynamic import types - tree-sitter is loaded at runtime to handle missing bindings
 type ParserType = InstanceType<typeof import("tree-sitter")>;
@@ -109,12 +111,16 @@ async function initParser(): Promise<boolean> {
 		logger.debug("Tree-sitter bash parser initialized successfully");
 	} catch (error) {
 		// Graceful degradation - parser features will be disabled
-		logger.warn(
-			"Tree-sitter bash parser not available (native bindings missing)",
-			{
-				error: error instanceof Error ? error.message : String(error),
-			},
-		);
+		const message =
+			"Tree-sitter bash parser not available (native bindings missing)";
+		const context = {
+			error: error instanceof Error ? error.message : String(error),
+		};
+		if (isTestEnv) {
+			logger.debug(message, context);
+		} else {
+			logger.warn(message, context);
+		}
 		parserAvailable = false;
 	}
 	return parserAvailable;

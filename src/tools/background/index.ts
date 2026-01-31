@@ -1,5 +1,6 @@
 export {
 	RotatingLogWriter,
+	type LogRotationInfo,
 	type RotatingLogWriterOptions,
 } from "./log-rotation.js";
 export {

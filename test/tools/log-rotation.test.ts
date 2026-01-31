@@ -132,19 +132,20 @@ describe("RotatingLogWriter", () => {
 	describe("rotation", () => {
 		it("rotates log file when limit exceeded", async () => {
 			const writer = createWriter({ limit: 10, segments: 1 });
+			const rotation = writer.waitForRotation();
 			await writeAndEnd(writer, "12345678901234567890"); // 20 bytes
 
-			// Should have rotated - archive should exist
-			const archivePath = `${logPath}.1.gz`;
+			const { archivePath } = await rotation;
 			expect(existsSync(archivePath)).toBe(true);
 			expect(shiftArchivesCalled).toBe(true);
 		});
 
 		it("compresses rotated logs with gzip", async () => {
 			const writer = createWriter({ limit: 10, segments: 1 });
+			const rotation = writer.waitForRotation();
 			await writeAndEnd(writer, "First ten!Second ten"); // triggers rotation
 
-			const archivePath = `${logPath}.1.gz`;
+			const { archivePath } = await rotation;
 			expect(existsSync(archivePath)).toBe(true);
 
 			// Decompress and verify content
@@ -155,8 +156,10 @@ describe("RotatingLogWriter", () => {
 
 		it("calls shiftArchives before rotation", async () => {
 			const writer = createWriter({ limit: 10, segments: 1 });
+			const rotation = writer.waitForRotation();
 			await writeAndEnd(writer, "More than ten bytes here");
 
+			await rotation;
 			expect(shiftArchivesCalled).toBe(true);
 		});
 
@@ -185,8 +188,10 @@ describe("RotatingLogWriter", () => {
 				existingSize: 10,
 				segments: 1,
 			});
+			const rotation = writer.waitForRotation();
 			await writeAndEnd(writer, "New data");
 
+			await rotation;
 			expect(shiftArchivesCalled).toBe(true);
 		});
 	});
