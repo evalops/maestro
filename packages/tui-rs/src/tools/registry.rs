@@ -2376,7 +2376,18 @@ impl ToolExecutor {
                         let tasks = background_tasks::list();
                         let summary = tasks
                             .iter()
-                            .map(|t| format!("{} {:?} {}", t.id, t.status, t.command))
+                            .map(|t| {
+                                let mut line = format!("{} {:?} {}", t.id, t.status, t.command);
+                                if t.log_write_failed {
+                                    if let Some(reason) = &t.log_write_error {
+                                        let reason = reason.replace('\n', " ").replace('\r', " ");
+                                        line.push_str(&format!(" [log write failed: {reason}]"));
+                                    } else {
+                                        line.push_str(" [log write failed]");
+                                    }
+                                }
+                                line
+                            })
                             .collect::<Vec<_>>()
                             .join("\n");
                         let details = serde_json::json!({ "count": tasks.len() });
@@ -4150,6 +4161,35 @@ mod tests {
     use super::*;
     use crate::tools::details;
 
+    struct EnvGuard {
+        log_bytes: Option<String>,
+        log_segments: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn capture() -> Self {
+            Self {
+                log_bytes: std::env::var("COMPOSER_BACKGROUND_TASK_LOG_BYTES").ok(),
+                log_segments: std::env::var("COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS").ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.log_bytes {
+                std::env::set_var("COMPOSER_BACKGROUND_TASK_LOG_BYTES", value);
+            } else {
+                std::env::remove_var("COMPOSER_BACKGROUND_TASK_LOG_BYTES");
+            }
+            if let Some(value) = &self.log_segments {
+                std::env::set_var("COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS", value);
+            } else {
+                std::env::remove_var("COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS");
+            }
+        }
+    }
+
     #[test]
     fn test_registry_has_default_tools() {
         let registry = ToolRegistry::new();
@@ -4307,6 +4347,51 @@ mod tests {
             .unwrap_or_default()
             .to_lowercase()
             .contains("binary file detected"));
+    }
+
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn test_background_tasks_wait_for_rotation() {
+        let _env_guard = EnvGuard::capture();
+        std::env::set_var("COMPOSER_BACKGROUND_TASK_LOG_BYTES", "128");
+        std::env::set_var("COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS", "1");
+
+        let dir = tempfile::tempdir().unwrap();
+        let executor = ToolExecutor::new(dir.path().to_str().unwrap());
+        let command = "sh -c \"head -c 10000 /dev/zero; sleep 0.2\"";
+        let start_args = serde_json::json!({
+            "action": "start",
+            "command": command,
+            "cwd": dir.path().to_str().unwrap(),
+            "shell": false
+        });
+        let start_result = executor
+            .execute("background_tasks", &start_args, None, "bg-start")
+            .await;
+        assert!(
+            start_result.success,
+            "start failed: {:?}",
+            start_result.error
+        );
+        let task_id = start_result
+            .details
+            .as_ref()
+            .and_then(|details| details.get("id"))
+            .and_then(|id| id.as_str())
+            .unwrap()
+            .to_string();
+
+        let wait_args = serde_json::json!({
+            "action": "waitForRotation",
+            "taskId": task_id,
+            "timeoutMs": 2000
+        });
+        let wait_result = executor
+            .execute("background_tasks", &wait_args, None, "bg-wait")
+            .await;
+        assert!(wait_result.success, "wait failed: {:?}", wait_result.error);
+        let details = wait_result.details.unwrap_or_default();
+        assert!(details.get("archivePath").is_some());
     }
 
     #[tokio::test]
