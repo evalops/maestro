@@ -79,6 +79,18 @@ export OPENAI_API_KEY=sk-...
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude models) |
 | `OPENAI_API_KEY` | OpenAI API key (for GPT models) |
 | `COMPOSER_MODEL` | Override default model |
+| `COMPOSER_BACKGROUND_TASK_LOG_BYTES` | Max log file size before rotation (default 5MB) |
+| `COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS` | Number of rotated log segments to keep (default 2) |
+
+## Background Task Logs
+
+Background task output is written to `~/.composer/logs` with rotation. Defaults are 5MB per log file and 2 rotated segments.
+
+The `background_tasks` tool supports `action=waitForRotation` with an optional `timeoutMs` (default 5000) to wait for a rotation event:
+
+```text
+background_tasks action=waitForRotation taskId=<id> timeoutMs=10000
+```
 
 ## Conductor Bridge Helpers
 

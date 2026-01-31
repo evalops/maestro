@@ -76,6 +76,8 @@ pub struct BackgroundTask {
     #[allow(dead_code)]
     pub cwd: String,
     pub log_path: String,
+    pub log_write_failed: bool,
+    pub log_write_error: Option<String>,
     pub status: BackgroundTaskStatus,
     #[allow(dead_code)]
     pub started_at: SystemTime,
@@ -190,6 +192,12 @@ fn store_rotation_observer(id: &str, observer: LogRotationObserver) {
     }
 }
 
+fn remove_rotation_observer(id: &str) {
+    if let Ok(mut observers) = ROTATION_OBSERVERS.write() {
+        observers.remove(id);
+    }
+}
+
 fn get_rotation_observer(id: &str) -> Result<LogRotationObserver, String> {
     let observers = ROTATION_OBSERVERS
         .read()
@@ -206,6 +214,17 @@ fn get_rotation_observer(id: &str) -> Result<LogRotationObserver, String> {
         return Err("Log rotation tracking unavailable for task".to_string());
     }
     Err("Task not found".to_string())
+}
+
+fn mark_log_write_failure(id: &str, reason: &str) {
+    if let Ok(mut tasks) = TASKS.write() {
+        if let Some(task) = tasks.get_mut(id) {
+            if !task.log_write_failed {
+                task.log_write_failed = true;
+                task.log_write_error = Some(reason.to_string());
+            }
+        }
+    }
 }
 
 struct RotatingLogWriter {
@@ -743,6 +762,7 @@ async fn drain_stream<R>(
     mut reader: R,
     writer: Arc<Mutex<RotatingLogWriter>>,
     remaining: Arc<AtomicUsize>,
+    task_id: String,
 ) where
     R: AsyncRead + Unpin + Send + 'static,
 {
@@ -758,14 +778,15 @@ async fn drain_stream<R>(
                 let mut guard = writer.lock().await;
                 if let Err(err) = guard.append(&buffer[..count]).await {
                     guard.record_failure(&err).await;
+                    mark_log_write_failure(&task_id, &err);
                     write_failed = true;
                 }
             }
             Err(err) => {
                 let mut guard = writer.lock().await;
-                guard
-                    .record_failure(&format!("Log stream read failed: {err}"))
-                    .await;
+                let reason = format!("Log stream read failed: {err}");
+                guard.record_failure(&reason).await;
+                mark_log_write_failure(&task_id, &reason);
                 break;
             }
         }
@@ -844,10 +865,20 @@ pub async fn start(
     let remaining = Arc::new(AtomicUsize::new(stream_count.max(1)));
 
     if let Some(out) = stdout {
-        tokio::spawn(drain_stream(out, log_writer.clone(), remaining.clone()));
+        tokio::spawn(drain_stream(
+            out,
+            log_writer.clone(),
+            remaining.clone(),
+            id.clone(),
+        ));
     }
     if let Some(err) = stderr {
-        tokio::spawn(drain_stream(err, log_writer.clone(), remaining.clone()));
+        tokio::spawn(drain_stream(
+            err,
+            log_writer.clone(),
+            remaining.clone(),
+            id.clone(),
+        ));
     }
     if stream_count == 0 {
         let mut guard = log_writer.lock().await;
@@ -865,6 +896,8 @@ pub async fn start(
         command: command.clone(),
         cwd,
         log_path: log_path.to_string_lossy().to_string(),
+        log_write_failed: false,
+        log_write_error: None,
         status: BackgroundTaskStatus::Running,
         started_at: SystemTime::now(),
         finished_at: None,
@@ -895,6 +928,7 @@ pub async fn start(
                 };
             }
         }
+        remove_rotation_observer(&id);
 
         if let Some(pid) = pid {
             process_registry::unregister(pid);
@@ -939,6 +973,7 @@ pub fn stop(id: &str) -> Result<BackgroundTask, String> {
     }
     task.status = BackgroundTaskStatus::Stopped;
     task.finished_at = Some(SystemTime::now());
+    remove_rotation_observer(id);
 
     Ok(task.clone())
 }
@@ -1099,6 +1134,8 @@ mod tests {
             command: "echo hello".to_string(),
             cwd: "/tmp".to_string(),
             log_path: "/tmp/test.log".to_string(),
+            log_write_failed: false,
+            log_write_error: None,
             status: BackgroundTaskStatus::Running,
             started_at: SystemTime::now(),
             finished_at: None,
@@ -1120,6 +1157,8 @@ mod tests {
             command: "sleep 10".to_string(),
             cwd: ".".to_string(),
             log_path: "/tmp/clone.log".to_string(),
+            log_write_failed: true,
+            log_write_error: Some("Log write failed".to_string()),
             status: BackgroundTaskStatus::Exited,
             started_at: SystemTime::now(),
             finished_at: Some(SystemTime::now()),
