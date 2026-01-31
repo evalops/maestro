@@ -656,6 +656,7 @@ describe("backgroundTasksTool", () => {
 		expect(task).toBeTruthy();
 		if (task?.logPath) {
 			const archived = `${task.logPath}.1.gz`;
+			await waitForCondition(() => existsSync(archived));
 			expect(existsSync(archived)).toBe(true);
 		}
 		await backgroundTaskManager.stopTask(taskId);
