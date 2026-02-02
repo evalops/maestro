@@ -4,11 +4,13 @@
 		"include": ["src", "test", "packages", "docs"],
 		"ignore": [
 			"dist",
+			"dist-electron",
 			"node_modules",
 			".external",
 			"src/models/models.generated.ts",
 			"packages/vscode-extension/media",
-			"packages/tui-rs/target"
+			"packages/tui-rs/target",
+			"packages/desktop/dist-electron"
 		]
 	},
 	"formatter": {

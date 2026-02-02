@@ -1,0 +1,81 @@
+{
+	"$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+	"appId": "com.evalops.composer",
+	"productName": "Composer",
+	"directories": {
+		"output": "release",
+		"buildResources": "assets"
+	},
+	"files": ["dist/**/*", "dist-electron/**/*"],
+	"mac": {
+		"target": [
+			{
+				"target": "dmg",
+				"arch": ["x64", "arm64"]
+			},
+			{
+				"target": "zip",
+				"arch": ["x64", "arm64"]
+			}
+		],
+		"icon": "assets/icon.icns",
+		"category": "public.app-category.developer-tools",
+		"darkModeSupport": true,
+		"hardenedRuntime": true,
+		"gatekeeperAssess": false,
+		"entitlements": "assets/entitlements.mac.plist",
+		"entitlementsInherit": "assets/entitlements.mac.plist"
+	},
+	"dmg": {
+		"contents": [
+			{
+				"x": 130,
+				"y": 220
+			},
+			{
+				"x": 410,
+				"y": 220,
+				"type": "link",
+				"path": "/Applications"
+			}
+		],
+		"window": {
+			"width": 540,
+			"height": 400
+		}
+	},
+	"win": {
+		"target": [
+			{
+				"target": "nsis",
+				"arch": ["x64"]
+			}
+		],
+		"icon": "assets/icon.ico"
+	},
+	"nsis": {
+		"oneClick": false,
+		"perMachine": false,
+		"allowToChangeInstallationDirectory": true,
+		"deleteAppDataOnUninstall": false
+	},
+	"linux": {
+		"target": [
+			{
+				"target": "AppImage",
+				"arch": ["x64"]
+			},
+			{
+				"target": "deb",
+				"arch": ["x64"]
+			}
+		],
+		"icon": "assets/icon.png",
+		"category": "Development"
+	},
+	"publish": {
+		"provider": "github",
+		"owner": "evalops",
+		"repo": "composer"
+	}
+}
