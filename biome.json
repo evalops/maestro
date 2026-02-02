@@ -10,7 +10,8 @@
 			"src/models/models.generated.ts",
 			"packages/vscode-extension/media",
 			"packages/tui-rs/target",
-			"packages/desktop/dist-electron"
+			"packages/desktop/dist-electron",
+			"packages/desktop/release"
 		]
 	},
 	"formatter": {

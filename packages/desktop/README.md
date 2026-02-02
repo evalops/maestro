@@ -10,8 +10,9 @@ Beautiful, native Electron desktop app for Composer - your AI coding assistant.
 - **Persistent Settings** - Window position, size, and preferences saved between sessions
 
 ### Beautiful Dark Theme
-- **Deep black background** (#0a0a0b) for reduced eye strain
-- **Thoughtful typography** - Inter for UI, JetBrains Mono for code
+- **Obsidian noir background** - Deep blacks for reduced eye strain
+- **Teal accent color** - Modern, distinctive visual identity
+- **Thoughtful typography** - DM Sans for UI, JetBrains Mono for code
 - **Subtle animations** - Smooth transitions and micro-interactions
 - **Syntax highlighting** - Full highlight.js support for code blocks
 
@@ -41,10 +42,79 @@ bun run dev
 bun run package
 
 # Build for specific platform
-bun run package:mac    # macOS (.dmg, .zip)
-bun run package:win    # Windows (.exe, NSIS installer)
-bun run package:linux  # Linux (.AppImage, .deb)
+bun run package:mac           # macOS (.dmg, .zip)
+bun run package:mac:universal # macOS Universal Binary (Intel + Apple Silicon)
+bun run package:win           # Windows (.exe, NSIS installer)
+bun run package:linux         # Linux (.AppImage, .deb, .rpm)
+bun run package:all           # All platforms
 ```
+
+## Packaging
+
+### Icon Generation
+
+Regenerate app icons from SVG source:
+
+```bash
+# Requires ImageMagick: brew install imagemagick
+bun run icons
+```
+
+This generates:
+- `icon.icns` - macOS app icon
+- `icon.ico` - Windows icon
+- `icon.png` - Linux icon (512x512)
+- `dmg-background.png` - DMG installer background
+- `dmg-background@2x.png` - Retina DMG background
+
+### macOS DMG
+
+The macOS DMG features:
+- **Custom background** - Branded installer with drag-to-Applications guidance
+- **Universal binary** - Runs natively on Intel and Apple Silicon Macs
+- **ULFO compression** - Modern, efficient compression
+- **Notarization ready** - Hardened runtime with proper entitlements
+
+### Code Signing & Notarization (macOS)
+
+For distribution outside the Mac App Store:
+
+1. **Developer ID Certificate** - Obtain from Apple Developer portal
+
+2. **Environment Variables**:
+   ```bash
+   # Option A: Apple ID credentials
+   export APPLE_ID="your@email.com"
+   export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
+   export APPLE_TEAM_ID="XXXXXXXXXX"
+
+   # Option B: App Store Connect API Key (recommended for CI/CD)
+   export APPLE_API_KEY="XXXXXXXXXX"
+   export APPLE_API_KEY_PATH="/path/to/AuthKey_XXXXXXXXXX.p8"
+   export APPLE_API_ISSUER="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+   ```
+
+3. **Build with notarization**:
+   ```bash
+   bun run publish:mac
+   ```
+
+To skip notarization during development:
+```bash
+SKIP_NOTARIZE=true bun run package:mac
+```
+
+### Windows
+
+- NSIS installer with customizable installation directory
+- Portable executable option
+- Desktop and Start Menu shortcuts
+
+### Linux
+
+- AppImage for universal distribution
+- `.deb` for Debian/Ubuntu
+- `.rpm` for Fedora/RHEL
 
 ## Architecture
 
@@ -55,6 +125,7 @@ packages/desktop/
 │   │   ├── index.ts    # App entry point
 │   │   ├── window.ts   # Window management
 │   │   ├── menu.ts     # Native menu bar
+│   │   ├── server.ts   # Embedded backend server
 │   │   └── ipc.ts      # IPC handlers
 │   ├── preload/        # Context bridge
 │   │   └── index.ts    # Exposed APIs
@@ -62,7 +133,11 @@ packages/desktop/
 │       ├── components/ # UI components
 │       ├── hooks/      # React hooks
 │       └── lib/        # API client, types
-├── assets/             # App icons
+├── assets/             # App icons & DMG background
+├── scripts/            # Build scripts
+│   ├── generate-icons.sh  # Icon generation
+│   └── notarize.js        # macOS notarization
+├── release/            # Built installers
 └── dist-electron/      # Built Electron code
 ```
 
@@ -90,20 +165,21 @@ The app connects to a Composer backend server at `http://localhost:8080` by defa
 ### Colors
 
 ```css
---bg-primary: #0a0a0b;      /* Deep black */
---bg-secondary: #141416;    /* Card backgrounds */
---bg-tertiary: #1c1c1f;     /* Hover states */
---border: #2a2a2d;          /* Subtle borders */
---text-primary: #fafafa;    /* Main text */
---text-secondary: #a1a1aa;  /* Muted text */
---accent: #3b82f6;          /* Blue accent */
+--bg-void: #020204;         /* Deepest black */
+--bg-primary: #06060a;      /* Primary background */
+--bg-secondary: #0c0c12;    /* Card backgrounds */
+--bg-tertiary: #12121a;     /* Elevated surfaces */
+--accent: #14b8a6;          /* Teal accent */
+--accent-hover: #0d9488;    /* Teal hover */
+--text-primary: #f8fafc;    /* Main text */
+--text-secondary: #94a3b8;  /* Muted text */
 ```
 
 ### Typography
 
-- **UI Text**: Inter (400, 500, 600, 700)
+- **UI Text**: DM Sans (400, 500, 600, 700)
 - **Code**: JetBrains Mono (400, 500, 600)
-- **Sizes**: 12px (xs), 14px (sm), 16px (base), 20px (lg), 28px (xl)
+- **Sizes**: 11px (xs), 13px (sm), 15px (base), 18px (lg), 24px (xl)
 
 ## Development Notes
 
@@ -113,6 +189,7 @@ The main process (`src/main/`) handles:
 - Window creation and lifecycle
 - Native menu bar
 - IPC communication
+- Embedded backend server management
 - File system access
 
 ### Preload Script
@@ -132,20 +209,6 @@ The renderer (`src/renderer/`) is a React application with:
 - **marked** for Markdown rendering
 - Custom hooks for chat and session management
 
-## Packaging
-
-Built with `electron-builder`:
-- macOS: DMG installer with drag-to-Applications
-- Windows: NSIS installer with optional per-user install
-- Linux: AppImage and .deb packages
-
-### Code Signing (macOS)
-
-For distribution, you'll need:
-1. Apple Developer certificate
-2. Notarization with `notarize.js` script
-3. Hardened runtime entitlements
-
 ## Troubleshooting
 
 ### App won't connect
@@ -159,6 +222,18 @@ For distribution, you'll need:
 1. Clear the build cache: `bun run clean`
 2. Reinstall dependencies: `rm -rf node_modules && bun install`
 3. Check for TypeScript errors: `bun run check`
+
+### DMG background not showing
+
+1. Regenerate icons: `bun run icons`
+2. Ensure ImageMagick is installed: `brew install imagemagick`
+3. Check `assets/dmg-background.png` exists
+
+### Notarization fails
+
+1. Verify your Apple Developer credentials
+2. Check entitlements in `assets/entitlements.mac.plist`
+3. Set `SKIP_NOTARIZE=true` for local development
 
 ## License
 

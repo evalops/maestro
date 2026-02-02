@@ -5,16 +5,20 @@
 	"type": "module",
 	"main": "dist-electron/main/index.js",
 	"scripts": {
-		"clean": "node ../../scripts/clean-paths.js dist dist-electron",
+		"clean": "node ../../scripts/clean-paths.js dist dist-electron release",
 		"dev": "vite",
-		"build": "vite build && electron-builder --config electron-builder.json",
-		"build:vite": "vite build",
+		"build": "vite build",
 		"preview": "vite preview",
 		"check": "tsc --noEmit",
-		"package": "npm run build:vite && electron-builder --config electron-builder.json",
-		"package:mac": "npm run build:vite && electron-builder --mac --config electron-builder.json",
-		"package:win": "npm run build:vite && electron-builder --win --config electron-builder.json",
-		"package:linux": "npm run build:vite && electron-builder --linux --config electron-builder.json"
+		"icons": "./scripts/generate-icons.sh",
+		"package": "npm run build && electron-builder --config electron-builder.json",
+		"package:mac": "npm run build && electron-builder --mac --config electron-builder.json",
+		"package:mac:universal": "npm run build && electron-builder --mac --universal --config electron-builder.json",
+		"package:win": "npm run build && electron-builder --win --config electron-builder.json",
+		"package:linux": "npm run build && electron-builder --linux --config electron-builder.json",
+		"package:all": "npm run build && electron-builder -mwl --config electron-builder.json",
+		"publish": "npm run build && electron-builder --publish always --config electron-builder.json",
+		"publish:mac": "npm run build && electron-builder --mac --publish always --config electron-builder.json"
 	},
 	"keywords": [
 		"composer",
@@ -37,12 +41,13 @@
 		"electron-updater": "^6.3.9"
 	},
 	"devDependencies": {
+		"@electron/notarize": "^2.5.0",
 		"@types/node": "^24.10.7",
 		"@types/react": "^19.0.0",
 		"@types/react-dom": "^19.0.0",
 		"@vitejs/plugin-react": "^4.3.4",
 		"autoprefixer": "^10.4.20",
-		"electron": "^33.2.1",
+		"electron": "33.2.1",
 		"electron-builder": "^25.1.8",
 		"highlight.js": "^11.10.0",
 		"marked": "^17.0.0",
