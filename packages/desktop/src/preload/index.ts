@@ -30,6 +30,8 @@ const electronAPI = {
 		title?: string;
 		filters?: { name: string; extensions: string[] }[];
 	}) => ipcRenderer.invoke("dialog:openFile", options),
+	openDirectory: (options?: { title?: string }) =>
+		ipcRenderer.invoke("dialog:openDirectory", options),
 
 	saveFile: (options?: {
 		title?: string;

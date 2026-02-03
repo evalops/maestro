@@ -220,6 +220,15 @@ export interface AutomationCreateInput {
 	sessionMode?: "reuse" | "new";
 	sessionId?: string | null;
 	contextPaths?: string[];
+	contextFolders?: string[];
+	runWindow?: {
+		start?: string;
+		end?: string;
+		days?: number[];
+	} | null;
+	exclusive?: boolean;
+	notifyOnSuccess?: boolean;
+	notifyOnFailure?: boolean;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 }

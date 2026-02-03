@@ -109,10 +109,15 @@ export interface AutomationTask {
 	runCount: number;
 	running?: boolean;
 	runHistory?: AutomationRunRecord[];
+	runWindow?: AutomationRunWindow;
+	exclusive?: boolean;
+	notifyOnSuccess?: boolean;
+	notifyOnFailure?: boolean;
 	sessionMode?: "reuse" | "new";
 	sessionId?: string;
 	lastSessionId?: string;
 	contextPaths?: string[];
+	contextFolders?: string[];
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 }
@@ -127,4 +132,10 @@ export interface AutomationRunRecord {
 	error?: string;
 	output?: string;
 	sessionId?: string;
+}
+
+export interface AutomationRunWindow {
+	start: string;
+	end: string;
+	days?: number[];
 }

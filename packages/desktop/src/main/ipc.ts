@@ -81,6 +81,17 @@ export function setupIpc(): void {
 	);
 
 	ipcMain.handle(
+		"dialog:openDirectory",
+		async (_event, options: { title?: string }) => {
+			const result = await dialog.showOpenDialog({
+				title: options.title ?? "Select Folder",
+				properties: ["openDirectory"],
+			});
+			return result.canceled ? null : result.filePaths[0];
+		},
+	);
+
+	ipcMain.handle(
 		"dialog:saveFile",
 		async (
 			_event,

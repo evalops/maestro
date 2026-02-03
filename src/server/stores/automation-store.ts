@@ -19,6 +19,12 @@ export interface AutomationRunRecord {
 	output?: string;
 	sessionId?: string;
 }
+
+export interface AutomationRunWindow {
+	start: string;
+	end: string;
+	days?: number[];
+}
 export type AutomationSessionMode = "reuse" | "new";
 
 export interface AutomationTask {
@@ -45,10 +51,15 @@ export interface AutomationTask {
 	runCount: number;
 	running?: boolean;
 	runHistory?: AutomationRunRecord[];
+	runWindow?: AutomationRunWindow;
+	exclusive?: boolean;
+	notifyOnSuccess?: boolean;
+	notifyOnFailure?: boolean;
 	sessionMode?: AutomationSessionMode;
 	sessionId?: string;
 	lastSessionId?: string;
 	contextPaths?: string[];
+	contextFolders?: string[];
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 }
@@ -64,6 +75,15 @@ const AUTOMATIONS_STATE_PATH =
 
 const MAX_AUTOMATIONS = 500;
 const MAX_RUN_HISTORY = 20;
+
+function isValidTimeString(value: string): boolean {
+	if (!/^\d{2}:\d{2}$/.test(value)) return false;
+	const [hour, minute] = value.split(":").map((part) => Number(part));
+	if (hour === undefined || minute === undefined) return false;
+	if (hour < 0 || hour > 23) return false;
+	if (minute < 0 || minute > 59) return false;
+	return true;
+}
 
 function normalizeRunRecord(raw: unknown): AutomationRunRecord | null {
 	if (!isPlainObject(raw)) return null;
@@ -97,6 +117,30 @@ function normalizeRunRecord(raw: unknown): AutomationRunRecord | null {
 	}
 	if (typeof record.sessionId === "string" && record.sessionId.length > 0) {
 		cleaned.sessionId = record.sessionId;
+	}
+	return cleaned;
+}
+
+function normalizeRunWindow(raw: unknown): AutomationRunWindow | null {
+	if (!isPlainObject(raw)) return null;
+	const input = raw as Partial<AutomationRunWindow>;
+	if (typeof input.start !== "string" || typeof input.end !== "string") {
+		return null;
+	}
+	if (!isValidTimeString(input.start) || !isValidTimeString(input.end)) {
+		return null;
+	}
+	const cleaned: AutomationRunWindow = {
+		start: input.start,
+		end: input.end,
+	};
+	if (Array.isArray(input.days)) {
+		const days = input.days.filter(
+			(day) => Number.isFinite(day) && day >= 0 && day <= 6,
+		);
+		if (days.length > 0) {
+			cleaned.days = Array.from(new Set(days));
+		}
 	}
 	return cleaned;
 }
@@ -170,6 +214,21 @@ function normalizeAutomation(raw: unknown): AutomationTask | null {
 		}
 		cleaned.runHistory = normalizedHistory;
 	}
+	if (task.runWindow) {
+		const normalizedWindow = normalizeRunWindow(task.runWindow);
+		if (normalizedWindow) {
+			cleaned.runWindow = normalizedWindow;
+		}
+	}
+	if (typeof task.exclusive === "boolean") {
+		cleaned.exclusive = task.exclusive;
+	}
+	if (typeof task.notifyOnSuccess === "boolean") {
+		cleaned.notifyOnSuccess = task.notifyOnSuccess;
+	}
+	if (typeof task.notifyOnFailure === "boolean") {
+		cleaned.notifyOnFailure = task.notifyOnFailure;
+	}
 	if (
 		task.scheduleKind &&
 		["once", "daily", "weekly", "cron"].includes(task.scheduleKind)
@@ -204,6 +263,11 @@ function normalizeAutomation(raw: unknown): AutomationTask | null {
 	}
 	if (Array.isArray(task.contextPaths)) {
 		cleaned.contextPaths = task.contextPaths.filter(
+			(path): path is string => typeof path === "string" && path.length > 0,
+		);
+	}
+	if (Array.isArray(task.contextFolders)) {
+		cleaned.contextFolders = task.contextFolders.filter(
 			(path): path is string => typeof path === "string" && path.length > 0,
 		);
 	}

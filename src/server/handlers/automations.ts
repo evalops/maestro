@@ -37,6 +37,15 @@ interface AutomationCreateInput {
 	sessionMode?: "reuse" | "new";
 	sessionId?: string | null;
 	contextPaths?: string[];
+	contextFolders?: string[];
+	runWindow?: {
+		start?: string;
+		end?: string;
+		days?: number[];
+	} | null;
+	exclusive?: boolean;
+	notifyOnSuccess?: boolean;
+	notifyOnFailure?: boolean;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 }
@@ -70,6 +79,25 @@ function sanitizePaths(paths?: string[]): string[] | undefined {
 		.map((path) => path.trim())
 		.filter(Boolean)
 		.slice(0, 24);
+}
+
+function sanitizeRunWindow(
+	window?: AutomationCreateInput["runWindow"],
+): { start: string; end: string; days?: number[] } | undefined {
+	if (!window || typeof window !== "object") return undefined;
+	if (typeof window.start !== "string" || typeof window.end !== "string") {
+		return undefined;
+	}
+	if (!/^\d{2}:\d{2}$/.test(window.start)) return undefined;
+	if (!/^\d{2}:\d{2}$/.test(window.end)) return undefined;
+	const days = Array.isArray(window.days)
+		? window.days.filter((day) => Number.isFinite(day) && day >= 0 && day <= 6)
+		: undefined;
+	return {
+		start: window.start,
+		end: window.end,
+		days: days && days.length > 0 ? Array.from(new Set(days)) : undefined,
+	};
 }
 
 function parseRunAt(value?: string | null): Date | null {
@@ -195,6 +223,11 @@ export async function handleAutomations(
 				sessionMode: data.sessionMode ?? "reuse",
 				sessionId: data.sessionId ?? undefined,
 				contextPaths: sanitizePaths(data.contextPaths),
+				contextFolders: sanitizePaths(data.contextFolders),
+				runWindow: sanitizeRunWindow(data.runWindow),
+				exclusive: data.exclusive ?? false,
+				notifyOnSuccess: data.notifyOnSuccess ?? true,
+				notifyOnFailure: data.notifyOnFailure ?? true,
 				model: data.model,
 				thinkingLevel: data.thinkingLevel,
 			};
@@ -255,6 +288,23 @@ export async function handleAutomations(
 			}
 			if (Array.isArray(data.contextPaths)) {
 				task.contextPaths = sanitizePaths(data.contextPaths);
+			}
+			if (Array.isArray(data.contextFolders)) {
+				task.contextFolders = sanitizePaths(data.contextFolders);
+			}
+			if (data.runWindow === null) {
+				task.runWindow = undefined;
+			} else if (data.runWindow !== undefined) {
+				task.runWindow = sanitizeRunWindow(data.runWindow);
+			}
+			if (typeof data.exclusive === "boolean") {
+				task.exclusive = data.exclusive;
+			}
+			if (typeof data.notifyOnSuccess === "boolean") {
+				task.notifyOnSuccess = data.notifyOnSuccess;
+			}
+			if (typeof data.notifyOnFailure === "boolean") {
+				task.notifyOnFailure = data.notifyOnFailure;
 			}
 			if (typeof data.model === "string") {
 				task.model = data.model;
