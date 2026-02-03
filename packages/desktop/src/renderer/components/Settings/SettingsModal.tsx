@@ -54,7 +54,6 @@ const DEFAULT_UI_STATUS: UiStatus = {
 };
 
 const DEFAULT_MODE_OPTIONS = ["smart", "rush", "free", "custom"];
-const TELEMETRY_POLICY_URL = "https://github.com/evalops/composer#telemetry";
 
 const getModelKey = (model: Model) => `${model.provider}:${model.id}`;
 
@@ -130,6 +129,8 @@ export function SettingsModal({
 		null,
 	);
 	const [selectedComposer, setSelectedComposer] = useState<string>("");
+	const [showTelemetryPolicyModal, setShowTelemetryPolicyModal] =
+		useState(false);
 	const [availableModels, setAvailableModels] = useState<Model[]>(
 		dedupeModels(models ?? []),
 	);
@@ -719,11 +720,43 @@ export function SettingsModal({
 		return telemetryStatus.endpoint ?? telemetryStatus.filePath ?? "";
 	}, [telemetryStatus]);
 
+	const telemetryDestinationExplanation = useMemo(() => {
+		if (!telemetryStatus?.enabled) {
+			return "Nowhere. Telemetry is disabled.";
+		}
+		if (telemetryStatus.endpoint) {
+			return `Your endpoint receives JSON event payloads: ${telemetryStatus.endpoint}`;
+		}
+		if (telemetryStatus.filePath) {
+			return `Events are written to a local log file: ${telemetryStatus.filePath}`;
+		}
+		return "Telemetry is enabled, but no destination is configured.";
+	}, [telemetryStatus]);
+
+	const trainingScopeExplanation = useMemo(() => {
+		if (!trainingStatus) return "Applies to requests from this app.";
+		if (trainingStatus.preference === "opted-out") {
+			return "We send an opt-out header to providers that support it.";
+		}
+		if (trainingStatus.preference === "opted-in") {
+			return "We allow provider data use where supported.";
+		}
+		return "Provider default (controlled by your model account settings).";
+	}, [trainingStatus]);
+
 	const telemetrySamplingLabel = useMemo(() => {
 		if (!telemetryStatus) return "—";
 		if (!telemetryStatus.enabled) return "—";
 		const percent = Math.round(telemetryStatus.sampleRate * 100);
 		return `${percent}%`;
+	}, [telemetryStatus]);
+
+	const telemetrySamplingExplanation = useMemo(() => {
+		if (!telemetryStatus?.enabled) return "Sampling applies only when enabled.";
+		if (telemetryStatus.sampleRate < 1) {
+			return "Only a portion of events are recorded.";
+		}
+		return "All telemetry events are recorded.";
 	}, [telemetryStatus]);
 
 	const trainingPreferenceLabel = useMemo(() => {
@@ -755,11 +788,8 @@ export function SettingsModal({
 		return `${Math.round(value / 1000)}s`;
 	};
 
-	const canOpenTelemetryPolicy =
-		typeof window !== "undefined" && Boolean(window.electron?.openExternal);
-
-	const openTelemetryPolicy = () => {
-		window.electron?.openExternal?.(TELEMETRY_POLICY_URL);
+	const closeTelemetryPolicyModal = () => {
+		setShowTelemetryPolicyModal(false);
 	};
 
 	if (!open) return null;
@@ -1585,15 +1615,13 @@ export function SettingsModal({
 										</div>
 									</div>
 									<div className="flex items-center gap-2">
-										{canOpenTelemetryPolicy && (
-											<button
-												type="button"
-												className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-												onClick={openTelemetryPolicy}
-											>
-												Policy
-											</button>
-										)}
+										<button
+											type="button"
+											className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+											onClick={() => setShowTelemetryPolicyModal(true)}
+										>
+											Policy
+										</button>
 										<button
 											type="button"
 											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
@@ -1832,6 +1860,101 @@ export function SettingsModal({
 						</section>
 					)}
 				</div>
+				{showTelemetryPolicyModal && (
+					<div className="absolute inset-0 z-[60] flex items-center justify-center">
+						<button
+							type="button"
+							className="absolute inset-0 bg-black/60"
+							onClick={closeTelemetryPolicyModal}
+							title="Close telemetry policy"
+						/>
+						<div className="relative z-[70] w-[560px] max-w-[92vw] rounded-2xl border border-line-subtle bg-bg-secondary shadow-[0_24px_64px_-20px_rgba(0,0,0,0.7)]">
+							<div className="flex items-center justify-between px-5 py-4 border-b border-line-subtle">
+								<div>
+									<h3 className="text-sm font-semibold text-text-primary">
+										Telemetry & Training Policy
+									</h3>
+									<p className="text-xs text-text-muted">
+										Plain-English summary for this device.
+									</p>
+								</div>
+								<button
+									type="button"
+									className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-tertiary/60 transition-colors"
+									onClick={closeTelemetryPolicyModal}
+									title="Close"
+								>
+									<svg
+										aria-hidden="true"
+										width="14"
+										height="14"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										strokeWidth="2"
+										strokeLinecap="round"
+										strokeLinejoin="round"
+									>
+										<line x1="18" y1="6" x2="6" y2="18" />
+										<line x1="6" y1="6" x2="18" y2="18" />
+									</svg>
+								</button>
+							</div>
+							<div className="p-5 space-y-4 text-xs text-text-muted">
+								<div>
+									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
+										What we collect
+									</div>
+									<p className="mt-2">
+										Operational events like tool names, durations,
+										success/failure, background task status, API timings, and
+										token/cost metrics. Telemetry does not include chat message
+										content. Commands are sanitized where possible.
+									</p>
+								</div>
+								<div>
+									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
+										Where it goes
+									</div>
+									<p className="mt-2">{telemetryDestinationExplanation}</p>
+								</div>
+								<div>
+									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
+										How to disable
+									</div>
+									<p className="mt-2">
+										Use the Telemetry toggle in Settings or run{" "}
+										<span className="text-text-primary">/telemetry off</span>.
+									</p>
+								</div>
+								<div>
+									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
+										How to export logs
+									</div>
+									<p className="mt-2">
+										{telemetryStatus?.enabled && telemetryStatus.filePath
+											? `Copy the log file at ${telemetryStatus.filePath}.`
+											: telemetryStatus?.enabled && telemetryStatus.endpoint
+												? "Export data from your configured endpoint."
+												: "No logs are written when telemetry is disabled."}
+									</p>
+								</div>
+								<div>
+									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
+										Training data
+									</div>
+									<p className="mt-2">{trainingScopeExplanation}</p>
+								</div>
+								<div>
+									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
+										Sampling
+									</div>
+									<p className="mt-2">{telemetrySamplingExplanation}</p>
+								</div>
+							</div>
+						</div>
+					</div>
+				)}
 			</div>
 		</div>
 	);
