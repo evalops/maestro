@@ -54,6 +54,7 @@ const DEFAULT_UI_STATUS: UiStatus = {
 };
 
 const DEFAULT_MODE_OPTIONS = ["smart", "rush", "free", "custom"];
+const TELEMETRY_POLICY_URL = "https://github.com/evalops/composer#telemetry";
 
 const getModelKey = (model: Model) => `${model.provider}:${model.id}`;
 
@@ -92,7 +93,7 @@ export function SettingsModal({
 	const [approvalMode, setApprovalMode] = useState<ApprovalMode>("prompt");
 	const [uiStatus, setUiStatus] = useState<UiStatus>(DEFAULT_UI_STATUS);
 	const [queueMode, setQueueMode] = useState<QueueMode>("all");
-	const [showTerminalUiControls, setShowTerminalUiControls] = useState(false);
+	const [showCliOnlyControls, setShowCliOnlyControls] = useState(false);
 	const [frameworks, setFrameworks] = useState<FrameworkSummary[]>([]);
 	const [frameworkId, setFrameworkId] = useState<string>("none");
 	const [frameworkScope, setFrameworkScope] = useState<"user" | "workspace">(
@@ -697,6 +698,49 @@ export function SettingsModal({
 		return dedupeModels(list);
 	}, [availableModels, models]);
 
+	const telemetryDataLabel = useMemo(() => {
+		if (!telemetryStatus?.enabled) return "No events recorded";
+		if (telemetryStatus.sampleRate < 1) {
+			const percent = Math.round(telemetryStatus.sampleRate * 100);
+			return `Minimal (${percent}% sampled)`;
+		}
+		return "Full";
+	}, [telemetryStatus]);
+
+	const telemetryDestinationLabel = useMemo(() => {
+		if (!telemetryStatus?.enabled) return "Local (disabled)";
+		if (telemetryStatus.endpoint) return "HTTP endpoint";
+		if (telemetryStatus.filePath) return "Local log file";
+		return "Unknown";
+	}, [telemetryStatus]);
+
+	const telemetryDestinationDetail = useMemo(() => {
+		if (!telemetryStatus?.enabled) return "";
+		return telemetryStatus.endpoint ?? telemetryStatus.filePath ?? "";
+	}, [telemetryStatus]);
+
+	const telemetrySamplingLabel = useMemo(() => {
+		if (!telemetryStatus) return "—";
+		if (!telemetryStatus.enabled) return "—";
+		const percent = Math.round(telemetryStatus.sampleRate * 100);
+		return `${percent}%`;
+	}, [telemetryStatus]);
+
+	const trainingPreferenceLabel = useMemo(() => {
+		if (!trainingStatus) return "Unknown";
+		if (trainingStatus.preference === "opted-in") return "Opted-in";
+		if (trainingStatus.preference === "opted-out") return "Opted-out";
+		return "Provider default";
+	}, [trainingStatus]);
+
+	const trainingDataLabel = useMemo(() => {
+		if (!trainingStatus) return "Unknown";
+		if (trainingStatus.preference === "opted-out")
+			return "No training use (opted-out)";
+		if (trainingStatus.preference === "opted-in") return "Allowed";
+		return "Controlled by provider";
+	}, [trainingStatus]);
+
 	const formatTimestamp = (value?: number | string) => {
 		if (!value) return "Unknown";
 		const date = typeof value === "number" ? new Date(value) : new Date(value);
@@ -709,6 +753,13 @@ export function SettingsModal({
 		if (value < 1000) return `${Math.round(value)}ms`;
 		if (value < 60000) return `${(value / 1000).toFixed(1)}s`;
 		return `${Math.round(value / 1000)}s`;
+	};
+
+	const canOpenTelemetryPolicy =
+		typeof window !== "undefined" && Boolean(window.electron?.openExternal);
+
+	const openTelemetryPolicy = () => {
+		window.electron?.openExternal?.(TELEMETRY_POLICY_URL);
 	};
 
 	if (!open) return null;
@@ -728,30 +779,41 @@ export function SettingsModal({
 							Settings
 						</h2>
 						<p className="text-xs text-text-muted">
-							Desktop preferences plus runtime controls.
+							Desktop preferences plus runtime controls. Toggle CLI-only
+							settings when needed.
 						</p>
 					</div>
-					<button
-						type="button"
-						className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-tertiary/60 transition-colors"
-						onClick={onClose}
-						title="Close"
-					>
-						<svg
-							aria-hidden="true"
-							width="14"
-							height="14"
-							viewBox="0 0 24 24"
-							fill="none"
-							stroke="currentColor"
-							strokeWidth="2"
-							strokeLinecap="round"
-							strokeLinejoin="round"
+					<div className="flex items-center gap-2">
+						<button
+							type="button"
+							className="px-3 py-2 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+							onClick={() => setShowCliOnlyControls((prev) => !prev)}
+							title="Show terminal-only settings"
 						>
-							<line x1="18" y1="6" x2="6" y2="18" />
-							<line x1="6" y1="6" x2="18" y2="18" />
-						</svg>
-					</button>
+							{showCliOnlyControls ? "Hide CLI-only" : "Show CLI-only"}
+						</button>
+						<button
+							type="button"
+							className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-tertiary/60 transition-colors"
+							onClick={onClose}
+							title="Close"
+						>
+							<svg
+								aria-hidden="true"
+								width="14"
+								height="14"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="2"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+							>
+								<line x1="18" y1="6" x2="6" y2="18" />
+								<line x1="6" y1="6" x2="18" y2="18" />
+							</svg>
+						</button>
+					</div>
 				</div>
 
 				<div className="px-5 py-5 space-y-6 text-sm text-text-secondary overflow-y-auto max-h-[calc(90vh-96px)]">
@@ -1100,124 +1162,6 @@ export function SettingsModal({
 									<option value="all">All</option>
 								</select>
 							</div>
-						</div>
-					</section>
-
-					<section className="border border-line-subtle rounded-xl overflow-hidden">
-						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
-							Terminal UI (Optional)
-						</div>
-						<div className="p-4 space-y-4">
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Terminal-only controls
-									</div>
-									<div className="text-xs text-text-muted">
-										Applies to the Composer TUI, not the desktop UI.
-									</div>
-								</div>
-								<button
-									type="button"
-									className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-									onClick={() => setShowTerminalUiControls((prev) => !prev)}
-								>
-									{showTerminalUiControls ? "Hide" : "Show"}
-								</button>
-							</div>
-
-							{showTerminalUiControls && (
-								<div className="space-y-4">
-									<div className="flex items-center justify-between gap-4">
-										<div>
-											<div className="text-text-primary font-medium">
-												Zen mode
-											</div>
-											<div className="text-xs text-text-muted">
-												Reduce TUI clutter.
-											</div>
-										</div>
-										<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-											<input
-												type="checkbox"
-												disabled={!hasSession}
-												checked={uiStatus.zenMode}
-												onChange={(event) => updateZen(event.target.checked)}
-												className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-											/>
-											<span>{uiStatus.zenMode ? "On" : "Off"}</span>
-										</label>
-									</div>
-
-									<div className="flex items-center justify-between gap-4">
-										<div>
-											<div className="text-text-primary font-medium">
-												Clean mode
-											</div>
-											<div className="text-xs text-text-muted">
-												Clean up TUI output formatting.
-											</div>
-										</div>
-										<select
-											disabled={!hasSession}
-											value={uiStatus.cleanMode}
-											onChange={(event) =>
-												updateCleanMode(event.target.value as CleanMode)
-											}
-											className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
-										>
-											<option value="off">Off</option>
-											<option value="soft">Soft</option>
-											<option value="aggressive">Aggressive</option>
-										</select>
-									</div>
-
-									<div className="flex items-center justify-between gap-4">
-										<div>
-											<div className="text-text-primary font-medium">
-												Footer mode
-											</div>
-											<div className="text-xs text-text-muted">
-												TUI status footer density.
-											</div>
-										</div>
-										<select
-											disabled={!hasSession}
-											value={uiStatus.footerMode}
-											onChange={(event) =>
-												updateFooterMode(event.target.value as FooterMode)
-											}
-											className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
-										>
-											<option value="ensemble">Ensemble</option>
-											<option value="solo">Solo</option>
-										</select>
-									</div>
-
-									<div className="flex items-center justify-between gap-4">
-										<div>
-											<div className="text-text-primary font-medium">
-												Compact tools
-											</div>
-											<div className="text-xs text-text-muted">
-												Reduce TUI tool output cards.
-											</div>
-										</div>
-										<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-											<input
-												type="checkbox"
-												disabled={!hasSession}
-												checked={uiStatus.compactTools}
-												onChange={(event) =>
-													updateCompactTools(event.target.checked)
-												}
-												className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-											/>
-											<span>{uiStatus.compactTools ? "On" : "Off"}</span>
-										</label>
-									</div>
-								</div>
-							)}
 						</div>
 					</section>
 
@@ -1628,74 +1572,265 @@ export function SettingsModal({
 						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
 							Telemetry & Training
 						</div>
-						<div className="p-4 space-y-4">
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">Telemetry</div>
-									<div className="text-xs text-text-muted">
-										Status: {telemetryStatus?.enabled ? "On" : "Off"}
+						<div className="p-4 space-y-6">
+							<div className="space-y-3">
+								<div className="flex items-start justify-between gap-4">
+									<div>
+										<div className="text-text-primary font-medium">
+											Telemetry
+										</div>
+										<div className="text-xs text-text-muted">
+											Writes operational metrics (tool names, durations, error
+											rates) to a local log file or configured endpoint.
+										</div>
+									</div>
+									<div className="flex items-center gap-2">
+										{canOpenTelemetryPolicy && (
+											<button
+												type="button"
+												className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+												onClick={openTelemetryPolicy}
+											>
+												Policy
+											</button>
+										)}
+										<button
+											type="button"
+											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+											onClick={() => updateTelemetry("on")}
+										>
+											Enable
+										</button>
+										<button
+											type="button"
+											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+											onClick={() => updateTelemetry("off")}
+										>
+											Disable
+										</button>
+										<button
+											type="button"
+											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+											onClick={() => updateTelemetry("reset")}
+										>
+											Reset
+										</button>
 									</div>
 								</div>
-								<div className="flex items-center gap-2">
-									<button
-										type="button"
-										className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										onClick={() => updateTelemetry("on")}
-									>
-										Enable
-									</button>
-									<button
-										type="button"
-										className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										onClick={() => updateTelemetry("off")}
-									>
-										Disable
-									</button>
-									<button
-										type="button"
-										className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										onClick={() => updateTelemetry("reset")}
-									>
-										Reset
-									</button>
+								<div className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 p-3 space-y-1 text-xs text-text-muted">
+									<div className="flex items-center justify-between">
+										<span>Status</span>
+										<span className="text-text-primary">
+											{telemetryStatus?.enabled ? "On" : "Off"}
+										</span>
+									</div>
+									<div className="flex items-center justify-between">
+										<span>Data</span>
+										<span className="text-text-primary">
+											{telemetryDataLabel}
+										</span>
+									</div>
+									<div className="flex items-center justify-between">
+										<span>Destination</span>
+										<span className="text-text-primary">
+											{telemetryDestinationLabel}
+										</span>
+									</div>
+									{telemetryDestinationDetail && (
+										<div
+											className="text-[11px] text-text-tertiary truncate"
+											title={telemetryDestinationDetail}
+										>
+											{telemetryDestinationDetail}
+										</div>
+									)}
+									<div className="flex items-center justify-between">
+										<span>Sampling</span>
+										<span className="text-text-primary">
+											{telemetrySamplingLabel}
+										</span>
+									</div>
+									<div className="flex items-center justify-between">
+										<span>Scope</span>
+										<span className="text-text-primary">This device</span>
+									</div>
+								</div>
+								<div className="text-[11px] text-text-tertiary">
+									{telemetryStatus?.enabled
+										? `Reason: ${telemetryStatus.reason}`
+										: "Telemetry is off. No usage metrics are written or sent."}
 								</div>
 							</div>
 
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Training data
+							<div className="space-y-3">
+								<div className="flex items-start justify-between gap-4">
+									<div>
+										<div className="text-text-primary font-medium">
+											Training data
+										</div>
+										<div className="text-xs text-text-muted">
+											Controls the data-collection header sent to model
+											providers.
+										</div>
 									</div>
-									<div className="text-xs text-text-muted">
-										Preference: {trainingStatus?.preference ?? "unknown"}
+									<div className="flex items-center gap-2">
+										<button
+											type="button"
+											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+											onClick={() => updateTraining("on")}
+										>
+											Opt-in
+										</button>
+										<button
+											type="button"
+											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+											onClick={() => updateTraining("off")}
+										>
+											Opt-out
+										</button>
+										<button
+											type="button"
+											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+											onClick={() => updateTraining("reset")}
+										>
+											Reset
+										</button>
 									</div>
 								</div>
-								<div className="flex items-center gap-2">
-									<button
-										type="button"
-										className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										onClick={() => updateTraining("on")}
-									>
-										Opt-in
-									</button>
-									<button
-										type="button"
-										className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										onClick={() => updateTraining("off")}
-									>
-										Opt-out
-									</button>
-									<button
-										type="button"
-										className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										onClick={() => updateTraining("reset")}
-									>
-										Reset
-									</button>
+								<div className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 p-3 space-y-1 text-xs text-text-muted">
+									<div className="flex items-center justify-between">
+										<span>Preference</span>
+										<span className="text-text-primary">
+											{trainingPreferenceLabel}
+										</span>
+									</div>
+									<div className="flex items-center justify-between">
+										<span>Data use</span>
+										<span className="text-text-primary">
+											{trainingDataLabel}
+										</span>
+									</div>
+									<div className="flex items-center justify-between">
+										<span>Destination</span>
+										<span className="text-text-primary">Model providers</span>
+									</div>
+									<div className="flex items-center justify-between">
+										<span>Scope</span>
+										<span className="text-text-primary">
+											Requests from this app
+										</span>
+									</div>
+								</div>
+								<div className="text-[11px] text-text-tertiary">
+									{trainingStatus?.preference === "provider-default"
+										? "Provider default (controlled by your model account settings)."
+										: `Reason: ${trainingStatus?.reason ?? "unknown"}`}
 								</div>
 							</div>
 						</div>
 					</section>
+
+					{showCliOnlyControls && (
+						<section className="border border-line-subtle rounded-xl overflow-hidden">
+							<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
+								Terminal UI (CLI Only)
+							</div>
+							<div className="p-4 space-y-4">
+								<div className="text-xs text-text-muted">
+									These settings affect the terminal interface only. The desktop
+									UI ignores them.
+								</div>
+								<div className="flex items-center justify-between gap-4">
+									<div>
+										<div className="text-text-primary font-medium">
+											Zen mode
+										</div>
+										<div className="text-xs text-text-muted">
+											Reduce TUI clutter.
+										</div>
+									</div>
+									<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
+										<input
+											type="checkbox"
+											disabled={!hasSession}
+											checked={uiStatus.zenMode}
+											onChange={(event) => updateZen(event.target.checked)}
+											className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
+										/>
+										<span>{uiStatus.zenMode ? "On" : "Off"}</span>
+									</label>
+								</div>
+
+								<div className="flex items-center justify-between gap-4">
+									<div>
+										<div className="text-text-primary font-medium">
+											Clean mode
+										</div>
+										<div className="text-xs text-text-muted">
+											Clean up TUI output formatting.
+										</div>
+									</div>
+									<select
+										disabled={!hasSession}
+										value={uiStatus.cleanMode}
+										onChange={(event) =>
+											updateCleanMode(event.target.value as CleanMode)
+										}
+										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
+									>
+										<option value="off">Off</option>
+										<option value="soft">Soft</option>
+										<option value="aggressive">Aggressive</option>
+									</select>
+								</div>
+
+								<div className="flex items-center justify-between gap-4">
+									<div>
+										<div className="text-text-primary font-medium">
+											Footer mode
+										</div>
+										<div className="text-xs text-text-muted">
+											TUI status footer density.
+										</div>
+									</div>
+									<select
+										disabled={!hasSession}
+										value={uiStatus.footerMode}
+										onChange={(event) =>
+											updateFooterMode(event.target.value as FooterMode)
+										}
+										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
+									>
+										<option value="ensemble">Ensemble</option>
+										<option value="solo">Solo</option>
+									</select>
+								</div>
+
+								<div className="flex items-center justify-between gap-4">
+									<div>
+										<div className="text-text-primary font-medium">
+											Compact tools
+										</div>
+										<div className="text-xs text-text-muted">
+											Reduce TUI tool output cards.
+										</div>
+									</div>
+									<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
+										<input
+											type="checkbox"
+											disabled={!hasSession}
+											checked={uiStatus.compactTools}
+											onChange={(event) =>
+												updateCompactTools(event.target.checked)
+											}
+											className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
+										/>
+										<span>{uiStatus.compactTools ? "On" : "Off"}</span>
+									</label>
+								</div>
+							</div>
+						</section>
+					)}
 				</div>
 			</div>
 		</div>
