@@ -9,21 +9,25 @@ import type { SessionSummary } from "../../lib/types";
 
 export interface SidebarProps {
 	open: boolean;
+	activeView: "chat" | "automations";
 	sessions: SessionSummary[];
 	currentSessionId: string | null;
 	onSessionSelect: (sessionId: string) => void;
 	onSessionDelete: (sessionId: string) => void;
 	onNewSession: () => void;
+	onViewChange: (view: "chat" | "automations") => void;
 	onOpenSettings: () => void;
 }
 
 export function Sidebar({
 	open,
+	activeView,
 	sessions,
 	currentSessionId,
 	onSessionSelect,
 	onSessionDelete,
 	onNewSession,
+	onViewChange,
 	onOpenSettings,
 }: SidebarProps) {
 	const [searchQuery, setSearchQuery] = useState("");
@@ -123,6 +127,45 @@ export function Sidebar({
 							transition-all duration-200"
 					/>
 				</div>
+			</div>
+
+			{/* Workspace */}
+			<div className="flex-shrink-0 px-4 pb-3">
+				<div className="text-[11px] uppercase tracking-[0.2em] text-text-tertiary mb-2">
+					Workspace
+				</div>
+				<button
+					type="button"
+					onClick={() => onViewChange("automations")}
+					className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm transition-all ${
+						activeView === "automations"
+							? "bg-bg-tertiary/70 text-text-primary border border-accent/30 shadow-[0_8px_20px_-16px_rgba(20,184,166,0.8)]"
+							: "bg-bg-tertiary/30 text-text-muted hover:text-text-primary hover:bg-bg-tertiary/60"
+					}`}
+				>
+					<span className="w-8 h-8 rounded-lg bg-bg-secondary/70 border border-border-subtle flex items-center justify-center">
+						<svg
+							aria-hidden="true"
+							width="16"
+							height="16"
+							viewBox="0 0 24 24"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.8"
+							strokeLinecap="round"
+							strokeLinejoin="round"
+						>
+							<path d="M12 8v5l3 2" />
+							<circle cx="12" cy="12" r="9" />
+						</svg>
+					</span>
+					<div className="flex-1 text-left">
+						<div className="font-medium">Automations</div>
+						<div className="text-[11px] text-text-tertiary">
+							Scheduled agent runs
+						</div>
+					</div>
+				</button>
 			</div>
 
 			{/* Sessions List */}

@@ -84,3 +84,34 @@ export interface WorkspaceStatus {
 		version: string;
 	};
 }
+
+export interface AutomationTask {
+	id: string;
+	name: string;
+	prompt: string;
+	schedule: string | null;
+	scheduleLabel?: string;
+	scheduleKind?: "once" | "daily" | "weekly" | "cron";
+	scheduleTime?: string;
+	scheduleDays?: number[];
+	runAt?: string;
+	cronExpression?: string;
+	nextRun: string | null;
+	timezone: string;
+	enabled: boolean;
+	createdAt: string;
+	updatedAt: string;
+	lastRunAt?: string;
+	lastRunStatus?: "success" | "failure" | "skipped";
+	lastRunError?: string;
+	lastRunDurationMs?: number;
+	lastOutput?: string;
+	runCount: number;
+	running?: boolean;
+	sessionMode?: "reuse" | "new";
+	sessionId?: string;
+	lastSessionId?: string;
+	contextPaths?: string[];
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+}

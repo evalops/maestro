@@ -5,6 +5,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { AutomationsView } from "./components/Automations/AutomationsView";
 import { ChatContainer } from "./components/Chat/ChatContainer";
 import { Header } from "./components/Header/Header";
 import {
@@ -24,6 +25,7 @@ export default function App() {
 	const [sidebarOpen, setSidebarOpen] = useState(true);
 	const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [activeView, setActiveView] = useState<"chat" | "automations">("chat");
 	const [settings, setSettings] = useState<DesktopSettings>(DEFAULT_SETTINGS);
 	const {
 		sessions,
@@ -81,6 +83,7 @@ export default function App() {
 					break;
 				case "view-sessions":
 					setSidebarOpen(true);
+					setActiveView("chat");
 					break;
 				default:
 					console.log("Unhandled menu event:", event, args);
@@ -94,11 +97,13 @@ export default function App() {
 		const session = await createSession();
 		if (session) {
 			setCurrentSessionId(session.id);
+			setActiveView("chat");
 		}
 	}, [createSession]);
 
 	const handleSessionSelect = useCallback((sessionId: string) => {
 		setCurrentSessionId(sessionId);
+		setActiveView("chat");
 	}, []);
 
 	const handleSessionDelete = useCallback(
@@ -119,6 +124,12 @@ export default function App() {
 			setCurrentSessionId(sessions[0].id);
 		}
 	}, [loading, sessions, currentSessionId, handleNewSession]);
+
+	const handleOpenSession = useCallback((sessionId: string) => {
+		setCurrentSessionId(sessionId);
+		setActiveView("chat");
+		setSidebarOpen(true);
+	}, []);
 
 	return (
 		<div className="flex flex-col h-screen overflow-hidden bg-bg-void">
@@ -158,11 +169,13 @@ export default function App() {
 				{/* Sidebar */}
 				<Sidebar
 					open={sidebarOpen}
+					activeView={activeView}
 					sessions={sessions}
 					currentSessionId={currentSessionId}
 					onSessionSelect={handleSessionSelect}
 					onSessionDelete={handleSessionDelete}
 					onNewSession={handleNewSession}
+					onViewChange={setActiveView}
 					onOpenSettings={() => setSettingsOpen(true)}
 				/>
 
@@ -185,12 +198,22 @@ export default function App() {
 							"linear-gradient(180deg, var(--bg-primary) 0%, var(--bg-void) 100%)",
 					}}
 				>
-					<ChatContainer
-						sessionId={currentSessionId}
-						showTimestamps={settings.showTimestamps}
-						density={settings.density}
-						thinkingLevel={settings.thinkingLevel}
-					/>
+					{activeView === "chat" ? (
+						<ChatContainer
+							sessionId={currentSessionId}
+							showTimestamps={settings.showTimestamps}
+							density={settings.density}
+							thinkingLevel={settings.thinkingLevel}
+						/>
+					) : (
+						<AutomationsView
+							sessions={sessions}
+							currentSessionId={currentSessionId}
+							models={models}
+							currentModel={currentModel}
+							onOpenSession={handleOpenSession}
+						/>
+					)}
 				</main>
 			</div>
 			<SettingsModal

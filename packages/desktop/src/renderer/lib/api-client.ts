@@ -6,6 +6,7 @@
 
 import type {
 	AgentEvent,
+	AutomationTask,
 	Message,
 	Model,
 	Session,
@@ -204,6 +205,33 @@ export interface McpStatus {
 	servers: McpServerStatus[];
 }
 
+export interface AutomationCreateInput {
+	name: string;
+	prompt: string;
+	schedule: string | null;
+	scheduleLabel?: string;
+	scheduleKind?: "once" | "daily" | "weekly" | "cron";
+	scheduleTime?: string;
+	scheduleDays?: number[];
+	runAt?: string;
+	cronExpression?: string;
+	timezone?: string;
+	enabled?: boolean;
+	sessionMode?: "reuse" | "new";
+	sessionId?: string | null;
+	contextPaths?: string[];
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+}
+
+export type AutomationUpdateInput = Partial<AutomationCreateInput> & {
+	enabled?: boolean;
+};
+
+export interface AutomationsResponse {
+	automations: AutomationTask[];
+}
+
 export interface ComposerProfile {
 	name: string;
 	description?: string;
@@ -247,6 +275,54 @@ export class ApiClient {
 		}
 
 		return response.json();
+	}
+
+	async getAutomations(): Promise<AutomationTask[]> {
+		const data = await this.fetchJson<AutomationsResponse>("/api/automations");
+		return data.automations ?? [];
+	}
+
+	async createAutomation(
+		input: AutomationCreateInput,
+	): Promise<AutomationTask> {
+		const data = await this.fetchJson<{ automation: AutomationTask }>(
+			"/api/automations",
+			{
+				method: "POST",
+				body: JSON.stringify(input),
+			},
+		);
+		return data.automation;
+	}
+
+	async updateAutomation(
+		id: string,
+		input: AutomationUpdateInput,
+	): Promise<AutomationTask> {
+		const data = await this.fetchJson<{ automation: AutomationTask }>(
+			`/api/automations/${id}`,
+			{
+				method: "PATCH",
+				body: JSON.stringify(input),
+			},
+		);
+		return data.automation;
+	}
+
+	async deleteAutomation(id: string): Promise<void> {
+		await this.fetchJson<{ success: boolean }>(`/api/automations/${id}`, {
+			method: "DELETE",
+		});
+	}
+
+	async runAutomation(id: string): Promise<AutomationTask> {
+		const data = await this.fetchJson<{ automation: AutomationTask }>(
+			`/api/automations/${id}/run`,
+			{
+				method: "POST",
+			},
+		);
+		return data.automation;
 	}
 
 	// Models

@@ -98,6 +98,7 @@ const getDbModule = (() => {
 })();
 import { WebActionApprovalService } from "./server/approval-service.js";
 import { checkApiAuth } from "./server/authz.js";
+import { startAutomationScheduler } from "./server/automations/scheduler.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import { handleChatWebSocket } from "./server/handlers/chat-ws.js";
 import {
@@ -685,6 +686,7 @@ export async function startWebServer(port = 8080) {
 	registerCrashHandlers();
 	await reloadModelConfig();
 	await initLifecycle();
+	startAutomationScheduler(context);
 
 	// Initialize enterprise context for user/org tracking (optional, only if enterprise features enabled)
 	const { enterpriseContext } = await import("./enterprise/context.js");

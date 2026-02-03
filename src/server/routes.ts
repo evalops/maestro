@@ -7,6 +7,7 @@ import { handleAdminCleanup, handleAdminWarmCaches } from "./handlers/admin.js";
 import { handleApproval } from "./handlers/approval.js";
 import { handleApprovals } from "./handlers/approvals.js";
 import { handleAttachmentExtract } from "./handlers/attachments.js";
+import { handleAutomations } from "./handlers/automations.js";
 import { handleBackground } from "./handlers/background.js";
 import { handleBranch } from "./handlers/branch.js";
 import { handleBridgeStatus } from "./handlers/bridge.js";
@@ -214,6 +215,34 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "POST",
 			path: "/api/background",
 			handler: (req, res) => handleBackground(req, res, corsHeaders),
+		},
+		{
+			method: "GET",
+			path: "/api/automations",
+			handler: (req, res) => handleAutomations(req, res, context),
+		},
+		{
+			method: "POST",
+			path: "/api/automations",
+			handler: (req, res) => handleAutomations(req, res, context),
+		},
+		{
+			method: "PATCH",
+			path: "/api/automations/:id",
+			handler: (req, res, params) =>
+				handleAutomations(req, res, context, params),
+		},
+		{
+			method: "DELETE",
+			path: "/api/automations/:id",
+			handler: (req, res, params) =>
+				handleAutomations(req, res, context, params),
+		},
+		{
+			method: "POST",
+			path: "/api/automations/:id/run",
+			handler: (req, res, params) =>
+				handleAutomations(req, res, context, params),
 		},
 		{
 			method: "GET",
