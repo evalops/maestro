@@ -24,6 +24,8 @@ export function Header({
 }: HeaderProps) {
 	const [isMaximized, setIsMaximized] = useState(false);
 	const [showModelDropdown, setShowModelDropdown] = useState(false);
+	const getModelKey = (model: Model) => `${model.provider}:${model.id}`;
+	const currentModelKey = currentModel ? getModelKey(currentModel) : "";
 	const isMac =
 		window.electron?.isMac ?? navigator.platform.toLowerCase().includes("mac");
 
@@ -196,20 +198,20 @@ export function Header({
 										{models.map((model) => (
 											<button
 												type="button"
-												key={model.id}
+												key={getModelKey(model)}
 												onClick={() => {
-													onModelChange(model.id);
+													onModelChange(getModelKey(model));
 													setShowModelDropdown(false);
 												}}
 												className={`w-full flex items-start gap-3 p-3 rounded-xl text-left transition-all duration-150 ${
-													currentModel?.id === model.id
+													currentModelKey === getModelKey(model)
 														? "bg-accent-subtle border border-line-glow"
 														: "hover:bg-bg-tertiary/50 border border-transparent"
 												}`}
 											>
 												<span
 													className={`mt-1.5 w-2 h-2 rounded-full flex-shrink-0 transition-colors ${
-														currentModel?.id === model.id
+														currentModelKey === getModelKey(model)
 															? "bg-accent"
 															: "bg-text-muted"
 													}`}
@@ -217,7 +219,7 @@ export function Header({
 												<div className="flex-1 min-w-0">
 													<div
 														className={`font-medium truncate ${
-															currentModel?.id === model.id
+															currentModelKey === getModelKey(model)
 																? "text-accent-hover"
 																: "text-text-primary"
 														}`}
@@ -229,6 +231,9 @@ export function Header({
 															{model.description}
 														</div>
 													)}
+													<div className="text-[10px] text-text-tertiary mt-1">
+														{model.provider}
+													</div>
 												</div>
 											</button>
 										))}

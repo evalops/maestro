@@ -6,10 +6,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiClient } from "../lib/api-client";
-import type { Message } from "../lib/types";
+import type { Message, ThinkingLevel } from "../lib/types";
 
 export interface UseChatOptions {
 	sessionId?: string;
+	thinkingLevel?: ThinkingLevel;
 }
 
 export interface UseChatReturn {
@@ -21,7 +22,10 @@ export interface UseChatReturn {
 	clearMessages: () => void;
 }
 
-export function useChat(sessionId?: string): UseChatReturn {
+export function useChat(
+	sessionId?: string,
+	options: UseChatOptions = {},
+): UseChatReturn {
 	const [messages, setMessages] = useState<Message[]>([]);
 	const [isLoading, setIsLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -78,9 +82,23 @@ export function useChat(sessionId?: string): UseChatReturn {
 
 				// Stream the response
 				let fullContent = "";
+				const thinkingBlocks = new Map<number, string>();
+				let currentThinkingIndex: number | null = null;
+				const updateAssistantMessage = (update: (message: Message) => void) => {
+					setMessages((prev) => {
+						const updated = [...prev];
+						const lastMsg = updated[updated.length - 1];
+						if (lastMsg && lastMsg.role === "assistant") {
+							update(lastMsg);
+						}
+						return updated;
+					});
+				};
+
 				for await (const event of apiClient.chat({
 					sessionId,
 					messages: [...messages, userMessage],
+					thinkingLevel: options.thinkingLevel,
 				})) {
 					if (event.type === "done") break;
 
@@ -88,14 +106,37 @@ export function useChat(sessionId?: string): UseChatReturn {
 						const msgEvent = event.assistantMessageEvent;
 						if (msgEvent.type === "text_delta" && msgEvent.delta) {
 							fullContent += msgEvent.delta;
-							setMessages((prev) => {
-								const updated = [...prev];
-								const lastMsg = updated[updated.length - 1];
-								if (lastMsg && lastMsg.role === "assistant") {
-									lastMsg.content = fullContent;
-								}
-								return updated;
+							updateAssistantMessage((lastMsg) => {
+								lastMsg.content = fullContent;
 							});
+						} else if (msgEvent.type === "thinking_start") {
+							if (typeof msgEvent.contentIndex === "number") {
+								currentThinkingIndex = msgEvent.contentIndex;
+								thinkingBlocks.set(msgEvent.contentIndex, "");
+								updateAssistantMessage((lastMsg) => {
+									lastMsg.thinking = "";
+								});
+							}
+						} else if (
+							msgEvent.type === "thinking_delta" &&
+							typeof msgEvent.contentIndex === "number"
+						) {
+							if (currentThinkingIndex === null) {
+								currentThinkingIndex = msgEvent.contentIndex;
+								if (!thinkingBlocks.has(msgEvent.contentIndex)) {
+									thinkingBlocks.set(msgEvent.contentIndex, "");
+								}
+							}
+							const activeIndex = currentThinkingIndex ?? msgEvent.contentIndex;
+							const current = thinkingBlocks.get(activeIndex) || "";
+							thinkingBlocks.set(activeIndex, current + (msgEvent.delta ?? ""));
+							updateAssistantMessage((lastMsg) => {
+								lastMsg.thinking = Array.from(thinkingBlocks.values()).join(
+									"\n\n",
+								);
+							});
+						} else if (msgEvent.type === "thinking_end") {
+							currentThinkingIndex = null;
 						}
 					}
 				}
@@ -113,7 +154,7 @@ export function useChat(sessionId?: string): UseChatReturn {
 				abortControllerRef.current = null;
 			}
 		},
-		[sessionId, messages, isLoading],
+		[sessionId, messages, isLoading, options.thinkingLevel],
 	);
 
 	const clearError = useCallback(() => {

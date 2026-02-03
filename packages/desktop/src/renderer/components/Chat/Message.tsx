@@ -4,6 +4,7 @@
  * Renders a single chat message with markdown support.
  */
 
+import { useState } from "react";
 import type { ToolCall as ToolCallType } from "../../lib/types";
 import { Markdown } from "../common";
 import { ToolCall } from "./ToolCall";
@@ -11,19 +12,30 @@ import { ToolCall } from "./ToolCall";
 export interface MessageProps {
 	role: "user" | "assistant";
 	content: string;
+	thinking?: string;
 	toolCalls?: ToolCallType[];
 	timestamp?: string;
+	showTimestamp?: boolean;
+	density?: "comfortable" | "compact";
 	isStreaming?: boolean;
 }
 
 export function Message({
 	role,
 	content,
+	thinking,
 	toolCalls,
 	timestamp,
+	showTimestamp = true,
+	density = "comfortable",
 	isStreaming = false,
 }: MessageProps) {
 	const isUser = role === "user";
+	const isCompact = density === "compact";
+	const [isThinkingOpen, setIsThinkingOpen] = useState(false);
+	const hasThinking = thinking !== undefined;
+	const thinkingContent = (thinking ?? "").trim();
+	const hasThinkingContent = thinkingContent.length > 0;
 
 	const formatTime = (dateString?: string) => {
 		if (!dateString) return "";
@@ -34,17 +46,24 @@ export function Message({
 		});
 	};
 
+	const getThinkingSummary = () => {
+		if (!hasThinkingContent) return "Thinking...";
+		const firstLine = thinkingContent.split("\n")[0] ?? "";
+		if (firstLine.length <= 120) return firstLine;
+		return `${firstLine.slice(0, 120)}...`;
+	};
+
 	return (
 		<div
-			className={`flex items-start gap-4 animate-slide-up ${
+			className={`flex items-start ${isCompact ? "gap-3" : "gap-4"} animate-slide-up ${
 				isUser ? "flex-row-reverse" : ""
 			}`}
 		>
 			{/* Avatar */}
 			<div
-				className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-200 hover:scale-105 ${
-					isUser ? "" : ""
-				}`}
+				className={`flex items-center justify-center flex-shrink-0 transition-all duration-200 hover:scale-105 ${
+					isCompact ? "w-8 h-8 rounded-lg" : "w-10 h-10 rounded-xl"
+				} ${isUser ? "" : ""}`}
 				style={
 					isUser
 						? {
@@ -109,14 +128,14 @@ export function Message({
 			>
 				{/* Header */}
 				<div
-					className={`flex items-center gap-2.5 mb-2.5 ${
-						isUser ? "justify-end" : ""
-					}`}
+					className={`flex items-center ${
+						isCompact ? "gap-2 mb-2" : "gap-2.5 mb-2.5"
+					} ${isUser ? "justify-end" : ""}`}
 				>
 					<span className="text-label text-text-secondary">
 						{isUser ? "You" : "Composer"}
 					</span>
-					{timestamp && (
+					{timestamp && showTimestamp && (
 						<span className="text-[10px] text-text-muted font-mono tabular-nums">
 							{formatTime(timestamp)}
 						</span>
@@ -131,14 +150,55 @@ export function Message({
 					)}
 				</div>
 
+				{/* Thinking Block */}
+				{!isUser && hasThinking && (
+					<div
+						className={`thinking-block ${isThinkingOpen ? "open" : "collapsed"} ${
+							isCompact ? "compact" : ""
+						}`}
+					>
+						<button
+							type="button"
+							className="thinking-header"
+							aria-expanded={isThinkingOpen}
+							onClick={() => setIsThinkingOpen((prev) => !prev)}
+						>
+							<div className="thinking-label">
+								<span
+									className="thinking-dot animate-pulse"
+									aria-hidden="true"
+								/>
+								<span>{isStreaming ? "Thinking..." : "Reasoning"}</span>
+							</div>
+							<span className="thinking-toggle" aria-hidden="true">
+								▾
+							</span>
+						</button>
+						{!isThinkingOpen && hasThinkingContent && (
+							<div className="thinking-summary">{getThinkingSummary()}</div>
+						)}
+						<div
+							className={`thinking-content ${
+								isThinkingOpen ? "open" : "collapsed"
+							}`}
+						>
+							{hasThinkingContent ? thinkingContent : "Thinking..."}
+						</div>
+					</div>
+				)}
+
 				{/* Message Content */}
 				<div
-					className={`px-5 py-4 transition-all duration-200 ${
-						isUser ? "message-user" : "message-assistant"
-					}`}
+					className={`transition-all duration-200 ${
+						isCompact ? "px-4 py-3" : "px-5 py-4"
+					} ${isUser ? "message-user" : "message-assistant"}`}
 				>
 					{isUser ? (
-						<p className="whitespace-pre-wrap text-[15px] leading-relaxed">
+						<p
+							className={`whitespace-pre-wrap leading-relaxed ${
+								isCompact ? "text-[14px]" : "text-[15px]"
+							}`}
+						>
 							{content}
 						</p>
 					) : (

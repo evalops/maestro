@@ -7,12 +7,24 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChatContainer } from "./components/Chat/ChatContainer";
 import { Header } from "./components/Header/Header";
+import {
+	type DesktopSettings,
+	SettingsModal,
+} from "./components/Settings/SettingsModal";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { useComposer } from "./hooks/useComposer";
+
+const DEFAULT_SETTINGS: DesktopSettings = {
+	showTimestamps: true,
+	density: "comfortable",
+	thinkingLevel: "off",
+};
 
 export default function App() {
 	const [sidebarOpen, setSidebarOpen] = useState(true);
 	const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [settings, setSettings] = useState<DesktopSettings>(DEFAULT_SETTINGS);
 	const {
 		sessions,
 		models,
@@ -22,6 +34,28 @@ export default function App() {
 		deleteSession,
 		setModel,
 	} = useComposer();
+	useEffect(() => {
+		try {
+			const stored = localStorage.getItem("composer-desktop-settings");
+			if (stored) {
+				const parsed = JSON.parse(stored) as DesktopSettings;
+				setSettings({ ...DEFAULT_SETTINGS, ...parsed });
+			}
+		} catch (error) {
+			console.warn("Failed to load settings:", error);
+		}
+	}, []);
+
+	useEffect(() => {
+		try {
+			localStorage.setItem(
+				"composer-desktop-settings",
+				JSON.stringify(settings),
+			);
+		} catch (error) {
+			console.warn("Failed to persist settings:", error);
+		}
+	}, [settings]);
 
 	// Handle menu events from the native menu
 	useEffect(() => {
@@ -31,6 +65,9 @@ export default function App() {
 			switch (event) {
 				case "new-session":
 					handleNewSession();
+					break;
+				case "preferences":
+					setSettingsOpen(true);
 					break;
 				case "toggle-sidebar":
 					setSidebarOpen((prev) => !prev);
@@ -126,6 +163,7 @@ export default function App() {
 					onSessionSelect={handleSessionSelect}
 					onSessionDelete={handleSessionDelete}
 					onNewSession={handleNewSession}
+					onOpenSettings={() => setSettingsOpen(true)}
 				/>
 
 				{/* Divider with gradient */}
@@ -147,9 +185,24 @@ export default function App() {
 							"linear-gradient(180deg, var(--bg-primary) 0%, var(--bg-void) 100%)",
 					}}
 				>
-					<ChatContainer sessionId={currentSessionId} />
+					<ChatContainer
+						sessionId={currentSessionId}
+						showTimestamps={settings.showTimestamps}
+						density={settings.density}
+						thinkingLevel={settings.thinkingLevel}
+					/>
 				</main>
 			</div>
+			<SettingsModal
+				open={settingsOpen}
+				settings={settings}
+				onChange={setSettings}
+				onClose={() => setSettingsOpen(false)}
+				sessionId={currentSessionId}
+				models={models}
+				currentModel={currentModel}
+				onModelChange={setModel}
+			/>
 		</div>
 	);
 }

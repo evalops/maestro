@@ -6,17 +6,27 @@
 
 import { useEffect, useRef } from "react";
 import { useChat } from "../../hooks/useChat";
+import type { ThinkingLevel } from "../../lib/types";
 import { InputArea } from "./InputArea";
 import { MessageList } from "./MessageList";
 
 export interface ChatContainerProps {
 	sessionId: string | null;
+	showTimestamps?: boolean;
+	density?: "comfortable" | "compact";
+	thinkingLevel?: ThinkingLevel;
 }
 
-export function ChatContainer({ sessionId }: ChatContainerProps) {
+export function ChatContainer({
+	sessionId,
+	showTimestamps = true,
+	density = "comfortable",
+	thinkingLevel = "off",
+}: ChatContainerProps) {
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const { messages, isLoading, error, sendMessage, clearError } = useChat(
 		sessionId ?? undefined,
+		{ thinkingLevel },
 	);
 
 	// Auto-scroll to bottom when new messages arrive
@@ -231,7 +241,12 @@ export function ChatContainer({ sessionId }: ChatContainerProps) {
 						</div>
 					) : (
 						<>
-							<MessageList messages={messages} isLoading={isLoading} />
+							<MessageList
+								messages={messages}
+								isLoading={isLoading}
+								showTimestamps={showTimestamps}
+								density={density}
+							/>
 							<div ref={messagesEndRef} className="h-4" />
 						</>
 					)}

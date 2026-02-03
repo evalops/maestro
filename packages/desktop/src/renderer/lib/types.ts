@@ -8,9 +8,18 @@ export interface Message {
 	id?: string;
 	role: "user" | "assistant";
 	content: string;
+	thinking?: string;
 	toolCalls?: ToolCall[];
 	timestamp?: string;
 }
+
+export type ThinkingLevel =
+	| "off"
+	| "minimal"
+	| "low"
+	| "medium"
+	| "high"
+	| "max";
 
 export interface ToolCall {
 	id?: string;
@@ -45,9 +54,15 @@ export interface AgentEvent {
 	type: string;
 	assistantMessageEvent?: {
 		type: string;
+		contentIndex?: number;
 		delta?: string;
 		content?: string;
 		message?: Message;
+		partial?: Message;
+		toolCallId?: string;
+		toolCallName?: string;
+		toolCallArgs?: Record<string, unknown>;
+		toolCallArgsTruncated?: boolean;
 	};
 	message?: Message;
 }
