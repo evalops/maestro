@@ -3,6 +3,10 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import electron from "vite-plugin-electron/simple";
 
+const DEV_PORT = Number(
+	process.env.COMPOSER_DESKTOP_UI_PORT ?? process.env.VITE_PORT ?? 5173,
+);
+
 export default defineConfig({
 	plugins: [
 		react(),
@@ -48,6 +52,7 @@ export default defineConfig({
 		emptyOutDir: true,
 	},
 	server: {
-		port: 5173,
+		port: DEV_PORT,
+		strictPort: true,
 	},
 });

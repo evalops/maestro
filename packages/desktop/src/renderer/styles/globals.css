@@ -624,6 +624,110 @@ body {
 	border-color: var(--border-default);
 }
 
+/* Thinking Block */
+.thinking-block {
+	margin-bottom: 12px;
+	border: 1px solid var(--border-subtle);
+	border-radius: 18px;
+	overflow: hidden;
+	background: linear-gradient(
+		145deg,
+		rgba(20, 184, 166, 0.08) 0%,
+		rgba(12, 12, 18, 0.9) 100%
+	);
+	box-shadow: 0 6px 20px -12px rgba(0, 0, 0, 0.6);
+}
+
+.thinking-block.compact {
+	border-radius: 16px;
+	margin-bottom: 8px;
+}
+
+.thinking-header {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 0.5rem 0.85rem;
+	background: rgba(20, 184, 166, 0.08);
+	border-bottom: 1px solid var(--border-subtle);
+	cursor: pointer;
+	user-select: none;
+}
+
+.thinking-block.compact .thinking-header {
+	padding: 0.4rem 0.7rem;
+}
+
+.thinking-label {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+	font-size: 0.6rem;
+	font-weight: 600;
+	letter-spacing: 0.16em;
+	text-transform: uppercase;
+	color: var(--accent);
+}
+
+.thinking-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 9999px;
+	background: var(--accent);
+	box-shadow: 0 0 10px var(--accent-glow);
+}
+
+.thinking-toggle {
+	font-size: 0.75rem;
+	color: var(--text-tertiary);
+	transition: transform var(--transition-fast);
+}
+
+.thinking-block.collapsed .thinking-toggle {
+	transform: rotate(-90deg);
+}
+
+.thinking-summary {
+	padding: 0.35rem 0.85rem;
+	font-size: 0.7rem;
+	color: var(--text-tertiary);
+	font-style: italic;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	background: rgba(6, 6, 10, 0.35);
+}
+
+.thinking-block.compact .thinking-summary {
+	padding: 0.3rem 0.7rem;
+	font-size: 0.65rem;
+}
+
+.thinking-content {
+	padding: 0.75rem 0.85rem;
+	font-size: 0.75rem;
+	line-height: 1.7;
+	color: var(--text-secondary);
+	font-family: "JetBrains Mono", "SF Mono", "Menlo", "Monaco", "Courier New",
+		monospace;
+	white-space: pre-wrap;
+	max-height: 320px;
+	overflow-y: auto;
+	background: rgba(6, 6, 10, 0.5);
+	border-top: 1px solid var(--border-subtle);
+}
+
+.thinking-block.compact .thinking-content {
+	padding: 0.6rem 0.7rem;
+	font-size: 0.7rem;
+	max-height: 240px;
+}
+
+.thinking-content.collapsed {
+	display: none;
+}
+
 /* Sidebar Session Item */
 .session-item {
 	@apply px-3 py-3 rounded-xl cursor-pointer;

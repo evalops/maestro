@@ -14,6 +14,7 @@ export interface SidebarProps {
 	onSessionSelect: (sessionId: string) => void;
 	onSessionDelete: (sessionId: string) => void;
 	onNewSession: () => void;
+	onOpenSettings: () => void;
 }
 
 export function Sidebar({
@@ -23,6 +24,7 @@ export function Sidebar({
 	onSessionSelect,
 	onSessionDelete,
 	onNewSession,
+	onOpenSettings,
 }: SidebarProps) {
 	const [searchQuery, setSearchQuery] = useState("");
 	const [hoveredSession, setHoveredSession] = useState<string | null>(null);
@@ -239,9 +241,32 @@ export function Sidebar({
 					<span>
 						{sessions.length} session{sessions.length !== 1 ? "s" : ""}
 					</span>
-					<span className="font-mono text-[10px] px-2 py-0.5 rounded-md bg-bg-tertiary/50">
-						v0.10.0
-					</span>
+					<div className="flex items-center gap-2">
+						<button
+							type="button"
+							onClick={onOpenSettings}
+							className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-tertiary/50 transition-colors"
+							title="Settings"
+						>
+							<svg
+								aria-hidden="true"
+								width="14"
+								height="14"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.6"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+							>
+								<circle cx="12" cy="12" r="3" />
+								<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.65 1.65 0 0 0 15 19.4a1.65 1.65 0 0 0-1 .6 1.65 1.65 0 0 0-.33 1.82V22a2 2 0 1 1-4 0v-.08A1.65 1.65 0 0 0 9 20.6a1.65 1.65 0 0 0-1-.6 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-.6-1 1.65 1.65 0 0 0-1.82-.33H2a2 2 0 1 1 0-4h.08A1.65 1.65 0 0 0 3.4 9a1.65 1.65 0 0 0 .6-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6c.3 0 .6-.1 1-.6a1.65 1.65 0 0 0 .33-1.82V2a2 2 0 1 1 4 0v.08a1.65 1.65 0 0 0 .33 1.82c.4.5.7.6 1 .6a1.65 1.65 0 0 0 1-.6l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c0 .3.1.6.6 1a1.65 1.65 0 0 0 1.82.33H22a2 2 0 1 1 0 4h-.08a1.65 1.65 0 0 0-1.82.33c-.5.4-.6.7-.6 1z" />
+							</svg>
+						</button>
+						<span className="font-mono text-[10px] px-2 py-0.5 rounded-md bg-bg-tertiary/50">
+							v0.10.0
+						</span>
+					</div>
 				</div>
 			</div>
 		</aside>

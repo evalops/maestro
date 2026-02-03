@@ -8,6 +8,27 @@ import { useCallback, useEffect, useState } from "react";
 import { apiClient } from "../lib/api-client";
 import type { Model, Session, SessionSummary } from "../lib/types";
 
+const getModelKey = (model: Model) => `${model.provider}:${model.id}`;
+
+const dedupeModels = (list: Model[]) => {
+	const seen = new Set<string>();
+	return list.filter((model) => {
+		const key = getModelKey(model);
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+};
+
+const parseModelSpecifier = (specifier: string) => {
+	const trimmed = specifier.trim();
+	const [provider, ...rest] = trimmed.split(":");
+	if (rest.length === 0) {
+		return { provider: undefined, id: trimmed };
+	}
+	return { provider, id: rest.join(":") };
+};
+
 export interface UseComposerReturn {
 	// Sessions
 	sessions: SessionSummary[];
@@ -40,7 +61,7 @@ export function useComposer(): UseComposerReturn {
 				]);
 
 				setSessions(sessionsData);
-				setModels(modelsData);
+				setModels(dedupeModels(modelsData));
 				setCurrentModel(modelData);
 			} catch (err) {
 				console.error("Failed to load initial data:", err);
@@ -94,10 +115,18 @@ export function useComposer(): UseComposerReturn {
 		async (modelId: string) => {
 			try {
 				await apiClient.setModel(modelId);
-				const model = models.find((m) => m.id === modelId);
+				const parsed = parseModelSpecifier(modelId);
+				const model = models.find((m) =>
+					parsed.provider
+						? m.provider === parsed.provider && m.id === parsed.id
+						: m.id === parsed.id,
+				);
 				if (model) {
 					setCurrentModel(model);
+					return;
 				}
+				const refreshed = await apiClient.getCurrentModel();
+				setCurrentModel(refreshed);
 			} catch (err) {
 				console.error("Failed to set model:", err);
 			}
