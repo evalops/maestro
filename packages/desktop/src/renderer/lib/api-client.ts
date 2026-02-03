@@ -187,7 +187,16 @@ export interface LspDetections {
 export interface McpServerStatus {
 	name: string;
 	connected: boolean;
-	tools?: number;
+	tools?:
+		| Array<{
+				name: string;
+				description?: string;
+				inputSchema?: unknown;
+				annotations?: Record<string, unknown>;
+		  }>
+		| number;
+	resources?: string[];
+	prompts?: string[];
 	error?: string;
 }
 

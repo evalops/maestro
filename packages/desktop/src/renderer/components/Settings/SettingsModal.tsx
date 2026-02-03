@@ -121,6 +121,9 @@ export function SettingsModal({
 		Array<{ serverId: string; root: string }>
 	>([]);
 	const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
+	const [expandedMcpServer, setExpandedMcpServer] = useState<string | null>(
+		null,
+	);
 	const [composerStatus, setComposerStatus] = useState<ComposerStatus | null>(
 		null,
 	);
@@ -644,6 +647,10 @@ export function SettingsModal({
 				err instanceof Error ? err.message : "Failed to load MCP status",
 			);
 		}
+	};
+
+	const toggleMcpServer = (name: string) => {
+		setExpandedMcpServer((prev) => (prev === name ? null : name));
 	};
 
 	const refreshComposers = async () => {
@@ -1416,18 +1423,103 @@ export function SettingsModal({
 								</div>
 								{mcpStatus?.servers?.length ? (
 									<div className="grid grid-cols-1 gap-2">
-										{mcpStatus.servers.map((server) => (
-											<div
-												key={server.name}
-												className="flex items-center justify-between text-xs text-text-muted"
-											>
-												<span>{server.name}</span>
-												<span>
-													{server.connected ? "Connected" : "Offline"} ·{" "}
-													{server.tools ?? 0} tools
-												</span>
-											</div>
-										))}
+										{mcpStatus.servers.map((server) => {
+											const tools = Array.isArray(server.tools)
+												? server.tools
+												: [];
+											const toolCount = Array.isArray(server.tools)
+												? server.tools.length
+												: (server.tools ?? 0);
+											const resources = server.resources ?? [];
+											const prompts = server.prompts ?? [];
+											const isExpanded = expandedMcpServer === server.name;
+
+											return (
+												<div
+													key={server.name}
+													className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30"
+												>
+													<button
+														type="button"
+														className="w-full flex items-center justify-between text-xs text-text-muted px-3 py-2"
+														onClick={() => toggleMcpServer(server.name)}
+													>
+														<span className="text-text-primary">
+															{server.name}
+														</span>
+														<span>
+															{server.connected ? "Connected" : "Offline"} ·{" "}
+															{toolCount} tools · {resources.length} resources ·{" "}
+															{prompts.length} prompts
+														</span>
+													</button>
+													{isExpanded && (
+														<div className="border-t border-line-subtle/60 px-3 py-2 space-y-2 text-[11px] text-text-muted">
+															{tools.length > 0 ? (
+																<div>
+																	<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
+																		Tools
+																	</div>
+																	<div className="flex flex-wrap gap-1">
+																		{tools.map((tool) => (
+																			<span
+																				key={`${server.name}:${tool.name}`}
+																				className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary"
+																				title={tool.description}
+																			>
+																				{tool.name}
+																			</span>
+																		))}
+																	</div>
+																</div>
+															) : (
+																<div>No tools reported.</div>
+															)}
+															<div className="grid grid-cols-2 gap-2">
+																<div>
+																	<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
+																		Resources
+																	</div>
+																	{resources.length ? (
+																		<ul className="space-y-1">
+																			{resources.map((resource) => (
+																				<li
+																					key={`${server.name}:${resource}`}
+																					className="truncate"
+																				>
+																					{resource}
+																				</li>
+																			))}
+																		</ul>
+																	) : (
+																		<div>None</div>
+																	)}
+																</div>
+																<div>
+																	<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
+																		Prompts
+																	</div>
+																	{prompts.length ? (
+																		<ul className="space-y-1">
+																			{prompts.map((prompt) => (
+																				<li
+																					key={`${server.name}:${prompt}`}
+																					className="truncate"
+																				>
+																					{prompt}
+																				</li>
+																			))}
+																		</ul>
+																	) : (
+																		<div>None</div>
+																	)}
+																</div>
+															</div>
+														</div>
+													)}
+												</div>
+											);
+										})}
 									</div>
 								) : (
 									<div className="text-xs text-text-muted">
