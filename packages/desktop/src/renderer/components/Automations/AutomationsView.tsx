@@ -776,7 +776,37 @@ export function AutomationsView({
 		Boolean(previewError) ||
 		previewLoading;
 	const sectionCardClass =
-		"rounded-2xl border border-border-subtle bg-bg-secondary/40 p-4";
+		"rounded-2xl border border-border-subtle bg-bg-secondary/45 p-4";
+	const runWindowDaysLabel = runWindowDays
+		.slice()
+		.sort((a, b) => a - b)
+		.map((day) => dayOptions.find((option) => option.value === day)?.label)
+		.filter(Boolean)
+		.join(", ");
+	const runWindowSummary = runWindowEnabled
+		? `${formatTimeLabel(runWindowStart)}–${formatTimeLabel(runWindowEnd)}`
+		: "Off";
+	const notificationSummary =
+		[notifyOnSuccess ? "Success" : null, notifyOnFailure ? "Failure" : null]
+			.filter(Boolean)
+			.join(", ") || "Off";
+	const contextSummary = `${contextPaths.length} file${
+		contextPaths.length === 1 ? "" : "s"
+	} · ${contextFolders.length} folder${contextFolders.length === 1 ? "" : "s"}`;
+	const selectedModelLabel = useMemo(() => {
+		if (!model) return "Workspace default";
+		const [provider, id] = model.split(":");
+		const match = models.find(
+			(item) => item.provider === provider && item.id === id,
+		);
+		return match?.name || id || model;
+	}, [model, models]);
+	const selectedSessionLabel = useMemo(() => {
+		if (sessionMode === "new") return "New session per run";
+		if (!sessionId) return "Continue latest session";
+		const match = sessions.find((session) => session.id === sessionId);
+		return `Continue: ${match?.title || "Untitled session"}`;
+	}, [sessionId, sessionMode, sessions]);
 
 	return (
 		<div className="flex-1 overflow-hidden">
@@ -1020,6 +1050,70 @@ export function AutomationsView({
 							</div>
 
 							<div className="space-y-4">
+								<div className="rounded-2xl border border-border-subtle bg-bg-tertiary/50 p-4">
+									<div className="flex items-center justify-between gap-3">
+										<div className="text-xs uppercase tracking-wide text-text-tertiary">
+											Automation Snapshot
+										</div>
+										<span className="badge bg-bg-secondary text-text-tertiary">
+											{editingId ? "Editing" : "Draft"}
+										</span>
+									</div>
+									<div className="mt-3 grid gap-3 md:grid-cols-2">
+										<div className="rounded-xl border border-border-subtle bg-bg-secondary/55 p-3">
+											<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
+												Schedule
+											</div>
+											<div className="mt-2 text-sm text-text-primary">
+												{schedulePreview.label}
+											</div>
+											<div className="mt-1 text-xs text-text-muted">
+												Next run:{" "}
+												{previewNextRun
+													? `${formatDateLabel(
+															previewNextRun,
+														)} · ${formatRelativeTime(previewNextRun)}`
+													: "—"}
+											</div>
+										</div>
+										<div className="rounded-xl border border-border-subtle bg-bg-secondary/55 p-3">
+											<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
+												Run Window
+											</div>
+											<div className="mt-2 text-sm text-text-primary">
+												{runWindowSummary}
+											</div>
+											<div className="mt-1 text-xs text-text-muted">
+												{runWindowEnabled
+													? runWindowDaysLabel || "Any day"
+													: "Any day"}
+											</div>
+										</div>
+										<div className="rounded-xl border border-border-subtle bg-bg-secondary/55 p-3">
+											<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
+												Run Controls
+											</div>
+											<div className="mt-2 text-sm text-text-primary">
+												{exclusiveRun ? "Exclusive" : "Parallel"} ·{" "}
+												{notificationSummary}
+											</div>
+											<div className="mt-1 text-xs text-text-muted">
+												{selectedSessionLabel}
+											</div>
+										</div>
+										<div className="rounded-xl border border-border-subtle bg-bg-secondary/55 p-3">
+											<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
+												Context
+											</div>
+											<div className="mt-2 text-sm text-text-primary">
+												{contextSummary}
+											</div>
+											<div className="mt-1 text-xs text-text-muted">
+												{selectedModelLabel} · Thinking {thinkingLevel}
+											</div>
+										</div>
+									</div>
+								</div>
 								<div className={sectionCardClass}>
 									<div className="flex items-start justify-between gap-3">
 										<div>
@@ -1311,162 +1405,164 @@ export function AutomationsView({
 											</div>
 										)}
 
-										<div className="rounded-xl border border-border-subtle bg-bg-secondary/50 px-4 py-3">
-											<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
-												Schedule Preview
-											</div>
-											<div className="mt-2 text-sm text-text-primary">
-												{schedulePreview.label}
-											</div>
-											<div className="mt-1 text-xs text-text-muted">
-												Next run:{" "}
-												{previewNextRun
-													? `${formatDateLabel(
-															previewNextRun,
-														)} · ${formatRelativeTime(previewNextRun)}`
-													: "—"}
-											</div>
-											{previewLoading && (
-												<div className="mt-2 text-xs text-text-tertiary">
-													Validating schedule...
+										<div className="grid gap-3 md:grid-cols-2">
+											<div className="rounded-xl border border-border-subtle bg-bg-secondary/50 px-4 py-3">
+												<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
+													Schedule Preview
 												</div>
-											)}
-											{previewError ? (
-												<div className="mt-2 text-xs text-error">
-													{previewError}
+												<div className="mt-2 text-sm text-text-primary">
+													{schedulePreview.label}
 												</div>
-											) : !previewTimezoneValid ? (
-												<div className="mt-2 text-xs text-text-muted">
-													Timezone is invalid. Using UTC.
+												<div className="mt-1 text-xs text-text-muted">
+													Next run:{" "}
+													{previewNextRun
+														? `${formatDateLabel(
+																previewNextRun,
+															)} · ${formatRelativeTime(previewNextRun)}`
+														: "—"}
 												</div>
-											) : null}
-										</div>
+												{previewLoading && (
+													<div className="mt-2 text-xs text-text-tertiary">
+														Validating schedule...
+													</div>
+												)}
+												{previewError ? (
+													<div className="mt-2 text-xs text-error">
+														{previewError}
+													</div>
+												) : !previewTimezoneValid ? (
+													<div className="mt-2 text-xs text-text-muted">
+														Timezone is invalid. Using UTC.
+													</div>
+												) : null}
+											</div>
 
-										<div className="rounded-xl border border-border-subtle bg-bg-secondary/50 px-4 py-3">
-											<div className="flex items-center justify-between gap-4">
-												<div>
-													<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
-														Run Window
-													</div>
-													<div className="text-xs text-text-muted mt-1">
-														Only run during this local time range.
-													</div>
-												</div>
-												<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-													<input
-														type="checkbox"
-														checked={runWindowEnabled}
-														onChange={(event) =>
-															setRunWindowEnabled(event.target.checked)
-														}
-														className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-													/>
-													<span>{runWindowEnabled ? "On" : "Off"}</span>
-												</label>
-											</div>
-											{runWindowEnabled && (
-												<div className="mt-3 space-y-3">
-													<div className="grid grid-cols-2 gap-3">
-														<div>
-															<label
-																htmlFor="automation-window-start"
-																className="text-xs uppercase tracking-wide text-text-tertiary"
-															>
-																Start
-															</label>
-															<input
-																id="automation-window-start"
-																type="time"
-																className="input mt-2"
-																value={runWindowStart}
-																onChange={(event) =>
-																	setRunWindowStart(event.target.value)
-																}
-															/>
-														</div>
-														<div>
-															<label
-																htmlFor="automation-window-end"
-																className="text-xs uppercase tracking-wide text-text-tertiary"
-															>
-																End
-															</label>
-															<input
-																id="automation-window-end"
-																type="time"
-																className="input mt-2"
-																value={runWindowEnd}
-																onChange={(event) =>
-																	setRunWindowEnd(event.target.value)
-																}
-															/>
-														</div>
-													</div>
+											<div className="rounded-xl border border-border-subtle bg-bg-secondary/50 px-4 py-3">
+												<div className="flex items-center justify-between gap-4">
 													<div>
-														<div className="text-xs uppercase tracking-wide text-text-tertiary">
-															Days
+														<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
+															Run Window
 														</div>
-														<div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-muted">
-															<button
-																type="button"
-																className="btn-ghost text-[11px]"
-																onClick={() =>
-																	setRunWindowDays([1, 2, 3, 4, 5])
-																}
-															>
-																Weekdays
-															</button>
-															<button
-																type="button"
-																className="btn-ghost text-[11px]"
-																onClick={() => setRunWindowDays([0, 6])}
-															>
-																Weekends
-															</button>
-															<button
-																type="button"
-																className="btn-ghost text-[11px]"
-																onClick={() =>
-																	setRunWindowDays(
-																		dayOptions.map((day) => day.value),
-																	)
-																}
-															>
-																Every day
-															</button>
-														</div>
-														<div className="mt-2 flex flex-wrap gap-2">
-															{dayOptions.map((day) => {
-																const selected = runWindowDays.includes(
-																	day.value,
-																);
-																return (
-																	<button
-																		key={day.value}
-																		type="button"
-																		className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-																			selected
-																				? "border-accent bg-accent/15 text-accent"
-																				: "border-border-subtle text-text-muted hover:border-border-default"
-																		}`}
-																		onClick={() => {
-																			setRunWindowDays((prev) =>
-																				prev.includes(day.value)
-																					? prev.filter(
-																							(item) => item !== day.value,
-																						)
-																					: [...prev, day.value],
-																			);
-																		}}
-																	>
-																		{day.label}
-																	</button>
-																);
-															})}
+														<div className="text-xs text-text-muted mt-1">
+															Only run during this local time range.
 														</div>
 													</div>
+													<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
+														<input
+															type="checkbox"
+															checked={runWindowEnabled}
+															onChange={(event) =>
+																setRunWindowEnabled(event.target.checked)
+															}
+															className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
+														/>
+														<span>{runWindowEnabled ? "On" : "Off"}</span>
+													</label>
 												</div>
-											)}
+												{runWindowEnabled && (
+													<div className="mt-3 space-y-3">
+														<div className="grid grid-cols-2 gap-3">
+															<div>
+																<label
+																	htmlFor="automation-window-start"
+																	className="text-xs uppercase tracking-wide text-text-tertiary"
+																>
+																	Start
+																</label>
+																<input
+																	id="automation-window-start"
+																	type="time"
+																	className="input mt-2"
+																	value={runWindowStart}
+																	onChange={(event) =>
+																		setRunWindowStart(event.target.value)
+																	}
+																/>
+															</div>
+															<div>
+																<label
+																	htmlFor="automation-window-end"
+																	className="text-xs uppercase tracking-wide text-text-tertiary"
+																>
+																	End
+																</label>
+																<input
+																	id="automation-window-end"
+																	type="time"
+																	className="input mt-2"
+																	value={runWindowEnd}
+																	onChange={(event) =>
+																		setRunWindowEnd(event.target.value)
+																	}
+																/>
+															</div>
+														</div>
+														<div>
+															<div className="text-xs uppercase tracking-wide text-text-tertiary">
+																Days
+															</div>
+															<div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-muted">
+																<button
+																	type="button"
+																	className="btn-ghost text-[11px]"
+																	onClick={() =>
+																		setRunWindowDays([1, 2, 3, 4, 5])
+																	}
+																>
+																	Weekdays
+																</button>
+																<button
+																	type="button"
+																	className="btn-ghost text-[11px]"
+																	onClick={() => setRunWindowDays([0, 6])}
+																>
+																	Weekends
+																</button>
+																<button
+																	type="button"
+																	className="btn-ghost text-[11px]"
+																	onClick={() =>
+																		setRunWindowDays(
+																			dayOptions.map((day) => day.value),
+																		)
+																	}
+																>
+																	Every day
+																</button>
+															</div>
+															<div className="mt-2 flex flex-wrap gap-2">
+																{dayOptions.map((day) => {
+																	const selected = runWindowDays.includes(
+																		day.value,
+																	);
+																	return (
+																		<button
+																			key={day.value}
+																			type="button"
+																			className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+																				selected
+																					? "border-accent bg-accent/15 text-accent"
+																					: "border-border-subtle text-text-muted hover:border-border-default"
+																			}`}
+																			onClick={() => {
+																				setRunWindowDays((prev) =>
+																					prev.includes(day.value)
+																						? prev.filter(
+																								(item) => item !== day.value,
+																							)
+																						: [...prev, day.value],
+																				);
+																			}}
+																		>
+																			{day.label}
+																		</button>
+																	);
+																})}
+															</div>
+														</div>
+													</div>
+												)}
+											</div>
 										</div>
 									</div>
 								</div>
