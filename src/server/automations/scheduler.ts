@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AgentEvent, AppMessage } from "../../agent/types.js";
@@ -5,6 +6,7 @@ import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
 import { createSessionManagerForScope } from "../session-scope.js";
 import {
+	type AutomationRunRecord,
 	type AutomationTask,
 	loadAutomationState,
 	saveAutomationState,
@@ -36,6 +38,11 @@ const MAX_OUTPUT_SNIPPET =
 		process.env.COMPOSER_AUTOMATION_OUTPUT_MAX_CHARS || "1400",
 		10,
 	) || 1400;
+const MAX_RUN_HISTORY =
+	Number.parseInt(
+		process.env.COMPOSER_AUTOMATION_RUN_HISTORY_MAX || "20",
+		10,
+	) || 20;
 
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 const runningTaskIds = new Set<string>();
@@ -85,19 +92,39 @@ export async function runAutomationById(
 	saveAutomationState(state);
 
 	runningTaskIds.add(automationId);
+	const startedAt = new Date().toISOString();
 	const start = performance.now();
 
 	try {
 		const result = await executeAutomation(task, context);
 		const durationMs = Math.round(performance.now() - start);
 
-		task.lastRunAt = new Date().toISOString();
+		const finishedAt = new Date().toISOString();
+		task.lastRunAt = finishedAt;
 		task.lastRunDurationMs = durationMs;
 		task.lastRunStatus = result.success ? "success" : "failure";
 		task.lastRunError = result.error ?? undefined;
-		if (result.output) {
-			task.lastOutput = result.output.slice(0, MAX_OUTPUT_SNIPPET);
+		const outputSnippet = result.output
+			? result.output.slice(0, MAX_OUTPUT_SNIPPET)
+			: undefined;
+		if (outputSnippet) {
+			task.lastOutput = outputSnippet;
 		}
+		const runRecord: AutomationRunRecord = {
+			id: randomUUID(),
+			startedAt,
+			finishedAt,
+			durationMs,
+			status: result.success ? "success" : "failure",
+			trigger: reason,
+			error: result.error ?? undefined,
+			output: outputSnippet,
+			sessionId: result.sessionId,
+		};
+		task.runHistory = [runRecord, ...(task.runHistory ?? [])].slice(
+			0,
+			MAX_RUN_HISTORY,
+		);
 
 		if (result.sessionId) {
 			task.lastSessionId = result.sessionId;
@@ -128,9 +155,24 @@ export async function runAutomationById(
 		logger.error("Automation execution failed", error as Error, {
 			automationId,
 		});
-		task.lastRunAt = new Date().toISOString();
+		const finishedAt = new Date().toISOString();
+		task.lastRunAt = finishedAt;
 		task.lastRunStatus = "failure";
 		task.lastRunError = error instanceof Error ? error.message : String(error);
+		const durationMs = Math.round(performance.now() - start);
+		const runRecord: AutomationRunRecord = {
+			id: randomUUID(),
+			startedAt,
+			finishedAt,
+			durationMs,
+			status: "failure",
+			trigger: reason,
+			error: task.lastRunError,
+		};
+		task.runHistory = [runRecord, ...(task.runHistory ?? [])].slice(
+			0,
+			MAX_RUN_HISTORY,
+		);
 		task.running = false;
 		task.updatedAt = new Date().toISOString();
 		saveAutomationState(state);
@@ -234,9 +276,10 @@ async function executeAutomation(
 	sessionManager.startSession(agent.state, { subject: "automation" });
 
 	const { contextText } = buildContextPrompt(task.contextPaths || []);
+	const renderedPrompt = renderAutomationPrompt(task);
 	const userInput = contextText
-		? `${task.prompt}\n\n${contextText}`
-		: task.prompt;
+		? `${renderedPrompt}\n\n${contextText}`
+		: renderedPrompt;
 
 	let lastAssistantOutput: string | undefined;
 
@@ -312,6 +355,53 @@ function buildContextPrompt(paths: string[]): { contextText: string } {
 		contextText:
 			`Context files (auto-injected):\n${sections.join("\n\n")}`.trim(),
 	};
+}
+
+function renderAutomationPrompt(task: AutomationTask): string {
+	const timezone =
+		task.timezone && isValidTimezone(task.timezone) ? task.timezone : "UTC";
+	const now = new Date();
+	const dateFormatter = new Intl.DateTimeFormat(undefined, {
+		dateStyle: "medium",
+		timeZone: timezone,
+	});
+	const timeFormatter = new Intl.DateTimeFormat(undefined, {
+		timeStyle: "short",
+		timeZone: timezone,
+	});
+	const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+		dateStyle: "medium",
+		timeStyle: "short",
+		timeZone: timezone,
+	});
+
+	const formatDate = (value?: string | null) => {
+		if (!value) return "";
+		const date = new Date(value);
+		if (Number.isNaN(date.getTime())) return "";
+		return dateTimeFormatter.format(date);
+	};
+
+	const tokens: Record<string, string> = {
+		automation_name: task.name,
+		date: dateFormatter.format(now),
+		time: timeFormatter.format(now),
+		datetime: dateTimeFormatter.format(now),
+		timezone,
+		run_count: String(task.runCount ?? 0),
+		last_run_at: formatDate(task.lastRunAt),
+		last_status: task.lastRunStatus ?? "",
+		last_error: task.lastRunError ?? "",
+		last_output: task.lastOutput ?? "",
+		next_run_at: formatDate(task.nextRun),
+		schedule_label: task.scheduleLabel ?? "",
+		workspace: process.cwd(),
+	};
+
+	return task.prompt.replace(
+		/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g,
+		(match, key: string) => tokens[key] ?? match,
+	);
 }
 
 function extractTextFromMessage(message: AppMessage): string {

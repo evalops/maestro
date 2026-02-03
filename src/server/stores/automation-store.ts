@@ -6,6 +6,19 @@ import { isPlainObject, tryParseJson } from "../../utils/json.js";
 import { resolveEnvPath } from "../../utils/path-expansion.js";
 
 export type AutomationRunStatus = "success" | "failure" | "skipped";
+export type AutomationRunTrigger = "manual" | "schedule";
+
+export interface AutomationRunRecord {
+	id: string;
+	startedAt: string;
+	finishedAt: string;
+	durationMs?: number;
+	status: AutomationRunStatus;
+	trigger?: AutomationRunTrigger;
+	error?: string;
+	output?: string;
+	sessionId?: string;
+}
 export type AutomationSessionMode = "reuse" | "new";
 
 export interface AutomationTask {
@@ -31,6 +44,7 @@ export interface AutomationTask {
 	lastOutput?: string;
 	runCount: number;
 	running?: boolean;
+	runHistory?: AutomationRunRecord[];
 	sessionMode?: AutomationSessionMode;
 	sessionId?: string;
 	lastSessionId?: string;
@@ -49,6 +63,43 @@ const AUTOMATIONS_STATE_PATH =
 	resolve(getAgentDir(), "automations.json");
 
 const MAX_AUTOMATIONS = 500;
+const MAX_RUN_HISTORY = 20;
+
+function normalizeRunRecord(raw: unknown): AutomationRunRecord | null {
+	if (!isPlainObject(raw)) return null;
+	const record = raw as Partial<AutomationRunRecord>;
+	if (typeof record.id !== "string" || record.id.length === 0) return null;
+	if (typeof record.startedAt !== "string") return null;
+	if (typeof record.finishedAt !== "string") return null;
+	if (record.status !== "success" && record.status !== "failure") {
+		if (record.status !== "skipped") return null;
+	}
+	const cleaned: AutomationRunRecord = {
+		id: record.id,
+		startedAt: record.startedAt,
+		finishedAt: record.finishedAt,
+		status: record.status,
+	};
+	if (
+		typeof record.durationMs === "number" &&
+		Number.isFinite(record.durationMs)
+	) {
+		cleaned.durationMs = record.durationMs;
+	}
+	if (record.trigger === "manual" || record.trigger === "schedule") {
+		cleaned.trigger = record.trigger;
+	}
+	if (typeof record.error === "string") {
+		cleaned.error = record.error;
+	}
+	if (typeof record.output === "string") {
+		cleaned.output = record.output;
+	}
+	if (typeof record.sessionId === "string" && record.sessionId.length > 0) {
+		cleaned.sessionId = record.sessionId;
+	}
+	return cleaned;
+}
 
 function normalizeAutomation(raw: unknown): AutomationTask | null {
 	if (!isPlainObject(raw)) return null;
@@ -109,6 +160,15 @@ function normalizeAutomation(raw: unknown): AutomationTask | null {
 	}
 	if (typeof task.lastOutput === "string") {
 		cleaned.lastOutput = task.lastOutput;
+	}
+	if (Array.isArray(task.runHistory)) {
+		const normalizedHistory = task.runHistory
+			.map((entry) => normalizeRunRecord(entry))
+			.filter((entry): entry is AutomationRunRecord => Boolean(entry));
+		if (normalizedHistory.length > MAX_RUN_HISTORY) {
+			normalizedHistory.splice(MAX_RUN_HISTORY);
+		}
+		cleaned.runHistory = normalizedHistory;
 	}
 	if (
 		task.scheduleKind &&

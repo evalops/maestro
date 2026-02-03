@@ -226,7 +226,21 @@ export interface AutomationCreateInput {
 
 export type AutomationUpdateInput = Partial<AutomationCreateInput> & {
 	enabled?: boolean;
+	clearHistory?: boolean;
 };
+
+export interface AutomationPreviewInput {
+	schedule?: string | null;
+	runAt?: string | null;
+	timezone?: string;
+}
+
+export interface AutomationPreviewResponse {
+	nextRun: string | null;
+	timezone: string;
+	timezoneValid: boolean;
+	error?: string;
+}
 
 export interface AutomationsResponse {
 	automations: AutomationTask[];
@@ -323,6 +337,38 @@ export class ApiClient {
 			},
 		);
 		return data.automation;
+	}
+
+	async previewAutomation(
+		input: AutomationPreviewInput,
+	): Promise<AutomationPreviewResponse> {
+		try {
+			return await this.fetchJson<AutomationPreviewResponse>(
+				"/api/automations/preview",
+				{
+					method: "POST",
+					body: JSON.stringify(input),
+				},
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Preview failed";
+			const match = message.match(/- (\{.*\})$/);
+			let parsedMessage = message;
+			if (match?.[1]) {
+				try {
+					const parsed = JSON.parse(match[1]) as { error?: string };
+					if (parsed.error) parsedMessage = parsed.error;
+				} catch {
+					parsedMessage = message;
+				}
+			}
+			return {
+				nextRun: null,
+				timezone: input.timezone ?? "UTC",
+				timezoneValid: false,
+				error: parsedMessage,
+			};
+		}
 	}
 
 	// Models

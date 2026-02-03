@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAutomations } from "../../hooks/useAutomations";
 import type {
 	AutomationCreateInput,
 	AutomationUpdateInput,
 } from "../../lib/api-client";
+import { apiClient } from "../../lib/api-client";
 import type {
 	AutomationTask,
 	Model,
@@ -38,6 +39,108 @@ const thinkingOptions: ThinkingLevel[] = [
 	"medium",
 	"high",
 	"max",
+];
+
+const promptTokenOptions = [
+	{
+		label: "Date",
+		token: "{{date}}",
+		description: "Local date",
+	},
+	{
+		label: "DateTime",
+		token: "{{datetime}}",
+		description: "Local date + time",
+	},
+	{
+		label: "Time",
+		token: "{{time}}",
+		description: "Local time",
+	},
+	{
+		label: "Timezone",
+		token: "{{timezone}}",
+		description: "Resolved timezone",
+	},
+	{
+		label: "Automation",
+		token: "{{automation_name}}",
+		description: "Automation name",
+	},
+	{
+		label: "Run Count",
+		token: "{{run_count}}",
+		description: "Total runs",
+	},
+	{
+		label: "Last Run",
+		token: "{{last_run_at}}",
+		description: "Last run timestamp",
+	},
+	{
+		label: "Last Status",
+		token: "{{last_status}}",
+		description: "Last run status",
+	},
+	{
+		label: "Last Error",
+		token: "{{last_error}}",
+		description: "Last run error",
+	},
+	{
+		label: "Last Output",
+		token: "{{last_output}}",
+		description: "Last run output",
+	},
+	{
+		label: "Schedule",
+		token: "{{schedule_label}}",
+		description: "Schedule summary",
+	},
+	{
+		label: "Next Run",
+		token: "{{next_run_at}}",
+		description: "Next scheduled run",
+	},
+	{
+		label: "Workspace",
+		token: "{{workspace}}",
+		description: "Current workspace",
+	},
+];
+
+const automationTemplates = [
+	{
+		id: "morning-review",
+		name: "Morning Review",
+		description: "Daily repo pulse check and TODO scan.",
+		prompt:
+			"Review git status, recent commits, and TODOs. Summarize priorities for {{date}}.",
+		scheduleKind: "daily" as const,
+		dailyTime: "09:00",
+		thinkingLevel: "low" as ThinkingLevel,
+	},
+	{
+		id: "weekly-digest",
+		name: "Weekly Digest",
+		description: "Weekly engineering recap with next steps.",
+		prompt:
+			"Summarize changes since last run ({{last_run_at}}) and draft next actions.",
+		scheduleKind: "weekly" as const,
+		weeklyTime: "09:30",
+		weeklyDays: [1],
+		thinkingLevel: "medium" as ThinkingLevel,
+	},
+	{
+		id: "nightly-check",
+		name: "Nightly Quality Check",
+		description: "Run tests/lint and summarize regressions.",
+		prompt:
+			"Run the relevant test and lint commands. Report failures and quick fixes.",
+		scheduleKind: "daily" as const,
+		dailyTime: "19:00",
+		thinkingLevel: "low" as ThinkingLevel,
+	},
 ];
 
 function formatLocalDateTimeInput(value: string | undefined) {
@@ -98,6 +201,16 @@ function formatRelativeTime(value?: string | null) {
 	return rtf.format(days, "day");
 }
 
+function formatDuration(value?: number | null) {
+	if (!value || !Number.isFinite(value)) return "—";
+	if (value < 1000) return `${value}ms`;
+	const seconds = value / 1000;
+	if (seconds < 60) return `${seconds.toFixed(1)}s`;
+	const minutes = Math.floor(seconds / 60);
+	const remaining = Math.round(seconds % 60);
+	return `${minutes}m ${remaining}s`;
+}
+
 function parseCronSchedule(schedule: string | null | undefined) {
 	if (!schedule) return null;
 	const parts = schedule.trim().split(/\s+/);
@@ -148,6 +261,7 @@ export function AutomationsView({
 
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [editingId, setEditingId] = useState<string | null>(null);
+	const [filter, setFilter] = useState("");
 
 	const [name, setName] = useState("");
 	const [prompt, setPrompt] = useState("");
@@ -168,6 +282,33 @@ export function AutomationsView({
 		currentModel ? `${currentModel.provider}:${currentModel.id}` : undefined,
 	);
 	const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>("off");
+	const [previewNextRun, setPreviewNextRun] = useState<string | null>(null);
+	const [previewError, setPreviewError] = useState<string | null>(null);
+	const [previewLoading, setPreviewLoading] = useState(false);
+	const [previewTimezoneValid, setPreviewTimezoneValid] = useState(true);
+
+	const systemTimezone = useMemo(
+		() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+		[],
+	);
+	const timezoneOptions = useMemo(() => {
+		const supportedValuesOf = (
+			Intl as typeof Intl & {
+				supportedValuesOf?: (key: "timeZone") => string[];
+			}
+		).supportedValuesOf;
+		if (typeof supportedValuesOf === "function") {
+			return supportedValuesOf("timeZone");
+		}
+		return [
+			"UTC",
+			"America/Los_Angeles",
+			"America/New_York",
+			"Europe/London",
+			"Europe/Berlin",
+			"Asia/Tokyo",
+		];
+	}, []);
 
 	useEffect(() => {
 		if (!editingId && currentSessionId) {
@@ -199,6 +340,27 @@ export function AutomationsView({
 		[automations, selectedId],
 	);
 
+	const filteredAutomations = useMemo(() => {
+		const query = filter.trim().toLowerCase();
+		if (!query) return automations;
+		return automations.filter(
+			(item) =>
+				item.name.toLowerCase().includes(query) ||
+				item.prompt.toLowerCase().includes(query),
+		);
+	}, [automations, filter]);
+
+	const automationCounts = useMemo(() => {
+		const enabled = automations.filter((item) => item.enabled).length;
+		const running = automations.filter((item) => item.running).length;
+		return {
+			total: automations.length,
+			enabled,
+			paused: automations.length - enabled,
+			running,
+		};
+	}, [automations]);
+
 	const handleResetForm = () => {
 		setEditingId(null);
 		setName("");
@@ -209,7 +371,7 @@ export function AutomationsView({
 		setWeeklyTime("09:00");
 		setWeeklyDays([1]);
 		setCronExpression("0 9 * * 1");
-		setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+		setTimezone(systemTimezone);
 		setSessionMode("reuse");
 		setSessionId(currentSessionId);
 		setContextPaths([]);
@@ -218,6 +380,10 @@ export function AutomationsView({
 			currentModel ? `${currentModel.provider}:${currentModel.id}` : undefined,
 		);
 		setThinkingLevel("off");
+		setPreviewNextRun(null);
+		setPreviewError(null);
+		setPreviewLoading(false);
+		setPreviewTimezoneValid(true);
 	};
 
 	const handleEditAutomation = (automation: AutomationTask) => {
@@ -263,9 +429,39 @@ export function AutomationsView({
 		}
 	};
 
-	const buildSchedule = () => {
+	const handleApplyTemplate = (
+		template: (typeof automationTemplates)[number],
+	) => {
+		setEditingId(null);
+		setName(template.name);
+		setPrompt(template.prompt);
+		setScheduleKind(template.scheduleKind);
+		setOnceDateTime("");
+		setDailyTime(template.dailyTime ?? "09:00");
+		setWeeklyTime(template.weeklyTime ?? "09:00");
+		setWeeklyDays(template.weeklyDays ?? [1]);
+		setCronExpression("0 9 * * 1");
+		setTimezone(systemTimezone);
+		setSessionMode("reuse");
+		setSessionId(currentSessionId);
+		setContextPaths([]);
+		setContextInput("");
+		setThinkingLevel(template.thinkingLevel ?? "off");
+	};
+
+	const handleInsertToken = (token: string) => {
+		setPrompt((prev) => {
+			if (!prev.trim()) return token;
+			if (prev.endsWith(" ") || prev.endsWith("\n")) return `${prev}${token}`;
+			return `${prev} ${token}`;
+		});
+	};
+
+	const buildSchedule = useCallback(() => {
 		if (scheduleKind === "once") {
-			const runAt = onceDateTime ? new Date(onceDateTime).toISOString() : "";
+			const date = onceDateTime ? new Date(onceDateTime) : null;
+			const runAt =
+				date && !Number.isNaN(date.getTime()) ? date.toISOString() : "";
 			return {
 				schedule: null,
 				runAt,
@@ -282,10 +478,10 @@ export function AutomationsView({
 		}
 		if (scheduleKind === "weekly") {
 			const [hour, minute] = weeklyTime.split(":");
-			const days = weeklyDays.length > 0 ? weeklyDays : [1];
-			const schedule = `${minute} ${hour} * * ${days.sort().join(",")}`;
-			const daysLabel = days
-				.sort()
+			const days = (weeklyDays.length > 0 ? weeklyDays : [1]).slice();
+			const sortedDays = days.sort((a, b) => a - b);
+			const schedule = `${minute} ${hour} * * ${sortedDays.join(",")}`;
+			const daysLabel = sortedDays
 				.map((day) => dayOptions.find((d) => d.value === day)?.label)
 				.filter(Boolean)
 				.join(", ");
@@ -299,7 +495,58 @@ export function AutomationsView({
 			schedule,
 			label: `Cron · ${schedule}`,
 		};
-	};
+	}, [
+		scheduleKind,
+		onceDateTime,
+		dailyTime,
+		weeklyTime,
+		weeklyDays,
+		cronExpression,
+	]);
+
+	const schedulePreview = useMemo(() => buildSchedule(), [buildSchedule]);
+
+	useEffect(() => {
+		let active = true;
+		if (!schedulePreview.schedule && !schedulePreview.runAt) {
+			setPreviewNextRun(null);
+			setPreviewError(null);
+			setPreviewTimezoneValid(true);
+			setPreviewLoading(false);
+			return () => undefined;
+		}
+
+		const runAt = schedulePreview.runAt ?? null;
+		setPreviewLoading(true);
+		const timeout = setTimeout(() => {
+			apiClient
+				.previewAutomation({
+					schedule: schedulePreview.schedule,
+					runAt,
+					timezone,
+				})
+				.then((response) => {
+					if (!active) return;
+					setPreviewNextRun(response.nextRun);
+					setPreviewTimezoneValid(response.timezoneValid);
+					setPreviewError(response.error ?? null);
+				})
+				.catch((error) => {
+					if (!active) return;
+					setPreviewError(
+						error instanceof Error ? error.message : "Failed to preview run.",
+					);
+				})
+				.finally(() => {
+					if (active) setPreviewLoading(false);
+				});
+		}, 250);
+
+		return () => {
+			active = false;
+			clearTimeout(timeout);
+		};
+	}, [schedulePreview.schedule, schedulePreview.runAt, timezone]);
 
 	const handleSubmit = async () => {
 		if (!name.trim() || !prompt.trim()) return;
@@ -356,7 +603,10 @@ export function AutomationsView({
 	const isSubmitDisabled =
 		!name.trim() ||
 		!prompt.trim() ||
-		(scheduleKind === "once" && !onceDateTime);
+		(scheduleKind === "once" && !onceDateTime) ||
+		(scheduleKind === "cron" && !cronExpression.trim()) ||
+		Boolean(previewError) ||
+		previewLoading;
 
 	return (
 		<div className="flex-1 overflow-hidden">
@@ -387,20 +637,43 @@ export function AutomationsView({
 								<h3 className="text-sm font-semibold text-text-secondary uppercase tracking-wide">
 									Active Automations
 								</h3>
-								<span className="badge-accent">{automations.length} total</span>
+								<span className="badge-accent">
+									{automationCounts.total} total
+								</span>
+							</div>
+							<div className="space-y-3 mb-4">
+								<input
+									className="input"
+									placeholder="Search automations..."
+									value={filter}
+									onChange={(event) => setFilter(event.target.value)}
+								/>
+								<div className="flex flex-wrap gap-2 text-xs text-text-muted">
+									<span>{automationCounts.enabled} enabled</span>
+									<span>•</span>
+									<span>{automationCounts.paused} paused</span>
+									{automationCounts.running > 0 && (
+										<>
+											<span>•</span>
+											<span>{automationCounts.running} running</span>
+										</>
+									)}
+								</div>
 							</div>
 							{loading ? (
 								<div className="space-y-3">
 									<div className="h-16 rounded-xl shimmer" />
 									<div className="h-16 rounded-xl shimmer" />
 								</div>
-							) : automations.length === 0 ? (
+							) : filteredAutomations.length === 0 ? (
 								<div className="text-sm text-text-muted">
-									No automations yet. Build one on the right.
+									{automations.length === 0
+										? "No automations yet. Build one on the right."
+										: "No automations match this search."}
 								</div>
 							) : (
 								<div className="space-y-3">
-									{automations.map((automation) => {
+									{filteredAutomations.map((automation) => {
 										const isActive = automation.id === selectedId;
 										const statusLabel = automation.running
 											? "Running"
@@ -533,6 +806,29 @@ export function AutomationsView({
 
 							<div className="space-y-4">
 								<div>
+									<div className="text-xs uppercase tracking-wide text-text-tertiary">
+										Templates
+									</div>
+									<div className="mt-2 grid gap-2 md:grid-cols-3">
+										{automationTemplates.map((template) => (
+											<button
+												key={template.id}
+												type="button"
+												className="rounded-xl border border-border-subtle bg-bg-secondary/40 px-3 py-3 text-left transition hover:border-border-default hover:bg-bg-secondary/70"
+												onClick={() => handleApplyTemplate(template)}
+											>
+												<div className="text-sm font-semibold text-text-primary">
+													{template.name}
+												</div>
+												<div className="text-xs text-text-muted mt-1">
+													{template.description}
+												</div>
+											</button>
+										))}
+									</div>
+								</div>
+
+								<div>
 									<label
 										htmlFor="automation-name"
 										className="text-xs uppercase tracking-wide text-text-tertiary"
@@ -562,6 +858,22 @@ export function AutomationsView({
 										value={prompt}
 										onChange={(event) => setPrompt(event.target.value)}
 									/>
+									<div className="mt-3 flex flex-wrap gap-2">
+										{promptTokenOptions.map((token) => (
+											<button
+												key={token.token}
+												type="button"
+												className="badge bg-bg-tertiary text-text-secondary hover:text-text-primary"
+												title={token.description}
+												onClick={() => handleInsertToken(token.token)}
+											>
+												{token.label}
+											</button>
+										))}
+									</div>
+									<div className="text-[11px] text-text-muted mt-2">
+										Tokens are replaced at run time. Hover to see details.
+									</div>
 								</div>
 
 								<div className="grid grid-cols-2 gap-3">
@@ -593,13 +905,28 @@ export function AutomationsView({
 										>
 											Timezone
 										</label>
-										<input
-											id="automation-timezone"
-											className="input mt-2"
-											value={timezone}
-											onChange={(event) => setTimezone(event.target.value)}
-											placeholder="America/Los_Angeles"
-										/>
+										<div className="mt-2 flex gap-2">
+											<input
+												id="automation-timezone"
+												className="input"
+												list="automation-timezones"
+												value={timezone}
+												onChange={(event) => setTimezone(event.target.value)}
+												placeholder="America/Los_Angeles"
+											/>
+											<button
+												type="button"
+												className="btn-secondary text-xs"
+												onClick={() => setTimezone(systemTimezone)}
+											>
+												Local
+											</button>
+										</div>
+										<datalist id="automation-timezones">
+											{timezoneOptions.map((tz) => (
+												<option key={tz} value={tz} />
+											))}
+										</datalist>
 									</div>
 								</div>
 
@@ -644,6 +971,31 @@ export function AutomationsView({
 										<div>
 											<div className="text-xs uppercase tracking-wide text-text-tertiary">
 												Days
+											</div>
+											<div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-muted">
+												<button
+													type="button"
+													className="btn-ghost text-[11px]"
+													onClick={() => setWeeklyDays([1, 2, 3, 4, 5])}
+												>
+													Weekdays
+												</button>
+												<button
+													type="button"
+													className="btn-ghost text-[11px]"
+													onClick={() => setWeeklyDays([0, 6])}
+												>
+													Weekends
+												</button>
+												<button
+													type="button"
+													className="btn-ghost text-[11px]"
+													onClick={() =>
+														setWeeklyDays(dayOptions.map((day) => day.value))
+													}
+												>
+													Every day
+												</button>
 											</div>
 											<div className="mt-2 flex flex-wrap gap-2">
 												{dayOptions.map((day) => {
@@ -707,6 +1059,37 @@ export function AutomationsView({
 										/>
 									</div>
 								)}
+
+								<div className="rounded-xl border border-border-subtle bg-bg-secondary/40 px-4 py-3">
+									<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
+										Schedule Preview
+									</div>
+									<div className="mt-2 text-sm text-text-primary">
+										{schedulePreview.label}
+									</div>
+									<div className="mt-1 text-xs text-text-muted">
+										Next run:{" "}
+										{previewNextRun
+											? `${formatDateLabel(
+													previewNextRun,
+												)} · ${formatRelativeTime(previewNextRun)}`
+											: "—"}
+									</div>
+									{previewLoading && (
+										<div className="mt-2 text-xs text-text-tertiary">
+											Validating schedule...
+										</div>
+									)}
+									{previewError ? (
+										<div className="mt-2 text-xs text-error">
+											{previewError}
+										</div>
+									) : !previewTimezoneValid ? (
+										<div className="mt-2 text-xs text-text-muted">
+											Timezone is invalid. Using UTC.
+										</div>
+									) : null}
+								</div>
 
 								<div className="grid grid-cols-2 gap-3">
 									<div>
@@ -836,7 +1219,7 @@ export function AutomationsView({
 									</div>
 									{contextPaths.length > 0 && (
 										<div className="mt-3 flex flex-wrap gap-2">
-											{contextPaths.map((path) => (
+											{contextPaths.map((path, index) => (
 												<span
 													key={path}
 													className="badge bg-bg-tertiary text-text-secondary"
@@ -925,6 +1308,24 @@ export function AutomationsView({
 											</div>
 										</div>
 									</div>
+									<div className="grid grid-cols-2 gap-4">
+										<div>
+											<div className="text-xs uppercase tracking-wide text-text-tertiary">
+												Runs
+											</div>
+											<div className="mt-1">
+												{selectedAutomation.runCount ?? 0}
+											</div>
+										</div>
+										<div>
+											<div className="text-xs uppercase tracking-wide text-text-tertiary">
+												Last Duration
+											</div>
+											<div className="mt-1">
+												{formatDuration(selectedAutomation.lastRunDurationMs)}
+											</div>
+										</div>
+									</div>
 									<div>
 										<div className="text-xs uppercase tracking-wide text-text-tertiary">
 											Last Output
@@ -934,6 +1335,16 @@ export function AutomationsView({
 												"No output captured yet."}
 										</div>
 									</div>
+									{selectedAutomation.lastRunError && (
+										<div>
+											<div className="text-xs uppercase tracking-wide text-text-tertiary">
+												Last Error
+											</div>
+											<div className="mt-2 text-xs text-error bg-error/10 border border-error/40 rounded-xl p-3">
+												{selectedAutomation.lastRunError}
+											</div>
+										</div>
+									)}
 									{selectedAutomation.lastSessionId && (
 										<button
 											type="button"
@@ -949,6 +1360,91 @@ export function AutomationsView({
 							) : (
 								<div className="text-sm text-text-muted">
 									Select an automation to see details.
+								</div>
+							)}
+						</div>
+
+						<div className="card p-5">
+							<div className="flex items-center justify-between mb-4">
+								<h3 className="text-sm font-semibold text-text-secondary uppercase tracking-wide">
+									Run History
+								</h3>
+								{selectedAutomation?.runHistory?.length ? (
+									<button
+										type="button"
+										className="text-xs text-text-muted hover:text-text-primary"
+										onClick={() => {
+											void updateAutomation(selectedAutomation.id, {
+												clearHistory: true,
+											});
+										}}
+									>
+										Clear history
+									</button>
+								) : null}
+							</div>
+							{selectedAutomation ? (
+								selectedAutomation.runHistory &&
+								selectedAutomation.runHistory.length > 0 ? (
+									<div className="space-y-3">
+										{selectedAutomation.runHistory.map((run) => {
+											const statusClass =
+												run.status === "success"
+													? "badge-success"
+													: run.status === "failure"
+														? "badge bg-error/10 text-error"
+														: "badge bg-bg-tertiary text-text-muted";
+											const triggerLabel =
+												run.trigger === "manual"
+													? "Manual"
+													: run.trigger === "schedule"
+														? "Scheduled"
+														: "Run";
+											return (
+												<div
+													key={run.id}
+													className="rounded-xl border border-border-subtle bg-bg-secondary/40 p-3"
+												>
+													<div className="flex items-center justify-between gap-3">
+														<div className="text-sm text-text-primary">
+															{formatDateLabel(run.finishedAt)}
+														</div>
+														<span className={statusClass}>{run.status}</span>
+													</div>
+													<div className="mt-1 text-xs text-text-muted">
+														{triggerLabel} · {formatDuration(run.durationMs)}
+													</div>
+													{run.error && (
+														<div className="mt-2 text-xs text-error">
+															{run.error}
+														</div>
+													)}
+													{run.output && (
+														<div className="mt-2 whitespace-pre-wrap text-xs bg-bg-tertiary/40 border border-border-subtle rounded-xl p-3 text-text-muted max-h-32 overflow-y-auto">
+															{run.output}
+														</div>
+													)}
+													{run.sessionId && (
+														<button
+															type="button"
+															className="btn-secondary w-full mt-3"
+															onClick={() => onOpenSession(run.sessionId!)}
+														>
+															Open run session
+														</button>
+													)}
+												</div>
+											);
+										})}
+									</div>
+								) : (
+									<div className="text-sm text-text-muted">
+										No runs captured yet.
+									</div>
+								)
+							) : (
+								<div className="text-sm text-text-muted">
+									Select an automation to see run history.
 								</div>
 							)}
 						</div>

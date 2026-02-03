@@ -43,6 +43,13 @@ interface AutomationCreateInput {
 
 interface AutomationUpdateInput extends AutomationCreateInput {
 	enabled?: boolean;
+	clearHistory?: boolean;
+}
+
+interface AutomationPreviewInput {
+	schedule?: string | null;
+	runAt?: string | null;
+	timezone?: string;
 }
 
 const schedulePattern =
@@ -184,6 +191,7 @@ export async function handleAutomations(
 				createdAt: now,
 				updatedAt: now,
 				runCount: 0,
+				runHistory: [],
 				sessionMode: data.sessionMode ?? "reuse",
 				sessionId: data.sessionId ?? undefined,
 				contextPaths: sanitizePaths(data.contextPaths),
@@ -254,6 +262,9 @@ export async function handleAutomations(
 			if (data.thinkingLevel) {
 				task.thinkingLevel = data.thinkingLevel;
 			}
+			if (data.clearHistory) {
+				task.runHistory = [];
+			}
 
 			const timezone =
 				data.timezone && isValidTimezone(data.timezone)
@@ -318,6 +329,58 @@ export async function handleAutomations(
 		sendJson(res, 405, { error: "Method not allowed" }, context.corsHeaders);
 	} catch (error) {
 		logger.error("Automation handler error", error as Error);
+		respondWithApiError(res, error, 500, context.corsHeaders, req);
+	}
+}
+
+export async function handleAutomationPreview(
+	req: IncomingMessage,
+	res: ServerResponse,
+	context: WebServerContext,
+) {
+	try {
+		if (req.method !== "POST") {
+			sendJson(res, 405, { error: "Method not allowed" }, context.corsHeaders);
+			return;
+		}
+
+		const data = await readJsonBody<AutomationPreviewInput>(req);
+		const timezoneInput =
+			typeof data.timezone === "string" ? data.timezone : "UTC";
+		const timezoneValid = isValidTimezone(timezoneInput);
+		const timezone = timezoneValid ? timezoneInput : "UTC";
+
+		const schedule = data.schedule ? data.schedule.trim() : null;
+		const runAt = parseRunAt(data.runAt ?? null);
+
+		if (schedule && !isValidSchedule(schedule)) {
+			sendJson(
+				res,
+				400,
+				{ error: "Invalid schedule format", timezoneValid },
+				context.corsHeaders,
+			);
+			return;
+		}
+		if (!schedule && !runAt) {
+			sendJson(
+				res,
+				400,
+				{ error: "Provide schedule or runAt", timezoneValid },
+				context.corsHeaders,
+			);
+			return;
+		}
+
+		const nextRun = resolveNextRun(schedule, runAt, timezone);
+		sendJson(
+			res,
+			200,
+			{ nextRun, timezone, timezoneValid },
+			context.corsHeaders,
+		);
+	} catch (error) {
+		logger.error("Automation preview error", error as Error);
 		respondWithApiError(res, error, 500, context.corsHeaders, req);
 	}
 }

@@ -108,10 +108,23 @@ export interface AutomationTask {
 	lastOutput?: string;
 	runCount: number;
 	running?: boolean;
+	runHistory?: AutomationRunRecord[];
 	sessionMode?: "reuse" | "new";
 	sessionId?: string;
 	lastSessionId?: string;
 	contextPaths?: string[];
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
+}
+
+export interface AutomationRunRecord {
+	id: string;
+	startedAt: string;
+	finishedAt: string;
+	durationMs?: number;
+	status: "success" | "failure" | "skipped";
+	trigger?: "manual" | "schedule";
+	error?: string;
+	output?: string;
+	sessionId?: string;
 }
