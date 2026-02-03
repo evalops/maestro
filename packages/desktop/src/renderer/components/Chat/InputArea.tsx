@@ -22,7 +22,11 @@ interface MentionState {
 }
 
 function buildMcpToolName(server: string, tool: string): string {
-	return `mcp__${sanitizeMcpName(server)}__${tool}`;
+	return `mcp__${sanitizeMcpName(server)}__${sanitizeMcpToolName(tool)}`;
+}
+
+function sanitizeMcpToolName(value: string): string {
+	return value.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
 function sanitizeMcpName(value: string): string {
@@ -430,13 +434,17 @@ export function InputArea({
 						<button
 							type="button"
 							onClick={() => setToolPickerOpen((open) => !open)}
-							disabled={disabled || mcpTools.length === 0}
+							disabled={disabled}
 							className="p-2.5 rounded-xl text-text-muted hover:text-text-secondary hover:bg-bg-elevated/50
 								transition-all duration-200 disabled:opacity-40"
 							title={
-								mcpTools.length > 0
-									? "Insert MCP tool"
-									: "No MCP tools available"
+								mcpLoading
+									? "Loading MCP tools"
+									: mcpError
+										? "MCP tools unavailable"
+										: mcpTools.length > 0
+											? "Insert MCP tool"
+											: "No MCP tools available"
 							}
 						>
 							<svg
