@@ -92,6 +92,7 @@ export function SettingsModal({
 	const [approvalMode, setApprovalMode] = useState<ApprovalMode>("prompt");
 	const [uiStatus, setUiStatus] = useState<UiStatus>(DEFAULT_UI_STATUS);
 	const [queueMode, setQueueMode] = useState<QueueMode>("all");
+	const [showTerminalUiControls, setShowTerminalUiControls] = useState(false);
 	const [frameworks, setFrameworks] = useState<FrameworkSummary[]>([]);
 	const [frameworkId, setFrameworkId] = useState<string>("none");
 	const [frameworkScope, setFrameworkScope] = useState<"user" | "workspace">(
@@ -727,7 +728,7 @@ export function SettingsModal({
 							Settings
 						</h2>
 						<p className="text-xs text-text-muted">
-							Slash-command controls for this session.
+							Desktop preferences plus runtime controls.
 						</p>
 					</div>
 					<button
@@ -1069,7 +1070,7 @@ export function SettingsModal({
 
 					<section className="border border-line-subtle rounded-xl overflow-hidden">
 						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
-							Session Controls
+							Session Behavior
 						</div>
 						<div className="p-4 space-y-4">
 							{!hasSession && (
@@ -1077,92 +1078,6 @@ export function SettingsModal({
 									Start a session to enable session-scoped settings.
 								</div>
 							)}
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">Zen mode</div>
-									<div className="text-xs text-text-muted">
-										Reduce UI clutter.
-									</div>
-								</div>
-								<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-									<input
-										type="checkbox"
-										disabled={!hasSession}
-										checked={uiStatus.zenMode}
-										onChange={(event) => updateZen(event.target.checked)}
-										className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-									/>
-									<span>{uiStatus.zenMode ? "On" : "Off"}</span>
-								</label>
-							</div>
-
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Clean mode
-									</div>
-									<div className="text-xs text-text-muted">
-										Clean up output formatting.
-									</div>
-								</div>
-								<select
-									disabled={!hasSession}
-									value={uiStatus.cleanMode}
-									onChange={(event) =>
-										updateCleanMode(event.target.value as CleanMode)
-									}
-									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
-								>
-									<option value="off">Off</option>
-									<option value="soft">Soft</option>
-									<option value="aggressive">Aggressive</option>
-								</select>
-							</div>
-
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Footer mode
-									</div>
-									<div className="text-xs text-text-muted">
-										Status footer density.
-									</div>
-								</div>
-								<select
-									disabled={!hasSession}
-									value={uiStatus.footerMode}
-									onChange={(event) =>
-										updateFooterMode(event.target.value as FooterMode)
-									}
-									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
-								>
-									<option value="ensemble">Ensemble</option>
-									<option value="solo">Solo</option>
-								</select>
-							</div>
-
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Compact tools
-									</div>
-									<div className="text-xs text-text-muted">
-										Reduce tool output cards.
-									</div>
-								</div>
-								<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-									<input
-										type="checkbox"
-										disabled={!hasSession}
-										checked={uiStatus.compactTools}
-										onChange={(event) =>
-											updateCompactTools(event.target.checked)
-										}
-										className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-									/>
-									<span>{uiStatus.compactTools ? "On" : "Off"}</span>
-								</label>
-							</div>
 
 							<div className="flex items-center justify-between gap-4">
 								<div>
@@ -1170,7 +1085,7 @@ export function SettingsModal({
 										Queue mode
 									</div>
 									<div className="text-xs text-text-muted">
-										One or all prompts queued.
+										How follow-up prompts are queued.
 									</div>
 								</div>
 								<select
@@ -1185,6 +1100,124 @@ export function SettingsModal({
 									<option value="all">All</option>
 								</select>
 							</div>
+						</div>
+					</section>
+
+					<section className="border border-line-subtle rounded-xl overflow-hidden">
+						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
+							Terminal UI (Optional)
+						</div>
+						<div className="p-4 space-y-4">
+							<div className="flex items-center justify-between gap-4">
+								<div>
+									<div className="text-text-primary font-medium">
+										Terminal-only controls
+									</div>
+									<div className="text-xs text-text-muted">
+										Applies to the Composer TUI, not the desktop UI.
+									</div>
+								</div>
+								<button
+									type="button"
+									className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
+									onClick={() => setShowTerminalUiControls((prev) => !prev)}
+								>
+									{showTerminalUiControls ? "Hide" : "Show"}
+								</button>
+							</div>
+
+							{showTerminalUiControls && (
+								<div className="space-y-4">
+									<div className="flex items-center justify-between gap-4">
+										<div>
+											<div className="text-text-primary font-medium">
+												Zen mode
+											</div>
+											<div className="text-xs text-text-muted">
+												Reduce TUI clutter.
+											</div>
+										</div>
+										<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
+											<input
+												type="checkbox"
+												disabled={!hasSession}
+												checked={uiStatus.zenMode}
+												onChange={(event) => updateZen(event.target.checked)}
+												className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
+											/>
+											<span>{uiStatus.zenMode ? "On" : "Off"}</span>
+										</label>
+									</div>
+
+									<div className="flex items-center justify-between gap-4">
+										<div>
+											<div className="text-text-primary font-medium">
+												Clean mode
+											</div>
+											<div className="text-xs text-text-muted">
+												Clean up TUI output formatting.
+											</div>
+										</div>
+										<select
+											disabled={!hasSession}
+											value={uiStatus.cleanMode}
+											onChange={(event) =>
+												updateCleanMode(event.target.value as CleanMode)
+											}
+											className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
+										>
+											<option value="off">Off</option>
+											<option value="soft">Soft</option>
+											<option value="aggressive">Aggressive</option>
+										</select>
+									</div>
+
+									<div className="flex items-center justify-between gap-4">
+										<div>
+											<div className="text-text-primary font-medium">
+												Footer mode
+											</div>
+											<div className="text-xs text-text-muted">
+												TUI status footer density.
+											</div>
+										</div>
+										<select
+											disabled={!hasSession}
+											value={uiStatus.footerMode}
+											onChange={(event) =>
+												updateFooterMode(event.target.value as FooterMode)
+											}
+											className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
+										>
+											<option value="ensemble">Ensemble</option>
+											<option value="solo">Solo</option>
+										</select>
+									</div>
+
+									<div className="flex items-center justify-between gap-4">
+										<div>
+											<div className="text-text-primary font-medium">
+												Compact tools
+											</div>
+											<div className="text-xs text-text-muted">
+												Reduce TUI tool output cards.
+											</div>
+										</div>
+										<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
+											<input
+												type="checkbox"
+												disabled={!hasSession}
+												checked={uiStatus.compactTools}
+												onChange={(event) =>
+													updateCompactTools(event.target.checked)
+												}
+												className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
+											/>
+											<span>{uiStatus.compactTools ? "On" : "Off"}</span>
+										</label>
+									</div>
+								</div>
+							)}
 						</div>
 					</section>
 
