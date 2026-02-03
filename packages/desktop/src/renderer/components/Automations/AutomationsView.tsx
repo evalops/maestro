@@ -775,6 +775,8 @@ export function AutomationsView({
 		(scheduleKind === "cron" && !cronExpression.trim()) ||
 		Boolean(previewError) ||
 		previewLoading;
+	const sectionCardClass =
+		"rounded-2xl border border-border-subtle bg-bg-secondary/40 p-4";
 
 	return (
 		<div className="flex-1 overflow-hidden">
@@ -1018,11 +1020,18 @@ export function AutomationsView({
 							</div>
 
 							<div className="space-y-4">
-								<div>
-									<div className="text-xs uppercase tracking-wide text-text-tertiary">
-										Templates
+								<div className={sectionCardClass}>
+									<div className="flex items-start justify-between gap-3">
+										<div>
+											<div className="text-xs uppercase tracking-wide text-text-tertiary">
+												Templates
+											</div>
+											<div className="text-xs text-text-muted mt-1">
+												Start from a proven routine.
+											</div>
+										</div>
 									</div>
-									<div className="mt-2 grid gap-2 md:grid-cols-3">
+									<div className="mt-3 grid gap-2 md:grid-cols-3">
 										{automationTemplates.map((template) => (
 											<button
 												key={template.id}
@@ -1041,674 +1050,728 @@ export function AutomationsView({
 									</div>
 								</div>
 
-								<div>
-									<label
-										htmlFor="automation-name"
-										className="text-xs uppercase tracking-wide text-text-tertiary"
-									>
-										Name
-									</label>
-									<input
-										id="automation-name"
-										className="input mt-2"
-										placeholder="Weekly status sync"
-										value={name}
-										onChange={(event) => setName(event.target.value)}
-									/>
-								</div>
-
-								<div>
-									<label
-										htmlFor="automation-prompt"
-										className="text-xs uppercase tracking-wide text-text-tertiary"
-									>
-										Prompt
-									</label>
-									<textarea
-										id="automation-prompt"
-										className="input mt-2 h-28 resize-none"
-										placeholder="Summarize the latest changes and open pull requests."
-										value={prompt}
-										onChange={(event) => setPrompt(event.target.value)}
-									/>
-									<div className="mt-3 flex flex-wrap gap-2">
-										{promptTokenOptions.map((token) => (
-											<button
-												key={token.token}
-												type="button"
-												className="badge bg-bg-tertiary text-text-secondary hover:text-text-primary"
-												title={token.description}
-												onClick={() => handleInsertToken(token.token)}
-											>
-												{token.label}
-											</button>
-										))}
+								<div className={sectionCardClass}>
+									<div className="text-xs uppercase tracking-wide text-text-tertiary">
+										Basics
 									</div>
-									<div className="text-[11px] text-text-muted mt-2">
-										Tokens are replaced at run time. Hover to see details.
-									</div>
-								</div>
-
-								<div className="grid grid-cols-2 gap-3">
-									<div>
-										<label
-											htmlFor="automation-schedule"
-											className="text-xs uppercase tracking-wide text-text-tertiary"
-										>
-											Schedule
-										</label>
-										<select
-											id="automation-schedule"
-											className="input mt-2"
-											value={scheduleKind}
-											onChange={(event) =>
-												setScheduleKind(event.target.value as ScheduleKind)
-											}
-										>
-											<option value="once">One-time</option>
-											<option value="daily">Daily</option>
-											<option value="weekly">Weekly</option>
-											<option value="cron">Cron</option>
-										</select>
-									</div>
-									<div>
-										<label
-											htmlFor="automation-timezone"
-											className="text-xs uppercase tracking-wide text-text-tertiary"
-										>
-											Timezone
-										</label>
-										<div className="mt-2 flex gap-2">
-											<input
-												id="automation-timezone"
-												className="input"
-												list="automation-timezones"
-												value={timezone}
-												onChange={(event) => setTimezone(event.target.value)}
-												placeholder="America/Los_Angeles"
-											/>
-											<button
-												type="button"
-												className="btn-secondary text-xs"
-												onClick={() => setTimezone(systemTimezone)}
-											>
-												Local
-											</button>
-										</div>
-										<datalist id="automation-timezones">
-											{timezoneOptions.map((tz) => (
-												<option key={tz} value={tz} />
-											))}
-										</datalist>
-									</div>
-								</div>
-
-								{scheduleKind === "once" && (
-									<div>
-										<label
-											htmlFor="automation-run-at"
-											className="text-xs uppercase tracking-wide text-text-tertiary"
-										>
-											Run At
-										</label>
-										<input
-											id="automation-run-at"
-											type="datetime-local"
-											className="input mt-2"
-											value={onceDateTime}
-											onChange={(event) => setOnceDateTime(event.target.value)}
-										/>
-									</div>
-								)}
-
-								{scheduleKind === "daily" && (
-									<div>
-										<label
-											htmlFor="automation-daily-time"
-											className="text-xs uppercase tracking-wide text-text-tertiary"
-										>
-											Time
-										</label>
-										<input
-											id="automation-daily-time"
-											type="time"
-											className="input mt-2"
-											value={dailyTime}
-											onChange={(event) => setDailyTime(event.target.value)}
-										/>
-									</div>
-								)}
-
-								{scheduleKind === "weekly" && (
-									<div className="space-y-3">
-										<div>
-											<div className="text-xs uppercase tracking-wide text-text-tertiary">
-												Days
-											</div>
-											<div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-muted">
-												<button
-													type="button"
-													className="btn-ghost text-[11px]"
-													onClick={() => setWeeklyDays([1, 2, 3, 4, 5])}
-												>
-													Weekdays
-												</button>
-												<button
-													type="button"
-													className="btn-ghost text-[11px]"
-													onClick={() => setWeeklyDays([0, 6])}
-												>
-													Weekends
-												</button>
-												<button
-													type="button"
-													className="btn-ghost text-[11px]"
-													onClick={() =>
-														setWeeklyDays(dayOptions.map((day) => day.value))
-													}
-												>
-													Every day
-												</button>
-											</div>
-											<div className="mt-2 flex flex-wrap gap-2">
-												{dayOptions.map((day) => {
-													const selected = weeklyDays.includes(day.value);
-													return (
-														<button
-															key={day.value}
-															type="button"
-															className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-																selected
-																	? "border-accent bg-accent/15 text-accent"
-																	: "border-border-subtle text-text-muted hover:border-border-default"
-															}`}
-															onClick={() => {
-																setWeeklyDays((prev) =>
-																	prev.includes(day.value)
-																		? prev.filter((item) => item !== day.value)
-																		: [...prev, day.value],
-																);
-															}}
-														>
-															{day.label}
-														</button>
-													);
-												})}
-											</div>
-										</div>
+									<div className="mt-3 space-y-3">
 										<div>
 											<label
-												htmlFor="automation-weekly-time"
+												htmlFor="automation-name"
 												className="text-xs uppercase tracking-wide text-text-tertiary"
 											>
-												Time
+												Name
 											</label>
 											<input
-												id="automation-weekly-time"
-												type="time"
+												id="automation-name"
 												className="input mt-2"
-												value={weeklyTime}
-												onChange={(event) => setWeeklyTime(event.target.value)}
+												placeholder="Weekly status sync"
+												value={name}
+												onChange={(event) => setName(event.target.value)}
 											/>
 										</div>
-									</div>
-								)}
 
-								{scheduleKind === "cron" && (
-									<div>
-										<label
-											htmlFor="automation-cron"
-											className="text-xs uppercase tracking-wide text-text-tertiary"
-										>
-											Cron Expression
-										</label>
-										<input
-											id="automation-cron"
-											className="input mt-2 font-mono"
-											value={cronExpression}
-											onChange={(event) =>
-												setCronExpression(event.target.value)
-											}
-										/>
-									</div>
-								)}
-
-								<div className="rounded-xl border border-border-subtle bg-bg-secondary/40 px-4 py-3">
-									<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
-										Schedule Preview
-									</div>
-									<div className="mt-2 text-sm text-text-primary">
-										{schedulePreview.label}
-									</div>
-									<div className="mt-1 text-xs text-text-muted">
-										Next run:{" "}
-										{previewNextRun
-											? `${formatDateLabel(
-													previewNextRun,
-												)} · ${formatRelativeTime(previewNextRun)}`
-											: "—"}
-									</div>
-									{previewLoading && (
-										<div className="mt-2 text-xs text-text-tertiary">
-											Validating schedule...
+										<div>
+											<label
+												htmlFor="automation-prompt"
+												className="text-xs uppercase tracking-wide text-text-tertiary"
+											>
+												Prompt
+											</label>
+											<textarea
+												id="automation-prompt"
+												className="input mt-2 h-28 resize-none"
+												placeholder="Summarize the latest changes and open pull requests."
+												value={prompt}
+												onChange={(event) => setPrompt(event.target.value)}
+											/>
+											<div className="mt-3 flex flex-wrap gap-2">
+												{promptTokenOptions.map((token) => (
+													<button
+														key={token.token}
+														type="button"
+														className="badge bg-bg-tertiary text-text-secondary hover:text-text-primary"
+														title={token.description}
+														onClick={() => handleInsertToken(token.token)}
+													>
+														{token.label}
+													</button>
+												))}
+											</div>
+											<div className="text-[11px] text-text-muted mt-2">
+												Tokens are replaced at run time. Hover to see details.
+											</div>
 										</div>
-									)}
-									{previewError ? (
-										<div className="mt-2 text-xs text-error">
-											{previewError}
-										</div>
-									) : !previewTimezoneValid ? (
-										<div className="mt-2 text-xs text-text-muted">
-											Timezone is invalid. Using UTC.
-										</div>
-									) : null}
+									</div>
 								</div>
 
-								<div className="rounded-xl border border-border-subtle bg-bg-secondary/40 px-4 py-3">
-									<div className="flex items-center justify-between gap-4">
+								<div className={sectionCardClass}>
+									<div className="flex items-start justify-between gap-3">
 										<div>
-											<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
-												Run Window
+											<div className="text-xs uppercase tracking-wide text-text-tertiary">
+												Schedule
 											</div>
 											<div className="text-xs text-text-muted mt-1">
-												Only run during this local time range.
+												Define when the automation runs.
 											</div>
 										</div>
-										<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-											<input
-												type="checkbox"
-												checked={runWindowEnabled}
-												onChange={(event) =>
-													setRunWindowEnabled(event.target.checked)
-												}
-												className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-											/>
-											<span>{runWindowEnabled ? "On" : "Off"}</span>
-										</label>
 									</div>
-									{runWindowEnabled && (
-										<div className="mt-3 space-y-3">
-											<div className="grid grid-cols-2 gap-3">
-												<div>
-													<label
-														htmlFor="automation-window-start"
-														className="text-xs uppercase tracking-wide text-text-tertiary"
-													>
-														Start
-													</label>
-													<input
-														id="automation-window-start"
-														type="time"
-														className="input mt-2"
-														value={runWindowStart}
-														onChange={(event) =>
-															setRunWindowStart(event.target.value)
-														}
-													/>
-												</div>
-												<div>
-													<label
-														htmlFor="automation-window-end"
-														className="text-xs uppercase tracking-wide text-text-tertiary"
-													>
-														End
-													</label>
-													<input
-														id="automation-window-end"
-														type="time"
-														className="input mt-2"
-														value={runWindowEnd}
-														onChange={(event) =>
-															setRunWindowEnd(event.target.value)
-														}
-													/>
-												</div>
+									<div className="mt-3 space-y-4">
+										<div className="grid grid-cols-2 gap-3">
+											<div>
+												<label
+													htmlFor="automation-schedule"
+													className="text-xs uppercase tracking-wide text-text-tertiary"
+												>
+													Schedule
+												</label>
+												<select
+													id="automation-schedule"
+													className="input mt-2"
+													value={scheduleKind}
+													onChange={(event) =>
+														setScheduleKind(event.target.value as ScheduleKind)
+													}
+												>
+													<option value="once">One-time</option>
+													<option value="daily">Daily</option>
+													<option value="weekly">Weekly</option>
+													<option value="cron">Cron</option>
+												</select>
 											</div>
 											<div>
-												<div className="text-xs uppercase tracking-wide text-text-tertiary">
-													Days
-												</div>
-												<div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-muted">
-													<button
-														type="button"
-														className="btn-ghost text-[11px]"
-														onClick={() => setRunWindowDays([1, 2, 3, 4, 5])}
-													>
-														Weekdays
-													</button>
-													<button
-														type="button"
-														className="btn-ghost text-[11px]"
-														onClick={() => setRunWindowDays([0, 6])}
-													>
-														Weekends
-													</button>
-													<button
-														type="button"
-														className="btn-ghost text-[11px]"
-														onClick={() =>
-															setRunWindowDays(
-																dayOptions.map((day) => day.value),
-															)
+												<label
+													htmlFor="automation-timezone"
+													className="text-xs uppercase tracking-wide text-text-tertiary"
+												>
+													Timezone
+												</label>
+												<div className="mt-2 flex gap-2">
+													<input
+														id="automation-timezone"
+														className="input"
+														list="automation-timezones"
+														value={timezone}
+														onChange={(event) =>
+															setTimezone(event.target.value)
 														}
+														placeholder="America/Los_Angeles"
+													/>
+													<button
+														type="button"
+														className="btn-secondary text-xs"
+														onClick={() => setTimezone(systemTimezone)}
 													>
-														Every day
+														Local
 													</button>
 												</div>
-												<div className="mt-2 flex flex-wrap gap-2">
-													{dayOptions.map((day) => {
-														const selected = runWindowDays.includes(day.value);
-														return (
-															<button
-																key={day.value}
-																type="button"
-																className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-																	selected
-																		? "border-accent bg-accent/15 text-accent"
-																		: "border-border-subtle text-text-muted hover:border-border-default"
-																}`}
-																onClick={() => {
-																	setRunWindowDays((prev) =>
-																		prev.includes(day.value)
-																			? prev.filter(
-																					(item) => item !== day.value,
-																				)
-																			: [...prev, day.value],
-																	);
-																}}
+												<datalist id="automation-timezones">
+													{timezoneOptions.map((tz) => (
+														<option key={tz} value={tz} />
+													))}
+												</datalist>
+											</div>
+										</div>
+
+										{scheduleKind === "once" && (
+											<div>
+												<label
+													htmlFor="automation-run-at"
+													className="text-xs uppercase tracking-wide text-text-tertiary"
+												>
+													Run At
+												</label>
+												<input
+													id="automation-run-at"
+													type="datetime-local"
+													className="input mt-2"
+													value={onceDateTime}
+													onChange={(event) =>
+														setOnceDateTime(event.target.value)
+													}
+												/>
+											</div>
+										)}
+
+										{scheduleKind === "daily" && (
+											<div>
+												<label
+													htmlFor="automation-daily-time"
+													className="text-xs uppercase tracking-wide text-text-tertiary"
+												>
+													Time
+												</label>
+												<input
+													id="automation-daily-time"
+													type="time"
+													className="input mt-2"
+													value={dailyTime}
+													onChange={(event) => setDailyTime(event.target.value)}
+												/>
+											</div>
+										)}
+
+										{scheduleKind === "weekly" && (
+											<div className="space-y-3">
+												<div>
+													<div className="text-xs uppercase tracking-wide text-text-tertiary">
+														Days
+													</div>
+													<div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-muted">
+														<button
+															type="button"
+															className="btn-ghost text-[11px]"
+															onClick={() => setWeeklyDays([1, 2, 3, 4, 5])}
+														>
+															Weekdays
+														</button>
+														<button
+															type="button"
+															className="btn-ghost text-[11px]"
+															onClick={() => setWeeklyDays([0, 6])}
+														>
+															Weekends
+														</button>
+														<button
+															type="button"
+															className="btn-ghost text-[11px]"
+															onClick={() =>
+																setWeeklyDays(
+																	dayOptions.map((day) => day.value),
+																)
+															}
+														>
+															Every day
+														</button>
+													</div>
+													<div className="mt-2 flex flex-wrap gap-2">
+														{dayOptions.map((day) => {
+															const selected = weeklyDays.includes(day.value);
+															return (
+																<button
+																	key={day.value}
+																	type="button"
+																	className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+																		selected
+																			? "border-accent bg-accent/15 text-accent"
+																			: "border-border-subtle text-text-muted hover:border-border-default"
+																	}`}
+																	onClick={() => {
+																		setWeeklyDays((prev) =>
+																			prev.includes(day.value)
+																				? prev.filter(
+																						(item) => item !== day.value,
+																					)
+																				: [...prev, day.value],
+																		);
+																	}}
+																>
+																	{day.label}
+																</button>
+															);
+														})}
+													</div>
+												</div>
+												<div>
+													<label
+														htmlFor="automation-weekly-time"
+														className="text-xs uppercase tracking-wide text-text-tertiary"
+													>
+														Time
+													</label>
+													<input
+														id="automation-weekly-time"
+														type="time"
+														className="input mt-2"
+														value={weeklyTime}
+														onChange={(event) =>
+															setWeeklyTime(event.target.value)
+														}
+													/>
+												</div>
+											</div>
+										)}
+
+										{scheduleKind === "cron" && (
+											<div>
+												<label
+													htmlFor="automation-cron"
+													className="text-xs uppercase tracking-wide text-text-tertiary"
+												>
+													Cron Expression
+												</label>
+												<input
+													id="automation-cron"
+													className="input mt-2 font-mono"
+													value={cronExpression}
+													onChange={(event) =>
+														setCronExpression(event.target.value)
+													}
+												/>
+											</div>
+										)}
+
+										<div className="rounded-xl border border-border-subtle bg-bg-secondary/50 px-4 py-3">
+											<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
+												Schedule Preview
+											</div>
+											<div className="mt-2 text-sm text-text-primary">
+												{schedulePreview.label}
+											</div>
+											<div className="mt-1 text-xs text-text-muted">
+												Next run:{" "}
+												{previewNextRun
+													? `${formatDateLabel(
+															previewNextRun,
+														)} · ${formatRelativeTime(previewNextRun)}`
+													: "—"}
+											</div>
+											{previewLoading && (
+												<div className="mt-2 text-xs text-text-tertiary">
+													Validating schedule...
+												</div>
+											)}
+											{previewError ? (
+												<div className="mt-2 text-xs text-error">
+													{previewError}
+												</div>
+											) : !previewTimezoneValid ? (
+												<div className="mt-2 text-xs text-text-muted">
+													Timezone is invalid. Using UTC.
+												</div>
+											) : null}
+										</div>
+
+										<div className="rounded-xl border border-border-subtle bg-bg-secondary/50 px-4 py-3">
+											<div className="flex items-center justify-between gap-4">
+												<div>
+													<div className="text-[10px] uppercase tracking-wide text-text-tertiary">
+														Run Window
+													</div>
+													<div className="text-xs text-text-muted mt-1">
+														Only run during this local time range.
+													</div>
+												</div>
+												<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
+													<input
+														type="checkbox"
+														checked={runWindowEnabled}
+														onChange={(event) =>
+															setRunWindowEnabled(event.target.checked)
+														}
+														className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
+													/>
+													<span>{runWindowEnabled ? "On" : "Off"}</span>
+												</label>
+											</div>
+											{runWindowEnabled && (
+												<div className="mt-3 space-y-3">
+													<div className="grid grid-cols-2 gap-3">
+														<div>
+															<label
+																htmlFor="automation-window-start"
+																className="text-xs uppercase tracking-wide text-text-tertiary"
 															>
-																{day.label}
+																Start
+															</label>
+															<input
+																id="automation-window-start"
+																type="time"
+																className="input mt-2"
+																value={runWindowStart}
+																onChange={(event) =>
+																	setRunWindowStart(event.target.value)
+																}
+															/>
+														</div>
+														<div>
+															<label
+																htmlFor="automation-window-end"
+																className="text-xs uppercase tracking-wide text-text-tertiary"
+															>
+																End
+															</label>
+															<input
+																id="automation-window-end"
+																type="time"
+																className="input mt-2"
+																value={runWindowEnd}
+																onChange={(event) =>
+																	setRunWindowEnd(event.target.value)
+																}
+															/>
+														</div>
+													</div>
+													<div>
+														<div className="text-xs uppercase tracking-wide text-text-tertiary">
+															Days
+														</div>
+														<div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-muted">
+															<button
+																type="button"
+																className="btn-ghost text-[11px]"
+																onClick={() =>
+																	setRunWindowDays([1, 2, 3, 4, 5])
+																}
+															>
+																Weekdays
 															</button>
-														);
-													})}
+															<button
+																type="button"
+																className="btn-ghost text-[11px]"
+																onClick={() => setRunWindowDays([0, 6])}
+															>
+																Weekends
+															</button>
+															<button
+																type="button"
+																className="btn-ghost text-[11px]"
+																onClick={() =>
+																	setRunWindowDays(
+																		dayOptions.map((day) => day.value),
+																	)
+																}
+															>
+																Every day
+															</button>
+														</div>
+														<div className="mt-2 flex flex-wrap gap-2">
+															{dayOptions.map((day) => {
+																const selected = runWindowDays.includes(
+																	day.value,
+																);
+																return (
+																	<button
+																		key={day.value}
+																		type="button"
+																		className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+																			selected
+																				? "border-accent bg-accent/15 text-accent"
+																				: "border-border-subtle text-text-muted hover:border-border-default"
+																		}`}
+																		onClick={() => {
+																			setRunWindowDays((prev) =>
+																				prev.includes(day.value)
+																					? prev.filter(
+																							(item) => item !== day.value,
+																						)
+																					: [...prev, day.value],
+																			);
+																		}}
+																	>
+																		{day.label}
+																	</button>
+																);
+															})}
+														</div>
+													</div>
+												</div>
+											)}
+										</div>
+									</div>
+								</div>
+
+								<div className={sectionCardClass}>
+									<div className="text-xs uppercase tracking-wide text-text-tertiary">
+										Run Controls
+									</div>
+									<div className="mt-3 space-y-3">
+										<div className="grid grid-cols-2 gap-3">
+											<div>
+												<label
+													htmlFor="automation-session-mode"
+													className="text-xs uppercase tracking-wide text-text-tertiary"
+												>
+													Session Mode
+												</label>
+												<select
+													id="automation-session-mode"
+													className="input mt-2"
+													value={sessionMode}
+													onChange={(event) =>
+														setSessionMode(
+															event.target.value as "reuse" | "new",
+														)
+													}
+												>
+													<option value="reuse">Continue session</option>
+													<option value="new">New session per run</option>
+												</select>
+											</div>
+											<div>
+												<label
+													htmlFor="automation-session"
+													className="text-xs uppercase tracking-wide text-text-tertiary"
+												>
+													Session
+												</label>
+												<select
+													id="automation-session"
+													className="input mt-2"
+													disabled={sessionMode !== "reuse"}
+													value={sessionId || ""}
+													onChange={(event) =>
+														setSessionId(event.target.value || null)
+													}
+												>
+													<option value="">Select session</option>
+													{sessions.map((session) => (
+														<option key={session.id} value={session.id}>
+															{session.title || "Untitled"}
+														</option>
+													))}
+												</select>
+											</div>
+										</div>
+
+										<div className="grid grid-cols-2 gap-3">
+											<div>
+												<label
+													htmlFor="automation-model"
+													className="text-xs uppercase tracking-wide text-text-tertiary"
+												>
+													Model
+												</label>
+												<select
+													id="automation-model"
+													className="input mt-2"
+													value={model || ""}
+													onChange={(event) =>
+														setModel(event.target.value || undefined)
+													}
+												>
+													<option value="">Default</option>
+													{models.map((modelOption) => (
+														<option
+															key={`${modelOption.provider}:${modelOption.id}`}
+															value={`${modelOption.provider}:${modelOption.id}`}
+														>
+															{modelOption.name || modelOption.id}
+														</option>
+													))}
+												</select>
+											</div>
+											<div>
+												<label
+													htmlFor="automation-thinking"
+													className="text-xs uppercase tracking-wide text-text-tertiary"
+												>
+													Thinking
+												</label>
+												<select
+													id="automation-thinking"
+													className="input mt-2"
+													value={thinkingLevel}
+													onChange={(event) =>
+														setThinkingLevel(
+															event.target.value as ThinkingLevel,
+														)
+													}
+												>
+													{thinkingOptions.map((option) => (
+														<option key={option} value={option}>
+															{option}
+														</option>
+													))}
+												</select>
+											</div>
+										</div>
+
+										<div className="grid grid-cols-2 gap-3">
+											<div>
+												<label
+													htmlFor="automation-concurrency"
+													className="text-xs uppercase tracking-wide text-text-tertiary"
+												>
+													Concurrency
+												</label>
+												<select
+													id="automation-concurrency"
+													className="input mt-2"
+													value={exclusiveRun ? "exclusive" : "parallel"}
+													onChange={(event) =>
+														setExclusiveRun(event.target.value === "exclusive")
+													}
+												>
+													<option value="parallel">Allow parallel runs</option>
+													<option value="exclusive">Run exclusively</option>
+												</select>
+											</div>
+											<div>
+												<label
+													htmlFor="automation-notify-success"
+													className="text-xs uppercase tracking-wide text-text-tertiary"
+												>
+													Notifications
+												</label>
+												<div className="mt-2 space-y-2 text-xs text-text-tertiary">
+													<label className="inline-flex items-center gap-2">
+														<input
+															id="automation-notify-success"
+															type="checkbox"
+															checked={notifyOnSuccess}
+															onChange={(event) =>
+																setNotifyOnSuccess(event.target.checked)
+															}
+															className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
+														/>
+														<span>Success</span>
+													</label>
+													<label className="inline-flex items-center gap-2">
+														<input
+															type="checkbox"
+															checked={notifyOnFailure}
+															onChange={(event) =>
+																setNotifyOnFailure(event.target.checked)
+															}
+															className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
+														/>
+														<span>Failure</span>
+													</label>
+												</div>
+												<div className="text-[11px] text-text-muted mt-2">
+													Uses background notification settings from Preferences
+													({notificationsEnabled ? "On" : "Off"}).
 												</div>
 											</div>
 										</div>
-									)}
-								</div>
-
-								<div className="grid grid-cols-2 gap-3">
-									<div>
-										<label
-											htmlFor="automation-session-mode"
-											className="text-xs uppercase tracking-wide text-text-tertiary"
-										>
-											Session Mode
-										</label>
-										<select
-											id="automation-session-mode"
-											className="input mt-2"
-											value={sessionMode}
-											onChange={(event) =>
-												setSessionMode(event.target.value as "reuse" | "new")
-											}
-										>
-											<option value="reuse">Continue session</option>
-											<option value="new">New session per run</option>
-										</select>
-									</div>
-									<div>
-										<label
-											htmlFor="automation-session"
-											className="text-xs uppercase tracking-wide text-text-tertiary"
-										>
-											Session
-										</label>
-										<select
-											id="automation-session"
-											className="input mt-2"
-											disabled={sessionMode !== "reuse"}
-											value={sessionId || ""}
-											onChange={(event) =>
-												setSessionId(event.target.value || null)
-											}
-										>
-											<option value="">Select session</option>
-											{sessions.map((session) => (
-												<option key={session.id} value={session.id}>
-													{session.title || "Untitled"}
-												</option>
-											))}
-										</select>
 									</div>
 								</div>
 
-								<div className="grid grid-cols-2 gap-3">
-									<div>
-										<label
-											htmlFor="automation-model"
-											className="text-xs uppercase tracking-wide text-text-tertiary"
-										>
-											Model
-										</label>
-										<select
-											id="automation-model"
-											className="input mt-2"
-											value={model || ""}
-											onChange={(event) =>
-												setModel(event.target.value || undefined)
-											}
-										>
-											<option value="">Default</option>
-											{models.map((modelOption) => (
-												<option
-													key={`${modelOption.provider}:${modelOption.id}`}
-													value={`${modelOption.provider}:${modelOption.id}`}
-												>
-													{modelOption.name || modelOption.id}
-												</option>
-											))}
-										</select>
+								<div className={sectionCardClass}>
+									<div className="text-xs uppercase tracking-wide text-text-tertiary">
+										Context
 									</div>
-									<div>
-										<label
-											htmlFor="automation-thinking"
-											className="text-xs uppercase tracking-wide text-text-tertiary"
-										>
-											Thinking
-										</label>
-										<select
-											id="automation-thinking"
-											className="input mt-2"
-											value={thinkingLevel}
-											onChange={(event) =>
-												setThinkingLevel(event.target.value as ThinkingLevel)
-											}
-										>
-											{thinkingOptions.map((option) => (
-												<option key={option} value={option}>
-													{option}
-												</option>
-											))}
-										</select>
-									</div>
-								</div>
-
-								<div className="grid grid-cols-2 gap-3">
-									<div>
-										<label
-											htmlFor="automation-concurrency"
-											className="text-xs uppercase tracking-wide text-text-tertiary"
-										>
-											Concurrency
-										</label>
-										<select
-											id="automation-concurrency"
-											className="input mt-2"
-											value={exclusiveRun ? "exclusive" : "parallel"}
-											onChange={(event) =>
-												setExclusiveRun(event.target.value === "exclusive")
-											}
-										>
-											<option value="parallel">Allow parallel runs</option>
-											<option value="exclusive">Run exclusively</option>
-										</select>
-									</div>
-									<div>
-										<label
-											htmlFor="automation-notify-success"
-											className="text-xs uppercase tracking-wide text-text-tertiary"
-										>
-											Notifications
-										</label>
-										<div className="mt-2 space-y-2 text-xs text-text-tertiary">
-											<label className="inline-flex items-center gap-2">
-												<input
-													id="automation-notify-success"
-													type="checkbox"
-													checked={notifyOnSuccess}
-													onChange={(event) =>
-														setNotifyOnSuccess(event.target.checked)
-													}
-													className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-												/>
-												<span>Success</span>
+									<div className="mt-3 space-y-3">
+										<div>
+											<label
+												htmlFor="automation-context-input"
+												className="text-xs uppercase tracking-wide text-text-tertiary"
+											>
+												Context Files
 											</label>
-											<label className="inline-flex items-center gap-2">
+											<div className="mt-2 flex gap-2">
 												<input
-													type="checkbox"
-													checked={notifyOnFailure}
+													id="automation-context-input"
+													className="input"
+													placeholder="src/server/routes.ts"
+													value={contextInput}
 													onChange={(event) =>
-														setNotifyOnFailure(event.target.checked)
+														setContextInput(event.target.value)
 													}
-													className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
+													onKeyDown={(event) => {
+														if (event.key === "Enter") {
+															event.preventDefault();
+															handleAddContextPath();
+														}
+													}}
 												/>
-												<span>Failure</span>
+												<button
+													type="button"
+													className="btn-secondary"
+													onClick={handleAddContextPath}
+												>
+													Add
+												</button>
+												<button
+													type="button"
+													className="btn-secondary"
+													onClick={handlePickContextFile}
+												>
+													Pick
+												</button>
+											</div>
+											{contextPaths.length > 0 && (
+												<div className="mt-3 flex flex-wrap gap-2">
+													{contextPaths.map((path, index) => (
+														<span
+															key={path}
+															className="badge bg-bg-tertiary text-text-secondary"
+														>
+															{path}
+															<button
+																type="button"
+																className="ml-2 text-text-muted hover:text-text-primary"
+																onClick={() =>
+																	setContextPaths((prev) =>
+																		prev.filter((_, i) => i !== index),
+																	)
+																}
+															>
+																×
+															</button>
+														</span>
+													))}
+												</div>
+											)}
+										</div>
+
+										<div>
+											<label
+												htmlFor="automation-context-folder-input"
+												className="text-xs uppercase tracking-wide text-text-tertiary"
+											>
+												Context Folders
 											</label>
-										</div>
-									</div>
-								</div>
-
-								<div className="text-[11px] text-text-muted">
-									Uses background notification settings from Preferences (
-									{notificationsEnabled ? "On" : "Off"}).
-								</div>
-
-								<div>
-									<label
-										htmlFor="automation-context-input"
-										className="text-xs uppercase tracking-wide text-text-tertiary"
-									>
-										Context Files
-									</label>
-									<div className="mt-2 flex gap-2">
-										<input
-											id="automation-context-input"
-											className="input"
-											placeholder="src/server/routes.ts"
-											value={contextInput}
-											onChange={(event) => setContextInput(event.target.value)}
-											onKeyDown={(event) => {
-												if (event.key === "Enter") {
-													event.preventDefault();
-													handleAddContextPath();
-												}
-											}}
-										/>
-										<button
-											type="button"
-											className="btn-secondary"
-											onClick={handleAddContextPath}
-										>
-											Add
-										</button>
-										<button
-											type="button"
-											className="btn-secondary"
-											onClick={handlePickContextFile}
-										>
-											Pick
-										</button>
-									</div>
-									{contextPaths.length > 0 && (
-										<div className="mt-3 flex flex-wrap gap-2">
-											{contextPaths.map((path, index) => (
-												<span
-													key={path}
-													className="badge bg-bg-tertiary text-text-secondary"
-												>
-													{path}
-													<button
-														type="button"
-														className="ml-2 text-text-muted hover:text-text-primary"
-														onClick={() =>
-															setContextPaths((prev) =>
-																prev.filter((_, i) => i !== index),
-															)
+											<div className="mt-2 flex gap-2">
+												<input
+													id="automation-context-folder-input"
+													className="input"
+													placeholder="src/server"
+													value={contextFolderInput}
+													onChange={(event) =>
+														setContextFolderInput(event.target.value)
+													}
+													onKeyDown={(event) => {
+														if (event.key === "Enter") {
+															event.preventDefault();
+															handleAddContextFolder();
 														}
-													>
-														×
-													</button>
-												</span>
-											))}
-										</div>
-									)}
-								</div>
-
-								<div>
-									<label
-										htmlFor="automation-context-folder-input"
-										className="text-xs uppercase tracking-wide text-text-tertiary"
-									>
-										Context Folders
-									</label>
-									<div className="mt-2 flex gap-2">
-										<input
-											id="automation-context-folder-input"
-											className="input"
-											placeholder="src/server"
-											value={contextFolderInput}
-											onChange={(event) =>
-												setContextFolderInput(event.target.value)
-											}
-											onKeyDown={(event) => {
-												if (event.key === "Enter") {
-													event.preventDefault();
-													handleAddContextFolder();
-												}
-											}}
-										/>
-										<button
-											type="button"
-											className="btn-secondary"
-											onClick={handleAddContextFolder}
-										>
-											Add
-										</button>
-										<button
-											type="button"
-											className="btn-secondary"
-											onClick={handlePickContextFolder}
-										>
-											Pick
-										</button>
-									</div>
-									{contextFolders.length > 0 && (
-										<div className="mt-3 flex flex-wrap gap-2">
-											{contextFolders.map((path) => (
-												<span
-													key={path}
-													className="badge bg-bg-tertiary text-text-secondary"
+													}}
+												/>
+												<button
+													type="button"
+													className="btn-secondary"
+													onClick={handleAddContextFolder}
 												>
-													{path}
-													<button
-														type="button"
-														className="ml-2 text-text-muted hover:text-text-primary"
-														onClick={() =>
-															setContextFolders((prev) =>
-																prev.filter((item) => item !== path),
-															)
-														}
-													>
-														×
-													</button>
-												</span>
-											))}
+													Add
+												</button>
+												<button
+													type="button"
+													className="btn-secondary"
+													onClick={handlePickContextFolder}
+												>
+													Pick
+												</button>
+											</div>
+											{contextFolders.length > 0 && (
+												<div className="mt-3 flex flex-wrap gap-2">
+													{contextFolders.map((path) => (
+														<span
+															key={path}
+															className="badge bg-bg-tertiary text-text-secondary"
+														>
+															{path}
+															<button
+																type="button"
+																className="ml-2 text-text-muted hover:text-text-primary"
+																onClick={() =>
+																	setContextFolders((prev) =>
+																		prev.filter((item) => item !== path),
+																	)
+																}
+															>
+																×
+															</button>
+														</span>
+													))}
+												</div>
+											)}
+											<div className="text-[11px] text-text-muted mt-2">
+												Folders snapshot the first few readable files and inject
+												them into the prompt.
+											</div>
 										</div>
-									)}
-									<div className="text-[11px] text-text-muted mt-2">
-										Folders snapshot the first few readable files and inject
-										them into the prompt.
 									</div>
 								</div>
 
