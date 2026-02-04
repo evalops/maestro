@@ -40,6 +40,22 @@ const mockModel: RegisteredModel = {
 	isLocal: false,
 };
 
+const mockOpenAiModel: RegisteredModel = {
+	id: "gpt-4o",
+	name: "GPT-4o",
+	api: "openai-completions",
+	provider: "openai",
+	baseUrl: "https://api.openai.com/v1/chat/completions",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 128000,
+	maxTokens: 4096,
+	providerName: "OpenAI",
+	source: "builtin",
+	isLocal: false,
+};
+
 describe("session serialization", () => {
 	it("converts app messages with thinking and tools to composer format", () => {
 		const userMessage: AppMessage = {
@@ -235,6 +251,33 @@ describe("session serialization", () => {
 			(p: AssistantMessage["content"][number]) => p.type,
 		);
 		expect(contentTypes).toEqual(["thinking", "text", "toolCall"]);
+	});
+
+	it("preserves assistant provenance when hydrating across providers", () => {
+		const composerMessages: ComposerMessage[] = [
+			{
+				role: "assistant",
+				content: "Hello",
+				thinking: "Reasoning",
+				provider: "anthropic",
+				api: "anthropic-messages",
+				model: "claude-sonnet-4-5",
+				timestamp: new Date().toISOString(),
+			},
+		];
+
+		const appMessages = convertComposerMessagesToApp(
+			composerMessages,
+			mockOpenAiModel,
+		);
+
+		const assistant = appMessages[0] as AssistantMessage;
+		expect(assistant.provider).toBe("anthropic");
+		expect(assistant.api).toBe("anthropic-messages");
+		expect(assistant.model).toBe("claude-sonnet-4-5");
+		expect(assistant.content.some((part) => part.type === "thinking")).toBe(
+			true,
+		);
 	});
 
 	it("throws descriptive errors for invalid composer timestamps", () => {

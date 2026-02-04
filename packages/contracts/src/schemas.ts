@@ -99,6 +99,9 @@ export const ComposerMessageSchema = Type.Object({
 	toolName: Type.Optional(Type.String()),
 	isError: Type.Optional(Type.Boolean()),
 	usage: Type.Optional(ComposerUsageSchema),
+	provider: Type.Optional(Type.String()),
+	api: Type.Optional(Type.String()),
+	model: Type.Optional(Type.String()),
 });
 
 export const ComposerChatRequestSchema = Type.Object({

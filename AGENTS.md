@@ -13,8 +13,7 @@ This document defines the operational parameters for **Composer**. It serves two
 
 **On first user message (do this in order):**
 - Read the root `README.md` fully.
-- Ask which package(s) to work on if you are unsure from their message.
-- Read the chosen package README(s) fully: `packages/ai/README.md`, `packages/tui/README.md`, `packages/contracts/README.md`, `packages/web/README.md`.
+- Always review all package README(s); do not ask which package(s): `packages/ai/README.md`, `packages/tui/README.md`, `packages/contracts/README.md`, `packages/web/README.md`.
 
 ### 🛠 Workspace Management
 

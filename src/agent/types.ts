@@ -1166,6 +1166,8 @@ export interface AgentRunConfig {
 	reasoning?: ReasoningEffort;
 	/** Optional reasoning summary preference for Responses API */
 	reasoningSummary?: "auto" | "detailed" | "concise" | null;
+	/** Emit message_end for the initial user message (defaults to true). */
+	emitUserMessageEnd?: boolean;
 	/** Function to retrieve steering messages for batch sending */
 	getSteeringMessages?: <T>() => Promise<QueuedMessage<T>[]>;
 	/** Function to retrieve follow-up messages for batch sending */

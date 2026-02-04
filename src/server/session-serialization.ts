@@ -459,6 +459,9 @@ export function convertAppMessageToComposer(
 			timestamp,
 			tools: tools.length ? tools : undefined,
 			usage: toComposerUsage(message.usage),
+			provider: message.provider,
+			api: message.api,
+			model: message.model,
 		};
 	}
 
@@ -605,6 +608,9 @@ export function convertComposerMessageToApp(
 
 	// Assistant messages - reconstruct content array from components
 	if (message.role === "assistant") {
+		const resolvedProvider = message.provider ?? model.provider;
+		const resolvedApi = (message.api ?? model.api) as AssistantMessage["api"];
+		const resolvedModel = message.model ?? model.id;
 		if (Array.isArray(message.content)) {
 			const normalizedSequence = normalizeComposerContentBlocks(
 				message.content,
@@ -638,9 +644,9 @@ export function convertComposerMessageToApp(
 			const assistantMessage: AssistantMessage = {
 				role: "assistant",
 				content: normalizedSequence,
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
+				api: resolvedApi,
+				provider: resolvedProvider,
+				model: resolvedModel,
 				usage: message.usage
 					? {
 							input: message.usage.input ?? 0,
@@ -711,9 +717,9 @@ export function convertComposerMessageToApp(
 		const assistantMessage: AssistantMessage = {
 			role: "assistant",
 			content: normalizedSequence,
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
+			api: resolvedApi,
+			provider: resolvedProvider,
+			model: resolvedModel,
 			usage: message.usage
 				? {
 						input: message.usage.input ?? 0,

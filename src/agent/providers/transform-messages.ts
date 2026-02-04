@@ -71,17 +71,17 @@ export function transformMessages<T extends Message>(
 				assistantMsg.provider === "github-copilot" &&
 				model.provider === "github-copilot" &&
 				assistantMsg.api !== model.api;
+			const shouldConvertThinking =
+				assistantMsg.provider !== model.provider ||
+				assistantMsg.api !== model.api ||
+				!model.reasoning;
 
-			if (
-				assistantMsg.provider === model.provider &&
-				assistantMsg.api === model.api &&
-				!needsToolCallIdNormalization
-			) {
+			if (!shouldConvertThinking && !needsToolCallIdNormalization) {
 				return msg;
 			}
 
 			const transformedContent = assistantMsg.content.flatMap((block) => {
-				if (block.type === "thinking") {
+				if (block.type === "thinking" && shouldConvertThinking) {
 					if (!block.thinking || block.thinking.trim() === "") return [];
 					return {
 						type: "text" as const,

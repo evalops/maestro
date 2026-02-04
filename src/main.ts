@@ -1833,7 +1833,7 @@ export async function main(args: string[]) {
 		}
 	}
 
-	// Note: Session will be started lazily after first user+assistant message exchange
+	// Note: Session will be started lazily after the first user message
 	// (unless continuing/resuming, in which case it's already initialized)
 
 	// Log loaded context files (they're already in the system prompt)
@@ -2140,7 +2140,7 @@ export async function main(args: string[]) {
 		if (event.type === "message_end") {
 			sessionManager.saveMessage(event.message);
 
-			// Check if we should initialize session now (after first user+assistant exchange)
+			// Check if we should initialize session now (after first user message)
 			if (sessionManager.shouldInitializeSession(agent.state.messages)) {
 				// Check concurrent session limit before starting
 				// We define "active" as updated in the last hour

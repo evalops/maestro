@@ -148,13 +148,13 @@ export class TurnTracker {
 				break;
 
 			case "message_start":
-				if (this.currentTurn) {
+				if (this.currentTurn && event.message?.role === "assistant") {
 					this.currentTurn.recordLlmStart();
 				}
 				break;
 
 			case "message_end":
-				if (this.currentTurn) {
+				if (this.currentTurn && event.message?.role === "assistant") {
 					this.currentTurn.recordLlmEnd();
 					// Accumulate usage from this message (turns may have multiple LLM calls)
 					if ("message" in event && event.message && "usage" in event.message) {

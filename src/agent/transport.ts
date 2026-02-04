@@ -537,6 +537,9 @@ export class ProviderTransport implements AgentTransport {
 		}
 
 		yield { type: "message_start", message: userMessage };
+		if (cfg.emitUserMessageEnd !== false) {
+			yield { type: "message_end", message: userMessage };
+		}
 
 		const context = {
 			systemPrompt,

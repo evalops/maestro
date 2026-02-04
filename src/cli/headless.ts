@@ -333,6 +333,9 @@ function handleAssistantMessageEvent(
 function handleAgentEvent(event: AgentEvent): void {
 	switch (event.type) {
 		case "message_start": {
+			if (event.message.role !== "assistant") {
+				break;
+			}
 			currentMessageId = generateMessageId();
 			send({
 				type: "response_start",
@@ -351,6 +354,9 @@ function handleAgentEvent(event: AgentEvent): void {
 		}
 
 		case "message_end": {
+			if (event.message.role !== "assistant") {
+				break;
+			}
 			// Extract usage from assistant messages
 			let usage: ResponseEndMessage["usage"];
 			const msg = event.message;
