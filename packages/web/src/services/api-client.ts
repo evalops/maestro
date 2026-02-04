@@ -711,7 +711,11 @@ export class ApiClient {
 									yield finalText;
 								}
 							}
-						} else if (event.type === "message_end" && !sawTextDelta) {
+						} else if (
+							event.type === "message_end" &&
+							!sawTextDelta &&
+							event.message?.role === "assistant"
+						) {
 							const finalText = extractTextFromMessage(event.message);
 							if (finalText) {
 								sawTextDelta = true;

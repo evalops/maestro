@@ -109,6 +109,9 @@ export function createAgentJsonlAdapter(
 		handle(event: AgentEvent) {
 			switch (event.type) {
 				case "message_start": {
+					if (!isAssistantMessage(event.message)) {
+						break;
+					}
 					currentAssistantTurn = nextTurnId();
 					writer.emit({
 						type: "turn",
@@ -120,6 +123,9 @@ export function createAgentJsonlAdapter(
 					break;
 				}
 				case "message_update": {
+					if (!isAssistantMessage(event.message)) {
+						break;
+					}
 					if (!currentAssistantTurn) {
 						currentAssistantTurn = nextTurnId();
 						writer.emit({
@@ -140,20 +146,19 @@ export function createAgentJsonlAdapter(
 					break;
 				}
 				case "message_end": {
-					if (isAssistantMessage(event.message)) {
-						lastAssistantText = extractText(event.message);
+					if (!isAssistantMessage(event.message)) {
+						break;
 					}
+					lastAssistantText = extractText(event.message);
 					const turnId = currentAssistantTurn ?? nextTurnId();
 					const data: Record<string, unknown> = {
 						text: extractText(event.message),
 					};
-					if (isAssistantMessage(event.message)) {
-						data.usage = event.message.usage;
-						data.stopReason = event.message.stopReason;
-						data.model = event.message.model;
-						data.provider = event.message.provider;
-						data.api = event.message.api;
-					}
+					data.usage = event.message.usage;
+					data.stopReason = event.message.stopReason;
+					data.model = event.message.model;
+					data.provider = event.message.provider;
+					data.api = event.message.api;
 					writer.emit({
 						type: "item",
 						subtype: "message_complete",

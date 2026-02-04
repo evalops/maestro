@@ -61,4 +61,37 @@ describe("jsonl writer", () => {
 			api: "anthropic-messages",
 		});
 	});
+
+	it("ignores user message boundaries for assistant turn output", () => {
+		let output = "";
+		const stream = new Writable({
+			write(chunk, _encoding, callback) {
+				output += chunk.toString();
+				callback();
+			},
+		});
+
+		const writer = new JsonlEventWriter(true, stream);
+		const adapter = createAgentJsonlAdapter(writer, () => "turn-1");
+		const userMessage = {
+			role: "user",
+			content: [{ type: "text", text: "Hi" }],
+			timestamp: Date.now(),
+		};
+
+		adapter.handle({ type: "message_start", message: userMessage });
+		adapter.handle({ type: "message_end", message: userMessage });
+
+		const events = output
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line));
+		const hasTurn = events.some((event) => event.type === "turn");
+		const hasMessageComplete = events.some(
+			(event) => event.type === "item" && event.subtype === "message_complete",
+		);
+		expect(hasTurn).toBe(false);
+		expect(hasMessageComplete).toBe(false);
+	});
 });

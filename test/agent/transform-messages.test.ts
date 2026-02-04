@@ -10,6 +10,7 @@ import type {
 function createModel(
 	provider: string,
 	api: string,
+	reasoning = false,
 ): Model<"anthropic-messages"> {
 	return {
 		id: "test-model",
@@ -19,7 +20,7 @@ function createModel(
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 100000,
 		baseUrl: "https://api.anthropic.com",
-		reasoning: false,
+		reasoning,
 		input: ["text"],
 		maxTokens: 4096,
 	};
@@ -51,7 +52,7 @@ function createAssistantMessage(
 
 describe("transformMessages", () => {
 	describe("thinking block transformation", () => {
-		it("preserves thinking blocks when same provider", () => {
+		it("preserves thinking blocks when same provider and reasoning enabled", () => {
 			const messages: Message[] = [
 				createAssistantMessage(
 					[
@@ -63,13 +64,35 @@ describe("transformMessages", () => {
 				),
 			];
 
-			const model = createModel("anthropic", "anthropic-messages");
+			const model = createModel("anthropic", "anthropic-messages", true);
 			const result = transformMessages(messages, model);
 
 			expect(result[0]!.role).toBe("assistant");
 			const content = (result[0] as AssistantMessage).content;
 			expect(content).toHaveLength(2);
 			expect(content[0]!.type).toBe("thinking");
+		});
+
+		it("converts thinking blocks when reasoning is disabled on destination model", () => {
+			const messages: Message[] = [
+				createAssistantMessage(
+					[
+						{ type: "thinking", thinking: "Let me think about this..." },
+						{ type: "text", text: "Here is my response" },
+					],
+					"anthropic",
+					"anthropic-messages",
+				),
+			];
+
+			const model = createModel("anthropic", "anthropic-messages", false);
+			const result = transformMessages(messages, model);
+
+			const content = (result[0] as AssistantMessage).content;
+			expect(content[0]!.type).toBe("text");
+			expect((content[0] as { type: "text"; text: string }).text).toContain(
+				"<thinking>",
+			);
 		});
 
 		it("converts thinking blocks to text when crossing providers", () => {

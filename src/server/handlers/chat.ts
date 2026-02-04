@@ -516,7 +516,7 @@ export async function handleChat(
 			if (event.type === "message_end") {
 				sessionManager.saveMessage(event.message);
 
-				// Auto-initialize session on first assistant message
+				// Auto-initialize session on first user message
 				if (sessionManager.shouldInitializeSession(agent.state.messages)) {
 					// Check concurrent session limit before starting
 					// We define "active" as updated in the last hour

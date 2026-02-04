@@ -40,12 +40,12 @@
  * When `agent.prompt()` is called, the following sequence occurs:
  *
  * 1. **agent_start**: Signals the beginning of a prompt cycle
- * 2. **message_start**: New assistant message being constructed
- * 3. **content_block_delta**: Streaming text/thinking content
- * 4. **tool_execution_start**: Tool call initiated
- * 5. **tool_execution_end**: Tool call completed
- * 6. **message_update**: Partial message with accumulated content
- * 7. **message_end**: Complete assistant message
+ * 2. **message_start**: Message envelope begins (user or assistant)
+ * 3. **message_end**: Message envelope completes (user or assistant)
+ * 4. **content_block_delta**: Streaming text/thinking content
+ * 5. **tool_execution_start**: Tool call initiated
+ * 6. **tool_execution_end**: Tool call completed
+ * 7. **message_update**: Partial message with accumulated content
  * 8. **agent_end**: Prompt cycle completed
  *
  * ## Message Transformation
@@ -240,7 +240,11 @@ function normalizeMessagesForProvider(
 		if (msg.role !== "assistant") {
 			return msg;
 		}
-		if (msg.provider === targetModel.provider && msg.api === targetModel.api) {
+		const shouldConvertThinking =
+			msg.provider !== targetModel.provider ||
+			msg.api !== targetModel.api ||
+			!targetModel.reasoning;
+		if (!shouldConvertThinking) {
 			return msg;
 		}
 		const content = msg.content.map((block) => {
@@ -904,7 +908,9 @@ export class Agent {
 					this.emit(event);
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
-					this._state.messages = [...this._state.messages, event.message];
+					if (!this._state.messages.includes(event.message as AppMessage)) {
+						this._state.messages = [...this._state.messages, event.message];
+					}
 					// Track last stop reason for overflow detection
 					if (
 						"stopReason" in event.message &&
@@ -1046,12 +1052,14 @@ export class Agent {
 				reasoning,
 				reasoningSummary: this._state.reasoningSummary,
 				preprocessMessages: this.preprocessMessages,
-				getQueuedMessages: async <T>() => this.dequeueQueuedMessages<T>(),
+				getSteeringMessages: async <T>() => this.dequeueSteeringMessages<T>(),
+				getFollowUpMessages: async <T>() => this.dequeueFollowUpMessages<T>(),
 				user: this._state.user,
 				session: this._state.session,
 				sandbox: this._state.sandbox,
 				temperature: this._state.temperature,
 				topP: this._state.topP,
+				emitUserMessageEnd: false,
 			};
 
 			for await (const event of this.transport.run(
@@ -1072,7 +1080,9 @@ export class Agent {
 					this.emit(event);
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
-					this._state.messages = [...this._state.messages, event.message];
+					if (!this._state.messages.includes(event.message as AppMessage)) {
+						this._state.messages = [...this._state.messages, event.message];
+					}
 					// Track last stop reason for overflow detection
 					if (
 						"stopReason" in event.message &&

@@ -180,6 +180,12 @@ export interface ComposerMessage {
 	isError?: boolean;
 	/** Token usage and cost for this message */
 	usage?: ComposerUsage;
+	/** Original provider for assistant messages (for cross-provider resume) */
+	provider?: string;
+	/** Original API for assistant messages (for cross-provider resume) */
+	api?: string;
+	/** Original model ID for assistant messages (for cross-provider resume) */
+	model?: string;
 }
 
 /**

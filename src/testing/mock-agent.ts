@@ -48,6 +48,9 @@ export class MockToolTransport implements AgentTransport {
 		signal?: AbortSignal,
 	): AsyncGenerator<AgentEvent, void, unknown> {
 		yield { type: "message_start", message: userMessage };
+		if (config.emitUserMessageEnd !== false) {
+			yield { type: "message_end", message: userMessage };
+		}
 
 		const throwIfAborted = () => {
 			if (signal?.aborted) {

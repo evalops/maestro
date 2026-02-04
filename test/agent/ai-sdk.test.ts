@@ -102,6 +102,7 @@ describe("@evalops/ai facade", () => {
 
 		expect(events.map((e) => e.type)).toEqual([
 			"message_start",
+			"message_end",
 			"turn_start",
 			"message_start",
 			"message_update",

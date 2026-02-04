@@ -1,6 +1,9 @@
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "../../src/agent/agent.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
 import type { WebServerContext } from "../../src/server/app-context.js";
@@ -57,6 +60,20 @@ function makeRes(): MockResponse {
 		},
 	};
 	return res;
+}
+
+function findJsonlFiles(dir: string): string[] {
+	const entries = readdirSync(dir, { withFileTypes: true });
+	const files: string[] = [];
+	for (const entry of entries) {
+		const fullPath = join(dir, entry.name);
+		if (entry.isDirectory()) {
+			files.push(...findJsonlFiles(fullPath));
+		} else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+			files.push(fullPath);
+		}
+	}
+	return files;
 }
 
 interface MockPassThrough extends PassThrough {
@@ -156,6 +173,105 @@ describe("handleChat", () => {
 		// SSE stream writes contain DONE marker
 		expect(res.body).toContain("[DONE]");
 		expect(res.statusCode).toBe(200);
+	});
+
+	it("persists user messages during streaming", async () => {
+		const composerHome = mkdtempSync(join(tmpdir(), "composer-home-"));
+		vi.stubEnv("COMPOSER_HOME", composerHome);
+
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = {};
+		const body = {
+			messages: [{ role: "user", content: "hi" }],
+		};
+		req.end(JSON.stringify(body));
+
+		const res = makeRes();
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async () => {
+				type EventCallback = (e: unknown) => void;
+				let subscriber: EventCallback | undefined;
+				const state = {
+					systemPrompt: "",
+					model: mockModel,
+					thinkingLevel: "off",
+					tools: [],
+					messages: [] as unknown[],
+					isStreaming: false,
+					streamMessage: null,
+					pendingToolCalls: new Map(),
+				};
+				return {
+					state,
+					subscribe: (fn: EventCallback) => {
+						subscriber = fn;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt: async () => {
+						const userMessage = { role: "user", content: "hi" };
+						state.messages = [...state.messages, userMessage];
+						subscriber?.({
+							type: "message_end",
+							message: userMessage,
+						});
+						const assistantMessage = {
+							role: "assistant",
+							content: [{ type: "text", text: "Hello" }],
+							api: mockModel.api,
+							provider: mockModel.provider,
+							model: mockModel.id,
+							usage: {
+								input: 1,
+								output: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							},
+							stopReason: "stop",
+							timestamp: Date.now(),
+						};
+						state.messages = [...state.messages, assistantMessage];
+						subscriber?.({
+							type: "message_end",
+							message: assistantMessage,
+						});
+					},
+					abort: () => {},
+				};
+			},
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		const sessionDir = join(composerHome, "agent", "sessions");
+		const sessionFiles = findJsonlFiles(sessionDir);
+		expect(sessionFiles.length).toBeGreaterThan(0);
+
+		const entries = readFileSync(sessionFiles[0]!, "utf8")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line));
+		const messages = entries
+			.filter((entry) => entry.type === "message")
+			.map((entry) => entry.message);
+		expect(messages.some((msg) => msg.role === "user")).toBe(true);
 	});
 
 	it("slims toolcall update events when header is set", async () => {

@@ -840,7 +840,7 @@ export class ComposerSidebarProvider
 							// Update reference
 							assistantMsg = msg;
 						}
-					} else {
+					} else if (msg.role !== "user") {
 						// Append other messages (e.g. tool results)
 						this._messages.push(msg);
 					}
