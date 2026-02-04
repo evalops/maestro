@@ -6,19 +6,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiClient } from "../lib/api-client";
+import { dedupeModels } from "../lib/model-utils";
 import type { Model, Session, SessionSummary } from "../lib/types";
-
-const getModelKey = (model: Model) => `${model.provider}:${model.id}`;
-
-const dedupeModels = (list: Model[]) => {
-	const seen = new Set<string>();
-	return list.filter((model) => {
-		const key = getModelKey(model);
-		if (seen.has(key)) return false;
-		seen.add(key);
-		return true;
-	});
-};
 
 const parseModelSpecifier = (specifier: string) => {
 	const trimmed = specifier.trim();

@@ -260,6 +260,21 @@ function normalizeMessagesForProvider(
 	});
 }
 
+function isDuplicateMessage(
+	existing: AppMessage | undefined,
+	incoming: AppMessage,
+): boolean {
+	if (!existing) return false;
+	if (existing.role !== incoming.role) return false;
+	if ("timestamp" in existing && "timestamp" in incoming) {
+		if (existing.timestamp !== incoming.timestamp) return false;
+	}
+	if (existing.role === "toolResult" && incoming.role === "toolResult") {
+		return existing.toolCallId === incoming.toolCallId;
+	}
+	return true;
+}
+
 /**
  * Configuration options for creating an Agent instance.
  */
@@ -908,8 +923,11 @@ export class Agent {
 					this.emit(event);
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
-					if (!this._state.messages.includes(event.message as AppMessage)) {
-						this._state.messages = [...this._state.messages, event.message];
+					const incoming = event.message as AppMessage;
+					const lastMessage =
+						this._state.messages[this._state.messages.length - 1];
+					if (!isDuplicateMessage(lastMessage, incoming)) {
+						this._state.messages = [...this._state.messages, incoming];
 					}
 					// Track last stop reason for overflow detection
 					if (
@@ -1080,8 +1098,11 @@ export class Agent {
 					this.emit(event);
 				} else if (event.type === "message_end") {
 					this._state.streamMessage = null;
-					if (!this._state.messages.includes(event.message as AppMessage)) {
-						this._state.messages = [...this._state.messages, event.message];
+					const incoming = event.message as AppMessage;
+					const lastMessage =
+						this._state.messages[this._state.messages.length - 1];
+					if (!isDuplicateMessage(lastMessage, incoming)) {
+						this._state.messages = [...this._state.messages, incoming];
 					}
 					// Track last stop reason for overflow detection
 					if (

@@ -22,11 +22,8 @@ interface MentionState {
 }
 
 function buildMcpToolName(server: string, tool: string): string {
-	return `mcp__${sanitizeMcpName(server)}__${sanitizeMcpToolName(tool)}`;
-}
-
-function sanitizeMcpToolName(value: string): string {
-	return value.replace(/[^A-Za-z0-9._-]/g, "_");
+	// Keep tool names as-is to match backend canonical MCP IDs.
+	return `mcp__${sanitizeMcpName(server)}__${tool}`;
 }
 
 function sanitizeMcpName(value: string): string {
@@ -307,9 +304,7 @@ export function InputArea({
 			{/* Input container with glow effect */}
 			<div className="input-area">
 				<div
-					className={`relative flex items-end gap-3 rounded-2xl p-4 transition-all duration-300 ${
-						isFocused ? "" : ""
-					}`}
+					className="relative flex items-end gap-3 rounded-2xl p-4 transition-all duration-300"
 					style={{
 						background: isFocused
 							? "linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%)"
@@ -345,11 +340,23 @@ export function InputArea({
 									)}
 									{!mcpLoading && !mcpError && filteredTools.length === 0 && (
 										<div className="px-4 py-4 text-xs text-text-muted">
-											No MCP tools available. Configure servers in
-											<code className="ml-1 font-mono text-[11px] text-text-secondary">
-												.composer/mcp.json
-											</code>
-											.
+											{mcpTools.length === 0 ? (
+												<>
+													No MCP tools available. Configure servers in
+													<code className="ml-1 font-mono text-[11px] text-text-secondary">
+														.composer/mcp.json
+													</code>
+													.
+												</>
+											) : (
+												<>
+													No MCP tools match{" "}
+													{mentionState?.query
+														? `"${mentionState.query}"`
+														: "your filter"}
+													.
+												</>
+											)}
 										</div>
 									)}
 									{!mcpLoading &&
@@ -433,7 +440,13 @@ export function InputArea({
 						{/* MCP tools button */}
 						<button
 							type="button"
-							onClick={() => setToolPickerOpen((open) => !open)}
+							onClick={() => {
+								if (isPickerOpen) {
+									closePicker();
+								} else {
+									setToolPickerOpen(true);
+								}
+							}}
 							disabled={disabled}
 							className="p-2.5 rounded-xl text-text-muted hover:text-text-secondary hover:bg-bg-elevated/50
 								transition-all duration-200 disabled:opacity-40"

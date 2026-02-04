@@ -23,6 +23,7 @@ import {
 	type UiStatus,
 	apiClient,
 } from "../../lib/api-client";
+import { dedupeModels, getModelKey } from "../../lib/model-utils";
 import type { Model, ThinkingLevel } from "../../lib/types";
 
 export type DensityMode = "comfortable" | "compact";
@@ -54,18 +55,6 @@ const DEFAULT_UI_STATUS: UiStatus = {
 };
 
 const DEFAULT_MODE_OPTIONS = ["smart", "rush", "free", "custom"];
-
-const getModelKey = (model: Model) => `${model.provider}:${model.id}`;
-
-const dedupeModels = (list: Model[]) => {
-	const seen = new Set<string>();
-	return list.filter((model) => {
-		const key = getModelKey(model);
-		if (seen.has(key)) return false;
-		seen.add(key);
-		return true;
-	});
-};
 
 const normalizeModeOptions = (modes: Array<string | { mode: string }>) => {
 	const normalized = modes
@@ -1480,7 +1469,11 @@ export function SettingsModal({
 																	</div>
 																</div>
 															) : (
-																<div>No tools reported.</div>
+																<div>
+																	{toolCount > 0
+																		? `${toolCount} tools reported (details unavailable).`
+																		: "No tools reported."}
+																</div>
 															)}
 															<div className="grid grid-cols-2 gap-2">
 																<div>

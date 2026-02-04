@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { getModelKey } from "../../lib/model-utils";
 import type { Model } from "../../lib/types";
 
 export interface HeaderProps {
@@ -24,7 +25,6 @@ export function Header({
 }: HeaderProps) {
 	const [isMaximized, setIsMaximized] = useState(false);
 	const [showModelDropdown, setShowModelDropdown] = useState(false);
-	const getModelKey = (model: Model) => `${model.provider}:${model.id}`;
 	const currentModelKey = currentModel ? getModelKey(currentModel) : "";
 	const isMac =
 		window.electron?.isMac ?? navigator.platform.toLowerCase().includes("mac");
