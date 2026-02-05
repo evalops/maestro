@@ -272,13 +272,22 @@ function isDuplicateMessage(
 	if (existing.role === "toolResult" && incoming.role === "toolResult") {
 		return existing.toolCallId === incoming.toolCallId;
 	}
-	// For assistant messages, compare stopReason and content identity to avoid
+	// For assistant messages, compare stopReason and content fingerprint to avoid
 	// discarding distinct messages that share a timestamp (e.g. parallel tool calls).
 	if (existing.role === "assistant" && incoming.role === "assistant") {
 		if (existing.stopReason !== incoming.stopReason) return false;
-		// Same stopReason and timestamp — compare content length as a cheap
-		// structural check before falling through to the default (duplicate).
 		if (existing.content.length !== incoming.content.length) return false;
+		// Compare first content block identity for a stronger structural check.
+		const a = existing.content[0];
+		const b = incoming.content[0];
+		if (a && b) {
+			if (a.type !== b.type) return false;
+			if (a.type === "toolCall" && b.type === "toolCall") {
+				if (a.id !== b.id) return false;
+			} else if (a.type === "text" && b.type === "text") {
+				if (a.text !== b.text) return false;
+			}
+		}
 	}
 	return true;
 }
