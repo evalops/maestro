@@ -286,6 +286,8 @@ function isDuplicateMessage(
 				if (a.id !== b.id) return false;
 			} else if (a.type === "text" && b.type === "text") {
 				if (a.text !== b.text) return false;
+			} else if (a.type === "thinking" && b.type === "thinking") {
+				if (a.thinking !== b.thinking) return false;
 			}
 		}
 	}
