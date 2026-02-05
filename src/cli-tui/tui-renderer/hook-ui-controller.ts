@@ -94,11 +94,6 @@ export class HookUiController {
 		setGlobalUIContext(this.hookUiContext, true);
 	}
 
-	/** Return the current HookUIContext (lazily created if needed). */
-	getHookUiContext(): HookUIContext {
-		return this.hookUiContext ?? this.createHookUiContext();
-	}
-
 	/** Footer hints from active hook status entries. */
 	getHookStatusHints(): FooterHint[] {
 		const hints: FooterHint[] = [];

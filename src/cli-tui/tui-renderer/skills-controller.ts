@@ -58,16 +58,6 @@ export class SkillsController {
 		this.activeSkills.clear();
 	}
 
-	/** Whether a skill is currently active by name. */
-	isActive(name: string): boolean {
-		return this.activeSkills.has(name);
-	}
-
-	/** Number of currently-active skills. */
-	get activeCount(): number {
-		return this.activeSkills.size;
-	}
-
 	// ─── Command Handler ───────────────────────────────────────────────────
 
 	handleSkillsCommand(context: CommandExecutionContext): void {
