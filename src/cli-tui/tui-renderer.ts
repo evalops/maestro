@@ -54,17 +54,9 @@ import { BashModeView } from "./bash-mode-view.js";
 import { ChangelogView } from "./changelog-view.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
 import {
-	type ComposerRenderContext,
-	handleComposerCommand,
-} from "./commands/composer-handlers.js";
-import {
 	type GroupedCommandHandlers,
 	createGroupedCommandHandlers,
 } from "./commands/grouped-command-handlers.js";
-import {
-	type McpRenderContext,
-	handleMcpCommand,
-} from "./commands/mcp-handlers.js";
 import {
 	handleApprovalsCommand,
 	handlePlanModeCommand,
@@ -138,6 +130,14 @@ import {
 import { buildTuiCommandRegistryOptions } from "./tui-renderer/command-registry-options.js";
 import { buildTuiCommandRegistry } from "./tui-renderer/command-registry.js";
 import {
+	type DelegatingCommandHandlerMap,
+	createDelegatingCommandHandlers,
+} from "./tui-renderer/delegating-command-handlers.js";
+import {
+	type FooterHintsController,
+	createFooterHintsController,
+} from "./tui-renderer/footer-hints-controller.js";
+import {
 	type HistoryController,
 	createHistoryController,
 } from "./tui-renderer/history-controller.js";
@@ -162,20 +162,15 @@ import { buildReviewPrompt } from "./utils/commands/review-prompt.js";
 import { SlashHintBar } from "./utils/commands/slash-hint-bar.js";
 import { openExternalEditor } from "./utils/external-editor.js";
 import {
-	type FooterHint,
 	type FooterMode,
 	type FooterStats,
 	calculateFooterStats,
-	formatTokenCount,
 } from "./utils/footer-utils.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
 import { areAnimationsDisabled } from "../config/env-vars.js";
-import { validateFrameworkPreference } from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
-import { handleFrameworkCommand as frameworkHandler } from "./commands/framework-handlers.js";
-import { handleGuardianCommand as guardianHandler } from "./commands/guardian-handlers.js";
 import { handleOtelCommand as otelHandler } from "./commands/otel-handlers.js";
 import { HookInputModal } from "./hooks/hook-input-modal.js";
 import { ModalManager } from "./modal-manager.js";
@@ -245,7 +240,6 @@ import {
 	type ViewportController,
 	createViewportController,
 } from "./tui-renderer/viewport-controller.js";
-import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
 const logger = createLogger("tui:renderer");
 
@@ -324,8 +318,9 @@ export class TuiRenderer {
 	private autoRetryController: AutoRetryController;
 	private sessionRecoveryManager: SessionRecoveryManager;
 	private testVerificationService: AutoVerifyService | null = null;
-	private planHint: string | null = null;
 	private hookUiController!: HookUiController;
+	private delegatingHandlers!: DelegatingCommandHandlerMap;
+	private footerHintsController!: FooterHintsController;
 	private toolOutputView: ToolOutputView;
 	private commandPaletteView: CommandPaletteView;
 	private slashCommands: SlashCommand[] = [];
@@ -403,12 +398,10 @@ export class TuiRenderer {
 	private isAgentRunning = false;
 	private approvalController?: ApprovalController;
 	private approvalService: ActionApprovalService;
-	private contextWarningLevel: "none" | "warn" | "danger" = "none";
 	private modelScope: RegisteredModel[] = [];
 	private startupChangelog?: string | null;
 	private startupChangelogSummary?: string | null;
 	private updateNotice?: UpdateCheckResult | null;
-	private startupWarnings: FooterHint[] = [];
 	private modalManager: ModalManager;
 	private viewportController!: ViewportController;
 	private terminalCapabilities: TerminalCapabilities =
@@ -655,6 +648,18 @@ export class TuiRenderer {
 		});
 		this.hookUiController.initializeGlobalContext();
 
+		this.delegatingHandlers = createDelegatingCommandHandlers({
+			agent: this.agent,
+			notificationView: this.notificationView,
+			addMarkdown: (content) =>
+				this.chatContainer.addChild(new Markdown(content)),
+			addSpacedText: (content) => {
+				this.chatContainer.addChild(new Spacer(1));
+				this.chatContainer.addChild(new Text(content, 1, 0));
+			},
+			requestRender: () => this.ui.requestRender(),
+		});
+
 		// Now that all core layout containers exist, compute the initial viewport
 		// sizing and wire resize handling.
 		this.refreshTerminalCapabilities();
@@ -720,7 +725,43 @@ export class TuiRenderer {
 			notificationView: this.notificationView,
 		});
 
-		this.surfaceStartupWarnings();
+		this.footerHintsController = createFooterHintsController({
+			deps: {
+				isAgentRunning: () => this.isAgentRunning,
+				idleFooterHint: this.idleFooterHint,
+				isReducedMotion: () => this.reducedMotion,
+				isMinimalMode: () => this.minimalMode,
+				getSandboxMode: () =>
+					this.agent.state.sandboxMode ?? process.env.COMPOSER_SANDBOX ?? null,
+				isSandboxActive: () =>
+					Boolean(this.agent.state.sandboxEnabled) ||
+					Boolean(this.agent.state.sandbox),
+				getApprovalMode: () => this.approvalService.getMode(),
+				getQueueData: () => ({
+					followUpMode: this.queueController.getFollowUpMode(),
+					queuedCount: this.queueController.getQueuedCount(),
+					hasQueue: this.queueController.hasQueue(),
+					queueHint: this.queueController.buildQueueHint(),
+				}),
+				getThinkingLevel: () => this.agent.state.thinkingLevel,
+				getUnseenAlertCount: () => this.footer.getUnseenAlertCount(),
+				getHookStatusHints: () => this.hookUiController.getHookStatusHints(),
+				getActiveToast: () => this.footer.getActiveToast(),
+				getBackgroundCounts: () => this.backgroundTasksController.getCounts(),
+				isCompacting: () => this.compactionController?.isCompacting() ?? false,
+				hasPendingPaste: () => this.pasteHandler?.hasPending() ?? false,
+				isBashModeActive: () => this.bashModeView?.isActive() ?? false,
+				setRuntimeBadges: (badges) =>
+					this.footer.setRuntimeBadges(badges as string[]),
+				setHints: (hints) => this.footer.setHints(hints),
+			},
+			callbacks: {
+				showToast: (message, tone) =>
+					this.notificationView.showToast(message, tone),
+				setToast: (message, tone) => this.footer.setToast(message, tone),
+			},
+		});
+		this.footerHintsController.surfaceStartupWarnings();
 		this.approvalController = createApprovalController({
 			approvalService,
 			ui: this.ui,
@@ -748,7 +789,7 @@ export class TuiRenderer {
 			modalManager: this.modalManager,
 			notificationView: this.notificationView,
 			setPlanHint: (hint) => {
-				this.planHint = hint;
+				this.footerHintsController.planHint = hint;
 				this.refreshFooterHint();
 			},
 			onStoreChanged: (store) => this.planController?.handleStoreChanged(store),
@@ -909,7 +950,7 @@ export class TuiRenderer {
 				requestRender: () => this.ui.requestRender(),
 				clearEditor: () => this.clearEditor(),
 				setPlanHint: (hint) => {
-					this.planHint = hint;
+					this.footerHintsController.planHint = hint;
 				},
 				isAgentRunning: () => this.isAgentRunning,
 			},
@@ -1006,7 +1047,7 @@ export class TuiRenderer {
 				clearStartupContainer: () => this.startupContainer.clear(),
 				syncPlanHint: () => this.planView.syncHintWithStore(),
 				setPlanHint: (hint) => {
-					this.planHint = hint;
+					this.footerHintsController.planHint = hint;
 				},
 				clearEditor: () => this.editor.setText(""),
 				clearPendingTools: () => this.pendingTools.clear(),
@@ -1126,7 +1167,7 @@ export class TuiRenderer {
 				this.scrollContainer.clearHistory();
 				this.startupContainer.clear();
 				this.planView.syncHintWithStore();
-				this.planHint = null;
+				this.footerHintsController.planHint = null;
 				this.footer.updateState(this.agent.state);
 				this.refreshFooterHint();
 				this.renderInitialMessages(this.agent.state);
@@ -1147,7 +1188,7 @@ export class TuiRenderer {
 				this.scrollContainer.clearHistory();
 				this.startupContainer.clear();
 				this.planView.syncHintWithStore();
-				this.planHint = null;
+				this.footerHintsController.planHint = null;
 				this.footer.updateState(this.agent.state);
 				this.refreshFooterHint();
 				this.renderInitialMessages(this.agent.state);
@@ -1185,7 +1226,7 @@ export class TuiRenderer {
 				showInfo: (msg) => this.notificationView.showInfo(msg),
 				refreshFooterHint: () => this.refreshFooterHint(),
 				setContextWarningLevel: (level) => {
-					this.contextWarningLevel = level;
+					this.footerHintsController.setContextWarningLevel(level);
 				},
 			},
 		});
@@ -1680,132 +1721,43 @@ export class TuiRenderer {
 	private async handleGuardianCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		await guardianHandler(context, {
-			showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
-			showWarning: (msg) => this.notificationView.showToast(msg, "warn"),
-			showError: (msg) => this.notificationView.showError(msg),
-			addContent: (content) =>
-				this.chatContainer.addChild(new Markdown(content)),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleGuardianCommand(context);
 	}
 
 	private async handleWorkflowCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { handleWorkflowCommand } = await import(
-			"./commands/workflow-handlers.js"
-		);
-		// Build tool map from agent state
-		const toolMap = new Map(
-			(this.agent.state.tools ?? []).map((t) => [t.name, t]),
-		);
-		await handleWorkflowCommand({
-			rawInput: context.rawInput,
-			cwd: process.cwd(),
-			tools: toolMap,
-			addContent: (content) => {
-				this.chatContainer.addChild(new Markdown(content));
-			},
-			showError: (message) => this.notificationView.showError(message),
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showSuccess: (message) =>
-				this.notificationView.showToast(message, "success"),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleWorkflowCommand(context);
 	}
 
 	private async handleEnhancedUndoCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { handleEnhancedUndoCommand } = await import(
-			"./commands/undo-handlers.js"
-		);
-		handleEnhancedUndoCommand({
-			rawInput: context.rawInput,
-			addContent: (content) => {
-				this.chatContainer.addChild(new Markdown(content));
-			},
-			showError: (message) => this.notificationView.showError(message),
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showSuccess: (message) =>
-				this.notificationView.showToast(message, "success"),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleEnhancedUndoCommand(context);
 	}
 
 	private async handleChangesCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { handleChangesCommand } = await import(
-			"./commands/undo-handlers.js"
-		);
-		handleChangesCommand({
-			rawInput: context.rawInput,
-			addContent: (content) => {
-				this.chatContainer.addChild(new Markdown(content));
-			},
-			showError: (message) => this.notificationView.showError(message),
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showSuccess: (message) =>
-				this.notificationView.showToast(message, "success"),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleChangesCommand(context);
 	}
 
 	private async handleCheckpointCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { handleCheckpointCommand } = await import(
-			"./commands/undo-handlers.js"
-		);
-		handleCheckpointCommand({
-			rawInput: context.rawInput,
-			addContent: (content) => {
-				this.chatContainer.addChild(new Markdown(content));
-			},
-			showError: (message) => this.notificationView.showError(message),
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showSuccess: (message) =>
-				this.notificationView.showToast(message, "success"),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleCheckpointCommand(context);
 	}
 
 	private async handleMemoryCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { handleMemoryCommand } = await import(
-			"./commands/memory-handlers.js"
-		);
-		handleMemoryCommand({
-			rawInput: context.rawInput,
-			cwd: process.cwd(),
-			sessionId: this.agent.state.session?.id,
-			addContent: (content) => {
-				this.chatContainer.addChild(new Markdown(content));
-			},
-			showError: (message) => this.notificationView.showError(message),
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showSuccess: (message) =>
-				this.notificationView.showToast(message, "success"),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleMemoryCommand(context);
 	}
 
 	private async handleModeCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { createModeCommandHandler } = await import(
-			"./commands/handlers/mode-handler.js"
-		);
-		const handler = createModeCommandHandler({
-			onModeChange: (_mode, model) => {
-				// Could update agent config here in the future
-				this.notificationView.showToast(`Model: ${model}`, "info");
-			},
-		});
-		handler(context);
+		await this.delegatingHandlers.handleModeCommand(context);
 	}
 
 	private handleContextCommand(_context: CommandExecutionContext): void {
@@ -1819,43 +1771,7 @@ export class TuiRenderer {
 	private async handleSourcesCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		try {
-			const result = await this.agent.getContextSourceStatus();
-			const lines: string[] = ["Context Sources Status:"];
-			lines.push(
-				`  Total: ${result.successCount} success, ${result.failureCount} failed (${result.totalDurationMs}ms)`,
-			);
-			lines.push("");
-
-			for (const source of result.sourceStatuses) {
-				const icon =
-					source.status === "success"
-						? "✓"
-						: source.status === "empty"
-							? "○"
-							: source.status === "skipped"
-								? "⊘"
-								: "✗";
-				const status =
-					source.status === "success"
-						? source.truncated
-							? `success (truncated from ${source.originalLength} chars)`
-							: "success"
-						: source.status;
-				const duration =
-					source.durationMs > 0 ? ` (${source.durationMs}ms)` : "";
-				lines.push(`  ${icon} ${source.name}: ${status}${duration}`);
-				if (source.error) {
-					lines.push(`      Error: ${source.error}`);
-				}
-			}
-
-			context.showInfo(lines.join("\n"));
-		} catch (error) {
-			context.showError(
-				`Failed to get context source status: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
+		await this.delegatingHandlers.handleSourcesCommand(context);
 	}
 
 	private handleFooterCommand(context: CommandExecutionContext): void {
@@ -2092,11 +2008,7 @@ export class TuiRenderer {
 	}
 
 	private handleFrameworkCommand(context: CommandExecutionContext): void {
-		frameworkHandler(context, {
-			showInfo: (msg) => this.notificationView.showInfo(msg),
-			showError: (msg) => this.notificationView.showError(msg),
-			showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
-		});
+		this.delegatingHandlers.handleFrameworkCommand(context);
 	}
 
 	private handleNewChatCommand(context: CommandExecutionContext): void {
@@ -2118,45 +2030,11 @@ export class TuiRenderer {
 	}
 
 	private handleMcpCommand(context: CommandExecutionContext): void {
-		handleMcpCommand(this._createMcpRenderContext(context));
-	}
-
-	private _createMcpRenderContext(
-		context: CommandExecutionContext,
-	): McpRenderContext {
-		return {
-			rawInput: context.rawInput,
-			addContent: (content: string) => {
-				this.chatContainer.addChild(new Spacer(1));
-				this.chatContainer.addChild(new Text(content, 1, 0));
-			},
-			showError: (message: string) => {
-				this.notificationView.showError(message);
-			},
-			requestRender: () => {
-				this.ui.requestRender();
-			},
-		};
+		this.delegatingHandlers.handleMcpCommand(context);
 	}
 
 	private handleComposerCommand(context: CommandExecutionContext): void {
-		handleComposerCommand(this._createComposerRenderContext(context));
-	}
-
-	private _createComposerRenderContext(
-		context: CommandExecutionContext,
-	): ComposerRenderContext {
-		return {
-			rawInput: context.rawInput,
-			cwd: process.cwd(),
-			addContent: (content: string) => {
-				this.chatContainer.addChild(new Spacer(1));
-				this.chatContainer.addChild(new Text(content, 1, 0));
-			},
-			requestRender: () => {
-				this.ui.requestRender();
-			},
-		};
+		this.delegatingHandlers.handleComposerCommand(context);
 	}
 
 	private createCommandContext({
@@ -2253,106 +2131,12 @@ export class TuiRenderer {
 	}
 
 	public refreshFooterHint(): void {
-		const sandboxMode =
-			this.agent.state.sandboxMode ?? process.env.COMPOSER_SANDBOX ?? null;
-		const sandboxRequested = Boolean(sandboxMode);
-		const sandboxActive =
-			Boolean(this.agent.state.sandboxEnabled) ||
-			Boolean(this.agent.state.sandbox);
-		this.footer.setRuntimeBadges(
-			buildRuntimeBadges({
-				approvalMode: this.approvalService.getMode(),
-				promptQueueMode: this.queueController.getFollowUpMode(),
-				queuedPromptCount: this.queueController.getQueuedCount(),
-				hasPromptQueue: this.queueController.hasQueue(),
-				thinkingLevel: this.agent.state.thinkingLevel,
-				sandboxMode,
-				isSafeMode: process.env.COMPOSER_SAFE_MODE === "1",
-				sandboxRequestedButMissing: sandboxRequested && !sandboxActive,
-				alertCount: this.footer.getUnseenAlertCount(),
-				reducedMotion: this.reducedMotion,
-				compactForced: this.minimalMode,
-			}),
-		);
-		if (this.isAgentRunning) {
-			return;
-		}
-		const hints: FooterHint[] = [];
-		const pushHint = (
-			type: FooterHint["type"],
-			message: string,
-			priority: number,
-		): void => {
-			if (message.trim().length === 0) return;
-			hints.push({ type, message, priority });
-		};
-
-		if (this.idleFooterHint) {
-			pushHint("custom", this.idleFooterHint, 20);
-		}
-		for (const hint of this.buildOperationalHints()) {
-			pushHint("custom", hint, 40);
-		}
-		for (const hint of this.hookUiController.getHookStatusHints()) {
-			hints.push(hint);
-		}
-		const activeToast = this.footer.getActiveToast();
-		if (
-			activeToast &&
-			(activeToast.tone === "danger" || activeToast.tone === "warn")
-		) {
-			pushHint("custom", `Alert: ${activeToast.message}`, 160);
-		}
-		if (this.startupWarnings.length > 0) {
-			hints.push(...this.startupWarnings);
-		}
-		if (this.planHint) {
-			pushHint("plan", `Plan ${this.planHint}`, 120);
-		}
-		const queueHint = this.queueController.buildQueueHint();
-		if (queueHint) {
-			pushHint("queue", queueHint, 110);
-		}
-		this.footer.setHints(hints);
-	}
-
-	private buildOperationalHints(): string[] {
-		const hints: string[] = [];
-		const backgroundCounts = this.backgroundTasksController.getCounts();
-		if (backgroundCounts.running > 0 || backgroundCounts.failed > 0) {
-			const runningLabel = `${backgroundCounts.running} background ${backgroundCounts.running === 1 ? "task" : "tasks"} running`;
-			const failureSuffix =
-				backgroundCounts.failed > 0
-					? `; ${backgroundCounts.failed} failed`
-					: "";
-			hints.push(`${runningLabel}${failureSuffix} (use /background list)`);
-		}
-		if (this.compactionController?.isCompacting()) {
-			hints.push("Compacting history…");
-		}
-		if (this.pasteHandler?.hasPending()) {
-			hints.push("Summarizing pasted text…");
-		}
-		if (this.bashModeView?.isActive()) {
-			hints.push("Bash mode active — type exit to leave");
-		}
-		return hints;
+		this.footerHintsController.refresh();
 	}
 
 	private handleEditorTyping(): void {
 		this.footer.clearToast();
 		this.slashHintController?.refreshSlashHintDebounced();
-	}
-
-	private surfaceStartupWarnings(): void {
-		const warning = validateFrameworkPreference();
-		if (!warning) return;
-		this.startupWarnings.push({
-			type: "custom",
-			message: warning,
-			priority: 140,
-		});
-		this.footer.setToast(warning, "warn");
 	}
 
 	public extractTextFromAppMessage(message: AppMessage): string {
@@ -2385,39 +2169,7 @@ export class TuiRenderer {
 	}
 
 	private maybeShowContextWarning(stats: FooterStats): void {
-		if (!stats.contextWindow) {
-			this.contextWarningLevel = "none";
-			return;
-		}
-		const percent = stats.contextPercent;
-		let nextLevel: "none" | "warn" | "danger" = "none";
-		if (percent >= 90) {
-			nextLevel = "danger";
-		} else if (percent >= 70) {
-			nextLevel = "warn";
-		}
-		if (nextLevel === this.contextWarningLevel) {
-			return;
-		}
-		if (nextLevel === "none") {
-			this.contextWarningLevel = "none";
-			return;
-		}
-		const label = `${formatTokenCount(stats.contextTokens)}/${formatTokenCount(
-			stats.contextWindow,
-		)}`;
-		if (nextLevel === "warn") {
-			this.notificationView.showToast(
-				`Context ${percent.toFixed(1)}% used (${label}). Consider /compact before your next prompt.`,
-				"info",
-			);
-		} else {
-			this.notificationView.showToast(
-				`Context ${percent.toFixed(1)}% used (${label}). Composer will auto-compact soon.`,
-				"warn",
-			);
-		}
-		this.contextWarningLevel = nextLevel;
+		this.footerHintsController.maybeShowContextWarning(stats);
 	}
 
 	private provideFailureHints(message: string): void {
