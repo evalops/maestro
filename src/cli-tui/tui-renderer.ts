@@ -93,9 +93,6 @@ import { TreeSelectorView } from "./selectors/tree-selector-view.js";
 import { UserMessageSelectorView } from "./selectors/user-message-selector-view.js";
 import { ConversationCompactor } from "./session/conversation-compactor.js";
 import { SessionContext } from "./session/session-context.js";
-import type { SessionDataProvider } from "./session/session-data-provider.js";
-import type { SessionSummaryController } from "./session/session-summary-controller.js";
-import type { SessionSwitcherView } from "./session/session-switcher-view.js";
 import type { SessionView } from "./session/session-view.js";
 import { SlashCommandMatcher, SlashCycleState } from "./slash/index.js";
 import { renderStartupAnnouncements } from "./startup-announcements.js";
@@ -104,7 +101,6 @@ import type { DiagnosticsView } from "./status/diagnostics-view.js";
 import { QuotaView } from "./status/quota-view.js";
 import { TelemetryView } from "./status/telemetry-view.js";
 import { TrainingView } from "./status/training-view.js";
-import type { StreamingView } from "./streaming-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import type { ToolOutputView } from "./tool-output-view.js";
 import { ToolStatusView } from "./tool-status-view.js";
@@ -143,13 +139,7 @@ import {
 	type SkillsController,
 	createSkillsController,
 } from "./tui-renderer/skills-controller.js";
-import {
-	type UiState,
-	loadCommandPrefs,
-	loadUiState,
-	saveCommandPrefs,
-	saveUiState,
-} from "./ui-state.js";
+import { type UiState, saveCommandPrefs, saveUiState } from "./ui-state.js";
 import { UpdateView } from "./update-view.js";
 import type { CommandPaletteView } from "./utils/commands/command-palette-view.js";
 import { buildReviewPrompt } from "./utils/commands/review-prompt.js";
@@ -325,9 +315,6 @@ export class TuiRenderer {
 	private planView: PlanView;
 	private planController?: PlanController;
 	private sessionView: SessionView;
-	private sessionDataProvider: SessionDataProvider;
-	private sessionSummaryController!: SessionSummaryController;
-	private sessionSwitcherView!: SessionSwitcherView;
 	private sessionStateController!: SessionStateController;
 	private importExportView: ImportExportView;
 	private runCommandView: RunCommandView;
@@ -346,9 +333,7 @@ export class TuiRenderer {
 	private changelogView: ChangelogView;
 	private hotkeysView: HotkeysView;
 	private trainingView: TrainingView;
-	private contextView?: ContextView;
 	private infoView: InfoView;
-	private streamingView: StreamingView;
 	private thinkingSelectorView: ThinkingSelectorView;
 	private themeSelectorView: ThemeSelectorView;
 	private modelSelectorView: ModelSelectorView;
@@ -383,7 +368,6 @@ export class TuiRenderer {
 	private uiState: UiState = {};
 	private footerMode: FooterMode = "ensemble";
 	private reducedMotion = false;
-	private reducedMotionForced = false;
 	private zenMode = false;
 	private hideThinkingBlocks = false;
 	private readonly minimalMode = checkMinimalMode();
@@ -437,7 +421,6 @@ export class TuiRenderer {
 			this.footerMode = initialPrefs.footerMode;
 		}
 		this.reducedMotion = initialPrefs.reducedMotion ?? false;
-		this.reducedMotionForced = initialPrefs.reducedMotionForced;
 		if (typeof initialPrefs.zenMode === "boolean") {
 			this.zenMode = initialPrefs.zenMode;
 		}
@@ -856,10 +839,7 @@ export class TuiRenderer {
 				);
 			},
 		});
-		this.sessionDataProvider = sessionSubsystem.sessionDataProvider;
-		this.sessionSummaryController = sessionSubsystem.sessionSummaryController;
 		this.sessionView = sessionSubsystem.sessionView;
-		this.sessionSwitcherView = sessionSubsystem.sessionSwitcherView;
 
 		// History controller uses sessionContext stores
 		this.historyController = createHistoryController({
@@ -933,7 +913,6 @@ export class TuiRenderer {
 		});
 		this.toolOutputView = toolingViews.toolOutputView;
 		this.messageView = toolingViews.messageView;
-		this.streamingView = toolingViews.streamingView;
 		this.agentEventRouter = toolingViews.agentEventRouter;
 		this.sessionStateController = createSessionStateController({
 			deps: {
@@ -1363,31 +1342,41 @@ export class TuiRenderer {
 				getMessages: () => this.agent.state.messages,
 				createCommandContext: (ctx) => this.createCommandContext(ctx),
 				handleReviewCommand: (context) => this.handleReviewCommand(context),
-				handleHistoryCommand: (context) => this.handleHistoryCommand(context),
+				handleHistoryCommand: (context) =>
+					this.historyController.handleHistoryCommand(context),
 				handleToolHistoryCommand: (context) =>
-					this.handleToolHistoryCommand(context),
-				handleSkillsCommand: (context) => this.handleSkillsCommand(context),
+					this.historyController.handleToolHistoryCommand(context),
+				handleSkillsCommand: (context) =>
+					this.skillsController.handleSkillsCommand(context),
 				handleEnhancedUndoCommand: (context) =>
-					this.handleEnhancedUndoCommand(context),
+					this.delegatingHandlers.handleEnhancedUndoCommand(context),
 				handleFooterCommand: (context) => this.handleFooterCommand(context),
 				handleCompactToolsCommand: (rawInput) =>
 					this.handleCompactToolsCommand(rawInput),
 				handleSteerCommand: (context) => this.handleSteerCommand(context),
 				handleStatsCommand: (context) => this.handleStatsCommand(context),
-				handleNewChatCommand: (context) => this.handleNewChatCommand(context),
+				handleNewChatCommand: (context) =>
+					this.sessionStateController.handleNewChatCommand(context),
 				handleTreeCommand: (_context) => this.treeSelectorView.show(),
-				handleMcpCommand: (context) => this.handleMcpCommand(context),
-				handleComposerCommand: (context) => this.handleComposerCommand(context),
+				handleMcpCommand: (context) =>
+					this.delegatingHandlers.handleMcpCommand(context),
+				handleComposerCommand: (context) =>
+					this.delegatingHandlers.handleComposerCommand(context),
 				handleContextCommand: (context) => this.handleContextCommand(context),
 				handleFrameworkCommand: (context) =>
-					this.handleFrameworkCommand(context),
-				handleGuardianCommand: (context) => this.handleGuardianCommand(context),
-				handleWorkflowCommand: (context) => this.handleWorkflowCommand(context),
-				handleChangesCommand: (context) => this.handleChangesCommand(context),
+					this.delegatingHandlers.handleFrameworkCommand(context),
+				handleGuardianCommand: (context) =>
+					this.delegatingHandlers.handleGuardianCommand(context),
+				handleWorkflowCommand: (context) =>
+					this.delegatingHandlers.handleWorkflowCommand(context),
+				handleChangesCommand: (context) =>
+					this.delegatingHandlers.handleChangesCommand(context),
 				handleCheckpointCommand: (context) =>
-					this.handleCheckpointCommand(context),
-				handleMemoryCommand: (context) => this.handleMemoryCommand(context),
-				handleModeCommand: (context) => this.handleModeCommand(context),
+					this.delegatingHandlers.handleCheckpointCommand(context),
+				handleMemoryCommand: (context) =>
+					this.delegatingHandlers.handleMemoryCommand(context),
+				handleModeCommand: (context) =>
+					this.delegatingHandlers.handleModeCommand(context),
 				getGroupedHandlers: () => this.getGroupedHandlers(),
 				refreshFooterHint: () => this.refreshFooterHint(),
 				onQuit: () => {
@@ -1503,10 +1492,6 @@ export class TuiRenderer {
 
 	attachPromptQueue(queue: PromptQueue): void {
 		this.queueController.attach(queue);
-	}
-
-	private handleSessionRecoverCommand(context: CommandExecutionContext): void {
-		this.sessionStateController.handleSessionRecoverCommand(context);
 	}
 
 	public async ensureContextBudgetBeforePrompt(): Promise<void> {
@@ -1641,48 +1626,6 @@ export class TuiRenderer {
 		this.headerContainer.addChild(new Spacer(1));
 	}
 
-	private async handleGuardianCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.delegatingHandlers.handleGuardianCommand(context);
-	}
-
-	private async handleWorkflowCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.delegatingHandlers.handleWorkflowCommand(context);
-	}
-
-	private async handleEnhancedUndoCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.delegatingHandlers.handleEnhancedUndoCommand(context);
-	}
-
-	private async handleChangesCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.delegatingHandlers.handleChangesCommand(context);
-	}
-
-	private async handleCheckpointCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.delegatingHandlers.handleCheckpointCommand(context);
-	}
-
-	private async handleMemoryCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.delegatingHandlers.handleMemoryCommand(context);
-	}
-
-	private async handleModeCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.delegatingHandlers.handleModeCommand(context);
-	}
-
 	private handleContextCommand(_context: CommandExecutionContext): void {
 		const contextView = new ContextView({
 			state: this.agent.state,
@@ -1768,18 +1711,6 @@ export class TuiRenderer {
 				`/review failed to run: ${message.slice(0, 200)}`,
 			);
 		}
-	}
-
-	private handleHistoryCommand(context: CommandExecutionContext): void {
-		this.historyController.handleHistoryCommand(context);
-	}
-
-	private handleToolHistoryCommand(context: CommandExecutionContext): void {
-		this.historyController.handleToolHistoryCommand(context);
-	}
-
-	private handleSkillsCommand(context: CommandExecutionContext): void {
-		this.skillsController.handleSkillsCommand(context);
 	}
 
 	// Skills, history rendering, and formatting have been extracted to:
@@ -1897,14 +1828,6 @@ export class TuiRenderer {
 		});
 	}
 
-	private handleFrameworkCommand(context: CommandExecutionContext): void {
-		this.delegatingHandlers.handleFrameworkCommand(context);
-	}
-
-	private handleNewChatCommand(context: CommandExecutionContext): void {
-		this.sessionStateController.handleNewChatCommand(context);
-	}
-
 	private resetConversation(
 		messages: AppMessage[],
 		editorSeed?: string,
@@ -1917,14 +1840,6 @@ export class TuiRenderer {
 			toastMessage,
 			options,
 		);
-	}
-
-	private handleMcpCommand(context: CommandExecutionContext): void {
-		this.delegatingHandlers.handleMcpCommand(context);
-	}
-
-	private handleComposerCommand(context: CommandExecutionContext): void {
-		this.delegatingHandlers.handleComposerCommand(context);
 	}
 
 	private createCommandContext({
@@ -2085,7 +2000,8 @@ export class TuiRenderer {
 					this.chatContainer.addChild(new Spacer(1));
 					this.chatContainer.addChild(new Text(text, 1, 0));
 				},
-				handleNewChatCommand: (ctx) => this.handleNewChatCommand(ctx),
+				handleNewChatCommand: (ctx) =>
+					this.sessionStateController.handleNewChatCommand(ctx),
 				handleClearCommand: () => this.clearController.handleClearCommand(),
 				handleSessionCommand: (rawInput) =>
 					this.sessionView.handleSessionCommand(rawInput),
@@ -2102,7 +2018,7 @@ export class TuiRenderer {
 				handleShareCommand: (rawInput) =>
 					this.importExportView.handleShareCommand(rawInput),
 				handleSessionRecoverCommand: (ctx) =>
-					this.handleSessionRecoverCommand(ctx),
+					this.sessionStateController.handleSessionRecoverCommand(ctx),
 				handleStatusCommand: () => this.diagnosticsView.handleStatusCommand(),
 				handleAboutCommand: () => this.aboutView.handleAboutCommand(),
 				handleContextCommand: (ctx) => this.handleContextCommand(ctx),
