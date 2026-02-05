@@ -272,10 +272,13 @@ function isDuplicateMessage(
 	if (existing.role === "toolResult" && incoming.role === "toolResult") {
 		return existing.toolCallId === incoming.toolCallId;
 	}
-	// For assistant messages, compare stopReason to distinguish tool-call
-	// messages (stopReason: "toolUse") from final text messages.
+	// For assistant messages, compare stopReason and content identity to avoid
+	// discarding distinct messages that share a timestamp (e.g. parallel tool calls).
 	if (existing.role === "assistant" && incoming.role === "assistant") {
-		return existing.stopReason === incoming.stopReason;
+		if (existing.stopReason !== incoming.stopReason) return false;
+		// Same stopReason and timestamp — compare content length as a cheap
+		// structural check before falling through to the default (duplicate).
+		if (existing.content.length !== incoming.content.length) return false;
 	}
 	return true;
 }
