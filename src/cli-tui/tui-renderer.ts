@@ -1,4 +1,3 @@
-import { basename } from "node:path";
 import type { SlashCommand } from "@evalops/tui";
 import {
 	Container,
@@ -41,8 +40,6 @@ import {
 import { SessionRecoveryManager } from "../agent/session-recovery.js";
 import {
 	type AutoVerifyService,
-	type TestResult,
-	formatTestResult,
 	registerTestVerificationHooks,
 } from "../testing/index.js";
 import { createLogger } from "../utils/logger.js";
@@ -53,19 +50,11 @@ import type { BackgroundTasksController } from "./background/background-tasks-co
 import { BashModeView } from "./bash-mode-view.js";
 import { ChangelogView } from "./changelog-view.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
-import {
-	type GroupedCommandHandlers,
-	createGroupedCommandHandlers,
-} from "./commands/grouped-command-handlers.js";
-import {
-	handleApprovalsCommand,
-	handlePlanModeCommand,
-} from "./commands/safety-handlers.js";
+import type { GroupedCommandHandlers } from "./commands/grouped-command-handlers.js";
 import type {
 	CommandEntry,
 	CommandExecutionContext,
 } from "./commands/types.js";
-import { handleInitCommand } from "./commands/utility-handlers.js";
 import { ConfigView } from "./config-view.js";
 import { ContextView } from "./context-view.js";
 import { CustomEditor } from "./custom-editor.js";
@@ -137,6 +126,7 @@ import {
 	type FooterHintsController,
 	createFooterHintsController,
 } from "./tui-renderer/footer-hints-controller.js";
+import { buildGroupedCommandHandlers } from "./tui-renderer/grouped-handlers-wiring.js";
 import {
 	type HistoryController,
 	createHistoryController,
@@ -145,6 +135,10 @@ import {
 	type HookUiController,
 	createHookUiController,
 } from "./tui-renderer/hook-ui-controller.js";
+import {
+	type MiscHandlers,
+	createMiscHandlers,
+} from "./tui-renderer/misc-handlers.js";
 import {
 	type SkillsController,
 	createSkillsController,
@@ -160,7 +154,6 @@ import { UpdateView } from "./update-view.js";
 import type { CommandPaletteView } from "./utils/commands/command-palette-view.js";
 import { buildReviewPrompt } from "./utils/commands/review-prompt.js";
 import { SlashHintBar } from "./utils/commands/slash-hint-bar.js";
-import { openExternalEditor } from "./utils/external-editor.js";
 import {
 	type FooterMode,
 	type FooterStats,
@@ -171,7 +164,6 @@ import { WelcomeAnimation } from "./welcome-animation.js";
 import { areAnimationsDisabled } from "../config/env-vars.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
-import { handleOtelCommand as otelHandler } from "./commands/otel-handlers.js";
 import { HookInputModal } from "./hooks/hook-input-modal.js";
 import { ModalManager } from "./modal-manager.js";
 import { PasteHandler } from "./paste/paste-handler.js";
@@ -410,7 +402,7 @@ export class TuiRenderer {
 	private lowBandwidthConfig: LowBandwidthConfig = getLowBandwidthConfig();
 	private interruptController!: InterruptController;
 	private pasteHandler!: PasteHandler;
-	private terminalTitle: string | null = null;
+	private miscHandlers!: MiscHandlers;
 	private groupedHandlers?: GroupedCommandHandlers;
 	private uiStateController!: UiStateController;
 	private quickSettingsController!: QuickSettingsController;
@@ -513,28 +505,28 @@ export class TuiRenderer {
 			},
 		});
 		this.autoRetryController = createAutoRetryController();
-		this.autoRetryController.setEventListener((event) => {
-			this.handleAutoRetryEvent(event);
-		});
 		// Load retry config if available
 		if (options.retryConfig) {
 			this.autoRetryController.loadFromRetryConfig(options.retryConfig);
 		}
 		this.sessionRecoveryManager = new SessionRecoveryManager();
+		this.startupChangelog = options.startupChangelog;
+		this.startupChangelogSummary = options.startupChangelogSummary;
+		this.updateNotice = options.updateNotice;
+		this.ui = new TUI(new ProcessTerminal(), this.terminalFeatures);
+		this.autoRetryController.setEventListener((event) => {
+			this.miscHandlers.handleAutoRetryEvent(event);
+		});
 		// Initialize test verification with auto-test hooks
 		this.testVerificationService = registerTestVerificationHooks(
 			process.cwd(),
 			{
 				onTestComplete: (result) => {
-					this.handleTestVerificationResult(result);
+					this.miscHandlers.handleTestVerificationResult(result);
 				},
 			},
 		);
-		this.startupChangelog = options.startupChangelog;
-		this.startupChangelogSummary = options.startupChangelogSummary;
-		this.updateNotice = options.updateNotice;
-		this.ui = new TUI(new ProcessTerminal(), this.terminalFeatures);
-		this.updateTerminalTitle();
+		this.miscHandlers.updateTerminalTitle();
 		this.configureRenderThrottle();
 		this.startupContainer = new Container();
 		this.headerContainer = new Container();
@@ -563,8 +555,8 @@ export class TuiRenderer {
 					this.quickSettingsController.toggleToolOutputs(),
 				toggleThinkingBlocks: () =>
 					this.quickSettingsController.toggleThinkingBlocks(),
-				openExternalEditor: () => this.handleExternalEditor(),
-				suspend: () => this.handleCtrlZ(),
+				openExternalEditor: () => this.miscHandlers.handleExternalEditor(),
+				suspend: () => this.miscHandlers.handleCtrlZ(),
 				handleSlashCycle: (reverse) =>
 					this.slashHintController?.handleSlashCycle(reverse) ?? false,
 				cycleThinkingLevel: () =>
@@ -604,6 +596,21 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			footer: this.footer,
+		});
+		this.miscHandlers = createMiscHandlers({
+			deps: {
+				ui: this.ui,
+				notificationView: this.notificationView,
+				getEditorText: () => this.editor.getText(),
+				setEditorText: (text) => this.editor.setText(text),
+				getTelemetryStatus: () => this.telemetryStatus,
+			},
+			callbacks: {
+				setAgentRunning: (running) => {
+					this.isAgentRunning = running;
+				},
+				refreshFooterHint: () => this.refreshFooterHint(),
+			},
 		});
 
 		// Initialize extracted controllers (attachment → skills → history)
@@ -1092,7 +1099,7 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			version: this.version,
-			telemetryStatus: () => this.describeTelemetryStatus(),
+			telemetryStatus: () => this.miscHandlers.describeTelemetryStatus(),
 			otelStatus: () => getOpenTelemetryStatus(),
 			getApprovalMode: () => this.approvalService.getMode(),
 		});
@@ -1506,90 +1513,6 @@ export class TuiRenderer {
 		await this.compactionController.ensureContextBudgetBeforePrompt();
 	}
 
-	/**
-	 * Handle auto-retry events from the retry controller.
-	 */
-	private handleAutoRetryEvent(event: AgentEvent): void {
-		if (event.type === "auto_retry_start") {
-			const delaySec = (event.delayMs / 1000).toFixed(1);
-			this.notificationView.showToast(
-				`Retrying (attempt ${event.attempt}/${event.maxAttempts}) in ${delaySec}s... Press Escape to cancel.`,
-				"warn",
-			);
-			// Mark as running again since we're retrying
-			this.isAgentRunning = true;
-			this.refreshFooterHint();
-		} else if (event.type === "auto_retry_end") {
-			if (event.success) {
-				this.notificationView.showToast(
-					`Retry succeeded after ${event.attempt} attempt(s).`,
-					"info",
-				);
-			} else if (event.finalError) {
-				this.notificationView.showError(
-					`Retry failed after ${event.attempt} attempt(s): ${event.finalError}`,
-				);
-			}
-			this.refreshFooterHint();
-		}
-	}
-
-	private handleExternalEditor(): void {
-		const result = openExternalEditor(this.ui, this.editor.getText());
-		if (result.error) {
-			this.notificationView.showInfo(result.error);
-			return;
-		}
-		if (typeof result.updatedText === "string") {
-			this.editor.setText(result.updatedText);
-			this.ui.requestRender();
-		}
-	}
-
-	private handleCtrlZ(): void {
-		if (process.platform === "win32") {
-			this.notificationView.showInfo(
-				"Suspending is not supported on Windows terminals.",
-			);
-			return;
-		}
-		process.once("SIGCONT", () => {
-			this.ui.start();
-			this.ui.requestRender("interactive");
-		});
-		this.ui.stop();
-		process.kill(0, "SIGTSTP");
-	}
-
-	/**
-	 * Handle test verification result.
-	 * Shows a notification with test results - success is brief, failures are detailed.
-	 */
-	private handleTestVerificationResult(result: TestResult): void {
-		if (result.success) {
-			// Show brief success notification
-			this.notificationView.showInfo(
-				`✓ Tests passed: ${result.passedTests}/${result.totalTests} (${result.durationMs}ms)`,
-			);
-		} else {
-			// Show detailed failure notification
-			const formatted = formatTestResult(result);
-			this.notificationView.showError(formatted);
-
-			// If we have specific failures, add them to the context for the agent
-			if (result.failures.length > 0) {
-				const failureSummary = result.failures
-					.slice(0, 3)
-					.map((f) => `• ${f.testName}: ${f.errorMessage.split("\n")[0]}`)
-					.join("\n");
-				logger.warn("Test failures detected", {
-					failedTests: result.failedTests,
-					failures: failureSummary,
-				});
-			}
-		}
-	}
-
 	async init(): Promise<void> {
 		if (this.isInitialized) return;
 
@@ -1768,12 +1691,6 @@ export class TuiRenderer {
 		this.modalManager.push(contextView);
 	}
 
-	private async handleSourcesCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		await this.delegatingHandlers.handleSourcesCommand(context);
-	}
-
 	private handleFooterCommand(context: CommandExecutionContext): void {
 		this.uiStateController.handleFooterCommand(context, {
 			getToastHistory: (count: number) => this.footer.getToastHistory(count),
@@ -1935,36 +1852,9 @@ export class TuiRenderer {
 
 	// consumePendingAttachmentMarkers, handleClipboardImagePaste,
 	// restoreQueuedAttachments extracted to attachment-controller.ts
-
-	private updateTerminalTitle(): void {
-		if (process.env.COMPOSER_DISABLE_TERMINAL_TITLE === "1") {
-			return;
-		}
-		if (!process.stdout.isTTY) {
-			return;
-		}
-		const dir = basename(process.cwd());
-		const nextTitle = `composer - ${dir}`;
-		if (this.terminalTitle === nextTitle) {
-			return;
-		}
-		process.stdout.write(`\u001b]0;${nextTitle}\u0007`);
-		this.terminalTitle = nextTitle;
-	}
-
-	private clearTerminalTitle(): void {
-		if (!this.terminalTitle) {
-			return;
-		}
-		if (process.env.COMPOSER_DISABLE_TERMINAL_TITLE === "1") {
-			return;
-		}
-		if (!process.stdout.isTTY) {
-			return;
-		}
-		process.stdout.write("\u001b]0;\u0007");
-		this.terminalTitle = null;
-	}
+	// updateTerminalTitle, clearTerminalTitle, handleAutoRetryEvent,
+	// handleExternalEditor, handleCtrlZ, handleTestVerificationResult,
+	// describeTelemetryStatus extracted to misc-handlers.ts
 
 	private handleApprovalRequired(request: ActionApprovalRequest): void {
 		this.approvalController?.enqueue(request);
@@ -2082,21 +1972,6 @@ export class TuiRenderer {
 		);
 	}
 
-	private describeTelemetryStatus(): string {
-		const status = this.telemetryStatus;
-		const base = status.enabled ? "enabled" : "disabled";
-		const details: string[] = [];
-		if (status.runtimeOverride) {
-			details.push(`override=${status.runtimeOverride}`);
-		} else if (status.reason) {
-			details.push(status.reason);
-		}
-		if (status.sampleRate !== 1) {
-			details.push(`sample=${status.sampleRate}`);
-		}
-		return details.length > 0 ? `${base} (${details.join(", ")})` : base;
-	}
-
 	private renderCommandHelp(command: SlashCommand): void {
 		const help = formatCommandHelp(command);
 		this.chatContainer.addChild(new Spacer(1));
@@ -2200,158 +2075,81 @@ export class TuiRenderer {
 
 	private getGroupedHandlers(): GroupedCommandHandlers {
 		if (!this.groupedHandlers) {
-			this.groupedHandlers = createGroupedCommandHandlers({
-				session: {
-					handleNewChat: (context) => this.handleNewChatCommand(context),
-					handleClear: () => this.clearController.handleClearCommand(),
-					handleSessionInfo: (ctx) =>
-						this.sessionView.handleSessionCommand(ctx.rawInput),
-					handleSessionsList: (ctx) =>
-						this.sessionView.handleSessionsCommand(ctx.rawInput),
-					handleBranch: (ctx) => this.branchController.handleBranchCommand(ctx),
-					handleTree: (_ctx) => this.treeSelectorView.show(),
-					handleQueue: (ctx) => {
-						if (this.queuePanelController) {
-							this.queuePanelController.handleQueueCommand(ctx);
-							return;
-						}
-						ctx.showInfo("Prompt queue is not available.");
-					},
-					handleExport: (ctx) =>
-						this.importExportView.handleExportCommand(ctx.rawInput),
-					handleShare: (ctx) =>
-						this.importExportView.handleShareCommand(ctx.rawInput),
-					handleRecover: (ctx) => this.handleSessionRecoverCommand(ctx),
+			this.groupedHandlers = buildGroupedCommandHandlers({
+				delegatingHandlers: this.delegatingHandlers,
+				notificationView: this.notificationView,
+				approvalService: this.approvalService,
+				requestRender: () => this.ui.requestRender(),
+				refreshFooterHint: () => this.refreshFooterHint(),
+				addSpacedText: (text) => {
+					this.chatContainer.addChild(new Spacer(1));
+					this.chatContainer.addChild(new Text(text, 1, 0));
 				},
-				diag: {
-					handleStatus: () => this.diagnosticsView.handleStatusCommand(),
-					handleAbout: () => this.aboutView.handleAboutCommand(),
-					handleContext: (ctx) => this.handleContextCommand(ctx),
-					handleStats: (ctx) => this.handleStatsCommand(ctx),
-					handleBackground: (ctx) =>
-						this.backgroundTasksController.handleBackgroundCommand(ctx),
-					handleDiagnostics: (ctx) =>
-						this.diagnosticsView.handleDiagnosticsCommand(ctx.rawInput),
-					handleTelemetry: (ctx) =>
-						this.telemetryView.handleTelemetryCommand(ctx),
-					handleTraining: (ctx) => this.trainingView.handleTrainingCommand(ctx),
-					handleOtel: (_ctx) =>
-						otelHandler({
-							showInfo: (msg) => this.notificationView.showInfo(msg),
-						}),
-					handleConfig: (ctx) => this.configView.handleConfigCommand(ctx),
-					handleLsp: (ctx) => this.lspView.handleLspCommand(ctx.rawInput),
-					handleMcp: (ctx) => this.handleMcpCommand(ctx),
-					handleSources: (ctx) => this.handleSourcesCommand(ctx),
-				},
-				ui: {
-					showTheme: () => this.themeSelectorView.show(),
-					handleClean: (ctx) => this.uiStateController.handleCleanCommand(ctx),
-					handleFooter: (ctx) => this.handleFooterCommand(ctx),
-					handleZen: (ctx) => this.uiStateController.handleZenCommand(ctx),
-					handleCompactTools: (ctx) =>
-						this.handleCompactToolsCommand(ctx.rawInput),
-					getUiState: () => ({
-						...this.uiStateController.getState(),
-						compactTools: this.toolOutputView?.isCompact() ?? false,
-					}),
-				},
-				safety: {
-					handleApprovals: (ctx) =>
-						handleApprovalsCommand(ctx, this.approvalService, {
-							showToast: (msg, type) =>
-								this.notificationView.showToast(msg, type),
-							refreshFooterHint: () => this.refreshFooterHint(),
-							addContent: (text) => {
-								this.chatContainer.addChild(new Spacer(1));
-								this.chatContainer.addChild(new Text(text, 1, 0));
-							},
-							requestRender: () => this.ui.requestRender(),
-						}),
-					handlePlanMode: (ctx) =>
-						handlePlanModeCommand(ctx, {
-							showToast: (msg, type) =>
-								this.notificationView.showToast(msg, type),
-							refreshFooterHint: () => this.refreshFooterHint(),
-							addContent: (text) => {
-								this.chatContainer.addChild(new Spacer(1));
-								this.chatContainer.addChild(new Text(text, 1, 0));
-							},
-							requestRender: () => this.ui.requestRender(),
-						}),
-					handleGuardian: (ctx) => this.handleGuardianCommand(ctx),
-					getSafetyState: () => ({
-						approvalMode: process.env.COMPOSER_APPROVALS ?? "prompt",
-						planMode: process.env.COMPOSER_PLAN_MODE === "1",
-						guardianEnabled: true,
-					}),
-				},
-				git: {
-					handleDiff: (ctx) => this.gitView.handlePreviewCommand(ctx.rawInput),
-					handleReview: (ctx) => this.handleReviewCommand(ctx),
-					runGitCommand: async (cmd: string) => {
-						const { execSync } = await import("node:child_process");
-						return execSync(cmd, { encoding: "utf-8" });
-					},
-				},
-				auth: {
-					handleLogin: (ctx) =>
-						this.oauthFlowController.handleLoginCommand(
-							ctx.argumentText,
-							(msg) => ctx.showError(msg),
-						),
-					handleLogout: (ctx) =>
-						this.oauthFlowController.handleLogoutCommand(
-							ctx.argumentText,
-							(msg) => ctx.showError(msg),
-							(msg) => ctx.showInfo(msg),
-						),
-					getAuthState: () => this.getActualAuthState(),
-				},
-				usage: {
-					handleCost: (ctx) => this.costView.handleCostCommand(ctx),
-					handleQuota: (ctx) => this.quotaView.handleQuotaCommand(ctx),
-					handleStats: (ctx) => this.handleStatsCommand(ctx),
-				},
-				undo: {
-					handleUndo: (ctx) => this.handleEnhancedUndoCommand(ctx),
-					handleCheckpoint: (ctx) => this.handleCheckpointCommand(ctx),
-					handleChanges: (ctx) => this.handleChangesCommand(ctx),
-					getUndoState: () => ({
-						canUndo: true,
-						undoCount: 0,
-						checkpoints: [],
-					}),
-				},
-				config: {
-					handleConfig: (ctx) => this.configView.handleConfigCommand(ctx),
-					handleImport: (ctx) =>
-						this.importExportView.handleImportCommand(ctx.rawInput),
-					handleFramework: (ctx) => this.handleFrameworkCommand(ctx),
-					handleComposer: (ctx) => this.handleComposerCommand(ctx),
-					handleInit: (ctx) =>
-						handleInitCommand(ctx, {
-							showSuccess: (msg) =>
-								this.notificationView.showToast(msg, "success"),
-							showError: (msg) => ctx.showError(msg),
-							addContent: (text) => {
-								this.chatContainer.addChild(new Spacer(1));
-								this.chatContainer.addChild(new Text(text, 1, 0));
-							},
-							requestRender: () => this.ui.requestRender(),
-						}),
-				},
-				tools: {
-					handleTools: (ctx) =>
-						this.toolStatusView.handleToolsCommand(ctx.rawInput),
-					handleMcp: (ctx) => this.handleMcpCommand(ctx),
-					handleLsp: (ctx) => this.lspView.handleLspCommand(ctx.rawInput),
-					handleWorkflow: (ctx) => this.handleWorkflowCommand(ctx),
-					handleRun: (ctx) =>
-						this.runCommandView.handleRunCommand(ctx.rawInput),
-					handleCommands: (ctx) =>
-						this.customCommandsController.handleCommandsCommand(ctx),
-				},
+				handleNewChatCommand: (ctx) => this.handleNewChatCommand(ctx),
+				handleClearCommand: () => this.clearController.handleClearCommand(),
+				handleSessionCommand: (rawInput) =>
+					this.sessionView.handleSessionCommand(rawInput),
+				handleSessionsCommand: (rawInput) =>
+					this.sessionView.handleSessionsCommand(rawInput),
+				handleBranchCommand: (ctx) =>
+					this.branchController.handleBranchCommand(ctx),
+				showTree: () => this.treeSelectorView.show(),
+				handleQueueCommand: this.queuePanelController
+					? (ctx) => this.queuePanelController!.handleQueueCommand(ctx)
+					: null,
+				handleExportCommand: (rawInput) =>
+					this.importExportView.handleExportCommand(rawInput),
+				handleShareCommand: (rawInput) =>
+					this.importExportView.handleShareCommand(rawInput),
+				handleSessionRecoverCommand: (ctx) =>
+					this.handleSessionRecoverCommand(ctx),
+				handleStatusCommand: () => this.diagnosticsView.handleStatusCommand(),
+				handleAboutCommand: () => this.aboutView.handleAboutCommand(),
+				handleContextCommand: (ctx) => this.handleContextCommand(ctx),
+				handleStatsCommand: (ctx) => this.handleStatsCommand(ctx),
+				handleBackgroundCommand: (ctx) =>
+					this.backgroundTasksController.handleBackgroundCommand(ctx),
+				handleDiagnosticsCommand: (rawInput) =>
+					this.diagnosticsView.handleDiagnosticsCommand(rawInput),
+				handleTelemetryCommand: (ctx) =>
+					this.telemetryView.handleTelemetryCommand(ctx),
+				handleTrainingCommand: (ctx) =>
+					this.trainingView.handleTrainingCommand(ctx),
+				handleConfigCommand: (ctx) => this.configView.handleConfigCommand(ctx),
+				handleLspCommand: (rawInput) => this.lspView.handleLspCommand(rawInput),
+				showTheme: () => this.themeSelectorView.show(),
+				handleCleanCommand: (ctx) =>
+					this.uiStateController.handleCleanCommand(ctx),
+				handleFooterCommand: (ctx) => this.handleFooterCommand(ctx),
+				handleZenCommand: (ctx) => this.uiStateController.handleZenCommand(ctx),
+				handleCompactToolsCommand: (ctx) =>
+					this.handleCompactToolsCommand(ctx.rawInput),
+				getUiState: () => ({
+					...this.uiStateController.getState(),
+					compactTools: this.toolOutputView?.isCompact() ?? false,
+				}),
+				handleDiffCommand: (rawInput) =>
+					this.gitView.handlePreviewCommand(rawInput),
+				handleReviewCommand: (ctx) => this.handleReviewCommand(ctx),
+				handleLoginCommand: (argumentText, showError) =>
+					this.oauthFlowController.handleLoginCommand(argumentText, showError),
+				handleLogoutCommand: (argumentText, showError, showInfo) =>
+					this.oauthFlowController.handleLogoutCommand(
+						argumentText,
+						showError,
+						showInfo,
+					),
+				getAuthState: () => this.getActualAuthState(),
+				handleCostCommand: (ctx) => this.costView.handleCostCommand(ctx),
+				handleQuotaCommand: (ctx) => this.quotaView.handleQuotaCommand(ctx),
+				handleImportCommand: (rawInput) =>
+					this.importExportView.handleImportCommand(rawInput),
+				handleToolsCommand: (rawInput) =>
+					this.toolStatusView.handleToolsCommand(rawInput),
+				handleRunCommand: (rawInput) =>
+					this.runCommandView.handleRunCommand(rawInput),
+				handleCommandsCommand: (ctx) =>
+					this.customCommandsController.handleCommandsCommand(ctx),
 			});
 		}
 		return this.groupedHandlers;
@@ -2368,7 +2166,7 @@ export class TuiRenderer {
 			this.ui.stop();
 			this.isInitialized = false;
 		}
-		this.clearTerminalTitle();
+		this.miscHandlers.clearTerminalTitle();
 		// End session recovery tracking and create final backup
 		this.sessionRecoveryManager.endSession();
 		// Stop test verification service
