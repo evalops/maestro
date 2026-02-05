@@ -1,10 +1,6 @@
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import Clipboard from "@crosscopy/clipboard";
 import type { SlashCommand } from "@evalops/tui";
 import {
-	type Component,
 	Container,
 	Markdown,
 	ProcessTerminal,
@@ -19,22 +15,11 @@ import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 	ActionApprovalService,
-	ApprovalMode,
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/agent.js";
-import type {
-	AgentEvent,
-	AgentState,
-	AppMessage,
-	Attachment,
-} from "../agent/types.js";
+import type { AgentEvent, AgentState, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
-import {
-	getTypeScriptHookCommands,
-	setGlobalUIContext,
-} from "../hooks/index.js";
-import type { HookCommandContext, HookUIContext } from "../hooks/types.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
 import { listOAuthProviders, loadOAuthCredentials } from "../oauth/storage.js";
@@ -44,22 +29,8 @@ import {
 	toSessionModelMetadata,
 } from "../session/manager.js";
 import type { SessionManager } from "../session/manager.js";
-import {
-	type LoadedSkill,
-	type SkillLoadError,
-	findSkill,
-	formatSkillForInjection,
-	formatSkillListItem,
-	loadSkills,
-	searchSkills,
-} from "../skills/loader.js";
 import { getTelemetryStatus } from "../telemetry.js";
-import {
-	type Theme,
-	getCurrentThemeName,
-	setTheme,
-	theme,
-} from "../theme/theme.js";
+import { getCurrentThemeName, setTheme } from "../theme/theme.js";
 import { getTrainingStatus } from "../training.js";
 
 import { AutoCompactionMonitor } from "../agent/auto-compaction.js";
@@ -110,11 +81,6 @@ import { EditorView } from "./editor-view.js";
 import { FeedbackView } from "./feedback-view.js";
 import { FooterComponent } from "./footer.js";
 import { GitView } from "./git/git-view.js";
-import type { PromptHistoryEntry } from "./history/prompt-history.js";
-import type {
-	ToolHistoryEntry,
-	ToolHistoryStore,
-} from "./history/tool-history.js";
 import { HotkeysView } from "./hotkeys-view.js";
 import { ImportExportView } from "./import-view.js";
 import { InfoView } from "./info-view.js";
@@ -128,11 +94,7 @@ import type { OAuthFlowController } from "./oauth/index.js";
 import { OllamaView } from "./ollama-view.js";
 import type { PlanView } from "./plan-view.js";
 import type { PlanController } from "./plan/plan-controller.js";
-import type {
-	PromptPayload,
-	PromptQueue,
-	QueuedPrompt,
-} from "./prompt-queue.js";
+import type { PromptPayload, PromptQueue } from "./prompt-queue.js";
 import {
 	type QueueController,
 	type QueueMode,
@@ -141,7 +103,6 @@ import {
 import { RunCommandView } from "./run/run-command-view.js";
 import { RunController } from "./run/run-controller.js";
 import type { FileSearchView } from "./search/file-search-view.js";
-import { BaseSelectorComponent } from "./selectors/base-selector.js";
 import { ModelSelectorView } from "./selectors/model-selector-view.js";
 import { QueueModeSelectorView } from "./selectors/queue-mode-selector-view.js";
 import { ReportSelectorView } from "./selectors/report-selector-view.js";
@@ -170,8 +131,24 @@ import {
 	type AgentEventBridge,
 	createAgentEventBridge,
 } from "./tui-renderer/agent-event-bridge.js";
+import {
+	type AttachmentController,
+	createAttachmentController,
+} from "./tui-renderer/attachment-controller.js";
 import { buildTuiCommandRegistryOptions } from "./tui-renderer/command-registry-options.js";
 import { buildTuiCommandRegistry } from "./tui-renderer/command-registry.js";
+import {
+	type HistoryController,
+	createHistoryController,
+} from "./tui-renderer/history-controller.js";
+import {
+	type HookUiController,
+	createHookUiController,
+} from "./tui-renderer/hook-ui-controller.js";
+import {
+	type SkillsController,
+	createSkillsController,
+} from "./tui-renderer/skills-controller.js";
 import {
 	type UiState,
 	loadCommandPrefs,
@@ -348,8 +325,7 @@ export class TuiRenderer {
 	private sessionRecoveryManager: SessionRecoveryManager;
 	private testVerificationService: AutoVerifyService | null = null;
 	private planHint: string | null = null;
-	private hookStatusByKey = new Map<string, string>();
-	private hookUiContext?: HookUIContext;
+	private hookUiController!: HookUiController;
 	private toolOutputView: ToolOutputView;
 	private commandPaletteView: CommandPaletteView;
 	private slashCommands: SlashCommand[] = [];
@@ -409,7 +385,9 @@ export class TuiRenderer {
 	};
 	private agentEventRouter!: AgentEventRouter;
 	private sessionContext = new SessionContext();
-	private activeSkills = new Set<string>();
+	private skillsController!: SkillsController;
+	private historyController!: HistoryController;
+	private attachmentController!: AttachmentController;
 	private queueController: QueueController;
 	private queuePanelController?: QueuePanelController;
 	// Default to soft deduplication so repeated streamed lines don't appear in the TUI.
@@ -439,8 +417,6 @@ export class TuiRenderer {
 	private lowBandwidthConfig: LowBandwidthConfig = getLowBandwidthConfig();
 	private interruptController!: InterruptController;
 	private pasteHandler!: PasteHandler;
-	private pendingAttachmentCounter = 0;
-	private pendingAttachments = new Map<number, Attachment>();
 	private terminalTitle: string | null = null;
 	private groupedHandlers?: GroupedCommandHandlers;
 	private uiStateController!: UiStateController;
@@ -586,7 +562,8 @@ export class TuiRenderer {
 			ui: this.ui,
 			handlers: {
 				handleLargePaste: (event) => this.pasteHandler.handleLargePaste(event),
-				handlePasteImage: () => this.handleClipboardImagePaste(),
+				handlePasteImage: () =>
+					this.attachmentController.handleClipboardImagePaste(),
 				handleTyping: () => this.handleEditorTyping(),
 				cycleModel: () => this.quickSettingsController.cycleModel(),
 				toggleToolOutputs: () =>
@@ -635,8 +612,48 @@ export class TuiRenderer {
 			ui: this.ui,
 			footer: this.footer,
 		});
-		this.hookUiContext = this.createHookUiContext();
-		setGlobalUIContext(this.hookUiContext, true);
+
+		// Initialize extracted controllers (attachment → skills → history)
+		this.attachmentController = createAttachmentController({
+			deps: {
+				insertEditorText: (text) => this.editor.insertText(text),
+				setEditorText: (text) => this.editor.setText(text),
+			},
+			callbacks: {
+				requestRender: () => this.ui.requestRender(),
+			},
+		});
+
+		this.skillsController = createSkillsController({
+			deps: {
+				injectMessage: (message) => this.agent.injectMessage(message),
+				cwd: () => process.cwd(),
+			},
+			callbacks: {
+				pushCommandOutput: (text) => this.pushCommandOutput(text),
+				showInfo: (message) => this.notificationView.showInfo(message),
+				showError: (message) => this.notificationView.showError(message),
+			},
+		});
+
+		this.hookUiController = createHookUiController({
+			deps: {
+				ui: this.ui,
+				getEditorText: () => this.editor.getText(),
+				setEditorText: (text) => this.editor.setText(text),
+				modalManager: this.modalManager,
+				agent: this.agent,
+				sessionManager: this.sessionManager,
+				notificationView: this.notificationView,
+				createHookInputModal: (opts) => new HookInputModal(opts),
+				createCommandContext: (params) => this.createCommandContext(params),
+			},
+			callbacks: {
+				refreshFooterHint: () => this.refreshFooterHint(),
+				requestRender: () => this.ui.requestRender(),
+			},
+		});
+		this.hookUiController.initializeGlobalContext();
 
 		// Now that all core layout containers exist, compute the initial viewport
 		// sizing and wire resize handling.
@@ -673,7 +690,8 @@ export class TuiRenderer {
 				getBashModeView: () => this.bashModeView,
 				getInterruptController: () => this.interruptController,
 				autoRetryController: this.autoRetryController,
-				consumeAttachments: (text) => this.consumeAttachments(text),
+				consumeAttachments: (text) =>
+					this.attachmentController.consumeAttachments(text),
 			},
 			callbacks: {
 				showInfo: (message) => this.notificationView.showInfo(message),
@@ -688,7 +706,7 @@ export class TuiRenderer {
 			onInterrupt: (options) => this.inputController.notifyInterrupt(options),
 			restoreQueuedPrompts: () => {
 				const restored = this.queueController.restoreQueuedPrompts();
-				this.restoreQueuedAttachments(restored);
+				this.attachmentController.restoreQueuedAttachments(restored);
 			},
 			getWorkingHint: () => this.workingFooterHint,
 			isMinimalMode: () => this.isMinimalMode(),
@@ -795,6 +813,15 @@ export class TuiRenderer {
 		this.sessionView = sessionSubsystem.sessionView;
 		this.sessionSwitcherView = sessionSubsystem.sessionSwitcherView;
 
+		// History controller uses sessionContext stores
+		this.historyController = createHistoryController({
+			deps: { sessionContext: this.sessionContext },
+			callbacks: {
+				pushCommandOutput: (text) => this.pushCommandOutput(text),
+				showInfo: (message) => this.notificationView.showInfo(message),
+			},
+		});
+
 		// Initialize paste handler
 		this.pasteHandler = new PasteHandler({
 			agent: this.agent,
@@ -875,7 +902,7 @@ export class TuiRenderer {
 				planView: this.planView,
 				footer: this.footer,
 				notificationView: this.notificationView,
-				clearActiveSkills: () => this.activeSkills.clear(),
+				clearActiveSkills: () => this.skillsController.clearActiveSkills(),
 			},
 			callbacks: {
 				refreshFooterHint: () => this.refreshFooterHint(),
@@ -972,7 +999,7 @@ export class TuiRenderer {
 				resetAgent: () => this.agent.reset(),
 				resetSession: () => this.sessionManager.reset(),
 				resetArtifacts: () => this.sessionContext.resetArtifacts(),
-				clearActiveSkills: () => this.activeSkills.clear(),
+				clearActiveSkills: () => this.skillsController.clearActiveSkills(),
 				clearToolTracking: () => this.toolOutputView.clearTrackedComponents(),
 				clearChatContainer: () => this.chatContainer.clear(),
 				clearScrollHistory: () => this.scrollContainer.clearHistory(),
@@ -1332,7 +1359,9 @@ export class TuiRenderer {
 			},
 			logDebug: (message, meta) => logger.debug(message, meta),
 		});
-		const hookRegistry = this.buildHookCommandEntries(registry.commands);
+		const hookRegistry = this.hookUiController.buildHookCommandEntries(
+			registry.commands,
+		);
 		if (hookRegistry.commands.length > 0) {
 			registry.entries.push(...hookRegistry.entries);
 			registry.commands.push(...hookRegistry.commands);
@@ -1406,7 +1435,7 @@ export class TuiRenderer {
 				void this.handleFollowUpSubmit(text);
 			},
 			shouldFollowUp: () => this.isAgentRunning,
-			canSubmitEmpty: () => this.hasPendingAttachments(),
+			canSubmitEmpty: () => this.attachmentController.hasPendingAttachments(),
 			shouldInterrupt: () =>
 				this.isAgentRunning || this.interruptController.isArmed(),
 			onInterrupt: () => this.inputController.handleInterruptRequest(),
@@ -1909,387 +1938,21 @@ export class TuiRenderer {
 	}
 
 	private handleHistoryCommand(context: CommandExecutionContext): void {
-		const raw = context.argumentText.trim();
-		const history = this.sessionContext.getPromptHistory();
-		if (["help", "?", "-h", "--help"].includes(raw.toLowerCase())) {
-			context.renderHelp();
-			return;
-		}
-
-		if (!raw) {
-			this.renderPromptHistory(history.recent(20), "Recent Prompts");
-			return;
-		}
-
-		if (raw.toLowerCase() === "clear") {
-			history.clear();
-			context.showInfo("Prompt history cleared.");
-			return;
-		}
-
-		if (/^\d+$/.test(raw)) {
-			const count = Number.parseInt(raw, 10);
-			this.renderPromptHistory(history.recent(count), "Recent Prompts");
-			return;
-		}
-
-		const results = history.search(raw, 10);
-		if (results.length === 0) {
-			context.showInfo(`No matches for "${raw}".`);
-			return;
-		}
-		this.renderPromptHistory(results, `Search Results for "${raw}"`);
+		this.historyController.handleHistoryCommand(context);
 	}
 
 	private handleToolHistoryCommand(context: CommandExecutionContext): void {
-		const raw = context.argumentText.trim();
-		const toolHistory = this.sessionContext.getToolHistory();
-		if (["help", "?", "-h", "--help"].includes(raw.toLowerCase())) {
-			context.renderHelp();
-			return;
-		}
-
-		const parts = raw.split(/\s+/).filter(Boolean);
-		const primary = parts[0]?.toLowerCase();
-
-		if (!primary) {
-			this.renderToolHistoryList(
-				toolHistory.recent(10),
-				"Recent Tool Executions",
-			);
-			return;
-		}
-
-		if (primary === "clear") {
-			toolHistory.clear();
-			context.showInfo("Tool history cleared.");
-			return;
-		}
-
-		if (primary === "stats" || primary === "statistics") {
-			this.renderToolHistoryStats(toolHistory);
-			return;
-		}
-
-		if (primary === "tool") {
-			const name = parts.slice(1).join(" ").trim();
-			if (!name) {
-				context.showError("Usage: /toolhistory tool <name>");
-				return;
-			}
-			this.renderToolHistoryForTool(toolHistory, name);
-			return;
-		}
-
-		if (/^\d+$/.test(primary)) {
-			const count = Number.parseInt(primary, 10);
-			this.renderToolHistoryList(
-				toolHistory.recent(count),
-				"Recent Tool Executions",
-			);
-			return;
-		}
-
-		this.renderToolHistoryForTool(toolHistory, primary);
+		this.historyController.handleToolHistoryCommand(context);
 	}
 
 	private handleSkillsCommand(context: CommandExecutionContext): void {
-		const raw = context.argumentText.trim();
-		const parts = raw.split(/\s+/).filter(Boolean);
-		const subcommand = (parts[0] ?? "list").toLowerCase();
-
-		if (["help", "?", "-h", "--help"].includes(subcommand)) {
-			context.renderHelp();
-			return;
-		}
-
-		const { skills, errors } = loadSkills(process.cwd());
-
-		switch (subcommand) {
-			case "list":
-			case "ls":
-			case "": {
-				this.renderSkillsList(skills, errors);
-				return;
-			}
-			case "reload":
-			case "refresh": {
-				this.renderSkillsList(skills, errors, "Reloaded skills from disk.");
-				return;
-			}
-			case "activate":
-			case "enable":
-			case "on": {
-				const target = parts.slice(1).join(" ").trim();
-				if (!target) {
-					context.showError("Usage: /skills activate <skill-name>");
-					return;
-				}
-				const resolved = this.resolveSkillTarget(skills, target, context);
-				if (!resolved) return;
-				if (this.activeSkills.has(resolved.name)) {
-					context.showInfo(`Skill "${resolved.name}" is already active.`);
-					return;
-				}
-				this.activeSkills.add(resolved.name);
-				this.injectSkillMessage(resolved, "activate");
-				context.showInfo(
-					`Activated skill "${resolved.name}" (instructions injected).`,
-				);
-				return;
-			}
-			case "deactivate":
-			case "disable":
-			case "off": {
-				const target = parts.slice(1).join(" ").trim();
-				if (!target) {
-					context.showError("Usage: /skills deactivate <skill-name>");
-					return;
-				}
-				const resolved = this.resolveSkillTarget(skills, target, context);
-				if (!resolved) return;
-				if (!this.activeSkills.has(resolved.name)) {
-					context.showInfo(`Skill "${resolved.name}" is not active.`);
-					return;
-				}
-				this.activeSkills.delete(resolved.name);
-				this.injectSkillMessage(resolved, "deactivate");
-				context.showInfo(`Deactivated skill "${resolved.name}".`);
-				return;
-			}
-			case "info":
-			case "show": {
-				const target = parts.slice(1).join(" ").trim();
-				if (!target) {
-					context.showError("Usage: /skills info <skill-name>");
-					return;
-				}
-				const resolved = this.resolveSkillTarget(skills, target, context);
-				if (!resolved) return;
-				this.renderSkillInfo(resolved);
-				return;
-			}
-			default: {
-				const resolved = this.resolveSkillTarget(skills, subcommand, context);
-				if (!resolved) return;
-				this.renderSkillInfo(resolved);
-			}
-		}
+		this.skillsController.handleSkillsCommand(context);
 	}
 
-	private renderPromptHistory(
-		entries: PromptHistoryEntry[],
-		title: string,
-	): void {
-		if (!entries.length) {
-			this.notificationView.showInfo("No prompt history.");
-			return;
-		}
-		const lines = [`## ${title}`, ""];
-		for (let i = 0; i < entries.length; i++) {
-			const entry = entries[i];
-			if (!entry) continue;
-			lines.push(`${i + 1}. ${this.formatPreview(entry.prompt, 80)}`);
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private renderToolHistoryList(
-		entries: ToolHistoryEntry[],
-		title: string,
-	): void {
-		if (!entries.length) {
-			this.notificationView.showInfo("No tool history.");
-			return;
-		}
-		const lines = [`## ${title}`, ""];
-		for (const entry of entries) {
-			const status = entry.isError ? "✗" : "✓";
-			lines.push(
-				`${status} ${entry.tool} (${this.formatDuration(entry.durationMs)})`,
-			);
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private renderToolHistoryStats(toolHistory: ToolHistoryStore): void {
-		const stats = toolHistory.stats();
-		if (stats.total === 0) {
-			this.notificationView.showInfo("No tool history.");
-			return;
-		}
-		const entries = Array.from(stats.byTool.entries()).sort(
-			(a, b) => b[1].total - a[1].total,
-		);
-		const lines = [
-			"## Tool Statistics",
-			"",
-			`Total executions: ${stats.total}`,
-			"",
-		];
-		for (const [tool, summary] of entries) {
-			const errorRate =
-				summary.total > 0
-					? `${Math.round((summary.errors / summary.total) * 100)}%`
-					: "0%";
-			lines.push(
-				`${tool}: ${summary.total} run${summary.total === 1 ? "" : "s"} (${summary.errors} error${summary.errors === 1 ? "" : "s"}, ${errorRate} error rate)`,
-			);
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private renderToolHistoryForTool(
-		toolHistory: ToolHistoryStore,
-		name: string,
-	): void {
-		const entries = toolHistory.forTool(name, 10);
-		if (!entries.length) {
-			this.notificationView.showInfo(`No history for tool "${name}".`);
-			return;
-		}
-		const lines = [`## History for "${name}"`, ""];
-		for (const entry of entries) {
-			const status = entry.isError ? "✗" : "✓";
-			const preview = entry.preview
-				? this.formatPreview(entry.preview, 80)
-				: "(no output)";
-			lines.push(
-				`${status} ${this.formatDuration(entry.durationMs)} - ${preview}`,
-			);
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private renderSkillsList(
-		skills: LoadedSkill[],
-		errors: SkillLoadError[],
-		statusMessage?: string,
-	): void {
-		const lines: string[] = ["## Available Skills", ""];
-		if (statusMessage) {
-			lines.push(statusMessage, "");
-		}
-		if (skills.length === 0 && errors.length === 0) {
-			lines.push("*No skills found*");
-			lines.push("");
-			lines.push("Skills are loaded from:");
-			lines.push("- `~/.composer/skills/` (global)");
-			lines.push("- `.composer/skills/` (project)");
-		} else {
-			for (const skill of skills) {
-				const isActive = this.activeSkills.has(skill.name);
-				const suffix = isActive ? " (active)" : "";
-				lines.push(`- ${formatSkillListItem(skill)}${suffix}`);
-			}
-			lines.push("");
-			lines.push(`*${skills.length} skill(s) found*`);
-			if (this.activeSkills.size > 0) {
-				lines.push(
-					`Active: ${Array.from(this.activeSkills.values()).join(", ")}`,
-				);
-			}
-		}
-		if (errors.length > 0) {
-			lines.push("");
-			lines.push(`**${errors.length} error(s) loading skills:**`);
-			for (const err of errors.slice(0, 5)) {
-				lines.push(`- ${err.message ?? "Unknown error"}`);
-			}
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private renderSkillInfo(skill: LoadedSkill): void {
-		const lines: string[] = [`## Skill: ${skill.name}`, ""];
-		lines.push(`**Description:** ${skill.description}`);
-		lines.push("");
-		lines.push(`**Source:** ${skill.sourceType}`);
-		lines.push("");
-		lines.push(`**Path:** \`${skill.sourcePath}\``);
-		if (skill.resources.length > 0) {
-			lines.push("");
-			lines.push("**Resources:**");
-			for (const resource of skill.resources.slice(0, 5)) {
-				lines.push(`- \`${resource.path}\` (${resource.type})`);
-			}
-			if (skill.resources.length > 5) {
-				lines.push(`- …and ${skill.resources.length - 5} more`);
-			}
-		}
-		if (skill.content) {
-			lines.push("");
-			lines.push("**Instructions preview:**");
-			lines.push("```");
-			lines.push(this.formatPreviewBlock(skill.content, 200));
-			lines.push("```");
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private injectSkillMessage(
-		skill: LoadedSkill,
-		action: "activate" | "deactivate",
-	): void {
-		const content =
-			action === "activate"
-				? formatSkillForInjection(skill)
-				: [
-						`# Skill deactivated: ${skill.name}`,
-						"",
-						`Ignore previous instructions from the "${skill.name}" skill unless it is reactivated.`,
-					].join("\n");
-		const message: AppMessage = {
-			role: "hookMessage",
-			customType: action === "activate" ? "skill" : "skill-deactivated",
-			content,
-			display: false,
-			details: { name: skill.name, action },
-			timestamp: Date.now(),
-		};
-		this.agent.injectMessage(message);
-	}
-
-	private resolveSkillTarget(
-		skills: LoadedSkill[],
-		target: string,
-		context: CommandExecutionContext,
-	): LoadedSkill | null {
-		let skill = findSkill(skills, target);
-		if (!skill) {
-			const matches = searchSkills(skills, target);
-			if (matches.length === 1) {
-				skill = matches[0];
-			} else if (matches.length > 1) {
-				const list = matches.map((match) => match.name).join(", ");
-				context.showError(`Multiple skills match "${target}": ${list}`);
-				return null;
-			}
-		}
-		if (!skill) {
-			context.showError(`Skill "${target}" not found.`);
-			return null;
-		}
-		return skill;
-	}
-
-	private formatPreview(text: string, limit: number): string {
-		const normalized = text.replace(/\s+/g, " ").trim();
-		if (normalized.length <= limit) return normalized;
-		return `${normalized.slice(0, limit - 1)}…`;
-	}
-
-	private formatPreviewBlock(text: string, limit: number): string {
-		const trimmed = text.trim();
-		if (trimmed.length <= limit) return trimmed;
-		return `${trimmed.slice(0, limit - 1)}…`;
-	}
-
-	private formatDuration(durationMs?: number): string {
-		if (!durationMs && durationMs !== 0) return "?";
-		if (durationMs < 1000) return `${durationMs}ms`;
-		return `${(durationMs / 1000).toFixed(1)}s`;
-	}
+	// Skills, history rendering, and formatting have been extracted to:
+	// - skills-controller.ts
+	// - history-controller.ts
+	// - utils/text-preview.ts
 
 	private async handleStatsCommand(
 		_context: CommandExecutionContext,
@@ -2301,26 +1964,8 @@ export class TuiRenderer {
 
 	private clearEditor(): void {
 		this.editor.setText("");
-		this.clearPendingAttachments();
+		this.attachmentController.clearPendingAttachments();
 		this.ui.requestRender();
-	}
-
-	private clearPendingAttachments(): void {
-		this.pendingAttachments.clear();
-		this.pendingAttachmentCounter = 0;
-	}
-
-	private hasPendingAttachments(): boolean {
-		return this.pendingAttachments.size > 0;
-	}
-
-	private consumeAttachments(text: string): PromptPayload {
-		const { text: updatedText, attachments } =
-			this.consumePendingAttachmentMarkers(text);
-		return {
-			text: updatedText,
-			attachments: attachments.length > 0 ? attachments : undefined,
-		};
 	}
 
 	private async handleFollowUpSubmit(text: string): Promise<void> {
@@ -2372,92 +2017,8 @@ export class TuiRenderer {
 		this.refreshFooterHint();
 	}
 
-	private consumePendingAttachmentMarkers(text: string): {
-		text: string;
-		attachments: Attachment[];
-	} {
-		if (this.pendingAttachments.size === 0) {
-			return { text, attachments: [] };
-		}
-		let updated = text;
-		const attachments: Attachment[] = [];
-		for (const [id, attachment] of this.pendingAttachments) {
-			const marker = `[image #${id}]`;
-			if (!updated.includes(marker)) {
-				continue;
-			}
-			const replacement = `[attachment] ${attachment.fileName} (${attachment.mimeType})`;
-			updated = updated.split(marker).join(replacement);
-			attachments.push(attachment);
-		}
-		this.clearPendingAttachments();
-		return { text: updated, attachments };
-	}
-
-	private async handleClipboardImagePaste(): Promise<void> {
-		try {
-			if (!Clipboard.hasImage()) {
-				return;
-			}
-			const imageData = await Clipboard.getImageBinary();
-			if (!imageData || imageData.length === 0) {
-				return;
-			}
-			const attachmentId = `att_${randomUUID()}`;
-			const fileName = `clipboard-image-${attachmentId.slice(-6)}.png`;
-			const attachment: Attachment = {
-				id: attachmentId,
-				type: "image",
-				fileName,
-				mimeType: "image/png",
-				size: imageData.length,
-				content: Buffer.from(imageData).toString("base64"),
-			};
-			const markerId = ++this.pendingAttachmentCounter;
-			this.pendingAttachments.set(markerId, attachment);
-			this.editor.insertText(`[image #${markerId}]`);
-			this.ui.requestRender();
-		} catch {
-			// Ignore clipboard errors (permissions, empty clipboard, etc.)
-		}
-	}
-
-	private restoreQueuedAttachments(entries: QueuedPrompt[]): void {
-		const restored = entries.some(
-			(entry) => (entry.attachments?.length ?? 0) > 0,
-		);
-		if (!restored) {
-			return;
-		}
-		this.clearPendingAttachments();
-		const segments: string[] = [];
-		for (const entry of entries) {
-			let segment = entry.text;
-			const attachments = entry.attachments ?? [];
-			if (attachments.length > 0) {
-				const markers: string[] = [];
-				for (const attachment of attachments) {
-					const markerId = ++this.pendingAttachmentCounter;
-					this.pendingAttachments.set(markerId, attachment);
-					markers.push(`[image #${markerId}]`);
-				}
-				if (markers.length > 0) {
-					const trimmed = segment.trim();
-					segment =
-						trimmed.length > 0
-							? `${trimmed}\n${markers.join(" ")}`
-							: markers.join(" ");
-				}
-			}
-			segments.push(segment);
-		}
-		const restoredText = segments
-			.filter((s) => s.trim().length > 0)
-			.join("\n\n");
-		if (restoredText) {
-			this.editor.setText(restoredText);
-		}
-	}
+	// consumePendingAttachmentMarkers, handleClipboardImagePaste,
+	// restoreQueuedAttachments extracted to attachment-controller.ts
 
 	private updateTerminalTitle(): void {
 		if (process.env.COMPOSER_DISABLE_TERMINAL_TITLE === "1") {
@@ -2691,297 +2252,6 @@ export class TuiRenderer {
 		this.provideFailureHints(errorMessage);
 	}
 
-	private createHookUiContext(): HookUIContext {
-		return {
-			select: (title, options) => this.showHookSelector(title, options),
-			confirm: (title, message) => this.showHookConfirm(title, message),
-			input: (title, placeholder) => this.showHookInput(title, placeholder),
-			notify: (message, type) => {
-				if (type === "error") {
-					this.notificationView.showError(message);
-					return;
-				}
-				const tone = type === "warning" ? "warn" : "info";
-				this.notificationView.showToast(message, tone);
-			},
-			setStatus: (key, text) => this.setHookStatus(key, text),
-			custom: (factory) => this.showHookCustom(factory),
-			setEditorText: (text) => {
-				this.editor.setText(text);
-				this.ui.requestRender();
-			},
-			getEditorText: () => this.editor.getText(),
-			editor: (title, prefill) => this.showHookEditor(title, prefill),
-			get theme() {
-				return theme;
-			},
-		};
-	}
-
-	private showHookSelector(
-		title: string,
-		options: string[],
-	): Promise<string | null> {
-		return new Promise((resolve) => {
-			if (options.length === 0) {
-				resolve(null);
-				return;
-			}
-			const items = options.map((option) => ({
-				label: option,
-				value: option,
-			}));
-			const selector = new BaseSelectorComponent({
-				items,
-				visibleRows: Math.min(10, items.length),
-				onSelect: (value) => {
-					this.modalManager.pop();
-					resolve(value);
-				},
-				onCancel: () => {
-					this.modalManager.pop();
-					resolve(null);
-				},
-				prepend: [new Text(theme.fg("accent", title), 1, 0), new Spacer(1)],
-			});
-			this.modalManager.push(selector);
-		});
-	}
-
-	private showHookConfirm(title: string, message: string): Promise<boolean> {
-		return new Promise((resolve) => {
-			const items = [
-				{ label: "Yes", value: "yes" },
-				{ label: "No", value: "no" },
-			];
-			const selector = new BaseSelectorComponent({
-				items,
-				visibleRows: 2,
-				onSelect: (value) => {
-					this.modalManager.pop();
-					resolve(value === "yes");
-				},
-				onCancel: () => {
-					this.modalManager.pop();
-					resolve(false);
-				},
-				prepend: [
-					new Text(theme.fg("accent", title), 1, 0),
-					new Text(theme.fg("muted", message), 1, 0),
-					new Spacer(1),
-				],
-			});
-			this.modalManager.push(selector);
-		});
-	}
-
-	private showHookInput(
-		title: string,
-		placeholder?: string,
-	): Promise<string | null> {
-		return new Promise((resolve) => {
-			const modal = new HookInputModal({
-				ui: this.ui,
-				title,
-				placeholder,
-				onSubmit: (value) => {
-					this.modalManager.pop();
-					resolve(value);
-				},
-				onCancel: () => {
-					this.modalManager.pop();
-					resolve(null);
-				},
-			});
-			this.modalManager.push(modal);
-		});
-	}
-
-	private showHookEditor(
-		title: string,
-		prefill?: string,
-	): Promise<string | null> {
-		return new Promise((resolve) => {
-			const modal = new HookInputModal({
-				ui: this.ui,
-				title,
-				prefill,
-				description: "Enter to save | Esc to cancel | Shift+Enter for newline",
-				onSubmit: (value) => {
-					this.modalManager.pop();
-					resolve(value);
-				},
-				onCancel: () => {
-					this.modalManager.pop();
-					resolve(null);
-				},
-			});
-			this.modalManager.push(modal);
-		});
-	}
-
-	private async showHookCustom<T>(
-		factory: (
-			tui: TUI,
-			theme: Theme,
-			done: (result: T) => void,
-		) => Component | Promise<Component>,
-	): Promise<T> {
-		return new Promise((resolve) => {
-			let resolved = false;
-			const done = (result: T) => {
-				if (resolved) return;
-				resolved = true;
-				this.modalManager.pop();
-				resolve(result);
-			};
-
-			void (async () => {
-				try {
-					const component = await factory(this.ui, theme, done);
-					const modal = component as Component & {
-						onClose?: () => void;
-					};
-					const previousOnClose = modal.onClose;
-					modal.onClose = () => {
-						previousOnClose?.();
-						if (!resolved) {
-							done(undefined as T);
-						}
-					};
-					this.modalManager.push(modal);
-				} catch (error) {
-					this.notificationView.showError(
-						error instanceof Error ? error.message : "Hook custom UI failed",
-					);
-					resolve(undefined as T);
-				}
-			})();
-		});
-	}
-
-	private execHookCommand(
-		command: string,
-		args: string[],
-	): Promise<{ stdout: string; stderr: string; code: number }> {
-		return new Promise((resolve) => {
-			const child = spawn(command, args, {
-				cwd: process.cwd(),
-				shell: false,
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-
-			let stdout = "";
-			let stderr = "";
-
-			child.stdout?.on("data", (data) => {
-				stdout += data.toString();
-			});
-
-			child.stderr?.on("data", (data) => {
-				stderr += data.toString();
-			});
-
-			child.on("error", (error) => {
-				resolve({
-					stdout,
-					stderr: `${stderr}\n${error.message}`,
-					code: 1,
-				});
-			});
-
-			child.on("close", (code) => {
-				resolve({
-					stdout,
-					stderr,
-					code: code ?? 1,
-				});
-			});
-		});
-	}
-
-	private createHookCommandContext(): HookCommandContext {
-		return {
-			exec: (command, args) => this.execHookCommand(command, args),
-			ui: this.hookUiContext ?? this.createHookUiContext(),
-			hasUI: true,
-			cwd: process.cwd(),
-			sessionFile: this.sessionManager.getSessionFile(),
-			isIdle: () => !this.agent.state.isStreaming,
-			abort: () => this.agent.abort(),
-			hasQueuedMessages: () => this.agent.getQueuedMessageCount() > 0,
-			waitForIdle: () => {
-				if (!this.agent.state.isStreaming) {
-					return Promise.resolve();
-				}
-				return new Promise((resolve) => {
-					const unsubscribe = this.agent.subscribe((event) => {
-						if (event.type === "agent_end") {
-							unsubscribe();
-							resolve();
-						}
-					});
-				});
-			},
-		};
-	}
-
-	private buildHookCommandEntries(existingCommands: SlashCommand[]): {
-		entries: CommandEntry[];
-		commands: SlashCommand[];
-	} {
-		const existingNames = new Set(existingCommands.map((cmd) => cmd.name));
-		const entries: CommandEntry[] = [];
-		const commands: SlashCommand[] = [];
-		for (const command of getTypeScriptHookCommands()) {
-			if (existingNames.has(command.name)) {
-				logger.warn("Skipping hook command due to name conflict", {
-					name: command.name,
-				});
-				continue;
-			}
-			const slashCommand: SlashCommand = {
-				name: command.name,
-				description: command.description ?? "Hook command",
-				usage: `/${command.name} [args]`,
-				tags: ["hooks"],
-			};
-			const matches = (input: string) =>
-				input === `/${command.name}` || input.startsWith(`/${command.name} `);
-			const execute = (input: string) => {
-				const argumentText = input
-					.replace(new RegExp(`^/${command.name}\\s*`), "")
-					.trim();
-				const context = this.createCommandContext({
-					command: slashCommand,
-					rawInput: input,
-					argumentText,
-				});
-				if (
-					argumentText === "?" ||
-					argumentText === "--help" ||
-					argumentText === "-h"
-				) {
-					context.renderHelp();
-					return;
-				}
-				const hookContext = this.createHookCommandContext();
-				const result = command.handler(argumentText, hookContext);
-				if (result && typeof (result as Promise<void>).then === "function") {
-					(result as Promise<void>).catch((error) => {
-						context.showError(
-							error instanceof Error ? error.message : String(error),
-						);
-					});
-				}
-			};
-			entries.push({ command: slashCommand, matches, execute });
-			commands.push(slashCommand);
-			existingNames.add(command.name);
-		}
-		return { entries, commands };
-	}
-
 	public refreshFooterHint(): void {
 		const sandboxMode =
 			this.agent.state.sandboxMode ?? process.env.COMPOSER_SANDBOX ?? null;
@@ -3023,7 +2293,7 @@ export class TuiRenderer {
 		for (const hint of this.buildOperationalHints()) {
 			pushHint("custom", hint, 40);
 		}
-		for (const hint of this.getHookStatusHints()) {
+		for (const hint of this.hookUiController.getHookStatusHints()) {
 			hints.push(hint);
 		}
 		const activeToast = this.footer.getActiveToast();
@@ -3065,35 +2335,6 @@ export class TuiRenderer {
 		}
 		if (this.bashModeView?.isActive()) {
 			hints.push("Bash mode active — type exit to leave");
-		}
-		return hints;
-	}
-
-	private sanitizeHookStatusText(text: string): string {
-		return text.replace(/[\r\n\t]+/g, " ");
-	}
-
-	private setHookStatus(key: string, text: string | undefined): void {
-		if (!key) return;
-		if (!text || text.trim().length === 0) {
-			if (this.hookStatusByKey.delete(key)) {
-				this.refreshFooterHint();
-			}
-			return;
-		}
-		const sanitized = this.sanitizeHookStatusText(text);
-		const previous = this.hookStatusByKey.get(key);
-		if (previous === sanitized) {
-			return;
-		}
-		this.hookStatusByKey.set(key, sanitized);
-		this.refreshFooterHint();
-	}
-
-	private getHookStatusHints(): FooterHint[] {
-		const hints: FooterHint[] = [];
-		for (const text of this.hookStatusByKey.values()) {
-			hints.push({ type: "custom", message: text, priority: 130 });
 		}
 		return hints;
 	}
@@ -3177,13 +2418,6 @@ export class TuiRenderer {
 			);
 		}
 		this.contextWarningLevel = nextLevel;
-	}
-
-	private describeError(error: unknown): string {
-		if (error instanceof Error) {
-			return error.message;
-		}
-		return String(error ?? "Unknown error");
 	}
 
 	private provideFailureHints(message: string): void {
