@@ -526,7 +526,6 @@ export class TuiRenderer {
 				},
 			},
 		);
-		this.miscHandlers.updateTerminalTitle();
 		this.configureRenderThrottle();
 		this.startupContainer = new Container();
 		this.headerContainer = new Container();
@@ -612,6 +611,7 @@ export class TuiRenderer {
 				refreshFooterHint: () => this.refreshFooterHint(),
 			},
 		});
+		this.miscHandlers.updateTerminalTitle();
 
 		// Initialize extracted controllers (attachment → skills → history)
 		this.attachmentController = createAttachmentController({
