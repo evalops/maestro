@@ -514,6 +514,21 @@ export class TuiRenderer {
 		this.startupChangelogSummary = options.startupChangelogSummary;
 		this.updateNotice = options.updateNotice;
 		this.ui = new TUI(new ProcessTerminal(), this.terminalFeatures);
+		this.miscHandlers = createMiscHandlers({
+			deps: {
+				ui: this.ui,
+				getNotificationView: () => this.notificationView,
+				getEditorText: () => this.editor.getText(),
+				setEditorText: (text) => this.editor.setText(text),
+				getTelemetryStatus: () => this.telemetryStatus,
+			},
+			callbacks: {
+				setAgentRunning: (running) => {
+					this.isAgentRunning = running;
+				},
+				refreshFooterHint: () => this.refreshFooterHint(),
+			},
+		});
 		this.autoRetryController.setEventListener((event) => {
 			this.miscHandlers.handleAutoRetryEvent(event);
 		});
@@ -595,21 +610,6 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			footer: this.footer,
-		});
-		this.miscHandlers = createMiscHandlers({
-			deps: {
-				ui: this.ui,
-				notificationView: this.notificationView,
-				getEditorText: () => this.editor.getText(),
-				setEditorText: (text) => this.editor.setText(text),
-				getTelemetryStatus: () => this.telemetryStatus,
-			},
-			callbacks: {
-				setAgentRunning: (running) => {
-					this.isAgentRunning = running;
-				},
-				refreshFooterHint: () => this.refreshFooterHint(),
-			},
 		});
 		this.miscHandlers.updateTerminalTitle();
 

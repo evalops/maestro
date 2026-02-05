@@ -21,8 +21,8 @@ const logger = createLogger("misc-handlers");
 export interface MiscHandlerDeps {
 	/** TUI instance for rendering. */
 	ui: TUI;
-	/** Notification view for toasts and errors. */
-	notificationView: NotificationView;
+	/** Notification view for toasts and errors (lazy — may not exist at construction time). */
+	getNotificationView: () => NotificationView;
 	/** Get editor text. */
 	getEditorText: () => string;
 	/** Set editor text. */
@@ -64,22 +64,28 @@ export class MiscHandlers {
 	handleAutoRetryEvent(event: AgentEvent): void {
 		if (event.type === "auto_retry_start") {
 			const delaySec = (event.delayMs / 1000).toFixed(1);
-			this.deps.notificationView.showToast(
-				`Retrying (attempt ${event.attempt}/${event.maxAttempts}) in ${delaySec}s... Press Escape to cancel.`,
-				"warn",
-			);
+			this.deps
+				.getNotificationView()
+				.showToast(
+					`Retrying (attempt ${event.attempt}/${event.maxAttempts}) in ${delaySec}s... Press Escape to cancel.`,
+					"warn",
+				);
 			this.callbacks.setAgentRunning(true);
 			this.callbacks.refreshFooterHint();
 		} else if (event.type === "auto_retry_end") {
 			if (event.success) {
-				this.deps.notificationView.showToast(
-					`Retry succeeded after ${event.attempt} attempt(s).`,
-					"info",
-				);
+				this.deps
+					.getNotificationView()
+					.showToast(
+						`Retry succeeded after ${event.attempt} attempt(s).`,
+						"info",
+					);
 			} else if (event.finalError) {
-				this.deps.notificationView.showError(
-					`Retry failed after ${event.attempt} attempt(s): ${event.finalError}`,
-				);
+				this.deps
+					.getNotificationView()
+					.showError(
+						`Retry failed after ${event.attempt} attempt(s): ${event.finalError}`,
+					);
 			}
 			this.callbacks.refreshFooterHint();
 		}
@@ -89,7 +95,7 @@ export class MiscHandlers {
 	handleExternalEditor(): void {
 		const result = openExternalEditor(this.deps.ui, this.deps.getEditorText());
 		if (result.error) {
-			this.deps.notificationView.showInfo(result.error);
+			this.deps.getNotificationView().showInfo(result.error);
 			return;
 		}
 		if (typeof result.updatedText === "string") {
@@ -101,9 +107,9 @@ export class MiscHandlers {
 	/** Handle Ctrl+Z suspension. */
 	handleCtrlZ(): void {
 		if (process.platform === "win32") {
-			this.deps.notificationView.showInfo(
-				"Suspending is not supported on Windows terminals.",
-			);
+			this.deps
+				.getNotificationView()
+				.showInfo("Suspending is not supported on Windows terminals.");
 			return;
 		}
 		process.once("SIGCONT", () => {
@@ -117,12 +123,14 @@ export class MiscHandlers {
 	/** Handle test verification result notification. */
 	handleTestVerificationResult(result: TestResult): void {
 		if (result.success) {
-			this.deps.notificationView.showInfo(
-				`✓ Tests passed: ${result.passedTests}/${result.totalTests} (${result.durationMs}ms)`,
-			);
+			this.deps
+				.getNotificationView()
+				.showInfo(
+					`✓ Tests passed: ${result.passedTests}/${result.totalTests} (${result.durationMs}ms)`,
+				);
 		} else {
 			const formatted = formatTestResult(result);
-			this.deps.notificationView.showError(formatted);
+			this.deps.getNotificationView().showError(formatted);
 
 			if (result.failures.length > 0) {
 				const failureSummary = result.failures
