@@ -1,10 +1,5 @@
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { basename } from "node:path";
-import Clipboard from "@crosscopy/clipboard";
 import type { SlashCommand } from "@evalops/tui";
 import {
-	type Component,
 	Container,
 	Markdown,
 	ProcessTerminal,
@@ -19,22 +14,11 @@ import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 	ActionApprovalService,
-	ApprovalMode,
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/agent.js";
-import type {
-	AgentEvent,
-	AgentState,
-	AppMessage,
-	Attachment,
-} from "../agent/types.js";
+import type { AgentEvent, AgentState, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
-import {
-	getTypeScriptHookCommands,
-	setGlobalUIContext,
-} from "../hooks/index.js";
-import type { HookCommandContext, HookUIContext } from "../hooks/types.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { getRegisteredModels } from "../models/registry.js";
 import { listOAuthProviders, loadOAuthCredentials } from "../oauth/storage.js";
@@ -44,22 +28,8 @@ import {
 	toSessionModelMetadata,
 } from "../session/manager.js";
 import type { SessionManager } from "../session/manager.js";
-import {
-	type LoadedSkill,
-	type SkillLoadError,
-	findSkill,
-	formatSkillForInjection,
-	formatSkillListItem,
-	loadSkills,
-	searchSkills,
-} from "../skills/loader.js";
 import { getTelemetryStatus } from "../telemetry.js";
-import {
-	type Theme,
-	getCurrentThemeName,
-	setTheme,
-	theme,
-} from "../theme/theme.js";
+import { getCurrentThemeName, setTheme } from "../theme/theme.js";
 import { getTrainingStatus } from "../training.js";
 
 import { AutoCompactionMonitor } from "../agent/auto-compaction.js";
@@ -70,8 +40,6 @@ import {
 import { SessionRecoveryManager } from "../agent/session-recovery.js";
 import {
 	type AutoVerifyService,
-	type TestResult,
-	formatTestResult,
 	registerTestVerificationHooks,
 } from "../testing/index.js";
 import { createLogger } from "../utils/logger.js";
@@ -82,27 +50,11 @@ import type { BackgroundTasksController } from "./background/background-tasks-co
 import { BashModeView } from "./bash-mode-view.js";
 import { ChangelogView } from "./changelog-view.js";
 import { formatCommandHelp } from "./commands/argument-parser.js";
-import {
-	type ComposerRenderContext,
-	handleComposerCommand,
-} from "./commands/composer-handlers.js";
-import {
-	type GroupedCommandHandlers,
-	createGroupedCommandHandlers,
-} from "./commands/grouped-command-handlers.js";
-import {
-	type McpRenderContext,
-	handleMcpCommand,
-} from "./commands/mcp-handlers.js";
-import {
-	handleApprovalsCommand,
-	handlePlanModeCommand,
-} from "./commands/safety-handlers.js";
+import type { GroupedCommandHandlers } from "./commands/grouped-command-handlers.js";
 import type {
 	CommandEntry,
 	CommandExecutionContext,
 } from "./commands/types.js";
-import { handleInitCommand } from "./commands/utility-handlers.js";
 import { ConfigView } from "./config-view.js";
 import { ContextView } from "./context-view.js";
 import { CustomEditor } from "./custom-editor.js";
@@ -110,11 +62,6 @@ import { EditorView } from "./editor-view.js";
 import { FeedbackView } from "./feedback-view.js";
 import { FooterComponent } from "./footer.js";
 import { GitView } from "./git/git-view.js";
-import type { PromptHistoryEntry } from "./history/prompt-history.js";
-import type {
-	ToolHistoryEntry,
-	ToolHistoryStore,
-} from "./history/tool-history.js";
 import { HotkeysView } from "./hotkeys-view.js";
 import { ImportExportView } from "./import-view.js";
 import { InfoView } from "./info-view.js";
@@ -128,11 +75,7 @@ import type { OAuthFlowController } from "./oauth/index.js";
 import { OllamaView } from "./ollama-view.js";
 import type { PlanView } from "./plan-view.js";
 import type { PlanController } from "./plan/plan-controller.js";
-import type {
-	PromptPayload,
-	PromptQueue,
-	QueuedPrompt,
-} from "./prompt-queue.js";
+import type { PromptPayload, PromptQueue } from "./prompt-queue.js";
 import {
 	type QueueController,
 	type QueueMode,
@@ -141,7 +84,6 @@ import {
 import { RunCommandView } from "./run/run-command-view.js";
 import { RunController } from "./run/run-controller.js";
 import type { FileSearchView } from "./search/file-search-view.js";
-import { BaseSelectorComponent } from "./selectors/base-selector.js";
 import { ModelSelectorView } from "./selectors/model-selector-view.js";
 import { QueueModeSelectorView } from "./selectors/queue-mode-selector-view.js";
 import { ReportSelectorView } from "./selectors/report-selector-view.js";
@@ -170,8 +112,37 @@ import {
 	type AgentEventBridge,
 	createAgentEventBridge,
 } from "./tui-renderer/agent-event-bridge.js";
+import {
+	type AttachmentController,
+	createAttachmentController,
+} from "./tui-renderer/attachment-controller.js";
 import { buildTuiCommandRegistryOptions } from "./tui-renderer/command-registry-options.js";
 import { buildTuiCommandRegistry } from "./tui-renderer/command-registry.js";
+import {
+	type DelegatingCommandHandlerMap,
+	createDelegatingCommandHandlers,
+} from "./tui-renderer/delegating-command-handlers.js";
+import {
+	type FooterHintsController,
+	createFooterHintsController,
+} from "./tui-renderer/footer-hints-controller.js";
+import { buildGroupedCommandHandlers } from "./tui-renderer/grouped-handlers-wiring.js";
+import {
+	type HistoryController,
+	createHistoryController,
+} from "./tui-renderer/history-controller.js";
+import {
+	type HookUiController,
+	createHookUiController,
+} from "./tui-renderer/hook-ui-controller.js";
+import {
+	type MiscHandlers,
+	createMiscHandlers,
+} from "./tui-renderer/misc-handlers.js";
+import {
+	type SkillsController,
+	createSkillsController,
+} from "./tui-renderer/skills-controller.js";
 import {
 	type UiState,
 	loadCommandPrefs,
@@ -183,23 +154,16 @@ import { UpdateView } from "./update-view.js";
 import type { CommandPaletteView } from "./utils/commands/command-palette-view.js";
 import { buildReviewPrompt } from "./utils/commands/review-prompt.js";
 import { SlashHintBar } from "./utils/commands/slash-hint-bar.js";
-import { openExternalEditor } from "./utils/external-editor.js";
 import {
-	type FooterHint,
 	type FooterMode,
 	type FooterStats,
 	calculateFooterStats,
-	formatTokenCount,
 } from "./utils/footer-utils.js";
 import { WelcomeAnimation } from "./welcome-animation.js";
 
 import { areAnimationsDisabled } from "../config/env-vars.js";
-import { validateFrameworkPreference } from "../config/framework.js";
 import type { UpdateCheckResult } from "../update/check.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
-import { handleFrameworkCommand as frameworkHandler } from "./commands/framework-handlers.js";
-import { handleGuardianCommand as guardianHandler } from "./commands/guardian-handlers.js";
-import { handleOtelCommand as otelHandler } from "./commands/otel-handlers.js";
 import { HookInputModal } from "./hooks/hook-input-modal.js";
 import { ModalManager } from "./modal-manager.js";
 import { PasteHandler } from "./paste/paste-handler.js";
@@ -268,7 +232,6 @@ import {
 	type ViewportController,
 	createViewportController,
 } from "./tui-renderer/viewport-controller.js";
-import { buildRuntimeBadges } from "./utils/runtime-badges.js";
 
 const logger = createLogger("tui:renderer");
 
@@ -347,9 +310,9 @@ export class TuiRenderer {
 	private autoRetryController: AutoRetryController;
 	private sessionRecoveryManager: SessionRecoveryManager;
 	private testVerificationService: AutoVerifyService | null = null;
-	private planHint: string | null = null;
-	private hookStatusByKey = new Map<string, string>();
-	private hookUiContext?: HookUIContext;
+	private hookUiController!: HookUiController;
+	private delegatingHandlers!: DelegatingCommandHandlerMap;
+	private footerHintsController!: FooterHintsController;
 	private toolOutputView: ToolOutputView;
 	private commandPaletteView: CommandPaletteView;
 	private slashCommands: SlashCommand[] = [];
@@ -409,7 +372,9 @@ export class TuiRenderer {
 	};
 	private agentEventRouter!: AgentEventRouter;
 	private sessionContext = new SessionContext();
-	private activeSkills = new Set<string>();
+	private skillsController!: SkillsController;
+	private historyController!: HistoryController;
+	private attachmentController!: AttachmentController;
 	private queueController: QueueController;
 	private queuePanelController?: QueuePanelController;
 	// Default to soft deduplication so repeated streamed lines don't appear in the TUI.
@@ -425,12 +390,10 @@ export class TuiRenderer {
 	private isAgentRunning = false;
 	private approvalController?: ApprovalController;
 	private approvalService: ActionApprovalService;
-	private contextWarningLevel: "none" | "warn" | "danger" = "none";
 	private modelScope: RegisteredModel[] = [];
 	private startupChangelog?: string | null;
 	private startupChangelogSummary?: string | null;
 	private updateNotice?: UpdateCheckResult | null;
-	private startupWarnings: FooterHint[] = [];
 	private modalManager: ModalManager;
 	private viewportController!: ViewportController;
 	private terminalCapabilities: TerminalCapabilities =
@@ -439,9 +402,7 @@ export class TuiRenderer {
 	private lowBandwidthConfig: LowBandwidthConfig = getLowBandwidthConfig();
 	private interruptController!: InterruptController;
 	private pasteHandler!: PasteHandler;
-	private pendingAttachmentCounter = 0;
-	private pendingAttachments = new Map<number, Attachment>();
-	private terminalTitle: string | null = null;
+	private miscHandlers!: MiscHandlers;
 	private groupedHandlers?: GroupedCommandHandlers;
 	private uiStateController!: UiStateController;
 	private quickSettingsController!: QuickSettingsController;
@@ -544,28 +505,27 @@ export class TuiRenderer {
 			},
 		});
 		this.autoRetryController = createAutoRetryController();
-		this.autoRetryController.setEventListener((event) => {
-			this.handleAutoRetryEvent(event);
-		});
 		// Load retry config if available
 		if (options.retryConfig) {
 			this.autoRetryController.loadFromRetryConfig(options.retryConfig);
 		}
 		this.sessionRecoveryManager = new SessionRecoveryManager();
+		this.startupChangelog = options.startupChangelog;
+		this.startupChangelogSummary = options.startupChangelogSummary;
+		this.updateNotice = options.updateNotice;
+		this.ui = new TUI(new ProcessTerminal(), this.terminalFeatures);
+		this.autoRetryController.setEventListener((event) => {
+			this.miscHandlers.handleAutoRetryEvent(event);
+		});
 		// Initialize test verification with auto-test hooks
 		this.testVerificationService = registerTestVerificationHooks(
 			process.cwd(),
 			{
 				onTestComplete: (result) => {
-					this.handleTestVerificationResult(result);
+					this.miscHandlers.handleTestVerificationResult(result);
 				},
 			},
 		);
-		this.startupChangelog = options.startupChangelog;
-		this.startupChangelogSummary = options.startupChangelogSummary;
-		this.updateNotice = options.updateNotice;
-		this.ui = new TUI(new ProcessTerminal(), this.terminalFeatures);
-		this.updateTerminalTitle();
 		this.configureRenderThrottle();
 		this.startupContainer = new Container();
 		this.headerContainer = new Container();
@@ -586,15 +546,16 @@ export class TuiRenderer {
 			ui: this.ui,
 			handlers: {
 				handleLargePaste: (event) => this.pasteHandler.handleLargePaste(event),
-				handlePasteImage: () => this.handleClipboardImagePaste(),
+				handlePasteImage: () =>
+					this.attachmentController.handleClipboardImagePaste(),
 				handleTyping: () => this.handleEditorTyping(),
 				cycleModel: () => this.quickSettingsController.cycleModel(),
 				toggleToolOutputs: () =>
 					this.quickSettingsController.toggleToolOutputs(),
 				toggleThinkingBlocks: () =>
 					this.quickSettingsController.toggleThinkingBlocks(),
-				openExternalEditor: () => this.handleExternalEditor(),
-				suspend: () => this.handleCtrlZ(),
+				openExternalEditor: () => this.miscHandlers.handleExternalEditor(),
+				suspend: () => this.miscHandlers.handleCtrlZ(),
 				handleSlashCycle: (reverse) =>
 					this.slashHintController?.handleSlashCycle(reverse) ?? false,
 				cycleThinkingLevel: () =>
@@ -635,8 +596,76 @@ export class TuiRenderer {
 			ui: this.ui,
 			footer: this.footer,
 		});
-		this.hookUiContext = this.createHookUiContext();
-		setGlobalUIContext(this.hookUiContext, true);
+		this.miscHandlers = createMiscHandlers({
+			deps: {
+				ui: this.ui,
+				notificationView: this.notificationView,
+				getEditorText: () => this.editor.getText(),
+				setEditorText: (text) => this.editor.setText(text),
+				getTelemetryStatus: () => this.telemetryStatus,
+			},
+			callbacks: {
+				setAgentRunning: (running) => {
+					this.isAgentRunning = running;
+				},
+				refreshFooterHint: () => this.refreshFooterHint(),
+			},
+		});
+		this.miscHandlers.updateTerminalTitle();
+
+		// Initialize extracted controllers (attachment → skills → history)
+		this.attachmentController = createAttachmentController({
+			deps: {
+				insertEditorText: (text) => this.editor.insertText(text),
+				setEditorText: (text) => this.editor.setText(text),
+			},
+			callbacks: {
+				requestRender: () => this.ui.requestRender(),
+			},
+		});
+
+		this.skillsController = createSkillsController({
+			deps: {
+				injectMessage: (message) => this.agent.injectMessage(message),
+				cwd: () => process.cwd(),
+			},
+			callbacks: {
+				pushCommandOutput: (text) => this.pushCommandOutput(text),
+				showInfo: (message) => this.notificationView.showInfo(message),
+				showError: (message) => this.notificationView.showError(message),
+			},
+		});
+
+		this.hookUiController = createHookUiController({
+			deps: {
+				ui: this.ui,
+				getEditorText: () => this.editor.getText(),
+				setEditorText: (text) => this.editor.setText(text),
+				modalManager: this.modalManager,
+				agent: this.agent,
+				sessionManager: this.sessionManager,
+				notificationView: this.notificationView,
+				createHookInputModal: (opts) => new HookInputModal(opts),
+				createCommandContext: (params) => this.createCommandContext(params),
+			},
+			callbacks: {
+				refreshFooterHint: () => this.refreshFooterHint(),
+				requestRender: () => this.ui.requestRender(),
+			},
+		});
+		this.hookUiController.initializeGlobalContext();
+
+		this.delegatingHandlers = createDelegatingCommandHandlers({
+			agent: this.agent,
+			notificationView: this.notificationView,
+			addMarkdown: (content) =>
+				this.chatContainer.addChild(new Markdown(content)),
+			addSpacedText: (content) => {
+				this.chatContainer.addChild(new Spacer(1));
+				this.chatContainer.addChild(new Text(content, 1, 0));
+			},
+			requestRender: () => this.ui.requestRender(),
+		});
 
 		// Now that all core layout containers exist, compute the initial viewport
 		// sizing and wire resize handling.
@@ -673,7 +702,8 @@ export class TuiRenderer {
 				getBashModeView: () => this.bashModeView,
 				getInterruptController: () => this.interruptController,
 				autoRetryController: this.autoRetryController,
-				consumeAttachments: (text) => this.consumeAttachments(text),
+				consumeAttachments: (text) =>
+					this.attachmentController.consumeAttachments(text),
 			},
 			callbacks: {
 				showInfo: (message) => this.notificationView.showInfo(message),
@@ -688,7 +718,7 @@ export class TuiRenderer {
 			onInterrupt: (options) => this.inputController.notifyInterrupt(options),
 			restoreQueuedPrompts: () => {
 				const restored = this.queueController.restoreQueuedPrompts();
-				this.restoreQueuedAttachments(restored);
+				this.attachmentController.restoreQueuedAttachments(restored);
 			},
 			getWorkingHint: () => this.workingFooterHint,
 			isMinimalMode: () => this.isMinimalMode(),
@@ -702,7 +732,43 @@ export class TuiRenderer {
 			notificationView: this.notificationView,
 		});
 
-		this.surfaceStartupWarnings();
+		this.footerHintsController = createFooterHintsController({
+			deps: {
+				isAgentRunning: () => this.isAgentRunning,
+				idleFooterHint: this.idleFooterHint,
+				isReducedMotion: () => this.reducedMotion,
+				isMinimalMode: () => this.minimalMode,
+				getSandboxMode: () =>
+					this.agent.state.sandboxMode ?? process.env.COMPOSER_SANDBOX ?? null,
+				isSandboxActive: () =>
+					Boolean(this.agent.state.sandboxEnabled) ||
+					Boolean(this.agent.state.sandbox),
+				getApprovalMode: () => this.approvalService.getMode(),
+				getQueueData: () => ({
+					followUpMode: this.queueController.getFollowUpMode(),
+					queuedCount: this.queueController.getQueuedCount(),
+					hasQueue: this.queueController.hasQueue(),
+					queueHint: this.queueController.buildQueueHint(),
+				}),
+				getThinkingLevel: () => this.agent.state.thinkingLevel,
+				getUnseenAlertCount: () => this.footer.getUnseenAlertCount(),
+				getHookStatusHints: () => this.hookUiController.getHookStatusHints(),
+				getActiveToast: () => this.footer.getActiveToast(),
+				getBackgroundCounts: () => this.backgroundTasksController.getCounts(),
+				isCompacting: () => this.compactionController?.isCompacting() ?? false,
+				hasPendingPaste: () => this.pasteHandler?.hasPending() ?? false,
+				isBashModeActive: () => this.bashModeView?.isActive() ?? false,
+				setRuntimeBadges: (badges) =>
+					this.footer.setRuntimeBadges(badges as string[]),
+				setHints: (hints) => this.footer.setHints(hints),
+			},
+			callbacks: {
+				showToast: (message, tone) =>
+					this.notificationView.showToast(message, tone),
+				setToast: (message, tone) => this.footer.setToast(message, tone),
+			},
+		});
+		this.footerHintsController.surfaceStartupWarnings();
 		this.approvalController = createApprovalController({
 			approvalService,
 			ui: this.ui,
@@ -730,7 +796,7 @@ export class TuiRenderer {
 			modalManager: this.modalManager,
 			notificationView: this.notificationView,
 			setPlanHint: (hint) => {
-				this.planHint = hint;
+				this.footerHintsController.planHint = hint;
 				this.refreshFooterHint();
 			},
 			onStoreChanged: (store) => this.planController?.handleStoreChanged(store),
@@ -794,6 +860,15 @@ export class TuiRenderer {
 		this.sessionSummaryController = sessionSubsystem.sessionSummaryController;
 		this.sessionView = sessionSubsystem.sessionView;
 		this.sessionSwitcherView = sessionSubsystem.sessionSwitcherView;
+
+		// History controller uses sessionContext stores
+		this.historyController = createHistoryController({
+			deps: { sessionContext: this.sessionContext },
+			callbacks: {
+				pushCommandOutput: (text) => this.pushCommandOutput(text),
+				showInfo: (message) => this.notificationView.showInfo(message),
+			},
+		});
 
 		// Initialize paste handler
 		this.pasteHandler = new PasteHandler({
@@ -875,14 +950,14 @@ export class TuiRenderer {
 				planView: this.planView,
 				footer: this.footer,
 				notificationView: this.notificationView,
-				clearActiveSkills: () => this.activeSkills.clear(),
+				clearActiveSkills: () => this.skillsController.clearActiveSkills(),
 			},
 			callbacks: {
 				refreshFooterHint: () => this.refreshFooterHint(),
 				requestRender: () => this.ui.requestRender(),
 				clearEditor: () => this.clearEditor(),
 				setPlanHint: (hint) => {
-					this.planHint = hint;
+					this.footerHintsController.planHint = hint;
 				},
 				isAgentRunning: () => this.isAgentRunning,
 			},
@@ -972,14 +1047,14 @@ export class TuiRenderer {
 				resetAgent: () => this.agent.reset(),
 				resetSession: () => this.sessionManager.reset(),
 				resetArtifacts: () => this.sessionContext.resetArtifacts(),
-				clearActiveSkills: () => this.activeSkills.clear(),
+				clearActiveSkills: () => this.skillsController.clearActiveSkills(),
 				clearToolTracking: () => this.toolOutputView.clearTrackedComponents(),
 				clearChatContainer: () => this.chatContainer.clear(),
 				clearScrollHistory: () => this.scrollContainer.clearHistory(),
 				clearStartupContainer: () => this.startupContainer.clear(),
 				syncPlanHint: () => this.planView.syncHintWithStore(),
 				setPlanHint: (hint) => {
-					this.planHint = hint;
+					this.footerHintsController.planHint = hint;
 				},
 				clearEditor: () => this.editor.setText(""),
 				clearPendingTools: () => this.pendingTools.clear(),
@@ -1024,7 +1099,7 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 			ui: this.ui,
 			version: this.version,
-			telemetryStatus: () => this.describeTelemetryStatus(),
+			telemetryStatus: () => this.miscHandlers.describeTelemetryStatus(),
 			otelStatus: () => getOpenTelemetryStatus(),
 			getApprovalMode: () => this.approvalService.getMode(),
 		});
@@ -1099,7 +1174,7 @@ export class TuiRenderer {
 				this.scrollContainer.clearHistory();
 				this.startupContainer.clear();
 				this.planView.syncHintWithStore();
-				this.planHint = null;
+				this.footerHintsController.planHint = null;
 				this.footer.updateState(this.agent.state);
 				this.refreshFooterHint();
 				this.renderInitialMessages(this.agent.state);
@@ -1120,7 +1195,7 @@ export class TuiRenderer {
 				this.scrollContainer.clearHistory();
 				this.startupContainer.clear();
 				this.planView.syncHintWithStore();
-				this.planHint = null;
+				this.footerHintsController.planHint = null;
 				this.footer.updateState(this.agent.state);
 				this.refreshFooterHint();
 				this.renderInitialMessages(this.agent.state);
@@ -1158,7 +1233,7 @@ export class TuiRenderer {
 				showInfo: (msg) => this.notificationView.showInfo(msg),
 				refreshFooterHint: () => this.refreshFooterHint(),
 				setContextWarningLevel: (level) => {
-					this.contextWarningLevel = level;
+					this.footerHintsController.setContextWarningLevel(level);
 				},
 			},
 		});
@@ -1332,7 +1407,9 @@ export class TuiRenderer {
 			},
 			logDebug: (message, meta) => logger.debug(message, meta),
 		});
-		const hookRegistry = this.buildHookCommandEntries(registry.commands);
+		const hookRegistry = this.hookUiController.buildHookCommandEntries(
+			registry.commands,
+		);
 		if (hookRegistry.commands.length > 0) {
 			registry.entries.push(...hookRegistry.entries);
 			registry.commands.push(...hookRegistry.commands);
@@ -1406,7 +1483,7 @@ export class TuiRenderer {
 				void this.handleFollowUpSubmit(text);
 			},
 			shouldFollowUp: () => this.isAgentRunning,
-			canSubmitEmpty: () => this.hasPendingAttachments(),
+			canSubmitEmpty: () => this.attachmentController.hasPendingAttachments(),
 			shouldInterrupt: () =>
 				this.isAgentRunning || this.interruptController.isArmed(),
 			onInterrupt: () => this.inputController.handleInterruptRequest(),
@@ -1434,90 +1511,6 @@ export class TuiRenderer {
 
 	public async ensureContextBudgetBeforePrompt(): Promise<void> {
 		await this.compactionController.ensureContextBudgetBeforePrompt();
-	}
-
-	/**
-	 * Handle auto-retry events from the retry controller.
-	 */
-	private handleAutoRetryEvent(event: AgentEvent): void {
-		if (event.type === "auto_retry_start") {
-			const delaySec = (event.delayMs / 1000).toFixed(1);
-			this.notificationView.showToast(
-				`Retrying (attempt ${event.attempt}/${event.maxAttempts}) in ${delaySec}s... Press Escape to cancel.`,
-				"warn",
-			);
-			// Mark as running again since we're retrying
-			this.isAgentRunning = true;
-			this.refreshFooterHint();
-		} else if (event.type === "auto_retry_end") {
-			if (event.success) {
-				this.notificationView.showToast(
-					`Retry succeeded after ${event.attempt} attempt(s).`,
-					"info",
-				);
-			} else if (event.finalError) {
-				this.notificationView.showError(
-					`Retry failed after ${event.attempt} attempt(s): ${event.finalError}`,
-				);
-			}
-			this.refreshFooterHint();
-		}
-	}
-
-	private handleExternalEditor(): void {
-		const result = openExternalEditor(this.ui, this.editor.getText());
-		if (result.error) {
-			this.notificationView.showInfo(result.error);
-			return;
-		}
-		if (typeof result.updatedText === "string") {
-			this.editor.setText(result.updatedText);
-			this.ui.requestRender();
-		}
-	}
-
-	private handleCtrlZ(): void {
-		if (process.platform === "win32") {
-			this.notificationView.showInfo(
-				"Suspending is not supported on Windows terminals.",
-			);
-			return;
-		}
-		process.once("SIGCONT", () => {
-			this.ui.start();
-			this.ui.requestRender("interactive");
-		});
-		this.ui.stop();
-		process.kill(0, "SIGTSTP");
-	}
-
-	/**
-	 * Handle test verification result.
-	 * Shows a notification with test results - success is brief, failures are detailed.
-	 */
-	private handleTestVerificationResult(result: TestResult): void {
-		if (result.success) {
-			// Show brief success notification
-			this.notificationView.showInfo(
-				`✓ Tests passed: ${result.passedTests}/${result.totalTests} (${result.durationMs}ms)`,
-			);
-		} else {
-			// Show detailed failure notification
-			const formatted = formatTestResult(result);
-			this.notificationView.showError(formatted);
-
-			// If we have specific failures, add them to the context for the agent
-			if (result.failures.length > 0) {
-				const failureSummary = result.failures
-					.slice(0, 3)
-					.map((f) => `• ${f.testName}: ${f.errorMessage.split("\n")[0]}`)
-					.join("\n");
-				logger.warn("Test failures detected", {
-					failedTests: result.failedTests,
-					failures: failureSummary,
-				});
-			}
-		}
 	}
 
 	async init(): Promise<void> {
@@ -1651,132 +1644,43 @@ export class TuiRenderer {
 	private async handleGuardianCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		await guardianHandler(context, {
-			showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
-			showWarning: (msg) => this.notificationView.showToast(msg, "warn"),
-			showError: (msg) => this.notificationView.showError(msg),
-			addContent: (content) =>
-				this.chatContainer.addChild(new Markdown(content)),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleGuardianCommand(context);
 	}
 
 	private async handleWorkflowCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { handleWorkflowCommand } = await import(
-			"./commands/workflow-handlers.js"
-		);
-		// Build tool map from agent state
-		const toolMap = new Map(
-			(this.agent.state.tools ?? []).map((t) => [t.name, t]),
-		);
-		await handleWorkflowCommand({
-			rawInput: context.rawInput,
-			cwd: process.cwd(),
-			tools: toolMap,
-			addContent: (content) => {
-				this.chatContainer.addChild(new Markdown(content));
-			},
-			showError: (message) => this.notificationView.showError(message),
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showSuccess: (message) =>
-				this.notificationView.showToast(message, "success"),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleWorkflowCommand(context);
 	}
 
 	private async handleEnhancedUndoCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { handleEnhancedUndoCommand } = await import(
-			"./commands/undo-handlers.js"
-		);
-		handleEnhancedUndoCommand({
-			rawInput: context.rawInput,
-			addContent: (content) => {
-				this.chatContainer.addChild(new Markdown(content));
-			},
-			showError: (message) => this.notificationView.showError(message),
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showSuccess: (message) =>
-				this.notificationView.showToast(message, "success"),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleEnhancedUndoCommand(context);
 	}
 
 	private async handleChangesCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { handleChangesCommand } = await import(
-			"./commands/undo-handlers.js"
-		);
-		handleChangesCommand({
-			rawInput: context.rawInput,
-			addContent: (content) => {
-				this.chatContainer.addChild(new Markdown(content));
-			},
-			showError: (message) => this.notificationView.showError(message),
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showSuccess: (message) =>
-				this.notificationView.showToast(message, "success"),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleChangesCommand(context);
 	}
 
 	private async handleCheckpointCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { handleCheckpointCommand } = await import(
-			"./commands/undo-handlers.js"
-		);
-		handleCheckpointCommand({
-			rawInput: context.rawInput,
-			addContent: (content) => {
-				this.chatContainer.addChild(new Markdown(content));
-			},
-			showError: (message) => this.notificationView.showError(message),
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showSuccess: (message) =>
-				this.notificationView.showToast(message, "success"),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleCheckpointCommand(context);
 	}
 
 	private async handleMemoryCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { handleMemoryCommand } = await import(
-			"./commands/memory-handlers.js"
-		);
-		handleMemoryCommand({
-			rawInput: context.rawInput,
-			cwd: process.cwd(),
-			sessionId: this.agent.state.session?.id,
-			addContent: (content) => {
-				this.chatContainer.addChild(new Markdown(content));
-			},
-			showError: (message) => this.notificationView.showError(message),
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showSuccess: (message) =>
-				this.notificationView.showToast(message, "success"),
-			requestRender: () => this.ui.requestRender(),
-		});
+		await this.delegatingHandlers.handleMemoryCommand(context);
 	}
 
 	private async handleModeCommand(
 		context: CommandExecutionContext,
 	): Promise<void> {
-		const { createModeCommandHandler } = await import(
-			"./commands/handlers/mode-handler.js"
-		);
-		const handler = createModeCommandHandler({
-			onModeChange: (_mode, model) => {
-				// Could update agent config here in the future
-				this.notificationView.showToast(`Model: ${model}`, "info");
-			},
-		});
-		handler(context);
+		await this.delegatingHandlers.handleModeCommand(context);
 	}
 
 	private handleContextCommand(_context: CommandExecutionContext): void {
@@ -1785,48 +1689,6 @@ export class TuiRenderer {
 			onClose: () => this.modalManager.pop(),
 		});
 		this.modalManager.push(contextView);
-	}
-
-	private async handleSourcesCommand(
-		context: CommandExecutionContext,
-	): Promise<void> {
-		try {
-			const result = await this.agent.getContextSourceStatus();
-			const lines: string[] = ["Context Sources Status:"];
-			lines.push(
-				`  Total: ${result.successCount} success, ${result.failureCount} failed (${result.totalDurationMs}ms)`,
-			);
-			lines.push("");
-
-			for (const source of result.sourceStatuses) {
-				const icon =
-					source.status === "success"
-						? "✓"
-						: source.status === "empty"
-							? "○"
-							: source.status === "skipped"
-								? "⊘"
-								: "✗";
-				const status =
-					source.status === "success"
-						? source.truncated
-							? `success (truncated from ${source.originalLength} chars)`
-							: "success"
-						: source.status;
-				const duration =
-					source.durationMs > 0 ? ` (${source.durationMs}ms)` : "";
-				lines.push(`  ${icon} ${source.name}: ${status}${duration}`);
-				if (source.error) {
-					lines.push(`      Error: ${source.error}`);
-				}
-			}
-
-			context.showInfo(lines.join("\n"));
-		} catch (error) {
-			context.showError(
-				`Failed to get context source status: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
 	}
 
 	private handleFooterCommand(context: CommandExecutionContext): void {
@@ -1909,387 +1771,21 @@ export class TuiRenderer {
 	}
 
 	private handleHistoryCommand(context: CommandExecutionContext): void {
-		const raw = context.argumentText.trim();
-		const history = this.sessionContext.getPromptHistory();
-		if (["help", "?", "-h", "--help"].includes(raw.toLowerCase())) {
-			context.renderHelp();
-			return;
-		}
-
-		if (!raw) {
-			this.renderPromptHistory(history.recent(20), "Recent Prompts");
-			return;
-		}
-
-		if (raw.toLowerCase() === "clear") {
-			history.clear();
-			context.showInfo("Prompt history cleared.");
-			return;
-		}
-
-		if (/^\d+$/.test(raw)) {
-			const count = Number.parseInt(raw, 10);
-			this.renderPromptHistory(history.recent(count), "Recent Prompts");
-			return;
-		}
-
-		const results = history.search(raw, 10);
-		if (results.length === 0) {
-			context.showInfo(`No matches for "${raw}".`);
-			return;
-		}
-		this.renderPromptHistory(results, `Search Results for "${raw}"`);
+		this.historyController.handleHistoryCommand(context);
 	}
 
 	private handleToolHistoryCommand(context: CommandExecutionContext): void {
-		const raw = context.argumentText.trim();
-		const toolHistory = this.sessionContext.getToolHistory();
-		if (["help", "?", "-h", "--help"].includes(raw.toLowerCase())) {
-			context.renderHelp();
-			return;
-		}
-
-		const parts = raw.split(/\s+/).filter(Boolean);
-		const primary = parts[0]?.toLowerCase();
-
-		if (!primary) {
-			this.renderToolHistoryList(
-				toolHistory.recent(10),
-				"Recent Tool Executions",
-			);
-			return;
-		}
-
-		if (primary === "clear") {
-			toolHistory.clear();
-			context.showInfo("Tool history cleared.");
-			return;
-		}
-
-		if (primary === "stats" || primary === "statistics") {
-			this.renderToolHistoryStats(toolHistory);
-			return;
-		}
-
-		if (primary === "tool") {
-			const name = parts.slice(1).join(" ").trim();
-			if (!name) {
-				context.showError("Usage: /toolhistory tool <name>");
-				return;
-			}
-			this.renderToolHistoryForTool(toolHistory, name);
-			return;
-		}
-
-		if (/^\d+$/.test(primary)) {
-			const count = Number.parseInt(primary, 10);
-			this.renderToolHistoryList(
-				toolHistory.recent(count),
-				"Recent Tool Executions",
-			);
-			return;
-		}
-
-		this.renderToolHistoryForTool(toolHistory, primary);
+		this.historyController.handleToolHistoryCommand(context);
 	}
 
 	private handleSkillsCommand(context: CommandExecutionContext): void {
-		const raw = context.argumentText.trim();
-		const parts = raw.split(/\s+/).filter(Boolean);
-		const subcommand = (parts[0] ?? "list").toLowerCase();
-
-		if (["help", "?", "-h", "--help"].includes(subcommand)) {
-			context.renderHelp();
-			return;
-		}
-
-		const { skills, errors } = loadSkills(process.cwd());
-
-		switch (subcommand) {
-			case "list":
-			case "ls":
-			case "": {
-				this.renderSkillsList(skills, errors);
-				return;
-			}
-			case "reload":
-			case "refresh": {
-				this.renderSkillsList(skills, errors, "Reloaded skills from disk.");
-				return;
-			}
-			case "activate":
-			case "enable":
-			case "on": {
-				const target = parts.slice(1).join(" ").trim();
-				if (!target) {
-					context.showError("Usage: /skills activate <skill-name>");
-					return;
-				}
-				const resolved = this.resolveSkillTarget(skills, target, context);
-				if (!resolved) return;
-				if (this.activeSkills.has(resolved.name)) {
-					context.showInfo(`Skill "${resolved.name}" is already active.`);
-					return;
-				}
-				this.activeSkills.add(resolved.name);
-				this.injectSkillMessage(resolved, "activate");
-				context.showInfo(
-					`Activated skill "${resolved.name}" (instructions injected).`,
-				);
-				return;
-			}
-			case "deactivate":
-			case "disable":
-			case "off": {
-				const target = parts.slice(1).join(" ").trim();
-				if (!target) {
-					context.showError("Usage: /skills deactivate <skill-name>");
-					return;
-				}
-				const resolved = this.resolveSkillTarget(skills, target, context);
-				if (!resolved) return;
-				if (!this.activeSkills.has(resolved.name)) {
-					context.showInfo(`Skill "${resolved.name}" is not active.`);
-					return;
-				}
-				this.activeSkills.delete(resolved.name);
-				this.injectSkillMessage(resolved, "deactivate");
-				context.showInfo(`Deactivated skill "${resolved.name}".`);
-				return;
-			}
-			case "info":
-			case "show": {
-				const target = parts.slice(1).join(" ").trim();
-				if (!target) {
-					context.showError("Usage: /skills info <skill-name>");
-					return;
-				}
-				const resolved = this.resolveSkillTarget(skills, target, context);
-				if (!resolved) return;
-				this.renderSkillInfo(resolved);
-				return;
-			}
-			default: {
-				const resolved = this.resolveSkillTarget(skills, subcommand, context);
-				if (!resolved) return;
-				this.renderSkillInfo(resolved);
-			}
-		}
+		this.skillsController.handleSkillsCommand(context);
 	}
 
-	private renderPromptHistory(
-		entries: PromptHistoryEntry[],
-		title: string,
-	): void {
-		if (!entries.length) {
-			this.notificationView.showInfo("No prompt history.");
-			return;
-		}
-		const lines = [`## ${title}`, ""];
-		for (let i = 0; i < entries.length; i++) {
-			const entry = entries[i];
-			if (!entry) continue;
-			lines.push(`${i + 1}. ${this.formatPreview(entry.prompt, 80)}`);
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private renderToolHistoryList(
-		entries: ToolHistoryEntry[],
-		title: string,
-	): void {
-		if (!entries.length) {
-			this.notificationView.showInfo("No tool history.");
-			return;
-		}
-		const lines = [`## ${title}`, ""];
-		for (const entry of entries) {
-			const status = entry.isError ? "✗" : "✓";
-			lines.push(
-				`${status} ${entry.tool} (${this.formatDuration(entry.durationMs)})`,
-			);
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private renderToolHistoryStats(toolHistory: ToolHistoryStore): void {
-		const stats = toolHistory.stats();
-		if (stats.total === 0) {
-			this.notificationView.showInfo("No tool history.");
-			return;
-		}
-		const entries = Array.from(stats.byTool.entries()).sort(
-			(a, b) => b[1].total - a[1].total,
-		);
-		const lines = [
-			"## Tool Statistics",
-			"",
-			`Total executions: ${stats.total}`,
-			"",
-		];
-		for (const [tool, summary] of entries) {
-			const errorRate =
-				summary.total > 0
-					? `${Math.round((summary.errors / summary.total) * 100)}%`
-					: "0%";
-			lines.push(
-				`${tool}: ${summary.total} run${summary.total === 1 ? "" : "s"} (${summary.errors} error${summary.errors === 1 ? "" : "s"}, ${errorRate} error rate)`,
-			);
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private renderToolHistoryForTool(
-		toolHistory: ToolHistoryStore,
-		name: string,
-	): void {
-		const entries = toolHistory.forTool(name, 10);
-		if (!entries.length) {
-			this.notificationView.showInfo(`No history for tool "${name}".`);
-			return;
-		}
-		const lines = [`## History for "${name}"`, ""];
-		for (const entry of entries) {
-			const status = entry.isError ? "✗" : "✓";
-			const preview = entry.preview
-				? this.formatPreview(entry.preview, 80)
-				: "(no output)";
-			lines.push(
-				`${status} ${this.formatDuration(entry.durationMs)} - ${preview}`,
-			);
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private renderSkillsList(
-		skills: LoadedSkill[],
-		errors: SkillLoadError[],
-		statusMessage?: string,
-	): void {
-		const lines: string[] = ["## Available Skills", ""];
-		if (statusMessage) {
-			lines.push(statusMessage, "");
-		}
-		if (skills.length === 0 && errors.length === 0) {
-			lines.push("*No skills found*");
-			lines.push("");
-			lines.push("Skills are loaded from:");
-			lines.push("- `~/.composer/skills/` (global)");
-			lines.push("- `.composer/skills/` (project)");
-		} else {
-			for (const skill of skills) {
-				const isActive = this.activeSkills.has(skill.name);
-				const suffix = isActive ? " (active)" : "";
-				lines.push(`- ${formatSkillListItem(skill)}${suffix}`);
-			}
-			lines.push("");
-			lines.push(`*${skills.length} skill(s) found*`);
-			if (this.activeSkills.size > 0) {
-				lines.push(
-					`Active: ${Array.from(this.activeSkills.values()).join(", ")}`,
-				);
-			}
-		}
-		if (errors.length > 0) {
-			lines.push("");
-			lines.push(`**${errors.length} error(s) loading skills:**`);
-			for (const err of errors.slice(0, 5)) {
-				lines.push(`- ${err.message ?? "Unknown error"}`);
-			}
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private renderSkillInfo(skill: LoadedSkill): void {
-		const lines: string[] = [`## Skill: ${skill.name}`, ""];
-		lines.push(`**Description:** ${skill.description}`);
-		lines.push("");
-		lines.push(`**Source:** ${skill.sourceType}`);
-		lines.push("");
-		lines.push(`**Path:** \`${skill.sourcePath}\``);
-		if (skill.resources.length > 0) {
-			lines.push("");
-			lines.push("**Resources:**");
-			for (const resource of skill.resources.slice(0, 5)) {
-				lines.push(`- \`${resource.path}\` (${resource.type})`);
-			}
-			if (skill.resources.length > 5) {
-				lines.push(`- …and ${skill.resources.length - 5} more`);
-			}
-		}
-		if (skill.content) {
-			lines.push("");
-			lines.push("**Instructions preview:**");
-			lines.push("```");
-			lines.push(this.formatPreviewBlock(skill.content, 200));
-			lines.push("```");
-		}
-		this.pushCommandOutput(lines.join("\n"));
-	}
-
-	private injectSkillMessage(
-		skill: LoadedSkill,
-		action: "activate" | "deactivate",
-	): void {
-		const content =
-			action === "activate"
-				? formatSkillForInjection(skill)
-				: [
-						`# Skill deactivated: ${skill.name}`,
-						"",
-						`Ignore previous instructions from the "${skill.name}" skill unless it is reactivated.`,
-					].join("\n");
-		const message: AppMessage = {
-			role: "hookMessage",
-			customType: action === "activate" ? "skill" : "skill-deactivated",
-			content,
-			display: false,
-			details: { name: skill.name, action },
-			timestamp: Date.now(),
-		};
-		this.agent.injectMessage(message);
-	}
-
-	private resolveSkillTarget(
-		skills: LoadedSkill[],
-		target: string,
-		context: CommandExecutionContext,
-	): LoadedSkill | null {
-		let skill = findSkill(skills, target);
-		if (!skill) {
-			const matches = searchSkills(skills, target);
-			if (matches.length === 1) {
-				skill = matches[0];
-			} else if (matches.length > 1) {
-				const list = matches.map((match) => match.name).join(", ");
-				context.showError(`Multiple skills match "${target}": ${list}`);
-				return null;
-			}
-		}
-		if (!skill) {
-			context.showError(`Skill "${target}" not found.`);
-			return null;
-		}
-		return skill;
-	}
-
-	private formatPreview(text: string, limit: number): string {
-		const normalized = text.replace(/\s+/g, " ").trim();
-		if (normalized.length <= limit) return normalized;
-		return `${normalized.slice(0, limit - 1)}…`;
-	}
-
-	private formatPreviewBlock(text: string, limit: number): string {
-		const trimmed = text.trim();
-		if (trimmed.length <= limit) return trimmed;
-		return `${trimmed.slice(0, limit - 1)}…`;
-	}
-
-	private formatDuration(durationMs?: number): string {
-		if (!durationMs && durationMs !== 0) return "?";
-		if (durationMs < 1000) return `${durationMs}ms`;
-		return `${(durationMs / 1000).toFixed(1)}s`;
-	}
+	// Skills, history rendering, and formatting have been extracted to:
+	// - skills-controller.ts
+	// - history-controller.ts
+	// - utils/text-preview.ts
 
 	private async handleStatsCommand(
 		_context: CommandExecutionContext,
@@ -2301,26 +1797,8 @@ export class TuiRenderer {
 
 	private clearEditor(): void {
 		this.editor.setText("");
-		this.clearPendingAttachments();
+		this.attachmentController.clearPendingAttachments();
 		this.ui.requestRender();
-	}
-
-	private clearPendingAttachments(): void {
-		this.pendingAttachments.clear();
-		this.pendingAttachmentCounter = 0;
-	}
-
-	private hasPendingAttachments(): boolean {
-		return this.pendingAttachments.size > 0;
-	}
-
-	private consumeAttachments(text: string): PromptPayload {
-		const { text: updatedText, attachments } =
-			this.consumePendingAttachmentMarkers(text);
-		return {
-			text: updatedText,
-			attachments: attachments.length > 0 ? attachments : undefined,
-		};
 	}
 
 	private async handleFollowUpSubmit(text: string): Promise<void> {
@@ -2372,122 +1850,11 @@ export class TuiRenderer {
 		this.refreshFooterHint();
 	}
 
-	private consumePendingAttachmentMarkers(text: string): {
-		text: string;
-		attachments: Attachment[];
-	} {
-		if (this.pendingAttachments.size === 0) {
-			return { text, attachments: [] };
-		}
-		let updated = text;
-		const attachments: Attachment[] = [];
-		for (const [id, attachment] of this.pendingAttachments) {
-			const marker = `[image #${id}]`;
-			if (!updated.includes(marker)) {
-				continue;
-			}
-			const replacement = `[attachment] ${attachment.fileName} (${attachment.mimeType})`;
-			updated = updated.split(marker).join(replacement);
-			attachments.push(attachment);
-		}
-		this.clearPendingAttachments();
-		return { text: updated, attachments };
-	}
-
-	private async handleClipboardImagePaste(): Promise<void> {
-		try {
-			if (!Clipboard.hasImage()) {
-				return;
-			}
-			const imageData = await Clipboard.getImageBinary();
-			if (!imageData || imageData.length === 0) {
-				return;
-			}
-			const attachmentId = `att_${randomUUID()}`;
-			const fileName = `clipboard-image-${attachmentId.slice(-6)}.png`;
-			const attachment: Attachment = {
-				id: attachmentId,
-				type: "image",
-				fileName,
-				mimeType: "image/png",
-				size: imageData.length,
-				content: Buffer.from(imageData).toString("base64"),
-			};
-			const markerId = ++this.pendingAttachmentCounter;
-			this.pendingAttachments.set(markerId, attachment);
-			this.editor.insertText(`[image #${markerId}]`);
-			this.ui.requestRender();
-		} catch {
-			// Ignore clipboard errors (permissions, empty clipboard, etc.)
-		}
-	}
-
-	private restoreQueuedAttachments(entries: QueuedPrompt[]): void {
-		const restored = entries.some(
-			(entry) => (entry.attachments?.length ?? 0) > 0,
-		);
-		if (!restored) {
-			return;
-		}
-		this.clearPendingAttachments();
-		const segments: string[] = [];
-		for (const entry of entries) {
-			let segment = entry.text;
-			const attachments = entry.attachments ?? [];
-			if (attachments.length > 0) {
-				const markers: string[] = [];
-				for (const attachment of attachments) {
-					const markerId = ++this.pendingAttachmentCounter;
-					this.pendingAttachments.set(markerId, attachment);
-					markers.push(`[image #${markerId}]`);
-				}
-				if (markers.length > 0) {
-					const trimmed = segment.trim();
-					segment =
-						trimmed.length > 0
-							? `${trimmed}\n${markers.join(" ")}`
-							: markers.join(" ");
-				}
-			}
-			segments.push(segment);
-		}
-		const restoredText = segments
-			.filter((s) => s.trim().length > 0)
-			.join("\n\n");
-		if (restoredText) {
-			this.editor.setText(restoredText);
-		}
-	}
-
-	private updateTerminalTitle(): void {
-		if (process.env.COMPOSER_DISABLE_TERMINAL_TITLE === "1") {
-			return;
-		}
-		if (!process.stdout.isTTY) {
-			return;
-		}
-		const dir = basename(process.cwd());
-		const nextTitle = `composer - ${dir}`;
-		if (this.terminalTitle === nextTitle) {
-			return;
-		}
-		process.stdout.write(`\u001b]0;${nextTitle}\u0007`);
-		this.terminalTitle = nextTitle;
-	}
-
-	private clearTerminalTitle(): void {
-		if (!this.terminalTitle) {
-			return;
-		}
-		if (process.env.COMPOSER_DISABLE_TERMINAL_TITLE === "1") {
-			return;
-		}
-		if (!process.stdout.isTTY) {
-			return;
-		}
-		process.stdout.write("\u001b]0;\u0007");
-		this.terminalTitle = null;
-	}
+	// consumePendingAttachmentMarkers, handleClipboardImagePaste,
+	// restoreQueuedAttachments extracted to attachment-controller.ts
+	// updateTerminalTitle, clearTerminalTitle, handleAutoRetryEvent,
+	// handleExternalEditor, handleCtrlZ, handleTestVerificationResult,
+	// describeTelemetryStatus extracted to misc-handlers.ts
 
 	private handleApprovalRequired(request: ActionApprovalRequest): void {
 		this.approvalController?.enqueue(request);
@@ -2531,11 +1898,7 @@ export class TuiRenderer {
 	}
 
 	private handleFrameworkCommand(context: CommandExecutionContext): void {
-		frameworkHandler(context, {
-			showInfo: (msg) => this.notificationView.showInfo(msg),
-			showError: (msg) => this.notificationView.showError(msg),
-			showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
-		});
+		this.delegatingHandlers.handleFrameworkCommand(context);
 	}
 
 	private handleNewChatCommand(context: CommandExecutionContext): void {
@@ -2557,45 +1920,11 @@ export class TuiRenderer {
 	}
 
 	private handleMcpCommand(context: CommandExecutionContext): void {
-		handleMcpCommand(this._createMcpRenderContext(context));
-	}
-
-	private _createMcpRenderContext(
-		context: CommandExecutionContext,
-	): McpRenderContext {
-		return {
-			rawInput: context.rawInput,
-			addContent: (content: string) => {
-				this.chatContainer.addChild(new Spacer(1));
-				this.chatContainer.addChild(new Text(content, 1, 0));
-			},
-			showError: (message: string) => {
-				this.notificationView.showError(message);
-			},
-			requestRender: () => {
-				this.ui.requestRender();
-			},
-		};
+		this.delegatingHandlers.handleMcpCommand(context);
 	}
 
 	private handleComposerCommand(context: CommandExecutionContext): void {
-		handleComposerCommand(this._createComposerRenderContext(context));
-	}
-
-	private _createComposerRenderContext(
-		context: CommandExecutionContext,
-	): ComposerRenderContext {
-		return {
-			rawInput: context.rawInput,
-			cwd: process.cwd(),
-			addContent: (content: string) => {
-				this.chatContainer.addChild(new Spacer(1));
-				this.chatContainer.addChild(new Text(content, 1, 0));
-			},
-			requestRender: () => {
-				this.ui.requestRender();
-			},
-		};
+		this.delegatingHandlers.handleComposerCommand(context);
 	}
 
 	private createCommandContext({
@@ -2643,21 +1972,6 @@ export class TuiRenderer {
 		);
 	}
 
-	private describeTelemetryStatus(): string {
-		const status = this.telemetryStatus;
-		const base = status.enabled ? "enabled" : "disabled";
-		const details: string[] = [];
-		if (status.runtimeOverride) {
-			details.push(`override=${status.runtimeOverride}`);
-		} else if (status.reason) {
-			details.push(status.reason);
-		}
-		if (status.sampleRate !== 1) {
-			details.push(`sample=${status.sampleRate}`);
-		}
-		return details.length > 0 ? `${base} (${details.join(", ")})` : base;
-	}
-
 	private renderCommandHelp(command: SlashCommand): void {
 		const help = formatCommandHelp(command);
 		this.chatContainer.addChild(new Spacer(1));
@@ -2691,427 +2005,13 @@ export class TuiRenderer {
 		this.provideFailureHints(errorMessage);
 	}
 
-	private createHookUiContext(): HookUIContext {
-		return {
-			select: (title, options) => this.showHookSelector(title, options),
-			confirm: (title, message) => this.showHookConfirm(title, message),
-			input: (title, placeholder) => this.showHookInput(title, placeholder),
-			notify: (message, type) => {
-				if (type === "error") {
-					this.notificationView.showError(message);
-					return;
-				}
-				const tone = type === "warning" ? "warn" : "info";
-				this.notificationView.showToast(message, tone);
-			},
-			setStatus: (key, text) => this.setHookStatus(key, text),
-			custom: (factory) => this.showHookCustom(factory),
-			setEditorText: (text) => {
-				this.editor.setText(text);
-				this.ui.requestRender();
-			},
-			getEditorText: () => this.editor.getText(),
-			editor: (title, prefill) => this.showHookEditor(title, prefill),
-			get theme() {
-				return theme;
-			},
-		};
-	}
-
-	private showHookSelector(
-		title: string,
-		options: string[],
-	): Promise<string | null> {
-		return new Promise((resolve) => {
-			if (options.length === 0) {
-				resolve(null);
-				return;
-			}
-			const items = options.map((option) => ({
-				label: option,
-				value: option,
-			}));
-			const selector = new BaseSelectorComponent({
-				items,
-				visibleRows: Math.min(10, items.length),
-				onSelect: (value) => {
-					this.modalManager.pop();
-					resolve(value);
-				},
-				onCancel: () => {
-					this.modalManager.pop();
-					resolve(null);
-				},
-				prepend: [new Text(theme.fg("accent", title), 1, 0), new Spacer(1)],
-			});
-			this.modalManager.push(selector);
-		});
-	}
-
-	private showHookConfirm(title: string, message: string): Promise<boolean> {
-		return new Promise((resolve) => {
-			const items = [
-				{ label: "Yes", value: "yes" },
-				{ label: "No", value: "no" },
-			];
-			const selector = new BaseSelectorComponent({
-				items,
-				visibleRows: 2,
-				onSelect: (value) => {
-					this.modalManager.pop();
-					resolve(value === "yes");
-				},
-				onCancel: () => {
-					this.modalManager.pop();
-					resolve(false);
-				},
-				prepend: [
-					new Text(theme.fg("accent", title), 1, 0),
-					new Text(theme.fg("muted", message), 1, 0),
-					new Spacer(1),
-				],
-			});
-			this.modalManager.push(selector);
-		});
-	}
-
-	private showHookInput(
-		title: string,
-		placeholder?: string,
-	): Promise<string | null> {
-		return new Promise((resolve) => {
-			const modal = new HookInputModal({
-				ui: this.ui,
-				title,
-				placeholder,
-				onSubmit: (value) => {
-					this.modalManager.pop();
-					resolve(value);
-				},
-				onCancel: () => {
-					this.modalManager.pop();
-					resolve(null);
-				},
-			});
-			this.modalManager.push(modal);
-		});
-	}
-
-	private showHookEditor(
-		title: string,
-		prefill?: string,
-	): Promise<string | null> {
-		return new Promise((resolve) => {
-			const modal = new HookInputModal({
-				ui: this.ui,
-				title,
-				prefill,
-				description: "Enter to save | Esc to cancel | Shift+Enter for newline",
-				onSubmit: (value) => {
-					this.modalManager.pop();
-					resolve(value);
-				},
-				onCancel: () => {
-					this.modalManager.pop();
-					resolve(null);
-				},
-			});
-			this.modalManager.push(modal);
-		});
-	}
-
-	private async showHookCustom<T>(
-		factory: (
-			tui: TUI,
-			theme: Theme,
-			done: (result: T) => void,
-		) => Component | Promise<Component>,
-	): Promise<T> {
-		return new Promise((resolve) => {
-			let resolved = false;
-			const done = (result: T) => {
-				if (resolved) return;
-				resolved = true;
-				this.modalManager.pop();
-				resolve(result);
-			};
-
-			void (async () => {
-				try {
-					const component = await factory(this.ui, theme, done);
-					const modal = component as Component & {
-						onClose?: () => void;
-					};
-					const previousOnClose = modal.onClose;
-					modal.onClose = () => {
-						previousOnClose?.();
-						if (!resolved) {
-							done(undefined as T);
-						}
-					};
-					this.modalManager.push(modal);
-				} catch (error) {
-					this.notificationView.showError(
-						error instanceof Error ? error.message : "Hook custom UI failed",
-					);
-					resolve(undefined as T);
-				}
-			})();
-		});
-	}
-
-	private execHookCommand(
-		command: string,
-		args: string[],
-	): Promise<{ stdout: string; stderr: string; code: number }> {
-		return new Promise((resolve) => {
-			const child = spawn(command, args, {
-				cwd: process.cwd(),
-				shell: false,
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-
-			let stdout = "";
-			let stderr = "";
-
-			child.stdout?.on("data", (data) => {
-				stdout += data.toString();
-			});
-
-			child.stderr?.on("data", (data) => {
-				stderr += data.toString();
-			});
-
-			child.on("error", (error) => {
-				resolve({
-					stdout,
-					stderr: `${stderr}\n${error.message}`,
-					code: 1,
-				});
-			});
-
-			child.on("close", (code) => {
-				resolve({
-					stdout,
-					stderr,
-					code: code ?? 1,
-				});
-			});
-		});
-	}
-
-	private createHookCommandContext(): HookCommandContext {
-		return {
-			exec: (command, args) => this.execHookCommand(command, args),
-			ui: this.hookUiContext ?? this.createHookUiContext(),
-			hasUI: true,
-			cwd: process.cwd(),
-			sessionFile: this.sessionManager.getSessionFile(),
-			isIdle: () => !this.agent.state.isStreaming,
-			abort: () => this.agent.abort(),
-			hasQueuedMessages: () => this.agent.getQueuedMessageCount() > 0,
-			waitForIdle: () => {
-				if (!this.agent.state.isStreaming) {
-					return Promise.resolve();
-				}
-				return new Promise((resolve) => {
-					const unsubscribe = this.agent.subscribe((event) => {
-						if (event.type === "agent_end") {
-							unsubscribe();
-							resolve();
-						}
-					});
-				});
-			},
-		};
-	}
-
-	private buildHookCommandEntries(existingCommands: SlashCommand[]): {
-		entries: CommandEntry[];
-		commands: SlashCommand[];
-	} {
-		const existingNames = new Set(existingCommands.map((cmd) => cmd.name));
-		const entries: CommandEntry[] = [];
-		const commands: SlashCommand[] = [];
-		for (const command of getTypeScriptHookCommands()) {
-			if (existingNames.has(command.name)) {
-				logger.warn("Skipping hook command due to name conflict", {
-					name: command.name,
-				});
-				continue;
-			}
-			const slashCommand: SlashCommand = {
-				name: command.name,
-				description: command.description ?? "Hook command",
-				usage: `/${command.name} [args]`,
-				tags: ["hooks"],
-			};
-			const matches = (input: string) =>
-				input === `/${command.name}` || input.startsWith(`/${command.name} `);
-			const execute = (input: string) => {
-				const argumentText = input
-					.replace(new RegExp(`^/${command.name}\\s*`), "")
-					.trim();
-				const context = this.createCommandContext({
-					command: slashCommand,
-					rawInput: input,
-					argumentText,
-				});
-				if (
-					argumentText === "?" ||
-					argumentText === "--help" ||
-					argumentText === "-h"
-				) {
-					context.renderHelp();
-					return;
-				}
-				const hookContext = this.createHookCommandContext();
-				const result = command.handler(argumentText, hookContext);
-				if (result && typeof (result as Promise<void>).then === "function") {
-					(result as Promise<void>).catch((error) => {
-						context.showError(
-							error instanceof Error ? error.message : String(error),
-						);
-					});
-				}
-			};
-			entries.push({ command: slashCommand, matches, execute });
-			commands.push(slashCommand);
-			existingNames.add(command.name);
-		}
-		return { entries, commands };
-	}
-
 	public refreshFooterHint(): void {
-		const sandboxMode =
-			this.agent.state.sandboxMode ?? process.env.COMPOSER_SANDBOX ?? null;
-		const sandboxRequested = Boolean(sandboxMode);
-		const sandboxActive =
-			Boolean(this.agent.state.sandboxEnabled) ||
-			Boolean(this.agent.state.sandbox);
-		this.footer.setRuntimeBadges(
-			buildRuntimeBadges({
-				approvalMode: this.approvalService.getMode(),
-				promptQueueMode: this.queueController.getFollowUpMode(),
-				queuedPromptCount: this.queueController.getQueuedCount(),
-				hasPromptQueue: this.queueController.hasQueue(),
-				thinkingLevel: this.agent.state.thinkingLevel,
-				sandboxMode,
-				isSafeMode: process.env.COMPOSER_SAFE_MODE === "1",
-				sandboxRequestedButMissing: sandboxRequested && !sandboxActive,
-				alertCount: this.footer.getUnseenAlertCount(),
-				reducedMotion: this.reducedMotion,
-				compactForced: this.minimalMode,
-			}),
-		);
-		if (this.isAgentRunning) {
-			return;
-		}
-		const hints: FooterHint[] = [];
-		const pushHint = (
-			type: FooterHint["type"],
-			message: string,
-			priority: number,
-		): void => {
-			if (message.trim().length === 0) return;
-			hints.push({ type, message, priority });
-		};
-
-		if (this.idleFooterHint) {
-			pushHint("custom", this.idleFooterHint, 20);
-		}
-		for (const hint of this.buildOperationalHints()) {
-			pushHint("custom", hint, 40);
-		}
-		for (const hint of this.getHookStatusHints()) {
-			hints.push(hint);
-		}
-		const activeToast = this.footer.getActiveToast();
-		if (
-			activeToast &&
-			(activeToast.tone === "danger" || activeToast.tone === "warn")
-		) {
-			pushHint("custom", `Alert: ${activeToast.message}`, 160);
-		}
-		if (this.startupWarnings.length > 0) {
-			hints.push(...this.startupWarnings);
-		}
-		if (this.planHint) {
-			pushHint("plan", `Plan ${this.planHint}`, 120);
-		}
-		const queueHint = this.queueController.buildQueueHint();
-		if (queueHint) {
-			pushHint("queue", queueHint, 110);
-		}
-		this.footer.setHints(hints);
-	}
-
-	private buildOperationalHints(): string[] {
-		const hints: string[] = [];
-		const backgroundCounts = this.backgroundTasksController.getCounts();
-		if (backgroundCounts.running > 0 || backgroundCounts.failed > 0) {
-			const runningLabel = `${backgroundCounts.running} background ${backgroundCounts.running === 1 ? "task" : "tasks"} running`;
-			const failureSuffix =
-				backgroundCounts.failed > 0
-					? `; ${backgroundCounts.failed} failed`
-					: "";
-			hints.push(`${runningLabel}${failureSuffix} (use /background list)`);
-		}
-		if (this.compactionController?.isCompacting()) {
-			hints.push("Compacting history…");
-		}
-		if (this.pasteHandler?.hasPending()) {
-			hints.push("Summarizing pasted text…");
-		}
-		if (this.bashModeView?.isActive()) {
-			hints.push("Bash mode active — type exit to leave");
-		}
-		return hints;
-	}
-
-	private sanitizeHookStatusText(text: string): string {
-		return text.replace(/[\r\n\t]+/g, " ");
-	}
-
-	private setHookStatus(key: string, text: string | undefined): void {
-		if (!key) return;
-		if (!text || text.trim().length === 0) {
-			if (this.hookStatusByKey.delete(key)) {
-				this.refreshFooterHint();
-			}
-			return;
-		}
-		const sanitized = this.sanitizeHookStatusText(text);
-		const previous = this.hookStatusByKey.get(key);
-		if (previous === sanitized) {
-			return;
-		}
-		this.hookStatusByKey.set(key, sanitized);
-		this.refreshFooterHint();
-	}
-
-	private getHookStatusHints(): FooterHint[] {
-		const hints: FooterHint[] = [];
-		for (const text of this.hookStatusByKey.values()) {
-			hints.push({ type: "custom", message: text, priority: 130 });
-		}
-		return hints;
+		this.footerHintsController.refresh();
 	}
 
 	private handleEditorTyping(): void {
 		this.footer.clearToast();
 		this.slashHintController?.refreshSlashHintDebounced();
-	}
-
-	private surfaceStartupWarnings(): void {
-		const warning = validateFrameworkPreference();
-		if (!warning) return;
-		this.startupWarnings.push({
-			type: "custom",
-			message: warning,
-			priority: 140,
-		});
-		this.footer.setToast(warning, "warn");
 	}
 
 	public extractTextFromAppMessage(message: AppMessage): string {
@@ -3144,46 +2044,7 @@ export class TuiRenderer {
 	}
 
 	private maybeShowContextWarning(stats: FooterStats): void {
-		if (!stats.contextWindow) {
-			this.contextWarningLevel = "none";
-			return;
-		}
-		const percent = stats.contextPercent;
-		let nextLevel: "none" | "warn" | "danger" = "none";
-		if (percent >= 90) {
-			nextLevel = "danger";
-		} else if (percent >= 70) {
-			nextLevel = "warn";
-		}
-		if (nextLevel === this.contextWarningLevel) {
-			return;
-		}
-		if (nextLevel === "none") {
-			this.contextWarningLevel = "none";
-			return;
-		}
-		const label = `${formatTokenCount(stats.contextTokens)}/${formatTokenCount(
-			stats.contextWindow,
-		)}`;
-		if (nextLevel === "warn") {
-			this.notificationView.showToast(
-				`Context ${percent.toFixed(1)}% used (${label}). Consider /compact before your next prompt.`,
-				"info",
-			);
-		} else {
-			this.notificationView.showToast(
-				`Context ${percent.toFixed(1)}% used (${label}). Composer will auto-compact soon.`,
-				"warn",
-			);
-		}
-		this.contextWarningLevel = nextLevel;
-	}
-
-	private describeError(error: unknown): string {
-		if (error instanceof Error) {
-			return error.message;
-		}
-		return String(error ?? "Unknown error");
+		this.footerHintsController.maybeShowContextWarning(stats);
 	}
 
 	private provideFailureHints(message: string): void {
@@ -3214,158 +2075,81 @@ export class TuiRenderer {
 
 	private getGroupedHandlers(): GroupedCommandHandlers {
 		if (!this.groupedHandlers) {
-			this.groupedHandlers = createGroupedCommandHandlers({
-				session: {
-					handleNewChat: (context) => this.handleNewChatCommand(context),
-					handleClear: () => this.clearController.handleClearCommand(),
-					handleSessionInfo: (ctx) =>
-						this.sessionView.handleSessionCommand(ctx.rawInput),
-					handleSessionsList: (ctx) =>
-						this.sessionView.handleSessionsCommand(ctx.rawInput),
-					handleBranch: (ctx) => this.branchController.handleBranchCommand(ctx),
-					handleTree: (_ctx) => this.treeSelectorView.show(),
-					handleQueue: (ctx) => {
-						if (this.queuePanelController) {
-							this.queuePanelController.handleQueueCommand(ctx);
-							return;
-						}
-						ctx.showInfo("Prompt queue is not available.");
-					},
-					handleExport: (ctx) =>
-						this.importExportView.handleExportCommand(ctx.rawInput),
-					handleShare: (ctx) =>
-						this.importExportView.handleShareCommand(ctx.rawInput),
-					handleRecover: (ctx) => this.handleSessionRecoverCommand(ctx),
+			this.groupedHandlers = buildGroupedCommandHandlers({
+				delegatingHandlers: this.delegatingHandlers,
+				notificationView: this.notificationView,
+				approvalService: this.approvalService,
+				requestRender: () => this.ui.requestRender(),
+				refreshFooterHint: () => this.refreshFooterHint(),
+				addSpacedText: (text) => {
+					this.chatContainer.addChild(new Spacer(1));
+					this.chatContainer.addChild(new Text(text, 1, 0));
 				},
-				diag: {
-					handleStatus: () => this.diagnosticsView.handleStatusCommand(),
-					handleAbout: () => this.aboutView.handleAboutCommand(),
-					handleContext: (ctx) => this.handleContextCommand(ctx),
-					handleStats: (ctx) => this.handleStatsCommand(ctx),
-					handleBackground: (ctx) =>
-						this.backgroundTasksController.handleBackgroundCommand(ctx),
-					handleDiagnostics: (ctx) =>
-						this.diagnosticsView.handleDiagnosticsCommand(ctx.rawInput),
-					handleTelemetry: (ctx) =>
-						this.telemetryView.handleTelemetryCommand(ctx),
-					handleTraining: (ctx) => this.trainingView.handleTrainingCommand(ctx),
-					handleOtel: (_ctx) =>
-						otelHandler({
-							showInfo: (msg) => this.notificationView.showInfo(msg),
-						}),
-					handleConfig: (ctx) => this.configView.handleConfigCommand(ctx),
-					handleLsp: (ctx) => this.lspView.handleLspCommand(ctx.rawInput),
-					handleMcp: (ctx) => this.handleMcpCommand(ctx),
-					handleSources: (ctx) => this.handleSourcesCommand(ctx),
-				},
-				ui: {
-					showTheme: () => this.themeSelectorView.show(),
-					handleClean: (ctx) => this.uiStateController.handleCleanCommand(ctx),
-					handleFooter: (ctx) => this.handleFooterCommand(ctx),
-					handleZen: (ctx) => this.uiStateController.handleZenCommand(ctx),
-					handleCompactTools: (ctx) =>
-						this.handleCompactToolsCommand(ctx.rawInput),
-					getUiState: () => ({
-						...this.uiStateController.getState(),
-						compactTools: this.toolOutputView?.isCompact() ?? false,
-					}),
-				},
-				safety: {
-					handleApprovals: (ctx) =>
-						handleApprovalsCommand(ctx, this.approvalService, {
-							showToast: (msg, type) =>
-								this.notificationView.showToast(msg, type),
-							refreshFooterHint: () => this.refreshFooterHint(),
-							addContent: (text) => {
-								this.chatContainer.addChild(new Spacer(1));
-								this.chatContainer.addChild(new Text(text, 1, 0));
-							},
-							requestRender: () => this.ui.requestRender(),
-						}),
-					handlePlanMode: (ctx) =>
-						handlePlanModeCommand(ctx, {
-							showToast: (msg, type) =>
-								this.notificationView.showToast(msg, type),
-							refreshFooterHint: () => this.refreshFooterHint(),
-							addContent: (text) => {
-								this.chatContainer.addChild(new Spacer(1));
-								this.chatContainer.addChild(new Text(text, 1, 0));
-							},
-							requestRender: () => this.ui.requestRender(),
-						}),
-					handleGuardian: (ctx) => this.handleGuardianCommand(ctx),
-					getSafetyState: () => ({
-						approvalMode: process.env.COMPOSER_APPROVALS ?? "prompt",
-						planMode: process.env.COMPOSER_PLAN_MODE === "1",
-						guardianEnabled: true,
-					}),
-				},
-				git: {
-					handleDiff: (ctx) => this.gitView.handlePreviewCommand(ctx.rawInput),
-					handleReview: (ctx) => this.handleReviewCommand(ctx),
-					runGitCommand: async (cmd: string) => {
-						const { execSync } = await import("node:child_process");
-						return execSync(cmd, { encoding: "utf-8" });
-					},
-				},
-				auth: {
-					handleLogin: (ctx) =>
-						this.oauthFlowController.handleLoginCommand(
-							ctx.argumentText,
-							(msg) => ctx.showError(msg),
-						),
-					handleLogout: (ctx) =>
-						this.oauthFlowController.handleLogoutCommand(
-							ctx.argumentText,
-							(msg) => ctx.showError(msg),
-							(msg) => ctx.showInfo(msg),
-						),
-					getAuthState: () => this.getActualAuthState(),
-				},
-				usage: {
-					handleCost: (ctx) => this.costView.handleCostCommand(ctx),
-					handleQuota: (ctx) => this.quotaView.handleQuotaCommand(ctx),
-					handleStats: (ctx) => this.handleStatsCommand(ctx),
-				},
-				undo: {
-					handleUndo: (ctx) => this.handleEnhancedUndoCommand(ctx),
-					handleCheckpoint: (ctx) => this.handleCheckpointCommand(ctx),
-					handleChanges: (ctx) => this.handleChangesCommand(ctx),
-					getUndoState: () => ({
-						canUndo: true,
-						undoCount: 0,
-						checkpoints: [],
-					}),
-				},
-				config: {
-					handleConfig: (ctx) => this.configView.handleConfigCommand(ctx),
-					handleImport: (ctx) =>
-						this.importExportView.handleImportCommand(ctx.rawInput),
-					handleFramework: (ctx) => this.handleFrameworkCommand(ctx),
-					handleComposer: (ctx) => this.handleComposerCommand(ctx),
-					handleInit: (ctx) =>
-						handleInitCommand(ctx, {
-							showSuccess: (msg) =>
-								this.notificationView.showToast(msg, "success"),
-							showError: (msg) => ctx.showError(msg),
-							addContent: (text) => {
-								this.chatContainer.addChild(new Spacer(1));
-								this.chatContainer.addChild(new Text(text, 1, 0));
-							},
-							requestRender: () => this.ui.requestRender(),
-						}),
-				},
-				tools: {
-					handleTools: (ctx) =>
-						this.toolStatusView.handleToolsCommand(ctx.rawInput),
-					handleMcp: (ctx) => this.handleMcpCommand(ctx),
-					handleLsp: (ctx) => this.lspView.handleLspCommand(ctx.rawInput),
-					handleWorkflow: (ctx) => this.handleWorkflowCommand(ctx),
-					handleRun: (ctx) =>
-						this.runCommandView.handleRunCommand(ctx.rawInput),
-					handleCommands: (ctx) =>
-						this.customCommandsController.handleCommandsCommand(ctx),
-				},
+				handleNewChatCommand: (ctx) => this.handleNewChatCommand(ctx),
+				handleClearCommand: () => this.clearController.handleClearCommand(),
+				handleSessionCommand: (rawInput) =>
+					this.sessionView.handleSessionCommand(rawInput),
+				handleSessionsCommand: (rawInput) =>
+					this.sessionView.handleSessionsCommand(rawInput),
+				handleBranchCommand: (ctx) =>
+					this.branchController.handleBranchCommand(ctx),
+				showTree: () => this.treeSelectorView.show(),
+				handleQueueCommand: this.queuePanelController
+					? (ctx) => this.queuePanelController!.handleQueueCommand(ctx)
+					: null,
+				handleExportCommand: (rawInput) =>
+					this.importExportView.handleExportCommand(rawInput),
+				handleShareCommand: (rawInput) =>
+					this.importExportView.handleShareCommand(rawInput),
+				handleSessionRecoverCommand: (ctx) =>
+					this.handleSessionRecoverCommand(ctx),
+				handleStatusCommand: () => this.diagnosticsView.handleStatusCommand(),
+				handleAboutCommand: () => this.aboutView.handleAboutCommand(),
+				handleContextCommand: (ctx) => this.handleContextCommand(ctx),
+				handleStatsCommand: (ctx) => this.handleStatsCommand(ctx),
+				handleBackgroundCommand: (ctx) =>
+					this.backgroundTasksController.handleBackgroundCommand(ctx),
+				handleDiagnosticsCommand: (rawInput) =>
+					this.diagnosticsView.handleDiagnosticsCommand(rawInput),
+				handleTelemetryCommand: (ctx) =>
+					this.telemetryView.handleTelemetryCommand(ctx),
+				handleTrainingCommand: (ctx) =>
+					this.trainingView.handleTrainingCommand(ctx),
+				handleConfigCommand: (ctx) => this.configView.handleConfigCommand(ctx),
+				handleLspCommand: (rawInput) => this.lspView.handleLspCommand(rawInput),
+				showTheme: () => this.themeSelectorView.show(),
+				handleCleanCommand: (ctx) =>
+					this.uiStateController.handleCleanCommand(ctx),
+				handleFooterCommand: (ctx) => this.handleFooterCommand(ctx),
+				handleZenCommand: (ctx) => this.uiStateController.handleZenCommand(ctx),
+				handleCompactToolsCommand: (ctx) =>
+					this.handleCompactToolsCommand(ctx.rawInput),
+				getUiState: () => ({
+					...this.uiStateController.getState(),
+					compactTools: this.toolOutputView?.isCompact() ?? false,
+				}),
+				handleDiffCommand: (rawInput) =>
+					this.gitView.handlePreviewCommand(rawInput),
+				handleReviewCommand: (ctx) => this.handleReviewCommand(ctx),
+				handleLoginCommand: (argumentText, showError) =>
+					this.oauthFlowController.handleLoginCommand(argumentText, showError),
+				handleLogoutCommand: (argumentText, showError, showInfo) =>
+					this.oauthFlowController.handleLogoutCommand(
+						argumentText,
+						showError,
+						showInfo,
+					),
+				getAuthState: () => this.getActualAuthState(),
+				handleCostCommand: (ctx) => this.costView.handleCostCommand(ctx),
+				handleQuotaCommand: (ctx) => this.quotaView.handleQuotaCommand(ctx),
+				handleImportCommand: (rawInput) =>
+					this.importExportView.handleImportCommand(rawInput),
+				handleToolsCommand: (rawInput) =>
+					this.toolStatusView.handleToolsCommand(rawInput),
+				handleRunCommand: (rawInput) =>
+					this.runCommandView.handleRunCommand(rawInput),
+				handleCommandsCommand: (ctx) =>
+					this.customCommandsController.handleCommandsCommand(ctx),
 			});
 		}
 		return this.groupedHandlers;
@@ -3382,7 +2166,7 @@ export class TuiRenderer {
 			this.ui.stop();
 			this.isInitialized = false;
 		}
-		this.clearTerminalTitle();
+		this.miscHandlers.clearTerminalTitle();
 		// End session recovery tracking and create final backup
 		this.sessionRecoveryManager.endSession();
 		// Stop test verification service
