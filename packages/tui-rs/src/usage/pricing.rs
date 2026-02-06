@@ -198,9 +198,10 @@ impl Default for ModelPricing {
         pricing.add_tier("gpt-4", PricingTier::simple(30.0, 60.0));
         pricing.add_tier("gpt-3.5-turbo", PricingTier::simple(0.50, 1.50));
         pricing.add_tier("o1-preview", PricingTier::simple(15.0, 60.0));
-        pricing.add_tier("o1-mini", PricingTier::simple(3.0, 12.0));
+        pricing.add_tier("o1-mini", PricingTier::simple(1.10, 4.40));
         pricing.add_tier("o1", PricingTier::simple(15.0, 60.0));
         pricing.add_tier("o3-mini", PricingTier::simple(1.10, 4.40));
+        pricing.add_tier("o3", PricingTier::simple(2.0, 8.0));
 
         // Google Gemini models
         pricing.add_tier("gemini-2.0-flash", PricingTier::simple(0.10, 0.40));

@@ -103,8 +103,26 @@ describe("cost-tracker", () => {
 
 		it("handles case-insensitive matching", () => {
 			const pricing = costTracker.getPricing("GPT-4O");
-			expect(pricing.inputPerMillion).toBe(5);
-			expect(pricing.outputPerMillion).toBe(15);
+			expect(pricing.inputPerMillion).toBe(2.5);
+			expect(pricing.outputPerMillion).toBe(10);
+		});
+
+		it("does not confuse prefix-related models", () => {
+			// gpt-4o must not resolve to gpt-4o-mini
+			const gpt4o = costTracker.getPricing("gpt-4o");
+			expect(gpt4o.inputPerMillion).toBe(2.5);
+			expect(gpt4o.outputPerMillion).toBe(10);
+
+			const gpt4oMini = costTracker.getPricing("gpt-4o-mini");
+			expect(gpt4oMini.inputPerMillion).toBe(0.15);
+
+			// o3 must not resolve to o3-mini
+			const o3 = costTracker.getPricing("o3");
+			expect(o3.inputPerMillion).toBe(2);
+			expect(o3.outputPerMillion).toBe(8);
+
+			const o3mini = costTracker.getPricing("o3-mini");
+			expect(o3mini.inputPerMillion).toBe(1.1);
 		});
 	});
 
@@ -666,8 +684,8 @@ describe("cost-tracker", () => {
 			});
 
 			// Only input + output cost, no cached cost
-			// $0.005 input + $0.0075 output = $0.0125
-			expect(cost).toBeCloseTo(0.0125, 4);
+			// $0.0025 input + $0.005 output = $0.0075
+			expect(cost).toBeCloseTo(0.0075, 4);
 		});
 	});
 });

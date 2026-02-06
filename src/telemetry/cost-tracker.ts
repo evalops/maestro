@@ -108,14 +108,15 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
 	// OpenAI GPT-4
 	"gpt-4-turbo": { inputPerMillion: 10, outputPerMillion: 30 },
 	"gpt-4-turbo-preview": { inputPerMillion: 10, outputPerMillion: 30 },
-	"gpt-4o": { inputPerMillion: 5, outputPerMillion: 15 },
+	"gpt-4o": { inputPerMillion: 2.5, outputPerMillion: 10 },
 	"gpt-4o-mini": { inputPerMillion: 0.15, outputPerMillion: 0.6 },
 	"gpt-4": { inputPerMillion: 30, outputPerMillion: 60 },
 
 	// OpenAI o1
 	o1: { inputPerMillion: 15, outputPerMillion: 60 },
-	"o1-mini": { inputPerMillion: 3, outputPerMillion: 12 },
+	"o1-mini": { inputPerMillion: 1.1, outputPerMillion: 4.4 },
 	"o1-preview": { inputPerMillion: 15, outputPerMillion: 60 },
+	o3: { inputPerMillion: 2, outputPerMillion: 8 },
 	"o3-mini": { inputPerMillion: 1.1, outputPerMillion: 4.4 },
 
 	// Google Gemini
@@ -290,15 +291,53 @@ class CostTracker {
 			return MODEL_PRICING[modelId]!;
 		}
 
-		// Try partial match
+		// Try case-insensitive exact match
 		const normalizedId = modelId.toLowerCase();
 		for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-			if (
-				normalizedId.includes(key.toLowerCase()) ||
-				key.toLowerCase().includes(normalizedId)
-			) {
+			if (key.toLowerCase() === normalizedId) {
 				return pricing;
 			}
+		}
+
+		// Try prefix match: model starts with key (longest key wins = most specific)
+		let bestMatch: { key: string; pricing: ModelPricing } | undefined;
+		for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
+			const keyLower = key.toLowerCase();
+			if (normalizedId.startsWith(keyLower)) {
+				if (!bestMatch || key.length > bestMatch.key.length) {
+					bestMatch = { key, pricing };
+				}
+			}
+		}
+		if (bestMatch) {
+			return bestMatch.pricing;
+		}
+
+		// Try reverse prefix: key starts with model (shortest key wins = closest match)
+		bestMatch = undefined;
+		for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
+			const keyLower = key.toLowerCase();
+			if (keyLower.startsWith(normalizedId)) {
+				if (!bestMatch || key.length < bestMatch.key.length) {
+					bestMatch = { key, pricing };
+				}
+			}
+		}
+		if (bestMatch) {
+			return bestMatch.pricing;
+		}
+
+		// Try substring match as fallback (longest match wins)
+		for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
+			const keyLower = key.toLowerCase();
+			if (normalizedId.includes(keyLower) || keyLower.includes(normalizedId)) {
+				if (!bestMatch || key.length > bestMatch.key.length) {
+					bestMatch = { key, pricing };
+				}
+			}
+		}
+		if (bestMatch) {
+			return bestMatch.pricing;
 		}
 
 		logger.debug("Using default pricing for unknown model", { modelId });
