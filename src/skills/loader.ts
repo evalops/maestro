@@ -18,7 +18,8 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -76,8 +77,8 @@ export interface SkillDefinition {
 export interface LoadedSkill extends SkillDefinition {
 	/** Source directory path */
 	sourcePath: string;
-	/** Source type: 'user' or 'project' */
-	sourceType: "user" | "project";
+	/** Source type: 'user', 'project', or 'system' */
+	sourceType: "user" | "project" | "system";
 	/** Full markdown content (without frontmatter) */
 	content: string;
 	/** List of bundled resource files */
@@ -354,7 +355,7 @@ function getResourceType(
  */
 function loadSkillFromDirectory(
 	skillDir: string,
-	sourceType: "user" | "project",
+	sourceType: "user" | "project" | "system",
 ): LoadedSkill | SkillLoadError {
 	const skillFile = findSkillMd(skillDir);
 	const dirName = basename(skillDir);
@@ -508,7 +509,7 @@ function loadSkillFromDirectory(
  */
 function scanSkillsDirectory(
 	dir: string,
-	sourceType: "user" | "project",
+	sourceType: "user" | "project" | "system",
 ): { skills: LoadedSkill[]; errors: SkillLoadError[] } {
 	if (!existsSync(dir)) {
 		return { skills: [], errors: [] };
@@ -555,44 +556,109 @@ function scanSkillsDirectory(
 }
 
 /**
- * Load all available skills from user and project directories.
+ * Get the system skills directory bundled with the package.
+ *
+ * Resolves the `skills/` directory relative to the package root,
+ * which works whether running from source (repo) or installed via npm.
+ */
+function getSystemSkillsDir(): string {
+	// Allow explicit override for non-standard packaging layouts
+	const override = process.env.COMPOSER_SYSTEM_SKILLS_DIR;
+	if (override && existsSync(override)) {
+		return override;
+	}
+
+	// import.meta.url points to this file — either src/skills/loader.ts (dev)
+	// or dist/cli.js (bundled). Walk up to find the package root by looking
+	// for a directory that contains both package.json and skills/.
+	const thisFile = fileURLToPath(import.meta.url);
+	let dir = dirname(thisFile);
+	for (let i = 0; i < 5; i++) {
+		const skillsDir = join(dir, "skills");
+		if (existsSync(join(dir, "package.json")) && existsSync(skillsDir)) {
+			return skillsDir;
+		}
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	// Fallback: assume 3 levels up (src/skills/loader.ts layout)
+	const packageRoot = dirname(dirname(dirname(thisFile)));
+	return join(packageRoot, "skills");
+}
+
+/**
+ * Load all available skills from system, user, and project directories.
+ *
+ * Priority (highest wins): project > user > system.
+ * System skills are bundled with the package and provide default capabilities.
  *
  * @param workspaceDir - The current workspace/project directory
  * @returns Object with loaded skills and any errors
  */
-export function loadSkills(workspaceDir: string): {
+export function loadSkills(
+	workspaceDir: string,
+	options?: { includeSystem?: boolean },
+): {
 	skills: LoadedSkill[];
 	errors: SkillLoadError[];
 } {
+	const includeSystem = options?.includeSystem ?? true;
+	const systemSkillsDir = includeSystem ? getSystemSkillsDir() : null;
 	const userSkillsDir = join(PATHS.COMPOSER_HOME, "skills");
 	const projectSkillsDir = join(workspaceDir, ".composer", "skills");
 
-	logger.debug("Scanning for skills", { userSkillsDir, projectSkillsDir });
+	logger.debug("Scanning for skills", {
+		systemSkillsDir: systemSkillsDir ?? "(disabled)",
+		userSkillsDir,
+		projectSkillsDir,
+	});
 
+	const systemResult = systemSkillsDir
+		? scanSkillsDirectory(systemSkillsDir, "system")
+		: { skills: [], errors: [] };
 	const userResult = scanSkillsDirectory(userSkillsDir, "user");
 	const projectResult = scanSkillsDirectory(projectSkillsDir, "project");
 
-	// Project skills override user skills by name
+	// Priority: project > user > system (last writer wins)
 	const skillMap = new Map<string, LoadedSkill>();
 
+	for (const skill of systemResult.skills) {
+		skillMap.set(skill.name.toLowerCase(), skill);
+	}
+
 	for (const skill of userResult.skills) {
+		const existing = skillMap.get(skill.name.toLowerCase());
+		if (existing) {
+			logger.debug("User skill overrides system skill", {
+				name: skill.name,
+			});
+		}
 		skillMap.set(skill.name.toLowerCase(), skill);
 	}
 
 	for (const skill of projectResult.skills) {
 		const existing = skillMap.get(skill.name.toLowerCase());
 		if (existing) {
-			logger.debug("Project skill overrides user skill", { name: skill.name });
+			logger.debug("Project skill overrides existing skill", {
+				name: skill.name,
+				overridden: existing.sourceType,
+			});
 		}
 		skillMap.set(skill.name.toLowerCase(), skill);
 	}
 
 	const allSkills = Array.from(skillMap.values());
-	const allErrors = [...userResult.errors, ...projectResult.errors];
+	const allErrors = [
+		...systemResult.errors,
+		...userResult.errors,
+		...projectResult.errors,
+	];
 
 	logger.info("Finished loading skills", {
 		total: allSkills.length,
 		errors: allErrors.length,
+		system: systemResult.skills.length,
 		user: userResult.skills.length,
 		project: projectResult.skills.length,
 	});
@@ -725,7 +791,12 @@ export function skillsToPrompt(skills: LoadedSkill[]): string {
  * Format skill for display in a list.
  */
 export function formatSkillListItem(skill: LoadedSkill): string {
-	const source = skill.sourceType === "user" ? "(user)" : "(project)";
+	const sourceLabels: Record<LoadedSkill["sourceType"], string> = {
+		system: "(system)",
+		user: "(user)",
+		project: "(project)",
+	};
+	const source = sourceLabels[skill.sourceType];
 	const tags = skill.tags?.length ? ` [${skill.tags.join(", ")}]` : "";
 	return `${skill.name} ${source}${tags} - ${skill.description}`;
 }

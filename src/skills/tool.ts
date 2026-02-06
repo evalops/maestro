@@ -37,13 +37,16 @@ const SkillToolSchema = Type.Object({
 /**
  * Create the Skill tool definition.
  */
-export function createSkillTool(workspaceDir: string): AgentTool {
+export function createSkillTool(
+	workspaceDir: string,
+	options?: { includeSystem?: boolean },
+): AgentTool {
 	// Load skills once when tool is created
 	let cachedSkills: LoadedSkill[] | null = null;
 
 	const getSkills = (): LoadedSkill[] => {
 		if (cachedSkills === null) {
-			const result = loadSkills(workspaceDir);
+			const result = loadSkills(workspaceDir, options);
 			cachedSkills = result.skills;
 		}
 		return cachedSkills;

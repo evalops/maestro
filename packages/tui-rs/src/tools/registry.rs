@@ -2380,7 +2380,7 @@ impl ToolExecutor {
                                 let mut line = format!("{} {:?} {}", t.id, t.status, t.command);
                                 if t.log_write_failed {
                                     if let Some(reason) = &t.log_write_error {
-                                        let reason = reason.replace('\n', " ").replace('\r', " ");
+                                        let reason = reason.replace(['\n', '\r'], " ");
                                         line.push_str(&format!(" [log write failed: {reason}]"));
                                     } else {
                                         line.push_str(" [log write failed]");
@@ -4353,12 +4353,14 @@ mod tests {
     #[cfg(not(windows))]
     async fn test_background_tasks_wait_for_rotation() {
         let _env_guard = EnvGuard::capture();
-        std::env::set_var("COMPOSER_BACKGROUND_TASK_LOG_BYTES", "128");
+        // MIN_LOG_BYTES is 50_000, so the limit must be at least that to enable rotation.
+        // Write more data than the limit to guarantee rotation triggers.
+        std::env::set_var("COMPOSER_BACKGROUND_TASK_LOG_BYTES", "50000");
         std::env::set_var("COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS", "1");
 
         let dir = tempfile::tempdir().unwrap();
         let executor = ToolExecutor::new(dir.path().to_str().unwrap());
-        let command = "sh -c \"head -c 10000 /dev/zero; sleep 0.2\"";
+        let command = "sh -c \"head -c 60000 /dev/zero; sleep 0.2\"";
         let start_args = serde_json::json!({
             "action": "start",
             "command": command,

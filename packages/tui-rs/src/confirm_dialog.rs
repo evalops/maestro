@@ -88,8 +88,8 @@ impl ConfirmDialog {
 
     /// Handle a key event.
     pub fn handle_key(&mut self, key: KeyEvent) -> ConfirmResult {
-        if self.result.is_some() {
-            return self.result.unwrap();
+        if let Some(result) = self.result {
+            return result;
         }
 
         match key.code {

@@ -21,6 +21,10 @@ pub enum SkillSource {
     Plugin,
     /// Loaded from a remote source
     Remote,
+    /// Bundled system skills shipped with the package
+    System,
+    /// Project-level skills from .composer/skills/
+    Project,
 }
 
 /// Skill definition
@@ -243,6 +247,8 @@ mod tests {
         assert_ne!(SkillSource::Builtin, SkillSource::User);
         assert_ne!(SkillSource::User, SkillSource::Plugin);
         assert_ne!(SkillSource::Plugin, SkillSource::Remote);
+        assert_ne!(SkillSource::Remote, SkillSource::System);
+        assert_ne!(SkillSource::System, SkillSource::Project);
     }
 
     #[test]
@@ -258,6 +264,12 @@ mod tests {
 
         let json = serde_json::to_string(&SkillSource::Remote).unwrap();
         assert_eq!(json, "\"remote\"");
+
+        let json = serde_json::to_string(&SkillSource::System).unwrap();
+        assert_eq!(json, "\"system\"");
+
+        let json = serde_json::to_string(&SkillSource::Project).unwrap();
+        assert_eq!(json, "\"project\"");
     }
 
     #[test]
@@ -1324,6 +1336,8 @@ mod tests {
         assert_eq!(SkillSource::User, SkillSource::User);
         assert_eq!(SkillSource::Plugin, SkillSource::Plugin);
         assert_eq!(SkillSource::Remote, SkillSource::Remote);
+        assert_eq!(SkillSource::System, SkillSource::System);
+        assert_eq!(SkillSource::Project, SkillSource::Project);
     }
 
     #[test]
@@ -1333,6 +1347,8 @@ mod tests {
             SkillSource::User,
             SkillSource::Plugin,
             SkillSource::Remote,
+            SkillSource::System,
+            SkillSource::Project,
         ];
 
         for i in 0..sources.len() {

@@ -258,6 +258,10 @@ impl LoadedSkill {
 pub struct SkillLoader {
     /// Directories to search for skills
     search_paths: Vec<PathBuf>,
+    /// Cached system skills directory (resolved once at construction)
+    system_skills_dir: Option<PathBuf>,
+    /// Cached user skills directory (resolved once at construction)
+    user_skills_dir: Option<PathBuf>,
 }
 
 impl SkillLoader {
@@ -266,15 +270,53 @@ impl SkillLoader {
     pub fn new() -> Self {
         let mut search_paths = Vec::new();
 
-        // Add global user skills directory
-        if let Some(home) = dirs::home_dir() {
-            search_paths.push(home.join(".composer").join("skills"));
+        let system_skills_dir = Self::find_system_skills_dir();
+        let user_skills_dir = dirs::home_dir().map(|h| h.join(".composer").join("skills"));
+
+        // Add system skills directory (bundled with the package, lowest priority)
+        if let Some(ref system_dir) = system_skills_dir {
+            search_paths.push(system_dir.clone());
         }
 
-        // Add project-specific skills directory
+        // Add global user skills directory
+        if let Some(ref user_dir) = user_skills_dir {
+            search_paths.push(user_dir.clone());
+        }
+
+        // Add project-specific skills directory (highest priority)
         search_paths.push(PathBuf::from(".composer").join("skills"));
 
-        Self { search_paths }
+        Self {
+            search_paths,
+            system_skills_dir,
+            user_skills_dir,
+        }
+    }
+
+    /// Discover the system skills directory bundled with the package.
+    ///
+    /// Walks up from the current executable looking for a directory that
+    /// contains both `skills/` and `package.json` (the package root).
+    fn find_system_skills_dir() -> Option<PathBuf> {
+        // Allow explicit override for non-standard packaging layouts
+        if let Ok(dir) = std::env::var("COMPOSER_SYSTEM_SKILLS_DIR") {
+            let path = PathBuf::from(dir);
+            if path.is_dir() {
+                return Some(path);
+            }
+        }
+
+        let exe = std::env::current_exe().ok()?;
+        let mut cursor = exe.parent();
+        for _ in 0..10 {
+            let path = cursor?;
+            let skills_dir = path.join("skills");
+            if skills_dir.is_dir() && path.join("package.json").is_file() {
+                return Some(skills_dir);
+            }
+            cursor = path.parent();
+        }
+        None
     }
 
     /// Create a loader with custom search paths
@@ -282,6 +324,8 @@ impl SkillLoader {
     pub fn with_paths(paths: Vec<PathBuf>) -> Self {
         Self {
             search_paths: paths,
+            system_skills_dir: None,
+            user_skills_dir: None,
         }
     }
 
@@ -381,15 +425,32 @@ impl SkillLoader {
         results
     }
 
+    /// Determine the skill source based on which search path the directory belongs to
+    fn source_for_dir(&self, dir: &Path) -> SkillSource {
+        if let Some(ref system_dir) = self.system_skills_dir {
+            if dir.starts_with(system_dir) {
+                return SkillSource::System;
+            }
+        }
+        if let Some(ref user_dir) = self.user_skills_dir {
+            if dir.starts_with(user_dir) {
+                return SkillSource::User;
+            }
+        }
+        // Default: project-level skills (.composer/skills/)
+        SkillSource::Project
+    }
+
     /// Load skills from a specific directory
     #[must_use]
     pub fn load_from_directory(&self, dir: &Path) -> Vec<Result<LoadedSkill, SkillLoadError>> {
         let mut results = Vec::new();
+        let source = self.source_for_dir(dir);
 
         // Look for SKILL.md directly in the skills directory (single-file skill)
         // Supports both SKILL.md and skill.md (case-insensitive per spec)
         if let Some(skill_file) = Self::find_skill_md(dir) {
-            results.push(self.load_skill_file(&skill_file, SkillSource::User));
+            results.push(self.load_skill_file(&skill_file, source));
         }
 
         // Look for subdirectories containing SKILL.md
@@ -398,17 +459,6 @@ impl SkillLoader {
                 let path = entry.path();
                 if path.is_dir() {
                     if let Some(skill_file) = Self::find_skill_md(&path) {
-                        // Determine source based on path
-                        let source = if dir.starts_with(
-                            dirs::home_dir()
-                                .unwrap_or_default()
-                                .join(".composer")
-                                .join("skills"),
-                        ) {
-                            SkillSource::User
-                        } else {
-                            SkillSource::Plugin
-                        };
                         results.push(self.load_skill_file(&skill_file, source));
                     }
                 }

@@ -47,7 +47,7 @@ ${content}
 
 	describe("createSkillTool", () => {
 		it("creates a valid tool definition", () => {
-			const tool = createSkillTool(testDir);
+			const tool = createSkillTool(testDir, { includeSystem: false });
 
 			expect(tool.name).toBe("Skill");
 			expect(tool.description).toContain("specialized skill");
@@ -57,7 +57,7 @@ ${content}
 
 	describe("execute - list", () => {
 		it("returns message when no skills available", async () => {
-			const tool = createSkillTool(testDir);
+			const tool = createSkillTool(testDir, { includeSystem: false });
 			const result = await tool.execute("test-1", { skill: "list" });
 			const text = getResultText(result);
 
@@ -69,7 +69,7 @@ ${content}
 			createTestSkill("skill-a", "First skill", "Content A");
 			createTestSkill("skill-b", "Second skill", "Content B");
 
-			const tool = createSkillTool(testDir);
+			const tool = createSkillTool(testDir, { includeSystem: false });
 			const result = await tool.execute("test-2", { skill: "list" });
 			const text = getResultText(result);
 
@@ -85,7 +85,7 @@ ${content}
 		it("loads skill by exact name", async () => {
 			createTestSkill("my-skill", "Test skill", "# Instructions\n\nDo this.");
 
-			const tool = createSkillTool(testDir);
+			const tool = createSkillTool(testDir, { includeSystem: false });
 			const result = await tool.execute("test-3", { skill: "my-skill" });
 			const text = getResultText(result);
 
@@ -99,7 +99,7 @@ ${content}
 		it("loads skill case-insensitively", async () => {
 			createTestSkill("camelcase", "Test", "Content");
 
-			const tool = createSkillTool(testDir);
+			const tool = createSkillTool(testDir, { includeSystem: false });
 			const result = await tool.execute("test-4", { skill: "CamelCase" });
 			const text = getResultText(result);
 
@@ -110,7 +110,7 @@ ${content}
 		it("returns error for unknown skill", async () => {
 			createTestSkill("known", "Known skill", "Content");
 
-			const tool = createSkillTool(testDir);
+			const tool = createSkillTool(testDir, { includeSystem: false });
 			const result = await tool.execute("test-5", { skill: "unknown" });
 			const text = getResultText(result);
 
@@ -120,7 +120,7 @@ ${content}
 		});
 
 		it("returns error for empty skill name", async () => {
-			const tool = createSkillTool(testDir);
+			const tool = createSkillTool(testDir, { includeSystem: false });
 			const result = await tool.execute("test-6", { skill: "" });
 			const text = getResultText(result);
 
@@ -133,7 +133,7 @@ ${content}
 		it("finds skill by partial match when unique", async () => {
 			createTestSkill("react-testing", "Testing React components", "Content");
 
-			const tool = createSkillTool(testDir);
+			const tool = createSkillTool(testDir, { includeSystem: false });
 			const result = await tool.execute("test-7", { skill: "react" });
 			const text = getResultText(result);
 
@@ -145,7 +145,7 @@ ${content}
 			createTestSkill("react-testing", "Testing React", "Content");
 			createTestSkill("react-components", "Building React", "Content");
 
-			const tool = createSkillTool(testDir);
+			const tool = createSkillTool(testDir, { includeSystem: false });
 			const result = await tool.execute("test-8", { skill: "react" });
 			const text = getResultText(result);
 
@@ -177,7 +177,7 @@ cd {{project}} && npm install
 `,
 			);
 
-			const tool = createSkillTool(testDir);
+			const tool = createSkillTool(testDir, { includeSystem: false });
 			const result = await tool.execute("test-9", {
 				skill: "with-args",
 				args: { project: "my-app" },
@@ -208,7 +208,7 @@ Use the bundled scripts.
 			writeFileSync(join(dir, "setup.sh"), "#!/bin/bash\necho done");
 			writeFileSync(join(dir, "config.json"), '{"key": "value"}');
 
-			const tool = createSkillTool(testDir);
+			const tool = createSkillTool(testDir, { includeSystem: false });
 			const result = await tool.execute("test-10", {
 				skill: "with-resources",
 			});

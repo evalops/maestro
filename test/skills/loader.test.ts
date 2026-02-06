@@ -30,12 +30,12 @@ describe("skills/loader", () => {
 	describe("loadSkills", () => {
 		it("returns empty array when no skills directory exists", () => {
 			const emptyDir = join(tmpdir(), `empty-${Date.now()}`);
-			const { skills } = loadSkills(emptyDir);
+			const { skills } = loadSkills(emptyDir, { includeSystem: false });
 			expect(skills).toEqual([]);
 		});
 
 		it("returns empty array when skills directory is empty", () => {
-			const { skills } = loadSkills(testDir);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
 			expect(skills).toEqual([]);
 		});
 
@@ -68,7 +68,7 @@ This is the skill content.
 
 			writeFileSync(join(skillDir, "SKILL.md"), skillContent);
 
-			const { skills } = loadSkills(testDir);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
 
 			expect(skills).toHaveLength(1);
 			expect(skills[0]!.name).toBe("test-skill");
@@ -100,7 +100,7 @@ Use the bundled scripts.
 			writeFileSync(join(skillDir, "template.hbs"), "<div>{{content}}</div>");
 			writeFileSync(join(skillDir, "reference.md"), "# Reference docs");
 
-			const { skills } = loadSkills(testDir);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
 
 			expect(skills).toHaveLength(1);
 			expect(skills[0]!.resources).toHaveLength(3);
@@ -148,7 +148,7 @@ Content.
 
 			writeFileSync(join(invalidDir, "README.md"), "# Not a skill");
 
-			const { skills } = loadSkills(testDir);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
 
 			expect(skills).toHaveLength(1);
 			expect(skills[0]!.name).toBe("valid");
@@ -197,7 +197,7 @@ Content.
 `,
 			);
 
-			const { skills } = loadSkills(testDir);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
 
 			expect(skills).toHaveLength(1);
 			expect(skills[0]!.name).toBe("valid");
@@ -219,7 +219,7 @@ Content for skill ${i}.
 				);
 			}
 
-			const { skills } = loadSkills(testDir);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
 
 			expect(skills).toHaveLength(3);
 			const names = skills.map((s) => s.name).sort();
@@ -242,7 +242,7 @@ Content.
 `,
 			);
 
-			const { skills } = loadSkills(testDir);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
 
 			expect(findSkill(skills, "My-Skill")).toBeDefined();
 			expect(findSkill(skills, "my-skill")).toBeDefined();
@@ -272,7 +272,7 @@ Content.
 `,
 			);
 
-			const { skills } = loadSkills(testDir);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
 
 			expect(searchSkills(skills, "react")).toHaveLength(1);
 			expect(searchSkills(skills, "jest")).toHaveLength(1);
@@ -300,7 +300,7 @@ Content.
 `,
 			);
 
-			const { skills } = loadSkills(testDir);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
 			const formatted = formatSkillListItem(skills[0]!);
 
 			expect(formatted).toContain("format-test");
@@ -332,7 +332,7 @@ tags:
 
 			writeFileSync(join(skillDir, "helper.sh"), "#!/bin/bash");
 
-			const { skills } = loadSkills(testDir);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
 			const formatted = formatSkillForInjection(skills[0]!);
 
 			expect(formatted).toContain("# Skill: inject-test");
@@ -368,7 +368,7 @@ Content.
 `,
 			);
 
-			const { skills } = loadSkills(testDir);
+			const { skills } = loadSkills(testDir, { includeSystem: false });
 			const summary = getSkillsSummary(skills);
 
 			expect(summary).toContain("## Available Skills");
