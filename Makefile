@@ -6,13 +6,20 @@ export ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GROQ_API_KEY \
        OPENROUTER_API_KEY XAI_API_KEY EXA_API_KEY \
        COMPOSER_MODEL COMPOSER_MODEL_PROVIDER
 
-.PHONY: help install build build-all compile run-ts run-rs run-rs-debug \
-        web dev dev-all test test-fast lint check fmt clean \
+.PHONY: help setup install build build-all compile run-ts run-rs run-rs-debug \
+        web dev dev-all test test-fast lint check fmt smoke evals verify clean \
         db-up db-down db-migrate
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+setup: ## First-time project bootstrap
+	@test -f .env || { test -f .env.example || { echo "error: .env.example not found — is this a complete checkout?" >&2; exit 1; }; \
+		cp .env.example .env && echo "Created .env from .env.example — add your API keys"; }
+	bun install
+	bun run build:all
+	@echo "\nReady! Run 'make run-ts' or 'make help' for all targets."
 
 install: ## Install dependencies (bun install)
 	bun install
@@ -59,6 +66,14 @@ check: lint test ## Full CI check (lint + test)
 
 fmt: ## Auto-format with Biome
 	bunx biome check --fix --unsafe .
+
+smoke: ## Smoke-test the built CLI
+	npm run smoke
+
+evals: ## Run eval scenarios
+	npx nx run composer:evals --skip-nx-cache
+
+verify: fmt lint test build smoke ## Full verification (format + lint + test + build + smoke)
 
 clean: ## Remove build artifacts
 	npm run clean

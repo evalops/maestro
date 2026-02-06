@@ -1,0 +1,20 @@
+{
+  "name": "Composer",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:22",
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/shyim/devcontainers-features/bun:0": {}
+  },
+  "forwardPorts": [8080, 3000],
+  "postCreateCommand": "make setup",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "biomejs.biome",
+        "rust-lang.rust-analyzer"
+      ]
+    }
+  }
+}
