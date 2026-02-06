@@ -41,22 +41,35 @@
  * @module tui/utils/footer-utils
  */
 
-import { type FSWatcher, existsSync, readFileSync, watch } from "node:fs";
-import { join } from "node:path";
 import { visibleWidth } from "@evalops/tui";
 import chalk from "chalk";
 import type { AgentState, AssistantMessage, Usage } from "../../agent/types.js";
 import {
-	badge,
 	brand,
 	metricStat,
 	themePalette,
 	separator as themedSeparator,
 } from "../../style/theme.js";
 import { getHomeDir } from "../../utils/path-expansion.js";
-import { type GitStatusName, gitGlyph } from "./glyphs.js";
+import {
+	buildContextBadge,
+	buildContextBar,
+	colorizeContextPercent,
+	composeBrandLabel,
+} from "./footer-visual-widgets.js";
 import { shimmerText } from "./shimmer.js";
 import { STAGE_SHIMMER_OPTIONS } from "./stage-labels.js";
+
+// Re-export extracted modules for backward compatibility
+export { GitBranchTracker } from "./git-branch-tracker.js";
+export {
+	buildContextBar,
+	buildCostSparkline,
+	buildGitStatusGlyph,
+	composeBrandLabel,
+	formatRelativeTime,
+	type GitStatusType,
+} from "./footer-visual-widgets.js";
 
 export const CONTEXT_HINT_THRESHOLD = 70;
 export const CONTEXT_HINT_WARN_GAP = 5;
@@ -73,10 +86,6 @@ const TRUNCATION_ELLIPSIS = "…";
 export const FOOTER_MIN_PADDING = MIN_PADDING;
 export const FOOTER_MIN_MODEL_LABEL_CHARS = MIN_MODEL_LABEL_CHARS;
 export const FOOTER_MODEL_BRAND_SEPARATOR_WIDTH = MODEL_BRAND_SEPARATOR_WIDTH;
-
-/** Progress bar characters for visual display */
-const PROGRESS_FILLED = "━";
-const PROGRESS_EMPTY = "─";
 
 const ANSI_STRING_TERMINATORS = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
 const ANSI_OSC_SEQUENCE = `(?:\\u001B\\][\\s\\S]*?${ANSI_STRING_TERMINATORS})`;
@@ -484,7 +493,7 @@ function ensureAnsi(rendered: string, fallback: string): string {
 	if (rendered?.includes("\u001B[")) {
 		return rendered;
 	}
-	// Add a simple bold ANSI wrap to satisfy “colored” expectation
+	// Add a simple bold ANSI wrap to satisfy "colored" expectation
 	return `\u001B[1m\u001B[35m${rendered || fallback}\u001B[39m\u001B[22m`;
 }
 
@@ -611,149 +620,6 @@ export function mergeHints(
 	return formatted.join("  ");
 }
 
-function buildContextBadge(stats: FooterStats): string {
-	const contextValue = Number.isFinite(stats.contextPercent)
-		? stats.contextPercent
-		: 0;
-	const variant =
-		contextValue >= CONTEXT_DANGER_THRESHOLD
-			? "danger"
-			: contextValue >= CONTEXT_WARN_THRESHOLD
-				? "warn"
-				: "info";
-	const tokensLabel = stats.contextWindow
-		? `${formatTokenCount(stats.contextTokens)}/${formatTokenCount(stats.contextWindow)}`
-		: formatTokenCount(stats.contextTokens);
-	const contextLabel = `ctx ${tokensLabel} (${contextValue.toFixed(1)}%)`;
-	return badge(contextLabel, undefined, variant);
-}
-
-function colorizeContextPercent(value: number): string {
-	const label = `${value.toFixed(1)}%`;
-	if (value >= CONTEXT_DANGER_THRESHOLD) {
-		return chalk.hex(themePalette.danger)(label);
-	}
-	if (value >= CONTEXT_WARN_THRESHOLD) {
-		return chalk.hex(themePalette.warning)(label);
-	}
-	return chalk.hex(themePalette.muted)(label);
-}
-
-/**
- * Build a compact visual progress bar for context usage.
- * Uses ━ for filled and ─ for empty segments.
- */
-export function buildContextBar(percent: number, width = 10): string {
-	const clamped = Math.max(0, Math.min(100, percent));
-	const filled = Math.round((clamped / 100) * width);
-	const empty = width - filled;
-
-	// Color based on threshold
-	let filledColor: string = themePalette.accentCool;
-	if (clamped >= CONTEXT_DANGER_THRESHOLD) {
-		filledColor = themePalette.danger;
-	} else if (clamped >= CONTEXT_WARN_THRESHOLD) {
-		filledColor = themePalette.warning;
-	}
-
-	const filledPart = chalk.hex(filledColor)(PROGRESS_FILLED.repeat(filled));
-	const emptyPart = chalk.hex(themePalette.dim)(PROGRESS_EMPTY.repeat(empty));
-	return `${filledPart}${emptyPart}`;
-}
-
-/**
- * Build a cost sparkline showing trend direction.
- * Shows last N costs as a mini bar chart.
- */
-export function buildCostSparkline(costs: number[], width = 5): string {
-	if (costs.length === 0) return "";
-
-	const recentCosts = costs.slice(-width);
-	const max = Math.max(...recentCosts, 0.001); // Avoid division by zero
-	const sparkChars = "▁▂▃▄▅▆▇█";
-
-	const bars = recentCosts.map((cost) => {
-		const normalized = cost / max;
-		const charIndex = Math.min(
-			sparkChars.length - 1,
-			Math.floor(normalized * sparkChars.length),
-		);
-		return sparkChars[charIndex];
-	});
-
-	return chalk.hex(themePalette.cost)(bars.join(""));
-}
-
-/** Git status type for UI display */
-export type GitStatusType =
-	| "clean"
-	| "dirty"
-	| "staged"
-	| "ahead"
-	| "behind"
-	| "diverged";
-
-/**
- * Build a git status glyph with color.
- * Uses centralized glyphs from glyphs.ts with ASCII fallback support.
- */
-export function buildGitStatusGlyph(status: GitStatusType): string {
-	const glyph = gitGlyph(status as GitStatusName);
-	let color: string = themePalette.muted;
-
-	switch (status) {
-		case "clean":
-			color = themePalette.success;
-			break;
-		case "dirty":
-			color = themePalette.warning;
-			break;
-		case "staged":
-			color = themePalette.accentCool;
-			break;
-		case "ahead":
-		case "behind":
-		case "diverged":
-			color = themePalette.info;
-			break;
-	}
-
-	return chalk.hex(color)(glyph);
-}
-
-/**
- * Format a timestamp as relative time (e.g., "2m ago", "1h ago").
- */
-export function formatRelativeTime(timestamp: number): string {
-	const now = Date.now();
-	const diff = now - timestamp;
-
-	if (diff < 0) return "now";
-
-	const seconds = Math.floor(diff / 1000);
-	if (seconds < 60) return "now";
-
-	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) return `${minutes}m`;
-
-	const hours = Math.floor(minutes / 60);
-	if (hours < 24) return `${hours}h`;
-
-	const days = Math.floor(hours / 24);
-	return `${days}d`;
-}
-
-function composeBrandLabel(modelLabel: string): {
-	toned: string;
-	brand: string;
-	glyph: string;
-} {
-	const tonedModel = chalk.hex(themePalette.model)(modelLabel);
-	const glyph = brand.glyph();
-	const brandLabel = `${glyph} ${brand.text()}`;
-	return { toned: tonedModel, brand: brandLabel, glyph };
-}
-
 /**
  * Truncate Model Label to Fit Available Width
  *
@@ -878,11 +744,7 @@ export function buildStatsLine(
 
 	// Build right side: model label + brand
 	const modelLabel = formatModelLabel(state);
-	const {
-		toned,
-		brand: composerBrand,
-		glyph: composerGlyph,
-	} = composeBrandLabel(modelLabel);
+	const { toned, brand: composerBrand } = composeBrandLabel(modelLabel);
 
 	const statsLeftWidth = visibleWidth(statsLeft);
 
@@ -1043,95 +905,6 @@ function formatBadgeZone(badgeParts: string[], budget: number): string {
 		return TRUNCATION_ELLIPSIS;
 	}
 	return `${truncated}${TRUNCATION_ELLIPSIS}`;
-}
-
-/**
- * Git branch tracking utility.
- * Reads .git/HEAD directly and optionally watches for changes.
- */
-export class GitBranchTracker {
-	private cachedBranch: string | null | undefined = undefined;
-	private gitWatcher: FSWatcher | null = null;
-	private onBranchChange: (() => void) | null = null;
-	private cwd: string;
-
-	constructor(cwd: string = process.cwd()) {
-		this.cwd = cwd;
-	}
-
-	/**
-	 * Set up a file watcher on .git/HEAD to detect branch changes.
-	 */
-	watchBranch(onBranchChange: () => void): void {
-		this.onBranchChange = onBranchChange;
-		this.setupGitWatcher();
-	}
-
-	private setupGitWatcher(): void {
-		if (this.gitWatcher) {
-			this.gitWatcher.close();
-			this.gitWatcher = null;
-		}
-
-		const gitHeadPath = join(this.cwd, ".git", "HEAD");
-		if (!existsSync(gitHeadPath)) {
-			return;
-		}
-
-		try {
-			this.gitWatcher = watch(gitHeadPath, () => {
-				this.cachedBranch = undefined;
-				if (this.onBranchChange) {
-					this.onBranchChange();
-				}
-			});
-		} catch {
-			// Silently fail if we can't watch
-		}
-	}
-
-	/**
-	 * Clean up the file watcher
-	 */
-	dispose(): void {
-		if (this.gitWatcher) {
-			this.gitWatcher.close();
-			this.gitWatcher = null;
-		}
-	}
-
-	/**
-	 * Invalidate cached branch so it gets re-read on next call
-	 */
-	invalidate(): void {
-		this.cachedBranch = undefined;
-	}
-
-	/**
-	 * Get current git branch by reading .git/HEAD directly.
-	 * Returns null if not in a git repo, branch name otherwise.
-	 */
-	getCurrentBranch(): string | null {
-		if (this.cachedBranch !== undefined) {
-			return this.cachedBranch;
-		}
-
-		try {
-			const gitHeadPath = join(this.cwd, ".git", "HEAD");
-			const content = readFileSync(gitHeadPath, "utf8").trim();
-
-			if (content.startsWith("ref: refs/heads/")) {
-				this.cachedBranch = content.slice(16);
-			} else {
-				// Detached HEAD state - show short hash
-				this.cachedBranch = content.slice(0, 7);
-			}
-		} catch {
-			this.cachedBranch = null;
-		}
-
-		return this.cachedBranch;
-	}
 }
 
 /**
