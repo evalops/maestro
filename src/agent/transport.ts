@@ -47,7 +47,6 @@
 
 import { isContextFirewallBlockingEnabled } from "../config/env-vars.js";
 import { type ToolHookService, createToolHookService } from "../hooks/index.js";
-import { envApiKeyMap } from "../providers/api-keys.js";
 import { getProviderNetworkConfig } from "../providers/network-config.js";
 import { isStreamIdleTimeoutError } from "../providers/stream-idle-timeout.js";
 import { type Clock, systemClock } from "../utils/clock.js";
@@ -55,12 +54,8 @@ import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("transport");
 import type { AuthCredential } from "../providers/auth.js";
-import {
-	HUMAN_EGRESS_PII_RULE_ID,
-	defaultActionFirewall,
-} from "../safety/action-firewall.js";
-import { AdaptiveThresholds, METRICS } from "../safety/adaptive-thresholds.js";
-import { sanitizeLogMessage } from "../safety/context-firewall.js";
+import { defaultActionFirewall } from "../safety/action-firewall.js";
+import { AdaptiveThresholds } from "../safety/adaptive-thresholds.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import {
 	type SafetyMiddleware,
@@ -73,22 +68,25 @@ import {
 	applyWorkflowStateHooks,
 	isWorkflowTrackedTool,
 } from "../safety/workflow-state.js";
-import { trackToolBlocked } from "../telemetry/security-events.js";
 import { getOptimalConcurrency } from "../tools/parallel-execution.js";
-import { ToolError } from "../tools/tool-dsl.js";
 import { trackUsage } from "../tracking/cost-tracker.js";
 import { getTrainingHeaders } from "../training.js";
-import type {
-	ActionApprovalService,
-	WorkflowStateSnapshot,
-} from "./action-approval.js";
+import type { ActionApprovalService } from "./action-approval.js";
 import { getStoredCredentials } from "./keys.js";
-import { streamAnthropic } from "./providers/anthropic.js";
-import { streamBedrock } from "./providers/bedrock.js";
-import { streamGoogleGeminiCli } from "./providers/google-gemini-cli.js";
-import { streamGoogle } from "./providers/google.js";
-import { streamOpenAI } from "./providers/openai.js";
-import { validateToolArguments } from "./providers/validation.js";
+import { createProviderStream } from "./transport/create-provider-stream.js";
+import { createToolExecutionPromise } from "./transport/tool-execution.js";
+import { evaluateToolSafety } from "./transport/tool-safety-pipeline.js";
+import {
+	type PendingExecution,
+	createToolUpdateQueue,
+	waitForNextExecutionOrUpdate,
+} from "./transport/tool-update-queue.js";
+import {
+	type SessionTokenCounter,
+	type ToolAuditLogger,
+	calculateCost,
+	resolveEnvCredential,
+} from "./transport/transport-utils.js";
 import type {
 	AgentEvent,
 	AgentRunConfig,
@@ -96,28 +94,17 @@ import type {
 	AgentTransport,
 	AppMessage,
 	AssistantMessage,
-	AssistantMessageEvent,
 	Message,
-	Model,
 	QueuedMessage,
 	ToolCall,
 	ToolResultMessage,
 } from "./types.js";
 
-interface ToolExecutionOutcome {
-	message: ToolResultMessage;
-	isError: boolean;
-}
-
-export type SessionTokenCounter = (sessionId: string) => Promise<number | null>;
-
-export type ToolAuditLogger = (entry: {
-	toolName: string;
-	args: Record<string, unknown>;
-	status: "success" | "failure" | "denied";
-	durationMs: number;
-	error?: string;
-}) => Promise<void>;
+// Re-export types for backward compatibility
+export type {
+	SessionTokenCounter,
+	ToolAuditLogger,
+} from "./transport/transport-utils.js";
 
 export interface ClientToolExecutionService {
 	requestExecution: (
@@ -126,47 +113,6 @@ export interface ClientToolExecutionService {
 		args: Record<string, unknown>,
 		signal?: AbortSignal,
 	) => Promise<{ content: AgentToolResult["content"]; isError: boolean }>;
-}
-
-/**
- * Extract text content from a message content field.
- * Handles both string format and array format (multimodal messages).
- *
- * This is critical for semantic safety analysis - without this, multimodal
- * messages would bypass intent extraction and skip the semantic judge.
- */
-function extractTextFromContent(
-	content: string | { type: string; text?: string }[] | undefined,
-): string | undefined {
-	if (!content) return undefined;
-
-	// Simple string content
-	if (typeof content === "string") {
-		return content;
-	}
-
-	// Array content (multimodal) - extract text from all text blocks
-	if (Array.isArray(content)) {
-		const textParts: string[] = [];
-		for (const block of content) {
-			if (
-				typeof block === "object" &&
-				block !== null &&
-				block.type === "text" &&
-				typeof block.text === "string"
-			) {
-				textParts.push(block.text);
-			}
-		}
-		return textParts.length > 0 ? textParts.join("\n") : undefined;
-	}
-
-	return undefined;
-}
-
-interface PendingExecution {
-	toolCall: ToolCall;
-	promise: Promise<ToolExecutionOutcome>;
 }
 
 export interface ProviderTransportOptions {
@@ -190,151 +136,6 @@ export interface ProviderTransportOptions {
 	sessionTokenCounter?: SessionTokenCounter;
 	/** Audit logger for sensitive tool execution events */
 	auditLogger?: ToolAuditLogger;
-}
-
-function resolveEnvCredential(provider: string): AuthCredential | undefined {
-	const vars = envApiKeyMap[provider as keyof typeof envApiKeyMap] ?? [];
-	for (const name of vars) {
-		const value = process.env[name];
-		if (!value) continue;
-		const isAnthropicOAuth =
-			provider === "anthropic" && name === "ANTHROPIC_OAUTH_TOKEN";
-		return {
-			provider,
-			token: value,
-			type: isAnthropicOAuth ? "anthropic-oauth" : "api-key",
-			source: isAnthropicOAuth ? "anthropic_oauth_env" : "env",
-			envVar: name,
-		};
-	}
-	return undefined;
-}
-
-// Sensitive tools that should be logged for audit purposes
-const SENSITIVE_TOOLS = new Set([
-	"bash",
-	"background_tasks",
-	"write",
-	"edit",
-	"git_cmd",
-	"gh_pr",
-	"gh_issue",
-	"websearch",
-	"webfetch",
-]);
-
-async function logToolExecutionAudit(
-	auditLogger: ToolAuditLogger | undefined,
-	toolName: string,
-	args: Record<string, unknown>,
-	status: "success" | "failure" | "denied",
-	durationMs: number,
-	error?: string,
-): Promise<void> {
-	// Only log sensitive tools and only if enterprise features are available
-	if (!SENSITIVE_TOOLS.has(toolName) || !auditLogger) {
-		return;
-	}
-
-	try {
-		const sanitizedError = error ? sanitizeLogMessage(error) : undefined;
-		await auditLogger({
-			toolName,
-			args,
-			status,
-			durationMs,
-			error: sanitizedError,
-		});
-	} catch (err) {
-		// Log audit failures but fail open (allow legitimate use) per user feedback
-		logger.error(
-			"Failed to log tool execution",
-			err instanceof Error ? err : new Error(String(err)),
-			{ toolName },
-		);
-	}
-}
-
-/**
- * Calculate API Cost from Token Usage
- *
- * Computes the total cost of an LLM request based on token counts and
- * per-token pricing. Costs are specified in dollars per million tokens
- * (the standard industry format), so we divide by 1,000,000.
- *
- * ## Cost Components
- *
- * - **Input tokens**: Tokens in the prompt (system prompt + messages + tools)
- * - **Output tokens**: Tokens generated by the model
- * - **Cache read**: Tokens loaded from prompt cache (usually cheaper)
- * - **Cache write**: Tokens written to prompt cache (may have different pricing)
- *
- * ## Example Calculation
- *
- * For Claude Sonnet with input=$3/M, output=$15/M:
- * - 10,000 input tokens = 10000 * 3 / 1,000,000 = $0.03
- * - 1,000 output tokens = 1000 * 15 / 1,000,000 = $0.015
- * - Total = $0.045
- *
- * @param usage - Token counts from the API response
- * @param costConfig - Per-million-token pricing for each usage type
- * @returns Total cost in dollars
- */
-function calculateCost(
-	usage: {
-		input?: number;
-		output?: number;
-		cacheRead?: number;
-		cacheWrite?: number;
-	},
-	costConfig: {
-		input: number;
-		output: number;
-		cacheRead: number;
-		cacheWrite: number;
-	},
-): number {
-	// Each cost component: (tokens * dollars_per_million) / 1_000_000
-	const inputCost = ((usage.input || 0) * costConfig.input) / 1_000_000;
-	const outputCost = ((usage.output || 0) * costConfig.output) / 1_000_000;
-	const cacheReadCost =
-		((usage.cacheRead || 0) * costConfig.cacheRead) / 1_000_000;
-	const cacheWriteCost =
-		((usage.cacheWrite || 0) * costConfig.cacheWrite) / 1_000_000;
-
-	return inputCost + outputCost + cacheReadCost + cacheWriteCost;
-}
-
-function formatPendingPii(snapshot: WorkflowStateSnapshot): string {
-	if (snapshot.pendingPii.length === 0) {
-		return "(none tracked)";
-	}
-	return snapshot.pendingPii
-		.map(
-			(artifact) =>
-				`• ${artifact.label} (artifact: ${artifact.id}, source: ${artifact.sourceToolCallId})`,
-		)
-		.join("\n");
-}
-
-function buildPiiPolicyResult(
-	toolCall: ToolCall,
-	snapshot: WorkflowStateSnapshot,
-	clock: Clock,
-): ToolResultMessage {
-	const artifactSummary = formatPendingPii(snapshot);
-	const orphanedSummary = snapshot.orphanedRedactions.length
-		? `Orphaned redaction attempts: ${snapshot.orphanedRedactions.join(", ")}`
-		: "";
-	const guidanceText = `Policy block: unredacted PII is still pending, so "${toolCall.name}" cannot run.\n\nArtifacts requiring redaction:\n${artifactSummary}\n\n${orphanedSummary ? `${orphanedSummary}\n\n` : ""}Next steps: run \`redact_transcript\` (or your workflow's redaction tool) for each artifact above, then retry the egress action.`;
-	return {
-		role: "toolResult",
-		toolCallId: toolCall.id,
-		toolName: toolCall.name,
-		content: [{ type: "text", text: guidanceText }],
-		isError: true,
-		timestamp: clock.now(),
-	};
 }
 
 /**
@@ -673,56 +474,12 @@ export class ProviderTransport implements AgentTransport {
 				}
 				streamAttempt++;
 
-				let stream: AsyncGenerator<AssistantMessageEvent, void, unknown>;
-				if (model.api === "anthropic-messages") {
-					stream = streamAnthropic(
-						model as Model<"anthropic-messages">,
-						currentContext,
-						{
-							...streamOptions,
-							thinking: cfg.reasoning,
-						},
-					);
-				} else if (
-					model.api === "openai-completions" ||
-					model.api === "openai-responses"
-				) {
-					stream = streamOpenAI(
-						model as Model<"openai-completions" | "openai-responses">,
-						currentContext,
-						{
-							...streamOptions,
-							reasoningEffort: cfg.reasoning,
-							reasoningSummary: cfg.reasoningSummary,
-						},
-					);
-				} else if (model.api === "google-generative-ai") {
-					stream = streamGoogle(
-						model as Model<"google-generative-ai">,
-						currentContext,
-						{
-							...streamOptions,
-							thinking: cfg.reasoning,
-						},
-					);
-				} else if (model.api === "google-gemini-cli") {
-					stream = streamGoogleGeminiCli(
-						model as Model<"google-gemini-cli">,
-						currentContext,
-						{
-							...streamOptions,
-							thinking: cfg.reasoning,
-						},
-					);
-				} else if (model.api === "bedrock-converse") {
-					stream = streamBedrock(
-						model as Model<"bedrock-converse">,
-						currentContext,
-						streamOptions,
-					);
-				} else {
-					throw new Error(`Unsupported API: ${model.api}`);
-				}
+				const stream = createProviderStream(
+					model,
+					currentContext,
+					streamOptions,
+					{ reasoning: cfg.reasoning, reasoningSummary: cfg.reasoningSummary },
+				);
 
 				try {
 					for await (const event of stream) {
@@ -997,239 +754,42 @@ export class ProviderTransport implements AgentTransport {
 					const toolCall = toolCallsToExecute[toolIndex];
 					if (!toolCall) continue;
 
-					// Rate limiting check (doom loop detection is now handled by SafetyMiddleware)
-					const now = this.clock.now();
-					const timestamps = this.recentToolTimestamps.get(toolCall.name) ?? [];
-					const recent = timestamps.filter(
-						(ts) => now - ts < ProviderTransport.TOOL_RATE_WINDOW_MS,
-					);
-
-					// Track tool calls per minute for adaptive thresholds
-					if (now - this.minuteWindowStart >= 60_000) {
-						// Record the observation at minute boundary
-						this.adaptiveThresholds.recordObservation(
-							METRICS.TOOL_CALLS_PER_MINUTE,
-							this.toolCallsThisMinute,
-						);
-						// Reset for new minute window
-						this.toolCallsThisMinute = 0;
-						this.minuteWindowStart = now;
-					}
-					this.toolCallsThisMinute++;
-
-					// Track tool-specific metrics
-					const toolNameLower = toolCall.name.toLowerCase();
-					if (toolNameLower === "read" || toolNameLower === "glob") {
-						this.adaptiveThresholds.recordObservation(
-							METRICS.READS_PER_MINUTE,
-							1,
-						);
-					} else if (toolNameLower === "write" || toolNameLower === "edit") {
-						this.adaptiveThresholds.recordObservation(
-							METRICS.WRITES_PER_MINUTE,
-							1,
-						);
-					} else if (
-						toolNameLower === "webfetch" ||
-						toolNameLower === "websearch" ||
-						toolNameLower.includes("mcp")
-					) {
-						this.adaptiveThresholds.recordObservation(
-							METRICS.EGRESS_PER_MINUTE,
-							1,
-						);
-					}
-
-					// Check for anomalous tool call rate
-					const anomalyCheck = this.adaptiveThresholds.checkAnomaly(
-						METRICS.TOOL_CALLS_PER_MINUTE,
-						this.toolCallsThisMinute,
-					);
-
-					// Enforce anomaly detection - block when anomaly detected
-					if (anomalyCheck.isAnomaly) {
-						trackToolBlocked({
-							toolName: toolCall.name,
-							reason: `Anomaly detected: ${anomalyCheck.reason ?? "Unusual tool call rate"}`,
-							source: "adaptive",
-						});
-						const anomalyMessage: ToolResultMessage = {
-							role: "toolResult",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							content: [
-								{
-									type: "text",
-									text: `Blocked "${toolCall.name}" due to anomalous behavior: ${anomalyCheck.reason ?? "Unusual tool call pattern detected"}. Z-score: ${anomalyCheck.zScore.toFixed(2)}, Baseline: ${anomalyCheck.mean.toFixed(2)} ± ${anomalyCheck.stdDev.toFixed(2)}`,
-								},
-							],
-							isError: true,
-							timestamp: now,
-						};
-						for (const evt of emitToolResult(anomalyMessage, toolCall, true)) {
-							yield evt;
-						}
-						await checkSteering();
-						if (steeringTriggered) {
-							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
-							break;
-						}
-						continue;
-					}
-
-					// Use adaptive threshold if we have enough data, otherwise use static limit
-					const effectiveRateLimit =
-						this.adaptiveThresholds.getAdaptedThreshold(
-							`tool_rate_${toolCall.name}`,
-							ProviderTransport.TOOL_RATE_LIMIT,
-						);
-
-					if (recent.length >= effectiveRateLimit) {
-						const rateMessage: ToolResultMessage = {
-							role: "toolResult",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							content: [
-								{
-									type: "text",
-									text: `Blocked "${toolCall.name}" due to rate limit: >${effectiveRateLimit} calls in ${ProviderTransport.TOOL_RATE_WINDOW_MS / 1000}s window.${
-										anomalyCheck.isAnomaly
-											? ` (Anomaly detected: ${anomalyCheck.reason})`
-											: ""
-									}`,
-								},
-							],
-							isError: true,
-							timestamp: now,
-						};
-						for (const evt of emitToolResult(rateMessage, toolCall, true)) {
-							yield evt;
-						}
-						await checkSteering();
-						if (steeringTriggered) {
-							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
-							break;
-						}
-						continue;
-					}
-
-					// Record observation for per-tool adaptive rate
-					this.adaptiveThresholds.recordObservation(
-						`tool_rate_${toolCall.name}`,
-						recent.length,
-					);
-
-					recent.push(now);
-					this.recentToolTimestamps.set(toolCall.name, recent);
-					const sanitizedStartArgs = this.safetyMiddleware.sanitizeForLogging(
-						toolCall.arguments as Record<string, unknown>,
-					);
-
-					yield {
-						type: "tool_execution_start",
-						toolCallId: toolCall.id,
-						toolName: toolCall.name,
-						args: sanitizedStartArgs,
-					};
-
-					// Run PreToolUse hooks before firewall check
-					let effectiveToolCall = toolCall;
-					if (hookService) {
-						const hookResult = await hookService.runPreToolUseHooks(
+					// Run safety pipeline (rate limiting, hooks, firewall, approval, validation)
+					const { verdict: safetyVerdict, rateLimitUpdate } =
+						await evaluateToolSafety({
 							toolCall,
+							tools,
+							userMessage,
+							cfg,
 							signal,
-						);
+							clock: this.clock,
+							safetyMiddleware: this.safetyMiddleware,
+							workflowState: this.workflowState,
+							adaptiveThresholds: this.adaptiveThresholds,
+							auditLogger: this.auditLogger,
+							approvalService: this.options.approvalService,
+							hookService,
+							firewall,
+							rateLimitState: {
+								recentToolTimestamps: this.recentToolTimestamps,
+								toolCallsThisMinute: this.toolCallsThisMinute,
+								minuteWindowStart: this.minuteWindowStart,
+								rateWindowMs: ProviderTransport.TOOL_RATE_WINDOW_MS,
+								rateLimit: ProviderTransport.TOOL_RATE_LIMIT,
+							},
+							emitToolResult,
+						});
 
-						// Check if hook blocked execution
-						if (hookResult.blocked) {
-							const hookBlockedResult: ToolResultMessage = {
-								role: "toolResult",
-								toolCallId: toolCall.id,
-								toolName: toolCall.name,
-								content: [
-									{
-										type: "text",
-										text: `Blocked by hook: ${hookResult.blockReason ?? "Hook denied execution"}`,
-									},
-								],
-								isError: true,
-								timestamp: this.clock.now(),
-							};
-							await logToolExecutionAudit(
-								this.auditLogger,
-								toolCall.name,
-								this.safetyMiddleware.sanitizeForLogging(
-									toolCall.arguments as Record<string, unknown>,
-								),
-								"denied",
-								0,
-								hookResult.blockReason,
-							);
-							for (const event of emitToolResult(
-								hookBlockedResult,
-								toolCall,
-								true,
-							)) {
-								yield event;
-							}
-							await checkSteering();
-							if (steeringTriggered) {
-								remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
-								break;
-							}
-							continue;
-						}
+					// Apply rate limit state updates
+					this.toolCallsThisMinute = rateLimitUpdate.toolCallsThisMinute;
+					this.minuteWindowStart = rateLimitUpdate.minuteWindowStart;
 
-						// Apply updated input from hook if provided
-						if (hookResult.updatedInput) {
-							effectiveToolCall = {
-								...toolCall,
-								arguments: hookResult.updatedInput,
-							};
-							logger.debug("Hook modified tool input", {
-								toolName: toolCall.name,
-								originalArgs: Object.keys(toolCall.arguments),
-								updatedArgs: Object.keys(hookResult.updatedInput),
-							});
-						}
+					// Yield collected events from safety pipeline
+					for (const event of safetyVerdict.events) {
+						yield event;
 					}
 
-					// Run safety middleware sequence analysis
-					const safetyCheck = this.safetyMiddleware.preExecution(
-						effectiveToolCall.name,
-						effectiveToolCall.arguments as Record<string, unknown>,
-					);
-
-					if (!safetyCheck.allowed && !safetyCheck.requiresApproval) {
-						// Hard block from safety middleware
-						const safetyBlockedResult: ToolResultMessage = {
-							role: "toolResult",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							content: [
-								{
-									type: "text",
-									text: `Blocked by safety check: ${safetyCheck.reason ?? "Safety policy violation"}`,
-								},
-							],
-							isError: true,
-							timestamp: this.clock.now(),
-						};
-						await logToolExecutionAudit(
-							this.auditLogger,
-							toolCall.name,
-							safetyCheck.sanitizedArgs,
-							"denied",
-							0,
-							safetyCheck.reason,
-						);
-						for (const event of emitToolResult(
-							safetyBlockedResult,
-							toolCall,
-							true,
-						)) {
-							yield event;
-						}
+					if (safetyVerdict.outcome === "blocked") {
 						await checkSteering();
 						if (steeringTriggered) {
 							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
@@ -1238,231 +798,13 @@ export class ProviderTransport implements AgentTransport {
 						continue;
 					}
 
-					let approvalAllowed = true;
-					let approvalReason: string | undefined;
-
-					// Check if safety middleware requires approval
-					if (safetyCheck.requiresApproval) {
-						approvalAllowed = false;
-						approvalReason = safetyCheck.reason;
-					}
-
-					const workflowSnapshot = this.workflowState.snapshot();
-					// Look up tool to get annotations for firewall decisions
-					const toolDef = tools.find((t) => t.name === effectiveToolCall.name);
-					const verdict = await firewall.evaluate({
-						toolName: effectiveToolCall.name,
-						args: effectiveToolCall.arguments,
-						metadata: {
-							workflowState: workflowSnapshot,
-							annotations: toolDef?.annotations,
-						},
-						user: cfg.user,
-						session: cfg.session,
-						// Extract user intent from message content (supports both string and array formats)
-						userIntent: extractTextFromContent(userMessage.content),
-					});
-
-					if (verdict.action === "block") {
-						const blockedResult: ToolResultMessage = {
-							role: "toolResult",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							content: [
-								{
-									type: "text",
-									text: `Action blocked by firewall: ${verdict.reason}${
-										verdict.remediation
-											? `\n\nSuggestion: ${verdict.remediation}`
-											: ""
-									}`,
-								},
-							],
-							isError: true,
-							timestamp: this.clock.now(),
-						};
-
-						// Log denied tool execution for audit
-						await logToolExecutionAudit(
-							this.auditLogger,
-							toolCall.name,
-							this.safetyMiddleware.sanitizeForLogging(
-								toolCall.arguments as Record<string, unknown>,
-							),
-							"denied",
-							0,
-							verdict.reason,
-						);
-
-						for (const event of emitToolResult(blockedResult, toolCall, true)) {
-							yield event;
-						}
-						await checkSteering();
-						if (steeringTriggered) {
-							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
-							break;
-						}
-						continue;
-					}
-
-					if (
-						verdict.action === "require_approval" &&
-						verdict.ruleId === HUMAN_EGRESS_PII_RULE_ID
-					) {
-						const policyResult = buildPiiPolicyResult(
-							toolCall,
-							workflowSnapshot,
-							this.clock,
-						);
-						for (const event of emitToolResult(policyResult, toolCall, true)) {
-							yield event;
-						}
-						await checkSteering();
-						if (steeringTriggered) {
-							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
-							break;
-						}
-						continue;
-					}
-					if (verdict.action === "require_approval") {
-						const approvalService = this.options.approvalService;
-						if (approvalService) {
-							const sanitizedApprovalArgs =
-								this.safetyMiddleware.sanitizeForLogging(
-									effectiveToolCall.arguments as Record<string, unknown>,
-								);
-							const request = {
-								id: toolCall.id,
-								toolName: toolCall.name,
-								args: sanitizedApprovalArgs,
-								reason: verdict.reason,
-							};
-							const shouldEmitEvents =
-								approvalService.requiresUserInteraction();
-							if (shouldEmitEvents) {
-								yield { type: "action_approval_required", request };
-							}
-
-							const decision = await approvalService.requestApproval(
-								request,
-								signal,
-							);
-							if (shouldEmitEvents) {
-								yield {
-									type: "action_approval_resolved",
-									request,
-									decision,
-								};
-							}
-
-							if (!decision.approved) {
-								approvalAllowed = false;
-								approvalReason = decision.reason ?? verdict.reason;
-							}
-						}
-					}
-
-					if (!approvalAllowed) {
-						// Log denied tool execution for audit
-						await logToolExecutionAudit(
-							this.auditLogger,
-							toolCall.name,
-							this.safetyMiddleware.sanitizeForLogging(
-								toolCall.arguments as Record<string, unknown>,
-							),
-							"denied",
-							0,
-							approvalReason,
-						);
-
-						const deniedResult: ToolResultMessage = {
-							role: "toolResult",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							content: [
-								{ type: "text", text: approvalReason ?? "Action denied" },
-							],
-							isError: true,
-							timestamp: this.clock.now(),
-						};
-						for (const event of emitToolResult(deniedResult, toolCall, true)) {
-							yield event;
-						}
-						await checkSteering();
-						if (steeringTriggered) {
-							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
-							break;
-						}
-						continue;
-					}
-
-					// Use toolDef from earlier lookup
-					if (!toolDef) {
-						const errorResult: ToolResultMessage = {
-							role: "toolResult",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							content: [
-								{
-									type: "text",
-									text: `Error: Tool "${toolCall.name}" not found`,
-								},
-							],
-							isError: true,
-							timestamp: this.clock.now(),
-						};
-						for (const event of emitToolResult(errorResult, toolCall, true)) {
-							yield event;
-						}
-						await checkSteering();
-						if (steeringTriggered) {
-							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
-							break;
-						}
-						continue;
-					}
-					const tool = toolDef;
-
-					let validatedArgs: Record<string, unknown>;
-					try {
-						// Validate the raw (hook-modified) arguments to preserve schema expectations
-						const rawArgs = validateToolArguments(tool, effectiveToolCall);
-						const vaultedArgs =
-							this.safetyMiddleware.prepareExecutionArgs(rawArgs);
-						// Resolve any credential references (e.g., {{CRED:api_key:abc123}}) to actual values
-						// This allows the agent to use vaulted credentials in tool execution
-						validatedArgs =
-							this.safetyMiddleware.resolveCredentials(vaultedArgs);
-					} catch (error: unknown) {
-						const validationErrorResult: ToolResultMessage = {
-							role: "toolResult",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							content: [
-								{
-									type: "text",
-									text: error instanceof Error ? error.message : String(error),
-								},
-							],
-							isError: true,
-							timestamp: this.clock.now(),
-						};
-						for (const event of emitToolResult(
-							validationErrorResult,
-							toolCall,
-							true,
-						)) {
-							yield event;
-						}
-						await checkSteering();
-						if (steeringTriggered) {
-							remainingToolCalls = toolCallsToExecute.slice(toolIndex + 1);
-							break;
-						}
-						continue;
-					}
-					const sanitizedExecutionArgs =
-						this.safetyMiddleware.sanitizeForLogging(validatedArgs);
+					const {
+						validatedArgs,
+						toolDef: tool,
+						sanitizedExecutionArgs,
+					} = safetyVerdict;
+					// Reconstruct effective tool call with validated (possibly hook-modified) args
+					const effectiveToolCall = { ...toolCall, arguments: validatedArgs };
 
 					// For client tools, set up the execution promise first, then emit event
 					// This prevents race conditions where the client responds before we're listening
@@ -1490,270 +832,22 @@ export class ProviderTransport implements AgentTransport {
 						};
 					}
 
-					const startTime = this.clock.now();
-					const executionPromise: Promise<ToolExecutionOutcome> =
-						Promise.resolve()
-							.then(() => {
-								if (tool.executionLocation === "client") {
-									if (!clientToolExecPromise) {
-										throw new Error(
-											`Client tool execution service not configured for tool "${tool.name}"`,
-										);
-									}
-									return clientToolExecPromise.then(
-										(res) =>
-											({
-												content: res.content,
-												isError: res.isError,
-												details: undefined,
-											}) as AgentToolResult,
-									);
-								}
-								const context = cfg.sandbox
-									? { sandbox: cfg.sandbox }
-									: undefined;
-								const onUpdate = (partialResult: AgentToolResult) => {
-									toolUpdateQueue.push({
-										type: "tool_execution_update",
-										toolCallId: toolCall.id,
-										toolName: toolCall.name,
-										args: sanitizedExecutionArgs,
-										partialResult,
-									});
-								};
-								return tool.execute(
-									toolCall.id,
-									validatedArgs,
-									signal,
-									context,
-									onUpdate,
-								);
-							})
-
-							.then(async (result) => {
-								// Log tool execution - check isError flag for correct status
-								await logToolExecutionAudit(
-									this.auditLogger,
-									toolCall.name,
-									sanitizedExecutionArgs,
-									result.isError ? "failure" : "success",
-									this.clock.now() - startTime,
-								);
-
-								// Record execution in safety middleware for sequence analysis
-								this.safetyMiddleware.postExecution(
-									toolCall.name,
-									validatedArgs,
-									!result.isError,
-									true, // approved
-								);
-
-								// Track failure rate for adaptive thresholds
-								this.adaptiveThresholds.recordObservation(
-									METRICS.FAILURE_RATE,
-									result.isError ? 1 : 0,
-								);
-
-								const toolResultMsg: ToolResultMessage = {
-									role: "toolResult" as const,
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									content: result.content,
-									details: result.details,
-									isError: result.isError || false,
-									timestamp: this.clock.now(),
-								};
-
-								// Run PostToolUse hooks for successful execution
-								if (hookService && !result.isError) {
-									const postHookResult = await hookService.runPostToolUseHooks(
-										effectiveToolCall,
-										toolResultMsg,
-										signal,
-									);
-									// If hook adds context, append to result content
-									if (postHookResult.additionalContext) {
-										toolResultMsg.content = [
-											...toolResultMsg.content,
-											{
-												type: "text" as const,
-												text: `\n[Hook context]: ${postHookResult.additionalContext}`,
-											},
-										];
-									}
-									// If hook wants to prevent continuation, mark the result
-									if (postHookResult.preventContinuation) {
-										toolResultMsg.content = [
-											...toolResultMsg.content,
-											{
-												type: "text" as const,
-												text: `\n[Hook stop]: ${postHookResult.stopReason ?? "Hook requested stop"}`,
-											},
-										];
-										toolResultMsg.isError = true;
-									}
-									// Merge assertions and evaluation into details
-									if (
-										postHookResult.assertions?.length ||
-										postHookResult.evaluation
-									) {
-										const mergedDetails: Record<string, unknown> =
-											toolResultMsg.details &&
-											typeof toolResultMsg.details === "object"
-												? {
-														...(toolResultMsg.details as Record<
-															string,
-															unknown
-														>),
-													}
-												: {};
-
-										if (postHookResult.evaluation) {
-											mergedDetails.evaluation = postHookResult.evaluation;
-										}
-										if (postHookResult.assertions?.length) {
-											mergedDetails.assertions = postHookResult.assertions;
-										}
-
-										toolResultMsg.details =
-											mergedDetails as typeof toolResultMsg.details;
-									}
-
-									const evalHookResult = await hookService.runEvalGateHooks(
-										effectiveToolCall,
-										toolResultMsg,
-										signal,
-									);
-
-									if (evalHookResult.additionalContext) {
-										toolResultMsg.content = [
-											...toolResultMsg.content,
-											{
-												type: "text" as const,
-												text: `\n[Hook context]: ${evalHookResult.additionalContext}`,
-											},
-										];
-									}
-
-									if (
-										evalHookResult.assertions?.length ||
-										evalHookResult.evaluation
-									) {
-										const mergedDetails: Record<string, unknown> =
-											toolResultMsg.details &&
-											typeof toolResultMsg.details === "object"
-												? {
-														...(toolResultMsg.details as Record<
-															string,
-															unknown
-														>),
-													}
-												: {};
-
-										// Only assign evaluation if it's actually defined and has content
-										if (
-											evalHookResult.evaluation &&
-											Object.keys(evalHookResult.evaluation).length > 0
-										) {
-											mergedDetails.evaluation = evalHookResult.evaluation;
-										}
-										// Only assign assertions if they exist and have length
-										if (evalHookResult.assertions?.length) {
-											mergedDetails.assertions = evalHookResult.assertions;
-										}
-
-										toolResultMsg.details =
-											mergedDetails as typeof toolResultMsg.details;
-									}
-
-									if (evalHookResult.preventContinuation) {
-										toolResultMsg.content = [
-											...toolResultMsg.content,
-											{
-												type: "text" as const,
-												text: `\n[Hook stop]: ${evalHookResult.stopReason ?? "Hook requested stop"}`,
-											},
-										];
-										toolResultMsg.isError = true;
-									}
-								}
-
-								return {
-									message: toolResultMsg,
-									isError: toolResultMsg.isError,
-								};
-							})
-							.catch(async (error: unknown) => {
-								const errorMessage =
-									error instanceof Error
-										? error.message
-										: `Error: ${String(error)}`;
-
-								// Log failed tool execution
-								await logToolExecutionAudit(
-									this.auditLogger,
-									toolCall.name,
-									this.safetyMiddleware.sanitizeForLogging(validatedArgs),
-									"failure",
-									this.clock.now() - startTime,
-									errorMessage,
-								);
-
-								// Record failure in safety middleware for sequence analysis
-								this.safetyMiddleware.postExecution(
-									toolCall.name,
-									validatedArgs,
-									false, // success
-									true, // approved
-								);
-
-								// Track failure rate for adaptive thresholds (failure = 1)
-								this.adaptiveThresholds.recordObservation(
-									METRICS.FAILURE_RATE,
-									1,
-								);
-
-								const toolResultMsg: ToolResultMessage = {
-									role: "toolResult" as const,
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									content: [
-										{
-											type: "text" as const,
-											text: errorMessage,
-										},
-									],
-									details:
-										error instanceof ToolError ? error.details : undefined,
-									isError: true,
-									timestamp: this.clock.now(),
-								};
-
-								// Run PostToolUseFailure hooks
-								if (hookService) {
-									const failureHookResult =
-										await hookService.runPostToolUseFailureHooks(
-											effectiveToolCall,
-											errorMessage,
-											signal,
-										);
-									// If hook adds context, append to result content
-									if (failureHookResult.additionalContext) {
-										toolResultMsg.content = [
-											...toolResultMsg.content,
-											{
-												type: "text" as const,
-												text: `\n[Hook context]: ${failureHookResult.additionalContext}`,
-											},
-										];
-									}
-								}
-
-								return {
-									message: toolResultMsg,
-									isError: true,
-								};
-							});
+					const executionPromise = createToolExecutionPromise({
+						toolCall,
+						effectiveToolCall,
+						tool,
+						validatedArgs,
+						sanitizedExecutionArgs,
+						cfg,
+						signal,
+						clock: this.clock,
+						safetyMiddleware: this.safetyMiddleware,
+						adaptiveThresholds: this.adaptiveThresholds,
+						auditLogger: this.auditLogger,
+						hookService,
+						toolUpdateQueue,
+						clientToolExecPromise,
+					});
 
 					pendingExecutions.push({
 						toolCall,
@@ -1867,89 +961,4 @@ export class ProviderTransport implements AgentTransport {
 			hasMoreToolCalls = encounteredError ? false : pendingNextTurn;
 		}
 	}
-}
-
-type ToolUpdateEvent = Extract<AgentEvent, { type: "tool_execution_update" }>;
-
-class ToolUpdateQueue {
-	private updates: ToolUpdateEvent[] = [];
-	private resolve?: (event: ToolUpdateEvent) => void;
-	private pending?: Promise<ToolUpdateEvent>;
-
-	push(event: ToolUpdateEvent): void {
-		if (this.resolve) {
-			const resolve = this.resolve;
-			this.resolve = undefined;
-			this.pending = undefined;
-			resolve(event);
-			return;
-		}
-		this.updates.push(event);
-	}
-
-	hasPending(): boolean {
-		return this.updates.length > 0;
-	}
-
-	shift(): ToolUpdateEvent | undefined {
-		return this.updates.shift();
-	}
-
-	next(): Promise<ToolUpdateEvent> {
-		const queued = this.shift();
-		if (queued) {
-			return Promise.resolve(queued);
-		}
-		if (!this.pending) {
-			this.pending = new Promise<ToolUpdateEvent>((resolve) => {
-				this.resolve = resolve;
-			});
-		}
-		return this.pending;
-	}
-}
-
-function createToolUpdateQueue(): ToolUpdateQueue {
-	return new ToolUpdateQueue();
-}
-
-async function waitForNextExecutionOrUpdate(
-	pendingExecutions: PendingExecution[],
-	updateQueue: ToolUpdateQueue,
-): Promise<
-	| { kind: "update"; event: ToolUpdateEvent }
-	| {
-			kind: "execution";
-			execution: PendingExecution;
-			outcome: ToolExecutionOutcome;
-	  }
-> {
-	const queued = updateQueue.shift();
-	if (queued) {
-		return { kind: "update", event: queued };
-	}
-
-	const executionPromise = Promise.race(
-		pendingExecutions.map((entry) =>
-			entry.promise.then((outcome) => ({ entry, outcome })),
-		),
-	).then((race) => ({
-		kind: "execution" as const,
-		execution: race.entry,
-		outcome: race.outcome,
-	}));
-
-	const updatePromise = updateQueue.next().then((event) => ({
-		kind: "update" as const,
-		event,
-	}));
-
-	const next = await Promise.race([executionPromise, updatePromise]);
-	if (next.kind === "execution") {
-		const index = pendingExecutions.indexOf(next.execution);
-		if (index >= 0) {
-			pendingExecutions.splice(index, 1);
-		}
-	}
-	return next;
 }
