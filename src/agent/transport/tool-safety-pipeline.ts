@@ -41,6 +41,7 @@ export type ToolSafetyVerdict =
 	| { outcome: "blocked"; events: AgentEvent[] }
 	| {
 			outcome: "proceed";
+			effectiveToolCall: ToolCall;
 			validatedArgs: Record<string, unknown>;
 			toolDef: AgentTool;
 			events: AgentEvent[];
@@ -529,6 +530,7 @@ export async function evaluateToolSafety(
 	return {
 		verdict: {
 			outcome: "proceed",
+			effectiveToolCall,
 			validatedArgs,
 			toolDef,
 			events,

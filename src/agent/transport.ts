@@ -799,12 +799,12 @@ export class ProviderTransport implements AgentTransport {
 					}
 
 					const {
+						effectiveToolCall,
 						validatedArgs,
 						toolDef: tool,
 						sanitizedExecutionArgs,
 					} = safetyVerdict;
-					// Reconstruct effective tool call with validated (possibly hook-modified) args
-					const effectiveToolCall = { ...toolCall, arguments: validatedArgs };
+					// Use hook-modified (pre-validation) args for hook inputs
 
 					// For client tools, set up the execution promise first, then emit event
 					// This prevents race conditions where the client responds before we're listening
