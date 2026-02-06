@@ -877,6 +877,7 @@ Sessions are JSONL in `~/.composer/agent/sessions/`. Use:
 
 ## Documentation
 
+- [Architecture Guide](docs/ARCHITECTURE.md)
 - [Documentation Index](docs/README.md)
 - [Quickstart](docs/QUICKSTART.md)
 - [Feature Guide](docs/FEATURES.md)
