@@ -7,8 +7,8 @@ export ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GROQ_API_KEY \
        COMPOSER_MODEL COMPOSER_MODEL_PROVIDER
 
 .PHONY: help setup install build build-all compile run-ts run-rs run-rs-debug \
-        web dev dev-all test test-fast lint check fmt smoke evals verify clean \
-        db-up db-down db-migrate
+        web dev dev-all test test-fast lint check fmt fmt-unsafe smoke evals \
+        verify clean db-up db-down db-migrate
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -64,10 +64,13 @@ lint: ## Biome + eval verifier
 
 check: lint test ## Full CI check (lint + test)
 
-fmt: ## Auto-format with Biome
+fmt: ## Auto-format with Biome (safe formatting only)
+	bunx biome format --write .
+
+fmt-unsafe: ## Auto-format + unsafe lint fixes
 	bunx biome check --fix --unsafe .
 
-smoke: ## Smoke-test the built CLI
+smoke: build ## Smoke-test the built CLI
 	npm run smoke
 
 evals: ## Run eval scenarios
