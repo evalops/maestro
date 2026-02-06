@@ -35,7 +35,7 @@
 
 import type { SessionEntry } from "../session/types.js";
 import { convertAppMessageToLlm } from "./custom-messages.js";
-import type { AppMessage, AssistantMessage, Usage } from "./types.js";
+import type { Api, AppMessage, AssistantMessage, Usage } from "./types.js";
 
 // ============================================================================
 // Types
@@ -777,4 +777,195 @@ export function findPreviousSummary(
 		}
 	}
 	return undefined;
+}
+
+// ============================================================================
+// Orchestrated Compaction
+// ============================================================================
+
+/**
+ * Minimal agent interface required by performCompaction.
+ * Avoids depending on the full Agent class to keep this module leaf-level.
+ */
+export interface CompactionAgent {
+	state: {
+		messages: AppMessage[];
+		model: { api: Api; provider: string; id: string };
+	};
+	generateSummary(
+		history: AppMessage[],
+		prompt: string,
+		systemPrompt: string,
+	): Promise<AssistantMessage>;
+	replaceMessages(messages: AppMessage[]): void;
+}
+
+/**
+ * Minimal session manager interface required by performCompaction.
+ */
+export interface CompactionSessionManager {
+	buildSessionContext(): { messageEntries: Array<{ id?: string }> };
+	saveCompaction(
+		summary: string,
+		firstKeptEntryIndex: number,
+		tokensBefore: number,
+		options?: {
+			auto?: boolean;
+			customInstructions?: string;
+			firstKeptEntryId?: string;
+		},
+	): void;
+	saveMessage(message: AppMessage): void;
+}
+
+/**
+ * Result of a performCompaction() call.
+ */
+export interface PerformCompactionResult {
+	success: boolean;
+	compactedCount?: number;
+	summary?: string;
+	firstKeptEntryIndex?: number;
+	tokensBefore?: number;
+	error?: string;
+}
+
+/**
+ * Perform context compaction end-to-end: calculate boundary, generate summary,
+ * replace messages, and persist to session.
+ *
+ * This function consolidates the compaction logic previously duplicated across
+ * main.ts (auto-compact + RPC compact) and ConversationCompactor.
+ *
+ * @param params.agent - Agent instance (or compatible interface)
+ * @param params.sessionManager - Session persistence manager
+ * @param params.auto - Whether this is an auto-triggered compaction
+ * @param params.customInstructions - Optional focus instructions for summary
+ * @param params.renderSummaryText - Optional callback to render an AssistantMessage to plain text.
+ *   When omitted, performCompaction uses a JSON-based fallback extractor.
+ * @returns Result indicating success or failure
+ */
+export async function performCompaction(params: {
+	agent: CompactionAgent;
+	sessionManager: CompactionSessionManager;
+	auto?: boolean;
+	customInstructions?: string;
+	renderSummaryText?: (message: AssistantMessage) => string;
+}): Promise<PerformCompactionResult> {
+	const { agent, sessionManager, auto, customInstructions, renderSummaryText } =
+		params;
+	const messages = [...agent.state.messages];
+	const keepCount = 6;
+
+	if (messages.length <= keepCount + 1) {
+		return { success: false, error: "Not enough history to compact" };
+	}
+
+	// Calculate boundary using token-based cut point detection
+	let boundary = Math.max(0, messages.length - keepCount);
+	const lastUsage = getLastAssistantUsage(messages);
+	if (lastUsage) {
+		const tokenBasedCut = findCutPoint(
+			messages,
+			0,
+			messages.length,
+			DEFAULT_COMPACTION_SETTINGS.keepRecentTokens,
+		);
+		boundary = Math.max(boundary, tokenBasedCut);
+	}
+	boundary = adjustBoundaryForToolResults(messages, boundary);
+
+	const older = messages.slice(0, boundary);
+	if (!older.length) {
+		return { success: false, error: "No earlier messages to compact" };
+	}
+
+	// Look for previous summary (cascading)
+	const previousSummary = findPreviousSummary(messages);
+	const summaryInput: AppMessage[] = [];
+	if (previousSummary) {
+		summaryInput.push({
+			role: "user",
+			content: `Previous session summary:\n${previousSummary}`,
+			timestamp: Date.now(),
+		});
+	}
+	const sliceSize = Math.min(40, older.length);
+	summaryInput.push(...older.slice(-sliceSize));
+
+	let summaryText = "";
+	let usedModel = false;
+
+	try {
+		const prompt = buildSummarizationPrompt(customInstructions);
+		const summary = await agent.generateSummary(
+			summaryInput,
+			prompt,
+			"You are a careful note-taker that distills coding conversations into actionable summaries.",
+		);
+		const llmText = renderSummaryText
+			? renderSummaryText(summary)
+			: extractMessageText(summary);
+		summaryText = llmText.trim() || buildLocalSummary(older, 32);
+		usedModel = true;
+	} catch {
+		summaryText = buildLocalSummary(older, 32);
+	}
+
+	const decorated = decorateSummaryText(summaryText, older.length, usedModel);
+	const tokensBefore = lastUsage ? calculateContextTokens(lastUsage) : 0;
+
+	// Build summary and resume messages
+	const summaryMessage: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "text", text: decorated }],
+		api: agent.state.model.api,
+		provider: agent.state.model.provider,
+		model: agent.state.model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+
+	const resumeMessage: AppMessage = {
+		role: "user",
+		content: [
+			{
+				type: "text",
+				text: "Use the above summary to resume the plan from where we left off.",
+			},
+		],
+		timestamp: Date.now(),
+	};
+
+	const sessionContext = sessionManager.buildSessionContext();
+	const firstKeptEntryId = sessionContext.messageEntries[boundary]?.id;
+
+	// Persist compaction to session
+	sessionManager.saveCompaction(summaryText, boundary, tokensBefore, {
+		auto,
+		customInstructions,
+		firstKeptEntryId,
+	});
+
+	// Replace agent messages
+	const keep = messages.slice(boundary);
+	const newMessages = [summaryMessage as AppMessage, resumeMessage, ...keep];
+	agent.replaceMessages(newMessages);
+	sessionManager.saveMessage(summaryMessage);
+	sessionManager.saveMessage(resumeMessage);
+
+	return {
+		success: true,
+		compactedCount: older.length,
+		summary: summaryText,
+		firstKeptEntryIndex: boundary,
+		tokensBefore,
+	};
 }

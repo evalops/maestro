@@ -94,24 +94,18 @@ import {
 	type ApprovalMode,
 } from "./agent/action-approval.js";
 import {
-	BackgroundTaskContextSource,
-	FrameworkPreferenceContextSource,
-	IDEContextSource,
-	LspContextSource,
-	TodoContextSource,
-} from "./agent/context-providers.js";
-import {
-	Agent,
-	ProviderTransport,
-	type ThinkingLevel,
+	type Agent,
+	type Api,
+	type Model,
 	isAssistantMessage,
 } from "./agent/index.js";
+import { createAuthSetup, validateCodexFlags } from "./bootstrap/auth-setup.js";
 import {
 	disposeCheckpointService,
 	initCheckpointService,
 } from "./checkpoints/index.js";
 import { TuiRenderer } from "./cli-tui/tui-renderer.js";
-import { type Args, type Mode, parseArgs } from "./cli/args.js";
+import { type Mode, parseArgs } from "./cli/args.js";
 import {
 	EXEC_SESSION_SUMMARY_PREFIX,
 	runExecCommand,
@@ -126,90 +120,22 @@ import {
 	emitUserTurn as emitUserTurnEvent,
 } from "./cli/jsonl-writer.js";
 import { selectSession } from "./cli/session.js";
-import {
-	buildSystemPrompt,
-	loadProjectContextFiles,
-} from "./cli/system-prompt.js";
-import { composerManager } from "./composers/index.js";
+import { buildSystemPrompt } from "./cli/system-prompt.js";
 import { validateFrameworkPreference } from "./config/framework.js";
 import { loadRuntimeConfig } from "./config/runtime-config.js";
-import {
-	createNotificationFromAgentEvent,
-	isNotificationEnabled,
-	sendNotification,
-} from "./hooks/notification-hooks.js";
-import {
-	discoverAndLoadTypeScriptHooks,
-	setGlobalAppendEntryHandler,
-	setGlobalCwd,
-	setGlobalSendHandler,
-	setGlobalSendMessageHandler,
-} from "./hooks/typescript-loader.js";
 import { loadEnv } from "./load-env.js";
 import { bootstrapLsp } from "./lsp/bootstrap.js";
-import { loadMcpConfig } from "./mcp/config.js";
-import { mcpManager } from "./mcp/manager.js";
-import { getAllMcpTools } from "./mcp/tool-bridge.js";
 import { ensureModelsLoaded } from "./models/builtin.js";
 import type { RegisteredModel } from "./models/registry.js";
-import {
-	findModelById,
-	getCustomConfigPath,
-	getCustomProviderMetadata,
-	getFactoryDefaultModelSelection,
-	getRegisteredModels,
-	getSupportedProviders,
-	reloadModelConfig,
-	resolveAlias,
-	resolveModel,
-} from "./models/registry.js";
-import { resolveModelScope } from "./models/scope.js";
+import { reloadModelConfig } from "./models/registry.js";
 import { initOpenTelemetry } from "./opentelemetry.js";
-import {
-	getEnvVarsForProvider,
-	isKnownProvider,
-} from "./providers/api-keys.js";
-import {
-	type AuthCredential,
-	type AuthMode,
-	createAuthResolver,
-} from "./providers/auth.js";
+import type { AuthMode } from "./providers/auth.js";
 import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
-import { PolicyError, checkSessionLimits } from "./safety/policy.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
-import {
-	type SandboxMode,
-	createSandbox,
-	disposeSandbox,
-} from "./sandbox/index.js";
-import { SessionManager, toSessionModelMetadata } from "./session/manager.js";
-import {
-	type TurnTracker,
-	createTurnTracker,
-} from "./telemetry/turn-tracker.js";
-import {
-	codingTools,
-	filterTools,
-	readOnlyToolNames,
-	toolRegistry,
-} from "./tools/index.js";
-import { loadInlineTools } from "./tools/inline-tools.js";
-import {
-	formatChangelogVersion,
-	getChangelogPath,
-	getLatestEntry,
-	getNewEntries,
-	isChangelogHiddenFromEnv,
-	parseChangelog,
-	readLastShownChangelogVersion,
-	summarizeChangelogEntry,
-	writeLastShownChangelogVersion,
-} from "./update/changelog.js";
-import { type UpdateCheckResult, checkForUpdate } from "./update/check.js";
+import { SessionManager } from "./session/manager.js";
+import type { UpdateCheckResult } from "./update/check.js";
 import { isInsideGitRepository } from "./utils/git.js";
-import { createLogger } from "./utils/logger.js";
-
 /**
  * Load version from package.json at runtime.
  * Uses Node's createRequire for compatibility with ESM imports
@@ -219,40 +145,7 @@ const packageJson = createRequire(import.meta.url)("../package.json") as {
 	version?: string;
 };
 const VERSION = packageJson.version ?? "unknown";
-const logger = createLogger("main");
 
-const getAuditModule = (() => {
-	let promise: Promise<
-		typeof import("./enterprise/audit-integration.js")
-	> | null = null;
-	return () => {
-		if (!promise) {
-			promise = import("./enterprise/audit-integration.js");
-		}
-		return promise;
-	};
-})();
-
-const getBillingModule = (() => {
-	let promise: Promise<typeof import("./billing/token-tracker.js")> | null =
-		null;
-	return () => {
-		if (!promise) {
-			promise = import("./billing/token-tracker.js");
-		}
-		return promise;
-	};
-})();
-
-const getDbModule = (() => {
-	let promise: Promise<typeof import("./db/client.js")> | null = null;
-	return () => {
-		if (!promise) {
-			promise = import("./db/client.js");
-		}
-		return promise;
-	};
-})();
 let enterpriseCleanupRegistered = false;
 let checkpointCleanupRegistered = false;
 let sandboxCleanupRegistered = false;
@@ -427,280 +320,6 @@ async function runSingleShotMode(
 }
 
 /**
- * Runs the CLI in RPC (Remote Procedure Call) mode.
- *
- * This mode provides a JSON-over-stdio protocol for programmatic control
- * of the agent. It's designed for IDE integrations, language servers,
- * and other tools that need to embed composer functionality.
- *
- * ## Protocol
- *
- * **Input (stdin)**: JSON objects, one per line
- * ```json
- * {"type": "prompt", "message": "Hello"}
- * {"type": "abort"}
- * ```
- *
- * **Output (stdout)**: Agent events as JSON objects, one per line
- * ```json
- * {"type": "message_start", ...}
- * {"type": "content_block_delta", ...}
- * {"type": "message_end", ...}
- * ```
- *
- * The process runs indefinitely until stdin closes or it receives
- * a termination signal.
- *
- * @param agent - Configured Agent instance
- * @param _sessionManager - Unused but kept for consistent function signature
- */
-async function runRpcMode(
-	agent: Agent,
-	sessionManager: SessionManager,
-): Promise<void> {
-	// Import compaction utilities
-	const {
-		buildSummarizationPrompt,
-		decorateSummaryText,
-		buildLocalSummary,
-		calculateContextTokens,
-		getLastAssistantUsage,
-		adjustBoundaryForToolResults,
-		findCutPoint,
-		findPreviousSummary,
-		DEFAULT_COMPACTION_SETTINGS,
-	} = await import("./agent/compaction.js");
-	const { createRenderableMessage, renderMessageToPlainText } = await import(
-		"./conversation/render-model.js"
-	);
-
-	// Subscribe to all events and emit as JSON for client consumption
-	agent.subscribe((event) => {
-		console.log(JSON.stringify(event));
-	});
-
-	// Set up JSON-over-stdin readline interface
-	// Each line is expected to be a complete JSON object
-	const readline = await import("node:readline");
-	const rl = readline.createInterface({
-		input: process.stdin,
-		output: process.stdout,
-		terminal: false, // Disable terminal features for raw JSON I/O
-	});
-
-	// Process incoming RPC commands line by line
-	rl.on("line", async (line: string) => {
-		try {
-			const input = JSON.parse(line);
-
-			// Dispatch based on command type
-			// Supports: prompt, abort, compact, get_messages, get_state, continue
-			if (input.type === "prompt" && input.message) {
-				await agent.prompt(input.message);
-			} else if (input.type === "abort") {
-				agent.abort();
-			} else if (input.type === "get_messages") {
-				// Return current conversation messages
-				console.log(
-					JSON.stringify({
-						type: "messages",
-						messages: agent.state.messages,
-					}),
-				);
-			} else if (input.type === "get_state") {
-				// Return full agent state (without sensitive fields)
-				console.log(
-					JSON.stringify({
-						type: "state",
-						state: {
-							model: agent.state.model,
-							messages: agent.state.messages,
-							isStreaming: agent.state.isStreaming,
-							error: agent.state.error,
-							thinkingLevel: agent.state.thinkingLevel,
-							session: agent.state.session,
-							queuedMessageCount: agent.getQueuedMessageCount(),
-						},
-					}),
-				);
-			} else if (input.type === "continue") {
-				// Continue conversation without new user message (for overflow recovery)
-				await agent.continue(input.options);
-			} else if (input.type === "compact") {
-				// Handle context compaction in RPC mode
-				const customInstructions = input.customInstructions as
-					| string
-					| undefined;
-				const messages = [...agent.state.messages];
-				const keepCount = 6;
-
-				if (messages.length <= keepCount + 1) {
-					console.log(
-						JSON.stringify({
-							type: "error",
-							error: "Not enough history to compact",
-						}),
-					);
-					return;
-				}
-
-				// Calculate boundary using token-based cut point
-				let boundary = Math.max(0, messages.length - keepCount);
-				const lastUsage = getLastAssistantUsage(messages);
-				if (lastUsage) {
-					const tokenBasedCut = findCutPoint(
-						messages,
-						0,
-						messages.length,
-						DEFAULT_COMPACTION_SETTINGS.keepRecentTokens,
-					);
-					boundary = Math.max(boundary, tokenBasedCut);
-				}
-				boundary = adjustBoundaryForToolResults(messages, boundary);
-
-				const older = messages.slice(0, boundary);
-				if (!older.length) {
-					console.log(
-						JSON.stringify({
-							type: "error",
-							error: "No earlier messages to compact",
-						}),
-					);
-					return;
-				}
-
-				// Look for previous summary (cascading)
-				const previousSummary = findPreviousSummary(messages);
-				const summaryInput: import("./agent/types.js").Message[] = [];
-				if (previousSummary) {
-					summaryInput.push({
-						role: "user",
-						content: `Previous session summary:\n${previousSummary}`,
-						timestamp: Date.now(),
-					});
-				}
-				const sliceSize = Math.min(40, older.length);
-				summaryInput.push(
-					...(older.slice(-sliceSize) as import("./agent/types.js").Message[]),
-				);
-
-				let summaryText = "";
-				let usedModel = false;
-
-				try {
-					const prompt = buildSummarizationPrompt(customInstructions);
-					const summary = await agent.generateSummary(
-						summaryInput,
-						prompt,
-						"You are a careful note-taker that distills coding conversations into actionable summaries.",
-					);
-					const summaryRenderable = createRenderableMessage(
-						summary as import("./agent/types.js").AppMessage,
-					);
-					const llmText = summaryRenderable
-						? renderMessageToPlainText(summaryRenderable).trim()
-						: "";
-					summaryText =
-						llmText ||
-						buildLocalSummary(
-							older as import("./agent/types.js").AppMessage[],
-							32,
-						);
-					usedModel = true;
-				} catch {
-					summaryText = buildLocalSummary(
-						older as import("./agent/types.js").AppMessage[],
-						32,
-					);
-				}
-
-				const decorated = decorateSummaryText(
-					summaryText,
-					older.length,
-					usedModel,
-				);
-				const tokensBefore = lastUsage ? calculateContextTokens(lastUsage) : 0;
-
-				// Create summary message
-				const summaryMessage: import("./agent/types.js").AssistantMessage = {
-					role: "assistant",
-					content: [{ type: "text", text: decorated }],
-					api: agent.state.model.api,
-					provider: agent.state.model.provider,
-					model: agent.state.model.id,
-					usage: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-						cost: {
-							input: 0,
-							output: 0,
-							cacheRead: 0,
-							cacheWrite: 0,
-							total: 0,
-						},
-					},
-					stopReason: "stop",
-					timestamp: Date.now(),
-				};
-
-				const resumeMessage: import("./agent/types.js").AppMessage = {
-					role: "user",
-					content: [
-						{
-							type: "text",
-							text: "Use the above summary to resume the plan from where we left off.",
-						},
-					],
-					timestamp: Date.now(),
-				};
-
-				const sessionContext = sessionManager.buildSessionContext();
-				const firstKeptEntryId = sessionContext.messageEntries[boundary]?.id;
-
-				// Save compaction to session
-				sessionManager.saveCompaction(summaryText, boundary, tokensBefore, {
-					auto: false,
-					customInstructions,
-					firstKeptEntryId,
-				});
-
-				// Update agent messages
-				const keep = messages.slice(boundary);
-				const newMessages = [
-					summaryMessage as import("./agent/types.js").AppMessage,
-					resumeMessage,
-					...keep,
-				];
-				agent.replaceMessages(newMessages);
-				sessionManager.saveMessage(summaryMessage);
-				sessionManager.saveMessage(resumeMessage);
-
-				// Emit compaction event
-				const compactionEvent: import("./agent/types.js").AgentEvent = {
-					type: "compaction",
-					summary: summaryText,
-					firstKeptEntryIndex: boundary,
-					tokensBefore,
-					auto: false,
-					customInstructions,
-					timestamp: new Date().toISOString(),
-				};
-				console.log(JSON.stringify(compactionEvent));
-			}
-		} catch (error: unknown) {
-			// Emit parsing/execution errors as JSON for client handling
-			const message = error instanceof Error ? error.message : String(error);
-			console.log(JSON.stringify({ type: "error", error: message }));
-		}
-	});
-
-	// Keep process alive indefinitely - exits when stdin closes
-	return new Promise(() => {});
-}
-
-/**
  * Main entry point for the Composer CLI application.
  *
  * This function orchestrates the complete initialization sequence and routes
@@ -860,106 +479,19 @@ export async function main(args: string[]) {
 	// - claude: Force Anthropic OAuth (no API key fallback)
 	const authMode: AuthMode = parsed.authMode ?? "auto";
 
-	// Explicitly disallow Codex/ChatGPT subscription tokens.
-	if (process.env.CODEX_API_KEY) {
-		console.warn(
-			chalk.yellow(
-				"CODEX_API_KEY detected but Codex subscriptions are not supported. The value will be ignored.",
-			),
+	try {
+		validateCodexFlags(args, parsed.command);
+	} catch (error) {
+		console.error(
+			chalk.red(error instanceof Error ? error.message : String(error)),
 		);
-	}
-	if (parsed.command !== "help" && parsed.command !== "config") {
-		const codexFlagsUsed = args.some((arg, index) => {
-			if (arg === "--codex-api-key" || arg.startsWith("--codex-api-key=")) {
-				return true;
-			}
-			if (arg === "--auth" && args[index + 1] === "chatgpt") return true;
-			if (arg.startsWith("--auth=chatgpt")) return true;
-			return false;
-		});
-		if (codexFlagsUsed) {
-			console.error(
-				chalk.red(
-					"Codex/ChatGPT auth mode is no longer supported. Use a standard OpenAI API key instead.",
-				),
-			);
-			process.exit(1);
-		}
+		process.exit(1);
 	}
 
-	// Create authentication resolver that handles credential lookup
-	// The resolver is called when making API requests to determine auth headers
-	const authResolver = createAuthResolver({
-		mode: authMode,
+	const { requireCredential } = createAuthSetup({
+		authMode,
 		explicitApiKey: parsed.apiKey,
 	});
-
-	// Helper to build user-friendly error messages for missing credentials
-	// Returns both plain text (for errors) and colored (for terminal) versions
-	type AuthLine = { plain: string; colored: string };
-	const buildMissingAuthLines = (providerName: string): AuthLine[] => {
-		const lines: AuthLine[] = [];
-		const push = (plain: string, colored?: string) => {
-			lines.push({ plain, colored: colored ?? plain });
-		};
-		push(
-			`Error: No credentials found for provider "${providerName}"`,
-			chalk.red(`Error: No credentials found for provider "${providerName}"`),
-		);
-		if (authMode !== "api-key") {
-			const loginHint =
-				providerName === "anthropic"
-					? 'Run "composer anthropic login" (claude) or use /login to authenticate before retrying.'
-					: providerName === "openai"
-						? 'Run "composer openai login" or use /login to authenticate before retrying.'
-						: 'Run "/login" to authenticate before retrying.';
-			push(
-				`${loginHint} Or provide an API key for the selected provider.`,
-				chalk.dim(
-					`${loginHint} Or provide an API key for the selected provider.`,
-				),
-			);
-		}
-		const envVars = getEnvVarsForProvider(providerName);
-		if (envVars.length) {
-			push(
-				`Set ${envVars.join(" or ")} or provide --api-key for ${providerName}.`,
-				chalk.dim(
-					`Set ${envVars.join(" or ")} or provide --api-key for ${providerName}.`,
-				),
-			);
-		} else {
-			const customMeta = getCustomProviderMetadata(providerName);
-			if (customMeta?.apiKeyEnv) {
-				push(
-					`Set ${customMeta.apiKeyEnv} environment variable or provide --api-key for ${providerName}.`,
-					chalk.dim(
-						`Set ${customMeta.apiKeyEnv} environment variable or provide --api-key for ${providerName}.`,
-					),
-				);
-			}
-		}
-		return lines;
-	};
-
-	const requireCredential = async (
-		providerName: string,
-		fatal: boolean,
-	): Promise<AuthCredential> => {
-		const credential = await authResolver(providerName);
-		if (credential) {
-			return credential;
-		}
-		const lines = buildMissingAuthLines(providerName);
-		if (fatal) {
-			for (const line of lines) {
-				console.error(line.colored);
-			}
-			process.exit(1);
-		}
-		const plain = lines.map((line) => line.plain).join("\n");
-		throw new Error(plain);
-	};
 
 	if (parsed.command === "exec") {
 		if (parsed.execFullAuto && parsed.execReadOnly) {
@@ -1294,94 +826,20 @@ export async function main(args: string[]) {
 	// PHASE 8: Model Resolution
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	// Resolve the provider and model to use for this session
-	// Priority: CLI args > provider/model format > alias resolution > provider-agnostic lookup > factory defaults > hardcoded defaults
-	let provider = parsed.provider;
-	let modelId = parsed.model;
-
-	// Check if model uses provider/modelId format (e.g., "bedrock/anthropic.claude-v3")
-	if (modelId && !provider && modelId.includes("/")) {
-		const slashIndex = modelId.indexOf("/");
-		const maybeProvider = modelId.slice(0, slashIndex);
-		const maybeModelId = modelId.slice(slashIndex + 1);
-		// Validate it looks like a provider (not a path or URL)
-		if (maybeProvider && maybeModelId && !maybeProvider.includes(".")) {
-			provider = maybeProvider;
-			modelId = maybeModelId;
-			console.log(
-				chalk.dim(`Parsed model: ${parsed.model} → ${provider}/${modelId}`),
-			);
-		}
-	}
-
-	// Check if model is an alias
-	if (modelId && !provider) {
-		const resolved = resolveAlias(modelId);
-		if (resolved) {
-			provider = resolved.provider;
-			modelId = resolved.modelId;
-			console.log(
-				chalk.dim(`Using alias: ${parsed.model} → ${provider}/${modelId}`),
-			);
-		}
-	}
-
-	// If no provider specified and not an alias, search for model across all providers
-	if (modelId && !provider) {
-		const foundModel = findModelById(modelId);
-		if (foundModel) {
-			provider = foundModel.provider;
-			console.log(chalk.dim(`Found model: ${modelId} (provider: ${provider})`));
-		}
-	}
-
-	if (!provider || !modelId) {
-		const factoryDefault = getFactoryDefaultModelSelection();
-		if (factoryDefault) {
-			if (!provider) {
-				provider = factoryDefault.provider;
-			}
-			if (!modelId) {
-				modelId = factoryDefault.modelId;
-			}
-		}
-	}
-
-	provider ??= "anthropic";
-	modelId ??= "claude-opus-4-5-20251101";
-
-	const supportedProviders = new Set(getSupportedProviders());
-	if (!supportedProviders.has(provider)) {
-		console.error(
-			chalk.red(
-				`Unknown provider "${provider}". Supported providers: ${Array.from(
-					supportedProviders,
-				)
-					.sort()
-					.join(", ")}`,
-			),
-		);
-		process.exit(1);
-	}
-	await requireCredential(provider, true);
-
-	// Create agent
-	let model: ReturnType<typeof resolveModel> | undefined;
+	let model: Model<Api>;
 	try {
-		model = resolveModel(provider, modelId);
+		const { resolveModelFromArgs } = await import(
+			"./bootstrap/model-resolution-setup.js"
+		);
+		const resolved = await resolveModelFromArgs({
+			parsedProvider: parsed.provider,
+			parsedModel: parsed.model,
+			requireCredential,
+		});
+		model = resolved.model;
 	} catch (error) {
-		if (error instanceof PolicyError) {
-			console.error(chalk.red(`\n${error.message}\n`));
-			process.exit(1);
-		}
-		throw error;
-	}
-
-	if (!model) {
 		console.error(
-			chalk.red(
-				`Unknown model "${provider}/${modelId}". Check your models config.`,
-			),
+			chalk.red(error instanceof Error ? error.message : String(error)),
 		);
 		process.exit(1);
 	}
@@ -1427,53 +885,31 @@ export async function main(args: string[]) {
 	// PHASE 10: Tool Registry and Sandbox Setup
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	// Build initial tools list - MCP tools will be added dynamically after connection
-	// Apply --tools filter if user specified a subset of tools
-	let baseTools = codingTools;
-	if (parsed.tools && parsed.tools.length > 0) {
-		const filteredTools = filterTools(parsed.tools);
-		if (filteredTools.length === 0) {
-			console.error(
-				chalk.red(
-					`No valid tools matched --tools filter: ${parsed.tools.join(", ")}`,
-				),
-			);
-			console.log(
-				chalk.dim(
-					`Available tools: ${Object.keys(toolRegistry).sort().join(", ")}`,
-				),
-			);
-			process.exit(1);
-		}
-		baseTools = filteredTools;
-		console.log(
-			chalk.dim(
-				`Tools restricted to: ${filteredTools.map((t) => t.name).join(", ")}`,
-			),
+	let toolsResult: Awaited<
+		ReturnType<
+			typeof import("./bootstrap/tools-setup.js").createToolsAndSandbox
+		>
+	>;
+	try {
+		const { createToolsAndSandbox } = await import(
+			"./bootstrap/tools-setup.js"
 		);
+		toolsResult = await createToolsAndSandbox({
+			parsedTools: parsed.tools,
+			parsedSandbox: parsed.sandbox,
+			cwd: process.cwd(),
+		});
+	} catch (error) {
+		console.error(
+			chalk.red(error instanceof Error ? error.message : String(error)),
+		);
+		process.exit(1);
 	}
-
-	// Load inline tools from .composer/tools.json and ~/.composer/tools.json
-	const inlineTools = loadInlineTools();
-	const allTools = [...baseTools, ...inlineTools];
-
-	// Create sandbox for isolated tool execution if requested
-	// Sandbox modes:
-	// - "docker": Run tools in a Docker container for isolation
-	// - "local": Run tools locally with limited permissions
-	// - "none": No sandboxing (default)
-	const sandboxMode = (parsed.sandbox ?? process.env.COMPOSER_SANDBOX_MODE) as
-		| SandboxMode
-		| undefined;
-	const sandbox = sandboxMode
-		? await createSandbox({ mode: sandboxMode, cwd: process.cwd() })
-		: undefined;
+	const { allTools, baseTools, sandbox, sandboxMode } = toolsResult;
 
 	// Register sandbox cleanup on exit (only if sandbox is active)
-	if (sandbox) {
-		const cleanupSandbox = async () => {
-			await disposeSandbox(sandbox);
-		};
+	if (sandbox && toolsResult.disposeSandbox) {
+		const cleanupSandbox = toolsResult.disposeSandbox;
 		if (!sandboxCleanupRegistered) {
 			process.once("beforeExit", () => void cleanupSandbox());
 			process.once("SIGINT", () => {
@@ -1492,243 +928,47 @@ export async function main(args: string[]) {
 	// PHASE 11: Agent Creation
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	// Create the main Agent instance that orchestrates LLM communication
-	// The Agent handles:
-	// - Message history management
-	// - Streaming response handling
-	// - Tool execution orchestration
-	// - Context injection from various sources
-	const sessionTokenCounter = async (sessionId: string) => {
-		try {
-			const { isDatabaseConfigured } = await getDbModule();
-			if (!isDatabaseConfigured()) return null;
-			const { getSessionTokenCount } = await getBillingModule();
-			return await getSessionTokenCount(sessionId);
-		} catch (error) {
-			logger.warn("Failed to get session token count", {
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return null;
-		}
-	};
-
-	const auditLogger = async (entry: {
-		toolName: string;
-		args: Record<string, unknown>;
-		status: "success" | "failure" | "denied";
-		durationMs: number;
-		error?: string;
-	}) => {
-		try {
-			const { logSensitiveToolExecution } = await getAuditModule();
-			await logSensitiveToolExecution(
-				entry.toolName,
-				entry.args,
-				entry.status,
-				entry.durationMs,
-				entry.error,
-			);
-		} catch (error) {
-			logger.warn("Failed to log tool execution", {
-				error: error instanceof Error ? error.message : String(error),
-				toolName: entry.toolName,
-			});
-		}
-	};
-
-	const agent = new Agent({
-		initialState: {
-			systemPrompt,
-			model,
-			thinkingLevel: "off", // Extended thinking disabled by default
-			reasoningSummary,
-			tools: allTools,
-			sandbox,
-			sandboxMode: sandboxMode ?? null,
-			sandboxEnabled: Boolean(sandbox),
-			// Inject enterprise user context for audit logging
-			user: (() => {
-				const u = enterpriseContext.getUser();
-				return u ? { id: u.userId, orgId: u.orgId } : undefined;
-			})(),
-		},
-		// Transport handles LLM API communication with auth resolution
-		transport: new ProviderTransport({
-			getAuthContext: (providerName) => requireCredential(providerName, false),
-			approvalService,
-			sessionTokenCounter,
-			auditLogger,
-		}),
-		// Context sources inject dynamic information into the system prompt
-		// These provide real-time context like todos, background tasks, LSP state, etc.
-		contextSources: [
-			new TodoContextSource(), // Active todo list items
-			new BackgroundTaskContextSource(), // Running background processes
-			new LspContextSource(), // Language Server diagnostics
-			new FrameworkPreferenceContextSource(), // Framework preferences
-			new IDEContextSource(), // IDE integration state
-		],
+	const { createAgentInstance } = await import(
+		"./bootstrap/agent-creation-setup.js"
+	);
+	const enterpriseUser = (() => {
+		const u = enterpriseContext.getUser();
+		return u ? { id: u.userId, orgId: u.orgId } : undefined;
+	})();
+	const { agent } = createAgentInstance({
+		systemPrompt,
+		model,
+		reasoningSummary,
+		allTools,
+		sandbox,
+		sandboxMode: sandboxMode ?? null,
+		approvalService,
+		requireCredential,
+		enterpriseUser,
+		readonly: parsed.readonly,
+		composer: parsed.composer,
+		cwd: process.cwd(),
 	});
-
-	// Initialize composer manager for multi-agent orchestration
-	// The composer manager handles spawning sub-agents and coordinating workflows
-	composerManager.initialize(agent, systemPrompt, allTools, process.cwd());
-
-	// Activate composer if specified via CLI flags
-	// --readonly activates the "explore" composer for read-only mode
-	// --composer <name> activates a specific composer profile
-	if (parsed.readonly) {
-		const success = composerManager.activate("explore", process.cwd());
-		if (!success) {
-			console.warn(
-				chalk.yellow(
-					'Warning: Could not activate read-only mode. The "explore" composer may not be available.',
-				),
-			);
-		}
-	} else if (parsed.composer) {
-		const success = composerManager.activate(parsed.composer, process.cwd());
-		if (!success) {
-			console.warn(
-				chalk.yellow(
-					`Warning: Could not activate composer "${parsed.composer}". Check that it exists.`,
-				),
-			);
-		}
-	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 11.5: TypeScript Hooks Initialization
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	// Load TypeScript hooks from ~/.composer/hooks/ and .composer/hooks/
-	// These hooks can intercept events and inject messages via pi.send()
-	setGlobalCwd(process.cwd());
-	const { hooks: tsHooks, errors: tsHookErrors } =
-		await discoverAndLoadTypeScriptHooks([], process.cwd());
-
-	if (tsHooks.length > 0) {
-		console.error(`[hooks] Loaded ${tsHooks.length} TypeScript hooks`);
-	}
-	if (tsHookErrors.length > 0) {
-		console.error(
-			`[hooks] Warning: ${tsHookErrors.length} hook loading errors`,
-		);
-	}
-
-	// Wire up the send handler to allow hooks to inject messages
-	setGlobalSendHandler((text, attachments) => {
-		const message = {
-			role: "user" as const,
-			content: text,
-			attachments,
-			timestamp: Date.now(),
-		};
-		if (agent.state.isStreaming) {
-			// Queue message for processing after current turn
-			void agent.followUp(message);
-		} else {
-			// Start new turn immediately
-			void agent.prompt(text, attachments);
-		}
-	});
-	setGlobalSendMessageHandler((message, triggerTurn) => {
-		const hookMessage = {
-			role: "hookMessage" as const,
-			customType: message.customType,
-			content: message.content,
-			display: message.display,
-			details: message.details,
-			timestamp: Date.now(),
-		};
-		const manager = sessionManager as SessionManager & {
-			appendCustomMessageEntry?: (
-				customType: string,
-				content:
-					| string
-					| { type: string; text?: string; data?: string; mimeType?: string }[],
-				display: boolean,
-				details?: unknown,
-			) => void;
-		};
-		manager.appendCustomMessageEntry?.(
-			message.customType,
-			message.content,
-			message.display,
-			message.details,
-		);
-		if (agent.state.isStreaming) {
-			// Queue for next turn; triggerTurn is ignored while streaming
-			void agent.followUp(hookMessage);
-			return;
-		}
-		agent.injectMessage(hookMessage);
-		if (triggerTurn) {
-			void agent.continue();
-		}
-	});
-	setGlobalAppendEntryHandler((customType, data) => {
-		const manager = sessionManager as SessionManager & {
-			appendCustomEntry?: (type: string, payload?: unknown) => void;
-		};
-		if (manager.appendCustomEntry) {
-			manager.appendCustomEntry(customType, data);
-		} else {
-			console.warn(
-				`[hooks] appendEntry(${customType}) ignored (session manager does not support custom entries yet)`,
-			);
-		}
+	const { initializeTypeScriptHooks } = await import(
+		"./bootstrap/hooks-setup.js"
+	);
+	const { tsHooks } = await initializeTypeScriptHooks({
+		agent,
+		sessionManager,
+		cwd: process.cwd(),
 	});
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 12: MCP (Model Context Protocol) Integration
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	// Initialize MCP servers to extend available tools
-	// MCP servers provide additional capabilities like database access,
-	// file system operations, API integrations, etc.
-	const mcpConfig = loadMcpConfig(process.cwd(), { includeEnvLimits: true });
-	if (mcpConfig.servers.length > 0) {
-		// Listen for MCP server connections to add their tools
-		mcpManager.on("connected", () => {
-			const mcpTools = getAllMcpTools();
-			if (mcpTools.length > 0) {
-				const updatedTools = [...baseTools, ...mcpTools];
-				agent.setTools(updatedTools);
-				// Update composer manager's base tools (preserves active composer state)
-				composerManager.updateBaseTools(updatedTools);
-			}
-		});
-
-		// Listen for tool list changes to update agent tools dynamically
-		// Debounced to handle rapid concurrent updates from multiple servers
-		let toolsChangedTimeout: ReturnType<typeof setTimeout> | null = null;
-		mcpManager.on("tools_changed", () => {
-			if (toolsChangedTimeout) clearTimeout(toolsChangedTimeout);
-			toolsChangedTimeout = setTimeout(() => {
-				toolsChangedTimeout = null;
-				const mcpTools = getAllMcpTools();
-				const updatedTools = [...baseTools, ...mcpTools];
-				agent.setTools(updatedTools);
-				composerManager.updateBaseTools(updatedTools);
-			}, 100);
-		});
-
-		// Clear pending timeout only when all servers have disconnected
-		mcpManager.on("disconnected", () => {
-			const hasConnectedServers = mcpManager
-				.getStatus()
-				.servers.some((s) => s.connected);
-			if (!hasConnectedServers && toolsChangedTimeout) {
-				clearTimeout(toolsChangedTimeout);
-				toolsChangedTimeout = null;
-			}
-		});
-
-		mcpManager.configure(mcpConfig).catch((err) => {
-			console.warn("[mcp] Failed to initialize MCP servers:", err);
-		});
-	}
+	const { initializeMcpServers } = await import("./bootstrap/mcp-setup.js");
+	initializeMcpServers({ agent, baseTools, cwd: process.cwd() });
 
 	// Determine mode early to know if we should print messages
 	const isInteractive = parsed.messages.length === 0;
@@ -1758,475 +998,49 @@ export async function main(args: string[]) {
 		);
 	}
 
-	let scopedModels: RegisteredModel[] = [];
-	if (parsed.models && parsed.models.length > 0) {
-		scopedModels = resolveModelScope(parsed.models);
-		if (scopedModels.length === 0 && shouldPrintMessages) {
-			console.log(
-				chalk.yellow(
-					`Warning: --models patterns (${parsed.models.join(", ")}) did not match any registered models`,
-				),
-			);
-		}
-	}
-
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 13: Session Restoration
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	// Restore previous session state if continuing or resuming
-	// This includes messages, model selection, and thinking level
 	const shouldRestoreSession =
 		parsed.continue || parsed.resume || execResumeApplied;
-	if (shouldRestoreSession) {
-		const messages = sessionManager.loadMessages();
-		if (messages.length > 0) {
-			if (shouldPrintMessages) {
-				console.log(
-					chalk.dim(`Loaded ${messages.length} messages from previous session`),
-				);
-			}
-			agent.replaceMessages(messages);
-		}
-
-		// Load and restore model
-		const savedModel = sessionManager.loadModel();
-		if (savedModel) {
-			// Parse provider/modelId from saved model string (format: "provider/modelId")
-			const [savedProvider, savedModelId] = savedModel.split("/");
-			if (savedProvider && savedModelId && isKnownProvider(savedProvider)) {
-				try {
-					const restoredModel = resolveModel(savedProvider, savedModelId);
-					if (restoredModel) {
-						agent.setModel(restoredModel);
-					}
-					if (shouldPrintMessages) {
-						console.log(chalk.dim(`Restored model: ${savedModel}`));
-					}
-				} catch (error: unknown) {
-					if (shouldPrintMessages) {
-						const message =
-							error instanceof Error ? error.message : String(error);
-						console.error(
-							chalk.yellow(
-								`Warning: Could not restore model ${savedModel}: ${message}`,
-							),
-						);
-					}
-				}
-			} else if (shouldPrintMessages) {
-				console.error(
-					chalk.yellow(
-						`Warning: Could not restore model ${savedModel}: unknown provider`,
-					),
-				);
-			}
-		}
-
-		// Load and restore thinking level
-		const thinkingLevel = sessionManager.loadThinkingLevel() as ThinkingLevel;
-		if (thinkingLevel) {
-			agent.setThinkingLevel(thinkingLevel);
-			if (shouldPrintMessages) {
-				console.log(chalk.dim(`Restored thinking level: ${thinkingLevel}`));
-			}
-		}
-	}
-
-	// Note: Session will be started lazily after the first user message
-	// (unless continuing/resuming, in which case it's already initialized)
-
-	// Log loaded context files (they're already in the system prompt)
 	const isFreshInteractiveSession =
 		isInteractive && !shouldRestoreSession && mode !== "rpc";
 
-	if (shouldPrintMessages && !parsed.continue && !parsed.resume) {
-		const contextFiles = loadProjectContextFiles();
-		if (contextFiles.length > 0) {
-			console.log(chalk.dim("Loaded project context from:"));
-			for (const { path: filePath } of contextFiles) {
-				console.log(chalk.dim(`  - ${filePath}`));
-			}
-		}
-	}
-
-	let startupChangelogSummary: string | null = null;
-	let latestEntryVersion: string | null = null;
-	if (isFreshInteractiveSession && !isChangelogHiddenFromEnv()) {
-		const changelogEntries = parseChangelog(getChangelogPath());
-		const lastVersion = readLastShownChangelogVersion();
-		const latestEntry = lastVersion
-			? getLatestEntry(getNewEntries(changelogEntries, lastVersion))
-			: getLatestEntry(changelogEntries);
-		if (latestEntry) {
-			const versionLabel = formatChangelogVersion(latestEntry);
-			const summaryLine = summarizeChangelogEntry(latestEntry);
-			startupChangelogSummary = summaryLine
-				? `v${versionLabel} — ${summaryLine}`
-				: `v${versionLabel}`;
-			latestEntryVersion = versionLabel;
-		}
-		if (latestEntryVersion) {
-			writeLastShownChangelogVersion(latestEntryVersion);
-		}
-	}
-
-	let updateNotice: UpdateCheckResult | null = null;
-	if (isFreshInteractiveSession) {
-		try {
-			updateNotice = await Promise.race([
-				checkForUpdate(VERSION),
-				new Promise<UpdateCheckResult | null>((resolve) =>
-					setTimeout(() => resolve(null), 1_000),
-				),
-			]);
-		} catch {
-			updateNotice = null;
-		}
-		if (updateNotice && !updateNotice.isUpdateAvailable) {
-			updateNotice = null;
-		}
-	}
+	const { restoreSessionState } = await import(
+		"./bootstrap/session-restoration-setup.js"
+	);
+	const { startupChangelogSummary, updateNotice, scopedModels } =
+		await restoreSessionState({
+			agent,
+			sessionManager,
+			shouldRestoreSession,
+			isContinueOrResume: Boolean(parsed.continue || parsed.resume),
+			shouldPrintMessages,
+			isFreshInteractiveSession,
+			version: VERSION,
+			models: parsed.models,
+		});
 
 	// ─────────────────────────────────────────────────────────────────────────────
-	// PHASE 14.5: Wide Events Telemetry Setup
+	// PHASE 14.5: Event Subscriptions
 	// ─────────────────────────────────────────────────────────────────────────────
 
-	// Initialize turn tracker for canonical wide events telemetry
-	// This emits one comprehensive event per turn for analytics-style querying
-	const turnTracker = createTurnTracker(agent, {
-		sessionId: sessionManager.getSessionId(),
-		onTurnComplete: (event) => {
-			// Log sampled events at debug level
-			if (event.sampled) {
-				logger.debug("Wide event emitted", {
-					turnId: event.turnId,
-					status: event.status,
-					toolCount: event.toolCount,
-					durationMs: event.totalDurationMs,
-					sampleReason: event.sampleReason,
-				});
-			}
-		},
+	const { setupEventSubscriptions } = await import(
+		"./bootstrap/event-subscriptions-setup.js"
+	);
+	setupEventSubscriptions({
+		agent,
+		sessionManager,
+		approvalMode: (approvalModeOverride ?? "prompt") as
+			| "auto"
+			| "prompt"
+			| "fail",
+		sandboxMode,
+		tsHookCount: tsHooks.length,
+		cwd: process.cwd(),
+		enterpriseContext,
 	});
-
-	// Set initial context for turn tracking
-	// Map sandboxMode to tracker's expected values
-	const trackerSandboxMode =
-		sandboxMode === "docker"
-			? "docker"
-			: sandboxMode === "local" || sandboxMode === "native"
-				? "local"
-				: "none";
-	turnTracker.updateContext({
-		sandboxMode: trackerSandboxMode,
-		approvalMode: approvalModeOverride ?? "prompt",
-		mcpServers: mcpManager
-			.getStatus()
-			.servers.filter((s) => s.connected)
-			.map((s) => s.name),
-		contextSourceCount: 5, // TodoContext, BackgroundTask, LSP, Framework, IDE
-		features: {
-			safeMode: Boolean(process.env.COMPOSER_SAFE_MODE),
-			guardianEnabled: process.env.COMPOSER_GUARDIAN !== "0",
-			compactionEnabled: true,
-			hookCount: tsHooks.length,
-		},
-	});
-
-	// Update MCP server list when servers connect/disconnect
-	// Filter by connected status in both handlers for consistency
-	mcpManager.on("connected", () => {
-		turnTracker.updateContext({
-			mcpServers: mcpManager
-				.getStatus()
-				.servers.filter((s) => s.connected)
-				.map((s) => s.name),
-		});
-	});
-	mcpManager.on("disconnected", () => {
-		turnTracker.updateContext({
-			mcpServers: mcpManager
-				.getStatus()
-				.servers.filter((s) => s.connected)
-				.map((s) => s.name),
-		});
-	});
-
-	// Subscribe to agent events to save messages and handle overflow
-	agent.subscribe(async (event) => {
-		// Handle context overflow with auto-compaction and retry
-		if (
-			event.type === "agent_end" &&
-			event.stopReason === "length" &&
-			!event.aborted
-		) {
-			console.error(
-				chalk.yellow("[auto-compact] Context overflow detected, compacting..."),
-			);
-
-			// Import compaction utilities
-			const {
-				buildSummarizationPrompt,
-				decorateSummaryText,
-				buildLocalSummary,
-				calculateContextTokens,
-				getLastAssistantUsage,
-				adjustBoundaryForToolResults,
-				findCutPoint,
-				findPreviousSummary,
-				DEFAULT_COMPACTION_SETTINGS,
-			} = await import("./agent/compaction.js");
-			const { createRenderableMessage, renderMessageToPlainText } =
-				await import("./conversation/render-model.js");
-
-			try {
-				const messages = [...agent.state.messages];
-				const keepCount = 6;
-
-				if (messages.length <= keepCount + 1) {
-					console.error(
-						chalk.yellow("[auto-compact] Not enough history to compact"),
-					);
-					return;
-				}
-
-				// Calculate boundary
-				let boundary = Math.max(0, messages.length - keepCount);
-				const lastUsage = getLastAssistantUsage(messages);
-				if (lastUsage) {
-					const tokenBasedCut = findCutPoint(
-						messages,
-						0,
-						messages.length,
-						DEFAULT_COMPACTION_SETTINGS.keepRecentTokens,
-					);
-					boundary = Math.max(boundary, tokenBasedCut);
-				}
-				boundary = adjustBoundaryForToolResults(messages, boundary);
-
-				const older = messages.slice(0, boundary);
-				if (!older.length) {
-					console.error(
-						chalk.yellow("[auto-compact] No earlier messages to compact"),
-					);
-					return;
-				}
-
-				// Look for previous summary (cascading)
-				const previousSummary = findPreviousSummary(messages);
-				const summaryInput: import("./agent/types.js").Message[] = [];
-				if (previousSummary) {
-					summaryInput.push({
-						role: "user",
-						content: `Previous session summary:\n${previousSummary}`,
-						timestamp: Date.now(),
-					});
-				}
-				const sliceSize = Math.min(40, older.length);
-				summaryInput.push(
-					...(older.slice(-sliceSize) as import("./agent/types.js").Message[]),
-				);
-
-				let summaryText = "";
-				let usedModel = false;
-
-				try {
-					const prompt = buildSummarizationPrompt();
-					const summary = await agent.generateSummary(
-						summaryInput,
-						prompt,
-						"You are a careful note-taker that distills coding conversations into actionable summaries.",
-					);
-					const summaryRenderable = createRenderableMessage(
-						summary as import("./agent/types.js").AppMessage,
-					);
-					const llmText = summaryRenderable
-						? renderMessageToPlainText(summaryRenderable).trim()
-						: "";
-					summaryText =
-						llmText ||
-						buildLocalSummary(
-							older as import("./agent/types.js").AppMessage[],
-							32,
-						);
-					usedModel = true;
-				} catch {
-					summaryText = buildLocalSummary(
-						older as import("./agent/types.js").AppMessage[],
-						32,
-					);
-				}
-
-				const decorated = decorateSummaryText(
-					summaryText,
-					older.length,
-					usedModel,
-				);
-				const tokensBefore = lastUsage ? calculateContextTokens(lastUsage) : 0;
-
-				// Create summary message
-				const summaryMessage: import("./agent/types.js").AssistantMessage = {
-					role: "assistant",
-					content: [{ type: "text", text: decorated }],
-					api: agent.state.model.api,
-					provider: agent.state.model.provider,
-					model: agent.state.model.id,
-					usage: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-						cost: {
-							input: 0,
-							output: 0,
-							cacheRead: 0,
-							cacheWrite: 0,
-							total: 0,
-						},
-					},
-					stopReason: "stop",
-					timestamp: Date.now(),
-				};
-
-				const resumeMessage: import("./agent/types.js").AppMessage = {
-					role: "user",
-					content: [
-						{
-							type: "text",
-							text: "Use the above summary to resume the plan from where we left off.",
-						},
-					],
-					timestamp: Date.now(),
-				};
-
-				const sessionContext = sessionManager.buildSessionContext();
-				const firstKeptEntryId = sessionContext.messageEntries[boundary]?.id;
-
-				// Save compaction
-				sessionManager.saveCompaction(summaryText, boundary, tokensBefore, {
-					auto: true,
-					firstKeptEntryId,
-				});
-
-				// Update agent messages
-				const keep = messages.slice(boundary);
-				const newMessages = [
-					summaryMessage as import("./agent/types.js").AppMessage,
-					resumeMessage,
-					...keep,
-				];
-				agent.replaceMessages(newMessages);
-				sessionManager.saveMessage(summaryMessage);
-				sessionManager.saveMessage(resumeMessage);
-
-				console.error(
-					chalk.green("[auto-compact] Compaction complete, continuing..."),
-				);
-
-				// Continue the conversation
-				void agent.continue();
-			} catch (error) {
-				console.error(
-					chalk.red(
-						`[auto-compact] Failed: ${error instanceof Error ? error.message : String(error)}`,
-					),
-				);
-			}
-			return;
-		}
-
-		// Save messages on completion
-		if (event.type === "message_end") {
-			sessionManager.saveMessage(event.message);
-
-			// Check if we should initialize session now (after first user message)
-			if (sessionManager.shouldInitializeSession(agent.state.messages)) {
-				// Check concurrent session limit before starting
-				// We define "active" as updated in the last hour
-				let activeCount: number | undefined;
-				try {
-					const sessions = sessionManager.loadAllSessions();
-					activeCount = sessions.filter(
-						(s) => Date.now() - s.modified.getTime() < 60 * 60 * 1000,
-					).length;
-				} catch (error) {
-					// Fallback to undefined to let checkSessionLimits decide (it will fail-closed if limit exists)
-					console.error(
-						chalk.yellow(
-							`[Policy] Failed to count active sessions: ${error instanceof Error ? error.message : String(error)}`,
-						),
-					);
-				}
-
-				// Check against policy (+1 for the session we are about to create)
-				const limitCheck = checkSessionLimits(
-					{ startedAt: new Date() },
-					// If loadAllSessions failed (activeCount undefined), we pass undefined to trigger fail-closed
-					// If successful (activeCount number), we pass count + 1
-					activeCount !== undefined
-						? { activeSessionCount: activeCount + 1 }
-						: undefined,
-				);
-
-				if (!limitCheck.allowed) {
-					const msg = `\n[Policy] ${limitCheck.reason}`;
-					if (isInteractive) {
-						// In TUI, we might need to show error via renderer, but renderer isn't accessible here easily
-						// We'll log to stderr which might break TUI layout, but it's a fatal error
-						console.error(chalk.red(msg));
-						// We can't easily stop the agent loop from here without throwing
-						process.exit(1);
-					} else {
-						console.error(chalk.red(msg));
-						process.exit(1);
-					}
-				}
-
-				sessionManager.startSession(agent.state);
-
-				// Record session start in enterprise context for audit logging
-				if (enterpriseContext.isEnterprise()) {
-					enterpriseContext.startSession(
-						sessionManager.getSessionId(),
-						(agent.state.model as RegisteredModel)?.id,
-					);
-					const session = enterpriseContext.getSession();
-					if (session) {
-						agent.setSession({
-							id: session.sessionId,
-							startedAt: session.startedAt,
-						});
-					}
-				}
-			}
-		}
-
-		const modelMetadata = toSessionModelMetadata(
-			agent.state.model as RegisteredModel,
-		);
-		sessionManager.updateSnapshot(agent.state, modelMetadata);
-	});
-
-	// Subscribe to agent events for notification hooks (if configured)
-	if (
-		isNotificationEnabled("turn-complete") ||
-		isNotificationEnabled("session-start") ||
-		isNotificationEnabled("session-end") ||
-		isNotificationEnabled("tool-execution") ||
-		isNotificationEnabled("error")
-	) {
-		agent.subscribe((event) => {
-			const payload = createNotificationFromAgentEvent(event, {
-				cwd: process.cwd(),
-				sessionId: sessionManager.getSessionId(),
-				messages: agent.state.messages,
-			});
-			if (payload) {
-				void sendNotification(payload);
-			}
-		});
-	}
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 14: Runtime Mode Dispatch
@@ -2255,6 +1069,7 @@ export async function main(args: string[]) {
 		await runHeadlessMode(agent, sessionManager, approvalService);
 	} else if (mode === "rpc") {
 		// RPC mode - headless operation
+		const { runRpcMode } = await import("./cli/rpc-mode.js");
 		await runRpcMode(agent, sessionManager);
 	} else if (isInteractive) {
 		// No messages and not RPC - use TUI
