@@ -25,3 +25,6 @@ src/**/*.js.map
 session.txt
 .cache/
 coverage
+
+# Local env (API keys)
+.env
