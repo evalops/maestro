@@ -38,7 +38,7 @@ jobs:
           cache-nx: "false"
 
       - name: Run hook tests
-        run: bun test test/hooks/ --reporter=verbose
+        run: bun test test/hooks/
 
       - name: Test summary
         if: always()

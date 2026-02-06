@@ -201,9 +201,9 @@ List available models:
 {
   "models": [
     {
-      "id": "claude-opus-4-5-20251101",
+      "id": "claude-opus-4-6",
       "provider": "anthropic",
-      "name": "Claude Sonnet 4.5",
+      "name": "Claude Opus 4.6",
       "capabilities": {
         "streaming": true,
         "tools": true,
@@ -221,7 +221,7 @@ Send message and receive streaming response:
 **Request:**
 ```json
 {
-  "model": "anthropic:claude-opus-4-5-20251101",
+  "model": "anthropic:claude-opus-4-6",
   "messages": [
     { "role": "user", "content": "Create a hello world function" }
   ],
@@ -449,7 +449,7 @@ PORT=3001 bun run web
 ```bash
 curl -N -X POST http://localhost:8080/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"model":"anthropic:claude-opus-4-5-20251101","messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"anthropic:claude-opus-4-6","messages":[{"role":"user","content":"hi"}]}'
 ```
 4. Try WebSocket transport from the UI (`/transport ws`) and confirm `/api/chat/ws` upgrades successfully.
 

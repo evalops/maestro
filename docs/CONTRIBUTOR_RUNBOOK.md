@@ -24,7 +24,7 @@ Expected: all commands succeed; dist artifacts appear under `dist/`.
 ## 2. Inner Loop
 
 - `bun run dev` — TS watch (rebuilds `dist/`).
-- TUI: `bun run cli -- --provider anthropic --model claude-opus-4-5-20251101 "hi"`.
+- TUI: `bun run cli -- --provider anthropic --model claude-opus-4-6 "hi"`.
 - Web: `bun run web:dev` (server on `:8080`, Vite on `:3000`).
 - Package builds: `bun run --filter @evalops/tui build`, `bun run --filter @evalops/composer-web build`.
 

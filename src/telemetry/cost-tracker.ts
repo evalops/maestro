@@ -66,9 +66,9 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
 		cachedInputPerMillion: 1.5,
 	},
 	"claude-opus-4-5-20251101": {
-		inputPerMillion: 15,
-		outputPerMillion: 75,
-		cachedInputPerMillion: 1.5,
+		inputPerMillion: 5,
+		outputPerMillion: 25,
+		cachedInputPerMillion: 0.5,
 	},
 	"claude-opus-4-6": {
 		inputPerMillion: 5,

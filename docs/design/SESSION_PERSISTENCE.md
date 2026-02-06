@@ -50,7 +50,7 @@ private getSessionDirectory(): string {
 Each line is a JSON object representing an entry:
 
 ```jsonl
-{"type":"session","id":"uuid","timestamp":"...","cwd":"/path","model":"anthropic/claude-opus-4-5-20251101"}
+{"type":"session","id":"uuid","timestamp":"...","cwd":"/path","model":"anthropic/claude-opus-4-6"}
 {"type":"message","timestamp":"...","message":{"role":"user","content":"Hello"}}
 {"type":"message","timestamp":"...","message":{"role":"assistant","content":[...]}}
 {"type":"thinking_level_change","timestamp":"...","thinkingLevel":"high"}

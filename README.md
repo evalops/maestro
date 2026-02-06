@@ -704,7 +704,7 @@ composer [options] [messages...]
 | Flag | Description |
 |------|-------------|
 | `--provider <name>` | Provider (anthropic, openai, google, etc.). Default: `anthropic` |
-| `--model <id>` | Model ID. Default: `claude-opus-4-5-20251101` |
+| `--model <id>` | Model ID. Default: `claude-opus-4-6` |
 | `--api-key <key>` | Override API key |
 | `--system-prompt <text\|file>` | Custom system prompt |
 | `--append-system-prompt <text\|file>` | Append instructions to the system prompt |
@@ -734,7 +734,7 @@ systemPrompt: |
   Be concise. Flag issues by severity (critical/warning/suggestion).
   
 tools: [read, search, diff, gh_pr]  # Restricted tool set
-model: claude-opus-4-5-20251101     # Can override default model
+model: claude-opus-4-6     # Can override default model
 triggers:
   keywords: [review, pr, code review]
   files: ["*.ts", "*.tsx", "*.py", "*.go"]

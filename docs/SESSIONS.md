@@ -25,7 +25,7 @@ by dashes, so different repos never collide.
 Each line is a JSON object describing a session event:
 
 ```json
-{ "type": "session", "id": "uuid", "timestamp": "...", "cwd": "...", "model": "anthropic/claude-opus-4-5-20251101" }
+{ "type": "session", "id": "uuid", "timestamp": "...", "cwd": "...", "model": "anthropic/claude-opus-4-6" }
 { "type": "message", "timestamp": "...", "message": { "role": "user", "content": "..." } }
 { "type": "thinking_level_change", "timestamp": "...", "thinkingLevel": "deep" }
 { "type": "model_change", "timestamp": "...", "model": "openai/gpt-4o", "modelMetadata": { ... } }

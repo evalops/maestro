@@ -9,7 +9,7 @@ Composer is a Bun + Nx workspace. Follow this path to go from a fresh clone to a
 
 Doc conventions:
 - Audience: contributors. For feature usage see [Feature Guide](FEATURES.md); for tools see [Tools Reference](TOOLS_REFERENCE.md).
-- Defaults: provider/model default to `claude-opus-4-5-20251101` unless overridden.
+- Defaults: provider/model default to `claude-opus-4-6` unless overridden.
 - Build targets: `composer:build` = CLI only; `composer:build:all` = CLI + TUI + Web.
 
 ## Prerequisites
@@ -47,7 +47,7 @@ During development you can use:
 - `npx nx run composer:test --skip-nx-cache` – mirrors CI by building TUI/Web before tests
 - `bun run --filter @evalops/tui build` / `bun run --filter @evalops/composer-web build` – package-specific builds
 - `bun run dev` – optional watch mode (tsc --watch) for inner-loop work
-- `bun run cli -- --provider anthropic --model claude-opus-4-5-20251101 "hello"` – run the CLI directly from `dist/cli.js` with the canonical model example
+- `bun run cli -- --provider anthropic --model claude-opus-4-6 "hello"` – run the CLI directly from `dist/cli.js` with the canonical model example
 
 ## Validate
 Use these checks before opening a PR:

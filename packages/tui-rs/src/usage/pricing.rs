@@ -99,20 +99,40 @@ impl ModelPricing {
             return tier;
         }
 
-        // Try prefix matching
+        // Try prefix matching (longest match wins to prefer specific tiers)
+        let mut best_match: Option<(&str, &PricingTier)> = None;
         for (pattern, tier) in &self.tiers {
-            if model.starts_with(pattern) || pattern.starts_with(model) {
-                return tier;
+            if model.starts_with(pattern.as_str()) || pattern.starts_with(model) {
+                match best_match {
+                    None => best_match = Some((pattern.as_str(), tier)),
+                    Some((best_pattern, _)) if pattern.len() > best_pattern.len() => {
+                        best_match = Some((pattern.as_str(), tier));
+                    }
+                    _ => {}
+                }
             }
         }
+        if let Some((_, tier)) = best_match {
+            return tier;
+        }
 
-        // Check for common model families
+        // Check for common model families (e.g., provider/model-id strings)
         let model_lower = model.to_lowercase();
+        let mut best_family_match: Option<(&str, &PricingTier)> = None;
         for (pattern, tier) in &self.tiers {
             let pattern_lower = pattern.to_lowercase();
             if model_lower.contains(&pattern_lower) || pattern_lower.contains(&model_lower) {
-                return tier;
+                match best_family_match {
+                    None => best_family_match = Some((pattern.as_str(), tier)),
+                    Some((best_pattern, _)) if pattern.len() > best_pattern.len() => {
+                        best_family_match = Some((pattern.as_str(), tier));
+                    }
+                    _ => {}
+                }
             }
+        }
+        if let Some((_, tier)) = best_family_match {
+            return tier;
         }
 
         &self.default_tier
@@ -141,8 +161,12 @@ impl Default for ModelPricing {
     fn default() -> Self {
         let mut pricing = Self::new();
 
-        // Anthropic Claude models (as of Jan 2025)
-        // Claude Opus 4
+        // Anthropic Claude models
+        // Claude Opus 4.6 ($5/$25 per M tokens)
+        pricing.add_tier("claude-opus-4-6", PricingTier::new(5.0, 25.0, 0.50, 6.25));
+        // Claude Opus 4.5 ($5/$25 per M tokens)
+        pricing.add_tier("claude-opus-4-5", PricingTier::new(5.0, 25.0, 0.50, 6.25));
+        // Claude Opus 4.0 ($15/$75 per M tokens)
         pricing.add_tier("claude-opus-4", PricingTier::new(15.0, 75.0, 1.50, 18.75));
         pricing.add_tier("claude-4-opus", PricingTier::new(15.0, 75.0, 1.50, 18.75));
 
@@ -277,5 +301,67 @@ mod tests {
 
         // Cache reads at 0.30/M vs input at 3.0/M
         assert!(with_cache < no_cache);
+    }
+
+    #[test]
+    fn test_opus_4_6_pricing_is_specific() {
+        let pricing = ModelPricing::default();
+
+        // Exact model ID
+        let tier = pricing.get_tier("claude-opus-4-6");
+        assert!((tier.input_per_million - 5.0).abs() < 0.01);
+        assert!((tier.output_per_million - 25.0).abs() < 0.01);
+
+        // Versioned suffix should match the 4.5 tier (not generic 4.x pricing)
+        let tier = pricing.get_tier("claude-opus-4-5-20251101");
+        assert!((tier.input_per_million - 5.0).abs() < 0.01);
+
+        // provider/model-id format should match the specific tier
+        let tier = pricing.get_tier("anthropic/claude-opus-4-6");
+        assert!((tier.input_per_million - 5.0).abs() < 0.01);
+
+        // Extra suffix variants should still match the specific tier
+        let tier = pricing.get_tier("claude-opus-4-6-thinking");
+        assert!((tier.input_per_million - 5.0).abs() < 0.01);
+
+        // The generic Opus 4 tier should remain $15/$75
+        let tier = pricing.get_tier("claude-opus-4-20250514");
+        assert!((tier.input_per_million - 15.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_longest_prefix_wins() {
+        // Verifies that longest-match-wins is deterministic regardless of
+        // HashMap iteration order. Run 50 times to catch nondeterminism.
+        for _ in 0..50 {
+            let pricing = ModelPricing::default();
+
+            // "claude-opus-4-6" (len 16) must beat "claude-opus-4" (len 13)
+            let tier = pricing.get_tier("claude-opus-4-6");
+            assert!(
+                (tier.input_per_million - 5.0).abs() < 0.01,
+                "Opus 4.6 got ${}/M instead of $5/M — prefix match is nondeterministic",
+                tier.input_per_million
+            );
+
+            // "claude-opus-4-5-20251101" should match "claude-opus-4-5" (len 15)
+            // not "claude-opus-4" (len 13)
+            let tier = pricing.get_tier("claude-opus-4-5-20251101");
+            assert!(
+                (tier.input_per_million - 5.0).abs() < 0.01,
+                "Opus 4.5 versioned got ${}/M instead of $5/M",
+                tier.input_per_million
+            );
+
+            // "claude-3-5-haiku-20250101" should match "claude-3-5-haiku" (len 16)
+            // not "claude-3-5" which doesn't exist, but shouldn't match
+            // "claude-3-haiku" (len 14) either
+            let tier = pricing.get_tier("claude-3-5-haiku-20250101");
+            assert!(
+                (tier.input_per_million - 0.80).abs() < 0.01,
+                "Haiku 3.5 versioned got ${}/M instead of $0.80/M",
+                tier.input_per_million
+            );
+        }
     }
 }

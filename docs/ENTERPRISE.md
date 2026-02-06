@@ -174,7 +174,7 @@ Models must be explicitly approved before use:
 ```bash
 curl -X POST /api/model-approvals \
   -d '{
-    "modelId": "claude-opus-4-5-20251101",
+    "modelId": "claude-opus-4-6",
     "status": "approved",
     "tokenLimit": 1000000,
     "spendLimitCents": 5000,

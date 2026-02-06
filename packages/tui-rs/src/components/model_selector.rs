@@ -45,8 +45,8 @@ fn available_models() -> Vec<ModelInfo> {
             "Fast and intelligent, good balance",
         ),
         ModelInfo::new(
-            "claude-opus-4-5-20251101",
-            "Claude Opus 4.5",
+            "claude-opus-4-6",
+            "Claude Opus 4.6",
             "Anthropic",
             "Most capable, best for complex tasks",
         ),

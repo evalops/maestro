@@ -162,11 +162,11 @@ interface ModelPricing {
 }
 
 const MODEL_PRICING: Record<string, ModelPricing> = {
-  "anthropic/claude-opus-4-5-20251101": {
-    inputPerMillion: 15.00,
-    outputPerMillion: 75.00,
-    cacheReadPerMillion: 1.50,
-    cacheWritePerMillion: 18.75
+  "anthropic/claude-opus-4-6": {
+    inputPerMillion: 5.00,
+    outputPerMillion: 25.00,
+    cacheReadPerMillion: 0.50,
+    cacheWritePerMillion: 6.25
   },
   "anthropic/claude-sonnet-4-5-20250929": {
     inputPerMillion: 3.00,

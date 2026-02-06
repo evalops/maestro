@@ -55,6 +55,11 @@ impl ModelLimits {
                 max_output: 8_192,
                 ..Default::default()
             },
+            s if s.contains("claude-opus-4-6") => Self {
+                max_context: 1_000_000,
+                max_output: 128_000,
+                ..Default::default()
+            },
             s if s.contains("claude-opus-4") => Self {
                 max_context: 200_000,
                 max_output: 32_000,
@@ -340,6 +345,10 @@ mod tests {
 
     #[test]
     fn test_model_limits() {
+        let limits = ModelLimits::for_model("claude-opus-4-6");
+        assert_eq!(limits.max_context, 1_000_000);
+        assert_eq!(limits.max_output, 128_000);
+
         let limits = ModelLimits::for_model("claude-opus-4-5-20251101");
         assert_eq!(limits.max_context, 200_000);
         assert_eq!(limits.max_output, 32_000);
