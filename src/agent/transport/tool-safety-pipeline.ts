@@ -3,7 +3,7 @@
  * Pre-execution safety evaluation: rate limiting, adaptive thresholds,
  * safety middleware, firewall checks, PII policy, approval flow, and tool validation.
  *
- * Returns a verdict with collected events for the caller to yield.
+ * Yields events as they occur and returns a verdict when complete.
  */
 
 import {
@@ -221,12 +221,14 @@ interface RateLimitUpdate {
 
 /**
  * Evaluate all safety checks for a tool call before execution.
- * Returns a verdict indicating whether to block or proceed, along with
- * collected events the caller should yield.
+ * Yields events as they occur and returns the final verdict.
  */
-export async function evaluateToolSafety(
+export async function* evaluateToolSafety(
 	ctx: ToolSafetyContext,
-): Promise<{ verdict: ToolSafetyVerdict; rateLimitUpdate: RateLimitUpdate }> {
+): AsyncGenerator<
+	AgentEvent,
+	{ verdict: ToolSafetyVerdict; rateLimitUpdate: RateLimitUpdate }
+> {
 	const {
 		toolCall,
 		tools,
@@ -244,12 +246,24 @@ export async function evaluateToolSafety(
 	} = ctx;
 
 	const events: AgentEvent[] = [];
+	const recordEvent = (event: AgentEvent) => {
+		events.push(event);
+		return event;
+	};
+	const recordEvents = (newEvents: AgentEvent[]) => {
+		events.push(...newEvents);
+		return newEvents;
+	};
 
 	// 1. Rate limiting
 	const rateLimitResult = checkRateLimit(ctx);
 	if (rateLimitResult.blocked) {
+		const blockedEvents = recordEvents(rateLimitResult.events);
+		for (const event of blockedEvents) {
+			yield event;
+		}
 		return {
-			verdict: { outcome: "blocked", events: rateLimitResult.events },
+			verdict: { outcome: "blocked", events },
 			rateLimitUpdate: rateLimitResult.updatedState,
 		};
 	}
@@ -257,7 +271,7 @@ export async function evaluateToolSafety(
 	const sanitizedStartArgs = safetyMiddleware.sanitizeForLogging(
 		toolCall.arguments as Record<string, unknown>,
 	);
-	events.push({
+	yield recordEvent({
 		type: "tool_execution_start",
 		toolCallId: toolCall.id,
 		toolName: toolCall.name,
@@ -293,7 +307,12 @@ export async function evaluateToolSafety(
 				0,
 				hookResult.blockReason,
 			);
-			events.push(...emitToolResult(hookBlockedResult, toolCall, true));
+			const hookBlockedEvents = recordEvents(
+				emitToolResult(hookBlockedResult, toolCall, true),
+			);
+			for (const event of hookBlockedEvents) {
+				yield event;
+			}
 			return {
 				verdict: { outcome: "blocked", events },
 				rateLimitUpdate: rateLimitResult.updatedState,
@@ -336,7 +355,12 @@ export async function evaluateToolSafety(
 			0,
 			safetyCheck.reason,
 		);
-		events.push(...emitToolResult(safetyBlockedResult, toolCall, true));
+		const safetyBlockedEvents = recordEvents(
+			emitToolResult(safetyBlockedResult, toolCall, true),
+		);
+		for (const event of safetyBlockedEvents) {
+			yield event;
+		}
 		return {
 			verdict: { outcome: "blocked", events },
 			rateLimitUpdate: rateLimitResult.updatedState,
@@ -392,7 +416,12 @@ export async function evaluateToolSafety(
 			0,
 			verdict.reason,
 		);
-		events.push(...emitToolResult(blockedResult, toolCall, true));
+		const firewallBlockedEvents = recordEvents(
+			emitToolResult(blockedResult, toolCall, true),
+		);
+		for (const event of firewallBlockedEvents) {
+			yield event;
+		}
 		return {
 			verdict: { outcome: "blocked", events },
 			rateLimitUpdate: rateLimitResult.updatedState,
@@ -409,7 +438,12 @@ export async function evaluateToolSafety(
 			workflowSnapshot,
 			clock,
 		);
-		events.push(...emitToolResult(policyResult, toolCall, true));
+		const policyBlockedEvents = recordEvents(
+			emitToolResult(policyResult, toolCall, true),
+		);
+		for (const event of policyBlockedEvents) {
+			yield event;
+		}
 		return {
 			verdict: { outcome: "blocked", events },
 			rateLimitUpdate: rateLimitResult.updatedState,
@@ -430,12 +464,12 @@ export async function evaluateToolSafety(
 			};
 			const shouldEmitEvents = approvalService.requiresUserInteraction();
 			if (shouldEmitEvents) {
-				events.push({ type: "action_approval_required", request });
+				yield recordEvent({ type: "action_approval_required", request });
 			}
 
 			const decision = await approvalService.requestApproval(request, signal);
 			if (shouldEmitEvents) {
-				events.push({
+				yield recordEvent({
 					type: "action_approval_resolved",
 					request,
 					decision,
@@ -468,7 +502,12 @@ export async function evaluateToolSafety(
 			isError: true,
 			timestamp: clock.now(),
 		};
-		events.push(...emitToolResult(deniedResult, toolCall, true));
+		const deniedEvents = recordEvents(
+			emitToolResult(deniedResult, toolCall, true),
+		);
+		for (const event of deniedEvents) {
+			yield event;
+		}
 		return {
 			verdict: { outcome: "blocked", events },
 			rateLimitUpdate: rateLimitResult.updatedState,
@@ -490,7 +529,12 @@ export async function evaluateToolSafety(
 			isError: true,
 			timestamp: clock.now(),
 		};
-		events.push(...emitToolResult(errorResult, toolCall, true));
+		const errorEvents = recordEvents(
+			emitToolResult(errorResult, toolCall, true),
+		);
+		for (const event of errorEvents) {
+			yield event;
+		}
 		return {
 			verdict: { outcome: "blocked", events },
 			rateLimitUpdate: rateLimitResult.updatedState,
@@ -517,7 +561,12 @@ export async function evaluateToolSafety(
 			isError: true,
 			timestamp: clock.now(),
 		};
-		events.push(...emitToolResult(validationErrorResult, toolCall, true));
+		const validationEvents = recordEvents(
+			emitToolResult(validationErrorResult, toolCall, true),
+		);
+		for (const event of validationEvents) {
+			yield event;
+		}
 		return {
 			verdict: { outcome: "blocked", events },
 			rateLimitUpdate: rateLimitResult.updatedState,

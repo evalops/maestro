@@ -75,7 +75,10 @@ import type { ActionApprovalService } from "./action-approval.js";
 import { getStoredCredentials } from "./keys.js";
 import { createProviderStream } from "./transport/create-provider-stream.js";
 import { createToolExecutionPromise } from "./transport/tool-execution.js";
-import { evaluateToolSafety } from "./transport/tool-safety-pipeline.js";
+import {
+	evaluateToolSafety,
+	type ToolSafetyVerdict,
+} from "./transport/tool-safety-pipeline.js";
 import {
 	type PendingExecution,
 	createToolUpdateQueue,
@@ -755,39 +758,48 @@ export class ProviderTransport implements AgentTransport {
 					if (!toolCall) continue;
 
 					// Run safety pipeline (rate limiting, hooks, firewall, approval, validation)
-					const { verdict: safetyVerdict, rateLimitUpdate } =
-						await evaluateToolSafety({
-							toolCall,
-							tools,
-							userMessage,
-							cfg,
-							signal,
-							clock: this.clock,
-							safetyMiddleware: this.safetyMiddleware,
-							workflowState: this.workflowState,
-							adaptiveThresholds: this.adaptiveThresholds,
-							auditLogger: this.auditLogger,
-							approvalService: this.options.approvalService,
-							hookService,
-							firewall,
-							rateLimitState: {
-								recentToolTimestamps: this.recentToolTimestamps,
-								toolCallsThisMinute: this.toolCallsThisMinute,
-								minuteWindowStart: this.minuteWindowStart,
-								rateWindowMs: ProviderTransport.TOOL_RATE_WINDOW_MS,
-								rateLimit: ProviderTransport.TOOL_RATE_LIMIT,
-							},
-							emitToolResult,
-						});
+					const safetyIterator = evaluateToolSafety({
+						toolCall,
+						tools,
+						userMessage,
+						cfg,
+						signal,
+						clock: this.clock,
+						safetyMiddleware: this.safetyMiddleware,
+						workflowState: this.workflowState,
+						adaptiveThresholds: this.adaptiveThresholds,
+						auditLogger: this.auditLogger,
+						approvalService: this.options.approvalService,
+						hookService,
+						firewall,
+						rateLimitState: {
+							recentToolTimestamps: this.recentToolTimestamps,
+							toolCallsThisMinute: this.toolCallsThisMinute,
+							minuteWindowStart: this.minuteWindowStart,
+							rateWindowMs: ProviderTransport.TOOL_RATE_WINDOW_MS,
+							rateLimit: ProviderTransport.TOOL_RATE_LIMIT,
+						},
+						emitToolResult,
+					});
+					let safetyVerdict: ToolSafetyVerdict | undefined;
+					let rateLimitUpdate:
+						| { toolCallsThisMinute: number; minuteWindowStart: number }
+						| undefined;
+					while (true) {
+						const safetyStep = await safetyIterator.next();
+						if (safetyStep.done) {
+							({ verdict: safetyVerdict, rateLimitUpdate } = safetyStep.value);
+							break;
+						}
+						yield safetyStep.value;
+					}
+					if (!safetyVerdict || !rateLimitUpdate) {
+						throw new Error("Safety pipeline did not return a verdict.");
+					}
 
 					// Apply rate limit state updates
 					this.toolCallsThisMinute = rateLimitUpdate.toolCallsThisMinute;
 					this.minuteWindowStart = rateLimitUpdate.minuteWindowStart;
-
-					// Yield collected events from safety pipeline
-					for (const event of safetyVerdict.events) {
-						yield event;
-					}
 
 					if (safetyVerdict.outcome === "blocked") {
 						await checkSteering();
