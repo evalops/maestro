@@ -40,7 +40,7 @@
  *   ],
  *   "aliases": {
  *     "fast": "anthropic/claude-3-5-haiku-latest",
- *     "smart": "anthropic/claude-opus-4-5-20251101"
+ *     "smart": "anthropic/claude-opus-4-6"
  *   }
  * }
  * ```

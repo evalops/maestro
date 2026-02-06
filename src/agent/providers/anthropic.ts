@@ -11,7 +11,7 @@
  *
  * ```json
  * {
- *   "model": "claude-opus-4-5-20251101",
+ *   "model": "claude-opus-4-6",
  *   "max_tokens": 8192,
  *   "system": "You are a helpful assistant...",
  *   "messages": [{"role": "user", "content": "Hello"}],

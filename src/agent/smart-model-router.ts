@@ -18,7 +18,7 @@
  *
  * // Configure models
  * smartModelRouter.configure({
- *   reasoning: "claude-opus-4-5-20251101",
+ *   reasoning: "claude-opus-4-6",
  *   execution: "claude-sonnet-4-20250514",
  *   tools: "claude-3-5-haiku-20241022",
  * });
@@ -110,7 +110,7 @@ const COMPLEX_TOOLS = new Set(["Edit", "Write", "Bash", "Task"]);
  */
 const DEFAULT_CONFIGS: Record<string, ModelConfig> = {
 	anthropic: {
-		reasoning: "claude-opus-4-5-20251101",
+		reasoning: "claude-opus-4-6",
 		execution: "claude-sonnet-4-20250514",
 		tools: "claude-3-5-haiku-20241022",
 		default: "claude-sonnet-4-20250514",
@@ -128,7 +128,7 @@ const DEFAULT_CONFIGS: Record<string, ModelConfig> = {
 		default: "gemini-1.5-pro",
 	},
 	mixed: {
-		reasoning: "claude-opus-4-5-20251101",
+		reasoning: "claude-opus-4-6",
 		execution: "claude-sonnet-4-20250514",
 		tools: "gpt-4o-mini",
 		default: "claude-sonnet-4-20250514",

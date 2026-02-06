@@ -11,7 +11,7 @@ describe("TurnCollector", () => {
 		const collector = new TurnCollector("session-123", 1);
 
 		collector.setModel({
-			id: "claude-opus-4-5-20251101",
+			id: "claude-opus-4-6",
 			provider: "anthropic",
 			thinkingLevel: "medium",
 		});
@@ -30,7 +30,7 @@ describe("TurnCollector", () => {
 		expect(event.type).toBe("canonical-turn");
 		expect(event.sessionId).toBe("session-123");
 		expect(event.turnNumber).toBe(1);
-		expect(event.model.id).toBe("claude-opus-4-5-20251101");
+		expect(event.model.id).toBe("claude-opus-4-6");
 		expect(event.model.provider).toBe("anthropic");
 		expect(event.tokens.input).toBe(1000);
 		expect(event.tokens.output).toBe(500);

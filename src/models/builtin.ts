@@ -2,12 +2,12 @@ import type { Api, Model } from "../agent/types.js";
 import { MODELS as GENERATED_MODELS } from "./models.generated.js";
 import { normalizeModelBaseUrl } from "./url-normalize.js";
 
-// Manual overlay for Claude Opus 4.5 (not yet in models.dev registry)
-const ANTHROPIC_OPUS_45_OVERLAY = {
+// Manual overlay for Claude Opus 4.6 (not yet in models.dev registry)
+const ANTHROPIC_OPUS_46_OVERLAY = {
 	anthropic: {
-		"claude-opus-4-5-20251101": {
-			id: "claude-opus-4-5-20251101",
-			name: "Claude Opus 4.5",
+		"claude-opus-4-6": {
+			id: "claude-opus-4-6",
+			name: "Claude Opus 4.6",
 			api: "anthropic-messages",
 			provider: "anthropic",
 			baseUrl: "https://api.anthropic.com",
@@ -20,8 +20,8 @@ const ANTHROPIC_OPUS_45_OVERLAY = {
 				cacheRead: 0.5,
 				cacheWrite: 6.25,
 			},
-			contextWindow: 200000,
-			maxTokens: 32000,
+			contextWindow: 1000000,
+			maxTokens: 128000,
 		} as Model<"anthropic-messages">,
 	},
 } satisfies Record<string, Record<string, Model<Api>>>;
@@ -391,6 +391,21 @@ const GITHUB_COPILOT_OVERLAY = {
 		"claude-opus-4.5": {
 			id: "claude-opus-4.5",
 			name: "Claude Opus 4.5",
+			api: "openai-completions",
+			provider: "github-copilot",
+			baseUrl: "https://api.individual.githubcopilot.com",
+			headers: GITHUB_COPILOT_HEADERS,
+			compat: GITHUB_COPILOT_COMPAT,
+			reasoning: true,
+			toolUse: true,
+			input: ["text", "image"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 16000,
+		} as Model<"openai-completions">,
+		"claude-opus-4.6": {
+			id: "claude-opus-4.6",
+			name: "Claude Opus 4.6",
 			api: "openai-completions",
 			provider: "github-copilot",
 			baseUrl: "https://api.individual.githubcopilot.com",
@@ -803,6 +818,19 @@ const GOOGLE_ANTIGRAVITY_OVERLAY = {
 		"claude-opus-4-5-thinking": {
 			id: "claude-opus-4-5-thinking",
 			name: "Claude Opus 4.5 Thinking (Antigravity)",
+			api: "google-gemini-cli",
+			provider: "google-antigravity",
+			baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
+			reasoning: true,
+			toolUse: true,
+			input: ["text", "image"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200000,
+			maxTokens: 64000,
+		} as Model<"google-gemini-cli">,
+		"claude-opus-4-6-thinking": {
+			id: "claude-opus-4-6-thinking",
+			name: "Claude Opus 4.6 Thinking (Antigravity)",
 			api: "google-gemini-cli",
 			provider: "google-antigravity",
 			baseUrl: "https://daily-cloudcode-pa.sandbox.googleapis.com",
@@ -1256,7 +1284,7 @@ function convertGeneratedModels(): Record<string, Model<Api>[]> {
 
 	// Apply overlay additions
 	const overlays: Record<string, Record<string, Model<Api>>>[] = [
-		ANTHROPIC_OPUS_45_OVERLAY,
+		ANTHROPIC_OPUS_46_OVERLAY,
 		OPENROUTER_RESPONSES_OVERLAY,
 		GROQ_RESPONSES_OVERLAY,
 		OPENAI_CODEX_OVERLAY,

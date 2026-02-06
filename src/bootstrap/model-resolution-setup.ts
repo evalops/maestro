@@ -93,7 +93,7 @@ export async function resolveModelFromArgs(params: {
 	}
 
 	provider ??= "anthropic";
-	modelId ??= "claude-opus-4-5-20251101";
+	modelId ??= "claude-opus-4-6";
 
 	// Validate provider
 	const supportedProviders = new Set(getSupportedProviders());

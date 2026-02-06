@@ -69,11 +69,19 @@ const DEFAULT_CHAINS: Record<string, string[]> = {
 		"gemini-1.5-pro",
 	],
 	"claude-opus-4-20250514": [
+		"claude-opus-4-6",
 		"claude-opus-4-5-20251101",
 		"claude-sonnet-4-20250514",
 		"gpt-4-turbo",
 	],
 	"claude-opus-4-5-20251101": [
+		"claude-opus-4-6",
+		"claude-opus-4-20250514",
+		"claude-sonnet-4-20250514",
+		"gpt-4-turbo",
+	],
+	"claude-opus-4-6": [
+		"claude-opus-4-5-20251101",
 		"claude-opus-4-20250514",
 		"claude-sonnet-4-20250514",
 		"gpt-4-turbo",
@@ -108,8 +116,8 @@ const DEFAULT_CHAINS: Record<string, string[]> = {
 	],
 
 	// Reasoning models
-	o1: ["claude-opus-4-5-20251101", "o1-preview", "deepseek-r1"],
-	"deepseek-r1": ["o1", "claude-opus-4-5-20251101", "deepseek-reasoner"],
+	o1: ["claude-opus-4-6", "o1-preview", "deepseek-r1"],
+	"deepseek-r1": ["o1", "claude-opus-4-6", "deepseek-reasoner"],
 };
 
 /**

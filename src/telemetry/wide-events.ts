@@ -159,7 +159,7 @@ export function setDefaultTelemetryRecorder(recorder: TelemetryRecorder): void {
  * Usage:
  * ```typescript
  * const turn = new TurnCollector(sessionId, turnNumber);
- * turn.setModel({ id: "claude-opus-4-5-20251101", provider: "anthropic", thinkingLevel: "medium" });
+ * turn.setModel({ id: "claude-opus-4-6", provider: "anthropic", thinkingLevel: "medium" });
  *
  * // During tool execution
  * turn.recordToolStart("bash", "call-123");

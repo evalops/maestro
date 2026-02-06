@@ -70,6 +70,11 @@ const MODEL_PRICING: Record<string, ModelPricing> = {
 		outputPerMillion: 75,
 		cachedInputPerMillion: 1.5,
 	},
+	"claude-opus-4-6": {
+		inputPerMillion: 5,
+		outputPerMillion: 25,
+		cachedInputPerMillion: 0.5,
+	},
 
 	// Anthropic Claude 3.5
 	"claude-3-5-sonnet-20241022": {

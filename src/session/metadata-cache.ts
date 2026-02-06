@@ -45,7 +45,7 @@ export type { SessionModelMetadata } from "./types.js";
 export class SessionMetadataCache {
 	/** Current thinking level: "off", "minimal", "low", "medium", "high", "max" */
 	private thinkingLevel = "off";
-	/** Current model in format "provider/modelId" (e.g., "anthropic/claude-opus-4-5-20251101") */
+	/** Current model in format "provider/modelId" (e.g., "anthropic/claude-opus-4-6") */
 	private model: string | null = null;
 	/** Full metadata for the current model (capabilities, context window, etc.) */
 	private metadata?: SessionModelMetadata;

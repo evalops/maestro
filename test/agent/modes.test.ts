@@ -56,7 +56,7 @@ describe("agent/modes", () => {
 	describe("getModelForTier", () => {
 		it("returns anthropic model by default", () => {
 			const model = getModelForTier("opus");
-			expect(model).toBe("claude-opus-4-5-20251101");
+			expect(model).toBe("claude-opus-4-6");
 		});
 
 		it("returns openai model when specified", () => {

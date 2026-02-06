@@ -17,7 +17,7 @@ function createSessionEntry(
 		id: "test-id",
 		timestamp: new Date().toISOString(),
 		cwd: "/test",
-		model: "anthropic/claude-opus-4-5-20251101",
+		model: "anthropic/claude-opus-4-6",
 		thinkingLevel: "off",
 		...overrides,
 	};
@@ -50,12 +50,12 @@ describe("SessionMetadataCache", () => {
 		it("extracts model from session entry", () => {
 			const cache = new SessionMetadataCache();
 			const entry = createSessionEntry({
-				model: "anthropic/claude-opus-4-5-20251101",
+				model: "anthropic/claude-opus-4-6",
 			});
 
 			cache.apply(entry);
 
-			expect(cache.getModel()).toBe("anthropic/claude-opus-4-5-20251101");
+			expect(cache.getModel()).toBe("anthropic/claude-opus-4-6");
 		});
 
 		it("extracts model metadata from session entry", () => {
@@ -149,7 +149,7 @@ describe("SessionMetadataCache", () => {
 					id: "test-session",
 					timestamp: "2024-01-01T00:00:00Z",
 					cwd: "/test",
-					model: "anthropic/claude-opus-4-5-20251101",
+					model: "anthropic/claude-opus-4-6",
 					thinkingLevel: "medium",
 				},
 				{
@@ -164,7 +164,7 @@ describe("SessionMetadataCache", () => {
 			const cache = new SessionMetadataCache();
 			cache.seedFromFile(testFile);
 
-			expect(cache.getModel()).toBe("anthropic/claude-opus-4-5-20251101");
+			expect(cache.getModel()).toBe("anthropic/claude-opus-4-6");
 			expect(cache.getThinkingLevel()).toBe("high"); // Updated by change entry
 		});
 
@@ -198,7 +198,7 @@ describe("SessionMetadataCache", () => {
 					id: "test",
 					timestamp: "2024-01-01T00:00:00Z",
 					cwd: "/test",
-					model: "anthropic/claude-opus-4-5-20251101",
+					model: "anthropic/claude-opus-4-6",
 					thinkingLevel: "off",
 				}),
 				"{ invalid json",
@@ -215,7 +215,7 @@ describe("SessionMetadataCache", () => {
 			cache.seedFromFile(testFile);
 
 			// Should parse valid entries and skip invalid ones
-			expect(cache.getModel()).toBe("anthropic/claude-opus-4-5-20251101");
+			expect(cache.getModel()).toBe("anthropic/claude-opus-4-6");
 			expect(cache.getThinkingLevel()).toBe("high");
 		});
 	});
@@ -226,16 +226,16 @@ describe("SessionMetadataCache", () => {
 
 			cache.apply(
 				createSessionEntry({
-					model: "anthropic/claude-opus-4-5-20251101",
+					model: "anthropic/claude-opus-4-6",
 					thinkingLevel: "high",
 					modelMetadata: {
 						provider: "anthropic",
-						modelId: "claude-opus-4-5-20251101",
+						modelId: "claude-opus-4-6",
 					},
 				}),
 			);
 
-			expect(cache.getModel()).toBe("anthropic/claude-opus-4-5-20251101");
+			expect(cache.getModel()).toBe("anthropic/claude-opus-4-6");
 			expect(cache.getThinkingLevel()).toBe("high");
 			expect(cache.getModelMetadata()).toBeDefined();
 

@@ -31,6 +31,8 @@ type ProviderPreset = {
 	requiresApiKey: boolean;
 	apiKeyEnv?: string;
 	note?: string;
+	contextWindow?: number;
+	maxTokens?: number;
 };
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
@@ -38,10 +40,12 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 		id: "anthropic",
 		name: "Anthropic (Claude)",
 		api: "anthropic-messages",
-		defaultModel: "claude-opus-4-5-20251101",
+		defaultModel: "claude-opus-4-6",
 		baseUrl: "https://api.anthropic.com",
 		requiresApiKey: true,
 		apiKeyEnv: "ANTHROPIC_API_KEY",
+		contextWindow: 1000000,
+		maxTokens: 128000,
 	},
 	{
 		id: "openai",
@@ -674,8 +678,8 @@ export async function handleConfigInit(): Promise<void> {
 							name: createPrompts
 								? "{file:./prompts/system.md}"
 								: "Default assistant",
-							contextWindow: 200000,
-							maxTokens: 8192,
+							contextWindow: preset?.contextWindow ?? 200000,
+							maxTokens: preset?.maxTokens ?? 8192,
 						},
 					],
 				},

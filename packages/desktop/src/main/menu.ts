@@ -123,22 +123,25 @@ export function createMenu(mainWindow: BrowserWindow): void {
 				{
 					label: "Claude Sonnet 4",
 					click: () => {
-						mainWindow.webContents.send("menu:set-model", "claude-sonnet-4-5");
+						mainWindow.webContents.send(
+							"menu:set-model",
+							"claude-sonnet-4-5-20250929",
+						);
 					},
 				},
 				{
-					label: "Claude Opus 4.5",
+					label: "Claude Opus 4.6",
 					click: () => {
-						mainWindow.webContents.send(
-							"menu:set-model",
-							"claude-opus-4-5-20251101",
-						);
+						mainWindow.webContents.send("menu:set-model", "claude-opus-4-6");
 					},
 				},
 				{
 					label: "Claude Haiku",
 					click: () => {
-						mainWindow.webContents.send("menu:set-model", "claude-3-5-haiku");
+						mainWindow.webContents.send(
+							"menu:set-model",
+							"claude-haiku-4-5-20251001",
+						);
 					},
 				},
 			],

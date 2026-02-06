@@ -191,7 +191,7 @@ export const MODE_CONFIGS: Record<AgentMode, ModeConfig> = {
 export const MODEL_BY_TIER: Record<ModelTier, ModelMapping> = {
 	// Opus tier: Highest capability models with advanced reasoning
 	opus: {
-		anthropic: "claude-opus-4-5-20251101",
+		anthropic: "claude-opus-4-6",
 		openai: "gpt-5.2",
 		google: "gemini-2.0-flash-thinking-exp",
 	},
