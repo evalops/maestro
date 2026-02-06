@@ -17,7 +17,7 @@ import {
 	applyProviderLoader,
 	readJsonFile,
 } from "./config-loader.js";
-import { normalizeBaseUrl } from "./registry.js";
+import { normalizeBaseUrl } from "./url-normalize.js";
 
 const logger = createLogger("models:registry");
 

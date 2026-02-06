@@ -6,7 +6,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { and, eq } from "drizzle-orm";
 import { AuditLogger } from "../audit/logger.js";
-import { extractBearerToken, verifyToken } from "../auth/jwt.js";
 import { TokenTracker } from "../billing/token-tracker.js";
 import { getDb } from "../db/client.js";
 import {
@@ -45,6 +44,7 @@ import {
 	handleUpdateMemberQuota,
 	handleUpdateMemberRole,
 } from "./enterprise/member-handlers.js";
+import { authenticateJWT } from "./enterprise/middleware.js";
 import {
 	handleApproveModel,
 	handleDenyModel,
@@ -52,34 +52,6 @@ import {
 } from "./enterprise/model-approval-handlers.js";
 
 const logger = createLogger("enterprise-api");
-
-// ============================================================================
-// AUTHENTICATION MIDDLEWARE
-// ============================================================================
-
-export async function authenticateJWT(req: IncomingMessage): Promise<{
-	userId: string;
-	email: string;
-	orgId: string;
-	roleId: string;
-} | null> {
-	const token = extractBearerToken(req.headers.authorization);
-	if (!token) {
-		return null;
-	}
-
-	const payload = verifyToken(token);
-	if (!payload || payload.type !== "access") {
-		return null;
-	}
-
-	return {
-		userId: payload.userId,
-		email: payload.email,
-		orgId: payload.orgId,
-		roleId: payload.roleId,
-	};
-}
 
 // ============================================================================
 // USAGE & QUOTA ENDPOINTS

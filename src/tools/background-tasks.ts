@@ -126,7 +126,6 @@ import {
 	type TaskStartOptions,
 	formatTaskSummary,
 } from "./background/task-types.js";
-export { backgroundTasksTool } from "./background/tool-handler.js";
 import {
 	getShellConfig,
 	killProcessTree,
@@ -1172,6 +1171,7 @@ export type {
 	BackgroundTaskHealthEntry,
 	BackgroundTaskNotification,
 } from "./background/task-types.js";
+export { backgroundTasksTool } from "./background/tool-handler.js";
 
 export function formatTaskFailures(): string | null {
 	const tasks = backgroundTaskManager.getTasks();

@@ -14,7 +14,7 @@ import {
 	RESOURCES,
 } from "../../rbac/permissions.js";
 import { readJsonBody, sendJson } from "../../server/server-utils.js";
-import { authenticateJWT } from "../enterprise-routes.js";
+import { authenticateJWT } from "./middleware.js";
 
 export async function handleGetModelApprovals(
 	req: IncomingMessage,

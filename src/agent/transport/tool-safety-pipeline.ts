@@ -16,6 +16,7 @@ import type { SafetyMiddleware } from "../../safety/safety-middleware.js";
 import type { WorkflowStateTracker } from "../../safety/workflow-state.js";
 import { trackToolBlocked } from "../../telemetry/security-events.js";
 import type { Clock } from "../../utils/clock.js";
+import { createLogger } from "../../utils/logger.js";
 import type { ActionApprovalService } from "../action-approval.js";
 import { validateToolArguments } from "../providers/validation.js";
 import type {
@@ -32,6 +33,8 @@ import {
 	extractTextFromContent,
 	logToolExecutionAudit,
 } from "./transport-utils.js";
+
+const logger = createLogger("transport:tool-safety");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -92,11 +95,25 @@ export interface ToolSafetyContext {
 // Rate Limiting
 // ─────────────────────────────────────────────────────────────────────────────
 
-function checkRateLimit(
-	ctx: ToolSafetyContext,
-):
-	| { blocked: true; events: AgentEvent[]; updatedState: RateLimitUpdate }
-	| { blocked: false; recent: number[]; updatedState: RateLimitUpdate } {
+type RateLimitBlockKind = "anomaly" | "rate_limit";
+
+interface RateLimitBlock {
+	kind: RateLimitBlockKind;
+	reason: string;
+}
+
+function checkRateLimit(ctx: ToolSafetyContext):
+	| {
+			blocked: true;
+			events: AgentEvent[];
+			updatedState: RateLimitUpdate;
+			block: RateLimitBlock;
+	  }
+	| {
+			blocked: false;
+			recent: number[];
+			updatedState: RateLimitUpdate;
+	  } {
 	const { toolCall, clock, adaptiveThresholds, emitToolResult } = ctx;
 	const { recentToolTimestamps, rateWindowMs, rateLimit } = ctx.rateLimitState;
 	let { toolCallsThisMinute, minuteWindowStart } = ctx.rateLimitState;
@@ -143,9 +160,10 @@ function checkRateLimit(
 
 	// Enforce anomaly detection
 	if (anomalyCheck.isAnomaly) {
+		const reason = `Anomaly detected: ${anomalyCheck.reason ?? "Unusual tool call rate"}`;
 		trackToolBlocked({
 			toolName: toolCall.name,
-			reason: `Anomaly detected: ${anomalyCheck.reason ?? "Unusual tool call rate"}`,
+			reason,
 			source: "adaptive",
 		});
 		const anomalyMessage: ToolResultMessage = {
@@ -165,6 +183,10 @@ function checkRateLimit(
 			blocked: true,
 			events: emitToolResult(anomalyMessage, toolCall, true),
 			updatedState,
+			block: {
+				kind: "anomaly",
+				reason,
+			},
 		};
 	}
 
@@ -175,6 +197,7 @@ function checkRateLimit(
 	);
 
 	if (recent.length >= effectiveRateLimit) {
+		const reason = `Rate limit exceeded: >${effectiveRateLimit} calls in ${rateWindowMs / 1000}s window`;
 		const rateMessage: ToolResultMessage = {
 			role: "toolResult",
 			toolCallId: toolCall.id,
@@ -196,6 +219,10 @@ function checkRateLimit(
 			blocked: true,
 			events: emitToolResult(rateMessage, toolCall, true),
 			updatedState,
+			block: {
+				kind: "rate_limit",
+				reason,
+			},
 		};
 	}
 
@@ -255,9 +282,21 @@ export async function* evaluateToolSafety(
 		return newEvents;
 	};
 
+	const sanitizedStartArgs = safetyMiddleware.sanitizeForLogging(
+		toolCall.arguments as Record<string, unknown>,
+	);
+
 	// 1. Rate limiting
 	const rateLimitResult = checkRateLimit(ctx);
 	if (rateLimitResult.blocked) {
+		await logToolExecutionAudit(
+			auditLogger,
+			toolCall.name,
+			sanitizedStartArgs,
+			"denied",
+			0,
+			rateLimitResult.block.reason,
+		);
 		const blockedEvents = recordEvents(rateLimitResult.events);
 		for (const event of blockedEvents) {
 			yield event;
@@ -267,10 +306,6 @@ export async function* evaluateToolSafety(
 			rateLimitUpdate: rateLimitResult.updatedState,
 		};
 	}
-
-	const sanitizedStartArgs = safetyMiddleware.sanitizeForLogging(
-		toolCall.arguments as Record<string, unknown>,
-	);
 	yield recordEvent({
 		type: "tool_execution_start",
 		toolCallId: toolCall.id,
@@ -320,6 +355,25 @@ export async function* evaluateToolSafety(
 		}
 
 		if (hookResult.updatedInput) {
+			const originalKeys = Object.keys(
+				toolCall.arguments as Record<string, unknown>,
+			);
+			const updatedKeys = Object.keys(hookResult.updatedInput);
+			const addedKeys = updatedKeys.filter((k) => !originalKeys.includes(k));
+			const removedKeys = originalKeys.filter((k) => !updatedKeys.includes(k));
+			const modifiedKeys = updatedKeys.filter(
+				(k) =>
+					originalKeys.includes(k) &&
+					(toolCall.arguments as Record<string, unknown>)[k] !==
+						hookResult.updatedInput![k],
+			);
+			logger.debug("Hook modified tool input", {
+				toolName: toolCall.name,
+				toolCallId: toolCall.id,
+				addedKeys,
+				removedKeys,
+				modifiedKeys,
+			});
 			effectiveToolCall = {
 				...toolCall,
 				arguments: hookResult.updatedInput,

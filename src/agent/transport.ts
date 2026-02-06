@@ -76,8 +76,8 @@ import { getStoredCredentials } from "./keys.js";
 import { createProviderStream } from "./transport/create-provider-stream.js";
 import { createToolExecutionPromise } from "./transport/tool-execution.js";
 import {
-	evaluateToolSafety,
 	type ToolSafetyVerdict,
+	evaluateToolSafety,
 } from "./transport/tool-safety-pipeline.js";
 import {
 	type PendingExecution,

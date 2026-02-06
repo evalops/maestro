@@ -47,7 +47,7 @@
 
 // User interaction tools
 import { askUserTool } from "./ask-user.js";
-import { backgroundTasksTool } from "./background-tasks.js";
+import { backgroundTasksTool } from "./background/tool-handler.js";
 
 // Shell execution with cwd tracking and safety checks
 import { bashTool } from "./bash.js";
@@ -111,7 +111,7 @@ export {
 	type AskUserResult,
 } from "./ask-user.js";
 export { bashTool } from "./bash.js";
-export { backgroundTasksTool } from "./background-tasks.js";
+export { backgroundTasksTool } from "./background/tool-handler.js";
 export { codesearchTool } from "./codesearch.js";
 export { diffTool } from "./diff.js";
 export { editTool } from "./edit.js";

@@ -26,7 +26,7 @@ import {
 	sendJson,
 } from "../../server/server-utils.js";
 import { createLogger } from "../../utils/logger.js";
-import { authenticateJWT } from "../enterprise-routes.js";
+import { authenticateJWT } from "./middleware.js";
 
 const logger = createLogger("enterprise-api");
 

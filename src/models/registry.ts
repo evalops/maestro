@@ -93,7 +93,7 @@ import {
 	clearFactoryCache,
 	ensureFactoryData,
 } from "./factory-integration.js";
-import { normalizeLLMBaseUrl } from "./url-normalize.js";
+import { isLocalBaseUrl, normalizeBaseUrl } from "./url-normalize.js";
 
 // Re-export types and functions from extracted modules for backward compatibility
 export type {
@@ -116,6 +116,7 @@ export {
 	getFactoryConfigPath,
 	getFactorySettingsPath,
 } from "./factory-integration.js";
+export { isLocalBaseUrl, normalizeBaseUrl } from "./url-normalize.js";
 const logger = createLogger("models:registry");
 
 /**
@@ -145,101 +146,6 @@ export interface ProviderMetadata {
 
 let cachedProviders: RegisteredModel[] | null = null;
 const customProviderMetadata = new Map<string, ProviderMetadata>();
-
-export function isLocalBaseUrl(url?: string): boolean {
-	if (!url) {
-		return false;
-	}
-	try {
-		const parsed = new URL(url);
-		return (
-			parsed.hostname === "localhost" ||
-			parsed.hostname === "127.0.0.1" ||
-			parsed.hostname === "::1" ||
-			parsed.hostname === "0.0.0.0"
-		);
-	} catch {
-		return false;
-	}
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// URL Normalization & Validation
-// ─────────────────────────────────────────────────────────────────────────────
-
-function validateBaseUrl(baseUrl: string, providerId: string, api?: Api): void {
-	// Validate common provider URL patterns
-	if (providerId === "anthropic" || api === "anthropic-messages") {
-		if (baseUrl.includes("api.anthropic.com")) {
-			if (
-				!baseUrl.includes("/v1/messages") &&
-				!baseUrl.includes("/v1/complete")
-			) {
-				logger.warn(
-					"Anthropic base URL should end with /v1/messages, auto-normalizing",
-					{ baseUrl },
-				);
-			}
-		}
-	}
-
-	if (providerId.includes("bedrock") || providerId.includes("aws")) {
-		if (baseUrl.includes("bedrock.") && !baseUrl.includes("bedrock-runtime.")) {
-			logger.warn(
-				"AWS Bedrock URL should use 'bedrock-runtime', auto-normalizing",
-				{ baseUrl },
-			);
-		}
-	}
-
-	if (providerId.includes("vertex") || providerId.includes("google")) {
-		if (
-			baseUrl.includes("aiplatform.googleapis.com") &&
-			!baseUrl.includes("/v1/")
-		) {
-			logger.warn("Google Vertex AI URLs should include full path with /v1/", {
-				baseUrl,
-			});
-		}
-	}
-}
-
-export function normalizeBaseUrl(
-	baseUrl: string,
-	providerId: string,
-	api?: Api,
-): string {
-	let normalized = baseUrl;
-
-	// Validate first (logs warnings)
-	validateBaseUrl(baseUrl, providerId, api);
-
-	// AWS Bedrock
-	if (providerId.includes("bedrock") || providerId.includes("aws")) {
-		if (
-			normalized.includes("bedrock") &&
-			normalized.includes("amazonaws.com") &&
-			!normalized.includes("bedrock-runtime")
-		) {
-			normalized = normalized.replace("bedrock.", "bedrock-runtime.");
-		}
-	}
-
-	// Google Vertex AI
-	if (providerId.includes("vertex") || providerId.includes("google")) {
-		if (
-			normalized.includes("aiplatform.googleapis.com") &&
-			!normalized.includes("/v1/")
-		) {
-			normalized = normalized.replace(/\/$/, "");
-		}
-	}
-
-	// Apply shared Anthropic/OpenAI normalization
-	normalized = normalizeLLMBaseUrl(normalized, providerId, api);
-
-	return normalized;
-}
 
 function getExpectedUrlFormat(providerId: string, api?: Api): string {
 	if (providerId === "anthropic" || api === "anthropic-messages") {

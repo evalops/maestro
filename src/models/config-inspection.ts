@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { expandTildePath } from "../utils/path-expansion.js";
 import { getConfigPaths, loadConfig, loadConfigFile } from "./config-loader.js";
 import { ensureFactoryData } from "./factory-integration.js";
-import { isLocalBaseUrl } from "./registry.js";
+import { isLocalBaseUrl } from "./url-normalize.js";
 
 /**
  * Validate config without loading it (for CLI validation command)
