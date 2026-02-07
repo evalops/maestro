@@ -20,7 +20,8 @@ export function startThemeWatcher(
 	if (
 		!currentThemeName ||
 		currentThemeName === "dark" ||
-		currentThemeName === "light"
+		currentThemeName === "light" ||
+		currentThemeName === "high-contrast"
 	) {
 		return;
 	}

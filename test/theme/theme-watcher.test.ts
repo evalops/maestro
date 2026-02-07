@@ -43,6 +43,15 @@ describe("theme-watcher", () => {
 		stopThemeWatcher();
 	});
 
+	it("does not start for built-in 'high-contrast' theme", () => {
+		const callbacks: ThemeWatcherCallbacks = {
+			reloadTheme: vi.fn(),
+			handleThemeDeleted: vi.fn(),
+		};
+		startThemeWatcher("high-contrast", callbacks);
+		stopThemeWatcher();
+	});
+
 	it("does not start for undefined theme name", () => {
 		const callbacks: ThemeWatcherCallbacks = {
 			reloadTheme: vi.fn(),

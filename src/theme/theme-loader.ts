@@ -33,7 +33,9 @@ let BUILTIN_THEMES: Record<string, ThemeJson> | undefined;
 
 function getBuiltinThemes(): Record<string, ThemeJson> {
 	if (!BUILTIN_THEMES) {
-		const loadBuiltinTheme = (name: "dark" | "light"): ThemeJson => {
+		const loadBuiltinTheme = (
+			name: "dark" | "light" | "high-contrast",
+		): ThemeJson => {
 			for (const dir of getBuiltinThemeCandidateDirs()) {
 				const themePath = path.join(dir, `${name}.json`);
 				if (!fs.existsSync(themePath)) continue;
@@ -67,6 +69,7 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 		BUILTIN_THEMES = {
 			dark: loadBuiltinTheme("dark"),
 			light: loadBuiltinTheme("light"),
+			"high-contrast": loadBuiltinTheme("high-contrast"),
 		};
 	}
 	return BUILTIN_THEMES;
