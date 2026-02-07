@@ -39,7 +39,12 @@ const previousUnsafe = process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE;
 process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE = "1";
 overrideBackgroundTaskSettingsPath(settingsPath);
 resetBackgroundTaskSettings();
-const TASK_HOLD_MS = 500;
+const IS_CI = Boolean(process.env.CI);
+const TASK_HOLD_MS = IS_CI ? 1500 : 500;
+const DEFAULT_WAIT_ATTEMPTS = IS_CI ? 80 : 50;
+const DEFAULT_WAIT_DELAY_MS = IS_CI ? 200 : 150;
+const DEFAULT_LOG_ATTEMPTS = IS_CI ? 60 : 40;
+const MTIME_BUMP_MS = IS_CI ? 1100 : 5;
 const joinParts = (...parts: string[]) => parts.join("");
 const SAMPLE_REDACTED_TOKEN = joinParts(
 	"sk",
@@ -77,8 +82,8 @@ function sleep(ms: number): Promise<void> {
 async function waitForLogEntry(
 	taskId: string,
 	expected: string,
-	attempts = 40,
-	delayMs = 150,
+	attempts = DEFAULT_LOG_ATTEMPTS,
+	delayMs = DEFAULT_WAIT_DELAY_MS,
 ): Promise<string> {
 	for (let i = 0; i < attempts; i += 1) {
 		const logsResult = await backgroundTasksTool.execute(
@@ -100,8 +105,8 @@ async function waitForLogEntry(
 
 async function waitForCondition(
 	check: () => boolean | Promise<boolean>,
-	attempts = 50,
-	delayMs = 150,
+	attempts = DEFAULT_WAIT_ATTEMPTS,
+	delayMs = DEFAULT_WAIT_DELAY_MS,
 ): Promise<void> {
 	for (let i = 0; i < attempts; i += 1) {
 		const result = await check();
@@ -284,7 +289,7 @@ describe("backgroundTasksTool", () => {
 		expect(beforeNotify).toBe(false);
 
 		// Ensure a distinct mtime before writing.
-		await sleep(5);
+		await sleep(MTIME_BUMP_MS);
 		writeFileSync(
 			settingsPath,
 			JSON.stringify({ notificationsEnabled: true }, null, 2),

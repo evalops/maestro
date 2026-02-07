@@ -5,8 +5,6 @@
  * Copyright (c) 2025 Mario Zechner
  * https://github.com/badlogic/pi-mono
  */
-import * as fs from "node:fs";
-import * as path from "node:path";
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@evalops/tui";
 import chalk from "chalk";
 import {
@@ -15,9 +13,15 @@ import {
 	detectColorMode,
 	fgAnsi,
 } from "./color-utils.js";
-import { embeddedThemes, getThemesDir, loadThemeJson } from "./theme-loader.js";
+import { embeddedThemes, loadThemeJson } from "./theme-loader.js";
 import { resolveThemePalette } from "./theme-resolver.js";
 import type { ThemeBg, ThemeColor, ThemeJson } from "./theme-schema.js";
+import { startThemeWatcher } from "./theme-watcher.js";
+import {
+	createEditorTheme,
+	createMarkdownTheme,
+	createSelectListTheme,
+} from "./tui-theme-helpers.js";
 
 // ============================================================================
 // Types & Schema
@@ -166,15 +170,32 @@ function loadInitialTheme(): Theme {
 // Initialize theme with dark as default
 export let theme: Theme = loadInitialTheme();
 let currentThemeName: string | undefined;
-let themeWatcher: fs.FSWatcher | undefined;
 let onThemeChangeCallback: (() => void) | undefined;
+
+function getWatcherCallbacks() {
+	return {
+		reloadTheme(name: string) {
+			theme = loadTheme(name);
+			if (onThemeChangeCallback) {
+				onThemeChangeCallback();
+			}
+		},
+		handleThemeDeleted() {
+			currentThemeName = "dark";
+			theme = loadTheme("dark");
+			if (onThemeChangeCallback) {
+				onThemeChangeCallback();
+			}
+		},
+	};
+}
 
 export function initTheme(themeName?: string): void {
 	const name = themeName ?? getDefaultTheme();
 	currentThemeName = name;
 	try {
 		theme = loadTheme(name);
-		startThemeWatcher();
+		startThemeWatcher(currentThemeName, getWatcherCallbacks());
 	} catch (error) {
 		// Theme is invalid - fall back to dark theme silently
 		currentThemeName = "dark";
@@ -187,7 +208,7 @@ export function setTheme(name: string): { success: boolean; error?: string } {
 	currentThemeName = name;
 	try {
 		theme = loadTheme(name);
-		startThemeWatcher();
+		startThemeWatcher(currentThemeName, getWatcherCallbacks());
 		return { success: true };
 	} catch (error) {
 		// Theme is invalid - fall back to dark theme
@@ -209,111 +230,20 @@ export function getCurrentThemeName(): string {
 	return currentThemeName ?? "dark";
 }
 
-function startThemeWatcher(): void {
-	// Stop existing watcher if any
-	if (themeWatcher) {
-		themeWatcher.close();
-		themeWatcher = undefined;
-	}
-
-	// Only watch if it's a custom theme (not built-in)
-	if (
-		!currentThemeName ||
-		currentThemeName === "dark" ||
-		currentThemeName === "light"
-	) {
-		return;
-	}
-
-	const themesDir = getThemesDir();
-	const themeFile = path.join(themesDir, `${currentThemeName}.json`);
-
-	// Only watch if the file exists
-	if (!fs.existsSync(themeFile)) {
-		return;
-	}
-
-	try {
-		themeWatcher = fs.watch(themeFile, (eventType) => {
-			if (eventType === "change") {
-				// Debounce rapid changes
-				setTimeout(() => {
-					try {
-						// Reload the theme
-						theme = loadTheme(currentThemeName ?? "dark");
-						// Notify callback (to invalidate UI)
-						if (onThemeChangeCallback) {
-							onThemeChangeCallback();
-						}
-					} catch (error) {
-						// Ignore errors (file might be in invalid state while being edited)
-					}
-				}, 100);
-			} else if (eventType === "rename") {
-				// File was deleted or renamed - fall back to default theme
-				setTimeout(() => {
-					if (!fs.existsSync(themeFile)) {
-						currentThemeName = "dark";
-						theme = loadTheme("dark");
-						if (themeWatcher) {
-							themeWatcher.close();
-							themeWatcher = undefined;
-						}
-						if (onThemeChangeCallback) {
-							onThemeChangeCallback();
-						}
-					}
-				}, 100);
-			}
-		});
-	} catch (error) {
-		// Ignore errors starting watcher
-	}
-}
-
-export function stopThemeWatcher(): void {
-	if (themeWatcher) {
-		themeWatcher.close();
-		themeWatcher = undefined;
-	}
-}
+export { stopThemeWatcher } from "./theme-watcher.js";
 
 // ============================================================================
-// TUI Helpers
+// TUI Helpers (delegating to pure functions)
 // ============================================================================
 
 export function getMarkdownTheme(): MarkdownTheme {
-	return {
-		heading: (text: string) => theme.fg("mdHeading", text),
-		link: (text: string) => theme.fg("mdLink", text),
-		linkUrl: (text: string) => theme.fg("mdLinkUrl", text),
-		code: (text: string) => theme.fg("mdCode", text),
-		codeBlock: (text: string) => theme.fg("mdCodeBlock", text),
-		codeBlockBorder: (text: string) => theme.fg("mdCodeBlockBorder", text),
-		quote: (text: string) => theme.fg("mdQuote", text),
-		quoteBorder: (text: string) => theme.fg("mdQuoteBorder", text),
-		hr: (text: string) => theme.fg("mdHr", text),
-		listBullet: (text: string) => theme.fg("mdListBullet", text),
-		bold: (text: string) => theme.bold(text),
-		italic: (text: string) => theme.fg("mdQuote", theme.italic(text)),
-		underline: (text: string) => theme.underline(text),
-		strikethrough: (text: string) => chalk.strikethrough(text),
-	};
+	return createMarkdownTheme(theme);
 }
 
 export function getSelectListTheme(): SelectListTheme {
-	return {
-		selectedPrefix: (text: string) => theme.fg("accent", text),
-		selectedText: (text: string) => theme.fg("accent", text),
-		description: (text: string) => theme.fg("muted", text),
-		scrollInfo: (text: string) => theme.fg("muted", text),
-		noMatch: (text: string) => theme.fg("muted", text),
-	};
+	return createSelectListTheme(theme);
 }
 
 export function getEditorTheme(): EditorTheme {
-	return {
-		borderColor: (text: string) => theme.fg("borderMuted", text),
-		selectList: getSelectListTheme(),
-	};
+	return createEditorTheme(theme);
 }

@@ -329,12 +329,13 @@ echo "Received: $input"
 	});
 
 	it("respects timeout", async () => {
+		const quotedNode = JSON.stringify(process.execPath);
 		const config = {
 			tools: [
 				{
 					name: "timeout_test",
 					description: "Long running command",
-					command: "sleep 10",
+					command: `${quotedNode} -e "setTimeout(() => {}, 10000)"`,
 					timeout: 100, // 100ms timeout
 				},
 			],
