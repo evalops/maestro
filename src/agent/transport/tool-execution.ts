@@ -264,13 +264,22 @@ export function createToolExecutionPromise(
 		tool.maxRetries !== undefined ||
 		tool.retryDelayMs !== undefined ||
 		tool.shouldRetry !== undefined;
+	const isClientTool = tool.executionLocation === "client";
 	const allowAutoRetries =
-		tool.executionLocation !== "client" &&
+		!isClientTool &&
 		!toolHasRetryConfig &&
 		resolvedRetryConfig.maxAutoRetries > 0;
-	const autoMaxAttempts = allowAutoRetries
-		? resolvedRetryConfig.maxAutoRetries + 1
-		: 1;
+	const autoMaxAttempts = isClientTool
+		? 1
+		: toolHasRetryConfig
+			? (tool.maxRetries ?? resolvedRetryConfig.maxAutoRetries) + 1
+			: allowAutoRetries
+				? resolvedRetryConfig.maxAutoRetries + 1
+				: 1;
+	const retryDelay = toolHasRetryConfig
+		? (tool.retryDelayMs ?? resolvedRetryConfig.initialDelayMs)
+		: resolvedRetryConfig.initialDelayMs;
+	const shouldRetryFn = tool.shouldRetry ?? isRetryableToolError;
 
 	const context = cfg.sandbox ? { sandbox: cfg.sandbox } : undefined;
 	const onUpdate = (partialResult: AgentToolResult) => {
@@ -301,14 +310,11 @@ export function createToolExecutionPromise(
 	};
 
 	const executeWithRetry = async (): Promise<AgentToolResult> => {
-		if (tool.executionLocation === "client") {
-			return await executeToolOnce();
-		}
 		let totalAttempts = 0;
 		let userRetryRounds = 0;
 		while (userRetryRounds < MAX_USER_RETRY_ROUNDS) {
 			let attempt = 0;
-			let delayMs = resolvedRetryConfig.initialDelayMs;
+			let delayMs = retryDelay;
 			let lastError: unknown;
 
 			while (attempt < autoMaxAttempts) {
@@ -321,30 +327,36 @@ export function createToolExecutionPromise(
 					if (signal?.aborted) {
 						throw error;
 					}
-					const retryable = isRetryableToolError(error);
+					const retryable = shouldRetryFn(error);
 					const isFinalAttempt = attempt >= autoMaxAttempts;
 					if (!retryable || isFinalAttempt) {
 						break;
 					}
-					const retryAfter = parseRetryAfter(extractRetryHeaders(error));
-					const delay = Math.min(
-						retryAfter ?? delayMs,
-						resolvedRetryConfig.maxDelayMs,
-					);
-					delayMs = retryAfter
-						? resolvedRetryConfig.initialDelayMs
-						: Math.min(
-								delayMs * resolvedRetryConfig.backoffMultiplier,
-								resolvedRetryConfig.maxDelayMs,
-							);
-					await sleepWithSignal(delay, signal);
+					if (toolHasRetryConfig) {
+						// Tool-level config: fixed delay
+						await sleepWithSignal(retryDelay, signal);
+					} else {
+						// Transport-level config: exponential backoff
+						const retryAfter = parseRetryAfter(extractRetryHeaders(error));
+						const delay = Math.min(
+							retryAfter ?? delayMs,
+							resolvedRetryConfig.maxDelayMs,
+						);
+						delayMs = retryAfter
+							? resolvedRetryConfig.initialDelayMs
+							: Math.min(
+									delayMs * resolvedRetryConfig.backoffMultiplier,
+									resolvedRetryConfig.maxDelayMs,
+								);
+						await sleepWithSignal(delay, signal);
+					}
 				}
 			}
 
 			if (!lastError) {
 				throw new Error("Tool execution failed without an error");
 			}
-			if (!toolRetryService || !isRetryableToolError(lastError)) {
+			if (!toolRetryService || !shouldRetryFn(lastError)) {
 				throw lastError;
 			}
 			const errorMessage = getErrorMessage(lastError);
@@ -373,6 +385,11 @@ export function createToolExecutionPromise(
 				});
 			}
 			if (decision.action === "retry") {
+				if (isClientTool) {
+					// Client tools use a pre-created promise that can't be re-executed
+					// from the transport layer. Throw so the client can handle re-dispatch.
+					throw lastError;
+				}
 				userRetryRounds += 1;
 				continue;
 			}
