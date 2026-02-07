@@ -250,6 +250,15 @@ pub enum CommandAction {
     Steer(String),
     /// Show diagnostics/status summary
     ShowDiagnostics,
+    /// Session management actions
+    Session(SessionAction),
+}
+
+/// Session management actions.
+#[derive(Debug, Clone)]
+pub enum SessionAction {
+    /// Prune old sessions by count/age limits
+    Cleanup,
 }
 
 /// Queue mode target for queue commands.

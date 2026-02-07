@@ -7,8 +7,8 @@ export ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY GROQ_API_KEY \
        COMPOSER_MODEL COMPOSER_MODEL_PROVIDER
 
 .PHONY: help setup install build build-all compile run-ts run-rs run-rs-debug \
-        web dev dev-all test test-fast lint check fmt fmt-unsafe smoke evals \
-        verify clean db-up db-down db-migrate
+        web dev dev-all test test-fast test-coverage lint check fmt fmt-unsafe \
+        smoke evals verify clean db-up db-down db-migrate
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -58,6 +58,9 @@ test: ## Full test suite
 
 test-fast: ## Fast test subset
 	npm run test:fast
+
+test-coverage: ## Test suite with V8 coverage report
+	npm run test:coverage
 
 lint: ## Biome + eval verifier
 	bun run bun:lint

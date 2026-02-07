@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
 Quick validation script for skills - minimal version
+
+Requires: PyYAML (pip install pyyaml)
 """
 
 import sys

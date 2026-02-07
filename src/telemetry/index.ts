@@ -55,3 +55,10 @@ export {
 	type TurnTrackerConfig,
 	type TurnTrackerContext,
 } from "./turn-tracker.js";
+
+// Session performance aggregation
+export {
+	SessionPerfCollector,
+	formatPerfReport,
+	type SessionPerfSnapshot,
+} from "./session-perf.js";

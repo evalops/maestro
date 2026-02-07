@@ -675,6 +675,92 @@ impl SessionManager {
         }
         Ok(())
     }
+
+    /// Prune old sessions that exceed count or age limits.
+    ///
+    /// Respects favorites (never deletes them) and never deletes the current session.
+    /// Returns `(removed, errors)` counts.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_sessions` - Maximum number of sessions to keep (0 = unlimited)
+    /// * `max_age_days` - Maximum age in days for sessions (0 = unlimited)
+    pub fn prune_sessions(&self, max_sessions: usize, max_age_days: u64) -> (usize, usize) {
+        if max_sessions == 0 && max_age_days == 0 {
+            return (0, 0);
+        }
+
+        let sessions = match self.list_sessions() {
+            Ok(s) => s,
+            Err(_) => return (0, 0),
+        };
+
+        let mut removed = 0usize;
+        let mut errors = 0usize;
+
+        // Age-based pruning
+        if max_age_days > 0 {
+            let cutoff =
+                std::time::SystemTime::now() - std::time::Duration::from_secs(max_age_days * 86400);
+
+            for session in &sessions {
+                if session.is_favorite() {
+                    continue;
+                }
+                if self
+                    .current_session_id
+                    .as_deref()
+                    .is_some_and(|id| id == session.id)
+                {
+                    continue;
+                }
+                if let Some(modified) = session.modified {
+                    if modified < cutoff {
+                        match fs::remove_file(&session.path) {
+                            Ok(()) => removed += 1,
+                            Err(e) => {
+                                eprintln!("Failed to prune session {}: {e}", session.short_id());
+                                errors += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Count-based pruning (sessions are already sorted newest-first)
+        if max_sessions > 0 && sessions.len() > max_sessions {
+            let mut kept = 0usize;
+            for session in &sessions {
+                if session.is_favorite() {
+                    continue;
+                }
+                if self
+                    .current_session_id
+                    .as_deref()
+                    .is_some_and(|id| id == session.id)
+                {
+                    continue;
+                }
+                // Check if the file was already removed by age pruning
+                if !session.path.exists() {
+                    continue;
+                }
+                kept += 1;
+                if kept > max_sessions {
+                    match fs::remove_file(&session.path) {
+                        Ok(()) => removed += 1,
+                        Err(e) => {
+                            eprintln!("Failed to prune session {}: {e}", session.short_id());
+                            errors += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        (removed, errors)
+    }
 }
 
 #[cfg(test)]
@@ -1270,5 +1356,122 @@ mod tests {
 
         let debug = format!("{:?}", info);
         assert!(debug.contains("test"));
+    }
+
+    // ============================================================
+    // Prune Sessions Tests
+    // ============================================================
+
+    #[test]
+    fn test_prune_sessions_noop_when_zero_limits() {
+        let dir = TempDir::new().unwrap();
+        create_test_session_file(dir.path(), "abc123");
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let (removed, errors) = manager.prune_sessions(0, 0);
+        assert_eq!(removed, 0);
+        assert_eq!(errors, 0);
+        // Session file still exists
+        assert_eq!(manager.list_sessions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_prune_sessions_by_count() {
+        let dir = TempDir::new().unwrap();
+        for i in 0..5 {
+            create_test_session_file(dir.path(), &format!("session{i}"));
+        }
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        assert_eq!(manager.list_sessions().unwrap().len(), 5);
+
+        let (removed, errors) = manager.prune_sessions(2, 0);
+        assert_eq!(errors, 0);
+        assert!(removed > 0);
+        assert!(manager.list_sessions().unwrap().len() <= 2);
+    }
+
+    #[test]
+    fn test_prune_sessions_respects_favorites() {
+        let dir = TempDir::new().unwrap();
+        // Create a regular session
+        create_test_session_file(dir.path(), "regular");
+        // Create a session with favorite meta
+        let fav_filename = "2024-01-15T10-30-00-000Z_favorite.jsonl";
+        let fav_path = dir.path().join(fav_filename);
+        let mut file = fs::File::create(&fav_path).unwrap();
+        use std::io::Write;
+        writeln!(file, r#"{{"type":"session","id":"favorite","timestamp":"2024-01-15T10:30:00Z","cwd":"/tmp","model":"anthropic/claude-3","thinking_level":"medium"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"session_meta","timestamp":"2024-01-15T10:30:00Z","favorite":true}}"#
+        )
+        .unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        // Prune to 0 count - favorites should survive
+        let (removed, _) = manager.prune_sessions(0, 1); // 1 day age limit
+                                                         // The favorite session file should still exist
+        assert!(fav_path.exists());
+        // removed count may vary based on file timestamps
+        let _ = removed;
+    }
+
+    #[test]
+    fn test_prune_sessions_skips_current_session() {
+        let dir = TempDir::new().unwrap();
+        create_test_session_file(dir.path(), "current123");
+        create_test_session_file(dir.path(), "other456");
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: Some("current123".to_string()),
+            writer: None,
+        };
+
+        // Prune with count limit of 1 - current session should survive
+        let (removed, errors) = manager.prune_sessions(1, 0);
+        assert_eq!(errors, 0);
+
+        // Verify current session file still exists
+        let remaining = manager.list_sessions().unwrap();
+        let current_exists = remaining.iter().any(|s| s.id == "current123");
+        assert!(current_exists, "Current session should not be pruned");
+        let _ = removed;
+    }
+
+    #[test]
+    fn test_prune_sessions_empty_dir() {
+        let dir = TempDir::new().unwrap();
+
+        let manager = SessionManager {
+            cwd: "/tmp".to_string(),
+            sessions_dir: dir.path().to_path_buf(),
+            current_session_id: None,
+            writer: None,
+        };
+
+        let (removed, errors) = manager.prune_sessions(10, 90);
+        assert_eq!(removed, 0);
+        assert_eq!(errors, 0);
     }
 }

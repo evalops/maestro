@@ -48,6 +48,13 @@ export default defineConfig({
 				"src/**/types.ts",
 				"src/cli.ts",
 			],
+			// Minimum coverage thresholds — prevents regression
+			thresholds: {
+				statements: 40,
+				branches: 30,
+				functions: 30,
+				lines: 40,
+			},
 		},
 	},
 	poolOptions,

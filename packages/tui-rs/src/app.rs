@@ -2274,6 +2274,9 @@ Add the required fields and retry.",
             CommandAction::Steer(text) => {
                 let _ = self.handle_steer_submit(text).await;
             }
+            CommandAction::Session(session_action) => {
+                self.handle_session_action(session_action);
+            }
             CommandAction::ShowDiagnostics => {
                 let mut diag = String::new();
                 diag.push_str("## Diagnostics\n\n");
@@ -2358,6 +2361,36 @@ Add the required fields and retry.",
     }
 
     /// Handle session export actions
+    fn handle_session_action(&mut self, action: crate::commands::SessionAction) {
+        use crate::commands::SessionAction;
+        match action {
+            SessionAction::Cleanup => {
+                let max_sessions = std::env::var("COMPOSER_MAX_SESSIONS")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(100);
+                let max_age_days = std::env::var("COMPOSER_MAX_SESSION_AGE_DAYS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(90);
+
+                let (removed, errors) = self
+                    .session_manager
+                    .prune_sessions(max_sessions, max_age_days);
+                if removed == 0 {
+                    self.state
+                        .add_system_message("No sessions to prune.".to_string());
+                } else {
+                    let mut msg = format!("Pruned {removed} session(s).");
+                    if errors > 0 {
+                        msg.push_str(&format!(" {errors} error(s)."));
+                    }
+                    self.state.add_system_message(msg);
+                }
+            }
+        }
+    }
+
     fn handle_export_action(&mut self, action: crate::commands::ExportAction) {
         use crate::commands::ExportAction;
         use crate::session::{ExportFormat, ExportOptions, SessionReader};

@@ -33,6 +33,7 @@ import {
 	type TurnTracker,
 	createTurnTracker,
 } from "../telemetry/turn-tracker.js";
+import type { CanonicalTurnEvent } from "../telemetry/wide-events.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("event-subscriptions");
@@ -57,6 +58,8 @@ export function setupEventSubscriptions(params: {
 		startSession: (sessionId: string, modelId?: string) => void;
 		getSession: () => { sessionId: string; startedAt: Date } | null;
 	};
+	/** Optional callback invoked on every turn completion (for perf aggregation). */
+	onTurnComplete?: (event: CanonicalTurnEvent) => void;
 }): EventSubscriptionsResult {
 	const {
 		agent,
@@ -82,6 +85,7 @@ export function setupEventSubscriptions(params: {
 					sampleReason: event.sampleReason,
 				});
 			}
+			params.onTurnComplete?.(event);
 		},
 	});
 

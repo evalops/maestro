@@ -1,6 +1,8 @@
 name: ci
 
 on:
+  push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -30,9 +32,12 @@ jobs:
 
       - name: Test (Nx affected)
         env:
-          NX_BASE: ${{ github.event.pull_request.base.sha }}
-          NX_HEAD: ${{ github.event.pull_request.head.sha }}
+          NX_BASE: ${{ github.event.pull_request.base.sha || 'HEAD~1' }}
+          NX_HEAD: ${{ github.event.pull_request.head.sha || 'HEAD' }}
         run: bash scripts/ci-nx-tests.sh
+
+      - name: Build
+        run: npm run build
 
       - name: Upload Nx test logs (if any)
         if: ${{ always() && hashFiles('nx-tests-attempt-*.log') != '' }}
@@ -40,4 +45,28 @@ jobs:
         with:
           name: nx-tests-logs-${{ github.run_id }}
           path: nx-tests-attempt-*.log
+          if-no-files-found: ignore
+
+  coverage:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-bun-nx
+
+      - name: Build all packages
+        run: npm run build:all
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: coverage-report-${{ github.run_id }}
+          path: coverage/
           if-no-files-found: ignore

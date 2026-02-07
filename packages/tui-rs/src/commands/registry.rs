@@ -76,7 +76,8 @@ use std::sync::Arc;
 use super::types::{
     ArgumentValue, Command, CommandAction, CommandArgument, CommandCategory, CommandContext,
     CommandError, CommandOutput, CommandResult, ExportAction, HistoryAction, HooksAction,
-    McpAction, ModalType, QueueAction, QueueModeKind, SkillsAction, ToolHistoryAction, UsageAction,
+    McpAction, ModalType, QueueAction, QueueModeKind, SessionAction, SkillsAction,
+    ToolHistoryAction, UsageAction,
 };
 use crate::git;
 use crate::lsp::max_diagnostics_per_file;
@@ -750,10 +751,26 @@ pub fn build_command_registry() -> CommandRegistry {
             "session",
             "Session information",
             CommandCategory::Session,
-            Box::new(|_| Ok(CommandOutput::Message("Current session info".to_string()))),
+            Box::new(|ctx| {
+                let sub = ctx
+                    .raw_args
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase();
+                match sub.as_str() {
+                    "cleanup" | "prune" => Ok(CommandOutput::Action(CommandAction::Session(
+                        SessionAction::Cleanup,
+                    ))),
+                    _ => Ok(CommandOutput::Message("Current session info".to_string())),
+                }
+            }),
         )
         .alias("ss")
-        .group(vec!["info", "new", "clear", "list", "load", "export"]),
+        .usage("/session [info|new|clear|list|load|export|cleanup]")
+        .group(vec![
+            "info", "new", "clear", "list", "load", "export", "cleanup",
+        ]),
     );
 
     registry.register(Command::new(

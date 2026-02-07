@@ -26,6 +26,7 @@ export type GroupedCommandDeps = {
 		handleExport: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleShare: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleRecover: (ctx: CommandExecutionContext) => void | Promise<void>;
+		handleCleanup: (ctx: CommandExecutionContext) => void | Promise<void>;
 	};
 	diag: {
 		handleStatus: () => void | Promise<void>;
@@ -41,6 +42,7 @@ export type GroupedCommandDeps = {
 		handleLsp: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleMcp: (ctx: CommandExecutionContext) => void | Promise<void>;
 		handleSources: (ctx: CommandExecutionContext) => void | Promise<void>;
+		handlePerf: () => void | Promise<void>;
 	};
 	ui: {
 		showTheme: () => void | Promise<void>;
@@ -138,6 +140,8 @@ export function createGroupedCommandHandlers(
 					deps.session.handleShare(ctx),
 				handleRecover: (ctx: CommandExecutionContext) =>
 					deps.session.handleRecover(ctx),
+				handleCleanup: (ctx: CommandExecutionContext) =>
+					deps.session.handleCleanup(ctx),
 				showInfo: (msg: string) => context.showInfo(msg),
 			});
 			await handler(context);
@@ -166,6 +170,7 @@ export function createGroupedCommandHandlers(
 				handleMcp: (ctx: CommandExecutionContext) => deps.diag.handleMcp(ctx),
 				handleSources: (ctx: CommandExecutionContext) =>
 					deps.diag.handleSources(ctx),
+				handlePerf: () => deps.diag.handlePerf(),
 				showInfo: (msg: string) => context.showInfo(msg),
 				isDatabaseConfigured: () => isDatabaseConfigured(),
 			});

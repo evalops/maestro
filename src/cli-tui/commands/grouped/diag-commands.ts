@@ -46,6 +46,7 @@ export interface DiagCommandDeps {
 	handleLsp: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleMcp: (ctx: CommandExecutionContext) => void;
 	handleSources: (ctx: CommandExecutionContext) => void | Promise<void>;
+	handlePerf: () => void;
 	showInfo: (message: string) => void;
 	isDatabaseConfigured: () => boolean;
 }
@@ -134,6 +135,11 @@ export function createDiagCommandHandler(deps: DiagCommandDeps) {
 			case "otel":
 			case "opentelemetry":
 				deps.handleOtel(ctx);
+				break;
+
+			case "perf":
+			case "performance":
+				deps.handlePerf();
 				break;
 
 			case "config":
@@ -231,6 +237,7 @@ function showDiagHelp(ctx: CommandExecutionContext): void {
   /diag telemetry [cmd] Telemetry (status|on|off|reset)
   /diag training [cmd]  Training preference (status|on|off|reset)
   /diag otel            OpenTelemetry runtime config
+  /diag perf            Session performance metrics (tool/LLM latency, throughput)
   /diag config          Configuration validation
   /diag pii [cmd]       PII detection (patterns|test <text>)
   /diag access [cmd]    Directory access (safe|restricted|test <path>)

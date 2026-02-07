@@ -49,6 +49,9 @@ export interface GroupedWiringDeps {
 	handleSessionRecoverCommand: (
 		ctx: CommandExecutionContext,
 	) => void | Promise<void>;
+	handleSessionCleanupCommand: (
+		ctx: CommandExecutionContext,
+	) => void | Promise<void>;
 
 	// ── Diag ──
 	handleStatusCommand: () => void | Promise<void>;
@@ -65,6 +68,7 @@ export interface GroupedWiringDeps {
 	handleTrainingCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleConfigCommand: (ctx: CommandExecutionContext) => void | Promise<void>;
 	handleLspCommand: (rawInput: string) => void | Promise<void>;
+	handlePerfCommand: () => void;
 
 	// ── UI ──
 	showTheme: () => void;
@@ -149,6 +153,7 @@ export function buildGroupedCommandHandlers(
 			handleExport: (ctx) => deps.handleExportCommand(ctx.rawInput),
 			handleShare: (ctx) => deps.handleShareCommand(ctx.rawInput),
 			handleRecover: (ctx) => deps.handleSessionRecoverCommand(ctx),
+			handleCleanup: (ctx) => deps.handleSessionCleanupCommand(ctx),
 		},
 		diag: {
 			handleStatus: () => deps.handleStatusCommand(),
@@ -167,6 +172,7 @@ export function buildGroupedCommandHandlers(
 			handleLsp: (ctx) => deps.handleLspCommand(ctx.rawInput),
 			handleMcp: (ctx) => deps.delegatingHandlers.handleMcpCommand(ctx),
 			handleSources: (ctx) => deps.delegatingHandlers.handleSourcesCommand(ctx),
+			handlePerf: () => deps.handlePerfCommand(),
 		},
 		ui: {
 			showTheme: () => deps.showTheme(),

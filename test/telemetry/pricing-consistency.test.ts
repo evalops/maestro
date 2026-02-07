@@ -33,8 +33,13 @@ function buildGeneratedLookup(): Map<
 				{ cost: { input: number; output: number; cacheRead: number } }
 			>,
 		)) {
-			// Prefer direct (non-openrouter) entries when duplicates exist
-			if (!lookup.has(modelId) || provider !== "openrouter") {
+			// Prefer direct provider entries over openrouter aggregator;
+			// among direct providers, keep the first one seen (stable order)
+			const existing = lookup.get(modelId);
+			if (
+				!existing ||
+				(existing.provider === "openrouter" && provider !== "openrouter")
+			) {
 				lookup.set(modelId, { provider, ...model.cost });
 			}
 		}

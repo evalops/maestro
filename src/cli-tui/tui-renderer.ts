@@ -29,6 +29,10 @@ import {
 } from "../session/manager.js";
 import type { SessionManager } from "../session/manager.js";
 import { getTelemetryStatus } from "../telemetry.js";
+import {
+	SessionPerfCollector,
+	formatPerfReport,
+} from "../telemetry/session-perf.js";
 import { getCurrentThemeName, setTheme } from "../theme/theme.js";
 import { getTrainingStatus } from "../training.js";
 
@@ -288,6 +292,7 @@ export class TuiRenderer {
 	private telemetryStatus = getTelemetryStatus();
 	private trainingStatus = getTrainingStatus();
 	private currentModelMetadata?: SessionModelMetadata;
+	private perfCollector = new SessionPerfCollector();
 
 	// Track if this is the first user message (to skip spacer)
 	// Welcome animation shown before first interaction
@@ -1561,6 +1566,7 @@ export class TuiRenderer {
 	}
 
 	async handleEvent(event: AgentEvent, state: AgentState): Promise<void> {
+		this.perfCollector.handleAgentEvent(event);
 		await this.agentEventBridge.handleEvent(event, state);
 	}
 
@@ -1988,6 +1994,11 @@ export class TuiRenderer {
 		return this.minimalMode;
 	}
 
+	private showPerfReport(): void {
+		const snap = this.perfCollector.snapshot();
+		this.notificationView.showInfo(formatPerfReport(snap));
+	}
+
 	private getGroupedHandlers(): GroupedCommandHandlers {
 		if (!this.groupedHandlers) {
 			this.groupedHandlers = buildGroupedCommandHandlers({
@@ -2019,6 +2030,16 @@ export class TuiRenderer {
 					this.importExportView.handleShareCommand(rawInput),
 				handleSessionRecoverCommand: (ctx) =>
 					this.sessionStateController.handleSessionRecoverCommand(ctx),
+				handleSessionCleanupCommand: (ctx) => {
+					const result = this.sessionManager.pruneSessions();
+					if (result.removed === 0) {
+						ctx.showInfo("No sessions to prune.");
+					} else {
+						ctx.showInfo(
+							`Pruned ${result.removed} session(s).${result.errors > 0 ? ` ${result.errors} error(s).` : ""}`,
+						);
+					}
+				},
 				handleStatusCommand: () => this.diagnosticsView.handleStatusCommand(),
 				handleAboutCommand: () => this.aboutView.handleAboutCommand(),
 				handleContextCommand: (ctx) => this.handleContextCommand(ctx),
@@ -2033,6 +2054,7 @@ export class TuiRenderer {
 					this.trainingView.handleTrainingCommand(ctx),
 				handleConfigCommand: (ctx) => this.configView.handleConfigCommand(ctx),
 				handleLspCommand: (rawInput) => this.lspView.handleLspCommand(rawInput),
+				handlePerfCommand: () => this.showPerfReport(),
 				showTheme: () => this.themeSelectorView.show(),
 				handleCleanCommand: (ctx) =>
 					this.uiStateController.handleCleanCommand(ctx),

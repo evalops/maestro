@@ -1,5 +1,7 @@
 # Composer by EvalOps
 
+[![CI](https://github.com/evalops/composer/actions/workflows/ci.yml/badge.svg)](https://github.com/evalops/composer/actions/workflows/ci.yml)
+
 Composer is a deterministic coding agent with multi-model support, featuring terminal (TUI/CLI), web, IDE (VS Code, JetBrains), browser (Conductor), Slack, and GitHub interfaces for AI-assisted development.
 
 ---

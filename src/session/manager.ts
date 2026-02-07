@@ -460,6 +460,26 @@ export class SessionManager {
 				},
 			},
 		});
+
+		// Auto-prune old sessions in the background (non-blocking)
+		if (
+			SESSION_CONFIG.MAX_SESSIONS > 0 ||
+			SESSION_CONFIG.MAX_SESSION_AGE_DAYS > 0
+		) {
+			setTimeout(() => {
+				try {
+					const result = this.pruneSessions();
+					if (result.removed > 0) {
+						logger.debug("Auto-pruned sessions", result);
+					}
+				} catch (error) {
+					logger.error(
+						"Session auto-prune failed",
+						error instanceof Error ? error : undefined,
+					);
+				}
+			}, 5000);
+		}
 	}
 
 	saveMessage(message: AppMessage): void {
@@ -1274,5 +1294,65 @@ export class SessionManager {
 		}
 
 		unlinkSync(sessionFile);
+	}
+
+	/**
+	 * Prune old sessions based on configured limits.
+	 * Removes sessions that exceed MAX_SESSIONS count or MAX_SESSION_AGE_DAYS.
+	 * Favorites are never pruned.
+	 * Returns the number of sessions removed.
+	 */
+	pruneSessions(): { removed: number; errors: number } {
+		const maxSessions = SESSION_CONFIG.MAX_SESSIONS;
+		const maxAgeDays = SESSION_CONFIG.MAX_SESSION_AGE_DAYS;
+
+		if (maxSessions <= 0 && maxAgeDays <= 0) {
+			return { removed: 0, errors: 0 };
+		}
+
+		const sessions = this.loadAllSessions();
+		const currentSessionId = this.getSessionId();
+		const now = Date.now();
+		const maxAgeMs = maxAgeDays > 0 ? maxAgeDays * 24 * 60 * 60 * 1000 : 0;
+
+		const toRemove: SessionMetadata[] = [];
+
+		// Mark sessions that exceed age limit
+		if (maxAgeMs > 0) {
+			for (const session of sessions) {
+				if (session.favorite) continue;
+				if (session.id === currentSessionId) continue;
+				if (now - session.modified.getTime() > maxAgeMs) {
+					toRemove.push(session);
+				}
+			}
+		}
+
+		// Mark sessions that exceed count limit (keep newest, skip favorites and current)
+		if (maxSessions > 0) {
+			const eligible = sessions.filter(
+				(s) =>
+					!s.favorite &&
+					s.id !== currentSessionId &&
+					!toRemove.some((r) => r.id === s.id),
+			);
+			// Sessions are sorted newest-first from loadAllSessions
+			if (eligible.length > maxSessions) {
+				toRemove.push(...eligible.slice(maxSessions));
+			}
+		}
+
+		let removed = 0;
+		let errors = 0;
+		for (const session of toRemove) {
+			try {
+				unlinkSync(session.path);
+				removed++;
+			} catch {
+				errors++;
+			}
+		}
+
+		return { removed, errors };
 	}
 }

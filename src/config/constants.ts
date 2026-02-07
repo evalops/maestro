@@ -19,6 +19,13 @@ export const getAgentDir = (): string => {
 	return envAgentDir || join(getComposerHome(), "agent");
 };
 
+/** Parse an int env var, returning `fallback` only when the value is NaN. */
+function intEnv(raw: string | undefined, fallback: number): number {
+	if (raw === undefined) return fallback;
+	const n = Number.parseInt(raw, 10);
+	return Number.isNaN(n) ? fallback : n;
+}
+
 /**
  * Session management configuration
  */
@@ -35,6 +42,13 @@ export const SESSION_CONFIG = {
 			join(getAgentDir(), "sessions")
 		);
 	},
+	/** Maximum number of sessions to retain per working directory (0 = unlimited) */
+	MAX_SESSIONS: Math.max(0, intEnv(process.env.COMPOSER_MAX_SESSIONS, 100)),
+	/** Maximum age for sessions in days (0 = unlimited) */
+	MAX_SESSION_AGE_DAYS: Math.max(
+		0,
+		intEnv(process.env.COMPOSER_MAX_SESSION_AGE_DAYS, 90),
+	),
 } as const;
 
 /**
