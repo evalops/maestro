@@ -1,0 +1,51 @@
+{
+	"name": "@evalops/governance",
+	"version": "0.10.0",
+	"description": "Agent governance library — safety pipeline, firewall, and policy enforcement for any MCP-compatible agent.",
+	"type": "module",
+	"main": "./dist/packages/governance/src/index.js",
+	"types": "./dist/packages/governance/src/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/packages/governance/src/index.d.ts",
+			"default": "./dist/packages/governance/src/index.js"
+		}
+	},
+	"files": ["dist", "README.md"],
+	"scripts": {
+		"clean": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/governance.tsbuildinfo",
+		"build": "node ../../scripts/clean-paths.js dist ../../tmp/tsbuildinfo/governance.tsbuildinfo && node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json",
+		"dev": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --watch --preserveWatchOutput",
+		"check": "node ../../scripts/ensure-dir.js ../../tmp/tsbuildinfo && tsc -p tsconfig.build.json --noEmit",
+		"test": "vitest --run --passWithNoTests",
+		"prepublishOnly": "npm run clean && npm run build"
+	},
+	"keywords": [
+		"governance",
+		"safety",
+		"firewall",
+		"policy",
+		"agent",
+		"mcp",
+		"evalops"
+	],
+	"author": "EvalOps",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/evalops/composer.git",
+		"directory": "packages/governance"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	},
+	"dependencies": {
+		"@evalops/contracts": "^0.10.0",
+		"@sinclair/typebox": "^0.34.0"
+	},
+	"devDependencies": {
+		"@types/node": "^24.10.7",
+		"typescript": "^5.9.3",
+		"vitest": "^4.0.7"
+	}
+}

@@ -10,6 +10,10 @@ const allowedOutside = [
 		filePrefix: join(packagesDir, "ai", "src") + sep,
 		allowedPrefixes: [join(repoRoot, "src") + sep],
 	},
+	{
+		filePrefix: join(packagesDir, "governance", "src") + sep,
+		allowedPrefixes: [join(repoRoot, "src") + sep],
+	},
 ];
 
 const sourceExtensions = new Set([".ts", ".tsx", ".js", ".jsx"]);
