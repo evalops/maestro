@@ -185,6 +185,8 @@ export function isAgentEvent(response: RpcResponse): response is AgentEvent {
 		"tool_execution_start",
 		"tool_execution_update",
 		"tool_execution_end",
+		"tool_retry_required",
+		"tool_retry_resolved",
 		"error",
 	].includes(response.type);
 }

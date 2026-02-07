@@ -41,6 +41,10 @@ export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 	const schema = options.schema;
 	const parameters = schema;
 	const validate = compileTypeboxSchema(schema);
+	const maxRetries = options.maxRetries ?? 1;
+	const retryDelayMs = options.retryDelayMs ?? 500;
+	const shouldRetry =
+		options.shouldRetry ?? ((error: unknown) => isTransientToolError(error));
 
 	return {
 		name: options.name,
@@ -52,6 +56,9 @@ export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 		inputExamples: options.inputExamples,
 		allowedCallers: options.allowedCallers,
 		deferApiDefinition: options.deferApiDefinition,
+		maxRetries,
+		retryDelayMs,
+		shouldRetry,
 		execute: async (toolCallId, params: Record<string, unknown>, signal) => {
 			let parsedParams: Static<Schema>;
 			const input =
@@ -69,11 +76,7 @@ export function createTypeboxTool<Schema extends TSchema, Details = undefined>(
 			}
 			parsedParams = input as Static<Schema>;
 
-			const maxAttempts = Math.max(1, (options.maxRetries ?? 1) + 1);
-			const retryDelayMs = options.retryDelayMs ?? 500;
-			const shouldRetry =
-				options.shouldRetry ??
-				((error: unknown) => isTransientToolError(error));
+			const maxAttempts = Math.max(1, maxRetries + 1);
 
 			let attempt = 0;
 			let lastError: unknown;

@@ -73,6 +73,7 @@ import { trackUsage } from "../tracking/cost-tracker.js";
 import { getTrainingHeaders } from "../training.js";
 import type { ActionApprovalService } from "./action-approval.js";
 import { getStoredCredentials } from "./keys.js";
+import type { ToolRetryConfig, ToolRetryService } from "./tool-retry.js";
 import { createProviderStream } from "./transport/create-provider-stream.js";
 import { createToolExecutionPromise } from "./transport/tool-execution.js";
 import {
@@ -127,6 +128,8 @@ export interface ProviderTransportOptions {
 	) => AuthCredential | undefined | Promise<AuthCredential | undefined>;
 	corsProxyUrl?: string;
 	approvalService?: ActionApprovalService;
+	toolRetryService?: ToolRetryService;
+	toolRetryConfig?: ToolRetryConfig;
 	clientToolService?: ClientToolExecutionService;
 	maxConcurrentToolExecutions?: number;
 	/** Hook service for tool lifecycle hooks (PreToolUse, PostToolUse, etc.) */
@@ -857,6 +860,8 @@ export class ProviderTransport implements AgentTransport {
 						adaptiveThresholds: this.adaptiveThresholds,
 						auditLogger: this.auditLogger,
 						hookService,
+						toolRetryService: this.options.toolRetryService,
+						toolRetryConfig: this.options.toolRetryConfig,
 						toolUpdateQueue,
 						clientToolExecPromise,
 					});

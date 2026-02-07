@@ -36,6 +36,7 @@ import type {
 	ActionApprovalDecision,
 	ActionApprovalRequest,
 } from "./action-approval.js";
+import type { ToolRetryDecision, ToolRetryRequest } from "./tool-retry.js";
 
 /**
  * API format identifier for different LLM provider APIs.
@@ -527,6 +528,12 @@ export interface AgentTool<
 	allowedCallers?: string[];
 	/** If true, don't send tool definition to API */
 	deferApiDefinition?: boolean;
+	/** Optional max retries configured by the tool itself */
+	maxRetries?: number;
+	/** Optional retry delay configured by the tool itself */
+	retryDelayMs?: number;
+	/** Optional tool-level retry predicate */
+	shouldRetry?: (error: unknown) => boolean;
 	/**
 	 * Execute the tool with the given parameters.
 	 *
@@ -957,6 +964,10 @@ export interface AgentState {
  * - `action_approval_required` - User approval needed
  * - `action_approval_resolved` - User made approval decision
  *
+ * ## Tool Retry Events
+ * - `tool_retry_required` - Tool failed and retry decision needed
+ * - `tool_retry_resolved` - Tool retry decision resolved
+ *
  * ## Status Events
  * - `status` - Status update
  * - `error` - Error occurred
@@ -1072,6 +1083,20 @@ export type AgentEvent =
 			request: ActionApprovalRequest;
 			/** User's decision */
 			decision: ActionApprovalDecision;
+	  }
+	| {
+			/** Tool failed and requires a retry decision */
+			type: "tool_retry_required";
+			/** Details of the retry request */
+			request: ToolRetryRequest;
+	  }
+	| {
+			/** Tool retry decision resolved */
+			type: "tool_retry_resolved";
+			/** The original request */
+			request: ToolRetryRequest;
+			/** User or policy decision */
+			decision: ToolRetryDecision;
 	  }
 	| {
 			/** Client-side tool invocation needed */

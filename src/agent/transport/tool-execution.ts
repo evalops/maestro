@@ -4,12 +4,20 @@
  * audit logging, safety tracking, and hook lifecycle.
  */
 
+import { getErrorMessage, isRetriableError } from "../../errors/index.js";
 import type { ToolHookService } from "../../hooks/tool-integration.js";
 import { METRICS } from "../../safety/adaptive-thresholds.js";
 import type { AdaptiveThresholds } from "../../safety/adaptive-thresholds.js";
 import type { SafetyMiddleware } from "../../safety/safety-middleware.js";
 import { ToolError } from "../../tools/tool-dsl.js";
 import type { Clock } from "../../utils/clock.js";
+import { extractRetryHeaders, parseRetryAfter } from "../../utils/retry.js";
+import type {
+	ToolRetryConfig,
+	ToolRetryDecision,
+	ToolRetryRequest,
+	ToolRetryService,
+} from "../tool-retry.js";
 import type {
 	AgentRunConfig,
 	AgentTool,
@@ -47,6 +55,8 @@ export interface ToolExecutionContext {
 		ToolHookService,
 		"runPostToolUseHooks" | "runEvalGateHooks" | "runPostToolUseFailureHooks"
 	>;
+	toolRetryService?: ToolRetryService;
+	toolRetryConfig?: ToolRetryConfig;
 	// Concurrency
 	toolUpdateQueue: ToolUpdateQueue;
 	/** Pre-created client tool execution promise (if applicable) */
@@ -54,6 +64,167 @@ export interface ToolExecutionContext {
 		content: AgentToolResult["content"];
 		isError: boolean;
 	}>;
+}
+
+const DEFAULT_TOOL_RETRY_CONFIG: Required<ToolRetryConfig> = {
+	maxAutoRetries: 1,
+	initialDelayMs: 500,
+	maxDelayMs: 5_000,
+	backoffMultiplier: 2,
+};
+
+/** Hard cap on user-prompted retry rounds to prevent infinite loops. */
+const MAX_USER_RETRY_ROUNDS = 10;
+
+const RETRYABLE_MESSAGE_SNIPPETS = [
+	"timeout",
+	"timed out",
+	"rate limit",
+	"too many requests",
+	"temporarily",
+	"overloaded",
+	"network",
+	"econnreset",
+	"econnrefused",
+	"enotfound",
+];
+
+const NON_RETRYABLE_MESSAGE_SNIPPETS = [
+	"invalid",
+	"validation",
+	"not found",
+	"no such file",
+	"permission",
+	"denied",
+	"unauthorized",
+	"forbidden",
+	"syntax",
+];
+
+function resolveToolRetryConfig(
+	config?: ToolRetryConfig,
+): Required<ToolRetryConfig> {
+	return {
+		maxAutoRetries:
+			config?.maxAutoRetries ?? DEFAULT_TOOL_RETRY_CONFIG.maxAutoRetries,
+		initialDelayMs:
+			config?.initialDelayMs ?? DEFAULT_TOOL_RETRY_CONFIG.initialDelayMs,
+		maxDelayMs: config?.maxDelayMs ?? DEFAULT_TOOL_RETRY_CONFIG.maxDelayMs,
+		backoffMultiplier:
+			config?.backoffMultiplier ?? DEFAULT_TOOL_RETRY_CONFIG.backoffMultiplier,
+	};
+}
+
+function isRetryableToolError(error: unknown): boolean {
+	if (!error) return false;
+	if (isRetriableError(error)) return true;
+	if (error instanceof ToolError && error.code === "VALIDATION_ERROR") {
+		return false;
+	}
+	if (error instanceof Error && error.name === "AbortError") {
+		return false;
+	}
+	const message =
+		error instanceof Error
+			? error.message.toLowerCase()
+			: String(error).toLowerCase();
+	if (
+		NON_RETRYABLE_MESSAGE_SNIPPETS.some((snippet) => message.includes(snippet))
+	) {
+		return false;
+	}
+	if (RETRYABLE_MESSAGE_SNIPPETS.some((snippet) => message.includes(snippet))) {
+		return true;
+	}
+	return false;
+}
+
+function buildToolErrorHints(error: unknown, baseMessage: string): string[] {
+	const hints = new Set<string>();
+	const lower = baseMessage.toLowerCase();
+
+	if (error instanceof ToolError && error.code === "VALIDATION_ERROR") {
+		hints.add("Check the tool arguments for missing or invalid values.");
+	}
+	if (
+		lower.includes("permission") ||
+		lower.includes("eacces") ||
+		lower.includes("denied")
+	) {
+		hints.add("Verify file permissions or access rights.");
+	}
+	if (lower.includes("not found") || lower.includes("no such file")) {
+		hints.add("Confirm the target path exists and is spelled correctly.");
+	}
+	if (lower.includes("timeout") || lower.includes("timed out")) {
+		hints.add("Check network connectivity and retry.");
+	}
+	if (lower.includes("rate limit") || lower.includes("too many requests")) {
+		hints.add("Wait briefly before retrying the request.");
+	}
+	if (
+		lower.includes("unauthorized") ||
+		lower.includes("forbidden") ||
+		lower.includes("api key") ||
+		lower.includes("credential")
+	) {
+		hints.add("Verify API keys or credentials for this provider.");
+	}
+	if (isRetriableError(error)) {
+		hints.add("This looks transient; retrying may succeed.");
+	}
+
+	return Array.from(hints);
+}
+
+function formatToolErrorMessage(error: unknown): string {
+	const baseMessage = getErrorMessage(error);
+	const hints = buildToolErrorHints(error, baseMessage);
+	if (hints.length === 0) {
+		return baseMessage;
+	}
+	return `${baseMessage}\n\nNext steps:\n${hints
+		.map((hint) => `- ${hint}`)
+		.join("\n")}`;
+}
+
+function buildRetrySummary(errorMessage: string): string {
+	const firstLine = errorMessage.split(/\r?\n/)[0]?.trim();
+	if (!firstLine) {
+		return "Awaiting retry decision";
+	}
+	const shortened =
+		firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine;
+	return `Retry after error: ${shortened}`;
+}
+
+function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+	if (ms <= 0) return Promise.resolve();
+	if (!signal) {
+		return new Promise((resolve) => setTimeout(resolve, ms));
+	}
+	if (signal.aborted) {
+		const error = new Error("Operation aborted");
+		error.name = "AbortError";
+		return Promise.reject(error);
+	}
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => {
+			cleanup();
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			cleanup();
+			const error = new Error("Operation aborted");
+			error.name = "AbortError";
+			reject(error);
+		};
+		const cleanup = () => {
+			signal.removeEventListener("abort", onAbort);
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,47 +254,144 @@ export function createToolExecutionPromise(
 		hookService,
 		toolUpdateQueue,
 		clientToolExecPromise,
+		toolRetryService,
+		toolRetryConfig,
 	} = ctx;
 
 	const startTime = clock.now();
+	const resolvedRetryConfig = resolveToolRetryConfig(toolRetryConfig);
+	const toolHasRetryConfig =
+		tool.maxRetries !== undefined ||
+		tool.retryDelayMs !== undefined ||
+		tool.shouldRetry !== undefined;
+	const allowAutoRetries =
+		tool.executionLocation !== "client" &&
+		!toolHasRetryConfig &&
+		resolvedRetryConfig.maxAutoRetries > 0;
+	const autoMaxAttempts = allowAutoRetries
+		? resolvedRetryConfig.maxAutoRetries + 1
+		: 1;
 
-	return Promise.resolve()
-		.then(() => {
-			if (tool.executionLocation === "client") {
-				if (!clientToolExecPromise) {
-					throw new Error(
-						`Client tool execution service not configured for tool "${tool.name}"`,
-					);
-				}
-				return clientToolExecPromise.then(
-					(res) =>
-						({
-							content: res.content,
-							isError: res.isError,
-							details: undefined,
-						}) as AgentToolResult,
+	const context = cfg.sandbox ? { sandbox: cfg.sandbox } : undefined;
+	const onUpdate = (partialResult: AgentToolResult) => {
+		toolUpdateQueue.push({
+			type: "tool_execution_update",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			args: sanitizedExecutionArgs,
+			partialResult,
+		});
+	};
+
+	const executeToolOnce = async (): Promise<AgentToolResult> => {
+		if (tool.executionLocation === "client") {
+			if (!clientToolExecPromise) {
+				throw new Error(
+					`Client tool execution service not configured for tool "${tool.name}"`,
 				);
 			}
-			const context = cfg.sandbox ? { sandbox: cfg.sandbox } : undefined;
-			const onUpdate = (partialResult: AgentToolResult) => {
-				toolUpdateQueue.push({
-					type: "tool_execution_update",
-					toolCallId: toolCall.id,
-					toolName: toolCall.name,
-					args: sanitizedExecutionArgs,
-					partialResult,
-				});
+			const res = await clientToolExecPromise;
+			return {
+				content: res.content,
+				isError: res.isError,
+				details: undefined,
+			} as AgentToolResult;
+		}
+		return tool.execute(toolCall.id, validatedArgs, signal, context, onUpdate);
+	};
+
+	const executeWithRetry = async (): Promise<AgentToolResult> => {
+		if (tool.executionLocation === "client") {
+			return await executeToolOnce();
+		}
+		let totalAttempts = 0;
+		let userRetryRounds = 0;
+		while (userRetryRounds < MAX_USER_RETRY_ROUNDS) {
+			let attempt = 0;
+			let delayMs = resolvedRetryConfig.initialDelayMs;
+			let lastError: unknown;
+
+			while (attempt < autoMaxAttempts) {
+				attempt += 1;
+				totalAttempts += 1;
+				try {
+					return await executeToolOnce();
+				} catch (error: unknown) {
+					lastError = error;
+					if (signal?.aborted) {
+						throw error;
+					}
+					const retryable = isRetryableToolError(error);
+					const isFinalAttempt = attempt >= autoMaxAttempts;
+					if (!retryable || isFinalAttempt) {
+						break;
+					}
+					const retryAfter = parseRetryAfter(extractRetryHeaders(error));
+					const delay = Math.min(
+						retryAfter ?? delayMs,
+						resolvedRetryConfig.maxDelayMs,
+					);
+					delayMs = retryAfter
+						? resolvedRetryConfig.initialDelayMs
+						: Math.min(
+								delayMs * resolvedRetryConfig.backoffMultiplier,
+								resolvedRetryConfig.maxDelayMs,
+							);
+					await sleepWithSignal(delay, signal);
+				}
+			}
+
+			if (!lastError) {
+				throw new Error("Tool execution failed without an error");
+			}
+			if (!toolRetryService || !isRetryableToolError(lastError)) {
+				throw lastError;
+			}
+			const errorMessage = getErrorMessage(lastError);
+			const request: ToolRetryRequest = {
+				id: `${toolCall.id}:retry:${totalAttempts}`,
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				args: sanitizedExecutionArgs,
+				errorMessage,
+				attempt: totalAttempts,
+				summary: buildRetrySummary(errorMessage),
 			};
-			return tool.execute(
-				toolCall.id,
-				validatedArgs,
-				signal,
-				context,
-				onUpdate,
-			);
-		})
-		.then(async (result) => {
-			// Log tool execution
+			if (toolRetryService.requiresUserInteraction()) {
+				toolUpdateQueue.push({
+					type: "tool_retry_required",
+					request,
+				});
+			}
+			const decision: ToolRetryDecision =
+				await toolRetryService.requestDecision(request, signal);
+			if (toolRetryService.requiresUserInteraction()) {
+				toolUpdateQueue.push({
+					type: "tool_retry_resolved",
+					request,
+					decision,
+				});
+			}
+			if (decision.action === "retry") {
+				userRetryRounds += 1;
+				continue;
+			}
+			if (decision.action === "abort") {
+				const abortError = new Error(decision.reason ?? "Tool retry aborted");
+				abortError.name = "AbortError";
+				throw abortError;
+			}
+			throw lastError;
+		}
+		throw new Error(
+			`Tool "${toolCall.name}" failed after ${MAX_USER_RETRY_ROUNDS} retry rounds`,
+		);
+	};
+
+	return (async () => {
+		try {
+			const result = await executeWithRetry();
+
 			await logToolExecutionAudit(
 				auditLogger,
 				toolCall.name,
@@ -132,15 +400,13 @@ export function createToolExecutionPromise(
 				clock.now() - startTime,
 			);
 
-			// Record execution in safety middleware for sequence analysis
 			safetyMiddleware.postExecution(
 				toolCall.name,
 				validatedArgs,
 				!result.isError,
-				true, // approved
+				true,
 			);
 
-			// Track failure rate for adaptive thresholds
 			adaptiveThresholds.recordObservation(
 				METRICS.FAILURE_RATE,
 				result.isError ? 1 : 0,
@@ -156,7 +422,6 @@ export function createToolExecutionPromise(
 				timestamp: clock.now(),
 			};
 
-			// Run PostToolUse hooks for successful execution
 			if (hookService && !result.isError) {
 				const postHookResult = await hookService.runPostToolUseHooks(
 					effectiveToolCall,
@@ -249,10 +514,12 @@ export function createToolExecutionPromise(
 				message: toolResultMsg,
 				isError: toolResultMsg.isError,
 			};
-		})
-		.catch(async (error: unknown) => {
-			const errorMessage =
-				error instanceof Error ? error.message : `Error: ${String(error)}`;
+		} catch (error: unknown) {
+			if (error instanceof Error && error.name === "AbortError") {
+				throw error;
+			}
+			const baseErrorMessage = getErrorMessage(error);
+			const formattedMessage = formatToolErrorMessage(error);
 
 			await logToolExecutionAudit(
 				auditLogger,
@@ -260,11 +527,10 @@ export function createToolExecutionPromise(
 				safetyMiddleware.sanitizeForLogging(validatedArgs),
 				"failure",
 				clock.now() - startTime,
-				errorMessage,
+				baseErrorMessage,
 			);
 
 			safetyMiddleware.postExecution(toolCall.name, validatedArgs, false, true);
-
 			adaptiveThresholds.recordObservation(METRICS.FAILURE_RATE, 1);
 
 			const toolResultMsg: ToolResultMessage = {
@@ -274,7 +540,7 @@ export function createToolExecutionPromise(
 				content: [
 					{
 						type: "text" as const,
-						text: errorMessage,
+						text: formattedMessage,
 					},
 				],
 				details: error instanceof ToolError ? error.details : undefined,
@@ -285,7 +551,7 @@ export function createToolExecutionPromise(
 			if (hookService) {
 				const failureHookResult = await hookService.runPostToolUseFailureHooks(
 					effectiveToolCall,
-					errorMessage,
+					baseErrorMessage,
 					signal,
 				);
 				if (failureHookResult.additionalContext) {
@@ -303,5 +569,6 @@ export function createToolExecutionPromise(
 				message: toolResultMsg,
 				isError: true,
 			};
-		});
+		}
+	})();
 }

@@ -22,7 +22,12 @@ export interface PendingExecution {
 
 export type ToolUpdateEvent = Extract<
 	AgentEvent,
-	{ type: "tool_execution_update" }
+	{
+		type:
+			| "tool_execution_update"
+			| "tool_retry_required"
+			| "tool_retry_resolved";
+	}
 >;
 
 // ─────────────────────────────────────────────────────────────────────────────

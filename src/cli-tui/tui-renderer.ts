@@ -16,6 +16,11 @@ import type {
 	ActionApprovalService,
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/agent.js";
+import type {
+	ToolRetryDecision,
+	ToolRetryRequest,
+	ToolRetryService,
+} from "../agent/tool-retry.js";
 import type { AgentEvent, AgentState, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
 import type { CleanMode } from "../conversation/render-model.js";
@@ -107,6 +112,7 @@ import { TelemetryView } from "./status/telemetry-view.js";
 import { TrainingView } from "./status/training-view.js";
 import type { ToolExecutionComponent } from "./tool-execution.js";
 import type { ToolOutputView } from "./tool-output-view.js";
+import type { ToolRetryController } from "./tool-retry/tool-retry-controller.js";
 import { ToolStatusView } from "./tool-status-view.js";
 import {
 	type AgentEventBridge,
@@ -216,6 +222,7 @@ import {
 	type SlashHintController,
 	createSlashHintController,
 } from "./tui-renderer/slash-hint-controller.js";
+import { createToolRetryController } from "./tui-renderer/tool-retry-setup.js";
 import { createToolingViews } from "./tui-renderer/tooling-views-setup.js";
 import {
 	type UiStateController,
@@ -378,7 +385,9 @@ export class TuiRenderer {
 	private readonly minimalMode = checkMinimalMode();
 	private isAgentRunning = false;
 	private approvalController?: ApprovalController;
+	private toolRetryController?: ToolRetryController;
 	private approvalService: ActionApprovalService;
+	private toolRetryService: ToolRetryService;
 	private modelScope: RegisteredModel[] = [];
 	private startupChangelog?: string | null;
 	private startupChangelogSummary?: string | null;
@@ -406,6 +415,7 @@ export class TuiRenderer {
 		sessionManager: SessionManager,
 		version: string,
 		approvalService: ActionApprovalService,
+		toolRetryService: ToolRetryService,
 		explicitApiKey?: string,
 		options: {
 			modelScope?: RegisteredModel[];
@@ -764,7 +774,15 @@ export class TuiRenderer {
 			editorContainer: this.editorContainer,
 			notificationView: this.notificationView,
 		});
+		this.toolRetryController = createToolRetryController({
+			toolRetryService,
+			ui: this.ui,
+			editor: this.editor,
+			editorContainer: this.editorContainer,
+			notificationView: this.notificationView,
+		});
 		this.approvalService = approvalService;
+		this.toolRetryService = toolRetryService;
 		this.loaderView = createLoaderView({
 			ui: this.ui,
 			statusContainer: this.statusContainer,
@@ -963,6 +981,10 @@ export class TuiRenderer {
 					this.handleApprovalRequired(request),
 				handleApprovalResolved: (request, decision) =>
 					this.handleApprovalResolved(request, decision),
+				handleToolRetryRequired: (request) =>
+					this.handleToolRetryRequired(request),
+				handleToolRetryResolved: (request, decision) =>
+					this.handleToolRetryResolved(request, decision),
 				setAgentRunning: (running) => {
 					this.isAgentRunning = running;
 				},
@@ -1807,6 +1829,26 @@ export class TuiRenderer {
 		this.approvalController?.resolve(request, decision);
 		const component = this.pendingTools.get(request.id);
 		component?.setPendingStatus(null);
+		this.ui.requestRender();
+	}
+
+	private handleToolRetryRequired(request: ToolRetryRequest): void {
+		this.toolRetryController?.enqueue(request);
+		const component = this.pendingTools.get(request.toolCallId);
+		component?.setPendingStatus(request.summary ?? "Retry required");
+		this.ui.requestRender();
+	}
+
+	private handleToolRetryResolved(
+		request: ToolRetryRequest,
+		decision: ToolRetryDecision,
+	): void {
+		this.toolRetryController?.resolve(request, decision);
+		const component = this.pendingTools.get(request.toolCallId);
+		component?.setPendingStatus(null);
+		if (decision.action === "abort") {
+			this.agent.abort();
+		}
 		this.ui.requestRender();
 	}
 

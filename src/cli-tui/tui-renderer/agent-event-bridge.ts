@@ -11,6 +11,10 @@ import type {
 import type { Agent } from "../../agent/agent.js";
 import type { AutoRetryController } from "../../agent/auto-retry.js";
 import type { SessionRecoveryManager } from "../../agent/session-recovery.js";
+import type {
+	ToolRetryDecision,
+	ToolRetryRequest,
+} from "../../agent/tool-retry.js";
 import { isAssistantMessage } from "../../agent/type-guards.js";
 import type { AgentEvent, AgentState } from "../../agent/types.js";
 import type { RegisteredModel } from "../../models/registry.js";
@@ -45,6 +49,11 @@ export interface AgentEventBridgeCallbacks {
 		request: ActionApprovalRequest,
 		decision: ActionApprovalDecision,
 	) => void;
+	handleToolRetryRequired: (request: ToolRetryRequest) => void;
+	handleToolRetryResolved: (
+		request: ToolRetryRequest,
+		decision: ToolRetryDecision,
+	) => void;
 	setAgentRunning: (running: boolean) => void;
 	maybeShowContextWarning: (stats: FooterStats) => void;
 	setCurrentModelMetadata: (metadata?: SessionModelMetadata) => void;
@@ -75,6 +84,14 @@ export class AgentEventBridge {
 		}
 		if (event.type === "action_approval_resolved") {
 			this.callbacks.handleApprovalResolved(event.request, event.decision);
+			return;
+		}
+		if (event.type === "tool_retry_required") {
+			this.callbacks.handleToolRetryRequired(event.request);
+			return;
+		}
+		if (event.type === "tool_retry_resolved") {
+			this.callbacks.handleToolRetryResolved(event.request, event.decision);
 			return;
 		}
 

@@ -99,6 +99,7 @@ import {
 	type Model,
 	isAssistantMessage,
 } from "./agent/index.js";
+import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
 import { createAuthSetup, validateCodexFlags } from "./bootstrap/auth-setup.js";
 import {
 	disposeCheckpointService,
@@ -189,6 +190,7 @@ async function runInteractiveMode(
 	sessionManager: SessionManager,
 	version: string,
 	approvalService: ActionApprovalService,
+	toolRetryService: ToolRetryService,
 	explicitApiKey?: string,
 	options: InteractiveOptions = {},
 ): Promise<void> {
@@ -202,6 +204,7 @@ async function runInteractiveMode(
 		sessionManager,
 		version,
 		approvalService,
+		toolRetryService,
 		explicitApiKey,
 		options,
 	);
@@ -880,6 +883,9 @@ export async function main(args: string[]) {
 
 	// Create approval service that controls tool execution authorization
 	const approvalService = new ActionApprovalService(approvalModeOverride);
+	const toolRetryMode: ToolRetryMode =
+		isInteractiveTui && !isHeadlessMode ? "prompt" : "skip";
+	const toolRetryService = new ToolRetryService(toolRetryMode);
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 10: Tool Registry and Sandbox Setup
@@ -943,6 +949,7 @@ export async function main(args: string[]) {
 		sandbox,
 		sandboxMode: sandboxMode ?? null,
 		approvalService,
+		toolRetryService,
 		requireCredential,
 		enterpriseUser,
 		readonly: parsed.readonly,
@@ -1078,6 +1085,7 @@ export async function main(args: string[]) {
 			sessionManager,
 			VERSION,
 			approvalService,
+			toolRetryService,
 			parsed.apiKey,
 			{
 				modelScope: scopedModels,

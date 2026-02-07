@@ -18,6 +18,7 @@ import {
 	TodoContextSource,
 } from "../agent/context-providers.js";
 import { Agent, ProviderTransport } from "../agent/index.js";
+import type { ToolRetryConfig, ToolRetryService } from "../agent/tool-retry.js";
 import type { AgentTool, Api, Model } from "../agent/types.js";
 import { composerManager } from "../composers/index.js";
 import type { AuthCredential } from "../providers/auth.js";
@@ -81,6 +82,8 @@ export function createAgentInstance(params: {
 	sandbox: Sandbox | undefined;
 	sandboxMode: string | null | undefined;
 	approvalService: ActionApprovalService;
+	toolRetryService: ToolRetryService;
+	toolRetryConfig?: ToolRetryConfig;
 	requireCredential: (
 		providerName: string,
 		fatal: boolean,
@@ -98,6 +101,8 @@ export function createAgentInstance(params: {
 		sandbox,
 		sandboxMode,
 		approvalService,
+		toolRetryService,
+		toolRetryConfig,
 		requireCredential,
 		enterpriseUser,
 		cwd,
@@ -158,6 +163,8 @@ export function createAgentInstance(params: {
 		transport: new ProviderTransport({
 			getAuthContext: (providerName) => requireCredential(providerName, false),
 			approvalService,
+			toolRetryService,
+			toolRetryConfig,
 			sessionTokenCounter,
 			auditLogger,
 		}),

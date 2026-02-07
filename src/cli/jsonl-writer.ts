@@ -33,7 +33,8 @@ export type JsonlEvent =
 				| "tool_call"
 				| "tool_result"
 				| "tool_update"
-				| "approval";
+				| "approval"
+				| "tool_retry";
 			turnId?: string;
 			timestamp: string;
 			data?: unknown;
@@ -229,6 +230,24 @@ export function createAgentJsonlAdapter(
 					writer.emit({
 						type: "item",
 						subtype: "approval",
+						timestamp: now(),
+						data: { request: event.request, decision: event.decision },
+					});
+					break;
+				}
+				case "tool_retry_required": {
+					writer.emit({
+						type: "item",
+						subtype: "tool_retry",
+						timestamp: now(),
+						data: { request: event.request },
+					});
+					break;
+				}
+				case "tool_retry_resolved": {
+					writer.emit({
+						type: "item",
+						subtype: "tool_retry",
 						timestamp: now(),
 						data: { request: event.request, decision: event.decision },
 					});

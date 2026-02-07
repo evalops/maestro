@@ -436,6 +436,8 @@ function handleAgentEvent(event: AgentEvent): void {
 		case "turn_start":
 		case "turn_end":
 		case "action_approval_resolved":
+		case "tool_retry_required":
+		case "tool_retry_resolved":
 		case "client_tool_request":
 		case "compaction":
 			// Not needed for basic TUI
