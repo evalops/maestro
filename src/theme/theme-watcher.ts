@@ -8,6 +8,20 @@ export interface ThemeWatcherCallbacks {
 }
 
 let themeWatcher: fs.FSWatcher | undefined;
+let reloadTimeout: ReturnType<typeof setTimeout> | undefined;
+let deleteTimeout: ReturnType<typeof setTimeout> | undefined;
+let watcherGeneration = 0;
+
+function clearWatcherTimers(): void {
+	if (reloadTimeout) {
+		clearTimeout(reloadTimeout);
+		reloadTimeout = undefined;
+	}
+	if (deleteTimeout) {
+		clearTimeout(deleteTimeout);
+		deleteTimeout = undefined;
+	}
+}
 
 export function startThemeWatcher(
 	currentThemeName: string | undefined,
@@ -15,6 +29,7 @@ export function startThemeWatcher(
 ): void {
 	// Stop existing watcher if any
 	stopThemeWatcher();
+	const generation = watcherGeneration;
 
 	// Only watch if it's a custom theme (not built-in)
 	if (
@@ -36,9 +51,16 @@ export function startThemeWatcher(
 
 	try {
 		themeWatcher = fs.watch(themeFile, (eventType) => {
+			if (generation !== watcherGeneration) {
+				return;
+			}
 			if (eventType === "change") {
 				// Debounce rapid changes
-				setTimeout(() => {
+				clearWatcherTimers();
+				reloadTimeout = setTimeout(() => {
+					if (generation !== watcherGeneration) {
+						return;
+					}
 					try {
 						callbacks.reloadTheme(currentThemeName);
 					} catch (error) {
@@ -47,7 +69,11 @@ export function startThemeWatcher(
 				}, 100);
 			} else if (eventType === "rename") {
 				// File was deleted or renamed - fall back to default theme
-				setTimeout(() => {
+				clearWatcherTimers();
+				deleteTimeout = setTimeout(() => {
+					if (generation !== watcherGeneration) {
+						return;
+					}
 					if (!fs.existsSync(themeFile)) {
 						callbacks.handleThemeDeleted();
 						stopThemeWatcher();
@@ -61,6 +87,8 @@ export function startThemeWatcher(
 }
 
 export function stopThemeWatcher(): void {
+	watcherGeneration += 1;
+	clearWatcherTimers();
 	if (themeWatcher) {
 		themeWatcher.close();
 		themeWatcher = undefined;
