@@ -25,6 +25,7 @@ import {
 } from "../../lib/api-client";
 import { dedupeModels, getModelKey } from "../../lib/model-utils";
 import type { Model, ThinkingLevel } from "../../lib/types";
+import { PlanningSection } from "./PlanningSection";
 import {
 	type TelemetryTrainingAction,
 	TelemetryTrainingSection,
@@ -561,6 +562,11 @@ export function SettingsModal({
 		}
 	};
 
+	const handlePlanDraftChange = (draft: string) => {
+		setPlanDraft(draft);
+		setPlanDirty(true);
+	};
+
 	const updateBackgroundNotifications = async (enabled: boolean) => {
 		setBackgroundStatus((prev) =>
 			prev
@@ -999,82 +1005,17 @@ export function SettingsModal({
 						</div>
 					</section>
 
-					<section className="border border-line-subtle rounded-xl overflow-hidden">
-						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
-							Planning
-						</div>
-						<div className="p-4 space-y-4">
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">Plan mode</div>
-									<div className="text-xs text-text-muted">
-										Slash command: /plan
-									</div>
-								</div>
-								<div className="flex items-center gap-2">
-									{planStatus?.state?.active ? (
-										<button
-											type="button"
-											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={exitPlan}
-										>
-											Exit plan
-										</button>
-									) : (
-										<button
-											type="button"
-											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={startPlan}
-										>
-											Start plan
-										</button>
-									)}
-								</div>
-							</div>
-							{!planStatus?.state?.active && (
-								<div className="flex items-center justify-between gap-4">
-									<div className="text-xs text-text-muted">
-										Optional plan name
-									</div>
-									<input
-										type="text"
-										value={planName}
-										onChange={(event) => setPlanName(event.target.value)}
-										placeholder="Feature rollout plan"
-										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary w-64"
-									/>
-								</div>
-							)}
-							{planStatus?.state?.active && (
-								<div className="space-y-3">
-									<textarea
-										value={planDraft}
-										onChange={(event) => {
-											setPlanDraft(event.target.value);
-											setPlanDirty(true);
-										}}
-										rows={6}
-										className="w-full bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
-									/>
-									<div className="flex items-center justify-between gap-4">
-										<button
-											type="button"
-											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60 disabled:opacity-50"
-											onClick={savePlan}
-											disabled={!planDirty}
-										>
-											Save plan
-										</button>
-										<div className="text-xs text-text-muted">
-											{planStatus?.state?.filePath
-												? planStatus.state.filePath
-												: "Plan file not created yet"}
-										</div>
-									</div>
-								</div>
-							)}
-						</div>
-					</section>
+					<PlanningSection
+						planStatus={planStatus}
+						planDraft={planDraft}
+						planDirty={planDirty}
+						planName={planName}
+						onPlanNameChange={setPlanName}
+						onPlanDraftChange={handlePlanDraftChange}
+						onStartPlan={startPlan}
+						onExitPlan={exitPlan}
+						onSavePlan={savePlan}
+					/>
 
 					<section className="border border-line-subtle rounded-xl overflow-hidden">
 						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
