@@ -184,7 +184,9 @@ describe("ComposerChat", () => {
 		const messages = (
 			element as unknown as { messages: Array<{ tools?: unknown[] }> }
 		).messages;
-		const assistant = messages.findLast((msg) => Array.isArray(msg.tools));
+		const assistant = [...messages]
+			.reverse()
+			.find((msg: { tools?: unknown[] }) => Array.isArray(msg.tools));
 		assert.ok(assistant);
 		const tools = (assistant?.tools ?? []) as Array<{
 			args?: Record<string, unknown>;
@@ -228,7 +230,9 @@ describe("ComposerChat", () => {
 		const messages = (
 			element as unknown as { messages: Array<{ tools?: unknown[] }> }
 		).messages;
-		const assistant = messages.findLast((msg) => Array.isArray(msg.tools));
+		const assistant = [...messages]
+			.reverse()
+			.find((msg: { tools?: unknown[] }) => Array.isArray(msg.tools));
 		assert.ok(assistant);
 		const tools = (assistant?.tools ?? []) as Array<{
 			args?: Record<string, unknown>;

@@ -28,6 +28,9 @@ import { WEB_SLASH_COMMANDS } from "./slash-commands.js";
 import "./composer-message.js";
 import "./composer-input.js";
 import type { ComposerInput } from "./composer-input.js";
+import "./composer-session-sidebar.js";
+import "./composer-share-dialog.js";
+import "./composer-export-dialog.js";
 import "./composer-settings.js";
 import "./model-selector.js";
 import "./admin-settings.js";
@@ -88,7 +91,10 @@ interface MessageWithThinking extends Message {
 	thinking?: string;
 }
 
-type UiMessage = Message & { localOnly?: boolean };
+type UiMessage = Omit<Message, "tools"> & {
+	tools?: ExtendedToolCall[];
+	localOnly?: boolean;
+};
 
 @customElement("composer-chat")
 export class ComposerChat extends LitElement {
@@ -103,129 +109,6 @@ export class ComposerChat extends LitElement {
 			font-family: var(--font-mono, "JetBrains Mono", monospace);
 		}
 
-		/* Sidebar - Control Room Panel */
-		.sidebar {
-			width: 260px;
-			background: var(--bg-deep, #08090a);
-			border-right: 1px solid var(--border-primary, #1e2023);
-			display: flex;
-			flex-direction: column;
-			transition: transform 0.2s ease;
-			z-index: 20;
-		}
-
-		.sidebar.collapsed {
-			transform: translateX(-100%);
-		}
-
-		.sidebar-header {
-			padding: 1rem 0.75rem;
-			display: flex;
-			flex-direction: column;
-			gap: 0.75rem;
-			border-bottom: 1px solid var(--border-primary, #1e2023);
-		}
-
-		.sidebar-header h2 {
-			font-family: var(--font-mono, monospace);
-			font-size: 0.6rem;
-			font-weight: 600;
-			margin: 0;
-			color: var(--text-tertiary, #5c5e62);
-			text-transform: uppercase;
-			letter-spacing: 0.1em;
-		}
-
-		.session-search {
-			margin-top: 0.4rem;
-			width: 100%;
-			padding: 0.35rem 0.5rem;
-			background: var(--bg-primary, #0a0e14);
-			border: 1px solid var(--border-secondary, #30363d);
-			color: var(--text-primary, #e6edf3);
-			border-radius: 3px;
-			font-family: var(--font-mono, "SF Mono", "Menlo", "Monaco", monospace);
-			font-size: 0.75rem;
-		}
-
-		.session-search::placeholder {
-			color: var(--text-tertiary, #5c5e62);
-		}
-
-		.new-session-btn {
-			width: 100%;
-			padding: 0.5rem 0.75rem;
-			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
-			color: var(--accent-amber, #d4a012);
-			border: none;
-			font-family: var(--font-mono, monospace);
-			font-size: 0.7rem;
-			font-weight: 600;
-			cursor: pointer;
-			transition: all 0.15s ease;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			gap: 0.5rem;
-			text-transform: uppercase;
-			letter-spacing: 0.05em;
-		}
-
-		.new-session-btn:hover {
-			background: var(--accent-amber, #d4a012);
-			color: var(--bg-deep, #08090a);
-		}
-
-		.new-session-btn:active {
-			transform: scale(0.98);
-		}
-
-		.sessions-list {
-			flex: 1;
-			overflow-y: auto;
-			padding: 0.5rem;
-		}
-
-		.session-item {
-			padding: 0.625rem 0.75rem;
-			margin-bottom: 1px;
-			cursor: pointer;
-			transition: all 0.1s ease;
-			background: transparent;
-			border-left: 2px solid transparent;
-			position: relative;
-		}
-
-		.session-item:hover {
-			background: var(--bg-elevated, #161719);
-		}
-
-		.session-item.active {
-			background: var(--bg-elevated, #161719);
-			border-left-color: var(--accent-amber, #d4a012);
-		}
-
-		.session-title {
-			font-family: var(--font-mono, monospace);
-			font-size: 0.75rem;
-			font-weight: 500;
-			margin-bottom: 0.2rem;
-			color: var(--text-primary, #e8e9eb);
-			white-space: nowrap;
-			overflow: hidden;
-			text-overflow: ellipsis;
-		}
-
-		.session-item.active .session-title {
-			color: var(--accent-amber, #d4a012);
-		}
-
-		.session-meta {
-			font-family: var(--font-mono, monospace);
-			font-size: 0.6rem;
-			color: var(--text-tertiary, #5c5e62);
-		}
-
 		/* Main Content */
 		.main-content {
 			flex: 1;
@@ -236,7 +119,7 @@ export class ComposerChat extends LitElement {
 			background: var(--bg-primary, #0c0d0f);
 		}
 
-		:host([zen]) .sidebar {
+		:host([zen]) composer-session-sidebar {
 			display: none;
 		}
 
@@ -568,118 +451,6 @@ export class ComposerChat extends LitElement {
 		.toast.error { border-left: 2px solid var(--accent-red, #ef4444); }
 		.toast.info { border-left: 2px solid var(--accent-amber, #d4a012); }
 
-		/* Modal */
-		.modal-overlay {
-			position: fixed;
-			inset: 0;
-			background: rgba(0, 0, 0, 0.7);
-			z-index: 260;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			padding: 1.25rem;
-		}
-
-		.modal-dialog {
-			width: min(520px, 100%);
-			background: var(--bg-deep, #08090a);
-			border: 1px solid var(--border-primary, #1e2023);
-			box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
-			padding: 0.9rem;
-			font-family: var(--font-mono, monospace);
-		}
-
-		.modal-title {
-			font-size: 0.75rem;
-			font-weight: 700;
-			letter-spacing: 0.08em;
-			text-transform: uppercase;
-			color: var(--text-secondary, #8b8d91);
-			margin-bottom: 0.75rem;
-		}
-
-		.modal-row {
-			display: flex;
-			gap: 0.5rem;
-			align-items: center;
-			margin-bottom: 0.6rem;
-		}
-
-		.modal-row label {
-			font-size: 0.7rem;
-			color: var(--text-tertiary, #5c5e62);
-			min-width: 130px;
-		}
-
-		.modal-row input[type="number"],
-		.modal-row input[type="text"] {
-			flex: 1;
-			background: var(--bg-elevated, #161719);
-			border: 1px solid var(--border-primary, #1e2023);
-			color: var(--text-primary, #e8e9eb);
-			padding: 0.35rem 0.5rem;
-			font-family: inherit;
-			font-size: 0.75rem;
-		}
-
-		.modal-row select {
-			flex: 1;
-			background: var(--bg-elevated, #161719);
-			border: 1px solid var(--border-primary, #1e2023);
-			color: var(--text-primary, #e8e9eb);
-			padding: 0.35rem 0.5rem;
-			font-family: inherit;
-			font-size: 0.75rem;
-		}
-
-		.modal-help {
-			font-size: 0.7rem;
-			color: var(--text-tertiary, #5c5e62);
-			line-height: 1.35;
-			margin: 0.5rem 0 0.75rem 0;
-		}
-
-		.modal-actions {
-			display: flex;
-			justify-content: flex-end;
-			gap: 0.5rem;
-		}
-
-		.modal-btn {
-			border: 1px solid var(--border-primary, #1e2023);
-			background: transparent;
-			color: var(--text-tertiary, #5c5e62);
-			height: 30px;
-			padding: 0 0.75rem;
-			cursor: pointer;
-			font-family: inherit;
-			font-size: 0.7rem;
-			letter-spacing: 0.06em;
-			text-transform: uppercase;
-		}
-
-		.modal-btn.primary {
-			border-color: var(--accent-amber, #d4a012);
-			color: var(--accent-amber, #d4a012);
-			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
-		}
-
-		.modal-btn:hover:not(:disabled) {
-			background: var(--bg-elevated, #161719);
-			color: var(--text-primary, #e8e9eb);
-		}
-
-		.modal-btn:disabled {
-			opacity: 0.4;
-			cursor: not-allowed;
-		}
-
-		.modal-error {
-			font-size: 0.75rem;
-			color: var(--accent-red, #ef4444);
-			margin: 0.5rem 0;
-		}
-
 		.side-panel {
 			position: absolute;
 			top: 0;
@@ -861,11 +632,6 @@ export class ComposerChat extends LitElement {
 
 		/* Responsive */
 		@media (max-width: 768px) {
-			.sidebar {
-				position: absolute;
-				height: 100%;
-				box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
-			}
 			.workspace-panel {
 				grid-template-columns: 1fr;
 			}
@@ -912,9 +678,6 @@ export class ComposerChat extends LitElement {
 			}
 			.messages {
 				padding: 0.9rem 0.9rem;
-			}
-			.sidebar {
-				width: min(82vw, 320px);
 			}
 		}
 
@@ -968,19 +731,7 @@ export class ComposerChat extends LitElement {
 	@state() private zenMode = false;
 	@state() private queueMode: "one" | "all" = "all";
 	@state() private shareDialogOpen = false;
-	@state() private shareDialogLoading = false;
-	@state() private shareDialogError: string | null = null;
-	@state() private shareExpiresHours = 24;
-	@state() private shareMaxAccesses: number | null = 100;
-	@state() private shareResult: {
-		webShareUrl: string;
-		expiresAt: string;
-		maxAccesses: number | null;
-	} | null = null;
 	@state() private exportDialogOpen = false;
-	@state() private exportDialogLoading = false;
-	@state() private exportDialogError: string | null = null;
-	@state() private exportFormat: "json" | "markdown" | "text" = "json";
 	@state() private toast: {
 		message: string;
 		type: "info" | "error" | "success";
@@ -992,7 +743,6 @@ export class ComposerChat extends LitElement {
 	@state() private nextRefreshAllowed = 0;
 	@state() private showHealth = false;
 	@state() private showShortcuts = false;
-	@state() private sessionSearch = "";
 	@state() private attachmentViewerOpen = false;
 	@state() private attachmentViewerAttachment:
 		| NonNullable<Message["attachments"]>[number]
@@ -2105,7 +1855,9 @@ export class ComposerChat extends LitElement {
 						const diffText =
 							typeof preview?.diff === "string" && preview.diff.length > 0
 								? preview.diff
-								: (preview?.message ?? "No changes.");
+								: typeof preview?.message === "string"
+									? preview.message
+									: "No changes.";
 						this.appendCommandOutput(
 							command,
 							this.formatCodeBlock(diffText, "diff"),
@@ -2164,7 +1916,9 @@ export class ComposerChat extends LitElement {
 							const diffText =
 								typeof preview?.diff === "string" && preview.diff.length > 0
 									? preview.diff
-									: (preview?.message ?? "No changes.");
+									: typeof preview?.message === "string"
+										? preview.message
+										: "No changes.";
 							this.appendCommandOutput(
 								command,
 								this.formatCodeBlock(diffText, "diff"),
@@ -2606,6 +2360,41 @@ export class ComposerChat extends LitElement {
 		this.sidebarOpen = !this.sidebarOpen;
 	}
 
+	private handleExitSharedSession = () => {
+		window.location.href = "/";
+	};
+
+	private handleDialogNotice = (
+		event: CustomEvent<{
+			message?: string;
+			type?: "info" | "error" | "success";
+			duration?: number;
+		}>,
+	) => {
+		if (!event.detail?.message || !event.detail?.type) return;
+		this.showToast(
+			event.detail.message,
+			event.detail.type,
+			event.detail.duration,
+		);
+	};
+
+	private handleSelectSession = (
+		event: CustomEvent<{ sessionId?: unknown }>,
+	) => {
+		const sessionId = event.detail?.sessionId;
+		if (typeof sessionId !== "string") return;
+		void this.selectSession(sessionId);
+	};
+
+	private handleDeleteSession = (
+		event: CustomEvent<{ sessionId?: unknown }>,
+	) => {
+		const sessionId = event.detail?.sessionId;
+		if (typeof sessionId !== "string") return;
+		void this.deleteSession(sessionId);
+	};
+
 	private toggleSettings() {
 		this.settingsOpen = !this.settingsOpen;
 	}
@@ -2621,53 +2410,10 @@ export class ComposerChat extends LitElement {
 			return;
 		}
 		this.shareDialogOpen = true;
-		this.shareDialogError = null;
-		this.shareResult = null;
 	};
 
 	private closeShareDialog = () => {
 		this.shareDialogOpen = false;
-		this.shareDialogLoading = false;
-		this.shareDialogError = null;
-		this.shareResult = null;
-	};
-
-	private createShareLink = async () => {
-		if (!this.currentSessionId) return;
-		this.shareDialogLoading = true;
-		this.shareDialogError = null;
-		try {
-			const res = await this.apiClient.shareSession(this.currentSessionId, {
-				expiresInHours: Math.min(168, Math.max(1, this.shareExpiresHours)),
-				maxAccesses: this.shareMaxAccesses,
-			});
-			const webUrl = res.webShareUrl
-				? new URL(res.webShareUrl, window.location.origin).toString()
-				: new URL(
-						`/share/${res.shareToken}`,
-						window.location.origin,
-					).toString();
-			this.shareResult = {
-				webShareUrl: webUrl,
-				expiresAt: res.expiresAt,
-				maxAccesses: res.maxAccesses,
-			};
-		} catch (e) {
-			this.shareDialogError =
-				e instanceof Error ? e.message : "Failed to create share link";
-		} finally {
-			this.shareDialogLoading = false;
-		}
-	};
-
-	private copyShareLink = async () => {
-		if (!this.shareResult) return;
-		try {
-			await navigator.clipboard.writeText(this.shareResult.webShareUrl);
-			this.showToast("Share link copied", "success", 1500);
-		} catch {
-			this.showToast("Copy failed", "error", 1500);
-		}
 	};
 
 	private openExportDialog = async () => {
@@ -2677,50 +2423,10 @@ export class ComposerChat extends LitElement {
 			return;
 		}
 		this.exportDialogOpen = true;
-		this.exportDialogError = null;
-		this.exportFormat = "json";
 	};
 
 	private closeExportDialog = () => {
 		this.exportDialogOpen = false;
-		this.exportDialogLoading = false;
-		this.exportDialogError = null;
-	};
-
-	private exportSession = async () => {
-		const sessionId = this.currentSessionId;
-		if (!sessionId) return;
-		this.exportDialogLoading = true;
-		this.exportDialogError = null;
-		try {
-			const res = await this.apiClient.exportSession(sessionId, {
-				format: this.exportFormat,
-			});
-			if (!res.ok) {
-				throw new Error(`Export failed (${res.status} ${res.statusText})`);
-			}
-			const blob = await res.blob();
-			const ext =
-				this.exportFormat === "markdown"
-					? "md"
-					: this.exportFormat === "text"
-						? "txt"
-						: "json";
-			const filename = `session-${sessionId}.${ext}`;
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement("a");
-			a.href = url;
-			a.download = filename;
-			a.rel = "noopener";
-			a.click();
-			setTimeout(() => URL.revokeObjectURL(url), 1000);
-			this.showToast("Export downloaded", "success", 1500);
-			this.closeExportDialog();
-		} catch (e) {
-			this.exportDialogError = e instanceof Error ? e.message : "Export failed";
-		} finally {
-			this.exportDialogLoading = false;
-		}
 	};
 
 	private toggleArtifactsPanel() {
@@ -2998,7 +2704,7 @@ export class ComposerChat extends LitElement {
 		this.error = null;
 
 		// Add assistant message placeholder
-		const assistantMessage: Message = {
+		const assistantMessage: UiMessage = {
 			role: "assistant",
 			content: "",
 			timestamp: new Date().toISOString(),
@@ -3855,74 +3561,16 @@ export class ComposerChat extends LitElement {
 						></div>`
 					: ""
 			}
-			${
-				isShared
-					? html`<div class="sidebar ${this.sidebarOpen ? "" : "collapsed"}">
-							<div class="sidebar-header">
-								<h2>Shared</h2>
-								<button
-									class="new-session-btn"
-									@click=${() => {
-										window.location.href = "/";
-									}}
-								>
-									Exit
-								</button>
-							</div>
-							<div class="sessions-list">
-								<div class="loading">Read-only shared session</div>
-							</div>
-						</div>`
-					: html`<div class="sidebar ${this.sidebarOpen ? "" : "collapsed"}">
-							<div class="sidebar-header">
-								<h2>Sessions</h2>
-								<button class="new-session-btn" @click=${this.createNewSession}>
-									New Chat
-								</button>
-								<input
-									type="search"
-									placeholder="Filter..."
-									value=${this.sessionSearch}
-									@input=${(e: Event) => {
-										const value = (
-											e.target as HTMLInputElement
-										).value.toLowerCase();
-										this.sessionSearch = value;
-									}}
-									class="session-search"
-								/>
-							</div>
-							<div class="sessions-list">
-								${this.sessions.map((session) =>
-									this.sessionSearch &&
-									!session.title?.toLowerCase().includes(this.sessionSearch) &&
-									!session.id?.toLowerCase().includes(this.sessionSearch)
-										? ""
-										: html`
-										<div
-											class="session-item ${this.currentSessionId === session.id ? "active" : ""}"
-											@click=${() => this.selectSession(session.id)}
-										>
-											<div class="session-title">${session.title || "Untitled Session"}</div>
-										<div class="session-meta">
-											${this.formatSessionDate(session.updatedAt)} • ${session.messageCount || 0} msgs
-										</div>
-										<button
-											class="icon-btn"
-											title="Delete"
-											@click=${(e: Event) => {
-												e.stopPropagation();
-												this.deleteSession(session.id);
-											}}
-										>
-											${this.renderIcon("close")}
-										</button>
-										</div>
-									`,
-								)}
-							</div>
-						</div>`
-			}
+			<composer-session-sidebar
+				?shared=${isShared}
+				?collapsed=${!this.sidebarOpen}
+				.sessions=${this.sessions}
+				.currentSessionId=${this.currentSessionId}
+				@new-session=${this.createNewSession}
+				@select-session=${this.handleSelectSession}
+				@delete-session=${this.handleDeleteSession}
+				@exit-shared=${this.handleExitSharedSession}
+			></composer-session-sidebar>
 
 			<div class="main-content">
 		<div class="header">
@@ -4268,92 +3916,12 @@ export class ComposerChat extends LitElement {
 			${
 				this.shareDialogOpen
 					? html`
-						<div class="modal-overlay" @click=${this.closeShareDialog}>
-							<div class="modal-dialog" @click=${(e: Event) => e.stopPropagation()}>
-								<div class="modal-title">Share session</div>
-								<div class="modal-row">
-									<label for="share-exp">Expires (hours)</label>
-									<input
-										id="share-exp"
-										type="number"
-										min="1"
-										max="168"
-										.value=${String(this.shareExpiresHours)}
-										@input=${(e: Event) => {
-											const raw = (e.target as HTMLInputElement).value;
-											const n = Number.parseInt(raw, 10);
-											this.shareExpiresHours = Number.isFinite(n) ? n : 24;
-										}}
-									/>
-								</div>
-								<div class="modal-row">
-									<label for="share-max">Max opens</label>
-									<input
-										id="share-max"
-										type="number"
-										min="1"
-										.value=${this.shareMaxAccesses === null ? "" : String(this.shareMaxAccesses)}
-										placeholder="Unlimited"
-										@input=${(e: Event) => {
-											const raw = (e.target as HTMLInputElement).value.trim();
-											if (!raw) {
-												this.shareMaxAccesses = null;
-												return;
-											}
-											const n = Number.parseInt(raw, 10);
-											this.shareMaxAccesses = Number.isFinite(n) ? n : 100;
-										}}
-									/>
-								</div>
-
-								${
-									this.shareResult
-										? html`
-											<div class="modal-row">
-												<label>Link</label>
-												<input type="text" readonly .value=${this.shareResult.webShareUrl} />
-											</div>
-											<div class="modal-help">
-												Expires at ${new Date(this.shareResult.expiresAt).toLocaleString()}${
-													this.shareResult.maxAccesses === null
-														? " • unlimited opens"
-														: ` • max ${this.shareResult.maxAccesses} opens`
-												}
-											</div>
-										`
-										: html`<div class="modal-help">
-												Generates a read-only link for viewing this session in the web UI.
-											</div>`
-								}
-
-								${this.shareDialogError ? html`<div class="modal-error">${this.shareDialogError}</div>` : ""}
-
-								<div class="modal-actions">
-									<button class="modal-btn" @click=${this.closeShareDialog}>Close</button>
-									${
-										this.shareResult
-											? html`
-												<button
-													class="modal-btn primary"
-													@click=${this.copyShareLink}
-													?disabled=${this.shareDialogLoading}
-												>
-													Copy
-												</button>
-											`
-											: html`
-												<button
-													class="modal-btn primary"
-													@click=${this.createShareLink}
-													?disabled=${this.shareDialogLoading}
-												>
-													${this.shareDialogLoading ? "Creating..." : "Create link"}
-												</button>
-											`
-									}
-								</div>
-							</div>
-						</div>
+						<composer-share-dialog
+							.apiClient=${this.apiClient}
+							.sessionId=${this.currentSessionId}
+							@close=${this.closeShareDialog}
+							@notify=${this.handleDialogNotice}
+						></composer-share-dialog>
 				  `
 					: ""
 			}
@@ -4361,44 +3929,12 @@ export class ComposerChat extends LitElement {
 			${
 				this.exportDialogOpen
 					? html`
-						<div class="modal-overlay" @click=${this.closeExportDialog}>
-							<div class="modal-dialog" @click=${(e: Event) => e.stopPropagation()}>
-								<div class="modal-title">Export session</div>
-								<div class="modal-row">
-									<label for="export-format">Format</label>
-									<select
-										id="export-format"
-										.value=${this.exportFormat}
-										@change=${(e: Event) => {
-											const v = (e.target as HTMLSelectElement).value;
-											this.exportFormat =
-												v === "markdown" || v === "text" ? v : "json";
-										}}
-									>
-										<option value="json">JSON</option>
-										<option value="markdown">Markdown</option>
-										<option value="text">Text</option>
-									</select>
-								</div>
-
-								<div class="modal-help">
-									Downloads the full session including attachment content.
-								</div>
-
-								${this.exportDialogError ? html`<div class="modal-error">${this.exportDialogError}</div>` : ""}
-
-								<div class="modal-actions">
-									<button class="modal-btn" @click=${this.closeExportDialog}>Close</button>
-									<button
-										class="modal-btn primary"
-										@click=${this.exportSession}
-										?disabled=${this.exportDialogLoading}
-									>
-										${this.exportDialogLoading ? "Exporting..." : "Download"}
-									</button>
-								</div>
-							</div>
-						</div>
+						<composer-export-dialog
+							.apiClient=${this.apiClient}
+							.sessionId=${this.currentSessionId}
+							@close=${this.closeExportDialog}
+							@notify=${this.handleDialogNotice}
+						></composer-export-dialog>
 				  `
 					: ""
 			}
