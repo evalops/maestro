@@ -126,9 +126,26 @@ export function normalizeLLMBaseUrl(
 		: isOpenAIResponses
 			? "/responses"
 			: "/chat/completions";
+	const knownApiPaths = ["/v1/messages", "/chat/completions", "/responses"];
 
 	const hasPath = (pathname: string): boolean =>
 		pathname.endsWith(desiredPath) || pathname.includes(`${desiredPath}/`);
+
+	const normalizePathname = (pathname: string): string => {
+		if (hasPath(pathname)) {
+			return pathname;
+		}
+
+		const trimmedPathname = trimTrailingSlash(pathname);
+		const existingPath = knownApiPaths.find((candidate) =>
+			trimmedPathname.endsWith(candidate),
+		);
+		const basePath = existingPath
+			? trimmedPathname.slice(0, -existingPath.length)
+			: trimmedPathname;
+
+		return `${trimTrailingSlash(basePath)}${desiredPath}`;
+	};
 
 	const isPrivateIpv4 = (host: string): boolean => {
 		const ipv4Match = host.match(/^\d+\.\d+\.\d+\.\d+$/);
@@ -235,7 +252,7 @@ export function normalizeLLMBaseUrl(
 		try {
 			const url = new URL(urlStr);
 			if (!hasPath(url.pathname)) {
-				url.pathname = `${trimTrailingSlash(url.pathname)}${desiredPath}`;
+				url.pathname = normalizePathname(url.pathname);
 			}
 			return url.toString();
 		} catch {
@@ -283,7 +300,7 @@ export function normalizeLLMBaseUrl(
 		}
 
 		if (!hasPath(parsed.pathname)) {
-			parsed.pathname = `${trimTrailingSlash(parsed.pathname)}${desiredPath}`;
+			parsed.pathname = normalizePathname(parsed.pathname);
 		}
 		return parsed.toString();
 	} catch {

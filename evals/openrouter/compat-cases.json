@@ -1,0 +1,195 @@
+[
+	{
+		"name": "direct OpenAI hosts keep OpenAI-only features enabled",
+		"kind": "compat",
+		"input": {
+			"model": {
+				"provider": "openai",
+				"baseUrl": "https://api.openai.com/v1",
+				"id": "gpt-4o"
+			}
+		},
+		"expected": {
+			"supportsStore": true,
+			"supportsDeveloperRole": true,
+			"supportsReasoningEffort": true,
+			"supportsResponsesApi": true,
+			"supportsCacheControl": false,
+			"maxTokensField": "max_completion_tokens"
+		}
+	},
+	{
+		"name": "OpenRouter defaults to OpenAI-compatible but non-OpenAI settings",
+		"kind": "compat",
+		"input": {
+			"model": {
+				"provider": "openrouter",
+				"baseUrl": "https://openrouter.ai/api/v1/chat/completions",
+				"id": "openai/gpt-4o-mini"
+			}
+		},
+		"expected": {
+			"supportsStore": false,
+			"supportsDeveloperRole": false,
+			"supportsReasoningEffort": false,
+			"supportsResponsesApi": true,
+			"supportsCacheControl": false,
+			"maxTokensField": "max_tokens"
+		}
+	},
+	{
+		"name": "OpenRouter Anthropic models enable cache control support",
+		"kind": "compat",
+		"input": {
+			"model": {
+				"provider": "openrouter",
+				"baseUrl": "https://openrouter.ai/api/v1/chat/completions",
+				"id": "anthropic/claude-sonnet-4.5"
+			}
+		},
+		"expected": {
+			"supportsResponsesApi": true,
+			"supportsCacheControl": true,
+			"maxTokensField": "max_tokens"
+		}
+	},
+	{
+		"name": "OpenRouter compat overrides can re-enable reasoning effort",
+		"kind": "compat",
+		"input": {
+			"model": {
+				"provider": "openrouter",
+				"baseUrl": "https://openrouter.ai/api/v1/chat/completions",
+				"id": "openai/o4-mini",
+				"compat": {
+					"supportsReasoningEffort": true
+				}
+			}
+		},
+		"expected": {
+			"supportsReasoningEffort": true,
+			"supportsResponsesApi": true
+		}
+	},
+	{
+		"name": "Azure OpenAI remains on classic completions compatibility",
+		"kind": "compat",
+		"input": {
+			"model": {
+				"provider": "azure-openai",
+				"baseUrl": "https://my-resource.openai.azure.com/openai/deployments/gpt-4/chat/completions?api-version=2024-02-15-preview",
+				"id": "gpt-4"
+			}
+		},
+		"expected": {
+			"supportsResponsesApi": false,
+			"supportsReasoningEffort": false,
+			"maxTokensField": "max_tokens"
+		}
+	},
+	{
+		"name": "direct OpenRouter URLs switch to responses endpoints before query params",
+		"kind": "url",
+		"input": {
+			"baseUrl": "https://openrouter.ai/api/v1/chat/completions?project=test",
+			"api": "openai-responses"
+		},
+		"expected": "https://openrouter.ai/api/v1/responses?project=test"
+	},
+	{
+		"name": "responses endpoints remain untouched when already normalized",
+		"kind": "url",
+		"input": {
+			"baseUrl": "https://openrouter.ai/api/v1/responses?project=test",
+			"api": "openai-responses"
+		},
+		"expected": "https://openrouter.ai/api/v1/responses?project=test"
+	},
+	{
+		"name": "proxied upstream URLs append chat completions before query params",
+		"kind": "url",
+		"input": {
+			"baseUrl": "https://proxy.test/?url=https%3A%2F%2Fapi.example.com%2Fv1%3Fkey%3Dvalue",
+			"api": "openai-completions"
+		},
+		"expected": "https://proxy.test/?url=https%3A%2F%2Fapi.example.com%2Fv1%2Fchat%2Fcompletions%3Fkey%3Dvalue"
+	},
+	{
+		"name": "Responses API tool filtering removes blank tool names",
+		"kind": "responsesTools",
+		"input": {
+			"tools": [
+				{ "name": "", "description": "empty", "parameters": {} },
+				{ "name": "valid", "description": "valid tool", "parameters": {} }
+			]
+		},
+		"expected": {
+			"toolNames": ["valid"]
+		}
+	},
+	{
+		"name": "Responses API tool filtering removes top-level anyOf schemas",
+		"kind": "responsesTools",
+		"input": {
+			"tools": [
+				{
+					"name": "complex",
+					"description": "complex tool",
+					"parameters": {
+						"anyOf": [{ "type": "string" }]
+					}
+				},
+				{ "name": "simple", "description": "simple tool", "parameters": {} }
+			]
+		},
+		"expected": {
+			"toolNames": ["simple"]
+		}
+	},
+	{
+		"name": "Responses API tool filtering removes top-level enum schemas",
+		"kind": "responsesTools",
+		"input": {
+			"tools": [
+				{
+					"name": "enumtool",
+					"description": "enum tool",
+					"parameters": {
+						"enum": ["a", "b", "c"]
+					}
+				}
+			]
+		},
+		"expected": {
+			"toolNames": []
+		}
+	},
+	{
+		"name": "Responses API tool filtering keeps nested schemas and null params",
+		"kind": "responsesTools",
+		"input": {
+			"tools": [
+				{
+					"name": "nested",
+					"description": "nested properties are ok",
+					"parameters": {
+						"type": "object",
+						"properties": {
+							"field": {
+								"oneOf": [{ "type": "string" }]
+							}
+						}
+					}
+				},
+				{
+					"name": "nullparams",
+					"description": "null params",
+					"parameters": null
+				}
+			]
+		},
+		"expected": {
+			"toolNames": ["nested", "nullparams"]
+		}
+	}
+]

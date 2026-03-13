@@ -10,6 +10,14 @@ describe("resolveOpenAIUrl", () => {
 		expect(url).toBe("https://api.example.com/v1/responses?key=value");
 	});
 
+	it("replaces chat completions with responses for direct OpenRouter URLs", () => {
+		const url = resolveOpenAIUrlForTest(
+			"https://openrouter.ai/api/v1/chat/completions?key=value",
+			"openai-responses",
+		);
+		expect(url).toBe("https://openrouter.ai/api/v1/responses?key=value");
+	});
+
 	it("appends path before query params for proxied upstream URLs", () => {
 		const proxy = `https://proxy.test/?url=${encodeURIComponent(
 			"https://api.example.com/v1?key=value",

@@ -1,0 +1,512 @@
+[
+	{
+		"name": "appearance shows the enabled dark comfortable state",
+		"kind": "appearance",
+		"input": {
+			"themeMode": "dark",
+			"showTimestamps": true,
+			"density": "comfortable"
+		},
+		"expected": {
+			"themeMode": "dark",
+			"showTimestampsLabel": "On",
+			"isComfortableSelected": true,
+			"isCompactSelected": false
+		}
+	},
+	{
+		"name": "appearance shows the disabled compact state",
+		"kind": "appearance",
+		"input": {
+			"themeMode": "system",
+			"showTimestamps": false,
+			"density": "compact"
+		},
+		"expected": {
+			"themeMode": "system",
+			"showTimestampsLabel": "Off",
+			"isComfortableSelected": false,
+			"isCompactSelected": true
+		}
+	},
+	{
+		"name": "session behavior disables queue mode without an active session",
+		"kind": "sessionBehavior",
+		"input": {
+			"hasSession": false,
+			"queueMode": "all"
+		},
+		"expected": {
+			"queueMode": "all",
+			"queueModeDisabled": true,
+			"showSessionWarning": true
+		}
+	},
+	{
+		"name": "session behavior enables queue mode when a session exists",
+		"kind": "sessionBehavior",
+		"input": {
+			"hasSession": true,
+			"queueMode": "one"
+		},
+		"expected": {
+			"queueMode": "one",
+			"queueModeDisabled": false,
+			"showSessionWarning": false
+		}
+	},
+	{
+		"name": "background tasks default to off and zero counts when status is missing",
+		"kind": "backgroundTasks",
+		"input": {
+			"status": null
+		},
+		"expected": {
+			"notificationsEnabledLabel": "Off",
+			"statusDetailsEnabledLabel": "Off",
+			"runningCount": 0,
+			"failedCount": 0,
+			"totalCount": 0
+		}
+	},
+	{
+		"name": "background tasks summarize counts and labels",
+		"kind": "backgroundTasks",
+		"input": {
+			"status": {
+				"settings": {
+					"notificationsEnabled": true,
+					"statusDetailsEnabled": false
+				},
+				"snapshot": {
+					"running": 2,
+					"failed": 1,
+					"total": 5
+				}
+			}
+		},
+		"expected": {
+			"notificationsEnabledLabel": "On",
+			"statusDetailsEnabledLabel": "Off",
+			"runningCount": 2,
+			"failedCount": 1,
+			"totalCount": 5
+		}
+	},
+	{
+		"name": "framework options prepend none and preserve workspace scope",
+		"kind": "framework",
+		"input": {
+			"frameworks": [
+				{ "id": "react", "summary": "React" },
+				{ "id": "nextjs", "summary": "Next.js" }
+			],
+			"frameworkId": "nextjs",
+			"frameworkScope": "workspace",
+			"frameworkLocked": false
+		},
+		"expected": {
+			"options": [
+				{ "id": "none", "label": "None" },
+				{ "id": "react", "label": "react" },
+				{ "id": "nextjs", "label": "nextjs" }
+			],
+			"selectedFrameworkId": "nextjs",
+			"isUserScopeSelected": false,
+			"isWorkspaceScopeSelected": true,
+			"isLocked": false,
+			"lockedMessage": null
+		}
+	},
+	{
+		"name": "framework lock surfaces the policy warning",
+		"kind": "framework",
+		"input": {
+			"frameworks": [{ "id": "vue", "summary": "Vue" }],
+			"frameworkId": "vue",
+			"frameworkScope": "user",
+			"frameworkLocked": true
+		},
+		"expected": {
+			"selectedFrameworkId": "vue",
+			"isUserScopeSelected": true,
+			"isWorkspaceScopeSelected": false,
+			"isLocked": true,
+			"lockedMessage": "Framework is locked by policy."
+		}
+	},
+	{
+		"name": "model reasoning dedupes available models and keeps mode details",
+		"kind": "modelReasoning",
+		"input": {
+			"availableModels": [
+				{ "id": "sonnet", "name": "Claude Sonnet", "provider": "anthropic" },
+				{ "id": "sonnet", "name": "Claude Sonnet", "provider": "anthropic" },
+				{ "id": "gpt-5", "provider": "openai" }
+			],
+			"fallbackModels": [{ "id": "fallback", "provider": "openai" }],
+			"selectedModelId": "anthropic:sonnet",
+			"modeStatus": {
+				"mode": "rush",
+				"config": { "description": "Fastest response path" }
+			},
+			"modeOptions": ["smart", "rush"],
+			"thinkingLevel": "high"
+		},
+		"expected": {
+			"modelOptions": [
+				{ "id": "anthropic:sonnet", "label": "Claude Sonnet · anthropic" },
+				{ "id": "openai:gpt-5", "label": "gpt-5 · openai" }
+			],
+			"modelEmptyLabel": null,
+			"selectedModelId": "anthropic:sonnet",
+			"selectedMode": "rush",
+			"modeDescription": "Fastest response path",
+			"thinkingLevel": "high"
+		}
+	},
+	{
+		"name": "model reasoning falls back to fallback models and default modes",
+		"kind": "modelReasoning",
+		"input": {
+			"availableModels": [],
+			"fallbackModels": [{ "id": "sonnet", "provider": "anthropic" }],
+			"selectedModelId": "anthropic:sonnet",
+			"modeStatus": null,
+			"modeOptions": [],
+			"thinkingLevel": "minimal"
+		},
+		"expected": {
+			"modelOptions": [
+				{ "id": "anthropic:sonnet", "label": "sonnet · anthropic" }
+			],
+			"modeOptions": ["smart", "rush", "free", "custom"],
+			"selectedMode": "smart",
+			"modeDescription": null,
+			"thinkingLevel": "minimal"
+		}
+	},
+	{
+		"name": "mode option normalization dedupes mixed entries",
+		"kind": "modeOptions",
+		"input": {
+			"modes": [
+				"smart",
+				{ "mode": "rush", "config": { "description": "Fast" } },
+				"smart",
+				{ "mode": "custom", "config": {} }
+			]
+		},
+		"expected": ["smart", "rush", "custom"]
+	},
+	{
+		"name": "mode option normalization falls back to defaults when empty",
+		"kind": "modeOptions",
+		"input": {
+			"modes": []
+		},
+		"expected": ["smart", "rush", "free", "custom"]
+	},
+	{
+		"name": "planning describes an inactive plan mode",
+		"kind": "planning",
+		"input": {
+			"status": null,
+			"planDirty": false
+		},
+		"expected": {
+			"isActive": false,
+			"actionLabel": "Start plan",
+			"showNameInput": true,
+			"showEditor": false,
+			"planFileLabel": "Plan file not created yet",
+			"saveDisabled": true
+		}
+	},
+	{
+		"name": "planning enables saving for an active dirty plan",
+		"kind": "planning",
+		"input": {
+			"status": {
+				"state": {
+					"active": true,
+					"filePath": "/tmp/plan.md"
+				},
+				"content": "- [ ] write tests"
+			},
+			"planDirty": true
+		},
+		"expected": {
+			"isActive": true,
+			"actionLabel": "Exit plan",
+			"showNameInput": false,
+			"showEditor": true,
+			"planFileLabel": "/tmp/plan.md",
+			"saveDisabled": false
+		}
+	},
+	{
+		"name": "terminal ui disables controls without a session",
+		"kind": "terminalUi",
+		"input": {
+			"uiStatus": {
+				"zenMode": false,
+				"cleanMode": "soft",
+				"footerMode": "solo",
+				"compactTools": true,
+				"queueMode": "all"
+			},
+			"hasSession": false
+		},
+		"expected": {
+			"controlsDisabled": true,
+			"showSessionWarning": true,
+			"zenModeLabel": "Off",
+			"cleanMode": "soft",
+			"footerMode": "solo",
+			"compactToolsLabel": "On"
+		}
+	},
+	{
+		"name": "terminal ui enables controls for active sessions",
+		"kind": "terminalUi",
+		"input": {
+			"uiStatus": {
+				"zenMode": true,
+				"cleanMode": "aggressive",
+				"footerMode": "ensemble",
+				"compactTools": false,
+				"queueMode": "one"
+			},
+			"hasSession": true
+		},
+		"expected": {
+			"controlsDisabled": false,
+			"showSessionWarning": false,
+			"zenModeLabel": "On",
+			"cleanMode": "aggressive",
+			"footerMode": "ensemble",
+			"compactToolsLabel": "Off"
+		}
+	},
+	{
+		"name": "safety approvals summarize an in-flight guardian run",
+		"kind": "safetyApprovals",
+		"input": {
+			"approvalMode": "prompt",
+			"guardianStatus": {
+				"enabled": true,
+				"state": {
+					"enabled": true,
+					"lastRun": {
+						"status": "passed",
+						"startedAt": "not-a-date",
+						"durationMs": 1500,
+						"filesScanned": 42,
+						"summary": "No secrets found"
+					}
+				}
+			},
+			"guardianRunning": true
+		},
+		"expected": {
+			"approvalMode": "prompt",
+			"guardianChecked": true,
+			"guardianEnabledLabel": "On",
+			"guardianActionLabel": "Running…",
+			"guardianActionDisabled": true,
+			"lastRun": {
+				"status": "passed",
+				"summary": "No secrets found",
+				"durationLabel": "1.5s",
+				"timestampLabel": "Unknown"
+			}
+		}
+	},
+	{
+		"name": "safety approvals preserve fallback behavior without guardian status",
+		"kind": "safetyApprovals",
+		"input": {
+			"approvalMode": "auto",
+			"guardianStatus": null,
+			"guardianRunning": false
+		},
+		"expected": {
+			"approvalMode": "auto",
+			"guardianChecked": true,
+			"guardianEnabledLabel": "Off",
+			"guardianActionLabel": "Run now",
+			"guardianActionDisabled": false,
+			"lastRun": null
+		}
+	},
+	{
+		"name": "telemetry describes sampled local logging",
+		"kind": "telemetry",
+		"input": {
+			"status": {
+				"enabled": true,
+				"reason": "configured by policy",
+				"filePath": "/tmp/composer-telemetry.log",
+				"sampleRate": 0.25
+			}
+		},
+		"expected": {
+			"statusLabel": "On",
+			"dataLabel": "Minimal (25% sampled)",
+			"destinationLabel": "Local log file",
+			"destinationDetail": "/tmp/composer-telemetry.log",
+			"sourceLabel": "Local default",
+			"samplingLabel": "25%",
+			"overrideLabel": "None",
+			"reasonExplanation": "Reason: configured by policy.",
+			"exportExplanation": "Copy the log file at /tmp/composer-telemetry.log."
+		}
+	},
+	{
+		"name": "telemetry describes a session override sourced from an env flag",
+		"kind": "telemetry",
+		"input": {
+			"status": {
+				"enabled": true,
+				"reason": "flag disabled",
+				"sampleRate": 1,
+				"flagValue": "0",
+				"runtimeOverride": "enabled",
+				"overrideReason": "enabled via /api/telemetry"
+			}
+		},
+		"expected": {
+			"sourceLabel": "Env flag",
+			"overrideLabel": "Enabled",
+			"reasonExplanation": "Session override active: enabled via /api/telemetry."
+		}
+	},
+	{
+		"name": "training describes provider defaults",
+		"kind": "training",
+		"input": {
+			"status": {
+				"preference": "provider-default",
+				"optOut": null,
+				"reason": "provider controls it"
+			}
+		},
+		"expected": {
+			"preferenceLabel": "Provider default",
+			"dataLabel": "Controlled by provider",
+			"sourceLabel": "Provider default",
+			"overrideLabel": "None",
+			"reasonExplanation": "Providers use their default training policy."
+		}
+	},
+	{
+		"name": "training describes env flag opt-out state",
+		"kind": "training",
+		"input": {
+			"status": {
+				"preference": "opted-out",
+				"optOut": true,
+				"reason": "COMPOSER_TRAINING_OPT_OUT=true",
+				"flagValue": "true"
+			}
+		},
+		"expected": {
+			"sourceLabel": "Env flag",
+			"overrideLabel": "None",
+			"reasonExplanation": "Base preference comes from COMPOSER_TRAINING_OPT_OUT=true."
+		}
+	},
+	{
+		"name": "tools runtime summarizes lsp servers and detections",
+		"kind": "toolsRuntimeLsp",
+		"input": {
+			"status": {
+				"enabled": true,
+				"autostart": false,
+				"servers": [
+					{
+						"id": "typescript",
+						"root": "/repo",
+						"initialized": true,
+						"fileCount": 12,
+						"diagnosticCount": 3
+					},
+					{
+						"id": "eslint",
+						"root": "/repo",
+						"initialized": true,
+						"fileCount": 4,
+						"diagnosticCount": 1
+					}
+				]
+			},
+			"detections": [
+				{ "serverId": "typescript", "root": "/repo" },
+				{ "serverId": "eslint", "root": "/repo" }
+			]
+		},
+		"expected": {
+			"enabledLabel": "Yes",
+			"autostartLabel": "No",
+			"serverCount": 2,
+			"detectionsLabel": "typescript, eslint",
+			"servers": [
+				{ "id": "typescript", "summary": "12 files · 3 diag" },
+				{ "id": "eslint", "summary": "4 files · 1 diag" }
+			]
+		}
+	},
+	{
+		"name": "tools runtime preserves numeric MCP tool counts",
+		"kind": "toolsRuntimeMcpServer",
+		"input": {
+			"server": {
+				"name": "remote",
+				"connected": false,
+				"tools": 3,
+				"resources": [],
+				"prompts": []
+			},
+			"expandedServer": null
+		},
+		"expected": {
+			"name": "remote",
+			"summary": "Offline · 3 tools · 0 resources · 0 prompts",
+			"isExpanded": false,
+			"toolCount": 3,
+			"tools": [],
+			"toolDetailsLabel": "3 tools reported (details unavailable).",
+			"resources": [],
+			"prompts": []
+		}
+	},
+	{
+		"name": "tools runtime reports active composer state",
+		"kind": "toolsRuntimeComposerProfiles",
+		"input": {
+			"status": {
+				"composers": [{ "name": "default" }, { "name": "reviewer" }],
+				"active": { "name": "reviewer" }
+			},
+			"selectedComposer": "default"
+		},
+		"expected": {
+			"options": [{ "name": "default" }, { "name": "reviewer" }],
+			"activeLabel": "reviewer",
+			"canActivate": true
+		}
+	},
+	{
+		"name": "tools runtime composer selection prefers the active composer",
+		"kind": "toolsRuntimeComposerSelection",
+		"input": {
+			"status": {
+				"composers": [{ "name": "default" }, { "name": "reviewer" }],
+				"active": { "name": "reviewer" }
+			},
+			"currentSelection": "default"
+		},
+		"expected": "reviewer"
+	}
+]

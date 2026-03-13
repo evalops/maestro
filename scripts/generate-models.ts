@@ -112,6 +112,20 @@ export function enforceEndpoint(
 	providerId: string,
 	api: string,
 ): string {
+	const rawHasResponses = baseUrl.includes("/responses");
+	const rawHasCompletions = baseUrl.includes("/chat/completions");
+
+	if (api === "openai-responses" && rawHasCompletions && !rawHasResponses) {
+		throw new Error(
+			`Normalized baseUrl missing /responses for provider ${providerId}: ${baseUrl}`,
+		);
+	}
+	if (api === "openai-completions" && rawHasResponses && !rawHasCompletions) {
+		throw new Error(
+			`Normalized baseUrl missing /chat/completions for provider ${providerId}: ${baseUrl}`,
+		);
+	}
+
 	const normalized = normalizeLLMBaseUrl(baseUrl, providerId, api as Api);
 
 	const hasResponses = normalized.includes("/responses");
