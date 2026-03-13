@@ -63,14 +63,9 @@
  * @module tools/background-tasks
  */
 
-import {
-	type ChildProcess,
-	type SpawnOptions,
-	spawn,
-} from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 
 import { PATHS } from "../config/constants.js";
 import {
@@ -93,25 +88,17 @@ import { safejoin } from "../utils/path-validation.js";
 import { redactSecrets } from "../utils/secret-redactor.js";
 import { resolveShellEnvironment } from "../utils/shell-env.js";
 import {
-	ResourceMonitor,
 	type RestartPolicy,
-	RotatingLogWriter,
-	type TaskResourceUsage,
-	canRestart,
-	computeRestartDelay,
 	createRestartPolicy,
-	extractProcStatFields,
-	incrementAttempts,
 	shouldNotifyRestart,
 	updateNotifyThreshold,
 } from "./background/index.js";
 import {
-	archivedLogPath,
 	deleteArchives,
 	previewLastLine,
-	rotateArchives,
 	tailLogs,
 } from "./background/log-files.js";
+import { BackgroundTaskRuntime } from "./background/task-runtime.js";
 import {
 	type BackgroundTask,
 	type BackgroundTaskHealth,
@@ -119,19 +106,13 @@ import {
 	type BackgroundTaskLimits,
 	type BackgroundTaskNotification,
 	type BackgroundTaskStatus,
-	type ChildProcessWithUsage,
 	type ResourceLimitBreach,
 	type TaskLimitOverrides,
 	type TaskRuntimeLimits,
 	type TaskStartOptions,
 	formatTaskSummary,
 } from "./background/task-types.js";
-import {
-	getShellConfig,
-	killProcessTree,
-	parseCommandArguments,
-	validateShellParams,
-} from "./shell-utils.js";
+import { killProcessTree, validateShellParams } from "./shell-utils.js";
 import { ToolError } from "./tool-dsl.js";
 
 const LOG_TAIL_BYTES = 200_000;
@@ -143,7 +124,6 @@ const DEFAULT_CPU_MS = readNonNegativeInt(
 	"COMPOSER_BACKGROUND_TASK_MAX_CPU_MS",
 	10 * 60 * 1000,
 );
-const RESOURCE_POLL_INTERVAL_MS = 200;
 const RESTART_NOTIFY_THRESHOLD = readThresholdEnv(
 	"COMPOSER_BACKGROUND_TASK_NOTIFY_RESTARTS",
 	2,
@@ -170,70 +150,12 @@ const MAX_LOG_SEGMENTS = readPositiveInt(
 	0,
 );
 // Re-export for backwards compatibility
-export { type TaskResourceUsage, extractProcStatFields };
+export {
+	extractProcStatFields,
+	type TaskResourceUsage,
+} from "./background/index.js";
 
-/**
- * Evaluate Resource Usage Against Limits
- *
- * Checks whether a task's resource consumption has exceeded its configured
- * limits. Returns information about the first breach found (memory takes
- * priority over CPU since it's usually more urgent).
- *
- * ## Check Order
- *
- * 1. Memory (RSS): Checked first because memory exhaustion can crash the system
- * 2. CPU Time: Checked second; CPU-bound tasks are less dangerous but wasteful
- *
- * ## Limit Values
- *
- * A limit of 0 means "unlimited" - the check is skipped for that resource.
- * This allows users to disable specific limits while keeping others.
- *
- * ## Usage in Monitoring Loop
- *
- * This function is called every RESOURCE_POLL_INTERVAL_MS (200ms) by the
- * monitoring timer. If a breach is detected, the task is terminated via
- * enforceRuntimeLimits().
- *
- * @param usage - Current resource usage snapshot (may be undefined early in lifecycle)
- * @param limits - Configured limits from task or global defaults
- * @returns Breach info if limit exceeded, null if within limits
- */
-export function evaluateResourceLimitBreach(
-	usage: TaskResourceUsage | undefined,
-	limits: Pick<TaskRuntimeLimits, "maxRssKb" | "maxCpuMs">,
-): ResourceLimitBreach | null {
-	// No usage data yet (process just started)
-	if (!usage) {
-		return null;
-	}
-
-	// Check memory limit first (more critical - can crash system)
-	const rssLimit = limits.maxRssKb ?? 0;
-	const cpuLimit = limits.maxCpuMs ?? 0;
-
-	// Memory check: 0 means unlimited
-	if (rssLimit > 0 && (usage.maxRssKb ?? 0) > rssLimit) {
-		return {
-			kind: "memory",
-			limit: rssLimit,
-			actual: usage.maxRssKb ?? 0,
-		};
-	}
-
-	// CPU check: combine user + system time
-	const totalCpu = (usage.userMs ?? 0) + (usage.systemMs ?? 0);
-	if (cpuLimit > 0 && totalCpu > cpuLimit) {
-		return {
-			kind: "cpu",
-			limit: cpuLimit,
-			actual: totalCpu,
-		};
-	}
-
-	// All limits satisfied
-	return null;
-}
+export { evaluateResourceLimitBreach } from "./background/resource-limits.js";
 
 class BackgroundTaskManager extends EventEmitter {
 	private limits: BackgroundTaskLimits;
@@ -250,7 +172,15 @@ class BackgroundTaskManager extends EventEmitter {
 	private unsubscribeSettings?: () => void;
 	private secretCounter = 0;
 	private readonly logger = createLogger("background-tasks");
-	private readonly resourceMonitor = new ResourceMonitor();
+	private readonly runtime = new BackgroundTaskRuntime({
+		emitTaskNotification: (payload) => this.emitTaskNotification(payload),
+		emitTaskTelemetry: (task, event) => this.emitTaskTelemetry(task, event),
+		maybeNotifyRestart: (task, policy) => this.maybeNotifyRestart(task, policy),
+		notifyFailure: (task, code, signal) =>
+			this.notifyFailure(task, code, signal),
+		scheduleCleanup: (task) => this.scheduleCleanup(task),
+		setFailureReason: (task, reason) => this.setFailureReason(task, reason),
+	});
 
 	private ensureSettingsSubscription(): void {
 		if (this.unsubscribeSettings) {
@@ -407,314 +337,6 @@ class BackgroundTaskManager extends EventEmitter {
 		return createRestartPolicy(restart, RESTART_NOTIFY_THRESHOLD);
 	}
 
-	private createChildProcess(task: BackgroundTask): ChildProcess {
-		const mergedEnv: NodeJS.ProcessEnv = task.env;
-		const spawnOptions: SpawnOptions = {
-			detached: true,
-			stdio: ["ignore", "pipe", "pipe"],
-			cwd: task.cwd,
-			env: mergedEnv,
-		};
-		if (task.shellMode === "shell") {
-			const { shell, args } = getShellConfig();
-			return spawn(shell, [...args, task.command], spawnOptions);
-		}
-		let parsed: string[];
-		try {
-			parsed = parseCommandArguments(task.command);
-		} catch (error) {
-			throw new ToolError(
-				error instanceof Error
-					? error.message
-					: "Failed to parse command arguments",
-			);
-		}
-		if (parsed.length === 0) {
-			throw new ToolError("Command must contain an executable to run");
-		}
-		return spawn(parsed[0]!, parsed.slice(1), spawnOptions);
-	}
-
-	private launchProcess(task: BackgroundTask): void {
-		const child = this.createChildProcess(task);
-		this.attachLogging(child, task);
-		task.process = child;
-		task.failureReason = undefined;
-		task.lastLimitBreach = undefined;
-		task.pid = child.pid ?? undefined;
-		this.startUsageMonitor(task);
-		task.status = "running";
-		task.stopRequested = false;
-		task.exitCode = undefined;
-		task.signal = undefined;
-		task.finishedAt = undefined;
-		task.completion = new Promise<void>((resolve) => {
-			child.once("exit", (code, signal) => {
-				this.handleChildExit(task, child, resolve, code, signal);
-			});
-			child.once("error", (error) => {
-				this.handleChildError(task, child, resolve, error as Error);
-			});
-		});
-		this.emitTaskTelemetry(task, "started");
-	}
-
-	private handleChildExit(
-		task: BackgroundTask,
-		child: ChildProcess,
-		resolve: () => void,
-		code: number | null,
-		signal: NodeJS.Signals | null,
-	): void {
-		if (task.process !== child) {
-			resolve();
-			return;
-		}
-		task.exitCode = code;
-		task.signal = signal;
-		task.pid = undefined;
-		this.stopUsageMonitor(task);
-		this.captureResourceUsage(task, child);
-		task.terminatingForLimits = false;
-		const forcedFailure = Boolean(task.failureReason);
-		if (forcedFailure) {
-			this.disableRestart(task);
-		}
-		if (task.stopRequested) {
-			task.status = "stopped";
-			task.finishedAt = Date.now();
-			this.scheduleCleanup(task);
-			this.emitTaskTelemetry(task, "stopped");
-			resolve();
-			return;
-		}
-		if (!forcedFailure && code === 0) {
-			task.status = "exited";
-			task.finishedAt = Date.now();
-			this.scheduleCleanup(task);
-			this.emitTaskTelemetry(task, "exited");
-			resolve();
-			return;
-		}
-		if (!forcedFailure && this.scheduleRestart(task)) {
-			resolve();
-			return;
-		}
-		task.status = "failed";
-		task.finishedAt = Date.now();
-		this.scheduleCleanup(task);
-		this.emitTaskTelemetry(task, "failed");
-		if (!forcedFailure) {
-			this.notifyFailure(task, code, signal);
-		}
-		resolve();
-	}
-
-	private handleChildError(
-		task: BackgroundTask,
-		child: ChildProcess,
-		resolve: () => void,
-		_error: Error,
-	): void {
-		if (task.process !== child) {
-			resolve();
-			return;
-		}
-		task.pid = undefined;
-		this.stopUsageMonitor(task);
-		this.captureResourceUsage(task, child);
-		task.terminatingForLimits = false;
-		const forcedFailure = Boolean(task.failureReason);
-		if (forcedFailure) {
-			this.disableRestart(task);
-		}
-		if (!forcedFailure && this.scheduleRestart(task)) {
-			resolve();
-			return;
-		}
-		task.status = "failed";
-		task.finishedAt = Date.now();
-		this.scheduleCleanup(task);
-		this.emitTaskTelemetry(task, "failed");
-		if (!forcedFailure) {
-			this.notifyFailure(task, null, null);
-		}
-		resolve();
-	}
-
-	private captureResourceUsage(
-		task: BackgroundTask,
-		child: ChildProcess,
-	): void {
-		const { resourceUsage } = child as ChildProcessWithUsage;
-		if (typeof resourceUsage !== "function") {
-			return;
-		}
-		try {
-			const usage = resourceUsage.call(child);
-			if (!task.resourceUsage) {
-				task.resourceUsage = {};
-			}
-			const target = task.resourceUsage;
-			if (usage.maxRSS) {
-				target.maxRssKb = Math.max(target.maxRssKb ?? 0, usage.maxRSS);
-			}
-			if (usage.userCPUTime) {
-				target.userMs = Math.max(target.userMs ?? 0, usage.userCPUTime / 1000);
-			}
-			if (usage.systemCPUTime) {
-				target.systemMs = Math.max(
-					target.systemMs ?? 0,
-					usage.systemCPUTime / 1000,
-				);
-			}
-		} catch {
-			// Ignore metrics errors
-		}
-		this.enforceRuntimeLimits(task);
-	}
-
-	private scheduleRestart(task: BackgroundTask): boolean {
-		const policy = task.restartPolicy;
-		if (!policy || task.stopRequested) {
-			return false;
-		}
-		if (!canRestart(policy)) {
-			return false;
-		}
-		incrementAttempts(policy);
-		task.status = "restarting";
-		this.emitTaskTelemetry(task, "restarted");
-		this.maybeNotifyRestart(task, policy);
-		this.cancelRestart(task);
-		const delay = computeRestartDelay(policy);
-		task.restartTimer = setTimeout(() => {
-			task.restartTimer = null;
-			this.launchProcess(task);
-		}, delay);
-		if (task.restartTimer.unref) {
-			task.restartTimer.unref();
-		}
-		return true;
-	}
-
-	private cancelRestart(task: BackgroundTask): void {
-		if (task.restartTimer) {
-			clearTimeout(task.restartTimer);
-			task.restartTimer = null;
-		}
-	}
-
-	private disableRestart(task: BackgroundTask): void {
-		this.cancelRestart(task);
-		task.restartPolicy = undefined;
-	}
-
-	private startUsageMonitor(task: BackgroundTask): void {
-		if (!task.pid || task.usageMonitor) {
-			return;
-		}
-		const mode = this.getMonitoringMode();
-		task.monitoringMode = mode;
-		if (mode === "disabled") {
-			return;
-		}
-		this.sampleResourceUsage(task);
-		const monitor = setInterval(() => {
-			this.sampleResourceUsage(task);
-		}, RESOURCE_POLL_INTERVAL_MS);
-		if (monitor.unref) {
-			monitor.unref();
-		}
-		task.usageMonitor = monitor;
-	}
-
-	private stopUsageMonitor(task: BackgroundTask): void {
-		if (task.usageMonitor) {
-			clearInterval(task.usageMonitor);
-			task.usageMonitor = null;
-		}
-	}
-
-	private getMonitoringMode(): "proc" | "ps" | "disabled" {
-		return this.resourceMonitor.getMode();
-	}
-
-	private sampleResourceUsage(task: BackgroundTask): void {
-		if (!task.pid) {
-			this.stopUsageMonitor(task);
-			return;
-		}
-		const usage = this.resourceMonitor.getUsage(task.pid);
-		if (!usage) {
-			if (task.monitoringMode === "ps") {
-				// If ps cannot be read (pid exited), stop monitoring to avoid noisy logs
-				this.stopUsageMonitor(task);
-			}
-			return;
-		}
-		if (!task.resourceUsage) {
-			task.resourceUsage = {};
-		}
-		const target = task.resourceUsage;
-		if (usage.maxRssKb !== undefined) {
-			target.maxRssKb = Math.max(target.maxRssKb ?? 0, usage.maxRssKb);
-		}
-		if (usage.userMs !== undefined) {
-			target.userMs = Math.max(target.userMs ?? 0, usage.userMs);
-		}
-		if (usage.systemMs !== undefined) {
-			target.systemMs = Math.max(target.systemMs ?? 0, usage.systemMs);
-		}
-		this.enforceRuntimeLimits(task);
-	}
-
-	private enforceRuntimeLimits(task: BackgroundTask): void {
-		if (!task.resourceUsage || task.terminatingForLimits) {
-			return;
-		}
-		const breach = evaluateResourceLimitBreach(task.resourceUsage, task.limits);
-		if (!breach || task.failureReason) {
-			return;
-		}
-		const describe =
-			breach.kind === "memory"
-				? `${(breach.actual / 1024).toFixed(1)}MB > ${(breach.limit / 1024).toFixed(1)}MB`
-				: `${Math.round(breach.actual)}ms > ${Math.round(breach.limit)}ms`;
-		this.setFailureReason(task, `Resource limit (${breach.kind} ${describe})`);
-		task.lastLimitBreach = breach;
-		task.terminatingForLimits = true;
-		this.disableRestart(task);
-		if (!task.pid) {
-			return;
-		}
-		try {
-			killProcessTree(task.pid);
-		} catch (error) {
-			const errMessage =
-				error instanceof Error ? error.message : "Failed to terminate process";
-			this.emitTaskNotification({
-				taskId: task.id,
-				status: task.status,
-				command: task.command,
-				kind: "limit",
-				level: "warn",
-				reason: `${task.failureReason}; kill error: ${errMessage}`,
-				message: "resource limit hit but termination failed",
-			});
-			return;
-		}
-		this.emitTaskNotification({
-			taskId: task.id,
-			status: task.status,
-			command: task.command,
-			kind: "limit",
-			level: "warn",
-			reason: task.failureReason,
-			message: "exceeded resource limits; terminating",
-		});
-	}
-
 	private getLogDir(): string {
 		const expanded =
 			resolveEnvPath(process.env.COMPOSER_BACKGROUND_LOG_DIR) ??
@@ -764,58 +386,6 @@ class BackgroundTaskManager extends EventEmitter {
 		});
 	}
 
-	private attachLogging(child: ChildProcess, task: BackgroundTask): void {
-		let existingSize = 0;
-		try {
-			existingSize = statSync(task.logPath).size;
-		} catch {
-			// File may not exist yet
-		}
-		const writer = new RotatingLogWriter({
-			limit: task.limits.logSizeLimit,
-			segments: task.limits.logSegments,
-			logPath: task.logPath,
-			existingSize,
-			markTruncated: () => {
-				task.logTruncated = true;
-			},
-			shiftArchives: () =>
-				rotateArchives(task.logPath, task.limits.logSegments),
-			archivedPath: (index) => this.getArchivedLogPath(task.logPath, index),
-		});
-		task.logWriter = writer;
-
-		let closed = false;
-		const closeStream = () => {
-			if (closed) {
-				return;
-			}
-			closed = true;
-			writer.end();
-		};
-
-		const attach = (source?: NodeJS.ReadableStream | null) => {
-			if (!source) {
-				return;
-			}
-			source.pipe(writer, { end: false });
-			source.on("error", () => {
-				task.logTruncated = true;
-				closeStream();
-			});
-		};
-
-		attach(child.stdout);
-		attach(child.stderr);
-
-		child.once("exit", closeStream);
-		child.once("error", closeStream);
-	}
-
-	private getArchivedLogPath(logPath: string, index: number): string {
-		return archivedLogPath(logPath, index);
-	}
-
 	private generateTaskId(): string {
 		return `task-${Date.now()}-${randomUUID().slice(0, 8)}`;
 	}
@@ -859,8 +429,7 @@ class BackgroundTaskManager extends EventEmitter {
 		if (!force && (task.status === "running" || task.status === "restarting")) {
 			return;
 		}
-		this.cancelRestart(task);
-		this.stopUsageMonitor(task);
+		this.runtime.disposeTask(task);
 		this.tasks.delete(id);
 		this.clearCleanupTimer(id);
 		try {
@@ -997,7 +566,7 @@ class BackgroundTaskManager extends EventEmitter {
 			pid: undefined,
 			status: "running",
 			logPath,
-			process: {} as ChildProcess,
+			process: {} as BackgroundTask["process"],
 			completion: Promise.resolve(),
 			shellMode: useShell ? "shell" : "exec",
 			restartPolicy: this.normalizeRestartOptions(restart),
@@ -1008,7 +577,7 @@ class BackgroundTaskManager extends EventEmitter {
 		};
 
 		this.tasks.set(id, task);
-		this.launchProcess(task);
+		this.runtime.launchProcess(task);
 		return task;
 	}
 
@@ -1109,9 +678,9 @@ class BackgroundTaskManager extends EventEmitter {
 			return null;
 		}
 		task.stopRequested = true;
-		this.disableRestart(task);
+		this.runtime.disableRestart(task);
 		if (task.status === "restarting") {
-			this.stopUsageMonitor(task);
+			this.runtime.stopUsageMonitor(task);
 			task.status = "stopped";
 			task.finishedAt = Date.now();
 			this.scheduleCleanup(task);
