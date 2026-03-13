@@ -37,6 +37,7 @@ import {
 	type TelemetryTrainingAction,
 	TelemetryTrainingSection,
 } from "./TelemetryTrainingSection";
+import { TerminalUiSection } from "./TerminalUiSection";
 import {
 	type LspAction,
 	type LspDetection,
@@ -1009,105 +1010,14 @@ export function SettingsModal({
 					/>
 
 					{showCliOnlyControls && (
-						<section className="border border-line-subtle rounded-xl overflow-hidden">
-							<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
-								Terminal UI (CLI Only)
-							</div>
-							<div className="p-4 space-y-4">
-								<div className="text-xs text-text-muted">
-									These settings affect the terminal interface only. The desktop
-									UI ignores them.
-								</div>
-								<div className="flex items-center justify-between gap-4">
-									<div>
-										<div className="text-text-primary font-medium">
-											Zen mode
-										</div>
-										<div className="text-xs text-text-muted">
-											Reduce TUI clutter.
-										</div>
-									</div>
-									<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-										<input
-											type="checkbox"
-											disabled={!hasSession}
-											checked={uiStatus.zenMode}
-											onChange={(event) => updateZen(event.target.checked)}
-											className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-										/>
-										<span>{uiStatus.zenMode ? "On" : "Off"}</span>
-									</label>
-								</div>
-
-								<div className="flex items-center justify-between gap-4">
-									<div>
-										<div className="text-text-primary font-medium">
-											Clean mode
-										</div>
-										<div className="text-xs text-text-muted">
-											Clean up TUI output formatting.
-										</div>
-									</div>
-									<select
-										disabled={!hasSession}
-										value={uiStatus.cleanMode}
-										onChange={(event) =>
-											updateCleanMode(event.target.value as CleanMode)
-										}
-										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
-									>
-										<option value="off">Off</option>
-										<option value="soft">Soft</option>
-										<option value="aggressive">Aggressive</option>
-									</select>
-								</div>
-
-								<div className="flex items-center justify-between gap-4">
-									<div>
-										<div className="text-text-primary font-medium">
-											Footer mode
-										</div>
-										<div className="text-xs text-text-muted">
-											TUI status footer density.
-										</div>
-									</div>
-									<select
-										disabled={!hasSession}
-										value={uiStatus.footerMode}
-										onChange={(event) =>
-											updateFooterMode(event.target.value as FooterMode)
-										}
-										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
-									>
-										<option value="ensemble">Ensemble</option>
-										<option value="solo">Solo</option>
-									</select>
-								</div>
-
-								<div className="flex items-center justify-between gap-4">
-									<div>
-										<div className="text-text-primary font-medium">
-											Compact tools
-										</div>
-										<div className="text-xs text-text-muted">
-											Reduce TUI tool output cards.
-										</div>
-									</div>
-									<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-										<input
-											type="checkbox"
-											disabled={!hasSession}
-											checked={uiStatus.compactTools}
-											onChange={(event) =>
-												updateCompactTools(event.target.checked)
-											}
-											className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-										/>
-										<span>{uiStatus.compactTools ? "On" : "Off"}</span>
-									</label>
-								</div>
-							</div>
-						</section>
+						<TerminalUiSection
+							uiStatus={uiStatus}
+							hasSession={hasSession}
+							onUpdateZen={updateZen}
+							onUpdateCleanMode={updateCleanMode}
+							onUpdateFooterMode={updateFooterMode}
+							onUpdateCompactTools={updateCompactTools}
+						/>
 					)}
 				</div>
 			</div>
