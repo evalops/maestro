@@ -24,9 +24,32 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          fetch-depth: 0
+      - name: Checkout repository with retry
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://x-access-token:${CHECKOUT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          for attempt in 1 2 3 4; do
+            echo "Checkout attempt ${attempt}"
+            if git -c gc.auto=0 fetch --depth=1 --no-tags origin "${GITHUB_REF}"; then
+              git checkout --force --detach FETCH_HEAD
+              git remote set-url origin "https://github.com/${GITHUB_REPOSITORY}.git"
+              exit 0
+            fi
+
+            if [[ "${attempt}" -eq 4 ]]; then
+              echo "::error::Unable to fetch ${GITHUB_REF} after repeated attempts"
+              exit 1
+            fi
+
+            sleep $((2 ** attempt))
+          done
 
       - uses: ./.github/actions/setup-bun-nx
 
