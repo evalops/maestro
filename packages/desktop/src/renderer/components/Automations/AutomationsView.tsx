@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	type AutomationTemplate,
+	useAutomationForm,
+} from "../../hooks/useAutomationForm";
 import { useAutomations } from "../../hooks/useAutomations";
-import type {
-	AutomationCreateInput,
-	AutomationUpdateInput,
-} from "../../lib/api-client";
 import { apiClient } from "../../lib/api-client";
 import type {
 	AutomationTask,
@@ -11,6 +11,12 @@ import type {
 	SessionSummary,
 	ThinkingLevel,
 } from "../../lib/types";
+import {
+	type ScheduleKind,
+	dayOptions,
+	formatDateLabel,
+	formatTimeLabel,
+} from "./automation-form-utils";
 
 type AutomationViewProps = {
 	sessions: SessionSummary[];
@@ -20,8 +26,6 @@ type AutomationViewProps = {
 	onOpenSession: (sessionId: string) => void;
 };
 
-type ScheduleKind = "once" | "daily" | "weekly" | "cron";
-
 type AutomationToast = {
 	id: string;
 	title: string;
@@ -29,16 +33,6 @@ type AutomationToast = {
 	status: "success" | "failure";
 	sessionId?: string;
 };
-
-const dayOptions = [
-	{ label: "Sun", value: 0 },
-	{ label: "Mon", value: 1 },
-	{ label: "Tue", value: 2 },
-	{ label: "Wed", value: 3 },
-	{ label: "Thu", value: 4 },
-	{ label: "Fri", value: 5 },
-	{ label: "Sat", value: 6 },
-];
 
 const thinkingOptions: ThinkingLevel[] = [
 	"off",
@@ -117,7 +111,7 @@ const promptTokenOptions = [
 	},
 ];
 
-const automationTemplates = [
+const automationTemplates: AutomationTemplate[] = [
 	{
 		id: "morning-review",
 		name: "Morning Review",
@@ -151,42 +145,6 @@ const automationTemplates = [
 	},
 ];
 
-function formatLocalDateTimeInput(value: string | undefined) {
-	if (!value) return "";
-	const date = new Date(value);
-	if (Number.isNaN(date.getTime())) return "";
-	const pad = (num: number) => `${num}`.padStart(2, "0");
-	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
-		date.getDate(),
-	)}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function formatTimeLabel(value: string) {
-	if (!value) return "—";
-	const [hourStr, minuteStr] = value.split(":");
-	const hours = Number.parseInt(hourStr || "0", 10);
-	const minutes = Number.parseInt(minuteStr || "0", 10);
-	const date = new Date();
-	date.setHours(hours);
-	date.setMinutes(minutes);
-	return date.toLocaleTimeString(undefined, {
-		hour: "numeric",
-		minute: "2-digit",
-	});
-}
-
-function formatDateLabel(value?: string | null) {
-	if (!value) return "—";
-	const date = new Date(value);
-	if (Number.isNaN(date.getTime())) return "—";
-	return date.toLocaleString(undefined, {
-		month: "short",
-		day: "numeric",
-		hour: "numeric",
-		minute: "2-digit",
-	});
-}
-
 function formatRelativeTime(value?: string | null) {
 	if (!value) return "—";
 	const date = new Date(value);
@@ -219,37 +177,6 @@ function formatDuration(value?: number | null) {
 	return `${minutes}m ${remaining}s`;
 }
 
-function parseCronSchedule(schedule: string | null | undefined) {
-	if (!schedule) return null;
-	const parts = schedule.trim().split(/\s+/);
-	if (parts.length !== 5) return null;
-	const [minute, hour, _dom, _month, dow] = parts;
-	if (!/^\d+$/.test(minute) || !/^\d+$/.test(hour)) return null;
-	if (!minute || !hour) return null;
-	const time = `${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
-	const days =
-		dow && dow !== "*"
-			? dow
-					.split(",")
-					.flatMap((entry) => {
-						if (entry.includes("-")) {
-							const [startRaw, endRaw] = entry.split("-");
-							const start = Number(startRaw);
-							const end = Number(endRaw);
-							if (!Number.isFinite(start) || !Number.isFinite(end)) return [];
-							return Array.from(
-								{ length: end - start + 1 },
-								(_, i) => start + i,
-							);
-						}
-						const value = Number(entry);
-						return Number.isFinite(value) ? [value] : [];
-					})
-					.filter((day) => Number.isFinite(day))
-			: null;
-	return { time, days };
-}
-
 export function AutomationsView({
 	sessions,
 	currentSessionId,
@@ -268,41 +195,80 @@ export function AutomationsView({
 	} = useAutomations();
 
 	const [selectedId, setSelectedId] = useState<string | null>(null);
-	const [editingId, setEditingId] = useState<string | null>(null);
 	const [filter, setFilter] = useState("");
 
-	const [name, setName] = useState("");
-	const [prompt, setPrompt] = useState("");
-	const [scheduleKind, setScheduleKind] = useState<ScheduleKind>("weekly");
-	const [onceDateTime, setOnceDateTime] = useState("");
-	const [dailyTime, setDailyTime] = useState("09:00");
-	const [weeklyTime, setWeeklyTime] = useState("09:00");
-	const [weeklyDays, setWeeklyDays] = useState<number[]>([1]);
-	const [cronExpression, setCronExpression] = useState("0 9 * * 1");
-	const [timezone, setTimezone] = useState(
-		Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-	);
-	const [sessionMode, setSessionMode] = useState<"reuse" | "new">("reuse");
-	const [sessionId, setSessionId] = useState<string | null>(currentSessionId);
-	const [contextPaths, setContextPaths] = useState<string[]>([]);
-	const [contextInput, setContextInput] = useState("");
-	const [contextFolders, setContextFolders] = useState<string[]>([]);
-	const [contextFolderInput, setContextFolderInput] = useState("");
-	const [runWindowEnabled, setRunWindowEnabled] = useState(false);
-	const [runWindowStart, setRunWindowStart] = useState("09:00");
-	const [runWindowEnd, setRunWindowEnd] = useState("17:00");
-	const [runWindowDays, setRunWindowDays] = useState<number[]>([1, 2, 3, 4, 5]);
-	const [exclusiveRun, setExclusiveRun] = useState(false);
-	const [notifyOnSuccess, setNotifyOnSuccess] = useState(true);
-	const [notifyOnFailure, setNotifyOnFailure] = useState(true);
-	const [model, setModel] = useState<string | undefined>(
-		currentModel ? `${currentModel.provider}:${currentModel.id}` : undefined,
-	);
-	const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevel>("off");
-	const [previewNextRun, setPreviewNextRun] = useState<string | null>(null);
-	const [previewError, setPreviewError] = useState<string | null>(null);
-	const [previewLoading, setPreviewLoading] = useState(false);
-	const [previewTimezoneValid, setPreviewTimezoneValid] = useState(true);
+	const {
+		contextFolderInput,
+		contextFolders,
+		contextInput,
+		contextPaths,
+		cronExpression,
+		dailyTime,
+		editingId,
+		exclusiveRun,
+		handleAddContextFolder,
+		handleAddContextPath,
+		handleApplyTemplate,
+		handleEditAutomation,
+		handleInsertToken,
+		handlePickContextFile,
+		handlePickContextFolder,
+		handleResetForm,
+		handleSubmit,
+		isSubmitDisabled,
+		model,
+		name,
+		notifyOnFailure,
+		notifyOnSuccess,
+		onceDateTime,
+		previewError,
+		previewLoading,
+		previewNextRun,
+		previewTimezoneValid,
+		prompt,
+		runWindowDays,
+		runWindowEnabled,
+		runWindowEnd,
+		runWindowStart,
+		scheduleKind,
+		schedulePreview,
+		sessionId,
+		sessionMode,
+		setContextFolderInput,
+		setContextFolders,
+		setContextInput,
+		setContextPaths,
+		setCronExpression,
+		setDailyTime,
+		setExclusiveRun,
+		setModel,
+		setName,
+		setNotifyOnFailure,
+		setNotifyOnSuccess,
+		setOnceDateTime,
+		setPrompt,
+		setRunWindowDays,
+		setRunWindowEnabled,
+		setRunWindowEnd,
+		setRunWindowStart,
+		setScheduleKind,
+		setSessionId,
+		setSessionMode,
+		setThinkingLevel,
+		setTimezone,
+		setWeeklyDays,
+		setWeeklyTime,
+		thinkingLevel,
+		timezone,
+		weeklyDays,
+		weeklyTime,
+	} = useAutomationForm({
+		currentSessionId,
+		currentModel,
+		createAutomation,
+		updateAutomation,
+		onSaved: setSelectedId,
+	});
 	const [notificationsEnabled, setNotificationsEnabled] = useState(false);
 	const [toasts, setToasts] = useState<AutomationToast[]>([]);
 	const seenRunsRef = useRef<Record<string, string>>({});
@@ -329,18 +295,6 @@ export function AutomationsView({
 			"Asia/Tokyo",
 		];
 	}, []);
-
-	useEffect(() => {
-		if (!editingId && currentSessionId) {
-			setSessionId(currentSessionId);
-		}
-	}, [currentSessionId, editingId]);
-
-	useEffect(() => {
-		if (!editingId && currentModel) {
-			setModel(`${currentModel.provider}:${currentModel.id}`);
-		}
-	}, [currentModel, editingId]);
 
 	useEffect(() => {
 		const interval = setInterval(() => {
@@ -454,327 +408,6 @@ export function AutomationsView({
 			}
 		}
 	}, [automations, notificationsEnabled, addToast]);
-
-	const handleResetForm = () => {
-		setEditingId(null);
-		setName("");
-		setPrompt("");
-		setScheduleKind("weekly");
-		setOnceDateTime("");
-		setDailyTime("09:00");
-		setWeeklyTime("09:00");
-		setWeeklyDays([1]);
-		setCronExpression("0 9 * * 1");
-		setTimezone(systemTimezone);
-		setSessionMode("reuse");
-		setSessionId(currentSessionId);
-		setContextPaths([]);
-		setContextInput("");
-		setContextFolders([]);
-		setContextFolderInput("");
-		setRunWindowEnabled(false);
-		setRunWindowStart("09:00");
-		setRunWindowEnd("17:00");
-		setRunWindowDays([1, 2, 3, 4, 5]);
-		setExclusiveRun(false);
-		setNotifyOnSuccess(true);
-		setNotifyOnFailure(true);
-		setModel(
-			currentModel ? `${currentModel.provider}:${currentModel.id}` : undefined,
-		);
-		setThinkingLevel("off");
-		setPreviewNextRun(null);
-		setPreviewError(null);
-		setPreviewLoading(false);
-		setPreviewTimezoneValid(true);
-	};
-
-	const handleEditAutomation = (automation: AutomationTask) => {
-		setEditingId(automation.id);
-		setName(automation.name);
-		setPrompt(automation.prompt);
-		setScheduleKind(
-			automation.scheduleKind || (automation.schedule ? "cron" : "once"),
-		);
-		setTimezone(automation.timezone || "UTC");
-		setSessionMode(automation.sessionMode || "reuse");
-		setSessionId(automation.sessionId || currentSessionId);
-		setContextPaths(automation.contextPaths || []);
-		setContextFolders(automation.contextFolders || []);
-		setModel(automation.model || undefined);
-		setThinkingLevel(automation.thinkingLevel || "off");
-		setExclusiveRun(automation.exclusive ?? false);
-		setNotifyOnSuccess(automation.notifyOnSuccess ?? true);
-		setNotifyOnFailure(automation.notifyOnFailure ?? true);
-		if (automation.runWindow) {
-			setRunWindowEnabled(true);
-			setRunWindowStart(automation.runWindow.start);
-			setRunWindowEnd(automation.runWindow.end);
-			setRunWindowDays(automation.runWindow.days ?? []);
-		} else {
-			setRunWindowEnabled(false);
-			setRunWindowStart("09:00");
-			setRunWindowEnd("17:00");
-			setRunWindowDays([1, 2, 3, 4, 5]);
-		}
-
-		if (automation.scheduleKind === "once") {
-			setOnceDateTime(
-				formatLocalDateTimeInput(automation.runAt || automation.nextRun || ""),
-			);
-		} else if (automation.scheduleKind === "daily") {
-			setDailyTime(automation.scheduleTime || "09:00");
-		} else if (automation.scheduleKind === "weekly") {
-			setWeeklyTime(automation.scheduleTime || "09:00");
-			setWeeklyDays(automation.scheduleDays || [1]);
-		} else if (automation.scheduleKind === "cron") {
-			setCronExpression(
-				automation.cronExpression || automation.schedule || "0 9 * * 1",
-			);
-		} else if (automation.schedule) {
-			const parsed = parseCronSchedule(automation.schedule);
-			if (parsed?.days && parsed.days.length > 0) {
-				setScheduleKind("weekly");
-				setWeeklyDays(parsed.days);
-				setWeeklyTime(parsed.time);
-			} else if (parsed?.time) {
-				setScheduleKind("daily");
-				setDailyTime(parsed.time);
-			} else {
-				setScheduleKind("cron");
-				setCronExpression(automation.schedule);
-			}
-		}
-	};
-
-	const handleApplyTemplate = (
-		template: (typeof automationTemplates)[number],
-	) => {
-		setEditingId(null);
-		setName(template.name);
-		setPrompt(template.prompt);
-		setScheduleKind(template.scheduleKind);
-		setOnceDateTime("");
-		setDailyTime(template.dailyTime ?? "09:00");
-		setWeeklyTime(template.weeklyTime ?? "09:00");
-		setWeeklyDays(template.weeklyDays ?? [1]);
-		setCronExpression("0 9 * * 1");
-		setTimezone(systemTimezone);
-		setSessionMode("reuse");
-		setSessionId(currentSessionId);
-		setContextPaths([]);
-		setContextInput("");
-		setContextFolders([]);
-		setContextFolderInput("");
-		setRunWindowEnabled(false);
-		setRunWindowStart("09:00");
-		setRunWindowEnd("17:00");
-		setRunWindowDays([1, 2, 3, 4, 5]);
-		setExclusiveRun(false);
-		setNotifyOnSuccess(true);
-		setNotifyOnFailure(true);
-		setThinkingLevel(template.thinkingLevel ?? "off");
-	};
-
-	const handleInsertToken = (token: string) => {
-		setPrompt((prev) => {
-			if (!prev.trim()) return token;
-			if (prev.endsWith(" ") || prev.endsWith("\n")) return `${prev}${token}`;
-			return `${prev} ${token}`;
-		});
-	};
-
-	const buildSchedule = useCallback(() => {
-		if (scheduleKind === "once") {
-			const date = onceDateTime ? new Date(onceDateTime) : null;
-			const runAt =
-				date && !Number.isNaN(date.getTime()) ? date.toISOString() : "";
-			return {
-				schedule: null,
-				runAt,
-				label: runAt ? `One-time · ${formatDateLabel(runAt)}` : "One-time",
-			};
-		}
-		if (scheduleKind === "daily") {
-			const [hour, minute] = dailyTime.split(":");
-			const schedule = `${minute} ${hour} * * *`;
-			return {
-				schedule,
-				label: `Daily · ${formatTimeLabel(dailyTime)}`,
-			};
-		}
-		if (scheduleKind === "weekly") {
-			const [hour, minute] = weeklyTime.split(":");
-			const days = (weeklyDays.length > 0 ? weeklyDays : [1]).slice();
-			const sortedDays = days.sort((a, b) => a - b);
-			const schedule = `${minute} ${hour} * * ${sortedDays.join(",")}`;
-			const daysLabel = sortedDays
-				.map((day) => dayOptions.find((d) => d.value === day)?.label)
-				.filter(Boolean)
-				.join(", ");
-			return {
-				schedule,
-				label: `Weekly · ${daysLabel || "Mon"} · ${formatTimeLabel(weeklyTime)}`,
-			};
-		}
-		const schedule = cronExpression.trim();
-		return {
-			schedule,
-			label: `Cron · ${schedule}`,
-		};
-	}, [
-		scheduleKind,
-		onceDateTime,
-		dailyTime,
-		weeklyTime,
-		weeklyDays,
-		cronExpression,
-	]);
-
-	const schedulePreview = useMemo(() => buildSchedule(), [buildSchedule]);
-
-	useEffect(() => {
-		let active = true;
-		if (!schedulePreview.schedule && !schedulePreview.runAt) {
-			setPreviewNextRun(null);
-			setPreviewError(null);
-			setPreviewTimezoneValid(true);
-			setPreviewLoading(false);
-			return () => undefined;
-		}
-
-		const runAt = schedulePreview.runAt ?? null;
-		setPreviewLoading(true);
-		const timeout = setTimeout(() => {
-			apiClient
-				.previewAutomation({
-					schedule: schedulePreview.schedule,
-					runAt,
-					timezone,
-				})
-				.then((response) => {
-					if (!active) return;
-					setPreviewNextRun(response.nextRun);
-					setPreviewTimezoneValid(response.timezoneValid);
-					setPreviewError(response.error ?? null);
-				})
-				.catch((error) => {
-					if (!active) return;
-					setPreviewError(
-						error instanceof Error ? error.message : "Failed to preview run.",
-					);
-				})
-				.finally(() => {
-					if (active) setPreviewLoading(false);
-				});
-		}, 250);
-
-		return () => {
-			active = false;
-			clearTimeout(timeout);
-		};
-	}, [schedulePreview.schedule, schedulePreview.runAt, timezone]);
-
-	const handleSubmit = async () => {
-		if (!name.trim() || !prompt.trim()) return;
-		const schedule = buildSchedule();
-		const runWindow = runWindowEnabled
-			? {
-					start: runWindowStart,
-					end: runWindowEnd,
-					days: runWindowDays.length > 0 ? runWindowDays : undefined,
-				}
-			: null;
-		const payload: AutomationCreateInput = {
-			name: name.trim(),
-			prompt: prompt.trim(),
-			schedule: schedule.schedule,
-			runAt: scheduleKind === "once" ? schedule.runAt : undefined,
-			scheduleLabel: schedule.label,
-			scheduleKind,
-			scheduleTime:
-				scheduleKind === "daily"
-					? dailyTime
-					: scheduleKind === "weekly"
-						? weeklyTime
-						: undefined,
-			scheduleDays: scheduleKind === "weekly" ? weeklyDays : undefined,
-			cronExpression: scheduleKind === "cron" ? cronExpression : undefined,
-			timezone,
-			enabled: true,
-			sessionMode,
-			sessionId: sessionMode === "reuse" ? sessionId : null,
-			contextPaths,
-			contextFolders,
-			runWindow,
-			exclusive: exclusiveRun,
-			notifyOnSuccess,
-			notifyOnFailure,
-			model,
-			thinkingLevel,
-		};
-
-		if (editingId) {
-			const updated = await updateAutomation(
-				editingId,
-				payload as AutomationUpdateInput,
-			);
-			if (updated) {
-				setSelectedId(updated.id);
-				setEditingId(null);
-			}
-		} else {
-			const created = await createAutomation(payload);
-			if (created) {
-				setSelectedId(created.id);
-			}
-		}
-		handleResetForm();
-	};
-
-	const handleAddContextPath = () => {
-		if (!contextInput.trim()) return;
-		const next = contextInput.trim();
-		setContextPaths((prev) => (prev.includes(next) ? prev : [...prev, next]));
-		setContextInput("");
-	};
-
-	const handleAddContextFolder = () => {
-		if (!contextFolderInput.trim()) return;
-		const next = contextFolderInput.trim();
-		setContextFolders((prev) => (prev.includes(next) ? prev : [...prev, next]));
-		setContextFolderInput("");
-	};
-
-	const handlePickContextFile = async () => {
-		if (!window.electron?.openFile) return;
-		const filePath = await window.electron.openFile({
-			title: "Add context file",
-		});
-		if (!filePath) return;
-		setContextPaths((prev) =>
-			prev.includes(filePath) ? prev : [...prev, filePath],
-		);
-	};
-
-	const handlePickContextFolder = async () => {
-		if (!window.electron?.openDirectory) return;
-		const folderPath = await window.electron.openDirectory({
-			title: "Add context folder",
-		});
-		if (!folderPath) return;
-		setContextFolders((prev) =>
-			prev.includes(folderPath) ? prev : [...prev, folderPath],
-		);
-	};
-
-	const isSubmitDisabled =
-		!name.trim() ||
-		!prompt.trim() ||
-		(scheduleKind === "once" && !onceDateTime) ||
-		(scheduleKind === "cron" && !cronExpression.trim()) ||
-		Boolean(previewError) ||
-		previewLoading;
 	const sectionCardClass =
 		"rounded-2xl border border-border-subtle bg-bg-secondary/45 p-4";
 	const runWindowDaysLabel = runWindowDays
