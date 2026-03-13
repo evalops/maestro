@@ -33,6 +33,7 @@ import {
 	normalizeModeOptions,
 } from "./ModelReasoningSection";
 import { PlanningSection } from "./PlanningSection";
+import { SafetyApprovalsSection } from "./SafetyApprovalsSection";
 import {
 	type TelemetryTrainingAction,
 	TelemetryTrainingSection,
@@ -688,20 +689,6 @@ export function SettingsModal({
 		}
 	};
 
-	const formatTimestamp = (value?: number | string) => {
-		if (!value) return "Unknown";
-		const date = typeof value === "number" ? new Date(value) : new Date(value);
-		if (Number.isNaN(date.getTime())) return "Unknown";
-		return date.toLocaleString();
-	};
-
-	const formatDuration = (value?: number) => {
-		if (!value || value <= 0) return "";
-		if (value < 1000) return `${Math.round(value)}ms`;
-		if (value < 60000) return `${(value / 1000).toFixed(1)}s`;
-		return `${Math.round(value / 1000)}s`;
-	};
-
 	if (!open) return null;
 
 	return (
@@ -856,72 +843,14 @@ export function SettingsModal({
 						onThinkingLevelChange={setThinkingLevel}
 					/>
 
-					<section className="border border-line-subtle rounded-xl overflow-hidden">
-						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
-							Safety & Approvals
-						</div>
-						<div className="p-4 space-y-4">
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Approval mode
-									</div>
-									<div className="text-xs text-text-muted">
-										Auto, prompt, or fail for tool use.
-									</div>
-								</div>
-								<select
-									value={approvalMode}
-									onChange={(event) =>
-										updateApproval(event.target.value as ApprovalMode)
-									}
-									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
-								>
-									<option value="auto">Auto</option>
-									<option value="prompt">Prompt</option>
-									<option value="fail">Fail</option>
-								</select>
-							</div>
-
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">Guardian</div>
-									<div className="text-xs text-text-muted">
-										Secrets scanning on writes and commits.
-									</div>
-								</div>
-								<div className="flex items-center gap-2">
-									<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-										<input
-											type="checkbox"
-											checked={guardianStatus?.enabled ?? true}
-											onChange={(event) =>
-												updateGuardianEnabled(event.target.checked)
-											}
-											className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-										/>
-										<span>{guardianStatus?.enabled ? "On" : "Off"}</span>
-									</label>
-									<button
-										type="button"
-										className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										onClick={runGuardianNow}
-										disabled={guardianRunning}
-									>
-										{guardianRunning ? "Running…" : "Run now"}
-									</button>
-								</div>
-							</div>
-							{guardianStatus?.state?.lastRun && (
-								<div className="text-xs text-text-muted">
-									Last run {guardianStatus.state.lastRun.status} ·{" "}
-									{guardianStatus.state.lastRun.summary} ·{" "}
-									{formatDuration(guardianStatus.state.lastRun.durationMs)}·{" "}
-									{formatTimestamp(guardianStatus.state.lastRun.startedAt)}
-								</div>
-							)}
-						</div>
-					</section>
+					<SafetyApprovalsSection
+						approvalMode={approvalMode}
+						guardianStatus={guardianStatus}
+						guardianRunning={guardianRunning}
+						onUpdateApproval={updateApproval}
+						onUpdateGuardianEnabled={updateGuardianEnabled}
+						onRunGuardianNow={runGuardianNow}
+					/>
 
 					<PlanningSection
 						planStatus={planStatus}
