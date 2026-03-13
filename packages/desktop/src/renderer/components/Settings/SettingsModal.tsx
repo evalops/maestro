@@ -25,6 +25,7 @@ import {
 } from "../../lib/api-client";
 import { dedupeModels, getModelKey } from "../../lib/model-utils";
 import type { Model, ThinkingLevel } from "../../lib/types";
+import { BackgroundTasksSection } from "./BackgroundTasksSection";
 import { PlanningSection } from "./PlanningSection";
 import {
 	type TelemetryTrainingAction,
@@ -1122,72 +1123,11 @@ export function SettingsModal({
 						</div>
 					</section>
 
-					<section className="border border-line-subtle rounded-xl overflow-hidden">
-						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
-							Background Tasks
-						</div>
-						<div className="p-4 space-y-4">
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Notifications
-									</div>
-									<div className="text-xs text-text-muted">
-										Slash command: /background notify
-									</div>
-								</div>
-								<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-									<input
-										type="checkbox"
-										checked={
-											backgroundStatus?.settings.notificationsEnabled ?? false
-										}
-										onChange={(event) =>
-											updateBackgroundNotifications(event.target.checked)
-										}
-										className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-									/>
-									<span>
-										{backgroundStatus?.settings.notificationsEnabled
-											? "On"
-											: "Off"}
-									</span>
-								</label>
-							</div>
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Status details
-									</div>
-									<div className="text-xs text-text-muted">
-										Slash command: /background details
-									</div>
-								</div>
-								<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-									<input
-										type="checkbox"
-										checked={
-											backgroundStatus?.settings.statusDetailsEnabled ?? false
-										}
-										onChange={(event) =>
-											updateBackgroundDetails(event.target.checked)
-										}
-										className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-									/>
-									<span>
-										{backgroundStatus?.settings.statusDetailsEnabled
-											? "On"
-											: "Off"}
-									</span>
-								</label>
-							</div>
-							<div className="text-xs text-text-muted">
-								Running: {backgroundStatus?.snapshot?.running ?? 0} · Failed:{" "}
-								{backgroundStatus?.snapshot?.failed ?? 0} · Total:{" "}
-								{backgroundStatus?.snapshot?.total ?? 0}
-							</div>
-						</div>
-					</section>
+					<BackgroundTasksSection
+						backgroundStatus={backgroundStatus}
+						onUpdateNotifications={updateBackgroundNotifications}
+						onUpdateStatusDetails={updateBackgroundDetails}
+					/>
 
 					<ToolsRuntimeSection
 						lspStatus={lspStatus}
