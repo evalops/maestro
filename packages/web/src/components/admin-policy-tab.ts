@@ -180,7 +180,7 @@ export class AdminPolicyTab {
 		this.host.requestUpdate();
 	};
 
-	private async validatePolicy() {
+	private validatePolicy = async () => {
 		try {
 			JSON.parse(this.policyJson);
 		} catch (error) {
@@ -213,9 +213,9 @@ export class AdminPolicyTab {
 			);
 		}
 		this.host.requestUpdate();
-	}
+	};
 
-	private formatPolicy() {
+	private formatPolicy = () => {
 		try {
 			const parsed = JSON.parse(this.policyJson);
 			this.policyJson = JSON.stringify(parsed, null, 2);
@@ -224,9 +224,9 @@ export class AdminPolicyTab {
 			this.policyError = `Cannot format invalid JSON: ${error instanceof Error ? error.message : "Parse error"}`;
 		}
 		this.host.requestUpdate();
-	}
+	};
 
-	private async copyPolicyToClipboard() {
+	private copyPolicyToClipboard = async () => {
 		try {
 			await navigator.clipboard.writeText(this.policyJson);
 			this.showToast(
@@ -236,9 +236,9 @@ export class AdminPolicyTab {
 		} catch {
 			this.showToast("Failed to copy to clipboard", "error");
 		}
-	}
+	};
 
-	private downloadPolicy() {
+	private downloadPolicy = () => {
 		try {
 			JSON.parse(this.policyJson);
 			const blob = new Blob([this.policyJson], { type: "application/json" });
@@ -252,5 +252,5 @@ export class AdminPolicyTab {
 		} catch {
 			this.showToast("Fix JSON errors before downloading", "error");
 		}
-	}
+	};
 }

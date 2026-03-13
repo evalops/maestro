@@ -98,6 +98,29 @@ describe("ApiClient fallback resolution", () => {
 		}
 	});
 
+	it("preserves setModel fallback retries for non-ok primary responses", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ error: "Not found" }), {
+					status: 404,
+					headers: { "content-type": "application/json" },
+				}),
+			)
+			.mockResolvedValueOnce(makeNoContentResponse());
+
+		global.fetch = fetchMock;
+
+		const api = new ApiClient();
+		await api.setModel("claude-opus");
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(String(fetchMock.mock.calls[0]![0])).toContain("https://app.test");
+		expect(String(fetchMock.mock.calls[1]![0])).toContain(
+			"http://localhost:8080",
+		);
+	});
+
 	it("uses the shared JSON helper for session creation", async () => {
 		const session = {
 			id: "session-1",

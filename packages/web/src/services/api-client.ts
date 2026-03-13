@@ -594,6 +594,7 @@ export class ApiClient {
 		path: string,
 		init: RequestInit,
 		skipPrimary = false,
+		retryClientErrors = false,
 	) {
 		let lastError: unknown;
 		const bases = skipPrimary
@@ -611,7 +612,7 @@ export class ApiClient {
 				return res;
 			} catch (e) {
 				lastError = e;
-				if (isNonRetriableClientError(e)) {
+				if (!retryClientErrors && isNonRetriableClientError(e)) {
 					throw e;
 				}
 				if (shouldLogFallbackError(e)) {
@@ -1065,6 +1066,8 @@ export class ApiClient {
 		await this.tryFallbackFetch(
 			"/api/model",
 			this.buildJsonRequestInit("POST", { model: modelId }),
+			false,
+			true,
 		);
 	}
 
