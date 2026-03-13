@@ -4,7 +4,7 @@
  * Comprehensive settings panel for desktop preferences.
  */
 
-import { type ChangeEvent, useEffect, useMemo, useState } from "react";
+import { type ChangeEvent, useEffect, useState } from "react";
 import {
 	type ApprovalMode,
 	type BackgroundStatus,
@@ -27,6 +27,11 @@ import { dedupeModels, getModelKey } from "../../lib/model-utils";
 import type { Model, ThinkingLevel } from "../../lib/types";
 import { BackgroundTasksSection } from "./BackgroundTasksSection";
 import { FrameworkSection } from "./FrameworkSection";
+import {
+	DEFAULT_MODE_OPTIONS,
+	ModelReasoningSection,
+	normalizeModeOptions,
+} from "./ModelReasoningSection";
 import { PlanningSection } from "./PlanningSection";
 import {
 	type TelemetryTrainingAction,
@@ -65,17 +70,6 @@ const DEFAULT_UI_STATUS: UiStatus = {
 	footerMode: "ensemble",
 	compactTools: false,
 	queueMode: "all",
-};
-
-const DEFAULT_MODE_OPTIONS = ["smart", "rush", "free", "custom"];
-
-const normalizeModeOptions = (modes: Array<string | { mode: string }>) => {
-	const normalized = modes
-		.map((entry) => (typeof entry === "string" ? entry : entry.mode))
-		.filter((entry): entry is string => Boolean(entry));
-	return normalized.length
-		? Array.from(new Set(normalized))
-		: DEFAULT_MODE_OPTIONS;
 };
 
 export function SettingsModal({
@@ -693,11 +687,6 @@ export function SettingsModal({
 		}
 	};
 
-	const modelOptions = useMemo(() => {
-		const list = availableModels.length ? availableModels : (models ?? []);
-		return dedupeModels(list);
-	}, [availableModels, models]);
-
 	const formatTimestamp = (value?: number | string) => {
 		if (!value) return "Unknown";
 		const date = typeof value === "number" ? new Date(value) : new Date(value);
@@ -854,87 +843,17 @@ export function SettingsModal({
 						</div>
 					</section>
 
-					<section className="border border-line-subtle rounded-xl overflow-hidden">
-						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
-							Model & Reasoning
-						</div>
-						<div className="p-4 space-y-4">
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">Model</div>
-									<div className="text-xs text-text-muted">
-										Slash command: /model
-									</div>
-								</div>
-								<select
-									value={selectedModelId}
-									onChange={(event) => updateModel(event.target.value)}
-									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
-								>
-									{modelOptions.length === 0 && (
-										<option value="">No models detected</option>
-									)}
-									{modelOptions.map((model) => (
-										<option key={getModelKey(model)} value={getModelKey(model)}>
-											{model.name || model.id} · {model.provider}
-										</option>
-									))}
-								</select>
-							</div>
-
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Agent mode
-									</div>
-									<div className="text-xs text-text-muted">
-										Slash command: /mode
-									</div>
-								</div>
-								<select
-									value={modeStatus?.mode ?? modeOptions[0]}
-									onChange={(event) => updateMode(event.target.value)}
-									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
-								>
-									{modeOptions.map((mode) => (
-										<option key={mode} value={mode}>
-											{mode}
-										</option>
-									))}
-								</select>
-							</div>
-							{modeStatus?.config?.description && (
-								<div className="text-xs text-text-muted">
-									{modeStatus.config.description}
-								</div>
-							)}
-
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Thinking level
-									</div>
-									<div className="text-xs text-text-muted">
-										Controls reasoning depth for supported models.
-									</div>
-								</div>
-								<select
-									value={settings.thinkingLevel}
-									onChange={(event) =>
-										setThinkingLevel(event.target.value as ThinkingLevel)
-									}
-									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
-								>
-									<option value="off">Off</option>
-									<option value="minimal">Minimal</option>
-									<option value="low">Low</option>
-									<option value="medium">Medium</option>
-									<option value="high">High</option>
-									<option value="max">Max</option>
-								</select>
-							</div>
-						</div>
-					</section>
+					<ModelReasoningSection
+						availableModels={availableModels}
+						fallbackModels={models ?? []}
+						selectedModelId={selectedModelId}
+						modeStatus={modeStatus}
+						modeOptions={modeOptions}
+						thinkingLevel={settings.thinkingLevel}
+						onUpdateModel={updateModel}
+						onUpdateMode={updateMode}
+						onThinkingLevelChange={setThinkingLevel}
+					/>
 
 					<section className="border border-line-subtle rounded-xl overflow-hidden">
 						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
