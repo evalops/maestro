@@ -4,9 +4,28 @@
  * Renders markdown content with syntax highlighting.
  */
 
-import { type Tokens, marked } from "marked";
-import { useMemo } from "react";
+import { type Token, type Tokens, marked } from "marked";
+import { type ReactNode, useMemo } from "react";
 import { CodeBlock } from "./CodeBlock";
+
+type HeadingTag = "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+
+function getHeadingTag(depth: number): HeadingTag {
+	switch (depth) {
+		case 1:
+			return "h1";
+		case 2:
+			return "h2";
+		case 3:
+			return "h3";
+		case 4:
+			return "h4";
+		case 5:
+			return "h5";
+		default:
+			return "h6";
+	}
+}
 
 export interface MarkdownProps {
 	content: string;
@@ -24,10 +43,10 @@ export function Markdown({ content, className = "" }: MarkdownProps) {
 	const rendered = useMemo(() => {
 		// Parse the markdown
 		const tokens = marked.lexer(content);
-		const elements: React.ReactNode[] = [];
+		const elements: ReactNode[] = [];
 		let key = 0;
 
-		const renderToken = (token: marked.Token): React.ReactNode => {
+		const renderToken = (token: Token): ReactNode => {
 			const tokenKey = `token-${key++}-${token.type}`;
 			switch (token.type) {
 				case "code":
@@ -40,7 +59,7 @@ export function Markdown({ content, className = "" }: MarkdownProps) {
 					);
 
 				case "heading": {
-					const HeadingTag = `h${token.depth}` as keyof JSX.IntrinsicElements;
+					const HeadingTag = getHeadingTag(token.depth);
 					return (
 						<HeadingTag
 							key={tokenKey}

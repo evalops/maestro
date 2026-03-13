@@ -260,9 +260,10 @@ export function SettingsModal({
 						setQueueMode(sessionResults[1].value.mode);
 					}
 					if (sessionResults[2].status === "fulfilled") {
+						const zenEnabled = sessionResults[2].value.enabled;
 						setUiStatus((prev) => ({
 							...prev,
-							zenMode: sessionResults[2].value.enabled,
+							zenMode: zenEnabled,
 						}));
 					}
 				} else {

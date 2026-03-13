@@ -628,6 +628,48 @@ export class ApiClient {
 			: new Error("Failed to fetch API after fallbacks");
 	}
 
+	private buildJsonRequestInit(
+		method: "POST" | "PATCH" | "PUT" | "DELETE",
+		body?: unknown,
+		headers?: HeadersInit,
+	): RequestInit {
+		const requestHeaders = new Headers(headers);
+		if (body !== undefined && !requestHeaders.has("Content-Type")) {
+			requestHeaders.set("Content-Type", "application/json");
+		}
+		return {
+			method,
+			headers: requestHeaders,
+			...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+		};
+	}
+
+	private async fetchJsonRequestWithFallback<T>(
+		path: string,
+		method: "POST" | "PATCH" | "PUT" | "DELETE",
+		body?: unknown,
+		headers?: HeadersInit,
+	): Promise<T> {
+		return (await this.fetchJsonWithFallback(
+			path,
+			this.buildJsonRequestInit(method, body, headers),
+		)) as T;
+	}
+
+	private async tryJsonRequest<T>(
+		path: string,
+		method: "POST" | "PATCH" | "PUT" | "DELETE",
+		body?: unknown,
+		options?: { headers?: HeadersInit; skipPrimary?: boolean },
+	): Promise<T> {
+		const response = await this.tryFallbackFetch(
+			path,
+			this.buildJsonRequestInit(method, body, options?.headers),
+			options?.skipPrimary ?? false,
+		);
+		return (await safeJson(response)) as T;
+	}
+
 	/**
 	 * Send a chat message and receive streaming response (text only - for backward compatibility)
 	 */
@@ -979,20 +1021,10 @@ export class ApiClient {
 		>;
 		isError: boolean;
 	}): Promise<void> {
-		const response = await fetch(
-			`${this.baseUrl}/api/chat/client-tool-result`,
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(input),
-			},
+		await this.tryFallbackFetch(
+			"/api/chat/client-tool-result",
+			this.buildJsonRequestInit("POST", input),
 		);
-
-		if (!response.ok) {
-			throw new Error(
-				`Failed to submit client tool result: ${response.statusText}`,
-			);
-		}
 	}
 
 	/**
@@ -1030,26 +1062,10 @@ export class ApiClient {
 	 * Set current model
 	 */
 	async setModel(modelId: string): Promise<void> {
-		const response = await fetch(`${this.baseUrl}/api/model`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({ model: modelId }),
-		});
-
-		if (!response.ok) {
-			// attempt fallback hosts (skip the primary that already failed)
-			await this.tryFallbackFetch(
-				"/api/model",
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ model: modelId }),
-				},
-				/* skipPrimary */ true,
-			);
-		}
+		await this.tryFallbackFetch(
+			"/api/model",
+			this.buildJsonRequestInit("POST", { model: modelId }),
+		);
 	}
 
 	/**
@@ -1114,21 +1130,17 @@ export class ApiClient {
 		stderr?: string;
 		command?: string;
 	}> {
-		const data = await this.fetchJsonWithFallback("/api/run", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ script, args }),
-		});
-		if (!data || typeof data !== "object") {
-			throw new Error("Invalid run response payload");
-		}
-		return data as {
+		const data = await this.fetchJsonRequestWithFallback<{
 			success: boolean;
 			exitCode: number;
 			stdout?: string;
 			stderr?: string;
 			command?: string;
-		};
+		}>("/api/run", "POST", { script, args });
+		if (!data || typeof data !== "object") {
+			throw new Error("Invalid run response payload");
+		}
+		return data;
 	}
 
 	/**
@@ -1203,25 +1215,18 @@ export class ApiClient {
 		expiresAt: string;
 		maxAccesses: number | null;
 	}> {
-		const response = await this.tryFallbackFetch(
-			`/api/sessions/${encodeURIComponent(sessionId)}/share`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Accept: "application/json",
-				},
-				body: JSON.stringify(options || {}),
-			},
-		);
-
-		return (await safeJson(response)) as {
+		return await this.tryJsonRequest<{
 			shareToken: string;
 			shareUrl: string;
 			webShareUrl?: string;
 			expiresAt: string;
 			maxAccesses: number | null;
-		};
+		}>(
+			`/api/sessions/${encodeURIComponent(sessionId)}/share`,
+			"POST",
+			options ?? {},
+			{ headers: { Accept: "application/json" } },
+		);
 	}
 
 	async exportSession(
@@ -1230,13 +1235,9 @@ export class ApiClient {
 	): Promise<Response> {
 		return await this.tryFallbackFetch(
 			`/api/sessions/${encodeURIComponent(sessionId)}/export`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({ format: options?.format || "json" }),
-			},
+			this.buildJsonRequestInit("POST", {
+				format: options?.format || "json",
+			}),
 		);
 	}
 
@@ -1288,67 +1289,39 @@ export class ApiClient {
 		truncated: boolean;
 		extractedText: string;
 	}> {
-		const response = await this.tryFallbackFetch("/api/attachments/extract", {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Accept: "application/json",
-			},
-			body: JSON.stringify(input),
-		});
-		return (await safeJson(response)) as {
+		return await this.tryJsonRequest<{
 			fileName: string;
 			format: string;
 			size: number;
 			truncated: boolean;
 			extractedText: string;
-		};
+		}>("/api/attachments/extract", "POST", input, {
+			headers: { Accept: "application/json" },
+		});
 	}
 
 	/**
 	 * Create a new session
 	 */
 	async createSession(title?: string): Promise<Session> {
-		const response = await fetch(`${this.baseUrl}/api/sessions`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({ title }),
-		});
-
-		if (!response.ok) {
-			const fallback = await this.tryFallbackFetch("/api/sessions", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ title }),
-			});
-			const data = await safeJson(fallback);
-			if (VALIDATE_API_RESPONSES && !isComposerSession(data)) {
-				throw new Error("Invalid session payload");
-			}
-			return data as Session;
-		}
-		const data = await safeJson(response);
+		const data = await this.fetchJsonRequestWithFallback<Session>(
+			"/api/sessions",
+			"POST",
+			{ title },
+		);
 		if (VALIDATE_API_RESPONSES && !isComposerSession(data)) {
 			throw new Error("Invalid session payload");
 		}
-		return data as Session;
+		return data;
 	}
 
 	/**
 	 * Delete a session
 	 */
 	async deleteSession(sessionId: string): Promise<void> {
-		const response = await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, {
+		await this.tryFallbackFetch(`/api/sessions/${sessionId}`, {
 			method: "DELETE",
 		});
-
-		if (!response.ok) {
-			await this.tryFallbackFetch(`/api/sessions/${sessionId}`, {
-				method: "DELETE",
-			});
-		}
 	}
 
 	async getCommandPrefs(): Promise<CommandPrefs> {
@@ -1364,15 +1337,12 @@ export class ApiClient {
 	}
 
 	async saveCommandPrefs(prefs: CommandPrefs): Promise<void> {
-		const response = await this.tryFallbackFetch("/api/command-prefs", {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Accept: "application/json",
-			},
-			body: JSON.stringify(prefs),
-		});
-		const data = await safeJson(response);
+		const data = await this.tryJsonRequest(
+			"/api/command-prefs",
+			"POST",
+			prefs,
+			{ headers: { Accept: "application/json" } },
+		);
 		if (VALIDATE_API_RESPONSES && !isComposerCommandPrefsWriteResponse(data)) {
 			throw new Error("Invalid command prefs write response");
 		}
@@ -1387,19 +1357,16 @@ export class ApiClient {
 	}
 
 	async saveConfig(payload: ConfigWriteRequest): Promise<ConfigWriteResponse> {
-		const response = await this.tryFallbackFetch("/api/config", {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Accept: "application/json",
-			},
-			body: JSON.stringify(payload),
-		});
-		const data = await safeJson(response);
+		const data = await this.tryJsonRequest<ConfigWriteResponse>(
+			"/api/config",
+			"POST",
+			payload,
+			{ headers: { Accept: "application/json" } },
+		);
 		if (VALIDATE_API_RESPONSES && !isComposerConfigWriteResponse(data)) {
 			throw new Error("Invalid config write response payload");
 		}
-		return data as ConfigWriteResponse;
+		return data;
 	}
 
 	// Guardian
@@ -1422,15 +1389,16 @@ export class ApiClient {
 	}
 
 	async setGuardianEnabled(enabled: boolean): Promise<GuardianConfigResponse> {
-		const data = await this.fetchJsonWithFallback("/api/guardian/config", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ enabled }),
-		});
+		const data =
+			await this.fetchJsonRequestWithFallback<GuardianConfigResponse>(
+				"/api/guardian/config",
+				"POST",
+				{ enabled },
+			);
 		if (VALIDATE_API_RESPONSES && !isComposerGuardianConfigResponse(data)) {
 			throw new Error("Invalid guardian config response payload");
 		}
-		return data as GuardianConfigResponse;
+		return data;
 	}
 
 	// Plan Mode
@@ -1446,39 +1414,39 @@ export class ApiClient {
 		name?: string,
 		sessionId?: string,
 	): Promise<PlanActionResponse> {
-		const data = await this.fetchJsonWithFallback("/api/plan", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "enter", name, sessionId }),
-		});
+		const data = await this.fetchJsonRequestWithFallback<PlanActionResponse>(
+			"/api/plan",
+			"POST",
+			{ action: "enter", name, sessionId },
+		);
 		if (VALIDATE_API_RESPONSES && !isComposerPlanActionResponse(data)) {
 			throw new Error("Invalid plan action response payload");
 		}
-		return data as PlanActionResponse;
+		return data;
 	}
 
 	async exitPlanMode(): Promise<PlanActionResponse> {
-		const data = await this.fetchJsonWithFallback("/api/plan", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "exit" }),
-		});
+		const data = await this.fetchJsonRequestWithFallback<PlanActionResponse>(
+			"/api/plan",
+			"POST",
+			{ action: "exit" },
+		);
 		if (VALIDATE_API_RESPONSES && !isComposerPlanActionResponse(data)) {
 			throw new Error("Invalid plan action response payload");
 		}
-		return data as PlanActionResponse;
+		return data;
 	}
 
 	async updatePlan(content: string): Promise<PlanActionResponse> {
-		const data = await this.fetchJsonWithFallback("/api/plan", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "update", content }),
-		});
+		const data = await this.fetchJsonRequestWithFallback<PlanActionResponse>(
+			"/api/plan",
+			"POST",
+			{ action: "update", content },
+		);
 		if (VALIDATE_API_RESPONSES && !isComposerPlanActionResponse(data)) {
 			throw new Error("Invalid plan action response payload");
 		}
-		return data as PlanActionResponse;
+		return data;
 	}
 
 	// MCP
@@ -1510,35 +1478,31 @@ export class ApiClient {
 	async setBackgroundNotifications(
 		enabled: boolean,
 	): Promise<BackgroundUpdateResponse> {
-		const data = await this.fetchJsonWithFallback(
-			"/api/background?action=notify",
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ enabled }),
-			},
-		);
+		const data =
+			await this.fetchJsonRequestWithFallback<BackgroundUpdateResponse>(
+				"/api/background?action=notify",
+				"POST",
+				{ enabled },
+			);
 		if (VALIDATE_API_RESPONSES && !isComposerBackgroundUpdateResponse(data)) {
 			throw new Error("Invalid background update response payload");
 		}
-		return data as BackgroundUpdateResponse;
+		return data;
 	}
 
 	async setBackgroundStatusDetails(
 		enabled: boolean,
 	): Promise<BackgroundUpdateResponse> {
-		const data = await this.fetchJsonWithFallback(
-			"/api/background?action=details",
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ enabled }),
-			},
-		);
+		const data =
+			await this.fetchJsonRequestWithFallback<BackgroundUpdateResponse>(
+				"/api/background?action=details",
+				"POST",
+				{ enabled },
+			);
 		if (VALIDATE_API_RESPONSES && !isComposerBackgroundUpdateResponse(data)) {
 			throw new Error("Invalid background update response payload");
 		}
-		return data as BackgroundUpdateResponse;
+		return data;
 	}
 
 	// Undo/Checkpoint
@@ -1551,15 +1515,15 @@ export class ApiClient {
 	}
 
 	async undoChanges(count = 1): Promise<UndoOperationResponse> {
-		const data = await this.fetchJsonWithFallback("/api/undo", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "undo", count }),
-		});
+		const data = await this.fetchJsonRequestWithFallback<UndoOperationResponse>(
+			"/api/undo",
+			"POST",
+			{ action: "undo", count },
+		);
 		if (VALIDATE_API_RESPONSES && !isComposerUndoOperationResponse(data)) {
 			throw new Error("Invalid undo operation response payload");
 		}
-		return data as UndoOperationResponse;
+		return data;
 	}
 
 	async getChanges(
@@ -1587,18 +1551,16 @@ export class ApiClient {
 		mode: "auto" | "prompt" | "fail",
 		sessionId = "default",
 	): Promise<ApprovalsUpdateResponse> {
-		const data = await this.fetchJsonWithFallback(
-			`/api/approvals?sessionId=${sessionId}`,
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ mode }),
-			},
-		);
+		const data =
+			await this.fetchJsonRequestWithFallback<ApprovalsUpdateResponse>(
+				`/api/approvals?sessionId=${sessionId}`,
+				"POST",
+				{ mode },
+			);
 		if (VALIDATE_API_RESPONSES && !isComposerApprovalsUpdateResponse(data)) {
 			throw new Error("Invalid approvals update response payload");
 		}
-		return data as ApprovalsUpdateResponse;
+		return data;
 	}
 
 	// Framework
@@ -1624,15 +1586,16 @@ export class ApiClient {
 		framework: string | null,
 		scope: "user" | "workspace" = "user",
 	): Promise<FrameworkUpdateResponse> {
-		const data = await this.fetchJsonWithFallback("/api/framework", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ framework, scope }),
-		});
+		const data =
+			await this.fetchJsonRequestWithFallback<FrameworkUpdateResponse>(
+				"/api/framework",
+				"POST",
+				{ framework, scope },
+			);
 		if (VALIDATE_API_RESPONSES && !isComposerFrameworkUpdateResponse(data)) {
 			throw new Error("Invalid framework update response payload");
 		}
-		return data as FrameworkUpdateResponse;
+		return data;
 	}
 
 	// Tools
@@ -1665,10 +1628,8 @@ export class ApiClient {
 	async setTelemetry(
 		action: "on" | "off" | "reset",
 	): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/telemetry", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action }),
+		return await this.fetchJsonRequestWithFallback("/api/telemetry", "POST", {
+			action,
 		});
 	}
 
@@ -1680,10 +1641,8 @@ export class ApiClient {
 	async setTraining(
 		action: "on" | "off" | "reset",
 	): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/training", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action }),
+		return await this.fetchJsonRequestWithFallback("/api/training", "POST", {
+			action,
 		});
 	}
 
@@ -1706,26 +1665,20 @@ export class ApiClient {
 	}
 
 	async startLspServers(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/lsp", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "start" }),
+		return await this.fetchJsonRequestWithFallback("/api/lsp", "POST", {
+			action: "start",
 		});
 	}
 
 	async stopLspServers(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/lsp", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "stop" }),
+		return await this.fetchJsonRequestWithFallback("/api/lsp", "POST", {
+			action: "stop",
 		});
 	}
 
 	async restartLspServers(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/lsp", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "restart" }),
+		return await this.fetchJsonRequestWithFallback("/api/lsp", "POST", {
+			action: "restart",
 		});
 	}
 
@@ -1747,10 +1700,9 @@ export class ApiClient {
 	}
 
 	async runWorkflow(name: string): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/workflow", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "run", name }),
+		return await this.fetchJsonRequestWithFallback("/api/workflow", "POST", {
+			action: "run",
+			name,
 		});
 	}
 
@@ -1764,18 +1716,16 @@ export class ApiClient {
 	}
 
 	async pullOllamaModel(model: string): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/ollama", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "pull", model }),
+		return await this.fetchJsonRequestWithFallback("/api/ollama", "POST", {
+			action: "pull",
+			model,
 		});
 	}
 
 	async showOllamaModel(model: string): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/ollama", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "show", model }),
+		return await this.fetchJsonRequestWithFallback("/api/ollama", "POST", {
+			action: "show",
+			model,
 		});
 	}
 
@@ -1796,18 +1746,15 @@ export class ApiClient {
 	}
 
 	async activateComposer(name: string): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/composer", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "activate", name }),
+		return await this.fetchJsonRequestWithFallback("/api/composer", "POST", {
+			action: "activate",
+			name,
 		});
 	}
 
 	async deactivateComposer(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/composer", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "deactivate" }),
+		return await this.fetchJsonRequestWithFallback("/api/composer", "POST", {
+			action: "deactivate",
 		});
 	}
 
@@ -1825,10 +1772,8 @@ export class ApiClient {
 	}
 
 	async clearCostData(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/cost", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "clear" }),
+		return await this.fetchJsonRequestWithFallback("/api/cost", "POST", {
+			action: "clear",
 		});
 	}
 
@@ -1846,10 +1791,9 @@ export class ApiClient {
 	}
 
 	async setQuotaLimit(limit: number): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/quota", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "limit", limit }),
+		return await this.fetchJsonRequestWithFallback("/api/quota", "POST", {
+			action: "limit",
+			limit,
 		});
 	}
 
@@ -1888,10 +1832,11 @@ export class ApiClient {
 		content: string,
 		tags?: string[],
 	): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/memory", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "save", topic, content, tags }),
+		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
+			action: "save",
+			topic,
+			content,
+			tags,
 		});
 	}
 
@@ -1899,34 +1844,31 @@ export class ApiClient {
 		id?: string,
 		topic?: string,
 	): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/memory", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "delete", id, topic }),
+		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
+			action: "delete",
+			id,
+			topic,
 		});
 	}
 
 	async exportMemory(path?: string): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/memory", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "export", path }),
+		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
+			action: "export",
+			path,
 		});
 	}
 
 	async importMemory(path: string): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/memory", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "import", path }),
+		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
+			action: "import",
+			path,
 		});
 	}
 
 	async clearMemory(force = false): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/memory", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "clear", force }),
+		return await this.fetchJsonRequestWithFallback("/api/memory", "POST", {
+			action: "clear",
+			force,
 		});
 	}
 
@@ -1946,10 +1888,8 @@ export class ApiClient {
 	}
 
 	async setMode(mode: string): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/mode", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ mode }),
+		return await this.fetchJsonRequestWithFallback("/api/mode", "POST", {
+			mode,
 		});
 	}
 
@@ -1962,11 +1902,11 @@ export class ApiClient {
 		sessionId: string,
 		enabled: boolean,
 	): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback(`/api/zen?sessionId=${sessionId}`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ enabled }),
-		});
+		return await this.fetchJsonRequestWithFallback(
+			`/api/zen?sessionId=${sessionId}`,
+			"POST",
+			{ enabled },
+		);
 	}
 
 	// UI Settings
@@ -1980,13 +1920,10 @@ export class ApiClient {
 		mode: "off" | "soft" | "aggressive",
 		sessionId: string,
 	): Promise<{ success: boolean; cleanMode: UIStatusResponse["cleanMode"] }> {
-		return await this.fetchJsonWithFallback(
+		return await this.fetchJsonRequestWithFallback(
 			`/api/ui?sessionId=${encodeURIComponent(sessionId)}`,
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ action: "clean", cleanMode: mode }),
-			},
+			"POST",
+			{ action: "clean", cleanMode: mode },
 		);
 	}
 
@@ -1994,13 +1931,10 @@ export class ApiClient {
 		mode: "ensemble" | "solo",
 		sessionId: string,
 	): Promise<{ success: boolean; footerMode: UIStatusResponse["footerMode"] }> {
-		return await this.fetchJsonWithFallback(
+		return await this.fetchJsonRequestWithFallback(
 			`/api/ui?sessionId=${encodeURIComponent(sessionId)}`,
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ action: "footer", footerMode: mode }),
-			},
+			"POST",
+			{ action: "footer", footerMode: mode },
 		);
 	}
 
@@ -2011,13 +1945,10 @@ export class ApiClient {
 		success: boolean;
 		compactTools: boolean;
 	}> {
-		return await this.fetchJsonWithFallback(
+		return await this.fetchJsonRequestWithFallback(
 			`/api/ui?sessionId=${encodeURIComponent(sessionId)}`,
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ action: "compact", compactTools: enabled }),
-			},
+			"POST",
+			{ action: "compact", compactTools: enabled },
 		);
 	}
 
@@ -2038,10 +1969,10 @@ export class ApiClient {
 		mode: "one" | "all",
 		sessionId: string,
 	): Promise<{ success: boolean; mode: QueueStatusResponse["mode"] }> {
-		return await this.fetchJsonWithFallback("/api/queue", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "mode", mode, sessionId }),
+		return await this.fetchJsonRequestWithFallback("/api/queue", "POST", {
+			action: "mode",
+			mode,
+			sessionId,
 		});
 	}
 
@@ -2049,10 +1980,10 @@ export class ApiClient {
 		id: number,
 		sessionId: string,
 	): Promise<{ success: boolean; removed?: unknown }> {
-		return await this.fetchJsonWithFallback("/api/queue", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action: "cancel", id, sessionId }),
+		return await this.fetchJsonRequestWithFallback("/api/queue", "POST", {
+			action: "cancel",
+			id,
+			sessionId,
 		});
 	}
 
@@ -2074,10 +2005,9 @@ export class ApiClient {
 		newSessionId: string;
 		newSessionFile: string;
 	}> {
-		return await this.fetchJsonWithFallback("/api/branch", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ sessionId, ...options }),
+		return await this.fetchJsonRequestWithFallback("/api/branch", "POST", {
+			sessionId,
+			...options,
 		});
 	}
 }

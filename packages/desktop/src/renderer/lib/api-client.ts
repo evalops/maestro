@@ -64,7 +64,12 @@ export interface FrameworkList {
 export interface TelemetryStatus {
 	enabled: boolean;
 	reason: string;
+	endpoint?: string;
+	filePath?: string;
+	sampleRate: number;
+	flagValue?: string;
 	runtimeOverride?: "enabled" | "disabled";
+	overrideReason?: string;
 }
 
 export interface TrainingStatus {
@@ -300,6 +305,27 @@ export class ApiClient {
 		return response.json();
 	}
 
+	private buildJsonRequestInit(
+		method: "POST" | "PATCH" | "PUT" | "DELETE",
+		body?: unknown,
+	): RequestInit {
+		return {
+			method,
+			...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+		};
+	}
+
+	private async fetchJsonRequest<T>(
+		path: string,
+		method: "POST" | "PATCH" | "PUT" | "DELETE",
+		body?: unknown,
+	): Promise<T> {
+		return await this.fetchJson<T>(
+			path,
+			this.buildJsonRequestInit(method, body),
+		);
+	}
+
 	async getAutomations(): Promise<AutomationTask[]> {
 		const data = await this.fetchJson<AutomationsResponse>("/api/automations");
 		return data.automations ?? [];
@@ -308,12 +334,10 @@ export class ApiClient {
 	async createAutomation(
 		input: AutomationCreateInput,
 	): Promise<AutomationTask> {
-		const data = await this.fetchJson<{ automation: AutomationTask }>(
+		const data = await this.fetchJsonRequest<{ automation: AutomationTask }>(
 			"/api/automations",
-			{
-				method: "POST",
-				body: JSON.stringify(input),
-			},
+			"POST",
+			input,
 		);
 		return data.automation;
 	}
@@ -322,12 +346,10 @@ export class ApiClient {
 		id: string,
 		input: AutomationUpdateInput,
 	): Promise<AutomationTask> {
-		const data = await this.fetchJson<{ automation: AutomationTask }>(
+		const data = await this.fetchJsonRequest<{ automation: AutomationTask }>(
 			`/api/automations/${id}`,
-			{
-				method: "PATCH",
-				body: JSON.stringify(input),
-			},
+			"PATCH",
+			input,
 		);
 		return data.automation;
 	}
@@ -352,12 +374,10 @@ export class ApiClient {
 		input: AutomationPreviewInput,
 	): Promise<AutomationPreviewResponse> {
 		try {
-			return await this.fetchJson<AutomationPreviewResponse>(
+			return await this.fetchJsonRequest<AutomationPreviewResponse>(
 				"/api/automations/preview",
-				{
-					method: "POST",
-					body: JSON.stringify(input),
-				},
+				"POST",
+				input,
 			);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Preview failed";
@@ -400,10 +420,7 @@ export class ApiClient {
 	}
 
 	async setModel(modelId: string): Promise<void> {
-		await this.fetchJson("/api/model", {
-			method: "POST",
-			body: JSON.stringify({ model: modelId }),
-		});
+		await this.fetchJsonRequest("/api/model", "POST", { model: modelId });
 	}
 
 	// Sessions
@@ -428,9 +445,8 @@ export class ApiClient {
 	}
 
 	async createSession(title?: string): Promise<Session> {
-		return this.fetchJson<Session>("/api/sessions", {
-			method: "POST",
-			body: JSON.stringify({ title }),
+		return this.fetchJsonRequest<Session>("/api/sessions", "POST", {
+			title,
 		});
 	}
 
@@ -528,13 +544,13 @@ export class ApiClient {
 		mode: ApprovalMode,
 		sessionId = "default",
 	): Promise<{ success: boolean; mode: ApprovalMode }> {
-		return await this.fetchJson<{ success: boolean; mode: ApprovalMode }>(
-			`/api/approvals?sessionId=${encodeURIComponent(sessionId)}`,
-			{
-				method: "POST",
-				body: JSON.stringify({ mode, sessionId }),
-			},
-		);
+		return await this.fetchJsonRequest<{
+			success: boolean;
+			mode: ApprovalMode;
+		}>(`/api/approvals?sessionId=${encodeURIComponent(sessionId)}`, "POST", {
+			mode,
+			sessionId,
+		});
 	}
 
 	// UI
@@ -548,39 +564,39 @@ export class ApiClient {
 		mode: CleanMode,
 		sessionId: string,
 	): Promise<{ success: boolean; cleanMode: CleanMode }> {
-		return await this.fetchJson<{ success: boolean; cleanMode: CleanMode }>(
-			`/api/ui?sessionId=${encodeURIComponent(sessionId)}`,
-			{
-				method: "POST",
-				body: JSON.stringify({ action: "clean", cleanMode: mode }),
-			},
-		);
+		return await this.fetchJsonRequest<{
+			success: boolean;
+			cleanMode: CleanMode;
+		}>(`/api/ui?sessionId=${encodeURIComponent(sessionId)}`, "POST", {
+			action: "clean",
+			cleanMode: mode,
+		});
 	}
 
 	async setFooterMode(
 		mode: FooterMode,
 		sessionId: string,
 	): Promise<{ success: boolean; footerMode: FooterMode }> {
-		return await this.fetchJson<{ success: boolean; footerMode: FooterMode }>(
-			`/api/ui?sessionId=${encodeURIComponent(sessionId)}`,
-			{
-				method: "POST",
-				body: JSON.stringify({ action: "footer", footerMode: mode }),
-			},
-		);
+		return await this.fetchJsonRequest<{
+			success: boolean;
+			footerMode: FooterMode;
+		}>(`/api/ui?sessionId=${encodeURIComponent(sessionId)}`, "POST", {
+			action: "footer",
+			footerMode: mode,
+		});
 	}
 
 	async setCompactTools(
 		enabled: boolean,
 		sessionId: string,
 	): Promise<{ success: boolean; compactTools: boolean }> {
-		return await this.fetchJson<{ success: boolean; compactTools: boolean }>(
-			`/api/ui?sessionId=${encodeURIComponent(sessionId)}`,
-			{
-				method: "POST",
-				body: JSON.stringify({ action: "compact", compactTools: enabled }),
-			},
-		);
+		return await this.fetchJsonRequest<{
+			success: boolean;
+			compactTools: boolean;
+		}>(`/api/ui?sessionId=${encodeURIComponent(sessionId)}`, "POST", {
+			action: "compact",
+			compactTools: enabled,
+		});
 	}
 
 	// Queue
@@ -594,12 +610,10 @@ export class ApiClient {
 		mode: QueueMode,
 		sessionId: string,
 	): Promise<{ success: boolean; mode: QueueMode }> {
-		return await this.fetchJson<{ success: boolean; mode: QueueMode }>(
+		return await this.fetchJsonRequest<{ success: boolean; mode: QueueMode }>(
 			"/api/queue",
-			{
-				method: "POST",
-				body: JSON.stringify({ action: "mode", mode, sessionId }),
-			},
+			"POST",
+			{ action: "mode", mode, sessionId },
 		);
 	}
 
@@ -614,12 +628,10 @@ export class ApiClient {
 		sessionId: string,
 		enabled: boolean,
 	): Promise<{ success: boolean; enabled: boolean }> {
-		return await this.fetchJson<{ success: boolean; enabled: boolean }>(
+		return await this.fetchJsonRequest<{ success: boolean; enabled: boolean }>(
 			`/api/zen?sessionId=${encodeURIComponent(sessionId)}`,
-			{
-				method: "POST",
-				body: JSON.stringify({ enabled }),
-			},
+			"POST",
+			{ enabled },
 		);
 	}
 
@@ -638,14 +650,11 @@ export class ApiClient {
 		framework: string | null,
 		scope: "user" | "workspace" = "user",
 	): Promise<{ success: boolean; framework: string | null; scope: string }> {
-		return await this.fetchJson<{
+		return await this.fetchJsonRequest<{
 			success: boolean;
 			framework: string | null;
 			scope: string;
-		}>("/api/framework", {
-			method: "POST",
-			body: JSON.stringify({ framework, scope }),
-		});
+		}>("/api/framework", "POST", { framework, scope });
 	}
 
 	// Telemetry
@@ -656,13 +665,10 @@ export class ApiClient {
 	async setTelemetry(
 		action: "on" | "off" | "reset",
 	): Promise<{ success: boolean; status: TelemetryStatus }> {
-		return await this.fetchJson<{ success: boolean; status: TelemetryStatus }>(
-			"/api/telemetry",
-			{
-				method: "POST",
-				body: JSON.stringify({ action }),
-			},
-		);
+		return await this.fetchJsonRequest<{
+			success: boolean;
+			status: TelemetryStatus;
+		}>("/api/telemetry", "POST", { action });
 	}
 
 	// Training
@@ -673,13 +679,10 @@ export class ApiClient {
 	async setTraining(
 		action: "on" | "off" | "reset",
 	): Promise<{ success: boolean; status: TrainingStatus }> {
-		return await this.fetchJson<{ success: boolean; status: TrainingStatus }>(
-			"/api/training",
-			{
-				method: "POST",
-				body: JSON.stringify({ action }),
-			},
-		);
+		return await this.fetchJsonRequest<{
+			success: boolean;
+			status: TrainingStatus;
+		}>("/api/training", "POST", { action });
 	}
 
 	// Mode
@@ -692,9 +695,8 @@ export class ApiClient {
 	}
 
 	async setMode(mode: string): Promise<ModeStatus> {
-		return await this.fetchJson<ModeStatus>("/api/mode", {
-			method: "POST",
-			body: JSON.stringify({ mode }),
+		return await this.fetchJsonRequest<ModeStatus>("/api/mode", "POST", {
+			mode,
 		});
 	}
 
@@ -712,12 +714,10 @@ export class ApiClient {
 	async setGuardianEnabled(
 		enabled: boolean,
 	): Promise<{ success: boolean; enabled: boolean }> {
-		return await this.fetchJson<{ success: boolean; enabled: boolean }>(
+		return await this.fetchJsonRequest<{ success: boolean; enabled: boolean }>(
 			"/api/guardian/config",
-			{
-				method: "POST",
-				body: JSON.stringify({ enabled }),
-			},
+			"POST",
+			{ enabled },
 		);
 	}
 
@@ -730,24 +730,27 @@ export class ApiClient {
 		name?: string,
 		sessionId?: string,
 	): Promise<PlanActionResponse> {
-		return await this.fetchJson<PlanActionResponse>("/api/plan", {
-			method: "POST",
-			body: JSON.stringify({ action: "enter", name, sessionId }),
-		});
+		return await this.fetchJsonRequest<PlanActionResponse>(
+			"/api/plan",
+			"POST",
+			{ action: "enter", name, sessionId },
+		);
 	}
 
 	async exitPlanMode(): Promise<PlanActionResponse> {
-		return await this.fetchJson<PlanActionResponse>("/api/plan", {
-			method: "POST",
-			body: JSON.stringify({ action: "exit" }),
-		});
+		return await this.fetchJsonRequest<PlanActionResponse>(
+			"/api/plan",
+			"POST",
+			{ action: "exit" },
+		);
 	}
 
 	async updatePlan(content: string): Promise<PlanActionResponse> {
-		return await this.fetchJson<PlanActionResponse>("/api/plan", {
-			method: "POST",
-			body: JSON.stringify({ action: "update", content }),
-		});
+		return await this.fetchJsonRequest<PlanActionResponse>(
+			"/api/plan",
+			"POST",
+			{ action: "update", content },
+		);
 	}
 
 	// Background Tasks
@@ -760,24 +763,20 @@ export class ApiClient {
 	async setBackgroundNotifications(
 		enabled: boolean,
 	): Promise<BackgroundUpdateResponse> {
-		return await this.fetchJson<BackgroundUpdateResponse>(
+		return await this.fetchJsonRequest<BackgroundUpdateResponse>(
 			"/api/background?action=notify",
-			{
-				method: "POST",
-				body: JSON.stringify({ enabled }),
-			},
+			"POST",
+			{ enabled },
 		);
 	}
 
 	async setBackgroundStatusDetails(
 		enabled: boolean,
 	): Promise<BackgroundUpdateResponse> {
-		return await this.fetchJson<BackgroundUpdateResponse>(
+		return await this.fetchJsonRequest<BackgroundUpdateResponse>(
 			"/api/background?action=details",
-			{
-				method: "POST",
-				body: JSON.stringify({ enabled }),
-			},
+			"POST",
+			{ enabled },
 		);
 	}
 
@@ -791,32 +790,26 @@ export class ApiClient {
 	}
 
 	async startLsp(): Promise<{ success: boolean; message: string }> {
-		return await this.fetchJson<{ success: boolean; message: string }>(
+		return await this.fetchJsonRequest<{ success: boolean; message: string }>(
 			"/api/lsp",
-			{
-				method: "POST",
-				body: JSON.stringify({ action: "start" }),
-			},
+			"POST",
+			{ action: "start" },
 		);
 	}
 
 	async stopLsp(): Promise<{ success: boolean; message: string }> {
-		return await this.fetchJson<{ success: boolean; message: string }>(
+		return await this.fetchJsonRequest<{ success: boolean; message: string }>(
 			"/api/lsp",
-			{
-				method: "POST",
-				body: JSON.stringify({ action: "stop" }),
-			},
+			"POST",
+			{ action: "stop" },
 		);
 	}
 
 	async restartLsp(): Promise<{ success: boolean; message: string }> {
-		return await this.fetchJson<{ success: boolean; message: string }>(
+		return await this.fetchJsonRequest<{ success: boolean; message: string }>(
 			"/api/lsp",
-			{
-				method: "POST",
-				body: JSON.stringify({ action: "restart" }),
-			},
+			"POST",
+			{ action: "restart" },
 		);
 	}
 
@@ -833,22 +826,17 @@ export class ApiClient {
 	async activateComposer(
 		name: string,
 	): Promise<{ success: boolean; active?: ComposerProfile }> {
-		return await this.fetchJson<{ success: boolean; active?: ComposerProfile }>(
-			"/api/composer",
-			{
-				method: "POST",
-				body: JSON.stringify({ action: "activate", name }),
-			},
-		);
+		return await this.fetchJsonRequest<{
+			success: boolean;
+			active?: ComposerProfile;
+		}>("/api/composer", "POST", { action: "activate", name });
 	}
 
 	async deactivateComposer(): Promise<{ success: boolean; message?: string }> {
-		return await this.fetchJson<{ success: boolean; message?: string }>(
+		return await this.fetchJsonRequest<{ success: boolean; message?: string }>(
 			"/api/composer",
-			{
-				method: "POST",
-				body: JSON.stringify({ action: "deactivate" }),
-			},
+			"POST",
+			{ action: "deactivate" },
 		);
 	}
 }
