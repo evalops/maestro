@@ -15,7 +15,6 @@ import {
 	mkdirSync,
 	readdirSync,
 	statSync,
-	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
@@ -48,10 +47,10 @@ import {
 	createBranchedSessionFromLeaf as createBranchedSessionFromLeafFn,
 	createBranchedSessionFromState as createBranchedSessionFromStateFn,
 } from "./session-branch.js";
+import { SessionCatalog } from "./session-catalog.js";
 import {
 	type SessionContextSnapshot,
 	buildSessionContextFromEntries,
-	buildSessionFileInfo,
 	generateEntryId,
 	safeReadSessionEntries,
 } from "./session-context.js";
@@ -166,6 +165,7 @@ export class SessionManager {
 	private lastModelMetadata?: SessionModelMetadata;
 	/** Cache for current model/thinking level */
 	private metadataCache = new SessionMetadataCache();
+	private readonly catalog: SessionCatalog;
 
 	private fileEntries: SessionEntry[] = [];
 	private byId: Map<string, SessionTreeEntry> = new Map();
@@ -189,6 +189,11 @@ export class SessionManager {
 		this.sessionScope = options.sessionScope;
 		this.sessionDirOverride = options.sessionDir;
 		this.sessionDir = this.getSessionDirectory();
+		this.catalog = new SessionCatalog({
+			sessionDir: this.sessionDir,
+			beforeRead: () => this.writer?.flushSync(),
+			getCurrentSessionId: () => this.sessionId,
+		});
 
 		if (customSessionPath) {
 			// Use custom session file path
@@ -997,71 +1002,11 @@ export class SessionManager {
 	 * Load all sessions for the current directory with metadata
 	 */
 	loadAllSessions(): SessionMetadata[] {
-		this.writer?.flushSync();
-		scheduleSessionMigration();
-		const sessions: SessionMetadata[] = [];
-
-		try {
-			const files = readdirSync(this.sessionDir)
-				.filter((f) => f.endsWith(".jsonl"))
-				.map((f) => {
-					const fullPath = join(this.sessionDir, f);
-					const stats = statSync(fullPath);
-					return { path: fullPath, stats };
-				})
-				.sort((a, b) => b.stats.mtime.getTime() - a.stats.mtime.getTime());
-
-			for (const fileEntry of files) {
-				const { path: file, stats } = fileEntry;
-				try {
-					const entries = safeReadSessionEntries(file, (error) => {
-						logger.error(
-							`Failed to read session file ${file}`,
-							error instanceof Error ? error : undefined,
-						);
-					});
-					const info = buildSessionFileInfo(entries, stats);
-					if (!info) {
-						continue;
-					}
-					const derivedSummary =
-						info.summary || info.firstMessage || "(no summary)";
-
-					sessions.push({
-						path: file,
-						id: info.id,
-						subject: info.subject,
-						created: info.created,
-						modified: stats.mtime,
-						size: stats.size,
-						messageCount: info.messageCount,
-						firstMessage: info.firstMessage || "(no messages)",
-						summary: derivedSummary,
-						favorite: info.favorite,
-						allMessagesText: info.allMessagesText,
-					});
-				} catch (error) {
-					logger.error(
-						`Failed to process session file ${file}`,
-						error instanceof Error ? error : undefined,
-					);
-				}
-			}
-		} catch (error) {
-			logger.error(
-				"Failed to load sessions",
-				error instanceof Error ? error : undefined,
-			);
-		}
-
-		return sessions;
+		return this.catalog.loadAllSessions();
 	}
 
 	getSessionFileById(sessionId: string): string | null {
-		const match = this.loadAllSessions().find(
-			(session) => session.id === sessionId,
-		);
-		return match?.path ?? null;
+		return this.catalog.getSessionFileById(sessionId);
 	}
 
 	/**
@@ -1167,47 +1112,7 @@ export class SessionManager {
 		limit?: number;
 		offset?: number;
 	}): Promise<SessionSummary[]> {
-		this.writer?.flushSync();
-		const files = readdirSync(this.sessionDir);
-		const sessions = [];
-		const sortedFiles = files
-			.filter((f) => f.endsWith(".jsonl"))
-			.map((file) => {
-				const filePath = join(this.sessionDir, file);
-				const stats = statSync(filePath);
-				return { filePath, stats };
-			})
-			.sort((a, b) => b.stats.mtime.getTime() - a.stats.mtime.getTime());
-
-		const offset = Math.max(0, options?.offset ?? 0);
-		const limit = Math.max(1, options?.limit ?? sortedFiles.length);
-
-		for (const [index, entry] of sortedFiles.entries()) {
-			if (index < offset) continue;
-			if (sessions.length >= limit) break;
-			const { filePath, stats } = entry;
-
-			try {
-				const entries = safeReadSessionEntries(filePath);
-				const info = buildSessionFileInfo(entries, stats);
-				if (!info) continue;
-
-				sessions.push({
-					id: info.id,
-					subject: info.subject,
-					title: info.title ?? info.summary,
-					createdAt: info.created.toISOString(),
-					updatedAt: stats.mtime.toISOString(),
-					messageCount: info.messageCount,
-					favorite: info.favorite,
-					tags: info.tags,
-				});
-			} catch {
-				// Skip files that can't be read
-			}
-		}
-
-		return sessions;
+		return this.catalog.listSessions(options);
 	}
 
 	/**
@@ -1224,30 +1129,7 @@ export class SessionManager {
 		favorite: boolean;
 		tags?: string[];
 	} | null> {
-		this.writer?.flushSync();
-		const sessionFile = this.getSessionFileById(sessionId);
-		if (!sessionFile) {
-			return null;
-		}
-
-		const stats = statSync(sessionFile);
-		const entries = safeReadSessionEntries(sessionFile);
-		const info = buildSessionFileInfo(entries, stats);
-		if (!info) {
-			return null;
-		}
-
-		return {
-			id: info.id,
-			subject: info.subject,
-			title: info.title ?? info.summary,
-			messages: info.messages,
-			createdAt: info.created.toISOString(),
-			updatedAt: stats.mtime.toISOString(),
-			messageCount: info.messageCount,
-			favorite: info.favorite,
-			tags: info.tags,
-		};
+		return this.catalog.loadSession(sessionId);
 	}
 
 	/**
@@ -1288,12 +1170,7 @@ export class SessionManager {
 	 * Delete a session
 	 */
 	async deleteSession(sessionId: string): Promise<void> {
-		const sessionFile = this.getSessionFileById(sessionId);
-		if (!sessionFile) {
-			throw new Error(`Session ${sessionId} not found`);
-		}
-
-		unlinkSync(sessionFile);
+		this.catalog.deleteSession(sessionId);
 	}
 
 	/**
@@ -1303,56 +1180,6 @@ export class SessionManager {
 	 * Returns the number of sessions removed.
 	 */
 	pruneSessions(): { removed: number; errors: number } {
-		const maxSessions = SESSION_CONFIG.MAX_SESSIONS;
-		const maxAgeDays = SESSION_CONFIG.MAX_SESSION_AGE_DAYS;
-
-		if (maxSessions <= 0 && maxAgeDays <= 0) {
-			return { removed: 0, errors: 0 };
-		}
-
-		const sessions = this.loadAllSessions();
-		const currentSessionId = this.getSessionId();
-		const now = Date.now();
-		const maxAgeMs = maxAgeDays > 0 ? maxAgeDays * 24 * 60 * 60 * 1000 : 0;
-
-		const toRemove: SessionMetadata[] = [];
-
-		// Mark sessions that exceed age limit
-		if (maxAgeMs > 0) {
-			for (const session of sessions) {
-				if (session.favorite) continue;
-				if (session.id === currentSessionId) continue;
-				if (now - session.modified.getTime() > maxAgeMs) {
-					toRemove.push(session);
-				}
-			}
-		}
-
-		// Mark sessions that exceed count limit (keep newest, skip favorites and current)
-		if (maxSessions > 0) {
-			const eligible = sessions.filter(
-				(s) =>
-					!s.favorite &&
-					s.id !== currentSessionId &&
-					!toRemove.some((r) => r.id === s.id),
-			);
-			// Sessions are sorted newest-first from loadAllSessions
-			if (eligible.length > maxSessions) {
-				toRemove.push(...eligible.slice(maxSessions));
-			}
-		}
-
-		let removed = 0;
-		let errors = 0;
-		for (const session of toRemove) {
-			try {
-				unlinkSync(session.path);
-				removed++;
-			} catch {
-				errors++;
-			}
-		}
-
-		return { removed, errors };
+		return this.catalog.pruneSessions();
 	}
 }
