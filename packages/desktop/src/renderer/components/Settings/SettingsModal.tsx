@@ -4,7 +4,7 @@
  * Comprehensive settings panel for desktop preferences.
  */
 
-import { type ChangeEvent, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
 	type ApprovalMode,
 	type BackgroundStatus,
@@ -25,6 +25,7 @@ import {
 } from "../../lib/api-client";
 import { dedupeModels, getModelKey } from "../../lib/model-utils";
 import type { Model, ThinkingLevel } from "../../lib/types";
+import { AppearanceSection } from "./AppearanceSection";
 import { BackgroundTasksSection } from "./BackgroundTasksSection";
 import { FrameworkSection } from "./FrameworkSection";
 import {
@@ -316,10 +317,10 @@ export function SettingsModal({
 		}
 	}, [composerStatus, selectedComposer]);
 
-	const handleTimestampToggle = (event: ChangeEvent<HTMLInputElement>) => {
+	const setShowTimestamps = (enabled: boolean) => {
 		onChange({
 			...settings,
-			showTimestamps: event.target.checked,
+			showTimestamps: enabled,
 		});
 	};
 
@@ -753,83 +754,14 @@ export function SettingsModal({
 						<div className="text-xs text-text-tertiary">Loading settings…</div>
 					)}
 
-					<section className="border border-line-subtle rounded-xl overflow-hidden">
-						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
-							Appearance
-						</div>
-						<div className="p-4 space-y-4">
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">Theme</div>
-									<div className="text-xs text-text-muted">
-										System, dark, or light.
-									</div>
-								</div>
-								<select
-									value={themeMode}
-									onChange={(event) =>
-										updateTheme(event.target.value as ThemeMode)
-									}
-									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary"
-								>
-									<option value="system">System</option>
-									<option value="dark">Dark</option>
-									<option value="light">Light</option>
-								</select>
-							</div>
-
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Show timestamps
-									</div>
-									<div className="text-xs text-text-muted">
-										Display message time in the chat header.
-									</div>
-								</div>
-								<label className="inline-flex items-center gap-2 text-xs text-text-tertiary">
-									<input
-										type="checkbox"
-										checked={settings.showTimestamps}
-										onChange={handleTimestampToggle}
-										className="h-4 w-4 rounded border-line-subtle bg-bg-tertiary text-accent focus:ring-accent"
-									/>
-									<span>{settings.showTimestamps ? "On" : "Off"}</span>
-								</label>
-							</div>
-
-							<div>
-								<div className="text-text-primary font-medium">Density</div>
-								<div className="text-xs text-text-muted mb-2">
-									Control spacing between messages.
-								</div>
-								<div className="flex items-center gap-2">
-									<button
-										type="button"
-										className={`px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
-											settings.density === "comfortable"
-												? "border-accent text-text-primary bg-bg-tertiary"
-												: "border-line-subtle text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										}`}
-										onClick={() => setDensity("comfortable")}
-									>
-										Comfortable
-									</button>
-									<button
-										type="button"
-										className={`px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
-											settings.density === "compact"
-												? "border-accent text-text-primary bg-bg-tertiary"
-												: "border-line-subtle text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										}`}
-										onClick={() => setDensity("compact")}
-									>
-										Compact
-									</button>
-								</div>
-							</div>
-						</div>
-					</section>
+					<AppearanceSection
+						themeMode={themeMode}
+						showTimestamps={settings.showTimestamps}
+						density={settings.density}
+						onUpdateTheme={updateTheme}
+						onToggleTimestamps={setShowTimestamps}
+						onSetDensity={setDensity}
+					/>
 
 					<ModelReasoningSection
 						availableModels={availableModels}
