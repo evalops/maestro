@@ -1,38 +1,129 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ApprovalMode } from "../../agent/action-approval.js";
-import { sendJson } from "../server-utils.js";
+import type { WebServerContext } from "../app-context.js";
+import {
+	getApprovalModeForSession,
+	normalizeApprovalSessionId,
+	setApprovalModeForSession,
+} from "../approval-mode-store.js";
+import { getAuthSubject } from "../authz.js";
+import { ApiError, sendJson } from "../server-utils.js";
+import { createSessionManagerForRequest } from "../session-scope.js";
 import {
 	type ApprovalsUpdateRequestInput,
 	ApprovalsUpdateRequestSchema,
 	parseAndValidateJson,
 } from "../validation.js";
 
-// Store approval mode preference (per-session or global)
-// In a real implementation, this might be stored per-user or per-session
-const approvalModeStore = new Map<string, ApprovalMode>();
+const approvalSessionIdPattern = /^[A-Za-z0-9._-]+$/;
+
+function verifySessionOwnership(
+	session: { owner?: unknown; subject?: unknown },
+	subject: string,
+): boolean {
+	if (typeof session.owner === "string" && session.owner) {
+		return session.owner === subject;
+	}
+	if (typeof session.subject === "string" && session.subject) {
+		return session.subject === subject;
+	}
+	const strictMode = process.env.COMPOSER_STRICT_SESSION_ACCESS !== "false";
+	return !strictMode;
+}
+
+function assertApprovalSessionId(sessionId: string): void {
+	if (!approvalSessionIdPattern.test(sessionId)) {
+		throw new ApiError(400, "Invalid session id");
+	}
+}
+
+async function ensureApprovalSessionAccess(
+	req: IncomingMessage,
+	sessionId: string,
+	subject: string,
+): Promise<{ statusCode: number; error: string } | null> {
+	if (sessionId === "default") {
+		return null;
+	}
+
+	const sessionManager = createSessionManagerForRequest(req, false);
+	const sessionFile = sessionManager.getSessionFileById(sessionId);
+	if (!sessionFile) {
+		return null;
+	}
+
+	const session = await sessionManager.loadSession(sessionId);
+	if (!session) {
+		return {
+			statusCode: 404,
+			error: "Session file exists but could not be loaded",
+		};
+	}
+
+	if (!verifySessionOwnership(session, subject)) {
+		return {
+			statusCode: 403,
+			error: "Access denied: session belongs to another user",
+		};
+	}
+
+	return null;
+}
 
 export async function handleApprovals(
 	req: IncomingMessage,
 	res: ServerResponse,
-	corsHeaders: Record<string, string>,
+	context: Pick<WebServerContext, "corsHeaders" | "defaultApprovalMode">,
 ) {
-	if (req.method === "GET") {
-		const url = new URL(
-			req.url || "/api/approvals",
-			`http://${req.headers.host}`,
-		);
-		const sessionId = url.searchParams.get("sessionId") || "default";
-		const mode = approvalModeStore.get(sessionId) || "prompt";
+	const { corsHeaders, defaultApprovalMode } = context;
+	const subject = getAuthSubject(req);
+	const url = new URL(
+		req.url || "/api/approvals",
+		`http://${req.headers.host}`,
+	);
+	const querySessionId = url.searchParams.get("sessionId");
 
-		sendJson(
-			res,
-			200,
-			{
-				mode,
-				availableModes: ["auto", "prompt", "fail"],
-			},
-			corsHeaders,
-		);
+	if (req.method === "GET") {
+		try {
+			const sessionId = normalizeApprovalSessionId(querySessionId);
+			assertApprovalSessionId(sessionId);
+			const accessError = await ensureApprovalSessionAccess(
+				req,
+				sessionId,
+				subject,
+			);
+			if (accessError) {
+				sendJson(
+					res,
+					accessError.statusCode,
+					{ error: accessError.error },
+					corsHeaders,
+				);
+				return;
+			}
+			const mode = getApprovalModeForSession(
+				sessionId,
+				defaultApprovalMode,
+				subject,
+			);
+
+			sendJson(
+				res,
+				200,
+				{
+					mode,
+					availableModes: ["auto", "prompt", "fail"],
+				},
+				corsHeaders,
+			);
+		} catch (error) {
+			sendJson(
+				res,
+				400,
+				{ error: error instanceof Error ? error.message : String(error) },
+				corsHeaders,
+			);
+		}
 		return;
 	}
 
@@ -42,17 +133,44 @@ export async function handleApprovals(
 				req,
 				ApprovalsUpdateRequestSchema,
 			);
-			const sessionId = data.sessionId || "default";
+			const sessionId = normalizeApprovalSessionId(
+				data.sessionId ?? querySessionId,
+			);
+			assertApprovalSessionId(sessionId);
+			const accessError = await ensureApprovalSessionAccess(
+				req,
+				sessionId,
+				subject,
+			);
+			if (accessError) {
+				sendJson(
+					res,
+					accessError.statusCode,
+					{ error: accessError.error },
+					corsHeaders,
+				);
+				return;
+			}
 			const mode = data.mode;
-			approvalModeStore.set(sessionId, mode as ApprovalMode);
+			const effectiveMode = setApprovalModeForSession(
+				sessionId,
+				mode as ApprovalMode,
+				{
+					subject,
+					defaultApprovalMode,
+				},
+			);
 
 			sendJson(
 				res,
 				200,
 				{
 					success: true,
-					mode: mode as ApprovalMode,
-					message: `Approval mode set to ${mode}`,
+					mode: effectiveMode,
+					message:
+						effectiveMode === mode
+							? `Approval mode set to ${mode}`
+							: `Approval mode resolved to ${effectiveMode} because the server default is stricter`,
 				},
 				corsHeaders,
 			);

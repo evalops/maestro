@@ -5,6 +5,7 @@ import {
 	encodeScopedSessionId,
 	sanitizeSessionScope,
 } from "../session/scope.js";
+import { getArtifactAccessGrantFromRequest } from "./artifact-access.js";
 import { getAuthSubject } from "./authz.js";
 import { getRequestToken } from "./server-utils.js";
 
@@ -23,6 +24,10 @@ const SESSION_SCOPE_ENABLED =
 
 export function resolveSessionScope(req: IncomingMessage): string | null {
 	if (!SESSION_SCOPE_ENABLED) return null;
+	const artifactAccess = getArtifactAccessGrantFromRequest(req);
+	if (artifactAccess) {
+		return artifactAccess.scope ?? null;
+	}
 	if (!getRequestToken(req)) return null;
 	const subject = getAuthSubject(req);
 	if (!subject) return null;

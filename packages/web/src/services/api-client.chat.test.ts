@@ -29,6 +29,7 @@ const makeSseData = (payload: unknown) =>
 describe("ApiClient chat streaming", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
 		global.fetch = originalFetch;
 	});
 
@@ -201,5 +202,77 @@ describe("ApiClient chat streaming", () => {
 		}
 
 		expect(chunks).toEqual(["Fallback text"]);
+	});
+
+	it("adds centralized auth headers to chat event streaming requests", async () => {
+		global.fetch = vi
+			.fn()
+			.mockResolvedValue(makeSseResponse(["data: [DONE]\n\n"]));
+
+		const api = new ApiClient("http://localhost:8080", {
+			auth: {
+				accessToken: "access-token",
+				apiKey: "api-key",
+				csrfToken: "csrf-token",
+			},
+		});
+
+		for await (const _event of api.chatWithEvents({
+			messages: [{ role: "user", content: "hi" }],
+		})) {
+			// consume stream
+		}
+
+		const [, init] = vi.mocked(global.fetch).mock.calls[0] ?? [];
+		const headers = new Headers((init as RequestInit).headers);
+		expect(headers.get("authorization")).toBe("Bearer access-token");
+		expect(headers.get("x-composer-api-key")).toBe("api-key");
+		expect(headers.get("x-composer-csrf")).toBe("csrf-token");
+		expect(headers.get("x-composer-client-tools")).toBe("1");
+		expect(headers.get("x-composer-slim-events")).toBe("1");
+	});
+
+	it("uses SSE when WebSocket transport is selected but auth headers are required", async () => {
+		global.fetch = vi
+			.fn()
+			.mockResolvedValue(makeSseResponse(["data: [DONE]\n\n"]));
+		const webSocketSpy = vi.fn();
+		vi.stubGlobal("WebSocket", webSocketSpy);
+
+		const api = new ApiClient("http://localhost:8080", {
+			auth: { accessToken: "access-token" },
+		});
+		api.setTransportPreference("ws");
+
+		for await (const _event of api.chatWithEvents({
+			messages: [{ role: "user", content: "hi" }],
+		})) {
+			// consume stream
+		}
+
+		expect(global.fetch).toHaveBeenCalledTimes(1);
+		expect(webSocketSpy).not.toHaveBeenCalled();
+	});
+
+	it("does not fall back to WebSocket after SSE startup failure when auth headers are required", async () => {
+		const sseError = new Error("sse failed");
+		global.fetch = vi.fn().mockRejectedValue(sseError);
+		const webSocketSpy = vi.fn();
+		vi.stubGlobal("WebSocket", webSocketSpy);
+
+		const api = new ApiClient("http://localhost:8080", {
+			auth: { apiKey: "api-key" },
+		});
+
+		await expect(
+			(async () => {
+				for await (const _event of api.chatWithEvents({
+					messages: [{ role: "user", content: "hi" }],
+				})) {
+					// consume stream
+				}
+			})(),
+		).rejects.toThrow("sse failed");
+		expect(webSocketSpy).not.toHaveBeenCalled();
 	});
 });

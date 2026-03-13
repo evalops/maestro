@@ -57,6 +57,69 @@ describe("ComposerChat", () => {
 		assert.ok(input);
 	});
 
+	it("passes the shared api client to child components", async () => {
+		const sharedApiClient = {
+			baseUrl: "http://localhost:8080",
+		};
+
+		(element as unknown as { apiClient: unknown }).apiClient = sharedApiClient;
+		(
+			element as unknown as {
+				showModelSelector: boolean;
+				adminSettingsOpen: boolean;
+				artifactsOpen: boolean;
+				currentSessionId: string | null;
+			}
+		).showModelSelector = true;
+		(
+			element as unknown as {
+				showModelSelector: boolean;
+				adminSettingsOpen: boolean;
+				artifactsOpen: boolean;
+				currentSessionId: string | null;
+			}
+		).adminSettingsOpen = true;
+		(
+			element as unknown as {
+				showModelSelector: boolean;
+				adminSettingsOpen: boolean;
+				artifactsOpen: boolean;
+				currentSessionId: string | null;
+			}
+		).artifactsOpen = true;
+		(
+			element as unknown as {
+				showModelSelector: boolean;
+				adminSettingsOpen: boolean;
+				artifactsOpen: boolean;
+				currentSessionId: string | null;
+			}
+		).currentSessionId = "session-1";
+		await element.updateComplete;
+
+		const input = element.shadowRoot?.querySelector("composer-input") as
+			| ({ apiClient?: unknown } & Element)
+			| null;
+		const modelSelector = element.shadowRoot?.querySelector("model-selector") as
+			| ({ apiClient?: unknown } & Element)
+			| null;
+		const adminSettings = element.shadowRoot?.querySelector("admin-settings") as
+			| ({ apiClient?: unknown } & Element)
+			| null;
+		const artifactsPanel = element.shadowRoot?.querySelector(
+			"composer-artifacts-panel",
+		) as ({ apiClient?: unknown } & Element) | null;
+
+		assert.ok(input);
+		assert.ok(modelSelector);
+		assert.ok(adminSettings);
+		assert.ok(artifactsPanel);
+		assert.equal(input?.apiClient, sharedApiClient);
+		assert.equal(modelSelector?.apiClient, sharedApiClient);
+		assert.equal(adminSettings?.apiClient, sharedApiClient);
+		assert.equal(artifactsPanel?.apiClient, sharedApiClient);
+	});
+
 	it("displays error messages", async () => {
 		// Simulate error by triggering private state
 		(element as unknown as { error: string }).error = "Test error message";

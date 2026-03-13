@@ -111,6 +111,11 @@ import type {
 	ComposerUndoOperationResponse,
 	ComposerUndoStatusResponse,
 } from "@evalops/contracts";
+import {
+	getStoredComposerAccessToken,
+	getStoredComposerApiKey,
+	getStoredComposerCsrfToken,
+} from "./enterprise-api.js";
 
 export type Message = ComposerMessage;
 export type { ComposerToolCall };
@@ -172,6 +177,55 @@ const MAX_SSE_BUFFER = 1024 * 1024; // 1MB safeguard
 const VALIDATE_AGENT_EVENTS = Boolean(import.meta.env?.DEV);
 const VALIDATE_CHAT_REQUESTS = Boolean(import.meta.env?.DEV);
 const VALIDATE_API_RESPONSES = Boolean(import.meta.env?.DEV);
+const ARTIFACT_ACCESS_HEADER = "X-Composer-Artifact-Access";
+
+export interface ApiClientAuthConfig {
+	accessToken?: string | null;
+	apiKey?: string | null;
+	csrfToken?: string | null;
+}
+
+export interface ApiClientOptions {
+	auth?: ApiClientAuthConfig;
+}
+
+export interface PolicyValidationError {
+	path?: string;
+	message: string;
+	keyword?: string;
+}
+
+export interface PolicyValidationResponse {
+	valid: boolean;
+	errors?: PolicyValidationError[];
+}
+
+export interface AttachmentTextExtractionResponse {
+	fileName: string;
+	format: string;
+	size: number;
+	truncated: boolean;
+	extractedText: string;
+	cached?: boolean;
+}
+
+export type SessionArtifactAccessAction = "view" | "file" | "events" | "zip";
+
+interface SessionArtifactAccessResponse {
+	token: string;
+	expiresAt: string;
+	actions: SessionArtifactAccessAction[];
+	sessionId: string;
+	filename?: string;
+}
+
+declare global {
+	interface Window {
+		__COMPOSER_API__?: string;
+		__COMPOSER_API_KEY__?: string;
+		__COMPOSER_CSRF_TOKEN__?: string;
+	}
+}
 
 export class ApiClientError extends Error {
 	readonly status: number;
@@ -398,36 +452,12 @@ export interface UsageSummary {
 }
 
 async function safeJson(response: Response) {
+	if (!response.ok) {
+		await throwApiClientError(response);
+	}
+
 	const contentType = response.headers.get("content-type") || "";
 	const isJson = contentType.includes("application/json");
-
-	if (!response.ok) {
-		const raw = await response.text();
-		let payload: unknown = undefined;
-		if (isJson && raw) {
-			try {
-				payload = JSON.parse(raw);
-			} catch {
-				payload = undefined;
-			}
-		}
-
-		if (payload && isComposerErrorResponse(payload)) {
-			throw new ApiClientError(payload.error, response.status, payload);
-		}
-		if (payload && typeof (payload as { error?: string }).error === "string") {
-			throw new ApiClientError(
-				(payload as { error: string }).error,
-				response.status,
-			);
-		}
-
-		const snippet = raw ? ` Snippet: ${raw.slice(0, 120)}` : "";
-		throw new ApiClientError(
-			`API error: ${response.status} ${response.statusText}.${snippet}`,
-			response.status,
-		);
-	}
 
 	if (!isJson) {
 		const text = await response.text();
@@ -436,6 +466,36 @@ async function safeJson(response: Response) {
 		);
 	}
 	return response.json();
+}
+
+async function throwApiClientError(response: Response): Promise<never> {
+	const contentType = response.headers.get("content-type") || "";
+	const isJson = contentType.includes("application/json");
+	const raw = await response.text();
+	let payload: unknown = undefined;
+	if (isJson && raw) {
+		try {
+			payload = JSON.parse(raw);
+		} catch {
+			payload = undefined;
+		}
+	}
+
+	if (payload && isComposerErrorResponse(payload)) {
+		throw new ApiClientError(payload.error, response.status, payload);
+	}
+	if (payload && typeof (payload as { error?: string }).error === "string") {
+		throw new ApiClientError(
+			(payload as { error: string }).error,
+			response.status,
+		);
+	}
+
+	const snippet = raw ? ` Snippet: ${raw.slice(0, 120)}` : "";
+	throw new ApiClientError(
+		`API error: ${response.status} ${response.statusText}.${snippet}`,
+		response.status,
+	);
 }
 
 export interface UIStatusResponse {
@@ -492,6 +552,7 @@ export interface BranchListResponse {
  */
 export class ApiClient {
 	private transportPreference: "auto" | "sse" | "ws" = "auto";
+	private authConfig: ApiClientAuthConfig | null = null;
 
 	setTransportPreference(mode: "auto" | "sse" | "ws") {
 		this.transportPreference = mode;
@@ -519,7 +580,7 @@ export class ApiClient {
 	 *
 	 * @param baseUrl - Optional explicit base URL
 	 */
-	constructor(baseUrl?: string) {
+	constructor(baseUrl?: string, options?: ApiClientOptions) {
 		let resolved = baseUrl;
 		// Window override via global (allows runtime swap without rebuild)
 		if (!resolved && typeof window !== "undefined") {
@@ -548,6 +609,7 @@ export class ApiClient {
 		}
 		this.baseUrl = resolved.replace(/\/$/, "");
 		this.fallbackBases = this.buildFallbacks(this.baseUrl);
+		this.setAuthConfig(options?.auth ?? null);
 	}
 
 	private buildFallbacks(primary: string): string[] {
@@ -565,11 +627,133 @@ export class ApiClient {
 		return bases;
 	}
 
+	setAuthConfig(auth: ApiClientAuthConfig | null | undefined) {
+		this.authConfig = auth ? { ...auth } : null;
+	}
+
+	private resolveAuthConfig(): ApiClientAuthConfig {
+		return {
+			accessToken:
+				this.authConfig?.accessToken ?? getStoredComposerAccessToken(),
+			apiKey: this.authConfig?.apiKey ?? this.resolveApiKey(),
+			csrfToken: this.authConfig?.csrfToken ?? this.resolveCsrfToken(),
+		};
+	}
+
+	private hasHeaderBasedAuth(auth = this.resolveAuthConfig()): boolean {
+		return Boolean(auth.accessToken?.trim() || auth.apiKey?.trim());
+	}
+
+	private canUseWebSocketTransport(): boolean {
+		return !this.hasHeaderBasedAuth();
+	}
+
+	private resolveApiKey(): string | null {
+		const stored = getStoredComposerApiKey();
+		if (stored) return stored;
+		if (typeof window === "undefined") return null;
+		return this.readWindowOverride("__COMPOSER_API_KEY__", ["apiKey"]);
+	}
+
+	private resolveCsrfToken(): string | null {
+		const stored = getStoredComposerCsrfToken();
+		if (stored) return stored;
+		if (typeof window === "undefined") return null;
+		return this.readWindowOverride("__COMPOSER_CSRF_TOKEN__", [
+			"csrf",
+			"csrfToken",
+		]);
+	}
+
+	private readWindowOverride(
+		windowKey: "__COMPOSER_API_KEY__" | "__COMPOSER_CSRF_TOKEN__",
+		queryKeys: string[],
+	): string | null {
+		const direct = window[windowKey]?.trim();
+		if (direct) return direct;
+
+		try {
+			const params = new URLSearchParams(window.location?.search || "");
+			for (const queryKey of queryKeys) {
+				const value = params.get(queryKey)?.trim();
+				if (value) return value;
+			}
+		} catch {
+			// ignore search param errors
+		}
+
+		return null;
+	}
+
+	private buildRequestHeaders(headers?: HeadersInit, method = "GET"): Headers {
+		const requestHeaders = new Headers(headers);
+		const auth = this.resolveAuthConfig();
+
+		if (auth.accessToken && !requestHeaders.has("Authorization")) {
+			requestHeaders.set("Authorization", `Bearer ${auth.accessToken}`);
+		}
+		if (auth.apiKey && !requestHeaders.has("X-Composer-Api-Key")) {
+			requestHeaders.set("X-Composer-Api-Key", auth.apiKey);
+		}
+		if (
+			auth.csrfToken &&
+			!requestHeaders.has("X-Composer-Csrf") &&
+			!requestHeaders.has("X-Csrf-Token") &&
+			!requestHeaders.has("X-Xsrf-Token") &&
+			!["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase())
+		) {
+			requestHeaders.set("X-Composer-Csrf", auth.csrfToken);
+		}
+
+		return requestHeaders;
+	}
+
+	private buildRequestInit(init?: RequestInit): RequestInit {
+		const method = init?.method ?? "GET";
+		return {
+			...init,
+			headers: this.buildRequestHeaders(init?.headers, method),
+		};
+	}
+
+	private buildArtifactAccessHeaders(
+		artifactAccessToken?: string,
+		headers?: HeadersInit,
+	): Headers {
+		const requestHeaders = this.buildRequestHeaders(headers, "GET");
+		if (artifactAccessToken) {
+			requestHeaders.set(ARTIFACT_ACCESS_HEADER, artifactAccessToken);
+		}
+		return requestHeaders;
+	}
+
+	private async createObjectUrlFromResponse(
+		response: Response,
+	): Promise<string> {
+		const blob = await response.blob();
+		if (typeof URL.createObjectURL !== "function") {
+			throw new Error("Object URLs are not supported in this environment");
+		}
+		return URL.createObjectURL(blob);
+	}
+
+	private async fetchArtifactObjectUrl(
+		path: string,
+		artifactAccessToken?: string,
+	): Promise<string> {
+		const response = await this.tryFallbackFetch(path, {
+			method: "GET",
+			headers: this.buildArtifactAccessHeaders(artifactAccessToken),
+		});
+		return await this.createObjectUrlFromResponse(response);
+	}
+
 	private async fetchJsonWithFallback(path: string, init?: RequestInit) {
+		const requestInit = this.buildRequestInit(init);
 		let lastError: unknown;
 		for (const base of this.fallbackBases) {
 			try {
-				const res = await fetch(`${base}${path}`, init);
+				const res = await fetch(`${base}${path}`, requestInit);
 				return await safeJson(res);
 			} catch (e) {
 				lastError = e;
@@ -596,18 +780,16 @@ export class ApiClient {
 		skipPrimary = false,
 		retryClientErrors = false,
 	) {
+		const requestInit = this.buildRequestInit(init);
 		let lastError: unknown;
 		const bases = skipPrimary
 			? this.fallbackBases.filter((b) => b !== this.baseUrl)
 			: this.fallbackBases;
 		for (const base of bases) {
 			try {
-				const res = await fetch(`${base}${path}`, init);
+				const res = await fetch(`${base}${path}`, requestInit);
 				if (!res.ok) {
-					throw new ApiClientError(
-						`API error: ${res.status} ${res.statusText}`,
-						res.status,
-					);
+					await throwApiClientError(res);
 				}
 				return res;
 			} catch (e) {
@@ -629,12 +811,58 @@ export class ApiClient {
 			: new Error("Failed to fetch API after fallbacks");
 	}
 
+	private async openChatStream(
+		request: ChatRequest,
+		headers: HeadersInit,
+	): Promise<Response> {
+		if (VALIDATE_CHAT_REQUESTS && !isComposerChatRequest(request)) {
+			throw new Error("Invalid chat request payload");
+		}
+
+		const path = "/api/chat";
+		const requestInit = this.buildJsonRequestInit(
+			"POST",
+			{ ...request, stream: true },
+			headers,
+		);
+		let lastError: unknown;
+
+		for (const base of this.fallbackBases) {
+			try {
+				const response = await fetch(`${base}${path}`, requestInit);
+				if (!response.ok) {
+					await throwApiClientError(response);
+				}
+				if (!response.body) {
+					throw new Error("No response body");
+				}
+				return response;
+			} catch (error) {
+				lastError = error;
+				if (isNonRetriableClientError(error)) {
+					throw error;
+				}
+				if (shouldLogFallbackError(error)) {
+					console.warn("API fallback failed", {
+						base,
+						path,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+		}
+
+		throw lastError instanceof Error
+			? lastError
+			: new Error("Failed to fetch API after fallbacks");
+	}
+
 	private buildJsonRequestInit(
 		method: "POST" | "PATCH" | "PUT" | "DELETE",
 		body?: unknown,
 		headers?: HeadersInit,
 	): RequestInit {
-		const requestHeaders = new Headers(headers);
+		const requestHeaders = this.buildRequestHeaders(headers, method);
 		if (body !== undefined && !requestHeaders.has("Content-Type")) {
 			requestHeaders.set("Content-Type", "application/json");
 		}
@@ -675,26 +903,11 @@ export class ApiClient {
 	 * Send a chat message and receive streaming response (text only - for backward compatibility)
 	 */
 	async *chat(request: ChatRequest): AsyncGenerator<string, void, unknown> {
-		if (VALIDATE_CHAT_REQUESTS && !isComposerChatRequest(request)) {
-			throw new Error("Invalid chat request payload");
-		}
-		const response = await fetch(`${this.baseUrl}/api/chat`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"x-composer-slim-events": "1",
-			},
-			body: JSON.stringify({ ...request, stream: true }),
+		const response = await this.openChatStream(request, {
+			"x-composer-slim-events": "1",
 		});
 
-		if (!response.ok) {
-			throw new Error(`API error: ${response.statusText}`);
-		}
-
-		const reader = response.body?.getReader();
-		if (!reader) {
-			throw new Error("No response body");
-		}
+		const reader = response.body!.getReader();
 
 		const decoder = new TextDecoder();
 		let buffer = "";
@@ -816,27 +1029,12 @@ export class ApiClient {
 	private async *chatWithSse(
 		request: ChatRequest,
 	): AsyncGenerator<AgentEvent, void, unknown> {
-		if (VALIDATE_CHAT_REQUESTS && !isComposerChatRequest(request)) {
-			throw new Error("Invalid chat request payload");
-		}
-		const response = await fetch(`${this.baseUrl}/api/chat`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"x-composer-client-tools": "1",
-				"x-composer-slim-events": "1",
-			},
-			body: JSON.stringify({ ...request, stream: true }),
+		const response = await this.openChatStream(request, {
+			"x-composer-client-tools": "1",
+			"x-composer-slim-events": "1",
 		});
 
-		if (!response.ok) {
-			throw new Error(`API error: ${response.statusText}`);
-		}
-
-		const reader = response.body?.getReader();
-		if (!reader) {
-			throw new Error("No response body");
-		}
+		const reader = response.body!.getReader();
 
 		const decoder = new TextDecoder();
 		let buffer = "";
@@ -880,6 +1078,11 @@ export class ApiClient {
 	): AsyncGenerator<AgentEvent, void, unknown> {
 		if (VALIDATE_CHAT_REQUESTS && !isComposerChatRequest(request)) {
 			throw new Error("Invalid chat request payload");
+		}
+		if (!this.canUseWebSocketTransport()) {
+			throw new Error(
+				"WebSocket transport is unavailable when auth headers are required",
+			);
 		}
 
 		const url = this.buildWebSocketUrl("/api/chat/ws", {
@@ -987,7 +1190,11 @@ export class ApiClient {
 		request: ChatRequest,
 	): AsyncGenerator<AgentEvent, void, unknown> {
 		if (this.transportPreference === "ws") {
-			yield* this.chatWithWebSocket(request);
+			if (this.canUseWebSocketTransport()) {
+				yield* this.chatWithWebSocket(request);
+			} else {
+				yield* this.chatWithSse(request);
+			}
 			return;
 		}
 		if (this.transportPreference === "sse") {
@@ -1001,7 +1208,11 @@ export class ApiClient {
 				yield event;
 			}
 		} catch (err) {
-			if (!sawEvent) {
+			if (
+				!sawEvent &&
+				this.canUseWebSocketTransport() &&
+				!(err instanceof ApiClientError)
+			) {
 				yield* this.chatWithWebSocket(request);
 				return;
 			}
@@ -1025,6 +1236,18 @@ export class ApiClient {
 		await this.tryFallbackFetch(
 			"/api/chat/client-tool-result",
 			this.buildJsonRequestInit("POST", input),
+		);
+	}
+
+	async submitApprovalDecision(input: {
+		requestId: string;
+		decision: "approved" | "denied";
+		reason?: string;
+	}): Promise<{ success: boolean }> {
+		return await this.fetchJsonRequestWithFallback<{ success: boolean }>(
+			"/api/chat/approval",
+			"POST",
+			input,
 		);
 	}
 
@@ -1254,6 +1477,122 @@ export class ApiClient {
 		return data as Session;
 	}
 
+	private buildSessionArtifactViewerUrl(
+		sessionId: string,
+		filename: string,
+	): string {
+		const url = new URL(
+			`/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(filename)}/view`,
+			this.baseUrl,
+		);
+		return url.toString();
+	}
+
+	private buildSessionArtifactFileUrl(
+		sessionId: string,
+		filename: string,
+		options?: {
+			download?: boolean;
+			raw?: boolean;
+			standalone?: boolean;
+		},
+	): string {
+		const url = new URL(
+			`/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(filename)}`,
+			this.baseUrl,
+		);
+		if (options?.download) url.searchParams.set("download", "1");
+		if (options?.raw) url.searchParams.set("raw", "1");
+		if (options?.standalone) url.searchParams.set("standalone", "1");
+		return url.toString();
+	}
+
+	private buildSessionArtifactsZipUrl(sessionId: string): string {
+		const url = new URL(
+			`/api/sessions/${encodeURIComponent(sessionId)}/artifacts.zip`,
+			this.baseUrl,
+		);
+		return url.toString();
+	}
+
+	private async createSessionArtifactAccess(
+		sessionId: string,
+		input: {
+			filename?: string;
+			actions: SessionArtifactAccessAction[];
+		},
+	): Promise<SessionArtifactAccessResponse> {
+		const params = new URLSearchParams();
+		params.set("actions", input.actions.join(","));
+		if (input.filename) {
+			params.set("filename", input.filename);
+		}
+
+		return (await this.fetchJsonWithFallback(
+			`/api/sessions/${encodeURIComponent(sessionId)}/artifact-access?${params.toString()}`,
+		)) as SessionArtifactAccessResponse;
+	}
+
+	async resolveSessionArtifactViewUrl(
+		sessionId: string,
+		filename: string,
+	): Promise<string> {
+		if (!this.hasHeaderBasedAuth()) {
+			return this.buildSessionArtifactViewerUrl(sessionId, filename);
+		}
+
+		const access = await this.createSessionArtifactAccess(sessionId, {
+			filename,
+			actions: ["view", "file", "events", "zip"],
+		});
+		return await this.fetchArtifactObjectUrl(
+			`/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(filename)}/view`,
+			access.token,
+		);
+	}
+
+	async resolveSessionArtifactDownloadUrl(
+		sessionId: string,
+		filename: string,
+		options?: { standalone?: boolean; raw?: boolean },
+	): Promise<string> {
+		const raw = options?.standalone ? false : (options?.raw ?? true);
+		if (!this.hasHeaderBasedAuth()) {
+			return this.buildSessionArtifactFileUrl(sessionId, filename, {
+				download: true,
+				raw,
+				standalone: options?.standalone,
+			});
+		}
+
+		const access = await this.createSessionArtifactAccess(sessionId, {
+			filename,
+			actions: ["file"],
+		});
+		const params = new URLSearchParams();
+		params.set("download", "1");
+		if (raw) params.set("raw", "1");
+		if (options?.standalone) params.set("standalone", "1");
+		return await this.fetchArtifactObjectUrl(
+			`/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(filename)}?${params.toString()}`,
+			access.token,
+		);
+	}
+
+	async resolveSessionArtifactsZipUrl(sessionId: string): Promise<string> {
+		if (!this.hasHeaderBasedAuth()) {
+			return this.buildSessionArtifactsZipUrl(sessionId);
+		}
+
+		const access = await this.createSessionArtifactAccess(sessionId, {
+			actions: ["zip"],
+		});
+		return await this.fetchArtifactObjectUrl(
+			`/api/sessions/${encodeURIComponent(sessionId)}/artifacts.zip`,
+			access.token,
+		);
+	}
+
 	/**
 	 * Fetch raw bytes for a session attachment (for lazy-loaded session history).
 	 */
@@ -1262,6 +1601,15 @@ export class ApiClient {
 		attachmentId: string,
 	): Promise<ArrayBuffer> {
 		const path = `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`;
+		const response = await this.tryFallbackFetch(path, { method: "GET" });
+		return await response.arrayBuffer();
+	}
+
+	async getSharedSessionAttachmentBytes(
+		shareToken: string,
+		attachmentId: string,
+	): Promise<ArrayBuffer> {
+		const path = `/api/sessions/shared/${encodeURIComponent(shareToken)}/attachments/${encodeURIComponent(attachmentId)}`;
 		const response = await this.tryFallbackFetch(path, { method: "GET" });
 		return await response.arrayBuffer();
 	}
@@ -1285,22 +1633,29 @@ export class ApiClient {
 		mimeType?: string;
 		contentBase64: string;
 		maxChars?: number;
-	}): Promise<{
-		fileName: string;
-		format: string;
-		size: number;
-		truncated: boolean;
-		extractedText: string;
-	}> {
-		return await this.tryJsonRequest<{
-			fileName: string;
-			format: string;
-			size: number;
-			truncated: boolean;
-			extractedText: string;
-		}>("/api/attachments/extract", "POST", input, {
-			headers: { Accept: "application/json" },
-		});
+	}): Promise<AttachmentTextExtractionResponse> {
+		return await this.tryJsonRequest<AttachmentTextExtractionResponse>(
+			"/api/attachments/extract",
+			"POST",
+			input,
+			{
+				headers: { Accept: "application/json" },
+			},
+		);
+	}
+
+	async extractSessionAttachmentText(
+		sessionId: string,
+		attachmentId: string,
+	): Promise<AttachmentTextExtractionResponse> {
+		return await this.tryJsonRequest<AttachmentTextExtractionResponse>(
+			`/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/extract`,
+			"POST",
+			undefined,
+			{
+				headers: { Accept: "application/json" },
+			},
+		);
 	}
 
 	/**
@@ -1370,6 +1725,17 @@ export class ApiClient {
 			throw new Error("Invalid config write response payload");
 		}
 		return data;
+	}
+
+	async validatePolicy(
+		policy: Record<string, unknown>,
+	): Promise<PolicyValidationResponse> {
+		return await this.tryJsonRequest<PolicyValidationResponse>(
+			"/api/policy/validate",
+			"POST",
+			policy,
+			{ headers: { Accept: "application/json" } },
+		);
 	}
 
 	// Guardian
@@ -1542,7 +1908,7 @@ export class ApiClient {
 		sessionId = "default",
 	): Promise<ApprovalsStatusResponse> {
 		const data = await this.fetchJsonWithFallback(
-			`/api/approvals?sessionId=${sessionId}`,
+			`/api/approvals?sessionId=${encodeURIComponent(sessionId)}`,
 		);
 		if (VALIDATE_API_RESPONSES && !isComposerApprovalsStatusResponse(data)) {
 			throw new Error("Invalid approvals status response payload");
@@ -1556,9 +1922,9 @@ export class ApiClient {
 	): Promise<ApprovalsUpdateResponse> {
 		const data =
 			await this.fetchJsonRequestWithFallback<ApprovalsUpdateResponse>(
-				`/api/approvals?sessionId=${sessionId}`,
+				`/api/approvals?sessionId=${encodeURIComponent(sessionId)}`,
 				"POST",
-				{ mode },
+				{ mode, sessionId },
 			);
 		if (VALIDATE_API_RESPONSES && !isComposerApprovalsUpdateResponse(data)) {
 			throw new Error("Invalid approvals update response payload");

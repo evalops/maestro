@@ -5,6 +5,7 @@
 
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
+import type { ApiClient } from "../services/api-client.js";
 import {
 	type Alert,
 	type AuditLog,
@@ -916,6 +917,7 @@ export class AdminSettings extends LitElement {
 	`;
 
 	@property({ type: Boolean }) open = false;
+	@property({ attribute: false }) apiClient: ApiClient | null = null;
 
 	@state() private currentTab: AdminTab = "overview";
 	@state() private loading = false;
@@ -1181,8 +1183,10 @@ export class AdminSettings extends LitElement {
 			(status) => this.getStatusBadgeClass(status),
 			AdminSettings.DEFAULT_AUDIT_LOGS,
 		);
-		this.policyTab = new AdminPolicyTab(this, (message, type) =>
-			this.showToast(message, type),
+		this.policyTab = new AdminPolicyTab(
+			this,
+			() => this.apiClient,
+			(message, type) => this.showToast(message, type),
 		);
 	}
 

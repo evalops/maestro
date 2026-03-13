@@ -2,13 +2,23 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerMessage } from "@evalops/contracts";
 import { lookup as lookupMimeType } from "mime-types";
 import { createLogger } from "../../utils/logger.js";
+import {
+	ARTIFACT_ACCESS_HEADER,
+	type ArtifactAccessAction,
+	getArtifactAccessGrantFromRequest,
+	getArtifactAccessTokenFromRequest,
+	issueArtifactAccessGrant,
+} from "../artifact-access.js";
 import { subscribeArtifactUpdates } from "../artifacts-live-reload.js";
 import {
 	ApiError,
 	buildContentDisposition,
 	sendJson,
 } from "../server-utils.js";
-import { createSessionManagerForRequest } from "../session-scope.js";
+import {
+	createSessionManagerForRequest,
+	resolveSessionScope,
+} from "../session-scope.js";
 import { convertAppMessagesToComposer } from "../session-serialization.js";
 
 const logger = createLogger("session-artifacts");
@@ -19,18 +29,66 @@ function escapeScriptContent(code: string): string {
 }
 
 function injectLiveReload(html: string, eventsUrl: string): string {
+	return injectLiveReloadWithAuth(html, eventsUrl);
+}
+
+function injectLiveReloadWithAuth(
+	html: string,
+	eventsUrl: string,
+	accessToken?: string | null,
+): string {
+	const authHeaders = accessToken
+		? `{ ${JSON.stringify(ARTIFACT_ACCESS_HEADER)}: ${JSON.stringify(accessToken)} }`
+		: "undefined";
 	const scriptBody = `
 	(function() {
 	  try {
-	    const es = new EventSource(${JSON.stringify(eventsUrl)});
-	    es.onmessage = (e) => {
-	      try {
-	        const data = JSON.parse(e.data);
-	        if (data && data.type === "artifact_updated") {
-	          location.reload();
+	    const reload = () => location.reload();
+	    const connect = ${
+				accessToken
+					? `async () => {
+	      const response = await fetch(${JSON.stringify(eventsUrl)}, {
+	        headers: ${authHeaders},
+	        cache: "no-store",
+	      });
+	      if (!response.body) throw new Error("Missing response body");
+	      const reader = response.body.getReader();
+	      const decoder = new TextDecoder();
+	      let buffer = "";
+	      while (true) {
+	        const { done, value } = await reader.read();
+	        if (done) break;
+	        buffer += decoder.decode(value, { stream: true });
+	        let boundary = buffer.indexOf("\\n\\n");
+	        while (boundary !== -1) {
+	          const chunk = buffer.slice(0, boundary);
+	          buffer = buffer.slice(boundary + 2);
+	          const dataLine = chunk
+	            .split("\\n")
+	            .find((line) => line.startsWith("data:"));
+	          if (dataLine) {
+	            reload();
+	            return;
+	          }
+	          boundary = buffer.indexOf("\\n\\n");
 	        }
-	      } catch (err) { console.error("[Composer] Failed to parse live reload event:", err); }
-	    };
+	      }
+	    }`
+					: `() => {
+	      const es = new EventSource(${JSON.stringify(eventsUrl)});
+	      es.onmessage = (e) => {
+	        try {
+	          const data = JSON.parse(e.data);
+	          if (data && data.type === "artifact_updated") {
+	            reload();
+	          }
+	        } catch (err) { console.error("[Composer] Failed to parse live reload event:", err); }
+	      };
+	    }`
+			};
+	    Promise.resolve(connect()).catch((err) => {
+	      console.error("[Composer] Failed to setup live reload transport:", err);
+	    });
 	  } catch (err) { console.error("[Composer] Failed to setup live reload EventSource:", err); }
 	})();
 	`.trim();
@@ -197,6 +255,64 @@ function validateFilename(filename: string): void {
 	}
 }
 
+function buildSessionArtifactFileUrl(
+	sessionId: string,
+	filename: string,
+	options?: {
+		download?: boolean;
+		raw?: boolean;
+		standalone?: boolean;
+	},
+): string {
+	const path = `/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(filename)}`;
+	const url = new URL(path, "http://localhost");
+	if (options?.download) url.searchParams.set("download", "1");
+	if (options?.raw) url.searchParams.set("raw", "1");
+	if (options?.standalone) url.searchParams.set("standalone", "1");
+	return `${url.pathname}${url.search}`;
+}
+
+function buildSessionArtifactViewerUrl(
+	sessionId: string,
+	filename: string,
+): string {
+	return `/api/sessions/${encodeURIComponent(sessionId)}/artifacts/${encodeURIComponent(filename)}/view`;
+}
+
+function buildSessionArtifactsEventsUrl(
+	sessionId: string,
+	filename: string,
+): string {
+	const url = new URL(
+		`/api/sessions/${encodeURIComponent(sessionId)}/artifacts/events`,
+		"http://localhost",
+	);
+	url.searchParams.set("filename", filename);
+	return `${url.pathname}${url.search}`;
+}
+
+function buildSessionArtifactsZipUrl(sessionId: string): string {
+	return `/api/sessions/${encodeURIComponent(sessionId)}/artifacts.zip`;
+}
+
+function resolveArtifactAccessContext(req: IncomingMessage): {
+	accessToken: string | null;
+	grant: ReturnType<typeof getArtifactAccessGrantFromRequest>;
+} {
+	const grant = getArtifactAccessGrantFromRequest(req);
+	return {
+		accessToken: grant ? getArtifactAccessTokenFromRequest(req) : null,
+		grant,
+	};
+}
+
+function canUseArtifactAccess(
+	grant: ReturnType<typeof getArtifactAccessGrantFromRequest>,
+	action: ArtifactAccessAction,
+): boolean {
+	return Boolean(grant?.actions.includes(action));
+}
+
 export async function handleSessionArtifactsIndex(
 	req: IncomingMessage,
 	res: ServerResponse,
@@ -225,6 +341,98 @@ export async function handleSessionArtifactsIndex(
 				filenames: Array.from(artifacts.keys()).sort((a, b) =>
 					a.localeCompare(b),
 				),
+			},
+			cors,
+			req,
+		);
+	} catch (err) {
+		const error =
+			err instanceof ApiError ? err : new ApiError(500, "Internal error");
+		sendJson(res, error.statusCode, { error: error.message }, cors, req);
+	}
+}
+
+export async function handleSessionArtifactAccess(
+	req: IncomingMessage,
+	res: ServerResponse,
+	params: { id: string },
+	cors: Record<string, string>,
+) {
+	const sessionId = params.id;
+	try {
+		if (req.method !== "GET") {
+			res.writeHead(405, cors);
+			res.end();
+			return;
+		}
+		if (!sessionIdPattern.test(sessionId)) {
+			sendJson(res, 400, { error: "Invalid session id" }, cors, req);
+			return;
+		}
+
+		const url = new URL(req.url || "", "http://localhost");
+		const filename = url.searchParams.get("filename")?.trim() || undefined;
+		const actions = Array.from(
+			new Set(
+				(url.searchParams.get("actions") || "")
+					.split(",")
+					.map((action) => action.trim())
+					.filter(Boolean),
+			),
+		).filter((action): action is ArtifactAccessAction => {
+			return ["view", "file", "events", "zip"].includes(action);
+		});
+
+		if (actions.length === 0) {
+			sendJson(
+				res,
+				400,
+				{ error: "At least one artifact access action is required" },
+				cors,
+				req,
+			);
+			return;
+		}
+
+		if (filename) {
+			validateFilename(filename);
+		}
+
+		if (!filename && actions.some((action) => action !== "zip")) {
+			sendJson(
+				res,
+				400,
+				{ error: "filename is required for artifact file access" },
+				cors,
+				req,
+			);
+			return;
+		}
+
+		const messages = await loadComposerMessages(req, sessionId);
+		const artifacts = reconstructArtifactsFromMessages(messages);
+
+		if (filename && !artifacts.has(filename)) {
+			sendJson(res, 404, { error: "Artifact not found" }, cors, req);
+			return;
+		}
+
+		const access = issueArtifactAccessGrant({
+			sessionId,
+			scope: resolveSessionScope(req),
+			filename,
+			actions,
+		});
+
+		sendJson(
+			res,
+			200,
+			{
+				token: access.token,
+				expiresAt: access.expiresAtIso,
+				actions: access.actions,
+				sessionId,
+				...(filename ? { filename } : {}),
 			},
 			cors,
 			req,
@@ -272,13 +480,18 @@ export async function handleSessionArtifactFile(
 
 		const mime = lookupMimeType(filename) || "text/plain; charset=utf-8";
 		const isHtml = String(mime).startsWith("text/html");
+		const { accessToken, grant } = resolveArtifactAccessContext(req);
 
-		const eventsUrl = `/api/sessions/${encodeURIComponent(
-			sessionId,
-		)}/artifacts/events?filename=${encodeURIComponent(filename)}`;
+		const eventsUrl = canUseArtifactAccess(grant, "events")
+			? buildSessionArtifactsEventsUrl(sessionId, filename)
+			: accessToken
+				? null
+				: buildSessionArtifactsEventsUrl(sessionId, filename);
 
 		let body =
-			isHtml && !wantsRaw ? injectLiveReload(content, eventsUrl) : content;
+			isHtml && !wantsRaw && eventsUrl
+				? injectLiveReloadWithAuth(content, eventsUrl, accessToken)
+				: content;
 
 		// Standalone download: force attachment and embed artifacts snapshot + helpers.
 		if (isHtml && wantsStandalone) {
@@ -339,12 +552,62 @@ export async function handleSessionArtifactViewer(
 
 		const mime = lookupMimeType(filename) || "text/plain; charset=utf-8";
 		const isHtml = String(mime).startsWith("text/html");
+		const { accessToken, grant } = resolveArtifactAccessContext(req);
 
 		const title = `Composer Artifact · ${filename}`;
+		const viewerUrl = buildSessionArtifactViewerUrl(sessionId, filename);
 
-		const eventsUrl = `/api/sessions/${encodeURIComponent(
-			sessionId,
-		)}/artifacts/events?filename=${encodeURIComponent(filename)}`;
+		const eventsUrl = canUseArtifactAccess(grant, "events")
+			? buildSessionArtifactsEventsUrl(sessionId, filename)
+			: accessToken
+				? null
+				: buildSessionArtifactsEventsUrl(sessionId, filename);
+		const zipUrl = canUseArtifactAccess(grant, "zip")
+			? buildSessionArtifactsZipUrl(sessionId)
+			: accessToken
+				? null
+				: buildSessionArtifactsZipUrl(sessionId);
+		const rawDownloadUrl = canUseArtifactAccess(grant, "file")
+			? buildSessionArtifactFileUrl(sessionId, filename, {
+					download: true,
+					raw: true,
+				})
+			: accessToken
+				? null
+				: buildSessionArtifactFileUrl(sessionId, filename, {
+						download: true,
+						raw: true,
+					});
+		const standaloneDownloadUrl = isHtml
+			? canUseArtifactAccess(grant, "file")
+				? buildSessionArtifactFileUrl(sessionId, filename, {
+						download: true,
+						standalone: true,
+					})
+				: accessToken
+					? null
+					: buildSessionArtifactFileUrl(sessionId, filename, {
+							download: true,
+							standalone: true,
+						})
+			: null;
+
+		const zipAction = zipUrl
+			? accessToken
+				? `<button id="download-zip" class="hint-button" type="button">Download ZIP</button>`
+				: `<a class="hint" href="${zipUrl}" target="_blank" rel="noopener">Download ZIP</a>`
+			: "";
+		const rawDownloadAction = rawDownloadUrl
+			? accessToken
+				? `<button id="download-raw" class="hint-button" type="button">Download Raw</button>`
+				: `<a class="hint" href="${rawDownloadUrl}" target="_blank" rel="noopener">Download Raw</a>`
+			: "";
+		const standaloneDownloadAction = standaloneDownloadUrl
+			? accessToken
+				? `<button id="download-standalone" class="hint-button" type="button">Download Standalone</button>`
+				: `<a class="hint" href="${standaloneDownloadUrl}" target="_blank" rel="noopener">Download Standalone</a>`
+			: "";
+		const zipDownloadName = `${sessionId}-artifacts.zip`;
 
 		const srcdoc = isHtml
 			? injectArtifactsSnapshotRuntime(content, artifacts)
@@ -386,29 +649,16 @@ window.addEventListener("message", (e) => {
       button:hover { border-color: #58a6ff; color: #58a6ff; }
       iframe { width: 100%; height: calc(100% - 52px); border: 0; display:block; background: #fff; }
       .hint { font-size: 12px; color: #7d8590; }
+      .hint-button { padding: 0; border: 0; color: #7d8590; font-size: 12px; }
     </style>
   </head>
   <body>
     <div class="bar">
       <div class="title">${title.replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
       <div class="spacer"></div>
-      <a class="hint" href="/api/sessions/${encodeURIComponent(
-				sessionId,
-			)}/artifacts.zip" target="_blank" rel="noopener">Download ZIP</a>
-      <a class="hint" href="/api/sessions/${encodeURIComponent(
-				sessionId,
-			)}/artifacts/${encodeURIComponent(
-				filename,
-			)}?download=1&raw=1" target="_blank" rel="noopener">Download Raw</a>
-      ${
-				isHtml
-					? `<a class="hint" href="/api/sessions/${encodeURIComponent(
-							sessionId,
-						)}/artifacts/${encodeURIComponent(
-							filename,
-						)}?download=1&standalone=1" target="_blank" rel="noopener">Download Standalone</a>`
-					: ""
-			}
+      ${zipAction}
+      ${rawDownloadAction}
+      ${standaloneDownloadAction}
       <button id="reload">Reload</button>
     </div>
     ${openExternalHandler}
@@ -416,20 +666,150 @@ window.addEventListener("message", (e) => {
     <script>
       const frame = document.getElementById("frame");
       const reloadBtn = document.getElementById("reload");
+      const viewerUrl = ${JSON.stringify(viewerUrl)};
+      const eventsUrl = ${JSON.stringify(eventsUrl)};
+      const zipUrl = ${JSON.stringify(zipUrl)};
+      const rawDownloadUrl = ${JSON.stringify(rawDownloadUrl)};
+      const standaloneDownloadUrl = ${JSON.stringify(standaloneDownloadUrl)};
+      const artifactAccessToken = ${JSON.stringify(accessToken)};
+      const artifactAccessHeaders = artifactAccessToken
+        ? { ${JSON.stringify(ARTIFACT_ACCESS_HEADER)}: artifactAccessToken }
+        : undefined;
 
       const setDoc = (html) => {
         frame.srcdoc = html;
       };
 
+      const parseDownloadFilename = (response, fallbackName) => {
+        const contentDisposition = response.headers.get("content-disposition") || "";
+        const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+        if (utf8Match?.[1]) {
+          try {
+            return decodeURIComponent(utf8Match[1]);
+          } catch {
+            return utf8Match[1];
+          }
+        }
+        const quotedMatch = contentDisposition.match(/filename="([^"]+)"/i);
+        if (quotedMatch?.[1]) {
+          return quotedMatch[1];
+        }
+        const bareMatch = contentDisposition.match(/filename=([^;]+)/i);
+        return bareMatch?.[1]?.trim() || fallbackName || "";
+      };
+
+      const fetchViewerResource = async (url) => {
+        const response = await fetch(url, {
+          cache: "no-store",
+          ...(artifactAccessHeaders ? { headers: artifactAccessHeaders } : {}),
+        });
+        if (!response.ok) {
+		    throw new Error("Request failed (" + response.status + ")");
+        }
+        return response;
+      };
+
+      const downloadViewerResource = async (url, fallbackName) => {
+        const response = await fetchViewerResource(url);
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        const downloadName = parseDownloadFilename(response, fallbackName);
+        if (downloadName) {
+          link.download = downloadName;
+        }
+        link.rel = "noopener";
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      };
+
+      const refreshViewer = async () => {
+        if (!artifactAccessHeaders) {
+          location.reload();
+          return;
+        }
+        const response = await fetchViewerResource(viewerUrl);
+        const nextHtml = await response.text();
+        const nextUrl = URL.createObjectURL(
+          new Blob([nextHtml], { type: "text/html" }),
+        );
+        setTimeout(() => URL.revokeObjectURL(nextUrl), 60_000);
+        location.replace(nextUrl);
+      };
+
+      const triggerRefresh = () => {
+        void refreshViewer().catch((err) => {
+          console.error("[Composer] Failed to refresh viewer:", err);
+        });
+      };
+
+      const bindDownloadButton = (id, url, fallbackName) => {
+        const button = document.getElementById(id);
+        if (!button || !url || !artifactAccessHeaders) {
+          return;
+        }
+        button.addEventListener("click", () => {
+          void downloadViewerResource(url, fallbackName).catch((err) => {
+            console.error("[Composer] Failed to download artifact:", err);
+          });
+        });
+      };
+
       const srcdoc = ${JSON.stringify(srcdoc)};
       setDoc(srcdoc);
 
-      reloadBtn.addEventListener("click", () => location.reload());
+				bindDownloadButton("download-zip", zipUrl, ${JSON.stringify(zipDownloadName)});
+      bindDownloadButton("download-raw", rawDownloadUrl, ${JSON.stringify(filename)});
+      bindDownloadButton("download-standalone", standaloneDownloadUrl, ${JSON.stringify(filename)});
 
-      try {
-        const es = new EventSource(${JSON.stringify(eventsUrl)});
-        es.onmessage = () => location.reload();
-      } catch (err) { console.error("[Composer] Failed to setup viewer EventSource:", err); }
+      reloadBtn.addEventListener("click", () => triggerRefresh());
+
+      ${
+				eventsUrl
+					? `try {
+		const reload = () => triggerRefresh();
+        const connect = ${
+					accessToken
+						? `async () => {
+		  const response = await fetchViewerResource(eventsUrl);
+          if (!response.body) throw new Error("Missing response body");
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let boundary = buffer.indexOf("\\n\\n");
+            while (boundary !== -1) {
+              const chunk = buffer.slice(0, boundary);
+              buffer = buffer.slice(boundary + 2);
+              const dataLine = chunk
+                .split("\\n")
+                .find((line) => line.startsWith("data:"));
+              if (dataLine) {
+                reload();
+                return;
+              }
+              boundary = buffer.indexOf("\\n\\n");
+            }
+          }
+        }`
+						: `() => {
+          const es = new EventSource(${JSON.stringify(eventsUrl)});
+          es.onmessage = () => reload();
+        }`
+				};
+        Promise.resolve(connect()).catch((err) => {
+          console.error("[Composer] Failed to setup viewer live reload transport:", err);
+        });
+      } catch (err) { console.error("[Composer] Failed to setup viewer EventSource:", err); }`
+					: ""
+			}
     </script>
   </body>
 </html>`;

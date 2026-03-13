@@ -2,6 +2,7 @@ import type { IncomingMessage } from "node:http";
 import { basename } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import v8 from "node:v8";
+import { redactArtifactAccessTokenInUrl } from "./artifact-access.js";
 import { circuitBreakers } from "./circuit-breaker.js";
 import {
 	type RequestContext,
@@ -412,7 +413,7 @@ export function logRequest(
 
 	// Update Prometheus metrics
 	const method = req.method || "UNKNOWN";
-	const url = req.url || "/";
+	const url = redactArtifactAccessTokenInUrl(req.url);
 	const route = url.split("?")[0] ?? url;
 
 	incCounter("http_requests_total", {
@@ -444,7 +445,7 @@ export function logRequest(
 				requestId,
 				traceId,
 				method: req.method,
-				url: req.url,
+				url,
 				statusCode,
 				durationMs: duration,
 				userAgent: req.headers["user-agent"],

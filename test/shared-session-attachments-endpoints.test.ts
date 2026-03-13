@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	handleSessionShare,
+	handleSharedSession,
 	handleSharedSessionAttachment,
 	resetShareRateLimit,
 } from "../src/server/handlers/sessions.js";
@@ -115,6 +116,28 @@ function createMockResponse(): {
 
 const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 
+async function createShareToken(maxAccesses: number | null = 1) {
+	const shareReq = createMockRequest(
+		"POST",
+		"/api/sessions/test-session-1/share",
+		{
+			expiresInHours: 24,
+			maxAccesses,
+		},
+	);
+	const shareRes = createMockResponse();
+
+	await handleSessionShare(
+		shareReq,
+		shareRes.res,
+		{ id: "test-session-1" },
+		corsHeaders,
+	);
+
+	expect(shareRes.getStatus()).toBe(201);
+	return (shareRes.getBody() as { shareToken: string }).shareToken;
+}
+
 describe("Shared session attachments", () => {
 	beforeEach(() => {
 		// Disable strict session access for tests (sessions without ownership info)
@@ -127,37 +150,18 @@ describe("Shared session attachments", () => {
 	});
 
 	it("fetches attachment bytes via share token", async () => {
-		const shareReq = createMockRequest(
-			"POST",
-			"/api/sessions/test-session-1/share",
-			{
-				expiresInHours: 24,
-				maxAccesses: 1,
-			},
-		);
-		const shareRes = createMockResponse();
-
-		await handleSessionShare(
-			shareReq,
-			shareRes.res,
-			{ id: "test-session-1" },
-			corsHeaders,
-		);
-
-		expect(shareRes.getStatus()).toBe(201);
-		const shareBody = shareRes.getBody() as { shareToken: string };
-		expect(shareBody.shareToken).toBeTruthy();
+		const shareToken = await createShareToken();
 
 		const req = createMockRequest(
 			"GET",
-			`/api/sessions/shared/${shareBody.shareToken}/attachments/att-1`,
+			`/api/sessions/shared/${shareToken}/attachments/att-1`,
 		);
 		const { res, getStatus, getHeaders, getRawBody } = createMockResponse();
 
 		await handleSharedSessionAttachment(
 			req,
 			res,
-			{ token: shareBody.shareToken, attachmentId: "att-1" },
+			{ token: shareToken, attachmentId: "att-1" },
 			corsHeaders,
 		);
 
@@ -167,37 +171,99 @@ describe("Shared session attachments", () => {
 	});
 
 	it("supports download=1 on token attachment endpoint", async () => {
-		const shareReq = createMockRequest(
-			"POST",
-			"/api/sessions/test-session-1/share",
-			{
-				expiresInHours: 24,
-				maxAccesses: 1,
-			},
-		);
-		const shareRes = createMockResponse();
-
-		await handleSessionShare(
-			shareReq,
-			shareRes.res,
-			{ id: "test-session-1" },
-			corsHeaders,
-		);
-		const shareBody = shareRes.getBody() as { shareToken: string };
+		const shareToken = await createShareToken();
 
 		const req = createMockRequest(
 			"GET",
-			`/api/sessions/shared/${shareBody.shareToken}/attachments/att-1?download=1`,
+			`/api/sessions/shared/${shareToken}/attachments/att-1?download=1`,
 		);
 		const { res, getHeaders } = createMockResponse();
 
 		await handleSharedSessionAttachment(
 			req,
 			res,
-			{ token: shareBody.shareToken, attachmentId: "att-1" },
+			{ token: shareToken, attachmentId: "att-1" },
 			corsHeaders,
 		);
 
 		expect(getHeaders()["Content-Disposition"]).toContain("attachment;");
+	});
+
+	it("blocks attachment downloads once the share max-access limit is exhausted", async () => {
+		const shareToken = await createShareToken(1);
+
+		const sharedSessionReq = createMockRequest(
+			"GET",
+			`/api/sessions/shared/${shareToken}`,
+		);
+		const sharedSessionRes = createMockResponse();
+
+		await handleSharedSession(
+			sharedSessionReq,
+			sharedSessionRes.res,
+			{ token: shareToken },
+			corsHeaders,
+		);
+
+		expect(sharedSessionRes.getStatus()).toBe(200);
+
+		const attachmentReq = createMockRequest(
+			"GET",
+			`/api/sessions/shared/${shareToken}/attachments/att-1`,
+		);
+		const attachmentRes = createMockResponse();
+
+		await handleSharedSessionAttachment(
+			attachmentReq,
+			attachmentRes.res,
+			{ token: shareToken, attachmentId: "att-1" },
+			corsHeaders,
+		);
+
+		expect(attachmentRes.getStatus()).toBe(410);
+		expect(attachmentRes.getBody()).toEqual({
+			error: "Share link has reached maximum accesses",
+		});
+	});
+
+	it("rate-limits repeated attachment downloads", async () => {
+		const shareToken = await createShareToken(20);
+
+		for (let attempt = 0; attempt < 10; attempt++) {
+			const req = createMockRequest(
+				"GET",
+				`/api/sessions/shared/${shareToken}/attachments/att-1`,
+			);
+			const response = createMockResponse();
+
+			await handleSharedSessionAttachment(
+				req,
+				response.res,
+				{ token: shareToken, attachmentId: "att-1" },
+				corsHeaders,
+			);
+
+			expect(response.getStatus()).toBe(200);
+		}
+
+		const limitedReq = createMockRequest(
+			"GET",
+			`/api/sessions/shared/${shareToken}/attachments/att-1`,
+		);
+		const limitedRes = createMockResponse();
+
+		await handleSharedSessionAttachment(
+			limitedReq,
+			limitedRes.res,
+			{ token: shareToken, attachmentId: "att-1" },
+			corsHeaders,
+		);
+
+		expect(limitedRes.getStatus()).toBe(429);
+		expect(limitedRes.getHeaders()["Retry-After"]).toBeTruthy();
+		expect(limitedRes.getBody()).toEqual({
+			error: "Too many requests",
+			retryAfter: expect.any(Number),
+		});
 	});
 });

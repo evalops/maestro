@@ -54,6 +54,27 @@
 				"command": "bun run bun:evals",
 				"forwardAllArgs": true
 			}
+		},
+		"evals:openrouter-live-smoke": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run evals:openrouter-live-smoke",
+				"forwardAllArgs": true
+			}
+		},
+		"evals:openrouter-approvals-judge": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run evals:openrouter-approvals-judge",
+				"forwardAllArgs": true
+			}
+		},
+		"evals:openrouter-tool-surface-judge": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run evals:openrouter-tool-surface-judge",
+				"forwardAllArgs": true
+			}
 		}
 	}
 }

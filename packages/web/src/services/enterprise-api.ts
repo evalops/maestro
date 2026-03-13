@@ -155,13 +155,15 @@ async function safeJson(response: Response) {
 	return response.json();
 }
 
-type TokenKey = "access" | "refresh";
+type TokenKey = "access" | "refresh" | "apiKey" | "csrf";
 
 class EphemeralTokenStorage {
 	private memoryStore = new Map<TokenKey, string>();
 	private readonly keys: Record<TokenKey, string> = {
 		access: "composer_access_token",
 		refresh: "composer_refresh_token",
+		apiKey: "composer_api_key",
+		csrf: "composer_csrf_token",
 	};
 
 	private get browserStorage(): Storage | null {
@@ -223,6 +225,18 @@ class EphemeralTokenStorage {
 }
 
 const tokenStorage = new EphemeralTokenStorage();
+
+export function getStoredComposerAccessToken(): string | null {
+	return tokenStorage.get("access");
+}
+
+export function getStoredComposerApiKey(): string | null {
+	return tokenStorage.get("apiKey");
+}
+
+export function getStoredComposerCsrfToken(): string | null {
+	return tokenStorage.get("csrf");
+}
 
 export class EnterpriseApiClient {
 	private baseUrl: string;

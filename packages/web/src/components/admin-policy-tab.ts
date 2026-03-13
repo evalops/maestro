@@ -1,6 +1,9 @@
 import { type LitElement, html } from "lit";
+import type { ApiClient } from "../services/api-client.js";
 
 type ToastType = "success" | "error" | "info";
+
+type PolicyValidationClient = Pick<ApiClient, "validatePolicy">;
 
 type PolicyValidationError = {
 	path?: string;
@@ -44,6 +47,7 @@ export class AdminPolicyTab {
 
 	constructor(
 		private readonly host: Pick<LitElement, "requestUpdate">,
+		private readonly getApiClient: () => PolicyValidationClient | null,
 		private readonly showToast: (message: string, type: ToastType) => void,
 	) {}
 
@@ -181,21 +185,30 @@ export class AdminPolicyTab {
 	};
 
 	private validatePolicy = async () => {
+		let parsed: unknown;
 		try {
-			JSON.parse(this.policyJson);
+			parsed = JSON.parse(this.policyJson);
 		} catch (error) {
 			this.policyError = `Invalid JSON: ${error instanceof Error ? error.message : "Parse error"}`;
 			this.host.requestUpdate();
 			return;
 		}
 
+		const apiClient = this.getApiClient();
+		if (!apiClient) {
+			this.policyError = null;
+			this.showToast(
+				"Policy JSON syntax is valid (schema validation unavailable)",
+				"info",
+			);
+			this.host.requestUpdate();
+			return;
+		}
+
 		try {
-			const response = await fetch("/api/policy/validate", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: this.policyJson,
-			});
-			const result = (await response.json()) as PolicyValidationResponse;
+			const result = (await apiClient.validatePolicy(
+				parsed as Record<string, unknown>,
+			)) as PolicyValidationResponse;
 			if (result.valid) {
 				this.policyError = null;
 				this.showToast("Policy JSON is valid", "success");

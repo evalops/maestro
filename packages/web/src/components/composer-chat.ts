@@ -2,10 +2,12 @@
  * Main chat interface component
  */
 
+import type { ComposerActionApprovalRequest } from "@evalops/contracts";
 import { LitElement, type PropertyValues, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { parse as parsePartialJson } from "partial-json";
 import {
+	type AgentEvent,
 	ApiClient,
 	type ComposerToolCall,
 	type Message,
@@ -33,6 +35,7 @@ import "./composer-session-sidebar.js";
 import "./composer-share-dialog.js";
 import "./composer-export-dialog.js";
 import "./composer-settings.js";
+import "./composer-approval.js";
 import "./model-selector.js";
 import "./admin-settings.js";
 import "./composer-artifacts-panel.js";
@@ -96,6 +99,54 @@ type UiMessage = Omit<Message, "tools"> & {
 	tools?: ExtendedToolCall[];
 	localOnly?: boolean;
 };
+
+type AssistantMessageSnapshot = Pick<Message, "content"> & {
+	tools?: unknown[];
+	thinking?: string;
+};
+
+function getMessageTextContent(content: Message["content"]): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((item) => (item?.type === "text" ? item.text : ""))
+		.join("");
+}
+
+export function hasAssistantMessageProgress(
+	message: AssistantMessageSnapshot,
+): boolean {
+	if (getMessageTextContent(message.content).trim().length > 0) {
+		return true;
+	}
+	if (
+		typeof message.thinking === "string" &&
+		message.thinking.trim().length > 0
+	) {
+		return true;
+	}
+	return Array.isArray(message.tools) && message.tools.length > 0;
+}
+
+export function getTerminalStreamOutcome(
+	event: AgentEvent,
+): { message: string; type: "error" | "info" } | null {
+	switch (event.type) {
+		case "error":
+			return {
+				message: event.message?.trim() || "Failed to complete request",
+				type: "error",
+			};
+		case "aborted":
+			return { message: "Request aborted", type: "info" };
+		case "agent_end":
+			return event.aborted
+				? { message: "Request aborted", type: "info" }
+				: null;
+		default:
+			return null;
+	}
+}
 
 @customElement("composer-chat")
 export class ComposerChat extends LitElement {
@@ -741,6 +792,8 @@ export class ComposerChat extends LitElement {
 		typeof navigator !== "undefined" ? navigator.onLine : true;
 	@state() private lastSendFailed: string | null = null;
 	@state() private lastApiError: string | null = null;
+	@state() private pendingApprovalQueue: ComposerActionApprovalRequest[] = [];
+	@state() private approvalSubmitting = false;
 	@state() private nextRefreshAllowed = 0;
 	@state() private showHealth = false;
 	@state() private showShortcuts = false;
@@ -1193,6 +1246,58 @@ export class ComposerChat extends LitElement {
 		}
 	};
 
+	private enqueueApprovalRequest(request: ComposerActionApprovalRequest) {
+		if (this.pendingApprovalQueue.some((entry) => entry.id === request.id)) {
+			return;
+		}
+		this.pendingApprovalQueue = [...this.pendingApprovalQueue, request];
+	}
+
+	private clearApprovalRequest(requestId: string) {
+		this.pendingApprovalQueue = this.pendingApprovalQueue.filter(
+			(request) => request.id !== requestId,
+		);
+	}
+
+	private handleApproveRequest = (e: CustomEvent<{ requestId?: string }>) => {
+		void this.submitApprovalDecision("approved", e.detail?.requestId);
+	};
+
+	private handleDenyRequest = (e: CustomEvent<{ requestId?: string }>) => {
+		void this.submitApprovalDecision("denied", e.detail?.requestId);
+	};
+
+	private async submitApprovalDecision(
+		decision: "approved" | "denied",
+		requestId?: string,
+	) {
+		if (!requestId || this.approvalSubmitting) {
+			return;
+		}
+
+		this.approvalSubmitting = true;
+
+		try {
+			await this.apiClient.submitApprovalDecision({ requestId, decision });
+			this.clearApprovalRequest(requestId);
+			this.showToast(
+				decision === "approved" ? "Approval submitted" : "Denial submitted",
+				decision === "approved" ? "success" : "info",
+				1500,
+			);
+		} catch (error) {
+			this.showToast(
+				error instanceof Error
+					? error.message
+					: "Failed to submit approval decision",
+				"error",
+				2200,
+			);
+		} finally {
+			this.approvalSubmitting = false;
+		}
+	}
+
 	private getShareTokenFromLocation(): string | null {
 		if (typeof window === "undefined") return null;
 		try {
@@ -1539,8 +1644,12 @@ export class ComposerChat extends LitElement {
 			}
 		}
 
-		if (changed.has("currentSessionId") && this.currentSessionId) {
-			void this.refreshUiState(this.currentSessionId);
+		if (changed.has("currentSessionId")) {
+			this.pendingApprovalQueue = [];
+			this.approvalSubmitting = false;
+			if (this.currentSessionId) {
+				void this.refreshUiState(this.currentSessionId);
+			}
 		}
 	}
 
@@ -2183,6 +2292,8 @@ export class ComposerChat extends LitElement {
 		const toolCallArgsById = new Map<string, Record<string, unknown>>();
 		const thinkingBlocks = new Map<number, string>();
 		let currentThinkingIndex: number | null = null;
+		let terminalStreamOutcome: ReturnType<typeof getTerminalStreamOutcome> =
+			null;
 
 		try {
 			const requestMessages = await this.buildMessagesForChatRequest(
@@ -2454,6 +2565,16 @@ export class ComposerChat extends LitElement {
 						break;
 					}
 
+					case "action_approval_required": {
+						this.enqueueApprovalRequest(agentEvent.request);
+						break;
+					}
+
+					case "action_approval_resolved": {
+						this.clearApprovalRequest(agentEvent.request.id);
+						break;
+					}
+
 					case "client_tool_request": {
 						if (agentEvent.toolName === "artifacts") {
 							const args = coerceArtifactsArgs(agentEvent.args);
@@ -2523,19 +2644,45 @@ export class ComposerChat extends LitElement {
 						}
 						break;
 
+					case "error":
+					case "aborted":
+						terminalStreamOutcome = getTerminalStreamOutcome(agentEvent);
+						break;
+
 					case "agent_end":
-						// All done
+						terminalStreamOutcome ??= getTerminalStreamOutcome(agentEvent);
 						break;
 				}
 
 				if (this.autoScroll) this.scrollToBottom();
 			}
 
+			if (terminalStreamOutcome) {
+				this.error = terminalStreamOutcome.message;
+				this.lastSendFailed = text;
+				this.lastApiError = terminalStreamOutcome.message;
+				if (!hasAssistantMessageProgress(assistantMessage)) {
+					this.messages = this.messages.slice(0, -1);
+				} else {
+					assistantMessage.timestamp ||= new Date().toISOString();
+					this.messages = [...this.messages];
+				}
+				this.showToast(
+					terminalStreamOutcome.message,
+					terminalStreamOutcome.type,
+				);
+			}
+
 			// Refresh sessions list
 			await this.loadSessions();
 		} catch (e) {
 			this.error = e instanceof Error ? e.message : "Failed to send message";
-			this.messages = this.messages.slice(0, -1); // Remove placeholder
+			if (!hasAssistantMessageProgress(assistantMessage)) {
+				this.messages = this.messages.slice(0, -1);
+			} else {
+				assistantMessage.timestamp ||= new Date().toISOString();
+				this.messages = [...this.messages];
+			}
 			this.showToast(this.error, "error");
 			this.lastSendFailed = text;
 			this.lastApiError = this.error;
@@ -2965,9 +3112,16 @@ export class ComposerChat extends LitElement {
 						: "fast";
 
 		return html`
+			<composer-approval
+				.request=${this.pendingApprovalQueue[0] ?? null}
+				.submitting=${this.approvalSubmitting}
+				@approve=${this.handleApproveRequest}
+				@deny=${this.handleDenyRequest}
+			></composer-approval>
 			<composer-attachment-viewer
 				.open=${this.attachmentViewerOpen}
 				.attachment=${this.attachmentViewerAttachment}
+				.apiClient=${this.apiClient}
 				.apiEndpoint=${this.apiClient?.baseUrl || this.apiEndpoint}
 				.sessionId=${isShared ? null : this.currentSessionId}
 				.shareToken=${this.shareToken}
@@ -3263,6 +3417,7 @@ export class ComposerChat extends LitElement {
 
 				<div class="input-container">
 					<composer-input
+						.apiClient=${this.apiClient}
 						@submit=${this.handleSubmit}
 						@voice-error=${this.handleVoiceError}
 						?disabled=${this.loading || isShared}
@@ -3278,6 +3433,7 @@ export class ComposerChat extends LitElement {
 								.activeFilename=${this.activeArtifact}
 								.sessionId=${this.currentSessionId}
 								.apiBaseUrl=${this.apiClient.baseUrl}
+								.apiClient=${this.apiClient}
 								.attachments=${this.getAllAttachments()}
 								@close=${this.closeArtifactsPanel}
 								@select-artifact=${(e: CustomEvent<{ filename: string }>) =>
@@ -3308,6 +3464,7 @@ export class ComposerChat extends LitElement {
 					? html`
 				<div class="side-panel admin">
 					<admin-settings
+						.apiClient=${this.apiClient}
 						@close=${this.toggleAdminSettings}
 					></admin-settings>
 				</div>
@@ -3332,6 +3489,7 @@ export class ComposerChat extends LitElement {
 					? html`
 						<model-selector
 							.open=${this.showModelSelector}
+							.apiClient=${this.apiClient}
 							.apiEndpoint=${this.apiEndpoint}
 							.currentModel=${this.currentModel}
 							.modelsPrefetch=${this.models}

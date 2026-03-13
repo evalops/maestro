@@ -253,5 +253,23 @@
             "scripts/evals/run-openrouter-compat-evals.ts"
         ],
         "expectedRegex": "\\[openrouter-compat-evals\\] \\d+/\\d+ passed"
+    },
+    {
+        "name": "approvals flow eval suite",
+        "command": [
+            "bunx",
+            "tsx",
+            "scripts/evals/run-approvals-flow-evals.ts"
+        ],
+        "expectedRegex": "\\[approvals-flow-evals\\] \\d+/\\d+ passed"
+    },
+    {
+        "name": "tool surface smoke eval suite",
+        "command": [
+            "bunx",
+            "tsx",
+            "scripts/evals/run-tool-surface-smoke-evals.ts"
+        ],
+        "expectedRegex": "\\[tool-surface-smoke-evals\\] \\d+/\\d+ passed"
     }
 ]

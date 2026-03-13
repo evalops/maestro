@@ -20,6 +20,10 @@ import { checkSessionLimits } from "../../safety/policy.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
 import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
+import {
+	normalizeApprovalMode,
+	resolveApprovalModeForRequest,
+} from "../approval-mode-store.js";
 import { publishArtifactUpdate } from "../artifacts-live-reload.js";
 import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
@@ -395,32 +399,22 @@ export function handleChatWebSocket(
 
 			const headerApproval = (() => {
 				const header = req.headers["x-composer-approval-mode"];
-				const raw = Array.isArray(header) ? header[0] : header;
-				const normalized = raw?.trim().toLowerCase();
-				if (
-					normalized === "auto" ||
-					normalized === "prompt" ||
-					normalized === "fail"
-				) {
-					return normalized as "auto" | "prompt" | "fail";
+				const headerMode = normalizeApprovalMode(
+					Array.isArray(header) ? header[0] : header,
+				);
+				if (headerMode) {
+					return headerMode;
 				}
 				const approvalParam = url.searchParams.get("approval");
-				if (!approvalParam) return undefined;
-				const normalizedParam = approvalParam.trim().toLowerCase();
-				if (
-					normalizedParam === "auto" ||
-					normalizedParam === "prompt" ||
-					normalizedParam === "fail"
-				) {
-					return normalizedParam as "auto" | "prompt" | "fail";
-				}
-				return undefined;
+				return normalizeApprovalMode(approvalParam);
 			})();
 
-			const effectiveApproval =
-				headerApproval && headerApproval !== "auto"
-					? headerApproval
-					: (defaultApprovalMode as "auto" | "prompt" | "fail");
+			const effectiveApproval = resolveApprovalModeForRequest({
+				sessionId: chatReq.sessionId,
+				subject,
+				headerApprovalMode: headerApproval,
+				defaultApprovalMode,
+			});
 
 			const clientToolsHeader = (() => {
 				if (typeof clientToolsFromQuery === "boolean") {

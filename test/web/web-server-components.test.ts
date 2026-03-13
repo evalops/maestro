@@ -171,6 +171,17 @@ describe("createCorsHeaders", () => {
 		expect(headers["Access-Control-Allow-Methods"]).toContain("PATCH");
 		expect(headers["Access-Control-Allow-Methods"]).toContain("DELETE");
 	});
+
+	it("allows composer-specific auth and streaming headers", () => {
+		const headers = createCorsHeaders("*");
+		const allowHeaders = headers["Access-Control-Allow-Headers"] || "";
+
+		expect(allowHeaders).toContain("X-Composer-Api-Key");
+		expect(allowHeaders).toContain("X-Composer-Csrf");
+		expect(allowHeaders).toContain("X-Composer-Client");
+		expect(allowHeaders).toContain("X-Composer-Client-Tools");
+		expect(allowHeaders).toContain("X-Composer-Slim-Events");
+	});
 });
 
 describe("respondWithApiError", () => {

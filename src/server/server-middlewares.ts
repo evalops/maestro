@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { parse } from "node:url";
 import { createLogger } from "../utils/logger.js";
+import { getArtifactAccessGrantFromRequest } from "./artifact-access.js";
 import { isOverloaded, logRequest } from "./logger.js";
 import type { Middleware } from "./middleware.js";
 import type { RateLimiter, TieredRateLimiter } from "./rate-limiter.js";
@@ -229,6 +230,9 @@ export function createAuthMiddleware(
 			}
 
 			// Key provided: validate it.
+			if (getArtifactAccessGrantFromRequest(req)) {
+				return next();
+			}
 			if (!authenticateRequest(req, res, corsHeaders, apiKey)) {
 				return;
 			}

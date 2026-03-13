@@ -2,6 +2,7 @@ type HljsModule = typeof import("highlight.js");
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import type { ApiClient } from "../services/api-client.js";
 import type { Artifact } from "../services/artifacts.js";
 import { ArtifactsRuntimeProvider } from "./sandbox/artifacts-runtime-provider.js";
 import { AttachmentsRuntimeProvider } from "./sandbox/attachments-runtime-provider.js";
@@ -147,11 +148,45 @@ export class ComposerArtifactsPanel extends LitElement {
 	@property() activeFilename: string | null = null;
 	@property() sessionId: string | null = null;
 	@property() apiBaseUrl = "";
+	@property({ attribute: false }) apiClient: ApiClient | null = null;
 	@property({ attribute: false }) attachments: ComposerAttachment[] = [];
 
 	@state() private highlightedForKey: string | null = null;
 	@state() private highlightedHtml: string | null = null;
 	@state() private highlightError: string | null = null;
+	@state() private resolvedViewUrl: string | null = null;
+	@state() private resolvedDownloadUrl: string | null = null;
+	@state() private resolvedZipUrl: string | null = null;
+
+	private artifactUrlRequestKey: string | null = null;
+	private zipUrlRequestKey: string | null = null;
+
+	private revokeObjectUrl(url: string | null) {
+		if (!url?.startsWith("blob:")) return;
+		if (typeof URL.revokeObjectURL !== "function") return;
+		URL.revokeObjectURL(url);
+	}
+
+	private replaceResolvedViewUrl(url: string | null) {
+		if (this.resolvedViewUrl && this.resolvedViewUrl !== url) {
+			this.revokeObjectUrl(this.resolvedViewUrl);
+		}
+		this.resolvedViewUrl = url;
+	}
+
+	private replaceResolvedDownloadUrl(url: string | null) {
+		if (this.resolvedDownloadUrl && this.resolvedDownloadUrl !== url) {
+			this.revokeObjectUrl(this.resolvedDownloadUrl);
+		}
+		this.resolvedDownloadUrl = url;
+	}
+
+	private replaceResolvedZipUrl(url: string | null) {
+		if (this.resolvedZipUrl && this.resolvedZipUrl !== url) {
+			this.revokeObjectUrl(this.resolvedZipUrl);
+		}
+		this.resolvedZipUrl = url;
+	}
 
 	private buildRuntimeProviders(): SandboxRuntimeProvider[] {
 		const providers: SandboxRuntimeProvider[] = [
@@ -194,40 +229,175 @@ export class ComposerArtifactsPanel extends LitElement {
 		);
 	}
 
-	private openInNewTab(filename: string) {
-		if (!this.sessionId || !this.apiBaseUrl) return;
-		const url = `${this.apiBaseUrl}/api/sessions/${encodeURIComponent(
+	private getResolvedApiBaseUrl(): string {
+		return this.apiBaseUrl || this.apiClient?.baseUrl || "";
+	}
+
+	private canResolveArtifactLinks(): boolean {
+		return Boolean(this.sessionId && this.getResolvedApiBaseUrl());
+	}
+
+	private buildDirectArtifactViewUrl(filename: string): string | null {
+		const apiBaseUrl = this.getResolvedApiBaseUrl();
+		if (!this.sessionId || !apiBaseUrl) return null;
+		return `${apiBaseUrl}/api/sessions/${encodeURIComponent(
 			this.sessionId,
 		)}/artifacts/${encodeURIComponent(filename)}/view`;
+	}
+
+	private buildDirectArtifactDownloadUrl(
+		filename: string,
+		options?: { standalone?: boolean },
+	): string | null {
+		const apiBaseUrl = this.getResolvedApiBaseUrl();
+		if (!this.sessionId || !apiBaseUrl) return null;
+		const params = new URLSearchParams();
+		params.set("download", "1");
+		if (options?.standalone) params.set("standalone", "1");
+		else params.set("raw", "1");
+		return `${apiBaseUrl}/api/sessions/${encodeURIComponent(
+			this.sessionId,
+		)}/artifacts/${encodeURIComponent(filename)}?${params.toString()}`;
+	}
+
+	private buildDirectArtifactsZipUrl(): string | null {
+		const apiBaseUrl = this.getResolvedApiBaseUrl();
+		if (!this.sessionId || !apiBaseUrl) return null;
+		return `${apiBaseUrl}/api/sessions/${encodeURIComponent(
+			this.sessionId,
+		)}/artifacts.zip`;
+	}
+
+	private async resolveArtifactViewUrl(
+		filename: string,
+	): Promise<string | null> {
+		if (!this.sessionId) return null;
+		if (this.apiClient) {
+			return await this.apiClient.resolveSessionArtifactViewUrl(
+				this.sessionId,
+				filename,
+			);
+		}
+		return this.buildDirectArtifactViewUrl(filename);
+	}
+
+	private async resolveArtifactDownloadUrl(
+		filename: string,
+		options?: { standalone?: boolean },
+	): Promise<string | null> {
+		if (!this.sessionId) return null;
+		if (this.apiClient) {
+			return await this.apiClient.resolveSessionArtifactDownloadUrl(
+				this.sessionId,
+				filename,
+				options,
+			);
+		}
+		return this.buildDirectArtifactDownloadUrl(filename, options);
+	}
+
+	private async resolveArtifactsZipUrl(): Promise<string | null> {
+		if (!this.sessionId) return null;
+		if (this.apiClient) {
+			return await this.apiClient.resolveSessionArtifactsZipUrl(this.sessionId);
+		}
+		return this.buildDirectArtifactsZipUrl();
+	}
+
+	private async preloadArtifactLinks(active: Artifact | null) {
+		if (!active || !this.canResolveArtifactLinks()) {
+			this.artifactUrlRequestKey = null;
+			this.replaceResolvedViewUrl(null);
+			this.replaceResolvedDownloadUrl(null);
+			return;
+		}
+
+		const requestKey = `${this.sessionId}:${active.filename}:${this.apiBaseUrl}:${active.filename
+			.toLowerCase()
+			.endsWith(".html")}`;
+		this.artifactUrlRequestKey = requestKey;
+		this.replaceResolvedViewUrl(null);
+		this.replaceResolvedDownloadUrl(null);
+
+		try {
+			const [viewUrl, downloadUrl] = await Promise.all([
+				this.resolveArtifactViewUrl(active.filename),
+				this.resolveArtifactDownloadUrl(active.filename, {
+					standalone: active.filename.toLowerCase().endsWith(".html"),
+				}),
+			]);
+			if (this.artifactUrlRequestKey !== requestKey) return;
+			this.replaceResolvedViewUrl(viewUrl);
+			this.replaceResolvedDownloadUrl(downloadUrl);
+		} catch {
+			if (this.artifactUrlRequestKey !== requestKey) return;
+			this.replaceResolvedViewUrl(
+				this.buildDirectArtifactViewUrl(active.filename),
+			);
+			this.replaceResolvedDownloadUrl(
+				this.buildDirectArtifactDownloadUrl(active.filename, {
+					standalone: active.filename.toLowerCase().endsWith(".html"),
+				}),
+			);
+		}
+	}
+
+	private async preloadZipLink() {
+		if (!this.canResolveArtifactLinks()) {
+			this.zipUrlRequestKey = null;
+			this.replaceResolvedZipUrl(null);
+			return;
+		}
+
+		const requestKey = `${this.sessionId}:${this.apiBaseUrl}`;
+		this.zipUrlRequestKey = requestKey;
+		this.replaceResolvedZipUrl(null);
+
+		try {
+			const zipUrl = await this.resolveArtifactsZipUrl();
+			if (this.zipUrlRequestKey !== requestKey) return;
+			this.replaceResolvedZipUrl(zipUrl);
+		} catch {
+			if (this.zipUrlRequestKey !== requestKey) return;
+			this.replaceResolvedZipUrl(this.buildDirectArtifactsZipUrl());
+		}
+	}
+
+	private async openInNewTab(filename: string) {
+		const url =
+			this.resolvedViewUrl ?? (await this.resolveArtifactViewUrl(filename));
+		if (!url) return;
 		window.open(url, "_blank", "noopener,noreferrer");
 	}
 
-	private downloadZip() {
-		if (!this.sessionId || !this.apiBaseUrl) return;
-		const url = `${this.apiBaseUrl}/api/sessions/${encodeURIComponent(
-			this.sessionId,
-		)}/artifacts.zip`;
+	private downloadToNewTab(url: string | null, filename?: string) {
+		if (!url) return;
 		const a = document.createElement("a");
 		a.href = url;
 		a.rel = "noopener";
-		a.target = "_blank";
+		if (url.startsWith("blob:")) {
+			if (filename) {
+				a.download = filename;
+			}
+		} else {
+			a.target = "_blank";
+		}
 		a.click();
 	}
 
-	private downloadArtifact(filename: string, opts?: { standalone?: boolean }) {
-		if (!this.sessionId || !this.apiBaseUrl) return;
-		const params = new URLSearchParams();
-		params.set("download", "1");
-		if (opts?.standalone) params.set("standalone", "1");
-		else params.set("raw", "1");
-		const url = `${this.apiBaseUrl}/api/sessions/${encodeURIComponent(
-			this.sessionId,
-		)}/artifacts/${encodeURIComponent(filename)}?${params.toString()}`;
-		const a = document.createElement("a");
-		a.href = url;
-		a.rel = "noopener";
-		a.target = "_blank";
-		a.click();
+	private async downloadZip() {
+		const url = this.resolvedZipUrl ?? (await this.resolveArtifactsZipUrl());
+		this.downloadToNewTab(url, "composer-artifacts.zip");
+	}
+
+	private async downloadArtifact(
+		filename: string,
+		opts?: { standalone?: boolean },
+	) {
+		const url =
+			this.resolvedDownloadUrl ??
+			(await this.resolveArtifactDownloadUrl(filename, opts));
+		this.downloadToNewTab(url, filename);
 	}
 
 	private async highlightIfNeeded(active: Artifact) {
@@ -266,44 +436,44 @@ export class ComposerArtifactsPanel extends LitElement {
 		const active =
 			(this.activeFilename &&
 				artifacts.find((a) => a.filename === this.activeFilename)) ||
-			(artifacts.length > 0 ? artifacts[0] : null);
+			(artifacts.length > 0 ? (artifacts[0] ?? null) : null);
 
 		return html`
 			<div class="header">
 				<div class="title">Artifacts</div>
 				<div style="display:flex; align-items:center; gap:0.5rem;">
 					${
-						active && this.sessionId && this.apiBaseUrl
+						active && this.canResolveArtifactLinks()
 							? html`<button
 									class="close"
-									@click=${() => this.openInNewTab(active.filename)}
+								@click=${() => void this.openInNewTab(active.filename)}
 									title="Open in new tab"
 								>↗</button>`
 							: ""
 					}
 					${
-						active && this.sessionId && this.apiBaseUrl
+						active && this.canResolveArtifactLinks()
 							? active.filename.toLowerCase().endsWith(".html")
 								? html`<button
 										class="close"
 										@click=${() =>
-											this.downloadArtifact(active.filename, {
+											void this.downloadArtifact(active.filename, {
 												standalone: true,
 											})}
 										title="Download standalone HTML"
 									>DL</button>`
 								: html`<button
 										class="close"
-										@click=${() => this.downloadArtifact(active.filename)}
+									@click=${() => void this.downloadArtifact(active.filename)}
 										title="Download file"
 									>DL</button>`
 							: ""
 					}
 					${
-						this.sessionId && this.apiBaseUrl
+						this.canResolveArtifactLinks()
 							? html`<button
 									class="close"
-									@click=${this.downloadZip}
+								@click=${() => void this.downloadZip()}
 									title="Download artifacts zip"
 								>ZIP</button>`
 							: ""
@@ -355,15 +525,33 @@ export class ComposerArtifactsPanel extends LitElement {
 
 	override updated(changed: Map<string, unknown>): void {
 		super.updated(changed);
-		if (!changed.has("artifacts") && !changed.has("activeFilename")) return;
+		if (
+			!changed.has("artifacts") &&
+			!changed.has("activeFilename") &&
+			!changed.has("sessionId") &&
+			!changed.has("apiBaseUrl") &&
+			!changed.has("apiClient")
+		) {
+			return;
+		}
 
 		const artifacts = Array.isArray(this.artifacts) ? this.artifacts : [];
 		const active =
 			(this.activeFilename &&
 				artifacts.find((a) => a.filename === this.activeFilename)) ||
-			(artifacts.length > 0 ? artifacts[0] : null);
+			(artifacts.length > 0 ? (artifacts[0] ?? null) : null);
+
+		void this.preloadZipLink();
+		void this.preloadArtifactLinks(active);
 		if (!active) return;
 
 		void this.highlightIfNeeded(active);
+	}
+
+	override disconnectedCallback(): void {
+		super.disconnectedCallback();
+		this.revokeObjectUrl(this.resolvedViewUrl);
+		this.revokeObjectUrl(this.resolvedDownloadUrl);
+		this.revokeObjectUrl(this.resolvedZipUrl);
 	}
 }

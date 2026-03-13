@@ -153,6 +153,63 @@ function findAttachmentInSession(
 	return null;
 }
 
+async function resolveSharedSessionAccess(
+	req: IncomingMessage,
+	res: ServerResponse,
+	shareToken: string,
+	cors: Record<string, string>,
+): Promise<string | null> {
+	const clientIp =
+		(req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+		req.socket.remoteAddress ||
+		"unknown";
+	const rateLimit = await checkShareRateLimit(clientIp);
+	if (!rateLimit.allowed) {
+		res.setHeader("Retry-After", String(rateLimit.retryAfterSeconds ?? 60));
+		sendJson(
+			res,
+			429,
+			{
+				error: "Too many requests",
+				retryAfter: rateLimit.retryAfterSeconds,
+			},
+			cors,
+			req,
+		);
+		return null;
+	}
+
+	const accessResult = await tryAccessShare(shareToken);
+	if (!accessResult.allowed) {
+		switch (accessResult.reason) {
+			case "not_found":
+				sendJson(
+					res,
+					404,
+					{ error: "Share link not found or expired" },
+					cors,
+					req,
+				);
+				return null;
+			case "expired":
+				await deleteShareByToken(shareToken);
+				sendJson(res, 410, { error: "Share link has expired" }, cors, req);
+				return null;
+			case "max_accesses":
+				sendJson(
+					res,
+					410,
+					{ error: "Share link has reached maximum accesses" },
+					cors,
+					req,
+				);
+				return null;
+		}
+	}
+
+	return accessResult.sessionId ?? null;
+}
+
 // ============================================================================
 // SESSION HANDLERS
 // ============================================================================
@@ -474,59 +531,17 @@ export async function handleSharedSession(
 			return;
 		}
 
-		// Rate limit share access to prevent brute-force attacks
-		const clientIp =
-			(req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
-			req.socket.remoteAddress ||
-			"unknown";
-		const rateLimit = await checkShareRateLimit(clientIp);
-		if (!rateLimit.allowed) {
-			res.setHeader("Retry-After", String(rateLimit.retryAfterSeconds ?? 60));
-			sendJson(
-				res,
-				429,
-				{
-					error: "Too many requests",
-					retryAfter: rateLimit.retryAfterSeconds,
-				},
-				cors,
-				req,
-			);
+		const resolvedSessionId = await resolveSharedSessionAccess(
+			req,
+			res,
+			shareToken,
+			cors,
+		);
+		if (!resolvedSessionId) {
 			return;
 		}
 
-		// Atomic check and increment to prevent race conditions
-		const accessResult = await tryAccessShare(shareToken);
-		if (!accessResult.allowed) {
-			switch (accessResult.reason) {
-				case "not_found":
-					sendJson(
-						res,
-						404,
-						{ error: "Share link not found or expired" },
-						cors,
-						req,
-					);
-					return;
-				case "expired":
-					await deleteShareByToken(shareToken);
-					sendJson(res, 410, { error: "Share link has expired" }, cors, req);
-					return;
-				case "max_accesses":
-					sendJson(
-						res,
-						410,
-						{ error: "Share link has reached maximum accesses" },
-						cors,
-						req,
-					);
-					return;
-			}
-		}
-
-		const { scope, sessionId } = decodeScopedSessionId(
-			accessResult.sessionId as string,
-		);
+		const { scope, sessionId } = decodeScopedSessionId(resolvedSessionId);
 		const sessionManager = createSessionManagerForScope(scope, true);
 		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {
@@ -580,24 +595,17 @@ export async function handleSharedSessionAttachment(
 			return;
 		}
 
-		const share = await getSharedSessionFromDb(shareToken);
-		if (!share) {
-			sendJson(
-				res,
-				404,
-				{ error: "Share link not found or expired" },
-				cors,
-				req,
-			);
-			return;
-		}
-		if (share.expiresAt < new Date()) {
-			await deleteShareByToken(shareToken);
-			sendJson(res, 410, { error: "Share link has expired" }, cors, req);
+		const resolvedSessionId = await resolveSharedSessionAccess(
+			req,
+			res,
+			shareToken,
+			cors,
+		);
+		if (!resolvedSessionId) {
 			return;
 		}
 
-		const { scope, sessionId } = decodeScopedSessionId(share.sessionId);
+		const { scope, sessionId } = decodeScopedSessionId(resolvedSessionId);
 		const sessionManager = createSessionManagerForScope(scope, true);
 		const session = await sessionManager.loadSession(sessionId);
 		if (!session) {

@@ -3,6 +3,7 @@ import DOMPurify from "dompurify";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
+import type { ApiClient } from "../services/api-client.js";
 import { isValidBase64, normalizeBase64 } from "./base64-utils.js";
 
 type PdfjsModule = typeof import("pdfjs-dist");
@@ -312,6 +313,7 @@ export class ComposerAttachmentViewer extends LitElement {
 
 	@property({ type: Boolean, reflect: true }) open = false;
 	@property({ attribute: false }) attachment: ComposerAttachment | null = null;
+	@property({ attribute: false }) apiClient: ApiClient | null = null;
 	@property() apiEndpoint = "";
 	@property() sessionId: string | null = null;
 	@property() shareToken: string | null = null;
@@ -381,15 +383,31 @@ export class ComposerAttachmentViewer extends LitElement {
 				// ignore
 			}
 		}
-		this.blobUrl = null;
+		if (this.blobUrl !== null) {
+			this.blobUrl = null;
+		}
 		this.loadedBytes = null;
-		this.loadedText = null;
-		this.loadError = null;
-		this.loading = false;
-		this.xlsxSheetNames = [];
-		this.xlsxActiveSheet = 0;
-		this.xlsxHtml = null;
-		this.pptxActiveSlide = 0;
+		if (this.loadedText !== null) {
+			this.loadedText = null;
+		}
+		if (this.loadError !== null) {
+			this.loadError = null;
+		}
+		if (this.loading) {
+			this.loading = false;
+		}
+		if (this.xlsxSheetNames.length > 0) {
+			this.xlsxSheetNames = [];
+		}
+		if (this.xlsxActiveSheet !== 0) {
+			this.xlsxActiveSheet = 0;
+		}
+		if (this.xlsxHtml !== null) {
+			this.xlsxHtml = null;
+		}
+		if (this.pptxActiveSlide !== 0) {
+			this.pptxActiveSlide = 0;
+		}
 	}
 
 	private getKind(att: ComposerAttachment): AttachmentKind {
@@ -437,32 +455,63 @@ export class ComposerAttachmentViewer extends LitElement {
 		);
 	}
 
+	private getApiBaseUrl(): string {
+		return (this.apiClient?.baseUrl || this.apiEndpoint || "").replace(
+			/\/$/,
+			"",
+		);
+	}
+
 	private async fetchAttachmentBytes(): Promise<ArrayBuffer> {
 		const att = this.attachment;
 		const sessionId = this.sessionId;
 		const shareToken = this.shareToken;
-		const apiEndpoint = (this.apiEndpoint || "").replace(/\/$/, "");
-		if (!att?.id || !apiEndpoint) {
-			throw new Error("Missing apiEndpoint for attachment fetch");
-		}
-		const url =
-			shareToken && shareToken.length > 0
-				? `${apiEndpoint}/api/sessions/shared/${encodeURIComponent(shareToken)}/attachments/${encodeURIComponent(att.id)}`
-				: sessionId && sessionId.length > 0
-					? `${apiEndpoint}/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(att.id)}`
-					: null;
-
-		if (!url) {
-			throw new Error("Missing sessionId/shareToken for attachment fetch");
+		const apiClient = this.apiClient;
+		const apiBaseUrl = this.getApiBaseUrl();
+		if (!att?.id) {
+			throw new Error("Missing attachment id for attachment fetch");
 		}
 
-		const res = await fetch(url);
-		if (!res.ok) {
-			throw new Error(
-				`Failed to load attachment (${res.status} ${res.statusText})`,
+		if (shareToken && shareToken.length > 0) {
+			if (apiClient) {
+				return await apiClient.getSharedSessionAttachmentBytes(
+					shareToken,
+					att.id,
+				);
+			}
+			if (!apiBaseUrl) {
+				throw new Error("Missing apiEndpoint for attachment fetch");
+			}
+			const res = await fetch(
+				`${apiBaseUrl}/api/sessions/shared/${encodeURIComponent(shareToken)}/attachments/${encodeURIComponent(att.id)}`,
 			);
+			if (!res.ok) {
+				throw new Error(
+					`Failed to load attachment (${res.status} ${res.statusText})`,
+				);
+			}
+			return await res.arrayBuffer();
 		}
-		return await res.arrayBuffer();
+
+		if (sessionId && sessionId.length > 0) {
+			if (apiClient) {
+				return await apiClient.getSessionAttachmentBytes(sessionId, att.id);
+			}
+			if (!apiBaseUrl) {
+				throw new Error("Missing apiEndpoint for attachment fetch");
+			}
+			const res = await fetch(
+				`${apiBaseUrl}/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(att.id)}`,
+			);
+			if (!res.ok) {
+				throw new Error(
+					`Failed to load attachment (${res.status} ${res.statusText})`,
+				);
+			}
+			return await res.arrayBuffer();
+		}
+
+		throw new Error("Missing sessionId/shareToken for attachment fetch");
 	}
 
 	private async ensureBytesLoaded(opts?: {
@@ -600,8 +649,9 @@ export class ComposerAttachmentViewer extends LitElement {
 
 	private async extractText() {
 		const att = this.attachment;
-		const apiEndpoint = (this.apiEndpoint || "").replace(/\/$/, "");
-		if (!att?.id || !apiEndpoint) return;
+		const apiClient = this.apiClient;
+		const apiBaseUrl = this.getApiBaseUrl();
+		if (!att?.id || (!apiClient && !apiBaseUrl)) return;
 
 		const kind = this.getKind(att);
 		if (!["pdf", "docx", "xlsx", "pptx"].includes(kind)) return;
@@ -616,18 +666,27 @@ export class ComposerAttachmentViewer extends LitElement {
 			let extractedText: string | null = null;
 
 			if (canPersistToSession) {
-				const url = `${apiEndpoint}/api/sessions/${encodeURIComponent(
-					this.sessionId as string,
-				)}/attachments/${encodeURIComponent(att.id)}/extract`;
-				const res = await fetch(url, { method: "POST" });
-				if (!res.ok) {
-					throw new Error(
-						`Failed to extract (${res.status} ${res.statusText})`,
-					);
+				if (apiClient) {
+					extractedText = (
+						await apiClient.extractSessionAttachmentText(
+							this.sessionId as string,
+							att.id,
+						)
+					).extractedText;
+				} else {
+					const url = `${apiBaseUrl}/api/sessions/${encodeURIComponent(
+						this.sessionId as string,
+					)}/attachments/${encodeURIComponent(att.id)}/extract`;
+					const res = await fetch(url, { method: "POST" });
+					if (!res.ok) {
+						throw new Error(
+							`Failed to extract (${res.status} ${res.statusText})`,
+						);
+					}
+					const json = (await res.json()) as { extractedText?: unknown };
+					extractedText =
+						typeof json.extractedText === "string" ? json.extractedText : null;
 				}
-				const json = (await res.json()) as { extractedText?: unknown };
-				extractedText =
-					typeof json.extractedText === "string" ? json.extractedText : null;
 			} else {
 				const base64 =
 					typeof att.content === "string" && att.content.length > 0
@@ -643,26 +702,36 @@ export class ComposerAttachmentViewer extends LitElement {
 					throw new Error("Missing attachment content for extraction");
 				}
 
-				const res = await fetch(`${apiEndpoint}/api/attachments/extract`, {
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						Accept: "application/json",
-					},
-					body: JSON.stringify({
-						fileName: att.fileName,
-						mimeType: att.mimeType,
-						contentBase64: base64,
-					}),
-				});
-				if (!res.ok) {
-					throw new Error(
-						`Failed to extract (${res.status} ${res.statusText})`,
-					);
+				if (apiClient) {
+					extractedText = (
+						await apiClient.extractAttachmentText({
+							fileName: att.fileName,
+							mimeType: att.mimeType,
+							contentBase64: base64,
+						})
+					).extractedText;
+				} else {
+					const res = await fetch(`${apiBaseUrl}/api/attachments/extract`, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							Accept: "application/json",
+						},
+						body: JSON.stringify({
+							fileName: att.fileName,
+							mimeType: att.mimeType,
+							contentBase64: base64,
+						}),
+					});
+					if (!res.ok) {
+						throw new Error(
+							`Failed to extract (${res.status} ${res.statusText})`,
+						);
+					}
+					const json = (await res.json()) as { extractedText?: unknown };
+					extractedText =
+						typeof json.extractedText === "string" ? json.extractedText : null;
 				}
-				const json = (await res.json()) as { extractedText?: unknown };
-				extractedText =
-					typeof json.extractedText === "string" ? json.extractedText : null;
 			}
 
 			if (!extractedText) {

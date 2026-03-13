@@ -2,15 +2,9 @@
  * Approval component - request user approval for dangerous operations
  */
 
+import type { ComposerActionApprovalRequest } from "@evalops/contracts";
 import { LitElement, css, html } from "lit";
 import { customElement, property } from "lit/decorators.js";
-
-interface ApprovalRequest {
-	toolCallId: string;
-	toolName: string;
-	args: Record<string, unknown>;
-	reason?: string;
-}
 
 @customElement("composer-approval")
 export class ComposerApproval extends LitElement {
@@ -220,7 +214,9 @@ export class ComposerApproval extends LitElement {
 		}
 	`;
 
-	@property({ type: Object }) request: ApprovalRequest | null = null;
+	@property({ type: Object }) request: ComposerActionApprovalRequest | null =
+		null;
+	@property({ type: Boolean }) submitting = false;
 
 	private handleKeyDownRef = (event: KeyboardEvent) =>
 		this.handleKeyDown(event);
@@ -233,10 +229,24 @@ export class ComposerApproval extends LitElement {
 		return JSON.stringify(value, null, 2);
 	}
 
+	private getArgEntries(): Array<[string, unknown]> {
+		const args = this.request?.args;
+		if (args && typeof args === "object" && !Array.isArray(args)) {
+			return Object.entries(args);
+		}
+		if (args === undefined) {
+			return [];
+		}
+		return [["value", args]];
+	}
+
 	private handleApprove() {
+		if (this.submitting) {
+			return;
+		}
 		this.dispatchEvent(
 			new CustomEvent("approve", {
-				detail: { toolCallId: this.request?.toolCallId },
+				detail: { requestId: this.request?.id },
 				bubbles: true,
 				composed: true,
 			}),
@@ -244,9 +254,12 @@ export class ComposerApproval extends LitElement {
 	}
 
 	private handleDeny() {
+		if (this.submitting) {
+			return;
+		}
 		this.dispatchEvent(
 			new CustomEvent("deny", {
-				detail: { toolCallId: this.request?.toolCallId },
+				detail: { requestId: this.request?.id },
 				bubbles: true,
 				composed: true,
 			}),
@@ -254,9 +267,11 @@ export class ComposerApproval extends LitElement {
 	}
 
 	private handleKeyDown(e: KeyboardEvent) {
-		if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+		if (e.key === "Enter") {
+			e.preventDefault();
 			this.handleApprove();
 		} else if (e.key === "Escape") {
+			e.preventDefault();
 			this.handleDeny();
 		}
 	}
@@ -274,8 +289,7 @@ export class ComposerApproval extends LitElement {
 	override render() {
 		if (!this.request) return html``;
 
-		const args = this.request.args || {};
-		const argEntries = Object.entries(args);
+		const argEntries = this.getArgEntries();
 
 		return html`
 			<div class="approval-overlay">
@@ -323,16 +337,16 @@ export class ComposerApproval extends LitElement {
 					</div>
 
 					<div class="approval-actions">
-						<button class="btn btn-deny" @click=${this.handleDeny}>
+						<button class="btn btn-deny" @click=${this.handleDeny} ?disabled=${this.submitting}>
 							Deny
 						</button>
-						<button class="btn btn-approve" @click=${this.handleApprove}>
-							Approve
+						<button class="btn btn-approve" @click=${this.handleApprove} ?disabled=${this.submitting}>
+							${this.submitting ? "Submitting..." : "Approve"}
 						</button>
 					</div>
 
 					<div class="hint">
-						<kbd>Enter</kbd> or <kbd>⌘</kbd>+<kbd>Enter</kbd> to approve • <kbd>Esc</kbd> to deny
+						<kbd>Enter</kbd> to approve • <kbd>Esc</kbd> to deny
 					</div>
 				</div>
 			</div>

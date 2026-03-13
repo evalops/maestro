@@ -1,14 +1,26 @@
 import { fixture, html } from "@open-wc/testing";
 import { LitElement } from "lit";
 import { assert, afterEach, describe, it, vi } from "vitest";
+import type { PolicyValidationResponse } from "../services/api-client.js";
 import { AdminPolicyTab } from "./admin-policy-tab.js";
+
+type PolicyClient = {
+	validatePolicy: (
+		policy: Record<string, unknown>,
+	) => Promise<PolicyValidationResponse>;
+};
 
 class TestAdminPolicyHost extends LitElement {
 	readonly toastCalls: Array<{ message: string; type: string }> = [];
+	policyClient: PolicyClient | null = null;
 
-	private readonly policyTab = new AdminPolicyTab(this, (message, type) => {
-		this.toastCalls.push({ message, type });
-	});
+	private readonly policyTab = new AdminPolicyTab(
+		this,
+		() => this.policyClient,
+		(message, type) => {
+			this.toastCalls.push({ message, type });
+		},
+	);
 
 	override render() {
 		return this.policyTab.render();
@@ -54,14 +66,14 @@ describe("AdminPolicyTab", () => {
 	});
 
 	it("keeps policy handler context when validating JSON", async () => {
-		const fetchMock = vi.fn(async () => ({
-			json: async () => ({ valid: true }),
-		}));
-		vi.stubGlobal("fetch", fetchMock);
+		const validatePolicy = vi
+			.fn<PolicyClient["validatePolicy"]>()
+			.mockResolvedValue({ valid: true, errors: [] });
 
 		const element = await fixture<TestAdminPolicyHost>(
 			html`<test-admin-policy-host></test-admin-policy-host>`,
 		);
+		element.policyClient = { validatePolicy };
 		await element.updateComplete;
 
 		const validateButton = element.shadowRoot?.querySelector(
@@ -74,7 +86,27 @@ describe("AdminPolicyTab", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		await element.updateComplete;
 
-		assert.equal(fetchMock.mock.calls.length, 1);
+		assert.equal(validatePolicy.mock.calls.length, 1);
+		assert.deepEqual(validatePolicy.mock.calls[0]?.[0], {
+			orgId: "your-org-id",
+			tools: { allowed: [], blocked: [] },
+			dependencies: { allowed: [], blocked: [] },
+			models: { allowed: ["claude-*", "gpt-4*"], blocked: [] },
+			paths: {
+				allowed: [],
+				blocked: ["/etc/**", "**/.env*", "**/secrets/**"],
+			},
+			network: {
+				allowedHosts: [],
+				blockedHosts: [],
+				blockLocalhost: false,
+				blockPrivateIPs: false,
+			},
+			limits: {
+				maxTokensPerSession: 500000,
+				maxSessionDurationMinutes: 480,
+			},
+		});
 		assert.deepEqual(element.toastCalls, [
 			{ message: "Policy JSON is valid", type: "success" },
 		]);

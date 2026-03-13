@@ -61,11 +61,24 @@ export class ApiError extends StatusError {
 }
 
 export function createCorsHeaders(origin: string): Record<string, string> {
+	const allowHeaders = [
+		"Content-Type",
+		"Authorization",
+		"X-Composer-Artifact-Access",
+		"X-Composer-Api-Key",
+		"X-Composer-Approval-Mode",
+		"X-Composer-Client",
+		"X-Composer-Client-Tools",
+		"X-Composer-Csrf",
+		"X-Composer-Slim-Events",
+		"X-Csrf-Token",
+		"X-Xsrf-Token",
+	];
+
 	const headers: Record<string, string> = {
 		"Access-Control-Allow-Origin": origin,
 		"Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
-		"Access-Control-Allow-Headers":
-			"Content-Type, Authorization, X-Composer-Api-Key, X-Composer-Approval-Mode, X-Composer-Csrf, X-Csrf-Token, X-Xsrf-Token",
+		"Access-Control-Allow-Headers": allowHeaders.join(", "),
 		"Access-Control-Max-Age": "86400",
 	};
 	if (origin !== "*") {

@@ -3,10 +3,14 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "../../src/agent/agent.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
 import type { WebServerContext } from "../../src/server/app-context.js";
+import {
+	resetApprovalModeStore,
+	setApprovalModeForSession,
+} from "../../src/server/approval-mode-store.js";
 import { handleChat } from "../../src/server/handlers/chat.js";
 
 const mockModel: RegisteredModel = {
@@ -83,6 +87,11 @@ interface MockPassThrough extends PassThrough {
 }
 
 describe("handleChat", () => {
+	afterEach(() => {
+		resetApprovalModeStore();
+		vi.unstubAllEnvs();
+	});
+
 	it("returns 400 when no messages supplied", async () => {
 		const req = new PassThrough() as MockPassThrough;
 		req.method = "POST";
@@ -453,5 +462,255 @@ describe("handleChat", () => {
 		expect(update).toBeTruthy();
 		expect(update.assistantMessageEvent.toolCallArgs).toBeUndefined();
 		expect(update.assistantMessageEvent.toolCallArgsTruncated).toBe(true);
+	});
+
+	it("uses the stored session approval mode when no header override is set", async () => {
+		setApprovalModeForSession("session-approval", "fail");
+
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = {};
+		req.end(
+			JSON.stringify({
+				sessionId: "session-approval",
+				messages: [{ role: "user", content: "hi" }],
+			}),
+		);
+
+		const res = makeRes();
+		let capturedApproval: string | null = null;
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async (_model, _thinking, approval) => {
+				capturedApproval = approval;
+				type EventCallback = (e: unknown) => void;
+				let subscriber: EventCallback | undefined;
+				return {
+					state: {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					},
+					subscribe: (fn: EventCallback) => {
+						subscriber = fn;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt: async () => {
+						subscriber?.({
+							type: "message_end",
+							message: { role: "assistant" },
+						});
+					},
+					abort: () => {},
+				} as unknown as Agent;
+			},
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		expect(capturedApproval).toBe("fail");
+	});
+
+	it("honors an auto approval header override", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = { "x-composer-approval-mode": "auto" };
+		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
+
+		const res = makeRes();
+		let capturedApproval: string | null = null;
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async (_model, _thinking, approval) => {
+				capturedApproval = approval;
+				type EventCallback = (e: unknown) => void;
+				let subscriber: EventCallback | undefined;
+				return {
+					state: {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					},
+					subscribe: (fn: EventCallback) => {
+						subscriber = fn;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt: async () => {
+						subscriber?.({
+							type: "message_end",
+							message: { role: "assistant" },
+						});
+					},
+					abort: () => {},
+				} as unknown as Agent;
+			},
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "auto",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		expect(capturedApproval).toBe("auto");
+	});
+
+	it("does not let a stored session mode relax a stricter server default", async () => {
+		setApprovalModeForSession("session-approval", "auto");
+
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = {};
+		req.end(
+			JSON.stringify({
+				sessionId: "session-approval",
+				messages: [{ role: "user", content: "hi" }],
+			}),
+		);
+
+		const res = makeRes();
+		let capturedApproval: string | null = null;
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async (_model, _thinking, approval) => {
+				capturedApproval = approval;
+				type EventCallback = (e: unknown) => void;
+				let subscriber: EventCallback | undefined;
+				return {
+					state: {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					},
+					subscribe: (fn: EventCallback) => {
+						subscriber = fn;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt: async () => {
+						subscriber?.({
+							type: "message_end",
+							message: { role: "assistant" },
+						});
+					},
+					abort: () => {},
+				} as unknown as Agent;
+			},
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "fail",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		expect(capturedApproval).toBe("fail");
+	});
+
+	it("does not let an approval header relax a stricter server default", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = { "x-composer-approval-mode": "auto" };
+		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
+
+		const res = makeRes();
+		let capturedApproval: string | null = null;
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async (_model, _thinking, approval) => {
+				capturedApproval = approval;
+				type EventCallback = (e: unknown) => void;
+				let subscriber: EventCallback | undefined;
+				return {
+					state: {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					},
+					subscribe: (fn: EventCallback) => {
+						subscriber = fn;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt: async () => {
+						subscriber?.({
+							type: "message_end",
+							message: { role: "assistant" },
+						});
+					},
+					abort: () => {},
+				} as unknown as Agent;
+			},
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "fail",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		expect(capturedApproval).toBe("fail");
 	});
 });

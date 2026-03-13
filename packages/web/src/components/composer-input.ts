@@ -381,6 +381,7 @@ export class ComposerInput extends LitElement {
 
 	@property({ type: Boolean }) disabled = false;
 	@property({ type: Boolean }) showHint = true;
+	@property({ attribute: false }) apiClient: ApiClient | null = null;
 	@state() private value = "";
 	@state() private showSuggestions = false;
 	@state() private suggestionIndex = 0;
@@ -394,7 +395,7 @@ export class ComposerInput extends LitElement {
 
 	private maxLength = 10000;
 	private allFiles: string[] = [];
-	private apiClient = new ApiClient();
+	private localApiClient: ApiClient | null = null;
 	private mentionMatch: { start: number; end: number; query: string } | null =
 		null;
 	private checkMentionCounter = 0;
@@ -440,9 +441,10 @@ export class ComposerInput extends LitElement {
 		if (match) {
 			const query = (match[1] ?? "").toLowerCase();
 			const requestId = ++this.checkMentionCounter;
+			const apiClient = this.getApiClient();
 
 			if (this.allFiles.length === 0) {
-				this.allFiles = await this.apiClient.getFiles();
+				this.allFiles = await apiClient.getFiles();
 				// Ignore stale results
 				if (requestId !== this.checkMentionCounter) return;
 			}
@@ -484,6 +486,12 @@ export class ComposerInput extends LitElement {
 
 		this.showSuggestions = false;
 		this.mentionMatch = null;
+	}
+
+	private getApiClient(): ApiClient {
+		if (this.apiClient) return this.apiClient;
+		this.localApiClient ??= new ApiClient();
+		return this.localApiClient;
 	}
 
 	private updateSlashHint(text: string) {

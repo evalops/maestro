@@ -51,6 +51,10 @@ import type { SessionManager } from "../../session/manager.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
 import { recordSseSkip } from "../../telemetry.js";
 import type { WebServerContext } from "../app-context.js";
+import {
+	normalizeApprovalMode,
+	resolveApprovalModeForRequest,
+} from "../approval-mode-store.js";
 import { publishArtifactUpdate } from "../artifacts-live-reload.js";
 import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
@@ -250,25 +254,17 @@ export async function handleChat(
 		const registeredModel = await getRegisteredModel(chatReq.model);
 
 		// Parse approval mode from request header (allows per-request override)
-		const headerApproval = (() => {
-			const header = req.headers["x-composer-approval-mode"];
-			const raw = Array.isArray(header) ? header[0] : header;
-			const normalized = raw?.trim().toLowerCase();
-			if (
-				normalized === "auto" ||
-				normalized === "prompt" ||
-				normalized === "fail"
-			) {
-				return normalized as "auto" | "prompt" | "fail";
-			}
-			return undefined;
-		})();
+		const header = req.headers["x-composer-approval-mode"];
+		const headerApproval = normalizeApprovalMode(
+			Array.isArray(header) ? header[0] : header,
+		);
 
-		// Use header approval if specified, otherwise fall back to server default
-		const effectiveApproval =
-			headerApproval && headerApproval !== "auto"
-				? headerApproval
-				: (defaultApprovalMode as "auto" | "prompt" | "fail");
+		const effectiveApproval = resolveApprovalModeForRequest({
+			sessionId: chatReq.sessionId,
+			subject,
+			headerApprovalMode: headerApproval,
+			defaultApprovalMode,
+		});
 
 		// Create the agent with the resolved configuration
 		const clientToolsHeader = (() => {

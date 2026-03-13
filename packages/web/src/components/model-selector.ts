@@ -201,6 +201,7 @@ export class ModelSelector extends LitElement {
 	@property() apiEndpoint = "http://localhost:8080";
 	@property() currentModel = "";
 	@property({ attribute: false }) modelsPrefetch: Model[] | null = null;
+	@property({ attribute: false }) apiClient: ApiClient | null = null;
 
 	@state() private models: Model[] = [];
 	@state() private filteredModels: Model[] = [];
@@ -208,13 +209,7 @@ export class ModelSelector extends LitElement {
 	@state() private error: string | null = null;
 	@state() private searchQuery = "";
 	private searchTimer: number | null = null;
-
-	private apiClient!: ApiClient;
-
-	override connectedCallback() {
-		super.connectedCallback();
-		this.apiClient = new ApiClient(this.apiEndpoint);
-	}
+	private localApiClient: ApiClient | null = null;
 
 	override async updated(changed: Map<string, unknown>) {
 		if (changed.has("open") && this.open) {
@@ -230,7 +225,7 @@ export class ModelSelector extends LitElement {
 			if (this.modelsPrefetch && this.modelsPrefetch.length > 0) {
 				this.models = this.modelsPrefetch;
 			} else {
-				this.models = await this.apiClient.getModels();
+				this.models = await this.getApiClient().getModels();
 			}
 			this.filteredModels = this.models;
 		} catch (e) {
@@ -238,6 +233,12 @@ export class ModelSelector extends LitElement {
 		} finally {
 			this.loading = false;
 		}
+	}
+
+	private getApiClient(): ApiClient {
+		if (this.apiClient) return this.apiClient;
+		this.localApiClient ??= new ApiClient(this.apiEndpoint);
+		return this.localApiClient;
 	}
 
 	private handleSearch(e: Event) {

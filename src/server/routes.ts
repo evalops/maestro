@@ -45,6 +45,7 @@ import { handleQuota } from "./handlers/quota.js";
 import { handleReview } from "./handlers/review.js";
 import { handleRun } from "./handlers/run.js";
 import {
+	handleSessionArtifactAccess,
 	handleSessionArtifactFile,
 	handleSessionArtifactViewer,
 	handleSessionArtifactsEvents,
@@ -270,12 +271,12 @@ export function createRoutes(context: WebServerContext): Route[] {
 		{
 			method: "GET",
 			path: "/api/approvals",
-			handler: (req, res) => handleApprovals(req, res, corsHeaders),
+			handler: (req, res) => handleApprovals(req, res, context),
 		},
 		{
 			method: "POST",
 			path: "/api/approvals",
-			handler: (req, res) => handleApprovals(req, res, corsHeaders),
+			handler: (req, res) => handleApprovals(req, res, context),
 		},
 		{
 			method: "GET",
@@ -515,6 +516,17 @@ export function createRoutes(context: WebServerContext): Route[] {
 			path: "/api/sessions/:id/artifacts",
 			handler: (req, res, params) =>
 				handleSessionArtifactsIndex(
+					req,
+					res,
+					params as { id: string },
+					corsHeaders,
+				),
+		},
+		{
+			method: "GET",
+			path: "/api/sessions/:id/artifact-access",
+			handler: (req, res, params) =>
+				handleSessionArtifactAccess(
 					req,
 					res,
 					params as { id: string },
