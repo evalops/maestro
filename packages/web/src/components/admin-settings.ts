@@ -20,6 +20,7 @@ import {
 	type User,
 	getEnterpriseApi,
 } from "../services/enterprise-api.js";
+import { AdminAuditTab } from "./admin-audit-tab.js";
 import { AdminPolicyTab } from "./admin-policy-tab.js";
 
 type AdminTab =
@@ -1139,7 +1140,6 @@ export class AdminSettings extends LitElement {
 	];
 	@state() private members: OrgMember[] = [];
 	@state() private roles: Role[] = AdminSettings.DEFAULT_ROLES;
-	@state() private auditLogs: AuditLog[] = AdminSettings.DEFAULT_AUDIT_LOGS;
 	@state() private alerts: Alert[] = [];
 	@state() private modelApprovals: ModelApproval[] =
 		AdminSettings.DEFAULT_MODELS;
@@ -1152,9 +1152,6 @@ export class AdminSettings extends LitElement {
 	@state() private toast: Toast | null = null;
 	@state() private confirmDialog: ConfirmDialog | null = null;
 	@state() private userSearch = "";
-	@state() private auditSearch = "";
-	@state() private auditPage = 1;
-	private readonly auditPageSize = 20;
 
 	// Form states - initialized from defaults
 	@state() private inviteEmail = "";
@@ -1169,12 +1166,21 @@ export class AdminSettings extends LitElement {
 	@state() private webhookUrls = "";
 
 	private api: EnterpriseApiClient;
+	private readonly auditTab: AdminAuditTab;
 	private readonly policyTab: AdminPolicyTab;
 	private alertRefreshInterval: ReturnType<typeof setInterval> | null = null;
 
 	constructor() {
 		super();
 		this.api = getEnterpriseApi();
+		this.auditTab = new AdminAuditTab(
+			this,
+			this.api,
+			(message, type) => this.showToast(message, type),
+			(value) => this.formatDate(value),
+			(status) => this.getStatusBadgeClass(status),
+			AdminSettings.DEFAULT_AUDIT_LOGS,
+		);
 		this.policyTab = new AdminPolicyTab(this, (message, type) =>
 			this.showToast(message, type),
 		);
@@ -1285,8 +1291,7 @@ export class AdminSettings extends LitElement {
 						.getAuditLogs({ limit: 500 })
 						.catch(() => null);
 					if (logsRes?.logs) {
-						this.auditLogs = logsRes.logs;
-						this.auditPage = 1;
+						this.auditTab.setLogs(logsRes.logs);
 					}
 					break;
 				}
@@ -1580,56 +1585,14 @@ export class AdminSettings extends LitElement {
 		}
 	}
 
-	// Audit log export
-	private async handleExportAuditLogs() {
-		try {
-			const csv = await this.api.exportAuditLogs("csv");
-			const blob = new Blob([csv], { type: "text/csv" });
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement("a");
-			a.href = url;
-			a.download = `audit-logs-${new Date().toISOString().split("T")[0]}.csv`;
-			a.click();
-			URL.revokeObjectURL(url);
-			this.showToast("Export started", "success");
-		} catch (e) {
-			this.showToast(
-				e instanceof Error ? e.message : "Failed to export logs",
-				"error",
-			);
-		}
-	}
-
-	// Filtered/paginated data helpers
 	private get filteredMembers(): OrgMember[] {
 		if (!this.userSearch) return this.members;
 		const search = this.userSearch.toLowerCase();
 		return this.members.filter(
-			(m) =>
-				m.user.name?.toLowerCase().includes(search) ||
-				m.user.email?.toLowerCase().includes(search),
+			(member) =>
+				member.user.name?.toLowerCase().includes(search) ||
+				member.user.email?.toLowerCase().includes(search),
 		);
-	}
-
-	private get filteredAuditLogs(): AuditLog[] {
-		if (!this.auditSearch) return this.auditLogs;
-		const search = this.auditSearch.toLowerCase();
-		return this.auditLogs.filter(
-			(log) =>
-				log.action?.toLowerCase().includes(search) ||
-				log.userId?.toLowerCase().includes(search) ||
-				log.resourceType?.toLowerCase().includes(search),
-		);
-	}
-
-	private get paginatedAuditLogs(): AuditLog[] {
-		const filtered = this.filteredAuditLogs;
-		const start = (this.auditPage - 1) * this.auditPageSize;
-		return filtered.slice(start, start + this.auditPageSize);
-	}
-
-	private get totalAuditPages(): number {
-		return Math.ceil(this.filteredAuditLogs.length / this.auditPageSize);
 	}
 
 	private renderSparkline(
@@ -2224,121 +2187,7 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 	}
 
 	private renderAuditTab() {
-		if (this.tabLoading) {
-			return html`<div class="tab-loading"><span class="spinner"></span>Loading audit logs...</div>`;
-		}
-
-		const paginatedLogs = this.paginatedAuditLogs;
-		const totalPages = this.totalAuditPages;
-
-		return html`
-			<div class="section">
-				<div class="section-header">
-					<h3>Audit Logs (${this.filteredAuditLogs.length})</h3>
-					<button class="btn btn-sm" @click=${this.handleExportAuditLogs}>Export CSV</button>
-				</div>
-				<div class="section-content">
-					<input
-						type="text"
-						class="search-input"
-						placeholder="Search by action, user ID, or resource type..."
-						.value=${this.auditSearch}
-						@input=${(e: Event) => {
-							this.auditSearch = (e.target as HTMLInputElement).value;
-							this.auditPage = 1;
-						}}
-					/>
-					${
-						paginatedLogs.length > 0
-							? html`
-							<table class="data-table">
-								<thead>
-									<tr>
-										<th>Timestamp</th>
-										<th>Action</th>
-										<th>User</th>
-										<th>Status</th>
-										<th>Duration</th>
-										<th>Details</th>
-									</tr>
-								</thead>
-								<tbody>
-									${paginatedLogs.map(
-										(log) => html`
-											<tr>
-												<td style="white-space: nowrap; font-size: 0.75rem;">
-													${this.formatDate(log.createdAt)}
-												</td>
-												<td><code style="font-size: 0.75rem;">${log.action}</code></td>
-												<td>
-													<code style="font-size: 0.7rem;" title=${log.userId || ""}>${log.userId?.slice(0, 8) || "-"}...</code>
-												</td>
-												<td>
-													<span class="badge ${this.getStatusBadgeClass(log.status)}">
-														${log.status}
-													</span>
-												</td>
-												<td style="font-size: 0.75rem;">
-													${log.durationMs !== undefined ? `${log.durationMs}ms` : "-"}
-												</td>
-												<td style="font-size: 0.75rem; max-width: 200px; overflow: hidden; text-overflow: ellipsis;">
-													${
-														log.metadata
-															? JSON.stringify(log.metadata).slice(0, 50)
-															: "-"
-													}
-												</td>
-											</tr>
-										`,
-									)}
-								</tbody>
-							</table>
-							${
-								totalPages > 1
-									? html`
-									<div class="pagination">
-										<button
-											class="page-btn"
-											?disabled=${this.auditPage === 1}
-											@click=${() => {
-												this.auditPage = 1;
-											}}
-										>First</button>
-										<button
-											class="page-btn"
-											?disabled=${this.auditPage === 1}
-											@click=${() => {
-												this.auditPage = Math.max(1, this.auditPage - 1);
-											}}
-										>Prev</button>
-										<span class="page-info">Page ${this.auditPage} of ${totalPages}</span>
-										<button
-											class="page-btn"
-											?disabled=${this.auditPage === totalPages}
-											@click=${() => {
-												this.auditPage = Math.min(
-													totalPages,
-													this.auditPage + 1,
-												);
-											}}
-										>Next</button>
-										<button
-											class="page-btn"
-											?disabled=${this.auditPage === totalPages}
-											@click=${() => {
-												this.auditPage = totalPages;
-											}}
-										>Last</button>
-									</div>
-								`
-									: ""
-							}
-						`
-							: html`<div class="empty-state">${this.auditSearch ? "No matching logs found" : "No audit logs available"}</div>`
-					}
-				</div>
-			</div>
-		`;
+		return this.auditTab.render(this.tabLoading);
 	}
 
 	private renderPolicyTab() {
