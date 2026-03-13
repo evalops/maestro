@@ -26,6 +26,7 @@ import {
 import { dedupeModels, getModelKey } from "../../lib/model-utils";
 import type { Model, ThinkingLevel } from "../../lib/types";
 import { BackgroundTasksSection } from "./BackgroundTasksSection";
+import { FrameworkSection } from "./FrameworkSection";
 import { PlanningSection } from "./PlanningSection";
 import {
 	type TelemetryTrainingAction,
@@ -692,10 +693,6 @@ export function SettingsModal({
 		}
 	};
 
-	const frameworkOptions = useMemo(() => {
-		return [{ id: "none", summary: "No framework" }, ...frameworks];
-	}, [frameworks]);
-
 	const modelOptions = useMemo(() => {
 		const list = availableModels.length ? availableModels : (models ?? []);
 		return dedupeModels(list);
@@ -1053,75 +1050,14 @@ export function SettingsModal({
 						</div>
 					</section>
 
-					<section className="border border-line-subtle rounded-xl overflow-hidden">
-						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
-							Framework
-						</div>
-						<div className="p-4 space-y-4">
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">
-										Default framework
-									</div>
-									<div className="text-xs text-text-muted">
-										Slash command: /framework
-									</div>
-								</div>
-								<select
-									disabled={frameworkLocked}
-									value={frameworkId}
-									onChange={(event) => updateFramework(event.target.value)}
-									className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary disabled:opacity-50"
-								>
-									{frameworkOptions.map((framework) => (
-										<option key={framework.id} value={framework.id}>
-											{framework.id === "none" ? "None" : framework.id}
-										</option>
-									))}
-								</select>
-							</div>
-
-							<div className="flex items-center justify-between gap-4">
-								<div>
-									<div className="text-text-primary font-medium">Scope</div>
-									<div className="text-xs text-text-muted">
-										User or workspace default.
-									</div>
-								</div>
-								<div className="flex items-center gap-2">
-									<button
-										type="button"
-										disabled={frameworkLocked}
-										className={`px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
-											frameworkScope === "user"
-												? "border-accent text-text-primary bg-bg-tertiary"
-												: "border-line-subtle text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										}`}
-										onClick={() => updateFrameworkScope("user")}
-									>
-										User
-									</button>
-									<button
-										type="button"
-										disabled={frameworkLocked}
-										className={`px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
-											frameworkScope === "workspace"
-												? "border-accent text-text-primary bg-bg-tertiary"
-												: "border-line-subtle text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										}`}
-										onClick={() => updateFrameworkScope("workspace")}
-									>
-										Workspace
-									</button>
-								</div>
-							</div>
-							{frameworkLocked && (
-								<div className="text-xs text-text-muted">
-									Framework is locked by policy.
-								</div>
-							)}
-						</div>
-					</section>
+					<FrameworkSection
+						frameworks={frameworks}
+						frameworkId={frameworkId}
+						frameworkScope={frameworkScope}
+						frameworkLocked={frameworkLocked}
+						onUpdateFramework={updateFramework}
+						onUpdateFrameworkScope={updateFrameworkScope}
+					/>
 
 					<BackgroundTasksSection
 						backgroundStatus={backgroundStatus}
