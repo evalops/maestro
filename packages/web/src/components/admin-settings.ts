@@ -20,6 +20,7 @@ import {
 	type User,
 	getEnterpriseApi,
 } from "../services/enterprise-api.js";
+import { AdminPolicyTab } from "./admin-policy-tab.js";
 
 type AdminTab =
 	| "overview"
@@ -1167,36 +1168,16 @@ export class AdminSettings extends LitElement {
 		AdminSettings.DEFAULT_SETTINGS.auditRetentionDays || 90;
 	@state() private webhookUrls = "";
 
-	// Policy state
-	@state() private policyJson = JSON.stringify(
-		{
-			orgId: "your-org-id",
-			tools: { allowed: [], blocked: [] },
-			dependencies: { allowed: [], blocked: [] },
-			models: { allowed: ["claude-*", "gpt-4*"], blocked: [] },
-			paths: { allowed: [], blocked: ["/etc/**", "**/.env*", "**/secrets/**"] },
-			network: {
-				allowedHosts: [],
-				blockedHosts: [],
-				blockLocalhost: false,
-				blockPrivateIPs: false,
-			},
-			limits: {
-				maxTokensPerSession: 500000,
-				maxSessionDurationMinutes: 480,
-			},
-		},
-		null,
-		2,
-	);
-	@state() private policyError: string | null = null;
-
 	private api: EnterpriseApiClient;
+	private readonly policyTab: AdminPolicyTab;
 	private alertRefreshInterval: ReturnType<typeof setInterval> | null = null;
 
 	constructor() {
 		super();
 		this.api = getEnterpriseApi();
+		this.policyTab = new AdminPolicyTab(this, (message, type) =>
+			this.showToast(message, type),
+		);
 	}
 
 	override async connectedCallback() {
@@ -2361,211 +2342,7 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 	}
 
 	private renderPolicyTab() {
-		return html`
-			<div class="section">
-				<div class="section-header">
-					<h3>Enterprise Policy</h3>
-					<span style="font-size: 0.7rem; color: var(--admin-text-tertiary);">
-						Deploy via MDM to ~/.composer/policy.json
-					</span>
-				</div>
-				<div class="section-content">
-					<p style="color: var(--admin-text-secondary); font-size: 0.8rem; margin-bottom: 1.25rem; line-height: 1.6;">
-						Enterprise policies control which tools, models, paths, and network resources can be accessed.
-						Deploy this configuration to managed devices via your MDM (Jamf, Intune, Kandji, etc.) targeting
-						<code style="background: var(--admin-bg-surface); padding: 0.15rem 0.35rem;">~/.composer/policy.json</code>.
-					</p>
-
-					${
-						this.policyError
-							? html`<div style="color: var(--admin-accent-red); font-size: 0.75rem; margin-bottom: 1rem; padding: 0.75rem; background: var(--admin-accent-red-dim); border-left: 2px solid var(--admin-accent-red);">${this.policyError}</div>`
-							: ""
-					}
-
-					<div class="form-group">
-						<label class="form-label">Policy Configuration (JSON)</label>
-						<textarea
-							class="form-input"
-							style="font-family: var(--font-mono); font-size: 0.75rem; min-height: 400px; line-height: 1.5; resize: vertical;"
-							.value=${this.policyJson}
-							@input=${(e: Event) => {
-								this.policyJson = (e.target as HTMLTextAreaElement).value;
-								this.policyError = null;
-							}}
-						></textarea>
-					</div>
-
-					<div style="display: flex; gap: 0.75rem; margin-top: 1rem;">
-						<button class="btn btn-primary" @click=${this.validatePolicy}>Validate</button>
-						<button class="btn" @click=${this.formatPolicy}>Format</button>
-						<button class="btn" @click=${this.copyPolicyToClipboard}>Export for MDM</button>
-						<button class="btn" @click=${this.downloadPolicy}>Download JSON</button>
-					</div>
-				</div>
-			</div>
-
-			<div class="section">
-				<div class="section-header">
-					<h3>Policy Reference</h3>
-				</div>
-				<div class="section-content" style="padding: 0;">
-					<table class="data-table">
-						<thead>
-							<tr>
-								<th>Section</th>
-								<th>Description</th>
-								<th>Example Values</th>
-							</tr>
-						</thead>
-						<tbody>
-							<tr>
-								<td><code>orgId</code></td>
-								<td>Organization ID that must match the signed-in user</td>
-								<td><code>"org_abc123"</code></td>
-							</tr>
-							<tr>
-								<td><code>tools.allowed</code></td>
-								<td>Whitelist of allowed tool names (if set, only these tools work)</td>
-								<td><code>["read", "write", "bash"]</code></td>
-							</tr>
-							<tr>
-								<td><code>tools.blocked</code></td>
-								<td>Blacklist of blocked tool names</td>
-								<td><code>["bash", "background_tasks"]</code></td>
-							</tr>
-							<tr>
-								<td><code>models.allowed</code></td>
-								<td>Allowed model patterns (supports wildcards)</td>
-								<td><code>["claude-*", "gpt-4o"]</code></td>
-							</tr>
-							<tr>
-								<td><code>models.blocked</code></td>
-								<td>Blocked model patterns</td>
-								<td><code>["*-preview", "*-experimental"]</code></td>
-							</tr>
-							<tr>
-								<td><code>paths.blocked</code></td>
-								<td>Glob patterns for blocked file paths</td>
-								<td><code>["/etc/**", "**/.env*"]</code></td>
-							</tr>
-							<tr>
-								<td><code>paths.allowed</code></td>
-								<td>If set, only these paths are accessible</td>
-								<td><code>["/home/user/projects/**"]</code></td>
-							</tr>
-							<tr>
-								<td><code>dependencies.blocked</code></td>
-								<td>Blocked npm/pip package names</td>
-								<td><code>["malicious-pkg"]</code></td>
-							</tr>
-							<tr>
-								<td><code>network.blockedHosts</code></td>
-								<td>Blocked hostnames for network requests</td>
-								<td><code>["evil.com"]</code></td>
-							</tr>
-							<tr>
-								<td><code>network.blockLocalhost</code></td>
-								<td>Block access to localhost/127.0.0.1</td>
-								<td><code>true</code></td>
-							</tr>
-							<tr>
-								<td><code>network.blockPrivateIPs</code></td>
-								<td>Block access to private IP ranges (10.x, 192.168.x, etc.)</td>
-								<td><code>true</code></td>
-							</tr>
-							<tr>
-								<td><code>limits.maxTokensPerSession</code></td>
-								<td>Maximum tokens allowed per session</td>
-								<td><code>500000</code></td>
-							</tr>
-							<tr>
-								<td><code>limits.maxSessionDurationMinutes</code></td>
-								<td>Maximum session duration in minutes</td>
-								<td><code>480</code></td>
-							</tr>
-						</tbody>
-					</table>
-				</div>
-			</div>
-		`;
-	}
-
-	private async validatePolicy() {
-		try {
-			// First check basic JSON syntax locally
-			JSON.parse(this.policyJson);
-		} catch (e) {
-			this.policyError = `Invalid JSON: ${e instanceof Error ? e.message : "Parse error"}`;
-			return;
-		}
-
-		// Then validate against schema via API
-		try {
-			const response = await fetch("/api/policy/validate", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: this.policyJson,
-			});
-
-			const result = await response.json();
-			if (result.valid) {
-				this.policyError = null;
-				this.showToast("Policy JSON is valid", "success");
-			} else {
-				const errorMessages = result.errors
-					.map(
-						(e: { path?: string; message: string }) =>
-							`${e.path || "/"}: ${e.message}`,
-					)
-					.join("; ");
-				this.policyError = `Schema validation failed: ${errorMessages}`;
-			}
-		} catch (e) {
-			// Fallback to basic JSON validation if API unavailable
-			this.policyError = null;
-			this.showToast(
-				"Policy JSON syntax is valid (schema validation unavailable)",
-				"info",
-			);
-		}
-	}
-
-	private formatPolicy() {
-		try {
-			const parsed = JSON.parse(this.policyJson);
-			this.policyJson = JSON.stringify(parsed, null, 2);
-			this.policyError = null;
-		} catch (e) {
-			this.policyError = `Cannot format invalid JSON: ${e instanceof Error ? e.message : "Parse error"}`;
-		}
-	}
-
-	private async copyPolicyToClipboard() {
-		try {
-			await navigator.clipboard.writeText(this.policyJson);
-			this.showToast(
-				"Policy JSON copied - ready for MDM deployment",
-				"success",
-			);
-		} catch {
-			this.showToast("Failed to copy to clipboard", "error");
-		}
-	}
-
-	private downloadPolicy() {
-		try {
-			JSON.parse(this.policyJson);
-			const blob = new Blob([this.policyJson], { type: "application/json" });
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement("a");
-			a.href = url;
-			a.download = "policy.json";
-			a.click();
-			URL.revokeObjectURL(url);
-			this.showToast("Policy downloaded", "success");
-		} catch {
-			this.showToast("Fix JSON errors before downloading", "error");
-		}
+		return this.policyTab.render();
 	}
 
 	private renderCurrentTab() {
