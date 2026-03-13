@@ -75,7 +75,9 @@ export interface TelemetryStatus {
 export interface TrainingStatus {
 	preference: "opted-in" | "opted-out" | "provider-default";
 	optOut: boolean | null;
+	flagValue?: string;
 	runtimeOverride?: "opted-in" | "opted-out";
+	overrideReason?: string;
 	reason: string;
 }
 

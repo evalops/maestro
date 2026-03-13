@@ -25,6 +25,16 @@ import {
 } from "../../lib/api-client";
 import { dedupeModels, getModelKey } from "../../lib/model-utils";
 import type { Model, ThinkingLevel } from "../../lib/types";
+import {
+	type TelemetryTrainingAction,
+	TelemetryTrainingSection,
+} from "./TelemetryTrainingSection";
+import {
+	type LspAction,
+	type LspDetection,
+	ToolsRuntimeSection,
+	resolveComposerSelection,
+} from "./ToolsRuntimeSection";
 
 export type DensityMode = "comfortable" | "compact";
 export type ThemeMode = "system" | "dark" | "light";
@@ -107,9 +117,7 @@ export function SettingsModal({
 	const [backgroundStatus, setBackgroundStatus] =
 		useState<BackgroundStatus | null>(null);
 	const [lspStatus, setLspStatus] = useState<LspStatus | null>(null);
-	const [lspDetections, setLspDetections] = useState<
-		Array<{ serverId: string; root: string }>
-	>([]);
+	const [lspDetections, setLspDetections] = useState<LspDetection[]>([]);
 	const [mcpStatus, setMcpStatus] = useState<McpStatus | null>(null);
 	const [expandedMcpServer, setExpandedMcpServer] = useState<string | null>(
 		null,
@@ -118,8 +126,6 @@ export function SettingsModal({
 		null,
 	);
 	const [selectedComposer, setSelectedComposer] = useState<string>("");
-	const [showTelemetryPolicyModal, setShowTelemetryPolicyModal] =
-		useState(false);
 	const [availableModels, setAvailableModels] = useState<Model[]>(
 		dedupeModels(models ?? []),
 	);
@@ -302,13 +308,12 @@ export function SettingsModal({
 
 	useEffect(() => {
 		if (!composerStatus) return;
-		const activeName = composerStatus.active?.name;
-		if (activeName) {
-			setSelectedComposer(activeName);
-			return;
-		}
-		if (!selectedComposer && composerStatus.composers.length > 0) {
-			setSelectedComposer(composerStatus.composers[0].name);
+		const nextSelection = resolveComposerSelection(
+			composerStatus,
+			selectedComposer,
+		);
+		if (nextSelection !== selectedComposer) {
+			setSelectedComposer(nextSelection);
 		}
 	}, [composerStatus, selectedComposer]);
 
@@ -458,7 +463,7 @@ export function SettingsModal({
 		}
 	};
 
-	const updateTelemetry = async (action: "on" | "off" | "reset") => {
+	const updateTelemetry = async (action: TelemetryTrainingAction) => {
 		try {
 			const res = await apiClient.setTelemetry(action);
 			setTelemetryStatus(res.status);
@@ -469,7 +474,7 @@ export function SettingsModal({
 		}
 	};
 
-	const updateTraining = async (action: "on" | "off" | "reset") => {
+	const updateTraining = async (action: TelemetryTrainingAction) => {
 		try {
 			const res = await apiClient.setTraining(action);
 			setTrainingStatus(res.status);
@@ -607,7 +612,7 @@ export function SettingsModal({
 		}
 	};
 
-	const handleLspAction = async (action: "start" | "stop" | "restart") => {
+	const handleLspAction = async (action: LspAction) => {
 		try {
 			if (action === "start") {
 				await apiClient.startLsp();
@@ -689,81 +694,6 @@ export function SettingsModal({
 		return dedupeModels(list);
 	}, [availableModels, models]);
 
-	const telemetryDataLabel = useMemo(() => {
-		if (!telemetryStatus?.enabled) return "No events recorded";
-		if (telemetryStatus.sampleRate < 1) {
-			const percent = Math.round(telemetryStatus.sampleRate * 100);
-			return `Minimal (${percent}% sampled)`;
-		}
-		return "Full";
-	}, [telemetryStatus]);
-
-	const telemetryDestinationLabel = useMemo(() => {
-		if (!telemetryStatus?.enabled) return "Local (disabled)";
-		if (telemetryStatus.endpoint) return "HTTP endpoint";
-		if (telemetryStatus.filePath) return "Local log file";
-		return "Unknown";
-	}, [telemetryStatus]);
-
-	const telemetryDestinationDetail = useMemo(() => {
-		if (!telemetryStatus?.enabled) return "";
-		return telemetryStatus.endpoint ?? telemetryStatus.filePath ?? "";
-	}, [telemetryStatus]);
-
-	const telemetryDestinationExplanation = useMemo(() => {
-		if (!telemetryStatus?.enabled) {
-			return "Nowhere. Telemetry is disabled.";
-		}
-		if (telemetryStatus.endpoint) {
-			return `Your endpoint receives JSON event payloads: ${telemetryStatus.endpoint}`;
-		}
-		if (telemetryStatus.filePath) {
-			return `Events are written to a local log file: ${telemetryStatus.filePath}`;
-		}
-		return "Telemetry is enabled, but no destination is configured.";
-	}, [telemetryStatus]);
-
-	const trainingScopeExplanation = useMemo(() => {
-		if (!trainingStatus) return "Applies to requests from this app.";
-		if (trainingStatus.preference === "opted-out") {
-			return "We send an opt-out header to providers that support it.";
-		}
-		if (trainingStatus.preference === "opted-in") {
-			return "We allow provider data use where supported.";
-		}
-		return "Provider default (controlled by your model account settings).";
-	}, [trainingStatus]);
-
-	const telemetrySamplingLabel = useMemo(() => {
-		if (!telemetryStatus) return "—";
-		if (!telemetryStatus.enabled) return "—";
-		const percent = Math.round(telemetryStatus.sampleRate * 100);
-		return `${percent}%`;
-	}, [telemetryStatus]);
-
-	const telemetrySamplingExplanation = useMemo(() => {
-		if (!telemetryStatus?.enabled) return "Sampling applies only when enabled.";
-		if (telemetryStatus.sampleRate < 1) {
-			return "Only a portion of events are recorded.";
-		}
-		return "All telemetry events are recorded.";
-	}, [telemetryStatus]);
-
-	const trainingPreferenceLabel = useMemo(() => {
-		if (!trainingStatus) return "Unknown";
-		if (trainingStatus.preference === "opted-in") return "Opted-in";
-		if (trainingStatus.preference === "opted-out") return "Opted-out";
-		return "Provider default";
-	}, [trainingStatus]);
-
-	const trainingDataLabel = useMemo(() => {
-		if (!trainingStatus) return "Unknown";
-		if (trainingStatus.preference === "opted-out")
-			return "No training use (opted-out)";
-		if (trainingStatus.preference === "opted-in") return "Allowed";
-		return "Controlled by provider";
-	}, [trainingStatus]);
-
 	const formatTimestamp = (value?: number | string) => {
 		if (!value) return "Unknown";
 		const date = typeof value === "number" ? new Date(value) : new Date(value);
@@ -776,10 +706,6 @@ export function SettingsModal({
 		if (value < 1000) return `${Math.round(value)}ms`;
 		if (value < 60000) return `${(value / 1000).toFixed(1)}s`;
 		return `${Math.round(value / 1000)}s`;
-	};
-
-	const closeTelemetryPolicyModal = () => {
-		setShowTelemetryPolicyModal(false);
 	};
 
 	if (!open) return null;
@@ -1322,435 +1248,29 @@ export function SettingsModal({
 						</div>
 					</section>
 
-					<section className="border border-line-subtle rounded-xl overflow-hidden">
-						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
-							Tools & Runtime
-						</div>
-						<div className="p-4 space-y-5">
-							<div className="space-y-2">
-								<div className="flex items-center justify-between gap-4">
-									<div>
-										<div className="text-text-primary font-medium">
-											LSP servers
-										</div>
-										<div className="text-xs text-text-muted">
-											Slash command: /lsp
-										</div>
-									</div>
-									<div className="flex items-center gap-2">
-										<button
-											type="button"
-											className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={() => handleLspAction("start")}
-										>
-											Start
-										</button>
-										<button
-											type="button"
-											className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={() => handleLspAction("stop")}
-										>
-											Stop
-										</button>
-										<button
-											type="button"
-											className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={() => handleLspAction("restart")}
-										>
-											Restart
-										</button>
-										<button
-											type="button"
-											className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={detectLsp}
-										>
-											Detect
-										</button>
-									</div>
-								</div>
-								<div className="text-xs text-text-muted">
-									Enabled: {lspStatus?.enabled ? "Yes" : "No"} · Autostart:{" "}
-									{lspStatus?.autostart ? "Yes" : "No"} · Servers:{" "}
-									{lspStatus?.servers?.length ?? 0}
-								</div>
-								{lspStatus?.servers?.length ? (
-									<div className="grid grid-cols-1 gap-2">
-										{lspStatus.servers.map((server) => (
-											<div
-												key={server.id}
-												className="flex items-center justify-between text-xs text-text-muted"
-											>
-												<span>{server.id}</span>
-												<span>
-													{server.fileCount} files · {server.diagnosticCount}{" "}
-													diag
-												</span>
-											</div>
-										))}
-									</div>
-								) : (
-									<div className="text-xs text-text-muted">
-										No active LSP servers.
-									</div>
-								)}
-								{lspDetections.length > 0 && (
-									<div className="text-xs text-text-muted">
-										Detected: {lspDetections.map((d) => d.serverId).join(", ")}
-									</div>
-								)}
-							</div>
+					<ToolsRuntimeSection
+						lspStatus={lspStatus}
+						lspDetections={lspDetections}
+						onLspAction={handleLspAction}
+						onDetectLsp={detectLsp}
+						mcpStatus={mcpStatus}
+						expandedMcpServer={expandedMcpServer}
+						onToggleMcpServer={toggleMcpServer}
+						onRefreshMcpStatus={refreshMcpStatus}
+						composerStatus={composerStatus}
+						selectedComposer={selectedComposer}
+						onSelectedComposerChange={setSelectedComposer}
+						onRefreshComposers={refreshComposers}
+						onActivateComposer={activateComposer}
+						onDeactivateComposer={deactivateComposer}
+					/>
 
-							<div className="space-y-2">
-								<div className="flex items-center justify-between gap-4">
-									<div>
-										<div className="text-text-primary font-medium">
-											MCP servers
-										</div>
-										<div className="text-xs text-text-muted">
-											Slash command: /mcp
-										</div>
-									</div>
-									<button
-										type="button"
-										className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-										onClick={refreshMcpStatus}
-									>
-										Refresh
-									</button>
-								</div>
-								{mcpStatus?.servers?.length ? (
-									<div className="grid grid-cols-1 gap-2">
-										{mcpStatus.servers.map((server) => {
-											const tools = Array.isArray(server.tools)
-												? server.tools
-												: [];
-											const toolCount = Array.isArray(server.tools)
-												? server.tools.length
-												: (server.tools ?? 0);
-											const resources = server.resources ?? [];
-											const prompts = server.prompts ?? [];
-											const isExpanded = expandedMcpServer === server.name;
-
-											return (
-												<div
-													key={server.name}
-													className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30"
-												>
-													<button
-														type="button"
-														className="w-full flex items-center justify-between text-xs text-text-muted px-3 py-2"
-														onClick={() => toggleMcpServer(server.name)}
-													>
-														<span className="text-text-primary">
-															{server.name}
-														</span>
-														<span>
-															{server.connected ? "Connected" : "Offline"} ·{" "}
-															{toolCount} tools · {resources.length} resources ·{" "}
-															{prompts.length} prompts
-														</span>
-													</button>
-													{isExpanded && (
-														<div className="border-t border-line-subtle/60 px-3 py-2 space-y-2 text-[11px] text-text-muted">
-															{tools.length > 0 ? (
-																<div>
-																	<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
-																		Tools
-																	</div>
-																	<div className="flex flex-wrap gap-1">
-																		{tools.map((tool) => (
-																			<span
-																				key={`${server.name}:${tool.name}`}
-																				className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary"
-																				title={tool.description}
-																			>
-																				{tool.name}
-																			</span>
-																		))}
-																	</div>
-																</div>
-															) : (
-																<div>
-																	{toolCount > 0
-																		? `${toolCount} tools reported (details unavailable).`
-																		: "No tools reported."}
-																</div>
-															)}
-															<div className="grid grid-cols-2 gap-2">
-																<div>
-																	<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
-																		Resources
-																	</div>
-																	{resources.length ? (
-																		<ul className="space-y-1">
-																			{resources.map((resource) => (
-																				<li
-																					key={`${server.name}:${resource}`}
-																					className="truncate"
-																				>
-																					{resource}
-																				</li>
-																			))}
-																		</ul>
-																	) : (
-																		<div>None</div>
-																	)}
-																</div>
-																<div>
-																	<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">
-																		Prompts
-																	</div>
-																	{prompts.length ? (
-																		<ul className="space-y-1">
-																			{prompts.map((prompt) => (
-																				<li
-																					key={`${server.name}:${prompt}`}
-																					className="truncate"
-																				>
-																					{prompt}
-																				</li>
-																			))}
-																		</ul>
-																	) : (
-																		<div>None</div>
-																	)}
-																</div>
-															</div>
-														</div>
-													)}
-												</div>
-											);
-										})}
-									</div>
-								) : (
-									<div className="text-xs text-text-muted">
-										No MCP servers configured.
-									</div>
-								)}
-							</div>
-
-							<div className="space-y-2">
-								<div className="flex items-center justify-between gap-4">
-									<div>
-										<div className="text-text-primary font-medium">
-											Composer profiles
-										</div>
-										<div className="text-xs text-text-muted">
-											Slash command: /composer
-										</div>
-									</div>
-									<div className="flex items-center gap-2">
-										<button
-											type="button"
-											className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={refreshComposers}
-										>
-											Refresh
-										</button>
-									</div>
-								</div>
-								<div className="flex items-center justify-between gap-4">
-									<select
-										value={selectedComposer}
-										onChange={(event) =>
-											setSelectedComposer(event.target.value)
-										}
-										className="bg-bg-tertiary border border-line-subtle rounded-lg px-3 py-2 text-xs text-text-primary w-64"
-									>
-										{composerStatus?.composers?.length ? (
-											composerStatus.composers.map((composer) => (
-												<option key={composer.name} value={composer.name}>
-													{composer.name}
-												</option>
-											))
-										) : (
-											<option value="">No profiles</option>
-										)}
-									</select>
-									<div className="flex items-center gap-2">
-										<button
-											type="button"
-											className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={activateComposer}
-											disabled={!selectedComposer}
-										>
-											Activate
-										</button>
-										<button
-											type="button"
-											className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={deactivateComposer}
-										>
-											Deactivate
-										</button>
-									</div>
-								</div>
-								<div className="text-xs text-text-muted">
-									Active: {composerStatus?.active?.name ?? "none"}
-								</div>
-							</div>
-						</div>
-					</section>
-
-					<section className="border border-line-subtle rounded-xl overflow-hidden">
-						<div className="px-4 py-2 text-xs font-semibold text-text-tertiary border-b border-line-subtle uppercase tracking-wide">
-							Telemetry & Training
-						</div>
-						<div className="p-4 space-y-6">
-							<div className="space-y-3">
-								<div className="flex items-start justify-between gap-4">
-									<div>
-										<div className="text-text-primary font-medium">
-											Telemetry
-										</div>
-										<div className="text-xs text-text-muted">
-											Writes operational metrics (tool names, durations, error
-											rates) to a local log file or configured endpoint.
-										</div>
-									</div>
-									<div className="flex items-center gap-2">
-										<button
-											type="button"
-											className="px-2.5 py-1.5 rounded-lg border border-line-subtle text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={() => setShowTelemetryPolicyModal(true)}
-										>
-											Policy
-										</button>
-										<button
-											type="button"
-											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={() => updateTelemetry("on")}
-										>
-											Enable
-										</button>
-										<button
-											type="button"
-											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={() => updateTelemetry("off")}
-										>
-											Disable
-										</button>
-										<button
-											type="button"
-											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={() => updateTelemetry("reset")}
-										>
-											Reset
-										</button>
-									</div>
-								</div>
-								<div className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 p-3 space-y-1 text-xs text-text-muted">
-									<div className="flex items-center justify-between">
-										<span>Status</span>
-										<span className="text-text-primary">
-											{telemetryStatus?.enabled ? "On" : "Off"}
-										</span>
-									</div>
-									<div className="flex items-center justify-between">
-										<span>Data</span>
-										<span className="text-text-primary">
-											{telemetryDataLabel}
-										</span>
-									</div>
-									<div className="flex items-center justify-between">
-										<span>Destination</span>
-										<span className="text-text-primary">
-											{telemetryDestinationLabel}
-										</span>
-									</div>
-									{telemetryDestinationDetail && (
-										<div
-											className="text-[11px] text-text-tertiary truncate"
-											title={telemetryDestinationDetail}
-										>
-											{telemetryDestinationDetail}
-										</div>
-									)}
-									<div className="flex items-center justify-between">
-										<span>Sampling</span>
-										<span className="text-text-primary">
-											{telemetrySamplingLabel}
-										</span>
-									</div>
-									<div className="flex items-center justify-between">
-										<span>Scope</span>
-										<span className="text-text-primary">This device</span>
-									</div>
-								</div>
-								<div className="text-[11px] text-text-tertiary">
-									{telemetryStatus?.enabled
-										? `Reason: ${telemetryStatus.reason}`
-										: "Telemetry is off. No usage metrics are written or sent."}
-								</div>
-							</div>
-
-							<div className="space-y-3">
-								<div className="flex items-start justify-between gap-4">
-									<div>
-										<div className="text-text-primary font-medium">
-											Training data
-										</div>
-										<div className="text-xs text-text-muted">
-											Controls the data-collection header sent to model
-											providers.
-										</div>
-									</div>
-									<div className="flex items-center gap-2">
-										<button
-											type="button"
-											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={() => updateTraining("on")}
-										>
-											Opt-in
-										</button>
-										<button
-											type="button"
-											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={() => updateTraining("off")}
-										>
-											Opt-out
-										</button>
-										<button
-											type="button"
-											className="px-3 py-2 rounded-lg border border-line-subtle text-xs text-text-tertiary hover:text-text-primary hover:bg-bg-tertiary/60"
-											onClick={() => updateTraining("reset")}
-										>
-											Reset
-										</button>
-									</div>
-								</div>
-								<div className="rounded-lg border border-line-subtle/60 bg-bg-tertiary/30 p-3 space-y-1 text-xs text-text-muted">
-									<div className="flex items-center justify-between">
-										<span>Preference</span>
-										<span className="text-text-primary">
-											{trainingPreferenceLabel}
-										</span>
-									</div>
-									<div className="flex items-center justify-between">
-										<span>Data use</span>
-										<span className="text-text-primary">
-											{trainingDataLabel}
-										</span>
-									</div>
-									<div className="flex items-center justify-between">
-										<span>Destination</span>
-										<span className="text-text-primary">Model providers</span>
-									</div>
-									<div className="flex items-center justify-between">
-										<span>Scope</span>
-										<span className="text-text-primary">
-											Requests from this app
-										</span>
-									</div>
-								</div>
-								<div className="text-[11px] text-text-tertiary">
-									{trainingStatus?.preference === "provider-default"
-										? "Provider default (controlled by your model account settings)."
-										: `Reason: ${trainingStatus?.reason ?? "unknown"}`}
-								</div>
-							</div>
-						</div>
-					</section>
+					<TelemetryTrainingSection
+						telemetryStatus={telemetryStatus}
+						trainingStatus={trainingStatus}
+						updateTelemetry={updateTelemetry}
+						updateTraining={updateTraining}
+					/>
 
 					{showCliOnlyControls && (
 						<section className="border border-line-subtle rounded-xl overflow-hidden">
@@ -1854,101 +1374,6 @@ export function SettingsModal({
 						</section>
 					)}
 				</div>
-				{showTelemetryPolicyModal && (
-					<div className="absolute inset-0 z-[60] flex items-center justify-center">
-						<button
-							type="button"
-							className="absolute inset-0 bg-black/60"
-							onClick={closeTelemetryPolicyModal}
-							title="Close telemetry policy"
-						/>
-						<div className="relative z-[70] w-[560px] max-w-[92vw] rounded-2xl border border-line-subtle bg-bg-secondary shadow-[0_24px_64px_-20px_rgba(0,0,0,0.7)]">
-							<div className="flex items-center justify-between px-5 py-4 border-b border-line-subtle">
-								<div>
-									<h3 className="text-sm font-semibold text-text-primary">
-										Telemetry & Training Policy
-									</h3>
-									<p className="text-xs text-text-muted">
-										Plain-English summary for this device.
-									</p>
-								</div>
-								<button
-									type="button"
-									className="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-tertiary/60 transition-colors"
-									onClick={closeTelemetryPolicyModal}
-									title="Close"
-								>
-									<svg
-										aria-hidden="true"
-										width="14"
-										height="14"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										strokeWidth="2"
-										strokeLinecap="round"
-										strokeLinejoin="round"
-									>
-										<line x1="18" y1="6" x2="6" y2="18" />
-										<line x1="6" y1="6" x2="18" y2="18" />
-									</svg>
-								</button>
-							</div>
-							<div className="p-5 space-y-4 text-xs text-text-muted">
-								<div>
-									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
-										What we collect
-									</div>
-									<p className="mt-2">
-										Operational events like tool names, durations,
-										success/failure, background task status, API timings, and
-										token/cost metrics. Telemetry does not include chat message
-										content. Commands are sanitized where possible.
-									</p>
-								</div>
-								<div>
-									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
-										Where it goes
-									</div>
-									<p className="mt-2">{telemetryDestinationExplanation}</p>
-								</div>
-								<div>
-									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
-										How to disable
-									</div>
-									<p className="mt-2">
-										Use the Telemetry toggle in Settings or run{" "}
-										<span className="text-text-primary">/telemetry off</span>.
-									</p>
-								</div>
-								<div>
-									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
-										How to export logs
-									</div>
-									<p className="mt-2">
-										{telemetryStatus?.enabled && telemetryStatus.filePath
-											? `Copy the log file at ${telemetryStatus.filePath}.`
-											: telemetryStatus?.enabled && telemetryStatus.endpoint
-												? "Export data from your configured endpoint."
-												: "No logs are written when telemetry is disabled."}
-									</p>
-								</div>
-								<div>
-									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
-										Training data
-									</div>
-									<p className="mt-2">{trainingScopeExplanation}</p>
-								</div>
-								<div>
-									<div className="text-[11px] font-semibold text-text-tertiary uppercase tracking-wide">
-										Sampling
-									</div>
-									<p className="mt-2">{telemetrySamplingExplanation}</p>
-								</div>
-							</div>
-						</div>
-					</div>
-				)}
 			</div>
 		</div>
 	);
