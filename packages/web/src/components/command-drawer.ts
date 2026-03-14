@@ -1,6 +1,9 @@
-import { LitElement, css, html } from "lit";
+import { LitElement, type PropertyValues, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { WebSlashCommand } from "./slash-commands.js";
+import {
+	type WebSlashCommand,
+	isWebSlashCommandSupported,
+} from "./slash-commands.js";
 
 @customElement("command-drawer")
 export class CommandDrawer extends LitElement {
@@ -68,6 +71,15 @@ export class CommandDrawer extends LitElement {
 			background: rgba(212, 160, 18, 0.12);
 			color: var(--accent-amber, #d4a012);
 		}
+		.row.unsupported {
+			cursor: not-allowed;
+			opacity: 0.7;
+		}
+		.row.unsupported:hover,
+		.row.unsupported.selected {
+			background: rgba(148, 163, 184, 0.08);
+			color: inherit;
+		}
 		.meta {
 			display: flex;
 			flex-direction: column;
@@ -113,8 +125,45 @@ export class CommandDrawer extends LitElement {
 			}))
 			.filter((s) => s.score > 0 || !lower)
 			.sort(
-				(a, b) => b.score - a.score || a.cmd.name.localeCompare(b.cmd.name),
+				(a, b) =>
+					Number(this.isSelectableCommand(b.cmd)) -
+						Number(this.isSelectableCommand(a.cmd)) ||
+					b.score - a.score ||
+					a.cmd.name.localeCompare(b.cmd.name),
 			);
+	}
+
+	private isSelectableCommand(cmd: WebSlashCommand): boolean {
+		return isWebSlashCommandSupported(cmd);
+	}
+
+	private getFirstSelectableIndex(rows = this.scored): number {
+		const index = rows.findIndex(({ cmd }) => this.isSelectableCommand(cmd));
+		return index >= 0 ? index : 0;
+	}
+
+	private moveSelection(direction: 1 | -1) {
+		const rows = this.scored;
+		if (rows.length === 0) return;
+		if (!rows.some(({ cmd }) => this.isSelectableCommand(cmd))) return;
+
+		let index = this.selected;
+		for (let i = 0; i < rows.length; i += 1) {
+			index = (index + direction + rows.length) % rows.length;
+			const item = rows[index];
+			if (item && this.isSelectableCommand(item.cmd)) {
+				this.selected = index;
+				return;
+			}
+		}
+	}
+
+	private focusSearchInput() {
+		const input = this.shadowRoot?.querySelector(
+			"input",
+		) as HTMLInputElement | null;
+		input?.focus();
+		input?.select();
 	}
 
 	private score(cmd: WebSlashCommand, q: string): number {
@@ -132,7 +181,7 @@ export class CommandDrawer extends LitElement {
 
 	private select(index: number) {
 		const item = this.scored[index];
-		if (!item) return;
+		if (!item || !this.isSelectableCommand(item.cmd)) return;
 		this.dispatchEvent(
 			new CustomEvent("select-command", {
 				detail: item.cmd.name,
@@ -161,17 +210,24 @@ export class CommandDrawer extends LitElement {
 		}
 		if (e.key === "ArrowDown") {
 			e.preventDefault();
-			this.selected = (this.selected + 1) % Math.max(this.scored.length, 1);
+			this.moveSelection(1);
 		}
 		if (e.key === "ArrowUp") {
 			e.preventDefault();
-			this.selected =
-				(this.selected - 1 + Math.max(this.scored.length, 1)) %
-				Math.max(this.scored.length, 1);
+			this.moveSelection(-1);
 		}
 		if (e.key === "Enter") {
 			e.preventDefault();
 			this.select(this.selected);
+		}
+	}
+
+	override updated(changed: PropertyValues) {
+		super.updated(changed);
+		if (changed.has("open") && this.open) {
+			this.query = "";
+			this.selected = this.getFirstSelectableIndex();
+			void this.updateComplete.then(() => this.focusSearchInput());
 		}
 	}
 
@@ -190,7 +246,7 @@ export class CommandDrawer extends LitElement {
 						@input=${(e: InputEvent) => {
 							const target = e.target as HTMLInputElement;
 							this.query = target.value;
-							this.selected = 0;
+							this.selected = this.getFirstSelectableIndex();
 						}}
 					/>
 					<div class="badge">Ctrl/Cmd+K</div>
@@ -198,7 +254,10 @@ export class CommandDrawer extends LitElement {
 				<div class="list">
 					${rows.map(
 						({ cmd }, i) => html`<div
-							class="row ${i === this.selected ? "selected" : ""}"
+							class="row ${i === this.selected ? "selected" : ""} ${
+								this.isSelectableCommand(cmd) ? "" : "unsupported"
+							}"
+							aria-disabled=${this.isSelectableCommand(cmd) ? "false" : "true"}
 							@click=${() => this.select(i)}
 						>
 							<div class="meta">
@@ -226,6 +285,16 @@ export class CommandDrawer extends LitElement {
 											>
 												☆ favorite
 											</span>`
+									}
+									${
+										cmd.source === "custom"
+											? html`<span class="badge">custom</span>`
+											: null
+									}
+									${
+										this.isSelectableCommand(cmd)
+											? null
+											: html`<span class="badge">CLI only</span>`
 									}
 									${cmd.tags?.map(
 										(tag) => html`<span class="badge">#${tag}</span>`,

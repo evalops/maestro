@@ -37,7 +37,7 @@ export class ComposerApproval extends LitElement {
 			background: #0d1117;
 			border: 2px solid #d29922;
 			border-radius: 4px;
-			max-width: 600px;
+			max-width: 680px;
 			width: 90%;
 			max-height: 80vh;
 			overflow-y: auto;
@@ -65,7 +65,16 @@ export class ComposerApproval extends LitElement {
 		}
 
 		.warning-icon {
-			font-size: 1.5rem;
+			width: 1.9rem;
+			height: 1.9rem;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			border: 1px solid #d29922;
+			border-radius: 999px;
+			font-size: 0.85rem;
+			font-weight: 700;
+			color: #d29922;
 			animation: pulse 2s ease-in-out infinite;
 		}
 
@@ -113,11 +122,69 @@ export class ComposerApproval extends LitElement {
 			margin-bottom: 0.5rem;
 		}
 
+		.queue-box {
+			background: #161b22;
+			border: 1px solid #30363d;
+			border-left: 3px solid #d29922;
+			border-radius: 3px;
+			padding: 0.75rem;
+		}
+
+		.queue-title {
+			font-size: 0.78rem;
+			font-weight: 700;
+			color: #e6edf3;
+		}
+
+		.queue-subtitle {
+			margin-top: 0.35rem;
+			font-size: 0.72rem;
+			color: #8b949e;
+			line-height: 1.5;
+		}
+
 		.tool-info {
 			background: #161b22;
 			border: 1px solid #30363d;
 			border-radius: 2px;
 			padding: 0.75rem;
+		}
+
+		.tool-summary {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.5rem;
+			margin-top: 0.65rem;
+		}
+
+		.detail-chip {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.35rem;
+			padding: 0.2rem 0.45rem;
+			border: 1px solid #30363d;
+			border-radius: 999px;
+			background: #0d1117;
+			font-size: 0.66rem;
+			line-height: 1;
+		}
+
+		.detail-chip-label {
+			color: #8b949e;
+			text-transform: uppercase;
+			letter-spacing: 0.06em;
+		}
+
+		.detail-chip-value {
+			color: #e6edf3;
+		}
+
+		.detail-chip.warning .detail-chip-value {
+			color: #f2cc60;
+		}
+
+		.detail-chip.success .detail-chip-value {
+			color: #3fb950;
 		}
 
 		.tool-name {
@@ -131,6 +198,7 @@ export class ComposerApproval extends LitElement {
 			display: grid;
 			grid-template-columns: auto 1fr;
 			gap: 0.35rem 0.75rem;
+			margin-top: 0.75rem;
 			font-size: 0.75rem;
 		}
 
@@ -141,7 +209,27 @@ export class ComposerApproval extends LitElement {
 
 		.arg-value {
 			color: #e6edf3;
-			word-break: break-all;
+			white-space: pre-wrap;
+			word-break: break-word;
+		}
+
+		.command-box {
+			background: #0b1016;
+			border: 1px solid #30363d;
+			border-radius: 3px;
+			padding: 0.75rem;
+			max-height: 18rem;
+			overflow: auto;
+		}
+
+		.command-preview {
+			margin: 0;
+			font-family: inherit;
+			font-size: 0.72rem;
+			line-height: 1.6;
+			color: #e6edf3;
+			white-space: pre-wrap;
+			word-break: break-word;
 		}
 
 		.reason-box {
@@ -217,6 +305,7 @@ export class ComposerApproval extends LitElement {
 	@property({ type: Object }) request: ComposerActionApprovalRequest | null =
 		null;
 	@property({ type: Boolean }) submitting = false;
+	@property({ type: Number }) queueLength = 0;
 
 	private handleKeyDownRef = (event: KeyboardEvent) =>
 		this.handleKeyDown(event);
@@ -229,15 +318,79 @@ export class ComposerApproval extends LitElement {
 		return JSON.stringify(value, null, 2);
 	}
 
-	private getArgEntries(): Array<[string, unknown]> {
+	private getObjectArgs(): Record<string, unknown> | null {
 		const args = this.request?.args;
 		if (args && typeof args === "object" && !Array.isArray(args)) {
-			return Object.entries(args);
+			return args as Record<string, unknown>;
 		}
-		if (args === undefined) {
+		return null;
+	}
+
+	private extractCommandLines(): string[] | null {
+		const args = this.getObjectArgs();
+		const command = args?.command;
+		if (typeof command !== "string" || command.trim().length === 0) {
+			return null;
+		}
+		const scrubbed = command.replace(/[^\x20-\x7e\r\n]/g, "");
+		return scrubbed.trim().split(/\r?\n/);
+	}
+
+	private getToolDetails(): Array<{
+		label: string;
+		value: string;
+		tone?: "success" | "warning";
+	}> {
+		const args = this.getObjectArgs();
+		if (!args) return [];
+
+		const details: Array<{
+			label: string;
+			value: string;
+			tone?: "success" | "warning";
+		}> = [];
+
+		if (typeof args.action === "string" && args.action.trim().length > 0) {
+			details.push({ label: "Action", value: args.action });
+		}
+
+		if (typeof args.shell === "boolean") {
+			details.push({
+				label: "Shell mode",
+				value: args.shell ? "enabled" : "disabled",
+				tone: args.shell ? "warning" : "success",
+			});
+		}
+
+		return details;
+	}
+
+	private getArgEntries(): Array<[string, unknown]> {
+		const args = this.getObjectArgs();
+		if (args) {
+			return Object.entries(args).filter(
+				([key]) => key !== "action" && key !== "command" && key !== "shell",
+			);
+		}
+		const argsValue = this.request?.args;
+		if (argsValue === undefined) {
 			return [];
 		}
-		return [["value", args]];
+		return [["value", argsValue]];
+	}
+
+	private getQueueTitle(): string {
+		const total = Math.max(this.queueLength, this.request ? 1 : 0);
+		return `Approval 1 of ${Math.max(total, 1)}`;
+	}
+
+	private getQueueSubtitle(): string {
+		const total = Math.max(this.queueLength, this.request ? 1 : 0);
+		const remaining = Math.max(total - 1, 0);
+		if (remaining === 0) {
+			return "No other pending approvals";
+		}
+		return `${remaining} more approval${remaining === 1 ? "" : "s"} waiting`;
 	}
 
 	private handleApprove() {
@@ -290,12 +443,14 @@ export class ComposerApproval extends LitElement {
 		if (!this.request) return html``;
 
 		const argEntries = this.getArgEntries();
+		const commandLines = this.extractCommandLines();
+		const toolDetails = this.getToolDetails();
 
 		return html`
 			<div class="approval-overlay">
 				<div class="approval-modal">
 					<div class="approval-header">
-						<div class="warning-icon">⚠️</div>
+						<div class="warning-icon">!</div>
 						<div class="header-text">
 							<div class="header-title">Approval Required</div>
 							<div class="header-subtitle">This operation requires your permission</div>
@@ -304,9 +459,42 @@ export class ComposerApproval extends LitElement {
 
 					<div class="approval-body">
 						<div class="section">
+							<div class="section-label">Queue Status</div>
+							<div class="queue-box">
+								<div class="queue-title">${this.getQueueTitle()}</div>
+								<div class="queue-subtitle">${this.getQueueSubtitle()}</div>
+							</div>
+						</div>
+
+						${
+							this.request.reason
+								? html`
+									<div class="section">
+										<div class="section-label">Warning</div>
+										<div class="reason-box">${this.request.reason}</div>
+									</div>
+								`
+								: ""
+						}
+
+						<div class="section">
 							<div class="section-label">Tool</div>
 							<div class="tool-info">
 								<div class="tool-name">${this.request.toolName}</div>
+								${
+									toolDetails.length > 0
+										? html`<div class="tool-summary">
+											${toolDetails.map(
+												(detail) => html`
+													<span class="detail-chip ${detail.tone ?? ""}">
+														<span class="detail-chip-label">${detail.label}</span>
+														<span class="detail-chip-value">${detail.value}</span>
+													</span>
+												`,
+											)}
+										</div>`
+										: ""
+								}
 								${
 									argEntries.length > 0
 										? html`
@@ -325,11 +513,13 @@ export class ComposerApproval extends LitElement {
 						</div>
 
 						${
-							this.request.reason
+							commandLines
 								? html`
 							<div class="section">
-								<div class="section-label">Warning</div>
-								<div class="reason-box">${this.request.reason}</div>
+								<div class="section-label">Command Preview</div>
+								<div class="command-box">
+									<pre class="command-preview">${commandLines.join("\n")}</pre>
+								</div>
 							</div>
 						`
 								: ""

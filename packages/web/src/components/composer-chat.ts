@@ -2,7 +2,10 @@
  * Main chat interface component
  */
 
-import type { ComposerActionApprovalRequest } from "@evalops/contracts";
+import type {
+	ComposerActionApprovalRequest,
+	ComposerApprovalMode,
+} from "@evalops/contracts";
 import { LitElement, type PropertyValues, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { parse as parsePartialJson } from "partial-json";
@@ -27,7 +30,11 @@ import {
 import { dataStore } from "../services/data-store.js";
 import "./command-drawer.js";
 import { executeWebSlashCommand } from "./composer-chat-slash-commands.js";
-import { WEB_SLASH_COMMANDS } from "./slash-commands.js";
+import {
+	WEB_SLASH_COMMANDS,
+	type WebSlashCommand,
+	buildWebSlashCommands,
+} from "./slash-commands.js";
 import "./composer-message.js";
 import "./composer-input.js";
 import type { ComposerInput } from "./composer-input.js";
@@ -294,6 +301,17 @@ export class ComposerChat extends LitElement {
 		.pill.success {
 			background: var(--accent-green-dim, rgba(34, 197, 94, 0.12));
 			color: var(--accent-green, #22c55e);
+		}
+
+		.pill.error {
+			background: var(--accent-red-dim, rgba(239, 68, 68, 0.12));
+			color: var(--accent-red, #ef4444);
+		}
+
+		.status-note {
+			color: var(--accent-yellow, #eab308);
+			text-transform: uppercase;
+			letter-spacing: 0.04em;
 		}
 
 		.status-dot {
@@ -768,11 +786,15 @@ export class ComposerChat extends LitElement {
 	@state() private artifactsOpen = false;
 	@state() private activeArtifact: string | null = null;
 	@state() private artifactsState = createEmptyArtifactsState();
+	@state() private artifactsPanelAttachments: NonNullable<
+		Message["attachments"]
+	> = [];
 	@state() private status: WorkspaceStatus | null = null;
 	@state() private commandPrefs: { favorites: string[]; recents: string[] } = {
 		favorites: [],
 		recents: [],
 	};
+	@state() private slashCommands: WebSlashCommand[] = WEB_SLASH_COMMANDS;
 	@state() private commandDrawerOpen = false;
 	@state() private showModelSelector = false;
 	@state() private currentModelTokens: string | null = null;
@@ -794,6 +816,8 @@ export class ComposerChat extends LitElement {
 	@state() private lastApiError: string | null = null;
 	@state() private pendingApprovalQueue: ComposerActionApprovalRequest[] = [];
 	@state() private approvalSubmitting = false;
+	@state() private approvalMode: ComposerApprovalMode | null = null;
+	@state() private approvalModeNotice: string | null = null;
 	@state() private nextRefreshAllowed = 0;
 	@state() private showHealth = false;
 	@state() private showShortcuts = false;
@@ -809,6 +833,9 @@ export class ComposerChat extends LitElement {
 	private static REDUCED_MOTION_KEY = "composer_reduced_motion";
 
 	private apiClient!: ApiClient;
+	private approvalModeNoticeSessionId: string | null = null;
+	private approvalModeRequestId = 0;
+	private artifactsPanelAttachmentsRequestId = 0;
 	private attachmentContentCache = new Map<string, string>();
 	private unsubscribeStore?: () => void;
 	private autoScroll = true;
@@ -1370,13 +1397,15 @@ export class ComposerChat extends LitElement {
 		this.commandDrawerOpen = false;
 	}
 
-	private handleCommandSelect(name: string) {
+	private setComposerInputValue(text: string) {
 		const input = this.shadowRoot?.querySelector(
 			"composer-input",
 		) as ComposerInput | null;
-		if (input?.setValue) {
-			input.setValue(`/${name} `);
-		}
+		input?.setValue?.(text);
+	}
+
+	private handleCommandSelect(name: string) {
+		this.setComposerInputValue(`/${name} `);
 		const recents = [
 			name,
 			...this.commandPrefs.recents.filter((n) => n !== name),
@@ -1404,6 +1433,16 @@ export class ComposerChat extends LitElement {
 			this.commandPrefs = prefs;
 		} catch (e) {
 			console.warn("Failed to load command prefs", e);
+		}
+	}
+
+	private async loadSlashCommands() {
+		try {
+			const commands = await this.apiClient.getCommands();
+			this.slashCommands = buildWebSlashCommands(commands);
+		} catch (e) {
+			console.warn("Failed to load slash commands", e);
+			this.slashCommands = WEB_SLASH_COMMANDS;
 		}
 	}
 
@@ -1505,7 +1544,9 @@ export class ComposerChat extends LitElement {
 			void this.loadSharedSession(shareToken);
 		} else {
 			this.loadCurrentModel();
+			void this.loadApprovalModeStatus();
 			this.loadSessions();
+			this.loadSlashCommands();
 			dataStore.ensureStatus(this.apiClient);
 			dataStore.ensureModels(this.apiClient);
 			dataStore.ensureUsage(this.apiClient);
@@ -1622,6 +1663,18 @@ export class ComposerChat extends LitElement {
 			}
 		}
 
+		if (
+			changed.has("messages") ||
+			changed.has("currentSessionId") ||
+			changed.has("shareToken")
+		) {
+			this.artifactsPanelAttachmentsRequestId += 1;
+			this.artifactsPanelAttachments = this.getAllAttachments();
+			if (this.artifactsOpen) {
+				void this.refreshArtifactsPanelAttachments();
+			}
+		}
+
 		if (this.autoScroll && this.renderEndIndex !== total) {
 			this.renderEndIndex = total;
 		}
@@ -1649,6 +1702,18 @@ export class ComposerChat extends LitElement {
 			this.approvalSubmitting = false;
 			if (this.currentSessionId) {
 				void this.refreshUiState(this.currentSessionId);
+			}
+			if (!this.shareToken) {
+				this.clearApprovalModeStatus();
+				void this.loadApprovalModeStatus();
+			}
+		}
+
+		if (changed.has("shareToken")) {
+			if (this.shareToken) {
+				this.clearApprovalModeStatus();
+			} else {
+				void this.loadApprovalModeStatus();
 			}
 		}
 	}
@@ -1846,6 +1911,7 @@ export class ComposerChat extends LitElement {
 				this.appendCommandOutput(command, output, isError),
 			applyTheme: (theme) => this.applyTheme(theme),
 			applyZenMode: (enabled) => this.applyZenMode(enabled),
+			commands: this.slashCommands,
 			createNewSession: () => this.createNewSession(),
 			currentSessionId: this.currentSessionId,
 			isSharedSession: Boolean(this.shareToken),
@@ -1854,6 +1920,7 @@ export class ComposerChat extends LitElement {
 			},
 			openModelSelector: () => this.openModelSelector(),
 			selectSession: (sessionId) => this.selectSession(sessionId),
+			setApprovalModeStatus: (status) => this.updateApprovalModeStatus(status),
 			setCleanMode: (mode) => {
 				this.cleanMode = mode;
 			},
@@ -1862,6 +1929,9 @@ export class ComposerChat extends LitElement {
 			},
 			setFooterMode: (mode) => {
 				this.footerMode = mode;
+			},
+			setInputValue: (text) => {
+				this.setComposerInputValue(text);
 			},
 			setQueueMode: (mode) => {
 				this.queueMode = mode;
@@ -1960,6 +2030,18 @@ export class ComposerChat extends LitElement {
 		void this.deleteSession(sessionId);
 	};
 
+	private handleUpdateSession = (
+		event: CustomEvent<{
+			sessionId?: unknown;
+			updates?: { favorite?: boolean; tags?: string[]; title?: string };
+		}>,
+	) => {
+		const sessionId = event.detail?.sessionId;
+		const updates = event.detail?.updates;
+		if (typeof sessionId !== "string" || !updates) return;
+		void this.updateSessionMetadata(sessionId, updates);
+	};
+
 	private toggleSettings() {
 		this.settingsOpen = !this.settingsOpen;
 	}
@@ -1995,24 +2077,21 @@ export class ComposerChat extends LitElement {
 	};
 
 	private toggleArtifactsPanel() {
-		if (this.shareToken) {
-			this.showToast("Shared sessions are read-only", "info", 1800);
-			return;
-		}
 		this.artifactsOpen = !this.artifactsOpen;
+		if (this.artifactsOpen) {
+			void this.refreshArtifactsPanelAttachments();
+		}
 	}
 
 	private closeArtifactsPanel() {
 		this.artifactsOpen = false;
+		this.artifactsPanelAttachmentsRequestId += 1;
 	}
 
 	private setActiveArtifact(filename: string) {
-		if (this.shareToken) {
-			this.showToast("Shared sessions are read-only", "info", 1800);
-			return;
-		}
 		this.activeArtifact = filename;
 		this.artifactsOpen = true;
+		void this.refreshArtifactsPanelAttachments();
 	}
 
 	private handleOpenArtifact = (e: Event) => {
@@ -2080,6 +2159,129 @@ export class ComposerChat extends LitElement {
 				e instanceof Error ? e.message : "Failed to create new session";
 			this.showToast(this.error, "error");
 		}
+	}
+
+	private async updateSessionMetadata(
+		sessionId: string,
+		updates: Partial<Pick<SessionSummary, "favorite" | "tags" | "title">>,
+	) {
+		try {
+			const updated = await this.apiClient.updateSession(sessionId, updates);
+			this.sessions = this.sessions.map((session) =>
+				session.id === sessionId ? { ...session, ...updated } : session,
+			);
+			await this.loadSessions();
+			this.showToast("Session updated", "success", 1500);
+		} catch (e) {
+			const message =
+				e instanceof Error ? e.message : "Failed to update session";
+			this.showToast(message, "error");
+		}
+	}
+
+	private getApprovalModeSessionId(): string {
+		return this.currentSessionId ?? "default";
+	}
+
+	private clearApprovalModeStatus() {
+		this.approvalModeRequestId += 1;
+		this.approvalMode = null;
+		this.approvalModeNotice = null;
+		this.approvalModeNoticeSessionId = null;
+	}
+
+	private updateApprovalModeStatus(options: {
+		mode: ComposerApprovalMode;
+		message?: string;
+		notify?: boolean;
+		sessionId?: string | null;
+	}) {
+		const sessionId = options.sessionId ?? this.getApprovalModeSessionId();
+		if (this.shareToken || sessionId !== this.getApprovalModeSessionId()) {
+			return;
+		}
+		this.approvalModeRequestId += 1;
+		const note =
+			typeof options.message === "string" &&
+			options.message.includes("server default is stricter")
+				? options.message
+				: null;
+
+		this.approvalMode = options.mode;
+		this.approvalModeNotice = note;
+		this.approvalModeNoticeSessionId = sessionId;
+
+		if (options.notify && options.message) {
+			this.showToast(options.message, note ? "info" : "success", 2200);
+		}
+	}
+
+	private async loadApprovalModeStatus(
+		sessionId = this.getApprovalModeSessionId(),
+	) {
+		if (this.shareToken) {
+			this.clearApprovalModeStatus();
+			return;
+		}
+		const requestId = ++this.approvalModeRequestId;
+
+		try {
+			const status = await this.apiClient.getApprovalMode(sessionId);
+			if (
+				requestId !== this.approvalModeRequestId ||
+				this.shareToken ||
+				sessionId !== this.getApprovalModeSessionId()
+			) {
+				return;
+			}
+			this.approvalMode = status.mode;
+			if (this.approvalModeNoticeSessionId !== sessionId) {
+				this.approvalModeNotice = null;
+				this.approvalModeNoticeSessionId = sessionId;
+			}
+		} catch (e) {
+			if (
+				requestId !== this.approvalModeRequestId ||
+				this.shareToken ||
+				sessionId !== this.getApprovalModeSessionId()
+			) {
+				return;
+			}
+			this.approvalMode = null;
+			this.approvalModeNotice = null;
+			this.approvalModeNoticeSessionId = sessionId;
+			console.warn("Failed to load approval mode", e);
+		}
+	}
+
+	private async refreshArtifactsPanelAttachments() {
+		const attachments = this.getAllAttachments();
+		this.artifactsPanelAttachments = attachments;
+
+		const sessionId = this.currentSessionId;
+		const shareToken = this.shareToken;
+		const needsHydration = attachments.some(
+			(att) =>
+				Boolean(att?.contentOmitted) &&
+				!(typeof att.content === "string" && att.content.length > 0),
+		);
+		if (!needsHydration || (!sessionId && !shareToken)) {
+			return;
+		}
+
+		const requestId = ++this.artifactsPanelAttachmentsRequestId;
+		const hydrated = await this.hydrateAttachmentsForRequest(attachments, {
+			sessionId,
+			shareToken,
+		});
+		if (
+			requestId !== this.artifactsPanelAttachmentsRequestId ||
+			sessionId !== this.currentSessionId ||
+			shareToken !== this.shareToken
+		) {
+			return;
+		}
+		this.artifactsPanelAttachments = hydrated;
 	}
 
 	private async selectSession(sessionId: string) {
@@ -2167,8 +2369,10 @@ export class ComposerChat extends LitElement {
 
 	private async hydrateAttachmentForRequest(
 		att: NonNullable<Message["attachments"]>[number],
-		sessionId: string,
+		options: { sessionId?: string | null; shareToken?: string | null },
 	): Promise<NonNullable<Message["attachments"]>[number]> {
+		const sessionId = options.sessionId ?? null;
+		const shareToken = options.shareToken ?? null;
 		if (!att?.id) return att;
 
 		if (typeof att.content === "string" && att.content.length > 0) {
@@ -2185,11 +2389,18 @@ export class ComposerChat extends LitElement {
 			return { ...att, content: cached, contentOmitted: undefined };
 		}
 
+		if (!sessionId && !shareToken) return att;
+
 		try {
-			const base64 = await this.apiClient.getSessionAttachmentContentBase64(
-				sessionId,
-				att.id,
-			);
+			const base64 = shareToken
+				? await this.apiClient.getSharedSessionAttachmentContentBase64(
+						shareToken,
+						att.id,
+					)
+				: await this.apiClient.getSessionAttachmentContentBase64(
+						sessionId,
+						att.id,
+					);
 			this.attachmentContentCache.set(att.id, base64);
 			return { ...att, content: base64, contentOmitted: undefined };
 		} catch (e) {
@@ -2198,12 +2409,25 @@ export class ComposerChat extends LitElement {
 		}
 	}
 
+	private async hydrateAttachmentsForRequest(
+		attachments: NonNullable<Message["attachments"]>,
+		options: { sessionId?: string | null; shareToken?: string | null },
+	): Promise<NonNullable<Message["attachments"]>> {
+		const sessionId = options.sessionId ?? null;
+		const shareToken = options.shareToken ?? null;
+		if (!sessionId && !shareToken) return attachments;
+		return await Promise.all(
+			attachments.map((att) => this.hydrateAttachmentForRequest(att, options)),
+		);
+	}
+
 	private async buildMessagesForChatRequest(
 		messages: UiMessage[],
 	): Promise<Message[]> {
 		const sessionId = this.currentSessionId;
+		const shareToken = this.shareToken;
 		const filtered = messages.filter((msg) => !msg.localOnly);
-		if (!sessionId) return filtered;
+		if (!sessionId && !shareToken) return filtered;
 
 		const out: Message[] = [];
 		for (const msg of filtered) {
@@ -2213,9 +2437,10 @@ export class ComposerChat extends LitElement {
 				continue;
 			}
 
-			const hydrated = await Promise.all(
-				atts.map((a) => this.hydrateAttachmentForRequest(a, sessionId)),
-			);
+			const hydrated = await this.hydrateAttachmentsForRequest(atts, {
+				sessionId,
+				shareToken,
+			});
 			out.push({ ...msg, attachments: hydrated });
 		}
 		return out;
@@ -2805,15 +3030,11 @@ export class ComposerChat extends LitElement {
 		const attachmentsForSandbox = await (async () => {
 			const list = this.getAllAttachments();
 			const sessionId = this.currentSessionId;
-			if (!sessionId) return list;
-			return await Promise.all(
-				list.map((a) =>
-					this.hydrateAttachmentForRequest(
-						a as NonNullable<Message["attachments"]>[number],
-						sessionId,
-					),
-				),
-			);
+			const shareToken = this.shareToken;
+			return await this.hydrateAttachmentsForRequest(list, {
+				sessionId,
+				shareToken,
+			});
 		})();
 
 		el.providers = [
@@ -2979,6 +3200,7 @@ export class ComposerChat extends LitElement {
 		dataStore.ensureStatus(this.apiClient, true);
 		dataStore.ensureModels(this.apiClient, true);
 		dataStore.ensureUsage(this.apiClient, true);
+		void this.loadApprovalModeStatus();
 		this.showToast("Refreshing API state", "info", 1200);
 	}
 
@@ -3021,6 +3243,17 @@ export class ComposerChat extends LitElement {
 		const taskRunning = taskHealth?.running ?? 0;
 		const taskFailed = taskHealth?.failed ?? 0;
 		const isShared = Boolean(this.shareToken);
+		const approvalPillClass =
+			this.approvalMode === "auto"
+				? "success"
+				: this.approvalMode === "fail"
+					? "error"
+					: "warning";
+		const approvalTitle =
+			this.approvalModeNotice ??
+			(this.approvalMode
+				? `Approval mode: ${this.approvalMode}`
+				: "Approval mode");
 		const showSessionGallery =
 			!isShared && this.messages.length === 0 && this.sessions.length > 0;
 		const hasMessages = this.messages.length > 0;
@@ -3115,6 +3348,7 @@ export class ComposerChat extends LitElement {
 			<composer-approval
 				.request=${this.pendingApprovalQueue[0] ?? null}
 				.submitting=${this.approvalSubmitting}
+				.queueLength=${this.pendingApprovalQueue.length}
 				@approve=${this.handleApproveRequest}
 				@deny=${this.handleDenyRequest}
 			></composer-approval>
@@ -3178,6 +3412,7 @@ export class ComposerChat extends LitElement {
 				.currentSessionId=${this.currentSessionId}
 				@new-session=${this.createNewSession}
 				@select-session=${this.handleSelectSession}
+				@update-session=${this.handleUpdateSession}
 				@delete-session=${this.handleDeleteSession}
 				@exit-shared=${this.handleExitSharedSession}
 			></composer-session-sidebar>
@@ -3215,6 +3450,19 @@ export class ComposerChat extends LitElement {
 								? html`<div class="status-item" title=${gitSummary}>
 									<span>GIT</span>
 									<span class="pill ${this.status.git.status.modified || this.status.git.status.added || this.status.git.status.deleted ? "warning" : "success"}">${gitBranch}</span>
+								</div>`
+								: ""
+						}
+						${
+							!isShared && this.approvalMode
+								? html`<div class="status-item" title=${approvalTitle}>
+									<span>APPROVALS</span>
+									<span class="pill ${approvalPillClass}">${this.approvalMode}</span>
+									${
+										this.approvalModeNotice
+											? html`<span class="status-note">locked</span>`
+											: ""
+									}
 								</div>`
 								: ""
 						}
@@ -3275,9 +3523,8 @@ export class ComposerChat extends LitElement {
 						<button class="icon-btn" title="Admin Settings" @click=${this.toggleAdminSettings}>🛡️</button>
 						<button
 							class="icon-btn ${this.artifactsOpen ? "active" : ""}"
-							title=${isShared ? "Shared sessions are read-only" : "Artifacts"}
+							title=${isShared ? "Artifacts (read-only)" : "Artifacts"}
 							@click=${this.toggleArtifactsPanel}
-							?disabled=${isShared}
 						>
 							${this.renderIcon("file")}
 						</button>
@@ -3418,6 +3665,7 @@ export class ComposerChat extends LitElement {
 				<div class="input-container">
 					<composer-input
 						.apiClient=${this.apiClient}
+						.slashCommands=${this.slashCommands}
 						@submit=${this.handleSubmit}
 						@voice-error=${this.handleVoiceError}
 						?disabled=${this.loading || isShared}
@@ -3426,15 +3674,15 @@ export class ComposerChat extends LitElement {
 				</div>
 
 				${
-					this.artifactsOpen && !isShared
+					this.artifactsOpen
 						? html`
 							<composer-artifacts-panel
 								.artifacts=${this.getArtifactsList()}
 								.activeFilename=${this.activeArtifact}
-								.sessionId=${this.currentSessionId}
+								.sessionId=${isShared ? null : this.currentSessionId}
 								.apiBaseUrl=${this.apiClient.baseUrl}
 								.apiClient=${this.apiClient}
-								.attachments=${this.getAllAttachments()}
+								.attachments=${this.artifactsPanelAttachments}
 								@close=${this.closeArtifactsPanel}
 								@select-artifact=${(e: CustomEvent<{ filename: string }>) =>
 									this.setActiveArtifact(e.detail.filename)}
@@ -3474,7 +3722,7 @@ export class ComposerChat extends LitElement {
 
 			<command-drawer
 				?open=${this.commandDrawerOpen}
-				.commands=${WEB_SLASH_COMMANDS}
+				.commands=${this.slashCommands}
 				.favorites=${this.commandPrefs.favorites}
 				.recents=${this.commandPrefs.recents}
 				@select-command=${(e: CustomEvent<string>) =>

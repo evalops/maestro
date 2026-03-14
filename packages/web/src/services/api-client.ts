@@ -75,6 +75,7 @@ import {
 	isComposerPlanStatusResponse,
 	isComposerSession,
 	isComposerSessionListResponse,
+	isComposerSessionSummary,
 	isComposerStatusResponse,
 	isComposerUndoOperationResponse,
 	isComposerUndoStatusResponse,
@@ -1625,6 +1626,17 @@ export class ApiClient {
 		return arrayBufferToBase64(bytes);
 	}
 
+	async getSharedSessionAttachmentContentBase64(
+		shareToken: string,
+		attachmentId: string,
+	): Promise<string> {
+		const bytes = await this.getSharedSessionAttachmentBytes(
+			shareToken,
+			attachmentId,
+		);
+		return arrayBufferToBase64(bytes);
+	}
+
 	/**
 	 * Server-side document extraction (PDF/DOCX/XLSX/PPTX/text).
 	 */
@@ -1669,6 +1681,22 @@ export class ApiClient {
 		);
 		if (VALIDATE_API_RESPONSES && !isComposerSession(data)) {
 			throw new Error("Invalid session payload");
+		}
+		return data;
+	}
+
+	async updateSession(
+		sessionId: string,
+		updates: Partial<Pick<SessionSummary, "favorite" | "tags" | "title">>,
+	): Promise<SessionSummary> {
+		const data = await this.tryJsonRequest<SessionSummary>(
+			`/api/sessions/${encodeURIComponent(sessionId)}`,
+			"PATCH",
+			updates,
+			{ headers: { Accept: "application/json" } },
+		);
+		if (VALIDATE_API_RESPONSES && !isComposerSessionSummary(data)) {
+			throw new Error("Invalid session summary payload");
 		}
 		return data;
 	}

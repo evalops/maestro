@@ -6,7 +6,11 @@ import type { ComposerAttachment } from "@evalops/contracts";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { ApiClient } from "../services/api-client.js";
-import { WEB_SLASH_COMMANDS, type WebSlashCommand } from "./slash-commands.js";
+import {
+	WEB_SLASH_COMMANDS,
+	type WebSlashCommand,
+	isWebSlashCommandSupported,
+} from "./slash-commands.js";
 
 type SpeechRecognitionConstructor = new () => SpeechRecognition;
 
@@ -382,6 +386,8 @@ export class ComposerInput extends LitElement {
 	@property({ type: Boolean }) disabled = false;
 	@property({ type: Boolean }) showHint = true;
 	@property({ attribute: false }) apiClient: ApiClient | null = null;
+	@property({ attribute: false }) slashCommands: WebSlashCommand[] =
+		WEB_SLASH_COMMANDS;
 	@state() private value = "";
 	@state() private showSuggestions = false;
 	@state() private suggestionIndex = 0;
@@ -510,10 +516,12 @@ export class ComposerInput extends LitElement {
 			const [token] = trimmed.split(/\s+/);
 			const query = (token ?? "/").slice(1).toLowerCase();
 			type ScoredCommand = { cmd: WebSlashCommand; score: number };
-			const scored: ScoredCommand[] = WEB_SLASH_COMMANDS.map((cmd) => ({
-				cmd,
-				score: this.scoreCommand(cmd, query),
-			}))
+			const scored: ScoredCommand[] = this.slashCommands
+				.filter(isWebSlashCommandSupported)
+				.map((cmd) => ({
+					cmd,
+					score: this.scoreCommand(cmd, query),
+				}))
 				.filter((s) => s.score > 0 || !query)
 				.sort(
 					(a, b) => b.score - a.score || a.cmd.name.localeCompare(b.cmd.name),

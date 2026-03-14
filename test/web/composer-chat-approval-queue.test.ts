@@ -42,6 +42,12 @@ describe("composer-chat approval queue", () => {
 				args: { command: "touch test.txt" },
 				reason: "Needs approval",
 			},
+			{
+				id: "approval-2",
+				toolName: "write",
+				args: { path: "/tmp/demo.txt" },
+				reason: "Writes a file",
+			},
 		];
 
 		await element.submitApprovalDecision("approved", "approval-1");
@@ -50,7 +56,14 @@ describe("composer-chat approval queue", () => {
 			requestId: "approval-1",
 			decision: "approved",
 		});
-		expect(element.pendingApprovalQueue).toEqual([]);
+		expect(element.pendingApprovalQueue).toEqual([
+			{
+				id: "approval-2",
+				toolName: "write",
+				args: { path: "/tmp/demo.txt" },
+				reason: "Writes a file",
+			},
+		]);
 		expect(element.approvalSubmitting).toBe(false);
 	});
 

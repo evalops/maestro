@@ -3,6 +3,7 @@ import {
 	type WebSlashCommandContext,
 	executeWebSlashCommand,
 } from "./composer-chat-slash-commands.js";
+import { WEB_SLASH_COMMANDS } from "./slash-commands.js";
 
 type CommandOutput = {
 	output: string;
@@ -50,6 +51,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		},
 		applyTheme: vi.fn(),
 		applyZenMode: vi.fn(),
+		commands: WEB_SLASH_COMMANDS,
 		createNewSession: vi.fn().mockResolvedValue(undefined),
 		currentSessionId: "session-1",
 		isSharedSession: false,
@@ -59,6 +61,7 @@ function createContext(overrides: Partial<WebSlashCommandContext> = {}) {
 		setCleanMode: vi.fn(),
 		setCurrentModel: vi.fn(),
 		setFooterMode: vi.fn(),
+		setInputValue: vi.fn(),
 		setQueueMode: vi.fn(),
 		setTransportPreference: vi.fn(),
 		theme: "dark",
@@ -126,6 +129,58 @@ describe("executeWebSlashCommand", () => {
 			{
 				output: "Model set to anthropic/claude-opus",
 				isError: false,
+			},
+		]);
+	});
+
+	it("inserts custom command prompts by command name", async () => {
+		const customCommand = {
+			name: "triage",
+			description: "Triage an issue",
+			usage: "/triage issue=<value>",
+			source: "custom" as const,
+			prompt: "Triage issue {{issue}}",
+			args: [{ name: "issue", required: true }],
+		};
+		const setInputValue = vi.fn();
+		const { context, outputs } = createContext({
+			commands: [...WEB_SLASH_COMMANDS, customCommand],
+			setInputValue,
+		});
+
+		await executeWebSlashCommand("triage", "issue=42", context);
+
+		expect(setInputValue).toHaveBeenCalledWith("Triage issue 42");
+		expect(outputs).toEqual([
+			{
+				output: 'Inserted command "triage". Edit then submit.',
+				isError: false,
+			},
+		]);
+	});
+
+	it("validates custom /commands run invocations", async () => {
+		const customCommand = {
+			name: "triage",
+			description: "Triage an issue",
+			usage: "/triage issue=<value>",
+			source: "custom" as const,
+			prompt: "Triage issue {{issue}}",
+			args: [{ name: "issue", required: true }],
+		};
+		const setInputValue = vi.fn();
+		const { context, outputs } = createContext({
+			commands: [...WEB_SLASH_COMMANDS, customCommand],
+			setInputValue,
+		});
+
+		await executeWebSlashCommand("commands", "run triage", context);
+
+		expect(setInputValue).not.toHaveBeenCalled();
+		expect(outputs).toEqual([
+			{
+				output: "Missing required arg: issue\nUsage: /triage issue=<value>",
+				isError: true,
 			},
 		]);
 	});

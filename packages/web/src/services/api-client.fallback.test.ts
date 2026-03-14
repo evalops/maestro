@@ -271,6 +271,64 @@ describe("ApiClient fallback resolution", () => {
 		expect(init.body).toBe(JSON.stringify({ title: "Refactor" }));
 	});
 
+	it("uses the shared JSON helper for session updates", async () => {
+		const session = {
+			id: "session-1",
+			title: "Refactor",
+			createdAt: "2026-03-12T00:00:00.000Z",
+			updatedAt: "2026-03-12T00:05:00.000Z",
+			messageCount: 3,
+			favorite: true,
+			tags: ["bugfix"],
+		};
+		const fetchMock = vi.fn().mockResolvedValueOnce(makeJsonResponse(session));
+
+		global.fetch = fetchMock;
+
+		const api = new ApiClient("https://app.test");
+		const updated = await api.updateSession("session-1", {
+			favorite: true,
+			tags: ["bugfix"],
+		});
+
+		expect(updated).toEqual(session);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(String(url)).toContain("/api/sessions/session-1");
+		const headers = new Headers((init as RequestInit).headers);
+		expect((init as RequestInit).method).toBe("PATCH");
+		expect(headers.get("content-type")).toBe("application/json");
+		expect((init as RequestInit).body).toBe(
+			JSON.stringify({ favorite: true, tags: ["bugfix"] }),
+		);
+	});
+
+	it("hydrates shared session attachment content as base64", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(Uint8Array.from([1, 2, 3]), { status: 200 }),
+			);
+
+		global.fetch = fetchMock;
+
+		const api = new ApiClient("https://app.test");
+		const content = await api.getSharedSessionAttachmentContentBase64(
+			"share-1",
+			"att-1",
+		);
+
+		expect(content).toBe("AQID");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(String(url)).toContain(
+			"/api/sessions/shared/share-1/attachments/att-1",
+		);
+		expect((init as RequestInit).method).toBe("GET");
+	});
+
 	it("preserves complex JSON payloads for branch creation", async () => {
 		const branchResponse = {
 			success: true,

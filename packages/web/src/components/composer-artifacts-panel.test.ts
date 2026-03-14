@@ -72,4 +72,45 @@ describe("ComposerArtifactsPanel", () => {
 			"noopener,noreferrer",
 		);
 	});
+
+	it("hides remote artifact actions when links cannot be resolved", async () => {
+		const apiClient = {
+			baseUrl: "https://api.test",
+		} as unknown as ApiClient;
+		const artifacts: Artifact[] = [
+			{
+				filename: "preview.html",
+				content: "<p>Preview</p>",
+				createdAt: 1,
+				updatedAt: 1,
+			},
+		];
+
+		const element = await fixture<ComposerArtifactsPanel>(
+			html`<composer-artifacts-panel
+				.artifacts=${artifacts}
+				.activeFilename=${"preview.html"}
+				.apiClient=${apiClient}
+			></composer-artifacts-panel>`,
+		);
+
+		await element.updateComplete;
+
+		expect(
+			element.shadowRoot?.querySelector('button[title="Open in new tab"]'),
+		).toBeNull();
+		expect(
+			element.shadowRoot?.querySelector('button[title="Download file"]'),
+		).toBeNull();
+		expect(
+			element.shadowRoot?.querySelector(
+				'button[title="Download standalone HTML"]',
+			),
+		).toBeNull();
+		expect(
+			element.shadowRoot?.querySelector(
+				'button[title="Download artifacts zip"]',
+			),
+		).toBeNull();
+	});
 });

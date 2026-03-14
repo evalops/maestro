@@ -1,5 +1,10 @@
 import type { ApiClient } from "../services/api-client.js";
-import { WEB_SLASH_COMMANDS } from "./slash-commands.js";
+import {
+	WEB_SLASH_COMMANDS,
+	type WebSlashCommand,
+	findCustomWebSlashCommand,
+	renderCustomWebSlashCommand,
+} from "./slash-commands.js";
 
 type WebSlashCommandApiClient = Pick<
 	ApiClient,
@@ -36,25 +41,62 @@ type WebSlashCommandApiClient = Pick<
 
 type CommandOutputAppender = (output: string, isError?: boolean) => void;
 
+type ApprovalModeStatusUpdate = {
+	mode: "auto" | "prompt" | "fail";
+	message?: string;
+	notify?: boolean;
+	sessionId?: string | null;
+};
+
 export interface WebSlashCommandContext {
 	apiClient: WebSlashCommandApiClient;
 	appendCommandOutput: CommandOutputAppender;
 	applyTheme: (theme: "dark" | "light") => void;
 	applyZenMode: (enabled: boolean) => void;
+	commands: WebSlashCommand[];
 	createNewSession: () => Promise<void>;
 	currentSessionId: string | null;
 	isSharedSession: boolean;
 	openCommandDrawer: () => void;
 	openModelSelector: () => void;
 	selectSession: (sessionId: string) => Promise<void>;
+	setApprovalModeStatus: (status: ApprovalModeStatusUpdate) => void;
 	setCleanMode: (mode: "off" | "soft" | "aggressive") => void;
 	setCurrentModel: (model: string) => void;
 	setFooterMode: (mode: "ensemble" | "solo") => void;
+	setInputValue: (text: string) => void;
 	setQueueMode: (mode: "one" | "all") => void;
 	setTransportPreference: (mode: "auto" | "sse" | "ws") => void;
 	theme: "dark" | "light";
 	updateModelMeta: () => Promise<void> | void;
 	zenMode: boolean;
+}
+
+function formatSlashCommandSummary(command: WebSlashCommand): string {
+	const suffix =
+		command.source === "custom"
+			? " [custom]"
+			: command.supported === false
+				? " [CLI only]"
+				: "";
+	return `/${command.name} — ${command.description}${suffix}`;
+}
+
+function runCustomSlashCommand(
+	command: WebSlashCommand,
+	args: string,
+	context: WebSlashCommandContext,
+): boolean {
+	const rendered = renderCustomWebSlashCommand(command, args);
+	if (!rendered.ok) {
+		context.appendCommandOutput(rendered.error, true);
+		return true;
+	}
+	context.setInputValue(rendered.prompt);
+	context.appendCommandOutput(
+		`Inserted command "${command.name}". Edit then submit.`,
+	);
+	return true;
 }
 
 function getPreviewDiffText(
@@ -99,12 +141,19 @@ export async function executeWebSlashCommand(
 		return false;
 	};
 
+	const customCommand = findCustomWebSlashCommand(context.commands, command);
+	if (customCommand) {
+		runCustomSlashCommand(customCommand, args, context);
+		return;
+	}
+
 	try {
 		switch (command) {
 			case "help": {
-				const lines = WEB_SLASH_COMMANDS.map(
-					(cmd) => `/${cmd.name} — ${cmd.description}`,
-				);
+				const commands = context.commands.length
+					? context.commands
+					: WEB_SLASH_COMMANDS;
+				const lines = commands.map(formatSlashCommandSummary);
 				context.appendCommandOutput(formatCommandCodeBlock(lines.join("\n")));
 				break;
 			}
@@ -495,7 +544,46 @@ export async function executeWebSlashCommand(
 				break;
 			}
 			case "commands": {
-				context.openCommandDrawer();
+				const tokens = args.split(/\s+/).filter(Boolean);
+				const customCommands = context.commands.filter(
+					(command) => command.source === "custom",
+				);
+				if (tokens.length === 0) {
+					context.openCommandDrawer();
+					break;
+				}
+				if (tokens[0] === "list") {
+					if (customCommands.length === 0) {
+						context.appendCommandOutput("No custom commands available.");
+						break;
+					}
+					const lines = customCommands.map(
+						(command) => `• ${command.name} — ${command.description}`,
+					);
+					context.appendCommandOutput(formatCommandCodeBlock(lines.join("\n")));
+					break;
+				}
+				if (tokens[0] === "run") {
+					const name = tokens[1];
+					if (!name) {
+						context.appendCommandOutput(
+							"Usage: /commands run <name> arg=value ...",
+							true,
+						);
+						break;
+					}
+					const target = findCustomWebSlashCommand(context.commands, name);
+					if (!target) {
+						context.appendCommandOutput(`Command ${name} not found.`, true);
+						break;
+					}
+					runCustomSlashCommand(target, tokens.slice(2).join(" "), context);
+					break;
+				}
+				context.appendCommandOutput(
+					"Usage: /commands | /commands list | /commands run <name> arg=value ...",
+					true,
+				);
 				break;
 			}
 			case "history":
@@ -533,11 +621,21 @@ export async function executeWebSlashCommand(
 						args,
 						context.currentSessionId ?? "default",
 					);
+					context.setApprovalModeStatus({
+						mode: result.mode,
+						message: result.message,
+						notify: true,
+						sessionId: context.currentSessionId,
+					});
 					context.appendCommandOutput(formatCommandJsonBlock(result));
 				} else {
 					const status = await context.apiClient.getApprovalMode(
 						context.currentSessionId ?? "default",
 					);
+					context.setApprovalModeStatus({
+						mode: status.mode,
+						sessionId: context.currentSessionId,
+					});
 					context.appendCommandOutput(formatCommandJsonBlock(status));
 				}
 				break;
