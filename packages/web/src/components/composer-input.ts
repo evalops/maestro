@@ -30,6 +30,11 @@ interface SpeechRecognition extends EventTarget {
 	stop(): void;
 }
 
+type MentionStatus = {
+	kind: "loading" | "error";
+	message: string;
+};
+
 declare global {
 	interface Window {
 		SpeechRecognition?: SpeechRecognitionConstructor;
@@ -299,6 +304,27 @@ export class ComposerInput extends LitElement {
 			color: var(--accent-amber, #d4a012);
 		}
 
+		.mention-status {
+			position: absolute;
+			bottom: 100%;
+			left: 0;
+			right: 0;
+			margin-bottom: 0.5rem;
+			padding: 0.55rem 0.75rem;
+			background: var(--bg-secondary, #161b22);
+			border: 1px solid var(--border-primary, #1e2023);
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+			color: var(--text-secondary, #9ca3af);
+			font-family: var(--font-mono, monospace);
+			font-size: 0.75rem;
+			z-index: 95;
+		}
+
+		.mention-status.error {
+			border-color: rgba(239, 68, 68, 0.4);
+			color: var(--accent-red, #ef4444);
+		}
+
 		.slash-hint {
 			position: absolute;
 			bottom: 100%;
@@ -395,12 +421,15 @@ export class ComposerInput extends LitElement {
 	@state() private slashHint: WebSlashCommand | null = null;
 	@state() private slashMatches: WebSlashCommand[] = [];
 	@state() private slashIndex = 0;
+	@state() private mentionStatus: MentionStatus | null = null;
 	@state() private attachments: ComposerAttachment[] = [];
 	@state() private voiceSupported = false;
 	@state() private voiceActive = false;
 
 	private maxLength = 10000;
 	private allFiles: string[] = [];
+	private filesLoaded = false;
+	private filesPromise: Promise<string[]> | null = null;
 	private localApiClient: ApiClient | null = null;
 	private mentionMatch: { start: number; end: number; query: string } | null =
 		null;
@@ -432,12 +461,45 @@ export class ComposerInput extends LitElement {
 		target.style.height = "auto";
 		target.style.height = `${Math.min(target.scrollHeight, 240)}px`;
 
-		// Check for mention (awaited to prevent race conditions)
-		await this.checkMention(target);
+		// Check for mention without blocking the input path.
+		void this.checkMention(target);
 		this.updateSlashHint(target.value);
 	}
 
+	private async loadAllFiles(): Promise<string[]> {
+		if (this.filesLoaded) {
+			return this.allFiles;
+		}
+
+		if (!this.filesPromise) {
+			this.filesPromise = this.getApiClient()
+				.getFiles({ throwOnError: true })
+				.then((files) => {
+					this.allFiles = files;
+					this.filesLoaded = true;
+					return files;
+				})
+				.finally(() => {
+					this.filesPromise = null;
+				});
+		}
+
+		return this.filesPromise;
+	}
+
+	private prefetchFiles() {
+		if (this.filesLoaded || this.filesPromise) {
+			return;
+		}
+		void this.loadAllFiles().catch(() => {});
+	}
+
+	private handleTextareaFocus() {
+		this.prefetchFiles();
+	}
+
 	private async checkMention(textarea: HTMLTextAreaElement) {
+		const requestId = ++this.checkMentionCounter;
 		const cursor = textarea.selectionStart;
 		const textBeforeCursor = this.value.slice(0, cursor);
 
@@ -446,14 +508,33 @@ export class ComposerInput extends LitElement {
 
 		if (match) {
 			const query = (match[1] ?? "").toLowerCase();
-			const requestId = ++this.checkMentionCounter;
-			const apiClient = this.getApiClient();
+			this.mentionMatch = {
+				start: match.index,
+				end: cursor,
+				query: match[1] ?? "",
+			};
 
-			if (this.allFiles.length === 0) {
-				this.allFiles = await apiClient.getFiles();
-				// Ignore stale results
+			if (!this.filesLoaded) {
+				this.showSuggestions = false;
+				this.filteredFiles = [];
+				this.mentionStatus = {
+					kind: "loading",
+					message: "Loading files…",
+				};
+				try {
+					await this.loadAllFiles();
+				} catch {
+					if (requestId !== this.checkMentionCounter) return;
+					this.mentionStatus = {
+						kind: "error",
+						message: "Couldn't load files. Try again.",
+					};
+					return;
+				}
 				if (requestId !== this.checkMentionCounter) return;
 			}
+
+			this.mentionStatus = null;
 
 			// Handle empty query - return first files without ranking
 			if (!query) {
@@ -481,17 +562,13 @@ export class ComposerInput extends LitElement {
 			if (this.filteredFiles.length > 0) {
 				this.showSuggestions = true;
 				this.suggestionIndex = 0;
-				this.mentionMatch = {
-					start: match.index,
-					end: cursor,
-					query: match[1] ?? "",
-				};
 				return;
 			}
 		}
 
 		this.showSuggestions = false;
 		this.mentionMatch = null;
+		this.mentionStatus = null;
 	}
 
 	private getApiClient(): ApiClient {
@@ -569,6 +646,12 @@ export class ComposerInput extends LitElement {
 	}
 
 	private handleKeyDown(e: KeyboardEvent) {
+		if (this.mentionStatus && e.key === "Escape") {
+			e.preventDefault();
+			this.mentionStatus = null;
+			return;
+		}
+
 		// Slash cycling (Tab / Shift+Tab) if not showing file suggestions
 		if (!this.showSuggestions && this.value.trim().startsWith("/")) {
 			if (e.key === "Tab") {
@@ -922,6 +1005,10 @@ export class ComposerInput extends LitElement {
 		);
 	}
 
+	private getTextarea(): HTMLTextAreaElement | null {
+		return this.shadowRoot?.querySelector("textarea") ?? null;
+	}
+
 	private submit() {
 		const text = this.value.trim();
 		if ((!text && this.attachments.length === 0) || this.disabled) return;
@@ -938,7 +1025,8 @@ export class ComposerInput extends LitElement {
 		this.value = "";
 		this.attachments = [];
 		this.showSuggestions = false;
-		const textarea = this.shadowRoot?.querySelector("textarea");
+		this.mentionStatus = null;
+		const textarea = this.getTextarea();
 		if (textarea) {
 			textarea.value = "";
 			textarea.style.height = "auto";
@@ -946,17 +1034,21 @@ export class ComposerInput extends LitElement {
 	}
 
 	private syncTextareaValue(text: string) {
-		const textarea = this.shadowRoot?.querySelector("textarea");
+		const textarea = this.getTextarea();
 		if (!textarea) return;
 		textarea.value = text;
 		textarea.style.height = "auto";
 		textarea.style.height = `${Math.min(textarea.scrollHeight, 240)}px`;
 	}
 
+	public focusInput() {
+		this.getTextarea()?.focus();
+	}
+
 	public setValue(text: string) {
 		this.value = text;
 		this.syncTextareaValue(text);
-		this.shadowRoot?.querySelector("textarea")?.focus();
+		this.focusInput();
 	}
 
 	private getCharCountClass(): string {
@@ -998,6 +1090,15 @@ export class ComposerInput extends LitElement {
 						: null
 				}
 				${
+					this.mentionStatus && !this.showSuggestions
+						? html`
+							<div class="mention-status ${this.mentionStatus.kind === "error" ? "error" : ""}">
+								${this.mentionStatus.message}
+							</div>
+						`
+						: null
+				}
+				${
 					this.showSuggestions
 						? html`
 					<div class="suggestions">
@@ -1019,6 +1120,7 @@ export class ComposerInput extends LitElement {
 					<textarea
 						.value=${this.value}
 						@input=${this.handleInput}
+						@focus=${this.handleTextareaFocus}
 						@keydown=${this.handleKeyDown}
 						?disabled=${this.disabled}
 						placeholder="> Type a message or use slash commands: /run /config /help"

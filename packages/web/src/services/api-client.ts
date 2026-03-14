@@ -1298,7 +1298,7 @@ export class ApiClient {
 	/**
 	 * Get workspace files for mention
 	 */
-	async getFiles(): Promise<string[]> {
+	async getFiles(options: { throwOnError?: boolean } = {}): Promise<string[]> {
 		try {
 			const data = await this.fetchJsonWithFallback("/api/files");
 			if (VALIDATE_API_RESPONSES && !isComposerFilesResponse(data)) {
@@ -1307,6 +1307,9 @@ export class ApiClient {
 			return data.files || [];
 		} catch (e) {
 			console.error("Failed to fetch files:", e);
+			if (options.throwOnError) {
+				throw e;
+			}
 			return [];
 		}
 	}

@@ -99,4 +99,17 @@ describe("ApiClient error handling", () => {
 			expect(clientError.payload?.composer?.category).toBe("permission");
 		}
 	});
+
+	it("keeps file lookup fallback behavior unless throwOnError is requested", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		global.fetch = vi.fn().mockRejectedValue(new Error("network down"));
+
+		const api = new ApiClient("http://localhost:8080");
+
+		await expect(api.getFiles()).resolves.toEqual([]);
+		await expect(api.getFiles({ throwOnError: true })).rejects.toThrow(
+			"network down",
+		);
+		expect(errorSpy).toHaveBeenCalled();
+	});
 });

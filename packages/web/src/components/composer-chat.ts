@@ -1395,13 +1395,27 @@ export class ComposerChat extends LitElement {
 
 	private closeCommandDrawer() {
 		this.commandDrawerOpen = false;
+		this.scheduleComposerInputFocus();
+	}
+
+	private getComposerInput(): ComposerInput | null {
+		return this.shadowRoot?.querySelector(
+			"composer-input",
+		) as ComposerInput | null;
+	}
+
+	private focusComposerInput() {
+		this.getComposerInput()?.focusInput?.();
+	}
+
+	private scheduleComposerInputFocus() {
+		void this.updateComplete.then(() => {
+			this.focusComposerInput();
+		});
 	}
 
 	private setComposerInputValue(text: string) {
-		const input = this.shadowRoot?.querySelector(
-			"composer-input",
-		) as ComposerInput | null;
-		input?.setValue?.(text);
+		this.getComposerInput()?.setValue?.(text);
 	}
 
 	private handleCommandSelect(name: string) {
@@ -1414,7 +1428,7 @@ export class ComposerChat extends LitElement {
 			favorites: this.commandPrefs.favorites,
 			recents,
 		});
-		this.commandDrawerOpen = false;
+		this.closeCommandDrawer();
 	}
 
 	private handleToggleFavorite(name: string) {
@@ -2046,7 +2060,16 @@ export class ComposerChat extends LitElement {
 		this.settingsOpen = !this.settingsOpen;
 	}
 
+	private hasAdminSettingsAccess() {
+		return Boolean(
+			this.status?.database.configured && this.status.database.connected,
+		);
+	}
+
 	private toggleAdminSettings() {
+		if (!this.hasAdminSettingsAccess()) {
+			return;
+		}
 		this.adminSettingsOpen = !this.adminSettingsOpen;
 	}
 
@@ -3520,7 +3543,11 @@ export class ComposerChat extends LitElement {
 							${this.renderIcon(this.theme === "dark" ? "sun" : "moon")}
 						</button>
 						<button class="icon-btn" title="Settings" @click=${this.toggleSettings}>${this.renderIcon("settings")}</button>
-						<button class="icon-btn" title="Admin Settings" @click=${this.toggleAdminSettings}>🛡️</button>
+						${
+							this.hasAdminSettingsAccess()
+								? html`<button class="icon-btn" title="Admin Settings" @click=${this.toggleAdminSettings}>🛡️</button>`
+								: null
+						}
 						<button
 							class="icon-btn ${this.artifactsOpen ? "active" : ""}"
 							title=${isShared ? "Artifacts (read-only)" : "Artifacts"}
@@ -3708,7 +3735,7 @@ export class ComposerChat extends LitElement {
 			}
 
 			${
-				this.adminSettingsOpen
+				this.adminSettingsOpen && this.hasAdminSettingsAccess()
 					? html`
 				<div class="side-panel admin">
 					<admin-settings
