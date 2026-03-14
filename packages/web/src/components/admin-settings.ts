@@ -924,213 +924,8 @@ export class AdminSettings extends LitElement {
 	@state() private tabLoading = false;
 	@state() private error: string | null = null;
 
-	// Default data - renders immediately without API
-	private static readonly DEFAULT_ROLES: Role[] = [
-		{
-			id: "admin",
-			name: "Admin",
-			description: "Full access to all features",
-			isSystem: true,
-		},
-		{
-			id: "developer",
-			name: "Developer",
-			description: "Standard development access",
-			isSystem: true,
-		},
-		{
-			id: "viewer",
-			name: "Viewer",
-			description: "Read-only access",
-			isSystem: true,
-		},
-	];
-
-	private static readonly DEFAULT_MODELS: ModelApproval[] = [
-		{
-			id: "1",
-			orgId: "org",
-			modelId: "claude-sonnet-4-20250514",
-			provider: "anthropic",
-			status: "approved",
-			spendUsed: 0,
-			tokenUsed: 0,
-		},
-		{
-			id: "2",
-			orgId: "org",
-			modelId: "claude-3-5-haiku-20241022",
-			provider: "anthropic",
-			status: "approved",
-			spendUsed: 0,
-			tokenUsed: 0,
-		},
-		{
-			id: "3",
-			orgId: "org",
-			modelId: "gpt-4o",
-			provider: "openai",
-			status: "pending",
-			spendUsed: 0,
-			tokenUsed: 0,
-		},
-		{
-			id: "4",
-			orgId: "org",
-			modelId: "gpt-4o-mini",
-			provider: "openai",
-			status: "approved",
-			spendUsed: 0,
-			tokenUsed: 0,
-		},
-		{
-			id: "5",
-			orgId: "org",
-			modelId: "gemini-2.0-flash",
-			provider: "google",
-			status: "pending",
-			spendUsed: 0,
-			tokenUsed: 0,
-		},
-	];
-
-	private static readonly DEFAULT_DIRECTORY_RULES: DirectoryRule[] = [
-		{
-			id: "1",
-			orgId: "org",
-			pattern: "/home/**/projects/**",
-			isAllowed: true,
-			priority: 1,
-			description: "Allow project directories",
-		},
-		{
-			id: "2",
-			orgId: "org",
-			pattern: "/etc/**",
-			isAllowed: false,
-			priority: 2,
-			description: "Block system config",
-		},
-		{
-			id: "3",
-			orgId: "org",
-			pattern: "**/.env*",
-			isAllowed: false,
-			priority: 3,
-			description: "Block environment files",
-		},
-	];
-
-	private static readonly DEFAULT_SETTINGS: OrganizationSettings = {
-		maxTokensPerUser: 1000000,
-		maxSessionsPerUser: 50,
-		maxApiKeysPerUser: 5,
-		piiRedactionEnabled: true,
-		piiPatterns: [
-			"\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b",
-			"\\b\\d{3}-\\d{2}-\\d{4}\\b",
-		],
-		auditRetentionDays: 90,
-		alertWebhooks: [],
-	};
-
-	private static readonly DEFAULT_AUDIT_LOGS: AuditLog[] = [
-		{
-			id: "1",
-			orgId: "org",
-			userId: "user_abc123",
-			action: "session.create",
-			resourceType: "session",
-			status: "success",
-			createdAt: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
-		},
-		{
-			id: "2",
-			orgId: "org",
-			userId: "user_abc123",
-			action: "tool.bash.execute",
-			resourceType: "tool",
-			status: "success",
-			createdAt: new Date(Date.now() - 14 * 60 * 1000).toISOString(),
-		},
-		{
-			id: "3",
-			orgId: "org",
-			userId: "user_abc123",
-			action: "tool.write.execute",
-			resourceType: "tool",
-			status: "success",
-			createdAt: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
-		},
-		{
-			id: "4",
-			orgId: "org",
-			userId: "user_def456",
-			action: "session.create",
-			resourceType: "session",
-			status: "success",
-			createdAt: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
-		},
-		{
-			id: "5",
-			orgId: "org",
-			userId: "user_def456",
-			action: "tool.bash.execute",
-			resourceType: "tool",
-			status: "denied",
-			createdAt: new Date(Date.now() - 44 * 60 * 1000).toISOString(),
-		},
-		{
-			id: "6",
-			orgId: "org",
-			userId: "user_def456",
-			action: "model.select",
-			resourceType: "model",
-			status: "success",
-			createdAt: new Date(Date.now() - 43 * 60 * 1000).toISOString(),
-		},
-		{
-			id: "7",
-			orgId: "org",
-			userId: "user_ghi789",
-			action: "directory.access.denied",
-			resourceType: "directory",
-			status: "denied",
-			createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-		},
-		{
-			id: "8",
-			orgId: "org",
-			userId: "user_abc123",
-			action: "tool.edit.execute",
-			resourceType: "tool",
-			status: "success",
-			createdAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
-		},
-	];
-
-	// Data states - initialized with defaults
-	@state() private quota: UsageQuota | null = {
-		userId: "user",
-		orgId: "org",
-		tokenQuota: 1000000,
-		tokenUsed: 245000,
-		tokenRemaining: 755000,
-		spendLimit: 100,
-		spendUsed: 24.5,
-		spendRemaining: 75.5,
-		quotaResetAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-	};
-	@state() private orgUsage: OrgUsageSummary | null = {
-		totalTokens: 1250000,
-		totalSessions: 342,
-		totalUsers: 8,
-		topUsers: [],
-		modelBreakdown: [
-			{ modelId: "claude-sonnet-4-20250514", tokenUsed: 850000 },
-			{ modelId: "gpt-4o-mini", tokenUsed: 400000 },
-		],
-	};
+	@state() private quota: UsageQuota | null = null;
+	@state() private orgUsage: OrgUsageSummary | null = null;
 
 	// Usage trend data (last 14 days)
 	private readonly usageTrend = [
@@ -1141,14 +936,11 @@ export class AdminSettings extends LitElement {
 		18, 24, 31, 28, 35, 42, 38, 45, 41, 52, 48, 58, 54, 62,
 	];
 	@state() private members: OrgMember[] = [];
-	@state() private roles: Role[] = AdminSettings.DEFAULT_ROLES;
+	@state() private roles: Role[] = [];
 	@state() private alerts: Alert[] = [];
-	@state() private modelApprovals: ModelApproval[] =
-		AdminSettings.DEFAULT_MODELS;
-	@state() private directoryRules: DirectoryRule[] =
-		AdminSettings.DEFAULT_DIRECTORY_RULES;
-	@state() private orgSettings: OrganizationSettings | null =
-		AdminSettings.DEFAULT_SETTINGS;
+	@state() private modelApprovals: ModelApproval[] = [];
+	@state() private directoryRules: DirectoryRule[] = [];
+	@state() private orgSettings: OrganizationSettings | null = null;
 
 	// UI states
 	@state() private toast: Toast | null = null;
@@ -1161,10 +953,8 @@ export class AdminSettings extends LitElement {
 	@state() private newRulePattern = "";
 	@state() private newRuleAccess: "allow" | "deny" = "allow";
 	@state() private newRuleDescription = "";
-	@state() private piiPatterns =
-		AdminSettings.DEFAULT_SETTINGS.piiPatterns?.join("\n") || "";
-	@state() private auditRetention =
-		AdminSettings.DEFAULT_SETTINGS.auditRetentionDays || 90;
+	@state() private piiPatterns = "";
+	@state() private auditRetention = 90;
 	@state() private webhookUrls = "";
 
 	private api: EnterpriseApiClient;
@@ -1181,7 +971,7 @@ export class AdminSettings extends LitElement {
 			(message, type) => this.showToast(message, type),
 			(value) => this.formatDate(value),
 			(status) => this.getStatusBadgeClass(status),
-			AdminSettings.DEFAULT_AUDIT_LOGS,
+			[],
 		);
 		this.policyTab = new AdminPolicyTab(
 			this,
@@ -1192,9 +982,8 @@ export class AdminSettings extends LitElement {
 
 	override async connectedCallback() {
 		super.connectedCallback();
-		// Try to load real data in background, but UI renders immediately with defaults
 		if (this.api.isAuthenticated()) {
-			this.loadData();
+			void this.loadData();
 			this.startAlertRefresh();
 		}
 	}
@@ -1248,8 +1037,6 @@ export class AdminSettings extends LitElement {
 	}
 
 	private async loadTabData(tab: AdminTab) {
-		// Don't show loading state - we have defaults
-		// Only fetch if authenticated
 		if (!this.api.isAuthenticated()) return;
 
 		try {
@@ -1257,37 +1044,36 @@ export class AdminSettings extends LitElement {
 				case "users": {
 					const [membersRes, rolesRes] = await Promise.all([
 						this.api.getOrgMembers().catch(() => ({ members: [] })),
-						this.api
-							.getRoles()
-							.catch(() => ({ roles: AdminSettings.DEFAULT_ROLES })),
+						this.api.getRoles().catch(() => ({ roles: [] })),
 					]);
-					if (membersRes.members.length > 0) this.members = membersRes.members;
-					if (rolesRes.roles.length > 0) this.roles = rolesRes.roles;
+					this.members = membersRes.members;
+					this.roles = rolesRes.roles;
+					if (
+						this.roles.length > 0 &&
+						!this.roles.some((role) => role.id === this.inviteRoleId)
+					) {
+						this.inviteRoleId = this.roles[0]?.id ?? "";
+					}
 					break;
 				}
 				case "models": {
 					const approvalsRes = await this.api
 						.getModelApprovals()
 						.catch(() => null);
-					if (approvalsRes?.approvals.length)
-						this.modelApprovals = approvalsRes.approvals;
+					this.modelApprovals = approvalsRes?.approvals ?? [];
 					break;
 				}
 				case "directories": {
 					const rulesRes = await this.api.getDirectoryRules().catch(() => null);
-					if (rulesRes?.rules.length) this.directoryRules = rulesRes.rules;
+					this.directoryRules = rulesRes?.rules ?? [];
 					break;
 				}
 				case "security": {
 					const settings = await this.api.getOrgSettings().catch(() => null);
-					if (settings) {
-						this.orgSettings = settings;
-						this.piiPatterns =
-							settings.piiPatterns?.join("\n") || this.piiPatterns;
-						this.auditRetention =
-							settings.auditRetentionDays || this.auditRetention;
-						this.webhookUrls = settings.alertWebhooks?.join("\n") || "";
-					}
+					this.orgSettings = settings;
+					this.piiPatterns = settings?.piiPatterns?.join("\n") || "";
+					this.auditRetention = settings?.auditRetentionDays || 90;
+					this.webhookUrls = settings?.alertWebhooks?.join("\n") || "";
 					break;
 				}
 				case "audit": {
@@ -1302,8 +1088,11 @@ export class AdminSettings extends LitElement {
 			}
 		} catch (e) {
 			console.error("Failed to load admin tab data", { tab, error: e });
-			// Don't show error toast - we have defaults
 		}
+	}
+
+	private renderUnavailableState(message: string) {
+		return html`<div class="empty-state">${message}</div>`;
 	}
 
 	private async selectTab(tab: AdminTab) {
@@ -1403,7 +1192,11 @@ export class AdminSettings extends LitElement {
 
 	// User management actions
 	private async handleInviteUser() {
-		if (!this.inviteEmail || !this.inviteRoleId) {
+		const hasSelectedRole = this.roles.some(
+			(role) => role.id === this.inviteRoleId,
+		);
+
+		if (!this.inviteEmail || !this.inviteRoleId || !hasSelectedRole) {
 			this.showToast("Please enter email and select a role", "error");
 			return;
 		}
@@ -1642,6 +1435,12 @@ export class AdminSettings extends LitElement {
 	// =========================================================================
 
 	private renderOverviewTab() {
+		if (!this.api.isAuthenticated()) {
+			return this.renderUnavailableState(
+				"Sign in with enterprise credentials to view admin settings.",
+			);
+		}
+
 		const unreadAlerts = this.alerts.filter((a) => !a.isRead).length;
 
 		return html`
@@ -1799,11 +1598,18 @@ export class AdminSettings extends LitElement {
 	}
 
 	private renderUsersTab() {
+		if (!this.api.isAuthenticated()) {
+			return this.renderUnavailableState(
+				"Sign in with enterprise credentials to manage users and roles.",
+			);
+		}
+
 		if (this.tabLoading) {
 			return html`<div class="tab-loading"><span class="spinner"></span>Loading users...</div>`;
 		}
 
 		const filteredMembers = this.filteredMembers;
+		const canInvite = this.roles.length > 0;
 
 		return html`
 			<div class="section">
@@ -1828,6 +1634,7 @@ export class AdminSettings extends LitElement {
 							<label class="form-label">Role</label>
 							<select
 								class="form-input"
+								?disabled=${!canInvite}
 								.value=${this.inviteRoleId}
 								@change=${(e: Event) => {
 									this.inviteRoleId = (e.target as HTMLSelectElement).value;
@@ -1836,8 +1643,13 @@ export class AdminSettings extends LitElement {
 								${this.roles.map((role) => html`<option value=${role.id}>${role.name}</option>`)}
 							</select>
 						</div>
-						<button class="btn btn-primary" @click=${this.handleInviteUser}>Invite</button>
+						<button class="btn btn-primary" ?disabled=${!canInvite} @click=${this.handleInviteUser}>Invite</button>
 					</div>
+					${
+						canInvite
+							? ""
+							: html`<div class="empty-state" style="padding: 1rem 0 0;">No roles available. Please wait for roles to load before inviting users.</div>`
+					}
 				</div>
 			</div>
 
@@ -1933,6 +1745,12 @@ export class AdminSettings extends LitElement {
 	}
 
 	private renderModelsTab() {
+		if (!this.api.isAuthenticated()) {
+			return this.renderUnavailableState(
+				"Sign in with enterprise credentials to review model approvals.",
+			);
+		}
+
 		if (this.tabLoading) {
 			return html`<div class="tab-loading"><span class="spinner"></span>Loading models...</div>`;
 		}
@@ -2006,6 +1824,12 @@ export class AdminSettings extends LitElement {
 	}
 
 	private renderDirectoriesTab() {
+		if (!this.api.isAuthenticated()) {
+			return this.renderUnavailableState(
+				"Sign in with enterprise credentials to manage directory rules.",
+			);
+		}
+
 		if (this.tabLoading) {
 			return html`<div class="tab-loading"><span class="spinner"></span>Loading directory rules...</div>`;
 		}
@@ -2110,6 +1934,12 @@ export class AdminSettings extends LitElement {
 	}
 
 	private renderSecurityTab() {
+		if (!this.api.isAuthenticated()) {
+			return this.renderUnavailableState(
+				"Sign in with enterprise credentials to configure security settings.",
+			);
+		}
+
 		if (this.tabLoading) {
 			return html`<div class="tab-loading"><span class="spinner"></span>Loading security settings...</div>`;
 		}
@@ -2191,10 +2021,22 @@ INTERNAL-[A-Z]{3}-\\d{4}"
 	}
 
 	private renderAuditTab() {
+		if (!this.api.isAuthenticated()) {
+			return this.renderUnavailableState(
+				"Sign in with enterprise credentials to inspect audit logs.",
+			);
+		}
+
 		return this.auditTab.render(this.tabLoading);
 	}
 
 	private renderPolicyTab() {
+		if (!this.api.isAuthenticated()) {
+			return this.renderUnavailableState(
+				"Sign in with enterprise credentials to manage enterprise policy.",
+			);
+		}
+
 		return this.policyTab.render();
 	}
 

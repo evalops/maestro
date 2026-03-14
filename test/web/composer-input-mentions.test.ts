@@ -87,4 +87,44 @@ describe("composer-input mention lookup", () => {
 			)
 			.toContain("Couldn't load files");
 	});
+
+	it("does not refetch on every keystroke after a failed file lookup", async () => {
+		const el = document.createElement("composer-input") as HTMLElement & {
+			apiClient: {
+				getFiles: ReturnType<typeof vi.fn>;
+			};
+			updateComplete?: Promise<void>;
+		};
+
+		el.apiClient = {
+			getFiles: vi.fn().mockRejectedValue(new Error("request failed")),
+		};
+
+		document.body.appendChild(el);
+		await el.updateComplete;
+
+		const textarea = el.shadowRoot?.querySelector(
+			"textarea",
+		) as HTMLTextAreaElement;
+		textarea.value = "@rea";
+		textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+		textarea.dispatchEvent(new Event("input", { bubbles: true }));
+
+		await expect
+			.poll(
+				() =>
+					el.shadowRoot?.querySelector(".mention-status.error")?.textContent ??
+					"",
+			)
+			.toContain("Couldn't load files");
+
+		expect(el.apiClient.getFiles).toHaveBeenCalledTimes(1);
+
+		textarea.value = "@read";
+		textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+		textarea.dispatchEvent(new Event("input", { bubbles: true }));
+		await el.updateComplete;
+
+		expect(el.apiClient.getFiles).toHaveBeenCalledTimes(1);
+	});
 });

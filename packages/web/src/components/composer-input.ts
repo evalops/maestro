@@ -479,8 +479,14 @@ export class ComposerInput extends LitElement {
 					this.filesLoaded = true;
 					return files;
 				})
+				.catch((error) => {
+					this.filesPromise = Promise.reject(error);
+					return this.filesPromise;
+				})
 				.finally(() => {
-					this.filesPromise = null;
+					if (this.filesLoaded) {
+						this.filesPromise = null;
+					}
 				});
 		}
 
