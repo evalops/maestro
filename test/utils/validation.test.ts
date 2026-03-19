@@ -7,7 +7,9 @@ import {
 	isValidUrl,
 	parseIntSafe,
 	requireInRange,
+	requireKeys,
 	requireNonEmpty,
+	requireNonEmptyArray,
 	requireOneOf,
 	sanitizeCommandArg,
 	sanitizeString,
@@ -188,5 +190,40 @@ describe("isNotNull", () => {
 	it("returns false for null and undefined", () => {
 		expect(isNotNull(null)).toBe(false);
 		expect(isNotNull(undefined)).toBe(false);
+	});
+});
+
+describe("requireNonEmptyArray", () => {
+	it("does not throw for non-empty array", () => {
+		requireNonEmptyArray([1], "items");
+		requireNonEmptyArray(["a", "b"], "list");
+	});
+	it("throws for undefined or null", () => {
+		expect(() => requireNonEmptyArray(undefined, "items")).toThrow(
+			ValidationError,
+		);
+		expect(() => requireNonEmptyArray(null, "items")).toThrow(ValidationError);
+	});
+	it("throws for empty array", () => {
+		expect(() => requireNonEmptyArray([], "items")).toThrow(ValidationError);
+		expect(() => requireNonEmptyArray([], "items")).toThrow(
+			/must be a non-empty array/,
+		);
+	});
+});
+
+describe("requireKeys", () => {
+	it("does not throw when object has all required keys", () => {
+		requireKeys({ a: 1, b: 2 }, ["a", "b"]);
+	});
+	it("throws when value is not a plain object", () => {
+		expect(() => requireKeys(null, ["a"])).toThrow(ValidationError);
+		expect(() => requireKeys([], ["a"])).toThrow(ValidationError);
+	});
+	it("throws when required key is missing", () => {
+		expect(() => requireKeys({ a: 1 }, ["a", "b"])).toThrow(ValidationError);
+		expect(() => requireKeys({ a: 1 }, ["a", "b"])).toThrow(
+			/missing required key: b/,
+		);
 	});
 });
