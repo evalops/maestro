@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { batchExecute } from "../../src/utils/async.js";
+import {
+	TimeoutError,
+	batchExecute,
+	withTimeout,
+} from "../../src/utils/async.js";
 
 describe("batchExecute", () => {
 	it("waits for all tasks and respects concurrency", async () => {
@@ -45,5 +49,31 @@ describe("batchExecute", () => {
 		);
 		const results = await run;
 		expect(results).toEqual([10, 20, 30]);
+	});
+});
+
+describe("withTimeout", () => {
+	it("resolves with value when promise resolves before timeout", async () => {
+		const result = await withTimeout(Promise.resolve(42), 1000);
+		expect(result).toBe(42);
+	});
+
+	it("rejects with TimeoutError when timeout fires first", async () => {
+		vi.useFakeTimers();
+		try {
+			const slow = new Promise<number>((r) => setTimeout(() => r(1), 200));
+			const p = withTimeout(slow, 10);
+			const outcome = expect(p).rejects.toThrow(TimeoutError);
+			await vi.advanceTimersByTimeAsync(20);
+			await outcome;
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("rejects when timeoutMs is 0 (next-tick timeout)", async () => {
+		const neverResolves = new Promise<number>(() => {});
+		const p = withTimeout(neverResolves, 0);
+		await expect(p).rejects.toThrow(TimeoutError);
 	});
 });
