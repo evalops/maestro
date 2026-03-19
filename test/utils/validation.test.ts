@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
 	ValidationError,
+	isNotNull,
+	isPlainObject,
+	isValidEmail,
+	isValidUrl,
 	parseIntSafe,
 	requireInRange,
 	requireNonEmpty,
 	requireOneOf,
+	sanitizeCommandArg,
 	sanitizeString,
 	sanitizeSurrogates,
 } from "../../src/utils/validation.js";
@@ -125,5 +130,63 @@ describe("sanitizeSurrogates", () => {
 	it("removes unpaired low surrogate", () => {
 		const unpaired = String.fromCharCode(0xde08);
 		expect(sanitizeSurrogates(`Text ${unpaired} here`)).toBe("Text  here");
+	});
+});
+
+describe("isValidEmail", () => {
+	it("returns true for valid email", () => {
+		expect(isValidEmail("a@b.co")).toBe(true);
+		expect(isValidEmail("user@example.com")).toBe(true);
+	});
+	it("returns false for invalid email", () => {
+		expect(isValidEmail("")).toBe(false);
+		expect(isValidEmail("no-at")).toBe(false);
+		expect(isValidEmail("@nodomain")).toBe(false);
+		expect(isValidEmail("no-tld.")).toBe(false);
+	});
+});
+
+describe("isValidUrl", () => {
+	it("returns true for valid URL", () => {
+		expect(isValidUrl("https://example.com")).toBe(true);
+		expect(isValidUrl("file:///tmp/foo")).toBe(true);
+	});
+	it("returns false for invalid URL", () => {
+		expect(isValidUrl("")).toBe(false);
+		expect(isValidUrl("not a url")).toBe(false);
+	});
+});
+
+describe("sanitizeCommandArg", () => {
+	it("strips shell metacharacters", () => {
+		expect(sanitizeCommandArg("a;b|c")).toBe("abc");
+		expect(sanitizeCommandArg("$x`")).toBe("x");
+		expect(sanitizeCommandArg("(x)")).toBe("x");
+	});
+	it("leaves safe characters", () => {
+		expect(sanitizeCommandArg("hello-world")).toBe("hello-world");
+	});
+});
+
+describe("isPlainObject", () => {
+	it("returns true for plain object", () => {
+		expect(isPlainObject({})).toBe(true);
+		expect(isPlainObject({ a: 1 })).toBe(true);
+	});
+	it("returns false for non-plain values", () => {
+		expect(isPlainObject(null)).toBe(false);
+		expect(isPlainObject([])).toBe(false);
+		expect(isPlainObject(new Date())).toBe(false);
+	});
+});
+
+describe("isNotNull", () => {
+	it("returns true for non-null values", () => {
+		expect(isNotNull(0)).toBe(true);
+		expect(isNotNull("")).toBe(true);
+	});
+	it("returns false for null and undefined", () => {
+		expect(isNotNull(null)).toBe(false);
+		expect(isNotNull(undefined)).toBe(false);
 	});
 });
