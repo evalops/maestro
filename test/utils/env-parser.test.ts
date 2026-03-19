@@ -82,6 +82,16 @@ describe("readNonNegativeInt", () => {
 		expect(readNonNegativeInt(TEST_VAR, 42)).toBe(42);
 	});
 
+	it("returns fallback for whitespace-only string", () => {
+		process.env[TEST_VAR] = "   ";
+		expect(readNonNegativeInt(TEST_VAR, 42)).toBe(42);
+	});
+
+	it("parses value with leading and trailing whitespace", () => {
+		process.env[TEST_VAR] = "  42  ";
+		expect(readNonNegativeInt(TEST_VAR, 42)).toBe(42);
+	});
+
 	it("parses valid non-negative integers", () => {
 		process.env[TEST_VAR] = "0";
 		expect(readNonNegativeInt(TEST_VAR, 42)).toBe(0);
@@ -135,6 +145,13 @@ describe("readThresholdEnv", () => {
 		expect(readThresholdEnv(TEST_VAR, 50)).toBe(50);
 	});
 
+	it("returns fallback for whitespace-only and parses trimmed value", () => {
+		process.env[TEST_VAR] = "   ";
+		expect(readThresholdEnv(TEST_VAR, 50)).toBe(50);
+		process.env[TEST_VAR] = "  100  ";
+		expect(readThresholdEnv(TEST_VAR, 50)).toBe(100);
+	});
+
 	it("parses valid positive thresholds", () => {
 		process.env[TEST_VAR] = "1";
 		expect(readThresholdEnv(TEST_VAR, 50)).toBe(1);
@@ -180,6 +197,13 @@ describe("readPositiveInt", () => {
 	it("returns fallback for empty string", () => {
 		process.env[TEST_VAR] = "";
 		expect(readPositiveInt(TEST_VAR, 10)).toBe(10);
+	});
+
+	it("returns fallback for whitespace-only and parses trimmed value", () => {
+		process.env[TEST_VAR] = "   ";
+		expect(readPositiveInt(TEST_VAR, 10)).toBe(10);
+		process.env[TEST_VAR] = "  5  ";
+		expect(readPositiveInt(TEST_VAR, 10)).toBe(5);
 	});
 
 	it("parses valid positive integers (default minimum 1)", () => {

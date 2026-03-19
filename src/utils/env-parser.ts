@@ -38,8 +38,8 @@ export function readBooleanEnv(name: string, fallback = false): boolean {
  * @returns Parsed integer (>= 0) or fallback
  */
 export function readNonNegativeInt(name: string, fallback: number): number {
-	const raw = process.env[name];
-	if (!raw) {
+	const raw = process.env[name]?.trim();
+	if (raw === undefined || raw === "") {
 		return fallback;
 	}
 	const parsed = Number.parseInt(raw, 10);
@@ -59,8 +59,8 @@ export function readNonNegativeInt(name: string, fallback: number): number {
  * @returns Parsed threshold, Infinity if disabled, or fallback
  */
 export function readThresholdEnv(name: string, fallback: number): number {
-	const raw = process.env[name];
-	if (!raw) {
+	const raw = process.env[name]?.trim();
+	if (raw === undefined || raw === "") {
 		return fallback;
 	}
 	const parsed = Number.parseInt(raw, 10);
@@ -86,8 +86,8 @@ export function readPositiveInt(
 	fallback: number,
 	minimum = 1,
 ): number {
-	const raw = process.env[name];
-	if (!raw) {
+	const raw = process.env[name]?.trim();
+	if (raw === undefined || raw === "") {
 		return fallback;
 	}
 	const parsed = Number.parseInt(raw, 10);
