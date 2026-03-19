@@ -17,9 +17,10 @@ export function expandTildePathWithHomeDir(
 	path: string,
 	homeDir: string,
 ): string {
-	if (path === "~") return homeDir;
-	if (path.startsWith("~/") || path.startsWith("~\\")) {
-		return join(homeDir, path.slice(2));
+	const trimmed = path.trim();
+	if (trimmed === "~") return homeDir;
+	if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
+		return join(homeDir, trimmed.slice(2));
 	}
 	return path;
 }

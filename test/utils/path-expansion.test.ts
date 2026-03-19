@@ -47,6 +47,11 @@ describe("path-expansion", () => {
 		process.env.HOME = "/tmp/home";
 		expect(expandTildePath("~\\projects")).toBe("/tmp/home/projects");
 	});
+
+	it("expands path when only trailing whitespace after ~ (e.g. '~ ')", () => {
+		process.env.HOME = "/tmp/home";
+		expect(expandTildePath("~ ")).toBe("/tmp/home");
+	});
 });
 
 describe("resolveEnvPath", () => {
