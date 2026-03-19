@@ -32,4 +32,18 @@ describe("batchExecute", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("returns results in the same order as items", async () => {
+		const items = [10, 20, 30];
+		const run = batchExecute(
+			items,
+			async (item) => {
+				await new Promise((r) => setTimeout(r, item === 20 ? 50 : 10));
+				return item;
+			},
+			{ concurrency: 2 },
+		);
+		const results = await run;
+		expect(results).toEqual([10, 20, 30]);
+	});
 });

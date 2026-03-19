@@ -101,13 +101,15 @@ export async function batchExecute<T, R>(
 ): Promise<R[]> {
 	const { concurrency = 5, onProgress } = options;
 	const limit = Math.max(1, concurrency);
-	const results: R[] = [];
-	const executing: Promise<void>[] = [];
+	const results: R[] = new Array(items.length);
 	let completed = 0;
+	const executing: Promise<void>[] = [];
 
-	for (const item of items) {
-		const promise = fn(item).then((result) => {
-			results.push(result);
+	for (let i = 0; i < items.length; i++) {
+		const index = i;
+		const item = items[i];
+		const promise = fn(item!).then((result) => {
+			results[index] = result;
 			completed++;
 			if (onProgress) {
 				onProgress(completed);
@@ -116,9 +118,9 @@ export async function batchExecute<T, R>(
 
 		executing.push(promise);
 		promise.finally(() => {
-			const index = executing.indexOf(promise);
-			if (index >= 0) {
-				executing.splice(index, 1);
+			const idx = executing.indexOf(promise);
+			if (idx >= 0) {
+				executing.splice(idx, 1);
 			}
 		});
 
@@ -128,7 +130,7 @@ export async function batchExecute<T, R>(
 	}
 
 	await Promise.all(executing);
-	return results;
+	return results as R[];
 }
 
 /**
