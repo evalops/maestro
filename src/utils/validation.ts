@@ -189,6 +189,8 @@ export function requireNonEmptyArray<T>(
 	}
 }
 
+const STRICT_INTEGER_REGEX = /^-?\d+$/;
+
 /**
  * Parse and validate integer
  */
@@ -197,7 +199,20 @@ export function parseIntSafe(
 	fieldName: string,
 	options: { min?: number; max?: number } = {},
 ): number {
-	const num = typeof value === "number" ? value : Number.parseInt(value, 10);
+	let num: number;
+	if (typeof value === "number") {
+		num = value;
+	} else {
+		const trimmed = value.trim();
+		if (!STRICT_INTEGER_REGEX.test(trimmed)) {
+			throw new ValidationError(
+				`${fieldName} must be a valid integer`,
+				fieldName,
+				value,
+			);
+		}
+		num = Number.parseInt(trimmed, 10);
+	}
 
 	if (Number.isNaN(num)) {
 		throw new ValidationError(

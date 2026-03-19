@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	ValidationError,
+	parseIntSafe,
 	requireInRange,
 	requireNonEmpty,
 	requireOneOf,
@@ -65,5 +66,31 @@ describe("requireOneOf", () => {
 		expect(() => requireOneOf("x", ["a", "b"], "choice")).toThrow(
 			/choice must be one of: a, b/,
 		);
+	});
+});
+
+describe("parseIntSafe", () => {
+	it("returns integer for valid number", () => {
+		expect(parseIntSafe(42, "n")).toBe(42);
+		expect(parseIntSafe("42", "n")).toBe(42);
+	});
+
+	it("accepts trimmed string", () => {
+		expect(parseIntSafe("  42  ", "n")).toBe(42);
+	});
+
+	it("throws for string with trailing non-digits", () => {
+		expect(() => parseIntSafe("42x", "n")).toThrow(ValidationError);
+		expect(() => parseIntSafe("42x", "n")).toThrow(/valid integer/);
+	});
+
+	it("throws for string with leading non-digits", () => {
+		expect(() => parseIntSafe("x42", "n")).toThrow(ValidationError);
+	});
+
+	it("respects min and max options", () => {
+		expect(parseIntSafe("5", "n", { min: 0, max: 10 })).toBe(5);
+		expect(() => parseIntSafe("5", "n", { min: 10 })).toThrow(ValidationError);
+		expect(() => parseIntSafe("5", "n", { max: 3 })).toThrow(ValidationError);
 	});
 });
