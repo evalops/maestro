@@ -5,6 +5,8 @@ import {
 	requireInRange,
 	requireNonEmpty,
 	requireOneOf,
+	sanitizeString,
+	sanitizeSurrogates,
 } from "../../src/utils/validation.js";
 
 describe("requireNonEmpty", () => {
@@ -92,5 +94,36 @@ describe("parseIntSafe", () => {
 		expect(parseIntSafe("5", "n", { min: 0, max: 10 })).toBe(5);
 		expect(() => parseIntSafe("5", "n", { min: 10 })).toThrow(ValidationError);
 		expect(() => parseIntSafe("5", "n", { max: 3 })).toThrow(ValidationError);
+	});
+});
+
+describe("sanitizeString", () => {
+	it("removes null and control characters", () => {
+		expect(sanitizeString("a\u0000b\u0007c")).toBe("abc");
+		expect(sanitizeString("x\u001fy")).toBe("xy");
+	});
+
+	it("keeps tab and newline", () => {
+		expect(sanitizeString("a\tb\nc")).toBe("a\tb\nc");
+	});
+
+	it("truncates to maxLength", () => {
+		expect(sanitizeString("abcd", { maxLength: 2 })).toBe("ab");
+	});
+});
+
+describe("sanitizeSurrogates", () => {
+	it("preserves valid emoji (paired surrogates)", () => {
+		expect(sanitizeSurrogates("Hello 🙈 World")).toBe("Hello 🙈 World");
+	});
+
+	it("removes unpaired high surrogate", () => {
+		const unpaired = String.fromCharCode(0xd83d);
+		expect(sanitizeSurrogates(`Text ${unpaired} here`)).toBe("Text  here");
+	});
+
+	it("removes unpaired low surrogate", () => {
+		const unpaired = String.fromCharCode(0xde08);
+		expect(sanitizeSurrogates(`Text ${unpaired} here`)).toBe("Text  here");
 	});
 });
