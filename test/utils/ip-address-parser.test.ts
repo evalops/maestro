@@ -348,4 +348,10 @@ describe("isLocalhostAlias", () => {
 		expect(isLocalhostAlias("local")).toBe(false);
 		expect(isLocalhostAlias("")).toBe(false);
 	});
+
+	it("treats hostname comparison case-insensitively (e.g. Host header)", () => {
+		expect(isLocalhostAlias("Localhost")).toBe(true);
+		expect(isLocalhostAlias("LOCALHOST")).toBe(true);
+		expect(isLocalhostAlias("LocalHost.localdomain")).toBe(true);
+	});
 });

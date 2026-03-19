@@ -196,13 +196,16 @@ export function isPrivateIP(ip: string): boolean {
 /**
  * Check if a hostname is a localhost alias.
  *
- * @param hostname - Hostname to check (should be lowercase)
+ * Comparison is case-insensitive (e.g. for HTTP Host header).
+ *
+ * @param hostname - Hostname to check
  * @returns true if localhost alias
  */
 export function isLocalhostAlias(hostname: string): boolean {
+	const lower = hostname.toLowerCase();
 	return (
-		hostname === "localhost" ||
-		hostname === "localhost.localdomain" ||
-		hostname === "0.0.0.0"
+		lower === "localhost" ||
+		lower === "localhost.localdomain" ||
+		lower === "0.0.0.0"
 	);
 }
