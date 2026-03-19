@@ -68,9 +68,7 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	 */
 	end(result?: R): void {
 		this.done = true;
-		if (result !== undefined) {
-			this.resolveFinalResult(result);
-		}
+		this.resolveFinalResult(result as R);
 		// Notify all waiting consumers that we're done
 		while (this.waiting.length > 0) {
 			const waiter = this.waiting.shift();

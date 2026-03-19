@@ -5,7 +5,7 @@
 
 import { constants } from "node:fs";
 import { access, realpath, stat } from "node:fs/promises";
-import { isAbsolute, normalize, resolve, sep } from "node:path";
+import { basename, isAbsolute, normalize, resolve, sep } from "node:path";
 import { ERRORS, LIMITS } from "../config/constants.js";
 import { createLogger } from "./logger.js";
 import { expandTildePathWithHomeDir, getHomeDir } from "./path-expansion.js";
@@ -184,12 +184,14 @@ export async function validatePath(
 		}
 	}
 
-	// Check file extension
+	// Check file extension from the last path segment (so dirs like .git don't affect it)
 	if (allowedExtensions && allowedExtensions.size > 0) {
-		const ext = normalizedPath.slice(normalizedPath.lastIndexOf("."));
+		const name = basename(normalizedPath);
+		const lastDot = name.lastIndexOf(".");
+		const ext = lastDot >= 0 ? name.slice(lastDot) : "";
 		if (!allowedExtensions.has(ext)) {
 			throw new PathValidationError(
-				`File extension not allowed: ${ext}`,
+				`File extension not allowed: ${ext || "(none)"}`,
 				normalizedPath,
 				"extension_not_allowed",
 			);

@@ -13,11 +13,13 @@ export function isLocalBaseUrl(url?: string): boolean {
 	}
 	try {
 		const parsed = new URL(url);
+		// Normalize IPv6 hostname (some environments leave brackets, e.g. [::1])
+		const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
 		return (
-			parsed.hostname === "localhost" ||
-			parsed.hostname === "127.0.0.1" ||
-			parsed.hostname === "::1" ||
-			parsed.hostname === "0.0.0.0"
+			hostname === "localhost" ||
+			hostname === "127.0.0.1" ||
+			hostname === "::1" ||
+			hostname === "0.0.0.0"
 		);
 	} catch {
 		return false;

@@ -1,7 +1,11 @@
 import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { expandUserPath } from "../../src/utils/path-validation.js";
+import {
+	PathValidationError,
+	expandUserPath,
+	validatePath,
+} from "../../src/utils/path-validation.js";
 
 const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_USERPROFILE = process.env.USERPROFILE;
@@ -54,5 +58,45 @@ describe("expandUserPath", () => {
 	it("returns non-tilde paths unchanged", () => {
 		expect(expandUserPath("/absolute/path")).toBe("/absolute/path");
 		expect(expandUserPath("relative/path")).toBe("relative/path");
+	});
+});
+
+describe("validatePath with allowedExtensions", () => {
+	it("rejects path with no extension when allowedExtensions is set", async () => {
+		// Paths like "README" or "Makefile" have no dot; lastIndexOf(".") is -1,
+		// and slice(-1) would wrongly use the last character as "extension".
+		const allowed = new Set([".txt", ".json"]);
+		await expect(
+			validatePath("README", { allowedExtensions: allowed }),
+		).rejects.toThrow(PathValidationError);
+	});
+
+	it("reports extension_not_allowed for path with no dot (not last character)", async () => {
+		const allowed = new Set([".txt"]);
+		try {
+			await validatePath("noext", { allowedExtensions: allowed });
+			expect.fail("should have thrown");
+		} catch (e) {
+			expect(e).toBeInstanceOf(PathValidationError);
+			const err = e as PathValidationError;
+			expect(err.reason).toBe("extension_not_allowed");
+			// Bug: implementation used to report "t" (last char) as the disallowed extension
+			expect(err.message).not.toMatch(/extension not allowed: t$/i);
+		}
+	});
+
+	it("uses basename for extension so .git in path is not treated as extension", async () => {
+		const allowed = new Set([".txt"]);
+		// Path with dot in directory name; file "README" has no extension
+		try {
+			await validatePath(".git/README", { allowedExtensions: allowed });
+			expect.fail("should have thrown");
+		} catch (e) {
+			expect(e).toBeInstanceOf(PathValidationError);
+			const msg = (e as PathValidationError).message;
+			// Should report "(none)" or empty, not ".git" or ".git/README"
+			expect(msg).not.toContain(".git/");
+			expect(msg).not.toMatch(/extension not allowed: \.git/i);
+		}
 	});
 });

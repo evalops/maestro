@@ -1,5 +1,66 @@
 import { describe, expect, it } from "vitest";
-import { normalizeLLMBaseUrl } from "../src/models/url-normalize.js";
+import {
+	isLocalBaseUrl,
+	normalizeBaseUrl,
+	normalizeLLMBaseUrl,
+	trimTrailingSlash,
+} from "../src/models/url-normalize.js";
+
+describe("trimTrailingSlash", () => {
+	it("removes single trailing slash", () => {
+		expect(trimTrailingSlash("https://api.example.com/")).toBe(
+			"https://api.example.com",
+		);
+	});
+	it("leaves string without trailing slash unchanged", () => {
+		expect(trimTrailingSlash("https://api.example.com")).toBe(
+			"https://api.example.com",
+		);
+	});
+	it("reduces single slash to empty string", () => {
+		expect(trimTrailingSlash("/")).toBe("");
+	});
+	it("leaves empty string unchanged", () => {
+		expect(trimTrailingSlash("")).toBe("");
+	});
+});
+
+describe("isLocalBaseUrl", () => {
+	it("returns false for undefined or empty", () => {
+		expect(isLocalBaseUrl(undefined)).toBe(false);
+		expect(isLocalBaseUrl("")).toBe(false);
+	});
+	it("returns true for localhost", () => {
+		expect(isLocalBaseUrl("http://localhost/")).toBe(true);
+		expect(isLocalBaseUrl("http://localhost:8080/v1")).toBe(true);
+	});
+	it("returns true for 127.0.0.1 and ::1 and 0.0.0.0", () => {
+		expect(isLocalBaseUrl("http://127.0.0.1")).toBe(true);
+		expect(isLocalBaseUrl("http://[::1]/")).toBe(true);
+		expect(isLocalBaseUrl("http://0.0.0.0:3000")).toBe(true);
+	});
+	it("returns false for non-local hostnames", () => {
+		expect(isLocalBaseUrl("https://api.example.com")).toBe(false);
+		expect(isLocalBaseUrl("http://192.168.1.1")).toBe(false);
+	});
+	it("returns false for invalid URL", () => {
+		expect(isLocalBaseUrl("not-a-url")).toBe(false);
+	});
+});
+
+describe("normalizeBaseUrl", () => {
+	it("rewrites bedrock to bedrock-runtime for aws provider", () => {
+		const url = normalizeBaseUrl(
+			"https://bedrock.us-east-1.amazonaws.com",
+			"bedrock",
+		);
+		expect(url).toContain("bedrock-runtime");
+	});
+	it("leaves non-matching provider URLs unchanged for path", () => {
+		const url = "https://api.anthropic.com/v1/messages";
+		expect(normalizeBaseUrl(url, "anthropic")).toBe(url);
+	});
+});
 
 describe("normalizeLLMBaseUrl", () => {
 	it("appends endpoint to upstream when baseUrl is a proxy", () => {

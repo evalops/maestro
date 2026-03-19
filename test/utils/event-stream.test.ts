@@ -86,6 +86,15 @@ describe("EventStream", () => {
 			const result = await stream.result();
 			expect(result).toBe("manual end");
 		});
+
+		it("result() resolves when end() is called without argument (no hang)", async () => {
+			const stream = createTestStream();
+			stream.push({ type: "data", value: 1 });
+			stream.end();
+			// Without fix: result() would never resolve (promise stays pending)
+			const result = await stream.result();
+			expect(result).toBeUndefined();
+		}, 2000);
 	});
 
 	describe("end()", () => {
