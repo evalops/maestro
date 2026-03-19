@@ -104,7 +104,7 @@ export function substituteFileRefs(text: string, configDir: string): string {
 		const matches = [...line.matchAll(/\{file:([^}]+)\}/g)];
 
 		for (const match of matches) {
-			let filePath = match[1];
+			let filePath = match[1]?.trim();
 			if (!filePath) continue;
 
 			filePath = expandTildePath(filePath);

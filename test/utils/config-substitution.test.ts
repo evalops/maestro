@@ -118,6 +118,15 @@ describe("substituteFileRefs", () => {
 		expect(result).toBe('{"apiKey": "my-secret-value"}\n');
 	});
 
+	it("trims whitespace around file path in placeholder", () => {
+		writeFileSync(join(testDir, "trimme.txt"), "trimmed-value");
+		const result = substituteFileRefs(
+			'{"key": "{file:  trimme.txt  }"}',
+			testDir,
+		);
+		expect(result).toBe('{"key": "trimmed-value"}\n');
+	});
+
 	it("substitutes file reference with absolute path", () => {
 		const filePath = join(testDir, "absolute.txt");
 		writeFileSync(filePath, "absolute-value");
