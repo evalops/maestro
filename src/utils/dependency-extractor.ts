@@ -28,20 +28,20 @@
  * Captures package names after the install command, handling flags.
  */
 const npmInstallPattern =
-	/\b(?:npm|pnpm|yarn)\s+(?:install|i|add)\s+(?:--?[a-zA-Z-]+(?:=\S+)?\s+)*([\w@\-/.:\s]+)/i;
+	/\b(?:npm|pnpm|yarn)\s+(?:install|i|add)\s+(?:--?[a-zA-Z-]+(?:=\S+)?\s+)*([\w@\-/.:\s+]+)/i;
 
 /**
  * Pattern for bun add/install commands.
  */
 const bunAddPattern =
-	/\bbun\s+(?:add|install)\s+(?:--?[a-zA-Z-]+(?:=\S+)?\s+)*([\w@\-/.:\s]+)/i;
+	/\bbun\s+(?:add|install)\s+(?:--?[a-zA-Z-]+(?:=\S+)?\s+)*([\w@\-/.:\s+]+)/i;
 
 /**
  * Pattern for pip install commands.
  * Supports pip, pip3, etc.
  */
 const pipInstallPattern =
-	/\bpip\d*\s+install\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.:\s=<>]+)/i;
+	/\bpip\d*\s+install\s+(?:-[a-zA-Z-]+\s+)*([\w@\-/.:\s=<>+]+)/i;
 
 /**
  * Clean a package specifier to extract just the package name.

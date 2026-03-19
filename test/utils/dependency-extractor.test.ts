@@ -144,11 +144,10 @@ describe("extractDependencies", () => {
 	});
 
 	describe("special package specifiers", () => {
-		it("extracts package name from git+ URLs (captures 'git' prefix)", () => {
-			// The regex captures 'git' as it appears before the + character
+		it("preserves full git+ URL as single dependency", () => {
 			expect(
 				extractDependencies("npm install git+https://github.com/user/repo.git"),
-			).toEqual(["git"]);
+			).toEqual(["git+https://github.com/user/repo.git"]);
 		});
 
 		it("preserves local paths starting with ./", () => {
