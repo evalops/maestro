@@ -197,6 +197,11 @@ describe("extractUrlsFromShellCommand", () => {
 				"https://example.com",
 			]);
 		});
+
+		it("does not add http:// for whitespace-only or empty argument", () => {
+			expect(extractUrlsFromShellCommand('curl "  "')).toEqual([]);
+			expect(extractUrlsFromShellCommand("curl ''")).toEqual([]);
+		});
 	});
 });
 

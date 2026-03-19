@@ -160,14 +160,13 @@ export function extractUrlsFromShellCommand(command: string): string[] {
 				continue;
 			}
 
-			// Add http:// if no protocol specified
-			let url = stripped;
-			if (url && !/^https?:\/\//i.test(url)) {
+			// Add http:// if no protocol specified (skip whitespace-only to avoid "http://")
+			let url = stripped?.trim() ?? "";
+			if (!url) continue;
+			if (!/^https?:\/\//i.test(url)) {
 				url = `http://${url}`;
 			}
-			if (url) {
-				urls.push(url.replace(/[)}\],.;:]+$/, ""));
-			}
+			urls.push(url.replace(/[)}\],.;:]+$/, ""));
 		}
 	}
 
