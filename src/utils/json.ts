@@ -83,38 +83,40 @@ export function safeJsonStringify(
 
 		seen.add(val as object);
 		depth++;
+		try {
+			// Handle special types
+			if (val instanceof Error) {
+				return {
+					name: val.name,
+					message: val.message,
+					stack: val.stack,
+				};
+			}
 
-		// Handle special types
-		if (val instanceof Error) {
-			return {
-				name: val.name,
-				message: val.message,
-				stack: val.stack,
-			};
+			if (val instanceof Map) {
+				return Object.fromEntries(val);
+			}
+
+			if (val instanceof Set) {
+				return Array.from(val);
+			}
+
+			if (val instanceof Date) {
+				return val.toISOString();
+			}
+
+			if (val instanceof RegExp) {
+				return val.toString();
+			}
+
+			if (ArrayBuffer.isView(val)) {
+				return "[Binary Data]";
+			}
+
+			return val;
+		} finally {
+			depth--;
 		}
-
-		if (val instanceof Map) {
-			return Object.fromEntries(val);
-		}
-
-		if (val instanceof Set) {
-			return Array.from(val);
-		}
-
-		if (val instanceof Date) {
-			return val.toISOString();
-		}
-
-		if (val instanceof RegExp) {
-			return val.toString();
-		}
-
-		if (ArrayBuffer.isView(val)) {
-			return "[Binary Data]";
-		}
-
-		depth--;
-		return val;
 	};
 
 	try {
