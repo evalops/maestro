@@ -47,10 +47,11 @@ export function substituteEnvVars(
 	logger: SubstitutionLogger = noopLogger,
 ): string {
 	return text.replace(/\{env:([^}]+)\}/g, (_match, varName: string) => {
-		const value = process.env[varName];
+		const name = varName.trim();
+		const value = process.env[name];
 		if (value === undefined) {
 			logger.warn("Environment variable not set, using empty string", {
-				varName,
+				varName: name,
 			});
 			return "";
 		}

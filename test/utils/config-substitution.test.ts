@@ -88,6 +88,13 @@ describe("substituteEnvVars", () => {
 		expect(result).toBe("test");
 		process.env.MY_VAR_123 = undefined;
 	});
+
+	it("trims whitespace around env var name in placeholder", () => {
+		process.env.TRIM_ME = "ok";
+		const result = substituteEnvVars('{"x": "{env:  TRIM_ME  }"}');
+		expect(result).toBe('{"x": "ok"}');
+		Reflect.deleteProperty(process.env, "TRIM_ME");
+	});
 });
 
 describe("substituteFileRefs", () => {
