@@ -865,3 +865,100 @@ export function getSkillsSummary(skills: LoadedSkill[]): string {
 
 	return lines.join("\n");
 }
+
+/**
+ * Progressive Skill Disclosure (#857)
+ *
+ * Format skill metadata only (name + description) for system prompt injection.
+ * The agent can then use the `read` tool to load full SKILL.md content on-demand.
+ *
+ * Benefits:
+ * - Context efficiency: ~10 tokens per skill vs ~500+ for full content
+ * - Scalability: 20 skills use ~200 tokens instead of ~10,000
+ * - Self-directed: Agent loads what it needs when it needs it
+ */
+
+/**
+ * Format a single skill's metadata for system prompt (XML format).
+ *
+ * Returns only name and description in a self-closing XML tag.
+ * Follows the Agent Skills specification's progressive disclosure pattern.
+ *
+ * @param skill - The loaded skill
+ * @returns XML-formatted skill metadata
+ *
+ * @example
+ * ```xml
+ * <skill name="test-runner" description="Run and debug test suites" />
+ * <!-- source: ~/.maestro/skills/test-runner -->
+ * ```
+ */
+export function formatSkillMetadataOnly(skill: LoadedSkill): string {
+	// Escape XML special characters
+	const escapeName = skill.name
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
+
+	// Truncate description to max length per spec, escape XML
+	let description = skill.description;
+	if (description.length > MAX_DESCRIPTION_LENGTH) {
+		description = `${description.slice(0, MAX_DESCRIPTION_LENGTH - 3)}...`;
+	}
+	const escapeDesc = description
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
+
+	// Include source path as XML comment for debugging
+	return `<skill name="${escapeName}" description="${escapeDesc}" />\n<!-- source: ${skill.sourcePath} -->`;
+}
+
+/**
+ * Format multiple skills for system prompt with on-demand loading instructions.
+ *
+ * Returns XML list of skill metadata plus instructions for the agent to load
+ * full skill content using the `read` tool when needed.
+ *
+ * This is the primary function for progressive skill disclosure.
+ *
+ * @param skills - Array of loaded skills
+ * @returns XML-formatted skills list with loading instructions, or empty string if no skills
+ *
+ * @example
+ * ```xml
+ * <available_skills>
+ *   <skill name="test-runner" description="..." />
+ *   <skill name="git-workflow" description="..." />
+ * </available_skills>
+ *
+ * When a skill is relevant to the user's request, use the `read` tool to load
+ * the full skill instructions from the source path shown in the comment.
+ * ```
+ */
+export function formatSkillsForSystemPrompt(skills: LoadedSkill[]): string {
+	if (skills.length === 0) {
+		return "";
+	}
+
+	const lines: string[] = [];
+
+	lines.push("<available_skills>");
+	for (const skill of skills) {
+		lines.push(`  ${formatSkillMetadataOnly(skill)}`);
+	}
+	lines.push("</available_skills>");
+	lines.push("");
+	lines.push(
+		"When a skill is relevant to the user's request, use the `read` tool to load " +
+			"the full SKILL.md from the skill's source directory (shown in comments above). " +
+			"For example: `read ~/.maestro/skills/test-runner/SKILL.md` or " +
+			"`read .maestro/skills/custom-skill/SKILL.md`. " +
+			"This progressive loading keeps the system prompt lean while making all skill " +
+			"capabilities available on-demand.",
+	);
+
+	return lines.join("\n");
+}
