@@ -29,7 +29,9 @@ function createErrorMessage(errorMessage: string): AssistantMessage {
 }
 
 function createSuccessMessage(
-	usage: { input: number; cacheRead?: number } = { input: 1000 },
+	usage: { input: number; cacheRead?: number; cacheWrite?: number } = {
+		input: 1000,
+	},
 ): AssistantMessage {
 	return {
 		role: "assistant",
@@ -41,7 +43,7 @@ function createSuccessMessage(
 			input: usage.input,
 			output: 100,
 			cacheRead: usage.cacheRead || 0,
-			cacheWrite: 0,
+			cacheWrite: usage.cacheWrite || 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "stop",
@@ -74,6 +76,13 @@ describe("isContextOverflow", () => {
 				"The input token count (1196265) exceeds the maximum number of tokens allowed (1048575)",
 			);
 			expect(isContextOverflow(msg)).toBe(true);
+		});
+
+		it("does not treat token-per-minute quota errors as overflow", () => {
+			const msg = createErrorMessage(
+				"429 RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'generate_content_tokens' and limit 'Generate content tokens per minute per project'",
+			);
+			expect(isContextOverflow(msg)).toBe(false);
 		});
 	});
 
@@ -162,6 +171,14 @@ describe("isContextOverflow", () => {
 			expect(isContextOverflow(msg, 128000)).toBe(true);
 		});
 
+		it("considers cacheWrite tokens", () => {
+			const msg = createSuccessMessage({
+				input: 100000,
+				cacheWrite: 50000,
+			});
+			expect(isContextOverflow(msg, 128000)).toBe(true);
+		});
+
 		it("does not flag when within limits", () => {
 			const msg = createSuccessMessage({ input: 100000 });
 			expect(isContextOverflow(msg, 128000)).toBe(false);
@@ -246,6 +263,13 @@ describe("isRetryableError", () => {
 	describe("Rate limit errors", () => {
 		it("detects rate limit error", () => {
 			const msg = createErrorMessage("Rate limit exceeded. Please try again.");
+			expect(isRetryableError(msg)).toBe(true);
+		});
+
+		it("retries Google token quota RESOURCE_EXHAUSTED errors", () => {
+			const msg = createErrorMessage(
+				"429 RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'generate_content_tokens' and limit 'Generate content tokens per minute per project'",
+			);
 			expect(isRetryableError(msg)).toBe(true);
 		});
 

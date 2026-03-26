@@ -34,18 +34,30 @@ import type { AssistantMessage } from "./types.js";
 const OVERFLOW_PATTERNS = [
 	// Anthropic: "prompt is too long: 213462 tokens > 200000 maximum"
 	/prompt is too long/i,
+	/max_tokens.*exceeded/i,
 
-	// OpenAI (Completions & Responses API): "Your input exceeds the context window"
+	// OpenAI (Completions & Responses API)
 	/exceeds the context window/i,
+	/maximum context length/i,
+	/context_length_exceeded/i,
 
-	// Google Gemini: "The input token count (1196265) exceeds the maximum number of tokens allowed (1048575)"
+	// Google Gemini
 	/input token count.*exceeds the maximum/i,
+	/exceeds the maximum number of tokens/i,
+	// Google also uses RESOURCE_EXHAUSTED for quota/rate-limit errors, so keep
+	// overflow matching anchored to explicit limit/maximum phrasing.
+	/INVALID_ARGUMENT.*token.*limit/i,
+	/Request payload size exceeds.*token/i,
 
 	// xAI (Grok): "This model's maximum prompt length is 131072 but the request contains 537812 tokens"
 	/maximum prompt length is \d+/i,
 
 	// Groq: "Please reduce the length of the messages or completion"
 	/reduce the length of the messages/i,
+
+	// AWS Bedrock
+	/too many input tokens/i,
+	/ValidationException.*token/i,
 
 	// OpenRouter (all backends): "This endpoint's maximum context length is X tokens. However, you requested about Y tokens"
 	/maximum context length is \d+ tokens/i,
@@ -62,7 +74,27 @@ const OVERFLOW_PATTERNS = [
 	/token limit exceeded/i,
 	/context window.*exceeded/i,
 	/maximum.*tokens.*exceeded/i,
+	/request too large/i,
 ];
+
+/**
+ * Check if an error message string represents a context overflow.
+ *
+ * Reuse this helper anywhere we need provider-aware overflow detection so the
+ * pattern set stays consistent across the codebase.
+ *
+ * @param errorMessage - Provider error message to inspect
+ * @returns true if the error message indicates a context overflow
+ */
+export function isOverflowErrorMessage(errorMessage: string): boolean {
+	if (OVERFLOW_PATTERNS.some((pattern) => pattern.test(errorMessage))) {
+		return true;
+	}
+
+	// Cerebras and Mistral return 400/413 with no body
+	// Match patterns like "400 status code (no body)" or "413 (no body)"
+	return /^4(00|13)\s*(status code)?\s*\(no body\)/i.test(errorMessage);
+}
 
 /**
  * Check if an assistant message represents a context overflow error.
@@ -92,15 +124,7 @@ export function isContextOverflow(
 ): boolean {
 	// Case 1: Check error message patterns
 	if (message.stopReason === "error" && message.errorMessage) {
-		const errorMsg = message.errorMessage;
-		// Check known provider patterns
-		if (OVERFLOW_PATTERNS.some((pattern) => pattern.test(errorMsg))) {
-			return true;
-		}
-
-		// Cerebras and Mistral return 400/413 with no body
-		// Match patterns like "400 status code (no body)" or "413 (no body)"
-		if (/^4(00|13)\s*(status code)?\s*\(no body\)/i.test(errorMsg)) {
+		if (isOverflowErrorMessage(message.errorMessage)) {
 			return true;
 		}
 	}
@@ -110,7 +134,9 @@ export function isContextOverflow(
 	// If usage.input exceeds context window, it's likely an overflow
 	if (contextWindow && message.stopReason === "stop" && message.usage) {
 		const inputTokens =
-			(message.usage.input || 0) + (message.usage.cacheRead || 0);
+			(message.usage.input || 0) +
+			(message.usage.cacheRead || 0) +
+			(message.usage.cacheWrite || 0);
 		if (inputTokens > contextWindow) {
 			return true;
 		}

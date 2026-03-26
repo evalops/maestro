@@ -129,7 +129,7 @@ export async function* streamResponsesApiSdk(
 	if (model.reasoning && (options.reasoningEffort || shouldIncludeSummary)) {
 		// Use unified thinking level mapper for reasoning effort
 		const effort = options.reasoningEffort
-			? mapThinkingLevelToOpenAIEffort(options.reasoningEffort) ?? "medium"
+			? (mapThinkingLevelToOpenAIEffort(options.reasoningEffort) ?? "medium")
 			: "medium";
 		if (shouldIncludeSummary) {
 			params.reasoning = { effort, summary };

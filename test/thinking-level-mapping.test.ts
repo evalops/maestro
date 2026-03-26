@@ -9,12 +9,12 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { ThinkingLevel } from "../src/agent/types.js";
 import {
 	mapThinkingLevelToAnthropicBudget,
 	mapThinkingLevelToGoogleBudget,
 	mapThinkingLevelToOpenAIEffort,
 } from "../src/agent/thinking-level-mapper.js";
+import type { ThinkingLevel } from "../src/agent/types.js";
 
 describe("Thinking Level Mapping", () => {
 	describe("Type safety", () => {
