@@ -42,7 +42,7 @@
  *
  * ## Environment Variables
  *
- * - `COMPOSER_MODE`: Override the default mode at startup
+ * - `MAESTRO_MODE`: Override the default mode at startup
  */
 
 import { createLogger } from "../utils/logger.js";
@@ -296,13 +296,13 @@ export function parseMode(modeStr: string): AgentMode | null {
 /**
  * Get mode from environment variable.
  *
- * Reads COMPOSER_MODE from environment and validates it.
+ * Reads MAESTRO_MODE from environment and validates it.
  * Defaults to "smart" if not set or invalid.
  *
  * @returns The configured mode or "smart" as default
  */
 export function getModeFromEnv(): AgentMode {
-	const envMode = process.env.COMPOSER_MODE?.toLowerCase();
+	const envMode = process.env.MAESTRO_MODE?.toLowerCase();
 	if (envMode && envMode in MODE_CONFIGS) {
 		return envMode as AgentMode;
 	}

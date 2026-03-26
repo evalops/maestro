@@ -67,7 +67,7 @@ const baseInput: DiagnosticsInput = {
 	training: {
 		preference: "opted-out",
 		optOut: true,
-		reason: "COMPOSER_TRAINING_OPT_OUT=1",
+		reason: "MAESTRO_TRAINING_OPT_OUT=1",
 		flagValue: "1",
 	},
 	exaUsage: {

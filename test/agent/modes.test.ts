@@ -129,31 +129,31 @@ describe("agent/modes", () => {
 	});
 
 	describe("getModeFromEnv", () => {
-		const originalEnv = process.env.COMPOSER_MODE;
+		const originalEnv = process.env.MAESTRO_MODE;
 
 		afterEach(() => {
 			if (originalEnv === undefined) {
-				Reflect.deleteProperty(process.env, "COMPOSER_MODE");
+				Reflect.deleteProperty(process.env, "MAESTRO_MODE");
 			} else {
-				process.env.COMPOSER_MODE = originalEnv;
+				process.env.MAESTRO_MODE = originalEnv;
 			}
 		});
 
 		it("returns smart by default", () => {
-			Reflect.deleteProperty(process.env, "COMPOSER_MODE");
+			Reflect.deleteProperty(process.env, "MAESTRO_MODE");
 			expect(getModeFromEnv()).toBe("smart");
 		});
 
-		it("respects COMPOSER_MODE env var", () => {
-			process.env.COMPOSER_MODE = "rush";
+		it("respects MAESTRO_MODE env var", () => {
+			process.env.MAESTRO_MODE = "rush";
 			expect(getModeFromEnv()).toBe("rush");
 
-			process.env.COMPOSER_MODE = "FREE";
+			process.env.MAESTRO_MODE = "FREE";
 			expect(getModeFromEnv()).toBe("free");
 		});
 
 		it("ignores invalid env values", () => {
-			process.env.COMPOSER_MODE = "invalid";
+			process.env.MAESTRO_MODE = "invalid";
 			expect(getModeFromEnv()).toBe("smart");
 		});
 	});

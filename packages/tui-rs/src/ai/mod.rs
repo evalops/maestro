@@ -55,7 +55,7 @@
 //! # Example Usage
 //!
 //! ```rust,ignore
-//! use composer_tui::ai::{create_client_for_model, Message, RequestConfig};
+//! use maestro_tui::ai::{create_client_for_model, Message, RequestConfig};
 //!
 //! // Create a client based on model name
 //! let client = create_client_for_model("claude-opus-4-5")?;

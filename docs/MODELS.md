@@ -3,7 +3,7 @@
 Audience: contributors/operator tweaking model registry and provider configs.  
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md) · [AI SDK](../packages/ai/README.md)
 
-Composer loads model/provider metadata from multiple locations so you can mix
+Maestro loads model/provider metadata from multiple locations so you can mix
 built-in configs with Factory CLI settings. This page clarifies the resolution
 order and how to customize providers.
 
@@ -11,15 +11,15 @@ order and how to customize providers.
 
 `src/models/registry.ts` builds the registry from:
 
-1. **Built-in defaults** (shipped with Composer)
+1. **Built-in defaults** (shipped with Maestro)
 2. **Factory data**:
    - `~/.factory/config.json`
    - `~/.factory/settings.json`
-3. **Composer config**:
-   - `~/.composer/models.json` (legacy path)
-   - `~/.composer/config.json` (via `COMPOSER_CONFIG`)
+3. **Maestro config**:
+   - `~/.maestro/models.json` (legacy path)
+   - `~/.maestro/config.json` (via `MAESTRO_CONFIG`)
 4. **Env overrides**:
-   - `COMPOSER_MODELS_FILE=/path/to/custom.json`
+   - `MAESTRO_MODELS_FILE=/path/to/custom.json`
 
 Paths are read in that order, later entries overriding earlier ones.
 
@@ -59,13 +59,13 @@ Custom config files accept:
 }
 ```
 
-Factory files follow their own schema; Composer maps Factory model IDs to
+Factory files follow their own schema; Maestro maps Factory model IDs to
 providers internally (see `factoryDataCache.modelProviderMap`).
 
 ### OpenAI-compat overrides
 
 Some OpenAI-compatible vendors require small request-shape tweaks (token field,
-developer role support, tool result quirks, etc.). You can override Composer’s
+developer role support, tool result quirks, etc.). You can override Maestro’s
 auto-detection per model via `compat`:
 
 ```json
@@ -98,7 +98,7 @@ auto-detection per model via `compat`:
 Supported `compat` fields:
 
 - `supportsStore` (bool) – whether to send `store: false` (OpenAI only).
-- `supportsDeveloperRole` (bool) – if false, Composer uses `system` instead.
+- `supportsDeveloperRole` (bool) – if false, Maestro uses `system` instead.
 - `supportsReasoningEffort` (bool) – gates `reasoning_effort`.
 - `supportsResponsesApi` (bool) – allow `openai-responses` against this endpoint.
 - `maxTokensField` – `"max_tokens"` vs `"max_completion_tokens"`.
@@ -134,7 +134,7 @@ map injects defaults:
 
 ## Built-in Overlays (Responses API)
 
-Composer seeds a few Responses-capable models that aren’t yet emitted by the
+Maestro seeds a few Responses-capable models that aren’t yet emitted by the
 generator, so you can use them out of the box:
 
 - **OpenRouter (Responses API):** `openai/o4`, `openai/o4-mini`, and their
@@ -144,15 +144,15 @@ generator, so you can use them out of the box:
   `https://api.groq.com/openai/v1/responses`.
 
 To add more Responses-capable models (or override these), drop them into
-`.composer/config.json` with `api: "openai-responses"`; Composer will normalize
+`.maestro/config.json` with `api: "openai-responses"`; Maestro will normalize
 the base URL to `/responses` automatically.
 
 ### Responses API Compatibility Notes (Tools)
 
-When `api: "openai-responses"` is enabled for a model, Composer must filter tool
+When `api: "openai-responses"` is enabled for a model, Maestro must filter tool
 definitions to match Responses API schema constraints.
 
-In particular, Composer filters out any tool whose `parameters` JSON Schema
+In particular, Maestro filters out any tool whose `parameters` JSON Schema
 contains these keywords at the **top level**:
 
 - `oneOf`, `anyOf`, `allOf`
@@ -160,7 +160,7 @@ contains these keywords at the **top level**:
 - `not`
 
 This filtering is implemented in `filterResponsesApiTools()` (`src/agent/providers/openai.ts`).
-When tools are filtered, Composer logs a warning listing the affected tool names
+When tools are filtered, Maestro logs a warning listing the affected tool names
 (`src/agent/providers/openai-responses-sdk.ts`).
 
 Background:
@@ -186,14 +186,14 @@ Background:
 ```
 
 > Note: Codex subscription models are intentionally excluded. The Codex endpoint
-> requires the Codex CLI system prompt and tool set verbatim, which Composer
+> requires the Codex CLI system prompt and tool set verbatim, which Maestro
 > does not forward for security and transparency reasons.
 
 ## Factory Commands
 
 - `/import factory` or `npm run factory:import` – copies `~/.factory` config +
-  provider metadata into Composer’s store. Handy after updating models in Factory CLI.
-- `/export factory` or `npm run factory:export` – push Composer’s provider data
+  provider metadata into Maestro’s store. Handy after updating models in Factory CLI.
+- `/export factory` or `npm run factory:export` – push Maestro’s provider data
   back to Factory files.
 
 These commands ensure both CLIs stay in sync while still allowing standalone
@@ -201,8 +201,8 @@ configs.
 
 ## Tips
 
-- Use `composer models list` (or `/models`) to inspect the final registry, including
+- Use `maestro models list` (or `/models`) to inspect the final registry, including
   custom entries and their providers.
-- Keep secrets out of repo files; rely on `COMPOSER_MODELS_FILE` plus env vars for headers.
-- When troubleshooting, `LOG_COMPOSER_MODELS=1` (future flag) could dump the path
+- Keep secrets out of repo files; rely on `MAESTRO_MODELS_FILE` plus env vars for headers.
+- When troubleshooting, `LOG_MAESTRO_MODELS=1` (future flag) could dump the path
   resolution order—until then, add debug logs around `getRegisteredModels()`.

@@ -11,7 +11,7 @@ const projectRoot = join(__dirname, "..");
 
 const argsPath = process.argv[2];
 const envPath =
-	process.env.COMPOSER_TELEMETRY_FILE ?? process.env.PLAYWRIGHT_TELEMETRY_FILE;
+	process.env.MAESTRO_TELEMETRY_FILE ?? process.env.PLAYWRIGHT_TELEMETRY_FILE;
 
 const logPath = argsPath
 	? isAbsolute(argsPath)

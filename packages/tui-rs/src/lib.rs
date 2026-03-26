@@ -370,9 +370,9 @@ mod app;
 //
 // `pub use` makes items from submodules available at the crate root.
 // This provides a flatter, more convenient API. Instead of:
-//   `composer_tui::agent::NativeAgent`
+//   `maestro_tui::agent::NativeAgent`
 // Users can write:
-//   `composer_tui::NativeAgent`
+//   `maestro_tui::NativeAgent`
 //
 // This is a common pattern called "facade" - hiding internal structure
 // while exposing a clean public API.
@@ -590,7 +590,7 @@ pub use execpolicy::{
 /// 1. Default values
 /// 2. Global config (~/.composer/config.toml)
 /// 3. Project config (.composer/config.toml)
-/// 4. Environment variables (COMPOSER_*)
+/// 4. Environment variables (MAESTRO_*)
 /// 5. CLI arguments
 pub use config::{
     // Loading functions

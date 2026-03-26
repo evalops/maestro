@@ -1,0 +1,209 @@
+/*
+ * Obsidian Console — Enterprise SaaS Design System
+ *
+ * Palette: deep obsidian darks, warm neutral grays, electric teal accent
+ * Typography: DM Sans (display/body), IBM Plex Mono (data/code), Plus Jakarta Sans (headings)
+ * Philosophy: precision, density, authority
+ */
+
+:root {
+	/* ── Surfaces ─────────────────────────────── */
+	--bg-primary: #0a0a0c;
+	--bg-secondary: #0e0e11;
+	--bg-card: #141418;
+	--bg-card-hover: #1a1a1f;
+	--bg-input: #111115;
+	--bg-elevated: #1c1c22;
+
+	/* ── Borders ──────────────────────────────── */
+	--border: rgba(255, 255, 255, 0.06);
+	--border-subtle: rgba(255, 255, 255, 0.04);
+	--border-focus: rgba(255, 255, 255, 0.12);
+	--border-accent: rgba(45, 212, 191, 0.2);
+
+	/* ── Typography colors ────────────────────── */
+	--text-primary: #ececef;
+	--text-secondary: #8b8b96;
+	--text-muted: #55555e;
+	--text-inverse: #0a0a0c;
+
+	/* ── Accent: Electric Teal ────────────────── */
+	--accent: #2dd4bf;
+	--accent-hover: #14b8a6;
+	--accent-dim: rgba(45, 212, 191, 0.08);
+	--accent-glow: rgba(45, 212, 191, 0.15);
+
+	/* ── Semantic colors ──────────────────────── */
+	--danger: #f87171;
+	--danger-dim: rgba(248, 113, 113, 0.08);
+	--warning: #fbbf24;
+	--warning-dim: rgba(251, 191, 36, 0.08);
+	--info: #60a5fa;
+	--info-dim: rgba(96, 165, 250, 0.08);
+	--success: #34d399;
+	--success-dim: rgba(52, 211, 153, 0.08);
+
+	/* ── Radii ────────────────────────────────── */
+	--radius: 6px;
+	--radius-md: 8px;
+	--radius-lg: 10px;
+	--radius-xl: 14px;
+
+	/* ── Typography stacks ────────────────────── */
+	--font-display: "Plus Jakarta Sans", "DM Sans", -apple-system, sans-serif;
+	--font-body: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI",
+		sans-serif;
+	--font-mono: "IBM Plex Mono", "SF Mono", Menlo, monospace;
+
+	/* ── Shadows ──────────────────────────────── */
+	--shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+	--shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+	--shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+	--shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.6);
+	--shadow-glow: 0 0 20px rgba(45, 212, 191, 0.06);
+
+	/* ── Motion ───────────────────────────────── */
+	--ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+	--ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+	--duration-fast: 120ms;
+	--duration-normal: 200ms;
+	--duration-slow: 350ms;
+
+	/* ── Charts ───────────────────────────────── */
+	--chart-grid: rgba(255, 255, 255, 0.04);
+	--chart-tooltip-bg: #1c1c22;
+}
+
+/* ── Reset ─────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 0;
+}
+
+html,
+body,
+#root {
+	height: 100%;
+}
+
+body {
+	font-family: var(--font-body);
+	font-size: 14px;
+	background: var(--bg-primary);
+	color: var(--text-primary);
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	letter-spacing: -0.006em;
+	line-height: 1.5;
+}
+
+a {
+	color: var(--accent);
+	text-decoration: none;
+	transition: color var(--duration-fast) ease;
+}
+a:hover {
+	color: var(--accent-hover);
+}
+
+code,
+pre {
+	font-family: var(--font-mono);
+}
+
+/* ── Scrollbar ─────────────────────────────────── */
+
+::-webkit-scrollbar {
+	width: 5px;
+	height: 5px;
+}
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+::-webkit-scrollbar-thumb {
+	background: rgba(255, 255, 255, 0.08);
+	border-radius: 100px;
+}
+::-webkit-scrollbar-thumb:hover {
+	background: rgba(255, 255, 255, 0.14);
+}
+
+/* ── Focus ring ────────────────────────────────── */
+
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+/* ── Selection ─────────────────────────────────── */
+
+::selection {
+	background: rgba(45, 212, 191, 0.2);
+	color: var(--text-primary);
+}
+
+/* ── Animations ────────────────────────────────── */
+
+@keyframes fadeIn {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+@keyframes fadeUp {
+	from {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes slideDown {
+	from {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes pulse {
+	0%,
+	100% {
+		opacity: 0.4;
+	}
+	50% {
+		opacity: 0.7;
+	}
+}
+
+@keyframes shimmer {
+	0% {
+		transform: translateX(-100%);
+	}
+	100% {
+		transform: translateX(200%);
+	}
+}
+
+@keyframes glow-pulse {
+	0%,
+	100% {
+		box-shadow: 0 0 12px rgba(45, 212, 191, 0.08);
+	}
+	50% {
+		box-shadow: 0 0 20px rgba(45, 212, 191, 0.15);
+	}
+}

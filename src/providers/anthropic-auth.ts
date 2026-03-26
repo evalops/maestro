@@ -16,7 +16,7 @@
  * │  3. User authenticates at claude.ai or console.anthropic.com│
  * │  4. Receive authorization code from redirect                │
  * │  5. Exchange code + verifier for access/refresh tokens      │
- * │  6. Store credentials in ~/.composer/anthropic-oauth.json   │
+ * │  6. Store credentials in ~/.maestro/anthropic-oauth.json   │
  * │  7. Auto-refresh tokens when they expire                    │
  * └─────────────────────────────────────────────────────────────┘
  * ```
@@ -31,7 +31,7 @@
  * ## Token Storage
  *
  * Credentials are stored at:
- * - Default: `~/.composer/anthropic-oauth.json`
+ * - Default: `~/.maestro/anthropic-oauth.json`
  * - Custom: `$ANTHROPIC_OAUTH_FILE`
  *
  * File is created with mode 0o600 (owner read/write only).

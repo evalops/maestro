@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use composer_tui::tools::process_registry;
+//! use maestro_tui::tools::process_registry;
 //!
 //! // Register a background process
 //! process_registry::register(12345);

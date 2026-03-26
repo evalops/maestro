@@ -11,7 +11,7 @@ import { handleApprovals } from "../../src/server/handlers/approvals.js";
 import { SessionManager } from "../../src/session/manager.js";
 
 const corsHeaders = { "Access-Control-Allow-Origin": "*" };
-const originalSessionDir = process.env.COMPOSER_SESSION_DIR;
+const originalSessionDir = process.env.MAESTRO_SESSION_DIR;
 let tempSessionDir: string | null = null;
 const mockSessionState = {
 	model: {
@@ -75,7 +75,7 @@ function getTokenSubject(token: string): string {
 
 function makeSessionDir(): string {
 	tempSessionDir = mkdtempSync(join(tmpdir(), "composer-approvals-"));
-	process.env.COMPOSER_SESSION_DIR = tempSessionDir;
+	process.env.MAESTRO_SESSION_DIR = tempSessionDir;
 	return tempSessionDir;
 }
 
@@ -95,9 +95,9 @@ describe("handleApprovals", () => {
 			tempSessionDir = null;
 		}
 		if (originalSessionDir === undefined) {
-			delete process.env.COMPOSER_SESSION_DIR;
+			delete process.env.MAESTRO_SESSION_DIR;
 		} else {
-			process.env.COMPOSER_SESSION_DIR = originalSessionDir;
+			process.env.MAESTRO_SESSION_DIR = originalSessionDir;
 		}
 	});
 

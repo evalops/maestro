@@ -1,8 +1,8 @@
-# Composer by EvalOps
+# Maestro by EvalOps
 
-[![CI](https://github.com/evalops/composer/actions/workflows/ci.yml/badge.svg)](https://github.com/evalops/composer/actions/workflows/ci.yml)
+[![CI](https://github.com/evalops/maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/evalops/maestro/actions/workflows/ci.yml)
 
-Composer is a deterministic coding agent with multi-model support, featuring terminal (TUI/CLI), web, IDE (VS Code, JetBrains), browser (Conductor), Slack, and GitHub interfaces for AI-assisted development.
+Maestro is a deterministic coding agent with multi-model support, featuring terminal (TUI/CLI), web, IDE (VS Code, JetBrains), browser (Conductor), Slack, and GitHub interfaces for AI-assisted development.
 
 ---
 
@@ -24,7 +24,7 @@ Composer is a deterministic coding agent with multi-model support, featuring ter
 - [Building from Source](#from-source-bun--nx)
 - [Workspace Commands](#workspace-commands-bun--nx)
 - [Full Commands Reference](#full-commands-reference)
-- [Composers & Background Tasks](#composers-sub-agents)
+- [Maestros & Background Tasks](#maestros-sub-agents)
 - [MCP Integration](#adding-your-own-tools)
 - [Packages](#packages)
 - [Contributing](#contributing)
@@ -36,56 +36,56 @@ Composer is a deterministic coding agent with multi-model support, featuring ter
 
 ## Concept
 
-Composer exposes every capability through slash commands and git-aware helpers so you always know what changed and why. The agent is intentionally minimal: no hidden context juggling, no silent retries, just explicit tools you can chain together or script.
+Maestro exposes every capability through slash commands and git-aware helpers so you always know what changed and why. The agent is intentionally minimal: no hidden context juggling, no silent retries, just explicit tools you can chain together or script.
 
 Choose your interface:
 - **Terminal (TUI/CLI)**: Rich interactive terminal interface with keyboard shortcuts, file search, and command palette
 - **Web UI**: Modern browser-based interface for those who prefer a graphical environment (core parity; see parity appendix in `docs/WEB_UI.md`)
-- **Conductor (Chrome Extension)**: Browser-automation surface that connects to the Composer web server via the Conductor Bridge (`docs/CONDUCTOR_BRIDGE.md`)
+- **Conductor (Chrome Extension)**: Browser-automation surface that connects to the Maestro web server via the Conductor Bridge (`docs/CONDUCTOR_BRIDGE.md`)
 - **VS Code**: Native extension with inline chat, diagnostics integration, and go-to-definition ([VS Code Extension](packages/vscode-extension/README.md))
 - **JetBrains IDEs**: Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs ([JetBrains Plugin](packages/jetbrains-plugin/README.md))
 - **Slack Bot**: Deploy as a Slack bot with Docker sandbox isolation ([`@evalops/slack-agent`](packages/slack-agent/README.md))
 - **GitHub Agent**: Autonomous agent that watches repos, implements issues, and creates PRs ([`@evalops/github-agent`](packages/github-agent/README.md))
-- **Ambient Agent**: Always-on GitHub daemon that watches repos and ships PRs ([Ambient Composer design](docs/design/AMBIENT_AGENT.md))
+- **Ambient Agent**: Always-on GitHub daemon that watches repos and ships PRs ([Ambient Maestro design](docs/design/AMBIENT_AGENT.md))
 - **Headless**: Scriptable automation for CI/CD and evaluation pipelines
 
 ### Why Multiple Interfaces?
 
 The terminal is home for many developers—fast, scriptable, distraction-free. But not every workflow fits a terminal session. Sometimes you're on a call, away from your dev machine, or collaborating with teammates who aren't terminal-native.
 
-**Web UI** lets you access Composer from any browser. Share a session link with a colleague. Demo a feature without screen-sharing your terminal. Work from a tablet when you're not at your desk.
+**Web UI** lets you access Maestro from any browser. Share a session link with a colleague. Demo a feature without screen-sharing your terminal. Work from a tablet when you're not at your desk.
 
-**IDE extensions** (VS Code, JetBrains) integrate Composer directly into your editor. Get IDE-aware context—diagnostics, go-to-definition, find references—fed automatically to the agent. No copy-paste, no context switching.
+**IDE extensions** (VS Code, JetBrains) integrate Maestro directly into your editor. Get IDE-aware context—diagnostics, go-to-definition, find references—fed automatically to the agent. No copy-paste, no context switching.
 
 **Slack** meets teams where they already communicate. Deploy a shared coding agent that your whole team can @mention. Queue up tasks asynchronously—ask the bot to run tests while you're in a meeting, check results when you're back. Scheduled tasks, approval workflows, and persistent memory mean the agent can operate as a background teammate rather than a tool you have to babysit.
 
-**GitHub Agent** runs autonomously. Label an issue with `composer-task` and walk away—it'll implement the feature, run tests, and open a PR. Useful for self-improvement pipelines, batch refactoring, or delegating routine tasks.
+**GitHub Agent** runs autonomously. Label an issue with `maestro-task` and walk away—it'll implement the feature, run tests, and open a PR. Useful for self-improvement pipelines, batch refactoring, or delegating routine tasks.
 
-**Conductor** brings browser automation to Composer. The Chrome extension connects to Composer's web server, giving the agent eyes and hands in the browser—read pages, click elements, fill forms, capture screenshots. Useful for web scraping, testing workflows, or any task that requires interacting with web applications.
+**Conductor** brings browser automation to Maestro. The Chrome extension connects to Maestro's web server, giving the agent eyes and hands in the browser—read pages, click elements, fill forms, capture screenshots. Useful for web scraping, testing workflows, or any task that requires interacting with web applications.
 
 Same agent, same tools, same deterministic behavior—just different surfaces optimized for different contexts.
 
 ### Who It's For
 
-Developers who want deterministic, scriptable AI assistance with full transparency. You value explicit commands over hidden heuristics, git-friendly edits over opaque patches, and the ability to reason about every action Composer takes.
+Developers who want deterministic, scriptable AI assistance with full transparency. You value explicit commands over hidden heuristics, git-friendly edits over opaque patches, and the ability to reason about every action Maestro takes.
 
 ## Installation
 
 ### Bun (recommended)
 
 ```bash
-bun install -g @evalops/composer
+bun install -g @evalops/maestro
 ```
 
 ### npm
 
 ```bash
-npm install -g @evalops/composer
+npm install -g @evalops/maestro
 ```
 
 ### Nix (with flakes)
 ```bash
-nix run github:evalops/composer
+nix run github:evalops/maestro
 ```
 
 ## Quick Start
@@ -95,18 +95,18 @@ nix run github:evalops/composer
 export ANTHROPIC_API_KEY=sk-ant-...
 
 # Start the interactive terminal UI
-composer
+maestro
 
 # Or start the web UI
-composer web
+maestro web
 # Then open http://localhost:8080
 ```
 
-Once running, chat with the AI: `Create a simple Express server in src/server.ts`. Composer will read/write files and run shell commands via explicit slash commands.
+Once running, chat with the AI: `Create a simple Express server in src/server.ts`. Maestro will read/write files and run shell commands via explicit slash commands.
 
 ## API Keys
 
-Composer supports multiple LLM providers. Set the environment variable for your provider:
+Maestro supports multiple LLM providers. Set the environment variable for your provider:
 
 ```bash
 # Anthropic (Claude) - default
@@ -117,7 +117,7 @@ export OPENAI_API_KEY=sk-...
 
 # GitHub Copilot (OAuth)
 # Run /login github-copilot (device flow) — no API key required
-# Tokens are stored in ~/.composer/oauth.json
+# Tokens are stored in ~/.maestro/oauth.json
 # Optional bootstrap: export COPILOT_GITHUB_TOKEN=... or GH_TOKEN=...
 
 # Azure OpenAI (OpenAI-compatible)
@@ -150,7 +150,7 @@ export OPENROUTER_API_KEY=sk-or-...
 export EXA_API_KEY=...
 ```
 
-**Alternative:** Store keys in `~/.composer/keys.json`:
+**Alternative:** Store keys in `~/.maestro/keys.json`:
 
 ```json
 {
@@ -160,13 +160,13 @@ export EXA_API_KEY=...
 }
 ```
 
-Use `composer config init` for interactive provider setup, or `--provider` and `--model` flags to switch providers.
+Use `maestro config init` for interactive provider setup, or `--provider` and `--model` flags to switch providers.
 
-**OpenAI-compatible vendors (Azure/OpenRouter/Groq/Cerebras):** define a provider override with `api: "openai-completions"` (or `"openai-responses"` if supported) and a vendor base URL in `~/.composer/config.json` or `COMPOSER_MODELS_FILE`. See `docs/MODELS.md` for the full schema and `compat` flags.
+**OpenAI-compatible vendors (Azure/OpenRouter/Groq/Cerebras):** define a provider override with `api: "openai-completions"` (or `"openai-responses"` if supported) and a vendor base URL in `~/.maestro/config.json` or `MAESTRO_MODELS_FILE`. See `docs/MODELS.md` for the full schema and `compat` flags.
 
-**GitHub Copilot:** after `/login github-copilot`, select models via `/model` (provider `github-copilot`) or run `composer --provider github-copilot --model <id>`.
+**GitHub Copilot:** after `/login github-copilot`, select models via `/model` (provider `github-copilot`) or run `maestro --provider github-copilot --model <id>`.
 
-Example `~/.composer/config.json` to add a short alias:
+Example `~/.maestro/config.json` to add a short alias:
 
 ```json
 {
@@ -254,12 +254,12 @@ When using an OpenAI **Responses API** model (e.g. `api: "openai-responses"`), t
 
 In practice, tool `parameters` often need to be a top-level JSON Schema `object` (the root must not be `anyOf`), and some composition keywords (like `allOf` / `not`) are not supported by Structured Outputs.
 
-Composer will automatically **filter out tools** whose `parameters` schema uses these JSON Schema keywords at the **top level**:
+Maestro will automatically **filter out tools** whose `parameters` schema uses these JSON Schema keywords at the **top level**:
 - `oneOf`, `anyOf`, `allOf`
 - `enum`
 - `not`
 
-Composer logs a warning listing filtered tools (see `filterResponsesApiTools()`), but users may still be surprised if an external/MCP tool disappears.
+Maestro logs a warning listing filtered tools (see `filterResponsesApiTools()`), but users may still be surprised if an external/MCP tool disappears.
 
 Workaround: wrap the constrained value inside an object:
 
@@ -280,11 +280,11 @@ References:
 
 #### Reasoning summary & effort (Responses API only)
 
-Composer enforces these guardrails for OpenAI-compatible providers:
+Maestro enforces these guardrails for OpenAI-compatible providers:
 
 - `reasoningSummary` is only allowed for **Responses API** models (`api: "openai-responses"`) that are marked `reasoning: true`.
 - `reasoningEffort` is only sent when `compat.supportsReasoningEffort` is true.
-- If you enable these on unsupported models, Composer fails fast with a clear error.
+- If you enable these on unsupported models, Maestro fails fast with a clear error.
 
 For OpenAI-compatible vendors, set compat flags explicitly when needed:
 
@@ -312,8 +312,8 @@ For OpenAI-compatible vendors, set compat flags explicitly when needed:
 - Set a default stack for new tasks with `/framework <id>` (e.g., `fastapi`, `express`, `node`).
 - Scope defaults per user (default) or workspace via `/framework <id> --workspace`; clear with `/framework none`.
 - Discover options with `/framework list`.
-- Precedence: policy (locked) > policy > env override (`COMPOSER_FRAMEWORK_OVERRIDE`) > env default (`COMPOSER_DEFAULT_FRAMEWORK`) > workspace `.composer/workspace.json` > user `~/.composer/default-framework.json` > none.
-- Example policy (`~/.composer/policy.json`):
+- Precedence: policy (locked) > policy > env override (`MAESTRO_FRAMEWORK_OVERRIDE`) > env default (`MAESTRO_DEFAULT_FRAMEWORK`) > workspace `.maestro/workspace.json` > user `~/.maestro/default-framework.json` > none.
+- Example policy (`~/.maestro/policy.json`):
 
 ```json
 {
@@ -331,7 +331,7 @@ For OpenAI-compatible vendors, set compat flags explicitly when needed:
 
 ## Security
 
-Composer ships with a layered security model that balances power with protection:
+Maestro ships with a layered security model that balances power with protection:
 
 ### Action Firewall (enabled by default)
 
@@ -339,11 +339,11 @@ Composer ships with a layered security model that balances power with protection
 - **Tree-sitter analysis** – Parses bash commands for deeper safety checks beyond regex (detects `sudo`, `git push --force`, command substitution, etc.)
 - **System path protection** – Hard blocks modifications to `/etc`, `/usr`, `/var`, `/boot`, `/sys`, `/proc`, `/dev`
 - **Workspace containment** – Requires approval for file writes outside the current project or temp directories
-- **Trusted paths** – Configure additional allowed paths in `~/.composer/firewall.json`
+- **Trusted paths** – Configure additional allowed paths in `~/.maestro/firewall.json`
 
 ### Approval Modes
 
-Control how Composer handles risky actions via `--approval-mode` or `COMPOSER_APPROVAL_MODE`:
+Control how Maestro handles risky actions via `--approval-mode` or `MAESTRO_APPROVAL_MODE`:
 
 | Mode | Behavior |
 |------|----------|
@@ -354,40 +354,40 @@ Control how Composer handles risky actions via `--approval-mode` or `COMPOSER_AP
 ### Sandbox Execution
 
 ```bash
-composer exec --sandbox default        # Workspace containment + firewall active
-composer exec --sandbox danger-full-access  # Remove guardrails (trusted environments only)
+maestro exec --sandbox default        # Workspace containment + firewall active
+maestro exec --sandbox danger-full-access  # Remove guardrails (trusted environments only)
 ```
 
 Optional Docker sandbox available for stronger isolation (see [docs/SAFETY.md](docs/SAFETY.md) for current status).
 
 ### Safe Mode
 
-Enable extra restrictions with `--safe-mode` or `COMPOSER_SAFE_MODE=1`:
+Enable extra restrictions with `--safe-mode` or `MAESTRO_SAFE_MODE=1`:
 - Additional constraints on shell writes
 - Shield icon in footer indicates active protection
 - Recommended for untrusted environments
 
 See [Safety & Approvals](docs/SAFETY.md) for detailed configuration.
 
-### Composer Guardian (secrets + CI hygiene)
+### Maestro Guardian (secrets + CI hygiene)
 
-- **What it does:** Runs Semgrep (`p/secrets` + `p/ci`) plus a git-secrets/trufflehog fallback against staged files before commits/pushes initiated through Composer.
-- **Default:** On. Disable only in trusted environments with `COMPOSER_GUARDIAN=0` or `/guardian disable`.
+- **What it does:** Runs Semgrep (`p/secrets` + `p/ci`) plus a git-secrets/trufflehog fallback against staged files before commits/pushes initiated through Maestro.
+- **Default:** On. Disable only in trusted environments with `MAESTRO_GUARDIAN=0` or `/guardian disable`.
 - **Manual runs:** `/guardian` in the TUI or `bash scripts/guardian.sh --staged`.
 - **Pre-commit hook:** `npm run guardian:install-hook` installs `.git/hooks/pre-commit` that points to the same script.
 
 ## Hooks
 
-Composer supports lifecycle hooks for custom validation, logging, and automation. Hooks let you intercept tool calls, inject context, gate permissions, and integrate with external systems.
+Maestro supports lifecycle hooks for custom validation, logging, and automation. Hooks let you intercept tool calls, inject context, gate permissions, and integrate with external systems.
 
 ### Quick Start
 
 ```bash
 # Via environment variable
-export COMPOSER_HOOKS_PRE_TOOL_USE="./scripts/validate-command.sh"
+export MAESTRO_HOOKS_PRE_TOOL_USE="./scripts/validate-command.sh"
 ```
 
-Or via `.composer/hooks.json` (project) or `~/.composer/hooks.json` (user):
+Or via `.maestro/hooks.json` (project) or `~/.maestro/hooks.json` (user):
 
 ```json
 {
@@ -465,27 +465,27 @@ Telemetry is **off by default**. Enable for analytics:
 
 ```bash
 # Write to local log
-export COMPOSER_TELEMETRY=true
+export MAESTRO_TELEMETRY=true
 
 # Or stream to endpoint
-export COMPOSER_TELEMETRY_ENDPOINT=https://your-endpoint.com/hook
+export MAESTRO_TELEMETRY_ENDPOINT=https://your-endpoint.com/hook
 ```
 
 Payloads include tool name, success flag, and duration. Transport failures never block workflows.
 
 ## Context Files
 
-Composer loads `AGENT.md` / `AGENTS.md` / `CLAUDE.md` files automatically (with `AGENTS.override.md` taking precedence when present):
+Maestro loads `AGENT.md` / `AGENTS.md` / `CLAUDE.md` files automatically (with `AGENTS.override.md` taking precedence when present):
 
-1. **Global** (`~/.composer/agent/AGENT.md`) – personal defaults
+1. **Global** (`~/.maestro/agent/AGENT.md`) – personal defaults
 2. **Parent directories** – inherited settings
 3. **Project root** – most specific wins
 
 Use them for coding conventions, architecture notes, and project-specific instructions.
 
 To append extra instructions without replacing the base system prompt, add:
-- **Project:** `.composer/APPEND_SYSTEM.md`
-- **Global:** `~/.composer/agent/APPEND_SYSTEM.md`
+- **Project:** `.maestro/APPEND_SYSTEM.md`
+- **Global:** `~/.maestro/agent/APPEND_SYSTEM.md`
 - Or pass `--append-system-prompt <text|file>` on the CLI
 
 ---
@@ -494,13 +494,13 @@ To append extra instructions without replacing the base system prompt, add:
 
 ## EvalOps Workflows
 
-Composer is built for automated evaluation pipelines, making it easy to benchmark agent behavior and wire into CI/CD.
+Maestro is built for automated evaluation pipelines, making it easy to benchmark agent behavior and wire into CI/CD.
 
 ### Running Evaluations
 
 ```bash
 # Build CLI/TUI/Web and run all scenarios
-npx nx run composer:evals --skip-nx-cache
+npx nx run maestro:evals --skip-nx-cache
 ```
 
 **CI note:** Evals are opt-in on pull requests to keep CI fast. Add the `run-evals` label to a PR to trigger the evals workflow.
@@ -516,7 +516,7 @@ Each scenario specifies a command and expected output patterns:
   "scenarios": [
     {
       "name": "help-command",
-      "command": "composer --help",
+      "command": "maestro --help",
       "expect": {
         "stdout": ["Usage:", "--provider", "--model"],
         "exitCode": 0
@@ -524,7 +524,7 @@ Each scenario specifies a command and expected output patterns:
     },
     {
       "name": "version-check",
-      "command": "composer --version",
+      "command": "maestro --version",
       "expect": {
         "stdout": ["\\d+\\.\\d+\\.\\d+"],
         "exitCode": 0
@@ -544,14 +544,14 @@ Stream evaluation results to your analytics pipeline:
 
 ```bash
 # Write to local log file
-export COMPOSER_TELEMETRY=true
-export COMPOSER_TELEMETRY_FILE=~/.composer/telemetry.log
+export MAESTRO_TELEMETRY=true
+export MAESTRO_TELEMETRY_FILE=~/.maestro/telemetry.log
 
 # Or stream to endpoint
-export COMPOSER_TELEMETRY_ENDPOINT=https://your-evalops-dashboard.com/ingest
+export MAESTRO_TELEMETRY_ENDPOINT=https://your-evalops-dashboard.com/ingest
 
 # Control sampling rate (0.0 to 1.0)
-export COMPOSER_TELEMETRY_SAMPLE=0.25
+export MAESTRO_TELEMETRY_SAMPLE=0.25
 ```
 
 Payloads include tool name, success flag, duration, and evaluation context. Use `npm run telemetry:report` to summarize success rates and durations from the log.
@@ -565,15 +565,15 @@ Payloads include tool name, success flag, duration, and evaluation context. Use 
 
 ## Development Services (Docker)
 
-Composer uses Redis for rate limiting and PostgreSQL for persistence. Start local services with Docker Compose:
+Maestro uses Redis for rate limiting and PostgreSQL for persistence. Start local services with Docker Compose:
 
 ```bash
 # Start Redis and PostgreSQL
 docker compose up -d
 
 # Set environment variables
-export COMPOSER_REDIS_URL=redis://localhost:6379
-export COMPOSER_DATABASE_URL=postgresql://localhost:5432/composer?user=composer&password=composer
+export MAESTRO_REDIS_URL=redis://localhost:6379
+export MAESTRO_DATABASE_URL=postgresql://localhost:5432/maestro?user=maestro&password=maestro
 
 # Verify services are running
 docker compose ps
@@ -590,25 +590,25 @@ docker compose ps
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `COMPOSER_REDIS_URL` | Redis connection URL | (in-memory fallback) |
-| `COMPOSER_DATABASE_URL` | PostgreSQL connection URL | (file-based SQLite fallback) |
+| `MAESTRO_REDIS_URL` | Redis connection URL | (in-memory fallback) |
+| `MAESTRO_DATABASE_URL` | PostgreSQL connection URL | (file-based SQLite fallback) |
 
-Without these variables, Composer falls back to in-memory rate limiting and file-based storage, which works fine for local development.
+Without these variables, Maestro falls back to in-memory rate limiting and file-based storage, which works fine for local development.
 
 ## From Source (Bun + Nx)
 
 ```bash
-git clone https://github.com/evalops/composer.git
-cd composer
+git clone https://github.com/evalops/maestro.git
+cd maestro
 bun install
-npx nx run composer:build:all --skip-nx-cache   # Builds CLI, TUI, Web
+npx nx run maestro:build:all --skip-nx-cache   # Builds CLI, TUI, Web
 npm link                                        # Optional: link locally
 ```
 
 ### Binary Compilation
 ```bash
 bun run compile:binary
-# Output: dist/composer-bun
+# Output: dist/maestro-bun
 ```
 
 ### Using the native Bun binary
@@ -616,9 +616,9 @@ bun run compile:binary
 Build and distribute a single-file executable (no Node or repo needed):
 
 ```bash
-npm run bun:compile          # emits dist/composer-bun
-chmod +x dist/composer-bun   # if needed
-./dist/composer-bun --help   # run it
+npm run bun:compile           # emits dist/maestro-bun
+chmod +x dist/maestro-bun   # if needed
+./dist/maestro-bun --help   # run it
 ```
 
 Notes:
@@ -634,11 +634,11 @@ Notes:
 |---------|---------|
 | `bun install` | Install dependencies |
 | `bun run bun:lint` | Lint + eval verifier |
-| `npx nx run composer:test --skip-nx-cache` | Full test suite (builds TUI/Web) |
+| `npx nx run maestro:test --skip-nx-cache` | Full test suite (builds TUI/Web) |
 | `bun run bun:test:fast` | Fast local test run (parallel, opt-in via VITEST_FAST) |
-| `npx nx run composer:evals --skip-nx-cache` | Run eval scenarios |
+| `npx nx run maestro:evals --skip-nx-cache` | Run eval scenarios |
 | `bun run --filter @evalops/tui build` | Build TUI package |
-| `bun run --filter @evalops/composer-web build` | Build Web package |
+| `bun run --filter @evalops/maestro-web build` | Build Web package |
 | `bunx vitest --run -t "<test>"` | Run specific tests |
 
 ### Nix Hash Auto-Update (CI)
@@ -700,7 +700,7 @@ The `Update Nix Hash` workflow runs on pushes to `main` that touch `bun.lockb`, 
 ### CLI Options
 
 ```bash
-composer [options] [messages...]
+maestro [options] [messages...]
 ```
 
 | Flag | Description |
@@ -716,14 +716,14 @@ composer [options] [messages...]
 | `-c, --continue` | Resume latest session |
 | `-r, --resume` | Interactive session picker |
 
-## Composers (Sub-Agents)
+## Maestros (Sub-Agents)
 
-Composers are specialized agent profiles with custom system prompts, tool restrictions, and model overrides. Configure them in `~/.composer/composers/` (personal) or `.composer/composers/` (project-specific).
+Maestros are specialized agent profiles with custom system prompts, tool restrictions, and model overrides. They are managed with `/maestro`, and the profile files live in `~/.maestro/composers/` (personal) or `.maestro/composers/` (project-specific).
 
 ### Configuration
 
 ```yaml
-# .composer/composers/code-reviewer.yaml
+# .maestro/composers/code-reviewer.yaml
 name: code-reviewer
 description: Focused code review assistant
 systemPrompt: |
@@ -747,7 +747,7 @@ triggers:
 | Field | Description |
 |-------|-------------|
 | `name` | Unique identifier |
-| `description` | Shown in `/composer list` |
+| `description` | Shown in `/maestro list` |
 | `systemPrompt` | Custom instructions prepended to context |
 | `tools` | Array of allowed tools (omit for all tools) |
 | `model` | Override the default model |
@@ -757,12 +757,12 @@ triggers:
 ### Commands
 
 ```bash
-/composer list              # Show available composers
-/composer activate <name>   # Switch to a composer
-/composer deactivate        # Return to default agent
+/maestro list              # Show available maestros
+/maestro activate <name>   # Switch to a maestro
+/maestro deactivate        # Return to default agent
 ```
 
-For heavier delegation patterns (parallel tasks, long-running jobs), spawn a separate `composer` process or write a helper tool the agent can call via `bash`.
+For heavier delegation patterns (parallel tasks, long-running jobs), spawn a separate `maestro` process or write a helper tool the agent can call via `bash`.
 
 ## Background Tasks
 
@@ -781,17 +781,17 @@ The `background_tasks` tool manages long-running processes with lifecycle manage
 
 ```bash
 # Start a dev server in the background
-composer "Start the Next.js dev server"
+maestro "Start the Next.js dev server"
 # Agent executes: background_tasks action=start command="npm run dev" cwd="./packages/web"
 
 # Make code changes...
 
 # Check for errors
-composer "Show me the dev server logs"
+maestro "Show me the dev server logs"
 # Agent executes: background_tasks action=logs taskId="abc123" lines=50
 
 # Stop when done
-composer "Stop all background tasks"
+maestro "Stop all background tasks"
 # Agent executes: background_tasks action=stop taskId="abc123"
 ```
 
@@ -826,13 +826,13 @@ composer "Stop all background tasks"
 
 ### Log Storage
 
-- Logs persist to `~/.composer/logs/background-<taskId>.log`
+- Logs persist to `~/.maestro/logs/background-<taskId>.log`
 - Files truncated at 5MB to prevent disk issues
-- Tasks auto-cleanup on Composer exit
+- Tasks auto-cleanup on Maestro exit
 
 ## Adding Your Own Tools
 
-Configure MCP servers in `~/.composer/mcp.json`:
+Configure MCP servers in `~/.maestro/mcp.json`:
 
 ```json
 {
@@ -854,8 +854,8 @@ Tools appear as `mcp__<server>__<tool>`. Use `/mcp` to view status.
 ```bash
 bun install
 bunx biome check .                           # lint/format
-npx nx run composer:test --skip-nx-cache     # tests (mirrors CI)
-npx nx run composer:evals --skip-nx-cache    # eval scenarios
+npx nx run maestro:test --skip-nx-cache     # tests (mirrors CI)
+npx nx run maestro:evals --skip-nx-cache    # eval scenarios
 ```
 
 New commands/features should include tests in `test/`.
@@ -867,12 +867,12 @@ New commands/features should include tests in `test/`.
 1. Verify: `echo $ANTHROPIC_API_KEY`
 2. Check for typos/whitespace in shell config
 3. Restart terminal after setting vars
-4. Run `composer --diag`
+4. Run `maestro --diag`
 
 ### Session Files
 
-Sessions are JSONL in `~/.composer/agent/sessions/`. Use:
-- `composer --no-session` for fresh starts
+Sessions are JSONL in `~/.maestro/agent/sessions/`. Use:
+- `maestro --no-session` for fresh starts
 - `/export` to save as HTML before archiving
 
 ---
@@ -897,13 +897,13 @@ Sessions are JSONL in `~/.composer/agent/sessions/`. Use:
 | [`@evalops/ai`](packages/ai/README.md) | Shared AI SDK: model registry, provider transport, agent event streams |
 | [`@evalops/tui`](packages/tui/README.md) | Terminal UI library (TypeScript) with differential rendering |
 | [`tui-rs`](packages/tui-rs/README.md) | Native Rust TUI - standalone binary with native AI provider integrations |
-| [`@evalops/composer-web`](packages/web/README.md) | Web interface for Composer |
+| [`@evalops/maestro-web`](packages/web/README.md) | Web interface for Maestro |
 | [`@evalops/contracts`](packages/contracts/README.md) | Shared TypeScript definitions |
 | [`@evalops/slack-agent`](packages/slack-agent/README.md) | Slack bot with Docker sandbox isolation |
 | [`@evalops/github-agent`](packages/github-agent/README.md) | Autonomous GitHub agent for self-improvement pipelines |
-| [`ambient-agent-rs`](packages/ambient-agent-rs/README.md) | Always-on GitHub agent daemon (Ambient Composer) |
-| [Composer for VS Code](packages/vscode-extension/README.md) | VS Code extension with inline chat and IDE integration |
-| [Composer for JetBrains](packages/jetbrains-plugin/README.md) | Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs |
+| [`ambient-agent-rs`](packages/ambient-agent-rs/README.md) | Always-on GitHub agent daemon (Ambient Maestro) |
+| [Maestro for VS Code](packages/vscode-extension/README.md) | VS Code extension with inline chat and IDE integration |
+| [Maestro for JetBrains](packages/jetbrains-plugin/README.md) | Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs |
 
 Doc map (start here): [docs/README.md](docs/README.md) → Quickstart → Feature Guide → Tools Reference → Safety. Web/TUI differences: parity appendix in [docs/WEB_UI.md](docs/WEB_UI.md).
 

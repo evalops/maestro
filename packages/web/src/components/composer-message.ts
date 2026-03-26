@@ -752,7 +752,7 @@ export class ComposerMessage extends LitElement {
 
 				<div class="content-column">
 					<div class="header">
-						<span class="role-name">${this.role === "user" ? "You" : "Composer"}</span>
+						<span class="role-name">${this.role === "user" ? "You" : "Maestro"}</span>
 						<span class="timestamp">
 							${this.formatTimestamp(this.timestamp)}
 							${

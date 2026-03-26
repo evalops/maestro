@@ -53,12 +53,12 @@
  *
  * | Variable                              | Description                      | Default    |
  * |---------------------------------------|----------------------------------|------------|
- * | COMPOSER_BACKGROUND_TASK_MAX          | Max concurrent tasks             | 4          |
- * | COMPOSER_BACKGROUND_TASK_LOG_BYTES    | Per-task log size limit          | 5MB        |
- * | COMPOSER_BACKGROUND_TASK_RETENTION_MS | How long to keep finished tasks  | 10 min     |
- * | COMPOSER_BACKGROUND_TASK_MAX_RSS_KB   | Memory limit per task            | 768MB      |
- * | COMPOSER_BACKGROUND_TASK_MAX_CPU_MS   | CPU time limit per task          | 10 min     |
- * | COMPOSER_BACKGROUND_TASK_TICKS        | Clock ticks per second (Linux)   | 100        |
+ * | MAESTRO_BACKGROUND_TASK_MAX          | Max concurrent tasks             | 4          |
+ * | MAESTRO_BACKGROUND_TASK_LOG_BYTES    | Per-task log size limit          | 5MB        |
+ * | MAESTRO_BACKGROUND_TASK_RETENTION_MS | How long to keep finished tasks  | 10 min     |
+ * | MAESTRO_BACKGROUND_TASK_MAX_RSS_KB   | Memory limit per task            | 768MB      |
+ * | MAESTRO_BACKGROUND_TASK_MAX_CPU_MS   | CPU time limit per task          | 10 min     |
+ * | MAESTRO_BACKGROUND_TASK_TICKS        | Clock ticks per second (Linux)   | 100        |
  *
  * @module tools/background-tasks
  */
@@ -117,35 +117,35 @@ import { ToolError } from "./tool-dsl.js";
 
 const LOG_TAIL_BYTES = 200_000;
 const DEFAULT_RSS_KB = readNonNegativeInt(
-	"COMPOSER_BACKGROUND_TASK_MAX_RSS_KB",
+	"MAESTRO_BACKGROUND_TASK_MAX_RSS_KB",
 	768 * 1024,
 );
 const DEFAULT_CPU_MS = readNonNegativeInt(
-	"COMPOSER_BACKGROUND_TASK_MAX_CPU_MS",
+	"MAESTRO_BACKGROUND_TASK_MAX_CPU_MS",
 	10 * 60 * 1000,
 );
 const RESTART_NOTIFY_THRESHOLD = readThresholdEnv(
-	"COMPOSER_BACKGROUND_TASK_NOTIFY_RESTARTS",
+	"MAESTRO_BACKGROUND_TASK_NOTIFY_RESTARTS",
 	2,
 );
 
 const MAX_CONCURRENT_TASKS = readPositiveInt(
-	"COMPOSER_BACKGROUND_TASK_MAX",
+	"MAESTRO_BACKGROUND_TASK_MAX",
 	4,
 	1,
 );
 const MAX_LOG_FILE_BYTES = readPositiveInt(
-	"COMPOSER_BACKGROUND_TASK_LOG_BYTES",
+	"MAESTRO_BACKGROUND_TASK_LOG_BYTES",
 	5 * 1024 * 1024,
 	50_000,
 );
 const TASK_RETENTION_MS = readPositiveInt(
-	"COMPOSER_BACKGROUND_TASK_RETENTION_MS",
+	"MAESTRO_BACKGROUND_TASK_RETENTION_MS",
 	10 * 60 * 1000,
 	1_000,
 );
 const MAX_LOG_SEGMENTS = readPositiveInt(
-	"COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS",
+	"MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS",
 	2,
 	0,
 );
@@ -339,7 +339,7 @@ class BackgroundTaskManager extends EventEmitter {
 
 	private getLogDir(): string {
 		const expanded =
-			resolveEnvPath(process.env.COMPOSER_BACKGROUND_LOG_DIR) ??
+			resolveEnvPath(process.env.MAESTRO_BACKGROUND_LOG_DIR) ??
 			PATHS.BACKGROUND_TASK_LOG_DIR;
 		const shouldRefresh =
 			this.logDir === null ||

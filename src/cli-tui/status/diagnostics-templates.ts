@@ -143,7 +143,7 @@ ${muted("Use /diag for a full diagnostic report.")}`;
 }
 
 export function buildFeedbackTemplate(info: FeedbackTemplateInfo): string {
-	return `${heading("Composer feedback")}
+	return `${heading("Maestro feedback")}
 ${labeledValue("Version", info.version)}
 ${labeledValue("Session", info.sessionId ?? muted("unknown"))}
 ${labeledValue("Session file", info.sessionFile)}

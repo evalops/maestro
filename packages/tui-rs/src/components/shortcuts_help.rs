@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::components::{ShortcutsHelp, ShortcutCategory};
+//! use maestro_tui::components::{ShortcutsHelp, ShortcutCategory};
 //!
 //! let mut help = ShortcutsHelp::new()
 //!     .add_shortcut(ShortcutCategory::Navigation, "↑/↓", "Move selection")

@@ -2,10 +2,10 @@
 //!
 //! Run with: cargo bench --all-features
 
-use composer_tui::hooks::{
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use maestro_tui::hooks::{
     HookRegistry, HookResult, IntegratedHookSystem, PreToolUseHook, PreToolUseInput, SafetyHook,
 };
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use std::sync::Arc;
 
 /// Benchmark hook registry creation
@@ -214,7 +214,7 @@ fn bench_metrics(c: &mut Criterion) {
 
 /// Benchmark has_hooks check
 fn bench_has_hooks(c: &mut Criterion) {
-    use composer_tui::hooks::HookEventType;
+    use maestro_tui::hooks::HookEventType;
 
     let mut registry = HookRegistry::new();
     registry.register_pre_tool_use(Arc::new(SafetyHook));

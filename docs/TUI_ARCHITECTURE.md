@@ -1,6 +1,6 @@
 # TUI Architecture
 
-This document describes the architecture of Composer's Terminal User Interface, covering both the reusable `@evalops/tui` library and the Composer-specific application layer.
+This document describes the architecture of Maestro's Terminal User Interface, covering both the reusable `@evalops/tui` library and the Maestro-specific application layer.
 
 ## Overview
 
@@ -9,7 +9,7 @@ The TUI is split into two layers:
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    src/cli-tui/ (Application Layer)                  │
-│         Composer-specific UI: views, commands, agent integration     │
+│         Maestro-specific UI: views, commands, agent integration     │
 ├─────────────────────────────────────────────────────────────────────┤
 │                    packages/tui/ (Library Layer)                     │
 │         Reusable: rendering engine, components, terminal abstraction │
@@ -17,7 +17,7 @@ The TUI is split into two layers:
 ```
 
 - **`packages/tui/`** (~3,400 LOC) - A portable terminal UI library with differential rendering
-- **`src/cli-tui/`** (~2,550 LOC main + extracted modules, 100+ files) - Composer's UI built on top of the library
+- **`src/cli-tui/`** (~2,550 LOC main + extracted modules, 100+ files) - Maestro's UI built on top of the library
 
 ## Library Layer (`@evalops/tui`)
 
@@ -344,7 +344,7 @@ tui.setFocus(selectList);   // Modal mode: selector has focus
 | File | Purpose |
 |------|---------|
 | `tui-renderer.ts` | Main orchestrator |
-| `custom-editor.ts` | Editor with Composer-specific bindings |
+| `custom-editor.ts` | Editor with Maestro-specific bindings |
 | `agent-event-router.ts` | Routes agent events to views |
 | `modal-manager.ts` | Modal stack management |
 | `commands/registry.ts` | Slash command registration |

@@ -24,7 +24,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::agent::compaction::{ContextCompactor, CompactionConfig};
+//! use maestro_tui::agent::compaction::{ContextCompactor, CompactionConfig};
 //!
 //! let mut compactor = ContextCompactor::new(CompactionConfig::default());
 //!

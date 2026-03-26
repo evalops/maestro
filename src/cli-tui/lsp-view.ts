@@ -93,7 +93,7 @@ export class LspView {
 	private async handleStart(): Promise<void> {
 		if (!FEATURES.LSP_ENABLED) {
 			this.options.showError(
-				"LSP is disabled. Set COMPOSER_LSP_ENABLED=1 to enable.",
+				"LSP is disabled. Set MAESTRO_LSP_ENABLED=1 to enable.",
 			);
 			return;
 		}
@@ -121,7 +121,7 @@ export class LspView {
 	private async handleStop(): Promise<boolean> {
 		if (!FEATURES.LSP_ENABLED) {
 			this.options.showError(
-				"LSP is disabled. Set COMPOSER_LSP_ENABLED=1 to enable.",
+				"LSP is disabled. Set MAESTRO_LSP_ENABLED=1 to enable.",
 			);
 			return false;
 		}
@@ -148,7 +148,7 @@ export class LspView {
 	private async handleRestart(): Promise<void> {
 		if (!FEATURES.LSP_ENABLED) {
 			this.options.showError(
-				"LSP is disabled. Set COMPOSER_LSP_ENABLED=1 to enable.",
+				"LSP is disabled. Set MAESTRO_LSP_ENABLED=1 to enable.",
 			);
 			return;
 		}

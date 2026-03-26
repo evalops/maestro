@@ -6,7 +6,7 @@ export const ARTIFACT_ACCESS_HEADER = "x-composer-artifact-access";
 
 const DEFAULT_ARTIFACT_ACCESS_TTL_MS = 5 * 60 * 1000;
 const CONFIGURED_ARTIFACT_ACCESS_TTL_MS = Number.parseInt(
-	process.env.COMPOSER_ARTIFACT_ACCESS_TTL_MS || "",
+	process.env.MAESTRO_ARTIFACT_ACCESS_TTL_MS || "",
 	10,
 );
 const ARTIFACT_ACCESS_TTL_MS =
@@ -16,10 +16,10 @@ const ARTIFACT_ACCESS_TTL_MS =
 		: DEFAULT_ARTIFACT_ACCESS_TTL_MS;
 
 const ARTIFACT_ACCESS_SECRET =
-	process.env.COMPOSER_ARTIFACT_ACCESS_SECRET?.trim() ||
-	process.env.COMPOSER_AUTH_SHARED_SECRET?.trim() ||
-	process.env.COMPOSER_JWT_SECRET?.trim() ||
-	process.env.COMPOSER_WEB_API_KEY?.trim() ||
+	process.env.MAESTRO_ARTIFACT_ACCESS_SECRET?.trim() ||
+	process.env.MAESTRO_AUTH_SHARED_SECRET?.trim() ||
+	process.env.MAESTRO_JWT_SECRET?.trim() ||
+	process.env.MAESTRO_WEB_API_KEY?.trim() ||
 	randomBytes(32).toString("hex");
 
 const ARTIFACT_ACCESS_ACTIONS = ["view", "file", "events", "zip"] as const;

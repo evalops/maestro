@@ -1,16 +1,16 @@
 [package]
-name = "composer-tui"
+name = "maestro-tui"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Native terminal UI renderer for Composer"
+description = "Native terminal UI renderer for Maestro"
 
 [[bin]]
-name = "composer-tui"
+name = "maestro-tui"
 path = "src/main.rs"
 
 [lib]
-name = "composer_tui"
+name = "maestro_tui"
 path = "src/lib.rs"
 
 [dependencies]

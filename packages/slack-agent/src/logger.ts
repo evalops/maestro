@@ -19,7 +19,7 @@ export interface LogContext {
 	threadTs?: string;
 	runId?: string;
 	taskId?: string;
-	source?: "channel" | "dm" | "slash" | "scheduled";
+	source?: "channel" | "dm" | "slash" | "scheduled" | "trigger";
 }
 
 export type LogLevel = "debug" | "info" | "warn" | "error";

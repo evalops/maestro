@@ -22,7 +22,7 @@ describe("Composers loader", () => {
 	});
 
 	it("loads composer from JSON file", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "test.json"),
@@ -44,7 +44,7 @@ describe("Composers loader", () => {
 	});
 
 	it("loads composer from YAML file", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "yaml-test.yaml"),
@@ -61,7 +61,7 @@ tools: [read, write, bash]
 	});
 
 	it("uses filename as name when name not specified", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "unnamed.json"),
@@ -76,7 +76,7 @@ tools: [read, write, bash]
 	});
 
 	it("excludes disabled composers", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "enabled.json"),
@@ -97,7 +97,7 @@ tools: [read, write, bash]
 	});
 
 	it("normalizes tools string to array", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "string-tools.json"),
@@ -113,7 +113,7 @@ tools: [read, write, bash]
 	});
 
 	it("normalizes comma-separated tools string to array", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "comma-tools.json"),
@@ -129,7 +129,7 @@ tools: [read, write, bash]
 	});
 
 	it("keeps tools as array when already an array", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "array-tools.json"),
@@ -145,7 +145,7 @@ tools: [read, write, bash]
 	});
 
 	it("sets tools to undefined for invalid tools type", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "invalid-tools.json"),
@@ -161,7 +161,7 @@ tools: [read, write, bash]
 	});
 
 	it("rejects path traversal via symlinks", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 
 		// Create a directory outside the composers dir
@@ -192,7 +192,7 @@ tools: [read, write, bash]
 	});
 
 	it("handles YAML multiline strings correctly", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "multiline.yaml"),
@@ -217,7 +217,7 @@ systemPrompt: |
 	});
 
 	it("handles YAML nested objects (triggers)", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "triggers.yaml"),
@@ -241,7 +241,7 @@ triggers:
 	});
 
 	it("ignores non-config files", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "valid.json"),
@@ -256,7 +256,7 @@ triggers:
 	});
 
 	it("handles malformed JSON gracefully", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(join(composersDir, "malformed.json"), "{ invalid json }");
 		writeFileSync(
@@ -270,7 +270,7 @@ triggers:
 	});
 
 	it("handles malformed YAML gracefully", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "malformed.yaml"),
@@ -289,7 +289,7 @@ triggers:
 	});
 
 	it("loads .yml extension same as .yaml", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "test.yml"),
@@ -304,7 +304,7 @@ description: Uses .yml extension
 	});
 
 	it("adds default description when not specified", () => {
-		const composersDir = join(testDir, ".composer", "composers");
+		const composersDir = join(testDir, ".maestro", "composers");
 		mkdirSync(composersDir, { recursive: true });
 		writeFileSync(
 			join(composersDir, "no-desc.json"),

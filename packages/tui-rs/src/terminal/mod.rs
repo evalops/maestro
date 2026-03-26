@@ -30,7 +30,7 @@
 //! # Example Usage
 //!
 //! ```no_run
-//! use composer_tui::terminal::{init, restore, TerminalEventStream};
+//! use maestro_tui::terminal::{init, restore, TerminalEventStream};
 //!
 //! # async fn example() -> std::io::Result<()> {
 //! // Initialize the terminal

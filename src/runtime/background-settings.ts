@@ -62,7 +62,7 @@ function resolveEnvPath(raw: string): string | null {
 		}
 		return safejoin(SETTINGS_ROOT, expanded);
 	} catch (error) {
-		logger.warn("Ignoring unsafe COMPOSER_BACKGROUND_SETTINGS path", {
+		logger.warn("Ignoring unsafe MAESTRO_BACKGROUND_SETTINGS path", {
 			path: trimmed,
 			error: error instanceof Error ? error.message : String(error),
 		});
@@ -74,7 +74,7 @@ function getSettingsPath(): string {
 	if (settingsPathOverride) {
 		return resolveOverridePath(settingsPathOverride);
 	}
-	const custom = process.env.COMPOSER_BACKGROUND_SETTINGS;
+	const custom = process.env.MAESTRO_BACKGROUND_SETTINGS;
 	if (custom) {
 		const resolved = resolveEnvPath(custom);
 		if (resolved) {
@@ -288,7 +288,7 @@ export function overrideBackgroundTaskSettingsPath(path: string | null): void {
 	}
 
 	const allowUnsafeOverride =
-		process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE === "1" ||
+		process.env.MAESTRO_BACKGROUND_SETTINGS_UNSAFE === "1" ||
 		process.env.VITEST === "true" ||
 		process.env.NODE_ENV === "test";
 

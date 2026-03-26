@@ -33,7 +33,7 @@
 //!
 //! ```rust,ignore
 //! use crossterm::execute;
-//! use composer_tui::sync_output::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
+//! use maestro_tui::sync_output::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 //!
 //! let mut stdout = std::io::stdout();
 //!
@@ -117,7 +117,7 @@ impl Command for EndSynchronizedUpdate {
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::sync_output::with_synchronized_output;
+/// use maestro_tui::sync_output::with_synchronized_output;
 ///
 /// with_synchronized_output(&mut stdout, || {
 ///     // All rendering here is buffered
@@ -158,7 +158,7 @@ where
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::sync_output::SynchronizedOutputGuard;
+/// use maestro_tui::sync_output::SynchronizedOutputGuard;
 ///
 /// let _guard = SynchronizedOutputGuard::begin(&mut stdout)?;
 /// // All output is buffered

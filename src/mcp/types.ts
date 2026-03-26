@@ -19,7 +19,7 @@
  * |------------|------------|------------------------------------|
  * | enterprise | Highest    | Organization-wide settings         |
  * | plugin     | High       | Programmatically provided          |
- * | project    | Medium     | Per-project .composer/mcp.json     |
+ * | project    | Medium     | Per-project .maestro/mcp.json     |
  * | local      | Low        | Local overrides (git-ignored)      |
  * | user       | Lowest     | User's global settings             |
  *

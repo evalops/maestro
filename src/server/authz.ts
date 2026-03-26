@@ -8,14 +8,14 @@ import {
 	sendJson,
 } from "./server-utils.js";
 
-const WEB_API_KEY = process.env.COMPOSER_WEB_API_KEY?.trim() || null;
-const CSRF_TOKEN = process.env.COMPOSER_WEB_CSRF_TOKEN?.trim() || null;
-const SHARED_SECRET = process.env.COMPOSER_AUTH_SHARED_SECRET?.trim() || null;
-const JWT_SECRET = process.env.COMPOSER_JWT_SECRET?.trim() || null;
-const JWT_JWKS_URL = process.env.COMPOSER_JWT_JWKS_URL?.trim() || null;
-const JWT_AUDIENCE = process.env.COMPOSER_JWT_AUD?.trim() || undefined;
-const JWT_ISSUER = process.env.COMPOSER_JWT_ISS?.trim() || undefined;
-const JWT_ALG = process.env.COMPOSER_JWT_ALG?.trim() || "HS256";
+const WEB_API_KEY = process.env.MAESTRO_WEB_API_KEY?.trim() || null;
+const CSRF_TOKEN = process.env.MAESTRO_WEB_CSRF_TOKEN?.trim() || null;
+const SHARED_SECRET = process.env.MAESTRO_AUTH_SHARED_SECRET?.trim() || null;
+const JWT_SECRET = process.env.MAESTRO_JWT_SECRET?.trim() || null;
+const JWT_JWKS_URL = process.env.MAESTRO_JWT_JWKS_URL?.trim() || null;
+const JWT_AUDIENCE = process.env.MAESTRO_JWT_AUD?.trim() || undefined;
+const JWT_ISSUER = process.env.MAESTRO_JWT_ISS?.trim() || undefined;
+const JWT_ALG = process.env.MAESTRO_JWT_ALG?.trim() || "HS256";
 
 function base64UrlDecode(input: string): string {
 	return Buffer.from(
@@ -104,7 +104,7 @@ export async function requireApiAuth(
 		401,
 		{
 			error:
-				"Authentication required. Provide JWT (COMPOSER_JWT_SECRET) or shared-secret bearer token or COMPOSER_WEB_API_KEY.",
+				"Authentication required. Provide JWT (MAESTRO_JWT_SECRET) or shared-secret bearer token or MAESTRO_WEB_API_KEY.",
 		},
 		corsHeaders,
 		req,
@@ -126,8 +126,7 @@ export function requireCsrf(
 			res,
 			403,
 			{
-				error:
-					"COMPOSER_WEB_CSRF_TOKEN is required for state-changing requests",
+				error: "MAESTRO_WEB_CSRF_TOKEN is required for state-changing requests",
 			},
 			corsHeaders,
 			req,

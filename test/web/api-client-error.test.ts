@@ -20,7 +20,7 @@ describe("ApiClient error handling", () => {
 		const payload = {
 			error: "Invalid session",
 			code: "INVALID_ARGUMENT",
-			composer: {
+			maestro: {
 				code: "SESSION_ERROR",
 				category: "session",
 				severity: "error",
@@ -47,8 +47,8 @@ describe("ApiClient error handling", () => {
 			expect(error).toBeInstanceOf(ApiClientError);
 			const clientError = error as ApiClientError;
 			expect(clientError.status).toBe(400);
-			expect(clientError.payload?.composer?.code).toBe("SESSION_ERROR");
-			expect(clientError.payload?.composer?.category).toBe("session");
+			expect(clientError.payload?.maestro?.code).toBe("SESSION_ERROR");
+			expect(clientError.payload?.maestro?.category).toBe("session");
 		}
 	});
 
@@ -56,7 +56,7 @@ describe("ApiClient error handling", () => {
 		const payload = {
 			error: "Approval required",
 			code: "POLICY_BLOCKED",
-			composer: {
+			maestro: {
 				code: "APPROVAL_REQUIRED",
 				category: "permission",
 				severity: "error",
@@ -95,8 +95,8 @@ describe("ApiClient error handling", () => {
 			expect(error).toBeInstanceOf(ApiClientError);
 			const clientError = error as ApiClientError;
 			expect(clientError.status).toBe(403);
-			expect(clientError.payload?.composer?.code).toBe("APPROVAL_REQUIRED");
-			expect(clientError.payload?.composer?.category).toBe("permission");
+			expect(clientError.payload?.maestro?.code).toBe("APPROVAL_REQUIRED");
+			expect(clientError.payload?.maestro?.category).toBe("permission");
 		}
 	});
 

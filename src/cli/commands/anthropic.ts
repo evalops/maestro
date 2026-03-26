@@ -34,7 +34,7 @@ export async function handleAnthropicCommand(
 		default:
 			console.error(
 				chalk.red(
-					'Unknown anthropic subcommand. Try "composer anthropic login", "logout", or "status".',
+					'Unknown anthropic subcommand. Try "maestro anthropic login", "logout", or "status".',
 				),
 			);
 			process.exit(1);
@@ -42,7 +42,7 @@ export async function handleAnthropicCommand(
 }
 
 async function handleLogin(mode: AnthropicLoginMode): Promise<void> {
-	console.log(chalk.bold("Composer Claude Code login"));
+	console.log(chalk.bold("Maestro Claude Code login"));
 	const { url, verifier } = await generateAnthropicLoginUrl(mode);
 	console.log(chalk.gray(url));
 	const rl = createInterface({ input: stdin, output: stdout });
@@ -86,7 +86,7 @@ async function handleStatus(): Promise<void> {
 		console.log(chalk.yellow("No stored Claude Code credentials."));
 		console.log(
 			chalk.dim(
-				'Run "composer anthropic login" to link a Claude Pro/Max subscription.',
+				'Run "maestro anthropic login" to link a Claude Pro/Max subscription.',
 			),
 		);
 		return;

@@ -7,7 +7,7 @@
  *
  * ## Configuration File
  *
- * Location: `~/.composer/config.json`
+ * Location: `~/.maestro/config.json`
  *
  * ```json
  * {
@@ -60,7 +60,7 @@ import { PATHS } from "./constants.js";
 
 const logger = createLogger("config:lsp");
 
-const CONFIG_PATH = join(PATHS.COMPOSER_HOME, "config.json");
+const CONFIG_PATH = join(PATHS.MAESTRO_HOME, "config.json");
 
 const serverOverrideSchema = Type.Object({
 	enabled: Type.Optional(Type.Boolean()),

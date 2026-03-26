@@ -9,12 +9,12 @@ const logger = createLogger("cost-tracker");
 
 /**
  * Cost tracking for API usage
- * Stores usage data locally in ~/.composer/usage.json
- * Can be overridden via COMPOSER_USAGE_FILE environment variable for testing
+ * Stores usage data locally in ~/.maestro/usage.json
+ * Can be overridden via MAESTRO_USAGE_FILE environment variable for testing
  */
 
 function getUsageFilePathInternal(): string {
-	return resolveEnvPath(process.env.COMPOSER_USAGE_FILE) ?? PATHS.USAGE_FILE;
+	return resolveEnvPath(process.env.MAESTRO_USAGE_FILE) ?? PATHS.USAGE_FILE;
 }
 
 export interface UsageEntry {

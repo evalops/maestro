@@ -16,9 +16,9 @@ import type {
 } from "./types";
 
 const DEFAULT_BASE_URL =
-	import.meta.env.VITE_COMPOSER_BASE_URL ?? "http://localhost:8080";
+	import.meta.env.VITE_MAESTRO_BASE_URL ?? "http://localhost:8080";
 const DEFAULT_CSRF_TOKEN =
-	import.meta.env.VITE_COMPOSER_CSRF_TOKEN ?? "composer-desktop-csrf";
+	import.meta.env.VITE_MAESTRO_CSRF_TOKEN ?? "composer-desktop-csrf";
 const MAX_SSE_BUFFER = 1024 * 1024; // 1MB
 
 export type ApprovalMode = "auto" | "prompt" | "fail";

@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::components::StatusIndicator;
+//! use maestro_tui::components::StatusIndicator;
 //!
 //! let mut indicator = StatusIndicator::new()
 //!     .with_header("Working")

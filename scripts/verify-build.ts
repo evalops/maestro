@@ -3,7 +3,7 @@
  * Comprehensive build verification script
  *
  * Verifies that all build artifacts are present, valid, and functional.
- * This script should be run after `npm run build:all` or `npx nx run composer:build:all`
+ * This script should be run after `npm run build:all` or `npx nx run maestro:build:all`
  */
 
 import { access, readFile, stat, readdir } from "node:fs/promises";
@@ -159,7 +159,7 @@ async function verifyCLIFunctionality() {
 	const baseEnv = {
 		...process.env,
 		ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "test-key",
-		COMPOSER_NO_COLOR: "1",
+		MAESTRO_NO_COLOR: "1",
 	};
 
 	const cliPath = join(distPath, "cli.js");

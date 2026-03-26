@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::usage::{UsageTracker, ModelPricing};
+//! use maestro_tui::usage::{UsageTracker, ModelPricing};
 //!
 //! let mut tracker = UsageTracker::new();
 //! tracker.add_turn(usage);

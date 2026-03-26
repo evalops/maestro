@@ -1,0 +1,27 @@
+{
+	"name": "@evalops/slack-agent-ui",
+	"version": "0.1.0",
+	"description": "Web UI for Slack Agent - Dashboard gallery, connector management, OAuth flows",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"clean": "node ../../scripts/clean-paths.js dist",
+		"dev": "vite",
+		"build": "node ../../scripts/clean-paths.js dist && tsc -b && vite build",
+		"preview": "vite preview",
+		"check": "tsc --noEmit"
+	},
+	"dependencies": {
+		"react": "^19.0.0",
+		"react-dom": "^19.0.0",
+		"react-router-dom": "^7.1.0",
+		"recharts": "^3.7.0"
+	},
+	"devDependencies": {
+		"@types/react": "^19.0.0",
+		"@types/react-dom": "^19.0.0",
+		"@vitejs/plugin-react": "^4.3.0",
+		"typescript": "^5.9.3",
+		"vite": "^6.0.3"
+	}
+}

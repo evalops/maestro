@@ -1,6 +1,6 @@
 export type TrainingPreference = boolean | null;
 
-const trainingFlag = process.env.COMPOSER_TRAINING_OPT_OUT;
+const trainingFlag = process.env.MAESTRO_TRAINING_OPT_OUT;
 
 export const parseTrainingFlag = (
 	value: string | undefined,
@@ -85,7 +85,7 @@ export function getTrainingStatus(): TrainingStatus {
 	if (trainingOverride !== null) {
 		reason = trainingOverrideReason ?? "runtime override";
 	} else if (trainingFlag) {
-		reason = `COMPOSER_TRAINING_OPT_OUT=${trainingFlag}`;
+		reason = `MAESTRO_TRAINING_OPT_OUT=${trainingFlag}`;
 	}
 
 	return {

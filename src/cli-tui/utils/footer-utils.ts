@@ -474,10 +474,10 @@ export function renderStaticStageBadge(label: string): string {
 }
 
 function shimmerAllowed(): boolean {
-	const shimmerEnv = (process.env.COMPOSER_TUI_SHIMMER || "on").toLowerCase();
+	const shimmerEnv = (process.env.MAESTRO_TUI_SHIMMER || "on").toLowerCase();
 	if (shimmerEnv === "off") return false;
 	const noColor = process.env.NO_COLOR ?? "";
-	const composerNoColor = process.env.COMPOSER_NO_COLOR ?? "";
+	const composerNoColor = process.env.MAESTRO_NO_COLOR ?? "";
 	const isDisabled = (value: string) =>
 		Boolean(
 			value &&

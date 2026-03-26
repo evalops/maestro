@@ -19,7 +19,7 @@ const logger = createLogger("models:models-dev");
  */
 
 const MODELS_DEV_URL = "https://models.dev/api.json";
-const CACHE_DIR = PATHS.COMPOSER_HOME;
+const CACHE_DIR = PATHS.MAESTRO_HOME;
 const CACHE_FILE = join(CACHE_DIR, "models-dev-cache.json");
 const CACHE_MAX_AGE_MS = 1000 * 60 * 60; // 1 hour
 

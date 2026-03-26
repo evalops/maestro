@@ -18,7 +18,7 @@
 //! # Example Usage
 //!
 //! ```rust,ignore
-//! use composer_tui::tools::web_fetch::{WebFetchTool, WebFetchArgs};
+//! use maestro_tui::tools::web_fetch::{WebFetchTool, WebFetchArgs};
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let tool = WebFetchTool::new();

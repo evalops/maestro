@@ -82,9 +82,9 @@ export function handleBackgroundCommand(
 				exists
 					? "File exists and will be hot-reloaded on change."
 					: "File not found yet (it will be created on first toggle).",
-				process.env.COMPOSER_BACKGROUND_SETTINGS
-					? "Overridden via COMPOSER_BACKGROUND_SETTINGS."
-					: "Using default location under ~/.composer/agent/.",
+				process.env.MAESTRO_BACKGROUND_SETTINGS
+					? "Overridden via MAESTRO_BACKGROUND_SETTINGS."
+					: "Using default location under ~/.maestro/agent/.",
 			].join("\n"),
 		);
 		return;

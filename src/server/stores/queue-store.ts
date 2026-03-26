@@ -22,13 +22,13 @@ interface QueueStateFile {
 }
 
 const QUEUE_STATE_PATH =
-	resolveEnvPath(process.env.COMPOSER_QUEUE_STATE) ??
+	resolveEnvPath(process.env.MAESTRO_QUEUE_STATE) ??
 	resolve(getAgentDir(), "queue-state.json");
 
 const MAX_SESSIONS = 200;
 const MAX_AGE_MS =
 	Number.parseInt(
-		process.env.COMPOSER_QUEUE_MAX_AGE_MS || `${7 * 24 * 60 * 60 * 1000}`,
+		process.env.MAESTRO_QUEUE_MAX_AGE_MS || `${7 * 24 * 60 * 60 * 1000}`,
 		10,
 	) || 7 * 24 * 60 * 60 * 1000;
 const KEY_REGEX = /^[A-Za-z0-9._-]+$/;

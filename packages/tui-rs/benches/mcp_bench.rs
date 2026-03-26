@@ -2,11 +2,11 @@
 //!
 //! Run with: cargo bench --bench mcp_bench
 
-use composer_tui::mcp::{
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use maestro_tui::mcp::{
     load_mcp_config, McpClient, McpConfig, McpContent, McpRequest, McpResponse, McpServerConfig,
     McpTool, McpToolResult, McpTransport,
 };
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use serde_json::json;
 use std::collections::HashMap;
 

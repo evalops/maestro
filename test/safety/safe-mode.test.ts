@@ -24,12 +24,12 @@ function unsetEnv(key: string) {
 }
 
 function setSafeModeEnv(validators?: string) {
-	process.env.COMPOSER_SAFE_MODE = "1";
-	process.env.COMPOSER_SAFE_REQUIRE_PLAN = "1";
+	process.env.MAESTRO_SAFE_MODE = "1";
+	process.env.MAESTRO_SAFE_REQUIRE_PLAN = "1";
 	if (validators) {
-		process.env.COMPOSER_SAFE_VALIDATORS = validators;
+		process.env.MAESTRO_SAFE_VALIDATORS = validators;
 	} else {
-		unsetEnv("COMPOSER_SAFE_VALIDATORS");
+		unsetEnv("MAESTRO_SAFE_VALIDATORS");
 	}
 	configureSafeMode(true);
 }
@@ -39,9 +39,9 @@ describe("Safe mode", () => {
 		rmSync(TEST_DIR, { recursive: true, force: true });
 		mkdirSync(TEST_DIR, { recursive: true });
 		resetSafeModeForTests();
-		unsetEnv("COMPOSER_SAFE_MODE");
-		unsetEnv("COMPOSER_SAFE_REQUIRE_PLAN");
-		unsetEnv("COMPOSER_SAFE_VALIDATORS");
+		unsetEnv("MAESTRO_SAFE_MODE");
+		unsetEnv("MAESTRO_SAFE_REQUIRE_PLAN");
+		unsetEnv("MAESTRO_SAFE_VALIDATORS");
 	});
 
 	it("blocks write/edit until todo plan recorded", async () => {
@@ -106,7 +106,7 @@ describe("Safe mode", () => {
 	it("blocks operations when LSP diagnostics indicate errors", async () => {
 		setSafeModeEnv();
 		setPlanSatisfied(true);
-		process.env.COMPOSER_SAFE_LSP_SEVERITY = "2";
+		process.env.MAESTRO_SAFE_LSP_SEVERITY = "2";
 		configureSafeMode(true);
 
 		const { runValidatorsOnSuccess } = await import(

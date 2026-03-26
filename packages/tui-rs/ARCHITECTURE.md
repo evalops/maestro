@@ -1,6 +1,6 @@
-# Composer TUI-RS Architecture Documentation
+# Maestro TUI-RS Architecture Documentation
 
-This document provides deep technical documentation for the Composer TUI native Rust implementation. The codebase implements a terminal-based AI coding assistant with native API integrations to Anthropic and OpenAI.
+This document provides deep technical documentation for the Maestro TUI native Rust implementation. The codebase implements a terminal-based AI coding assistant with native API integrations to Anthropic and OpenAI.
 
 ## Table of Contents
 
@@ -17,7 +17,7 @@ This document provides deep technical documentation for the Composer TUI native 
 
 ## Overview
 
-Composer TUI-RS is a **pure Rust implementation** of the Composer terminal interface. Unlike the TypeScript version, this implementation:
+Maestro TUI-RS is a **pure Rust implementation** of the Maestro terminal interface. Unlike the TypeScript version, this implementation:
 
 - **No Node.js dependency**: Communicates directly with AI providers via native HTTP clients
 - **Native terminal handling**: Uses `crossterm` and `ratatui` for robust terminal management
@@ -531,7 +531,7 @@ Multi-line text input with:
 
 **JSONL format:**
 
-Sessions are stored as newline-delimited JSON in `~/.composer/agent/sessions/`:
+Sessions are stored as newline-delimited JSON in `~/.maestro/agent/sessions/`:
 
 ```json
 {"type": "user", "content": "Hello", "timestamp": "2025-..."}
@@ -1183,7 +1183,7 @@ Write operations are checked against workspace boundaries (future enhancement).
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key |
 | `OPENAI_API_KEY` | OpenAI API key |
-| `COMPOSER_MODEL` | Override default model |
+| `MAESTRO_MODEL` | Override default model |
 | `SHELL` | Shell for bash tool (default: `/bin/bash`, fallback: `/bin/sh`) |
 
 ### Runtime Configuration

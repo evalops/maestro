@@ -1,7 +1,7 @@
 {
-	"name": "composer-vscode",
+	"name": "maestro-vscode",
 	"displayName": "Composer",
-	"description": "Use Composer's deterministic AI assistant inside VS Code.",
+	"description": "Use Maestro's deterministic AI assistant inside VS Code.",
 	"publisher": "evalops",
 	"version": "0.10.0",
 	"license": "MIT",
@@ -10,12 +10,12 @@
 	"icon": "media/icon.png",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/evalops/composer.git",
+		"url": "https://github.com/evalops/maestro.git",
 		"directory": "packages/vscode-extension"
 	},
-	"homepage": "https://github.com/evalops/composer#readme",
+	"homepage": "https://github.com/evalops/maestro#readme",
 	"bugs": {
-		"url": "https://github.com/evalops/composer/issues"
+		"url": "https://github.com/evalops/maestro/issues"
 	},
 	"engines": {
 		"vscode": "^1.90.0"

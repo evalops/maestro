@@ -64,7 +64,7 @@ describe("Hook System", () => {
 
 	describe("loadHookConfiguration", () => {
 		it("should load hooks from environment variables", () => {
-			vi.stubEnv("COMPOSER_HOOKS_PRE_TOOL_USE", "my-validator.sh");
+			vi.stubEnv("MAESTRO_HOOKS_PRE_TOOL_USE", "my-validator.sh");
 
 			const config = loadHookConfiguration("/tmp/test");
 
@@ -76,7 +76,7 @@ describe("Hook System", () => {
 		});
 
 		it("should support multiple commands in env var", () => {
-			vi.stubEnv("COMPOSER_HOOKS_PRE_TOOL_USE", "validator1.sh\nvalidator2.sh");
+			vi.stubEnv("MAESTRO_HOOKS_PRE_TOOL_USE", "validator1.sh\nvalidator2.sh");
 
 			const config = loadHookConfiguration("/tmp/test");
 

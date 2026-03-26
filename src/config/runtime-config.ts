@@ -81,17 +81,17 @@ export function loadRuntimeConfig(args: Args, cwd?: string): RuntimeConfig {
  */
 export function applyConfigToEnv(config: ComposerConfig): void {
 	// Only set env vars if they're not already set (lower precedence)
-	if (config.model && !process.env.COMPOSER_MODEL) {
-		process.env.COMPOSER_MODEL = config.model;
+	if (config.model && !process.env.MAESTRO_MODEL) {
+		process.env.MAESTRO_MODEL = config.model;
 	}
-	if (config.model_provider && !process.env.COMPOSER_MODEL_PROVIDER) {
-		process.env.COMPOSER_MODEL_PROVIDER = config.model_provider;
+	if (config.model_provider && !process.env.MAESTRO_MODEL_PROVIDER) {
+		process.env.MAESTRO_MODEL_PROVIDER = config.model_provider;
 	}
-	if (config.approval_policy && !process.env.COMPOSER_APPROVAL_POLICY) {
-		process.env.COMPOSER_APPROVAL_POLICY = config.approval_policy;
+	if (config.approval_policy && !process.env.MAESTRO_APPROVAL_POLICY) {
+		process.env.MAESTRO_APPROVAL_POLICY = config.approval_policy;
 	}
-	if (config.sandbox_mode && !process.env.COMPOSER_SANDBOX_MODE) {
-		process.env.COMPOSER_SANDBOX_MODE = config.sandbox_mode;
+	if (config.sandbox_mode && !process.env.MAESTRO_SANDBOX_MODE) {
+		process.env.MAESTRO_SANDBOX_MODE = config.sandbox_mode;
 	}
 }
 

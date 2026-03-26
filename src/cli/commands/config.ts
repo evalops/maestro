@@ -497,7 +497,7 @@ export async function handleConfigShow(): Promise<void> {
 	const hierarchy = getConfigHierarchy();
 	const homeDir = getHomeDir();
 	const layoutPref = (
-		process.env.COMPOSER_CONFIG_SHOW_LAYOUT ?? "v2"
+		process.env.MAESTRO_CONFIG_SHOW_LAYOUT ?? "v2"
 	).toLowerCase();
 
 	if (layoutPref === "legacy") {
@@ -530,7 +530,7 @@ export async function handleConfigInit(): Promise<void> {
 
 	try {
 		// Determine config location
-		const configDir = join(process.cwd(), ".composer");
+		const configDir = join(process.cwd(), ".maestro");
 		const configPath = join(configDir, "config.json");
 		const promptsDir = join(configDir, "prompts");
 
@@ -740,7 +740,7 @@ You are a helpful AI coding assistant.
 			console.log(muted(`  1. Set ${envVarName} in your environment`));
 		}
 		if (createPrompts) {
-			console.log(muted("  2. Edit .composer/prompts/system.md"));
+			console.log(muted("  2. Edit .maestro/prompts/system.md"));
 		}
 		console.log(muted("  3. Run: composer models list"));
 		console.log(muted('  4. Start using: composer "your prompt"\n'));
@@ -952,12 +952,12 @@ export async function handleConfigLocal(): Promise<void> {
 		const scope = (
 			await rl.question(
 				chalk.cyan(
-					"\nSave provider to:\n  1) Project (.composer/local.json)\n  2) Home (~/.composer/local.json)\n\nChoice (1-2): ",
+					"\nSave provider to:\n  1) Project (.maestro/local.json)\n  2) Home (~/.maestro/local.json)\n\nChoice (1-2): ",
 				),
 			)
 		).trim();
 		const targetDir =
-			scope === "2" ? PATHS.COMPOSER_HOME : join(process.cwd(), ".composer");
+			scope === "2" ? PATHS.MAESTRO_HOME : join(process.cwd(), ".maestro");
 		mkdirSync(targetDir, { recursive: true });
 		const localPath = join(targetDir, "local.json");
 		const config = loadLocalConfig(localPath);

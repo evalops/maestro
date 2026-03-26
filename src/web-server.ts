@@ -189,8 +189,8 @@ function normalizeAuthMode(value?: string | null): AuthMode {
 }
 
 const PROFILE = (
-	process.env.COMPOSER_PROFILE ||
-	process.env.COMPOSER_WEB_PROFILE ||
+	process.env.MAESTRO_PROFILE ||
+	process.env.MAESTRO_WEB_PROFILE ||
 	""
 )
 	.trim()
@@ -202,33 +202,33 @@ const PROD_PROFILE =
 	PROFILE === "hardened";
 
 const DEFAULT_APPROVAL_MODE = normalizeApprovalMode(
-	process.env.COMPOSER_APPROVAL_MODE ?? (PROD_PROFILE ? "fail" : null),
+	process.env.MAESTRO_APPROVAL_MODE ?? (PROD_PROFILE ? "fail" : null),
 );
-const AUTH_MODE = normalizeAuthMode(process.env.COMPOSER_AUTH_MODE);
-const WEB_API_KEY = process.env.COMPOSER_WEB_API_KEY?.trim() || null;
-const requireKeyEnv = process.env.COMPOSER_WEB_REQUIRE_KEY;
-const requireRedisEnv = process.env.COMPOSER_WEB_REQUIRE_REDIS;
-const CSRF_TOKEN = process.env.COMPOSER_WEB_CSRF_TOKEN?.trim() || null;
+const AUTH_MODE = normalizeAuthMode(process.env.MAESTRO_AUTH_MODE);
+const WEB_API_KEY = process.env.MAESTRO_WEB_API_KEY?.trim() || null;
+const requireKeyEnv = process.env.MAESTRO_WEB_REQUIRE_KEY;
+const requireRedisEnv = process.env.MAESTRO_WEB_REQUIRE_REDIS;
+const CSRF_TOKEN = process.env.MAESTRO_WEB_CSRF_TOKEN?.trim() || null;
 const REQUIRE_CSRF =
-	(PROD_PROFILE && process.env.COMPOSER_WEB_REQUIRE_CSRF !== "0") ||
-	Boolean(process.env.COMPOSER_WEB_CSRF_TOKEN);
+	(PROD_PROFILE && process.env.MAESTRO_WEB_REQUIRE_CSRF !== "0") ||
+	Boolean(process.env.MAESTRO_WEB_CSRF_TOKEN);
 // Default: require in normal runtime, but don't break tests unless explicitly opted in.
 const REQUIRE_WEB_API_KEY =
 	(requireKeyEnv ?? (process.env.NODE_ENV === "test" ? "0" : "1")) !== "0";
 const REQUIRE_REDIS =
 	(requireRedisEnv ?? (process.env.NODE_ENV === "test" ? "0" : "1")) !== "0";
 const DEFAULT_WEB_ORIGIN =
-	process.env.COMPOSER_WEB_ORIGIN?.trim() || "http://localhost:4173";
+	process.env.MAESTRO_WEB_ORIGIN?.trim() || "http://localhost:4173";
 const STATIC_MAX_AGE =
 	Number.parseInt(
-		process.env.COMPOSER_STATIC_MAX_AGE ||
+		process.env.MAESTRO_STATIC_MAX_AGE ||
 			(process.env.NODE_ENV === "production" ? "86400" : "60"),
 		10,
 	) || 60;
 const MAX_SSE_CONNECTIONS =
-	Number.parseInt(process.env.COMPOSER_MAX_SSE_CONNECTIONS || "100", 10) || 100;
+	Number.parseInt(process.env.MAESTRO_MAX_SSE_CONNECTIONS || "100", 10) || 100;
 const REQUEST_TIMEOUT_MS =
-	Number.parseInt(process.env.COMPOSER_REQUEST_TIMEOUT_MS || "60000", 10) ||
+	Number.parseInt(process.env.MAESTRO_REQUEST_TIMEOUT_MS || "60000", 10) ||
 	60000;
 
 if (process.env.CODEX_API_KEY) {
@@ -238,57 +238,57 @@ if (process.env.CODEX_API_KEY) {
 }
 
 // Harden defaults for hosted deployments.
-process.env.COMPOSER_WEB_SERVER = "1";
-if (!process.env.COMPOSER_SAFE_MODE) process.env.COMPOSER_SAFE_MODE = "1";
-if (!process.env.COMPOSER_SAFE_REQUIRE_PLAN)
-	process.env.COMPOSER_SAFE_REQUIRE_PLAN = "1";
-if (PROD_PROFILE && !process.env.COMPOSER_FAIL_UNTAGGED_EGRESS) {
-	process.env.COMPOSER_FAIL_UNTAGGED_EGRESS = "1";
+process.env.MAESTRO_WEB_SERVER = "1";
+if (!process.env.MAESTRO_SAFE_MODE) process.env.MAESTRO_SAFE_MODE = "1";
+if (!process.env.MAESTRO_SAFE_REQUIRE_PLAN)
+	process.env.MAESTRO_SAFE_REQUIRE_PLAN = "1";
+if (PROD_PROFILE && !process.env.MAESTRO_FAIL_UNTAGGED_EGRESS) {
+	process.env.MAESTRO_FAIL_UNTAGGED_EGRESS = "1";
 }
-if (PROD_PROFILE && !process.env.COMPOSER_BACKGROUND_SHELL_DISABLE) {
-	process.env.COMPOSER_BACKGROUND_SHELL_DISABLE = "1";
+if (PROD_PROFILE && !process.env.MAESTRO_BACKGROUND_SHELL_DISABLE) {
+	process.env.MAESTRO_BACKGROUND_SHELL_DISABLE = "1";
 }
 if (REQUIRE_CSRF && !CSRF_TOKEN) {
 	throw new Error(
-		"COMPOSER_WEB_CSRF_TOKEN is required when CSRF enforcement is enabled (COMPOSER_PROFILE=prod or COMPOSER_WEB_REQUIRE_CSRF=1).",
+		"MAESTRO_WEB_CSRF_TOKEN is required when CSRF enforcement is enabled (MAESTRO_PROFILE=prod or MAESTRO_WEB_REQUIRE_CSRF=1).",
 	);
 }
 
 // Parse and validate TRUST_PROXY setting
 // WARNING: Only enable if behind a trusted reverse proxy that sets X-Forwarded-For
-const trustProxyEnv = process.env.COMPOSER_TRUST_PROXY?.toLowerCase();
+const trustProxyEnv = process.env.MAESTRO_TRUST_PROXY?.toLowerCase();
 const TRUST_PROXY = trustProxyEnv === "true";
 
 // Number of trusted proxy hops (default 1). Use this to extract the correct client IP
 // when behind multiple proxies (e.g., CDN -> nginx -> app). The IP is read from the
 // right side of X-Forwarded-For, skipping this many trusted proxy IPs.
 const rawProxyHops = Number.parseInt(
-	process.env.COMPOSER_TRUST_PROXY_HOPS || "1",
+	process.env.MAESTRO_TRUST_PROXY_HOPS || "1",
 	10,
 );
 const TRUST_PROXY_HOPS =
 	Number.isNaN(rawProxyHops) || rawProxyHops < 1 ? 1 : rawProxyHops;
 
 if (
-	process.env.COMPOSER_TRUST_PROXY_HOPS &&
+	process.env.MAESTRO_TRUST_PROXY_HOPS &&
 	(Number.isNaN(rawProxyHops) || rawProxyHops < 1)
 ) {
 	logger.warn(
-		"Invalid COMPOSER_TRUST_PROXY_HOPS value. Must be a positive integer. Defaulting to 1.",
-		{ value: process.env.COMPOSER_TRUST_PROXY_HOPS },
+		"Invalid MAESTRO_TRUST_PROXY_HOPS value. Must be a positive integer. Defaulting to 1.",
+		{ value: process.env.MAESTRO_TRUST_PROXY_HOPS },
 	);
 }
 
 if (trustProxyEnv && trustProxyEnv !== "true" && trustProxyEnv !== "false") {
 	logger.warn(
-		"Invalid COMPOSER_TRUST_PROXY value. Must be 'true' or 'false'. Defaulting to false.",
-		{ value: process.env.COMPOSER_TRUST_PROXY },
+		"Invalid MAESTRO_TRUST_PROXY value. Must be 'true' or 'false'. Defaulting to false.",
+		{ value: process.env.MAESTRO_TRUST_PROXY },
 	);
 }
 
 if (TRUST_PROXY) {
 	logger.warn(
-		"COMPOSER_TRUST_PROXY is enabled. Ensure this server is behind a trusted reverse proxy.",
+		"MAESTRO_TRUST_PROXY is enabled. Ensure this server is behind a trusted reverse proxy.",
 	);
 }
 
@@ -478,8 +478,8 @@ async function createAgent(
 			model: registeredModel,
 			thinkingLevel,
 			tools,
-			sandboxMode: process.env.COMPOSER_SANDBOX ?? null,
-			sandboxEnabled: Boolean(process.env.COMPOSER_SANDBOX),
+			sandboxMode: process.env.MAESTRO_SANDBOX ?? null,
+			sandboxEnabled: Boolean(process.env.MAESTRO_SANDBOX),
 		},
 		contextSources: [
 			new TodoContextSource(),
@@ -502,10 +502,10 @@ const WEB_ROOT = join(__dirname, "../packages/web");
 const ALLOWED_ORIGIN = DEFAULT_WEB_ORIGIN;
 const CORS_HEADERS = createCorsHeaders(ALLOWED_ORIGIN);
 const SECURITY_HEADERS: Record<string, string> =
-	PROD_PROFILE || process.env.COMPOSER_WEB_CSP?.trim()
+	PROD_PROFILE || process.env.MAESTRO_WEB_CSP?.trim()
 		? {
 				"Content-Security-Policy":
-					process.env.COMPOSER_WEB_CSP ||
+					process.env.MAESTRO_WEB_CSP ||
 					[
 						"default-src 'none'",
 						`connect-src 'self' ${ALLOWED_ORIGIN}`,
@@ -753,19 +753,19 @@ export async function startWebServer(port = 8080) {
 
 	if (REQUIRE_WEB_API_KEY && !WEB_API_KEY) {
 		throw new Error(
-			"COMPOSER_WEB_API_KEY is required. Set COMPOSER_WEB_REQUIRE_KEY=0 to allow unauthenticated APIs for local-only testing.",
+			"MAESTRO_WEB_API_KEY is required. Set MAESTRO_WEB_REQUIRE_KEY=0 to allow unauthenticated APIs for local-only testing.",
 		);
 	}
 
-	if (REQUIRE_REDIS && !process.env.COMPOSER_REDIS_URL) {
+	if (REQUIRE_REDIS && !process.env.MAESTRO_REDIS_URL) {
 		throw new Error(
-			"COMPOSER_REDIS_URL must be set for shared rate limiting. Set COMPOSER_WEB_REQUIRE_REDIS=0 to bypass in single-node dev only.",
+			"MAESTRO_REDIS_URL must be set for shared rate limiting. Set MAESTRO_WEB_REQUIRE_REDIS=0 to bypass in single-node dev only.",
 		);
 	}
 
 	const server = createServer(handleRequest);
 	const wsMaxPayload =
-		Number.parseInt(process.env.COMPOSER_WS_MAX_PAYLOAD || "1048576", 10) ||
+		Number.parseInt(process.env.MAESTRO_WS_MAX_PAYLOAD || "1048576", 10) ||
 		1048576;
 	const wsServer = new WebSocketServer({
 		noServer: true,

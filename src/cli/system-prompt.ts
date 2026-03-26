@@ -68,7 +68,7 @@ function resolvePromptInput(value?: string): string | null {
 }
 
 function loadAppendSystemPrompt(cwd: string): string | null {
-	const projectPath = join(cwd, ".composer", "APPEND_SYSTEM.md");
+	const projectPath = join(cwd, ".maestro", "APPEND_SYSTEM.md");
 	if (existsSync(projectPath)) {
 		return resolvePromptInput(projectPath);
 	}

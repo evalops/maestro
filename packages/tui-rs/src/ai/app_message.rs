@@ -16,7 +16,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::ai::app_message::{AppMessage, BashExecution, transform_to_api_messages};
+//! use maestro_tui::ai::app_message::{AppMessage, BashExecution, transform_to_api_messages};
 //!
 //! let app_messages = vec![
 //!     AppMessage::User { content: "Run ls -la".to_string() },

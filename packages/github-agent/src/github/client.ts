@@ -1003,7 +1003,7 @@ export class GitHubApiClient {
 			sha: input.sha,
 			state: input.state,
 			description: input.description,
-			context: input.context ?? "Composer Agent",
+			context: input.context ?? "Maestro Agent",
 			target_url: input.targetUrl,
 		});
 	}

@@ -20,11 +20,11 @@ export function shouldDefaultToReducedMotion(): boolean {
 }
 
 export function isReducedMotionEnabled(): boolean {
-	const envValue = parseEnvBoolean(process.env.COMPOSER_REDUCED_MOTION);
+	const envValue = parseEnvBoolean(process.env.MAESTRO_REDUCED_MOTION);
 	if (envValue !== undefined) return envValue;
 	return shouldDefaultToReducedMotion();
 }
 
 export function setReducedMotionEnv(enabled: boolean): void {
-	process.env.COMPOSER_REDUCED_MOTION = enabled ? "1" : "0";
+	process.env.MAESTRO_REDUCED_MOTION = enabled ? "1" : "0";
 }

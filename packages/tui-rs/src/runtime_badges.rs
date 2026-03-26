@@ -34,7 +34,7 @@ pub fn build_runtime_badges(params: RuntimeBadgeParams) -> RuntimeBadges {
         core.push("safe:on".to_string());
     }
 
-    if env::var("COMPOSER_PLAN_MODE").ok().as_deref() == Some("1") {
+    if env::var("MAESTRO_PLAN_MODE").ok().as_deref() == Some("1") {
         core.push("plan:on".to_string());
     }
 

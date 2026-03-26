@@ -1,6 +1,6 @@
 # Web UI Architecture Design
 
-The Web UI provides a browser-based interface for Composer, offering real-time chat, session management, and model selection through WebSocket communication.
+The Web UI provides a browser-based interface for Maestro, offering real-time chat, session management, and model selection through WebSocket communication.
 
 ## Overview
 
@@ -64,7 +64,7 @@ Key capabilities:
 ### Web Server (`src/web-server.ts`)
 
 ```typescript
-class ComposerWebServer {
+class MaestroWebServer {
   private app: Express;
   private wss: WebSocketServer;
   private agent: Agent;
@@ -166,7 +166,7 @@ class EventBroadcaster {
 
 ```typescript
 // src/server/websocket-client.ts
-class ComposerWebSocketClient {
+class MaestroWebSocketClient {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;

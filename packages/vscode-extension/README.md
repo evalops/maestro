@@ -1,6 +1,6 @@
-# Composer for VS Code
+# Maestro for VS Code
 
-Use Composer's deterministic AI assistant directly inside VS Code. Chat with AI, execute commands, and get intelligent code assistance without leaving your editor.
+Use Maestro's deterministic AI assistant directly inside VS Code. Chat with AI, execute commands, and get intelligent code assistance without leaving your editor.
 
 ## Features
 
@@ -12,36 +12,36 @@ Use Composer's deterministic AI assistant directly inside VS Code. Chat with AI,
 ## Requirements
 
 - VS Code 1.90.0 or higher
-- A running Composer API server (see [Composer CLI](https://github.com/evalops/composer))
+- A running Maestro API server (see [Maestro CLI](https://github.com/evalops/maestro))
 
 ## Getting Started
 
 1. Install the extension from the VS Code Marketplace
-2. Start the Composer API server:
+2. Start the Maestro API server:
    ```bash
-   composer web
+   maestro web
    ```
-3. Open the Composer sidebar from the Activity Bar
+3. Open the Maestro sidebar from the Activity Bar
 4. Start chatting with the AI assistant
 
 ## Extension Settings
 
 This extension contributes the following settings:
 
-- `composer.apiEndpoint`: URL of the Composer API server (default: `http://localhost:8080`)
+- `composer.apiEndpoint`: URL of the Maestro API server (default: `http://localhost:8080`)
 - `composer.model`: Model ID to use for chat generation (default: `claude-sonnet-4-5`)
 
 ## Commands
 
-- **Composer: Open Assistant Panel** - Open the Composer chat panel
-- **Composer: Open Documentation** - Open Composer documentation
+- **Maestro: Open Assistant Panel** - Open the Maestro chat panel
+- **Maestro: Open Documentation** - Open Maestro documentation
 - **Clear Chat** - Clear the current chat history
 
 ## Links
 
-- [Documentation](https://github.com/evalops/composer#readme)
-- [Report Issues](https://github.com/evalops/composer/issues)
-- [Changelog](https://github.com/evalops/composer/blob/main/CHANGELOG.md)
+- [Documentation](https://github.com/evalops/maestro#readme)
+- [Report Issues](https://github.com/evalops/maestro/issues)
+- [Changelog](https://github.com/evalops/maestro/blob/main/CHANGELOG.md)
 
 ## License
 

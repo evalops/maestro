@@ -2,8 +2,8 @@
  * Workflow definition loader.
  *
  * Loads workflow definitions from:
- * - .composer/workflows/*.yaml
- * - .composer/workflows/*.json
+ * - .maestro/workflows/*.yaml
+ * - .maestro/workflows/*.json
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
@@ -14,7 +14,7 @@ import type { WorkflowDefinition } from "./types.js";
 
 const logger = createLogger("workflow-loader");
 
-const WORKFLOW_DIR = ".composer/workflows";
+const WORKFLOW_DIR = ".maestro/workflows";
 
 /**
  * Load a workflow definition from a file.
@@ -44,7 +44,7 @@ export function loadWorkflowFile(filePath: string): WorkflowDefinition | null {
 }
 
 /**
- * Load all workflows from the project's .composer/workflows directory.
+ * Load all workflows from the project's .maestro/workflows directory.
  */
 export function loadWorkflows(cwd: string): Map<string, WorkflowDefinition> {
 	const workflows = new Map<string, WorkflowDefinition>();

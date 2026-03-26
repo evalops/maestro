@@ -52,8 +52,8 @@ jobs:
 
       - uses: ./.github/actions/setup-bun-nx
 
-      - name: Build Composer
-        run: npx nx run composer:build:all --skip-nx-cache
+      - name: Build Maestro
+        run: npx nx run maestro:build:all --skip-nx-cache
 
       - name: Determine issue number
         id: issue
@@ -80,7 +80,9 @@ jobs:
           REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
           WORKSPACE: ${{ github.workspace }}
-          COMPOSER_BIN: ${{ github.workspace }}/dist/composer-bun
+          # `maestro:build:all` emits the executable Node CLI bundle at dist/cli.js.
+          # This workflow does not compile the standalone Bun binary.
+          MAESTRO_BIN: ${{ github.workspace }}/dist/cli.js
         run: |
           # Build the github-agent
           cd packages/github-agent

@@ -162,7 +162,7 @@ function buildComponents() {
 				in: "header",
 				name: "x-composer-api-key",
 				description:
-					"Value of COMPOSER_WEB_API_KEY. Authorization: Bearer <key> is also accepted.",
+					"Value of MAESTRO_WEB_API_KEY. Authorization: Bearer <key> is also accepted.",
 			},
 		},
 		schemas,

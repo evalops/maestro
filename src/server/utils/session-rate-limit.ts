@@ -5,20 +5,20 @@ import {
 } from "../rate-limiter.js";
 
 const WINDOW_MS =
-	Number.parseInt(process.env.COMPOSER_RATE_LIMIT_WINDOW_MS || "60000", 10) ||
+	Number.parseInt(process.env.MAESTRO_RATE_LIMIT_WINDOW_MS || "60000", 10) ||
 	60_000;
 const SESSION_LIMIT =
-	Number.parseInt(process.env.COMPOSER_RATE_LIMIT_SESSION || "30", 10) || 30;
+	Number.parseInt(process.env.MAESTRO_RATE_LIMIT_SESSION || "30", 10) || 30;
 const IP_LIMIT =
-	Number.parseInt(process.env.COMPOSER_RATE_LIMIT_IP || "60", 10) || 60;
+	Number.parseInt(process.env.MAESTRO_RATE_LIMIT_IP || "60", 10) || 60;
 const FALLBACK_MAX_BUCKETS =
 	Number.parseInt(
-		process.env.COMPOSER_RATE_LIMIT_FALLBACK_MAX_BUCKETS || "10000",
+		process.env.MAESTRO_RATE_LIMIT_FALLBACK_MAX_BUCKETS || "10000",
 		10,
 	) || 10000;
 const FALLBACK_CLEANUP_INTERVAL =
 	Number.parseInt(
-		process.env.COMPOSER_RATE_LIMIT_FALLBACK_CLEANUP_INTERVAL || "1000",
+		process.env.MAESTRO_RATE_LIMIT_FALLBACK_CLEANUP_INTERVAL || "1000",
 		10,
 	) || 1000;
 

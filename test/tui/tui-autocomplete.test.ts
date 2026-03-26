@@ -13,7 +13,7 @@ describe("CombinedAutocompleteProvider - Path Extraction", () => {
 
 		describe("ReDoS prevention", () => {
 			it("should handle URLs with many slashes without hanging", () => {
-				const url = "https://github.com/evalops/composer/pull/79/files";
+				const url = "https://github.com/evalops/maestro/pull/79/files";
 				const start = Date.now();
 				const result = extractPathPrefix(url, false);
 				const elapsed = Date.now() - start;

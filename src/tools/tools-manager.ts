@@ -13,7 +13,7 @@
  * 3. Platform-specific binary selection (macOS, Linux, Windows)
  * 4. Architecture support (x86_64, arm64)
  *
- * Tools are installed to ~/.composer/tools/ to avoid requiring
+ * Tools are installed to ~/.maestro/tools/ to avoid requiring
  * system-wide permissions or polluting the system PATH.
  */
 
@@ -134,7 +134,7 @@ function commandExists(cmd: string): boolean {
  * Get the path to a tool binary, checking local install first then system PATH.
  *
  * Priority order:
- * 1. Local installation in ~/.composer/tools/
+ * 1. Local installation in ~/.maestro/tools/
  * 2. System PATH
  *
  * @param tool - The tool identifier ("fd" or "rg")

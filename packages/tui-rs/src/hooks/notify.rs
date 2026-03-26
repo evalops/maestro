@@ -6,10 +6,10 @@
 //! # Configuration
 //!
 //! Environment variables:
-//! - `COMPOSER_NOTIFY_PROGRAM`: Path to script to run on events
-//! - `COMPOSER_NOTIFY_EVENTS`: Comma-separated events or "all"
-//! - `COMPOSER_NOTIFY_TERMINAL`: Enable OSC 9 terminal notifications
-//! - `COMPOSER_NOTIFY_TIMEOUT`: Timeout in ms (default: 30000)
+//! - `MAESTRO_NOTIFY_PROGRAM`: Path to script to run on events
+//! - `MAESTRO_NOTIFY_EVENTS`: Comma-separated events or "all"
+//! - `MAESTRO_NOTIFY_TERMINAL`: Enable OSC 9 terminal notifications
+//! - `MAESTRO_NOTIFY_TIMEOUT`: Timeout in ms (default: 30000)
 //!
 //! Config file (`~/.composer/hooks.json`):
 //! ```json
@@ -203,11 +203,11 @@ impl NotifyConfig {
         };
 
         // Environment variables take precedence
-        if let Ok(program) = std::env::var("COMPOSER_NOTIFY_PROGRAM") {
+        if let Ok(program) = std::env::var("MAESTRO_NOTIFY_PROGRAM") {
             config.program = Some(PathBuf::from(program));
         }
 
-        if let Ok(events) = std::env::var("COMPOSER_NOTIFY_EVENTS") {
+        if let Ok(events) = std::env::var("MAESTRO_NOTIFY_EVENTS") {
             if events == "all" {
                 config.events = NotifyEventType::all();
             } else {
@@ -218,11 +218,11 @@ impl NotifyConfig {
             }
         }
 
-        if let Ok(terminal) = std::env::var("COMPOSER_NOTIFY_TERMINAL") {
+        if let Ok(terminal) = std::env::var("MAESTRO_NOTIFY_TERMINAL") {
             config.terminal_notify = terminal == "true" || terminal == "1";
         }
 
-        if let Ok(timeout) = std::env::var("COMPOSER_NOTIFY_TIMEOUT") {
+        if let Ok(timeout) = std::env::var("MAESTRO_NOTIFY_TIMEOUT") {
             if let Ok(ms) = timeout.parse::<u64>() {
                 config.timeout = Duration::from_millis(ms);
             }

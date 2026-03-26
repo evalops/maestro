@@ -1,6 +1,6 @@
-# Composer JetBrains Plugin
+# Maestro JetBrains Plugin
 
-JetBrains IDE integration for [Composer](https://github.com/evalops/composer) - the deterministic AI coding assistant.
+JetBrains IDE integration for [Maestro](https://github.com/evalops/maestro) - the deterministic AI coding assistant.
 
 ## Features
 
@@ -27,16 +27,16 @@ This plugin supports all JetBrains IDEs based on IntelliJ Platform 2024.3+:
 
 ## Requirements
 
-1. **Composer Server** - The plugin connects to a running Composer server
+1. **Maestro Server** - The plugin connects to a running Maestro server
 2. **JDK 17+** - Required for building the plugin
 
 ## Getting Started
 
-### 1. Start the Composer Server
+### 1. Start the Maestro Server
 
 ```bash
-# Install Composer CLI
-npm install -g @evalops/composer
+# Install Maestro CLI
+npm install -g @evalops/maestro
 
 # Start the web server
 composer web
@@ -48,7 +48,7 @@ The server will start on `http://localhost:8080` by default.
 
 #### From Marketplace (Recommended)
 1. Open **Settings** → **Plugins** → **Marketplace**
-2. Search for "Composer"
+2. Search for "Maestro"
 3. Click **Install**
 
 #### From Source
@@ -63,16 +63,16 @@ Then install via **Settings** → **Plugins** → ⚙️ → **Install Plugin fr
 
 ### 3. Configure the Plugin
 
-1. Open **Settings** → **Tools** → **Composer**
+1. Open **Settings** → **Tools** → **Maestro**
 2. Set the **API Endpoint** (default: `http://localhost:8080`)
 3. Choose your **Default Model** (e.g., `claude-sonnet-4-5`)
 
-### 4. Use Composer
+### 4. Use Maestro
 
-- Open the **Composer** tool window (right sidebar)
+- Open the **Maestro** tool window (right sidebar)
 - Type your message and press **Ctrl+Enter** to send
 - Use **Ctrl+Alt+C** to add files to context
-- Use **Ctrl+Shift+C** to focus the Composer window
+- Use **Ctrl+Shift+C** to focus the Maestro window
 
 ## Keyboard Shortcuts
 
@@ -80,11 +80,11 @@ Then install via **Settings** → **Plugins** → ⚙️ → **Install Plugin fr
 |--------|----------|
 | Send message | Ctrl+Enter |
 | Add file to context | Ctrl+Alt+C |
-| Focus Composer | Ctrl+Shift+C |
+| Focus Maestro | Ctrl+Shift+C |
 
 ## IDE-Specific Features
 
-When connected to the Composer server, the plugin provides IDE-aware tools:
+When connected to the Maestro server, the plugin provides IDE-aware tools:
 
 | Tool | Description |
 |------|-------------|
@@ -111,7 +111,7 @@ When connected to the Composer server, the plugin provides IDE-aware tools:
 ### Project Structure
 
 ```
-src/main/kotlin/com/evalops/composer/
+src/main/kotlin/com/evalops/maestro/
 ├── api/                    # HTTP/SSE client and data models
 ├── services/               # Application and project services
 ├── settings/               # Plugin settings
@@ -130,7 +130,7 @@ src/main/kotlin/com/evalops/composer/
 
 ### "Disconnected" Status
 
-1. Ensure the Composer server is running: `composer web`
+1. Ensure the Maestro server is running: `maestro web`
 2. Check the API endpoint in settings matches the server URL
 3. Look for errors in **Help** → **Diagnostic Tools** → **Debug Log**
 

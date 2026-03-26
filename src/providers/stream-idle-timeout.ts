@@ -25,7 +25,7 @@ const logger = createLogger("providers:stream-idle-timeout");
  *
  * Providers re-throw this error to allow the transport layer to handle retries.
  * Configure retry behavior via `streamMaxRetries` in network-config.ts or
- * the COMPOSER_STREAM_MAX_RETRIES environment variable.
+ * the MAESTRO_STREAM_MAX_RETRIES environment variable.
  */
 export class StreamIdleTimeoutError extends Error {
 	override readonly name = "StreamIdleTimeoutError";

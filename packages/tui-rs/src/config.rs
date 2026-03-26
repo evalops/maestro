@@ -21,7 +21,7 @@
 //! ## Configuration Sources (in order of precedence)
 //!
 //! 1. CLI flags (--model, --config key=value)
-//! 2. Environment variables (COMPOSER_*)
+//! 2. Environment variables (MAESTRO_*)
 //! 3. Active profile settings
 //! 4. Project config.toml (.composer/config.toml)
 //! 5. Global config.toml (~/.composer/config.toml)
@@ -766,45 +766,45 @@ fn parse_config_file(path: &Path) -> Option<ComposerConfig> {
 
 /// Apply environment variable overrides
 fn apply_env_overrides(config: &mut ComposerConfig) {
-    // COMPOSER_MODEL
-    if let Ok(model) = env::var("COMPOSER_MODEL") {
+    // MAESTRO_MODEL
+    if let Ok(model) = env::var("MAESTRO_MODEL") {
         config.model = Some(model);
     }
 
-    // COMPOSER_MODEL_PROVIDER
-    if let Ok(provider) = env::var("COMPOSER_MODEL_PROVIDER") {
+    // MAESTRO_MODEL_PROVIDER
+    if let Ok(provider) = env::var("MAESTRO_MODEL_PROVIDER") {
         config.model_provider = Some(provider);
     }
 
-    // COMPOSER_APPROVAL_POLICY
-    if let Ok(policy) = env::var("COMPOSER_APPROVAL_POLICY") {
+    // MAESTRO_APPROVAL_POLICY
+    if let Ok(policy) = env::var("MAESTRO_APPROVAL_POLICY") {
         if let Some(p) = ApprovalPolicy::parse(&policy) {
             config.approval_policy = Some(p);
         }
     }
 
-    // COMPOSER_SANDBOX_MODE
-    if let Ok(mode) = env::var("COMPOSER_SANDBOX_MODE") {
+    // MAESTRO_SANDBOX_MODE
+    if let Ok(mode) = env::var("MAESTRO_SANDBOX_MODE") {
         if let Some(m) = SandboxMode::parse(&mode) {
             config.sandbox_mode = Some(m);
         }
     }
 
-    // COMPOSER_PROFILE
-    if let Ok(profile) = env::var("COMPOSER_PROFILE") {
+    // MAESTRO_PROFILE
+    if let Ok(profile) = env::var("MAESTRO_PROFILE") {
         config.profile = Some(profile);
     }
 
-    // COMPOSER_HISTORY_PERSISTENCE
-    if let Ok(persistence) = env::var("COMPOSER_HISTORY_PERSISTENCE") {
+    // MAESTRO_HISTORY_PERSISTENCE
+    if let Ok(persistence) = env::var("MAESTRO_HISTORY_PERSISTENCE") {
         if let Some(parsed) = HistoryPersistence::parse(&persistence) {
             let history = config.history.get_or_insert_with(Default::default);
             history.persistence = Some(parsed);
         }
     }
 
-    // COMPOSER_HISTORY_MAX_BYTES
-    if let Ok(max_bytes) = env::var("COMPOSER_HISTORY_MAX_BYTES") {
+    // MAESTRO_HISTORY_MAX_BYTES
+    if let Ok(max_bytes) = env::var("MAESTRO_HISTORY_MAX_BYTES") {
         if let Ok(parsed) = max_bytes.trim().parse::<usize>() {
             let history = config.history.get_or_insert_with(Default::default);
             history.max_bytes = Some(parsed);
@@ -1118,15 +1118,15 @@ model_reasoning_effort = "high"
         let temp_dir = TempDir::new().unwrap();
 
         clear_config_cache();
-        env::set_var("COMPOSER_MODEL", "env-model");
-        env::set_var("COMPOSER_MODEL_PROVIDER", "env-provider");
+        env::set_var("MAESTRO_MODEL", "env-model");
+        env::set_var("MAESTRO_MODEL_PROVIDER", "env-provider");
 
         let config = load_config(temp_dir.path(), None);
         assert_eq!(config.model.as_deref(), Some("env-model"));
         assert_eq!(config.model_provider.as_deref(), Some("env-provider"));
 
-        env::remove_var("COMPOSER_MODEL");
-        env::remove_var("COMPOSER_MODEL_PROVIDER");
+        env::remove_var("MAESTRO_MODEL");
+        env::remove_var("MAESTRO_MODEL_PROVIDER");
     }
 
     #[test]

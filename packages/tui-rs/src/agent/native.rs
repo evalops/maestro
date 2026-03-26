@@ -144,7 +144,7 @@ fn policy_model_id(model: &str) -> String {
 /// # Examples
 ///
 /// ```
-/// use composer_tui::agent::NativeAgentConfig;
+/// use maestro_tui::agent::NativeAgentConfig;
 ///
 /// // Default configuration (Claude Sonnet)
 /// let config = NativeAgentConfig::default();

@@ -2,9 +2,9 @@
  * Redis integration tests for rate limiter.
  *
  * These tests require a running Redis instance.
- * Set COMPOSER_REDIS_URL=redis://localhost:6379 to enable.
+ * Set MAESTRO_REDIS_URL=redis://localhost:6379 to enable.
  *
- * Run with: COMPOSER_REDIS_URL=redis://localhost:6379 bunx vitest test/web/redis-rate-limiter.test.ts
+ * Run with: MAESTRO_REDIS_URL=redis://localhost:6379 bunx vitest test/web/redis-rate-limiter.test.ts
  */
 import {
 	afterAll,
@@ -27,7 +27,7 @@ import {
 	shutdownRedis,
 } from "../../src/server/rate-limiter.js";
 
-const REDIS_URL = process.env.COMPOSER_REDIS_URL;
+const REDIS_URL = process.env.MAESTRO_REDIS_URL;
 
 describe.skipIf(!REDIS_URL)("Redis Rate Limiter Integration", () => {
 	beforeAll(async () => {
@@ -40,7 +40,7 @@ describe.skipIf(!REDIS_URL)("Redis Rate Limiter Integration", () => {
 	});
 
 	describe("Redis connection", () => {
-		it("connects to Redis when COMPOSER_REDIS_URL is set", () => {
+		it("connects to Redis when MAESTRO_REDIS_URL is set", () => {
 			expect(isRedisAvailable()).toBe(true);
 			expect(getRedisClient()).not.toBeNull();
 		});

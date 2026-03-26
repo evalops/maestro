@@ -2,9 +2,9 @@
  * Hook configuration loader.
  *
  * Loads hook configurations from multiple sources:
- * - Environment variables (COMPOSER_HOOKS_*)
- * - User config file (~/.composer/hooks.json)
- * - Project config file (.composer/hooks.json)
+ * - Environment variables (MAESTRO_HOOKS_*)
+ * - User config file (~/.maestro/hooks.json)
+ * - Project config file (.maestro/hooks.json)
  * - Programmatic registration
  */
 
@@ -116,14 +116,14 @@ function applyRegisteredHooks(
  * Get the user hooks config path.
  */
 export function getUserHooksConfigPath(): string {
-	return join(PATHS.COMPOSER_HOME, "hooks.json");
+	return join(PATHS.MAESTRO_HOME, "hooks.json");
 }
 
 /**
  * Get the project hooks config path.
  */
 export function getProjectHooksConfigPath(cwd: string): string {
-	return join(cwd, ".composer", "hooks.json");
+	return join(cwd, ".maestro", "hooks.json");
 }
 
 function maybeResolveCommand(command: string, sourceDir: string): string {
@@ -384,12 +384,12 @@ function loadHooksFromFileWithExtends(
 /**
  * Load hooks from environment variables.
  *
- * Format: COMPOSER_HOOKS_<EVENT_TYPE>=<command>
- * Example: COMPOSER_HOOKS_PRE_TOOL_USE="my-validator.sh"
+ * Format: MAESTRO_HOOKS_<EVENT_TYPE>=<command>
+ * Example: MAESTRO_HOOKS_PRE_TOOL_USE="my-validator.sh"
  */
 function loadHooksFromEnv(): HookConfiguration {
 	const result: HookConfiguration = {};
-	const envPrefix = "COMPOSER_HOOKS_";
+	const envPrefix = "MAESTRO_HOOKS_";
 
 	const eventTypeMap: Record<string, HookEventType> = {
 		PRE_TOOL_USE: "PreToolUse",

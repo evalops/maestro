@@ -18,8 +18,8 @@ function parseEnvFlag(value?: string | null): OptionalBool {
 
 const isStdoutTTY = Boolean(process.stdout?.isTTY);
 
-const envForceColor = parseEnvFlag(process.env.COMPOSER_FORCE_COLOR);
-const envNoColor = parseEnvFlag(process.env.COMPOSER_NO_COLOR);
+const envForceColor = parseEnvFlag(process.env.MAESTRO_FORCE_COLOR);
+const envNoColor = parseEnvFlag(process.env.MAESTRO_NO_COLOR);
 const globalNoColor = process.env.NO_COLOR !== undefined ? true : undefined;
 const globalForceColor = parseEnvFlag(process.env.FORCE_COLOR);
 const resolvedNoColor = envNoColor ?? globalNoColor;

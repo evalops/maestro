@@ -1,11 +1,11 @@
-# Composer Web UI
+# Maestro Web UI
 
 Audience: users running the browser UI; contributors touching web server/client.  
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md) · [Features](FEATURES.md)
 
 Contents: [Features](#features) · [Architecture](#architecture) · [Conductor (Chrome Extension)](#conductor-chrome-extension) · [Quick Start](#quick-start) · [Configuration](#configuration) · [API Endpoints](#api-endpoints) · [Parity Appendix](#parity-appendix)
 
-A browser-based interface for the Composer AI coding assistant with core parity to the TUI. Parity is documented once—in the appendix below—to keep a single source of truth.
+A browser-based interface for the Maestro AI coding assistant with core parity to the TUI. Parity is documented once—in the appendix below—to keep a single source of truth.
 
 Parity at a glance:
 - Full: chat, sessions, models, config, usage, approvals, attachments, artifacts, share links (read-only), document extraction.
@@ -14,7 +14,7 @@ Parity at a glance:
 ## Features
 
 - **Real-time Streaming**: Live response streaming via SSE with WebSocket fallback
-- **Full Tool Execution**: All Composer tools work (bash, read, write, edit, etc.)
+- **Full Tool Execution**: All Maestro tools work (bash, read, write, edit, etc.)
 - **Modern Design**: GitHub-inspired dark theme with smooth animations
 - **Theme Toggle**: Light/dark themes with persisted preference
 - **Model Selection**: Switch between different AI models
@@ -44,20 +44,20 @@ Parity at a glance:
 
 ## Conductor (Chrome Extension)
 
-Conductor connects to the Composer web server and executes browser automation
+Conductor connects to the Maestro web server and executes browser automation
 tools inside the active tab. This turns the Web UI into a browser-aware surface
 that can read pages, click elements, type into inputs, and capture diagnostics.
 
 Setup and bridge details live in `docs/CONDUCTOR_BRIDGE.md`. In short:
 
-- Run the web server (`composer web`).
+- Run the web server (`maestro web`).
 - Enable the Conductor Bridge in the extension and point it at your server URL.
 - Send client tool headers so the server includes Conductor tools:
-  - `X-Composer-Client-Tools: 1`
-  - `X-Composer-Client: conductor`
+  - `X-Maestro-Client-Tools: 1`
+  - `X-Maestro-Client: conductor`
 
 Security notes:
-- For local dev, you can use `COMPOSER_WEB_REQUIRE_KEY=0` and `COMPOSER_WEB_ORIGIN="*"`.
+- For local dev, you can use `MAESTRO_WEB_REQUIRE_KEY=0` and `MAESTRO_WEB_ORIGIN="*"`.
 - For shared/hosted setups, lock CORS to your extension origin and require API keys.
 
 ### Components
@@ -76,7 +76,7 @@ Security notes:
    - `/api/sessions` - Session management
    - `/` - Serves static web UI files
 
-3. **Composer Core** - Shared with TUI
+3. **Maestro Core** - Shared with TUI
    - Agent, ProviderTransport, SessionManager
    - Tool execution (codingTools)
    - LLM provider integration
@@ -104,7 +104,7 @@ Build and run:
 
 ```bash
 # Full stack build (CLI + TUI + Web)
-npx nx run composer:build:all --skip-nx-cache
+npx nx run maestro:build:all --skip-nx-cache
 
 # Start web server
 bun run web
@@ -126,26 +126,26 @@ export GOOGLE_API_KEY="..."
 
 # Server Configuration
 export PORT=8080                                    # Server port
-export COMPOSER_SESSION_DIR="~/.composer/sessions"  # Session storage
-export COMPOSER_AGENT_DIR="~/.composer/agent"       # Context files
-export COMPOSER_SESSION_SCOPE="auth"                # Scope sessions by auth subject
-export COMPOSER_MULTI_USER="1"                      # Alias for COMPOSER_SESSION_SCOPE
+export MAESTRO_SESSION_DIR="~/.maestro/sessions"  # Session storage
+export MAESTRO_AGENT_DIR="~/.maestro/agent"       # Context files
+export MAESTRO_SESSION_SCOPE="auth"                # Scope sessions by auth subject
+export MAESTRO_MULTI_USER="1"                      # Alias for MAESTRO_SESSION_SCOPE
 
 # Proxy Configuration (when behind nginx, CloudFlare, etc.)
-export COMPOSER_TRUST_PROXY="true"                  # Trust X-Forwarded-For headers
+export MAESTRO_TRUST_PROXY="true"                  # Trust X-Forwarded-For headers
 ```
 
-#### COMPOSER_TRUST_PROXY
+#### MAESTRO_TRUST_PROXY
 
-When running behind a reverse proxy (nginx, CloudFlare, load balancer), set `COMPOSER_TRUST_PROXY=true` to extract the real client IP from the `X-Forwarded-For` header for rate limiting.
+When running behind a reverse proxy (nginx, CloudFlare, load balancer), set `MAESTRO_TRUST_PROXY=true` to extract the real client IP from the `X-Forwarded-For` header for rate limiting.
 
 **Security Warning:** Only enable this if your server is behind a trusted proxy that properly sets the `X-Forwarded-For` header. Enabling this on a publicly accessible server allows IP spoofing for rate limit bypass.
 
 **Important:** Ensure your server is NOT directly accessible from the internet when using this setting. The proxy should be the only entry point, and it should overwrite (not append to) the `X-Forwarded-For` header for incoming requests.
 
-#### COMPOSER_TRUST_PROXY_HOPS
+#### MAESTRO_TRUST_PROXY_HOPS
 
-For multi-proxy setups (e.g., CDN -> nginx -> app), set `COMPOSER_TRUST_PROXY_HOPS` to the number of trusted proxy hops. Default is `1`.
+For multi-proxy setups (e.g., CDN -> nginx -> app), set `MAESTRO_TRUST_PROXY_HOPS` to the number of trusted proxy hops. Default is `1`.
 
 The `X-Forwarded-For` header format is: `client-ip, proxy1-ip, proxy2-ip, ...`
 
@@ -178,16 +178,16 @@ server {
 
 Then set:
 ```bash
-export COMPOSER_TRUST_PROXY=true
-export COMPOSER_TRUST_PROXY_HOPS=1  # Only nginx in front
+export MAESTRO_TRUST_PROXY=true
+export MAESTRO_TRUST_PROXY_HOPS=1  # Only nginx in front
 ```
 
-#### COMPOSER_SESSION_SCOPE / COMPOSER_MULTI_USER
+#### MAESTRO_SESSION_SCOPE / MAESTRO_MULTI_USER
 
 Enable per-user session isolation (recommended for hosted deployments):
 
-- Set `COMPOSER_SESSION_SCOPE=auth` (or `true`/`1`) to scope sessions by the authenticated subject.
-- `COMPOSER_MULTI_USER` is an alias for the same behavior.
+- Set `MAESTRO_SESSION_SCOPE=auth` (or `true`/`1`) to scope sessions by the authenticated subject.
+- `MAESTRO_MULTI_USER` is an alias for the same behavior.
 
 When enabled, sessions are stored under per-subject subdirectories, and share links embed the scope automatically. Requests without a valid auth subject will fall back to the unscoped session directory.
 
@@ -242,7 +242,7 @@ data: [DONE]
 
 WebSocket alternative to SSE. Send the same JSON payload as `/api/chat` after the upgrade. Messages are JSON-encoded `AgentEvent` frames; the server terminates the stream with `{ "type": "done" }`.
 
-Note: WebSocket requests must include authentication headers when `COMPOSER_WEB_API_KEY`/JWT/shared secret auth is enabled. Browsers cannot set custom headers during the WebSocket handshake; use an authenticated reverse proxy or configure `COMPOSER_WEB_REQUIRE_KEY=0` for local-only development.
+Note: WebSocket requests must include authentication headers when `MAESTRO_WEB_API_KEY`/JWT/shared secret auth is enabled. Browsers cannot set custom headers during the WebSocket handshake; use an authenticated reverse proxy or configure `MAESTRO_WEB_REQUIRE_KEY=0` for local-only development.
 
 ## Tool Execution
 
@@ -273,36 +273,36 @@ Available tools:
 - `read` - Read files
 - `write` - Create/overwrite files
 - `edit` - Find and replace in files
-- ... (all Composer tools)
+- ... (all Maestro tools)
 
 ## Security Considerations
 
 ### Hardened profile (recommended for hosted use)
 
-Set `COMPOSER_PROFILE=prod` (or `COMPOSER_WEB_PROFILE=prod`) when running the web server to enable secure defaults:
-- Requires `COMPOSER_WEB_API_KEY` for all `/api` routes (401 otherwise).
+Set `MAESTRO_PROFILE=prod` (or `MAESTRO_WEB_PROFILE=prod`) when running the web server to enable secure defaults:
+- Requires `MAESTRO_WEB_API_KEY` for all `/api` routes (401 otherwise).
 - Approval mode defaults to `fail`.
-- CSRF enforced on mutating routes when `COMPOSER_WEB_CSRF_TOKEN` is set (auto-required in prod profile; override with `COMPOSER_WEB_REQUIRE_CSRF=0` for dev).
-- Strict CSP and security headers emitted for static assets; customize with `COMPOSER_WEB_CSP` if you need extra origins.
+- CSRF enforced on mutating routes when `MAESTRO_WEB_CSRF_TOKEN` is set (auto-required in prod profile; override with `MAESTRO_WEB_REQUIRE_CSRF=0` for dev).
+- Strict CSP and security headers emitted for static assets; customize with `MAESTRO_WEB_CSP` if you need extra origins.
 - Background shell tasks (`background_tasks` with `shell:true`) are blocked; untagged human-facing egress tools are blocked unless explicitly disabled.
 
 Example hardened run:
 ```bash
-COMPOSER_PROFILE=prod \
-COMPOSER_WEB_API_KEY=<strong-token> \
-COMPOSER_WEB_CSRF_TOKEN=<csrf-secret> \
-COMPOSER_WEB_ORIGIN=https://your.host \
-composer web
+MAESTRO_PROFILE=prod \
+MAESTRO_WEB_API_KEY=<strong-token> \
+MAESTRO_WEB_CSRF_TOKEN=<csrf-secret> \
+MAESTRO_WEB_ORIGIN=https://your.host \
+maestro web
 ```
 
 ### Development convenience
-- For local hacking, keep `COMPOSER_PROFILE` unset or `dev`, and you can opt out of strict egress/background-shell blocks with:
-  - `COMPOSER_FAIL_UNTAGGED_EGRESS=0`
-  - `COMPOSER_BACKGROUND_SHELL_DISABLE=0`
-- Set `COMPOSER_WEB_REQUIRE_KEY=0` to skip API key checks locally.
+- For local hacking, keep `MAESTRO_PROFILE` unset or `dev`, and you can opt out of strict egress/background-shell blocks with:
+  - `MAESTRO_FAIL_UNTAGGED_EGRESS=0`
+  - `MAESTRO_BACKGROUND_SHELL_DISABLE=0`
+- Set `MAESTRO_WEB_REQUIRE_KEY=0` to skip API key checks locally.
 
 ### CORS
-`COMPOSER_WEB_ORIGIN` sets `Access-Control-Allow-Origin` and related headers. Use your real host in production.
+`MAESTRO_WEB_ORIGIN` sets `Access-Control-Allow-Origin` and related headers. Use your real host in production.
 
 ## Deployment
 
@@ -348,7 +348,7 @@ server {
 NODE_ENV=production
 PORT=8080
 ANTHROPIC_API_KEY=sk-ant-...
-COMPOSER_SESSION_DIR=/var/lib/composer/sessions
+MAESTRO_SESSION_DIR=/var/lib/maestro/sessions
 ```
 
 ## Development

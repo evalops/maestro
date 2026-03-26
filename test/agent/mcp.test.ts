@@ -24,7 +24,7 @@ describe("MCP config loader", () => {
 	});
 
 	it("loads servers from project config (array format)", () => {
-		const configDir = join(testDir, ".composer");
+		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
 			join(configDir, "mcp.json"),
@@ -47,7 +47,7 @@ describe("MCP config loader", () => {
 	});
 
 	it("loads servers from mcpServers format (Claude Desktop style)", () => {
-		const configDir = join(testDir, ".composer");
+		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
 			join(configDir, "mcp.json"),
@@ -69,7 +69,7 @@ describe("MCP config loader", () => {
 	});
 
 	it("excludes disabled servers", () => {
-		const configDir = join(testDir, ".composer");
+		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
 			join(configDir, "mcp.json"),
@@ -87,7 +87,7 @@ describe("MCP config loader", () => {
 	});
 
 	it("detects http transport from url", () => {
-		const configDir = join(testDir, ".composer");
+		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
 			join(configDir, "mcp.json"),
@@ -104,7 +104,7 @@ describe("MCP config loader", () => {
 	});
 
 	it("detects SSE transport when URL ends with /sse", () => {
-		const configDir = join(testDir, ".composer");
+		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
 			join(configDir, "mcp.json"),
@@ -121,7 +121,7 @@ describe("MCP config loader", () => {
 	});
 
 	it("detects SSE transport when URL contains /sse/ path segment", () => {
-		const configDir = join(testDir, ".composer");
+		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
 			join(configDir, "mcp.json"),
@@ -137,7 +137,7 @@ describe("MCP config loader", () => {
 	});
 
 	it("does NOT detect SSE for URLs with 'sse' in other positions (e.g., /sessions)", () => {
-		const configDir = join(testDir, ".composer");
+		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
 			join(configDir, "mcp.json"),
@@ -154,7 +154,7 @@ describe("MCP config loader", () => {
 	});
 
 	it("detects SSE transport for sse subdomain", () => {
-		const configDir = join(testDir, ".composer");
+		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
 			join(configDir, "mcp.json"),
@@ -170,7 +170,7 @@ describe("MCP config loader", () => {
 	});
 
 	it("rejects invalid server configs (stdio without command)", () => {
-		const configDir = join(testDir, ".composer");
+		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
 			join(configDir, "mcp.json"),
@@ -186,7 +186,7 @@ describe("MCP config loader", () => {
 	});
 
 	it("rejects invalid server configs (http without url)", () => {
-		const configDir = join(testDir, ".composer");
+		const configDir = join(testDir, ".maestro");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(
 			join(configDir, "mcp.json"),

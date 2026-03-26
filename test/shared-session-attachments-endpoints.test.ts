@@ -141,11 +141,11 @@ async function createShareToken(maxAccesses: number | null = 1) {
 describe("Shared session attachments", () => {
 	beforeEach(() => {
 		// Disable strict session access for tests (sessions without ownership info)
-		process.env.COMPOSER_STRICT_SESSION_ACCESS = "false";
+		process.env.MAESTRO_STRICT_SESSION_ACCESS = "false";
 	});
 
 	afterEach(async () => {
-		delete process.env.COMPOSER_STRICT_SESSION_ACCESS;
+		delete process.env.MAESTRO_STRICT_SESSION_ACCESS;
 		await resetShareRateLimit();
 	});
 

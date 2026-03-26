@@ -186,7 +186,7 @@ describe("handleChat", () => {
 
 	it("persists user messages during streaming", async () => {
 		const composerHome = mkdtempSync(join(tmpdir(), "composer-home-"));
-		vi.stubEnv("COMPOSER_HOME", composerHome);
+		vi.stubEnv("MAESTRO_HOME", composerHome);
 
 		const req = new PassThrough() as MockPassThrough;
 		req.method = "POST";

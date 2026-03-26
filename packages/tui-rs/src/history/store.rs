@@ -36,7 +36,7 @@ impl Default for HistoryConfig {
             .join(".composer")
             .join("history")
             .join("prompts.jsonl");
-        let path = env::var("COMPOSER_PROMPT_HISTORY_FILE")
+        let path = env::var("MAESTRO_PROMPT_HISTORY_FILE")
             .ok()
             .and_then(|raw| {
                 let trimmed = raw.trim();

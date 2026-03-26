@@ -16,8 +16,8 @@ import type {
 
 const logger = createLogger("composers:loader");
 
-const PERSONAL_DIR = join(PATHS.COMPOSER_HOME, "composers");
-const PROJECT_DIR_NAME = ".composer/composers";
+const PERSONAL_DIR = join(PATHS.MAESTRO_HOME, "composers");
+const PROJECT_DIR_NAME = ".maestro/composers";
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value && typeof value === "object" && !Array.isArray(value)

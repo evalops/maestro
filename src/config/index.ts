@@ -5,10 +5,10 @@
  * sources with a clear precedence order:
  *
  * 1. CLI flags (--model, --config key=value, --profile)
- * 2. Environment variables (COMPOSER_*)
+ * 2. Environment variables (MAESTRO_*)
  * 3. Active TOML profile settings
- * 4. Project config.toml (.composer/config.toml)
- * 5. Global config.toml (~/.composer/config.toml)
+ * 4. Project config.toml (.maestro/config.toml)
+ * 5. Global config.toml (~/.maestro/config.toml)
  * 6. Built-in defaults
  */
 

@@ -1,6 +1,6 @@
 # Build Testing Guide
 
-This document describes the comprehensive build testing infrastructure for Composer.
+This document describes the comprehensive build testing infrastructure for Maestro.
 
 ## Overview
 
@@ -38,7 +38,7 @@ Verifies that workspace packages build correctly:
 
 ### 3. Binary Compilation Tests (`test/build/binary-compilation.test.ts`)
 
-Tests for the compiled binary (`dist/composer-bun`):
+Tests for the compiled binary (`dist/maestro-bun`):
 - Binary exists (if compilation was run)
 - Binary has correct size
 - Binary compilation process works (when `TEST_BINARY_COMPILATION=1`)
@@ -76,7 +76,7 @@ Comprehensive build verification script that runs all checks:
 **Run:**
 - `bun run verify-build` (basic verification)
 - `VERIFY_PACKAGES=1 bun run verify-build` (includes package verification)
-- `npx nx run composer:verify-build` (Nx target wrapper)
+- `npx nx run maestro:verify-build` (Nx target wrapper)
 
 ## Usage
 
@@ -113,7 +113,7 @@ bun run verify-build
 bun run smoke
 
 # 4. Run full test suite
-npx nx run composer:test --skip-nx-cache
+npx nx run maestro:test --skip-nx-cache
 ```
 
 ### CI Integration
@@ -138,10 +138,10 @@ New Nx targets for build verification:
 
 ```bash
 # Verify build artifacts
-npx nx run composer:verify-build
+npx nx run maestro:verify-build
 
 # Run smoke tests
-npx nx run composer:smoke
+npx nx run maestro:smoke
 ```
 
 ## Troubleshooting

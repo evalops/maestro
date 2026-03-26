@@ -83,10 +83,10 @@ export class FileTranscriptStore implements TranscriptStore {
 		this.baseDir =
 			baseDir ||
 			join(
-				resolveEnvPath(process.env.COMPOSER_DATA_DIR) ??
+				resolveEnvPath(process.env.MAESTRO_DATA_DIR) ??
 					resolveEnvPath(getHomeDir()) ??
 					tmpdir(),
-				".composer",
+				".maestro",
 				"transcripts",
 			);
 	}

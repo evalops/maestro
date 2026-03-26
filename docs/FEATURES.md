@@ -3,15 +3,15 @@
 Audience: users exploring TUI/CLI flows; skim first.  
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Tools Reference](TOOLS_REFERENCE.md) · [Web UI](WEB_UI.md)
 
-This guide highlights Composer’s user-facing capabilities across the TUI, CLI, and Web UI. Keep the [Tools Reference](TOOLS_REFERENCE.md) open for full slash command syntax.
+This guide highlights Maestro’s user-facing capabilities across the TUI, CLI, and Web UI. Keep the [Tools Reference](TOOLS_REFERENCE.md) open for full slash command syntax.
 
 Navigation: [Interfaces](#interfaces) · [TUI essentials](#tui-essentials) · [CLI mode](#cli-mode) · [Prompt queue](#prompt-queue) · [Background tasks](#background-tasks) · [Telemetry & diagnostics](#telemetry--diagnostics)
 
 ## Interfaces
-- **TUI** — launch `composer` with no arguments (or `bun run cli --` from source). Rich editor, slash command palette, and footer telemetry.
-- **CLI** — pass one or more messages as arguments (`composer "Read package.json" "Summarize dependencies"`). Supports JSON/RPC output for automation.
-- **Web UI** — start with `composer web`; see [Web UI Guide](WEB_UI.md) for parity notes and shortcuts.
-- **Conductor (Chrome extension)** — browser-automation surface that connects to the Composer web server via the Conductor Bridge (`CONDUCTOR_BRIDGE.md`).
+- **TUI** — launch `maestro` with no arguments (or `bun run cli --` from source). Rich editor, slash command palette, and footer telemetry.
+- **CLI** — pass one or more messages as arguments (`maestro "Read package.json" "Summarize dependencies"`). Supports JSON/RPC output for automation.
+- **Web UI** — start with `maestro web`; see [Web UI Guide](WEB_UI.md) for parity notes and shortcuts.
+- **Conductor (Chrome extension)** — browser-automation surface that connects to the Maestro web server via the Conductor Bridge (`CONDUCTOR_BRIDGE.md`).
 - **Ambient Agent** — always-on GitHub daemon that watches repos and ships PRs (see [Ambient Agent Design](design/AMBIENT_AGENT.md)).
 
 ## TUI essentials
@@ -23,7 +23,7 @@ Type `/` in the editor for completions. Highlights:
 - `/run <script>` — run workspace scripts with streamed output.
 - `/sessions` — list or load transcripts; format details live in [Sessions](SESSIONS.md).
 - `/report` — collect info for bug reports or feedback.
-- **Prompt templates** — drop markdown files into `.composer/prompts/*.md` (project) or `~/.composer/prompts/*.md` (user), then run them via `/prompts <name> …` or directly as `/<name> …` (if the name doesn’t collide with a built-in command). Markdown files in `.composer/commands/*.md` are also treated as prompt templates.
+- **Prompt templates** — drop markdown files into `.maestro/prompts/*.md` (project) or `~/.maestro/prompts/*.md` (user), then run them via `/prompts <name> …` or directly as `/<name> …` (if the name doesn’t collide with a built-in command). Markdown files in `.maestro/commands/*.md` are also treated as prompt templates.
 
 See [Tools Reference](TOOLS_REFERENCE.md) for every command and flag. Availability by surface (TUI vs Web) is summarized in [Web UI Guide](WEB_UI.md#parity-appendix).
 
@@ -39,8 +39,8 @@ Runtime badges condense environment + agent state into quick signals:
 - `env:docker|podman|wsl|ssh|flatpak|musl`, `term:tmux|screen|jetbrains`
 
 ### Accessibility / reduced motion
-- Set `COMPOSER_REDUCED_MOTION=1` to reduce animated UI elements (auto-enabled by default on SSH/tmux/screen).
-- Set `COMPOSER_DISABLE_ANIMATIONS=1` to hard-disable all TUI animations (spinners, typing dots, shimmer effects).
+- Set `MAESTRO_REDUCED_MOTION=1` to reduce animated UI elements (auto-enabled by default on SSH/tmux/screen).
+- Set `MAESTRO_DISABLE_ANIMATIONS=1` to hard-disable all TUI animations (spinners, typing dots, shimmer effects).
 
 ### Bash mode
 Prefix a message with `!` to enter persistent bash mode.
@@ -54,7 +54,7 @@ Prefix a message with `!` to enter persistent bash mode.
 - Supports `--mode json` and `--mode rpc` for scripting, plus provider/model flags (`--provider`, `--model`, `--api-key`).
 - `--continue`, `--session`, and `--no-session` align with the session model described in [Sessions](SESSIONS.md).
 - Approval behavior follows [Safety](SAFETY.md) (`--approval-mode prompt|auto|fail`).
-- Use `/framework <id>` to set a default stack (`fastapi`, `express`, `node`); add `--workspace` to scope it to the current repo; `/framework none` clears. Precedence: policy (locked) > policy > env override > env default > workspace `.composer/workspace.json` > user `~/.composer/default-framework.json` > none.
+- Use `/framework <id>` to set a default stack (`fastapi`, `express`, `node`); add `--workspace` to scope it to the current repo; `/framework none` clears. Precedence: policy (locked) > policy > env override > env default > workspace `.maestro/workspace.json` > user `~/.maestro/default-framework.json` > none.
 
 ## Prompt queue
 When the agent is busy, additional prompts are enqueued. The footer shows the count (“2 prompts queued”), and `/queue` lists, cancels, or reprioritizes pending items. Bash mode bypasses the queue for immediate shell access. Details: [Prompt Queue](PROMPT_QUEUE.md).
@@ -63,7 +63,7 @@ Use `/steer <message>` to interrupt the current run and push a new prompt to the
 ## Background tasks
 - Run long commands with `/background_tasks action=start …`; check `/background_tasks action=list` or `/background_tasks action=logs` without leaving chat.
 - Health telemetry feeds the footer and diagnostics view, showing recent failures, restarts, and limit breaches.
-- User controls live in `~/.composer/agent/background-settings.json` (or a custom path via `COMPOSER_BACKGROUND_SETTINGS`).
+- User controls live in `~/.maestro/agent/background-settings.json` (or a custom path via `MAESTRO_BACKGROUND_SETTINGS`).
 - Secrets in summaries/log previews are redacted automatically; avoid putting raw tokens directly in commands.
 
 ## Telemetry & diagnostics

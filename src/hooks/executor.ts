@@ -29,7 +29,7 @@ const logger = createLogger("hooks:executor");
 const DEFAULT_HOOK_TIMEOUT_MS = 60_000; // 60 seconds
 
 const hookSlots = createConcurrencyManagerFromEnv(
-	"COMPOSER_HOOKS_MAX_CONCURRENCY",
+	"MAESTRO_HOOKS_MAX_CONCURRENCY",
 	0,
 );
 
@@ -103,13 +103,13 @@ async function executeCommandHook(
 		// Build environment, filtering out undefined values to avoid "undefined" strings
 		const hookEnv: Record<string, string> = {
 			...process.env,
-			COMPOSER_PROJECT_DIR: input.cwd,
-			COMPOSER_HOOK_EVENT: input.hook_event_name,
+			MAESTRO_PROJECT_DIR: input.cwd,
+			MAESTRO_HOOK_EVENT: input.hook_event_name,
 		} as Record<string, string>;
 
 		// Only set session ID if defined
 		if (input.session_id) {
-			hookEnv.COMPOSER_SESSION_ID = input.session_id;
+			hookEnv.MAESTRO_SESSION_ID = input.session_id;
 		}
 
 		const child = spawn(hook.command, [], {

@@ -15,7 +15,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::markdown_stream::MarkdownStreamCollector;
+//! use maestro_tui::markdown_stream::MarkdownStreamCollector;
 //!
 //! let mut collector = MarkdownStreamCollector::new(Some(80));
 //!

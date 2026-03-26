@@ -7,7 +7,7 @@ export interface Args {
 	apiKey?: string;
 	systemPrompt?: string;
 	appendSystemPrompt?: string;
-	/** Port for `composer web` (defaults to PORT env or 8080) */
+	/** Port for `maestro web` (defaults to PORT env or 8080) */
 	port?: number;
 	continue?: boolean;
 	resume?: boolean;

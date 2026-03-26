@@ -2,11 +2,11 @@
  * Custom Prompts System - User-definable slash commands from Markdown files.
  *
  * Inspired by OpenAI Codex's prompts system. Prompts are discovered from:
- * - ~/.composer/prompts/*.md (user prompts)
- * - .composer/prompts/*.md (project prompts)
+ * - ~/.maestro/prompts/*.md (user prompts)
+ * - .maestro/prompts/*.md (project prompts)
  *
- * Additionally, Composer treats Markdown files in `.composer/commands/*.md` and
- * `~/.composer/commands/*.md` as prompts. This lets teams colocate "prompt-like"
+ * Additionally, Composer treats Markdown files in `.maestro/commands/*.md` and
+ * `~/.maestro/commands/*.md` as prompts. This lets teams colocate "prompt-like"
  * commands alongside other command templates.
  *
  * Each prompt is a Markdown file with optional YAML frontmatter:
@@ -308,10 +308,10 @@ function scanPromptsDirectory(
  * @returns Array of loaded prompts (project prompts override user prompts by name)
  */
 export function loadPrompts(workspaceDir: string): PromptDefinition[] {
-	const userPromptsDir = join(PATHS.COMPOSER_HOME, "prompts");
-	const userCommandsDir = join(PATHS.COMPOSER_HOME, "commands");
-	const projectPromptsDir = join(workspaceDir, ".composer", "prompts");
-	const projectCommandsDir = join(workspaceDir, ".composer", "commands");
+	const userPromptsDir = join(PATHS.MAESTRO_HOME, "prompts");
+	const userCommandsDir = join(PATHS.MAESTRO_HOME, "commands");
+	const projectPromptsDir = join(workspaceDir, ".maestro", "prompts");
+	const projectCommandsDir = join(workspaceDir, ".maestro", "commands");
 
 	logger.debug("Scanning for prompts", {
 		userPromptsDir,

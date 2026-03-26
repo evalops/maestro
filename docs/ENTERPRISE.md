@@ -1,4 +1,4 @@
-# Composer Enterprise
+# Maestro Enterprise
 
 Updated: 2025-12-02
 
@@ -7,7 +7,7 @@ Nav: [Docs index](README.md) · [Safety](SAFETY.md) · [Models](MODELS.md) · [S
 
 ## Executive Summary
 
-Composer Enterprise adds the controls required for regulated and security-conscious environments:
+Maestro Enterprise adds the controls required for regulated and security-conscious environments:
 
 - **Isolation**: Multi-tenant organizations with full resource separation
 - **Fine-grained RBAC**: Permission checks at API, tool-execution, and directory-resolution layers
@@ -21,7 +21,7 @@ No hidden state. No ambient authority. Every action is gated, logged, and attrib
 
 ## Deployment Model
 
-Composer is **stateless at the application layer**. All persistent state lives in the database:
+Maestro is **stateless at the application layer**. All persistent state lives in the database:
 
 | State Type | Storage | Notes |
 |------------|---------|-------|
@@ -31,9 +31,9 @@ Composer is **stateless at the application layer**. All persistent state lives i
 | Permissions cache | In-memory | 5-min TTL, auto-cleared on changes |
 | Directory rules cache | In-memory | 5-min TTL, auto-cleared on changes |
 
-**Scaling**: Add Composer instances behind a load balancer. No sticky sessions required. All instances read/write the same database.
+**Scaling**: Add Maestro instances behind a load balancer. No sticky sessions required. All instances read/write the same database.
 
-**Request capacity**: A single Composer instance handles 100+ req/s for typical API operations. Audit log writes are async and batched. For orgs with >50 concurrent users, consider read replicas for audit queries.
+**Request capacity**: A single Maestro instance handles 100+ req/s for typical API operations. Audit log writes are async and batched. For orgs with >50 concurrent users, consider read replicas for audit queries.
 
 ---
 
@@ -158,9 +158,9 @@ detector.addPatternFromString(
 ### Configuration
 
 ```bash
-COMPOSER_PII_ENABLED=true           # Enable detection
-COMPOSER_PII_BLOCK_ON_DETECT=false  # Block requests with PII (vs. redact and continue)
-COMPOSER_PII_LOG_DETECTIONS=true    # Audit log PII events
+MAESTRO_PII_ENABLED=true           # Enable detection
+MAESTRO_PII_BLOCK_ON_DETECT=false  # Block requests with PII (vs. redact and continue)
+MAESTRO_PII_LOG_DETECTIONS=true    # Audit log PII events
 ```
 
 ---
@@ -237,7 +237,7 @@ The check happens synchronously before the LLM request is sent. No partial execu
 ### Retention & Export
 
 ```bash
-COMPOSER_AUDIT_RETENTION_DAYS=90  # Auto-delete after 90 days
+MAESTRO_AUDIT_RETENTION_DAYS=90  # Auto-delete after 90 days
 ```
 
 ```bash
@@ -296,10 +296,10 @@ SSO integration is on the roadmap. The auth layer is designed for pluggable prov
 
 ```typescript
 // Future API (not yet implemented)
-COMPOSER_AUTH_PROVIDER=oidc
-COMPOSER_OIDC_ISSUER=https://login.company.com
-COMPOSER_OIDC_CLIENT_ID=...
-COMPOSER_OIDC_CLIENT_SECRET=...
+MAESTRO_AUTH_PROVIDER=oidc
+MAESTRO_OIDC_ISSUER=https://login.company.com
+MAESTRO_OIDC_CLIENT_ID=...
+MAESTRO_OIDC_CLIENT_SECRET=...
 ```
 
 Current JWT auth will remain available for service accounts and CLI access.
@@ -310,14 +310,14 @@ Current JWT auth will remain available for service accounts and CLI access.
 
 ### File-based Defaults (Single-User)
 
-In single-user mode, Composer stores sessions in `~/.composer/agent/sessions/` as JSONL files. This is the default for CLI installations.
+In single-user mode, Maestro stores sessions in `~/.maestro/agent/sessions/` as JSONL files. This is the default for CLI installations.
 
 ### Enterprise Equivalents
 
 | Single-User | Enterprise |
 |-------------|------------|
-| `~/.composer/agent/sessions/*.jsonl` | `sessions` + `session_messages` tables |
-| `~/.composer/config.json` | `organizations.settings` + `org_memberships` |
+| `~/.maestro/agent/sessions/*.jsonl` | `sessions` + `session_messages` tables |
+| `~/.maestro/config.json` | `organizations.settings` + `org_memberships` |
 | No auth | JWT + RBAC |
 | No audit | `audit_logs` table |
 
@@ -337,20 +337,20 @@ This preserves: message history, favorites, summaries, model selections, timesta
 ### Required for Enterprise
 
 ```bash
-COMPOSER_MULTI_TENANT=true
-COMPOSER_DATABASE_URL=postgresql://host/composer?user=user&password=pass
-COMPOSER_JWT_SECRET=$(openssl rand -hex 32)
+MAESTRO_MULTI_TENANT=true
+MAESTRO_DATABASE_URL=postgresql://host/maestro?user=user&password=pass
+MAESTRO_JWT_SECRET=$(openssl rand -hex 32)
 ```
 
 ### Optional
 
 ```bash
-COMPOSER_DATABASE_TYPE=postgres          # or 'sqlite' for dev
-COMPOSER_JWT_EXPIRY=24h
-COMPOSER_AUDIT_ENABLED=true
-COMPOSER_AUDIT_RETENTION_DAYS=90
-COMPOSER_PII_ENABLED=true
-COMPOSER_PII_BLOCK_ON_DETECT=false
+MAESTRO_DATABASE_TYPE=postgres          # or 'sqlite' for dev
+MAESTRO_JWT_EXPIRY=24h
+MAESTRO_AUDIT_ENABLED=true
+MAESTRO_AUDIT_RETENTION_DAYS=90
+MAESTRO_PII_ENABLED=true
+MAESTRO_PII_BLOCK_ON_DETECT=false
 ```
 
 ---

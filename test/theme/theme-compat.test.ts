@@ -18,14 +18,14 @@ describe("Theme compatibility", () => {
 		stopThemeWatcher();
 		// Restore to a built-in theme to avoid leaking custom theme state.
 		setTheme("dark");
-		process.env.COMPOSER_THEMES_DIR = previousThemesDir ?? "";
+		process.env.MAESTRO_THEMES_DIR = previousThemesDir ?? "";
 		if (themesDir) rmSync(themesDir, { recursive: true, force: true });
 	});
 
 	it("loads a pi-mono-like theme missing accentWarm and containing extra keys", () => {
 		themesDir = mkdtempSync(join(tmpdir(), "composer-themes-"));
-		previousThemesDir = process.env.COMPOSER_THEMES_DIR;
-		process.env.COMPOSER_THEMES_DIR = themesDir;
+		previousThemesDir = process.env.MAESTRO_THEMES_DIR;
+		process.env.MAESTRO_THEMES_DIR = themesDir;
 		mkdirSync(themesDir, { recursive: true });
 
 		const dark = JSON.parse(readFileSync("src/theme/dark.json", "utf-8")) as {

@@ -16,7 +16,7 @@ Key capabilities:
 ## Storage Architecture
 
 ```
-~/.composer/agent/sessions/
+~/.maestro/agent/sessions/
 └── --home-user-projects-myapp--/
     ├── 2024-01-15T10-30-00-000Z_uuid1.jsonl
     ├── 2024-01-15T14-45-00-000Z_uuid2.jsonl
@@ -35,10 +35,10 @@ private getSessionDirectory(): string {
   const safePath = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 
   const configDir = resolve(
-    process.env.COMPOSER_AGENT_DIR ??
+    process.env.MAESTRO_AGENT_DIR ??
     process.env.PLAYWRIGHT_AGENT_DIR ??
     process.env.CODING_AGENT_DIR ??
-    join(homedir(), ".composer/agent/")
+    join(homedir(), ".maestro/agent/")
   );
 
   return join(configDir, "sessions", safePath);

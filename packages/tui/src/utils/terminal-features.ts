@@ -29,14 +29,14 @@ export function detectTerminalFeatures(env = process.env): TerminalFeatures {
 	// Sync output (DECSET 2026) is great locally but causes "typed in waves"
 	// over SSH/tmux when the host PTY buffers frames. Disable by default for SSH
 	// and allow explicit env overrides:
-	//   COMPOSER_NO_SYNC=1          -> force off
-	//   COMPOSER_SYNC_OUTPUT=0|false -> force off
-	//   COMPOSER_SYNC_OUTPUT=1|true  -> force on (even over SSH)
-	const syncOverrideRaw = env.COMPOSER_SYNC_OUTPUT
-		? env.COMPOSER_SYNC_OUTPUT.toLowerCase()
+	//   MAESTRO_NO_SYNC=1          -> force off
+	//   MAESTRO_SYNC_OUTPUT=0|false -> force off
+	//   MAESTRO_SYNC_OUTPUT=1|true  -> force on (even over SSH)
+	const syncOverrideRaw = env.MAESTRO_SYNC_OUTPUT
+		? env.MAESTRO_SYNC_OUTPUT.toLowerCase()
 		: undefined;
 	const syncForcedOff =
-		env.COMPOSER_NO_SYNC === "1" ||
+		env.MAESTRO_NO_SYNC === "1" ||
 		syncOverrideRaw === "0" ||
 		syncOverrideRaw === "false";
 	const syncForcedOn = syncOverrideRaw === "1" || syncOverrideRaw === "true";

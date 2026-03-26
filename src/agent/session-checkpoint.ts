@@ -133,7 +133,7 @@ class SessionCheckpointManager {
 		this.config = { ...DEFAULT_CONFIG, ...config };
 
 		this.checkpointDir = join(
-			PATHS.COMPOSER_HOME,
+			PATHS.MAESTRO_HOME,
 			"sessions",
 			sessionId,
 			"checkpoints",

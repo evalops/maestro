@@ -59,7 +59,7 @@ describe("buildTelemetryViewModel", () => {
 
 		expect(viewModel.sourceLabel).toBe("Env flag");
 		expect(viewModel.sourceExplanation).toBe(
-			"COMPOSER_TELEMETRY=0 controls the base telemetry setting.",
+			"MAESTRO_TELEMETRY=0 controls the base telemetry setting.",
 		);
 		expect(viewModel.overrideLabel).toBe("Enabled");
 		expect(viewModel.overrideExplanation).toBe(
@@ -119,17 +119,17 @@ describe("buildTrainingViewModel", () => {
 		const viewModel = buildTrainingViewModel({
 			preference: "opted-out",
 			optOut: true,
-			reason: "COMPOSER_TRAINING_OPT_OUT=true",
+			reason: "MAESTRO_TRAINING_OPT_OUT=true",
 			flagValue: "true",
 		});
 
 		expect(viewModel.sourceLabel).toBe("Env flag");
 		expect(viewModel.sourceExplanation).toBe(
-			"COMPOSER_TRAINING_OPT_OUT=true sets the base training preference.",
+			"MAESTRO_TRAINING_OPT_OUT=true sets the base training preference.",
 		);
 		expect(viewModel.overrideLabel).toBe("None");
 		expect(viewModel.reasonExplanation).toBe(
-			"Base preference comes from COMPOSER_TRAINING_OPT_OUT=true.",
+			"Base preference comes from MAESTRO_TRAINING_OPT_OUT=true.",
 		);
 	});
 });

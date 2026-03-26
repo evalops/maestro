@@ -3,15 +3,15 @@
 **Source**: https://github.com/code-yeongyu/oh-my-opencode (567 stars)
 **Analysis Date**: 2025-12-16
 
-This document compares oh-my-opencode patterns against Composer's existing implementation to identify genuine gaps and opportunities.
+This document compares oh-my-opencode patterns against Maestro's existing implementation to identify genuine gaps and opportunities.
 
 ---
 
 ## Executive Summary
 
-oh-my-opencode is an OpenCode plugin adding multi-model orchestration, background agents, and smart context management. After deep review of Composer's architecture, here's what's **genuinely new** vs **already present**:
+oh-my-opencode is an OpenCode plugin adding multi-model orchestration, background agents, and smart context management. After deep review of Maestro's architecture, here's what's **genuinely new** vs **already present**:
 
-### Already Present in Composer ✅
+### Already Present in Maestro ✅
 - Hook system (more sophisticated - Lua/WASM/native backends)
 - Session management (JSONL-based, branching support)
 - Safety/firewall system (tree-sitter bash analysis)
@@ -54,7 +54,7 @@ Incomplete tasks remain in your todo list. Continue working on the next pending 
 - Tracks "reminded" sessions to avoid spam
 - Wired with session recovery to skip during recovery
 
-**Composer gap**: The TypeScript CLI has todo tracking but no auto-continuation. The agent relies on the LLM remembering todos.
+**Maestro gap**: The TypeScript CLI has todo tracking but no auto-continuation. The agent relies on the LLM remembering todos.
 
 **Implementation location**: Could be added to `packages/tui-rs/src/hooks/` as a new hook type or as agent-level behavior in `native.rs`.
 
@@ -62,7 +62,7 @@ Incomplete tasks remain in your todo list. Continue working on the next pending 
 
 ## 2. Specialized Model-Routed Agents (PARTIALLY NEW)
 
-Composer has **Swarm mode** for parallel task execution, but oh-my-opencode's pattern is different:
+Maestro has **Swarm mode** for parallel task execution, but oh-my-opencode's pattern is different:
 
 **oh-my-opencode pattern**:
 | Agent | Model | Role | Always Available |
@@ -77,7 +77,7 @@ Composer has **Swarm mode** for parallel task execution, but oh-my-opencode's pa
 - Grok for fast, cheap codebase exploration
 - Gemini for creative UI work
 
-**Composer gap**: Single-model per session. Swarm spawns parallel tasks but doesn't route to specialized models.
+**Maestro gap**: Single-model per session. Swarm spawns parallel tasks but doesn't route to specialized models.
 
 **Implementation opportunity**:
 ```rust
@@ -107,7 +107,7 @@ Complete your work thoroughly and methodically.`
 
 **Why it matters**: LLMs sometimes "sense" context pressure and start rushing or summarizing prematurely.
 
-**Composer gap**: Has compaction (`/compact`) but no proactive monitoring.
+**Maestro gap**: Has compaction (`/compact`) but no proactive monitoring.
 
 **Implementation**: Add to hook system - fire on `PostToolUse` when token count crosses threshold.
 
@@ -121,7 +121,7 @@ Complete your work thoroughly and methodically.`
 - `analyze` / `investigate` → Deep analysis mode
 - `ultrathink` → Extended thinking budget
 
-**Composer gap**: Thinking level is manual (`/thinking` command). No auto-detection.
+**Maestro gap**: Thinking level is manual (`/thinking` command). No auto-detection.
 
 **Implementation**: Add to `PreMessage` hook - scan user message for keywords, adjust `thinking_budget` or spawn specialized agents.
 
@@ -150,7 +150,7 @@ ast_grep_replace({
 - `$VAR` - single node
 - `$$$` - multiple nodes
 
-**Composer gap**: Has `grep` (ripgrep) but no AST-aware search. AST-grep is more precise for refactoring.
+**Maestro gap**: Has `grep` (ripgrep) but no AST-aware search. AST-grep is more precise for refactoring.
 
 **Implementation**: Add `ast_grep_search` and `ast_grep_replace` tools. Depends on `@ast-grep/napi` or CLI.
 
@@ -158,7 +158,7 @@ ast_grep_replace({
 
 ## 6. LSP as Agent Tools (PARTIALLY NEW)
 
-Composer has LSP integration for diagnostics but doesn't expose it as agent-callable tools:
+Maestro has LSP integration for diagnostics but doesn't expose it as agent-callable tools:
 
 **oh-my-opencode exposes**:
 | Tool | Purpose |
@@ -170,7 +170,7 @@ Composer has LSP integration for diagnostics but doesn't expose it as agent-call
 | `lsp_code_actions` | Get quick fixes |
 | `lsp_code_action_resolve` | Apply fix |
 
-**Composer gap**: LSP used internally but not as tools. Agent can't say "rename this symbol" or "find all references".
+**Maestro gap**: LSP used internally but not as tools. Agent can't say "rename this symbol" or "find all references".
 
 **Implementation**: Expose existing LSP client methods as tools in `packages/tui-rs/src/tools/`.
 
@@ -191,9 +191,9 @@ description: "TypeScript coding rules"
 
 **Trigger**: When agent reads/writes a matching file, rules are injected into context.
 
-**Composer gap**: Has AGENT.md loading but no glob-based conditional rules.
+**Maestro gap**: Has AGENT.md loading but no glob-based conditional rules.
 
-**Implementation**: Add `PostToolUse` hook for `read`/`write`/`edit` that checks `.composer/rules/*.md` against file path.
+**Implementation**: Add `PostToolUse` hook for `read`/`write`/`edit` that checks `.maestro/rules/*.md` against file path.
 
 ---
 
@@ -224,7 +224,7 @@ OmO's prompt is exceptionally well-structured:
 | Test run | Pass |
 | Delegation | Agent result verified |
 
-**Composer opportunity**: Incorporate these patterns into system prompt or AGENT.md template.
+**Maestro opportunity**: Incorporate these patterns into system prompt or AGENT.md template.
 
 ---
 
@@ -242,7 +242,7 @@ When delegating to subagents:
 7. CONTEXT: File paths, patterns, constraints
 ```
 
-**Composer opportunity**: Use this structure in Swarm task definitions.
+**Maestro opportunity**: Use this structure in Swarm task definitions.
 
 ---
 
@@ -254,7 +254,7 @@ When delegating to subagents:
 3. When agent completes → inject notification into parent session
 4. User can call `background_output(task_id)` to get results
 
-**Composer's Swarm mode** has similar parallel execution but:
+**Maestro's Swarm mode** has similar parallel execution but:
 - No fire-and-forget pattern
 - No notification injection
 - No `background_output` retrieval
@@ -310,7 +310,7 @@ When delegating to subagents:
 
 ## 12. Implementation Notes
 
-### Where to Add in Composer
+### Where to Add in Maestro
 
 | Feature | Location |
 |---------|----------|
@@ -335,11 +335,11 @@ ast-grep-core = "0.x"
 
 ## Conclusion
 
-Composer's architecture is more sophisticated than oh-my-opencode in several areas (Rust performance, Lua/WASM hooks, Swarm parallelism). The genuine gaps are:
+Maestro's architecture is more sophisticated than oh-my-opencode in several areas (Rust performance, Lua/WASM hooks, Swarm parallelism). The genuine gaps are:
 
 1. **Behavioral nudges** - Todo continuation, context monitoring, keyword detection
 2. **AST-aware tools** - ast-grep search/replace
 3. **LSP exposure** - Make existing LSP callable by agent
 4. **Conditional rules** - Glob-based rule injection
 
-These are all additive enhancements that fit cleanly into Composer's existing hook and tool systems.
+These are all additive enhancements that fit cleanly into Maestro's existing hook and tool systems.

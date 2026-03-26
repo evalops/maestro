@@ -18,10 +18,10 @@
  *
  * ## Environment Variables
  *
- * - `COMPOSER_SAFE_MODE`: Set to "1" to enable safe mode
- * - `COMPOSER_SAFE_REQUIRE_PLAN`: Set to "0" to disable plan requirement
- * - `COMPOSER_SAFE_VALIDATORS`: Comma-separated list of validator commands
- * - `COMPOSER_SAFE_LSP_SEVERITY`: Max LSP severity to allow (1=error, 2=warning)
+ * - `MAESTRO_SAFE_MODE`: Set to "1" to enable safe mode
+ * - `MAESTRO_SAFE_REQUIRE_PLAN`: Set to "0" to disable plan requirement
+ * - `MAESTRO_SAFE_VALIDATORS`: Comma-separated list of validator commands
+ * - `MAESTRO_SAFE_LSP_SEVERITY`: Max LSP severity to allow (1=error, 2=warning)
  *
  * ## Usage
  *
@@ -42,9 +42,9 @@ import type { LspDiagnostic } from "../lsp/index.js";
 const execAsync = promisify(exec);
 
 // Environment variable names for configuration
-const SAFE_MODE_ENV = "COMPOSER_SAFE_MODE";
-const VALIDATORS_ENV = "COMPOSER_SAFE_VALIDATORS";
-const REQUIRE_PLAN_ENV = "COMPOSER_SAFE_REQUIRE_PLAN";
+const SAFE_MODE_ENV = "MAESTRO_SAFE_MODE";
+const VALIDATORS_ENV = "MAESTRO_SAFE_VALIDATORS";
+const REQUIRE_PLAN_ENV = "MAESTRO_SAFE_REQUIRE_PLAN";
 
 /**
  * Internal state for safe mode configuration.
@@ -127,8 +127,8 @@ export function configureSafeMode(force = false): void {
 	state.enabled = process.env[SAFE_MODE_ENV] === "1";
 	state.requirePlan = false;
 	state.validators = [];
-	state.lspBlockingSeverity = process.env.COMPOSER_SAFE_LSP_SEVERITY
-		? Number(process.env.COMPOSER_SAFE_LSP_SEVERITY)
+	state.lspBlockingSeverity = process.env.MAESTRO_SAFE_LSP_SEVERITY
+		? Number(process.env.MAESTRO_SAFE_LSP_SEVERITY)
 		: 1;
 	state.planSatisfied = false;
 
@@ -218,7 +218,7 @@ function isExecError(error: unknown): error is ExecError {
  * 1. LSP diagnostics check - Fails if LSP reports errors above threshold
  * 2. Custom validators - Runs configured shell commands
  *
- * Validators receive the changed paths in COMPOSER_SAFE_CHANGED_PATHS env var
+ * Validators receive the changed paths in MAESTRO_SAFE_CHANGED_PATHS env var
  * (separated by ::) so they can focus on relevant files.
  *
  * @param paths - Array of file paths that were changed
@@ -264,7 +264,7 @@ export async function runValidatorsOnSuccess(
 	// Prepare environment with changed paths for validators
 	const env = {
 		...process.env,
-		COMPOSER_SAFE_CHANGED_PATHS: paths.join("::"),
+		MAESTRO_SAFE_CHANGED_PATHS: paths.join("::"),
 	};
 
 	// Run each validator command sequentially

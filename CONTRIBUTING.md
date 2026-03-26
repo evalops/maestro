@@ -1,6 +1,6 @@
 # Contributing Guide
 
-Thanks for helping build Composer! This document covers the workflow we
+Thanks for helping build Maestro! This document covers the workflow we
 expect before opening a PR.
 
 ## Prerequisites
@@ -12,19 +12,19 @@ expect before opening a PR.
 
 ## Development Workflow
 
-1. **Fork & clone** – `git clone https://github.com/evalops/composer.git`
+1. **Fork & clone** – `git clone https://github.com/evalops/maestro.git`
 2. **Install deps** – `bun install`
 3. **Create a branch** – `git checkout -b feature/my-change`
 4. **Implement + document** – update code + relevant docs (README, docs/*.md, AGENTS.md)
 5. **Run checks**:
    ```bash
    bunx biome check .                            # Biome + eval verifier
-   npx nx run composer:test --skip-nx-cache      # Builds TUI/Web then runs tests (CI-equivalent)
-   npx nx run composer:evals --skip-nx-cache     # Optional eval scenarios
+   npx nx run maestro:test --skip-nx-cache       # Builds TUI/Web then runs tests (CI-equivalent)
+   npx nx run maestro:evals --skip-nx-cache      # Optional eval scenarios
    bun run bun:test:fast                         # Fast local Vitest (no Nx build; VITEST_FAST=1)
    # If you touched specific packages, build them too:
    bun run --filter @evalops/tui build
-   bun run --filter @evalops/composer-web build
+   bun run --filter @evalops/maestro-web build
    ```
    (CI runs these, but failing locally wastes review cycles.)
    - Security: `bun run guardian` scans staged files with Semgrep + secrets; install a pre-commit hook with `npm run guardian:install-hook`.
@@ -68,7 +68,7 @@ bunx vitest --run -t "specific test name"
 
 - Use Vitest for unit tests
 - End-to-end behaviors should be covered by `evals/scenarios.json`
-- When changing CLI output, update the expected regexes and re-run `npx nx run composer:evals --skip-nx-cache`
+- When changing CLI output, update the expected regexes and re-run `npx nx run maestro:evals --skip-nx-cache`
 
 ## Releases
 

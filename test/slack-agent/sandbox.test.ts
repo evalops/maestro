@@ -250,6 +250,126 @@ describe("sandbox", () => {
 		});
 	});
 
+	describe("parseSandboxArg - daytona", () => {
+		const originalExit = process.exit;
+		const originalError = console.error;
+
+		beforeEach(() => {
+			process.exit = vi.fn((code?: number) => {
+				throw new Error(`process.exit(${code})`);
+			}) as never;
+			console.error = vi.fn();
+		});
+
+		afterEach(() => {
+			process.exit = originalExit;
+			console.error = originalError;
+		});
+
+		it("parses 'daytona' as daytona config", () => {
+			const config = parseSandboxArg("daytona");
+			expect(config).toEqual({ type: "daytona" });
+		});
+
+		it("parses 'daytona:snapshot' as daytona config with snapshot", () => {
+			const config = parseSandboxArg("daytona:my-snapshot");
+			expect(config).toEqual({ type: "daytona", snapshot: "my-snapshot" });
+		});
+
+		it("exits with error for daytona: without snapshot name", () => {
+			expect(() => parseSandboxArg("daytona:")).toThrow("process.exit(1)");
+			expect(console.error).toHaveBeenCalledWith(
+				expect.stringContaining("daytona:<snapshot> requires a snapshot name"),
+			);
+		});
+	});
+
+	describe("DaytonaExecutor", () => {
+		it("creates executor for daytona config", () => {
+			const config: SandboxConfig = { type: "daytona" };
+			const executor = createExecutor(config);
+
+			expect(executor).toBeDefined();
+			expect(executor.getWorkspacePath("/some/path")).toBe("/home/daytona");
+		});
+
+		it("returns undefined container name before init", () => {
+			const config: SandboxConfig = { type: "daytona" };
+			const executor = createExecutor(config);
+
+			expect(executor.getContainerName()).toBeUndefined();
+		});
+
+		it("exposes daytona-specific methods", () => {
+			const config: SandboxConfig = { type: "daytona" };
+			const executor = createExecutor(config);
+
+			expect(typeof executor.getPreviewUrl).toBe("function");
+			expect(typeof executor.uploadFile).toBe("function");
+			expect(typeof executor.downloadFile).toBe("function");
+			expect(typeof executor.gitClone).toBe("function");
+			expect(typeof executor.getSandboxId).toBe("function");
+		});
+
+		it("getSandboxId returns undefined before sandbox creation", () => {
+			const config: SandboxConfig = { type: "daytona" };
+			const executor = createExecutor(config);
+
+			expect(executor.getSandboxId?.()).toBeUndefined();
+		});
+
+		it("dispose is safe to call before sandbox creation", async () => {
+			const config: SandboxConfig = { type: "daytona" };
+			const executor = createExecutor(config);
+
+			await executor.dispose();
+		});
+
+		it("dispose is idempotent", async () => {
+			const config: SandboxConfig = { type: "daytona" };
+			const executor = createExecutor(config);
+
+			await executor.dispose();
+			await executor.dispose();
+		});
+
+		it("exec rejects after dispose", async () => {
+			const config: SandboxConfig = { type: "daytona" };
+			const executor = createExecutor(config);
+
+			await executor.dispose();
+			await expect(executor.exec("echo test")).rejects.toThrow(/disposed/);
+		});
+
+		it("creates executor with snapshot config", () => {
+			const config: SandboxConfig = {
+				type: "daytona",
+				snapshot: "node-20-dev",
+			};
+			const executor = createExecutor(config);
+
+			expect(executor).toBeDefined();
+			expect(executor.getWorkspacePath("/any")).toBe("/home/daytona");
+		});
+
+		it("creates executor with full config", () => {
+			const config: SandboxConfig = {
+				type: "daytona",
+				apiKey: "test-key",
+				apiUrl: "https://custom.api.com",
+				image: "debian:12",
+				language: "python",
+				cpu: 4,
+				memory: 8,
+				disk: 20,
+				autoStopInterval: 60,
+			};
+			const executor = createExecutor(config);
+
+			expect(executor).toBeDefined();
+		});
+	});
+
 	describe("DockerExecutor", () => {
 		it("maps any host path to /workspace", () => {
 			const config: SandboxConfig = { type: "docker", container: "test" };

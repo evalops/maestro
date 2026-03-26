@@ -140,7 +140,7 @@ export async function checkForUpdate(
 	options: CheckForUpdateOptions = {},
 ): Promise<UpdateCheckResult> {
 	const url =
-		options.url ?? process.env.COMPOSER_UPDATE_URL ?? DEFAULT_UPDATE_URL;
+		options.url ?? process.env.MAESTRO_UPDATE_URL ?? DEFAULT_UPDATE_URL;
 	const fetchImpl = options.fetch ?? fetch;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 

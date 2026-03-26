@@ -38,7 +38,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::safety::{ActionFirewall, FirewallVerdict};
+//! use maestro_tui::safety::{ActionFirewall, FirewallVerdict};
 //!
 //! let firewall = ActionFirewall::new("/workspace");
 //!

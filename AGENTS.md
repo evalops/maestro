@@ -1,9 +1,9 @@
 # Agent Configuration & Developer Protocol
 
-This document defines the operational parameters for **Composer**. It serves two purposes:
+This document defines the operational parameters for **Maestro**. It serves two purposes:
 
-1.  **Developer Guide:** Instructions for humans (and agents) modifying the Composer repository.
-2.  **System Architecture:** Documentation of Composer's internal behavior, prompts, and tool capabilities.
+1.  **Developer Guide:** Instructions for humans (and agents) modifying the Maestro repository.
+2.  **System Architecture:** Documentation of Maestro's internal behavior, prompts, and tool capabilities.
 
 -----
 
@@ -32,14 +32,14 @@ This document defines the operational parameters for **Composer**. It serves two
 
 #### Root Commands
 
-  * **Full Test Suite:** `npx nx run composer:test --skip-nx-cache` (Builds `tui` + `composer-web` automatically). Run after every code change.
+  * **Full Test Suite:** `npx nx run maestro:test --skip-nx-cache` (Builds `tui` + `maestro-web` automatically). Run after every code change.
   * **Linting:** `bun run bun:lint` (Biome + Eval Verifier). Run after every code change.
   * **Runtime Commands:** Avoid long-lived `dev`/watch servers (e.g., `npm run dev`) unless the user explicitly requests them.
 
 #### Package-Specific Commands
 
   * **TUI:** `bun run --filter @evalops/tui build` OR `npx nx run tui:build`
-  * **Web:** `bun run --filter @evalops/composer-web build` OR `npx nx run composer-web:build`
+  * **Web:** `bun run --filter @evalops/maestro-web build` OR `npx nx run maestro-web:build`
 
 #### Targeted Testing
 
@@ -62,13 +62,13 @@ If you make a mistake, fix it with a new commit. Do not rewrite history to cover
 **Pre-Commit Checklist:**
 
 1.  `bun run bun:lint`
-2.  `npx nx run composer:test --skip-nx-cache`
+2.  `npx nx run maestro:test --skip-nx-cache`
 3.  Build any touched packages (e.g., `npx nx run tui:build`)
 
 **Requirements:**
 
   * **Branching:** Branch off `main`. Never commit directly to `main`.
-  * **Title:** `[composer] <imperative short description>`
+  * **Title:** `[maestro] <imperative short description>`
   * **CI Skips:** If skipping a validator (e.g., `[skip ci]` or `[skip nix]`), you **must** explain why in the PR body.
 
 -----
@@ -82,13 +82,13 @@ If you make a mistake, fix it with a new commit. Do not rewrite history to cover
 3.  **Provider Agnostic:** Context loading is designed to be portable across Anthropic, OpenAI, Gemini, and Groq.
 4.  **Security Model:**
       * **Default:** "YOLO Mode" (Full Trust).
-      * **Safe Mode:** Activated via `COMPOSER_SAFE_MODE=1` (Requires permission for mutations).
+      * **Safe Mode:** Activated via `MAESTRO_SAFE_MODE=1` (Requires permission for mutations).
 
 ### Context Injection Strategy
 
-Composer constructs its system prompt by layering context files in the following priority (most specific wins):
+Maestro constructs its system prompt by layering context files in the following priority (most specific wins):
 
-1.  **Global Defaults:** `~/.composer/agent/AGENT.md`
+1.  **Global Defaults:** `~/.maestro/agent/AGENT.md`
 2.  **Parent Directories:** Walks up the tree, aggregating instructions.
 3.  **Project Root:** `AGENT.md` or `CLAUDE.md` in the current workspace.
 
@@ -183,7 +183,7 @@ The `background_tasks` tool manages long-running processes across agent interact
 1. **Always `list` before starting** to avoid duplicate processes
 2. **Use `shell: true` for pipes/redirects** (e.g., `npm run dev | tee output.log`)
 3. **Check logs regularly** for errors using the `logs` action
-4. **Stop tasks when done** - they'll auto-cleanup on Composer exit, but explicit stops are cleaner
+4. **Stop tasks when done** - they'll auto-cleanup on Maestro exit, but explicit stops are cleaner
 5. **Use restart policies for resilient services** - ideal for dev servers that should recover from crashes
 6. **Direct execution is safer** - omit `shell` parameter for simple commands without pipes
 
@@ -203,22 +203,22 @@ background_tasks action=stop taskId="<id>"
 ```
 
 **Log Storage:**
-- Logs persist to `~/.composer/logs/background-<taskId>.log`
+- Logs persist to `~/.maestro/logs/background-<taskId>.log`
 - Log files are truncated at 5MB to prevent disk space issues
 - Use `logs` action to tail recent output without reading the entire file
 
 ### 🔌 Model Context Protocol (MCP)
 
-Composer supports MCP servers for extending tool capabilities. MCP tools are dynamically loaded and exposed to the agent with the prefix `mcp_<server>_<tool>`.
+Maestro supports MCP servers for extending tool capabilities. MCP tools are dynamically loaded and exposed to the agent with the prefix `mcp_<server>_<tool>`.
 
 **Configuration Files:**
-- Global: `~/.composer/mcp.json`
-- Project: `.composer/mcp.json` (overrides global by server name)
+- Global: `~/.maestro/mcp.json`
+- Project: `.maestro/mcp.json` (overrides global by server name)
 
 **Config Formats:**
 
 ```json
-// Composer native format
+// Maestro native format
 {
   "servers": [
     {
@@ -284,29 +284,29 @@ The firewall intercepts every agent request to validate:
 
 1.  **Streaming Recovery:** Uses `partial-json` to parse interrupted streams.
 2.  **Exponential Backoff:** Applied automatically to network/API errors.
-3.  **Tool Failure Log:** All failures persist to `~/.composer/tool-failures.log`.
+3.  **Tool Failure Log:** All failures persist to `~/.maestro/tool-failures.log`.
 
 ### Session Persistence
 
-Sessions are stored as **JSONL** at `~/.composer/agent/sessions/`.
+Sessions are stored as **JSONL** at `~/.maestro/agent/sessions/`.
 
-  * **Resume:** `composer -c` (latest) or `composer -r` (interactive list).
-  * **Ephemeral:** `composer --no-session`.
+  * **Resume:** `maestro -c` (latest) or `maestro -r` (interactive list).
+  * **Ephemeral:** `maestro --no-session`.
   * **Debug:** Export sessions to HTML via `/export` for analysis.
 
 -----
 
-## 5\. Best Practices for Prompting Composer
+## 5\. Best Practices for Prompting Maestro
 
 1.  **Write Clear Specs:** Do not say "Make this better." Say "Refactor `src/auth` to use async/await and add Vitest coverage."
 2.  **Context is King:** If the project lacks an `AGENT.md`, you must provide stack details in the prompt.
 3.  **Review Loop:**
     ```bash
-    composer "Implement feature X"
+    maestro "Implement feature X"
     git diff      # Verify logic
     git add -p    # Stage granularly
     ```
-4.  **Tool Usage:** Do not ask Composer to manually read files one by one. It has `batch` capabilities for reading—encourage it to use them.
+4.  **Tool Usage:** Do not ask Maestro to manually read files one by one. It has `batch` capabilities for reading—encourage it to use them.
 5.  **Response Style:** Keep answers concise; avoid inline dynamic imports unless absolutely necessary.
 
 -----
@@ -387,6 +387,6 @@ handleMyCommand: (context) => this.doSomething(),
 
 ### Troubleshooting
 
-  * **Auth Error:** Check `echo $ANTHROPIC_API_KEY` and run `composer --diag`.
-  * **Corrupt Session:** Delete the specific JSONL file in `~/.composer/agent/sessions/`.
-  * **LSP Issues:** Restarting Composer re-initializes the LSP server automatically.
+  * **Auth Error:** Check `echo $ANTHROPIC_API_KEY` and run `maestro --diag`.
+  * **Corrupt Session:** Delete the specific JSONL file in `~/.maestro/agent/sessions/`.
+  * **LSP Issues:** Restarting Maestro re-initializes the LSP server automatically.

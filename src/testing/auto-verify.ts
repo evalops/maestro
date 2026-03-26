@@ -6,10 +6,10 @@
  * to affected files.
  *
  * Environment variables:
- * - COMPOSER_AUTO_TEST: Enable/disable auto-testing (default: true)
- * - COMPOSER_AUTO_TEST_DELAY: Debounce delay in ms (default: 2000)
- * - COMPOSER_AUTO_TEST_TIMEOUT: Test timeout in ms (default: 60000)
- * - COMPOSER_AUTO_TEST_COMMAND: Custom test command (auto-detected if not set)
+ * - MAESTRO_AUTO_TEST: Enable/disable auto-testing (default: true)
+ * - MAESTRO_AUTO_TEST_DELAY: Debounce delay in ms (default: 2000)
+ * - MAESTRO_AUTO_TEST_TIMEOUT: Test timeout in ms (default: 60000)
+ * - MAESTRO_AUTO_TEST_COMMAND: Custom test command (auto-detected if not set)
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -119,16 +119,16 @@ const DEFAULT_CONFIG: AutoVerifyConfig = {
  * Get auto-verify configuration from environment.
  */
 export function getAutoVerifyConfig(): AutoVerifyConfig {
-	const enabled = process.env.COMPOSER_AUTO_TEST !== "false";
+	const enabled = process.env.MAESTRO_AUTO_TEST !== "false";
 	const debounceDelay = Number.parseInt(
-		process.env.COMPOSER_AUTO_TEST_DELAY || "2000",
+		process.env.MAESTRO_AUTO_TEST_DELAY || "2000",
 		10,
 	);
 	const timeout = Number.parseInt(
-		process.env.COMPOSER_AUTO_TEST_TIMEOUT || "60000",
+		process.env.MAESTRO_AUTO_TEST_TIMEOUT || "60000",
 		10,
 	);
-	const customCommand = process.env.COMPOSER_AUTO_TEST_COMMAND;
+	const customCommand = process.env.MAESTRO_AUTO_TEST_COMMAND;
 
 	return {
 		...DEFAULT_CONFIG,

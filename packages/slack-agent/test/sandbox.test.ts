@@ -177,6 +177,71 @@ describe("HostExecutor", () => {
 	});
 });
 
+describe("parseSandboxArg - daytona", () => {
+	it("parses daytona mode", () => {
+		const result = parseSandboxArg("daytona");
+		expect(result).toEqual({ type: "daytona" });
+	});
+
+	it("parses daytona with snapshot", () => {
+		const result = parseSandboxArg("daytona:my-snapshot");
+		expect(result).toEqual({ type: "daytona", snapshot: "my-snapshot" });
+	});
+
+	it("parses daytona with multi-part snapshot name", () => {
+		const result = parseSandboxArg("daytona:node-20-dev");
+		expect(result).toEqual({ type: "daytona", snapshot: "node-20-dev" });
+	});
+});
+
+describe("createExecutor - daytona", () => {
+	it("creates daytona executor with default config", () => {
+		const executor = createExecutor({ type: "daytona" });
+		expect(executor.getWorkspacePath("/some/path")).toBe("/home/daytona");
+		// Before sandbox is created, container name is undefined
+		expect(executor.getContainerName()).toBeUndefined();
+	});
+
+	it("creates daytona executor with snapshot", () => {
+		const executor = createExecutor({
+			type: "daytona",
+			snapshot: "my-snapshot",
+		});
+		expect(executor.getWorkspacePath("/any")).toBe("/home/daytona");
+	});
+
+	it("exposes daytona-specific methods", () => {
+		const executor = createExecutor({ type: "daytona" });
+		expect(typeof executor.getPreviewUrl).toBe("function");
+		expect(typeof executor.uploadFile).toBe("function");
+		expect(typeof executor.downloadFile).toBe("function");
+		expect(typeof executor.gitClone).toBe("function");
+		expect(typeof executor.getSandboxId).toBe("function");
+	});
+
+	it("getSandboxId returns undefined before init", () => {
+		const executor = createExecutor({ type: "daytona" });
+		expect(executor.getSandboxId?.()).toBeUndefined();
+	});
+
+	it("dispose is safe to call before init", async () => {
+		const executor = createExecutor({ type: "daytona" });
+		await executor.dispose();
+	});
+
+	it("dispose is safe to call twice", async () => {
+		const executor = createExecutor({ type: "daytona" });
+		await executor.dispose();
+		await executor.dispose();
+	});
+
+	it("exec rejects after dispose", async () => {
+		const executor = createExecutor({ type: "daytona" });
+		await executor.dispose();
+		await expect(executor.exec("echo test")).rejects.toThrow(/disposed/);
+	});
+});
+
 // Note: DockerExecutor and AutoDockerExecutor tests would require Docker
 // and are better suited for integration tests
 describe("DockerExecutor (unit)", () => {

@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::history::PromptHistory;
+//! use maestro_tui::history::PromptHistory;
 //!
 //! let mut history = PromptHistory::load_or_create()?;
 //! history.add("git status");

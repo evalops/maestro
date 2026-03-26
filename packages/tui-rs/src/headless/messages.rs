@@ -118,7 +118,7 @@ use std::collections::HashMap;
 /// # Examples
 ///
 /// ```rust,ignore
-/// use composer_tui::headless::ToAgentMessage;
+/// use maestro_tui::headless::ToAgentMessage;
 ///
 /// // Send a simple prompt
 /// let msg = ToAgentMessage::Prompt {
@@ -205,7 +205,7 @@ pub struct ToolResult {
 /// The `#[serde(tag = "type")]` attribute enables type-directed deserialization:
 ///
 /// ```rust,ignore
-/// use composer_tui::headless::FromAgentMessage;
+/// use maestro_tui::headless::FromAgentMessage;
 ///
 /// let json = r#"{"type":"ready","model":"claude-3-opus","provider":"anthropic"}"#;
 /// let msg: FromAgentMessage = serde_json::from_str(json)?;
@@ -304,7 +304,7 @@ impl TokenUsage {
 /// # Usage Pattern
 ///
 /// ```rust,ignore
-/// use composer_tui::headless::{AgentState, FromAgentMessage};
+/// use maestro_tui::headless::{AgentState, FromAgentMessage};
 ///
 /// let mut state = AgentState::default();
 ///

@@ -28,7 +28,7 @@ describe("Guardian Config", () => {
 			`guardian-config-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
 		);
 		mkdirSync(testDir, { recursive: true });
-		mkdirSync(join(testDir, ".composer"), { recursive: true });
+		mkdirSync(join(testDir, ".maestro"), { recursive: true });
 
 		// Save original HOME
 		originalHome = process.env.HOME;
@@ -63,9 +63,9 @@ describe("Guardian Config", () => {
 	});
 
 	describe("getProjectConfigPath", () => {
-		it("should return path under .composer directory", () => {
+		it("should return path under .maestro directory", () => {
 			const path = getProjectConfigPath("/my/project");
-			expect(path).toContain(".composer");
+			expect(path).toContain(".maestro");
 			expect(path).toContain("guardian.json");
 			expect(path).toContain("/my/project");
 		});
@@ -79,7 +79,7 @@ describe("Guardian Config", () => {
 	describe("getUserConfigPath", () => {
 		it("should return path under home directory", () => {
 			const path = getUserConfigPath();
-			expect(path).toContain(".composer");
+			expect(path).toContain(".maestro");
 			expect(path).toContain("guardian.json");
 		});
 	});
@@ -98,7 +98,7 @@ describe("Guardian Config", () => {
 				tools: { semgrep: false },
 			};
 			writeFileSync(
-				join(testDir, ".composer", "guardian.json"),
+				join(testDir, ".maestro", "guardian.json"),
 				JSON.stringify(projectConfig),
 			);
 
@@ -115,7 +115,7 @@ describe("Guardian Config", () => {
 				customSecretPatterns: ["MY_SECRET_[A-Z]+", "CUSTOM_TOKEN_\\d+"],
 			};
 			writeFileSync(
-				join(testDir, ".composer", "guardian.json"),
+				join(testDir, ".maestro", "guardian.json"),
 				JSON.stringify(projectConfig),
 			);
 
@@ -130,7 +130,7 @@ describe("Guardian Config", () => {
 				excludePatterns: ["vendor/", "third_party/"],
 			};
 			writeFileSync(
-				join(testDir, ".composer", "guardian.json"),
+				join(testDir, ".maestro", "guardian.json"),
 				JSON.stringify(projectConfig),
 			);
 
@@ -146,7 +146,7 @@ describe("Guardian Config", () => {
 				toolTimeoutMs: 60_000,
 			};
 			writeFileSync(
-				join(testDir, ".composer", "guardian.json"),
+				join(testDir, ".maestro", "guardian.json"),
 				JSON.stringify(fileConfig),
 			);
 
@@ -163,7 +163,7 @@ describe("Guardian Config", () => {
 
 		it("should handle malformed config files gracefully", () => {
 			writeFileSync(
-				join(testDir, ".composer", "guardian.json"),
+				join(testDir, ".maestro", "guardian.json"),
 				"{ invalid json }",
 			);
 
@@ -237,7 +237,7 @@ describe("Guardian Config", () => {
 				customSecretPatterns: ["pattern1", "pattern2"],
 			};
 			writeFileSync(
-				join(testDir, ".composer", "guardian.json"),
+				join(testDir, ".maestro", "guardian.json"),
 				JSON.stringify(fileConfig),
 			);
 
@@ -252,7 +252,7 @@ describe("Guardian Config", () => {
 				excludePatterns: ["vendor/", "lib/"],
 			};
 			writeFileSync(
-				join(testDir, ".composer", "guardian.json"),
+				join(testDir, ".maestro", "guardian.json"),
 				JSON.stringify(fileConfig),
 			);
 
@@ -273,7 +273,7 @@ describe("Guardian Config", () => {
 				},
 			};
 			writeFileSync(
-				join(testDir, ".composer", "guardian.json"),
+				join(testDir, ".maestro", "guardian.json"),
 				JSON.stringify(projectConfig),
 			);
 
@@ -295,7 +295,7 @@ describe("Guardian Config", () => {
 				},
 			};
 			writeFileSync(
-				join(testDir, ".composer", "guardian.json"),
+				join(testDir, ".maestro", "guardian.json"),
 				JSON.stringify(projectConfig),
 			);
 

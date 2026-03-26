@@ -25,8 +25,8 @@
  *
  * ## Storage
  *
- * Tasks are persisted to `~/.composer/todos.json` (configurable via
- * COMPOSER_TODO_FILE environment variable). Each goal has its own
+ * Tasks are persisted to `~/.maestro/todos.json` (configurable via
+ * MAESTRO_TODO_FILE environment variable). Each goal has its own
  * checklist that can be updated incrementally.
  *
  * ## Usage Guidelines
@@ -268,7 +268,7 @@ type TodoStore = Record<
 
 export const defaultStorePath = PATHS.TODO_STORE;
 const getStorePath = () =>
-	resolveEnvPath(process.env.COMPOSER_TODO_FILE) ?? defaultStorePath;
+	resolveEnvPath(process.env.MAESTRO_TODO_FILE) ?? defaultStorePath;
 
 async function ensureParentDirectory(filePath: string) {
 	await mkdir(dirname(filePath), { recursive: true });

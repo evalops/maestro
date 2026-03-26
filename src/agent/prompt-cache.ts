@@ -6,9 +6,9 @@
  * and monitors cache hit/miss ratios for optimization.
  *
  * Environment variables:
- * - COMPOSER_PROMPT_CACHE_ENABLED: Enable/disable prompt caching (default: true)
- * - COMPOSER_PROMPT_CACHE_MIN_TOKENS: Minimum tokens for caching (default: 1024)
- * - COMPOSER_PROMPT_CACHE_TTL: TTL in seconds for cache entries (default: 300)
+ * - MAESTRO_PROMPT_CACHE_ENABLED: Enable/disable prompt caching (default: true)
+ * - MAESTRO_PROMPT_CACHE_MIN_TOKENS: Minimum tokens for caching (default: 1024)
+ * - MAESTRO_PROMPT_CACHE_TTL: TTL in seconds for cache entries (default: 300)
  */
 
 import { createHash } from "node:crypto";
@@ -92,13 +92,13 @@ const DEFAULT_CONFIG: PromptCacheConfig = {
  * Get prompt cache configuration from environment.
  */
 export function getPromptCacheConfig(): PromptCacheConfig {
-	const enabled = process.env.COMPOSER_PROMPT_CACHE_ENABLED !== "false";
+	const enabled = process.env.MAESTRO_PROMPT_CACHE_ENABLED !== "false";
 	const minTokens = Number.parseInt(
-		process.env.COMPOSER_PROMPT_CACHE_MIN_TOKENS || "1024",
+		process.env.MAESTRO_PROMPT_CACHE_MIN_TOKENS || "1024",
 		10,
 	);
 	const ttl = Number.parseInt(
-		process.env.COMPOSER_PROMPT_CACHE_TTL || "300",
+		process.env.MAESTRO_PROMPT_CACHE_TTL || "300",
 		10,
 	);
 

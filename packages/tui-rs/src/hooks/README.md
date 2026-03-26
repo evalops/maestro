@@ -1,4 +1,4 @@
-# Composer Hook System
+# Maestro Hook System
 
 The Rust TUI includes a comprehensive hook system for intercepting and modifying agent behavior.
 
@@ -35,8 +35,8 @@ The Rust TUI includes a comprehensive hook system for intercepting and modifying
 ## Configuration
 
 Hooks are configured via TOML files:
-- `~/.composer/hooks.toml` - Global hooks
-- `.composer/hooks.toml` - Project-local hooks
+- `~/.maestro/hooks.toml` - Global hooks
+- `.maestro/hooks.toml` - Project-local hooks
 
 ### Example Configuration
 
@@ -44,7 +44,7 @@ Hooks are configured via TOML files:
 [settings]
 enabled = true
 timeout_ms = 30000
-log_file = "~/.composer/hooks.log"
+log_file = "~/.maestro/hooks.log"
 
 # Block dangerous commands
 [[hooks]]
@@ -63,12 +63,12 @@ return { continue = true }
 # Load from file
 [[hooks]]
 event = "PreToolUse"
-lua_file = "~/.composer/hooks/safety.lua"
+lua_file = "~/.maestro/hooks/safety.lua"
 
 # WASM plugin
 [[hooks]]
 event = "PreToolUse"
-wasm = "~/.composer/plugins/safety.wasm"
+wasm = "~/.maestro/plugins/safety.wasm"
 
 # Block long messages
 [[hooks]]
@@ -96,7 +96,7 @@ return { continue = true }
 Implement traits directly:
 
 ```rust
-use composer_tui::hooks::{
+use maestro_tui::hooks::{
     PreToolUseHook, PreMessageHook, OnErrorHook,
     HookResult, PreToolUseInput, PreMessageInput, OnErrorInput,
 };
@@ -251,7 +251,7 @@ Hooks can return:
 The main entry point for hook execution:
 
 ```rust
-use composer_tui::hooks::IntegratedHookSystem;
+use maestro_tui::hooks::IntegratedHookSystem;
 
 // Create from working directory
 let mut hooks = IntegratedHookSystem::load_from_config("/path/to/cwd");
@@ -304,11 +304,11 @@ Configure terminal and external program notifications:
 
 ```bash
 # Environment variables
-export COMPOSER_NOTIFY_PROGRAM=/path/to/script
-export COMPOSER_NOTIFY_EVENTS=turn-complete,session-end,error
-export COMPOSER_NOTIFY_TERMINAL=true  # Enable OSC 9 notifications
+export MAESTRO_NOTIFY_PROGRAM=/path/to/script
+export MAESTRO_NOTIFY_EVENTS=turn-complete,session-end,error
+export MAESTRO_NOTIFY_TERMINAL=true  # Enable OSC 9 notifications
 
-# Or via ~/.composer/hooks.json
+# Or via ~/.maestro/hooks.json
 {
   "notify": {
     "program": "/path/to/script",
@@ -340,7 +340,7 @@ println!("Reloaded {} Lua, {} WASM", result.lua_scripts, result.wasm_plugins);
 
 Enable file watching with:
 ```rust
-use composer_tui::hooks::HotReloader;
+use maestro_tui::hooks::HotReloader;
 
 let mut reloader = HotReloader::for_cwd("/path/to/cwd")?;
 // In event loop:
@@ -404,7 +404,7 @@ Log all file modifications for compliance:
 ```lua
 -- Log every file write
 if tool_name == "Write" or tool_name == "Edit" then
-    local log = io.open(os.getenv("HOME") .. "/.composer/audit.log", "a")
+    local log = io.open(os.getenv("HOME") .. "/.maestro/audit.log", "a")
     if log then
         log:write(os.date("%Y-%m-%d %H:%M:%S") .. " " .. tool_input.file_path .. "\n")
         log:close()
@@ -453,7 +453,7 @@ Get notified when long-running tasks complete:
 [[hooks]]
 event = "SessionEnd"
 lua = """
-os.execute('osascript -e \\'display notification \"Session complete\" with title \"Composer\"\\'')
+os.execute('osascript -e \\'display notification \"Session complete\" with title \"Maestro\"\\'')
 return { continue = true }
 """
 ```
@@ -461,8 +461,8 @@ return { continue = true }
 Or use the built-in notification system:
 
 ```bash
-export COMPOSER_NOTIFY_TERMINAL=true
-export COMPOSER_NOTIFY_EVENTS=turn-complete,session-end,error
+export MAESTRO_NOTIFY_TERMINAL=true
+export MAESTRO_NOTIFY_EVENTS=turn-complete,session-end,error
 ```
 
 ### Auto-Approval Patterns

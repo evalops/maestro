@@ -10,13 +10,13 @@ describe("Provider Network Config", () => {
 
 	beforeEach(() => {
 		// Reset environment
-		Reflect.deleteProperty(process.env, "COMPOSER_PROVIDER_TIMEOUT_MS");
-		Reflect.deleteProperty(process.env, "COMPOSER_PROVIDER_MAX_RETRIES");
-		Reflect.deleteProperty(process.env, "COMPOSER_STREAM_MAX_RETRIES");
-		Reflect.deleteProperty(process.env, "COMPOSER_STREAM_IDLE_TIMEOUT_MS");
+		Reflect.deleteProperty(process.env, "MAESTRO_PROVIDER_TIMEOUT_MS");
+		Reflect.deleteProperty(process.env, "MAESTRO_PROVIDER_MAX_RETRIES");
+		Reflect.deleteProperty(process.env, "MAESTRO_STREAM_MAX_RETRIES");
+		Reflect.deleteProperty(process.env, "MAESTRO_STREAM_IDLE_TIMEOUT_MS");
 
 		// Create test directory and set HOME
-		mkdirSync(join(testDir, ".composer"), { recursive: true });
+		mkdirSync(join(testDir, ".maestro"), { recursive: true });
 		process.env.HOME = testDir;
 
 		// Clear module cache to reset config
@@ -52,8 +52,8 @@ describe("Provider Network Config", () => {
 		});
 
 		it("should apply global environment overrides", async () => {
-			process.env.COMPOSER_PROVIDER_TIMEOUT_MS = "60000";
-			process.env.COMPOSER_PROVIDER_MAX_RETRIES = "5";
+			process.env.MAESTRO_PROVIDER_TIMEOUT_MS = "60000";
+			process.env.MAESTRO_PROVIDER_MAX_RETRIES = "5";
 
 			const { getProviderNetworkConfig, clearNetworkConfigCache } =
 				await import("../../src/providers/network-config.js");
@@ -77,7 +77,7 @@ describe("Provider Network Config", () => {
 			};
 
 			writeFileSync(
-				join(testDir, ".composer", "providers.json"),
+				join(testDir, ".maestro", "providers.json"),
 				JSON.stringify(providersConfig),
 			);
 
@@ -113,7 +113,7 @@ describe("Provider Network Config", () => {
 			};
 
 			writeFileSync(
-				join(testDir, ".composer", "providers.json"),
+				join(testDir, ".maestro", "providers.json"),
 				JSON.stringify(providersConfig),
 			);
 

@@ -76,8 +76,8 @@ use crate::protocol::HistoryLine;
 ///
 /// ```no_run
 /// use std::fs::File;
-/// use composer_tui::terminal::push_history_lines;
-/// use composer_tui::protocol::HistoryLine;
+/// use maestro_tui::terminal::push_history_lines;
+/// use maestro_tui::protocol::HistoryLine;
 ///
 /// # fn example(mut tty: File) -> std::io::Result<()> {
 /// let lines = vec![/* history lines */];

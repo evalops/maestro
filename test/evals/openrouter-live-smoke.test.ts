@@ -7,8 +7,8 @@ import {
 
 describe("openrouter live smoke helpers", () => {
 	it("normalizes surrounding whitespace before exact sentinel comparison", () => {
-		expect(normalizeAssistantText("\nCOMPOSER_OK\r\n")).toBe("COMPOSER_OK");
-		expect(matchesExactSentinelResponse("\nCOMPOSER_OK\n", "COMPOSER_OK")).toBe(
+		expect(normalizeAssistantText("\nMAESTRO_OK\r\n")).toBe("MAESTRO_OK");
+		expect(matchesExactSentinelResponse("\nMAESTRO_OK\n", "MAESTRO_OK")).toBe(
 			true,
 		);
 	});
@@ -16,14 +16,14 @@ describe("openrouter live smoke helpers", () => {
 	it("fails when the sentinel is only a substring of the response", () => {
 		expect(
 			matchesExactSentinelResponse(
-				"Here is your answer: COMPOSER_OK",
-				"COMPOSER_OK",
+				"Here is your answer: MAESTRO_OK",
+				"MAESTRO_OK",
 			),
 		).toBe(false);
 		expect(
 			matchesExactSentinelResponse(
-				"COMPOSER_OK and one extra sentence.",
-				"COMPOSER_OK",
+				"MAESTRO_OK and one extra sentence.",
+				"MAESTRO_OK",
 			),
 		).toBe(false);
 	});
@@ -41,12 +41,12 @@ describe("openrouter live smoke helpers", () => {
 			{
 				role: "assistant",
 				content: [
-					{ type: "text", text: "COMPOSER_OK" },
+					{ type: "text", text: "MAESTRO_OK" },
 					{ type: "text", text: "SECOND_LINE" },
 				],
 			},
 		]);
 
-		expect(assistantText).toBe("COMPOSER_OK\nSECOND_LINE");
+		expect(assistantText).toBe("MAESTRO_OK\nSECOND_LINE");
 	});
 });

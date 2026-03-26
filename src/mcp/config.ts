@@ -7,11 +7,11 @@
  *
  * ## Configuration Sources (precedence order)
  *
- * 1. **Enterprise**: `~/.composer/enterprise/mcp.json` (highest)
+ * 1. **Enterprise**: `~/.maestro/enterprise/mcp.json` (highest)
  * 2. **Plugin**: Programmatically provided servers
- * 3. **Project**: `.composer/mcp.json` in project root
- * 4. **Local**: `.composer/mcp.local.json` (git-ignored)
- * 5. **User**: `~/.composer/mcp.json` (lowest)
+ * 3. **Project**: `.maestro/mcp.json` in project root
+ * 4. **Local**: `.maestro/mcp.local.json` (git-ignored)
+ * 5. **User**: `~/.maestro/mcp.json` (lowest)
  *
  * ## Configuration Format
  *
@@ -69,16 +69,16 @@ import type { McpConfig, McpScope, McpServerConfig } from "./types.js";
 
 const logger = createLogger("mcp:config");
 
-const PROJECT_CONFIG_NAME = ".composer/mcp.json";
-const LOCAL_CONFIG_NAME = ".composer/mcp.local.json";
+const PROJECT_CONFIG_NAME = ".maestro/mcp.json";
+const LOCAL_CONFIG_NAME = ".maestro/mcp.local.json";
 
 const getEnterpriseConfigPath = (): string =>
-	resolveEnvPath(process.env.COMPOSER_ENTERPRISE_MCP_PATH) ??
-	join(PATHS.COMPOSER_HOME, "enterprise", "mcp.json");
+	resolveEnvPath(process.env.MAESTRO_ENTERPRISE_MCP_PATH) ??
+	join(PATHS.MAESTRO_HOME, "enterprise", "mcp.json");
 
 const getUserConfigPath = (): string =>
-	resolveEnvPath(process.env.COMPOSER_USER_MCP_PATH) ??
-	join(PATHS.COMPOSER_HOME, "mcp.json");
+	resolveEnvPath(process.env.MAESTRO_USER_MCP_PATH) ??
+	join(PATHS.MAESTRO_HOME, "mcp.json");
 
 type ParsedConfig = { servers: McpServerConfig[] };
 

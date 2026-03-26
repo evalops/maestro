@@ -580,7 +580,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         self.current_git_branch = git_branch.clone();
 
         // Determine model from environment or default (prefer Claude)
-        let model = std::env::var("COMPOSER_MODEL").unwrap_or_else(|_| {
+        let model = std::env::var("MAESTRO_MODEL").unwrap_or_else(|_| {
             if std::env::var("ANTHROPIC_API_KEY").is_ok() {
                 "claude-sonnet-4-5-20250514".to_string()
             } else if std::env::var("OPENAI_API_KEY").is_ok() {
@@ -2365,11 +2365,11 @@ Add the required fields and retry.",
         use crate::commands::SessionAction;
         match action {
             SessionAction::Cleanup => {
-                let max_sessions = std::env::var("COMPOSER_MAX_SESSIONS")
+                let max_sessions = std::env::var("MAESTRO_MAX_SESSIONS")
                     .ok()
                     .and_then(|v| v.parse::<usize>().ok())
                     .unwrap_or(100);
-                let max_age_days = std::env::var("COMPOSER_MAX_SESSION_AGE_DAYS")
+                let max_age_days = std::env::var("MAESTRO_MAX_SESSION_AGE_DAYS")
                     .ok()
                     .and_then(|v| v.parse::<u64>().ok())
                     .unwrap_or(90);

@@ -19,9 +19,9 @@ Hooks provide:
 │                                                                      │
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │                     Hook Configuration                       │    │
-│  │  - Environment variables: COMPOSER_HOOKS_*                  │    │
-│  │  - User config: ~/.composer/hooks.json                      │    │
-│  │  - Project config: .composer/hooks.json                     │    │
+│  │  - Environment variables: MAESTRO_HOOKS_*                  │    │
+│  │  - User config: ~/.maestro/hooks.json                      │    │
+│  │  - Project config: .maestro/hooks.json                     │    │
 │  │  - Programmatic: registerHook()                             │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 │                              │                                       │
@@ -65,15 +65,15 @@ Hooks provide:
 
 ```bash
 # Command-based hooks
-export COMPOSER_HOOKS_PRE_TOOL_USE="./hooks/pre-tool.sh"
-export COMPOSER_HOOKS_POST_TOOL_USE="./hooks/post-tool.sh"
-export COMPOSER_HOOKS_USER_PROMPT_SUBMIT="./hooks/validate-prompt.sh"
+export MAESTRO_HOOKS_PRE_TOOL_USE="./hooks/pre-tool.sh"
+export MAESTRO_HOOKS_POST_TOOL_USE="./hooks/post-tool.sh"
+export MAESTRO_HOOKS_USER_PROMPT_SUBMIT="./hooks/validate-prompt.sh"
 ```
 
 ### Configuration File
 
 ```json
-// ~/.composer/hooks.json
+// ~/.maestro/hooks.json
 {
   "hooks": [
     {
@@ -601,7 +601,7 @@ INPUT=$(cat)
 
 # Log to file
 echo "$(date): $(echo "$INPUT" | jq -c '{tool: .toolName, duration: .durationMs}')" \
-  >> ~/.composer/tool-log.jsonl
+  >> ~/.maestro/tool-log.jsonl
 
 # Continue without modification
 echo '{"continue": true}'

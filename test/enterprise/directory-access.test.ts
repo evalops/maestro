@@ -22,7 +22,7 @@ describe("Directory Access Control", () => {
 
 		it("includes composer config directory", () => {
 			const dirs = getDefaultSafeDirectories();
-			expect(dirs.some((d) => d.includes(".composer"))).toBe(true);
+			expect(dirs.some((d) => d.includes(".maestro"))).toBe(true);
 		});
 	});
 

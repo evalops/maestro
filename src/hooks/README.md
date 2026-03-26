@@ -4,10 +4,10 @@ The TypeScript hook system allows you to intercept and modify agent behavior usi
 
 ## Quick Start
 
-Create a hook file in `~/.composer/hooks/` or `.composer/hooks/`:
+Create a hook file in `~/.maestro/hooks/` or `.maestro/hooks/`:
 
 ```typescript
-// ~/.composer/hooks/my-hook.ts
+// ~/.maestro/hooks/my-hook.ts
 import type { HookAPI } from 'composer';
 
 export default (pi: HookAPI) => {
@@ -156,7 +156,7 @@ import { homedir } from 'os';
 
 pi.on("PostToolUse", (input) => {
   const log = `${new Date().toISOString()} ${input.tool_name} ${JSON.stringify(input.tool_input)}\n`;
-  appendFileSync(`${homedir()}/.composer/audit.log`, log);
+  appendFileSync(`${homedir()}/.maestro/audit.log`, log);
   return { continue: true };
 });
 ```
@@ -184,7 +184,7 @@ import { exec } from 'child_process';
 
 pi.on("SessionEnd", (input) => {
   if (process.platform === 'darwin') {
-    exec(`osascript -e 'display notification "Session complete" with title "Composer"'`);
+    exec(`osascript -e 'display notification "Session complete" with title "Maestro"'`);
   }
 });
 ```
@@ -301,28 +301,28 @@ pi.on("PermissionRequest", async (input, ui) => {
 ## File Locations
 
 Hooks are loaded from:
-- `~/.composer/hooks/*.ts` - Global hooks
-- `.composer/hooks/*.ts` - Project-local hooks
+- `~/.maestro/hooks/*.ts` - Global hooks
+- `.maestro/hooks/*.ts` - Project-local hooks
 
 ## Environment Variables
 
 ```bash
 # Hook configuration
-COMPOSER_HOOKS_PRE_TOOL_USE="path/to/script.sh"
-COMPOSER_HOOKS_POST_TOOL_USE="path/to/script.sh"
+MAESTRO_HOOKS_PRE_TOOL_USE="path/to/script.sh"
+MAESTRO_HOOKS_POST_TOOL_USE="path/to/script.sh"
 
 # Notification settings
-COMPOSER_NOTIFY_TERMINAL=true
-COMPOSER_NOTIFY_EVENTS=turn-complete,session-end,error
-COMPOSER_NOTIFY_PROGRAM=/path/to/notifier
+MAESTRO_NOTIFY_TERMINAL=true
+MAESTRO_NOTIFY_EVENTS=turn-complete,session-end,error
+MAESTRO_NOTIFY_PROGRAM=/path/to/notifier
 ```
 
 ## hooks.json configuration (presets via `extends`)
 
 You can also configure command and prompt hooks via JSON:
 
-- User: `~/.composer/hooks.json`
-- Project: `.composer/hooks.json`
+- User: `~/.maestro/hooks.json`
+- Project: `.maestro/hooks.json`
 
 ```json
 {
@@ -348,6 +348,6 @@ You can also configure command and prompt hooks via JSON:
 ```
 
 Notes:
-- `extends` supports local files (relative to the config file) and npm packages. For packages, Composer looks for `hooks.json` at the package root.
+- `extends` supports local files (relative to the config file) and npm packages. For packages, Maestro looks for `hooks.json` at the package root.
 - Project config overrides user config, and user config overrides env vars (when matcher keys collide).
 - For command hooks, bare relative commands like `./scripts/check.sh` (no spaces) are resolved relative to the config file directory.

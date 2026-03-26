@@ -33,7 +33,7 @@
 //! # Example
 //!
 //! ```
-//! use composer_tui::syntax::highlight_code;
+//! use maestro_tui::syntax::highlight_code;
 //!
 //! let code = "fn main() {\n    println!(\"Hello\");\n}";
 //! let lines = highlight_code(code, Some("rust"));
@@ -164,7 +164,7 @@ pub fn highlight_code(code: &str, language: Option<&str>) -> Vec<Line<'static>> 
 /// # Example
 ///
 /// ```
-/// use composer_tui::syntax::has_syntax;
+/// use maestro_tui::syntax::has_syntax;
 ///
 /// assert!(has_syntax("rust"));
 /// assert!(has_syntax("python"));

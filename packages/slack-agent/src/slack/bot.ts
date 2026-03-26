@@ -35,6 +35,7 @@ export interface SlackMessage {
 	rawText: string;
 	user: string;
 	userName?: string;
+	teamId: string;
 	channel: string;
 	ts: string;
 	threadTs?: string; // Parent thread timestamp (if this is a thread reply)
@@ -61,6 +62,7 @@ interface PreparedMessage {
 
 export interface SlackContext {
 	message: SlackMessage;
+	teamId: string;
 	channelName?: string;
 	store: ChannelStore;
 	channels: ChannelInfo[];
@@ -74,7 +76,7 @@ export interface SlackContext {
 	/** Scheduled task ID if this run is task-backed. */
 	taskId?: string;
 	/** Origin of the run (message, dm, slash, scheduled). */
-	source?: "channel" | "dm" | "slash" | "scheduled";
+	source?: "channel" | "dm" | "slash" | "scheduled" | "trigger";
 	respond(text: string, log?: boolean): Promise<void>;
 	replaceMessage(text: string): Promise<void>;
 	respondInThread(text: string): Promise<void>;
@@ -88,6 +90,7 @@ export interface SlackContext {
 export interface ReactionContext {
 	reaction: string;
 	user: string;
+	teamId: string;
 	channel: string;
 	messageTs: string;
 	/** Add a reaction to a message */
@@ -109,8 +112,25 @@ export interface SlackAgentHandler {
 
 export interface SlackBotConfig {
 	appToken: string;
-	botToken: string;
+	/** Single-workspace bot token. For multi-workspace, use resolveWorkspace instead. */
+	botToken?: string;
 	workingDir: string;
+	/** Default team ID to use when events do not include a team_id (rare). */
+	defaultTeamId?: string;
+	/**
+	 * Multi-workspace resolver. Given a Slack team ID, return the bot token + per-workspace
+	 * workingDir (used for persistence: logs, permissions, connectors, dashboards, etc).
+	 */
+	resolveWorkspace?: (
+		teamId: string,
+	) => { botToken: string; workingDir: string } | null;
+	/**
+	 * If set, only process events for this Slack workspace/team ID.
+	 *
+	 * Note: Socket Mode may distribute events across multiple active connections. This
+	 * option is best used for debugging, not sharding.
+	 */
+	allowedTeamId?: string;
 	apiQueue?: ApiQueueOptions;
 	idempotency?: IdempotencyConfig;
 	metrics?: SlackMetrics;
@@ -144,26 +164,46 @@ export interface UserInfo {
 	displayName: string;
 }
 
-export class SlackBot {
-	private socketClient: SocketModeClient;
-	private webClient: WebClient;
-	private handler: SlackAgentHandler;
-	private botUserId: string | null = null;
-	public readonly store: ChannelStore;
-	public readonly metrics: SlackMetrics;
-	private readonly threadMemory: ThreadMemoryManager;
-	// Caches with 1-hour TTL to prevent unbounded memory growth
-	private userCache: PersistentTtlCache<
+type WorkspaceState = {
+	teamId: string;
+	botToken: string;
+	workingDir: string;
+	webClient: WebClient;
+	store: ChannelStore;
+	threadMemory: ThreadMemoryManager;
+	userCache: PersistentTtlCache<
 		string,
 		{ userName: string; displayName: string }
 	>;
-	private channelCache: PersistentTtlCache<string, string>;
+	channelCache: PersistentTtlCache<string, string>;
+	apiQueue: ApiQueue;
+	idempotency: IdempotencyManager;
+	botUserId: string | null;
+	/** Ensures we only perform heavyweight warmup once per workspace. */
+	warmupPromise: Promise<void> | null;
+};
+
+export class SlackBot {
+	private socketClient: SocketModeClient;
+	private handler: SlackAgentHandler;
+
+	/**
+	 * Legacy single-workspace store accessor. For multi-workspace, prefer ctx.store.
+	 * This is kept to avoid breaking single-workspace usage patterns.
+	 */
+	public readonly store: ChannelStore;
+	public readonly metrics: SlackMetrics;
+
+	private readonly workspaces = new Map<string, WorkspaceState>();
+	private readonly workspaceResolver: (
+		teamId: string,
+	) => { botToken: string; workingDir: string } | null;
+	private readonly defaultTeamId: string;
+
 	private recentEvents: Map<string, number> = new Map();
 	private readonly eventDedupeMs = 5 * 60 * 1000;
 	private lastEventCleanupMs = 0;
 	private readonly eventCleanupIntervalMs = 60 * 1000;
-	private readonly apiQueue: ApiQueue;
-	private readonly idempotency: IdempotencyManager;
 	private readonly validator: ReturnType<typeof createValidator>;
 	private readonly historyLimit: number;
 	private readonly historyMaxPages: number;
@@ -171,31 +211,16 @@ export class SlackBot {
 	private readonly backfillOnStartup: boolean;
 	private readonly backfillInclude: Set<string> | null;
 	private readonly backfillExclude: Set<string>;
+	private readonly allowedTeamId: string | null;
+	private readonly cacheDirBase: string | undefined;
+	private readonly apiQueueOptions: ApiQueueOptions | undefined;
+	private readonly idempotencyOptions: IdempotencyConfig | undefined;
+	private readonly threadMemoryOptions: ThreadMemoryConfig | undefined;
+	private readonly multiWorkspace: boolean;
 
 	constructor(handler: SlackAgentHandler, config: SlackBotConfig) {
 		this.handler = handler;
 		this.socketClient = new SocketModeClient({ appToken: config.appToken });
-		this.webClient = new WebClient(config.botToken);
-		this.store = new ChannelStore({
-			workingDir: config.workingDir,
-			botToken: config.botToken,
-		});
-
-		const cacheDir = config.cacheDir ?? join(config.workingDir, "cache");
-		this.userCache = new PersistentTtlCache({
-			persistPath: join(cacheDir, "users.json"),
-			defaultTtlMs: 60 * 60 * 1000, // 1 hour
-			persistIntervalMs: 30 * 1000,
-		});
-		this.channelCache = new PersistentTtlCache({
-			persistPath: join(cacheDir, "channels.json"),
-			defaultTtlMs: 60 * 60 * 1000, // 1 hour
-			persistIntervalMs: 30 * 1000,
-		});
-		this.threadMemory = new ThreadMemoryManager(
-			config.workingDir,
-			config.threadMemory,
-		);
 
 		this.metrics = config.metrics ?? createSlackMetrics();
 		this.validator = createValidator(config.validation);
@@ -208,39 +233,139 @@ export class SlackBot {
 		this.backfillExclude = this.normalizeBackfillSelectors(
 			config.backfillExclude,
 		);
-		this.apiQueue = createApiQueue({
-			...config.apiQueue,
-			onRateLimit: (method, retryAfterSeconds) => {
-				this.metrics.trackRateLimit(method);
-				config.apiQueue?.onRateLimit?.(method, retryAfterSeconds);
-			},
-			onRetry: (method, attempt, delayMs, error) => {
-				const errorType = error instanceof Error ? error.name : "unknown";
-				this.metrics.trackError(method, errorType);
-				config.apiQueue?.onRetry?.(method, attempt, delayMs, error);
-			},
+		this.allowedTeamId = config.allowedTeamId ?? null;
+
+		this.defaultTeamId =
+			config.defaultTeamId ?? config.allowedTeamId ?? "default";
+		this.cacheDirBase = config.cacheDir;
+		this.apiQueueOptions = config.apiQueue;
+		this.idempotencyOptions = config.idempotency;
+		this.threadMemoryOptions = config.threadMemory;
+
+		this.multiWorkspace = !!config.resolveWorkspace;
+
+		if (config.resolveWorkspace) {
+			this.workspaceResolver = config.resolveWorkspace;
+		} else if (config.botToken) {
+			this.workspaceResolver = () => ({
+				botToken: config.botToken as string,
+				workingDir: config.workingDir,
+			});
+		} else {
+			throw new Error(
+				"SlackBot requires botToken (single workspace) or resolveWorkspace (multi-workspace)",
+			);
+		}
+
+		// Legacy default store (single-workspace usage). In multi-workspace mode this may be unused.
+		this.store = new ChannelStore({
+			workingDir: config.workingDir,
+			botToken: config.botToken ?? "",
 		});
-		this.idempotency = new IdempotencyManager(
-			config.workingDir,
-			config.idempotency,
-		);
 
 		this.setupEventHandlers();
 	}
 
-	private async callSlack<T>(fn: () => Promise<T>, method: string): Promise<T> {
-		return this.apiQueue.enqueue(method, () =>
+	private async callSlack<T>(
+		ws: WorkspaceState,
+		fn: () => Promise<T>,
+		method: string,
+	): Promise<T> {
+		return ws.apiQueue.enqueue(method, () =>
 			this.metrics.trackApiCall(method, fn),
 		);
 	}
 
-	private async fetchChannels(): Promise<void> {
+	private async getWorkspaceState(
+		teamId: string | undefined,
+	): Promise<WorkspaceState | null> {
+		const resolvedTeamId = teamId || this.defaultTeamId;
+		if (!resolvedTeamId) return null;
+
+		const cached = this.workspaces.get(resolvedTeamId);
+		if (cached) return cached;
+
+		const resolved = this.workspaceResolver(resolvedTeamId);
+		if (!resolved) return null;
+
+		const cacheDir = this.cacheDirBase
+			? join(this.cacheDirBase, resolvedTeamId)
+			: join(resolved.workingDir, "cache");
+
+		const apiQueue = createApiQueue({
+			...this.apiQueueOptions,
+			onRateLimit: (method, retryAfterSeconds) => {
+				this.metrics.trackRateLimit(method);
+				this.apiQueueOptions?.onRateLimit?.(method, retryAfterSeconds);
+			},
+			onRetry: (method, attempt, delayMs, error) => {
+				const errorType = error instanceof Error ? error.name : "unknown";
+				this.metrics.trackError(method, errorType);
+				this.apiQueueOptions?.onRetry?.(method, attempt, delayMs, error);
+			},
+		});
+
+		const ws: WorkspaceState = {
+			teamId: resolvedTeamId,
+			botToken: resolved.botToken,
+			workingDir: resolved.workingDir,
+			webClient: new WebClient(resolved.botToken),
+			store: new ChannelStore({
+				workingDir: resolved.workingDir,
+				botToken: resolved.botToken,
+			}),
+			threadMemory: new ThreadMemoryManager(
+				resolved.workingDir,
+				this.threadMemoryOptions,
+			),
+			userCache: new PersistentTtlCache({
+				persistPath: join(cacheDir, "users.json"),
+				defaultTtlMs: 60 * 60 * 1000, // 1 hour
+				persistIntervalMs: 30 * 1000,
+			}),
+			channelCache: new PersistentTtlCache({
+				persistPath: join(cacheDir, "channels.json"),
+				defaultTtlMs: 60 * 60 * 1000, // 1 hour
+				persistIntervalMs: 30 * 1000,
+			}),
+			apiQueue,
+			idempotency: new IdempotencyManager(
+				resolved.workingDir,
+				this.idempotencyOptions,
+			),
+			botUserId: null,
+			warmupPromise: null,
+		};
+
+		this.workspaces.set(resolvedTeamId, ws);
+		return ws;
+	}
+
+	private async ensureBotUserId(ws: WorkspaceState): Promise<void> {
+		if (ws.botUserId) return;
+		try {
+			const auth = await this.callSlack(
+				ws,
+				() => ws.webClient.auth.test(),
+				"auth.test",
+			);
+			ws.botUserId = (auth as { user_id?: string }).user_id ?? null;
+		} catch (error) {
+			logger.logWarning(
+				`Failed to auth.test for workspace ${ws.teamId}`,
+				String(error),
+			);
+		}
+	}
+
+	private async fetchChannels(ws: WorkspaceState): Promise<void> {
 		try {
 			let cursor: string | undefined;
 			do {
 				const result = await this.callSlack(
+					ws,
 					() =>
-						this.webClient.conversations.list({
+						ws.webClient.conversations.list({
 							types: "public_channel,private_channel",
 							exclude_archived: true,
 							limit: 200,
@@ -255,7 +380,7 @@ export class SlackBot {
 				if (channels) {
 					for (const channel of channels) {
 						if (channel.id && channel.name && channel.is_member) {
-							this.channelCache.set(channel.id, channel.name);
+							ws.channelCache.set(channel.id, channel.name);
 						}
 					}
 				}
@@ -267,13 +392,14 @@ export class SlackBot {
 		}
 	}
 
-	private async fetchUsers(): Promise<void> {
+	private async fetchUsers(ws: WorkspaceState): Promise<void> {
 		try {
 			let cursor: string | undefined;
 			do {
 				const result = await this.callSlack(
+					ws,
 					() =>
-						this.webClient.users.list({
+						ws.webClient.users.list({
 							limit: 200,
 							cursor,
 						}),
@@ -291,7 +417,7 @@ export class SlackBot {
 				if (members) {
 					for (const user of members) {
 						if (user.id && user.name && !user.deleted) {
-							this.userCache.set(user.id, {
+							ws.userCache.set(user.id, {
 								userName: user.name,
 								displayName: user.real_name || user.name,
 							});
@@ -306,15 +432,15 @@ export class SlackBot {
 		}
 	}
 
-	getChannels(): ChannelInfo[] {
-		return Array.from(this.channelCache.entries()).map(([id, name]) => ({
+	private getChannels(ws: WorkspaceState): ChannelInfo[] {
+		return Array.from(ws.channelCache.entries()).map(([id, name]) => ({
 			id,
 			name,
 		}));
 	}
 
-	getUsers(): UserInfo[] {
-		return Array.from(this.userCache.entries()).map(
+	private getUsers(ws: WorkspaceState): UserInfo[] {
+		return Array.from(ws.userCache.entries()).map(
 			([id, { userName, displayName }]) => ({
 				id,
 				userName,
@@ -323,14 +449,14 @@ export class SlackBot {
 		);
 	}
 
-	private obfuscateUsernames(text: string): string {
+	private obfuscateUsernames(ws: WorkspaceState, text: string): string {
 		let result = text;
 
 		result = result.replace(/<@([A-Z0-9]+)>/gi, (_match, id) => {
 			return `<@${id.split("").join("_")}>`;
 		});
 
-		for (const { userName } of this.userCache.values()) {
+		for (const { userName } of ws.userCache.values()) {
 			const escaped = userName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 			const pattern = new RegExp(`(<@|@)?(\\b${escaped}\\b)`, "gi");
 			result = result.replace(pattern, (_match, prefix, name) => {
@@ -375,16 +501,18 @@ export class SlackBot {
 	}
 
 	private async getUserInfo(
+		ws: WorkspaceState,
 		userId: string,
 	): Promise<{ userName: string; displayName: string }> {
-		const cached = this.userCache.get(userId);
+		const cached = ws.userCache.get(userId);
 		if (cached) {
 			return cached;
 		}
 
 		try {
 			const result = await this.callSlack(
-				() => this.webClient.users.info({ user: userId }),
+				ws,
+				() => ws.webClient.users.info({ user: userId }),
 				"users.info",
 			);
 			const user = result.user as { name?: string; real_name?: string };
@@ -392,7 +520,7 @@ export class SlackBot {
 				userName: user?.name || userId,
 				displayName: user?.real_name || user?.name || userId,
 			};
-			this.userCache.set(userId, info);
+			ws.userCache.set(userId, info);
 			return info;
 		} catch {
 			return { userName: userId, displayName: userId };
@@ -400,6 +528,7 @@ export class SlackBot {
 	}
 
 	private async shouldProcessEvent(
+		ws: WorkspaceState,
 		key: string,
 		eventId?: string,
 	): Promise<boolean> {
@@ -413,7 +542,7 @@ export class SlackBot {
 		}
 
 		if (eventId) {
-			const check = await this.idempotency.checkAndLock(eventId, key);
+			const check = await ws.idempotency.checkAndLock(eventId, key);
 			if (!check.shouldProcess) {
 				return false;
 			}
@@ -426,17 +555,18 @@ export class SlackBot {
 	}
 
 	private async processEvent(
+		ws: WorkspaceState,
 		key: string,
 		eventId: string | undefined,
 		handler: () => Promise<void>,
 	): Promise<void> {
-		if (!(await this.shouldProcessEvent(key, eventId))) return;
+		if (!(await this.shouldProcessEvent(ws, key, eventId))) return;
 
 		try {
 			await handler();
 			if (eventId) {
 				try {
-					await this.idempotency.markComplete(eventId);
+					await ws.idempotency.markComplete(eventId);
 				} catch (markError) {
 					const details =
 						markError instanceof Error ? markError.message : String(markError);
@@ -448,7 +578,7 @@ export class SlackBot {
 			logger.logWarning("Slack event handler failed", message);
 			if (eventId) {
 				try {
-					await this.idempotency.markFailed(eventId, message);
+					await ws.idempotency.markFailed(eventId, message);
 				} catch (markError) {
 					const details =
 						markError instanceof Error ? markError.message : String(markError);
@@ -462,7 +592,16 @@ export class SlackBot {
 		this.socketClient.on("app_mention", async ({ event, ack, body }) => {
 			await ack();
 
-			const envelope = body as { event_id?: string };
+			const envelope = body as { event_id?: string; team_id?: string };
+			if (
+				this.allowedTeamId &&
+				envelope.team_id &&
+				envelope.team_id !== this.allowedTeamId
+			) {
+				return;
+			}
+			const ws = await this.getWorkspaceState(envelope.team_id);
+			if (!ws) return;
 			const slackEvent = event as {
 				text: string;
 				channel: string;
@@ -472,9 +611,9 @@ export class SlackBot {
 				files?: SlackFile[];
 			};
 
-			const dedupeKey = `app_mention:${slackEvent.channel}:${slackEvent.ts}`;
-			await this.processEvent(dedupeKey, envelope.event_id, async () => {
-				const prepared = await this.logMessage({
+			const dedupeKey = `app_mention:${ws.teamId}:${slackEvent.channel}:${slackEvent.ts}`;
+			await this.processEvent(ws, dedupeKey, envelope.event_id, async () => {
+				const prepared = await this.logMessage(ws, {
 					text: slackEvent.text,
 					channel: slackEvent.channel,
 					user: slackEvent.user,
@@ -486,6 +625,7 @@ export class SlackBot {
 				// For channel mentions, always use thread mode
 				// Use existing thread if mentioned in a thread, otherwise create new thread
 				const ctx = await this.createContext(
+					ws,
 					slackEvent,
 					{ useThread: true },
 					prepared,
@@ -508,10 +648,21 @@ export class SlackBot {
 					text?: string;
 					channel_id: string;
 					user_id: string;
+					team_id?: string;
 					trigger_id?: string;
 					response_url?: string;
 					event_id?: string;
 				};
+
+				if (
+					this.allowedTeamId &&
+					slackCommand.team_id &&
+					slackCommand.team_id !== this.allowedTeamId
+				) {
+					return;
+				}
+				const ws = await this.getWorkspaceState(slackCommand.team_id);
+				if (!ws) return;
 
 				if (
 					!slackCommand.command ||
@@ -521,12 +672,15 @@ export class SlackBot {
 					return;
 				}
 
-				const key = `slash:${slackCommand.channel_id}:${
+				const eventId = slackCommand.event_id ?? slackCommand.trigger_id;
+				const keyed = `slash:${ws.teamId}:${slackCommand.channel_id}:${
 					slackCommand.trigger_id || envelope_id
 				}`;
-				const eventId = slackCommand.event_id ?? slackCommand.trigger_id;
-				await this.processEvent(key, eventId, async () => {
-					const ctx = await this.createSlashContext(slackCommand);
+				await this.processEvent(ws, keyed, eventId, async () => {
+					const ctx = await this.createSlashContextTeam(
+						ws.teamId,
+						slackCommand,
+					);
 					await onSlashCommand(
 						ctx,
 						slackCommand.command,
@@ -539,7 +693,16 @@ export class SlackBot {
 		this.socketClient.on("message", async ({ event, ack, body }) => {
 			await ack();
 
-			const envelope = body as { event_id?: string };
+			const envelope = body as { event_id?: string; team_id?: string };
+			if (
+				this.allowedTeamId &&
+				envelope.team_id &&
+				envelope.team_id !== this.allowedTeamId
+			) {
+				return;
+			}
+			const ws = await this.getWorkspaceState(envelope.team_id);
+			if (!ws) return;
 			const slackEvent = event as {
 				text?: string;
 				channel: string;
@@ -562,11 +725,11 @@ export class SlackBot {
 
 			if (slackEvent.bot_id) return;
 			if (slackEvent.subtype === "message_changed") {
-				await this.handleMessageChanged(slackEvent);
+				await this.handleMessageChanged(ws, slackEvent);
 				return;
 			}
 			if (slackEvent.subtype === "message_deleted") {
-				await this.handleMessageDeleted(slackEvent);
+				await this.handleMessageDeleted(ws, slackEvent);
 				return;
 			}
 			if (
@@ -576,16 +739,16 @@ export class SlackBot {
 				return;
 			const user = slackEvent.user;
 			if (!user) return;
-			if (user === this.botUserId) return;
+			if (ws.botUserId && user === ws.botUserId) return;
 			if (
 				!slackEvent.text &&
 				(!slackEvent.files || slackEvent.files.length === 0)
 			)
 				return;
 
-			const dedupeKey = `message:${slackEvent.channel}:${slackEvent.ts}`;
-			await this.processEvent(dedupeKey, envelope.event_id, async () => {
-				const prepared = await this.logMessage({
+			const dedupeKey = `message:${ws.teamId}:${slackEvent.channel}:${slackEvent.ts}`;
+			await this.processEvent(ws, dedupeKey, envelope.event_id, async () => {
+				const prepared = await this.logMessage(ws, {
 					text: slackEvent.text || "",
 					channel: slackEvent.channel,
 					user,
@@ -597,6 +760,7 @@ export class SlackBot {
 				if (slackEvent.channel_type === "im") {
 					// DMs don't use thread mode by default (more conversational)
 					const ctx = await this.createContext(
+						ws,
 						{
 							text: slackEvent.text || "",
 							channel: slackEvent.channel,
@@ -620,7 +784,16 @@ export class SlackBot {
 			const onReaction = this.handler.onReaction;
 			if (!onReaction) return;
 
-			const envelope = body as { event_id?: string };
+			const envelope = body as { event_id?: string; team_id?: string };
+			if (
+				this.allowedTeamId &&
+				envelope.team_id &&
+				envelope.team_id !== this.allowedTeamId
+			) {
+				return;
+			}
+			const ws = await this.getWorkspaceState(envelope.team_id);
+			if (!ws) return;
 			const reactionEvent = event as {
 				reaction: string;
 				user: string;
@@ -635,20 +808,22 @@ export class SlackBot {
 			if (reactionEvent.item.type !== "message") return;
 
 			// Ignore bot's own reactions
-			if (reactionEvent.user === this.botUserId) return;
+			if (ws.botUserId && reactionEvent.user === ws.botUserId) return;
 
-			const dedupeKey = `reaction:${reactionEvent.item.channel}:${reactionEvent.item.ts}:${reactionEvent.reaction}:${reactionEvent.user}`;
-			await this.processEvent(dedupeKey, envelope.event_id, async () => {
+			const dedupeKey = `reaction:${ws.teamId}:${reactionEvent.item.channel}:${reactionEvent.item.ts}:${reactionEvent.reaction}:${reactionEvent.user}`;
+			await this.processEvent(ws, dedupeKey, envelope.event_id, async () => {
 				await onReaction({
 					reaction: reactionEvent.reaction,
 					user: reactionEvent.user,
+					teamId: ws.teamId,
 					channel: reactionEvent.item.channel,
 					messageTs: reactionEvent.item.ts,
 					addReaction: async (emoji: string, channel: string, ts: string) => {
 						try {
 							await this.callSlack(
+								ws,
 								() =>
-									this.webClient.reactions.add({
+									ws.webClient.reactions.add({
 										name: emoji,
 										channel,
 										timestamp: ts,
@@ -661,7 +836,8 @@ export class SlackBot {
 					},
 					postMessage: async (channel: string, text: string) => {
 						await this.callSlack(
-							() => this.webClient.chat.postMessage({ channel, text }),
+							ws,
+							() => ws.webClient.chat.postMessage({ channel, text }),
 							"chat.postMessage",
 						);
 					},
@@ -749,7 +925,10 @@ export class SlackBot {
 		return filtered;
 	}
 
-	private async resolveFiles(files: SlackFile[]): Promise<SlackFile[]> {
+	private async resolveFiles(
+		ws: WorkspaceState,
+		files: SlackFile[],
+	): Promise<SlackFile[]> {
 		const resolved: SlackFile[] = [];
 		for (const file of files) {
 			const fileId = file.id;
@@ -760,7 +939,8 @@ export class SlackBot {
 
 			try {
 				const result = await this.callSlack(
-					() => this.webClient.files.info({ file: fileId }),
+					ws,
+					() => ws.webClient.files.info({ file: fileId }),
 					"files.info",
 				);
 				const info = result.file as SlackFile | undefined;
@@ -778,6 +958,7 @@ export class SlackBot {
 	}
 
 	private async buildAttachments(
+		ws: WorkspaceState,
 		channelId: string,
 		files: SlackFile[] | undefined,
 		ts: string,
@@ -785,19 +966,23 @@ export class SlackBot {
 		if (!files || files.length === 0) return [];
 		const filtered = this.filterFiles(files);
 		if (filtered.length === 0) return [];
-		const resolved = await this.resolveFiles(filtered);
-		return this.store.processAttachments(channelId, resolved, ts);
+		const resolved = await this.resolveFiles(ws, filtered);
+		return ws.store.processAttachments(channelId, resolved, ts);
 	}
 
-	private async prepareMessage(event: {
-		text?: string;
-		channel: string;
-		user: string;
-		ts: string;
-		threadTs?: string;
-		files?: SlackFile[];
-	}): Promise<PreparedMessage> {
+	private async prepareMessage(
+		ws: WorkspaceState,
+		event: {
+			text?: string;
+			channel: string;
+			user: string;
+			ts: string;
+			threadTs?: string;
+			files?: SlackFile[];
+		},
+	): Promise<PreparedMessage> {
 		const attachments = await this.buildAttachments(
+			ws,
 			event.channel,
 			event.files,
 			event.ts,
@@ -806,21 +991,24 @@ export class SlackBot {
 			event.text ?? "",
 			attachments.length > 0,
 		);
-		const { userName, displayName } = await this.getUserInfo(event.user);
+		const { userName, displayName } = await this.getUserInfo(ws, event.user);
 		return { text, rawText, attachments, userName, displayName };
 	}
 
-	private async logMessage(event: {
-		text: string;
-		channel: string;
-		user: string;
-		ts: string;
-		threadTs?: string;
-		files?: SlackFile[];
-	}): Promise<PreparedMessage> {
-		const prepared = await this.prepareMessage(event);
+	private async logMessage(
+		ws: WorkspaceState,
+		event: {
+			text: string;
+			channel: string;
+			user: string;
+			ts: string;
+			threadTs?: string;
+			files?: SlackFile[];
+		},
+	): Promise<PreparedMessage> {
+		const prepared = await this.prepareMessage(ws, event);
 
-		await this.store.logMessage(event.channel, {
+		await ws.store.logMessage(event.channel, {
 			date: new Date(Number.parseFloat(event.ts) * 1000).toISOString(),
 			ts: event.ts,
 			threadTs: event.threadTs,
@@ -838,7 +1026,7 @@ export class SlackBot {
 			event.threadTs,
 		);
 		try {
-			await this.threadMemory.addMessage(event.channel, threadKey, {
+			await ws.threadMemory.addMessage(event.channel, threadKey, {
 				role: "user",
 				content: prepared.rawText,
 				userId: event.user,
@@ -858,17 +1046,25 @@ export class SlackBot {
 		return prepared;
 	}
 
-	private async handleMessageChanged(event: {
-		channel: string;
-		channel_type?: string;
-		message?: { ts?: string; text?: string; user?: string; thread_ts?: string };
-	}): Promise<void> {
+	private async handleMessageChanged(
+		ws: WorkspaceState,
+		event: {
+			channel: string;
+			channel_type?: string;
+			message?: {
+				ts?: string;
+				text?: string;
+				user?: string;
+				thread_ts?: string;
+			};
+		},
+	): Promise<void> {
 		const message = event.message;
 		if (!message?.ts) return;
 
 		const rawText = this.truncateRawText(message.text ?? "");
 		const editedAt = new Date().toISOString();
-		await this.store.updateMessage(event.channel, message.ts, {
+		await ws.store.updateMessage(event.channel, message.ts, {
 			text: rawText,
 			editedAt,
 		});
@@ -879,7 +1075,7 @@ export class SlackBot {
 			message.thread_ts,
 		);
 		try {
-			await this.threadMemory.updateMessageByTs(
+			await ws.threadMemory.updateMessageByTs(
 				event.channel,
 				threadKey,
 				message.ts,
@@ -897,16 +1093,19 @@ export class SlackBot {
 		}
 	}
 
-	private async handleMessageDeleted(event: {
-		channel: string;
-		channel_type?: string;
-		deleted_ts?: string;
-		previous_message?: { ts?: string; thread_ts?: string };
-	}): Promise<void> {
+	private async handleMessageDeleted(
+		ws: WorkspaceState,
+		event: {
+			channel: string;
+			channel_type?: string;
+			deleted_ts?: string;
+			previous_message?: { ts?: string; thread_ts?: string };
+		},
+	): Promise<void> {
 		const deletedTs = event.deleted_ts ?? event.previous_message?.ts;
 		if (!deletedTs) return;
 
-		await this.store.deleteMessage(event.channel, deletedTs);
+		await ws.store.deleteMessage(event.channel, deletedTs);
 
 		const threadKey = this.getThreadKey(
 			event.channel,
@@ -914,7 +1113,7 @@ export class SlackBot {
 			event.previous_message?.thread_ts,
 		);
 		try {
-			await this.threadMemory.deleteMessageByTs(
+			await ws.threadMemory.deleteMessageByTs(
 				event.channel,
 				threadKey,
 				deletedTs,
@@ -939,6 +1138,7 @@ export class SlackBot {
 	}
 
 	private async createContext(
+		ws: WorkspaceState,
 		event: {
 			text: string;
 			channel: string;
@@ -950,27 +1150,29 @@ export class SlackBot {
 		options: { useThread: boolean } = { useThread: false },
 		prepared?: PreparedMessage,
 	): Promise<SlackContext> {
-		const preparedMessage = prepared ?? (await this.prepareMessage(event));
+		const preparedMessage = prepared ?? (await this.prepareMessage(ws, event));
 		const { text, rawText, attachments } = preparedMessage;
 		const userName =
-			preparedMessage.userName ?? (await this.getUserInfo(event.user)).userName;
+			preparedMessage.userName ??
+			(await this.getUserInfo(ws, event.user)).userName;
 
 		let channelName: string | undefined;
 		try {
 			if (event.channel.startsWith("C") || event.channel.startsWith("G")) {
-				const cached = this.channelCache.get(event.channel);
+				const cached = ws.channelCache.get(event.channel);
 				if (cached) {
 					channelName = `#${cached}`;
 				} else {
 					const result = await this.callSlack(
+						ws,
 						() =>
-							this.webClient.conversations.info({
+							ws.webClient.conversations.info({
 								channel: event.channel,
 							}),
 						"conversations.info",
 					);
 					if (result.channel?.name) {
-						this.channelCache.set(event.channel, result.channel.name);
+						ws.channelCache.set(event.channel, result.channel.name);
 						channelName = `#${result.channel.name}`;
 					}
 				}
@@ -991,10 +1193,10 @@ export class SlackBot {
 
 		const responseHandlers = createResponseHandlers({
 			channelId: event.channel,
-			webClient: this.webClient,
-			store: this.store,
-			callSlack: this.callSlack.bind(this),
-			obfuscateUsernames: this.obfuscateUsernames.bind(this),
+			webClient: ws.webClient,
+			store: ws.store,
+			callSlack: (fn, method) => this.callSlack(ws, fn, method),
+			obfuscateUsernames: (t) => this.obfuscateUsernames(ws, t),
 			threadTs,
 			// Also post to channel when starting a new thread (not replying to existing)
 			replyBroadcast: threadTs ? useThread && !parentThreadTs : undefined,
@@ -1006,23 +1208,28 @@ export class SlackBot {
 				rawText,
 				user: event.user,
 				userName,
+				teamId: ws.teamId,
 				channel: event.channel,
 				ts: event.ts,
 				threadTs,
 				attachments,
 			},
+			teamId: ws.teamId,
 			channelName,
-			store: this.store,
-			channels: this.getChannels(),
-			users: this.getUsers(),
+			store: ws.store,
+			channels: this.getChannels(ws),
+			users: this.getUsers(ws),
 			threadKey,
 			useThread,
 			...responseHandlers,
 		};
 	}
 
-	private async backfillChannel(channelId: string): Promise<number> {
-		const lastTs = this.store.getLastTimestamp(channelId);
+	private async backfillChannel(
+		ws: WorkspaceState,
+		channelId: string,
+	): Promise<number> {
+		const lastTs = ws.store.getLastTimestamp(channelId);
 
 		type Message = NonNullable<
 			ConversationsHistoryResponse["messages"]
@@ -1035,8 +1242,9 @@ export class SlackBot {
 
 		do {
 			const result = await this.callSlack(
+				ws,
 				() =>
-					this.webClient.conversations.history({
+					ws.webClient.conversations.history({
 						channel: channelId,
 						oldest: lastTs ?? undefined,
 						inclusive: false,
@@ -1055,7 +1263,7 @@ export class SlackBot {
 		} while (cursor && pageCount < maxPages);
 
 		const relevantMessages = allMessages.filter((msg) => {
-			if (msg.user === this.botUserId) return true;
+			if (msg.user === ws.botUserId) return true;
 			if (msg.bot_id) return false;
 			if (msg.subtype !== undefined && msg.subtype !== "file_share")
 				return false;
@@ -1068,9 +1276,10 @@ export class SlackBot {
 
 		for (const msg of relevantMessages) {
 			const msgTs = msg.ts || "";
-			const isBotMessage = msg.user === this.botUserId;
+			const isBotMessage = msg.user === ws.botUserId;
 			const attachments = msg.files
 				? await this.buildAttachments(
+						ws,
 						channelId,
 						msg.files as SlackFile[],
 						msgTs,
@@ -1079,7 +1288,7 @@ export class SlackBot {
 			const rawText = this.truncateRawText(msg.text || "");
 
 			if (isBotMessage) {
-				await this.store.logMessage(channelId, {
+				await ws.store.logMessage(channelId, {
 					date: new Date(Number.parseFloat(msgTs) * 1000).toISOString(),
 					ts: msgTs,
 					threadTs: msg.thread_ts,
@@ -1090,7 +1299,7 @@ export class SlackBot {
 				});
 				const threadKey = this.getThreadKey(channelId, msgTs, msg.thread_ts);
 				try {
-					await this.threadMemory.addMessage(channelId, threadKey, {
+					await ws.threadMemory.addMessage(channelId, threadKey, {
 						role: "assistant",
 						content: rawText,
 						messageTs: msgTs,
@@ -1107,9 +1316,10 @@ export class SlackBot {
 				}
 			} else {
 				const { userName, displayName } = await this.getUserInfo(
+					ws,
 					msg.user || "",
 				);
-				await this.store.logMessage(channelId, {
+				await ws.store.logMessage(channelId, {
 					date: new Date(Number.parseFloat(msgTs) * 1000).toISOString(),
 					ts: msgTs,
 					threadTs: msg.thread_ts,
@@ -1122,7 +1332,7 @@ export class SlackBot {
 				});
 				const threadKey = this.getThreadKey(channelId, msgTs, msg.thread_ts);
 				try {
-					await this.threadMemory.addMessage(channelId, threadKey, {
+					await ws.threadMemory.addMessage(channelId, threadKey, {
 						role: "user",
 						content: rawText,
 						userId: msg.user || "",
@@ -1146,16 +1356,17 @@ export class SlackBot {
 	}
 
 	private resolveBackfillTargets(
+		ws: WorkspaceState,
 		channelIds?: string[],
 	): Array<{ id: string; name: string }> {
 		if (channelIds && channelIds.length > 0) {
 			return channelIds.map((id) => ({
 				id,
-				name: this.channelCache.get(id) ?? id,
+				name: ws.channelCache.get(id) ?? id,
 			}));
 		}
 
-		const allChannels = Array.from(this.channelCache.entries());
+		const allChannels = Array.from(ws.channelCache.entries());
 		const filtered = allChannels.filter(([channelId, channelName]) =>
 			this.shouldBackfillChannel(channelId, channelName),
 		);
@@ -1167,17 +1378,20 @@ export class SlackBot {
 		return filtered.map(([id, name]) => ({ id, name }));
 	}
 
-	private async runBackfill(options: {
-		channelIds?: string[];
-		source: "startup" | "manual";
-	}): Promise<void> {
+	private async runBackfill(
+		ws: WorkspaceState,
+		options: {
+			channelIds?: string[];
+			source: "startup" | "manual";
+		},
+	): Promise<void> {
 		const { channelIds, source } = options;
 		if (source === "startup" && !this.backfillOnStartup) {
 			logger.logInfo("Backfill disabled on startup.");
 			return;
 		}
 
-		const targets = this.resolveBackfillTargets(channelIds);
+		const targets = this.resolveBackfillTargets(ws, channelIds);
 		if (targets.length === 0) {
 			logger.logInfo("Backfill skipped: no matching channels.");
 			return;
@@ -1197,7 +1411,7 @@ export class SlackBot {
 					break;
 				}
 				try {
-					const count = await this.backfillChannel(current.id);
+					const count = await this.backfillChannel(ws, current.id);
 					if (count > 0) {
 						logger.logBackfillChannel(current.name, count);
 					}
@@ -1222,22 +1436,38 @@ export class SlackBot {
 	}
 
 	async backfill(channelIds?: string[]): Promise<void> {
-		await this.runBackfill({ channelIds, source: "manual" });
+		const ws = await this.getWorkspaceState(this.defaultTeamId);
+		if (!ws) return;
+		await this.ensureBotUserId(ws);
+		await Promise.all([this.fetchChannels(ws), this.fetchUsers(ws)]);
+		await this.runBackfill(ws, { channelIds, source: "manual" });
+	}
+
+	async backfillTeam(teamId: string, channelIds?: string[]): Promise<void> {
+		const ws = await this.getWorkspaceState(teamId);
+		if (!ws) return;
+		await this.ensureBotUserId(ws);
+		await Promise.all([this.fetchChannels(ws), this.fetchUsers(ws)]);
+		await this.runBackfill(ws, { channelIds, source: "manual" });
 	}
 
 	async start(): Promise<void> {
-		const auth = await this.callSlack(
-			() => this.webClient.auth.test(),
-			"auth.test",
-		);
-		this.botUserId = auth.user_id as string;
+		if (this.multiWorkspace) {
+			await this.socketClient.start();
+			logger.logConnected();
+			return;
+		}
 
-		await Promise.all([this.fetchChannels(), this.fetchUsers()]);
+		const ws = await this.getWorkspaceState(this.defaultTeamId);
+		if (!ws) {
+			throw new Error("Failed to resolve Slack workspace");
+		}
+		await this.ensureBotUserId(ws);
+		await Promise.all([this.fetchChannels(ws), this.fetchUsers(ws)]);
 		logger.logInfo(
-			`Loaded ${this.channelCache.size} channels, ${this.userCache.size} users`,
+			`Loaded ${ws.channelCache.size} channels, ${ws.userCache.size} users`,
 		);
-
-		await this.runBackfill({ source: "startup" });
+		await this.runBackfill(ws, { source: "startup" });
 
 		await this.socketClient.start();
 		logger.logConnected();
@@ -1252,10 +1482,21 @@ export class SlackBot {
 	 * Post a message to a channel (for scheduled tasks, notifications, etc.)
 	 */
 	async postMessage(channelId: string, text: string): Promise<string | null> {
+		return this.postMessageTeam(this.defaultTeamId, channelId, text);
+	}
+
+	async postMessageTeam(
+		teamId: string,
+		channelId: string,
+		text: string,
+	): Promise<string | null> {
+		const ws = await this.getWorkspaceState(teamId);
+		if (!ws) return null;
 		try {
 			const result = await this.callSlack(
+				ws,
 				() =>
-					this.webClient.chat.postMessage({
+					ws.webClient.chat.postMessage({
 						channel: channelId,
 						text,
 					}),
@@ -1264,7 +1505,7 @@ export class SlackBot {
 			return result.ts as string;
 		} catch (error) {
 			logger.logWarning(
-				`Failed to post message to ${channelId}`,
+				`Failed to post message to ${channelId} (${teamId})`,
 				String(error),
 			);
 			return null;
@@ -1281,20 +1522,36 @@ export class SlackBot {
 		channel_id: string;
 		user_id: string;
 	}): Promise<SlackContext> {
+		return this.createSlashContextTeam(this.defaultTeamId, command);
+	}
+
+	async createSlashContextTeam(
+		teamId: string,
+		command: {
+			command: string;
+			text?: string;
+			channel_id: string;
+			user_id: string;
+		},
+	): Promise<SlackContext> {
+		const ws = await this.getWorkspaceState(teamId);
+		if (!ws) {
+			throw new Error(`Unknown Slack workspace: ${teamId}`);
+		}
 		const now = Date.now();
 		const ts = `${Math.floor(now / 1000)}.${(now % 1000) * 1000}`;
 
 		const rawText = this.truncateRawText(
 			`${command.command} ${command.text || ""}`.trim(),
 		);
-		const { userName } = await this.getUserInfo(command.user_id);
+		const { userName } = await this.getUserInfo(ws, command.user_id);
 
 		const responseHandlers = createResponseHandlers({
 			channelId: command.channel_id,
-			webClient: this.webClient,
-			store: this.store,
-			callSlack: this.callSlack.bind(this),
-			obfuscateUsernames: this.obfuscateUsernames.bind(this),
+			webClient: ws.webClient,
+			store: ws.store,
+			callSlack: (fn, method) => this.callSlack(ws, fn, method),
+			obfuscateUsernames: (t) => this.obfuscateUsernames(ws, t),
 		});
 
 		const threadKey = this.getThreadKey(command.channel_id, ts);
@@ -1305,14 +1562,16 @@ export class SlackBot {
 				rawText,
 				user: command.user_id,
 				userName,
+				teamId: ws.teamId,
 				channel: command.channel_id,
 				ts,
 				attachments: [],
 			},
-			channelName: this.channelCache.get(command.channel_id),
-			store: this.store,
-			channels: this.getChannels(),
-			users: this.getUsers(),
+			teamId: ws.teamId,
+			channelName: ws.channelCache.get(command.channel_id),
+			store: ws.store,
+			channels: this.getChannels(ws),
+			users: this.getUsers(ws),
 			threadKey,
 			useThread: false,
 			source: "slash",
@@ -1327,15 +1586,31 @@ export class SlackBot {
 		channelId: string,
 		prompt: string,
 	): Promise<SlackContext> {
+		return this.createScheduledContextTeam(
+			this.defaultTeamId,
+			channelId,
+			prompt,
+		);
+	}
+
+	async createScheduledContextTeam(
+		teamId: string,
+		channelId: string,
+		prompt: string,
+	): Promise<SlackContext> {
+		const ws = await this.getWorkspaceState(teamId);
+		if (!ws) {
+			throw new Error(`Unknown Slack workspace: ${teamId}`);
+		}
 		const now = Date.now();
 		const ts = `${Math.floor(now / 1000)}.${(now % 1000) * 1000}`;
 
 		const responseHandlers = createResponseHandlers({
 			channelId,
-			webClient: this.webClient,
-			store: this.store,
-			callSlack: this.callSlack.bind(this),
-			obfuscateUsernames: this.obfuscateUsernames.bind(this),
+			webClient: ws.webClient,
+			store: ws.store,
+			callSlack: (fn, method) => this.callSlack(ws, fn, method),
+			obfuscateUsernames: (t) => this.obfuscateUsernames(ws, t),
 		});
 
 		const safePrompt = this.truncateRawText(prompt);
@@ -1346,14 +1621,16 @@ export class SlackBot {
 				rawText: safePrompt,
 				user: "scheduled",
 				userName: "Scheduled Task",
+				teamId: ws.teamId,
 				channel: channelId,
 				ts,
 				attachments: [],
 			},
-			channelName: this.channelCache.get(channelId),
-			store: this.store,
-			channels: this.getChannels(),
-			users: this.getUsers(),
+			teamId: ws.teamId,
+			channelName: ws.channelCache.get(channelId),
+			store: ws.store,
+			channels: this.getChannels(ws),
+			users: this.getUsers(ws),
 			threadKey,
 			useThread: false,
 			...responseHandlers,

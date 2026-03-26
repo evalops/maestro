@@ -1,9 +1,9 @@
 # Threat Model
 
-Audience: security auditors, operators deploying Composer in sensitive environments.
+Audience: security auditors, operators deploying Maestro in sensitive environments.
 Nav: [Docs index](README.md) · [Safety](SAFETY.md) · [Enterprise](ENTERPRISE.md)
 
-This document describes Composer's security architecture, trust boundaries, and mitigations against common attack vectors.
+This document describes Maestro's security architecture, trust boundaries, and mitigations against common attack vectors.
 
 ---
 
@@ -20,7 +20,7 @@ This document describes Composer's security architecture, trust boundaries, and 
 │                                     │ HTTPS/TLS                              │
 │                                     ▼                                        │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │                      COMPOSER PROCESS BOUNDARY                         │  │
+│  │                      MAESTRO PROCESS BOUNDARY                         │  │
 │  │                                                                         │  │
 │  │  ┌─────────────┐   ┌─────────────┐   ┌─────────────────────────────┐  │  │
 │  │  │   Agent     │◄──│   Safety    │◄──│     Tool Execution          │  │  │
@@ -94,10 +94,10 @@ This document describes Composer's security architecture, trust boundaries, and 
 **Configuration:**
 ```bash
 # Enable Docker sandbox
-composer --sandbox docker
+maestro --sandbox docker
 
 # Reject all high-risk commands automatically
-composer --approval-mode fail
+maestro --approval-mode fail
 ```
 
 **Residual Risk:** Low when approval mode is `prompt` or `fail`. High when using `auto` approval in untrusted environments.
@@ -118,7 +118,7 @@ composer --approval-mode fail
 |---------|----------|-------------|
 | PII Detection | `src/safety/semantic-judge.ts` | Scans for common PII patterns before external transmission |
 | Secret Redaction | `src/utils/secret-redactor.ts` | Redacts API keys and tokens in logs and outputs |
-| Guardian Pre-commit | `.composer/guardian.json` | Blocks commits containing secrets (Semgrep rules) |
+| Guardian Pre-commit | `.maestro/guardian.json` | Blocks commits containing secrets (Semgrep rules) |
 | Telemetry Opt-out | Default off | No data sent to Anthropic telemetry by default |
 | Audit Logging | `src/audit/` | HMAC-verified logs of sensitive operations (enterprise) |
 
@@ -227,7 +227,7 @@ composer --approval-mode fail
 - **Authorization:** Unix filesystem permissions
 
 ### Web Server Mode
-- **Authentication:** API key header (`X-Composer-API-Key`) or enterprise SSO
+- **Authentication:** API key header (`X-Maestro-API-Key`) or enterprise SSO
 - **Authorization:** RBAC via `src/rbac/permissions.ts` (enterprise)
 - **Session Management:** UUID-based sessions with configurable expiry
 
@@ -270,12 +270,12 @@ composer --approval-mode fail
 
 ### Suspected Prompt Injection
 1. Review session history: `/sessions` to examine conversation
-2. Check audit log: `cat ~/.composer/audit.log | grep -i suspicious`
+2. Check audit log: `cat ~/.maestro/audit.log | grep -i suspicious`
 3. Report patterns to maintainers for firewall rule updates
 
 ### Unauthorized File Access
 1. Examine tool results in session for unexpected paths
-2. Check directory access policy: `.composer/policy.json`
+2. Check directory access policy: `.maestro/policy.json`
 3. Tighten allowlist/denylist rules
 
 ### Credential Exposure
@@ -287,7 +287,7 @@ composer --approval-mode fail
 
 ## Security Contacts
 
-- **Issues:** https://github.com/evalops/composer/security
+- **Issues:** https://github.com/evalops/maestro/security
 - **Email:** security@evalops.io
 - **Responsible Disclosure:** 90-day disclosure window
 

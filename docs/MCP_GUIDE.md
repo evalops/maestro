@@ -2,11 +2,11 @@
 
 Contents: [What is MCP?](#what-is-mcp) · [Quick Start](#quick-start) · [Configuration](#configuration) · [Usage](#usage) · [Troubleshooting](#troubleshooting)
 
-This guide explains how to create, configure, and use custom MCP (Model Context Protocol) servers with Composer.
+This guide explains how to create, configure, and use custom MCP (Model Context Protocol) servers with Maestro.
 
 ## What is MCP?
 
-MCP (Model Context Protocol) is an open protocol that allows AI assistants to interact with external tools and data sources. Composer supports MCP servers, enabling you to extend its capabilities with custom tools.
+MCP (Model Context Protocol) is an open protocol that allows AI assistants to interact with external tools and data sources. Maestro supports MCP servers, enabling you to extend its capabilities with custom tools.
 
 ## Quick Start
 
@@ -17,9 +17,9 @@ MCP (Model Context Protocol) is an open protocol that allows AI assistants to in
 npm install -g @modelcontextprotocol/server-github
 ```
 
-### 2. Configure Composer to use it
+### 2. Configure Maestro to use it
 
-Create `~/.composer/mcp.json`:
+Create `~/.maestro/mcp.json`:
 
 ```json
 {
@@ -38,7 +38,7 @@ Create `~/.composer/mcp.json`:
 ### 3. Verify connection
 
 ```bash
-composer
+maestro
 /mcp
 ```
 
@@ -54,12 +54,12 @@ Model Context Protocol
 
 ### File Locations
 
-- **Global config**: `~/.composer/mcp.json` (applies to all projects)
-- **Project config**: `.composer/mcp.json` (project-specific, overrides global)
+- **Global config**: `~/.maestro/mcp.json` (applies to all projects)
+- **Project config**: `.maestro/mcp.json` (project-specific, overrides global)
 
 ### Configuration Formats
 
-Composer supports two configuration formats:
+Maestro supports two configuration formats:
 
 #### Format 1: Claude Desktop Style (Recommended)
 
@@ -111,7 +111,7 @@ Composer supports two configuration formats:
 
 ### Transport Types
 
-Composer auto-detects the transport type:
+Maestro auto-detects the transport type:
 
 - **stdio**: Default when `command` is provided
 - **sse**: When URL contains `/sse` or `sse` subdomain
@@ -179,7 +179,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case "greet":
       return {
         content: [
-          { type: "text", text: `Hello, ${args.name}! Welcome to Composer.` },
+          { type: "text", text: `Hello, ${args.name}! Welcome to Maestro.` },
         ],
       };
 
@@ -234,7 +234,7 @@ npx tsc my-tools-server.ts --module nodenext --moduleResolution nodenext
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node my-tools-server.js
 ```
 
-### Register with Composer
+### Register with Maestro
 
 ```json
 {
@@ -249,7 +249,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node my-tools-server.js
 
 ## Tool Annotations
 
-MCP tools can include behavior hints that Composer respects:
+MCP tools can include behavior hints that Maestro respects:
 
 ```typescript
 {
@@ -361,7 +361,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 ```typescript
 import { watch } from "fs";
 
-// Notify Composer when files change
+// Notify Maestro when files change
 watch("./src", { recursive: true }, (event, filename) => {
   server.notification({
     method: "notifications/resources/list_changed",
@@ -380,12 +380,12 @@ watch("./src", { recursive: true }, (event, filename) => {
 
 2. **Verify config syntax**:
    ```bash
-   cat ~/.composer/mcp.json | jq .
+   cat ~/.maestro/mcp.json | jq .
    ```
 
-3. **Check Composer logs**:
+3. **Check Maestro logs**:
    ```bash
-   COMPOSER_LOG_LEVEL=debug composer
+   MAESTRO_LOG_LEVEL=debug maestro
    ```
 
 ### Tools not appearing
@@ -438,7 +438,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 ```
 
-### Composer MCP Commands
+### Maestro MCP Commands
 
 | Command | Description |
 |---------|-------------|

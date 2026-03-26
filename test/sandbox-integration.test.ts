@@ -81,7 +81,7 @@ describe("Sandbox", () => {
 
 		beforeEach(() => {
 			testDir = join(tmpdir(), `sandbox-config-test-${Date.now()}`);
-			mkdirSync(join(testDir, ".composer"), { recursive: true });
+			mkdirSync(join(testDir, ".maestro"), { recursive: true });
 		});
 
 		afterEach(() => {
@@ -90,13 +90,13 @@ describe("Sandbox", () => {
 
 		it("should return undefined when no config file exists", () => {
 			const config = loadSandboxConfig(testDir);
-			// Remove the .composer dir to simulate no config
-			rmSync(join(testDir, ".composer"), { recursive: true, force: true });
+			// Remove the .maestro dir to simulate no config
+			rmSync(join(testDir, ".maestro"), { recursive: true, force: true });
 			expect(loadSandboxConfig(testDir)).toBeUndefined();
 		});
 
 		it("should load valid config file", () => {
-			const configPath = join(testDir, ".composer", "sandbox.json");
+			const configPath = join(testDir, ".maestro", "sandbox.json");
 			writeFileSync(
 				configPath,
 				JSON.stringify({
@@ -119,7 +119,7 @@ describe("Sandbox", () => {
 		});
 
 		it("should return undefined for invalid JSON", () => {
-			const configPath = join(testDir, ".composer", "sandbox.json");
+			const configPath = join(testDir, ".maestro", "sandbox.json");
 			writeFileSync(configPath, "{ invalid json }");
 
 			// Should log warning and return undefined
@@ -133,16 +133,16 @@ describe("Sandbox", () => {
 
 		beforeEach(() => {
 			// Ensure web-server mode is disabled for these tests
-			originalWebServer = process.env.COMPOSER_WEB_SERVER;
-			Reflect.deleteProperty(process.env, "COMPOSER_WEB_SERVER");
+			originalWebServer = process.env.MAESTRO_WEB_SERVER;
+			Reflect.deleteProperty(process.env, "MAESTRO_WEB_SERVER");
 		});
 
 		afterEach(() => {
 			// Restore original env
 			if (originalWebServer !== undefined) {
-				process.env.COMPOSER_WEB_SERVER = originalWebServer;
+				process.env.MAESTRO_WEB_SERVER = originalWebServer;
 			} else {
-				Reflect.deleteProperty(process.env, "COMPOSER_WEB_SERVER");
+				Reflect.deleteProperty(process.env, "MAESTRO_WEB_SERVER");
 			}
 		});
 
@@ -157,31 +157,31 @@ describe("Sandbox", () => {
 			await sandbox?.dispose();
 		});
 
-		it("should respect COMPOSER_SANDBOX_MODE env var", async () => {
-			const originalEnv = process.env.COMPOSER_SANDBOX_MODE;
+		it("should respect MAESTRO_SANDBOX_MODE env var", async () => {
+			const originalEnv = process.env.MAESTRO_SANDBOX_MODE;
 			try {
-				process.env.COMPOSER_SANDBOX_MODE = "local";
+				process.env.MAESTRO_SANDBOX_MODE = "local";
 				const sandbox = await createSandbox({});
 				expect(sandbox).toBeInstanceOf(LocalSandbox);
 				await sandbox?.dispose();
 			} finally {
 				if (originalEnv === undefined) {
-					Reflect.deleteProperty(process.env, "COMPOSER_SANDBOX_MODE");
+					Reflect.deleteProperty(process.env, "MAESTRO_SANDBOX_MODE");
 				} else {
-					process.env.COMPOSER_SANDBOX_MODE = originalEnv;
+					process.env.MAESTRO_SANDBOX_MODE = originalEnv;
 				}
 			}
 		});
 
 		it("should use config file when no explicit mode", async () => {
 			const testDir = join(tmpdir(), `sandbox-create-test-${Date.now()}`);
-			mkdirSync(join(testDir, ".composer"), { recursive: true });
-			const configPath = join(testDir, ".composer", "sandbox.json");
+			mkdirSync(join(testDir, ".maestro"), { recursive: true });
+			const configPath = join(testDir, ".maestro", "sandbox.json");
 			writeFileSync(configPath, JSON.stringify({ mode: "local" }));
 
 			// Save and clear env var to ensure config is used
-			const originalEnv = process.env.COMPOSER_SANDBOX_MODE;
-			Reflect.deleteProperty(process.env, "COMPOSER_SANDBOX_MODE");
+			const originalEnv = process.env.MAESTRO_SANDBOX_MODE;
+			Reflect.deleteProperty(process.env, "MAESTRO_SANDBOX_MODE");
 
 			try {
 				const sandbox = await createSandbox({ cwd: testDir });
@@ -190,7 +190,7 @@ describe("Sandbox", () => {
 			} finally {
 				// Restore env var
 				if (originalEnv !== undefined) {
-					process.env.COMPOSER_SANDBOX_MODE = originalEnv;
+					process.env.MAESTRO_SANDBOX_MODE = originalEnv;
 				}
 				rmSync(testDir, { recursive: true, force: true });
 			}

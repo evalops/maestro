@@ -62,7 +62,7 @@ export interface CheckpointStoreOptions {
 	maxCheckpoints?: number;
 	/** Whether to persist checkpoints to disk */
 	persistToDisk?: boolean;
-	/** Directory to persist checkpoints to (default: .composer/checkpoints) */
+	/** Directory to persist checkpoints to (default: .maestro/checkpoints) */
 	persistDir?: string;
 	/** Working directory for the project */
 	cwd: string;

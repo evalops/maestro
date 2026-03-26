@@ -1,6 +1,6 @@
-# Composer TUI (Rust)
+# Maestro TUI (Rust)
 
-Native terminal UI for Composer, built with Rust using ratatui and crossterm. Inspired by [OpenAI Codex TUI](https://github.com/openai/codex/tree/main/codex-rs).
+Native terminal UI for Maestro, built with Rust using ratatui and crossterm. Inspired by [OpenAI Codex TUI](https://github.com/openai/codex/tree/main/codex-rs).
 
 ## Why Rust?
 
@@ -78,13 +78,13 @@ export OPENAI_API_KEY=sk-...
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude models) |
 | `OPENAI_API_KEY` | OpenAI API key (for GPT models) |
-| `COMPOSER_MODEL` | Override default model |
-| `COMPOSER_BACKGROUND_TASK_LOG_BYTES` | Max log file size before rotation (default 5MB) |
-| `COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS` | Number of rotated log segments to keep (default 2) |
+| `MAESTRO_MODEL` | Override default model |
+| `MAESTRO_BACKGROUND_TASK_LOG_BYTES` | Max log file size before rotation (default 5MB) |
+| `MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS` | Number of rotated log segments to keep (default 2) |
 
 ## Background Task Logs
 
-Background task output is written to `~/.composer/logs` with rotation. Defaults are 5MB per log file and 2 rotated segments.
+Background task output is written to `~/.maestro/logs` with rotation. Defaults are 5MB per log file and 2 rotated segments.
 
 The `background_tasks` tool supports `action=waitForRotation` with an optional `timeoutMs` (default 5000) to wait for a rotation event:
 
@@ -94,13 +94,13 @@ background_tasks action=waitForRotation taskId=<id> timeoutMs=10000
 
 ## Conductor Bridge Helpers
 
-The Rust crate exposes helper types for probing a Composer web server bridge:
+The Rust crate exposes helper types for probing a Maestro web server bridge:
 
 ```rust
-use composer_tui::bridge::fetch_bridge_status;
+use maestro_tui::bridge::fetch_bridge_status;
 
 let status = fetch_bridge_status("http://localhost:8080").await?;
-println!("Composer version: {:?}", status.version);
+println!("Maestro version: {:?}", status.version);
 ```
 
 This is useful for tooling or diagnostics that need to confirm the bridge is

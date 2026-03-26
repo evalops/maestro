@@ -16,7 +16,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::swarm::{SwarmExecutor, SwarmPlan, SwarmTask, SwarmConfig};
+//! use maestro_tui::swarm::{SwarmExecutor, SwarmPlan, SwarmTask, SwarmConfig};
 //!
 //! // Create a plan
 //! let plan = SwarmPlan::new("Refactoring Plan")

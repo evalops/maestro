@@ -1,7 +1,7 @@
 {
-	"name": "@evalops/composer-web",
+	"name": "@evalops/maestro-web",
 	"version": "0.10.0",
-	"description": "Web UI for Composer - Browser-based AI coding assistant interface",
+	"description": "Web UI for Maestro - Browser-based AI coding assistant interface",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -15,19 +15,12 @@
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
-	"keywords": [
-		"composer",
-		"ai",
-		"web-ui",
-		"llm",
-		"coding-assistant",
-		"browser"
-	],
+	"keywords": ["maestro", "ai", "web-ui", "llm", "coding-assistant", "browser"],
 	"author": "EvalOps",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/evalops/composer.git",
+		"url": "git+https://github.com/evalops/maestro.git",
 		"directory": "packages/web"
 	},
 	"dependencies": {

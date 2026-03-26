@@ -32,12 +32,12 @@ use clap::Parser;
 // `clap` is the standard CLI argument parsing library in Rust.
 // The `Parser` trait enables derive macros to auto-generate argument parsing.
 
-use composer_tui::App;
+use maestro_tui::App;
 // Import our main `App` struct from the library crate.
 // In Rust, a package can have both a binary (main.rs) and a library (lib.rs).
 // This imports from lib.rs.
 
-use composer_tui::tools::cleanup_background_processes;
+use maestro_tui::tools::cleanup_background_processes;
 // Import the process cleanup function for signal handlers.
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -261,7 +261,7 @@ async fn main() -> Result<()> {
     // Set model from CLI if provided.
     // This environment variable is read by the App during initialization.
     if let Some(model) = &args.model {
-        std::env::set_var("COMPOSER_MODEL", model);
+        std::env::set_var("MAESTRO_MODEL", model);
     }
 
     // Create the application instance.

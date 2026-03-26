@@ -70,7 +70,7 @@ interface AutomationStateFile {
 }
 
 const AUTOMATIONS_STATE_PATH =
-	resolveEnvPath(process.env.COMPOSER_AUTOMATIONS_STATE) ??
+	resolveEnvPath(process.env.MAESTRO_AUTOMATIONS_STATE) ??
 	resolve(getAgentDir(), "automations.json");
 
 const MAX_AUTOMATIONS = 500;

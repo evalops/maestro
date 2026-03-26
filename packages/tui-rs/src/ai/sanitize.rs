@@ -23,7 +23,7 @@
 //! # Example
 //!
 //! ```rust
-//! use composer_tui::ai::sanitize::sanitize_surrogates;
+//! use maestro_tui::ai::sanitize::sanitize_surrogates;
 //!
 //! // Clean string passes through unchanged
 //! assert_eq!(sanitize_surrogates("Hello 世界"), "Hello 世界");

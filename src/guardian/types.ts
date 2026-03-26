@@ -48,7 +48,7 @@ export interface GuardianRunOptions {
 
 /**
  * User-configurable Guardian settings
- * Can be specified in .composer/guardian.json or ~/.composer/guardian.json
+ * Can be specified in .maestro/guardian.json or ~/.maestro/guardian.json
  */
 export interface GuardianConfig {
 	/** Enable/disable Guardian globally (default: true) */

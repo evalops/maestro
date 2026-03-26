@@ -30,7 +30,7 @@ export function generateTotpSecret(): string {
 export function generateTotpUri(
 	secret: string,
 	email: string,
-	issuer = "Composer",
+	issuer = "Maestro",
 ): string {
 	return authenticator.keyuri(email, issuer, secret);
 }

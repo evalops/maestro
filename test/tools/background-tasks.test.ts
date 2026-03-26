@@ -35,8 +35,8 @@ import { computeRestartDelay } from "../../src/tools/background/index.js";
 
 const settingsRoot = mkdtempSync(join(tmpdir(), "composer-bg-settings-"));
 const settingsPath = join(settingsRoot, "settings.json");
-const previousUnsafe = process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE;
-process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE = "1";
+const previousUnsafe = process.env.MAESTRO_BACKGROUND_SETTINGS_UNSAFE;
+process.env.MAESTRO_BACKGROUND_SETTINGS_UNSAFE = "1";
 overrideBackgroundTaskSettingsPath(settingsPath);
 resetBackgroundTaskSettings();
 const IS_CI = Boolean(process.env.CI);
@@ -55,7 +55,7 @@ const SAMPLE_REDACTED_TOKEN = joinParts(
 );
 
 afterAll(() => {
-	process.env.COMPOSER_BACKGROUND_SETTINGS_UNSAFE = previousUnsafe;
+	process.env.MAESTRO_BACKGROUND_SETTINGS_UNSAFE = previousUnsafe;
 	overrideBackgroundTaskSettingsPath(null);
 	rmSync(settingsRoot, { recursive: true, force: true });
 });
@@ -125,7 +125,7 @@ describe("backgroundTasksTool", () => {
 		resetBackgroundTaskSettings();
 		updateBackgroundTaskSettings({ statusDetailsEnabled: true });
 		logDir = mkdtempSync(join(tmpdir(), "composer-bg-"));
-		process.env.COMPOSER_BACKGROUND_LOG_DIR = logDir;
+		process.env.MAESTRO_BACKGROUND_LOG_DIR = logDir;
 		backgroundTaskManager.resetLimits();
 	});
 
@@ -133,7 +133,7 @@ describe("backgroundTasksTool", () => {
 		await backgroundTaskManager.stopAll();
 		backgroundTaskManager.clear();
 		rmSync(logDir, { recursive: true, force: true });
-		Reflect.deleteProperty(process.env, "COMPOSER_BACKGROUND_LOG_DIR");
+		Reflect.deleteProperty(process.env, "MAESTRO_BACKGROUND_LOG_DIR");
 	});
 
 	it("starts tasks and lists them", async () => {

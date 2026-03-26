@@ -199,15 +199,13 @@ export function createMenu(mainWindow: BrowserWindow): void {
 				{
 					label: "Documentation",
 					click: () => {
-						shell.openExternal("https://github.com/evalops/composer#readme");
+						shell.openExternal("https://github.com/evalops/maestro#readme");
 					},
 				},
 				{
 					label: "Report Issue",
 					click: () => {
-						shell.openExternal(
-							"https://github.com/evalops/composer/issues/new",
-						);
+						shell.openExternal("https://github.com/evalops/maestro/issues/new");
 					},
 				},
 				{ type: "separator" },

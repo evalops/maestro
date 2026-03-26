@@ -263,14 +263,14 @@ describe("Native Sandbox", () => {
 				await sandbox.dispose();
 			});
 
-			it("sets COMPOSER_SANDBOX env var", async () => {
+			it("sets MAESTRO_SANDBOX env var", async () => {
 				const sandbox = createNativeSandbox(
 					{ mode: "workspace-write" },
 					testDir,
 				);
 				await sandbox.initialize();
 
-				const result = await sandbox.exec("echo $COMPOSER_SANDBOX");
+				const result = await sandbox.exec("echo $MAESTRO_SANDBOX");
 				const expectedType =
 					platform() === "darwin"
 						? "seatbelt"

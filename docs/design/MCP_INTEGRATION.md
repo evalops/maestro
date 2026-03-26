@@ -1,6 +1,6 @@
 # MCP Protocol Integration Design
 
-The Model Context Protocol (MCP) integration enables dynamic tool loading from external servers, extending Composer's capabilities through a standardized interface.
+The Model Context Protocol (MCP) integration enables dynamic tool loading from external servers, extending Maestro's capabilities through a standardized interface.
 
 ## Overview
 
@@ -9,7 +9,7 @@ MCP provides:
 - **Dynamic Tool Discovery**: Automatic tool registration from servers
 - **Standardized Protocol**: JSON-RPC based communication
 - **Server Management**: Lifecycle management for MCP processes
-- **Tool Bridging**: Seamless integration with Composer's tool system
+- **Tool Bridging**: Seamless integration with Maestro's tool system
 
 ## Architecture
 
@@ -35,7 +35,7 @@ MCP provides:
 │                             ▼                                       │
 │  ┌─────────────────────────────────────────────────────────────┐    │
 │  │                    Tool Bridge                               │    │
-│  │  - MCP tool → Composer tool conversion                      │    │
+│  │  - MCP tool → Maestro tool conversion                      │    │
 │  │  - Schema translation                                       │    │
 │  │  - Result mapping                                           │    │
 │  └─────────────────────────────────────────────────────────────┘    │
@@ -52,7 +52,7 @@ MCP provides:
 ### Server Configuration File
 
 ```json
-// ~/.composer/mcp.json
+// ~/.maestro/mcp.json
 {
   "mcpServers": {
     "filesystem": {
@@ -104,7 +104,7 @@ class McpManager {
   private tools: Map<string, McpTool> = new Map();
 
   async loadConfig(): Promise<void> {
-    const configPath = join(homedir(), ".composer", "mcp.json");
+    const configPath = join(homedir(), ".maestro", "mcp.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
 
     for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
@@ -315,7 +315,7 @@ class McpClient {
         tools: {}
       },
       clientInfo: {
-        name: "composer",
+        name: "maestro",
         version: "0.10.0"
       }
     });
@@ -446,9 +446,9 @@ async function discoverMcpServers(): Promise<McpServerConfig[]> {
 
   // Check standard locations
   const searchPaths = [
-    join(homedir(), ".composer", "mcp-servers"),
+    join(homedir(), ".maestro", "mcp-servers"),
     join(process.cwd(), ".mcp-servers"),
-    "/usr/local/share/composer/mcp-servers"
+    "/usr/local/share/maestro/mcp-servers"
   ];
 
   for (const searchPath of searchPaths) {

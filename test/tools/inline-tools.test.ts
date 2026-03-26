@@ -1,5 +1,5 @@
 /**
- * Tests for inline tool definitions from .composer/tools.json
+ * Tests for inline tool definitions from .maestro/tools.json
  */
 import {
 	existsSync,
@@ -26,7 +26,7 @@ describe("loadInlineTools", () => {
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `inline-tools-test-${Date.now()}`);
-		composerDir = join(testDir, ".composer");
+		composerDir = join(testDir, ".maestro");
 		mkdirSync(composerDir, { recursive: true });
 	});
 
@@ -207,8 +207,8 @@ describe("loadInlineTools", () => {
 describe("getInlineToolsConfigPaths", () => {
 	it("returns correct paths", () => {
 		const paths = getInlineToolsConfigPaths("/some/project");
-		expect(paths.project).toBe("/some/project/.composer/tools.json");
-		expect(paths.user).toContain(".composer/tools.json");
+		expect(paths.project).toBe("/some/project/.maestro/tools.json");
+		expect(paths.user).toContain(".maestro/tools.json");
 	});
 });
 
@@ -219,7 +219,7 @@ describe("inline tool execution", () => {
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `inline-tools-exec-test-${Date.now()}`);
-		composerDir = join(testDir, ".composer");
+		composerDir = join(testDir, ".maestro");
 		scriptsDir = join(testDir, "scripts");
 		mkdirSync(composerDir, { recursive: true });
 		mkdirSync(scriptsDir, { recursive: true });

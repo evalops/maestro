@@ -7,6 +7,11 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+	type ConnectorRegistryInstance,
+	createConnectorRegistry,
+} from "./connectors/index.js";
+import type { ConnectorCapability } from "./connectors/types.js";
+import {
 	type ConversationTurn,
 	formatSummarizedContext,
 	summarizeContext,
@@ -14,14 +19,20 @@ import {
 import { CostTracker } from "./cost-tracker.js";
 import { isRetryableError, retryAsync } from "./errors.js";
 import * as logger from "./logger.js";
-import { type SandboxConfig, createExecutor } from "./sandbox.js";
+import {
+	type Executor,
+	type SandboxConfig,
+	createExecutor,
+} from "./sandbox.js";
 import type { ChannelInfo, SlackContext, UserInfo } from "./slack/bot.js";
 import type { ChannelStore } from "./store.js";
 import {
 	type ThreadMemoryConfig,
 	ThreadMemoryManager,
 } from "./thread-memory.js";
+import { createLiveDashboardTool } from "./tools/create-live-dashboard.js";
 import { createSlackAgentTools, setUploadFunction } from "./tools/index.js";
+import type { DashboardRegistry } from "./ui/dashboard-registry.js";
 import { ensureDir } from "./utils/fs.js";
 import { MessageQueue } from "./utils/message-queue.js";
 import { createTimestampGenerator } from "./utils/slack-timestamp.js";
@@ -118,6 +129,16 @@ const logCache = new Map<
 	string,
 	{ mtimeMs: number; size: number; turns: ConversationTurn[] }
 >();
+
+function toolNameAllowed(toolName: string, allowed: string[]): boolean {
+	for (const entry of allowed) {
+		if (entry === toolName) return true;
+		if (entry.endsWith("*") && toolName.startsWith(entry.slice(0, -1))) {
+			return true;
+		}
+	}
+	return false;
+}
 
 function getAnthropicApiKey(): string {
 	const key =
@@ -451,8 +472,10 @@ function buildSystemPrompt(
 	sandboxConfig: SandboxConfig,
 	channels: ChannelInfo[],
 	users: UserInfo[],
+	connectorDescription?: string,
 ): string {
 	const channelPath = `${workspacePath}/${channelId}`;
+	const isDaytona = sandboxConfig.type === "daytona";
 	const isDocker = sandboxConfig.type === "docker";
 
 	const channelMappings =
@@ -465,12 +488,19 @@ function buildSystemPrompt(
 			? users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
 			: "(no users loaded)";
 
-	const envDescription = isDocker
-		? `You are running inside a Docker container (Alpine Linux).
+	const envDescription = isDaytona
+		? `You are running inside a Daytona cloud sandbox.
+- Bash working directory: /home/daytona (use cd or absolute paths)
+- Install tools with: apt-get install -y <package> or pip install <package>
+- You can run web servers and get public preview URLs
+- Git operations are available natively
+- Your changes persist within the sandbox session`
+		: isDocker
+			? `You are running inside a Docker container (Alpine Linux).
 - Bash working directory: / (use cd or absolute paths)
 - Install tools with: apk add <package>
 - Your changes persist across sessions`
-		: `You are running directly on the host machine.
+			: `You are running directly on the host machine.
 - Bash working directory: ${process.cwd()}
 - Be careful with system modifications`;
 
@@ -523,27 +553,45 @@ Update when you learn something important or when asked to remember something.
 ### Current Memory
 ${memory}
 
-## Tools
-- bash: Run shell commands (primary tool). Install packages as needed. Destructive commands require user approval.
-- read: Read files
-- write: Create/overwrite files
-- edit: Surgical file edits
-- attach: Share files to Slack
-- status: Check system health, resource usage (CPU, memory), and workspace disk usage
-- schedule: Schedule tasks for future execution (one-time or recurring)
+	## Tools
+	- bash: Run shell commands (primary tool). Install packages as needed. Destructive commands require user approval.
+	- read: Read files
+	- write: Create/overwrite files
+	- edit: Surgical file edits
+	- attach: Share files to Slack
+	- status: Check system health, resource usage (CPU, memory), and workspace disk usage
+	- schedule: Schedule tasks for future execution (one-time or recurring)
+	- deploy: Deploy a mini-app/dashboard from the sandbox and get a public URL
+	- create_live_dashboard: Create a persistent, workspace-scoped live BI dashboard in the control plane (returns a link)
 
-Each tool requires a "label" parameter (shown to user).
+	Each tool requires a "label" parameter (shown to user).
 
 Use the status tool when:
 - User asks about your status, health, or resources
 - Before running memory-intensive tasks
 - Debugging performance issues
 
-Use the schedule tool for:
-- Reminders: "remind me in 2 hours to check deployment"
-- One-time tasks: "tomorrow at 9am run the test suite"
-- Recurring tasks: "every day at 9am summarize commits"
-`;
+	Use the schedule tool for:
+	- Reminders: "remind me in 2 hours to check deployment"
+	- One-time tasks: "tomorrow at 9am run the test suite"
+	- Recurring tasks: "every day at 9am summarize commits"
+
+	Use the create_live_dashboard tool when:
+	- The user asks for BI dashboards that should persist in the control plane
+	- You need a workspace-scoped dashboard link (/:teamId/dashboards/:id)
+	- The dashboard should auto-refresh on a fixed interval (default 5 minutes) using read-only connector queries
+	- If the request is vague (e.g. "build more dashboards"), ask clarifying questions before creating it (metrics, timeframe, segmentation)
+
+	Use the deploy tool when:
+	- You want a one-off sharable preview (HTML/JS/CSS) from the sandbox
+	- You generate HTML/JS/CSS files and want to share a live preview
+	- Write files first, then call deploy with the directory path
+
+Use the workflow tool for:
+- Multi-step tasks: "pull deals from HubSpot, cross-reference with Stripe, generate a report"
+- Chaining connector queries with data transformations
+- Reference previous step results with $steps.<stepName>
+${connectorDescription ? `\n${connectorDescription}\n` : ""}`;
 }
 
 function truncate(text: string, maxLen: number): string {
@@ -616,6 +664,8 @@ export interface ScheduleCallbacks {
 }
 
 export interface AgentRunnerOptions {
+	/** Optional pre-created executor (allows sharing a single docker:auto container). */
+	executor?: Executor;
 	/** Enable extended thinking mode */
 	thinking?: boolean;
 	/** Callback to request approval for destructive commands */
@@ -626,6 +676,24 @@ export interface AgentRunnerOptions {
 	allowedTools?: string[] | "all";
 	/** Thread memory configuration */
 	threadMemory?: ThreadMemoryConfig;
+	/** Callback to retrieve connector credentials by instance name */
+	getConnectorCredentials?: (
+		name: string,
+	) => Promise<import("./connectors/types.js").ConnectorCredentials | null>;
+	/**
+	 * Restrict connector tools to these capability categories for this run.
+	 * If omitted, all connector capabilities are exposed.
+	 */
+	connectorAllowedCategories?: Array<ConnectorCapability["category"]>;
+	/** Workspace-scoped dashboard registry for persisted BI dashboards (control plane). */
+	dashboardRegistry?: DashboardRegistry;
+	/** Public base URL for the control plane UI (used for links in Slack). */
+	controlPlaneBaseUrl?: string;
+	/** Called when the deploy tool successfully deploys an app */
+	onDeploy?: (
+		label: string,
+		details: import("./tools/index.js").DeployDetails,
+	) => void;
 }
 
 export function createAgentRunner(
@@ -634,8 +702,9 @@ export function createAgentRunner(
 	options?: AgentRunnerOptions,
 ): AgentRunner {
 	let agent: Agent | null = null;
-	const executor = createExecutor(sandboxConfig);
+	const executor = options?.executor ?? createExecutor(sandboxConfig);
 	const costTracker = workingDir ? new CostTracker(workingDir) : null;
+	let connectorRegistry: ConnectorRegistryInstance | null = null;
 	const threadMemory = workingDir
 		? new ThreadMemoryManager(workingDir, options?.threadMemory)
 		: null;
@@ -698,16 +767,51 @@ export function createAgentRunner(
 				await ctx.uploadFile(hostPath, title);
 			});
 
+			// Initialize connector registry (lazy, one-time)
+			if (
+				!connectorRegistry &&
+				workingDir &&
+				options?.getConnectorCredentials
+			) {
+				try {
+					connectorRegistry = await createConnectorRegistry({
+						workingDir,
+						getCredentials: options.getConnectorCredentials,
+						allowedCategories: options.connectorAllowedCategories,
+					});
+				} catch (error) {
+					logger.logWarning(
+						"Failed to initialize connector registry",
+						error instanceof Error ? error.message : String(error),
+					);
+				}
+			}
+
 			// Create tools with executor
+			const extraTools = [
+				...(connectorRegistry?.tools ?? []),
+				...(options?.dashboardRegistry
+					? [
+							createLiveDashboardTool({
+								teamId: ctx.teamId,
+								dashboardRegistry: options.dashboardRegistry,
+								createdBy: ctx.message.user,
+								uiBaseUrl: options.controlPlaneBaseUrl,
+								defaultRefreshIntervalMs: 5 * 60 * 1000,
+							}),
+						]
+					: []),
+			];
 			let tools = createSlackAgentTools(executor, {
 				containerName: executor.getContainerName(),
 				onApprovalNeeded: options?.onApprovalNeeded,
 				scheduleOptions: options?.scheduleCallbacks,
+				extraTools: extraTools.length ? extraTools : undefined,
+				onDeploy: options?.onDeploy,
 			});
 			if (options?.allowedTools && options.allowedTools !== "all") {
-				tools = tools.filter((tool) =>
-					options.allowedTools?.includes(tool.name),
-				);
+				const allowed = options.allowedTools;
+				tools = tools.filter((tool) => toolNameAllowed(tool.name, allowed));
 				if (tools.length === 0) {
 					logger.logWarning(
 						"No tools enabled for user",
@@ -764,6 +868,7 @@ export function createAgentRunner(
 				sandboxConfig,
 				ctx.channels,
 				ctx.users,
+				connectorRegistry?.describeForPrompt(),
 			);
 
 			logger.logInfo(

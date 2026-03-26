@@ -85,7 +85,7 @@ export class AboutView {
 			? `${this.options.agent.state.model.provider}/${this.options.agent.state.model.id}`
 			: "unknown";
 		const sessionId = this.options.sessionManager.getSessionId();
-		const safeMode = process.env.COMPOSER_SAFE_MODE === "1" ? "on" : "off";
+		const safeMode = process.env.MAESTRO_SAFE_MODE === "1" ? "on" : "off";
 		const pendingTools = this.options.agent.state.pendingToolCalls?.size ?? 0;
 		const approvalMode = this.options.getApprovalMode
 			? this.options.getApprovalMode()
@@ -150,7 +150,7 @@ export class AboutView {
 		const cwd = process.cwd();
 		const sessionFile = this.options.sessionManager.getSessionFile();
 		const sessionDir = sessionFile ? dirname(sessionFile) : "(pending)";
-		const composerDir = PATHS.COMPOSER_HOME;
+		const composerDir = PATHS.MAESTRO_HOME;
 		const lines = [
 			`${this.badge("cwd")}${cwd}`,
 			`${this.badge("session")}${sessionDir}`,

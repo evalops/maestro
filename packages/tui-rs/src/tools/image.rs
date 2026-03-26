@@ -21,7 +21,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::tools::image::{ImageTool, ReadImageArgs};
+//! use maestro_tui::tools::image::{ImageTool, ReadImageArgs};
 //!
 //! let tool = ImageTool::new();
 //! let result = tool.read_image(ReadImageArgs {

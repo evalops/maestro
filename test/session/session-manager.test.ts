@@ -75,12 +75,12 @@ describe("SessionManager - Deferred Session Creation", () => {
 	beforeEach(() => {
 		// Save original state
 		originalCwd = process.cwd();
-		originalEnv = process.env.COMPOSER_AGENT_DIR;
+		originalEnv = process.env.MAESTRO_AGENT_DIR;
 
 		// Create temp test directory for sessions
 		testDir = join(tmpdir(), `composer-sessions-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
-		process.env.COMPOSER_AGENT_DIR = testDir;
+		process.env.MAESTRO_AGENT_DIR = testDir;
 
 		// Change to test directory
 		process.chdir(testDir);
@@ -165,9 +165,9 @@ describe("SessionManager - Deferred Session Creation", () => {
 		// Restore original state
 		process.chdir(originalCwd);
 		if (originalEnv === undefined) {
-			Reflect.deleteProperty(process.env, "COMPOSER_AGENT_DIR");
+			Reflect.deleteProperty(process.env, "MAESTRO_AGENT_DIR");
 		} else {
-			process.env.COMPOSER_AGENT_DIR = originalEnv;
+			process.env.MAESTRO_AGENT_DIR = originalEnv;
 		}
 
 		// Cleanup test directory

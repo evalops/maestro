@@ -75,8 +75,8 @@ export async function refreshAnthropicToken(
 
 /**
  * Migrate old Anthropic OAuth credentials to new generic format
- * This reads from the old ~/.composer/anthropic-oauth.json file
- * and migrates to the new ~/.composer/oauth.json format
+ * This reads from the old ~/.maestro/anthropic-oauth.json file
+ * and migrates to the new ~/.maestro/oauth.json format
  */
 export async function migrateAnthropicCredentials(): Promise<boolean> {
 	try {

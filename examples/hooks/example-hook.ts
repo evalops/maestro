@@ -8,8 +8,8 @@
  * 4. Injects messages via pi.send()
  *
  * To use this hook:
- * 1. Copy to ~/.composer/hooks/example-hook.ts
- * 2. Restart Composer
+ * 1. Copy to ~/.maestro/hooks/example-hook.ts
+ * 2. Restart Maestro
  *
  * The hook will be automatically discovered and loaded.
  */
@@ -19,7 +19,7 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 
 // Log file for tracking agent activity
-const LOG_FILE = join(process.env.HOME || "~", ".composer", "hook-activity.log");
+const LOG_FILE = join(process.env.HOME || "~", ".maestro", "hook-activity.log");
 
 function log(message: string) {
 	const timestamp = new Date().toISOString();

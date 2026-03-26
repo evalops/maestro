@@ -16,7 +16,7 @@ describe("Settings Encryption", () => {
 
 	describe("Organization Settings", () => {
 		it("should encrypt webhookSigningSecret when encryption is enabled", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 			const { encryptOrgSettings, decryptOrgSettings } = await import(
@@ -49,7 +49,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should pass through settings unchanged when encryption is disabled", async () => {
-			Reflect.deleteProperty(process.env, "COMPOSER_DB_ENCRYPTION_KEY");
+			Reflect.deleteProperty(process.env, "MAESTRO_DB_ENCRYPTION_KEY");
 
 			const { encryptOrgSettings } = await import(
 				"../src/db/settings-encryption.js"
@@ -73,7 +73,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should handle null and undefined settings", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 			const { encryptOrgSettings, decryptOrgSettings } = await import(
@@ -87,7 +87,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should handle settings without sensitive fields", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 			const { encryptOrgSettings, decryptOrgSettings } = await import(
@@ -106,7 +106,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should detect encrypted org secrets", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 			const { encryptOrgSettings, isOrgSecretEncrypted } = await import(
@@ -126,7 +126,7 @@ describe("Settings Encryption", () => {
 
 	describe("User Settings", () => {
 		it("should encrypt twoFactor.secret when encryption is enabled", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 			const { encryptUserSettings, decryptUserSettings } = await import(
@@ -166,7 +166,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should pass through user settings unchanged when encryption is disabled", async () => {
-			Reflect.deleteProperty(process.env, "COMPOSER_DB_ENCRYPTION_KEY");
+			Reflect.deleteProperty(process.env, "MAESTRO_DB_ENCRYPTION_KEY");
 
 			const { encryptUserSettings } = await import(
 				"../src/db/settings-encryption.js"
@@ -192,7 +192,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should handle null and undefined user settings", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 			const { encryptUserSettings, decryptUserSettings } = await import(
@@ -206,7 +206,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should handle user settings without twoFactor", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 			const { encryptUserSettings, decryptUserSettings } = await import(
@@ -225,7 +225,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should handle twoFactor without secret", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 			const { encryptUserSettings, decryptUserSettings } = await import(
@@ -246,7 +246,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should detect encrypted user TOTP secrets", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 			const { encryptUserSettings, isUserTotpSecretEncrypted } = await import(
@@ -269,7 +269,7 @@ describe("Settings Encryption", () => {
 
 	describe("Migration Compatibility", () => {
 		it("should decrypt values that are already encrypted", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 			const { encryptOrgSettings, decryptOrgSettings } = await import(
@@ -286,7 +286,7 @@ describe("Settings Encryption", () => {
 		});
 
 		it("should pass through unencrypted values during read", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 			const { decryptOrgSettings } = await import(

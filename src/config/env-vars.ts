@@ -1,7 +1,7 @@
 /**
  * Environment Variable Configuration
  *
- * Centralized configuration for all COMPOSER_* environment variables.
+ * Centralized configuration for all MAESTRO_* environment variables.
  * Inspired by Claude Code's CLAUDE_CODE_* variables.
  *
  * Environment variables provide runtime configuration without modifying
@@ -11,50 +11,50 @@
  * ## Supported Variables
  *
  * ### Core Settings
- * - COMPOSER_MODEL - Override the default model
- * - COMPOSER_MODEL_PROVIDER - Override the model provider
- * - COMPOSER_PROFILE - Select a config profile
- * - COMPOSER_APPROVAL_POLICY - Set approval policy (untrusted|on-failure|on-request|never)
- * - COMPOSER_SANDBOX_MODE - Set sandbox mode (read-only|workspace-write|danger-full-access)
+ * - MAESTRO_MODEL - Override the default model
+ * - MAESTRO_MODEL_PROVIDER - Override the model provider
+ * - MAESTRO_PROFILE - Select a config profile
+ * - MAESTRO_APPROVAL_POLICY - Set approval policy (untrusted|on-failure|on-request|never)
+ * - MAESTRO_SANDBOX_MODE - Set sandbox mode (read-only|workspace-write|danger-full-access)
  *
  * ### Behavior Controls
- * - COMPOSER_MAX_OUTPUT_TOKENS - Maximum tokens for model output
- * - COMPOSER_DISABLE_TELEMETRY - Disable telemetry (1 to disable)
- * - COMPOSER_DISABLE_TERMINAL_TITLE - Don't update terminal title (1 to disable)
- * - COMPOSER_DISABLE_ANIMATIONS - Disable TUI animations (1 to disable)
- * - COMPOSER_CONTEXT_FIREWALL_BLOCKING - Enable/disable blocking of sensitive content in tool args (default: 1)
+ * - MAESTRO_MAX_OUTPUT_TOKENS - Maximum tokens for model output
+ * - MAESTRO_DISABLE_TELEMETRY - Disable telemetry (1 to disable)
+ * - MAESTRO_DISABLE_TERMINAL_TITLE - Don't update terminal title (1 to disable)
+ * - MAESTRO_DISABLE_ANIMATIONS - Disable TUI animations (1 to disable)
+ * - MAESTRO_CONTEXT_FIREWALL_BLOCKING - Enable/disable blocking of sensitive content in tool args (default: 1)
  *
  * ### Subagent Configuration
- * - COMPOSER_SUBAGENT_MODEL - Model to use for subagents
- * - COMPOSER_ORACLE_MODEL - Model to use for the Oracle tool
+ * - MAESTRO_SUBAGENT_MODEL - Model to use for subagents
+ * - MAESTRO_ORACLE_MODEL - Model to use for the Oracle tool
  *
  * ### API Configuration
- * - COMPOSER_API_KEY_HELPER_TTL_MS - Cache TTL for API key helpers
- * - COMPOSER_SKIP_AUTH - Skip authentication (for testing)
+ * - MAESTRO_API_KEY_HELPER_TTL_MS - Cache TTL for API key helpers
+ * - MAESTRO_SKIP_AUTH - Skip authentication (for testing)
  *
  * ### Network Configuration
- * - COMPOSER_HTTP_PROXY - HTTP proxy URL
- * - COMPOSER_HTTPS_PROXY - HTTPS proxy URL
- * - COMPOSER_SOCKS_PROXY - SOCKS proxy URL
- * - COMPOSER_NO_PROXY - Comma-separated list of hosts to bypass proxy
+ * - MAESTRO_HTTP_PROXY - HTTP proxy URL
+ * - MAESTRO_HTTPS_PROXY - HTTPS proxy URL
+ * - MAESTRO_SOCKS_PROXY - SOCKS proxy URL
+ * - MAESTRO_NO_PROXY - Comma-separated list of hosts to bypass proxy
  *
  * ### Debug Configuration
- * - COMPOSER_DEBUG - Enable debug logging (1 to enable)
- * - COMPOSER_LOG_LEVEL - Set log level (debug|info|warn|error)
- * - COMPOSER_USAGE_FILE - Path to write usage data
+ * - MAESTRO_DEBUG - Enable debug logging (1 to enable)
+ * - MAESTRO_LOG_LEVEL - Set log level (debug|info|warn|error)
+ * - MAESTRO_USAGE_FILE - Path to write usage data
  *
  * ### Session Configuration
- * - COMPOSER_NO_SESSION - Disable session persistence (1 to disable)
- * - COMPOSER_SESSION_DIR - Custom session storage directory
- * - COMPOSER_SESSION_SCOPE - Scope sessions by auth subject (auth|true|1)
- * - COMPOSER_MULTI_USER - Alias for COMPOSER_SESSION_SCOPE
- * - COMPOSER_SHARED_MEMORY_BASE - Shared memory base URL (Cloudflare Durable Objects worker)
- * - COMPOSER_SHARED_MEMORY_API_KEY - API key for shared memory service
- * - COMPOSER_SHARED_MEMORY_SESSION_ID - Override session ID for shared memory sync
+ * - MAESTRO_NO_SESSION - Disable session persistence (1 to disable)
+ * - MAESTRO_SESSION_DIR - Custom session storage directory
+ * - MAESTRO_SESSION_SCOPE - Scope sessions by auth subject (auth|true|1)
+ * - MAESTRO_MULTI_USER - Alias for MAESTRO_SESSION_SCOPE
+ * - MAESTRO_SHARED_MEMORY_BASE - Shared memory base URL (Cloudflare Durable Objects worker)
+ * - MAESTRO_SHARED_MEMORY_API_KEY - API key for shared memory service
+ * - MAESTRO_SHARED_MEMORY_SESSION_ID - Override session ID for shared memory sync
  *
  * ### Feature Flags
- * - COMPOSER_ENABLE_* - Enable specific features
- * - COMPOSER_DISABLE_* - Disable specific features
+ * - MAESTRO_ENABLE_* - Enable specific features
+ * - MAESTRO_DISABLE_* - Disable specific features
  */
 
 import { createLogger } from "../utils/logger.js";
@@ -62,56 +62,56 @@ import { createLogger } from "../utils/logger.js";
 const logger = createLogger("config:env");
 
 /**
- * All recognized COMPOSER_* environment variables.
+ * All recognized MAESTRO_* environment variables.
  */
 export const ENV_VARS = {
 	// Core settings
-	MODEL: "COMPOSER_MODEL",
-	MODEL_PROVIDER: "COMPOSER_MODEL_PROVIDER",
-	PROFILE: "COMPOSER_PROFILE",
-	APPROVAL_POLICY: "COMPOSER_APPROVAL_POLICY",
-	SANDBOX_MODE: "COMPOSER_SANDBOX_MODE",
+	MODEL: "MAESTRO_MODEL",
+	MODEL_PROVIDER: "MAESTRO_MODEL_PROVIDER",
+	PROFILE: "MAESTRO_PROFILE",
+	APPROVAL_POLICY: "MAESTRO_APPROVAL_POLICY",
+	SANDBOX_MODE: "MAESTRO_SANDBOX_MODE",
 
 	// Behavior controls
-	MAX_OUTPUT_TOKENS: "COMPOSER_MAX_OUTPUT_TOKENS",
-	DISABLE_TELEMETRY: "COMPOSER_DISABLE_TELEMETRY",
-	DISABLE_TERMINAL_TITLE: "COMPOSER_DISABLE_TERMINAL_TITLE",
-	DISABLE_ANIMATIONS: "COMPOSER_DISABLE_ANIMATIONS",
-	SAFE_MODE: "COMPOSER_SAFE_MODE",
-	CONTEXT_FIREWALL_BLOCKING: "COMPOSER_CONTEXT_FIREWALL_BLOCKING",
+	MAX_OUTPUT_TOKENS: "MAESTRO_MAX_OUTPUT_TOKENS",
+	DISABLE_TELEMETRY: "MAESTRO_DISABLE_TELEMETRY",
+	DISABLE_TERMINAL_TITLE: "MAESTRO_DISABLE_TERMINAL_TITLE",
+	DISABLE_ANIMATIONS: "MAESTRO_DISABLE_ANIMATIONS",
+	SAFE_MODE: "MAESTRO_SAFE_MODE",
+	CONTEXT_FIREWALL_BLOCKING: "MAESTRO_CONTEXT_FIREWALL_BLOCKING",
 
 	// Subagent configuration
-	SUBAGENT_MODEL: "COMPOSER_SUBAGENT_MODEL",
-	ORACLE_MODEL: "COMPOSER_ORACLE_MODEL",
-	SWARM_MODE: "COMPOSER_SWARM_MODE",
-	SWARM_ID: "COMPOSER_SWARM_ID",
-	TEAMMATE_ID: "COMPOSER_TEAMMATE_ID",
+	SUBAGENT_MODEL: "MAESTRO_SUBAGENT_MODEL",
+	ORACLE_MODEL: "MAESTRO_ORACLE_MODEL",
+	SWARM_MODE: "MAESTRO_SWARM_MODE",
+	SWARM_ID: "MAESTRO_SWARM_ID",
+	TEAMMATE_ID: "MAESTRO_TEAMMATE_ID",
 
 	// API configuration
-	API_KEY_HELPER_TTL_MS: "COMPOSER_API_KEY_HELPER_TTL_MS",
-	SKIP_AUTH: "COMPOSER_SKIP_AUTH",
-	SKIP_BEDROCK_AUTH: "COMPOSER_SKIP_BEDROCK_AUTH",
-	SKIP_VERTEX_AUTH: "COMPOSER_SKIP_VERTEX_AUTH",
+	API_KEY_HELPER_TTL_MS: "MAESTRO_API_KEY_HELPER_TTL_MS",
+	SKIP_AUTH: "MAESTRO_SKIP_AUTH",
+	SKIP_BEDROCK_AUTH: "MAESTRO_SKIP_BEDROCK_AUTH",
+	SKIP_VERTEX_AUTH: "MAESTRO_SKIP_VERTEX_AUTH",
 
 	// Network configuration
-	HTTP_PROXY: "COMPOSER_HTTP_PROXY",
-	HTTPS_PROXY: "COMPOSER_HTTPS_PROXY",
-	SOCKS_PROXY: "COMPOSER_SOCKS_PROXY",
-	NO_PROXY: "COMPOSER_NO_PROXY",
+	HTTP_PROXY: "MAESTRO_HTTP_PROXY",
+	HTTPS_PROXY: "MAESTRO_HTTPS_PROXY",
+	SOCKS_PROXY: "MAESTRO_SOCKS_PROXY",
+	NO_PROXY: "MAESTRO_NO_PROXY",
 
 	// Debug configuration
-	DEBUG: "COMPOSER_DEBUG",
-	LOG_LEVEL: "COMPOSER_LOG_LEVEL",
-	USAGE_FILE: "COMPOSER_USAGE_FILE",
+	DEBUG: "MAESTRO_DEBUG",
+	LOG_LEVEL: "MAESTRO_LOG_LEVEL",
+	USAGE_FILE: "MAESTRO_USAGE_FILE",
 
 	// Session configuration
-	NO_SESSION: "COMPOSER_NO_SESSION",
-	SESSION_DIR: "COMPOSER_SESSION_DIR",
-	SESSION_SCOPE: "COMPOSER_SESSION_SCOPE",
-	MULTI_USER: "COMPOSER_MULTI_USER",
-	SHARED_MEMORY_BASE: "COMPOSER_SHARED_MEMORY_BASE",
-	SHARED_MEMORY_API_KEY: "COMPOSER_SHARED_MEMORY_API_KEY",
-	SHARED_MEMORY_SESSION_ID: "COMPOSER_SHARED_MEMORY_SESSION_ID",
+	NO_SESSION: "MAESTRO_NO_SESSION",
+	SESSION_DIR: "MAESTRO_SESSION_DIR",
+	SESSION_SCOPE: "MAESTRO_SESSION_SCOPE",
+	MULTI_USER: "MAESTRO_MULTI_USER",
+	SHARED_MEMORY_BASE: "MAESTRO_SHARED_MEMORY_BASE",
+	SHARED_MEMORY_API_KEY: "MAESTRO_SHARED_MEMORY_API_KEY",
+	SHARED_MEMORY_SESSION_ID: "MAESTRO_SHARED_MEMORY_SESSION_ID",
 } as const;
 
 export type EnvVarName = (typeof ENV_VARS)[keyof typeof ENV_VARS];
@@ -159,20 +159,20 @@ export function getEnvList(name: EnvVarName): string[] | undefined {
 
 /**
  * Check if a feature flag is enabled.
- * Checks COMPOSER_ENABLE_<feature> env var.
+ * Checks MAESTRO_ENABLE_<feature> env var.
  */
 export function isFeatureEnabled(feature: string): boolean {
-	const envName = `COMPOSER_ENABLE_${feature.toUpperCase().replace(/-/g, "_")}`;
+	const envName = `MAESTRO_ENABLE_${feature.toUpperCase().replace(/-/g, "_")}`;
 	const value = process.env[envName]?.toLowerCase().trim();
 	return ["1", "true", "yes", "on"].includes(value || "");
 }
 
 /**
  * Check if a feature flag is disabled.
- * Checks COMPOSER_DISABLE_<feature> env var.
+ * Checks MAESTRO_DISABLE_<feature> env var.
  */
 export function isFeatureDisabled(feature: string): boolean {
-	const envName = `COMPOSER_DISABLE_${feature.toUpperCase().replace(/-/g, "_")}`;
+	const envName = `MAESTRO_DISABLE_${feature.toUpperCase().replace(/-/g, "_")}`;
 	const value = process.env[envName]?.toLowerCase().trim();
 	return ["1", "true", "yes", "on"].includes(value || "");
 }
@@ -193,7 +193,7 @@ export function getProxyConfig(): {
 		noProxy?: string[];
 	} = {};
 
-	// Check COMPOSER_* vars first, then standard vars
+	// Check MAESTRO_* vars first, then standard vars
 	const httpProxy =
 		getEnvString(ENV_VARS.HTTP_PROXY) ||
 		process.env.HTTP_PROXY ||
@@ -229,7 +229,7 @@ export function isSafeMode(): boolean {
 
 /**
  * Check if context firewall blocking is enabled.
- * Defaults to true (blocking enabled). Set COMPOSER_CONTEXT_FIREWALL_BLOCKING=0 to disable.
+ * Defaults to true (blocking enabled). Set MAESTRO_CONTEXT_FIREWALL_BLOCKING=0 to disable.
  *
  * When blocking is disabled, sensitive content (API keys, credentials) can be passed
  * through tool arguments without being blocked. This is useful for testing scenarios
@@ -275,7 +275,7 @@ export function getSubagentModel(): string | undefined {
 }
 
 /**
- * Log all set COMPOSER_* environment variables (for debugging).
+ * Log all set MAESTRO_* environment variables (for debugging).
  */
 export function logEnvVars(): void {
 	const setVars: Record<string, string> = {};
@@ -314,7 +314,7 @@ export function validateEnvVars(): string[] {
 		!["untrusted", "on-failure", "on-request", "never"].includes(approvalPolicy)
 	) {
 		warnings.push(
-			`Invalid COMPOSER_APPROVAL_POLICY: "${approvalPolicy}". Must be one of: untrusted, on-failure, on-request, never`,
+			`Invalid MAESTRO_APPROVAL_POLICY: "${approvalPolicy}". Must be one of: untrusted, on-failure, on-request, never`,
 		);
 	}
 
@@ -327,7 +327,7 @@ export function validateEnvVars(): string[] {
 		)
 	) {
 		warnings.push(
-			`Invalid COMPOSER_SANDBOX_MODE: "${sandboxMode}". Must be one of: read-only, workspace-write, danger-full-access`,
+			`Invalid MAESTRO_SANDBOX_MODE: "${sandboxMode}". Must be one of: read-only, workspace-write, danger-full-access`,
 		);
 	}
 
@@ -335,7 +335,7 @@ export function validateEnvVars(): string[] {
 	const logLevel = getEnvString(ENV_VARS.LOG_LEVEL);
 	if (logLevel && !["debug", "info", "warn", "error"].includes(logLevel)) {
 		warnings.push(
-			`Invalid COMPOSER_LOG_LEVEL: "${logLevel}". Must be one of: debug, info, warn, error`,
+			`Invalid MAESTRO_LOG_LEVEL: "${logLevel}". Must be one of: debug, info, warn, error`,
 		);
 	}
 
@@ -347,7 +347,7 @@ export function validateEnvVars(): string[] {
 			Number.parseInt(maxTokens, 10) < 1)
 	) {
 		warnings.push(
-			`Invalid COMPOSER_MAX_OUTPUT_TOKENS: "${maxTokens}". Must be a positive integer`,
+			`Invalid MAESTRO_MAX_OUTPUT_TOKENS: "${maxTokens}". Must be a positive integer`,
 		);
 	}
 

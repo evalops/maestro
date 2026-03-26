@@ -263,7 +263,7 @@ impl TailSamplingConfig {
     pub fn from_env() -> Self {
         let mut config = Self::default();
 
-        if let Ok(rate) = std::env::var("COMPOSER_WIDE_EVENT_SAMPLE_RATE") {
+        if let Ok(rate) = std::env::var("MAESTRO_WIDE_EVENT_SAMPLE_RATE") {
             if let Ok(r) = rate.parse::<f64>() {
                 if (0.0..=1.0).contains(&r) {
                     config.success_sample_rate = r;
@@ -271,7 +271,7 @@ impl TailSamplingConfig {
             }
         }
 
-        if let Ok(threshold) = std::env::var("COMPOSER_WIDE_EVENT_SLOW_THRESHOLD_MS") {
+        if let Ok(threshold) = std::env::var("MAESTRO_WIDE_EVENT_SLOW_THRESHOLD_MS") {
             if let Ok(t) = threshold.parse::<u64>() {
                 config.slow_threshold_ms = t;
             }

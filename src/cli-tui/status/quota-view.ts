@@ -119,7 +119,7 @@ export class QuotaView {
 	} | null> {
 		try {
 			const { verifyToken } = await import("../../auth/jwt.js");
-			const storedToken = process.env.COMPOSER_ENTERPRISE_TOKEN;
+			const storedToken = process.env.MAESTRO_ENTERPRISE_TOKEN;
 			if (!storedToken) return null;
 
 			const payload = verifyToken(storedToken);
@@ -155,7 +155,7 @@ export class QuotaView {
 			lines.push(
 				muted("Enterprise quota features require database configuration."),
 			);
-			lines.push(muted("Set COMPOSER_DATABASE_URL to enable org-wide quotas."));
+			lines.push(muted("Set MAESTRO_DATABASE_URL to enable org-wide quotas."));
 			lines.push("");
 			lines.push(
 				muted("Set a local session limit with: /quota limit <tokens>"),

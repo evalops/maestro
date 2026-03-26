@@ -25,7 +25,7 @@ const mockValidate = vi.mocked(validateConfig);
 const mockInspect = vi.mocked(inspectConfig);
 const mockHierarchy = vi.mocked(getConfigHierarchy);
 
-const TEST_HIERARCHY = ["/home/user/.composer/config.json"];
+const TEST_HIERARCHY = ["/home/user/.maestro/config.json"];
 
 const createContext = (
 	argumentText: string,
@@ -58,7 +58,7 @@ const createInspection = (): ConfigInspection => ({
 	sources: [
 		{ path: TEST_HIERARCHY[0]!, exists: true, loaded: true },
 		{
-			path: "/tmp/project/.composer/config.json",
+			path: "/tmp/project/.maestro/config.json",
 			exists: false,
 			loaded: false,
 		},
@@ -80,7 +80,7 @@ const createInspection = (): ConfigInspection => ({
 	],
 	fileReferences: [
 		{
-			path: "/home/user/.composer/prompts/system.md",
+			path: "/home/user/.maestro/prompts/system.md",
 			exists: true,
 			size: 1024,
 		},
@@ -117,7 +117,7 @@ describe("ConfigView", () => {
 		);
 		expect(textComponent).toBeDefined();
 		const rendered = textComponent?.render(120).join("\n") ?? "";
-		expect(rendered).toContain("Composer configuration");
+		expect(rendered).toContain("Maestro configuration");
 		expect(rendered).toContain("Anthropic");
 		expect(rendered).toContain("API key");
 		expect(rendered).toContain("Environment variables");

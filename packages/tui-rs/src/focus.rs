@@ -86,7 +86,7 @@ pub trait Focusable {
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::focus::{FocusManager, Focusable, InputResult};
+/// use maestro_tui::focus::{FocusManager, Focusable, InputResult};
 ///
 /// struct MyWidget { /* ... */ }
 ///

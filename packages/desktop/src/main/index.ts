@@ -21,7 +21,7 @@ const __dirname = dirname(__filename);
 app.disableHardwareAcceleration();
 
 // Set app name
-app.setName("Composer");
+app.setName("Maestro");
 
 // Keep a global reference of the window object
 let mainWindow: BrowserWindow | null = null;

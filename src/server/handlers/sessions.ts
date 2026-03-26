@@ -27,7 +27,7 @@
  *
  * ## Storage
  *
- * - Session data: JSONL files in `~/.composer/agent/sessions/`
+ * - Session data: JSONL files in `~/.maestro/agent/sessions/`
  * - Share tokens: PostgreSQL (with in-memory fallback)
  * - Rate limits: Redis (with in-memory fallback)
  *
@@ -107,7 +107,7 @@ function verifySessionOwnership(
 	// In strict mode (multi-user), deny access to prevent IDOR attacks.
 	// Sessions created via CLI don't have ownership info, but API access
 	// should be restricted in hosted environments.
-	const strictMode = process.env.COMPOSER_STRICT_SESSION_ACCESS !== "false";
+	const strictMode = process.env.MAESTRO_STRICT_SESSION_ACCESS !== "false";
 	return !strictMode;
 }
 

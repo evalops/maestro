@@ -222,9 +222,9 @@ interface SessionArtifactAccessResponse {
 
 declare global {
 	interface Window {
-		__COMPOSER_API__?: string;
-		__COMPOSER_API_KEY__?: string;
-		__COMPOSER_CSRF_TOKEN__?: string;
+		__MAESTRO_API__?: string;
+		__MAESTRO_API_KEY__?: string;
+		__MAESTRO_CSRF_TOKEN__?: string;
 	}
 }
 
@@ -573,7 +573,7 @@ export class ApiClient {
 	 *
 	 * The base URL is resolved in order of priority:
 	 * 1. Explicit baseUrl parameter
-	 * 2. window.__COMPOSER_API__ global
+	 * 2. window.__MAESTRO_API__ global
 	 * 3. ?api= URL parameter
 	 * 4. Same origin as current page
 	 * 5. VITE_API_ENDPOINT env variable
@@ -585,9 +585,9 @@ export class ApiClient {
 		let resolved = baseUrl;
 		// Window override via global (allows runtime swap without rebuild)
 		if (!resolved && typeof window !== "undefined") {
-			const winWithApi = window as Window & { __COMPOSER_API__?: string };
-			if (typeof winWithApi.__COMPOSER_API__ === "string") {
-				resolved = winWithApi.__COMPOSER_API__;
+			const winWithApi = window as Window & { __MAESTRO_API__?: string };
+			if (typeof winWithApi.__MAESTRO_API__ === "string") {
+				resolved = winWithApi.__MAESTRO_API__;
 			}
 			// ?api= URL param override
 			if (!resolved && window.location?.search) {
@@ -653,21 +653,21 @@ export class ApiClient {
 		const stored = getStoredComposerApiKey();
 		if (stored) return stored;
 		if (typeof window === "undefined") return null;
-		return this.readWindowOverride("__COMPOSER_API_KEY__", ["apiKey"]);
+		return this.readWindowOverride("__MAESTRO_API_KEY__", ["apiKey"]);
 	}
 
 	private resolveCsrfToken(): string | null {
 		const stored = getStoredComposerCsrfToken();
 		if (stored) return stored;
 		if (typeof window === "undefined") return null;
-		return this.readWindowOverride("__COMPOSER_CSRF_TOKEN__", [
+		return this.readWindowOverride("__MAESTRO_CSRF_TOKEN__", [
 			"csrf",
 			"csrfToken",
 		]);
 	}
 
 	private readWindowOverride(
-		windowKey: "__COMPOSER_API_KEY__" | "__COMPOSER_CSRF_TOKEN__",
+		windowKey: "__MAESTRO_API_KEY__" | "__MAESTRO_CSRF_TOKEN__",
 		queryKeys: string[],
 	): string | null {
 		const direct = window[windowKey]?.trim();

@@ -7,7 +7,7 @@
  *
  * ## Features
  *
- * - **Connection Pooling**: Configurable pool size via `COMPOSER_DB_MAX_CONNECTIONS`
+ * - **Connection Pooling**: Configurable pool size via `MAESTRO_DB_MAX_CONNECTIONS`
  * - **Graceful Shutdown**: Signal handlers ensure clean connection closure
  * - **Lazy Initialization**: Database connects on first use
  * - **Health Checks**: `testConnection()` for readiness probes
@@ -16,11 +16,11 @@
  *
  * | Environment Variable | Description | Default |
  * |---------------------|-------------|---------|
- * | `COMPOSER_DATABASE_URL` | PostgreSQL connection string | (required) |
+ * | `MAESTRO_DATABASE_URL` | PostgreSQL connection string | (required) |
  * | `DATABASE_URL` | Fallback connection string | - |
- * | `COMPOSER_DB_MAX_CONNECTIONS` | Connection pool size | 10 |
- * | `COMPOSER_DB_IDLE_TIMEOUT` | Idle connection timeout (seconds) | 20 |
- * | `COMPOSER_DB_CONNECT_TIMEOUT` | Connection timeout (seconds) | 10 |
+ * | `MAESTRO_DB_MAX_CONNECTIONS` | Connection pool size | 10 |
+ * | `MAESTRO_DB_IDLE_TIMEOUT` | Idle connection timeout (seconds) | 20 |
+ * | `MAESTRO_DB_CONNECT_TIMEOUT` | Connection timeout (seconds) | 10 |
  *
  * ## Usage
  *
@@ -70,26 +70,26 @@ export interface DatabaseConfig {
 }
 
 function getDatabaseConfig(): DatabaseConfig {
-	const url = process.env.COMPOSER_DATABASE_URL || process.env.DATABASE_URL;
+	const url = process.env.MAESTRO_DATABASE_URL || process.env.DATABASE_URL;
 
 	if (!url) {
 		throw new Error(
-			"COMPOSER_DATABASE_URL or DATABASE_URL environment variable must be set for enterprise features",
+			"MAESTRO_DATABASE_URL or DATABASE_URL environment variable must be set for enterprise features",
 		);
 	}
 
 	return {
 		url,
 		maxConnections: Number.parseInt(
-			process.env.COMPOSER_DB_MAX_CONNECTIONS || "10",
+			process.env.MAESTRO_DB_MAX_CONNECTIONS || "10",
 			10,
 		),
 		idleTimeout: Number.parseInt(
-			process.env.COMPOSER_DB_IDLE_TIMEOUT || "20",
+			process.env.MAESTRO_DB_IDLE_TIMEOUT || "20",
 			10,
 		),
 		connectTimeout: Number.parseInt(
-			process.env.COMPOSER_DB_CONNECT_TIMEOUT || "10",
+			process.env.MAESTRO_DB_CONNECT_TIMEOUT || "10",
 			10,
 		),
 	};
@@ -128,7 +128,7 @@ export async function closeDb(): Promise<void> {
  * Check if database is configured and available
  */
 export function isDatabaseConfigured(): boolean {
-	return !!(process.env.COMPOSER_DATABASE_URL || process.env.DATABASE_URL);
+	return !!(process.env.MAESTRO_DATABASE_URL || process.env.DATABASE_URL);
 }
 
 /**

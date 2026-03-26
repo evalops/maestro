@@ -56,7 +56,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::hooks::{HookRegistry, PreToolUseHook, HookResult};
+//! use maestro_tui::hooks::{HookRegistry, PreToolUseHook, HookResult};
 //!
 //! struct LoggingHook;
 //!

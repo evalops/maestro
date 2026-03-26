@@ -22,7 +22,7 @@
 //! # Example
 //!
 //! ```rust
-//! use composer_tui::agent::credential_store::{CredentialStore, CredentialType};
+//! use maestro_tui::agent::credential_store::{CredentialStore, CredentialType};
 //!
 //! let mut store = CredentialStore::new();
 //!

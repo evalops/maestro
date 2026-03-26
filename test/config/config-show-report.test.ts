@@ -12,7 +12,7 @@ beforeAll(() => {
 
 const sampleInspection: ConfigInspection = {
 	sources: [
-		{ path: "/Users/test/.composer/config.json", exists: true, loaded: true },
+		{ path: "/Users/test/.maestro/config.json", exists: true, loaded: true },
 		{ path: "/etc/composer/config.json", exists: false, loaded: false },
 	],
 	providers: [
@@ -40,7 +40,7 @@ const sampleInspection: ConfigInspection = {
 describe("buildConfigShowSections", () => {
 	it("produces snapshot for populated inspection", () => {
 		const result = buildConfigShowSections(sampleInspection, {
-			hierarchy: ["/Users/test/.composer/config.json"],
+			hierarchy: ["/Users/test/.maestro/config.json"],
 			homeDir: "/Users/test",
 			disableColors: true,
 		});

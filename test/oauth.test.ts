@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Set up test directory before importing modules
 const testDir = join(tmpdir(), `composer-oauth-test-${Date.now()}`);
-process.env.COMPOSER_AGENT_DIR = join(testDir, "agent");
+process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 
 import {
 	type SupportedOAuthProvider,
@@ -24,7 +24,7 @@ import {
 
 describe("OAuth Storage", () => {
 	beforeEach(() => {
-		process.env.COMPOSER_AGENT_DIR = join(testDir, "agent");
+		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 		// Create test directory
 		mkdirSync(testDir, { recursive: true });
 	});
@@ -108,7 +108,7 @@ describe("OAuth Storage", () => {
 
 describe("OAuth Index", () => {
 	beforeEach(() => {
-		process.env.COMPOSER_AGENT_DIR = join(testDir, "agent");
+		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 		mkdirSync(testDir, { recursive: true });
 	});
 
@@ -236,7 +236,7 @@ describe("OAuth Index", () => {
 
 describe("GitHub Copilot OAuth", () => {
 	beforeEach(() => {
-		process.env.COMPOSER_AGENT_DIR = join(testDir, "agent");
+		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 		mkdirSync(testDir, { recursive: true });
 	});
 
@@ -279,7 +279,7 @@ describe("GitHub Copilot OAuth", () => {
 
 describe("OpenAI OAuth", () => {
 	beforeEach(() => {
-		process.env.COMPOSER_AGENT_DIR = join(testDir, "agent");
+		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 		mkdirSync(testDir, { recursive: true });
 	});
 
@@ -299,7 +299,7 @@ describe("OpenAI OAuth", () => {
 
 describe("Anthropic OAuth", () => {
 	beforeEach(() => {
-		process.env.COMPOSER_AGENT_DIR = join(testDir, "agent");
+		process.env.MAESTRO_AGENT_DIR = join(testDir, "agent");
 		mkdirSync(testDir, { recursive: true });
 	});
 

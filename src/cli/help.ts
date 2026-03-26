@@ -1,14 +1,14 @@
 /**
  * @fileoverview CLI Help Output Module
  *
- * This module generates and displays the `--help` output for the Composer CLI.
+ * This module generates and displays the `--help` output for the Maestro CLI.
  * It provides a comprehensive overview of:
  *
  * - **Usage syntax** and common invocation patterns
  * - **Command-line options** for provider, model, session management, etc.
  * - **Environment variables** for API keys and configuration
  * - **Available tools** and their capabilities
- * - **Subcommands** like `composer exec` for headless execution
+ * - **Subcommands** like `maestro exec` for headless execution
  * - **Session management** commands and workflows
  *
  * ## Styling
@@ -26,11 +26,11 @@ import { badge, heading, muted, sectionHeading } from "../style/theme.js";
 /**
  * Prints the complete CLI help message to stdout.
  *
- * This function is invoked when the user runs `composer --help` or `composer -h`.
+ * This function is invoked when the user runs `maestro --help` or `maestro -h`.
  * It formats and displays all available options, commands, and usage examples
  * using the terminal theme for consistent styling.
  *
- * @param version - The current Composer version string (e.g., "1.2.3")
+ * @param version - The current Maestro version string (e.g., "1.2.3")
  *
  * @example
  * ```typescript
@@ -44,11 +44,11 @@ import { badge, heading, muted, sectionHeading } from "../style/theme.js";
  * ```
  */
 export function printHelp(version: string) {
-	const header = `${heading("Composer")} ${muted(
+	const header = `${heading("Maestro")} ${muted(
 		`v${version} by EvalOps — AI coding assistant with read, list, search, diff, bash, edit, write, todo tools`,
 	)}`;
 	const usage = `${sectionHeading("Usage")}${muted(
-		"composer [options] [messages...]",
+		"maestro [options] [messages...]",
 	)}`;
 	const options = `${sectionHeading("Options")}${[
 		"--provider <name>       Provider name (default: anthropic)",
@@ -62,7 +62,7 @@ export function printHelp(version: string) {
 		"--auth <mode>           Credential mode: auto (default), api-key, claude",
 		"--approval-mode <mode>  Action approvals: prompt (default in TUI), auto, fail",
 		"--sandbox <mode>        Sandbox mode: docker, local, none (see docs/SAFETY.md)",
-		"--port <n>              Port for `composer web` (defaults to PORT env or 8080)",
+		"--port <n>              Port for `maestro web` (defaults to PORT env or 8080)",
 		"--continue, -c          Continue previous session",
 		"--resume, -r            Select a session to resume",
 		"--session <path>        Use specific session file",
@@ -74,19 +74,19 @@ export function printHelp(version: string) {
 		.join("\n")}`;
 	const examples = `${sectionHeading("Examples")}${muted(
 		`  # Interactive mode (no messages = interactive TUI)
-  composer
+  maestro
 
   # Single message
-  composer "List all .ts files in src/"
+  maestro "List all .ts files in src/"
 
   # Multiple messages
-  composer "Read package.json" "What dependencies do we have?"
+  maestro "Read package.json" "What dependencies do we have?"
 
   # Continue previous session
-  composer --continue "What did we discuss?"
+  maestro --continue "What did we discuss?"
 
   # Use different model
-  composer --provider openai --model gpt-4o-mini "Help me refactor this code"`,
+  maestro --provider openai --model gpt-4o-mini "Help me refactor this code"`,
 	)}`;
 	const env = `${sectionHeading("Environment Variables:")}${muted(
 		`  GEMINI_API_KEY          - Google Gemini API key
@@ -94,18 +94,18 @@ export function printHelp(version: string) {
   ANTHROPIC_API_KEY       - Anthropic API key
   CLAUDE_CODE_TOKEN       - Claude Code access token for --auth claude
   ANTHROPIC_OAUTH_TOKEN   - Alternate env for Claude Code bearer tokens
-  COMPOSER_AGENT_DIR      - Session storage directory (default: ~/.composer/agent)
-  COMPOSER_SANDBOX_MODE   - Sandbox mode: docker, local, none (default: none)
-  COMPOSER_CHANGELOG      - Set to off/false/hide/hidden/skip/0 to hide startup changelog banner
-  COMPOSER_TUI_MINIMAL    - Set to 1/true to disable animations and reduce TUI effects (SSH-friendly)
-  COMPOSER_TUI_TOOL_MAX_CHARS - Max chars shown per tool output panel (0 = unlimited)
-  COMPOSER_TUI_TOOL_MAX_LINES - Max lines shown per tool output panel (0 = unlimited)
-  COMPOSER_SHARED_MEMORY_BASE - Shared memory base URL (Cloudflare Durable Objects worker)
-  COMPOSER_SHARED_MEMORY_API_KEY - API key for shared memory service
+  MAESTRO_AGENT_DIR      - Session storage directory (default: ~/.maestro/agent)
+  MAESTRO_SANDBOX_MODE   - Sandbox mode: docker, local, none (default: none)
+  MAESTRO_CHANGELOG      - Set to off/false/hide/hidden/skip/0 to hide startup changelog banner
+  MAESTRO_TUI_MINIMAL    - Set to 1/true to disable animations and reduce TUI effects (SSH-friendly)
+  MAESTRO_TUI_TOOL_MAX_CHARS - Max chars shown per tool output panel (0 = unlimited)
+  MAESTRO_TUI_TOOL_MAX_LINES - Max lines shown per tool output panel (0 = unlimited)
+  MAESTRO_SHARED_MEMORY_BASE - Shared memory base URL (Cloudflare Durable Objects worker)
+  MAESTRO_SHARED_MEMORY_API_KEY - API key for shared memory service
   CODING_AGENT_DIR        - Legacy session directory override (fallback)`,
 	)}`;
-	const execSection = `${sectionHeading("composer exec")}${muted(
-		`  composer exec "Summarize recent changes" --json
+	const execSection = `${sectionHeading("maestro exec")}${muted(
+		`  maestro exec "Summarize recent changes" --json
 
   Flags:
     --json                      Stream JSONL thread/turn events
@@ -116,19 +116,19 @@ export function printHelp(version: string) {
     --resume <sessionId>        Resume a prior exec session by id
     --last                      Resume the most recent exec session`,
 	)}`;
-	const webSection = `${sectionHeading("composer web")}${muted(
+	const webSection = `${sectionHeading("maestro web")}${muted(
 		`  # Start the bundled web UI + API server
-  composer web
+  maestro web
 
   # Use a custom port
-  composer web --port 3000`,
+  maestro web --port 3000`,
 	)}`;
-	const memorySection = `${sectionHeading("composer memory")}${muted(
-		`  composer memory [status]         Show shared memory service status
-  composer memory session <id>     Show per-session metrics
-  composer memory audit <id> [n]   Show recent sync audit entries
-  composer memory export <id>      Export metrics log as JSONL
-  composer memory watch [id] [ms]  Poll status/metrics continuously`,
+	const memorySection = `${sectionHeading("maestro memory")}${muted(
+		`  maestro memory [status]         Show shared memory service status
+  maestro memory session <id>     Show per-session metrics
+  maestro memory audit <id> [n]   Show recent sync audit entries
+  maestro memory export <id>      Export metrics log as JSONL
+  maestro memory watch [id] [ms]  Poll status/metrics continuously`,
 	)}`;
 	const sessionsSection = `${sectionHeading("Session Metadata")}${muted(
 		`  /session favorite|unfavorite      Toggle favorite for current session
@@ -153,7 +153,7 @@ export function printHelp(version: string) {
   todo   - Create TodoWrite-style checklists
 
   Read-only tools: read,list,find,search,parallel_ripgrep,diff,status
-  Example: composer --tools read,list,find,search,parallel_ripgrep,diff "Analyze this code"`,
+  Example: maestro --tools read,list,find,search,parallel_ripgrep,diff "Analyze this code"`,
 	)}`;
 
 	const frameworkSection = `${sectionHeading("Framework Preference")}${muted(
@@ -177,7 +177,7 @@ export function printHelp(version: string) {
 			sessionsDiscovery,
 			`${sectionHeading("Tips")}${badge(
 				"Need models?",
-				"composer models list",
+				"maestro models list",
 				"info",
 			)}`,
 			frameworkSection,

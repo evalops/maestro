@@ -87,7 +87,7 @@ export function handlePlanModeCommand(
 			context.showError('Plan mode must be "on" or "off".');
 			return;
 		}
-		process.env.COMPOSER_PLAN_MODE = arg === "on" ? "1" : "0";
+		process.env.MAESTRO_PLAN_MODE = arg === "on" ? "1" : "0";
 		handlers.showToast(
 			`Plan mode ${arg === "on" ? "enabled" : "disabled"}.`,
 			"success",
@@ -96,8 +96,7 @@ export function handlePlanModeCommand(
 	}
 
 	// Display current status
-	const status =
-		process.env.COMPOSER_PLAN_MODE === "1" ? "enabled" : "disabled";
+	const status = process.env.MAESTRO_PLAN_MODE === "1" ? "enabled" : "disabled";
 	handlers.addContent(`Plan mode is ${status}.`);
 	handlers.requestRender();
 }

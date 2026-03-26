@@ -3,16 +3,16 @@
  *
  * Ported from OpenAI Codex (MIT License) config pattern.
  * Supports:
- * - ~/.composer/config.toml (global config)
- * - .composer/config.toml (project config - shared, committed to git)
- * - .composer/config.local.toml (local overrides - gitignored)
+ * - ~/.maestro/config.toml (global config)
+ * - .maestro/config.toml (project config - shared, committed to git)
+ * - .maestro/config.local.toml (local overrides - gitignored)
  * - Named profiles for different configurations
  * - Environment variable overrides
  * - CLI flag overrides
  *
  * Configuration precedence (highest first):
  * 1. CLI flags (--model, --config key=value)
- * 2. Environment variables (COMPOSER_*)
+ * 2. Environment variables (MAESTRO_*)
  * 3. Active profile settings
  * 4. Local config.local.toml (personal overrides)
  * 5. Project config.toml (shared)
@@ -581,41 +581,41 @@ function parseConfigFile(path: string): ComposerConfig | null {
 function applyEnvOverrides(config: ComposerConfig): ComposerConfig {
 	const result = { ...config };
 
-	// COMPOSER_MODEL
-	if (process.env.COMPOSER_MODEL) {
-		result.model = process.env.COMPOSER_MODEL;
+	// MAESTRO_MODEL
+	if (process.env.MAESTRO_MODEL) {
+		result.model = process.env.MAESTRO_MODEL;
 	}
 
-	// COMPOSER_MODEL_PROVIDER
-	if (process.env.COMPOSER_MODEL_PROVIDER) {
-		result.model_provider = process.env.COMPOSER_MODEL_PROVIDER;
+	// MAESTRO_MODEL_PROVIDER
+	if (process.env.MAESTRO_MODEL_PROVIDER) {
+		result.model_provider = process.env.MAESTRO_MODEL_PROVIDER;
 	}
 
-	// COMPOSER_APPROVAL_POLICY
-	if (process.env.COMPOSER_APPROVAL_POLICY) {
-		const policy = process.env.COMPOSER_APPROVAL_POLICY as ApprovalPolicy;
+	// MAESTRO_APPROVAL_POLICY
+	if (process.env.MAESTRO_APPROVAL_POLICY) {
+		const policy = process.env.MAESTRO_APPROVAL_POLICY as ApprovalPolicy;
 		if (["untrusted", "on-failure", "on-request", "never"].includes(policy)) {
 			result.approval_policy = policy;
 		}
 	}
 
-	// COMPOSER_SANDBOX_MODE
-	if (process.env.COMPOSER_SANDBOX_MODE) {
-		const mode = process.env.COMPOSER_SANDBOX_MODE as SandboxMode;
+	// MAESTRO_SANDBOX_MODE
+	if (process.env.MAESTRO_SANDBOX_MODE) {
+		const mode = process.env.MAESTRO_SANDBOX_MODE as SandboxMode;
 		if (["read-only", "workspace-write", "danger-full-access"].includes(mode)) {
 			result.sandbox_mode = mode;
 		}
 	}
 
-	// COMPOSER_PROFILE
-	if (process.env.COMPOSER_PROFILE) {
-		result.profile = process.env.COMPOSER_PROFILE;
+	// MAESTRO_PROFILE
+	if (process.env.MAESTRO_PROFILE) {
+		result.profile = process.env.MAESTRO_PROFILE;
 	}
 
-	// COMPOSER_HISTORY_PERSISTENCE
-	if (process.env.COMPOSER_HISTORY_PERSISTENCE) {
+	// MAESTRO_HISTORY_PERSISTENCE
+	if (process.env.MAESTRO_HISTORY_PERSISTENCE) {
 		const persistence =
-			process.env.COMPOSER_HISTORY_PERSISTENCE.trim().toLowerCase();
+			process.env.MAESTRO_HISTORY_PERSISTENCE.trim().toLowerCase();
 		if (
 			persistence === "save-all" ||
 			persistence === "none" ||
@@ -628,9 +628,9 @@ function applyEnvOverrides(config: ComposerConfig): ComposerConfig {
 		}
 	}
 
-	// COMPOSER_HISTORY_MAX_BYTES
-	if (process.env.COMPOSER_HISTORY_MAX_BYTES) {
-		const parsed = Number.parseInt(process.env.COMPOSER_HISTORY_MAX_BYTES, 10);
+	// MAESTRO_HISTORY_MAX_BYTES
+	if (process.env.MAESTRO_HISTORY_MAX_BYTES) {
+		const parsed = Number.parseInt(process.env.MAESTRO_HISTORY_MAX_BYTES, 10);
 		if (Number.isFinite(parsed) && parsed >= 0) {
 			result.history = {
 				...(result.history ?? {}),
@@ -689,14 +689,14 @@ export function loadConfig(
 	let config = { ...DEFAULT_CONFIG };
 
 	// Load global config
-	const globalPath = join(PATHS.COMPOSER_HOME, "config.toml");
+	const globalPath = join(PATHS.MAESTRO_HOME, "config.toml");
 	const globalConfig = parseConfigFile(globalPath);
 	if (globalConfig) {
 		config = deepMerge(config, globalConfig);
 	}
 
 	// Load project config (shared, committed to git)
-	const projectPath = join(workspaceDir, ".composer", "config.toml");
+	const projectPath = join(workspaceDir, ".maestro", "config.toml");
 	const projectConfig = parseConfigFile(projectPath);
 	if (projectConfig) {
 		config = deepMerge(config, projectConfig);
@@ -704,7 +704,7 @@ export function loadConfig(
 
 	// Load local config (personal overrides, gitignored)
 	// This follows Claude Code's pattern of settings.local.json
-	const localPath = join(workspaceDir, ".composer", "config.local.toml");
+	const localPath = join(workspaceDir, ".maestro", "config.local.toml");
 	const localConfig = parseConfigFile(localPath);
 	if (localConfig) {
 		config = deepMerge(config, localConfig);

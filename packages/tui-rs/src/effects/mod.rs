@@ -26,7 +26,7 @@
 //! ## Basic Spinner
 //!
 //! ```rust,ignore
-//! use composer_tui::effects::{spinner, braille_spinner};
+//! use maestro_tui::effects::{spinner, braille_spinner};
 //!
 //! // In your render loop, increment frame each iteration
 //! let frame = 42;
@@ -39,7 +39,7 @@
 //! ## Shimmer Effect
 //!
 //! ```rust,ignore
-//! use composer_tui::effects::shimmer_spans;
+//! use maestro_tui::effects::shimmer_spans;
 //! use ratatui::style::Color;
 //!
 //! // Create shimmer effect on text

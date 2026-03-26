@@ -236,7 +236,7 @@ pub fn is_wsl() -> bool {
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::terminal_info::convert_windows_path_to_wsl;
+/// use maestro_tui::terminal_info::convert_windows_path_to_wsl;
 ///
 /// let wsl_path = convert_windows_path_to_wsl(r"C:\Users\Alice\file.txt");
 /// assert_eq!(wsl_path, Some(PathBuf::from("/mnt/c/Users/Alice/file.txt")));

@@ -5,9 +5,9 @@
  * for enhanced editor integration. Similar to Claude Code's IDE detection.
  *
  * Environment variables:
- * - COMPOSER_IDE_AUTOCONNECT: Enable/disable auto-connect (default: true)
- * - COMPOSER_IDE_SCAN_PORTS: Comma-separated list of ports to scan
- * - COMPOSER_IDE_TIMEOUT: Connection timeout in ms (default: 5000)
+ * - MAESTRO_IDE_AUTOCONNECT: Enable/disable auto-connect (default: true)
+ * - MAESTRO_IDE_SCAN_PORTS: Comma-separated list of ports to scan
+ * - MAESTRO_IDE_TIMEOUT: Connection timeout in ms (default: 5000)
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -97,12 +97,12 @@ const DEFAULT_CONFIG: IDEAutoConnectConfig = {
  * Get IDE auto-connect configuration from environment.
  */
 export function getIDEAutoConnectConfig(): IDEAutoConnectConfig {
-	const enabled = process.env.COMPOSER_IDE_AUTOCONNECT !== "false";
+	const enabled = process.env.MAESTRO_IDE_AUTOCONNECT !== "false";
 	const timeout = Number.parseInt(
-		process.env.COMPOSER_IDE_TIMEOUT || "5000",
+		process.env.MAESTRO_IDE_TIMEOUT || "5000",
 		10,
 	);
-	const scanPortsEnv = process.env.COMPOSER_IDE_SCAN_PORTS;
+	const scanPortsEnv = process.env.MAESTRO_IDE_SCAN_PORTS;
 	const scanPorts = scanPortsEnv
 		? scanPortsEnv
 				.split(",")

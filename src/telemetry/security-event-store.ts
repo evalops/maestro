@@ -152,14 +152,14 @@ const DEFAULT_CONFIG: SecurityStoreConfig = {
  * Get the path to the security events log file
  */
 export function getSecurityEventsPath(): string {
-	return join(PATHS.COMPOSER_HOME, "security-events.jsonl");
+	return join(PATHS.MAESTRO_HOME, "security-events.jsonl");
 }
 
 /**
  * Get the path to a rotated security events file
  */
 function getRotatedPath(index: number): string {
-	return join(PATHS.COMPOSER_HOME, `security-events.${index}.jsonl`);
+	return join(PATHS.MAESTRO_HOME, `security-events.${index}.jsonl`);
 }
 
 /**

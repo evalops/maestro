@@ -15,7 +15,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::agent::retry::{RetryPolicy, RetryDecision, ErrorKind};
+//! use maestro_tui::agent::retry::{RetryPolicy, RetryDecision, ErrorKind};
 //!
 //! let mut policy = RetryPolicy::default();
 //!

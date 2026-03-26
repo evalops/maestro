@@ -89,7 +89,7 @@ Available skills can be listed by calling this tool with skill="list".`,
 						content: [
 							{
 								type: "text",
-								text: "No skills available. Skills can be added to `.composer/skills/` in your workspace or `~/.composer/skills/` for global skills.",
+								text: "No skills available. Skills can be added to `.maestro/skills/` in your workspace or `~/.maestro/skills/` for global skills.",
 							},
 						],
 					};
@@ -135,7 +135,7 @@ Available skills can be listed by calling this tool with skill="list".`,
 				const suggestions =
 					skills.length > 0
 						? `\n\nAvailable skills: ${skills.map((s) => s.name).join(", ")}`
-						: '\n\nNo skills are available. Add skills to `.composer/skills/` or use "list" to check.';
+						: '\n\nNo skills are available. Add skills to `.maestro/skills/` or use "list" to check.';
 
 				return {
 					content: [

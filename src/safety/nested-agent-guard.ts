@@ -7,7 +7,7 @@
  *
  * ## Detection Methods
  *
- * 1. **Environment Variable**: Sets COMPOSER_PARENT_PID on startup, child processes
+ * 1. **Environment Variable**: Sets MAESTRO_PARENT_PID on startup, child processes
  *    can detect they're running inside a parent instance.
  *
  * 2. **Process Tree Analysis**: Tracks child process spawns and detects recursive patterns.
@@ -42,8 +42,8 @@ const logger = createLogger("safety:nested-agent-guard");
 /**
  * Environment variable set by parent agent instances.
  */
-const PARENT_PID_ENV = "COMPOSER_PARENT_PID";
-const AGENT_DEPTH_ENV = "COMPOSER_AGENT_DEPTH";
+const PARENT_PID_ENV = "MAESTRO_PARENT_PID";
+const AGENT_DEPTH_ENV = "MAESTRO_AGENT_DEPTH";
 const MAX_AGENT_DEPTH = 2; // Allow one level of nesting for legitimate use cases
 
 /**

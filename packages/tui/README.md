@@ -205,7 +205,7 @@ if (previousLines.length > newLines.length) {
 
 ## Related
 
-If you’re looking for the full Composer client with native scrollback support (especially over SSH), see the Rust TUI binary in `packages/tui-rs/README.md`.
+If you’re looking for the full Maestro client with native scrollback support (especially over SSH), see the Rust TUI binary in `packages/tui-rs/README.md`.
 
 ### Synchronized Output (DECSET 2026)
 
@@ -223,10 +223,10 @@ This is auto-disabled over SSH/tmux where it can cause "typing in waves" issues.
 
 ### Over SSH / tmux / "typing in waves"
 
-The TUI uses synchronized output (DECSET 2026) for flicker-free redraws. SSH and tmux/screen often buffer those frames, so keystrokes can arrive in bursts. Composer now auto-disables sync output when `SSH_CONNECTION`, `SSH_CLIENT`, `TMUX`, or `STY` is set. You can override with environment variables:
+The TUI uses synchronized output (DECSET 2026) for flicker-free redraws. SSH and tmux/screen often buffer those frames, so keystrokes can arrive in bursts. Maestro now auto-disables sync output when `SSH_CONNECTION`, `SSH_CLIENT`, `TMUX`, or `STY` is set. You can override with environment variables:
 
-- `COMPOSER_NO_SYNC=1` or `COMPOSER_SYNC_OUTPUT=0|false` — disable sync output (recommended over SSH/tmux)
-- `COMPOSER_SYNC_OUTPUT=1|true` — force enable even over SSH/tmux
+- `MAESTRO_NO_SYNC=1` or `MAESTRO_SYNC_OUTPUT=0|false` — disable sync output (recommended over SSH/tmux)
+- `MAESTRO_SYNC_OUTPUT=1|true` — force enable even over SSH/tmux
 
 ### Custom Components
 

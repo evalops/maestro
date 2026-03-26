@@ -77,7 +77,7 @@ export class TaskExecutor {
 				}
 			});
 			if (!composerResultTemp) {
-				throw new Error("Composer did not return a result");
+				throw new Error("Maestro did not return a result");
 			}
 			// Assert type after validation - TypeScript doesn't track callback assignments
 			const composerResult: ComposerResult = composerResultTemp;
@@ -210,11 +210,11 @@ export class TaskExecutor {
 	}> {
 		return new Promise((resolve) => {
 			const args = ["exec", "--full-auto", "--json", prompt];
-			const composerBin = process.env.COMPOSER_BIN || "composer";
+			const composerBin = process.env.MAESTRO_BIN || "maestro";
 
 			const env = { ...process.env };
-			if (this.config.maxTokensPerTask && !env.COMPOSER_MAX_OUTPUT_TOKENS) {
-				env.COMPOSER_MAX_OUTPUT_TOKENS = String(this.config.maxTokensPerTask);
+			if (this.config.maxTokensPerTask && !env.MAESTRO_MAX_OUTPUT_TOKENS) {
+				env.MAESTRO_MAX_OUTPUT_TOKENS = String(this.config.maxTokensPerTask);
 			}
 
 			const proc = spawn(composerBin, args, {
@@ -737,7 +737,7 @@ ${diff}
 			const headSha = await this.githubClient.getBranchHeadSha(branchName);
 			const summary = this.buildProgressSummary(task, progress);
 			const checkRun = await this.githubClient.createCheckRun({
-				name: "Composer Agent",
+				name: "Maestro Agent",
 				headSha,
 				status: "in_progress",
 				summary,
@@ -804,7 +804,7 @@ ${diff}
 						});
 					} else {
 						const checkRun = await this.githubClient.createCheckRun({
-							name: "Composer Agent",
+							name: "Maestro Agent",
 							headSha,
 							status: "completed",
 							conclusion,
@@ -829,9 +829,9 @@ ${diff}
 					state: conclusion === "success" ? "success" : "failure",
 					description:
 						conclusion === "success"
-							? "Composer Agent completed successfully"
-							: "Composer Agent reported failures",
-					context: "Composer Agent",
+							? "Maestro Agent completed successfully"
+							: "Maestro Agent reported failures",
+					context: "Maestro Agent",
 					targetUrl: pr.url,
 				});
 			} catch (err) {
@@ -870,7 +870,7 @@ ${diff}
 					}
 					const headSha = await this.githubClient.getBranchHeadSha(branchName);
 					const checkRun = await this.githubClient.createCheckRun({
-						name: "Composer Agent",
+						name: "Maestro Agent",
 						headSha,
 						status: "completed",
 						conclusion: "failure",
@@ -891,8 +891,8 @@ ${diff}
 			await this.githubClient.createCommitStatus({
 				sha: headSha,
 				state: "failure",
-				description: "Composer Agent reported failures",
-				context: "Composer Agent",
+				description: "Maestro Agent reported failures",
+				context: "Maestro Agent",
 				targetUrl: task.result?.prUrl,
 			});
 		} catch (err) {
@@ -911,7 +911,7 @@ ${diff}
 			lines.push(`Attempt: ${progress.attempt}/${progress.maxAttempts}`);
 		}
 		for (const [label, key] of [
-			["Composer", "composer"],
+			["Maestro", "composer"],
 			["Type check", "typecheck"],
 			["Lint", "lint"],
 			["Tests", "tests"],
@@ -947,7 +947,7 @@ ${diff}
 			lines.push(`Attempt: ${progress.attempt}/${progress.maxAttempts}`);
 		}
 		for (const [label, key] of [
-			["Composer", "composer"],
+			["Maestro", "composer"],
 			["Type check", "typecheck"],
 			["Lint", "lint"],
 			["Tests", "tests"],

@@ -61,13 +61,13 @@ interface MockRequest extends PassThrough {
 
 describe("handlePreview", () => {
 	beforeAll(async () => {
-		originalApiKey = process.env.COMPOSER_WEB_API_KEY;
-		process.env.COMPOSER_WEB_API_KEY = apiKey;
+		originalApiKey = process.env.MAESTRO_WEB_API_KEY;
+		process.env.MAESTRO_WEB_API_KEY = apiKey;
 		({ handlePreview } = await import("../../src/server/handlers/preview.js"));
 	});
 
 	afterAll(() => {
-		process.env.COMPOSER_WEB_API_KEY = originalApiKey;
+		process.env.MAESTRO_WEB_API_KEY = originalApiKey;
 	});
 
 	it("returns 200 with no changes for tracked files", async () => {

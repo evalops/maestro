@@ -1,20 +1,11 @@
-// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+// Bun Snapshot v1, https://goo.gl/fbAQLP
 
-exports[`buildConfigShowSections > handles empty collections 1`] = `
+exports[`buildConfigShowSections produces snapshot for populated inspection 1`] = `
 "Configuration Inspection
 
 
 Config Sources
-
-No providers configured"
-`;
-
-exports[`buildConfigShowSections > produces snapshot for populated inspection 1`] = `
-"Configuration Inspection
-
-
-Config Sources
-  • present ~/.composer/config.json
+  • present ~/.maestro/config.json
     missing /etc/composer/config.json
 
 Providers (1)
@@ -30,4 +21,13 @@ File References (1)
 
 Environment Variables (1)
   missing ANTHROPIC_API_KEY: (not set)"
+`;
+
+exports[`buildConfigShowSections handles empty collections 1`] = `
+"Configuration Inspection
+
+
+Config Sources
+
+No providers configured"
 `;

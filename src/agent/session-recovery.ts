@@ -6,9 +6,9 @@
  * with resumable conversation state.
  *
  * Environment variables:
- * - COMPOSER_SESSION_RECOVERY_ENABLED: Enable/disable auto-recovery (default: true)
- * - COMPOSER_SESSION_BACKUP_DIR: Directory for session backups
- * - COMPOSER_SESSION_BACKUP_INTERVAL: Interval between backups in ms (default: 60000)
+ * - MAESTRO_SESSION_RECOVERY_ENABLED: Enable/disable auto-recovery (default: true)
+ * - MAESTRO_SESSION_BACKUP_DIR: Directory for session backups
+ * - MAESTRO_SESSION_BACKUP_INTERVAL: Interval between backups in ms (default: 60000)
  */
 
 import {
@@ -77,7 +77,7 @@ export interface SessionRecoveryConfig {
 
 const DEFAULT_CONFIG: SessionRecoveryConfig = {
 	enabled: true,
-	backupDir: join(PATHS.COMPOSER_HOME, "session-backups"),
+	backupDir: join(PATHS.MAESTRO_HOME, "session-backups"),
 	backupInterval: 60000, // 1 minute
 	maxBackupsPerSession: 3,
 	maxBackupAge: 7 * 24 * 60 * 60 * 1000, // 7 days
@@ -87,12 +87,12 @@ const DEFAULT_CONFIG: SessionRecoveryConfig = {
  * Get session recovery configuration from environment.
  */
 export function getSessionRecoveryConfig(): SessionRecoveryConfig {
-	const enabled = process.env.COMPOSER_SESSION_RECOVERY_ENABLED !== "false";
+	const enabled = process.env.MAESTRO_SESSION_RECOVERY_ENABLED !== "false";
 	const backupDir =
-		resolveEnvPath(process.env.COMPOSER_SESSION_BACKUP_DIR) ??
+		resolveEnvPath(process.env.MAESTRO_SESSION_BACKUP_DIR) ??
 		DEFAULT_CONFIG.backupDir;
 	const backupInterval = Number.parseInt(
-		process.env.COMPOSER_SESSION_BACKUP_INTERVAL || "60000",
+		process.env.MAESTRO_SESSION_BACKUP_INTERVAL || "60000",
 		10,
 	);
 

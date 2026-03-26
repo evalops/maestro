@@ -33,7 +33,7 @@ export async function handleOpenAICommand(
 		default:
 			console.error(
 				chalk.red(
-					'Unknown openai subcommand. Try "composer openai login", "logout", or "status".',
+					'Unknown openai subcommand. Try "maestro openai login", "logout", or "status".',
 				),
 			);
 			process.exit(1);
@@ -41,7 +41,7 @@ export async function handleOpenAICommand(
 }
 
 async function handleLogin(): Promise<void> {
-	console.log(chalk.bold("Composer OpenAI Login"));
+	console.log(chalk.bold("Maestro OpenAI Login"));
 	const { url, verifier, state } = await generateOpenAILoginUrl();
 
 	console.log(
@@ -151,7 +151,7 @@ async function handleStatus(): Promise<void> {
 	if (!stored) {
 		console.log(chalk.yellow("No stored OpenAI credentials."));
 		console.log(
-			chalk.dim('Run "composer openai login" to authenticate with OpenAI.'),
+			chalk.dim('Run "maestro openai login" to authenticate with OpenAI.'),
 		);
 		return;
 	}

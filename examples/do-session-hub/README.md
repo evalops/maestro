@@ -1,6 +1,6 @@
 # DO Session Hub (Prototype)
 
-Minimal Durable Objects session hub example for Composer.
+Minimal Durable Objects session hub example for Maestro.
 
 ## What it shows
 
@@ -27,5 +27,5 @@ Minimal Durable Objects session hub example for Composer.
 
 ## Notes
 
-This is a prototype and not wired into Composer's build. The demo replay button fetches
+This is a prototype and not wired into Maestro's build. The demo replay button fetches
 events in pages of 100 (up to 5 pages per click); click Replay again to continue.

@@ -53,7 +53,7 @@ export interface BashModeFooterInfo {
  *
  * Features:
  * - Streaming output (real-time stdout/stderr display)
- * - Persistent command history (~/.composer/bash-history.json)
+ * - Persistent command history (~/.maestro/bash-history.json)
  * - Enhanced autocomplete (executables, git, npm scripts)
  * - Syntax highlighting for commands
  * - Environment variable persistence within session

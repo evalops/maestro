@@ -2,7 +2,7 @@
 
 Audience: contributors working on context assembly, retries, timeouts, and other agent-critical paths.
 
-Composer aims to be deterministic and debuggable. The easiest way to preserve that is to isolate sources of nondeterminism and inject them where needed, instead of calling them directly throughout the codebase.
+Maestro aims to be deterministic and debuggable. The easiest way to preserve that is to isolate sources of nondeterminism and inject them where needed, instead of calling them directly throughout the codebase.
 
 ## Core Idea
 

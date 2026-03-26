@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::skills::{SkillDefinition, SkillSource, SkillRegistry};
+//! use maestro_tui::skills::{SkillDefinition, SkillSource, SkillRegistry};
 //!
 //! // Define a skill
 //! let skill = SkillDefinition::new("frontend-design", "Frontend Design")

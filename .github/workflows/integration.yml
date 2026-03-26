@@ -44,11 +44,11 @@ jobs:
         ports:
           - 5432:5432
         env:
-          POSTGRES_USER: composer
-          POSTGRES_PASSWORD: composer
-          POSTGRES_DB: composer
+          POSTGRES_USER: maestro
+          POSTGRES_PASSWORD: maestro
+          POSTGRES_DB: maestro
         options: >-
-          --health-cmd "pg_isready -U composer"
+          --health-cmd "pg_isready -U maestro"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 3
@@ -63,8 +63,8 @@ jobs:
 
       - name: Run integration tests
         env:
-          COMPOSER_REDIS_URL: redis://localhost:6379
-          COMPOSER_DATABASE_URL: postgresql://localhost:5432/composer?user=composer&password=composer
+          MAESTRO_REDIS_URL: redis://localhost:6379
+          MAESTRO_DATABASE_URL: postgresql://localhost:5432/maestro?user=maestro&password=maestro
         run: |
           # Run all web tests with Redis and PostgreSQL available
           # Redis tests will use actual Redis instead of skipping

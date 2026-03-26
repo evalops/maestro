@@ -233,12 +233,28 @@ export class WorkspaceManager {
 	}
 
 	/**
+	 * List all known workspaces (including inactive/uninstalled).
+	 */
+	list(): WorkspaceCredentials[] {
+		return Array.from(this.workspaces.values());
+	}
+
+	/**
 	 * Get all active workspaces
 	 */
 	getAll(): WorkspaceCredentials[] {
 		return Array.from(this.workspaces.values()).filter(
 			(ws) => ws.status === "active",
 		);
+	}
+
+	setStatus(teamId: string, status: WorkspaceCredentials["status"]): boolean {
+		const ws = this.workspaces.get(teamId);
+		if (!ws) return false;
+		ws.status = status;
+		this.save();
+		logger.logInfo(`Workspace status updated: ${teamId} -> ${status}`);
+		return true;
 	}
 
 	/**

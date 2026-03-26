@@ -31,7 +31,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::agent::safety::{SafetyController, SafetyVerdict};
+//! use maestro_tui::agent::safety::{SafetyController, SafetyVerdict};
 //!
 //! let mut safety = SafetyController::new();
 //!

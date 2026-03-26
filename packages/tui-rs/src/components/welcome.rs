@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::components::WelcomeScreen;
+//! use maestro_tui::components::WelcomeScreen;
 //!
 //! let welcome = WelcomeScreen::new()
 //!     .with_version("0.1.0")
@@ -141,7 +141,7 @@ impl WelcomeScreen {
             }
         } else {
             // Show small logo instead
-            for line in logos::COMPOSER_SMALL.lines() {
+            for line in logos::MAESTRO_SMALL.lines() {
                 lines.push(Line::from(Span::styled(
                     line.to_string(),
                     Style::default().fg(Color::Cyan),
@@ -445,7 +445,7 @@ impl Widget for SplashScreen {
         let mut lines: Vec<Line<'static>> = Vec::new();
 
         if self.show_logo {
-            for line in logos::COMPOSER_SMALL.lines() {
+            for line in logos::MAESTRO_SMALL.lines() {
                 lines.push(Line::from(Span::styled(
                     line.to_string(),
                     Style::default().fg(Color::Cyan),

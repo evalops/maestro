@@ -4,7 +4,7 @@
         "args": [
             "--help"
         ],
-        "expectedRegex": "Composer v\\d+\\.\\d+\\.\\d+ by EvalOps"
+        "expectedRegex": "Maestro v\\d+\\.\\d+\\.\\d+ by EvalOps"
     },
     {
         "name": "cli help json mode",
@@ -13,7 +13,7 @@
             "--mode",
             "json"
         ],
-        "expectedRegex": "Composer v\\d+\\.\\d+\\.\\d+ by EvalOps"
+        "expectedRegex": "Maestro v\\d+\\.\\d+\\.\\d+ by EvalOps"
     },
     {
         "name": "read tool returns first line",
@@ -22,7 +22,7 @@
             "scripts/run-read-tool.js",
             "README.md"
         ],
-        "expectedRegex": "Composer by EvalOps"
+        "expectedRegex": "Maestro by EvalOps"
     },
     {
         "name": "write tool writes file",
@@ -58,9 +58,9 @@
             "node",
             "scripts/run-search-tool.js",
             "README.md",
-            "Composer"
+            "Maestro"
         ],
-        "expectedRegex": "README\\.md:1:# Composer"
+        "expectedRegex": "README\\.md:1:# Maestro by EvalOps"
     },
     {
         "name": "diff tool detects change",
@@ -120,7 +120,7 @@
             "scripts/telemetry-report.js"
         ],
         "env": {
-            "COMPOSER_TELEMETRY_FILE": "evals/sample-telemetry.log"
+            "MAESTRO_TELEMETRY_FILE": "evals/sample-telemetry.log"
         },
         "expectedRegex": "Log file: .*sample-telemetry\\.log"
     },

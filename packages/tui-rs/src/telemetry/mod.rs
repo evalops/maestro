@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::telemetry::{TurnCollector, TailSamplingConfig};
+//! use maestro_tui::telemetry::{TurnCollector, TailSamplingConfig};
 //!
 //! let mut turn = TurnCollector::new("session-123", 1, TailSamplingConfig::default());
 //! turn.set_model(ModelInfo {

@@ -149,7 +149,7 @@ export class FeedbackView {
 	}
 
 	private buildRuntimeFlagsLine(): string {
-		const safeMode = process.env.COMPOSER_SAFE_MODE === "1" ? "on" : "off";
+		const safeMode = process.env.MAESTRO_SAFE_MODE === "1" ? "on" : "off";
 		const approvalMode = this.options.getApprovalMode();
 		const queueCount = this.options.agent.state.pendingToolCalls?.size ?? 0;
 		return `safe-mode ${safeMode}, approvals ${approvalMode}, pending tools ${queueCount}`;

@@ -1,7 +1,7 @@
 /**
  * JSON-based memory store for cross-session persistence.
  *
- * Stores memories as JSON files in ~/.composer/memory/
+ * Stores memories as JSON files in ~/.maestro/memory/
  * with simple text-based search capabilities.
  */
 
@@ -19,7 +19,7 @@ import type {
 
 const logger = createLogger("memory:store");
 
-const MEMORY_DIR = join(PATHS.COMPOSER_HOME, "memory");
+const MEMORY_DIR = join(PATHS.MAESTRO_HOME, "memory");
 const STORE_FILE = join(MEMORY_DIR, "store.json");
 const CURRENT_VERSION = 1;
 

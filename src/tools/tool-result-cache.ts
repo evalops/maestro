@@ -5,12 +5,12 @@
  * executions. Uses content hashing for result validity and LRU eviction.
  *
  * Environment variables:
- * - COMPOSER_TOOL_CACHE_ENABLED: Enable/disable tool caching (default: true)
- * - COMPOSER_TOOL_CACHE_TTL: Default TTL in seconds (default: 300)
- * - COMPOSER_TOOL_CACHE_MAX_ENTRIES: Maximum cache entries (default: 1000)
- * - COMPOSER_TOOL_CACHE_MAX_BYTES: Maximum cache size in bytes (default: 50MB)
- * - COMPOSER_TOOL_CACHE_MAX_SIZE_BYTES: Legacy alias for max cache bytes (default: 50MB)
- * - COMPOSER_TOOL_CACHE_MAX_SIZE: Legacy alias for max entries (default: 1000)
+ * - MAESTRO_TOOL_CACHE_ENABLED: Enable/disable tool caching (default: true)
+ * - MAESTRO_TOOL_CACHE_TTL: Default TTL in seconds (default: 300)
+ * - MAESTRO_TOOL_CACHE_MAX_ENTRIES: Maximum cache entries (default: 1000)
+ * - MAESTRO_TOOL_CACHE_MAX_BYTES: Maximum cache size in bytes (default: 50MB)
+ * - MAESTRO_TOOL_CACHE_MAX_SIZE_BYTES: Legacy alias for max cache bytes (default: 50MB)
+ * - MAESTRO_TOOL_CACHE_MAX_SIZE: Legacy alias for max entries (default: 1000)
  */
 
 import { createHash } from "node:crypto";
@@ -228,17 +228,17 @@ const DEFAULT_CONFIG: ToolResultCacheConfig = {
  * Get tool cache configuration from environment.
  */
 export function getToolResultCacheConfig(): ToolResultCacheConfig {
-	const enabled = process.env.COMPOSER_TOOL_CACHE_ENABLED !== "false";
-	const ttl = Number.parseInt(process.env.COMPOSER_TOOL_CACHE_TTL || "300", 10);
+	const enabled = process.env.MAESTRO_TOOL_CACHE_ENABLED !== "false";
+	const ttl = Number.parseInt(process.env.MAESTRO_TOOL_CACHE_TTL || "300", 10);
 	const maxEntries = Number.parseInt(
-		process.env.COMPOSER_TOOL_CACHE_MAX_ENTRIES ??
-			process.env.COMPOSER_TOOL_CACHE_MAX_SIZE ??
+		process.env.MAESTRO_TOOL_CACHE_MAX_ENTRIES ??
+			process.env.MAESTRO_TOOL_CACHE_MAX_SIZE ??
 			"1000",
 		10,
 	);
 	const maxBytes = Number.parseInt(
-		process.env.COMPOSER_TOOL_CACHE_MAX_BYTES ??
-			process.env.COMPOSER_TOOL_CACHE_MAX_SIZE_BYTES ??
+		process.env.MAESTRO_TOOL_CACHE_MAX_BYTES ??
+			process.env.MAESTRO_TOOL_CACHE_MAX_SIZE_BYTES ??
 			`${DEFAULT_CONFIG.maxSizeBytes}`,
 		10,
 	);

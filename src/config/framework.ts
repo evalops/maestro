@@ -15,12 +15,12 @@
  *
  * ## Configuration Sources (precedence order)
  *
- * 1. **Policy (locked)**: `~/.composer/policy.json` with `locked: true`
- * 2. **Policy**: `~/.composer/policy.json`
- * 3. **Env override**: `COMPOSER_FRAMEWORK_OVERRIDE`
- * 4. **Env default**: `COMPOSER_DEFAULT_FRAMEWORK`
- * 5. **Workspace**: `.composer/workspace.json`
- * 6. **Global default**: `~/.composer/default-framework.json`
+ * 1. **Policy (locked)**: `~/.maestro/policy.json` with `locked: true`
+ * 2. **Policy**: `~/.maestro/policy.json`
+ * 3. **Env override**: `MAESTRO_FRAMEWORK_OVERRIDE`
+ * 4. **Env default**: `MAESTRO_DEFAULT_FRAMEWORK`
+ * 5. **Workspace**: `.maestro/workspace.json`
+ * 6. **Global default**: `~/.maestro/default-framework.json`
  *
  * ## Usage
  *
@@ -49,7 +49,7 @@ import { dirname, join } from "node:path";
 import { resolveEnvPath } from "../utils/path-expansion.js";
 import { PATHS } from "./constants.js";
 
-const WORKSPACE_FILE = ".composer/workspace.json";
+const WORKSPACE_FILE = ".maestro/workspace.json";
 const FRAMEWORKS: Record<string, { summary: string }> = {
 	fastapi: {
 		summary:
@@ -66,12 +66,12 @@ const FRAMEWORKS: Record<string, { summary: string }> = {
 };
 
 const getDefaultPath = (): string =>
-	resolveEnvPath(process.env.COMPOSER_DEFAULT_FRAMEWORK_FILE) ??
-	join(PATHS.COMPOSER_HOME, "default-framework.json");
+	resolveEnvPath(process.env.MAESTRO_DEFAULT_FRAMEWORK_FILE) ??
+	join(PATHS.MAESTRO_HOME, "default-framework.json");
 
 const getPolicyPath = (): string =>
-	resolveEnvPath(process.env.COMPOSER_FRAMEWORK_POLICY_FILE) ??
-	join(PATHS.COMPOSER_HOME, "policy.json");
+	resolveEnvPath(process.env.MAESTRO_FRAMEWORK_POLICY_FILE) ??
+	join(PATHS.MAESTRO_HOME, "policy.json");
 
 const getWorkspacePath = (): string => join(process.cwd(), WORKSPACE_FILE);
 
@@ -111,11 +111,11 @@ const assertFrameworkAllowed = (id: string | null) => {
 };
 
 const getEnvOverride = (): string | null =>
-	coerceNoneToNull(process.env.COMPOSER_FRAMEWORK_OVERRIDE ?? null);
+	coerceNoneToNull(process.env.MAESTRO_FRAMEWORK_OVERRIDE ?? null);
 
 export function getDefaultFramework(): string | null {
-	if (process.env.COMPOSER_DEFAULT_FRAMEWORK) {
-		return coerceNoneToNull(process.env.COMPOSER_DEFAULT_FRAMEWORK);
+	if (process.env.MAESTRO_DEFAULT_FRAMEWORK) {
+		return coerceNoneToNull(process.env.MAESTRO_DEFAULT_FRAMEWORK);
 	}
 	try {
 		const raw = readFileSync(getDefaultPath(), "utf8");
@@ -242,9 +242,9 @@ export function resolveFrameworkPreference(): {
 		return { id: envOverride, source: "env override", locked: false };
 	}
 
-	if (process.env.COMPOSER_DEFAULT_FRAMEWORK) {
+	if (process.env.MAESTRO_DEFAULT_FRAMEWORK) {
 		return {
-			id: normalizeId(process.env.COMPOSER_DEFAULT_FRAMEWORK),
+			id: normalizeId(process.env.MAESTRO_DEFAULT_FRAMEWORK),
 			source: "env",
 			locked: false,
 		};

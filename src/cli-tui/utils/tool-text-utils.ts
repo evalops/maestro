@@ -39,11 +39,11 @@ function parseLimit(raw: string | undefined, fallback: number): number {
 export function getToolOutputLimits(): ToolOutputLimits {
 	return {
 		maxChars: parseLimit(
-			process.env.COMPOSER_TUI_TOOL_MAX_CHARS,
+			process.env.MAESTRO_TUI_TOOL_MAX_CHARS,
 			DEFAULT_TOOL_MAX_CHARS,
 		),
 		maxLines: parseLimit(
-			process.env.COMPOSER_TUI_TOOL_MAX_LINES,
+			process.env.MAESTRO_TUI_TOOL_MAX_LINES,
 			DEFAULT_TOOL_MAX_LINES,
 		),
 	};

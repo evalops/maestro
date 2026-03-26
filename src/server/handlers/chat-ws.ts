@@ -228,7 +228,7 @@ export function handleChatWebSocket(
 	};
 
 	const maxPayload =
-		Number.parseInt(process.env.COMPOSER_WS_MAX_PAYLOAD || "1048576", 10) ||
+		Number.parseInt(process.env.MAESTRO_WS_MAX_PAYLOAD || "1048576", 10) ||
 		1048576;
 	const parseRequest = (data: RawData): ComposerChatRequest => {
 		const raw = rawDataToString(data, maxPayload);
@@ -468,7 +468,7 @@ export function handleChatWebSocket(
 			const slimEvents =
 				typeof slimFromQuery === "boolean" ? slimFromQuery : slimValue === "1";
 			const slimToolCallArgsLimit = (() => {
-				const raw = process.env.COMPOSER_SLIM_TOOLCALL_ARGS_MAX_BYTES;
+				const raw = process.env.MAESTRO_SLIM_TOOLCALL_ARGS_MAX_BYTES;
 				if (!raw) return 4096;
 				const parsed = Number(raw);
 				if (!Number.isFinite(parsed) || parsed <= 0) return 4096;

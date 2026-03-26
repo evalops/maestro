@@ -26,22 +26,22 @@ const logger = createLogger("lifecycle");
 
 // Configuration from environment
 const CLEANUP_INTERVAL_MS = Number.parseInt(
-	process.env.COMPOSER_CLEANUP_INTERVAL_MS || String(5 * 60 * 1000),
+	process.env.MAESTRO_CLEANUP_INTERVAL_MS || String(5 * 60 * 1000),
 	10,
 );
 
 const WEBHOOK_RETENTION_DAYS = Number.parseInt(
-	process.env.COMPOSER_WEBHOOK_RETENTION_DAYS || "7",
+	process.env.MAESTRO_WEBHOOK_RETENTION_DAYS || "7",
 	10,
 );
 
 const TOTP_CODE_RETENTION_HOURS = Number.parseInt(
-	process.env.COMPOSER_TOTP_RETENTION_HOURS || "24",
+	process.env.MAESTRO_TOTP_RETENTION_HOURS || "24",
 	10,
 );
 
 const REVOCATION_RETENTION_DAYS = Number.parseInt(
-	process.env.COMPOSER_REVOCATION_RETENTION_DAYS || "30",
+	process.env.MAESTRO_REVOCATION_RETENTION_DAYS || "30",
 	10,
 );
 
@@ -69,7 +69,7 @@ export async function warmCaches(): Promise<void> {
 
 // Delay between cleanup tasks to avoid DB spikes
 const CLEANUP_STAGGER_MS = Number.parseInt(
-	process.env.COMPOSER_CLEANUP_STAGGER_MS || "1000",
+	process.env.MAESTRO_CLEANUP_STAGGER_MS || "1000",
 	10,
 );
 
@@ -206,7 +206,7 @@ export async function initLifecycle(): Promise<void> {
 		logger.info("Field encryption enabled");
 	} else {
 		logger.warn(
-			"Field encryption disabled - set COMPOSER_DB_ENCRYPTION_KEY to enable",
+			"Field encryption disabled - set MAESTRO_DB_ENCRYPTION_KEY to enable",
 		);
 	}
 

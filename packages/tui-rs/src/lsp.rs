@@ -99,7 +99,7 @@ fn parse_env_bool(value: &str) -> Option<bool> {
 
 #[must_use]
 pub fn is_lsp_enabled() -> bool {
-    if let Ok(value) = std::env::var("COMPOSER_LSP_ENABLED") {
+    if let Ok(value) = std::env::var("MAESTRO_LSP_ENABLED") {
         if let Some(parsed) = parse_env_bool(&value) {
             return parsed;
         }
@@ -109,7 +109,7 @@ pub fn is_lsp_enabled() -> bool {
 
 #[must_use]
 pub fn max_diagnostics_per_file() -> usize {
-    if let Ok(value) = std::env::var("COMPOSER_LSP_MAX_DIAGNOSTICS") {
+    if let Ok(value) = std::env::var("MAESTRO_LSP_MAX_DIAGNOSTICS") {
         if let Ok(parsed) = value.parse::<usize>() {
             return parsed.max(1);
         }
@@ -119,7 +119,7 @@ pub fn max_diagnostics_per_file() -> usize {
 
 #[must_use]
 pub fn blocking_severity() -> u8 {
-    if let Ok(value) = std::env::var("COMPOSER_SAFE_LSP_SEVERITY") {
+    if let Ok(value) = std::env::var("MAESTRO_SAFE_LSP_SEVERITY") {
         if let Ok(parsed) = value.parse::<u8>() {
             return parsed.clamp(1, 4);
         }
@@ -128,7 +128,7 @@ pub fn blocking_severity() -> u8 {
 }
 
 fn resolve_cli_path(cwd: &Path) -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("COMPOSER_LSP_CLI") {
+    if let Ok(path) = std::env::var("MAESTRO_LSP_CLI") {
         let path = PathBuf::from(path);
         if path.exists() {
             return Some(path);
@@ -172,7 +172,7 @@ fn resolve_cli_path(cwd: &Path) -> Option<PathBuf> {
 }
 
 fn resolve_runtime() -> String {
-    std::env::var("COMPOSER_LSP_RUNTIME").unwrap_or_else(|_| "node".to_string())
+    std::env::var("MAESTRO_LSP_RUNTIME").unwrap_or_else(|_| "node".to_string())
 }
 
 fn normalize_path(cwd: &Path, raw: &str) -> PathBuf {

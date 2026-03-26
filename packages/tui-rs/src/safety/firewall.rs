@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::safety::{ActionFirewall, FirewallVerdict};
+//! use maestro_tui::safety::{ActionFirewall, FirewallVerdict};
 //!
 //! let firewall = ActionFirewall::new("/workspace");
 //!
@@ -273,11 +273,11 @@ impl ActionFirewall {
         }
 
         // Enterprise egress gating (safe mode + explicit flag)
-        if std::env::var("COMPOSER_NO_EGRESS_SHELL").ok().as_deref() == Some("1")
+        if std::env::var("MAESTRO_NO_EGRESS_SHELL").ok().as_deref() == Some("1")
             && has_egress_primitives(command)
         {
             return FirewallVerdict::RequireApproval {
-                reason: "Shell egress requires approval (COMPOSER_NO_EGRESS_SHELL=1)".to_string(),
+                reason: "Shell egress requires approval (MAESTRO_NO_EGRESS_SHELL=1)".to_string(),
             };
         }
 
@@ -425,7 +425,7 @@ impl ActionFirewall {
             return FirewallVerdict::Block { reason };
         }
 
-        if std::env::var("COMPOSER_FAIL_UNTAGGED_EGRESS")
+        if std::env::var("MAESTRO_FAIL_UNTAGGED_EGRESS")
             .ok()
             .as_deref()
             == Some("1")
@@ -433,7 +433,7 @@ impl ActionFirewall {
             && !has_tool_tags(tool_name)
         {
             return FirewallVerdict::Block {
-                reason: "Human-facing tool is missing TOOL_TAGS; annotate the tool or disable strict mode via COMPOSER_FAIL_UNTAGGED_EGRESS=0.".to_string(),
+                reason: "Human-facing tool is missing TOOL_TAGS; annotate the tool or disable strict mode via MAESTRO_FAIL_UNTAGGED_EGRESS=0.".to_string(),
             };
         }
 
@@ -537,13 +537,13 @@ impl ActionFirewall {
                         .and_then(serde_json::Value::as_bool)
                         .unwrap_or(false);
                     if shell
-                        && std::env::var("COMPOSER_BACKGROUND_SHELL_DISABLE")
+                        && std::env::var("MAESTRO_BACKGROUND_SHELL_DISABLE")
                             .ok()
                             .as_deref()
                             == Some("1")
                     {
                         return FirewallVerdict::Block {
-                            reason: "Background shell tasks are disabled by COMPOSER_BACKGROUND_SHELL_DISABLE"
+                            reason: "Background shell tasks are disabled by MAESTRO_BACKGROUND_SHELL_DISABLE"
                                 .to_string(),
                         };
                     }

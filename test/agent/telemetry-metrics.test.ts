@@ -13,8 +13,8 @@ import {
 describe("Business Metrics Telemetry", () => {
 	beforeEach(() => {
 		// Enable telemetry for tests
-		vi.stubEnv("COMPOSER_TELEMETRY", "1");
-		vi.stubEnv("COMPOSER_TELEMETRY_FILE", "/tmp/test-telemetry.log");
+		vi.stubEnv("MAESTRO_TELEMETRY", "1");
+		vi.stubEnv("MAESTRO_TELEMETRY_FILE", "/tmp/test-telemetry.log");
 	});
 
 	afterEach(() => {
@@ -121,8 +121,8 @@ describe("Business Metrics Telemetry", () => {
 
 describe("Sandbox Violation Telemetry", () => {
 	beforeEach(() => {
-		vi.stubEnv("COMPOSER_TELEMETRY", "1");
-		vi.stubEnv("COMPOSER_TELEMETRY_FILE", "/tmp/test-telemetry.log");
+		vi.stubEnv("MAESTRO_TELEMETRY", "1");
+		vi.stubEnv("MAESTRO_TELEMETRY_FILE", "/tmp/test-telemetry.log");
 	});
 
 	afterEach(() => {

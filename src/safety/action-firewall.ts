@@ -76,20 +76,20 @@ import type { SemanticJudge, SemanticJudgeContext } from "./semantic-judge.js";
 const logger = createLogger("safety:action-firewall");
 // Evaluate env flags lazily to honor profile overrides set after initial import.
 const isStrictUntaggedEgress = () =>
-	process.env.COMPOSER_FAIL_UNTAGGED_EGRESS === "1";
+	process.env.MAESTRO_FAIL_UNTAGGED_EGRESS === "1";
 const isBackgroundShellBlocked = () =>
-	process.env.COMPOSER_BACKGROUND_SHELL_DISABLE === "1";
-const isSafeModeEnabled = () => process.env.COMPOSER_SAFE_MODE === "1";
+	process.env.MAESTRO_BACKGROUND_SHELL_DISABLE === "1";
+const isSafeModeEnabled = () => process.env.MAESTRO_SAFE_MODE === "1";
 const isProdProfile = () =>
-	process.env.COMPOSER_PROFILE === "prod" ||
-	process.env.COMPOSER_WEB_PROFILE === "prod";
+	process.env.MAESTRO_PROFILE === "prod" ||
+	process.env.MAESTRO_WEB_PROFILE === "prod";
 const isNoEgressShellEnabled = () =>
 	["1", "true", "on"].includes(
-		(process.env.COMPOSER_NO_EGRESS_SHELL ?? "").toLowerCase(),
+		(process.env.MAESTRO_NO_EGRESS_SHELL ?? "").toLowerCase(),
 	);
 const isEgressOverrideAllowed = () =>
 	["1", "true", "on"].includes(
-		(process.env.COMPOSER_ALLOW_EGRESS_SHELL ?? "").toLowerCase(),
+		(process.env.MAESTRO_ALLOW_EGRESS_SHELL ?? "").toLowerCase(),
 	);
 
 /**
@@ -293,13 +293,13 @@ const dangerousCommandRules: ActionFirewallRule[] = Object.entries(
 	},
 }));
 
-const isBashStrict = () => process.env.COMPOSER_BASH_STRICT === "1";
+const isBashStrict = () => process.env.MAESTRO_BASH_STRICT === "1";
 const isBashGuardEnabled = () => {
-	const flag = process.env.COMPOSER_BASH_GUARD?.toLowerCase?.();
+	const flag = process.env.MAESTRO_BASH_GUARD?.toLowerCase?.();
 	if (flag) {
 		return !["0", "off", "false", "disabled", "no"].includes(flag);
 	}
-	// Default: guard ON (previous behavior). Explicitly set COMPOSER_BASH_GUARD=0 to YOLO.
+	// Default: guard ON (previous behavior). Explicitly set MAESTRO_BASH_GUARD=0 to YOLO.
 	if (isSafeModeEnabled() || isProdProfile()) {
 		return true;
 	}
@@ -552,7 +552,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			};
 		},
 		remediation: () =>
-			"The file path is outside the allowed workspace. Please use a path within the current project or a temporary directory, or ask the user to add this path to 'containment.trustedPaths' in ~/.composer/firewall.json.",
+			"The file path is outside the allowed workspace. Please use a path within the current project or a temporary directory, or ask the user to add this path to 'containment.trustedPaths' in ~/.maestro/firewall.json.",
 	},
 	{
 		id: "untagged-human-egress",
@@ -569,7 +569,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			return TOOL_TAGS[ctx.toolName] === undefined;
 		},
 		reason: () =>
-			"Human-facing tool is missing TOOL_TAGS; annotate the tool or disable strict mode via COMPOSER_FAIL_UNTAGGED_EGRESS=0.",
+			"Human-facing tool is missing TOOL_TAGS; annotate the tool or disable strict mode via MAESTRO_FAIL_UNTAGGED_EGRESS=0.",
 		remediation: () =>
 			"Add TOOL_TAGS entry marking egress intent (human/http) before invoking the tool.",
 	},
@@ -580,7 +580,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 		match: (ctx) =>
 			isBackgroundShellBlocked() && isBackgroundTaskShellStart(ctx) === true,
 		reason: () =>
-			"Starting background_tasks with shell=true is disabled by policy. Set COMPOSER_BACKGROUND_SHELL_DISABLE=0 to allow.",
+			"Starting background_tasks with shell=true is disabled by policy. Set MAESTRO_BACKGROUND_SHELL_DISABLE=0 to allow.",
 	},
 	{
 		id: "mcp-destructive-tool",
@@ -603,7 +603,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			"When plan mode is enabled, require approval before mutating commands",
 		action: "require_approval",
 		match: (ctx) => {
-			if (process.env.COMPOSER_PLAN_MODE !== "1") return false;
+			if (process.env.MAESTRO_PLAN_MODE !== "1") return false;
 			const name = ctx.toolName;
 			if (name === "write" || name === "edit" || name === "bash") return true;
 			if (name === "todo") return true;
@@ -624,12 +624,12 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			return false;
 		},
 		reason: (ctx) =>
-			`Plan mode requires confirmation before executing ${ctx.toolName}. Toggle with /plan-mode or COMPOSER_PLAN_MODE=0.`,
+			`Plan mode requires confirmation before executing ${ctx.toolName}. Toggle with /plan-mode or MAESTRO_PLAN_MODE=0.`,
 	},
 	{
 		id: "no-egress-shell",
 		description:
-			"Require approval when shell egress is disabled via COMPOSER_NO_EGRESS_SHELL",
+			"Require approval when shell egress is disabled via MAESTRO_NO_EGRESS_SHELL",
 		action: "require_approval",
 		evaluate: (ctx) => {
 			if (!isNoEgressShellEnabled() || isEgressOverrideAllowed()) {
@@ -646,7 +646,7 @@ export const defaultFirewallRules: ActionFirewallRule[] = [
 			return {
 				allowed: false,
 				reason:
-					"Shell egress (curl/wget/ssh/nc/dev/tcp) requires approval because COMPOSER_NO_EGRESS_SHELL=1. Allow temporarily with COMPOSER_ALLOW_EGRESS_SHELL=1 or add a bash allowlist entry.",
+					"Shell egress (curl/wget/ssh/nc/dev/tcp) requires approval because MAESTRO_NO_EGRESS_SHELL=1. Allow temporarily with MAESTRO_ALLOW_EGRESS_SHELL=1 or add a bash allowlist entry.",
 			};
 		},
 	},

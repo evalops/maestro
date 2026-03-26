@@ -17,7 +17,7 @@
  * ## Solution: File-Based Message Queue
  *
  * ```
- * ~/.composer/sessions/<session-id>/
+ * ~/.maestro/sessions/<session-id>/
  * ├── inbox.json         # User writes messages here
  * └── outbox.json        # Agent writes acknowledgments here
  * ```
@@ -182,7 +182,7 @@ class UserInputChannel {
 
 		this.sessionId = sessionId;
 		this.config.channelDir = join(
-			PATHS.COMPOSER_HOME,
+			PATHS.MAESTRO_HOME,
 			"sessions",
 			sessionId,
 			"channel",

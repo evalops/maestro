@@ -1,6 +1,6 @@
 # Tool System Architecture
 
-The tool system is the largest module in Composer (~335KB), providing a framework for defining, validating, executing, and caching tool operations that the LLM can invoke.
+The tool system is the largest module in Maestro (~335KB), providing a framework for defining, validating, executing, and caching tool operations that the LLM can invoke.
 
 ## Overview
 

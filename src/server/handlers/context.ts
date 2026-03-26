@@ -28,7 +28,7 @@ function assertSessionId(sessionId: string): void {
  * 3. Otherwise, access is denied for API requests in strict mode (prevents IDOR)
  *
  * Note: Current sessions don't store owner info, so this defaults to denying
- * access in strict mode. Set COMPOSER_STRICT_SESSION_ACCESS=false for backwards
+ * access in strict mode. Set MAESTRO_STRICT_SESSION_ACCESS=false for backwards
  * compatibility in single-user deployments.
  */
 function verifySessionOwnership(
@@ -49,7 +49,7 @@ function verifySessionOwnership(
 	// In strict mode (multi-user), deny access to prevent IDOR attacks.
 	// Sessions created via CLI don't have ownership info, but API access
 	// should be restricted in hosted environments.
-	const strictMode = process.env.COMPOSER_STRICT_SESSION_ACCESS !== "false";
+	const strictMode = process.env.MAESTRO_STRICT_SESSION_ACCESS !== "false";
 	return !strictMode;
 }
 

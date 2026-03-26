@@ -20,34 +20,34 @@ describe("IDE Auto-Connect", () => {
 			expect(config.scanInterval).toBeGreaterThan(0);
 		});
 
-		it("respects COMPOSER_IDE_AUTOCONNECT=false", () => {
-			const originalEnv = process.env.COMPOSER_IDE_AUTOCONNECT;
-			process.env.COMPOSER_IDE_AUTOCONNECT = "false";
+		it("respects MAESTRO_IDE_AUTOCONNECT=false", () => {
+			const originalEnv = process.env.MAESTRO_IDE_AUTOCONNECT;
+			process.env.MAESTRO_IDE_AUTOCONNECT = "false";
 
 			try {
 				const config = getIDEAutoConnectConfig();
 				expect(config.enabled).toBe(false);
 			} finally {
 				if (originalEnv === undefined) {
-					Reflect.deleteProperty(process.env, "COMPOSER_IDE_AUTOCONNECT");
+					Reflect.deleteProperty(process.env, "MAESTRO_IDE_AUTOCONNECT");
 				} else {
-					process.env.COMPOSER_IDE_AUTOCONNECT = originalEnv;
+					process.env.MAESTRO_IDE_AUTOCONNECT = originalEnv;
 				}
 			}
 		});
 
 		it("parses custom ports", () => {
-			const originalEnv = process.env.COMPOSER_IDE_SCAN_PORTS;
-			process.env.COMPOSER_IDE_SCAN_PORTS = "8000,9000,10000";
+			const originalEnv = process.env.MAESTRO_IDE_SCAN_PORTS;
+			process.env.MAESTRO_IDE_SCAN_PORTS = "8000,9000,10000";
 
 			try {
 				const config = getIDEAutoConnectConfig();
 				expect(config.scanPorts).toEqual([8000, 9000, 10000]);
 			} finally {
 				if (originalEnv === undefined) {
-					Reflect.deleteProperty(process.env, "COMPOSER_IDE_SCAN_PORTS");
+					Reflect.deleteProperty(process.env, "MAESTRO_IDE_SCAN_PORTS");
 				} else {
-					process.env.COMPOSER_IDE_SCAN_PORTS = originalEnv;
+					process.env.MAESTRO_IDE_SCAN_PORTS = originalEnv;
 				}
 			}
 		});

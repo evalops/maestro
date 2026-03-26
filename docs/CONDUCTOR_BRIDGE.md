@@ -1,29 +1,29 @@
 # Conductor Bridge (Local Development)
 
 This guide describes how to connect the Conductor Chrome extension to a local
-Composer web server during development, plus an optional native messaging host
-that can launch and monitor Composer automatically.
+Maestro web server during development, plus an optional native messaging host
+that can launch and monitor Maestro automatically.
 
 ## Quick Start (HTTP Bridge)
 
-1. Start Composer's web server:
+1. Start Maestro's web server:
 
 ```bash
-COMPOSER_WEB_REQUIRE_KEY=0 COMPOSER_WEB_REQUIRE_REDIS=0 COMPOSER_WEB_ORIGIN="*" composer web
+MAESTRO_WEB_REQUIRE_KEY=0 MAESTRO_WEB_REQUIRE_REDIS=0 MAESTRO_WEB_ORIGIN="*" maestro web
 ```
 
-2. In Conductor settings, enable "Composer Bridge" and set:
+2. In Conductor settings, enable "Maestro Bridge" and set:
 
 ```
 http://localhost:8080
 ```
 
 Conductor will fetch `/api/models` and stream `/api/chat` responses from the
-Composer server.
+Maestro server.
 
 ## Capabilities (Client-Side Tools)
 
-When the Conductor extension is connected, Composer can delegate browser actions
+When the Conductor extension is connected, Maestro can delegate browser actions
 to the client. These tools execute inside the browser context and return results
 to the server.
 
@@ -39,7 +39,7 @@ to the server.
 
 ## Optional: Native Messaging Host (Auto-Launch + Status)
 
-Composer ships a local native messaging host script at:
+Maestro ships a local native messaging host script at:
 
 ```
 composer/scripts/bridge/native-host.js
@@ -47,7 +47,7 @@ composer/scripts/bridge/native-host.js
 
 The host supports:
 - `status` requests (probe `/api/bridge/status`)
-- `launch` requests (start `composer web` if needed)
+- `launch` requests (start `maestro web` if needed)
 - JSON-RPC notifications (`bridge/status`) when connectivity changes
 
 ### Install the native host manifest
@@ -81,18 +81,18 @@ Place the manifest in the standard Chrome location (if you did not use the scrip
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `COMPOSER_BRIDGE_BASE_URL` | Base URL to probe/launch | `http://localhost:8080` |
-| `COMPOSER_BRIDGE_COMMAND` | Command to launch Composer | `composer` |
-| `COMPOSER_BRIDGE_ARGS` | Extra args (JSON array or space-delimited) | empty |
-| `COMPOSER_BRIDGE_POLL_MS` | Status poll interval (ms) | `2000` |
-| `COMPOSER_BRIDGE_LAUNCH_TIMEOUT_MS` | Launch timeout (ms) | `15000` |
+| `MAESTRO_BRIDGE_BASE_URL` | Base URL to probe/launch | `http://localhost:8080` |
+| `MAESTRO_BRIDGE_COMMAND` | Command to launch Maestro | `maestro` |
+| `MAESTRO_BRIDGE_ARGS` | Extra args (JSON array or space-delimited) | empty |
+| `MAESTRO_BRIDGE_POLL_MS` | Status poll interval (ms) | `2000` |
+| `MAESTRO_BRIDGE_LAUNCH_TIMEOUT_MS` | Launch timeout (ms) | `15000` |
 
-When the host launches Composer, it sets:
+When the host launches Maestro, it sets:
 
 ```
-COMPOSER_WEB_REQUIRE_KEY=0
-COMPOSER_WEB_REQUIRE_REDIS=0
-COMPOSER_WEB_ORIGIN="*"
+MAESTRO_WEB_REQUIRE_KEY=0
+MAESTRO_WEB_REQUIRE_REDIS=0
+MAESTRO_WEB_ORIGIN="*"
 ```
 
 Unless those variables are already set.
@@ -100,7 +100,7 @@ Unless those variables are already set.
 ## Notes
 
 - The HTTP bridge supports Conductor client tools (browser automation) because
-  the Composer web server exposes the client tool API.
+  the Maestro web server exposes the client tool API.
 - For production, use explicit API keys and locked CORS origins instead of `*`.
 
 ## Security & CORS Guidance
@@ -108,8 +108,8 @@ Unless those variables are already set.
 For local development, the quick-start command disables API keys and allows all
 origins. For shared or production deployments, tighten these settings:
 
-- Set `COMPOSER_WEB_REQUIRE_KEY=1` and configure an API key.
+- Set `MAESTRO_WEB_REQUIRE_KEY=1` and configure an API key.
 - Lock CORS to your extension origin (and any other approved origins):
-  - `COMPOSER_WEB_ORIGIN="chrome-extension://<extension-id>"`
+  - `MAESTRO_WEB_ORIGIN="chrome-extension://<extension-id>"`
   - Add any additional allowed origins as needed.
 - Keep the bridge on localhost unless you explicitly need remote access.

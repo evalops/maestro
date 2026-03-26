@@ -9,11 +9,11 @@ import { join, resolve } from "node:path";
 import { getHomeDir, resolveEnvPath } from "../utils/path-expansion.js";
 
 export const getComposerHome = (): string =>
-	resolveEnvPath(process.env.COMPOSER_HOME) ?? join(getHomeDir(), ".composer");
+	resolveEnvPath(process.env.MAESTRO_HOME) ?? join(getHomeDir(), ".maestro");
 
 export const getAgentDir = (): string => {
 	const envAgentDir =
-		resolveEnvPath(process.env.COMPOSER_AGENT_DIR) ??
+		resolveEnvPath(process.env.MAESTRO_AGENT_DIR) ??
 		resolveEnvPath(process.env.PLAYWRIGHT_AGENT_DIR) ??
 		resolveEnvPath(process.env.CODING_AGENT_DIR);
 	return envAgentDir || join(getComposerHome(), "agent");
@@ -32,22 +32,22 @@ function intEnv(raw: string | undefined, fallback: number): number {
 export const SESSION_CONFIG = {
 	/** Number of entries to buffer before flushing to disk */
 	WRITE_BATCH_SIZE: Number.parseInt(
-		process.env.COMPOSER_SESSION_BATCH_SIZE ?? "25",
+		process.env.MAESTRO_SESSION_BATCH_SIZE ?? "25",
 		10,
 	),
 	/** Default session directory path */
 	get DEFAULT_DIR(): string {
 		return (
-			resolveEnvPath(process.env.COMPOSER_SESSION_DIR) ??
+			resolveEnvPath(process.env.MAESTRO_SESSION_DIR) ??
 			join(getAgentDir(), "sessions")
 		);
 	},
 	/** Maximum number of sessions to retain per working directory (0 = unlimited) */
-	MAX_SESSIONS: Math.max(0, intEnv(process.env.COMPOSER_MAX_SESSIONS, 100)),
+	MAX_SESSIONS: Math.max(0, intEnv(process.env.MAESTRO_MAX_SESSIONS, 100)),
 	/** Maximum age for sessions in days (0 = unlimited) */
 	MAX_SESSION_AGE_DAYS: Math.max(
 		0,
-		intEnv(process.env.COMPOSER_MAX_SESSION_AGE_DAYS, 90),
+		intEnv(process.env.MAESTRO_MAX_SESSION_AGE_DAYS, 90),
 	),
 } as const;
 
@@ -57,7 +57,7 @@ export const SESSION_CONFIG = {
 export const TOOL_CONFIG = {
 	/** Default timeout for bash commands (in milliseconds) */
 	BASH_DEFAULT_TIMEOUT_MS: Number.parseInt(
-		process.env.COMPOSER_BASH_TIMEOUT_MS ?? "90000",
+		process.env.MAESTRO_BASH_TIMEOUT_MS ?? "90000",
 		10,
 	),
 	/** Default file read limit (lines) */
@@ -71,27 +71,27 @@ export const TOOL_CONFIG = {
  */
 export const PATHS = {
 	/** Composer home directory */
-	get COMPOSER_HOME(): string {
+	get MAESTRO_HOME(): string {
 		return getComposerHome();
 	},
 	/** Todo store file path */
 	get TODO_STORE(): string {
 		return (
-			resolveEnvPath(process.env.COMPOSER_TODO_FILE) ??
+			resolveEnvPath(process.env.MAESTRO_TODO_FILE) ??
 			join(getComposerHome(), "todos.json")
 		);
 	},
 	/** Usage tracking file path */
 	get USAGE_FILE(): string {
 		return (
-			resolveEnvPath(process.env.COMPOSER_USAGE_FILE) ??
+			resolveEnvPath(process.env.MAESTRO_USAGE_FILE) ??
 			join(getComposerHome(), "usage.json")
 		);
 	},
 	/** Telemetry log file path */
 	get TELEMETRY_LOG(): string {
 		return (
-			resolveEnvPath(process.env.COMPOSER_TELEMETRY_FILE) ??
+			resolveEnvPath(process.env.MAESTRO_TELEMETRY_FILE) ??
 			join(getComposerHome(), "telemetry.log")
 		);
 	},
@@ -106,35 +106,35 @@ export const PATHS = {
 	/** UI state file path */
 	get UI_STATE_FILE(): string {
 		return (
-			resolveEnvPath(process.env.COMPOSER_UI_STATE) ??
+			resolveEnvPath(process.env.MAESTRO_UI_STATE) ??
 			resolve(getAgentDir(), "ui-state.json")
 		);
 	},
 	/** Command prefs file path */
 	get COMMAND_PREFS_FILE(): string {
 		return (
-			resolveEnvPath(process.env.COMPOSER_COMMAND_PREFS) ??
+			resolveEnvPath(process.env.MAESTRO_COMMAND_PREFS) ??
 			resolve(getAgentDir(), "command-prefs.json")
 		);
 	},
 	/** Bash history file path */
 	get BASH_HISTORY_FILE(): string {
 		return (
-			resolveEnvPath(process.env.COMPOSER_BASH_HISTORY) ??
+			resolveEnvPath(process.env.MAESTRO_BASH_HISTORY) ??
 			join(getComposerHome(), "bash-history.json")
 		);
 	},
 	/** Prompt history file path */
 	get PROMPT_HISTORY_FILE(): string {
 		return (
-			resolveEnvPath(process.env.COMPOSER_PROMPT_HISTORY_FILE) ??
+			resolveEnvPath(process.env.MAESTRO_PROMPT_HISTORY_FILE) ??
 			join(getComposerHome(), "history", "prompts.jsonl")
 		);
 	},
 	/** Tool history file path */
 	get TOOL_HISTORY_FILE(): string {
 		return (
-			resolveEnvPath(process.env.COMPOSER_TOOL_HISTORY_FILE) ??
+			resolveEnvPath(process.env.MAESTRO_TOOL_HISTORY_FILE) ??
 			join(getComposerHome(), "history", "tools.jsonl")
 		);
 	},
@@ -145,7 +145,7 @@ export const PATHS = {
 	/** Cost tracking database path */
 	get COST_DB(): string {
 		return (
-			resolveEnvPath(process.env.COMPOSER_COST_DB) ??
+			resolveEnvPath(process.env.MAESTRO_COST_DB) ??
 			join(getComposerHome(), "costs.db")
 		);
 	},
@@ -164,12 +164,12 @@ export const PATHS = {
 export const API_CONFIG = {
 	/** Request timeout for LLM API calls (in milliseconds) */
 	REQUEST_TIMEOUT_MS: Number.parseInt(
-		process.env.COMPOSER_API_TIMEOUT_MS ?? "120000",
+		process.env.MAESTRO_API_TIMEOUT_MS ?? "120000",
 		10,
 	),
 	/** Telemetry sampling rate (0-1) */
 	TELEMETRY_SAMPLE_RATE: Number.parseFloat(
-		process.env.COMPOSER_TELEMETRY_SAMPLE ?? "1.0",
+		process.env.MAESTRO_TELEMETRY_SAMPLE ?? "1.0",
 	),
 } as const;
 
@@ -179,12 +179,12 @@ export const API_CONFIG = {
 export const LIMITS = {
 	/** Maximum file size to read (in bytes) */
 	MAX_FILE_SIZE_BYTES: Number.parseInt(
-		process.env.COMPOSER_MAX_FILE_SIZE ?? "10485760", // 10MB
+		process.env.MAESTRO_MAX_FILE_SIZE ?? "10485760", // 10MB
 		10,
 	),
 	/** Maximum number of search results */
 	MAX_SEARCH_RESULTS: Number.parseInt(
-		process.env.COMPOSER_MAX_SEARCH_RESULTS ?? "1000",
+		process.env.MAESTRO_MAX_SEARCH_RESULTS ?? "1000",
 		10,
 	),
 	/** Maximum command output length (characters) */
@@ -198,17 +198,17 @@ export const LIMITS = {
  */
 export const FEATURES = {
 	/** Enable safe mode (requires plan before mutations) */
-	SAFE_MODE: process.env.COMPOSER_SAFE_MODE === "1",
+	SAFE_MODE: process.env.MAESTRO_SAFE_MODE === "1",
 	/** Enable plan mode (ask before mutations via approval) */
-	PLAN_MODE: process.env.COMPOSER_PLAN_MODE === "1",
+	PLAN_MODE: process.env.MAESTRO_PLAN_MODE === "1",
 	/** Enable telemetry */
-	TELEMETRY_ENABLED: process.env.COMPOSER_TELEMETRY === "true",
+	TELEMETRY_ENABLED: process.env.MAESTRO_TELEMETRY === "true",
 	/** Telemetry endpoint URL */
-	TELEMETRY_ENDPOINT: process.env.COMPOSER_TELEMETRY_ENDPOINT,
+	TELEMETRY_ENDPOINT: process.env.MAESTRO_TELEMETRY_ENDPOINT,
 	/** Enable LSP integration */
-	LSP_ENABLED: process.env.COMPOSER_LSP_ENABLED !== "0",
+	LSP_ENABLED: process.env.MAESTRO_LSP_ENABLED !== "0",
 	/** Auto-start LSP servers when enabled */
-	LSP_AUTOSTART: process.env.COMPOSER_LSP_AUTOSTART === "1",
+	LSP_AUTOSTART: process.env.MAESTRO_LSP_AUTOSTART === "1",
 } as const;
 
 /**

@@ -30,7 +30,7 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 		lines.push(
 			"No MCP servers configured.",
 			"",
-			"Add servers to ~/.composer/mcp.json or .composer/mcp.json:",
+			"Add servers to ~/.maestro/mcp.json or .maestro/mcp.json:",
 			"",
 			'  { "mcpServers": { "my-server": { "command": "npx", "args": ["-y", "@example/mcp-server"] } } }',
 		);

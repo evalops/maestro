@@ -1,6 +1,6 @@
-# Rust Quick Reference for Composer TUI
+# Rust Quick Reference for Maestro TUI
 
-This guide explains Rust concepts you'll encounter in the Composer TUI codebase. It's designed for team members coming from TypeScript/JavaScript backgrounds.
+This guide explains Rust concepts you'll encounter in the Maestro TUI codebase. It's designed for team members coming from TypeScript/JavaScript backgrounds.
 
 ## Table of Contents
 

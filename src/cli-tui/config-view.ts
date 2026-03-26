@@ -133,7 +133,7 @@ export class ConfigView {
 		const envSection = this.buildEnvSection(inspection);
 		const filesSection = this.buildFileReferenceSection(inspection);
 		const summaryParts = [
-			chalk.bold("Composer configuration"),
+			chalk.bold("Maestro configuration"),
 			validationSection,
 			sourcesSection,
 			providersSection,

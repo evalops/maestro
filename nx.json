@@ -3,7 +3,7 @@
 	"cli": {
 		"packageManager": "npm"
 	},
-	"npmScope": "composer",
+	"npmScope": "maestro",
 	"tasksRunnerOptions": {
 		"default": {
 			"runner": "nx/tasks-runners/default",
@@ -29,16 +29,19 @@
 		}
 	},
 	"projects": {
-		"composer": {
+		"maestro": {
 			"tags": []
 		},
-		"composer-web": {
+		"maestro-web": {
 			"tags": []
 		},
 		"tui": {
 			"tags": []
 		},
 		"vscode-extension": {
+			"tags": []
+		},
+		"slack-agent-ui": {
 			"tags": []
 		}
 	}

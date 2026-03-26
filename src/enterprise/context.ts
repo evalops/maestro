@@ -70,7 +70,7 @@ class EnterpriseContextManager extends EventEmitter<ContextEventMap> {
 		if (this.initialized) return;
 
 		try {
-			const token = process.env.COMPOSER_ENTERPRISE_TOKEN;
+			const token = process.env.MAESTRO_ENTERPRISE_TOKEN;
 			if (token) {
 				const { verifyToken } = await import("../auth/jwt.js");
 				const payload = verifyToken(token);

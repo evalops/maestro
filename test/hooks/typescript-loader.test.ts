@@ -22,7 +22,7 @@ describe("TypeScript hook loader", () => {
 	it("normalizes unicode spaces in configured hook paths", async () => {
 		testDir = mkdtempSync(join(tmpdir(), "composer-ts-hooks-"));
 
-		// Prevent reading real user hooks from ~/.composer/hooks.
+		// Prevent reading real user hooks from ~/.maestro/hooks.
 		previousHome = process.env.HOME;
 		process.env.HOME = testDir;
 

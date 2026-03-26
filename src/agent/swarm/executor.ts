@@ -310,9 +310,9 @@ export class SwarmExecutor {
 			stdio: ["pipe", "pipe", "pipe"],
 			env: {
 				...process.env,
-				COMPOSER_SWARM_MODE: "1",
-				COMPOSER_SWARM_ID: this.state.id,
-				COMPOSER_TEAMMATE_ID: teammate.id,
+				MAESTRO_SWARM_MODE: "1",
+				MAESTRO_SWARM_ID: this.state.id,
+				MAESTRO_TEAMMATE_ID: teammate.id,
 			},
 		});
 

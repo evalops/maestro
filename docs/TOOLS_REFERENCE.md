@@ -54,7 +54,7 @@ export const myTool = createTool({
 
 | Tool | Description | Key Options / Notes |
 | ---- | ----------- | ------------------- |
-| `background_tasks` | Runs commands in the background and manages lifecycle. | `action` one of `start | list | stop | logs`; `start` supports `cwd`, `env`, `shell`, `restart` (maxAttempts, delayMs, strategy, maxDelayMs, jitterRatio), and `limits` (maxTasks, maxRssKb, maxCpuMs, logSizeLimit, logSegments, retentionMs). Logs are tailed via `action=logs`. TUI notifications/history detail depend on `~/.composer/agent/background-settings.json` (or `COMPOSER_BACKGROUND_SETTINGS`) flags `notificationsEnabled` and `statusDetailsEnabled`; manual edits are hot-reloaded and summaries are secret-redacted. |
+| `background_tasks` | Runs commands in the background and manages lifecycle. | `action` one of `start | list | stop | logs`; `start` supports `cwd`, `env`, `shell`, `restart` (maxAttempts, delayMs, strategy, maxDelayMs, jitterRatio), and `limits` (maxTasks, maxRssKb, maxCpuMs, logSizeLimit, logSegments, retentionMs). Logs are tailed via `action=logs`. TUI notifications/history detail depend on `~/.maestro/agent/background-settings.json` (or `MAESTRO_BACKGROUND_SETTINGS`) flags `notificationsEnabled` and `statusDetailsEnabled`; manual edits are hot-reloaded and summaries are secret-redacted. |
 | `read` | Reads file contents with syntax-aware chunking. Supports text, images, PDFs, and Jupyter notebooks. | Accepts `path`, optional `startLine`/`endLine`. Images are optimized with Sharp if available. PDFs are extracted to text. Notebooks display formatted cells with outputs. |
 | `list` | Lists files in a directory (non-recursive by default). | Supports glob filters and depth. Used for context discovery. |
 | `search` | Ripgrep-style text search. | Args mirror `rg` (`pattern`, `path`, `glob`). Output includes file:line matches. Default max results now capped to avoid huge responses; oversized outputs are truncated and marked. |
@@ -63,7 +63,7 @@ export const myTool = createTool({
 | `bash` | Executes shell commands (`bash -lc`). | Default timeout 90s (max 600s) and 40KB output cap; mutating commands require a plan when safe-mode is on. Runs from repo root; stdout/stderr streamed. In bash mode, `cd` is handled internally. |
 | `edit` | Structured find/replace writer. | Accepts `path`, `oldText`, `newText`. Supports `edits` array for multiple sequential edits, `replaceAll` for bulk replacements, and `dryRun` for previews. |
 | `write` | Writes or overwrites files. | Takes `path` + `contents`. Creates directories automatically. |
-| `todo` | Generates TodoWrite-style task lists. | Stored near the project (`~/.composer/todos.json`). Integrates with `/plan`. |
+| `todo` | Generates TodoWrite-style task lists. | Stored near the project (`~/.maestro/todos.json`). Integrates with `/plan`. |
 | `notebook_edit` | Edit Jupyter notebook (.ipynb) files at the cell level. | Modes: `replace` (default), `insert`, `delete`. Identify cells by `cell_id` or `cell_index`. Specify `cell_type` (code/markdown) for inserts. |
 | `ask_user` | Ask structured questions with predefined options. | 1-4 questions per call, each with 2-4 options. Supports `multiSelect` for non-exclusive choices. "Other" option auto-added. |
 | `websearch` | Search the web via Exa AI for real-time information. | Supports neural/keyword search, domain filtering, date ranges. Requires `EXA_API_KEY` env var. Large result text is previewed with truncation and overall output is capped. |
@@ -106,7 +106,7 @@ export const myTool = createTool({
 
 ## SDK Tool Types
 
-For external SDK consumers, tool input schemas are exported from `@evalops/composer`:
+For external SDK consumers, tool input schemas are exported from `@evalops/maestro`:
 
 ```typescript
 import {
@@ -118,7 +118,7 @@ import {
   getToolSchema,
   type ReadInput,
   type EditInput,
-} from '@evalops/composer';
+} from '@evalops/maestro';
 
 // Get schema at runtime
 const schema = getToolSchema('read');
@@ -135,7 +135,7 @@ Available schemas: `ReadInputSchema`, `EditInputSchema`, `WriteInputSchema`, `Ba
 
 ## CLI Commands
 
-For install/build/test entrypoints, use `docs/QUICKSTART.md` (canonical). Key dev helpers: `bun run cli -- --help`, `npx nx run composer:evals --skip-nx-cache`, `bun run telemetry:report`.
+For install/build/test entrypoints, use `docs/QUICKSTART.md` (canonical). Key dev helpers: `bun run cli -- --help`, `npx nx run maestro:evals --skip-nx-cache`, `bun run telemetry:report`.
 
 ## Common Errors & Remedies
 

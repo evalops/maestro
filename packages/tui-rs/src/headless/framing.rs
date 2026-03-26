@@ -181,7 +181,7 @@ pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 /// # Examples
 ///
 /// ```rust,ignore
-/// use composer_tui::headless::framing::FrameWriter;
+/// use maestro_tui::headless::framing::FrameWriter;
 /// use serde::{Serialize, Deserialize};
 ///
 /// #[derive(Serialize)]
@@ -293,7 +293,7 @@ impl<W: Write> FrameWriter<W> {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use composer_tui::headless::framing::FrameReader;
+/// use maestro_tui::headless::framing::FrameReader;
 /// use serde::Deserialize;
 /// use std::io::Cursor;
 ///

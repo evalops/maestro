@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::ai::vertex::VertexAiClient;
+//! use maestro_tui::ai::vertex::VertexAiClient;
 //!
 //! let client = VertexAiClient::from_env()?;
 //! let mut rx = client.stream(&messages, &config).await?;

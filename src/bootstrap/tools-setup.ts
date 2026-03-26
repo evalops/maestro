@@ -61,12 +61,12 @@ export async function createToolsAndSandbox(params: {
 		);
 	}
 
-	// Load inline tools from .composer/tools.json and ~/.composer/tools.json
+	// Load inline tools from .maestro/tools.json and ~/.maestro/tools.json
 	const inlineTools = loadInlineTools();
 	const allTools = [...baseTools, ...inlineTools];
 
 	// Create sandbox for isolated tool execution if requested
-	const sandboxMode = (parsedSandbox ?? process.env.COMPOSER_SANDBOX_MODE) as
+	const sandboxMode = (parsedSandbox ?? process.env.MAESTRO_SANDBOX_MODE) as
 		| SandboxMode
 		| undefined;
 	const sandbox = sandboxMode

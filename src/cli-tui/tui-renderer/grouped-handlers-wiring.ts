@@ -189,8 +189,8 @@ export function buildGroupedCommandHandlers(
 			handleGuardian: (ctx) =>
 				deps.delegatingHandlers.handleGuardianCommand(ctx),
 			getSafetyState: () => ({
-				approvalMode: process.env.COMPOSER_APPROVALS ?? "prompt",
-				planMode: process.env.COMPOSER_PLAN_MODE === "1",
+				approvalMode: process.env.MAESTRO_APPROVALS ?? "prompt",
+				planMode: process.env.MAESTRO_PLAN_MODE === "1",
 				guardianEnabled: true,
 			}),
 		},

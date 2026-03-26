@@ -1,6 +1,6 @@
-# Composer Architecture
+# Maestro Architecture
 
-Composer is a multi-surface agent runtime (CLI/TUI, web, IDEs, bots) that shares one event-driven core and pluggable provider/tool layers. This document is a navigation guide for contributors. For deep dives, see the linked [design docs](#key-design-docs).
+Maestro is a multi-surface agent runtime (CLI/TUI, web, IDEs, bots) that shares one event-driven core and pluggable provider/tool layers. This document is a navigation guide for contributors. For deep dives, see the linked [design docs](#key-design-docs).
 
 ---
 
@@ -61,7 +61,7 @@ Every surface shares the same Agent core, tool set, and safety layers.
 | `packages/ai/` | `@evalops/ai` — shared SDK: model registry, transport, agent types |
 | `packages/tui/` | `@evalops/tui` — terminal UI library: differential rendering, widgets |
 | `packages/tui-rs/` | Native Rust TUI binary (standalone, no Node subprocess) |
-| `packages/web/` | `@evalops/composer-web` — browser UI (Lit, Vite) |
+| `packages/web/` | `@evalops/maestro-web` — browser UI (Lit, Vite) |
 | `packages/contracts/` | `@evalops/contracts` — shared TypeScript definitions |
 | `packages/slack-agent/` | Slack bot surface with Docker sandbox |
 | `packages/github-agent/` | Autonomous GitHub agent (issue → PR pipeline) |
@@ -70,7 +70,7 @@ Every surface shares the same Agent core, tool set, and safety layers.
 | `packages/jetbrains-plugin/` | JetBrains plugin |
 | `docs/design/` | 17 detailed design documents (see [table below](#key-design-docs)) |
 | `test/` | Vitest test suite (~4500 tests) |
-| `evals/` | Evaluation scenarios (`npx nx run composer:evals`; CI runs on `run-evals` label) |
+| `evals/` | Evaluation scenarios (`npx nx run maestro:evals`; CI runs on `run-evals` label) |
 
 ### Surface Entrypoints
 
@@ -86,11 +86,11 @@ Every surface shares the same Agent core, tool set, and safety layers.
 
 ### Configuration Precedence (highest wins)
 
-1. Environment variables (`ANTHROPIC_API_KEY`, `COMPOSER_SAFE_MODE`, etc.)
-2. Project-local `.composer/` directory (mcp.json, firewall.json, commands/)
+1. Environment variables (`ANTHROPIC_API_KEY`, `MAESTRO_SAFE_MODE`, etc.)
+2. Project-local `.maestro/` directory (mcp.json, firewall.json, commands/)
 3. Project-root `AGENT.md` / `CLAUDE.md`
 4. Parent directory `AGENT.md` files (walked upward)
-5. Global `~/.composer/` directory (agent/AGENT.md, mcp.json, firewall.json)
+5. Global `~/.maestro/` directory (agent/AGENT.md, mcp.json, firewall.json)
 
 ---
 
@@ -210,7 +210,7 @@ All surfaces share the Agent core via different integration patterns:
 | **TS TUI** (`src/cli-tui/`) | Direct — `TuiRenderer` subscribes to `Agent.subscribe()` | Main interactive surface |
 | **Rust TUI** (`packages/tui-rs/`) | Standalone — own agent + native provider clients | No Node subprocess; mirrors TS feature set |
 | **Web UI** (`packages/web/`) | HTTP/WS — `src/server/` wraps Agent, streams via SSE/WebSocket | Lit components, Vite build |
-| **VS Code / JetBrains** | Extension/Plugin — spawns Composer process, communicates via RPC | IDE-aware context (diagnostics, references) |
+| **VS Code / JetBrains** | Extension/Plugin — spawns Maestro process, communicates via RPC | IDE-aware context (diagnostics, references) |
 | **Slack Bot** (`packages/slack-agent/`) | Docker sandbox — runs Agent in isolated container per request | Async queuing, approval workflows |
 | **GitHub Agent** (`packages/github-agent/`) | Headless — label-triggered, runs Agent on issue/PR events | Self-improvement pipelines |
 | **Conductor** | Chrome extension — connects to web server via Bridge | Browser automation tools |
@@ -284,16 +284,16 @@ Tool Call
        ▼
 ┌──────────────────┐
 │ Guardian          │ ← Semgrep (p/secrets + p/ci) on staged files
-│  Pre-commit gate  │   Runs before git commits/pushes from Composer
+│  Pre-commit gate  │   Runs before git commits/pushes from Maestro
 └──────────────────┘
 ```
 
 ### Trust Boundaries
 
-- **Workspace** = the project root directory (detected via `.git`, `package.json`, etc.). File writes inside workspace are allowed; writes outside require explicit approval. Additional trusted paths can be added via `containment.trustedPaths` in `~/.composer/firewall.json`.
+- **Workspace** = the project root directory (detected via `.git`, `package.json`, etc.). File writes inside workspace are allowed; writes outside require explicit approval. Additional trusted paths can be added via `containment.trustedPaths` in `~/.maestro/firewall.json`.
 - **Trusted sandbox** for `auto` mode = environments where a human is not present to approve (Docker containers, CI runners). The Slack bot's Docker sandbox uses `auto` because each request runs in an isolated container. IDE surfaces (VS Code, JetBrains) default to `prompt`.
 - **MCP tools are third-party.** They go through the same firewall and approval pipeline as built-in tools. An MCP tool calling `bash` still triggers destructive-command detection. MCP servers do *not* inherit `process.env` by default (only `PATH`, `HOME`, `USER`, `SHELL`, `TERM`).
-- **`COMPOSER_SAFE_MODE=1`** enables safe mode globally: all mutations require approval regardless of other settings.
+- **`MAESTRO_SAFE_MODE=1`** enables safe mode globally: all mutations require approval regardless of other settings.
 
 ---
 
@@ -331,7 +331,7 @@ Quick reference for "where do I change X?"
 |------|----------------|
 | **Add a slash command** | `commands/types.ts` → `commands/registry.ts` → `command-registry-builder.ts` → `tui-renderer.ts` |
 | **Add a built-in tool** | Create in `src/tools/`, register in tool list, add test in `test/tools/` |
-| **Add an MCP server** | `~/.composer/mcp.json` or `.composer/mcp.json` — tools auto-register as `mcp__<server>__<tool>` |
+| **Add an MCP server** | `~/.maestro/mcp.json` or `.maestro/mcp.json` — tools auto-register as `mcp__<server>__<tool>` |
 | **Add a provider** | Transport adapter in `packages/ai/`, model entries in registry, compat flags if needed |
 | **Add a context source** | Implement `AgentContextSource`, register in `AgentContextManager` |
 | **Add a TUI modal/selector** | Component in `src/cli-tui/selectors/`, view wrapper, init in `TuiRenderer`, push via `modalManager` |
@@ -339,7 +339,7 @@ Quick reference for "where do I change X?"
 | **Add a grouped subcommand** | Handler in `src/cli-tui/commands/grouped/`, subcommand constant, wire in parent factory |
 | **Fix terminal rendering** | Check if fix belongs in `packages/tui` (library), `src/cli-tui` (app), or `packages/tui-rs` (Rust) |
 | **Add a web API endpoint** | Route in `src/server/`, handler using shared Agent, update `packages/web/` if UI needed |
-| **Run tests** | `npx nx run composer:test --skip-nx-cache` (full) or `bunx vitest --run -t "name"` (targeted) |
+| **Run tests** | `npx nx run maestro:test --skip-nx-cache` (full) or `bunx vitest --run -t "name"` (targeted) |
 | **Lint** | `bun run bun:lint` (Biome + eval verifier) |
 
 ---
@@ -351,13 +351,13 @@ Get a local build running and make a visible change in under 10 minutes:
 ```bash
 # 1. Install and verify
 bun install
-npx nx run composer:test --skip-nx-cache   # ~4500 tests, should all pass
+npx nx run maestro:test --skip-nx-cache   # ~4500 tests, should all pass
 
 # 2. See what you're working with
-npx nx graph --focus composer               # dependency visualization
+npx nx graph --focus maestro               # dependency visualization
 
 # 3. Make a change — pick one:
-#    a) Edit a TUI string: grep for "Composer" in src/cli-tui/ and change it
+#    a) Edit a TUI string: grep for "Maestro" in src/cli-tui/ and change it
 #    b) Add a toy tool: create src/tools/clock.ts that returns Date.now()
 #    c) Add a slash command /ping: follow the 4-file pattern above
 

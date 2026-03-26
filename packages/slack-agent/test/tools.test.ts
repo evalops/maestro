@@ -27,6 +27,9 @@ describe("createSlackAgentTools", () => {
 			"write",
 			"status",
 			"attach",
+			"deploy",
+			"build_dashboard",
+			"workflow",
 		]);
 	});
 
@@ -41,7 +44,7 @@ describe("createSlackAgentTools", () => {
 		});
 
 		expect(tools.map((t) => t.name)).toContain("schedule");
-		expect(tools).toHaveLength(7);
+		expect(tools).toHaveLength(10);
 	});
 });
 

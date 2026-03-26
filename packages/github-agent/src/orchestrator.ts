@@ -425,7 +425,7 @@ export class Orchestrator {
 	private async handleCheckRunRerequested(
 		checkRun: CheckRunEvent,
 	): Promise<void> {
-		if (checkRun.name !== "Composer Agent") {
+		if (checkRun.name !== "Maestro Agent") {
 			return;
 		}
 		console.log(
@@ -514,9 +514,9 @@ export class Orchestrator {
 			state: "pending",
 			description:
 				status === "in_progress"
-					? "Composer Agent rerun in progress"
-					: "Composer Agent queued for rerun",
-			context: "Composer Agent",
+					? "Maestro Agent rerun in progress"
+					: "Maestro Agent queued for rerun",
+			context: "Maestro Agent",
 			targetUrl: task.result?.prUrl,
 		});
 	}

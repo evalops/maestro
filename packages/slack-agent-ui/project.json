@@ -1,0 +1,49 @@
+{
+	"name": "slack-agent-ui",
+	"projectType": "application",
+	"root": "packages/slack-agent-ui",
+	"sourceRoot": "packages/slack-agent-ui/src",
+	"implicitDependencies": [],
+	"targets": {
+		"build": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "cd packages/slack-agent-ui && bun run build",
+				"forwardAllArgs": true
+			}
+		},
+		"dev-api": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "npx tsx packages/slack-agent-ui/dev-server.ts",
+				"forwardAllArgs": true
+			}
+		},
+		"dev-ui": {
+			"executor": "nx:run-commands",
+			"options": {
+				"command": "bun run --filter @evalops/slack-agent-ui dev",
+				"forwardAllArgs": true
+			}
+		},
+		"dev": {
+			"executor": "nx:run-commands",
+			"options": {
+				"parallel": true,
+				"commands": [
+					{
+						"command": "npx tsx packages/slack-agent-ui/dev-server.ts",
+						"prefix": "api",
+						"color": "cyan"
+					},
+					{
+						"command": "bun run --filter @evalops/slack-agent-ui dev",
+						"prefix": "ui",
+						"color": "green"
+					}
+				],
+				"forwardAllArgs": true
+			}
+		}
+	}
+}

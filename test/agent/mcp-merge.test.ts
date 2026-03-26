@@ -13,8 +13,8 @@ describe("MCP multi-scope precedence and env expansion", () => {
 		baseDir = join(tmpdir(), `mcp-merge-${Date.now()}`);
 		projectDir = baseDir;
 		mkdirSync(projectDir, { recursive: true });
-		Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_MCP_PATH");
-		Reflect.deleteProperty(process.env, "COMPOSER_USER_MCP_PATH");
+		Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_MCP_PATH");
+		Reflect.deleteProperty(process.env, "MAESTRO_USER_MCP_PATH");
 	});
 
 	afterEach(() => {
@@ -32,11 +32,11 @@ describe("MCP multi-scope precedence and env expansion", () => {
 			servers: [{ name: "svc", transport: "stdio", command: "user-cmd" }],
 		});
 		// local
-		write(join(projectDir, ".composer/mcp.local.json"), {
+		write(join(projectDir, ".maestro/mcp.local.json"), {
 			servers: [{ name: "svc", transport: "stdio", command: "local-cmd" }],
 		});
 		// project
-		write(join(projectDir, ".composer/mcp.json"), {
+		write(join(projectDir, ".maestro/mcp.json"), {
 			servers: [{ name: "svc", transport: "stdio", command: "project-cmd" }],
 		});
 		// enterprise
@@ -49,8 +49,8 @@ describe("MCP multi-scope precedence and env expansion", () => {
 		];
 
 		// Patch paths via env for test
-		process.env.COMPOSER_ENTERPRISE_MCP_PATH = join(baseDir, "enterprise.json");
-		process.env.COMPOSER_USER_MCP_PATH = join(baseDir, "user.json");
+		process.env.MAESTRO_ENTERPRISE_MCP_PATH = join(baseDir, "enterprise.json");
+		process.env.MAESTRO_USER_MCP_PATH = join(baseDir, "user.json");
 
 		const cfg = loadMcpConfig(projectDir, {
 			pluginServers,
@@ -78,8 +78,8 @@ describe("MCP multi-scope precedence and env expansion", () => {
 			],
 		});
 
-		process.env.COMPOSER_ENTERPRISE_MCP_PATH = join(baseDir, "enterprise.json");
-		process.env.COMPOSER_USER_MCP_PATH = join(baseDir, "user.json");
+		process.env.MAESTRO_ENTERPRISE_MCP_PATH = join(baseDir, "enterprise.json");
+		process.env.MAESTRO_USER_MCP_PATH = join(baseDir, "user.json");
 
 		const cfg = loadMcpConfig(projectDir, { includeEnvLimits: true });
 		expect(cfg.servers).toHaveLength(0);
@@ -87,7 +87,7 @@ describe("MCP multi-scope precedence and env expansion", () => {
 
 	it("expands ${VAR} and ${VAR:-fallback}", () => {
 		process.env.TEST_FOO = "hello";
-		write(join(projectDir, ".composer/mcp.json"), {
+		write(join(projectDir, ".maestro/mcp.json"), {
 			servers: [
 				{
 					name: "exp",
@@ -104,7 +104,7 @@ describe("MCP multi-scope precedence and env expansion", () => {
 	});
 
 	it("detects sse URLs heuristically", () => {
-		write(join(projectDir, ".composer/mcp.json"), {
+		write(join(projectDir, ".maestro/mcp.json"), {
 			servers: [
 				{ name: "a", url: "http://example.com/sse" },
 				{ name: "b", url: "http://sse.example.com/stream" },

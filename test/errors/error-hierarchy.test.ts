@@ -347,7 +347,7 @@ describe("Error Hierarchy", () => {
 		it("should create config error", () => {
 			const error = new ConfigError("Invalid configuration", {
 				configKey: "apiKey",
-				configFile: "~/.composer/config.json",
+				configFile: "~/.maestro/config.json",
 			});
 
 			expect(error.code).toBe("CONFIG_ERROR");

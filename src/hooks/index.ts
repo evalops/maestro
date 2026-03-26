@@ -28,9 +28,9 @@
  * ## Configuration
  *
  * Hooks can be configured via:
- * - Environment variables: `COMPOSER_HOOKS_PRE_TOOL_USE="my-script.sh"`
- * - User config: `~/.composer/hooks.json`
- * - Project config: `.composer/hooks.json`
+ * - Environment variables: `MAESTRO_HOOKS_PRE_TOOL_USE="my-script.sh"`
+ * - User config: `~/.maestro/hooks.json`
+ * - Project config: `.maestro/hooks.json`
  * - Programmatic registration: `registerHook(...)`
  *
  * ## Hook Output Format

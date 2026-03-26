@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import os from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { resolveGuardianConfig } from "./config.js";
 import { loadGuardianState, recordGuardianRun } from "./state.js";
 import { DEFAULT_EXCLUDES } from "./types.js";
 import type {
@@ -151,20 +152,20 @@ function resolveEnablement(
 	if (!respectEnv) {
 		return { enabled: state.enabled };
 	}
-	const rawEnv = process.env.COMPOSER_GUARDIAN;
+	const rawEnv = process.env.MAESTRO_GUARDIAN;
 	if (typeof rawEnv === "string" && rawEnv.trim().length > 0) {
 		const normalized = rawEnv.trim().toLowerCase();
 		if (GUARDIAN_DISABLE_VALUES.includes(normalized)) {
 			return {
 				enabled: false,
-				reason: "COMPOSER_GUARDIAN=0 (disabled)",
+				reason: "MAESTRO_GUARDIAN=0 (disabled)",
 				envOverride: "disabled",
 			};
 		}
 		if (GUARDIAN_ENABLE_VALUES.includes(normalized)) {
 			return {
 				enabled: true,
-				reason: "COMPOSER_GUARDIAN=1 (forced on)",
+				reason: "MAESTRO_GUARDIAN=1 (forced on)",
 				envOverride: "enabled",
 			};
 		}
@@ -632,7 +633,7 @@ export function shouldGuardCommand(command: string): {
 	shouldGuard: boolean;
 	trigger: string | null;
 } {
-	const inlineDisable = /COMPOSER_GUARDIAN\s*=\s*(0|false|off|no)/i;
+	const inlineDisable = /MAESTRO_GUARDIAN\s*=\s*(0|false|off|no)/i;
 	if (inlineDisable.test(command)) {
 		return { shouldGuard: false, trigger: null };
 	}
@@ -734,21 +735,32 @@ export async function runGuardian(
 		}
 	}
 
+	const config = resolveGuardianConfig({
+		root,
+		config: options.config,
+	});
+
 	const toolResults: GuardianToolResult[] = [];
-	const semgrep = runSemgrep(files, scanRoot);
-	toolResults.push(semgrep);
+
+	if (config.tools.semgrep) {
+		toolResults.push(runSemgrep(files, scanRoot));
+	}
 
 	let fallback: GuardianToolResult | null = null;
-	const gitSecretsResult = runGitSecrets(files, scanRoot);
-	if (!gitSecretsResult.skipped) {
-		fallback = gitSecretsResult;
-	} else {
+	if (config.tools.gitSecrets) {
+		const gitSecretsResult = runGitSecrets(files, scanRoot);
+		if (!gitSecretsResult.skipped) {
+			fallback = gitSecretsResult;
+		}
+	}
+	if (!fallback && config.tools.trufflehog) {
 		const truffleResult = runTrufflehog(files, scanRoot);
 		if (!truffleResult.skipped) {
 			fallback = truffleResult;
-		} else {
-			fallback = runHeuristicScan(files, scanRoot);
 		}
+	}
+	if (!fallback && config.tools.heuristicScan) {
+		fallback = runHeuristicScan(files, scanRoot);
 	}
 	if (fallback) {
 		toolResults.push(fallback);

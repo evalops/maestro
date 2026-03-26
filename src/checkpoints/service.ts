@@ -160,7 +160,7 @@ export class CheckpointService {
 	constructor(cwd: string, config?: Partial<CheckpointConfig>) {
 		this.config = { ...DEFAULT_CHECKPOINT_CONFIG, ...config };
 		this.enabled =
-			this.config.enabled && !process.env.COMPOSER_DISABLE_FILE_CHECKPOINTING;
+			this.config.enabled && !process.env.MAESTRO_DISABLE_FILE_CHECKPOINTING;
 		this.cwd = cwd;
 		this.cwdReal = (() => {
 			try {

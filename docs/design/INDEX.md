@@ -1,6 +1,6 @@
 # Feature Design Documents
 
-This directory contains detailed design documentation for each major feature and subsystem in Composer. These documents provide deep technical insight into architecture decisions, data flows, and implementation patterns.
+This directory contains detailed design documentation for each major feature and subsystem in Maestro. These documents provide deep technical insight into architecture decisions, data flows, and implementation patterns.
 
 ## Core Systems
 
@@ -40,7 +40,7 @@ This directory contains detailed design documentation for each major feature and
 
 | Document | Description |
 |----------|-------------|
-| [Ambient Agent](AMBIENT_AGENT.md) | Always-on GitHub agent daemon (Ambient Composer) |
+| [Ambient Agent](AMBIENT_AGENT.md) | Always-on GitHub agent daemon (Ambient Maestro) |
 
 ## How to Use These Documents
 

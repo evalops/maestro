@@ -40,9 +40,9 @@ describe("Auto-Verify Service", () => {
 		});
 
 		it("returns default configuration", () => {
-			Reflect.deleteProperty(process.env, "COMPOSER_AUTO_TEST");
-			Reflect.deleteProperty(process.env, "COMPOSER_AUTO_TEST_DELAY");
-			Reflect.deleteProperty(process.env, "COMPOSER_AUTO_TEST_TIMEOUT");
+			Reflect.deleteProperty(process.env, "MAESTRO_AUTO_TEST");
+			Reflect.deleteProperty(process.env, "MAESTRO_AUTO_TEST_DELAY");
+			Reflect.deleteProperty(process.env, "MAESTRO_AUTO_TEST_TIMEOUT");
 
 			const config = getAutoVerifyConfig();
 
@@ -53,24 +53,24 @@ describe("Auto-Verify Service", () => {
 			expect(config.maxTestFiles).toBe(5);
 		});
 
-		it("respects COMPOSER_AUTO_TEST=false", () => {
-			process.env.COMPOSER_AUTO_TEST = "false";
+		it("respects MAESTRO_AUTO_TEST=false", () => {
+			process.env.MAESTRO_AUTO_TEST = "false";
 
 			const config = getAutoVerifyConfig();
 
 			expect(config.enabled).toBe(false);
 		});
 
-		it("parses COMPOSER_AUTO_TEST_DELAY", () => {
-			process.env.COMPOSER_AUTO_TEST_DELAY = "5000";
+		it("parses MAESTRO_AUTO_TEST_DELAY", () => {
+			process.env.MAESTRO_AUTO_TEST_DELAY = "5000";
 
 			const config = getAutoVerifyConfig();
 
 			expect(config.debounceDelayMs).toBe(5000);
 		});
 
-		it("parses COMPOSER_AUTO_TEST_TIMEOUT", () => {
-			process.env.COMPOSER_AUTO_TEST_TIMEOUT = "120000";
+		it("parses MAESTRO_AUTO_TEST_TIMEOUT", () => {
+			process.env.MAESTRO_AUTO_TEST_TIMEOUT = "120000";
 
 			const config = getAutoVerifyConfig();
 
@@ -78,8 +78,8 @@ describe("Auto-Verify Service", () => {
 		});
 
 		it("uses default for invalid numbers", () => {
-			process.env.COMPOSER_AUTO_TEST_DELAY = "invalid";
-			process.env.COMPOSER_AUTO_TEST_TIMEOUT = "also-invalid";
+			process.env.MAESTRO_AUTO_TEST_DELAY = "invalid";
+			process.env.MAESTRO_AUTO_TEST_TIMEOUT = "also-invalid";
 
 			const config = getAutoVerifyConfig();
 
@@ -88,7 +88,7 @@ describe("Auto-Verify Service", () => {
 		});
 
 		it("uses custom command when provided", () => {
-			process.env.COMPOSER_AUTO_TEST_COMMAND = "bun test";
+			process.env.MAESTRO_AUTO_TEST_COMMAND = "bun test";
 
 			const config = getAutoVerifyConfig();
 

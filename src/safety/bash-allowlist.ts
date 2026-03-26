@@ -13,14 +13,14 @@ let cachedPatterns: string[] | null = null;
 let cachedKey = "";
 
 function getPaths(): string[] {
-	const fromEnv = process.env.COMPOSER_BASH_ALLOWLIST_PATHS;
+	const fromEnv = process.env.MAESTRO_BASH_ALLOWLIST_PATHS;
 	const envPaths =
 		fromEnv
 			?.split(process.platform === "win32" ? ";" : ":")
 			.map((p) => resolveEnvPath(p) ?? p.trim())
 			.filter(Boolean) ?? [];
-	const workspacePath = join(process.cwd(), ".composer", "bash-allow.json");
-	const userPath = join(PATHS.COMPOSER_HOME, "bash-allow.json");
+	const workspacePath = join(process.cwd(), ".maestro", "bash-allow.json");
+	const userPath = join(PATHS.MAESTRO_HOME, "bash-allow.json");
 	return [...envPaths, workspacePath, userPath];
 }
 

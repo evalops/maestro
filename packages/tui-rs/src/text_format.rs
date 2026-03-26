@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust
-//! use composer_tui::text_format::{truncate_text, format_json_compact};
+//! use maestro_tui::text_format::{truncate_text, format_json_compact};
 //!
 //! let long_text = "This is a very long piece of text that needs truncation";
 //! let truncated = truncate_text(long_text, 20);
@@ -185,7 +185,7 @@ pub fn truncate_lines(text: &str, max_lines: usize) -> (Vec<&str>, usize) {
 /// # Examples
 ///
 /// ```rust
-/// use composer_tui::text_format::center_truncate_path;
+/// use maestro_tui::text_format::center_truncate_path;
 ///
 /// // Long path gets middle segments replaced with ellipsis
 /// let path = "/home/user/projects/very/long/nested/path/file.rs";

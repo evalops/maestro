@@ -25,7 +25,7 @@ describe("ComposerChat", () => {
 		const header = element.shadowRoot?.querySelector(".header");
 		assert.ok(header);
 		const title = header?.querySelector("h1");
-		assert.equal(title?.textContent, "Composer");
+		assert.equal(title?.textContent, "Maestro");
 	});
 
 	it("accepts custom api endpoint", async () => {

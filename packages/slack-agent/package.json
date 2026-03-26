@@ -1,7 +1,7 @@
 {
 	"name": "@evalops/slack-agent",
 	"version": "0.10.0",
-	"description": "Slack bot agent with Docker sandbox support for Composer",
+	"description": "Slack bot agent with Docker sandbox support for Maestro",
 	"type": "module",
 	"bin": {
 		"slack-agent": "dist/main.js"
@@ -17,18 +17,19 @@
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
-	"keywords": ["slack", "bot", "agent", "ai", "docker", "sandbox", "composer"],
+	"keywords": ["slack", "bot", "agent", "ai", "docker", "sandbox", "maestro"],
 	"author": "EvalOps",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/evalops/composer.git",
+		"url": "git+https://github.com/evalops/maestro.git",
 		"directory": "packages/slack-agent"
 	},
 	"engines": {
 		"node": ">=20.0.0"
 	},
 	"dependencies": {
+		"@daytonaio/sdk": "^0.139.0",
 		"@evalops/ai": "^0.10.0",
 		"@sinclair/typebox": "^0.34.0",
 		"@slack/socket-mode": "^2.0.0",

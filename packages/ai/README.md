@@ -1,6 +1,6 @@
 # @evalops/ai
 
-Shared Composer AI SDK providing model registry, provider-agnostic transport, and agent event stream primitives. Used by the CLI, TUI, and web UI.
+Shared Maestro AI SDK providing model registry, provider-agnostic transport, and agent event stream primitives. Used by the CLI, TUI, and web UI.
 
 ## Supported Providers
 
@@ -72,7 +72,7 @@ await agent.prompt("Hello, world!");
 
 ## OAuth Providers (GitHub Copilot)
 
-GitHub Copilot uses OAuth (stored in `~/.composer/oauth.json`). In SDK usage, use
+GitHub Copilot uses OAuth (stored in `~/.maestro/oauth.json`). In SDK usage, use
 `getAuthContext` to supply the token:
 
 ```typescript
@@ -97,7 +97,7 @@ const transport = new ProviderTransport({
 
 ## Subpath Entry Points
 
-`@evalops/ai` is the unified SDK surface for all Composer interfaces. Prefer the
+`@evalops/ai` is the unified SDK surface for all Maestro interfaces. Prefer the
 stable subpath entry points (kept inside this package) instead of reaching into
 monorepo `src` files:
 
@@ -283,7 +283,7 @@ agent.subscribe((event) => {
 ```
 
 For OpenAI Responses API models that support reasoning, you can also request
-`reasoningSummary` (auto/concise/detailed) via `AgentRunConfig`. Composer will
+`reasoningSummary` (auto/concise/detailed) via `AgentRunConfig`. Maestro will
 validate that the model is `openai-responses` and marked `reasoning: true`.
 
 ## Agent State

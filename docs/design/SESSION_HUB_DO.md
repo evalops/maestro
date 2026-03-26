@@ -4,7 +4,7 @@
 
 Introduce an optional Durable Objects (DO) "session hub" that coordinates multi-client sessions
 (Web, Slack, IDE, TUI) and fans out live updates. The hub is the authoritative session state
-and streaming coordinator. The agent runner (Composer runtime + tools) remains external.
+and streaming coordinator. The agent runner (Maestro runtime + tools) remains external.
 
 This design treats DOs as the **session control plane** (state + fan-out) while the runner
 handles **execution plane** (tool calls, file edits, tests, model calls).
@@ -39,7 +39,7 @@ Clients (Web/Slack/IDE/TUI)
 - **SessionHub Worker**: HTTP + WS router. Validates auth and forwards to Session DO.
 - **SessionHub DO**: One object per session. Stores session state + event log, manages
   WebSocket clients, and fan-out.
-- **Runner**: Composer runtime that executes tools and sends event updates to the Session DO.
+- **Runner**: Maestro runtime that executes tools and sends event updates to the Session DO.
 
 ## Data Model (SQLite-backed DO recommended)
 

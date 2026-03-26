@@ -17,7 +17,7 @@
  *
  * | Environment Variable | Description | Default |
  * |---------------------|-------------|---------|
- * | `COMPOSER_REDIS_URL` | Redis connection URL | (in-memory fallback) |
+ * | `MAESTRO_REDIS_URL` | Redis connection URL | (in-memory fallback) |
  *
  * ## Default Endpoint Limits
  *
@@ -107,14 +107,14 @@ let redisAvailable = false;
 let redisInitPromise: Promise<boolean> | null = null;
 
 /**
- * Initialize Redis connection if COMPOSER_REDIS_URL is configured.
+ * Initialize Redis connection if MAESTRO_REDIS_URL is configured.
  * Returns true if Redis is available, false otherwise.
  */
 export async function initRedis(): Promise<boolean> {
-	const redisUrl = process.env.COMPOSER_REDIS_URL;
+	const redisUrl = process.env.MAESTRO_REDIS_URL;
 	if (!redisUrl) {
 		logger.debug(
-			"No COMPOSER_REDIS_URL configured, using in-memory rate limiting",
+			"No MAESTRO_REDIS_URL configured, using in-memory rate limiting",
 		);
 		return false;
 	}

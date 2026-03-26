@@ -9,7 +9,7 @@ import {
 import { bootstrapLsp } from "../../src/lsp/bootstrap.js";
 import { getClients } from "../../src/lsp/index.js";
 
-const TEST_CONFIG_DIR = join(homedir(), ".composer-test");
+const TEST_CONFIG_DIR = join(homedir(), ".maestro-test");
 const TEST_CONFIG_FILE = join(TEST_CONFIG_DIR, "config.json");
 
 describe("LSP Bootstrap Tests", () => {
@@ -89,16 +89,16 @@ describe("LSP Bootstrap Tests", () => {
 
 	it("should set LSP_SEVERITY env var when blockingSeverity is configured", async () => {
 		// Save original env
-		const originalEnv = process.env.COMPOSER_SAFE_LSP_SEVERITY;
+		const originalEnv = process.env.MAESTRO_SAFE_LSP_SEVERITY;
 
 		// Bootstrap should not fail
 		await expect(bootstrapLsp()).resolves.toBeUndefined();
 
 		// Restore env
 		if (originalEnv !== undefined) {
-			process.env.COMPOSER_SAFE_LSP_SEVERITY = originalEnv;
+			process.env.MAESTRO_SAFE_LSP_SEVERITY = originalEnv;
 		} else {
-			Reflect.deleteProperty(process.env, "COMPOSER_SAFE_LSP_SEVERITY");
+			Reflect.deleteProperty(process.env, "MAESTRO_SAFE_LSP_SEVERITY");
 		}
 	});
 });

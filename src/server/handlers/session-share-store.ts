@@ -9,13 +9,13 @@ import { sharedSessions as sharedSessionsTable } from "../../db/schema.js";
 import { RateLimiter } from "../rate-limiter.js";
 
 // ============================================================================
-// RATE LIMITING (uses Redis when COMPOSER_REDIS_URL is configured)
+// RATE LIMITING (uses Redis when MAESTRO_REDIS_URL is configured)
 // ============================================================================
 
 const shareRateLimiter = new RateLimiter(
 	{
-		windowMs: Number(process.env.COMPOSER_SHARE_RATE_LIMIT_WINDOW_MS ?? 60_000),
-		max: Number(process.env.COMPOSER_SHARE_RATE_LIMIT_MAX ?? 10),
+		windowMs: Number(process.env.MAESTRO_SHARE_RATE_LIMIT_WINDOW_MS ?? 60_000),
+		max: Number(process.env.MAESTRO_SHARE_RATE_LIMIT_MAX ?? 10),
 	},
 	"share",
 );

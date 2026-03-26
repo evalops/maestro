@@ -15,7 +15,7 @@ export interface BashHistoryStore {
  */
 export function getHistoryFilePath(): string {
 	return (
-		resolveEnvPath(process.env.COMPOSER_BASH_HISTORY) ?? PATHS.BASH_HISTORY_FILE
+		resolveEnvPath(process.env.MAESTRO_BASH_HISTORY) ?? PATHS.BASH_HISTORY_FILE
 	);
 }
 

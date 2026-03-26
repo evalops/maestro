@@ -1,6 +1,6 @@
-# Composer Web UI
+# Maestro Web UI
 
-Beautiful, modern web interface for Composer AI coding assistant.
+Beautiful, modern web interface for Maestro AI coding assistant.
 
 ## Features
 
@@ -202,4 +202,4 @@ See the main [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
 
 ## License
 
-Same as main Composer project.
+Same as main Maestro project.

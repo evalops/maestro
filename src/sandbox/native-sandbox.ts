@@ -187,7 +187,7 @@ const SEATBELT_NETWORK_POLICY = `
 `;
 
 const SEATBELT_EXECUTABLE = "/usr/bin/sandbox-exec";
-const SANDBOX_ENV_VAR = "COMPOSER_SANDBOX";
+const SANDBOX_ENV_VAR = "MAESTRO_SANDBOX";
 
 // ─────────────────────────────────────────────────────────────
 // Helper Functions

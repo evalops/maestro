@@ -5,7 +5,7 @@ Generated from a fresh repo audit on `2026-03-13` across the current approvals/e
 Execution rules:
 
 - Tackle `P0` and `P1` first.
-- Keep `bun run bun:lint`, `npx nx run composer:test --skip-nx-cache`, and `npx nx run composer:evals --skip-nx-cache` green after each batch.
+- Keep `bun run bun:lint`, `npx nx run maestro:test --skip-nx-cache`, and `npx nx run maestro:evals --skip-nx-cache` green after each batch.
 - Treat live LLM-judge runs as local/manual validators, not CI-required defaults.
 - Update this file as work lands.
 

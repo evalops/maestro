@@ -43,7 +43,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::tools::inline::{load_inline_tools, InlineToolExecutor};
+//! use maestro_tui::tools::inline::{load_inline_tools, InlineToolExecutor};
 //!
 //! let tools = load_inline_tools("/path/to/workspace");
 //! for tool in &tools {

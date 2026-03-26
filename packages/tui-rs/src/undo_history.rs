@@ -58,7 +58,7 @@ impl<T> HistoryEntry<T> {
 /// # Example
 ///
 /// ```rust
-/// use composer_tui::undo_history::UndoHistory;
+/// use maestro_tui::undo_history::UndoHistory;
 ///
 /// let mut history: UndoHistory<String> = UndoHistory::new();
 ///

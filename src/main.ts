@@ -524,13 +524,13 @@ export async function main(args: string[]) {
 
 	// Enable safe mode if requested (restricts dangerous operations)
 	if (parsed.safeMode) {
-		process.env.COMPOSER_SAFE_MODE = "1";
+		process.env.MAESTRO_SAFE_MODE = "1";
 	}
 
 	// Load custom models file if specified
 	// This allows users to define additional models beyond the built-in ones
 	if (parsed.modelsFile) {
-		process.env.COMPOSER_MODELS_FILE = parsed.modelsFile;
+		process.env.MAESTRO_MODELS_FILE = parsed.modelsFile;
 		reloadModelConfig();
 	}
 
@@ -770,7 +770,7 @@ export async function main(args: string[]) {
 
 	// Create session manager for conversation persistence
 	// The session manager handles:
-	// - Session file creation and storage (~/.composer/agent/sessions/)
+	// - Session file creation and storage (~/.maestro/agent/sessions/)
 	// - Message persistence in JSONL format
 	// - Session resume and continuation
 	// - Model/thinking level tracking across restarts

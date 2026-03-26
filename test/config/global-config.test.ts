@@ -1,7 +1,7 @@
 /**
  * Global Config Loading Tests
  *
- * Tests for loading config from ~/.composer/config.toml (global config).
+ * Tests for loading config from ~/.maestro/config.toml (global config).
  * Uses vi.mock at module level to mock the homedir function.
  */
 
@@ -38,8 +38,8 @@ describe("global config loading", () => {
 		projectDir = join(testDir, "project");
 		process.env.HOME = globalDir;
 		process.env.USERPROFILE = globalDir;
-		mkdirSync(join(globalDir, ".composer"), { recursive: true });
-		mkdirSync(join(projectDir, ".composer"), { recursive: true });
+		mkdirSync(join(globalDir, ".maestro"), { recursive: true });
+		mkdirSync(join(projectDir, ".maestro"), { recursive: true });
 		clearConfigCache();
 	});
 
@@ -58,15 +58,15 @@ describe("global config loading", () => {
 		}
 		// Clean up env vars - must use delete because assignment to undefined
 		// sets the value to the string "undefined" instead of removing it
-		Reflect.deleteProperty(process.env, "COMPOSER_MODEL");
-		Reflect.deleteProperty(process.env, "COMPOSER_MODEL_PROVIDER");
-		Reflect.deleteProperty(process.env, "COMPOSER_APPROVAL_POLICY");
-		Reflect.deleteProperty(process.env, "COMPOSER_SANDBOX_MODE");
-		Reflect.deleteProperty(process.env, "COMPOSER_PROFILE");
+		Reflect.deleteProperty(process.env, "MAESTRO_MODEL");
+		Reflect.deleteProperty(process.env, "MAESTRO_MODEL_PROVIDER");
+		Reflect.deleteProperty(process.env, "MAESTRO_APPROVAL_POLICY");
+		Reflect.deleteProperty(process.env, "MAESTRO_SANDBOX_MODE");
+		Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
 	});
 
-	it("loads global config from ~/.composer/config.toml", () => {
-		const globalConfigPath = join(globalDir, ".composer", "config.toml");
+	it("loads global config from ~/.maestro/config.toml", () => {
+		const globalConfigPath = join(globalDir, ".maestro", "config.toml");
 		writeFileSync(
 			globalConfigPath,
 			`
@@ -81,7 +81,7 @@ model_provider = "global-provider"
 	});
 
 	it("project config overrides global config", () => {
-		const globalConfigPath = join(globalDir, ".composer", "config.toml");
+		const globalConfigPath = join(globalDir, ".maestro", "config.toml");
 		writeFileSync(
 			globalConfigPath,
 			`
@@ -91,7 +91,7 @@ approval_policy = "on-failure"
 `,
 		);
 
-		const projectConfigPath = join(projectDir, ".composer", "config.toml");
+		const projectConfigPath = join(projectDir, ".maestro", "config.toml");
 		writeFileSync(
 			projectConfigPath,
 			`
@@ -108,7 +108,7 @@ model = "project-model"
 	});
 
 	it("deep merges global and project nested configs", () => {
-		const globalConfigPath = join(globalDir, ".composer", "config.toml");
+		const globalConfigPath = join(globalDir, ".maestro", "config.toml");
 		writeFileSync(
 			globalConfigPath,
 			`
@@ -122,7 +122,7 @@ animations = true
 `,
 		);
 
-		const projectConfigPath = join(projectDir, ".composer", "config.toml");
+		const projectConfigPath = join(projectDir, ".maestro", "config.toml");
 		writeFileSync(
 			projectConfigPath,
 			`
@@ -144,7 +144,7 @@ animations = false
 	});
 
 	it("global profiles are available to project", () => {
-		const globalConfigPath = join(globalDir, ".composer", "config.toml");
+		const globalConfigPath = join(globalDir, ".maestro", "config.toml");
 		writeFileSync(
 			globalConfigPath,
 			`
@@ -158,7 +158,7 @@ model_reasoning_effort = "high"
 `,
 		);
 
-		const projectConfigPath = join(projectDir, ".composer", "config.toml");
+		const projectConfigPath = join(projectDir, ".maestro", "config.toml");
 		writeFileSync(
 			projectConfigPath,
 			`
@@ -181,7 +181,7 @@ model = "custom-model"
 	});
 
 	it("project profile overrides global profile with same name", () => {
-		const globalConfigPath = join(globalDir, ".composer", "config.toml");
+		const globalConfigPath = join(globalDir, ".maestro", "config.toml");
 		writeFileSync(
 			globalConfigPath,
 			`
@@ -191,7 +191,7 @@ model_provider = "global-provider"
 `,
 		);
 
-		const projectConfigPath = join(projectDir, ".composer", "config.toml");
+		const projectConfigPath = join(projectDir, ".maestro", "config.toml");
 		writeFileSync(
 			projectConfigPath,
 			`
@@ -209,26 +209,26 @@ model = "project-shared-model"
 	});
 
 	it("environment overrides take precedence over both global and project", () => {
-		const globalConfigPath = join(globalDir, ".composer", "config.toml");
+		const globalConfigPath = join(globalDir, ".maestro", "config.toml");
 		writeFileSync(globalConfigPath, 'model = "global-model"');
 
-		const projectConfigPath = join(projectDir, ".composer", "config.toml");
+		const projectConfigPath = join(projectDir, ".maestro", "config.toml");
 		writeFileSync(projectConfigPath, 'model = "project-model"');
 
-		process.env.COMPOSER_MODEL = "env-model";
+		process.env.MAESTRO_MODEL = "env-model";
 
 		const config = loadConfig(projectDir);
 		expect(config.model).toBe("env-model");
 	});
 
 	it("CLI overrides take precedence over everything", () => {
-		const globalConfigPath = join(globalDir, ".composer", "config.toml");
+		const globalConfigPath = join(globalDir, ".maestro", "config.toml");
 		writeFileSync(globalConfigPath, 'model = "global-model"');
 
-		const projectConfigPath = join(projectDir, ".composer", "config.toml");
+		const projectConfigPath = join(projectDir, ".maestro", "config.toml");
 		writeFileSync(projectConfigPath, 'model = "project-model"');
 
-		process.env.COMPOSER_MODEL = "env-model";
+		process.env.MAESTRO_MODEL = "env-model";
 
 		const config = loadConfig(projectDir, undefined, {
 			model: "cli-model",
@@ -237,7 +237,7 @@ model = "project-shared-model"
 	});
 
 	it("global MCP servers are merged with project servers", () => {
-		const globalConfigPath = join(globalDir, ".composer", "config.toml");
+		const globalConfigPath = join(globalDir, ".maestro", "config.toml");
 		writeFileSync(
 			globalConfigPath,
 			`
@@ -250,7 +250,7 @@ command = "global-cmd"
 `,
 		);
 
-		const projectConfigPath = join(projectDir, ".composer", "config.toml");
+		const projectConfigPath = join(projectDir, ".maestro", "config.toml");
 		writeFileSync(
 			projectConfigPath,
 			`
@@ -273,7 +273,7 @@ command = "project-cmd"
 	});
 
 	it("global model providers are merged with project providers", () => {
-		const globalConfigPath = join(globalDir, ".composer", "config.toml");
+		const globalConfigPath = join(globalDir, ".maestro", "config.toml");
 		writeFileSync(
 			globalConfigPath,
 			`
@@ -288,7 +288,7 @@ base_url = "https://api.anthropic.com"
 `,
 		);
 
-		const projectConfigPath = join(projectDir, ".composer", "config.toml");
+		const projectConfigPath = join(projectDir, ".maestro", "config.toml");
 		writeFileSync(
 			projectConfigPath,
 			`

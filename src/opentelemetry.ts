@@ -34,18 +34,18 @@ const packageVersion = (() => {
 			const version = packageJson.version;
 			cached = typeof version === "string" ? version : "unknown";
 		} catch (error) {
-			cached = process.env.COMPOSER_VERSION ?? "unknown";
+			cached = process.env.MAESTRO_VERSION ?? "unknown";
 		}
 		return cached;
 	};
 })();
 
 export const isOpenTelemetryEnabled = (): boolean => {
-	if (process.env.COMPOSER_OTEL === "0") {
+	if (process.env.MAESTRO_OTEL === "0") {
 		return false;
 	}
 
-	if (process.env.COMPOSER_OTEL === "1") {
+	if (process.env.MAESTRO_OTEL === "1") {
 		return true;
 	}
 
@@ -88,15 +88,15 @@ export function getOpenTelemetryStatus(): OpenTelemetryStatus {
 	const sampler =
 		configuredSampler ||
 		process.env.OTEL_TRACES_SAMPLER ||
-		process.env.COMPOSER_OTEL_SAMPLER ||
+		process.env.MAESTRO_OTEL_SAMPLER ||
 		"parentbased_traceidratio";
 
 	const reason = enabled
-		? process.env.COMPOSER_OTEL === "1"
-			? "COMPOSER_OTEL=1"
+		? process.env.MAESTRO_OTEL === "1"
+			? "MAESTRO_OTEL=1"
 			: "OTEL exporter detected"
-		: process.env.COMPOSER_OTEL === "0"
-			? "COMPOSER_OTEL=0"
+		: process.env.MAESTRO_OTEL === "0"
+			? "MAESTRO_OTEL=0"
 			: "no OTEL exporter configured";
 
 	return {
@@ -104,7 +104,7 @@ export function getOpenTelemetryStatus(): OpenTelemetryStatus {
 		reason,
 		serviceName:
 			configuredServiceName ||
-			process.env.COMPOSER_OTEL_SERVICE_NAME ||
+			process.env.MAESTRO_OTEL_SERVICE_NAME ||
 			"composer",
 		sdkStarted,
 		otlpEndpoint,
@@ -130,12 +130,12 @@ export async function initOpenTelemetry(
 	diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.ERROR);
 
 	const resolvedServiceName =
-		process.env.COMPOSER_OTEL_SERVICE_NAME || serviceName;
+		process.env.MAESTRO_OTEL_SERVICE_NAME || serviceName;
 	configuredServiceName = resolvedServiceName;
 
-	if (process.env.COMPOSER_OTEL_SAMPLER && !process.env.OTEL_TRACES_SAMPLER) {
-		process.env.OTEL_TRACES_SAMPLER = process.env.COMPOSER_OTEL_SAMPLER;
-		configuredSampler = process.env.COMPOSER_OTEL_SAMPLER;
+	if (process.env.MAESTRO_OTEL_SAMPLER && !process.env.OTEL_TRACES_SAMPLER) {
+		process.env.OTEL_TRACES_SAMPLER = process.env.MAESTRO_OTEL_SAMPLER;
+		configuredSampler = process.env.MAESTRO_OTEL_SAMPLER;
 	} else if (process.env.OTEL_TRACES_SAMPLER) {
 		configuredSampler = process.env.OTEL_TRACES_SAMPLER;
 	}

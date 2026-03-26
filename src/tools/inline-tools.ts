@@ -1,13 +1,13 @@
 /**
- * Inline Tool Definitions - Load custom tools from .composer/tools.json
+ * Inline Tool Definitions - Load custom tools from .maestro/tools.json
  *
  * Allows users to define shell-based tools without requiring full MCP server setup.
  * Tools receive parameters as JSON via stdin and return results via stdout.
  *
  * ## Configuration
  *
- * Project-level: `.composer/tools.json`
- * User-level: `~/.composer/tools.json`
+ * Project-level: `.maestro/tools.json`
+ * User-level: `~/.maestro/tools.json`
  *
  * Project tools override user tools with the same name.
  *
@@ -63,7 +63,7 @@ interface InlineParameterDef {
 }
 
 /**
- * Inline tool definition from .composer/tools.json
+ * Inline tool definition from .maestro/tools.json
  */
 interface InlineToolDef {
 	name: string;
@@ -475,7 +475,7 @@ export function loadInlineTools(projectDir?: string): AgentTool[] {
 	const loadedNames = new Set<string>();
 
 	// Load project-level config first (higher priority)
-	const projectConfigPath = join(cwd, ".composer", "tools.json");
+	const projectConfigPath = join(cwd, ".maestro", "tools.json");
 	const projectConfig = loadConfigFile(projectConfigPath);
 
 	if (projectConfig) {
@@ -506,7 +506,7 @@ export function loadInlineTools(projectDir?: string): AgentTool[] {
 	}
 
 	// Load user-level config (lower priority, skip if name already loaded)
-	const userConfigPath = join(PATHS.COMPOSER_HOME, "tools.json");
+	const userConfigPath = join(PATHS.MAESTRO_HOME, "tools.json");
 	const userConfig = loadConfigFile(userConfigPath);
 
 	if (userConfig) {
@@ -557,7 +557,7 @@ export function getInlineToolsConfigPaths(projectDir?: string): {
 } {
 	const cwd = projectDir ?? process.cwd();
 	return {
-		project: join(cwd, ".composer", "tools.json"),
-		user: join(PATHS.COMPOSER_HOME, "tools.json"),
+		project: join(cwd, ".maestro", "tools.json"),
+		user: join(PATHS.MAESTRO_HOME, "tools.json"),
 	};
 }

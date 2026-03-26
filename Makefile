@@ -54,7 +54,7 @@ dev-all: ## TS watch + test watch
 	npm run dev:all
 
 test: ## Full test suite
-	npx nx run composer:test --skip-nx-cache
+	npx nx run maestro:test --skip-nx-cache
 
 test-fast: ## Fast test subset
 	npm run test:fast
@@ -77,7 +77,7 @@ smoke: build ## Smoke-test the built CLI
 	npm run smoke
 
 evals: ## Run eval scenarios
-	npx nx run composer:evals --skip-nx-cache
+	npx nx run maestro:evals --skip-nx-cache
 
 verify: fmt lint test build smoke ## Full verification (format + lint + test + build + smoke)
 

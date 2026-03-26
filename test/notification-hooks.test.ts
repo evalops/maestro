@@ -9,9 +9,9 @@ describe("Notification Hooks", () => {
 
 	beforeEach(() => {
 		// Reset environment by setting to empty string (not undefined which becomes "undefined")
-		process.env.COMPOSER_NOTIFY_PROGRAM = "";
-		process.env.COMPOSER_NOTIFY_EVENTS = "";
-		process.env.COMPOSER_NOTIFY_TIMEOUT = "";
+		process.env.MAESTRO_NOTIFY_PROGRAM = "";
+		process.env.MAESTRO_NOTIFY_EVENTS = "";
+		process.env.MAESTRO_NOTIFY_TIMEOUT = "";
 
 		// Create test directory
 		mkdirSync(testDir, { recursive: true });
@@ -43,8 +43,8 @@ describe("Notification Hooks", () => {
 		});
 
 		it("should load config from environment variables", async () => {
-			process.env.COMPOSER_NOTIFY_PROGRAM = "/usr/bin/my-notifier";
-			process.env.COMPOSER_NOTIFY_EVENTS = "turn-complete,session-end";
+			process.env.MAESTRO_NOTIFY_PROGRAM = "/usr/bin/my-notifier";
+			process.env.MAESTRO_NOTIFY_EVENTS = "turn-complete,session-end";
 
 			const { loadNotificationConfig, clearNotificationConfigCache } =
 				await import("../src/hooks/notification-hooks.js");
@@ -58,8 +58,8 @@ describe("Notification Hooks", () => {
 		});
 
 		it("should expand 'all' to all event types", async () => {
-			process.env.COMPOSER_NOTIFY_PROGRAM = "/usr/bin/notifier";
-			process.env.COMPOSER_NOTIFY_EVENTS = "all";
+			process.env.MAESTRO_NOTIFY_PROGRAM = "/usr/bin/notifier";
+			process.env.MAESTRO_NOTIFY_EVENTS = "all";
 
 			const { loadNotificationConfig, clearNotificationConfigCache } =
 				await import("../src/hooks/notification-hooks.js");
@@ -75,9 +75,9 @@ describe("Notification Hooks", () => {
 		});
 
 		it("should parse custom timeout from environment", async () => {
-			process.env.COMPOSER_NOTIFY_PROGRAM = "/usr/bin/notifier";
-			process.env.COMPOSER_NOTIFY_EVENTS = "turn-complete";
-			process.env.COMPOSER_NOTIFY_TIMEOUT = "60000";
+			process.env.MAESTRO_NOTIFY_PROGRAM = "/usr/bin/notifier";
+			process.env.MAESTRO_NOTIFY_EVENTS = "turn-complete";
+			process.env.MAESTRO_NOTIFY_TIMEOUT = "60000";
 
 			const { loadNotificationConfig, clearNotificationConfigCache } =
 				await import("../src/hooks/notification-hooks.js");
@@ -89,8 +89,8 @@ describe("Notification Hooks", () => {
 		});
 
 		it("should filter invalid event types", async () => {
-			process.env.COMPOSER_NOTIFY_PROGRAM = "/usr/bin/notifier";
-			process.env.COMPOSER_NOTIFY_EVENTS = "turn-complete,invalid-event,error";
+			process.env.MAESTRO_NOTIFY_PROGRAM = "/usr/bin/notifier";
+			process.env.MAESTRO_NOTIFY_EVENTS = "turn-complete,invalid-event,error";
 
 			const { loadNotificationConfig, clearNotificationConfigCache } =
 				await import("../src/hooks/notification-hooks.js");
@@ -114,8 +114,8 @@ describe("Notification Hooks", () => {
 		});
 
 		it("should return false when event not in configured events", async () => {
-			process.env.COMPOSER_NOTIFY_PROGRAM = "/usr/bin/notifier";
-			process.env.COMPOSER_NOTIFY_EVENTS = "session-end";
+			process.env.MAESTRO_NOTIFY_PROGRAM = "/usr/bin/notifier";
+			process.env.MAESTRO_NOTIFY_EVENTS = "session-end";
 
 			const { isNotificationEnabled, clearNotificationConfigCache } =
 				await import("../src/hooks/notification-hooks.js");
@@ -125,8 +125,8 @@ describe("Notification Hooks", () => {
 		});
 
 		it("should return true when event is configured", async () => {
-			process.env.COMPOSER_NOTIFY_PROGRAM = "/usr/bin/notifier";
-			process.env.COMPOSER_NOTIFY_EVENTS = "turn-complete,error";
+			process.env.MAESTRO_NOTIFY_PROGRAM = "/usr/bin/notifier";
+			process.env.MAESTRO_NOTIFY_EVENTS = "turn-complete,error";
 
 			const { isNotificationEnabled, clearNotificationConfigCache } =
 				await import("../src/hooks/notification-hooks.js");

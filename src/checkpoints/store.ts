@@ -48,7 +48,7 @@ export class CheckpointStore {
 			maxCheckpoints: options.maxCheckpoints ?? 50,
 			persistToDisk: options.persistToDisk ?? false,
 			persistDir:
-				options.persistDir ?? join(options.cwd, ".composer", "checkpoints"),
+				options.persistDir ?? join(options.cwd, ".maestro", "checkpoints"),
 			cwd: options.cwd,
 			maxFileSize: options.maxFileSize ?? 1024 * 1024,
 		};

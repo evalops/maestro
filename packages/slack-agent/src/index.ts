@@ -73,10 +73,91 @@ export {
 	createReadTool,
 	createWriteTool,
 	createEditTool,
+	createDeployTool,
+	createBuildDashboardTool,
+	createLiveDashboardTool,
+	createWorkflowTool,
 	attachTool,
 	setUploadFunction,
 	type AgentTool,
+	type DeployDetails,
 } from "./tools/index.js";
+
+// Dashboard builder
+export { generateDashboardHtml, escapeHtml } from "./dashboard/renderer.js";
+export {
+	type DashboardSpec,
+	type DashboardComponent,
+	type StatItem,
+	type ChartDataset,
+	type TableColumn,
+	type ActivityItem,
+	type DashboardSpecInput,
+	DashboardSpecSchema,
+} from "./dashboard/types.js";
+
+// Connectors
+export {
+	createConnectorRegistry,
+	registerConnectorFactory,
+	getRegisteredTypes,
+	RestApiConnector,
+	HubSpotConnector,
+	StripeConnector,
+	GitHubConnector,
+	LinearConnector,
+	NotionConnector,
+	ZendeskConnector,
+	PostgresConnector,
+	type Connector,
+	type ConnectorAuthType,
+	type ConnectorCapability,
+	type ConnectorConfig,
+	type ConnectorCredentials,
+	type ConnectorFactory,
+	type ConnectorResult,
+	type ConnectorsConfig,
+	type ConnectorRegistryInstance,
+	type ConnectorRegistryOptions,
+	withMiddleware,
+	type MiddlewareConfig,
+	ConnectorManager,
+	type ConnectorManagerConfig,
+	WebhookTriggerManager,
+	type WebhookTrigger,
+	type WebhookTriggersConfig,
+	type TriggerRunCallback,
+	OAuthFlowManager,
+	type OAuthFlowConfig,
+	type OAuthFlowResult,
+} from "./connectors/index.js";
+
+// Connector Credentials
+export {
+	CredentialManager,
+	createCredentialGetter,
+} from "./connectors/credentials.js";
+
+// Webhooks
+export {
+	createWebhookServer,
+	registerWebhookHandler,
+	type WebhookEvent,
+	type WebhookCallback,
+	type WebhookServerConfig,
+	type WebhookServerInstance,
+} from "./webhooks.js";
+
+// UI
+export {
+	createApiServer,
+	type ApiServerConfig,
+	type ApiServerInstance,
+} from "./ui/api-server.js";
+export {
+	DashboardRegistry,
+	type DashboardEntry,
+} from "./ui/dashboard-registry.js";
 
 // Logging
 export * as logger from "./logger.js";

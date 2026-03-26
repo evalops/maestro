@@ -1,6 +1,6 @@
-# Composer Desktop
+# Maestro Desktop
 
-Beautiful, native Electron desktop app for Composer - your AI coding assistant.
+Beautiful, native Electron desktop app for Maestro - your AI coding assistant.
 
 ## Features
 
@@ -16,7 +16,7 @@ Beautiful, native Electron desktop app for Composer - your AI coding assistant.
 - **Subtle animations** - Smooth transitions and micro-interactions
 - **Syntax highlighting** - Full highlight.js support for code blocks
 
-### Full Composer Integration
+### Full Maestro Integration
 - **Session Management** - Create, switch, delete, and search sessions
 - **Model Selection** - Quick model switching from the header
 - **Streaming Responses** - Real-time SSE streaming with typing indicators
@@ -143,9 +143,9 @@ packages/desktop/
 
 ## Configuration
 
-The app connects to a Composer backend server at `http://localhost:8080` by default. To change this:
+The app connects to a Maestro backend server at `http://localhost:8080` by default. To change this:
 
-1. Start Composer web server: `composer web`
+1. Start Maestro web server: `maestro web`
 2. The desktop app will automatically connect
 
 ## Keyboard Shortcuts
@@ -213,7 +213,7 @@ The renderer (`src/renderer/`) is a React application with:
 
 ### App won't connect
 
-1. Ensure Composer backend is running: `composer web`
+1. Ensure Maestro backend is running: `maestro web`
 2. Check that port 8080 is available
 3. Look for errors in DevTools (View → Toggle DevTools)
 
@@ -237,4 +237,4 @@ The renderer (`src/renderer/`) is a React application with:
 
 ## License
 
-MIT - Same as main Composer project.
+MIT - Same as main Maestro project.

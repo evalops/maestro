@@ -35,7 +35,7 @@
 //! # Usage Example
 //!
 //! ```rust,ignore
-//! use composer_tui::files::{get_workspace_files, FileSearch, WorkspaceFile};
+//! use maestro_tui::files::{get_workspace_files, FileSearch, WorkspaceFile};
 //!
 //! // Index workspace files (typically done once at startup)
 //! let files = get_workspace_files("/path/to/project", 10000);

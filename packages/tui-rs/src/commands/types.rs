@@ -39,7 +39,7 @@
 //! # Example Command Flow
 //!
 //! ```rust,ignore
-//! use composer_tui::commands::{Command, CommandCategory, CommandContext, CommandOutput, CommandAction};
+//! use maestro_tui::commands::{Command, CommandCategory, CommandContext, CommandOutput, CommandAction};
 //!
 //! // 1. Define a command with handler
 //! let cmd = Command::new(
@@ -124,7 +124,7 @@ pub type CommandHandler = Box<dyn Fn(&CommandContext) -> CommandResult + Send + 
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::commands::{CommandOutput, CommandAction, ModalType};
+/// use maestro_tui::commands::{CommandOutput, CommandAction, ModalType};
 ///
 /// // Handler can return different output types
 /// fn handle_command(cmd: &str) -> CommandOutput {
@@ -191,7 +191,7 @@ pub enum CommandOutput {
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::commands::{CommandAction, CommandOutput};
+/// use maestro_tui::commands::{CommandAction, CommandOutput};
 ///
 /// // Handler returns action request
 /// let output = CommandOutput::Action(CommandAction::Quit);
@@ -398,7 +398,7 @@ pub enum SkillsAction {
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::commands::{CommandOutput, ModalType};
+/// use maestro_tui::commands::{CommandOutput, ModalType};
 ///
 /// // Command handler opens theme selector
 /// let output = CommandOutput::OpenModal(ModalType::ThemeSelector);
@@ -442,7 +442,7 @@ pub enum ModalType {
 /// The `with_hint()` method enables fluent error construction:
 ///
 /// ```rust,ignore
-/// use composer_tui::commands::CommandError;
+/// use maestro_tui::commands::CommandError;
 ///
 /// let error = CommandError::new("Unknown command: /foo")
 ///     .with_hint("Type /help to see available commands");
@@ -457,7 +457,7 @@ pub enum ModalType {
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::commands::{CommandError, CommandResult, CommandOutput};
+/// use maestro_tui::commands::{CommandError, CommandResult, CommandOutput};
 ///
 /// fn validate_arg(value: &str) -> CommandResult {
 ///     if value.is_empty() {
@@ -534,7 +534,7 @@ impl std::error::Error for CommandError {}
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::commands::{CommandContext, CommandResult, CommandOutput};
+/// use maestro_tui::commands::{CommandContext, CommandResult, CommandOutput};
 /// use std::collections::HashMap;
 ///
 /// fn my_handler(ctx: &CommandContext) -> CommandResult {
@@ -777,7 +777,7 @@ impl CommandArgument {
 /// The Command struct uses a builder pattern for fluent construction:
 ///
 /// ```rust,ignore
-/// use composer_tui::commands::{Command, CommandCategory, CommandArgument, CommandOutput};
+/// use maestro_tui::commands::{Command, CommandCategory, CommandArgument, CommandOutput};
 ///
 /// let cmd = Command::new(
 ///     "greet",

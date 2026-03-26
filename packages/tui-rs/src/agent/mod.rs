@@ -58,7 +58,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::agent::{NativeAgent, NativeAgentConfig, FromAgent};
+//! use maestro_tui::agent::{NativeAgent, NativeAgentConfig, FromAgent};
 //!
 //! # async fn example() -> anyhow::Result<()> {
 //! // Create an agent and its event stream.

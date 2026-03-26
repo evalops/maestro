@@ -18,7 +18,7 @@ export function loadComposerConfigOrThrow(): CustomModelConfig {
 	const composerConfig = getComposerCustomConfig();
 	if (composerConfig.providers.length === 0) {
 		throw new Error(
-			"Composer configuration has no custom models. Run npm run factory:import or create ~/.composer/models.json first.",
+			"Maestro configuration has no custom models. Run npm run factory:import or create ~/.maestro/models.json first.",
 		);
 	}
 	return composerConfig;

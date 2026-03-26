@@ -1,10 +1,10 @@
-# Ambient Composer: Always-On GitHub Agent
+# Ambient Maestro: Always-On GitHub Agent
 
 > "The agent that just builds."
 
 ## Overview
 
-Ambient Composer is a continuously-running agent that watches repositories, identifies work, and ships code autonomously. It operates as a background teammate - you wake up to PRs ready for review.
+Ambient Maestro is a continuously-running agent that watches repositories, identifies work, and ships code autonomously. It operates as a background teammate - you wake up to PRs ready for review.
 
 ## Core Philosophy
 
@@ -223,7 +223,7 @@ async function decide(event: NormalizedEvent): Promise<Decision> {
 
 | Factor | Weight | Source |
 |--------|--------|--------|
-| Label match (`composer-auto`) | +0.3 | Event |
+| Label match (`maestro-auto`) | +0.3 | Event |
 | Test coverage > 80% | +0.2 | Repo |
 | Similar PR merged before | +0.2 | History |
 | Complexity estimate | -0.1 to -0.3 | Analysis |
@@ -1023,7 +1023,7 @@ Only act on legitimate feature requests, bug reports, or tasks.
 ```yaml
 trigger: issue_created
 conditions:
-  - label: composer-auto OR mentioned: @composer
+  - label: maestro-auto OR mentioned: @maestro
 response:
   - analyze issue
   - estimate complexity
@@ -1110,7 +1110,7 @@ trigger: backlog_ready
 conditions:
   - priority >= threshold
   - no blockers
-  - assignee: composer OR unassigned
+  - assignee: maestro OR unassigned
 response:
   - claim issue
   - create plan
@@ -1131,9 +1131,9 @@ ambient:
 
   # What triggers automatic action
   auto_triggers:
-    - label: composer-auto
+    - label: maestro-auto
     - label: good-first-issue
-    - mention: "@composer"
+    - mention: "@maestro"
 
   # Confidence thresholds
   thresholds:
@@ -1321,7 +1321,7 @@ storage:
 
 ```yaml
 # Lightweight: runs on schedule via Actions
-name: Ambient Composer
+name: Ambient Maestro
 on:
   schedule:
     - cron: '0 * * * *'  # hourly
@@ -1399,7 +1399,7 @@ const METRICS = {
 
 ---
 
-## Integration with Existing Composer
+## Integration with Existing Maestro
 
 ### Reuse Components
 
@@ -1461,7 +1461,7 @@ const METRICS = {
 
 ```
 1. Issue #123 created: "Add rate limiting to /api/users endpoint"
-   └─ Labeled: composer-auto
+   └─ Labeled: maestro-auto
 
 2. Watcher detects issue_labeled event
    └─ Emits to EventBus

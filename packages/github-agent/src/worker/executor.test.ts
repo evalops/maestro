@@ -253,7 +253,7 @@ describe("PR URL Parsing", () => {
 		const testCases = [
 			{ url: "https://github.com/owner/repo/pull/123", expected: "123" },
 			{ url: "https://github.com/org/project/pull/1", expected: "1" },
-			{ url: "https://github.com/evalops/composer/pull/376", expected: "376" },
+			{ url: "https://github.com/evalops/maestro/pull/376", expected: "376" },
 		];
 
 		for (const { url, expected } of testCases) {

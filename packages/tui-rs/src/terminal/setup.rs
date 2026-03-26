@@ -150,7 +150,7 @@ pub fn is_tty_available() -> bool {
 /// # Example
 ///
 /// ```no_run
-/// # use composer_tui::terminal::check_tty;
+/// # use maestro_tui::terminal::check_tty;
 /// if let Err(e) = check_tty() {
 ///     eprintln!("Cannot access terminal: {}", e);
 ///     std::process::exit(1);
@@ -350,7 +350,7 @@ fn restore_impl() -> io::Result<()> {
 /// # Example
 ///
 /// ```no_run
-/// # use composer_tui::terminal::size;
+/// # use maestro_tui::terminal::size;
 /// let (width, height) = size()?;
 /// println!("Terminal is {}x{} characters", width, height);
 /// # Ok::<(), std::io::Error>(())

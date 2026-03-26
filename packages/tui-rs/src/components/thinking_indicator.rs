@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::components::{ThinkingIndicator, ThinkingPhase};
+//! use maestro_tui::components::{ThinkingIndicator, ThinkingPhase};
 //!
 //! let indicator = ThinkingIndicator::new()
 //!     .with_budget(16_000)

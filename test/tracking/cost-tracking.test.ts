@@ -32,8 +32,8 @@ describe("Cost Tracking", () => {
 		testUsageFile = join(testDir, "usage.json");
 
 		// Save and override the usage file path
-		originalEnv = process.env.COMPOSER_USAGE_FILE;
-		process.env.COMPOSER_USAGE_FILE = testUsageFile;
+		originalEnv = process.env.MAESTRO_USAGE_FILE;
+		process.env.MAESTRO_USAGE_FILE = testUsageFile;
 
 		// Start with clean slate
 		clearUsage();
@@ -42,9 +42,9 @@ describe("Cost Tracking", () => {
 	afterEach(() => {
 		// Restore original environment
 		if (originalEnv !== undefined) {
-			process.env.COMPOSER_USAGE_FILE = originalEnv;
+			process.env.MAESTRO_USAGE_FILE = originalEnv;
 		} else {
-			Reflect.deleteProperty(process.env, "COMPOSER_USAGE_FILE");
+			Reflect.deleteProperty(process.env, "MAESTRO_USAGE_FILE");
 		}
 
 		// Clean up temp directory

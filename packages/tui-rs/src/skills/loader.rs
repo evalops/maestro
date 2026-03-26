@@ -54,7 +54,7 @@
 //! # Example Usage
 //!
 //! ```rust,ignore
-//! use composer_tui::skills::loader::SkillLoader;
+//! use maestro_tui::skills::loader::SkillLoader;
 //!
 //! let loader = SkillLoader::new();
 //! let skills = loader.load_all();
@@ -299,7 +299,7 @@ impl SkillLoader {
     /// contains both `skills/` and `package.json` (the package root).
     fn find_system_skills_dir() -> Option<PathBuf> {
         // Allow explicit override for non-standard packaging layouts
-        if let Ok(dir) = std::env::var("COMPOSER_SYSTEM_SKILLS_DIR") {
+        if let Ok(dir) = std::env::var("MAESTRO_SYSTEM_SKILLS_DIR") {
             let path = PathBuf::from(dir);
             if path.is_dir() {
                 return Some(path);

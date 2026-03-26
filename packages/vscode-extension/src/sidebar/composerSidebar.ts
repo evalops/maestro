@@ -348,7 +348,7 @@ export class ComposerSidebarProvider
 						this._view.webview.postMessage({ type: "history", messages: [] });
 					}
 					vscode.window.showInformationMessage(
-						"Composer endpoint changed. Chat history was cleared to avoid mixing sessions.",
+						"Maestro endpoint changed. Chat history was cleared to avoid mixing sessions.",
 					);
 				}
 			}),
@@ -674,7 +674,7 @@ export class ComposerSidebarProvider
 		if (!trimmed) return;
 		if (this._isProcessing) {
 			vscode.window.showWarningMessage(
-				"Composer is still responding. Please wait for it to finish.",
+				"Maestro is still responding. Please wait for it to finish.",
 			);
 			return;
 		}

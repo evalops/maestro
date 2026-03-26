@@ -1,7 +1,7 @@
 /**
- * @fileoverview Headless Execution Command (composer exec)
+ * @fileoverview Headless Execution Command (maestro exec)
  *
- * This module implements the `composer exec` command for headless/scripted
+ * This module implements the `maestro exec` command for headless/scripted
  * agent execution. It's designed for CI/CD pipelines, automation scripts,
  * and evaluation workflows where interactive terminal UI is not needed.
  *
@@ -17,16 +17,16 @@
  *
  * ```bash
  * # Basic execution
- * composer exec "Summarize the README.md file"
+ * maestro exec "Summarize the README.md file"
  *
  * # With JSON output
- * composer exec --json "List all TypeScript files"
+ * maestro exec --json "List all TypeScript files"
  *
  * # With schema validation
- * composer exec --output-schema schema.json "Generate config"
+ * maestro exec --output-schema schema.json "Generate config"
  *
  * # Save output to file
- * composer exec --output-last-message result.txt "Generate report"
+ * maestro exec --output-last-message result.txt "Generate report"
  * ```
  *
  * ## JSONL Event Types
@@ -124,7 +124,7 @@ export async function runExecCommand(
 ): Promise<void> {
 	const prompts = options.prompts;
 	if (!prompts.length) {
-		throw new Error("composer exec requires at least one prompt");
+		throw new Error("maestro exec requires at least one prompt");
 	}
 	const threadId = options.sessionManager.getSessionId();
 	const jsonlWriter = new JsonlEventWriter(options.jsonl ?? false);
@@ -175,7 +175,7 @@ export async function runExecCommand(
 		}
 
 		if (executedPrompts === 0) {
-			throw new Error("composer exec requires at least one non-empty prompt");
+			throw new Error("maestro exec requires at least one non-empty prompt");
 		}
 		const lastAssistantText = adapter.getLastAssistantText();
 		if (!lastAssistantText) {
@@ -215,7 +215,7 @@ export async function runExecCommand(
 			console.log(lastAssistantText);
 			console.error(
 				chalk.dim(
-					`composer exec session ${threadId} saved to ${options.sessionManager.getSessionFile()}`,
+					`maestro exec session ${threadId} saved to ${options.sessionManager.getSessionFile()}`,
 				),
 			);
 		}

@@ -175,18 +175,18 @@ type TelemetryEvent =
 	| CanonicalTurnEvent;
 
 const telemetryFlag =
-	process.env.COMPOSER_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
+	process.env.MAESTRO_TELEMETRY ?? process.env.PLAYWRIGHT_TELEMETRY;
 
 const telemetryFileEnv =
-	resolveEnvPath(process.env.COMPOSER_TELEMETRY_FILE) ??
+	resolveEnvPath(process.env.MAESTRO_TELEMETRY_FILE) ??
 	resolveEnvPath(process.env.PLAYWRIGHT_TELEMETRY_FILE);
 
 const telemetryEndpointEnv =
-	process.env.COMPOSER_TELEMETRY_ENDPOINT ??
+	process.env.MAESTRO_TELEMETRY_ENDPOINT ??
 	process.env.PLAYWRIGHT_TELEMETRY_ENDPOINT;
 
 const telemetrySampleEnv =
-	process.env.COMPOSER_TELEMETRY_SAMPLE ??
+	process.env.MAESTRO_TELEMETRY_SAMPLE ??
 	process.env.PLAYWRIGHT_TELEMETRY_SAMPLE;
 
 const shouldEnableTelemetry = (): boolean => {

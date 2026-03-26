@@ -1,6 +1,6 @@
-# MCP configuration refresh (Composer)
+# MCP configuration refresh (Maestro)
 
-This document captures the refreshed MCP configuration approach for Composer. It is inspired by other agents but re‑implemented from scratch for our stack.
+This document captures the refreshed MCP configuration approach for Maestro. It is inspired by other agents but re‑implemented from scratch for our stack.
 
 ## Goals
 - Accept both array and `mcpServers` object formats.
@@ -13,11 +13,11 @@ This document captures the refreshed MCP configuration approach for Composer. It
 
 ## Scopes and precedence
 Highest precedence wins on the same server name:
-1. Enterprise: `~/.composer/enterprise/mcp.json` (optional)
+1. Enterprise: `~/.maestro/enterprise/mcp.json` (optional)
 2. Plugin/Dynamic: supplied programmatically when available
-3. Project: `<project>/.composer/mcp.json`
-4. Local (private overrides): `<project>/.composer/mcp.local.json`
-5. User: `~/.composer/mcp.json`
+3. Project: `<project>/.maestro/mcp.json`
+4. Local (private overrides): `<project>/.maestro/mcp.local.json`
+5. User: `~/.maestro/mcp.json`
 
 ## Transport detection
 - Explicit `transport` respected when valid.

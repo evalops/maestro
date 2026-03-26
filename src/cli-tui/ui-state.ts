@@ -22,11 +22,10 @@ export interface UiState {
 }
 
 const getUiStatePath = () =>
-	resolveEnvPath(process.env.COMPOSER_UI_STATE) ?? PATHS.UI_STATE_FILE;
+	resolveEnvPath(process.env.MAESTRO_UI_STATE) ?? PATHS.UI_STATE_FILE;
 
 const getCommandPrefsPath = () =>
-	resolveEnvPath(process.env.COMPOSER_COMMAND_PREFS) ??
-	PATHS.COMMAND_PREFS_FILE;
+	resolveEnvPath(process.env.MAESTRO_COMMAND_PREFS) ?? PATHS.COMMAND_PREFS_FILE;
 
 export function loadUiState(): UiState {
 	const uiStatePath = getUiStatePath();

@@ -182,7 +182,7 @@ pub enum ToAgent {
 /// # Examples
 ///
 /// ```
-/// use composer_tui::agent::ToolResult;
+/// use maestro_tui::agent::ToolResult;
 ///
 /// // Successful execution using helper method
 /// let result = ToolResult::success("Hello, world!");
@@ -582,7 +582,7 @@ pub enum FromAgent {
 /// # Examples
 ///
 /// ```
-/// use composer_tui::agent::TokenUsage;
+/// use maestro_tui::agent::TokenUsage;
 ///
 /// let usage = TokenUsage {
 ///     input_tokens: 1000,

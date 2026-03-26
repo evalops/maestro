@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::tools::details::BashDetails;
+//! use maestro_tui::tools::details::BashDetails;
 //!
 //! let details = BashDetails {
 //!     command: "ls -la".to_string(),

@@ -212,7 +212,7 @@ Always flag uncertainties, assumptions, or blind spots so the summoner knows whe
 });
 
 function selectOracleModel(inputOverride?: string): string {
-	const envOverride = process.env.COMPOSER_ORACLE_MODEL?.trim();
+	const envOverride = process.env.MAESTRO_ORACLE_MODEL?.trim();
 	const preferred =
 		inputOverride?.trim() ||
 		(envOverride && envOverride.length > 0 ? envOverride : "o3-mini");
@@ -244,6 +244,6 @@ function selectOracleModel(inputOverride?: string): string {
 	// No acceptable model configured
 	const available = models.map((m) => m.id).join(", ");
 	throw new Error(
-		`No model configured for Oracle. Tried ${preferred}. Set COMPOSER_ORACLE_MODEL to an available model or add a reasoning-capable model. Available models: ${available || "none"}.`,
+		`No model configured for Oracle. Tried ${preferred}. Set MAESTRO_ORACLE_MODEL to an available model or add a reasoning-capable model. Available models: ${available || "none"}.`,
 	);
 }

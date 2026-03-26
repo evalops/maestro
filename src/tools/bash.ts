@@ -176,7 +176,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 		const interpolatedCommand = interpolateContext(command);
 
 		// Step 2: Check execpolicy for command approval
-		// Policies in ~/.composer/execpolicy and .composer/execpolicy
+		// Policies in ~/.maestro/execpolicy and .maestro/execpolicy
 		const policyResult = checkCommand(interpolatedCommand, process.cwd());
 		if (policyResult.decision === "forbidden") {
 			const matchInfo = policyResult.matchedRules
@@ -187,7 +187,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 				)
 				.join(", ");
 			return respond.text(
-				`Command blocked by execpolicy: ${interpolatedCommand}\n\nDecision: forbidden\nMatched rules: ${matchInfo || "none"}\n\nTo allow this command, add a prefix_rule to .composer/execpolicy`,
+				`Command blocked by execpolicy: ${interpolatedCommand}\n\nDecision: forbidden\nMatched rules: ${matchInfo || "none"}\n\nTo allow this command, add a prefix_rule to .maestro/execpolicy`,
 			);
 		}
 

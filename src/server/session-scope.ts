@@ -10,8 +10,8 @@ import { getAuthSubject } from "./authz.js";
 import { getRequestToken } from "./server-utils.js";
 
 const SESSION_SCOPE_MODE = (
-	process.env.COMPOSER_SESSION_SCOPE ||
-	process.env.COMPOSER_MULTI_USER ||
+	process.env.MAESTRO_SESSION_SCOPE ||
+	process.env.MAESTRO_MULTI_USER ||
 	""
 )
 	.trim()

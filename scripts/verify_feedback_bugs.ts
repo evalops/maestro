@@ -6,7 +6,7 @@ import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const POLICY_PATH = join(homedir(), ".composer", "policy.json");
+const POLICY_PATH = join(homedir(), ".maestro", "policy.json");
 
 function cleanup() {
     if (existsSync(POLICY_PATH)) unlinkSync(POLICY_PATH);

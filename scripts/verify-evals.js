@@ -9,7 +9,7 @@ export const deterministicEvalScenarioVerifications = [
 	{
 		name: "read tool returns first line",
 		expectedCommand: ["node", "scripts/run-read-tool.js", "README.md"],
-		expectedRegex: "Composer by EvalOps",
+		expectedRegex: "Maestro by EvalOps",
 		actual: ({ repoRoot }) => {
 			const firstLine = readText("README.md", repoRoot).split(/\r?\n/)[0] ?? "";
 			return firstLine.trim();

@@ -172,7 +172,7 @@ vi.mock("../../src/models/registry.js", () => ({
 
 describe("CLI integration", () => {
 	const originalEnv = process.env.ANTHROPIC_API_KEY;
-	const originalAgentDir = process.env.COMPOSER_AGENT_DIR;
+	const originalAgentDir = process.env.MAESTRO_AGENT_DIR;
 	const originalOpenAI = process.env.OPENAI_API_KEY;
 	const originalClaude = process.env.CLAUDE_CODE_TOKEN;
 	const originalAnthropicOAuthFile = process.env.ANTHROPIC_OAUTH_FILE;
@@ -184,7 +184,7 @@ describe("CLI integration", () => {
 
 	beforeEach(() => {
 		tempAgentDir = mkdtempSync(join(tmpdir(), "composer-cli-test-"));
-		process.env.COMPOSER_AGENT_DIR = tempAgentDir;
+		process.env.MAESTRO_AGENT_DIR = tempAgentDir;
 		process.env.ANTHROPIC_OAUTH_FILE = join(
 			tempAgentDir,
 			"anthropic-oauth.json",
@@ -231,9 +231,9 @@ describe("CLI integration", () => {
 			process.env.ANTHROPIC_OAUTH_FILE = originalAnthropicOAuthFile;
 		}
 		if (originalAgentDir === undefined) {
-			Reflect.deleteProperty(process.env, "COMPOSER_AGENT_DIR");
+			Reflect.deleteProperty(process.env, "MAESTRO_AGENT_DIR");
 		} else {
-			process.env.COMPOSER_AGENT_DIR = originalAgentDir;
+			process.env.MAESTRO_AGENT_DIR = originalAgentDir;
 		}
 		if (tempAgentDir) {
 			rmSync(tempAgentDir, { recursive: true, force: true });

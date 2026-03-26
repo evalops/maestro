@@ -16,15 +16,15 @@ const __dirname = dirname(__filename);
 let serverProcess: ChildProcess | null = null;
 let serverReady = false;
 
-const SERVER_PORT = Number(process.env.COMPOSER_DESKTOP_PORT ?? 8080);
+const SERVER_PORT = Number(process.env.MAESTRO_DESKTOP_PORT ?? 8080);
 const SERVER_HOST = "127.0.0.1";
 const DEV_UI_PORT =
-	process.env.COMPOSER_DESKTOP_UI_PORT ?? process.env.VITE_PORT;
+	process.env.MAESTRO_DESKTOP_UI_PORT ?? process.env.VITE_PORT;
 const DEV_UI_ORIGIN = process.env.VITE_DEV_SERVER_URL
 	? process.env.VITE_DEV_SERVER_URL.replace(/\/$/, "")
 	: `http://localhost:${DEV_UI_PORT ?? "5173"}`;
 const CSRF_TOKEN =
-	process.env.COMPOSER_DESKTOP_CSRF_TOKEN ?? "composer-desktop-csrf";
+	process.env.MAESTRO_DESKTOP_CSRF_TOKEN ?? "composer-desktop-csrf";
 
 /**
  * Get the path to the web server module
@@ -89,13 +89,13 @@ export async function startServer(): Promise<boolean> {
 					PORT: String(SERVER_PORT),
 					NODE_ENV: "production",
 					// Disable API key requirement for local desktop use
-					COMPOSER_WEB_REQUIRE_KEY: "0",
-					COMPOSER_WEB_REQUIRE_REDIS: "0",
-					COMPOSER_WEB_CSRF_TOKEN: CSRF_TOKEN,
+					MAESTRO_WEB_REQUIRE_KEY: "0",
+					MAESTRO_WEB_REQUIRE_REDIS: "0",
+					MAESTRO_WEB_CSRF_TOKEN: CSRF_TOKEN,
 					// Set a JWT secret for local desktop use (not exposed externally)
-					COMPOSER_JWT_SECRET: "composer-desktop-local-jwt-secret-key-32chars",
+					MAESTRO_JWT_SECRET: "composer-desktop-local-jwt-secret-key-32chars",
 					// Allow CORS from Vite dev server and Electron
-					COMPOSER_WEB_ORIGIN: DEV_UI_ORIGIN,
+					MAESTRO_WEB_ORIGIN: DEV_UI_ORIGIN,
 				},
 				detached: false,
 			});

@@ -4,11 +4,11 @@
  * Allows configuring timeouts, retries, and backoff strategies per provider.
  *
  * Configuration via environment variables:
- *   COMPOSER_PROVIDER_TIMEOUT_MS - Global request timeout (default: 120000)
- *   COMPOSER_PROVIDER_MAX_RETRIES - Global max retries (default: 3)
- *   COMPOSER_STREAM_IDLE_TIMEOUT_MS - Stream idle timeout (default: 300000)
+ *   MAESTRO_PROVIDER_TIMEOUT_MS - Global request timeout (default: 120000)
+ *   MAESTRO_PROVIDER_MAX_RETRIES - Global max retries (default: 3)
+ *   MAESTRO_STREAM_IDLE_TIMEOUT_MS - Stream idle timeout (default: 300000)
  *
- * Or via ~/.composer/providers.json:
+ * Or via ~/.maestro/providers.json:
  * {
  *   "anthropic": { "timeout": 120000, "maxRetries": 3, "streamIdleTimeout": 300000 },
  *   "openai": { "timeout": 60000, "maxRetries": 5 }
@@ -62,30 +62,30 @@ export interface ProxyConfig {
 /**
  * Get proxy configuration from environment variables.
  *
- * Checks COMPOSER_* variables first, then standard HTTP_PROXY/HTTPS_PROXY.
+ * Checks MAESTRO_* variables first, then standard HTTP_PROXY/HTTPS_PROXY.
  * Supports HTTP, HTTPS, and SOCKS proxies.
  */
 export function getProxyConfig(): ProxyConfig {
 	const config: ProxyConfig = {};
 
-	// Check COMPOSER_* vars first, then standard vars
+	// Check MAESTRO_* vars first, then standard vars
 	const httpProxy =
-		process.env.COMPOSER_HTTP_PROXY ||
+		process.env.MAESTRO_HTTP_PROXY ||
 		process.env.HTTP_PROXY ||
 		process.env.http_proxy;
 	if (httpProxy) config.http = httpProxy;
 
 	const httpsProxy =
-		process.env.COMPOSER_HTTPS_PROXY ||
+		process.env.MAESTRO_HTTPS_PROXY ||
 		process.env.HTTPS_PROXY ||
 		process.env.https_proxy;
 	if (httpsProxy) config.https = httpsProxy;
 
-	const socksProxy = process.env.COMPOSER_SOCKS_PROXY;
+	const socksProxy = process.env.MAESTRO_SOCKS_PROXY;
 	if (socksProxy) config.socks = socksProxy;
 
 	const noProxy =
-		process.env.COMPOSER_NO_PROXY ||
+		process.env.MAESTRO_NO_PROXY ||
 		process.env.NO_PROXY ||
 		process.env.no_proxy;
 	if (noProxy) {
@@ -155,7 +155,7 @@ function loadGlobalOverrides(): Partial<ProviderNetworkConfig> {
 
 	globalOverrides = {};
 
-	const timeout = process.env.COMPOSER_PROVIDER_TIMEOUT_MS;
+	const timeout = process.env.MAESTRO_PROVIDER_TIMEOUT_MS;
 	if (timeout) {
 		const parsed = Number.parseInt(timeout, 10);
 		if (!Number.isNaN(parsed) && parsed > 0) {
@@ -163,7 +163,7 @@ function loadGlobalOverrides(): Partial<ProviderNetworkConfig> {
 		}
 	}
 
-	const maxRetries = process.env.COMPOSER_PROVIDER_MAX_RETRIES;
+	const maxRetries = process.env.MAESTRO_PROVIDER_MAX_RETRIES;
 	if (maxRetries) {
 		const parsed = Number.parseInt(maxRetries, 10);
 		if (!Number.isNaN(parsed) && parsed >= 0) {
@@ -171,7 +171,7 @@ function loadGlobalOverrides(): Partial<ProviderNetworkConfig> {
 		}
 	}
 
-	const streamMaxRetries = process.env.COMPOSER_STREAM_MAX_RETRIES;
+	const streamMaxRetries = process.env.MAESTRO_STREAM_MAX_RETRIES;
 	if (streamMaxRetries) {
 		const parsed = Number.parseInt(streamMaxRetries, 10);
 		if (!Number.isNaN(parsed) && parsed >= 0) {
@@ -179,7 +179,7 @@ function loadGlobalOverrides(): Partial<ProviderNetworkConfig> {
 		}
 	}
 
-	const streamIdleTimeout = process.env.COMPOSER_STREAM_IDLE_TIMEOUT_MS;
+	const streamIdleTimeout = process.env.MAESTRO_STREAM_IDLE_TIMEOUT_MS;
 	if (streamIdleTimeout) {
 		const parsed = Number.parseInt(streamIdleTimeout, 10);
 		if (!Number.isNaN(parsed) && parsed > 0) {
@@ -191,12 +191,12 @@ function loadGlobalOverrides(): Partial<ProviderNetworkConfig> {
 }
 
 /**
- * Load per-provider configs from ~/.composer/providers.json
+ * Load per-provider configs from ~/.maestro/providers.json
  */
 function loadProviderConfigs(): Map<string, Partial<ProviderNetworkConfig>> {
 	const configs = new Map<string, Partial<ProviderNetworkConfig>>();
 
-	const configPath = join(PATHS.COMPOSER_HOME, "providers.json");
+	const configPath = join(PATHS.MAESTRO_HOME, "providers.json");
 	if (!existsSync(configPath)) {
 		return configs;
 	}

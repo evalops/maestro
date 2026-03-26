@@ -1,7 +1,7 @@
 {
-	"name": "@evalops/composer-desktop",
+	"name": "@evalops/maestro-desktop",
 	"version": "0.10.0",
-	"description": "Composer Desktop - Beautiful Electron app for AI-assisted development",
+	"description": "Maestro Desktop - Beautiful Electron app for AI-assisted development",
 	"type": "module",
 	"main": "dist-electron/main/index.js",
 	"scripts": {
@@ -21,7 +21,7 @@
 		"publish:mac": "npm run build && electron-builder --mac --publish always --config electron-builder.json"
 	},
 	"keywords": [
-		"composer",
+		"maestro",
 		"ai",
 		"desktop",
 		"electron",
@@ -32,7 +32,7 @@
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/evalops/composer.git",
+		"url": "git+https://github.com/evalops/maestro.git",
 		"directory": "packages/desktop"
 	},
 	"dependencies": {

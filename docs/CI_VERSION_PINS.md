@@ -28,7 +28,7 @@ Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md)
 1. Update `tool-versions.json` and `.node-version` (and `.nvmrc`).
 2. Run:
    - `bun run bun:lint`
-   - `npx nx run composer:test --skip-nx-cache`
+   - `npx nx run maestro:test --skip-nx-cache`
 3. Open a PR and confirm CI is green.
 
 ### 2) Update Bun
@@ -36,7 +36,7 @@ Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md)
 1. Update `tool-versions.json` and the default `bun-version` in `.github/actions/setup-bun-nx/action.yml`.
 2. Run:
    - `bun run bun:lint`
-   - `npx nx run composer:test --skip-nx-cache`
+   - `npx nx run maestro:test --skip-nx-cache`
 3. Open a PR and confirm CI is green.
 
 ### 3) Update pinned GitHub Actions SHAs

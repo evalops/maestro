@@ -54,7 +54,7 @@ export function handleComposerCommand(renderCtx: ComposerRenderContext): void {
 			lines.push(
 				"No composers configured.",
 				"",
-				"Create composers in ~/.composer/composers/ or .composer/composers/",
+				"Create composers in ~/.maestro/composers/ or .maestro/composers/",
 				"",
 				"Example composer.yaml:",
 				"  name: code-reviewer",

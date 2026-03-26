@@ -204,7 +204,7 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "commands",
-				description: "List or run user commands from .composer/commands",
+				description: "List or run user commands from .maestro/commands",
 				usage: "/commands list | /commands run <name> [k=v]...",
 				tags: ["session", "automation"],
 			},
@@ -891,7 +891,7 @@ export function createCommandRegistry({
 			{
 				name: "prompts",
 				description:
-					"List/run prompt templates from markdown files (~/.composer/prompts/, .composer/prompts/).",
+					"List/run prompt templates from markdown files (~/.maestro/prompts/, .maestro/prompts/).",
 				usage: "/prompts [list|<name> [args]]",
 				tags: ["automation", "session"],
 				examples: [

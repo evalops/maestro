@@ -104,8 +104,8 @@ export function setupEventSubscriptions(params: {
 			.map((s) => s.name),
 		contextSourceCount: 5,
 		features: {
-			safeMode: Boolean(process.env.COMPOSER_SAFE_MODE),
-			guardianEnabled: process.env.COMPOSER_GUARDIAN !== "0",
+			safeMode: Boolean(process.env.MAESTRO_SAFE_MODE),
+			guardianEnabled: process.env.MAESTRO_GUARDIAN !== "0",
 			compactionEnabled: true,
 			hookCount: tsHookCount,
 		},

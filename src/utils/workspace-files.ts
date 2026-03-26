@@ -23,7 +23,7 @@ function runFindFiles(cwd: string): string[] {
 	const pruneDirs = [
 		".git",
 		"node_modules",
-		".composer",
+		".maestro",
 		".next",
 		".turbo",
 		".nx",

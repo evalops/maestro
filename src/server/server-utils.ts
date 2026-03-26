@@ -291,7 +291,7 @@ export function respondWithApiError(
 			error: status.message,
 			code: Code[status.code],
 			details: status.details.length ? status.details : undefined,
-			composer: isComposerError(error)
+			maestro: isComposerError(error)
 				? {
 						code: error.code,
 						category: error.category,

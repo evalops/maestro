@@ -43,8 +43,8 @@ async function ensureBuild() {
 async function runScenario(scenario) {
 	const env = { ...process.env, ...scenario.env };
 	// Force monochrome output for snapshot-friendly eval assertions
-	if (env.COMPOSER_NO_COLOR === undefined) {
-		env.COMPOSER_NO_COLOR = "1";
+	if (env.MAESTRO_NO_COLOR === undefined) {
+		env.MAESTRO_NO_COLOR = "1";
 	}
 	const args = Array.isArray(scenario.args) ? [...scenario.args] : [];
 	const messages = Array.isArray(scenario.messages)
@@ -238,8 +238,8 @@ function buildExpectationRegex(pattern) {
 
 function getChunkConfig() {
 	const argConfig = parseChunkArgs(cliArgs);
-	const envChunkCount = parseNumber(process.env.COMPOSER_EVAL_CHUNK_COUNT);
-	const envChunkIndex = parseNumber(process.env.COMPOSER_EVAL_CHUNK_INDEX);
+	const envChunkCount = parseNumber(process.env.MAESTRO_EVAL_CHUNK_COUNT);
+	const envChunkIndex = parseNumber(process.env.MAESTRO_EVAL_CHUNK_INDEX);
 
 	const chunkCount = clamp(
 		argConfig.chunkCount ?? envChunkCount ?? 1,
@@ -260,7 +260,7 @@ function getScenarioTimeoutMs(scenario) {
 	if (scenario && Number.isFinite(scenario.timeoutMs)) {
 		return clamp(Math.trunc(scenario.timeoutMs), 0, MAX_TIMEOUT_MS);
 	}
-	const envTimeout = parseNumber(process.env.COMPOSER_EVAL_SCENARIO_TIMEOUT_MS);
+	const envTimeout = parseNumber(process.env.MAESTRO_EVAL_SCENARIO_TIMEOUT_MS);
 	if (envTimeout !== undefined) {
 		return clamp(envTimeout, 0, MAX_TIMEOUT_MS);
 	}

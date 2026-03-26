@@ -28,11 +28,11 @@ fn parse_limit(raw: Option<String>, fallback: usize) -> usize {
 pub fn tool_output_limits() -> ToolOutputLimits {
     ToolOutputLimits {
         max_chars: parse_limit(
-            std::env::var("COMPOSER_TUI_TOOL_MAX_CHARS").ok(),
+            std::env::var("MAESTRO_TUI_TOOL_MAX_CHARS").ok(),
             DEFAULT_TOOL_MAX_CHARS,
         ),
         max_lines: parse_limit(
-            std::env::var("COMPOSER_TUI_TOOL_MAX_LINES").ok(),
+            std::env::var("MAESTRO_TUI_TOOL_MAX_LINES").ok(),
             DEFAULT_TOOL_MAX_LINES,
         ),
     }

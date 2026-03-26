@@ -48,7 +48,7 @@ export class EditRenderer implements ToolRenderer {
 		const terminalWidth = process.stdout.columns ?? 80;
 		const maxDiffWidth = Math.max(48, Math.min(120, terminalWidth - 8));
 		const diffStyle =
-			process.env.COMPOSER_TUI_DIFF_STYLE?.toLowerCase() ?? "auto";
+			process.env.MAESTRO_TUI_DIFF_STYLE?.toLowerCase() ?? "auto";
 		const pathValue =
 			typeof context.args?.file_path === "string"
 				? context.args.file_path

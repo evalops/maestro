@@ -1,10 +1,11 @@
 /**
- * Sandbox Executor - Host or Docker execution environments
+ * Sandbox Executor - Host, Docker, or Daytona execution environments
  *
- * Provides isolated command execution for the Slack agent. Supports three modes:
+ * Provides isolated command execution for the Slack agent. Supports four modes:
  * - Host: Direct execution on the host machine (not recommended for production)
  * - Docker (existing): Use an existing container by name
  * - Docker (auto): Automatically create and manage a container
+ * - Daytona: Cloud sandbox with preview URLs, file system API, and git operations
  */
 
 import { spawn } from "node:child_process";
@@ -21,6 +22,18 @@ export type SandboxConfig =
 			workspaceMount?: string;
 			cpus?: string;
 			memory?: string;
+	  }
+	| {
+			type: "daytona";
+			apiKey?: string;
+			apiUrl?: string;
+			snapshot?: string;
+			image?: string;
+			language?: string;
+			cpu?: number;
+			memory?: number;
+			disk?: number;
+			autoStopInterval?: number;
 	  };
 
 export interface DockerAutoConfig {
@@ -45,10 +58,27 @@ const DEFAULT_DOCKER_CONFIG: DockerAutoConfig = {
  * - "docker:container-name" - Use existing container
  * - "docker:auto" - Auto-create container with defaults
  * - "docker:auto:image:tag" - Auto-create with specific image
+ * - "daytona" - Cloud sandbox with Daytona (default snapshot)
+ * - "daytona:snapshot-name" - Cloud sandbox with specific Daytona snapshot
  */
 export function parseSandboxArg(value: string): SandboxConfig {
 	if (value === "host") {
 		return { type: "host" };
+	}
+
+	if (value === "daytona") {
+		return { type: "daytona" };
+	}
+
+	if (value.startsWith("daytona:")) {
+		const snapshot = value.slice("daytona:".length);
+		if (!snapshot) {
+			console.error(
+				"Error: daytona:<snapshot> requires a snapshot name (e.g., daytona:my-snapshot)",
+			);
+			process.exit(1);
+		}
+		return { type: "daytona", snapshot };
 	}
 
 	if (value === "docker:auto") {
@@ -86,7 +116,7 @@ export function parseSandboxArg(value: string): SandboxConfig {
 	}
 
 	console.error(
-		`Error: Invalid sandbox type '${value}'. Use 'host', 'docker:<container-name>', or 'docker:auto'`,
+		`Error: Invalid sandbox type '${value}'. Use 'host', 'docker:<container-name>', 'docker:auto', or 'daytona'`,
 	);
 	process.exit(1);
 }
@@ -97,6 +127,19 @@ export function parseSandboxArg(value: string): SandboxConfig {
 export async function validateSandbox(config: SandboxConfig): Promise<void> {
 	if (config.type === "host") {
 		console.log("Using host sandbox (no isolation).");
+		return;
+	}
+
+	if (config.type === "daytona") {
+		const apiKey = config.apiKey || process.env.DAYTONA_API_KEY;
+		if (!apiKey) {
+			console.error(
+				"Error: Daytona sandbox requires DAYTONA_API_KEY environment variable or --daytona-api-key flag",
+			);
+			process.exit(1);
+		}
+		const snapshot = config.snapshot ? ` (snapshot: ${config.snapshot})` : "";
+		console.log(`Daytona cloud sandbox mode enabled${snapshot}.`);
 		return;
 	}
 
@@ -174,11 +217,15 @@ function execSimple(cmd: string, args: string[]): Promise<string> {
 }
 
 /**
- * Create an executor that runs commands either on host or in Docker container
+ * Create an executor that runs commands either on host, in Docker container, or in Daytona sandbox
  */
 export function createExecutor(config: SandboxConfig): Executor {
 	if (config.type === "host") {
 		return new HostExecutor();
+	}
+
+	if (config.type === "daytona") {
+		return new DaytonaExecutor(config);
 	}
 
 	if (config.autoCreate) {
@@ -217,12 +264,46 @@ export interface Executor {
 	 * Cleanup resources (stop container if auto-created)
 	 */
 	dispose(): Promise<void>;
+
+	/**
+	 * Get a public preview URL for a port running in the sandbox.
+	 * Only available for Daytona executors; returns undefined for others.
+	 */
+	getPreviewUrl?(
+		port: number,
+		expiresInSeconds?: number,
+	): Promise<{ url: string; token: string } | undefined>;
+
+	/**
+	 * Upload a file to the sandbox filesystem.
+	 * Only available for Daytona executors.
+	 */
+	uploadFile?(content: Buffer, remotePath: string): Promise<void>;
+
+	/**
+	 * Download a file from the sandbox filesystem.
+	 * Only available for Daytona executors.
+	 */
+	downloadFile?(remotePath: string): Promise<Buffer>;
+
+	/**
+	 * Clone a git repository into the sandbox.
+	 * Only available for Daytona executors.
+	 */
+	gitClone?(url: string, path: string, branch?: string): Promise<void>;
+
+	/**
+	 * Get the Daytona sandbox ID (for Daytona executors).
+	 * Returns undefined for non-Daytona executors.
+	 */
+	getSandboxId?(): string | undefined;
 }
 
 export interface ExecOptions {
 	timeout?: number;
 	signal?: AbortSignal;
 	cwd?: string;
+	env?: Record<string, string>;
 }
 
 export interface ExecResult {
@@ -403,7 +484,13 @@ class AutoDockerExecutor implements Executor {
 		}
 
 		this.initPromise = this.createContainer();
-		return this.initPromise;
+		try {
+			return await this.initPromise;
+		} catch (err) {
+			// Clear cached promise so subsequent calls can retry
+			this.initPromise = null;
+			throw err;
+		}
 	}
 
 	private async createContainer(): Promise<void> {
@@ -513,6 +600,247 @@ class AutoDockerExecutor implements Executor {
 		}
 	}
 }
+
+/**
+ * Daytona configuration extracted from SandboxConfig
+ */
+interface DaytonaSandboxConfig {
+	apiKey?: string;
+	apiUrl?: string;
+	snapshot?: string;
+	image?: string;
+	language?: string;
+	cpu?: number;
+	memory?: number;
+	disk?: number;
+	autoStopInterval?: number;
+}
+
+/**
+ * Daytona cloud sandbox executor.
+ *
+ * Uses the Daytona SDK to create and manage sandboxes with:
+ * - Command execution via `sandbox.process.executeCommand`
+ * - File operations via `sandbox.fs`
+ * - Git operations via `sandbox.git`
+ * - Preview URLs via `sandbox.getSignedPreviewUrl`
+ */
+class DaytonaExecutor implements Executor {
+	private sandbox: DaytonaSandboxInstance | null = null;
+	private daytonaClient: DaytonaClient | null = null;
+	private config: DaytonaSandboxConfig;
+	private initPromise: Promise<void> | null = null;
+	private disposed = false;
+	private workDir: string | null = null;
+
+	constructor(config: DaytonaSandboxConfig) {
+		this.config = config;
+	}
+
+	private async ensureSandbox(): Promise<DaytonaSandboxInstance> {
+		if (this.disposed) {
+			throw new Error("Daytona executor has been disposed");
+		}
+
+		if (this.sandbox) {
+			return this.sandbox;
+		}
+
+		if (this.initPromise) {
+			await this.initPromise;
+			return this.sandbox!;
+		}
+
+		this.initPromise = this.createSandbox();
+		try {
+			await this.initPromise;
+		} catch (err) {
+			// Clear cached promise so subsequent calls can retry
+			this.initPromise = null;
+			throw err;
+		}
+		return this.sandbox!;
+	}
+
+	private async createSandbox(): Promise<void> {
+		// Dynamic import to avoid requiring the SDK when using Docker/host modes
+		const { Daytona } = await import("@daytonaio/sdk");
+
+		const apiKey = this.config.apiKey || process.env.DAYTONA_API_KEY;
+		if (!apiKey) {
+			throw new Error(
+				"Daytona sandbox requires DAYTONA_API_KEY environment variable",
+			);
+		}
+
+		this.daytonaClient = new Daytona({
+			apiKey,
+			...(this.config.apiUrl ? { apiUrl: this.config.apiUrl } : {}),
+		});
+
+		const createParams: Record<string, unknown> = {
+			language: this.config.language || "typescript",
+			envVars: { TERM: "xterm-256color" },
+			autoStopInterval: this.config.autoStopInterval ?? 30,
+		};
+
+		if (this.config.snapshot) {
+			createParams.snapshot = this.config.snapshot;
+		}
+
+		if (this.config.image) {
+			createParams.image = this.config.image;
+			if (
+				this.config.cpu !== undefined ||
+				this.config.memory !== undefined ||
+				this.config.disk !== undefined
+			) {
+				createParams.resources = {
+					...(this.config.cpu !== undefined ? { cpu: this.config.cpu } : {}),
+					...(this.config.memory !== undefined
+						? { memory: this.config.memory }
+						: {}),
+					...(this.config.disk !== undefined ? { disk: this.config.disk } : {}),
+				};
+			}
+		}
+
+		// Use type assertion since createParams can be either snapshot or image params
+		this.sandbox = (await this.daytonaClient.create(
+			createParams as Parameters<typeof this.daytonaClient.create>[0],
+			{ timeout: 120 },
+		)) as DaytonaSandboxInstance;
+
+		this.workDir = (await this.sandbox.getUserHomeDir()) ?? "/home/daytona";
+
+		console.log(
+			`Created Daytona sandbox: ${this.sandbox.id} (workDir: ${this.workDir})`,
+		);
+	}
+
+	async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
+		const sandbox = await this.ensureSandbox();
+
+		try {
+			const response = await sandbox.process.executeCommand(
+				command,
+				options?.cwd ?? this.workDir ?? undefined,
+				options?.env,
+				options?.timeout,
+			);
+
+			return {
+				stdout: response.result ?? "",
+				stderr: "",
+				code: response.exitCode ?? 0,
+			};
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			return {
+				stdout: "",
+				stderr: msg,
+				code: 1,
+			};
+		}
+	}
+
+	getWorkspacePath(_hostPath: string): string {
+		return this.workDir ?? "/home/daytona";
+	}
+
+	getContainerName(): string | undefined {
+		return this.sandbox?.id;
+	}
+
+	getSandboxId(): string | undefined {
+		return this.sandbox?.id;
+	}
+
+	async getPreviewUrl(
+		port: number,
+		expiresInSeconds = 3600,
+	): Promise<{ url: string; token: string } | undefined> {
+		const sandbox = await this.ensureSandbox();
+		const preview = await sandbox.getSignedPreviewUrl(port, expiresInSeconds);
+		return { url: preview.url, token: preview.token };
+	}
+
+	async uploadFile(content: Buffer, remotePath: string): Promise<void> {
+		const sandbox = await this.ensureSandbox();
+		await sandbox.fs.uploadFile(content, remotePath);
+	}
+
+	async downloadFile(remotePath: string): Promise<Buffer> {
+		const sandbox = await this.ensureSandbox();
+		const content = await sandbox.fs.downloadFile(remotePath);
+		return Buffer.from(content);
+	}
+
+	async gitClone(url: string, path: string, branch?: string): Promise<void> {
+		const sandbox = await this.ensureSandbox();
+		if (branch) {
+			await sandbox.git.clone(url, path, branch);
+		} else {
+			await sandbox.git.clone(url, path);
+		}
+	}
+
+	async dispose(): Promise<void> {
+		if (this.disposed) return;
+		this.disposed = true;
+
+		if (this.sandbox && this.daytonaClient) {
+			try {
+				await this.daytonaClient.delete(
+					this.sandbox as Parameters<typeof this.daytonaClient.delete>[0],
+				);
+				console.log(`Deleted Daytona sandbox: ${this.sandbox.id}`);
+			} catch {
+				// Sandbox may have already been stopped/deleted
+			}
+			this.sandbox = null;
+			this.daytonaClient = null;
+		}
+	}
+}
+
+/**
+ * Minimal type for the Daytona SDK client to avoid requiring the import at module level.
+ * The actual Daytona class is loaded dynamically.
+ */
+type DaytonaClient = {
+	create(params?: unknown, options?: { timeout?: number }): Promise<unknown>;
+	delete(sandbox: unknown, timeout?: number): Promise<void>;
+};
+
+/**
+ * Minimal type for the Daytona Sandbox instance.
+ * The actual Sandbox class is loaded dynamically.
+ */
+type DaytonaSandboxInstance = {
+	id: string;
+	process: {
+		executeCommand(
+			command: string,
+			cwd?: string,
+			env?: Record<string, string>,
+			timeout?: number,
+		): Promise<{ result: string; exitCode: number }>;
+	};
+	fs: {
+		uploadFile(content: Buffer, path: string): Promise<void>;
+		downloadFile(path: string): Promise<Buffer>;
+	};
+	git: {
+		clone(url: string, path: string, branch?: string): Promise<void>;
+	};
+	getUserHomeDir(): Promise<string | undefined>;
+	getPreviewLink(port: number): Promise<{ url: string; token: string }>;
+	getSignedPreviewUrl(
+		port: number,
+		expiresInSeconds?: number,
+	): Promise<{ url: string; token: string }>;
+};
 
 function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {

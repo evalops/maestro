@@ -13,8 +13,8 @@ describe("commands/prompts frontmatter", () => {
 		homeDir = join(tmpdir(), `composer-prompts-home-${Date.now()}`);
 		workspaceDir = join(tmpdir(), `composer-prompts-workspace-${Date.now()}`);
 		process.env.HOME = homeDir;
-		mkdirSync(join(homeDir, ".composer", "prompts"), { recursive: true });
-		mkdirSync(join(workspaceDir, ".composer", "prompts"), { recursive: true });
+		mkdirSync(join(homeDir, ".maestro", "prompts"), { recursive: true });
+		mkdirSync(join(workspaceDir, ".maestro", "prompts"), { recursive: true });
 	});
 
 	afterEach(() => {
@@ -25,7 +25,7 @@ describe("commands/prompts frontmatter", () => {
 
 	it("supports name override and aliases", () => {
 		writeFileSync(
-			join(homeDir, ".composer", "prompts", "review.md"),
+			join(homeDir, ".maestro", "prompts", "review.md"),
 			`---
 name: pr-review
 description: Review the current PR

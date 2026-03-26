@@ -37,7 +37,7 @@ export class UpdateView {
 			currentVersion,
 			sourceUrl,
 		} = result;
-		const header = chalk.bold("Composer update");
+		const header = chalk.bold("Maestro update");
 		let summary: string;
 		let instructions: string;
 		if (isUpdateAvailable && latestVersion) {

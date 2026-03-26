@@ -186,7 +186,7 @@ async function getCopilotToken(
 			headers: {
 				Authorization: `token ${githubToken}`,
 				Accept: "application/json",
-				"Editor-Version": "Composer/1.0.0",
+				"Editor-Version": "Maestro/1.0.0",
 				"Editor-Plugin-Version": "copilot/1.0.0",
 			},
 		});

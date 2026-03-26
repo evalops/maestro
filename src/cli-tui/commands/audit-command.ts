@@ -48,6 +48,6 @@ function showAuditStatus(
 	}
 
 	context.showInfo(
-		"Audit Log: Enterprise feature - database not configured.\nSet COMPOSER_DATABASE_URL to enable.",
+		"Audit Log: Enterprise feature - database not configured.\nSet MAESTRO_DATABASE_URL to enable.",
 	);
 }

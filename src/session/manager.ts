@@ -247,7 +247,7 @@ export class SessionManager {
 
 		const baseOverride =
 			resolveEnvPath(this.sessionDirOverride) ??
-			resolveEnvPath(process.env.COMPOSER_SESSION_DIR);
+			resolveEnvPath(process.env.MAESTRO_SESSION_DIR);
 		const baseDir =
 			baseOverride ??
 			SESSION_CONFIG.DEFAULT_DIR ??

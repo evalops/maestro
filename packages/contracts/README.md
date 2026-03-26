@@ -1,6 +1,6 @@
 # @evalops/contracts
 
-Shared TypeScript definitions for Composer's frontend/backend contract.
+Shared TypeScript definitions for Maestro's frontend/backend contract.
 
 ## Building locally
 
@@ -14,14 +14,14 @@ The package emits ESM + declaration artifacts into `packages/contracts/dist`. Ro
 ## Usage
 
 ```ts
-import type { ComposerMessage, ComposerUsage } from "@evalops/contracts";
+import type { MaestroMessage, MaestroUsage } from "@evalops/contracts";
 
-const payload: ComposerMessage = {
+const payload: MaestroMessage = {
 	role: "user",
-	content: "Hello Composer",
+	content: "Hello Maestro",
 };
 
-const usage: ComposerUsage = {
+const usage: MaestroUsage = {
 	input: 1200,
 	output: 300,
 	cacheRead: 0,
@@ -34,7 +34,7 @@ payload.usage = usage;
 
 ## Streaming events
 
-`ComposerAgentEvent` models the wire events emitted by Composer's streaming
+`MaestroAgentEvent` models the wire events emitted by Maestro's streaming
 endpoints, including transport signals like `session_update`, `heartbeat`,
 `aborted`, and `done`.
 
@@ -44,11 +44,11 @@ Contracts also ship lightweight runtime schemas and validators for boundary chec
 
 ```ts
 import {
-  ComposerChatRequestSchema,
-  assertComposerChatRequest,
+  MaestroChatRequestSchema,
+  assertMaestroChatRequest,
 } from "@evalops/contracts";
 
-assertComposerChatRequest(payload);
+assertMaestroChatRequest(payload);
 ```
 
 Consumers outside the monorepo can depend on `@evalops/contracts` once the package has been built/published; only the compiled `dist` folder is distributed.

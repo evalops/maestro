@@ -11,7 +11,7 @@ export interface EnvValidator {
 // Reference pattern only; not enforced elsewhere yet.
 export const defaultEnvValidators: EnvValidator[] = [
 	{
-		name: "COMPOSER_MCP_MAX_OUTPUT_TOKENS",
+		name: "MAESTRO_MCP_MAX_OUTPUT_TOKENS",
 		default: 32000,
 		validate: (raw) => {
 			if (!raw) return { effective: 32000, status: "valid" };
@@ -34,7 +34,7 @@ export const defaultEnvValidators: EnvValidator[] = [
 		},
 	},
 	{
-		name: "COMPOSER_MCP_MAX_STDIO_OUTPUT",
+		name: "MAESTRO_MCP_MAX_STDIO_OUTPUT",
 		default: 30000,
 		validate: (raw) => {
 			if (!raw) return { effective: 30000, status: "valid" };

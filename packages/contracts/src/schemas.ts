@@ -914,5 +914,5 @@ export const ComposerErrorResponseSchema = Type.Object({
 	details: Type.Optional(
 		Type.Array(Type.Record(Type.String(), Type.Unknown())),
 	),
-	composer: Type.Optional(ComposerErrorPayloadSchema),
+	maestro: Type.Optional(ComposerErrorPayloadSchema),
 });

@@ -480,7 +480,7 @@ export function createTurnCollector(
 export function getSamplingConfigFromEnv(): Partial<TailSamplingConfig> {
 	const config: Partial<TailSamplingConfig> = {};
 
-	const sampleRate = process.env.COMPOSER_WIDE_EVENT_SAMPLE_RATE;
+	const sampleRate = process.env.MAESTRO_WIDE_EVENT_SAMPLE_RATE;
 	if (sampleRate) {
 		const rate = Number.parseFloat(sampleRate);
 		if (!Number.isNaN(rate) && rate >= 0 && rate <= 1) {
@@ -488,7 +488,7 @@ export function getSamplingConfigFromEnv(): Partial<TailSamplingConfig> {
 		}
 	}
 
-	const slowThreshold = process.env.COMPOSER_WIDE_EVENT_SLOW_THRESHOLD_MS;
+	const slowThreshold = process.env.MAESTRO_WIDE_EVENT_SLOW_THRESHOLD_MS;
 	if (slowThreshold) {
 		const threshold = Number.parseInt(slowThreshold, 10);
 		if (!Number.isNaN(threshold) && threshold > 0) {

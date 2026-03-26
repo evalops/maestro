@@ -1,6 +1,6 @@
 # Tool Error Handling Patterns
 
-This document describes the error handling patterns used in Composer tools.
+This document describes the error handling patterns used in Maestro tools.
 
 ## Overview
 

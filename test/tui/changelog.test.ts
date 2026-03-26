@@ -17,7 +17,7 @@ const tempDir = () => mkdtempSync(join(tmpdir(), "composer-changelog-"));
 
 describe("changelog utilities", () => {
 	afterEach(() => {
-		Reflect.deleteProperty(process.env, "COMPOSER_CHANGELOG_STATE");
+		Reflect.deleteProperty(process.env, "MAESTRO_CHANGELOG_STATE");
 	});
 
 	it("parses entries and filters newer ones", () => {
@@ -91,22 +91,20 @@ describe("changelog utilities", () => {
 		expect(summary).toBeNull();
 	});
 
-	it("respects COMPOSER_CHANGELOG hide values", () => {
-		expect(isChangelogHiddenFromEnv({ COMPOSER_CHANGELOG: "off" })).toBe(true);
-		expect(isChangelogHiddenFromEnv({ COMPOSER_CHANGELOG: "hidden" })).toBe(
+	it("respects MAESTRO_CHANGELOG hide values", () => {
+		expect(isChangelogHiddenFromEnv({ MAESTRO_CHANGELOG: "off" })).toBe(true);
+		expect(isChangelogHiddenFromEnv({ MAESTRO_CHANGELOG: "hidden" })).toBe(
 			true,
 		);
-		expect(isChangelogHiddenFromEnv({ COMPOSER_CHANGELOG: "false" })).toBe(
-			true,
-		);
-		expect(isChangelogHiddenFromEnv({ COMPOSER_CHANGELOG: "1" })).toBe(false);
+		expect(isChangelogHiddenFromEnv({ MAESTRO_CHANGELOG: "false" })).toBe(true);
+		expect(isChangelogHiddenFromEnv({ MAESTRO_CHANGELOG: "1" })).toBe(false);
 		expect(isChangelogHiddenFromEnv({})).toBe(false);
 	});
 
 	it("stores last shown version in override path", () => {
 		const dir = tempDir();
 		const statePath = join(dir, "state.json");
-		process.env.COMPOSER_CHANGELOG_STATE = statePath;
+		process.env.MAESTRO_CHANGELOG_STATE = statePath;
 		expect(readLastShownChangelogVersion()).toBeNull();
 		writeLastShownChangelogVersion("0.3.0");
 		const raw = readFileSync(statePath, "utf-8");

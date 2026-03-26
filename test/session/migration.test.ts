@@ -102,12 +102,12 @@ describe("Session Migration", () => {
 	beforeEach(() => {
 		// Save original state
 		originalCwd = process.cwd();
-		originalEnv = process.env.COMPOSER_AGENT_DIR;
+		originalEnv = process.env.MAESTRO_AGENT_DIR;
 
 		// Create isolated test directory
 		testDir = join(tmpdir(), `composer-migration-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
-		process.env.COMPOSER_AGENT_DIR = testDir;
+		process.env.MAESTRO_AGENT_DIR = testDir;
 
 		// Change to test directory so session path is computed correctly
 		process.chdir(testDir);
@@ -123,9 +123,9 @@ describe("Session Migration", () => {
 		// Restore original state
 		process.chdir(originalCwd);
 		if (originalEnv === undefined) {
-			delete process.env.COMPOSER_AGENT_DIR;
+			delete process.env.MAESTRO_AGENT_DIR;
 		} else {
-			process.env.COMPOSER_AGENT_DIR = originalEnv;
+			process.env.MAESTRO_AGENT_DIR = originalEnv;
 		}
 
 		// Cleanup test directory

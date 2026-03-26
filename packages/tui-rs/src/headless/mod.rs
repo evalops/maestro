@@ -141,7 +141,7 @@
 //! For basic use cases, use `AsyncAgentTransport`:
 //!
 //! ```ignore
-//! use composer_tui::headless::{AsyncAgentTransportBuilder, ToAgentMessage};
+//! use maestro_tui::headless::{AsyncAgentTransportBuilder, ToAgentMessage};
 //!
 //! let mut transport = AsyncAgentTransportBuilder::new()
 //!     .cli_path("composer")
@@ -167,7 +167,7 @@
 //! For production use with reconnection and session recording, use `AgentSupervisor`:
 //!
 //! ```ignore
-//! use composer_tui::headless::{SupervisorBuilder, SessionRecorder};
+//! use maestro_tui::headless::{SupervisorBuilder, SessionRecorder};
 //!
 //! // Create session recorder for persistence
 //! let recorder = SessionRecorder::new("~/.composer/sessions")?;

@@ -1,6 +1,6 @@
 # Agent Event Reference
 
-Event names emitted by Composer’s agent loop (mirrors web/TUI clients and RPC).
+Event names emitted by Maestro’s agent loop (mirrors web/TUI clients and RPC).
 
 - **agent_start / agent_end** — lifecycle boundaries; `agent_end` includes `aborted` and optional `partialAccepted`.
 - **turn_start / turn_end** — each LLM turn; `turn_end` provides the assistant message and any tool results generated in that turn.

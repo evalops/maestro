@@ -66,9 +66,9 @@ function handleWorkflowList(ctx: WorkflowRenderContext): void {
 		lines.push(
 			"No workflows directory found.",
 			"",
-			"Create workflows in .composer/workflows/:",
+			"Create workflows in .maestro/workflows/:",
 			"",
-			"  .composer/workflows/my-workflow.yaml",
+			"  .maestro/workflows/my-workflow.yaml",
 			"",
 			"See /workflow help for more information.",
 		);
@@ -83,7 +83,7 @@ function handleWorkflowList(ctx: WorkflowRenderContext): void {
 		lines.push(
 			"No workflows defined.",
 			"",
-			"Create a workflow file in .composer/workflows/",
+			"Create a workflow file in .maestro/workflows/",
 		);
 	} else {
 		lines.push(`Found ${names.length} workflow(s):`, "");
@@ -285,11 +285,11 @@ function handleWorkflowHelp(ctx: WorkflowRenderContext): void {
 		"  /workflow validate <name>   Validate a workflow",
 		"  /workflow show <name>       Show workflow details",
 		"",
-		"Workflows are defined in .composer/workflows/*.yaml",
+		"Workflows are defined in .maestro/workflows/*.yaml",
 		"",
 		"Example workflow:",
 		"",
-		chalk.dim("  # .composer/workflows/setup.yaml"),
+		chalk.dim("  # .maestro/workflows/setup.yaml"),
 		chalk.dim("  name: setup-project"),
 		chalk.dim("  description: Initialize project"),
 		chalk.dim("  steps:"),

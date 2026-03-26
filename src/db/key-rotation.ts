@@ -33,7 +33,7 @@ export interface KeyRotationResult {
  * 3. Re-encrypts user TOTP secrets
  * 4. Reports success/failure for each record
  *
- * After successful rotation, update COMPOSER_DB_ENCRYPTION_KEY to the new key.
+ * After successful rotation, update MAESTRO_DB_ENCRYPTION_KEY to the new key.
  */
 export async function rotateEncryptionKey(
 	oldKeyHex: string,
@@ -172,7 +172,7 @@ export async function runKeyRotationCli(): Promise<void> {
 		console.log("Generated new encryption key:");
 		console.log(newKey);
 		console.log(
-			"\nStore this securely and use it as COMPOSER_DB_ENCRYPTION_KEY",
+			"\nStore this securely and use it as MAESTRO_DB_ENCRYPTION_KEY",
 		);
 		process.exit(0);
 	}
@@ -195,7 +195,7 @@ export async function runKeyRotationCli(): Promise<void> {
 			console.log(`  Organizations updated: ${result.orgsUpdated}`);
 			console.log(`  Users updated: ${result.usersUpdated}`);
 			console.log(
-				"\nIMPORTANT: Update COMPOSER_DB_ENCRYPTION_KEY to the new key",
+				"\nIMPORTANT: Update MAESTRO_DB_ENCRYPTION_KEY to the new key",
 			);
 		} else {
 			console.error("\nKey rotation completed with errors:");

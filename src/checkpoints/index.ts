@@ -29,7 +29,7 @@
  *
  * The checkpointing system can be configured or disabled:
  *
- * - Set `COMPOSER_DISABLE_FILE_CHECKPOINTING=1` to disable checkpointing
+ * - Set `MAESTRO_DISABLE_FILE_CHECKPOINTING=1` to disable checkpointing
  * - Configure trigger tools and exclude patterns via CheckpointConfig
  *
  * ## How It Works

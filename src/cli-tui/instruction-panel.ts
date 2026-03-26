@@ -25,7 +25,7 @@ export class InstructionPanelComponent implements Component {
 		const innerWidth = Math.max(1, panelWidth - 4);
 		const top = theme.fg("borderAccent", `╭${"─".repeat(panelWidth - 2)}╮`);
 		const title = this.centerText(
-			`composer v${this.version} · EvalOps`,
+			`maestro v${this.version} · EvalOps`,
 			innerWidth,
 		);
 		const titleLine = `${theme.fg("borderAccent", "│ ")}${theme.bold(

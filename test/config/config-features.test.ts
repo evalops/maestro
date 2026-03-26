@@ -1,7 +1,7 @@
 /**
  * @vitest-environment node
  *
- * These tests modify global model registry state via COMPOSER_CONFIG env var.
+ * These tests modify global model registry state via MAESTRO_CONFIG env var.
  * They must run sequentially to avoid race conditions with parallel tests.
  */
 import {
@@ -46,10 +46,10 @@ describe("Config Features", () => {
 		mkdirSync(testDir, { recursive: true });
 
 		// Save and clear config env vars to ensure isolation
-		originalComposerConfig = process.env.COMPOSER_CONFIG;
-		originalComposerModelsFile = process.env.COMPOSER_MODELS_FILE;
-		Reflect.deleteProperty(process.env, "COMPOSER_CONFIG");
-		Reflect.deleteProperty(process.env, "COMPOSER_MODELS_FILE");
+		originalComposerConfig = process.env.MAESTRO_CONFIG;
+		originalComposerModelsFile = process.env.MAESTRO_MODELS_FILE;
+		Reflect.deleteProperty(process.env, "MAESTRO_CONFIG");
+		Reflect.deleteProperty(process.env, "MAESTRO_MODELS_FILE");
 
 		// Clear any cached config from previous tests
 		try {
@@ -62,14 +62,14 @@ describe("Config Features", () => {
 	afterEach(() => {
 		// Restore original env vars
 		if (originalComposerConfig !== undefined) {
-			process.env.COMPOSER_CONFIG = originalComposerConfig;
+			process.env.MAESTRO_CONFIG = originalComposerConfig;
 		} else {
-			Reflect.deleteProperty(process.env, "COMPOSER_CONFIG");
+			Reflect.deleteProperty(process.env, "MAESTRO_CONFIG");
 		}
 		if (originalComposerModelsFile !== undefined) {
-			process.env.COMPOSER_MODELS_FILE = originalComposerModelsFile;
+			process.env.MAESTRO_MODELS_FILE = originalComposerModelsFile;
 		} else {
-			Reflect.deleteProperty(process.env, "COMPOSER_MODELS_FILE");
+			Reflect.deleteProperty(process.env, "MAESTRO_MODELS_FILE");
 		}
 
 		// Clean test-specific env vars
@@ -110,7 +110,7 @@ describe("Config Features", () => {
 			}`;
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 
 			const result = validateConfig();
 			expect(result.valid).toBe(true);
@@ -138,7 +138,7 @@ describe("Config Features", () => {
 			}`;
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 
 			const result = validateConfig();
 			expect(result.valid).toBe(true);
@@ -171,9 +171,9 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 
-			// Force config reload to pick up new COMPOSER_CONFIG
+			// Force config reload to pick up new MAESTRO_CONFIG
 			reloadModelConfig();
 
 			const inspection = inspectConfig();
@@ -214,7 +214,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 
 			const result = validateConfig();
 			expect(result.warnings.length).toBeGreaterThan(0);
@@ -250,7 +250,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 
 			const result = validateConfig();
 			expect(result.summary.fileReferences.length).toBe(1);
@@ -280,7 +280,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 
 			const result = validateConfig();
 			expect(result.valid).toBe(false);
@@ -328,7 +328,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 			reloadModelConfig(); // Force reload with new config
 
 			const aliases = getAliases();
@@ -367,7 +367,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 
 			const resolved = resolveAlias("nonexistent");
 			expect(resolved).toBeNull();
@@ -397,7 +397,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 
 			const result: ConfigValidationResult = validateConfig();
 			expect(result.valid).toBe(true);
@@ -429,7 +429,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 
 			const result = validateConfig();
 			expect(result.warnings.length).toBeGreaterThan(0);
@@ -447,7 +447,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 
 			const result = validateConfig();
 			expect(result.warnings.some((w) => w.includes("no effect"))).toBe(true);
@@ -484,7 +484,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 			reloadModelConfig(); // Force reload with new config
 
 			const inspection: ConfigInspection = inspectConfig();
@@ -514,7 +514,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 			reloadModelConfig();
 
 			const models = getRegisteredModels().filter(
@@ -542,7 +542,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 			reloadModelConfig();
 
 			const models = getRegisteredModels().filter(
@@ -576,7 +576,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 			reloadModelConfig();
 
 			const inspection = inspectConfig();
@@ -608,7 +608,7 @@ describe("Config Features", () => {
 			};
 
 			writeConfigFile(configPath, config);
-			process.env.COMPOSER_CONFIG = configPath;
+			process.env.MAESTRO_CONFIG = configPath;
 			reloadModelConfig();
 
 			const models = getRegisteredModels().filter(

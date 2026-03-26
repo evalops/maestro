@@ -23,17 +23,17 @@ const MAGENTA = `${ESC}35m`;
 const CYAN = `${ESC}36m`;
 
 const LOG_FORMAT =
-	process.env.COMPOSER_LOG_FORMAT?.toLowerCase() === "json" ? "json" : "text";
+	process.env.MAESTRO_LOG_FORMAT?.toLowerCase() === "json" ? "json" : "text";
 
 const LOAD_SHEDDING_THRESHOLD_MS =
 	Number.parseInt(
-		process.env.COMPOSER_LOAD_SHEDDING_THRESHOLD_MS || "200",
+		process.env.MAESTRO_LOAD_SHEDDING_THRESHOLD_MS || "200",
 		10,
 	) || 200;
 
 // Dapper-style Sampling: Default to 100% in dev, configurable in prod
 const LOG_SAMPLE_RATE = Number.parseFloat(
-	process.env.COMPOSER_LOG_SAMPLE_RATE || "1.0",
+	process.env.MAESTRO_LOG_SAMPLE_RATE || "1.0",
 );
 
 const HISTOGRAM_SIZE = 1000;

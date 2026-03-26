@@ -7,8 +7,7 @@ const packageJson = createRequire(import.meta.url)("../../../package.json") as {
 	version?: string;
 };
 
-const VERSION =
-	process.env.COMPOSER_VERSION ?? packageJson.version ?? "unknown";
+const VERSION = process.env.MAESTRO_VERSION ?? packageJson.version ?? "unknown";
 const CLIENT_HEADERS = [
 	"X-Composer-Client",
 	"X-Composer-Client-Tools",

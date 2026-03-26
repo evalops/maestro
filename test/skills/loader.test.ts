@@ -17,7 +17,7 @@ describe("skills/loader", () => {
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `composer-skills-test-${Date.now()}`);
-		skillsDir = join(testDir, ".composer", "skills");
+		skillsDir = join(testDir, ".maestro", "skills");
 		mkdirSync(skillsDir, { recursive: true });
 	});
 

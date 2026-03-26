@@ -76,7 +76,7 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 }
 
 export function getThemesDir(): string {
-	const override = resolveEnvPath(process.env.COMPOSER_THEMES_DIR);
+	const override = resolveEnvPath(process.env.MAESTRO_THEMES_DIR);
 	if (override) return override;
 	return path.resolve(getAgentDir(), "themes");
 }

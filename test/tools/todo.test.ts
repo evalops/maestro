@@ -35,16 +35,16 @@ describe("todo tool", () => {
 
 	beforeEach(() => {
 		testDir = mkdtempSync(join(tmpdir(), "todo-tool-test-"));
-		originalStorePath = process.env.COMPOSER_TODO_FILE;
-		process.env.COMPOSER_TODO_FILE = join(testDir, "todos.json");
+		originalStorePath = process.env.MAESTRO_TODO_FILE;
+		process.env.MAESTRO_TODO_FILE = join(testDir, "todos.json");
 		vi.clearAllMocks();
 	});
 
 	afterEach(() => {
 		if (originalStorePath !== undefined) {
-			process.env.COMPOSER_TODO_FILE = originalStorePath;
+			process.env.MAESTRO_TODO_FILE = originalStorePath;
 		} else {
-			Reflect.deleteProperty(process.env, "COMPOSER_TODO_FILE");
+			Reflect.deleteProperty(process.env, "MAESTRO_TODO_FILE");
 		}
 		rmSync(testDir, { recursive: true, force: true });
 	});

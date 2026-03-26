@@ -1,7 +1,7 @@
 {
 	"name": "@evalops/contracts",
 	"version": "0.10.0",
-	"description": "Shared Composer contracts for frontend/backend integration",
+	"description": "Shared Maestro contracts for frontend/backend integration",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -23,7 +23,7 @@
 	"dependencies": {
 		"@sinclair/typebox": "^0.34.0"
 	},
-	"keywords": ["composer", "contracts", "evalops"],
+	"keywords": ["maestro", "contracts", "evalops"],
 	"author": "EvalOps",
 	"license": "MIT"
 }

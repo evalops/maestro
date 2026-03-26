@@ -10,7 +10,7 @@ import {
 import { clearUsage, getUsageSummary } from "../../tracking/cost-tracker.js";
 
 /**
- * Handle `composer cost` command (default: today)
+ * Handle `maestro cost` command (default: today)
  */
 export async function handleCostSummary(period?: string): Promise<void> {
 	let since: number | undefined;
@@ -121,7 +121,7 @@ export async function handleCostSummary(period?: string): Promise<void> {
 }
 
 /**
- * Handle `composer cost clear` command
+ * Handle `maestro cost clear` command
  */
 export async function handleCostClear(): Promise<void> {
 	console.log(sectionHeading("Clear Usage Data"));
@@ -146,7 +146,7 @@ export async function handleCostClear(): Promise<void> {
 }
 
 /**
- * Handle `composer cost breakdown` command
+ * Handle `maestro cost breakdown` command
  */
 export async function handleCostBreakdown(): Promise<void> {
 	const summary = getUsageSummary();

@@ -6,8 +6,8 @@
  * - /commands command: List and run custom command templates
  *
  * Templates are loaded from:
- * - ~/.composer/prompts/ and .composer/prompts/ for prompts
- * - ~/.composer/commands/ and .composer/commands/ for commands
+ * - ~/.maestro/prompts/ and .maestro/prompts/ for prompts
+ * - ~/.maestro/commands/ and .maestro/commands/ for commands
  */
 
 import {
@@ -63,7 +63,7 @@ export class CustomCommandsController {
 		if (!action || action === "list") {
 			if (prompts.length === 0) {
 				context.showInfo(
-					"No prompts found. Add .md files to ~/.composer/prompts/ or .composer/prompts/",
+					"No prompts found. Add .md files to ~/.maestro/prompts/ or .maestro/prompts/",
 				);
 				return;
 			}
@@ -117,7 +117,7 @@ export class CustomCommandsController {
 		if (!action || action === "list") {
 			if (catalog.length === 0) {
 				context.showInfo(
-					"No commands found in ~/.composer/commands or .composer/commands.",
+					"No commands found in ~/.maestro/commands or .maestro/commands.",
 				);
 				return;
 			}

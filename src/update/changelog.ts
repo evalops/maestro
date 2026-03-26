@@ -11,7 +11,7 @@ export interface ChangelogEntry {
 	content: string;
 }
 
-const CHANGELOG_STATE_ENV = "COMPOSER_CHANGELOG_STATE";
+const CHANGELOG_STATE_ENV = "MAESTRO_CHANGELOG_STATE";
 
 const resolveStatePath = (): string => {
 	const override = resolveEnvPath(process.env[CHANGELOG_STATE_ENV]);
@@ -118,7 +118,7 @@ export function summarizeChangelogEntry(entry: ChangelogEntry): string | null {
 const HIDE_VALUES = new Set(["0", "false", "off", "hide", "hidden", "skip"]);
 
 export function isChangelogHiddenFromEnv(env = process.env): boolean {
-	const value = env.COMPOSER_CHANGELOG;
+	const value = env.MAESTRO_CHANGELOG;
 	if (!value) {
 		return false;
 	}

@@ -137,7 +137,7 @@ async function deliverHttp(
 
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
-		"User-Agent": "Composer-Webhooks/1.0",
+		"User-Agent": "Maestro-Webhooks/1.0",
 		"X-Webhook-Id": crypto.randomUUID(),
 	};
 

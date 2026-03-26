@@ -159,7 +159,7 @@ impl ResizeTracker {
 /// # Example
 ///
 /// ```rust
-/// use composer_tui::resize_handler::WidthCache;
+/// use maestro_tui::resize_handler::WidthCache;
 ///
 /// let mut cache: WidthCache<String, Vec<String>> = WidthCache::new(3);
 ///

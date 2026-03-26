@@ -1,7 +1,7 @@
 {
 	"name": "@evalops/github-agent",
 	"version": "0.10.0",
-	"description": "Autonomous GitHub agent - Composer building Composer",
+	"description": "Autonomous GitHub agent - Maestro building Maestro",
 	"type": "module",
 	"bin": {
 		"github-agent": "dist/main.js"
@@ -22,14 +22,14 @@
 		"agent",
 		"ai",
 		"autonomous",
-		"composer",
+		"maestro",
 		"self-improving"
 	],
 	"author": "EvalOps",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/evalops/composer.git",
+		"url": "git+https://github.com/evalops/maestro.git",
 		"directory": "packages/github-agent"
 	},
 	"engines": {

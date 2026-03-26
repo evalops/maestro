@@ -147,14 +147,14 @@ export class MiscHandlers {
 
 	/** Update the terminal title bar to show current directory. */
 	updateTerminalTitle(): void {
-		if (process.env.COMPOSER_DISABLE_TERMINAL_TITLE === "1") {
+		if (process.env.MAESTRO_DISABLE_TERMINAL_TITLE === "1") {
 			return;
 		}
 		if (!process.stdout.isTTY) {
 			return;
 		}
 		const dir = basename(process.cwd());
-		const nextTitle = `composer - ${dir}`;
+		const nextTitle = `maestro - ${dir}`;
 		if (this.terminalTitle === nextTitle) {
 			return;
 		}
@@ -167,7 +167,7 @@ export class MiscHandlers {
 		if (!this.terminalTitle) {
 			return;
 		}
-		if (process.env.COMPOSER_DISABLE_TERMINAL_TITLE === "1") {
+		if (process.env.MAESTRO_DISABLE_TERMINAL_TITLE === "1") {
 			return;
 		}
 		if (!process.stdout.isTTY) {

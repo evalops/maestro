@@ -3,7 +3,7 @@
 //! These tests verify the complete hook system works correctly,
 //! including hook execution, metrics, and session lifecycle.
 
-use composer_tui::hooks::{
+use maestro_tui::hooks::{
     HookEventType, HookResult, HookStats, IntegratedHookSystem, PreToolUseHook, PreToolUseInput,
 };
 use std::sync::Arc;
@@ -105,7 +105,7 @@ fn test_safety_hook_blocks_dangerous_commands() {
 
 #[test]
 fn test_custom_blocking_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_pre_tool_use(Arc::new(TestBlockingHook {
@@ -134,7 +134,7 @@ fn test_custom_blocking_hook() {
 
 #[test]
 fn test_context_injection_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_pre_tool_use(Arc::new(TestContextHook {
@@ -162,7 +162,7 @@ fn test_context_injection_hook() {
 
 #[test]
 fn test_input_modification_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_pre_tool_use(Arc::new(TestModifyHook));
@@ -338,7 +338,7 @@ fn test_pre_tool_use_input_serialization() {
 
 #[test]
 fn test_multiple_hooks_chain() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
 
@@ -404,7 +404,7 @@ fn test_multiple_hooks_chain() {
 
 #[test]
 fn test_lua_executor_creation() {
-    use composer_tui::hooks::LuaHookExecutor;
+    use maestro_tui::hooks::LuaHookExecutor;
 
     let executor = LuaHookExecutor::new();
     assert!(!executor.has_hooks());
@@ -413,7 +413,7 @@ fn test_lua_executor_creation() {
 
 #[test]
 fn test_lua_executor_load_script() {
-    use composer_tui::hooks::LuaHookExecutor;
+    use maestro_tui::hooks::LuaHookExecutor;
 
     let mut executor = LuaHookExecutor::new();
     let result = executor.load_script(
@@ -431,7 +431,7 @@ fn test_lua_executor_load_script() {
 
 #[test]
 fn test_wasm_executor_creation() {
-    use composer_tui::hooks::WasmHookExecutor;
+    use maestro_tui::hooks::WasmHookExecutor;
 
     let executor = WasmHookExecutor::new();
     assert!(!executor.has_plugins());
@@ -440,7 +440,7 @@ fn test_wasm_executor_creation() {
 
 #[test]
 fn test_wasm_result_code_conversion() {
-    use composer_tui::hooks::WasmResultCode;
+    use maestro_tui::hooks::WasmResultCode;
 
     assert_eq!(WasmResultCode::from(0), WasmResultCode::Continue);
     assert_eq!(WasmResultCode::from(1), WasmResultCode::Block);
@@ -604,7 +604,7 @@ fn test_hooks_disabled_returns_continue() {
 // Registry Tests for New Events
 // ============================================================================
 
-use composer_tui::hooks::{OnErrorHook, OnErrorInput, PreMessageHook, PreMessageInput};
+use maestro_tui::hooks::{OnErrorHook, OnErrorInput, PreMessageHook, PreMessageInput};
 
 struct TestPreMessageHook {
     block_long_messages: bool,
@@ -624,7 +624,7 @@ impl PreMessageHook for TestPreMessageHook {
 
 #[test]
 fn test_registry_pre_message_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_pre_message(Arc::new(TestPreMessageHook {
@@ -680,7 +680,7 @@ impl OnErrorHook for TestOnErrorHook {
 
 #[test]
 fn test_registry_on_error_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_on_error(Arc::new(TestOnErrorHook {
@@ -722,7 +722,7 @@ fn test_registry_on_error_hook() {
 
 #[test]
 fn test_registry_has_hooks_for_new_events() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
 
@@ -750,7 +750,7 @@ fn test_registry_has_hooks_for_new_events() {
 
 #[test]
 fn test_registry_total_hook_count() {
-    use composer_tui::hooks::{HookRegistry, SafetyHook};
+    use maestro_tui::hooks::{HookRegistry, SafetyHook};
 
     let mut registry = HookRegistry::new();
     assert_eq!(registry.total_hook_count(), 0);
@@ -773,7 +773,7 @@ fn test_registry_total_hook_count() {
 // Additional Hook Implementation Tests
 // ============================================================================
 
-use composer_tui::hooks::{
+use maestro_tui::hooks::{
     EvalGateHook, EvalGateInput, OverflowHook, OverflowInput, PermissionRequestHook,
     PermissionRequestInput, PostMessageHook, PostMessageInput, PostToolUseHook, PostToolUseInput,
     SessionEndHook, SessionEndInput, SessionStartHook, SessionStartInput, SubagentStartHook,
@@ -799,7 +799,7 @@ impl PostToolUseHook for TestPostToolUseHook {
 
 #[test]
 fn test_registry_post_tool_use_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_post_tool_use(Arc::new(TestPostToolUseHook {
@@ -842,7 +842,7 @@ impl PostMessageHook for TestPostMessageHook {
 
 #[test]
 fn test_registry_post_message_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_post_message(Arc::new(TestPostMessageHook {
@@ -884,7 +884,7 @@ impl SessionStartHook for TestSessionStartHook {
 
 #[test]
 fn test_registry_session_start_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_session_start(Arc::new(TestSessionStartHook { block_cli: true }));
@@ -931,7 +931,7 @@ impl SessionEndHook for TestSessionEndHook {
 
 #[test]
 fn test_registry_session_end_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_session_end(Arc::new(TestSessionEndHook));
@@ -969,7 +969,7 @@ impl OverflowHook for TestOverflowHook {
 
 #[test]
 fn test_registry_overflow_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_overflow(Arc::new(TestOverflowHook {
@@ -1024,7 +1024,7 @@ impl EvalGateHook for TestEvalGateHook {
 
 #[test]
 fn test_registry_eval_gate_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_eval_gate(Arc::new(TestEvalGateHook {
@@ -1083,7 +1083,7 @@ impl SubagentStartHook for TestSubagentStartHook {
 
 #[test]
 fn test_registry_subagent_start_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_subagent_start(Arc::new(TestSubagentStartHook {
@@ -1138,7 +1138,7 @@ impl SubagentStopHook for TestSubagentStopHook {
 
 #[test]
 fn test_registry_subagent_stop_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_subagent_stop(Arc::new(TestSubagentStopHook));
@@ -1181,7 +1181,7 @@ impl PermissionRequestHook for TestPermissionRequestHook {
 
 #[test]
 fn test_registry_permission_request_hook() {
-    use composer_tui::hooks::HookRegistry;
+    use maestro_tui::hooks::HookRegistry;
 
     let mut registry = HookRegistry::new();
     registry.register_permission_request(Arc::new(TestPermissionRequestHook {

@@ -3,10 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 describe("session rate limit fallback cleanup", () => {
 	it("evicts buckets when exceeding the fallback max", async () => {
 		vi.useFakeTimers();
-		vi.stubEnv("COMPOSER_RATE_LIMIT_FALLBACK_MAX_BUCKETS", "2");
-		vi.stubEnv("COMPOSER_RATE_LIMIT_FALLBACK_CLEANUP_INTERVAL", "1");
-		vi.stubEnv("COMPOSER_RATE_LIMIT_SESSION", "2");
-		vi.stubEnv("COMPOSER_REDIS_URL", "");
+		vi.stubEnv("MAESTRO_RATE_LIMIT_FALLBACK_MAX_BUCKETS", "2");
+		vi.stubEnv("MAESTRO_RATE_LIMIT_FALLBACK_CLEANUP_INTERVAL", "1");
+		vi.stubEnv("MAESTRO_RATE_LIMIT_SESSION", "2");
+		vi.stubEnv("MAESTRO_REDIS_URL", "");
 		try {
 			vi.setSystemTime(0);
 			vi.resetModules();

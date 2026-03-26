@@ -231,7 +231,7 @@ export class ProviderTransport implements AgentTransport {
 			enableSequenceAnalysis: true,
 			// Enable context firewall with blocking for sanitizing audit logs
 			enableContextFirewall: true,
-			// Configure context firewall blocking (can be disabled via COMPOSER_CONTEXT_FIREWALL_BLOCKING=0)
+			// Configure context firewall blocking (can be disabled via MAESTRO_CONTEXT_FIREWALL_BLOCKING=0)
 			contextFirewall: {
 				// When blocking is disabled, vault credentials so test keys can pass through safely.
 				vaultCredentials: !isContextFirewallBlockingEnabled(),

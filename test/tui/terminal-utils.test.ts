@@ -44,10 +44,10 @@ describe("terminal-utils", () => {
 		const envBackup: Record<string, string | undefined> = {};
 
 		beforeEach(() => {
-			envBackup.COMPOSER_TUI_LOW_BW = process.env.COMPOSER_TUI_LOW_BW;
-			envBackup.COMPOSER_TUI_LOW_BW_BATCH_MS =
-				process.env.COMPOSER_TUI_LOW_BW_BATCH_MS;
-			envBackup.COMPOSER_TUI_SCROLLBACK = process.env.COMPOSER_TUI_SCROLLBACK;
+			envBackup.MAESTRO_TUI_LOW_BW = process.env.MAESTRO_TUI_LOW_BW;
+			envBackup.MAESTRO_TUI_LOW_BW_BATCH_MS =
+				process.env.MAESTRO_TUI_LOW_BW_BATCH_MS;
+			envBackup.MAESTRO_TUI_SCROLLBACK = process.env.MAESTRO_TUI_SCROLLBACK;
 			envBackup.SSH_CONNECTION = process.env.SSH_CONNECTION;
 			envBackup.SSH_TTY = process.env.SSH_TTY;
 		});
@@ -63,9 +63,9 @@ describe("terminal-utils", () => {
 		});
 
 		it("returns default values when no env vars set", () => {
-			clearEnv("COMPOSER_TUI_LOW_BW");
-			clearEnv("COMPOSER_TUI_LOW_BW_BATCH_MS");
-			clearEnv("COMPOSER_TUI_SCROLLBACK");
+			clearEnv("MAESTRO_TUI_LOW_BW");
+			clearEnv("MAESTRO_TUI_LOW_BW_BATCH_MS");
+			clearEnv("MAESTRO_TUI_SCROLLBACK");
 			clearEnv("SSH_CONNECTION");
 			clearEnv("SSH_TTY");
 
@@ -75,31 +75,31 @@ describe("terminal-utils", () => {
 			expect(config.scrollbackLimit).toBe(600);
 		});
 
-		it("enables low bandwidth mode with COMPOSER_TUI_LOW_BW=1", () => {
+		it("enables low bandwidth mode with MAESTRO_TUI_LOW_BW=1", () => {
 			clearEnv("SSH_CONNECTION");
 			clearEnv("SSH_TTY");
-			process.env.COMPOSER_TUI_LOW_BW = "1";
+			process.env.MAESTRO_TUI_LOW_BW = "1";
 			const config = getLowBandwidthConfig();
 			expect(config.enabled).toBe(true);
 		});
 
-		it("enables low bandwidth mode with COMPOSER_TUI_LOW_BW=true", () => {
+		it("enables low bandwidth mode with MAESTRO_TUI_LOW_BW=true", () => {
 			clearEnv("SSH_CONNECTION");
 			clearEnv("SSH_TTY");
-			process.env.COMPOSER_TUI_LOW_BW = "true";
+			process.env.MAESTRO_TUI_LOW_BW = "true";
 			const config = getLowBandwidthConfig();
 			expect(config.enabled).toBe(true);
 		});
 
 		it("enables low bandwidth mode when SSH_CONNECTION is set", () => {
-			clearEnv("COMPOSER_TUI_LOW_BW");
+			clearEnv("MAESTRO_TUI_LOW_BW");
 			process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 54321";
 			const config = getLowBandwidthConfig();
 			expect(config.enabled).toBe(true);
 		});
 
 		it("enables low bandwidth mode when SSH_TTY is set", () => {
-			clearEnv("COMPOSER_TUI_LOW_BW");
+			clearEnv("MAESTRO_TUI_LOW_BW");
 			clearEnv("SSH_CONNECTION");
 			process.env.SSH_TTY = "/dev/pts/0";
 			const config = getLowBandwidthConfig();
@@ -107,13 +107,13 @@ describe("terminal-utils", () => {
 		});
 
 		it("uses custom batch interval when specified", () => {
-			process.env.COMPOSER_TUI_LOW_BW_BATCH_MS = "200";
+			process.env.MAESTRO_TUI_LOW_BW_BATCH_MS = "200";
 			const config = getLowBandwidthConfig();
 			expect(config.batchIntervalMs).toBe(200);
 		});
 
 		it("uses custom scrollback limit when specified", () => {
-			process.env.COMPOSER_TUI_SCROLLBACK = "1000";
+			process.env.MAESTRO_TUI_SCROLLBACK = "1000";
 			const config = getLowBandwidthConfig();
 			expect(config.scrollbackLimit).toBe(1000);
 		});
@@ -123,7 +123,7 @@ describe("terminal-utils", () => {
 		const envBackup: Record<string, string | undefined> = {};
 
 		beforeEach(() => {
-			envBackup.COMPOSER_TUI_MINIMAL = process.env.COMPOSER_TUI_MINIMAL;
+			envBackup.MAESTRO_TUI_MINIMAL = process.env.MAESTRO_TUI_MINIMAL;
 			envBackup.SSH_CONNECTION = process.env.SSH_CONNECTION;
 			envBackup.SSH_TTY = process.env.SSH_TTY;
 		});
@@ -139,35 +139,35 @@ describe("terminal-utils", () => {
 		});
 
 		it("returns false when no minimal indicators", () => {
-			clearEnv("COMPOSER_TUI_MINIMAL");
+			clearEnv("MAESTRO_TUI_MINIMAL");
 			clearEnv("SSH_CONNECTION");
 			clearEnv("SSH_TTY");
 			expect(isMinimalMode()).toBe(false);
 		});
 
-		it("returns true with COMPOSER_TUI_MINIMAL=1", () => {
+		it("returns true with MAESTRO_TUI_MINIMAL=1", () => {
 			clearEnv("SSH_CONNECTION");
 			clearEnv("SSH_TTY");
-			process.env.COMPOSER_TUI_MINIMAL = "1";
+			process.env.MAESTRO_TUI_MINIMAL = "1";
 			expect(isMinimalMode()).toBe(true);
 		});
 
-		it("returns true with COMPOSER_TUI_MINIMAL=true", () => {
+		it("returns true with MAESTRO_TUI_MINIMAL=true", () => {
 			clearEnv("SSH_CONNECTION");
 			clearEnv("SSH_TTY");
-			process.env.COMPOSER_TUI_MINIMAL = "true";
+			process.env.MAESTRO_TUI_MINIMAL = "true";
 			expect(isMinimalMode()).toBe(true);
 		});
 
 		it("returns true when SSH_TTY is set", () => {
-			clearEnv("COMPOSER_TUI_MINIMAL");
+			clearEnv("MAESTRO_TUI_MINIMAL");
 			clearEnv("SSH_CONNECTION");
 			process.env.SSH_TTY = "/dev/pts/0";
 			expect(isMinimalMode()).toBe(true);
 		});
 
 		it("returns true when SSH_CONNECTION is set", () => {
-			clearEnv("COMPOSER_TUI_MINIMAL");
+			clearEnv("MAESTRO_TUI_MINIMAL");
 			clearEnv("SSH_TTY");
 			process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 54321";
 			expect(isMinimalMode()).toBe(true);
@@ -178,8 +178,8 @@ describe("terminal-utils", () => {
 		const envBackup: Record<string, string | undefined> = {};
 
 		beforeEach(() => {
-			envBackup.COMPOSER_TUI_RENDER_INTERVAL_MS =
-				process.env.COMPOSER_TUI_RENDER_INTERVAL_MS;
+			envBackup.MAESTRO_TUI_RENDER_INTERVAL_MS =
+				process.env.MAESTRO_TUI_RENDER_INTERVAL_MS;
 			envBackup.SSH_CONNECTION = process.env.SSH_CONNECTION;
 			envBackup.SSH_TTY = process.env.SSH_TTY;
 		});
@@ -195,32 +195,32 @@ describe("terminal-utils", () => {
 		});
 
 		it("returns 0 when no env vars set and not SSH", () => {
-			clearEnv("COMPOSER_TUI_RENDER_INTERVAL_MS");
+			clearEnv("MAESTRO_TUI_RENDER_INTERVAL_MS");
 			clearEnv("SSH_CONNECTION");
 			clearEnv("SSH_TTY");
 			expect(getRenderInterval()).toBe(0);
 		});
 
 		it("returns SSH_RENDER_INTERVAL_MS when SSH_CONNECTION is set", () => {
-			clearEnv("COMPOSER_TUI_RENDER_INTERVAL_MS");
+			clearEnv("MAESTRO_TUI_RENDER_INTERVAL_MS");
 			process.env.SSH_CONNECTION = "10.0.0.1 22 10.0.0.2 54321";
 			expect(getRenderInterval()).toBe(SSH_RENDER_INTERVAL_MS);
 		});
 
 		it("returns SSH_RENDER_INTERVAL_MS when SSH_TTY is set", () => {
-			clearEnv("COMPOSER_TUI_RENDER_INTERVAL_MS");
+			clearEnv("MAESTRO_TUI_RENDER_INTERVAL_MS");
 			clearEnv("SSH_CONNECTION");
 			process.env.SSH_TTY = "/dev/pts/0";
 			expect(getRenderInterval()).toBe(SSH_RENDER_INTERVAL_MS);
 		});
 
-		it("returns custom interval when COMPOSER_TUI_RENDER_INTERVAL_MS is set", () => {
-			process.env.COMPOSER_TUI_RENDER_INTERVAL_MS = "100";
+		it("returns custom interval when MAESTRO_TUI_RENDER_INTERVAL_MS is set", () => {
+			process.env.MAESTRO_TUI_RENDER_INTERVAL_MS = "100";
 			expect(getRenderInterval()).toBe(100);
 		});
 
 		it("returns 0 for negative values", () => {
-			process.env.COMPOSER_TUI_RENDER_INTERVAL_MS = "-10";
+			process.env.MAESTRO_TUI_RENDER_INTERVAL_MS = "-10";
 			expect(getRenderInterval()).toBe(0);
 		});
 	});

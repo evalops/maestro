@@ -1,4 +1,4 @@
-# Development services for Composer
+# Development services for Maestro
 # Start with: docker compose up -d
 #
 # Services:
@@ -6,8 +6,8 @@
 #   - postgres: Database (port 5432)
 #
 # Set environment variables:
-#   COMPOSER_REDIS_URL=redis://localhost:6379
-#   COMPOSER_DATABASE_URL=postgresql://localhost:5432/composer?user=composer&password=composer
+#   MAESTRO_REDIS_URL=redis://localhost:6379
+#   MAESTRO_DATABASE_URL=postgresql://localhost:5432/maestro?user=maestro&password=maestro
 
 services:
   redis:
@@ -28,13 +28,13 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: composer
-      POSTGRES_PASSWORD: composer
-      POSTGRES_DB: composer
+      POSTGRES_USER: maestro
+      POSTGRES_PASSWORD: maestro
+      POSTGRES_DB: maestro
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U composer"]
+      test: ["CMD-SHELL", "pg_isready -U maestro"]
       interval: 10s
       timeout: 5s
       retries: 3

@@ -38,34 +38,34 @@ describe("clean-mode", () => {
 	});
 
 	describe("readCleanModeFromEnv", () => {
-		const originalEnv = process.env.COMPOSER_TUI_CLEAN;
+		const originalEnv = process.env.MAESTRO_TUI_CLEAN;
 
 		afterEach(() => {
 			if (originalEnv === undefined) {
-				Reflect.deleteProperty(process.env, "COMPOSER_TUI_CLEAN");
+				Reflect.deleteProperty(process.env, "MAESTRO_TUI_CLEAN");
 			} else {
-				process.env.COMPOSER_TUI_CLEAN = originalEnv;
+				process.env.MAESTRO_TUI_CLEAN = originalEnv;
 			}
 		});
 
 		it("returns null when env var is not set", () => {
-			Reflect.deleteProperty(process.env, "COMPOSER_TUI_CLEAN");
+			Reflect.deleteProperty(process.env, "MAESTRO_TUI_CLEAN");
 			expect(readCleanModeFromEnv()).toBeNull();
 		});
 
 		it("returns parsed value from env var", () => {
-			process.env.COMPOSER_TUI_CLEAN = "aggressive";
+			process.env.MAESTRO_TUI_CLEAN = "aggressive";
 			expect(readCleanModeFromEnv()).toBe("aggressive");
 
-			process.env.COMPOSER_TUI_CLEAN = "soft";
+			process.env.MAESTRO_TUI_CLEAN = "soft";
 			expect(readCleanModeFromEnv()).toBe("soft");
 
-			process.env.COMPOSER_TUI_CLEAN = "off";
+			process.env.MAESTRO_TUI_CLEAN = "off";
 			expect(readCleanModeFromEnv()).toBe("off");
 		});
 
 		it("returns null for invalid env value", () => {
-			process.env.COMPOSER_TUI_CLEAN = "invalid";
+			process.env.MAESTRO_TUI_CLEAN = "invalid";
 			expect(readCleanModeFromEnv()).toBeNull();
 		});
 	});

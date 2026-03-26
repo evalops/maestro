@@ -3,7 +3,7 @@
 Audience: VS Code extension contributors; read with `ARCHITECTURE_DIAGRAM.md` for core flow.  
 Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) · [Patterns](patterns/INDEX.md)
 
-This document outlines the architecture of the Composer VS Code extension, specifically focusing on its **Client-Server** design and the **Remote Tool Execution** pattern used to bridge the gap between the Agent (Backend) and the VS Code API (Frontend).
+This document outlines the architecture of the Maestro VS Code extension, specifically focusing on its **Client-Server** design and the **Remote Tool Execution** pattern used to bridge the gap between the Agent (Backend) and the VS Code API (Frontend).
 
 ## 1. High-Level Overview
 
@@ -16,7 +16,7 @@ graph TD
         A --> C[VS Code API]
     end
 
-    subgraph Composer Web Server [Backend Process]
+    subgraph Maestro Web Server [Backend Process]
         D[Node.js Server] --> E[Agent Core]
         E --> F[LLM Provider]
     end

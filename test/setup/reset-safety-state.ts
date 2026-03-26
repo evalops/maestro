@@ -2,11 +2,11 @@ import { afterEach } from "vitest";
 import { resetSafeModeForTests } from "../../src/safety/safe-mode.js";
 
 const envKeysToClear = [
-	"COMPOSER_SAFE_MODE",
-	"COMPOSER_SAFE_REQUIRE_PLAN",
-	"COMPOSER_SAFE_VALIDATORS",
-	"COMPOSER_SAFE_LSP_SEVERITY",
-	"COMPOSER_PLAN_MODE",
+	"MAESTRO_SAFE_MODE",
+	"MAESTRO_SAFE_REQUIRE_PLAN",
+	"MAESTRO_SAFE_VALIDATORS",
+	"MAESTRO_SAFE_LSP_SEVERITY",
+	"MAESTRO_PLAN_MODE",
 ];
 
 afterEach(() => {

@@ -21,10 +21,10 @@ describe("toml-config", () => {
 	beforeEach(() => {
 		clearConfigCache();
 		testDir = join(tmpdir(), `composer-config-test-${Date.now()}`);
-		globalDir = join(testDir, "global", ".composer");
+		globalDir = join(testDir, "global", ".maestro");
 		projectDir = join(testDir, "project");
 		mkdirSync(globalDir, { recursive: true });
-		mkdirSync(join(projectDir, ".composer"), { recursive: true });
+		mkdirSync(join(projectDir, ".maestro"), { recursive: true });
 	});
 
 	afterEach(() => {
@@ -32,11 +32,11 @@ describe("toml-config", () => {
 		rmSync(testDir, { recursive: true, force: true });
 		// Clean up env vars - must use delete because assignment to undefined
 		// sets the value to the string "undefined" instead of removing it
-		Reflect.deleteProperty(process.env, "COMPOSER_MODEL");
-		Reflect.deleteProperty(process.env, "COMPOSER_MODEL_PROVIDER");
-		Reflect.deleteProperty(process.env, "COMPOSER_APPROVAL_POLICY");
-		Reflect.deleteProperty(process.env, "COMPOSER_SANDBOX_MODE");
-		Reflect.deleteProperty(process.env, "COMPOSER_PROFILE");
+		Reflect.deleteProperty(process.env, "MAESTRO_MODEL");
+		Reflect.deleteProperty(process.env, "MAESTRO_MODEL_PROVIDER");
+		Reflect.deleteProperty(process.env, "MAESTRO_APPROVAL_POLICY");
+		Reflect.deleteProperty(process.env, "MAESTRO_SANDBOX_MODE");
+		Reflect.deleteProperty(process.env, "MAESTRO_PROFILE");
 	});
 
 	describe("DEFAULT_CONFIG", () => {
@@ -57,7 +57,7 @@ describe("toml-config", () => {
 		});
 
 		it("loads project config", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -74,7 +74,7 @@ approval_policy = "on-request"
 		});
 
 		it("deep merges nested configs", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -98,7 +98,7 @@ max_bytes = 1048576
 		});
 
 		it("applies profiles", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -121,7 +121,7 @@ model_reasoning_effort = "high"
 		});
 
 		it("allows profile override via parameter", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -141,7 +141,7 @@ model = "claude-opus-4"
 		});
 
 		it("caches config for same workspace and profile", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(configPath, 'model = "gpt-4o"');
 
 			const config1 = loadConfig(projectDir);
@@ -151,12 +151,12 @@ model = "claude-opus-4"
 
 		it("invalidates cache for different workspace", () => {
 			const otherDir = join(testDir, "other-project");
-			mkdirSync(join(otherDir, ".composer"), { recursive: true });
+			mkdirSync(join(otherDir, ".maestro"), { recursive: true });
 
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(configPath, 'model = "gpt-4o"');
 
-			const otherConfigPath = join(otherDir, ".composer", "config.toml");
+			const otherConfigPath = join(otherDir, ".maestro", "config.toml");
 			writeFileSync(otherConfigPath, 'model = "claude-opus-4"');
 
 			const config1 = loadConfig(projectDir);
@@ -166,7 +166,7 @@ model = "claude-opus-4"
 		});
 
 		it("applies CLI overrides with highest precedence", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(configPath, 'model = "gpt-4o"');
 
 			const config = loadConfig(projectDir, undefined, {
@@ -177,32 +177,32 @@ model = "claude-opus-4"
 	});
 
 	describe("environment variable overrides", () => {
-		it("applies COMPOSER_MODEL", () => {
-			process.env.COMPOSER_MODEL = "env-model";
+		it("applies MAESTRO_MODEL", () => {
+			process.env.MAESTRO_MODEL = "env-model";
 			const config = loadConfig(projectDir);
 			expect(config.model).toBe("env-model");
 		});
 
-		it("applies COMPOSER_MODEL_PROVIDER", () => {
-			process.env.COMPOSER_MODEL_PROVIDER = "openai";
+		it("applies MAESTRO_MODEL_PROVIDER", () => {
+			process.env.MAESTRO_MODEL_PROVIDER = "openai";
 			const config = loadConfig(projectDir);
 			expect(config.model_provider).toBe("openai");
 		});
 
-		it("applies COMPOSER_APPROVAL_POLICY", () => {
-			process.env.COMPOSER_APPROVAL_POLICY = "on-failure";
+		it("applies MAESTRO_APPROVAL_POLICY", () => {
+			process.env.MAESTRO_APPROVAL_POLICY = "on-failure";
 			const config = loadConfig(projectDir);
 			expect(config.approval_policy).toBe("on-failure");
 		});
 
-		it("applies COMPOSER_SANDBOX_MODE", () => {
-			process.env.COMPOSER_SANDBOX_MODE = "read-only";
+		it("applies MAESTRO_SANDBOX_MODE", () => {
+			process.env.MAESTRO_SANDBOX_MODE = "read-only";
 			const config = loadConfig(projectDir);
 			expect(config.sandbox_mode).toBe("read-only");
 		});
 
-		it("applies COMPOSER_PROFILE", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+		it("applies MAESTRO_PROFILE", () => {
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -211,19 +211,19 @@ model = "test-model"
 `,
 			);
 
-			process.env.COMPOSER_PROFILE = "test";
+			process.env.MAESTRO_PROFILE = "test";
 			const config = loadConfig(projectDir);
 			expect(config.model).toBe("test-model");
 		});
 
 		it("ignores invalid approval policy values", () => {
-			process.env.COMPOSER_APPROVAL_POLICY = "invalid-value";
+			process.env.MAESTRO_APPROVAL_POLICY = "invalid-value";
 			const config = loadConfig(projectDir);
 			expect(config.approval_policy).toBe("untrusted");
 		});
 
 		it("ignores invalid sandbox mode values", () => {
-			process.env.COMPOSER_SANDBOX_MODE = "invalid-mode";
+			process.env.MAESTRO_SANDBOX_MODE = "invalid-mode";
 			const config = loadConfig(projectDir);
 			expect(config.sandbox_mode).toBe("workspace-write");
 		});
@@ -303,7 +303,7 @@ model = "test-model"
 		});
 
 		it("returns profile names", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -334,7 +334,7 @@ model = "sonnet"
 		});
 
 		it("includes active profile when set", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -350,7 +350,7 @@ model = "test-model"
 		});
 
 		it("lists available profiles", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -371,7 +371,7 @@ model = "b"
 
 	describe("model provider configuration", () => {
 		it("parses full model provider config", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -408,7 +408,7 @@ X-Custom-Header = "value"
 
 	describe("MCP server configuration", () => {
 		it("parses stdio MCP server", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -435,7 +435,7 @@ enabled_tools = ["search", "fetch"]
 		});
 
 		it("parses HTTP MCP server", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -458,7 +458,7 @@ X-API-Version = "v2"
 
 	describe("sandbox configuration", () => {
 		it("parses sandbox workspace write config", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -486,7 +486,7 @@ exclude_slash_tmp = false
 
 	describe("shell environment policy", () => {
 		it("parses shell environment policy", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -515,7 +515,7 @@ DEBUG = "composer:*"
 
 	describe("OTEL configuration", () => {
 		it("parses OTLP HTTP exporter", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -541,7 +541,7 @@ Authorization = "Bearer token"
 
 	describe("TUI configuration", () => {
 		it("parses TUI settings", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -557,7 +557,7 @@ animations = false
 		});
 
 		it("parses boolean notifications setting", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -573,7 +573,7 @@ notifications = true
 
 	describe("project trust configuration", () => {
 		it("parses project trust levels", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -597,7 +597,7 @@ trust_level = "untrusted"
 
 	describe("instructions configuration", () => {
 		it("parses inline instructions", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
@@ -614,24 +614,24 @@ Follow the style guide.
 		});
 
 		it("parses instructions file path", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(
 				configPath,
 				`
-experimental_instructions_file = ".composer/instructions.md"
+experimental_instructions_file = ".maestro/instructions.md"
 `,
 			);
 
 			const config = loadConfig(projectDir);
 			expect(config.experimental_instructions_file).toBe(
-				".composer/instructions.md",
+				".maestro/instructions.md",
 			);
 		});
 	});
 
 	describe("error handling", () => {
 		it("handles malformed TOML gracefully", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(configPath, "this is not valid = [ toml");
 
 			// Should not throw, returns defaults
@@ -640,7 +640,7 @@ experimental_instructions_file = ".composer/instructions.md"
 		});
 
 		it("warns on missing profile", () => {
-			const configPath = join(projectDir, ".composer", "config.toml");
+			const configPath = join(projectDir, ".maestro", "config.toml");
 			writeFileSync(configPath, 'profile = "nonexistent"');
 
 			// Should not throw, just warns

@@ -1,6 +1,6 @@
 # Agent State Machine Design
 
-The Agent is the central orchestrator for all LLM interactions in Composer. It implements an event-driven architecture that enables real-time streaming, concurrent tool execution, and extensible transport layers.
+The Agent is the central orchestrator for all LLM interactions in Maestro. It implements an event-driven architecture that enables real-time streaming, concurrent tool execution, and extensible transport layers.
 
 ## Overview
 

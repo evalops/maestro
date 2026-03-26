@@ -58,7 +58,7 @@
 //! # Usage Example
 //!
 //! ```rust,ignore
-//! use composer_tui::themes::{set_theme_by_name, current_theme, available_themes};
+//! use maestro_tui::themes::{set_theme_by_name, current_theme, available_themes};
 //!
 //! // List available themes
 //! for name in available_themes() {

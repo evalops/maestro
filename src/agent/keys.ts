@@ -10,8 +10,8 @@ type StoredKey = {
 
 type KeyStore = Record<string, StoredKey>;
 
-const DEFAULT_KEYS_PATH = join(PATHS.COMPOSER_HOME, "keys.json");
-const PROJECT_KEYS_PATH = join(process.cwd(), ".composer", "keys.json");
+const DEFAULT_KEYS_PATH = join(PATHS.MAESTRO_HOME, "keys.json");
+const PROJECT_KEYS_PATH = join(process.cwd(), ".maestro", "keys.json");
 
 function getFactoryPaths(): { keysPath: string; configPath: string } {
 	const factoryHome =
@@ -25,11 +25,11 @@ function getFactoryPaths(): { keysPath: string; configPath: string } {
 function sanitizePath(pathOverride?: string): string | undefined {
 	const candidate =
 		pathOverride ??
-		resolveEnvPath(process.env.COMPOSER_KEYS_PATH) ??
+		resolveEnvPath(process.env.MAESTRO_KEYS_PATH) ??
 		DEFAULT_KEYS_PATH;
 	if (!candidate) return undefined;
 	const resolved = resolve(candidate);
-	const allowedRoots = [getHomeDir(), PATHS.COMPOSER_HOME, process.cwd()].map(
+	const allowedRoots = [getHomeDir(), PATHS.MAESTRO_HOME, process.cwd()].map(
 		(p) => resolve(p),
 	);
 	// Use proper path containment check - require path separator after root

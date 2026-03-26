@@ -1,6 +1,6 @@
 # TUI Rendering Engine Design
 
-The Terminal UI (TUI) is the largest codebase in Composer (~919KB, 147 files), providing an interactive terminal experience with streaming responses, tool visualizations, and modal dialogs.
+The Terminal UI (TUI) is the largest codebase in Maestro (~919KB, 147 files), providing an interactive terminal experience with streaming responses, tool visualizations, and modal dialogs.
 
 ## Overview
 

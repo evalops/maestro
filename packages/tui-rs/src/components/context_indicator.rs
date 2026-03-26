@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::components::ContextIndicator;
+//! use maestro_tui::components::ContextIndicator;
 //!
 //! let indicator = ContextIndicator::new()
 //!     .with_context_window(200_000)

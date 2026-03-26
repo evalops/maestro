@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::tools::background_tasks::{start, list, stop, logs};
+//! use maestro_tui::tools::background_tasks::{start, list, stop, logs};
 //!
 //! // Start a dev server
 //! let task = start(
@@ -118,12 +118,12 @@ fn read_env_usize(name: &str, default: usize, min: usize, max: usize) -> usize {
 
 fn log_limits() -> (u64, usize) {
     let bytes = read_env_u64(
-        "COMPOSER_BACKGROUND_TASK_LOG_BYTES",
+        "MAESTRO_BACKGROUND_TASK_LOG_BYTES",
         DEFAULT_LOG_FILE_BYTES,
         MIN_LOG_BYTES,
     );
     let segments = read_env_usize(
-        "COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS",
+        "MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS",
         DEFAULT_LOG_SEGMENTS,
         0,
         MAX_LOG_SEGMENTS,

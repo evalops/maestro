@@ -159,8 +159,8 @@ export class SkillsController {
 			lines.push("*No skills found*");
 			lines.push("");
 			lines.push("Skills are loaded from:");
-			lines.push("- `~/.composer/skills/` (global)");
-			lines.push("- `.composer/skills/` (project)");
+			lines.push("- `~/.maestro/skills/` (global)");
+			lines.push("- `.maestro/skills/` (project)");
 		} else {
 			for (const skill of skills) {
 				const isActive = this.activeSkills.has(skill.name);

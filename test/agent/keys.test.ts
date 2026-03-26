@@ -10,7 +10,7 @@ const tempFactoryConfig = join(tempDir, "config.json");
 describe("getStoredCredentials", () => {
 	beforeEach(() => {
 		mkdirSync(tempDir, { recursive: true });
-		process.env.COMPOSER_KEYS_PATH = tempFile;
+		process.env.MAESTRO_KEYS_PATH = tempFile;
 		process.env.FACTORY_HOME = tempDir;
 	});
 
@@ -25,7 +25,7 @@ describe("getStoredCredentials", () => {
 		} catch {
 			// ignore
 		}
-		Reflect.deleteProperty(process.env, "COMPOSER_KEYS_PATH");
+		Reflect.deleteProperty(process.env, "MAESTRO_KEYS_PATH");
 		Reflect.deleteProperty(process.env, "FACTORY_HOME");
 	});
 

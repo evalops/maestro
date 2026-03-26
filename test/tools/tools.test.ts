@@ -63,7 +63,7 @@ describe("Composer Tools", () => {
 	beforeEach(() => {
 		// Create a unique temporary directory for each test
 		testDir = mkdtempSync(join(tmpdir(), "composer-test-"));
-		process.env.COMPOSER_TODO_FILE = join(testDir, "todos.json");
+		process.env.MAESTRO_TODO_FILE = join(testDir, "todos.json");
 	});
 
 	afterEach(() => {
@@ -71,7 +71,7 @@ describe("Composer Tools", () => {
 		vi.restoreAllMocks();
 		// Clean up test directory
 		rmSync(testDir, { recursive: true, force: true });
-		Reflect.deleteProperty(process.env, "COMPOSER_TODO_FILE");
+		Reflect.deleteProperty(process.env, "MAESTRO_TODO_FILE");
 	});
 
 	describe("list tool", () => {
@@ -827,8 +827,8 @@ describe("Composer Tools", () => {
 
 		it("requires a plan for mutating commands when safe mode is enabled", async () => {
 			vi.resetModules();
-			process.env.COMPOSER_SAFE_MODE = "1";
-			process.env.COMPOSER_SAFE_REQUIRE_PLAN = "1";
+			process.env.MAESTRO_SAFE_MODE = "1";
+			process.env.MAESTRO_SAFE_REQUIRE_PLAN = "1";
 
 			const { bashTool: freshBashTool } = await import(
 				"../../src/tools/bash.js"
@@ -839,8 +839,8 @@ describe("Composer Tools", () => {
 					command: "rm -rf file.txt",
 				}),
 			).rejects.toThrow(/requires a plan/);
-			Reflect.deleteProperty(process.env, "COMPOSER_SAFE_MODE");
-			Reflect.deleteProperty(process.env, "COMPOSER_SAFE_REQUIRE_PLAN");
+			Reflect.deleteProperty(process.env, "MAESTRO_SAFE_MODE");
+			Reflect.deleteProperty(process.env, "MAESTRO_SAFE_REQUIRE_PLAN");
 		});
 	});
 

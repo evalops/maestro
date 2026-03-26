@@ -28,7 +28,7 @@ export class LoaderStageManager {
 	private dreamingTimeout: NodeJS.Timeout | null = null;
 	private dreamingActive = false;
 	private readonly dreamingDelayMs = 5000;
-	private readonly dreamingHint = "composer is pondering a haiku…";
+	private readonly dreamingHint = "maestro is pondering a haiku…";
 
 	constructor(private readonly options: LoaderStageManagerOptions) {
 		this.telemetry = new LoaderStageTelemetry();

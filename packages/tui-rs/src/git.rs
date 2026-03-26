@@ -28,7 +28,7 @@
 //!
 //! ```no_run
 //! use std::env;
-//! use composer_tui::git::{is_git_repo, current_branch, get_status};
+//! use maestro_tui::git::{is_git_repo, current_branch, get_status};
 //!
 //! let cwd = env::current_dir().unwrap();
 //! if is_git_repo(&cwd) {

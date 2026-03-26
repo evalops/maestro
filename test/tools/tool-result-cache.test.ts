@@ -373,10 +373,10 @@ describe("getToolResultCacheConfig", () => {
 	});
 
 	it("should read from environment variables", () => {
-		process.env.COMPOSER_TOOL_CACHE_ENABLED = "false";
-		process.env.COMPOSER_TOOL_CACHE_TTL = "600";
-		process.env.COMPOSER_TOOL_CACHE_MAX_SIZE = "500";
-		process.env.COMPOSER_TOOL_CACHE_MAX_BYTES = "1234";
+		process.env.MAESTRO_TOOL_CACHE_ENABLED = "false";
+		process.env.MAESTRO_TOOL_CACHE_TTL = "600";
+		process.env.MAESTRO_TOOL_CACHE_MAX_SIZE = "500";
+		process.env.MAESTRO_TOOL_CACHE_MAX_BYTES = "1234";
 
 		const config = getToolResultCacheConfig();
 

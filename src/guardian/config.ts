@@ -3,8 +3,8 @@
  *
  * Loads configuration from (in order of precedence):
  * 1. Programmatic options passed to runGuardian()
- * 2. Project-level: .composer/guardian.json
- * 3. User-level: ~/.composer/guardian.json
+ * 2. Project-level: .maestro/guardian.json
+ * 3. User-level: ~/.maestro/guardian.json
  * 4. Default configuration
  */
 
@@ -60,14 +60,14 @@ function loadConfigFile(path: string): GuardianConfig | null {
  */
 export function getProjectConfigPath(root?: string): string {
 	const projectRoot = root ? resolve(root) : process.cwd();
-	return join(projectRoot, ".composer", "guardian.json");
+	return join(projectRoot, ".maestro", "guardian.json");
 }
 
 /**
  * Get the user-level config file path
  */
 export function getUserConfigPath(): string {
-	return join(PATHS.COMPOSER_HOME, "guardian.json");
+	return join(PATHS.MAESTRO_HOME, "guardian.json");
 }
 
 /**
@@ -121,8 +121,8 @@ function mergeConfigs(...configs: (GuardianConfig | null)[]): GuardianConfig {
  *
  * Order of precedence (highest to lowest):
  * 1. Programmatic options
- * 2. Project-level config (.composer/guardian.json)
- * 3. User-level config (~/.composer/guardian.json)
+ * 2. Project-level config (.maestro/guardian.json)
+ * 3. User-level config (~/.maestro/guardian.json)
  * 4. Default config
  */
 export function resolveGuardianConfig(options?: {

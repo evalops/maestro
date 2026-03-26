@@ -40,7 +40,7 @@ export class LspClientManager extends EventEmitter {
 		super();
 		this.rootResolverTimeoutMs =
 			this.normalizeTimeout(options?.rootResolverTimeoutMs) ??
-			this.normalizeTimeout(process.env.COMPOSER_LSP_ROOT_TIMEOUT_MS) ??
+			this.normalizeTimeout(process.env.MAESTRO_LSP_ROOT_TIMEOUT_MS) ??
 			DEFAULT_ROOT_RESOLVER_TIMEOUT_MS;
 	}
 

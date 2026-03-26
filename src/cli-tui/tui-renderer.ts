@@ -237,7 +237,7 @@ import {
 const logger = createLogger("tui:renderer");
 
 const getTodoStorePath = () =>
-	resolveEnvPath(process.env.COMPOSER_TODO_FILE) ?? PATHS.TODO_STORE;
+	resolveEnvPath(process.env.MAESTRO_TODO_FILE) ?? PATHS.TODO_STORE;
 
 /**
  * Main TUI (Terminal User Interface) renderer for the Composer coding agent.
@@ -263,7 +263,7 @@ const getTodoStorePath = () =>
  *   agent,
  *   sessionManager,
  *   version: "0.8.2",
- *   sessionContext: { sessionFile: "~/.composer/agent/sessions/default.jsonl" }
+ *   sessionContext: { sessionFile: "~/.maestro/agent/sessions/default.jsonl" }
  * });
  *
  * await renderer.initialize();
@@ -737,7 +737,7 @@ export class TuiRenderer {
 				isReducedMotion: () => this.reducedMotion,
 				isMinimalMode: () => this.minimalMode,
 				getSandboxMode: () =>
-					this.agent.state.sandboxMode ?? process.env.COMPOSER_SANDBOX ?? null,
+					this.agent.state.sandboxMode ?? process.env.MAESTRO_SANDBOX ?? null,
 				isSandboxActive: () =>
 					Boolean(this.agent.state.sandboxEnabled) ||
 					Boolean(this.agent.state.sandbox),
@@ -1642,7 +1642,7 @@ export class TuiRenderer {
 		}
 
 		const title =
-			chalk.bold(`composer v${this.version}`) + chalk.gray(" · EvalOps");
+			chalk.bold(`maestro v${this.version}`) + chalk.gray(" · EvalOps");
 		const hintParts = [
 			`${chalk.gray("esc")} interrupt`,
 			`${chalk.gray("ctrl+c")} clear`,
@@ -1959,7 +1959,7 @@ export class TuiRenderer {
 
 	private shouldDisableAnimations(): boolean {
 		// Reduced motion is a user preference (and defaults on SSH/tmux).
-		// COMPOSER_DISABLE_ANIMATIONS is an explicit hard-disable switch.
+		// MAESTRO_DISABLE_ANIMATIONS is an explicit hard-disable switch.
 		return this.reducedMotion || areAnimationsDisabled();
 	}
 
@@ -2194,7 +2194,7 @@ export class TuiRenderer {
 	}
 
 	private async detectAndApplyTerminalTheme(): Promise<void> {
-		const auto = process.env.COMPOSER_TUI_AUTO_THEME;
+		const auto = process.env.MAESTRO_TUI_AUTO_THEME;
 		if (auto === "0" || auto === "false") return;
 		const detected = await probeTerminalBackground();
 		if (!detected) return;
@@ -2208,7 +2208,7 @@ export class TuiRenderer {
 	}
 
 	private configureRenderThrottle(): void {
-		const envValue = process.env.COMPOSER_TUI_RENDER_INTERVAL_MS;
+		const envValue = process.env.MAESTRO_TUI_RENDER_INTERVAL_MS;
 		let interval = Number.parseInt(envValue ?? "", 10);
 		if (!Number.isFinite(interval)) {
 			if (process.env.SSH_CONNECTION || process.env.SSH_TTY) {

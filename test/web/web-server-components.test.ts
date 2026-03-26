@@ -262,9 +262,9 @@ describe("respondWithApiError", () => {
 			composer?: { code?: string; category?: string; context?: unknown };
 		};
 		expect(isComposerErrorResponse(payload)).toBe(true);
-		expect(payload.composer?.code).toBe("VALIDATION_ERROR");
-		expect(payload.composer?.category).toBe("validation");
-		expect(payload.composer?.context).toMatchObject({
+		expect(payload.maestro?.code).toBe("VALIDATION_ERROR");
+		expect(payload.maestro?.category).toBe("validation");
+		expect(payload.maestro?.context).toMatchObject({
 			field: "name",
 			expected: "string",
 		});

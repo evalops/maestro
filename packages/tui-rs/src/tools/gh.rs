@@ -10,7 +10,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::tools::gh::{gh_pr, GhPrArgs};
+//! use maestro_tui::tools::gh::{gh_pr, GhPrArgs};
 //! use serde_json::json;
 //!
 //! // List open pull requests

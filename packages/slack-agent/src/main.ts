@@ -8,12 +8,21 @@
 
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { WebClient } from "@slack/web-api";
 import { DateTime } from "luxon";
 import { type AgentRunner, createAgentRunner } from "./agent-runner.js";
 import { ApprovalManager } from "./approval.js";
+import { ConnectorManager } from "./connectors/connector-manager.js";
+import {
+	CredentialManager,
+	createCredentialGetter,
+} from "./connectors/credentials.js";
+import { registerBuiltInConnectors } from "./connectors/index.js";
+import { WebhookTriggerManager } from "./connectors/webhook-triggers.js";
 import { CostTracker } from "./cost-tracker.js";
 import { FeedbackTracker } from "./feedback.js";
 import * as logger from "./logger.js";
+import { WorkspaceManager } from "./oauth.js";
 import {
 	PermissionManager,
 	type SlackRole,
@@ -33,7 +42,12 @@ import {
 	SlackBot,
 	type SlackContext,
 } from "./slack/bot.js";
+import { FileStorageBackend } from "./storage.js";
+import { ChannelStore } from "./store.js";
 import { ThreadMemoryManager } from "./thread-memory.js";
+import { createApiServer } from "./ui/api-server.js";
+import { DashboardRegistry } from "./ui/dashboard-registry.js";
+import { createWebhookServer } from "./webhooks.js";
 
 const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
@@ -51,6 +65,17 @@ const SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS =
 	process.env.SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS;
 const SLACK_AGENT_BACKFILL_CONCURRENCY =
 	process.env.SLACK_AGENT_BACKFILL_CONCURRENCY;
+const SLACK_AGENT_UI_PUBLIC_URL = process.env.SLACK_AGENT_UI_PUBLIC_URL;
+
+type ConnectorCapabilityCategory = "read" | "write" | "delete";
+
+function getConnectorAllowedCategoriesForRole(
+	role: SlackRole,
+): ConnectorCapabilityCategory[] | undefined {
+	// Default: allow all categories for elevated users, read-only for regular users/viewers.
+	if (role === "admin" || role === "power_user") return undefined;
+	return ["read"];
+}
 
 function formatNextRun(
 	task: Pick<ScheduledTask, "nextRun" | "timezone">,
@@ -65,6 +90,10 @@ function formatNextRun(
 function getSandboxDescription(sandbox: SandboxConfig): string {
 	if (sandbox.type === "host") {
 		return "host";
+	}
+	if (sandbox.type === "daytona") {
+		const detail = sandbox.snapshot ? `:${sandbox.snapshot}` : "";
+		return `daytona${detail}`;
 	}
 	if ("autoCreate" in sandbox && sandbox.autoCreate) {
 		return `docker:auto (${sandbox.image || "node:20-slim"})`;
@@ -96,12 +125,12 @@ function parsePositiveInt(value?: string): number | undefined {
 	return parsed;
 }
 
-function parseBoolean(value?: string): boolean | undefined {
+function parseBoolean(value?: string, label = "value"): boolean | undefined {
 	if (!value) return undefined;
 	const normalized = value.trim().toLowerCase();
 	if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
 	if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
-	logger.logWarning("Invalid SLACK_AGENT_BACKFILL_ON_STARTUP", value);
+	logger.logWarning(`Invalid ${label}`, value);
 	return undefined;
 }
 
@@ -168,17 +197,31 @@ function printUsage(): void {
 	console.error(
 		"  --sandbox=docker:auto:<image>   Auto-create with specific image",
 	);
+	console.error(
+		"  --sandbox=daytona               Cloud sandbox via Daytona (default snapshot)",
+	);
+	console.error(
+		"  --sandbox=daytona:<snapshot>     Cloud sandbox with specific Daytona snapshot",
+	);
 	console.error("");
 	console.error("Examples:");
 	console.error("  slack-agent --sandbox=docker:auto ./data");
 	console.error("  slack-agent --sandbox=docker:slack-agent-sandbox ./data");
 	console.error("  slack-agent --sandbox=docker:auto:python:3.12-slim ./data");
+	console.error("  slack-agent --sandbox=daytona ./data");
+	console.error("  slack-agent --sandbox=daytona:my-snapshot ./data");
 	console.error("");
 	console.error("Environment variables:");
 	console.error("  SLACK_APP_TOKEN       Slack app token (xapp-...)");
 	console.error("  SLACK_BOT_TOKEN       Slack bot token (xoxb-...)");
 	console.error("  ANTHROPIC_API_KEY     Anthropic API key");
 	console.error("  ANTHROPIC_OAUTH_TOKEN Anthropic OAuth token (alternative)");
+	console.error(
+		"  DAYTONA_API_KEY       Daytona API key (required for --sandbox=daytona)",
+	);
+	console.error(
+		"  DAYTONA_API_URL       Daytona API URL (default: https://app.daytona.io/api)",
+	);
 	console.error(
 		"  SLACK_AGENT_DEFAULT_TIMEZONE Default timezone for schedules (IANA name, default: UTC)",
 	);
@@ -203,22 +246,70 @@ function printUsage(): void {
 	console.error(
 		"  SLACK_AGENT_BACKFILL_CONCURRENCY Number of concurrent channel backfills (default: 1)",
 	);
+	console.error(
+		"  SLACK_AGENT_WEBHOOK_PORT         Port for webhook ingestion server (disabled if not set)",
+	);
+	console.error(
+		"  SLACK_AGENT_WEBHOOK_CHANNEL      Default Slack channel for webhook events",
+	);
+	console.error(
+		"  GITHUB_WEBHOOK_SECRET            Secret for verifying GitHub webhook signatures",
+	);
+	console.error(
+		"  STRIPE_WEBHOOK_SECRET            Secret for verifying Stripe webhook signatures",
+	);
+	console.error(
+		"  LINEAR_WEBHOOK_SECRET            Secret for verifying Linear webhook signatures",
+	);
 }
 
 const { workingDir, sandbox } = parseArgs();
 
 logger.logStartup(workingDir, getSandboxDescription(sandbox));
 
-if (
-	!SLACK_APP_TOKEN ||
-	!SLACK_BOT_TOKEN ||
-	(!ANTHROPIC_API_KEY && !ANTHROPIC_OAUTH_TOKEN)
-) {
+const workspaceManager = new WorkspaceManager(workingDir);
+
+const uiPort = process.env.SLACK_AGENT_UI_PORT
+	? Number(process.env.SLACK_AGENT_UI_PORT)
+	: undefined;
+const slackClientId = process.env.SLACK_CLIENT_ID;
+const slackClientSecret = process.env.SLACK_CLIENT_SECRET;
+const canInstallViaUi = !!(uiPort && slackClientId && slackClientSecret);
+
+const forceMulti =
+	parseBoolean(
+		process.env.SLACK_AGENT_MULTI_WORKSPACE,
+		"SLACK_AGENT_MULTI_WORKSPACE",
+	) === true;
+const hasSingleWorkspaceToken = !!SLACK_BOT_TOKEN;
+const useMultiWorkspace = forceMulti || !hasSingleWorkspaceToken;
+const hasAnyWorkspaceInstalled = workspaceManager.list().length > 0;
+
+if (!SLACK_APP_TOKEN || (!ANTHROPIC_API_KEY && !ANTHROPIC_OAUTH_TOKEN)) {
 	console.error("Missing required environment variables:");
 	if (!SLACK_APP_TOKEN) console.error("  - SLACK_APP_TOKEN (xapp-...)");
-	if (!SLACK_BOT_TOKEN) console.error("  - SLACK_BOT_TOKEN (xoxb-...)");
 	if (!ANTHROPIC_API_KEY && !ANTHROPIC_OAUTH_TOKEN)
 		console.error("  - ANTHROPIC_API_KEY or ANTHROPIC_OAUTH_TOKEN");
+	process.exit(1);
+}
+
+if (!useMultiWorkspace && !SLACK_BOT_TOKEN) {
+	console.error("Missing required environment variables:");
+	console.error("  - SLACK_BOT_TOKEN (xoxb-...)");
+	console.error(
+		"Or run multi-workspace mode by unsetting SLACK_BOT_TOKEN and installing via OAuth.",
+	);
+	process.exit(1);
+}
+
+if (useMultiWorkspace && !hasAnyWorkspaceInstalled && !canInstallViaUi) {
+	console.error("Multi-workspace mode requires either:");
+	console.error(
+		"  - an existing workspaces.json (at least one workspace installed), or",
+	);
+	console.error(
+		"  - SLACK_AGENT_UI_PORT + SLACK_CLIENT_ID + SLACK_CLIENT_SECRET to install via the UI.",
+	);
 	process.exit(1);
 }
 
@@ -227,82 +318,162 @@ await validateSandbox(sandbox);
 // Create the executor (manages container lifecycle for auto mode)
 const executor: Executor = createExecutor(sandbox);
 
+// Register built-in connector factories (explicit init, no import side effects)
+registerBuiltInConnectors();
+
 const defaultRole = parseDefaultRole(SLACK_AGENT_DEFAULT_ROLE);
-const permissionManager = new PermissionManager(workingDir, {
-	...(defaultRole ? { defaultRole } : {}),
-});
 
-// Rate limiter - configurable via environment
-const rateLimiter = new RateLimiter({
-	maxPerUser: Number(process.env.SLACK_RATE_LIMIT_USER) || 10,
-	maxPerChannel: Number(process.env.SLACK_RATE_LIMIT_CHANNEL) || 30,
-	windowMs: Number(process.env.SLACK_RATE_LIMIT_WINDOW_MS) || 60000,
-	persistPath: join(workingDir, "cache", "rate-limits.json"),
-});
+type WorkspaceRuntime = {
+	teamId: string;
+	workingDir: string;
+	botToken: string;
+	store: ChannelStore;
 
-// Cost tracker for usage reporting
-const costTracker = new CostTracker(workingDir);
+	permissionManager: PermissionManager;
+	rateLimiter: RateLimiter;
+	costTracker: CostTracker;
+	feedbackTracker: FeedbackTracker;
+	approvalManager: ApprovalManager;
+	threadMemoryManager: ThreadMemoryManager;
 
-// Feedback tracker for reaction-based feedback
-const feedbackTracker = new FeedbackTracker(workingDir);
+	credentialManager: CredentialManager;
+	getConnectorCredentials: ReturnType<typeof createCredentialGetter>;
+	connectorMgr: ConnectorManager;
+	triggerManager: WebhookTriggerManager;
+	dashboardRegistry: DashboardRegistry;
+	scheduler: Scheduler;
 
-// Approval manager for destructive operations
-const approvalManager = new ApprovalManager();
-approvalManager.start();
+	activeRuns: Map<
+		string,
+		{ runner: AgentRunner; context: SlackContext; stopContext?: SlackContext }
+	>;
+	startingRuns: Set<string>;
+	lastContexts: Map<string, SlackContext>;
+	thinkingEnabled: Map<string, boolean>;
+};
 
-const threadMemoryManager = new ThreadMemoryManager(workingDir);
+const runtimes = new Map<string, WorkspaceRuntime>();
+let runtimeSchedulersEnabled = false;
 
-// Scheduler placeholder (initialized after bot creation)
-const schedulerHolder: { instance: Scheduler | null } = { instance: null };
+function resolveWorkspaceDir(teamId: string): string {
+	return useMultiWorkspace
+		? join(workingDir, "workspaces", teamId)
+		: workingDir;
+}
 
-// Track active runs per channel
-const activeRuns = new Map<
-	string,
-	{ runner: AgentRunner; context: SlackContext; stopContext?: SlackContext }
->();
+function resolveBotToken(teamId: string): string | null {
+	if (!useMultiWorkspace) {
+		return SLACK_BOT_TOKEN ?? null;
+	}
+	const ws = workspaceManager.get(teamId);
+	if (!ws || ws.status !== "active") return null;
+	return ws.botToken;
+}
 
-// Track channels that are starting (to prevent race conditions)
-// This is checked synchronously before any async work to prevent double-starts
-const startingRuns = new Set<string>();
+function getRuntime(teamId: string): WorkspaceRuntime {
+	const existing = runtimes.get(teamId);
+	if (existing) return existing;
 
-/**
- * Check if a channel is available for a new run.
- * Returns true if available and marks it as starting.
- * This is atomic - the check and mark happen synchronously.
- */
-function tryStartRun(channelId: string): boolean {
-	if (activeRuns.has(channelId) || startingRuns.has(channelId)) {
+	const botToken = resolveBotToken(teamId);
+	if (!botToken) {
+		throw new Error(`Workspace not active or not installed: ${teamId}`);
+	}
+
+	const runtimeDir = resolveWorkspaceDir(teamId);
+	const permissionManager = new PermissionManager(runtimeDir, {
+		...(defaultRole ? { defaultRole } : {}),
+	});
+	const rateLimiter = new RateLimiter({
+		maxPerUser: Number(process.env.SLACK_RATE_LIMIT_USER) || 10,
+		maxPerChannel: Number(process.env.SLACK_RATE_LIMIT_CHANNEL) || 30,
+		windowMs: Number(process.env.SLACK_RATE_LIMIT_WINDOW_MS) || 60000,
+		persistPath: join(runtimeDir, "cache", "rate-limits.json"),
+	});
+	const costTracker = new CostTracker(runtimeDir);
+	const feedbackTracker = new FeedbackTracker(runtimeDir);
+	const approvalManager = new ApprovalManager();
+	approvalManager.start();
+	const threadMemoryManager = new ThreadMemoryManager(runtimeDir);
+
+	const store = new ChannelStore({ workingDir: runtimeDir, botToken });
+
+	const credentialStorage = new FileStorageBackend(
+		join(runtimeDir, ".credentials"),
+	);
+	const credentialManager = new CredentialManager(credentialStorage);
+	const getConnectorCredentials = createCredentialGetter(credentialManager);
+	const connectorMgr = new ConnectorManager({
+		workingDir: runtimeDir,
+		credentialManager,
+	});
+	const triggerManager = new WebhookTriggerManager(runtimeDir);
+	const dashboardRegistry = new DashboardRegistry(runtimeDir);
+
+	const rt: WorkspaceRuntime = {
+		teamId,
+		workingDir: runtimeDir,
+		botToken,
+		store,
+		permissionManager,
+		rateLimiter,
+		costTracker,
+		feedbackTracker,
+		approvalManager,
+		threadMemoryManager,
+		credentialManager,
+		getConnectorCredentials,
+		connectorMgr,
+		triggerManager,
+		dashboardRegistry,
+		scheduler: new Scheduler({
+			workingDir: runtimeDir,
+			onTaskDue: (task) => handleScheduledTask(rt, task),
+			onNotify: (task, minutesUntil) =>
+				handleTaskNotification(rt, task, minutesUntil),
+			defaultTimezone: SLACK_AGENT_DEFAULT_TIMEZONE,
+		}),
+		activeRuns: new Map(),
+		startingRuns: new Set(),
+		lastContexts: new Map(),
+		thinkingEnabled: new Map(),
+	};
+
+	// Webhook triggers (per workspace)
+	rt.triggerManager.setRunCallback(async (channel, prompt) => {
+		await handleTriggerPrompt(rt, channel, prompt);
+	});
+
+	// Scheduler (per workspace)
+	if (runtimeSchedulersEnabled) {
+		rt.scheduler.start();
+	}
+
+	runtimes.set(teamId, rt);
+	return rt;
+}
+
+function tryStartRun(rt: WorkspaceRuntime, channelId: string): boolean {
+	if (rt.activeRuns.has(channelId) || rt.startingRuns.has(channelId)) {
 		return false;
 	}
-	startingRuns.add(channelId);
+	rt.startingRuns.add(channelId);
 	return true;
 }
 
-/**
- * Mark a run as fully started (move from starting to active).
- */
 function markRunActive(
+	rt: WorkspaceRuntime,
 	channelId: string,
 	runner: AgentRunner,
 	context: SlackContext,
 ): void {
-	startingRuns.delete(channelId);
-	activeRuns.set(channelId, { runner, context });
+	rt.startingRuns.delete(channelId);
+	rt.activeRuns.set(channelId, { runner, context });
 }
 
-/**
- * Clear run state for a channel.
- */
-function clearRunState(channelId: string): void {
-	startingRuns.delete(channelId);
-	activeRuns.delete(channelId);
+function clearRunState(rt: WorkspaceRuntime, channelId: string): void {
+	rt.startingRuns.delete(channelId);
+	rt.activeRuns.delete(channelId);
 }
-
-// Track last context per channel for retry
-const lastContexts = new Map<string, SlackContext>();
-
-// Track thinking mode preference per channel
-const thinkingEnabled = new Map<string, boolean>();
 
 function formatPermissionDenied(check: {
 	reason?: string;
@@ -313,12 +484,13 @@ function formatPermissionDenied(check: {
 }
 
 async function requirePermission(
+	rt: WorkspaceRuntime,
 	userId: string,
 	action: string,
 	respond: (text: string) => Promise<void>,
 	resource?: string,
 ): Promise<boolean> {
-	const check = permissionManager.check(userId, action, resource);
+	const check = rt.permissionManager.check(userId, action, resource);
 	if (!check.allowed) {
 		await respond(formatPermissionDenied(check));
 		return false;
@@ -327,10 +499,11 @@ async function requirePermission(
 }
 
 async function ensureNotBlocked(
+	rt: WorkspaceRuntime,
 	userId: string,
 	respond: (text: string) => Promise<void>,
 ): Promise<boolean> {
-	const user = permissionManager.getUser(userId);
+	const user = rt.permissionManager.getUser(userId);
 	if (user.isBlocked) {
 		await respond(
 			`_Access denied: ${user.blockedReason ?? "User is blocked"}_`,
@@ -340,12 +513,15 @@ async function ensureNotBlocked(
 	return true;
 }
 
-function canViewCosts(userId: string): { allowed: boolean; reason?: string } {
-	const full = permissionManager.check(userId, "view_costs");
+function canViewCosts(
+	rt: WorkspaceRuntime,
+	userId: string,
+): { allowed: boolean; reason?: string } {
+	const full = rt.permissionManager.check(userId, "view_costs");
 	if (full.allowed) {
 		return { allowed: true };
 	}
-	const own = permissionManager.check(userId, "view_own_costs");
+	const own = rt.permissionManager.check(userId, "view_own_costs");
 	return own.allowed
 		? { allowed: true }
 		: { allowed: false, reason: own.reason };
@@ -371,8 +547,8 @@ function readMemoryFile(
 	}
 }
 
-function clearSummaryCache(channelId: string): void {
-	const channelDir = join(workingDir, channelId);
+function clearSummaryCache(rt: WorkspaceRuntime, channelId: string): void {
+	const channelDir = join(rt.workingDir, channelId);
 	const files = ["context_summary.json", "context_summary_llm.json"];
 	for (const file of files) {
 		const filePath = join(channelDir, file);
@@ -391,6 +567,7 @@ function clearSummaryCache(channelId: string): void {
  * Posts an approval request to Slack and waits for user reaction.
  */
 function createApprovalCallback(
+	rt: WorkspaceRuntime,
 	channelId: string,
 	postMessage: (text: string) => Promise<string | null>,
 ): (command: string, description: string) => Promise<boolean> {
@@ -412,7 +589,7 @@ function createApprovalCallback(
 
 		// Register with approval manager and wait for response
 		return new Promise((resolve) => {
-			approvalManager.requestApproval(
+			rt.approvalManager.requestApproval(
 				channelId,
 				messageTs,
 				command,
@@ -428,7 +605,11 @@ function createApprovalCallback(
  * Create schedule callbacks for a specific channel.
  * Wires up to the global scheduler instance.
  */
-function createScheduleCallbacks(channelId: string, userId: string) {
+function createScheduleCallbacks(
+	rt: WorkspaceRuntime,
+	channelId: string,
+	userId: string,
+) {
 	return {
 		onSchedule: async (
 			description: string,
@@ -441,17 +622,14 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 			warning?: string;
 			error?: string;
 		}> => {
-			const canSchedule = permissionManager.check(userId, "schedule_task");
+			const canSchedule = rt.permissionManager.check(userId, "schedule_task");
 			if (!canSchedule.allowed) {
 				return {
 					success: false,
 					error: canSchedule.reason ?? "Permission denied",
 				};
 			}
-			if (!schedulerHolder.instance) {
-				return { success: false, error: "Scheduler not initialized" };
-			}
-			const task = await schedulerHolder.instance.schedule(
+			const task = await rt.scheduler.schedule(
 				channelId,
 				userId,
 				description,
@@ -478,7 +656,10 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 			};
 		},
 		onListTasks: async () => {
-			const canView = permissionManager.check(userId, "view_scheduled_tasks");
+			const canView = rt.permissionManager.check(
+				userId,
+				"view_scheduled_tasks",
+			);
 			if (!canView.allowed) {
 				logger.logWarning(
 					"Scheduled task listing denied",
@@ -486,10 +667,7 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 				);
 				return [];
 			}
-			if (!schedulerHolder.instance) {
-				return [];
-			}
-			const tasks = schedulerHolder.instance.listTasks(channelId);
+			const tasks = rt.scheduler.listTasks(channelId);
 			return tasks.map((t) => ({
 				id: t.id,
 				description: t.description,
@@ -500,23 +678,23 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 		onCancelTask: async (
 			taskId: string,
 		): Promise<{ success: boolean; error?: string }> => {
-			if (!schedulerHolder.instance) {
-				return { success: false, error: "Scheduler not initialized" };
-			}
-			const task = schedulerHolder.instance
+			const task = rt.scheduler
 				.listTasks(channelId)
 				.find((t) => t.id === taskId);
 			if (!task) {
 				return { success: false, error: "Task not found" };
 			}
-			const canCancel = permissionManager.canCancelTask(userId, task.createdBy);
+			const canCancel = rt.permissionManager.canCancelTask(
+				userId,
+				task.createdBy,
+			);
 			if (!canCancel.allowed) {
 				return {
 					success: false,
 					error: canCancel.reason ?? "Permission denied",
 				};
 			}
-			const cancelled = await schedulerHolder.instance.cancel(taskId);
+			const cancelled = await rt.scheduler.cancel(taskId);
 			return cancelled
 				? { success: true }
 				: { success: false, error: "Task not found" };
@@ -526,11 +704,13 @@ function createScheduleCallbacks(channelId: string, userId: string) {
 
 // Handle notification before scheduled task
 async function handleTaskNotification(
+	rt: WorkspaceRuntime,
 	task: ScheduledTask,
 	minutesUntil: number,
 ): Promise<void> {
 	try {
-		await bot.postMessage(
+		await bot.postMessageTeam(
+			rt.teamId,
 			task.channelId,
 			`_Reminder: "${task.description}" will run in ${minutesUntil} minute${minutesUntil > 1 ? "s" : ""}_`,
 		);
@@ -544,10 +724,11 @@ async function handleTaskNotification(
 
 // Handle scheduled task execution
 async function handleScheduledTask(
+	rt: WorkspaceRuntime,
 	task: ScheduledTask,
 ): Promise<{ success: boolean; error?: string }> {
 	const channelId = task.channelId;
-	const creator = permissionManager.getUser(task.createdBy);
+	const creator = rt.permissionManager.getUser(task.createdBy);
 	if (creator.isBlocked) {
 		const reason = creator.blockedReason ?? "User is blocked";
 		logger.logWarning(
@@ -558,7 +739,7 @@ async function handleScheduledTask(
 	}
 
 	// Check if already running in this channel (atomic check-and-mark)
-	if (!tryStartRun(channelId)) {
+	if (!tryStartRun(rt, channelId)) {
 		logger.logWarning(
 			`Skipping scheduled task ${task.id} - channel ${channelId} is busy`,
 			task.description,
@@ -570,39 +751,60 @@ async function handleScheduledTask(
 
 	// Post notification about scheduled task
 	try {
-		await bot.postMessage(
+		await bot.postMessageTeam(
+			rt.teamId,
 			channelId,
 			`_Running scheduled task: ${task.description}_`,
 		);
 
 		// Create a minimal context for the scheduled task
-		const channelDir = join(workingDir, channelId);
-		const useThinking = thinkingEnabled.get(channelId) ?? false;
+		const channelDir = join(rt.workingDir, channelId);
+		const useThinking = rt.thinkingEnabled.get(channelId) ?? false;
 		const allowedTools = getAllowedToolsForRole(creator.role);
-		const canSchedule = permissionManager.check(
+		const connectorAllowedCategories = getConnectorAllowedCategoriesForRole(
+			creator.role,
+		);
+		const canSchedule = rt.permissionManager.check(
 			task.createdBy,
 			"schedule_task",
 		).allowed;
 
 		// Create approval callback for this channel
-		const onApprovalNeeded = createApprovalCallback(channelId, (text) =>
-			bot.postMessage(channelId, text),
+		const onApprovalNeeded = createApprovalCallback(rt, channelId, (text) =>
+			bot.postMessageTeam(rt.teamId, channelId, text),
 		);
 
 		// Create schedule callbacks for this channel
 		const scheduleCallbacks = canSchedule
-			? createScheduleCallbacks(channelId, task.createdBy)
+			? createScheduleCallbacks(rt, channelId, task.createdBy)
 			: undefined;
 
-		const runner = createAgentRunner(sandbox, workingDir, {
+		const runner = createAgentRunner(sandbox, rt.workingDir, {
+			executor,
 			thinking: useThinking,
 			onApprovalNeeded,
 			scheduleCallbacks,
 			allowedTools,
+			connectorAllowedCategories,
+			getConnectorCredentials: rt.getConnectorCredentials,
+			dashboardRegistry: rt.dashboardRegistry,
+			controlPlaneBaseUrl: SLACK_AGENT_UI_PUBLIC_URL,
+			onDeploy: (label, details) => {
+				const expiresIn = details.expiresIn ?? 3600;
+				rt.dashboardRegistry.register({
+					label,
+					url: details.url,
+					directory: details.directory,
+					port: details.port,
+					expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+					spec: details.spec,
+				});
+			},
 		});
 
 		// Create a simplified context for scheduled tasks
-		const scheduledCtx = await bot.createScheduledContext(
+		const scheduledCtx = await bot.createScheduledContextTeam(
+			rt.teamId,
 			channelId,
 			task.prompt,
 		);
@@ -621,13 +823,17 @@ async function handleScheduledTask(
 			taskId: task.id,
 			source: "scheduled",
 		};
-		markRunActive(channelId, runner, scheduledCtx);
+		markRunActive(rt, channelId, runner, scheduledCtx);
 
 		await scheduledCtx.setTyping(true);
 		await scheduledCtx.setWorking(true);
 
 		try {
-			const result = await runner.run(scheduledCtx, channelDir, bot.store);
+			const result = await runner.run(
+				scheduledCtx,
+				channelDir,
+				scheduledCtx.store,
+			);
 			logger.logRunSummary(logCtx, result);
 			if (result.stopReason === "error") {
 				return { success: false, error: "Agent stopped with error" };
@@ -635,18 +841,96 @@ async function handleScheduledTask(
 			return { success: true };
 		} finally {
 			await scheduledCtx.setWorking(false);
-			clearRunState(channelId);
+			clearRunState(rt, channelId);
 		}
 	} catch (error) {
 		// Clear starting state if we fail before marking active
-		clearRunState(channelId);
+		clearRunState(rt, channelId);
 		const errorMsg = error instanceof Error ? error.message : String(error);
 		logger.logWarning(`Scheduled task failed: ${task.id}`, errorMsg);
 		return { success: false, error: errorMsg };
 	}
 }
 
+async function handleTriggerPrompt(
+	rt: WorkspaceRuntime,
+	channelId: string,
+	prompt: string,
+): Promise<void> {
+	// Skip if already running in this channel (atomic check-and-mark)
+	if (!tryStartRun(rt, channelId)) {
+		await bot.postMessageTeam(
+			rt.teamId,
+			channelId,
+			"_Trigger skipped: channel is busy._",
+		);
+		return;
+	}
+
+	const runId = `run_${Date.now().toString(36)}_${Math.random()
+		.toString(36)
+		.slice(2, 6)}`;
+
+	const channelDir = join(rt.workingDir, channelId);
+	const useThinking = rt.thinkingEnabled.get(channelId) ?? false;
+
+	// Triggers run "headless" (no user). Use power_user tool access by default.
+	const allowedTools = getAllowedToolsForRole("power_user");
+	const connectorAllowedCategories =
+		getConnectorAllowedCategoriesForRole("power_user");
+
+	const runner = createAgentRunner(sandbox, rt.workingDir, {
+		executor,
+		thinking: useThinking,
+		allowedTools,
+		connectorAllowedCategories,
+		getConnectorCredentials: rt.getConnectorCredentials,
+		dashboardRegistry: rt.dashboardRegistry,
+		controlPlaneBaseUrl: SLACK_AGENT_UI_PUBLIC_URL,
+		onDeploy: (label, details) => {
+			const expiresIn = details.expiresIn ?? 3600;
+			rt.dashboardRegistry.register({
+				label,
+				url: details.url,
+				directory: details.directory,
+				port: details.port,
+				expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+				spec: details.spec,
+			});
+		},
+	});
+
+	const triggerCtx = await bot.createScheduledContextTeam(
+		rt.teamId,
+		channelId,
+		prompt,
+	);
+	triggerCtx.source = "trigger";
+	triggerCtx.runId = runId;
+	triggerCtx.message.user = "trigger";
+	triggerCtx.message.userName = "Webhook Trigger";
+
+	markRunActive(rt, channelId, runner, triggerCtx);
+
+	await triggerCtx.setTyping(true);
+	await triggerCtx.setWorking(true);
+
+	try {
+		const result = await runner.run(triggerCtx, channelDir, triggerCtx.store);
+		if (result.stopReason === "error") {
+			await triggerCtx.respond("_Trigger run failed._");
+		}
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		await triggerCtx.respond(`_Trigger error: ${msg}_`);
+	} finally {
+		await triggerCtx.setWorking(false);
+		clearRunState(rt, channelId);
+	}
+}
+
 async function handleMessage(
+	rt: WorkspaceRuntime,
 	ctx: SlackContext,
 	source: "channel" | "dm",
 ): Promise<void> {
@@ -655,12 +939,12 @@ async function handleMessage(
 	const messageText = ctx.message.text.toLowerCase().trim();
 	const userId = ctx.message.user;
 
-	if (!(await ensureNotBlocked(userId, ctx.respond))) {
+	if (!(await ensureNotBlocked(rt, userId, ctx.respond))) {
 		return;
 	}
 
 	// Handle simple /tasks text commands (not Slack-registered slash commands).
-	if (await handleTasksCommand(ctx)) {
+	if (await handleTasksCommand(rt, ctx)) {
 		return;
 	}
 
@@ -681,10 +965,10 @@ async function handleMessage(
 
 	// Check for stop command
 	if (messageText === "stop") {
-		if (!(await requirePermission(userId, "stop", ctx.respond))) {
+		if (!(await requirePermission(rt, userId, "stop", ctx.respond))) {
 			return;
 		}
-		const active = activeRuns.get(channelId);
+		const active = rt.activeRuns.get(channelId);
 		if (active) {
 			await ctx.respond("_Stopping..._");
 			active.stopContext = ctx;
@@ -696,15 +980,15 @@ async function handleMessage(
 	}
 
 	// Check if already running in this channel (atomic check-and-mark)
-	if (!tryStartRun(channelId)) {
+	if (!tryStartRun(rt, channelId)) {
 		await ctx.respond("_Already working on something. Say `stop` to cancel._");
 		return;
 	}
 
 	// Check rate limit
-	const rateCheck = rateLimiter.check(ctx.message.user, channelId);
+	const rateCheck = rt.rateLimiter.check(ctx.message.user, channelId);
 	if (!rateCheck.allowed) {
-		clearRunState(channelId); // Clear starting state since we're not proceeding
+		clearRunState(rt, channelId); // Clear starting state since we're not proceeding
 		const msg = formatRateLimitMessage(rateCheck);
 		logger.logWarning(
 			`Rate limited: ${ctx.message.userName} in ${channelId}`,
@@ -715,35 +999,51 @@ async function handleMessage(
 	}
 
 	logger.logUserMessage(logCtx, ctx.message.text);
-	const channelDir = join(workingDir, channelId);
+	const channelDir = join(rt.workingDir, channelId);
 
 	// Save context for retry
-	lastContexts.set(channelId, ctx);
+	rt.lastContexts.set(channelId, ctx);
 
 	// Check if thinking mode is enabled for this channel
-	const useThinking = thinkingEnabled.get(channelId) ?? false;
-	const allowedTools = getAllowedToolsForRole(
-		permissionManager.getUser(userId).role,
-	);
+	const useThinking = rt.thinkingEnabled.get(channelId) ?? false;
+	const role = rt.permissionManager.getUser(userId).role;
+	const allowedTools = getAllowedToolsForRole(role);
+	const connectorAllowedCategories = getConnectorAllowedCategoriesForRole(role);
 
 	// Create approval callback for this channel
-	const onApprovalNeeded = createApprovalCallback(channelId, (text) =>
-		bot.postMessage(channelId, text),
+	const onApprovalNeeded = createApprovalCallback(rt, channelId, (text) =>
+		bot.postMessageTeam(rt.teamId, channelId, text),
 	);
 
 	// Create schedule callbacks for this channel
-	const scheduleCallbacks = permissionManager.check(userId, "schedule_task")
+	const scheduleCallbacks = rt.permissionManager.check(userId, "schedule_task")
 		.allowed
-		? createScheduleCallbacks(channelId, ctx.message.user)
+		? createScheduleCallbacks(rt, channelId, ctx.message.user)
 		: undefined;
 
-	const runner = createAgentRunner(sandbox, workingDir, {
+	const runner = createAgentRunner(sandbox, rt.workingDir, {
+		executor,
 		thinking: useThinking,
 		onApprovalNeeded,
 		scheduleCallbacks,
 		allowedTools,
+		connectorAllowedCategories,
+		getConnectorCredentials: rt.getConnectorCredentials,
+		dashboardRegistry: rt.dashboardRegistry,
+		controlPlaneBaseUrl: SLACK_AGENT_UI_PUBLIC_URL,
+		onDeploy: (label, details) => {
+			const expiresIn = details.expiresIn ?? 3600;
+			rt.dashboardRegistry.register({
+				label,
+				url: details.url,
+				directory: details.directory,
+				port: details.port,
+				expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+				spec: details.spec,
+			});
+		},
 	});
-	markRunActive(channelId, runner, ctx);
+	markRunActive(rt, channelId, runner, ctx);
 
 	await ctx.setTyping(true);
 	await ctx.setWorking(true);
@@ -752,7 +1052,7 @@ async function handleMessage(
 		const result = await runner.run(ctx, channelDir, ctx.store);
 
 		// Handle different stop reasons
-		const active = activeRuns.get(channelId);
+		const active = rt.activeRuns.get(channelId);
 		if (result.stopReason === "aborted") {
 			if (active?.stopContext) {
 				await active.stopContext.setWorking(false);
@@ -768,25 +1068,24 @@ async function handleMessage(
 		await ctx.respond(`_Error: ${errorMsg}_`);
 	} finally {
 		await ctx.setWorking(false);
-		clearRunState(channelId);
+		clearRunState(rt, channelId);
 	}
 }
 
-async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
+async function handleTasksCommand(
+	rt: WorkspaceRuntime,
+	ctx: SlackContext,
+): Promise<boolean> {
 	const raw = ctx.message.text.trim();
 	const match = raw.match(/^\/tasks\b\s*(.*)$/i);
 	if (!match) return false;
 
 	const userId = ctx.message.user;
-	if (!(await ensureNotBlocked(userId, ctx.respond))) {
+	if (!(await ensureNotBlocked(rt, userId, ctx.respond))) {
 		return true;
 	}
 
 	const channelId = ctx.message.channel;
-	if (!schedulerHolder.instance) {
-		await ctx.respond("_Scheduler not initialized._");
-		return true;
-	}
 
 	const rest = match[1]?.trim() || "";
 	const [subRaw, ...args] = rest.split(/\s+/).filter(Boolean);
@@ -803,11 +1102,16 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 		}
 		case "list": {
 			if (
-				!(await requirePermission(userId, "view_scheduled_tasks", ctx.respond))
+				!(await requirePermission(
+					rt,
+					userId,
+					"view_scheduled_tasks",
+					ctx.respond,
+				))
 			) {
 				return true;
 			}
-			const tasks = schedulerHolder.instance.listTasks(channelId);
+			const tasks = rt.scheduler.listTasks(channelId);
 			if (tasks.length === 0) {
 				await ctx.respond("_No scheduled tasks for this channel._");
 				return true;
@@ -831,7 +1135,7 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 				return true;
 			}
 
-			const task = schedulerHolder.instance
+			const task = rt.scheduler
 				.listTasks(channelId)
 				.find((t) => t.id === taskId);
 			if (!task) {
@@ -839,14 +1143,17 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 				return true;
 			}
 
-			const canManage = permissionManager.canCancelTask(userId, task.createdBy);
+			const canManage = rt.permissionManager.canCancelTask(
+				userId,
+				task.createdBy,
+			);
 			if (!canManage.allowed) {
 				await ctx.respond(formatPermissionDenied(canManage));
 				return true;
 			}
 
 			if (sub === "pause") {
-				const ok = await schedulerHolder.instance.pause(taskId);
+				const ok = await rt.scheduler.pause(taskId);
 				await ctx.respond(
 					ok
 						? `_Paused task ${taskId}._`
@@ -856,7 +1163,7 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 			}
 
 			if (sub === "resume") {
-				const ok = await schedulerHolder.instance.resume(taskId);
+				const ok = await rt.scheduler.resume(taskId);
 				await ctx.respond(
 					ok
 						? `_Resumed task ${taskId}._`
@@ -866,7 +1173,7 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 			}
 
 			if (sub === "cancel" || sub === "delete") {
-				const ok = await schedulerHolder.instance.cancel(taskId);
+				const ok = await rt.scheduler.cancel(taskId);
 				await ctx.respond(
 					ok ? `_Cancelled task ${taskId}._` : `_Task ${taskId} not found._`,
 				);
@@ -874,20 +1181,18 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 			}
 
 			// run
-			if (activeRuns.has(channelId) || startingRuns.has(channelId)) {
+			if (rt.activeRuns.has(channelId) || rt.startingRuns.has(channelId)) {
 				await ctx.respond(
 					"_This channel is busy. Say `stop` first before running a task now._",
 				);
 				return true;
 			}
-			schedulerHolder.instance
-				.runNow(taskId)
-				.catch((err) =>
-					logger.logWarning(
-						`Failed to run task ${taskId} immediately`,
-						String(err),
-					),
+			void rt.scheduler.runNow(taskId).catch((error: unknown) => {
+				logger.logWarning(
+					`Failed to run task ${taskId} immediately`,
+					error instanceof Error ? error.message : String(error),
 				);
+			});
 			await ctx.respond(`_Triggered task ${taskId}. Running now..._`);
 			return true;
 		}
@@ -899,17 +1204,18 @@ async function handleTasksCommand(ctx: SlackContext): Promise<boolean> {
 }
 
 async function handleStatusRequest(
+	rt: WorkspaceRuntime,
 	channelId: string,
 	userId: string,
 	respond: (text: string) => Promise<void>,
 ): Promise<void> {
-	if (!(await requirePermission(userId, "view_status", respond))) {
+	if (!(await requirePermission(rt, userId, "view_status", respond))) {
 		return;
 	}
 
-	const busy = activeRuns.has(channelId) || startingRuns.has(channelId);
-	const thinking = thinkingEnabled.get(channelId) ?? false;
-	const stats = rateLimiter.getStats(userId, channelId);
+	const busy = rt.activeRuns.has(channelId) || rt.startingRuns.has(channelId);
+	const thinking = rt.thinkingEnabled.get(channelId) ?? false;
+	const stats = rt.rateLimiter.getStats(userId, channelId);
 
 	const lines: string[] = [];
 	lines.push("*Status*");
@@ -923,53 +1229,57 @@ async function handleStatusRequest(
 }
 
 async function handleCostRequest(
+	rt: WorkspaceRuntime,
 	channelId: string,
 	userId: string,
 	respond: (text: string) => Promise<void>,
 ): Promise<void> {
-	const full = permissionManager.check(userId, "view_costs");
-	if (!full.allowed) {
-		const own = permissionManager.check(userId, "view_own_costs");
-		if (!own.allowed) {
-			await respond(formatPermissionDenied(own));
-			return;
-		}
+	const canView = canViewCosts(rt, userId);
+	if (!canView.allowed) {
+		await respond(
+			`_Permission denied${canView.reason ? `: ${canView.reason}` : ""}_`,
+		);
+		return;
 	}
 
-	const summary = costTracker.getSummary(channelId);
-	const formatted = costTracker.formatSummary(summary);
+	const summary = rt.costTracker.getSummary(channelId);
+	const formatted = rt.costTracker.formatSummary(summary);
 	await respond(formatted);
 }
 
 async function handleClearRequest(
+	rt: WorkspaceRuntime,
 	channelId: string,
 	userId: string,
 	respond: (text: string) => Promise<void>,
 ): Promise<void> {
-	if (!(await requirePermission(userId, "clear_context", respond))) {
+	if (!(await requirePermission(rt, userId, "clear_context", respond))) {
 		return;
 	}
-	if (activeRuns.has(channelId) || startingRuns.has(channelId)) {
+	if (rt.activeRuns.has(channelId) || rt.startingRuns.has(channelId)) {
 		await respond("_Can't clear while working. Say `stop` first._");
 		return;
 	}
 
-	await bot.store.clearHistory(channelId);
-	await threadMemoryManager.clearChannel(channelId);
-	clearSummaryCache(channelId);
-	lastContexts.delete(channelId);
+	await rt.store.clearHistory(channelId);
+	await rt.threadMemoryManager.clearChannel(channelId);
+	clearSummaryCache(rt, channelId);
+	rt.lastContexts.delete(channelId);
 	logger.logInfo(`Context cleared in ${channelId}`);
 	await respond("_Conversation history cleared. Starting fresh!_");
 }
 
-async function handleMemoryRequest(ctx: SlackContext): Promise<void> {
+async function handleMemoryRequest(
+	rt: WorkspaceRuntime,
+	ctx: SlackContext,
+): Promise<void> {
 	const userId = ctx.message.user;
-	if (!(await requirePermission(userId, "manage_memory", ctx.respond))) {
+	if (!(await requirePermission(rt, userId, "manage_memory", ctx.respond))) {
 		return;
 	}
 
 	const channelId = ctx.message.channel;
-	const channelDir = join(workingDir, channelId);
+	const channelDir = join(rt.workingDir, channelId);
 	const sections: string[] = [];
 
 	const globalMemory = readMemoryFile(
@@ -985,7 +1295,7 @@ async function handleMemoryRequest(ctx: SlackContext): Promise<void> {
 	if (channelMemory) sections.push(channelMemory);
 
 	try {
-		const summary = await threadMemoryManager.getThreadSummary(
+		const summary = await rt.threadMemoryManager.getThreadSummary(
 			channelId,
 			ctx.threadKey,
 		);
@@ -1007,11 +1317,12 @@ async function handleMemoryRequest(ctx: SlackContext): Promise<void> {
 }
 
 async function handleBackfillCommand(
+	rt: WorkspaceRuntime,
 	ctx: SlackContext,
 	text: string,
 ): Promise<void> {
 	const userId = ctx.message.user;
-	if (!(await requirePermission(userId, "backfill_history", ctx.respond))) {
+	if (!(await requirePermission(rt, userId, "backfill_history", ctx.respond))) {
 		return;
 	}
 
@@ -1037,7 +1348,10 @@ async function handleBackfillCommand(
 
 	void (async () => {
 		try {
-			await bot.backfill(backfillAll ? undefined : [ctx.message.channel]);
+			await bot.backfillTeam(
+				rt.teamId,
+				backfillAll ? undefined : [ctx.message.channel],
+			);
 			await notifySuccess();
 		} catch (error) {
 			logger.logWarning("Backfill failed", String(error));
@@ -1065,17 +1379,18 @@ async function handleBackfillCommand(
 // 👍/👎 thumbsup/thumbsdown - Record feedback (tracked automatically)
 async function handleReaction(ctx: ReactionContext): Promise<void> {
 	const channelId = ctx.channel;
-	const active = activeRuns.get(channelId);
+	const rt = getRuntime(ctx.teamId);
+	const active = rt.activeRuns.get(channelId);
 	const respond = (text: string) => ctx.postMessage(channelId, text);
 
-	if (!(await ensureNotBlocked(ctx.user, respond))) {
+	if (!(await ensureNotBlocked(rt, ctx.user, respond))) {
 		return;
 	}
 
 	switch (ctx.reaction) {
 		case "octagonal_sign": {
 			// 🛑 Stop command
-			if (!(await requirePermission(ctx.user, "stop", respond))) {
+			if (!(await requirePermission(rt, ctx.user, "stop", respond))) {
 				break;
 			}
 			if (active) {
@@ -1089,18 +1404,18 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 
 		case "eyes": {
 			// 👀 Status check
-			if (!(await requirePermission(ctx.user, "view_status", respond))) {
+			if (!(await requirePermission(rt, ctx.user, "view_status", respond))) {
 				break;
 			}
 			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
-			await handleStatusRequest(channelId, ctx.user, respond);
+			await handleStatusRequest(rt, channelId, ctx.user, respond);
 			break;
 		}
 
 		case "moneybag":
 		case "chart_with_upwards_trend": {
 			// 💰 or 📈 Usage/cost check
-			const canView = canViewCosts(ctx.user);
+			const canView = canViewCosts(rt, ctx.user);
 			if (!canView.allowed) {
 				await respond(
 					`_Permission denied${canView.reason ? `: ${canView.reason}` : ""}_`,
@@ -1108,7 +1423,7 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 				break;
 			}
 			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
-			await handleCostRequest(channelId, ctx.user, respond);
+			await handleCostRequest(rt, channelId, ctx.user, respond);
 			break;
 		}
 
@@ -1116,8 +1431,9 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 		case "clipboard": {
 			// 📊 or 📋 Feedback summary
 			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
-			const feedbackSummary = feedbackTracker.getSummary(channelId);
-			const feedbackFormatted = feedbackTracker.formatSummary(feedbackSummary);
+			const feedbackSummary = rt.feedbackTracker.getSummary(channelId);
+			const feedbackFormatted =
+				rt.feedbackTracker.formatSummary(feedbackSummary);
 			await ctx.postMessage(channelId, feedbackFormatted);
 			break;
 		}
@@ -1125,7 +1441,7 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 		case "arrows_counterclockwise":
 		case "repeat": {
 			// 🔄 Retry last request
-			if (!(await requirePermission(ctx.user, "retry", respond))) {
+			if (!(await requirePermission(rt, ctx.user, "retry", respond))) {
 				break;
 			}
 			if (active) {
@@ -1136,7 +1452,7 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 				break;
 			}
 
-			const lastCtx = lastContexts.get(channelId);
+			const lastCtx = rt.lastContexts.get(channelId);
 			if (!lastCtx) {
 				await ctx.postMessage(channelId, "_No previous request to retry._");
 				break;
@@ -1147,19 +1463,21 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 			await ctx.postMessage(channelId, "_Retrying last request..._");
 
 			// Re-run with the last context
-			await handleMessage(lastCtx, "channel");
+			await handleMessage(rt, lastCtx, "channel");
 			break;
 		}
 
 		case "coffee":
 		case "brain": {
 			// ☕ or 🧠 Toggle extended thinking
-			if (!(await requirePermission(ctx.user, "toggle_thinking", respond))) {
+			if (
+				!(await requirePermission(rt, ctx.user, "toggle_thinking", respond))
+			) {
 				break;
 			}
 			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
-			const current = thinkingEnabled.get(channelId) ?? false;
-			thinkingEnabled.set(channelId, !current);
+			const current = rt.thinkingEnabled.get(channelId) ?? false;
+			rt.thinkingEnabled.set(channelId, !current);
 
 			if (!current) {
 				await ctx.postMessage(
@@ -1178,11 +1496,11 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 		case "broom":
 		case "wastebasket": {
 			// 🧹 or 🗑️ Clear conversation context
-			if (!(await requirePermission(ctx.user, "clear_context", respond))) {
+			if (!(await requirePermission(rt, ctx.user, "clear_context", respond))) {
 				break;
 			}
 			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
-			await handleClearRequest(channelId, ctx.user, respond);
+			await handleClearRequest(rt, channelId, ctx.user, respond);
 			break;
 		}
 
@@ -1190,16 +1508,17 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 		case "alarm_clock": {
 			// 📅 or ⏰ List scheduled tasks
 			if (
-				!(await requirePermission(ctx.user, "view_scheduled_tasks", respond))
+				!(await requirePermission(
+					rt,
+					ctx.user,
+					"view_scheduled_tasks",
+					respond,
+				))
 			) {
 				break;
 			}
 			await ctx.addReaction("white_check_mark", ctx.channel, ctx.messageTs);
-			if (!schedulerHolder.instance) {
-				await ctx.postMessage(channelId, "_Scheduler not initialized._");
-				break;
-			}
-			const tasks = schedulerHolder.instance.listTasks(channelId);
+			const tasks = rt.scheduler.listTasks(channelId);
 			if (tasks.length === 0) {
 				await ctx.postMessage(
 					channelId,
@@ -1220,7 +1539,7 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 
 		default: {
 			// Check if this is an approval reaction
-			const handled = await approvalManager.handleReaction(
+			const handled = await rt.approvalManager.handleReaction(
 				channelId,
 				ctx.messageTs,
 				ctx.reaction,
@@ -1231,7 +1550,7 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 			}
 
 			// Track feedback reactions (👍/👎) on any message
-			const feedback = feedbackTracker.record(
+			const feedback = rt.feedbackTracker.record(
 				channelId,
 				ctx.messageTs,
 				ctx.user,
@@ -1247,29 +1566,53 @@ async function handleReaction(ctx: ReactionContext): Promise<void> {
 	}
 }
 
+async function resolveTeamIdForBotToken(botToken: string): Promise<string> {
+	try {
+		const client = new WebClient(botToken);
+		const auth = await client.auth.test();
+		const teamId = (auth as { team_id?: string }).team_id;
+		if (teamId) return teamId;
+	} catch (error) {
+		logger.logWarning(
+			"Failed to resolve Slack team ID via auth.test",
+			error instanceof Error ? error.message : String(error),
+		);
+	}
+	return "default";
+}
+
+const defaultTeamId =
+	!useMultiWorkspace && SLACK_BOT_TOKEN
+		? await resolveTeamIdForBotToken(SLACK_BOT_TOKEN)
+		: undefined;
+
 const bot = new SlackBot(
 	{
 		async onChannelMention(ctx) {
-			await handleMessage(ctx, "channel");
+			const rt = getRuntime(ctx.teamId);
+			await handleMessage(rt, ctx, "channel");
 		},
 
 		async onDirectMessage(ctx) {
-			await handleMessage(ctx, "dm");
+			const rt = getRuntime(ctx.teamId);
+			await handleMessage(rt, ctx, "dm");
 		},
 
 		async onSlashCommand(ctx, command, text) {
+			const rt = getRuntime(ctx.teamId);
 			ctx.source = "slash";
 			const cmd = command.toLowerCase();
-			if (!(await ensureNotBlocked(ctx.message.user, ctx.respond))) {
+			if (!(await ensureNotBlocked(rt, ctx.message.user, ctx.respond))) {
 				return;
 			}
 
 			switch (cmd) {
 				case "/tasks":
-					await handleTasksCommand(ctx);
+					await handleTasksCommand(rt, ctx);
 					return;
 				case "/status":
 					await handleStatusRequest(
+						rt,
 						ctx.message.channel,
 						ctx.message.user,
 						ctx.respond,
@@ -1277,22 +1620,47 @@ const bot = new SlackBot(
 					return;
 				case "/cost":
 					await handleCostRequest(
+						rt,
 						ctx.message.channel,
 						ctx.message.user,
 						ctx.respond,
 					);
 					return;
 				case "/memory":
-					await handleMemoryRequest(ctx);
+					await handleMemoryRequest(rt, ctx);
 					return;
 				case "/backfill":
-					await handleBackfillCommand(ctx, text);
+					await handleBackfillCommand(rt, ctx, text);
 					return;
 				case "/clear":
 					await handleClearRequest(
+						rt,
 						ctx.message.channel,
 						ctx.message.user,
 						ctx.respond,
+					);
+					return;
+				case "/connect":
+					await ctx.respond(
+						await rt.connectorMgr.handleConnect(text, ctx.message.user),
+					);
+					return;
+				case "/connect-credentials":
+					await ctx.respond(
+						await rt.connectorMgr.handleSetCredentials(text, ctx.message.user),
+					);
+					return;
+				case "/disconnect":
+					await ctx.respond(
+						await rt.connectorMgr.handleDisconnect(text, ctx.message.user),
+					);
+					return;
+				case "/connectors":
+					await ctx.respond(await rt.connectorMgr.handleList());
+					return;
+				case "/triggers":
+					await ctx.respond(
+						rt.triggerManager.handleTriggersCommand(text, ctx.message.user),
 					);
 					return;
 				default:
@@ -1306,45 +1674,76 @@ const bot = new SlackBot(
 			await handleReaction(ctx);
 		},
 	},
-	{
-		appToken: SLACK_APP_TOKEN,
-		botToken: SLACK_BOT_TOKEN,
-		workingDir,
-		historyLimit: parsePositiveInt(SLACK_AGENT_HISTORY_LIMIT),
-		historyMaxPages: parsePositiveInt(SLACK_AGENT_HISTORY_PAGES),
-		backfillOnStartup: parseBoolean(SLACK_AGENT_BACKFILL_ON_STARTUP),
-		backfillInclude: parseCommaList(SLACK_AGENT_BACKFILL_CHANNELS),
-		backfillExclude: parseCommaList(SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS),
-		backfillConcurrency: parsePositiveInt(SLACK_AGENT_BACKFILL_CONCURRENCY),
-	},
+	(() => {
+		const cfg = {
+			appToken: SLACK_APP_TOKEN,
+			workingDir,
+			...(defaultTeamId ? { defaultTeamId } : {}),
+			historyLimit: parsePositiveInt(SLACK_AGENT_HISTORY_LIMIT),
+			historyMaxPages: parsePositiveInt(SLACK_AGENT_HISTORY_PAGES),
+			backfillOnStartup: parseBoolean(
+				SLACK_AGENT_BACKFILL_ON_STARTUP,
+				"SLACK_AGENT_BACKFILL_ON_STARTUP",
+			),
+			backfillInclude: parseCommaList(SLACK_AGENT_BACKFILL_CHANNELS),
+			backfillExclude: parseCommaList(SLACK_AGENT_BACKFILL_EXCLUDE_CHANNELS),
+			backfillConcurrency: parsePositiveInt(SLACK_AGENT_BACKFILL_CONCURRENCY),
+		};
+
+		if (useMultiWorkspace) {
+			return {
+				...cfg,
+				resolveWorkspace: (teamId: string) => {
+					const botToken = resolveBotToken(teamId);
+					if (!botToken) return null;
+					return { botToken, workingDir: resolveWorkspaceDir(teamId) };
+				},
+			};
+		}
+
+		return {
+			...cfg,
+			botToken: SLACK_BOT_TOKEN,
+		};
+	})(),
 );
 
-// Initialize scheduler after bot is created
-schedulerHolder.instance = new Scheduler({
-	workingDir,
-	onTaskDue: handleScheduledTask,
-	onNotify: handleTaskNotification,
-	defaultTimezone: SLACK_AGENT_DEFAULT_TIMEZONE,
-});
-schedulerHolder.instance.start();
-
-// Update shutdown handler to clean up scheduler and approval manager
+let shuttingDown = false;
 async function shutdownWithCleanup(signal: string): Promise<void> {
+	if (shuttingDown) return;
+	shuttingDown = true;
+
 	console.log(`\nReceived ${signal}, shutting down...`);
 
-	// Stop scheduler
-	await schedulerHolder.instance?.stop();
+	try {
+		await bot.stop();
+	} catch {
+		// ignore
+	}
 
-	// Stop approval manager
-	approvalManager.stop();
+	for (const rt of runtimes.values()) {
+		try {
+			await rt.scheduler.stop();
+		} catch {
+			// ignore
+		}
+		try {
+			rt.approvalManager.stop();
+		} catch {
+			// ignore
+		}
+		try {
+			await rt.threadMemoryManager.shutdown();
+		} catch {
+			// ignore
+		}
 
-	// Flush thread memory storage
-	await threadMemoryManager.shutdown();
-
-	// Abort all active runs
-	for (const [channelId, active] of activeRuns) {
-		console.log(`Aborting run in channel ${channelId}...`);
-		active.runner.abort();
+		for (const [channelId, active] of rt.activeRuns) {
+			console.log(
+				`Aborting run in channel ${channelId} (team ${rt.teamId})...`,
+			);
+			active.runner.abort();
+		}
 	}
 
 	// Dispose executor (stops auto-created containers)
@@ -1354,10 +1753,120 @@ async function shutdownWithCleanup(signal: string): Promise<void> {
 	process.exit(0);
 }
 
-// Replace the old shutdown handlers
-process.removeAllListeners("SIGINT");
-process.removeAllListeners("SIGTERM");
-process.on("SIGINT", () => shutdownWithCleanup("SIGINT"));
-process.on("SIGTERM", () => shutdownWithCleanup("SIGTERM"));
+process.on("SIGINT", () => void shutdownWithCleanup("SIGINT"));
+process.on("SIGTERM", () => void shutdownWithCleanup("SIGTERM"));
 
-bot.start();
+// Start schedulers once the SlackBot instance exists (scheduled tasks may post via bot).
+runtimeSchedulersEnabled = true;
+for (const rt of runtimes.values()) {
+	rt.scheduler.start();
+}
+
+// Pre-initialize runtimes so schedules and triggers are live even before first Slack event.
+if (useMultiWorkspace) {
+	for (const ws of workspaceManager.getAll()) {
+		try {
+			getRuntime(ws.teamId);
+		} catch (error) {
+			logger.logWarning(
+				"Failed to initialize workspace runtime",
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+	}
+} else if (defaultTeamId) {
+	try {
+		getRuntime(defaultTeamId);
+	} catch (error) {
+		logger.logWarning(
+			"Failed to initialize default workspace runtime",
+			error instanceof Error ? error.message : String(error),
+		);
+	}
+}
+
+await bot.start();
+
+// Start webhook server if port is configured
+const webhookPort = process.env.SLACK_AGENT_WEBHOOK_PORT
+	? Number(process.env.SLACK_AGENT_WEBHOOK_PORT)
+	: undefined;
+if (webhookPort) {
+	const webhookSecrets: Record<string, string> = {};
+	if (process.env.GITHUB_WEBHOOK_SECRET)
+		webhookSecrets.github = process.env.GITHUB_WEBHOOK_SECRET;
+	if (process.env.STRIPE_WEBHOOK_SECRET)
+		webhookSecrets.stripe = process.env.STRIPE_WEBHOOK_SECRET;
+	if (process.env.LINEAR_WEBHOOK_SECRET)
+		webhookSecrets.linear = process.env.LINEAR_WEBHOOK_SECRET;
+
+	const webhookServer = createWebhookServer(
+		{
+			port: webhookPort,
+			secrets:
+				Object.keys(webhookSecrets).length > 0 ? webhookSecrets : undefined,
+			defaultTeamId: defaultTeamId,
+			defaultChannel: process.env.SLACK_AGENT_WEBHOOK_CHANNEL,
+		},
+		async (event) => {
+			const rt = getRuntime(event.teamId);
+
+			// First, try to fire any matching triggers (agent runs)
+			const triggered = await rt.triggerManager.processEvent(event);
+
+			// Then post summary to the configured channel
+			const channel = event.channel ?? process.env.SLACK_AGENT_WEBHOOK_CHANNEL;
+			if (!channel) {
+				if (triggered === 0) {
+					logger.logWarning(
+						"Webhook event has no target channel and no triggers fired",
+						event.source,
+					);
+				}
+				return;
+			}
+			await bot.postMessageTeam(
+				rt.teamId,
+				channel,
+				`*[${event.source}]* ${event.summary}`,
+			);
+		},
+	);
+
+	webhookServer.start().catch((err) => {
+		logger.logWarning(
+			"Failed to start webhook server",
+			err instanceof Error ? err.message : String(err),
+		);
+	});
+}
+
+// Start UI API server if port is configured
+if (uiPort) {
+	const slackOAuth =
+		slackClientId && slackClientSecret
+			? {
+					clientId: slackClientId,
+					clientSecret: slackClientSecret,
+					scopes: parseCommaList(process.env.SLACK_OAUTH_SCOPES),
+					redirectUri: process.env.SLACK_OAUTH_REDIRECT_URI,
+					stateSecret: process.env.SLACK_OAUTH_STATE_SECRET,
+				}
+			: undefined;
+
+	const apiServer = createApiServer({
+		port: uiPort,
+		workingDir,
+		workspaceManager,
+		staticDir: process.env.SLACK_AGENT_UI_DIR,
+		authToken: process.env.SLACK_AGENT_UI_TOKEN || undefined,
+		slackOAuth,
+	});
+
+	apiServer.start().catch((err) => {
+		logger.logWarning(
+			"Failed to start UI API server",
+			err instanceof Error ? err.message : String(err),
+		);
+	});
+}

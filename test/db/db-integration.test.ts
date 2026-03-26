@@ -2,10 +2,10 @@
  * Database Integration Tests
  *
  * These tests require a PostgreSQL database connection.
- * Set COMPOSER_DATABASE_URL to run these tests.
+ * Set MAESTRO_DATABASE_URL to run these tests.
  *
  * To skip these tests when no DB is available:
- * - They check for COMPOSER_DATABASE_URL and skip if not set
+ * - They check for MAESTRO_DATABASE_URL and skip if not set
  * - They use a test-specific schema prefix to avoid polluting production data
  *
  * @vitest-environment node
@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Check if database is configured
-const DB_URL = process.env.COMPOSER_DATABASE_URL || process.env.DATABASE_URL;
+const DB_URL = process.env.MAESTRO_DATABASE_URL || process.env.DATABASE_URL;
 const skipDb = !DB_URL;
 
 // Conditional test wrapper

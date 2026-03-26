@@ -151,11 +151,11 @@ describe("Session Endpoints", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		// Disable strict session access for tests (sessions without ownership info)
-		process.env.COMPOSER_STRICT_SESSION_ACCESS = "false";
+		process.env.MAESTRO_STRICT_SESSION_ACCESS = "false";
 	});
 
 	afterEach(() => {
-		delete process.env.COMPOSER_STRICT_SESSION_ACCESS;
+		delete process.env.MAESTRO_STRICT_SESSION_ACCESS;
 	});
 
 	describe("handleSessions - GET (list)", () => {
@@ -272,11 +272,11 @@ describe("Session Sharing", () => {
 
 	beforeEach(() => {
 		// Disable strict session access for tests (sessions without ownership info)
-		process.env.COMPOSER_STRICT_SESSION_ACCESS = "false";
+		process.env.MAESTRO_STRICT_SESSION_ACCESS = "false";
 	});
 
 	afterEach(() => {
-		delete process.env.COMPOSER_STRICT_SESSION_ACCESS;
+		delete process.env.MAESTRO_STRICT_SESSION_ACCESS;
 	});
 
 	describe("handleSessionShare", () => {
@@ -342,11 +342,11 @@ describe("Session Sharing", () => {
 describe("Session Export", () => {
 	beforeEach(() => {
 		// Disable strict session access for tests (sessions without ownership info)
-		process.env.COMPOSER_STRICT_SESSION_ACCESS = "false";
+		process.env.MAESTRO_STRICT_SESSION_ACCESS = "false";
 	});
 
 	afterEach(() => {
-		delete process.env.COMPOSER_STRICT_SESSION_ACCESS;
+		delete process.env.MAESTRO_STRICT_SESSION_ACCESS;
 	});
 
 	describe("handleSessionExport", () => {

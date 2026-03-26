@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::components::{RateLimitDisplay, RateLimitWindow};
+//! use maestro_tui::components::{RateLimitDisplay, RateLimitWindow};
 //!
 //! let display = RateLimitDisplay::new()
 //!     .with_primary(RateLimitWindow::new(0.45, Some(300))) // 45% used, resets in 5min

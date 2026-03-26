@@ -7,11 +7,11 @@ import { config } from "dotenv";
 
 config();
 
-const dbType = process.env.COMPOSER_DATABASE_TYPE?.toLowerCase() || "sqlite";
-const dbUrl = process.env.COMPOSER_DATABASE_URL || process.env.DATABASE_URL;
+const dbType = process.env.MAESTRO_DATABASE_TYPE?.toLowerCase() || "sqlite";
+const dbUrl = process.env.MAESTRO_DATABASE_URL || process.env.DATABASE_URL;
 const homeDir = process.env.HOME || process.env.USERPROFILE || "/tmp";
 const dbFile =
-	process.env.COMPOSER_DATABASE_FILE || `${homeDir}/.composer/db/composer.db`;
+	process.env.MAESTRO_DATABASE_FILE || `${homeDir}/.maestro/db/maestro.db`;
 
 export default defineConfig({
 	schema: "./src/db/schema.ts",

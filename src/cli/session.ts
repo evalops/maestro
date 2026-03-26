@@ -8,7 +8,7 @@
  * ## Usage
  *
  * The `selectSession` function is invoked when:
- * - User runs `composer --resume` or `composer -r`
+ * - User runs `maestro --resume` or `maestro -r`
  * - User wants to pick from a list of previous sessions
  *
  * ## UI Behavior

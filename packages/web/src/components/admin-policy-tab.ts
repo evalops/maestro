@@ -57,14 +57,14 @@ export class AdminPolicyTab {
 				<div class="section-header">
 					<h3>Enterprise Policy</h3>
 					<span style="font-size: 0.7rem; color: var(--admin-text-tertiary);">
-						Deploy via MDM to ~/.composer/policy.json
+						Deploy via MDM to ~/.maestro/policy.json
 					</span>
 				</div>
 				<div class="section-content">
 					<p style="color: var(--admin-text-secondary); font-size: 0.8rem; margin-bottom: 1.25rem; line-height: 1.6;">
 						Enterprise policies control which tools, models, paths, and network resources can be accessed.
 						Deploy this configuration to managed devices via your MDM (Jamf, Intune, Kandji, etc.) targeting
-						<code style="background: var(--admin-bg-surface); padding: 0.15rem 0.35rem;">~/.composer/policy.json</code>.
+						<code style="background: var(--admin-bg-surface); padding: 0.15rem 0.35rem;">~/.maestro/policy.json</code>.
 					</p>
 
 					${

@@ -1,5 +1,5 @@
 {
-	"name": "composer-web",
+	"name": "maestro-web",
 	"projectType": "application",
 	"root": "packages/web",
 	"sourceRoot": "packages/web/src",

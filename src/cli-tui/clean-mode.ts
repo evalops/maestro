@@ -26,10 +26,10 @@ export function parseCleanMode(value: string): CleanMode | null {
 
 /**
  * Read clean mode from environment variable.
- * @returns The CleanMode from COMPOSER_TUI_CLEAN or null if not set/invalid
+ * @returns The CleanMode from MAESTRO_TUI_CLEAN or null if not set/invalid
  */
 export function readCleanModeFromEnv(): CleanMode | null {
-	const raw = process.env.COMPOSER_TUI_CLEAN;
+	const raw = process.env.MAESTRO_TUI_CLEAN;
 	if (!raw) return null;
 	return parseCleanMode(raw);
 }

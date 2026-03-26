@@ -42,14 +42,13 @@ export function getTerminalCapabilities(): TerminalCapabilities {
 export function getLowBandwidthConfig(): LowBandwidthConfig {
 	return {
 		enabled:
-			process.env.COMPOSER_TUI_LOW_BW === "1" ||
-			process.env.COMPOSER_TUI_LOW_BW?.toLowerCase() === "true" ||
+			process.env.MAESTRO_TUI_LOW_BW === "1" ||
+			process.env.MAESTRO_TUI_LOW_BW?.toLowerCase() === "true" ||
 			Boolean(process.env.SSH_CONNECTION || process.env.SSH_TTY),
 		batchIntervalMs:
-			Number.parseInt(process.env.COMPOSER_TUI_LOW_BW_BATCH_MS ?? "", 10) ||
-			120,
+			Number.parseInt(process.env.MAESTRO_TUI_LOW_BW_BATCH_MS ?? "", 10) || 120,
 		scrollbackLimit:
-			Number.parseInt(process.env.COMPOSER_TUI_SCROLLBACK ?? "", 10) || 600,
+			Number.parseInt(process.env.MAESTRO_TUI_SCROLLBACK ?? "", 10) || 600,
 	};
 }
 
@@ -58,8 +57,8 @@ export function getLowBandwidthConfig(): LowBandwidthConfig {
  */
 export function isMinimalMode(): boolean {
 	return (
-		process.env.COMPOSER_TUI_MINIMAL === "1" ||
-		process.env.COMPOSER_TUI_MINIMAL?.toLowerCase() === "true" ||
+		process.env.MAESTRO_TUI_MINIMAL === "1" ||
+		process.env.MAESTRO_TUI_MINIMAL?.toLowerCase() === "true" ||
 		typeof process.env.SSH_TTY === "string" ||
 		typeof process.env.SSH_CONNECTION === "string"
 	);
@@ -70,7 +69,7 @@ export function isMinimalMode(): boolean {
  * Uses SSH interval for remote connections.
  */
 export function getRenderInterval(): number {
-	const envValue = process.env.COMPOSER_TUI_RENDER_INTERVAL_MS;
+	const envValue = process.env.MAESTRO_TUI_RENDER_INTERVAL_MS;
 	let interval = Number.parseInt(envValue ?? "", 10);
 	if (!Number.isFinite(interval)) {
 		if (process.env.SSH_CONNECTION || process.env.SSH_TTY) {

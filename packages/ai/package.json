@@ -1,7 +1,7 @@
 {
 	"name": "@evalops/ai",
 	"version": "0.10.0",
-	"description": "Shared Composer AI SDK (models, transport, and agent event stream facade).",
+	"description": "Shared Maestro AI SDK (models, transport, and agent event stream facade).",
 	"type": "module",
 	"main": "./dist/packages/ai/src/index.js",
 	"types": "./dist/packages/ai/src/index.d.ts",
@@ -112,12 +112,12 @@
 		"test": "vitest --run --passWithNoTests",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
-	"keywords": ["ai", "llm", "agent", "streaming", "composer"],
+	"keywords": ["ai", "llm", "agent", "streaming", "maestro"],
 	"author": "EvalOps",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/evalops/composer.git",
+		"url": "git+https://github.com/evalops/maestro.git",
 		"directory": "packages/ai"
 	},
 	"engines": {

@@ -23,11 +23,11 @@ describe("framework preference resolution", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "composer-framework-"));
 		process.chdir(tempDir);
 		originalEnv = { ...process.env };
-		process.env.COMPOSER_DEFAULT_FRAMEWORK_FILE = join(
+		process.env.MAESTRO_DEFAULT_FRAMEWORK_FILE = join(
 			tempDir,
 			"default-framework.json",
 		);
-		process.env.COMPOSER_FRAMEWORK_POLICY_FILE = join(tempDir, "policy.json");
+		process.env.MAESTRO_FRAMEWORK_POLICY_FILE = join(tempDir, "policy.json");
 	});
 
 	afterEach(() => {
@@ -41,16 +41,16 @@ describe("framework preference resolution", () => {
 	});
 
 	const writePolicy = (value: unknown) => {
-		const policyPath = process.env.COMPOSER_FRAMEWORK_POLICY_FILE;
+		const policyPath = process.env.MAESTRO_FRAMEWORK_POLICY_FILE;
 		if (!policyPath) {
-			throw new Error("COMPOSER_FRAMEWORK_POLICY_FILE is not set");
+			throw new Error("MAESTRO_FRAMEWORK_POLICY_FILE is not set");
 		}
 		writeFileSync(policyPath, JSON.stringify(value, null, 2));
 	};
 
 	it("prefers locked policy and ignores overrides", () => {
 		writePolicy({ framework: { default: "fastapi", locked: true } });
-		process.env.COMPOSER_FRAMEWORK_OVERRIDE = "express";
+		process.env.MAESTRO_FRAMEWORK_OVERRIDE = "express";
 
 		const pref = resolveFrameworkPreference();
 		expect(pref).toEqual({
@@ -68,8 +68,8 @@ describe("framework preference resolution", () => {
 	});
 
 	it("uses env override ahead of env default and workspace", () => {
-		process.env.COMPOSER_FRAMEWORK_OVERRIDE = "express";
-		process.env.COMPOSER_DEFAULT_FRAMEWORK = "fastapi";
+		process.env.MAESTRO_FRAMEWORK_OVERRIDE = "express";
+		process.env.MAESTRO_DEFAULT_FRAMEWORK = "fastapi";
 		setWorkspaceFramework("node");
 
 		const pref = resolveFrameworkPreference();
@@ -86,7 +86,7 @@ describe("framework preference resolution", () => {
 		const pref = resolveFrameworkPreference();
 		expect(pref).toEqual({
 			id: "fastapi",
-			source: ".composer/workspace.json",
+			source: ".maestro/workspace.json",
 			locked: false,
 		});
 		expect(getWorkspaceFramework()).toBe("fastapi");

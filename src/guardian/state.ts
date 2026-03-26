@@ -6,7 +6,7 @@ import type { GuardianRunResult, GuardianState } from "./types.js";
 
 const STATE_ROOT = resolve(getAgentDir());
 const STATE_PATH =
-	resolveEnvPath(process.env.COMPOSER_GUARDIAN_STATE) ??
+	resolveEnvPath(process.env.MAESTRO_GUARDIAN_STATE) ??
 	join(STATE_ROOT, "guardian-state.json");
 
 const DEFAULT_STATE: GuardianState = {

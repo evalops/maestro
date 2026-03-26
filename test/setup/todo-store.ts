@@ -6,9 +6,9 @@ import { afterAll } from "vitest";
 const todoDir = mkdtempSync(join(tmpdir(), "composer-todos-"));
 const todoFile = join(todoDir, "todos.json");
 
-process.env.COMPOSER_TODO_FILE = todoFile;
+process.env.MAESTRO_TODO_FILE = todoFile;
 
 afterAll(() => {
 	rmSync(todoDir, { recursive: true, force: true });
-	Reflect.deleteProperty(process.env, "COMPOSER_TODO_FILE");
+	Reflect.deleteProperty(process.env, "MAESTRO_TODO_FILE");
 });

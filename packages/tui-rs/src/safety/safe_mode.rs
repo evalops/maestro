@@ -32,19 +32,19 @@ static PLAN_SATISFIED: AtomicBool = AtomicBool::new(false);
 
 static SAFE_MODE_CONFIG: std::sync::LazyLock<Mutex<SafeModeConfig>> =
     std::sync::LazyLock::new(|| {
-        let enabled = std::env::var("COMPOSER_SAFE_MODE").ok().as_deref() == Some("1");
+        let enabled = std::env::var("MAESTRO_SAFE_MODE").ok().as_deref() == Some("1");
         let require_plan = if enabled {
-            std::env::var("COMPOSER_SAFE_REQUIRE_PLAN").ok().as_deref() != Some("0")
+            std::env::var("MAESTRO_SAFE_REQUIRE_PLAN").ok().as_deref() != Some("0")
         } else {
             false
         };
-        let validators_raw = std::env::var("COMPOSER_SAFE_VALIDATORS").unwrap_or_default();
+        let validators_raw = std::env::var("MAESTRO_SAFE_VALIDATORS").unwrap_or_default();
         let validators = validators_raw
             .split(',')
             .map(|entry| entry.trim().to_string())
             .filter(|entry| !entry.is_empty())
             .collect();
-        let lsp_blocking_severity = std::env::var("COMPOSER_SAFE_LSP_SEVERITY")
+        let lsp_blocking_severity = std::env::var("MAESTRO_SAFE_LSP_SEVERITY")
             .ok()
             .and_then(|value| value.parse::<u8>().ok())
             .map_or_else(lsp::blocking_severity, |value| value.clamp(1, 4));
@@ -89,7 +89,7 @@ pub fn require_plan(tool_name: &str) -> Result<(), String> {
     ))
 }
 
-/// Run validators configured via `COMPOSER_SAFE_VALIDATORS`.
+/// Run validators configured via `MAESTRO_SAFE_VALIDATORS`.
 pub async fn run_validators(paths: &[String]) -> Result<Vec<ValidatorResult>, String> {
     run_validators_with_diagnostics(paths, None).await
 }
@@ -141,7 +141,7 @@ pub async fn run_validators_with_diagnostics(
         let mut cmd = tokio::process::Command::new(&shell);
         cmd.args(&shell_args)
             .arg(command.clone())
-            .env("COMPOSER_SAFE_CHANGED_PATHS", paths.join("::"));
+            .env("MAESTRO_SAFE_CHANGED_PATHS", paths.join("::"));
 
         let output = cmd
             .output()

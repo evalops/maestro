@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::ai::google::GoogleClient;
+//! use maestro_tui::ai::google::GoogleClient;
 //!
 //! let client = GoogleClient::from_env()?;
 //! let mut rx = client.stream(&messages, &config).await?;

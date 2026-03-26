@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::config_watcher::{ConfigWatcher, ConfigWatcherBuilder};
+//! use maestro_tui::config_watcher::{ConfigWatcher, ConfigWatcherBuilder};
 //!
 //! let mut watcher = ConfigWatcherBuilder::new()
 //!     .watch_composer_configs()

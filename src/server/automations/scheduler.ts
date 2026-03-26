@@ -18,46 +18,44 @@ import { getNextRunFromSchedule, isValidTimezone } from "./schedule-utils.js";
 const logger = createLogger("automations");
 
 const POLL_INTERVAL_MS =
-	Number.parseInt(process.env.COMPOSER_AUTOMATION_POLL_MS || "15000", 10) ||
+	Number.parseInt(process.env.MAESTRO_AUTOMATION_POLL_MS || "15000", 10) ||
 	15000;
 const MAX_CONTEXT_FILES =
 	Number.parseInt(
-		process.env.COMPOSER_AUTOMATION_CONTEXT_MAX_FILES || "12",
+		process.env.MAESTRO_AUTOMATION_CONTEXT_MAX_FILES || "12",
 		10,
 	) || 12;
 const MAX_CONTEXT_BYTES =
 	Number.parseInt(
-		process.env.COMPOSER_AUTOMATION_CONTEXT_MAX_BYTES || "120000",
+		process.env.MAESTRO_AUTOMATION_CONTEXT_MAX_BYTES || "120000",
 		10,
 	) || 120000;
 const MAX_CONTEXT_FILE_BYTES =
 	Number.parseInt(
-		process.env.COMPOSER_AUTOMATION_CONTEXT_MAX_FILE_BYTES || "40000",
+		process.env.MAESTRO_AUTOMATION_CONTEXT_MAX_FILE_BYTES || "40000",
 		10,
 	) || 40000;
 const MAX_OUTPUT_SNIPPET =
 	Number.parseInt(
-		process.env.COMPOSER_AUTOMATION_OUTPUT_MAX_CHARS || "1400",
+		process.env.MAESTRO_AUTOMATION_OUTPUT_MAX_CHARS || "1400",
 		10,
 	) || 1400;
 const MAX_AUTOMATION_CONCURRENCY =
-	Number.parseInt(process.env.COMPOSER_AUTOMATION_MAX_CONCURRENCY || "2", 10) ||
+	Number.parseInt(process.env.MAESTRO_AUTOMATION_MAX_CONCURRENCY || "2", 10) ||
 	2;
 const MAX_CONTEXT_FOLDER_FILES =
 	Number.parseInt(
-		process.env.COMPOSER_AUTOMATION_CONTEXT_MAX_FOLDER_FILES || "25",
+		process.env.MAESTRO_AUTOMATION_CONTEXT_MAX_FOLDER_FILES || "25",
 		10,
 	) || 25;
 const CONCURRENCY_RETRY_MS =
 	Number.parseInt(
-		process.env.COMPOSER_AUTOMATION_CONCURRENCY_RETRY_MS || "60000",
+		process.env.MAESTRO_AUTOMATION_CONCURRENCY_RETRY_MS || "60000",
 		10,
 	) || 60000;
 const MAX_RUN_HISTORY =
-	Number.parseInt(
-		process.env.COMPOSER_AUTOMATION_RUN_HISTORY_MAX || "20",
-		10,
-	) || 20;
+	Number.parseInt(process.env.MAESTRO_AUTOMATION_RUN_HISTORY_MAX || "20", 10) ||
+	20;
 
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 const runningTaskIds = new Set<string>();

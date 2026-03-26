@@ -88,7 +88,7 @@
 //! # Examples
 //!
 //! ```rust,ignore
-//! use composer_tui::tools::bash::{BashTool, BashArgs};
+//! use maestro_tui::tools::bash::{BashTool, BashArgs};
 //!
 //! # async fn examples() -> Result<(), Box<dyn std::error::Error>> {
 //! let tool = BashTool::new("/workspace");
@@ -174,7 +174,7 @@ pub(crate) fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
             );
         };
 
-        if let Ok(custom) = std::env::var("COMPOSER_BASH_PATH") {
+        if let Ok(custom) = std::env::var("MAESTRO_BASH_PATH") {
             let custom_path = PathBuf::from(&custom);
             if custom_path.is_dir() {
                 push_candidate(&mut direct_candidates, custom_path.join("bash.exe"));
@@ -225,7 +225,7 @@ pub(crate) fn resolve_shell_config() -> Result<(String, Vec<String>), String> {
             "\nAlso searched PATH for bash.exe".to_string()
         };
         return Err(format!(
-            "Git Bash not found. Please install Git for Windows from https://git-scm.com/download/win\nSet COMPOSER_BASH_PATH to override.\nSearched in:\n{}{}",
+            "Git Bash not found. Please install Git for Windows from https://git-scm.com/download/win\nSet MAESTRO_BASH_PATH to override.\nSearched in:\n{}{}",
             searched, path_note
         ));
     }
@@ -698,7 +698,7 @@ impl BashTool {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use composer_tui::tools::bash::BashTool;
+    /// use maestro_tui::tools::bash::BashTool;
     ///
     /// // Safe commands - no approval needed
     /// assert!(!BashTool::requires_approval("ls -la"));
@@ -845,7 +845,7 @@ impl BashTool {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use composer_tui::tools::bash::BashTool;
+    /// use maestro_tui::tools::bash::BashTool;
     ///
     /// // Dangerous commands return warning messages
     /// assert!(BashTool::is_dangerous("rm -rf /").is_some());
@@ -930,7 +930,7 @@ impl BashTool {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use composer_tui::tools::bash::{BashTool, BashArgs};
+    /// use maestro_tui::tools::bash::{BashTool, BashArgs};
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let tool = BashTool::new("/workspace");

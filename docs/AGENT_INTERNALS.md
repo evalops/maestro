@@ -1,6 +1,6 @@
 # Agent Internals
 
-This document describes the internal architecture of the Composer agent system, including the transport layer, tool execution flow, and context management.
+This document describes the internal architecture of the Maestro agent system, including the transport layer, tool execution flow, and context management.
 
 ## Architecture Overview
 
@@ -109,7 +109,7 @@ Hooks can intercept tool execution at key points:
 2. **PostToolUse**: After tool execution, can modify result
 3. **Notification**: For informational purposes only
 
-Configure hooks in `.composer/hooks.json`:
+Configure hooks in `.maestro/hooks.json`:
 
 ```json
 {
@@ -176,7 +176,7 @@ Enforces organizational policies:
 - Model restrictions
 - Dependency restrictions
 
-Policy file: `~/.composer/policy.json`
+Policy file: `~/.maestro/policy.json`
 
 ```json
 {
@@ -209,7 +209,7 @@ async function* streamProvider(
 
 ### Provider-Specific Configuration
 
-Network configuration (`~/.composer/providers.json`):
+Network configuration (`~/.maestro/providers.json`):
 
 ```json
 {
@@ -222,9 +222,9 @@ Network configuration (`~/.composer/providers.json`):
 ```
 
 Environment overrides:
-- `COMPOSER_PROVIDER_TIMEOUT_MS`
-- `COMPOSER_PROVIDER_MAX_RETRIES`
-- `COMPOSER_STREAM_IDLE_TIMEOUT_MS`
+- `MAESTRO_PROVIDER_TIMEOUT_MS`
+- `MAESTRO_PROVIDER_MAX_RETRIES`
+- `MAESTRO_STREAM_IDLE_TIMEOUT_MS`
 
 ## OAuth Integration (`src/oauth/`)
 
@@ -238,7 +238,7 @@ Environment overrides:
 
 ### Credential Storage
 
-Credentials stored in `~/.composer/oauth.json`:
+Credentials stored in `~/.maestro/oauth.json`:
 
 ```json
 {

@@ -34,7 +34,7 @@ use crossterm::Command;
 ///
 /// ```rust,ignore
 /// use crossterm::execute;
-/// use composer_tui::ansi_commands::SetScrollRegion;
+/// use maestro_tui::ansi_commands::SetScrollRegion;
 ///
 /// // Set scroll region to rows 5-20 (1-based)
 /// execute!(stdout(), SetScrollRegion(5..20))?;
@@ -398,7 +398,7 @@ impl Command for ScrollDown {
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::ansi_commands::{SetScrollRegion, ResetScrollRegion, scroll_region_down};
+/// use maestro_tui::ansi_commands::{SetScrollRegion, ResetScrollRegion, scroll_region_down};
 /// use crossterm::{execute, cursor::MoveTo};
 ///
 /// let mut stdout = std::io::stdout();

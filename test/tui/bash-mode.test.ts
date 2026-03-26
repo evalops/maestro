@@ -37,9 +37,9 @@ describe("bash-history", () => {
 	beforeEach(() => {
 		// Create a unique temp directory for each test
 		tempDir = mkdtempSync(join(tmpdir(), "composer-bash-history-"));
-		originalEnv = process.env.COMPOSER_BASH_HISTORY;
+		originalEnv = process.env.MAESTRO_BASH_HISTORY;
 		// Set a unique history file for this test
-		process.env.COMPOSER_BASH_HISTORY = join(
+		process.env.MAESTRO_BASH_HISTORY = join(
 			tempDir,
 			`history-${Date.now()}.json`,
 		);
@@ -48,9 +48,9 @@ describe("bash-history", () => {
 	afterEach(() => {
 		// Restore original env
 		if (originalEnv !== undefined) {
-			process.env.COMPOSER_BASH_HISTORY = originalEnv;
+			process.env.MAESTRO_BASH_HISTORY = originalEnv;
 		} else {
-			Reflect.deleteProperty(process.env, "COMPOSER_BASH_HISTORY");
+			Reflect.deleteProperty(process.env, "MAESTRO_BASH_HISTORY");
 		}
 		// Clean up temp directory
 		rmSync(tempDir, { recursive: true, force: true });
@@ -59,14 +59,14 @@ describe("bash-history", () => {
 	describe("getHistoryFilePath", () => {
 		it("returns env var path when set", () => {
 			const customPath = "/custom/path/history.json";
-			process.env.COMPOSER_BASH_HISTORY = customPath;
+			process.env.MAESTRO_BASH_HISTORY = customPath;
 			expect(getHistoryFilePath()).toBe(customPath);
 		});
 
 		it("returns default path when env var not set", () => {
-			Reflect.deleteProperty(process.env, "COMPOSER_BASH_HISTORY");
+			Reflect.deleteProperty(process.env, "MAESTRO_BASH_HISTORY");
 			const path = getHistoryFilePath();
-			expect(path).toContain(".composer");
+			expect(path).toContain(".maestro");
 			expect(path).toContain("bash-history.json");
 		});
 	});
@@ -131,7 +131,7 @@ describe("bash-history", () => {
 	describe("saveBashHistory", () => {
 		it("creates directory if it does not exist", () => {
 			const nestedPath = join(tempDir, "nested", "dir", "history.json");
-			process.env.COMPOSER_BASH_HISTORY = nestedPath;
+			process.env.MAESTRO_BASH_HISTORY = nestedPath;
 			saveBashHistory(["test command"]);
 			expect(existsSync(nestedPath)).toBe(true);
 		});

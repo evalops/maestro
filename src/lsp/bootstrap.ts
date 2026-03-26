@@ -19,7 +19,7 @@ export async function bootstrapLsp(): Promise<void> {
 	// Create default servers with workspace root resolver
 	const defaultServers = await createDefaultServers(resolveWorkspaceRoot);
 
-	// Apply user overrides from ~/.composer/config.json
+	// Apply user overrides from ~/.maestro/config.json
 	const finalServers = applyServerOverrides(defaultServers);
 
 	// Configure servers in LSP
@@ -31,7 +31,7 @@ export async function bootstrapLsp(): Promise<void> {
 
 	// Configure blocking severity in safe-mode if specified
 	if (lspConfig.blockingSeverity) {
-		process.env.COMPOSER_SAFE_LSP_SEVERITY = String(lspConfig.blockingSeverity);
+		process.env.MAESTRO_SAFE_LSP_SEVERITY = String(lspConfig.blockingSeverity);
 	}
 }
 

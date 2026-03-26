@@ -15,15 +15,15 @@ describe("Hierarchical Context File Loading", () => {
 
 	beforeEach(() => {
 		// Save original state
-		originalEnv = process.env.COMPOSER_AGENT_DIR;
-		originalHome = process.env.COMPOSER_HOME;
+		originalEnv = process.env.MAESTRO_AGENT_DIR;
+		originalHome = process.env.MAESTRO_HOME;
 
 		// Create temp test directory
 		testDir = join(tmpdir(), `composer-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
 
 		const composerHome = join(testDir, "composer-home");
-		process.env.COMPOSER_HOME = composerHome;
+		process.env.MAESTRO_HOME = composerHome;
 		mkdirSync(composerHome, { recursive: true });
 		clearConfigCache();
 	});
@@ -31,14 +31,14 @@ describe("Hierarchical Context File Loading", () => {
 	afterEach(() => {
 		// Restore original state
 		if (originalEnv === undefined) {
-			Reflect.deleteProperty(process.env, "COMPOSER_AGENT_DIR");
+			Reflect.deleteProperty(process.env, "MAESTRO_AGENT_DIR");
 		} else {
-			process.env.COMPOSER_AGENT_DIR = originalEnv;
+			process.env.MAESTRO_AGENT_DIR = originalEnv;
 		}
 		if (originalHome === undefined) {
-			Reflect.deleteProperty(process.env, "COMPOSER_HOME");
+			Reflect.deleteProperty(process.env, "MAESTRO_HOME");
 		} else {
-			process.env.COMPOSER_HOME = originalHome;
+			process.env.MAESTRO_HOME = originalHome;
 		}
 		clearConfigCache();
 
@@ -57,7 +57,7 @@ describe("Hierarchical Context File Loading", () => {
 				"# Global AGENTS\nThis is AGENTS.md",
 			);
 
-			process.env.COMPOSER_AGENT_DIR = globalDir;
+			process.env.MAESTRO_AGENT_DIR = globalDir;
 
 			const contextFiles = loadProjectContextFiles(testDir);
 			const globalContext = contextFiles.find((f) =>
@@ -75,7 +75,7 @@ describe("Hierarchical Context File Loading", () => {
 				"# Global Context\nThis is global context",
 			);
 
-			process.env.COMPOSER_AGENT_DIR = globalDir;
+			process.env.MAESTRO_AGENT_DIR = globalDir;
 
 			const contextFiles = loadProjectContextFiles(testDir);
 
@@ -99,7 +99,7 @@ describe("Hierarchical Context File Loading", () => {
 				"# CLAUDE.md Content\nThis should NOT be loaded",
 			);
 
-			process.env.COMPOSER_AGENT_DIR = globalDir;
+			process.env.MAESTRO_AGENT_DIR = globalDir;
 
 			const contextFiles = loadProjectContextFiles(testDir);
 
@@ -123,7 +123,7 @@ describe("Hierarchical Context File Loading", () => {
 				"# Override instructions\nOverride",
 			);
 
-			process.env.COMPOSER_AGENT_DIR = globalDir;
+			process.env.MAESTRO_AGENT_DIR = globalDir;
 
 			const contextFiles = loadProjectContextFiles(testDir);
 			const globalContext = contextFiles.find((f) => f.path.includes("global"));
@@ -197,7 +197,7 @@ describe("Hierarchical Context File Loading", () => {
 
 			// Should find exactly 2 project context files (excluding possible global)
 			const projectContexts = contextFiles.filter(
-				(f) => !f.path.includes("global") && !f.path.includes(".composer"),
+				(f) => !f.path.includes("global") && !f.path.includes(".maestro"),
 			);
 			expect(projectContexts.length).toBe(2);
 
@@ -247,7 +247,7 @@ describe("Hierarchical Context File Loading", () => {
 				"# Project\nProject settings",
 			);
 
-			process.env.COMPOSER_AGENT_DIR = globalDir;
+			process.env.MAESTRO_AGENT_DIR = globalDir;
 
 			const contextFiles = loadProjectContextFiles(projectDir);
 
@@ -289,7 +289,7 @@ describe("Hierarchical Context File Loading", () => {
 			writeFileSync(join(packagesDir, "AGENT.md"), "# Packages");
 			writeFileSync(join(appDir, "AGENT.md"), "# App");
 
-			process.env.COMPOSER_AGENT_DIR = globalDir;
+			process.env.MAESTRO_AGENT_DIR = globalDir;
 
 			const contextFiles = loadProjectContextFiles(appDir);
 
@@ -332,8 +332,8 @@ describe("Hierarchical Context File Loading", () => {
 			const emptyDir = join(testDir, "empty");
 			mkdirSync(emptyDir, { recursive: true });
 
-			// Don't set COMPOSER_AGENT_DIR so no global either
-			Reflect.deleteProperty(process.env, "COMPOSER_AGENT_DIR");
+			// Don't set MAESTRO_AGENT_DIR so no global either
+			Reflect.deleteProperty(process.env, "MAESTRO_AGENT_DIR");
 
 			const contextFiles = loadProjectContextFiles(emptyDir);
 
@@ -368,9 +368,9 @@ describe("Hierarchical Context File Loading", () => {
 		it("should load fallback filenames from project config", () => {
 			const projectDir = join(testDir, "project");
 			mkdirSync(projectDir, { recursive: true });
-			mkdirSync(join(projectDir, ".composer"), { recursive: true });
+			mkdirSync(join(projectDir, ".maestro"), { recursive: true });
 			writeFileSync(
-				join(projectDir, ".composer", "config.toml"),
+				join(projectDir, ".maestro", "config.toml"),
 				'project_doc_fallback_filenames = ["CONTEXT.md"]\n',
 			);
 			writeFileSync(join(projectDir, "CONTEXT.md"), "# Context\nFallback file");
@@ -384,9 +384,9 @@ describe("Hierarchical Context File Loading", () => {
 		it("should truncate context files based on max bytes", () => {
 			const projectDir = join(testDir, "project");
 			mkdirSync(projectDir, { recursive: true });
-			mkdirSync(join(projectDir, ".composer"), { recursive: true });
+			mkdirSync(join(projectDir, ".maestro"), { recursive: true });
 			writeFileSync(
-				join(projectDir, ".composer", "config.toml"),
+				join(projectDir, ".maestro", "config.toml"),
 				"project_doc_max_bytes = 12\n",
 			);
 			const content = "1234567890ABCDEFG";
@@ -403,9 +403,9 @@ describe("Hierarchical Context File Loading", () => {
 			const rootDir = join(testDir, "root");
 			const projectDir = join(rootDir, "project");
 			mkdirSync(projectDir, { recursive: true });
-			mkdirSync(join(projectDir, ".composer"), { recursive: true });
+			mkdirSync(join(projectDir, ".maestro"), { recursive: true });
 			writeFileSync(
-				join(projectDir, ".composer", "config.toml"),
+				join(projectDir, ".maestro", "config.toml"),
 				"project_doc_max_bytes = 16\n",
 			);
 			const rootContent = "ROOT-CONTEXT";

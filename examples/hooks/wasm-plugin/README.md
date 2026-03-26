@@ -1,4 +1,4 @@
-# WASM Safety Plugin for Composer
+# WASM Safety Plugin for Maestro
 
 This is an example WebAssembly hook plugin that blocks dangerous shell commands.
 
@@ -19,22 +19,22 @@ cargo build --release --target wasm32-unknown-unknown
 
 ```bash
 # Create plugins directory
-mkdir -p ~/.composer/plugins
+mkdir -p ~/.maestro/plugins
 
 # Copy the plugin
-cp target/wasm32-unknown-unknown/release/safety_plugin.wasm ~/.composer/plugins/
+cp target/wasm32-unknown-unknown/release/safety_plugin.wasm ~/.maestro/plugins/
 ```
 
 ## Configuration
 
-Add to `~/.composer/hooks.toml`:
+Add to `~/.maestro/hooks.toml`:
 
 ```toml
 [[hooks]]
 event = "PreToolUse"
 tools = ["Bash"]
 description = "WASM safety plugin"
-wasm = "~/.composer/plugins/safety_plugin.wasm"
+wasm = "~/.maestro/plugins/safety_plugin.wasm"
 ```
 
 ## Plugin Interface

@@ -177,7 +177,7 @@ impl LayoutConstraints {
 ///
 /// # Example
 /// ```
-/// use composer_tui::layout_constraints::responsive_width;
+/// use maestro_tui::layout_constraints::responsive_width;
 ///
 /// // Terminal is 120 columns, want 80% but clamp to [40, 100]
 /// let width = responsive_width(120, 40, 100, 0.8);
@@ -284,7 +284,7 @@ impl FlexItem {
 ///
 /// # Example
 /// ```
-/// use composer_tui::layout_constraints::{distribute_flex, FlexItem};
+/// use maestro_tui::layout_constraints::{distribute_flex, FlexItem};
 ///
 /// let items = vec![
 ///     FlexItem::weight(1.0).min(10),
@@ -470,7 +470,7 @@ impl PriorityZone {
 ///
 /// # Example
 /// ```
-/// use composer_tui::layout_constraints::{allocate_priority_zones, PriorityZone, Priority};
+/// use maestro_tui::layout_constraints::{allocate_priority_zones, PriorityZone, Priority};
 ///
 /// let mut zones = vec![
 ///     PriorityZone::new("essential", Priority::Essential, 20),

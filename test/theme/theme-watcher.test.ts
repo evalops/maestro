@@ -14,13 +14,13 @@ describe("theme-watcher", () => {
 
 	beforeEach(() => {
 		themesDir = mkdtempSync(join(tmpdir(), "composer-theme-watcher-"));
-		previousThemesDir = process.env.COMPOSER_THEMES_DIR;
-		process.env.COMPOSER_THEMES_DIR = themesDir;
+		previousThemesDir = process.env.MAESTRO_THEMES_DIR;
+		process.env.MAESTRO_THEMES_DIR = themesDir;
 	});
 
 	afterEach(() => {
 		stopThemeWatcher();
-		process.env.COMPOSER_THEMES_DIR = previousThemesDir ?? "";
+		process.env.MAESTRO_THEMES_DIR = previousThemesDir ?? "";
 		rmSync(themesDir, { recursive: true, force: true });
 	});
 

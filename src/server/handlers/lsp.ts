@@ -77,7 +77,7 @@ export async function handleLsp(
 					res,
 					400,
 					{
-						error: "LSP is disabled. Set COMPOSER_LSP_ENABLED=1 to enable.",
+						error: "LSP is disabled. Set MAESTRO_LSP_ENABLED=1 to enable.",
 					},
 					corsHeaders,
 				);

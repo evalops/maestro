@@ -33,7 +33,7 @@
 //! # Example
 //!
 //! ```
-//! use composer_tui::diff::{generate_diff, render_diff};
+//! use maestro_tui::diff::{generate_diff, render_diff};
 //!
 //! let old = "line 1\nline 2\nline 3";
 //! let new = "line 1\nline 2 modified\nline 3";

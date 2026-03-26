@@ -16,10 +16,10 @@
 
 /**
  * Check if the terminal supports Unicode.
- * Can be overridden via COMPOSER_LOW_UNICODE=1
+ * Can be overridden via MAESTRO_LOW_UNICODE=1
  */
 function detectLowUnicode(): boolean {
-	const envOverride = process.env.COMPOSER_LOW_UNICODE;
+	const envOverride = process.env.MAESTRO_LOW_UNICODE;
 	if (envOverride === "1" || envOverride === "true") return true;
 	if (envOverride === "0" || envOverride === "false") return false;
 

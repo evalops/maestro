@@ -313,13 +313,13 @@ async function checkAlertThresholds(entry: AuditLogEntry): Promise<void> {
 
 /**
  * Log an audit event with optional integrity hash chain.
- * Set COMPOSER_AUDIT_INTEGRITY=true to enable hash chain.
+ * Set MAESTRO_AUDIT_INTEGRITY=true to enable hash chain.
  */
 export async function logAudit(entry: AuditLogEntry): Promise<void> {
 	try {
 		const db = getDb();
 		const redactedMetadata = redactMetadata(entry.metadata);
-		const enableIntegrity = process.env.COMPOSER_AUDIT_INTEGRITY === "true";
+		const enableIntegrity = process.env.MAESTRO_AUDIT_INTEGRITY === "true";
 
 		// Generate entry ID
 		const entryId = crypto.randomUUID();

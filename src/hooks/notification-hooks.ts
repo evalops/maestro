@@ -5,9 +5,9 @@
  * enabling CI/automation integration and custom workflows.
  *
  * Configuration via environment variable or config file:
- *   COMPOSER_NOTIFY_PROGRAM=/path/to/script
- *   COMPOSER_NOTIFY_EVENTS=turn-complete,session-end (comma-separated, or "all")
- *   COMPOSER_NOTIFY_TERMINAL=true (enables OSC 9 terminal notifications)
+ *   MAESTRO_NOTIFY_PROGRAM=/path/to/script
+ *   MAESTRO_NOTIFY_EVENTS=turn-complete,session-end (comma-separated, or "all")
+ *   MAESTRO_NOTIFY_TERMINAL=true (enables OSC 9 terminal notifications)
  *
  * The program receives a JSON payload as its first argument with event details.
  *
@@ -71,12 +71,12 @@ export function loadNotificationConfig(): NotificationHooksConfig {
 	};
 
 	// Check environment variables first
-	const envProgram = process.env.COMPOSER_NOTIFY_PROGRAM;
+	const envProgram = process.env.MAESTRO_NOTIFY_PROGRAM;
 	if (envProgram) {
 		config.program = envProgram;
 	}
 
-	const envEvents = process.env.COMPOSER_NOTIFY_EVENTS;
+	const envEvents = process.env.MAESTRO_NOTIFY_EVENTS;
 	if (envEvents) {
 		if (envEvents === "all") {
 			config.events = [
@@ -102,7 +102,7 @@ export function loadNotificationConfig(): NotificationHooksConfig {
 		}
 	}
 
-	const envTimeout = process.env.COMPOSER_NOTIFY_TIMEOUT;
+	const envTimeout = process.env.MAESTRO_NOTIFY_TIMEOUT;
 	if (envTimeout) {
 		const parsed = Number.parseInt(envTimeout, 10);
 		if (!Number.isNaN(parsed) && parsed > 0) {
@@ -111,14 +111,14 @@ export function loadNotificationConfig(): NotificationHooksConfig {
 	}
 
 	// Terminal notifications via OSC 9
-	const envTerminal = process.env.COMPOSER_NOTIFY_TERMINAL;
+	const envTerminal = process.env.MAESTRO_NOTIFY_TERMINAL;
 	if (envTerminal === "true" || envTerminal === "1") {
 		config.terminalNotify = true;
 	}
 
 	// Check config file if no environment override
 	if (!config.program) {
-		const configPath = join(PATHS.COMPOSER_HOME, "hooks.json");
+		const configPath = join(PATHS.MAESTRO_HOME, "hooks.json");
 		if (existsSync(configPath)) {
 			try {
 				const fileConfig = JSON.parse(readFileSync(configPath, "utf-8"));
@@ -226,7 +226,7 @@ export function notifyTurnComplete(summary: string): void {
 
 	// Send terminal notification
 	if (config.terminalNotify) {
-		sendTerminalNotification("Composer", summary);
+		sendTerminalNotification("Maestro", summary);
 	}
 
 	// External program is handled by sendNotification with full payload

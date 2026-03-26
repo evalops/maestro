@@ -347,20 +347,20 @@ interface ActionFirewallVerdict {
 ```typescript
 // Environment variables for policy configuration
 const isStrictUntaggedEgress = () =>
-  process.env.COMPOSER_FAIL_UNTAGGED_EGRESS === "1";
+  process.env.MAESTRO_FAIL_UNTAGGED_EGRESS === "1";
 
 const isBackgroundShellBlocked = () =>
-  process.env.COMPOSER_BACKGROUND_SHELL_DISABLE === "1";
+  process.env.MAESTRO_BACKGROUND_SHELL_DISABLE === "1";
 
 // Plan mode requires approval for all mutations
-if (process.env.COMPOSER_PLAN_MODE === "1") {
+if (process.env.MAESTRO_PLAN_MODE === "1") {
   // Require approval for write, edit, bash, todo, gh_pr, gh_issue
 }
 ```
 
 ## Firewall Configuration File
 
-Users can configure trusted paths in `~/.composer/firewall.json`:
+Users can configure trusted paths in `~/.maestro/firewall.json`:
 
 ```json
 {

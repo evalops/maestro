@@ -34,7 +34,7 @@ export async function handleGuardianCommand(
 	if (arg.startsWith("enable")) {
 		setGuardianEnabled(true);
 		deps.showSuccess(
-			"Composer Guardian enabled (Semgrep + secrets before commit/push).",
+			"Maestro Guardian enabled (Semgrep + secrets before commit/push).",
 		);
 		return;
 	}
@@ -42,7 +42,7 @@ export async function handleGuardianCommand(
 	if (arg.startsWith("disable")) {
 		setGuardianEnabled(false);
 		deps.showWarning(
-			"Composer Guardian disabled. Set COMPOSER_GUARDIAN=1 to force on.",
+			"Maestro Guardian disabled. Set MAESTRO_GUARDIAN=1 to force on.",
 		);
 		return;
 	}
@@ -69,7 +69,7 @@ export async function handleGuardianCommand(
 
 	if (result.status === "failed" || result.status === "error") {
 		deps.showError(
-			"Composer Guardian found issues. Resolve findings or set COMPOSER_GUARDIAN=0 to override (not recommended).",
+			"Maestro Guardian found issues. Resolve findings or set MAESTRO_GUARDIAN=0 to override (not recommended).",
 		);
 	} else if (result.status === "passed") {
 		deps.showSuccess("Guardian passed.");

@@ -302,7 +302,7 @@ ${copyNote}`;
 	}
 
 	private describeRuntime(): string {
-		const safeMode = process.env.COMPOSER_SAFE_MODE === "1" ? "on" : "off";
+		const safeMode = process.env.MAESTRO_SAFE_MODE === "1" ? "on" : "off";
 		const approvalMode = this.options.getApprovalMode
 			? this.options.getApprovalMode()
 			: "unknown";

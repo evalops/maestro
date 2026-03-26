@@ -51,8 +51,8 @@ class Logger {
 
 	constructor(config?: Partial<LoggerConfig>) {
 		this.config = {
-			minLevel: (process.env.COMPOSER_LOG_LEVEL as LogLevel) ?? "info",
-			jsonFormat: process.env.COMPOSER_LOG_JSON === "1",
+			minLevel: (process.env.MAESTRO_LOG_LEVEL as LogLevel) ?? "info",
+			jsonFormat: process.env.MAESTRO_LOG_JSON === "1",
 			timestamps: true,
 			...config,
 		};
@@ -231,10 +231,10 @@ export function silenceLogger(): void {
 
 /**
  * Redirect all logs to a file (useful for TUI mode)
- * @param filePath - Path to the log file (defaults to ~/.composer/logs/composer.log)
+ * @param filePath - Path to the log file (defaults to ~/.maestro/logs/composer.log)
  */
 export function redirectLoggerToFile(filePath?: string): void {
-	const logFile = filePath ?? join(PATHS.COMPOSER_HOME, "logs", "composer.log");
+	const logFile = filePath ?? join(PATHS.MAESTRO_HOME, "logs", "composer.log");
 
 	// Ensure directory exists
 	try {

@@ -26,8 +26,8 @@
  * ```
  *
  * Configuration paths:
- * - ~/.composer/execpolicy (global)
- * - .composer/execpolicy (project - evaluated after global)
+ * - ~/.maestro/execpolicy (global)
+ * - .maestro/execpolicy (project - evaluated after global)
  */
 
 import {
@@ -588,8 +588,8 @@ export function loadPolicy(workspaceDir: string): Policy {
 
 	const policy = new Policy();
 
-	const globalPath = join(PATHS.COMPOSER_HOME, "execpolicy");
-	const projectPath = join(workspaceDir, ".composer", "execpolicy");
+	const globalPath = join(PATHS.MAESTRO_HOME, "execpolicy");
+	const projectPath = join(workspaceDir, ".maestro", "execpolicy");
 
 	// Load global policy
 	if (existsSync(globalPath)) {
@@ -774,7 +774,7 @@ export function isCommandForbidden(
  */
 export function whitelistCommand(workspaceDir: string, command: string): void {
 	const tokens = parseCommand(command);
-	const policyPath = join(workspaceDir, ".composer", "execpolicy");
+	const policyPath = join(workspaceDir, ".maestro", "execpolicy");
 	appendAllowPrefixRule(policyPath, tokens);
 }
 
@@ -796,7 +796,7 @@ export function getPolicySummary(workspaceDir: string): string {
 	if (totalRules === 0) {
 		lines.push("No rules defined. All commands will be prompted.");
 		lines.push("");
-		lines.push("Create ~/.composer/execpolicy or .composer/execpolicy");
+		lines.push("Create ~/.maestro/execpolicy or .maestro/execpolicy");
 		lines.push("to define command approval policies.");
 	} else {
 		let count = 0;

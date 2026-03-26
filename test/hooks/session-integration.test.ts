@@ -20,7 +20,7 @@ describe("SessionHookService", () => {
 
 	beforeEach(() => {
 		testDir = mkdtempSync(join(tmpdir(), "hooks-test-"));
-		hooksDir = join(testDir, ".composer", "hooks");
+		hooksDir = join(testDir, ".maestro", "hooks");
 		mkdirSync(hooksDir, { recursive: true });
 	});
 

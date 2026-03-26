@@ -1,6 +1,6 @@
 # pi-mono upstream notes
 
-Composer includes a few components that are **adapted from** or **inspired by** the open-source project **pi-mono**.
+Maestro includes a few components that are **adapted from** or **inspired by** the open-source project **pi-mono**.
 
 ## Upstream
 
@@ -11,22 +11,22 @@ Composer includes a few components that are **adapted from** or **inspired by** 
 
 ### Theme system
 
-- Composer: `src/theme/theme.ts`
+- Maestro: `src/theme/theme.ts`
 - Upstream reference: `packages/coding-agent/src/modes/interactive/theme/theme.ts`
 
-Notable differences in Composer vs upstream:
-- Composer adds additional semantic tokens (e.g. `accentWarm`) and uses `src/theme/color-utils.ts` for color resolution.
-- Token sets and embedded defaults have diverged (upstream includes `thinkingXhigh` and `bashMode`; Composer includes its own thinking levels and additional UI tokens).
-- Theme discovery paths differ (Composer searches built-in + CWD candidates; upstream uses config-based theme directories).
+Notable differences in Maestro vs upstream:
+- Maestro adds additional semantic tokens (e.g. `accentWarm`) and uses `src/theme/color-utils.ts` for color resolution.
+- Token sets and embedded defaults have diverged (upstream includes `thinkingXhigh` and `bashMode`; Maestro includes its own thinking levels and additional UI tokens).
+- Theme discovery paths differ (Maestro searches built-in + CWD candidates; upstream uses config-based theme directories).
 
 ### TypeScript hooks loader (pi-style hooks)
 
-- Composer: `src/hooks/typescript-loader.ts`, `src/hooks/types.ts`
+- Maestro: `src/hooks/typescript-loader.ts`, `src/hooks/types.ts`
 - Upstream reference: `packages/coding-agent/src/core/hooks/{loader.ts,types.ts}`
 
-Notable differences in Composer vs upstream:
-- Composer supports a larger event surface (`HookEventType`) and additional integration layers (tool/session integration + UI context).
-- Loader behavior and config locations differ (`~/.composer` / `.composer` vs upstream’s `~/.pi` / `.pi`).
+Notable differences in Maestro vs upstream:
+- Maestro supports a larger event surface (`HookEventType`) and additional integration layers (tool/session integration + UI context).
+- Loader behavior and config locations differ (`~/.maestro` / `.maestro` vs upstream’s `~/.pi` / `.pi`).
 
 ## Low-risk upstream improvements we should track
 

@@ -4,7 +4,7 @@
 ## Checklist
 
 - [ ] `make lint` (or `bun run bun:lint`)
-- [ ] `make test` (or `npx nx run composer:test --skip-nx-cache`)
+- [ ] `make test` (or `npx nx run maestro:test --skip-nx-cache`)
 - [ ] Built any touched packages (e.g., `make build-all`)
 
 ## Optional

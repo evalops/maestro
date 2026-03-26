@@ -352,7 +352,7 @@ describe("Checkpoint System", () => {
 
 		describe("persistence", () => {
 			it("should persist checkpoints to disk when enabled", () => {
-				const persistDir = join(tempDir, ".composer", "checkpoints");
+				const persistDir = join(tempDir, ".maestro", "checkpoints");
 				const store2 = createCheckpointStore({
 					cwd: tempDir,
 					persistToDisk: true,
@@ -368,7 +368,7 @@ describe("Checkpoint System", () => {
 			});
 
 			it("should load checkpoints from disk", () => {
-				const persistDir = join(tempDir, ".composer", "checkpoints");
+				const persistDir = join(tempDir, ".maestro", "checkpoints");
 				const filePath = join(tempDir, "test.txt");
 				writeFileSync(filePath, "content", "utf-8");
 

@@ -27,8 +27,8 @@ function parseMaxBytes(value?: string | null): number | undefined {
 export function resolveHistorySettings(
 	cwd: string = process.cwd(),
 ): HistorySettings {
-	let persistence = parsePersistence(process.env.COMPOSER_HISTORY_PERSISTENCE);
-	let maxBytes = parseMaxBytes(process.env.COMPOSER_HISTORY_MAX_BYTES);
+	let persistence = parsePersistence(process.env.MAESTRO_HISTORY_PERSISTENCE);
+	let maxBytes = parseMaxBytes(process.env.MAESTRO_HISTORY_MAX_BYTES);
 
 	if (!persistence || maxBytes === undefined) {
 		try {

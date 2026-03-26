@@ -39,7 +39,7 @@ const STATUS_ICON: Record<StepStatus, string> = {
 const STEP_LABELS: Record<ProgressStepId, string> = {
 	queued: "Queued",
 	branch: "Branch created",
-	composer: "Composer run",
+	composer: "Maestro run",
 	typecheck: "Type check",
 	lint: "Lint",
 	tests: "Tests",

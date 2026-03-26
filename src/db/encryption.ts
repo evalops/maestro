@@ -2,7 +2,7 @@
  * Field-level encryption for sensitive database columns.
  *
  * Uses AES-256-GCM for authenticated encryption. The encryption key
- * is derived from COMPOSER_DB_ENCRYPTION_KEY environment variable.
+ * is derived from MAESTRO_DB_ENCRYPTION_KEY environment variable.
  *
  * Encrypted values are stored as: base64(iv:ciphertext:authTag)
  */
@@ -24,7 +24,7 @@ let encryptionKey: Buffer | null = null;
  * Returns true if encryption is available, false otherwise.
  */
 export function initEncryption(): boolean {
-	const keySource = process.env.COMPOSER_DB_ENCRYPTION_KEY;
+	const keySource = process.env.MAESTRO_DB_ENCRYPTION_KEY;
 
 	if (!keySource) {
 		logger.debug("No encryption key configured, field encryption disabled");
@@ -204,7 +204,7 @@ export function reEncryptField(
 
 /**
  * Generate a new encryption key.
- * Returns the key as a hex string suitable for COMPOSER_DB_ENCRYPTION_KEY.
+ * Returns the key as a hex string suitable for MAESTRO_DB_ENCRYPTION_KEY.
  */
 export function generateEncryptionKey(): string {
 	return crypto.randomBytes(KEY_LENGTH).toString("hex");

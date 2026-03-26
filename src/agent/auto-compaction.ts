@@ -5,9 +5,9 @@
  * exceeds configured thresholds. Inspired by Claude Code's auto-compaction.
  *
  * Environment variables:
- * - COMPOSER_AUTOCOMPACT_PCT: Percentage threshold to trigger (default: 85)
- * - COMPOSER_AUTOCOMPACT_ENABLED: Enable/disable auto-compaction (default: true)
- * - COMPOSER_AUTOCOMPACT_MIN_MESSAGES: Minimum messages before compacting (default: 10)
+ * - MAESTRO_AUTOCOMPACT_PCT: Percentage threshold to trigger (default: 85)
+ * - MAESTRO_AUTOCOMPACT_ENABLED: Enable/disable auto-compaction (default: true)
+ * - MAESTRO_AUTOCOMPACT_MIN_MESSAGES: Minimum messages before compacting (default: 10)
  */
 
 import { createLogger } from "../utils/logger.js";
@@ -61,13 +61,13 @@ const DEFAULT_CONFIG: AutoCompactionConfig = {
  * Parse configuration from environment variables.
  */
 export function getAutoCompactionConfig(): AutoCompactionConfig {
-	const enabled = process.env.COMPOSER_AUTOCOMPACT_ENABLED !== "false";
+	const enabled = process.env.MAESTRO_AUTOCOMPACT_ENABLED !== "false";
 	const thresholdPercent = Number.parseInt(
-		process.env.COMPOSER_AUTOCOMPACT_PCT || "85",
+		process.env.MAESTRO_AUTOCOMPACT_PCT || "85",
 		10,
 	);
 	const minMessages = Number.parseInt(
-		process.env.COMPOSER_AUTOCOMPACT_MIN_MESSAGES || "10",
+		process.env.MAESTRO_AUTOCOMPACT_MIN_MESSAGES || "10",
 		10,
 	);
 

@@ -441,7 +441,7 @@ impl ToolExecutor {
     /// # Examples
     ///
     /// ```
-    /// use composer_tui::tools::ToolExecutor;
+    /// use maestro_tui::tools::ToolExecutor;
     ///
     /// // From &str
     /// let executor = ToolExecutor::new("/workspace");
@@ -675,7 +675,7 @@ impl ToolExecutor {
     /// # Examples
     ///
     /// ```
-    /// use composer_tui::tools::ToolExecutor;
+    /// use maestro_tui::tools::ToolExecutor;
     ///
     /// let executor = ToolExecutor::new(".");
     /// assert!(executor.has_tool("bash"));
@@ -719,7 +719,7 @@ impl ToolExecutor {
     /// # Examples
     ///
     /// ```
-    /// use composer_tui::tools::ToolExecutor;
+    /// use maestro_tui::tools::ToolExecutor;
     /// use serde_json::json;
     ///
     /// let executor = ToolExecutor::new(".");
@@ -757,7 +757,7 @@ impl ToolExecutor {
     /// # Examples
     ///
     /// ```
-    /// use composer_tui::tools::ToolExecutor;
+    /// use maestro_tui::tools::ToolExecutor;
     /// use serde_json::json;
     ///
     /// let executor = ToolExecutor::new(".");
@@ -834,7 +834,7 @@ impl ToolExecutor {
     /// # Examples
     ///
     /// ```rust,no_run
-    /// use composer_tui::tools::ToolExecutor;
+    /// use maestro_tui::tools::ToolExecutor;
     /// use serde_json::json;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -852,7 +852,7 @@ impl ToolExecutor {
     ///
     /// // Execute with event streaming
     /// use tokio::sync::mpsc;
-    /// use composer_tui::agent::FromAgent;
+    /// use maestro_tui::agent::FromAgent;
     ///
     /// let (tx, mut rx) = mpsc::unbounded_channel();
     /// let result = executor.execute("read", &json!({"file_path": "Cargo.toml"}), Some(&tx), "call-2").await;
@@ -2992,7 +2992,7 @@ impl ToolExecutor {
 /// # Examples
 ///
 /// ```
-/// use composer_tui::tools::ToolRegistry;
+/// use maestro_tui::tools::ToolRegistry;
 /// use serde_json::json;
 ///
 /// let registry = ToolRegistry::new();
@@ -3923,7 +3923,7 @@ impl ToolRegistry {
     /// # Examples
     ///
     /// ```
-    /// use composer_tui::tools::ToolRegistry;
+    /// use maestro_tui::tools::ToolRegistry;
     /// use serde_json::json;
     ///
     /// let registry = ToolRegistry::new();
@@ -3993,7 +3993,7 @@ impl ToolRegistry {
     /// # Examples
     ///
     /// ```
-    /// use composer_tui::tools::ToolRegistry;
+    /// use maestro_tui::tools::ToolRegistry;
     ///
     /// let registry = ToolRegistry::new();
     ///
@@ -4023,7 +4023,7 @@ impl ToolRegistry {
     /// # Examples
     ///
     /// ```
-    /// use composer_tui::tools::ToolRegistry;
+    /// use maestro_tui::tools::ToolRegistry;
     ///
     /// let registry = ToolRegistry::new();
     ///
@@ -4064,7 +4064,7 @@ impl ToolRegistry {
     /// # Examples
     ///
     /// ```
-    /// use composer_tui::tools::ToolRegistry;
+    /// use maestro_tui::tools::ToolRegistry;
     /// use serde_json::json;
     ///
     /// let registry = ToolRegistry::new();
@@ -4118,9 +4118,9 @@ impl ToolRegistry {
     /// # Example
     ///
     /// ```
-    /// use composer_tui::tools::ToolRegistry;
-    /// use composer_tui::agent::ToolDefinition;
-    /// use composer_tui::ai::Tool;
+    /// use maestro_tui::tools::ToolRegistry;
+    /// use maestro_tui::agent::ToolDefinition;
+    /// use maestro_tui::ai::Tool;
     ///
     /// let mut registry = ToolRegistry::new();
     ///
@@ -4169,8 +4169,8 @@ mod tests {
     impl EnvGuard {
         fn capture() -> Self {
             Self {
-                log_bytes: std::env::var("COMPOSER_BACKGROUND_TASK_LOG_BYTES").ok(),
-                log_segments: std::env::var("COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS").ok(),
+                log_bytes: std::env::var("MAESTRO_BACKGROUND_TASK_LOG_BYTES").ok(),
+                log_segments: std::env::var("MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS").ok(),
             }
         }
     }
@@ -4178,14 +4178,14 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             if let Some(value) = &self.log_bytes {
-                std::env::set_var("COMPOSER_BACKGROUND_TASK_LOG_BYTES", value);
+                std::env::set_var("MAESTRO_BACKGROUND_TASK_LOG_BYTES", value);
             } else {
-                std::env::remove_var("COMPOSER_BACKGROUND_TASK_LOG_BYTES");
+                std::env::remove_var("MAESTRO_BACKGROUND_TASK_LOG_BYTES");
             }
             if let Some(value) = &self.log_segments {
-                std::env::set_var("COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS", value);
+                std::env::set_var("MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS", value);
             } else {
-                std::env::remove_var("COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS");
+                std::env::remove_var("MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS");
             }
         }
     }
@@ -4355,8 +4355,8 @@ mod tests {
         let _env_guard = EnvGuard::capture();
         // MIN_LOG_BYTES is 50_000, so the limit must be at least that to enable rotation.
         // Write more data than the limit to guarantee rotation triggers.
-        std::env::set_var("COMPOSER_BACKGROUND_TASK_LOG_BYTES", "50000");
-        std::env::set_var("COMPOSER_BACKGROUND_TASK_LOG_SEGMENTS", "1");
+        std::env::set_var("MAESTRO_BACKGROUND_TASK_LOG_BYTES", "50000");
+        std::env::set_var("MAESTRO_BACKGROUND_TASK_LOG_SEGMENTS", "1");
 
         let dir = tempfile::tempdir().unwrap();
         let executor = ToolExecutor::new(dir.path().to_str().unwrap());

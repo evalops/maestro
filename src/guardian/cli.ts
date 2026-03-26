@@ -13,7 +13,7 @@ Options:
   --staged       Scan staged changes only (default)
   --all          Scan all tracked files
   --json         Emit JSON result
-  --no-env       Ignore COMPOSER_GUARDIAN overrides
+  --no-env       Ignore MAESTRO_GUARDIAN overrides
   --quiet        Omit file list from result output
   --trigger val  Label the caller (e.g. pre-commit, cli)
   -h, --help     Show this message

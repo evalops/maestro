@@ -274,33 +274,33 @@ export function getConfigPaths(): string[] {
 	const paths: string[] = [];
 
 	// 1. Global config
-	paths.push(join(PATHS.COMPOSER_HOME, "config.json"));
-	paths.push(join(PATHS.COMPOSER_HOME, "local.json"));
+	paths.push(join(PATHS.MAESTRO_HOME, "config.json"));
+	paths.push(join(PATHS.MAESTRO_HOME, "local.json"));
 
 	// 2. Project config (current directory)
-	const projectConfig = join(process.cwd(), ".composer", "config.json");
+	const projectConfig = join(process.cwd(), ".maestro", "config.json");
 	if (existsSync(projectConfig)) {
 		paths.push(projectConfig);
 	}
-	const projectLocal = join(process.cwd(), ".composer", "local.json");
+	const projectLocal = join(process.cwd(), ".maestro", "local.json");
 	if (existsSync(projectLocal)) {
 		paths.push(projectLocal);
 	}
 
 	// 3. Legacy path for backward compatibility
-	const legacyPath = join(PATHS.COMPOSER_HOME, "models.json");
+	const legacyPath = join(PATHS.MAESTRO_HOME, "models.json");
 	if (existsSync(legacyPath)) {
 		paths.push(legacyPath);
 	}
 
 	// 4. Environment variable override
-	if (process.env.COMPOSER_MODELS_FILE) {
-		const override = resolveEnvPath(process.env.COMPOSER_MODELS_FILE);
+	if (process.env.MAESTRO_MODELS_FILE) {
+		const override = resolveEnvPath(process.env.MAESTRO_MODELS_FILE);
 		if (override) paths.push(override);
 	}
 
-	if (process.env.COMPOSER_CONFIG) {
-		const override = resolveEnvPath(process.env.COMPOSER_CONFIG);
+	if (process.env.MAESTRO_CONFIG) {
+		const override = resolveEnvPath(process.env.MAESTRO_CONFIG);
 		if (override) paths.push(override);
 	}
 
@@ -309,8 +309,8 @@ export function getConfigPaths(): string[] {
 
 export function configPath(): string {
 	return (
-		resolveEnvPath(process.env.COMPOSER_MODELS_FILE) ??
-		join(PATHS.COMPOSER_HOME, "models.json")
+		resolveEnvPath(process.env.MAESTRO_MODELS_FILE) ??
+		join(PATHS.MAESTRO_HOME, "models.json")
 	);
 }
 

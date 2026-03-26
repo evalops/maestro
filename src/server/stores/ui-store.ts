@@ -6,7 +6,7 @@ import { tryParseJson } from "../../utils/json.js";
 import { resolveEnvPath } from "../../utils/path-expansion.js";
 
 const UI_STATE_PATH =
-	resolveEnvPath(process.env.COMPOSER_WEB_UI_STATE) ??
+	resolveEnvPath(process.env.MAESTRO_WEB_UI_STATE) ??
 	resolve(getAgentDir(), "web-ui-state.json");
 
 const KEY_REGEX = /^[A-Za-z0-9._-]+$/;

@@ -1,6 +1,6 @@
 # Prompt Queue & Loader Lifecycle
 
-When multiple prompts arrive faster than the agent can respond, Composer queues
+When multiple prompts arrive faster than the agent can respond, Maestro queues
 them and surfaces progress via the loader/notification system. This doc explains
 how the queue works and how the loader visualizes each stage.
 

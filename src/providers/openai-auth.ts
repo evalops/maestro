@@ -18,7 +18,7 @@
  * │  5. Receive authorization code via callback                 │
  * │  6. Exchange code for access/refresh/ID tokens              │
  * │  7. Exchange ID token for API key                           │
- * │  8. Store credentials in ~/.composer/openai-oauth.json      │
+ * │  8. Store credentials in ~/.maestro/openai-oauth.json      │
  * └─────────────────────────────────────────────────────────────┘
  * ```
  *
@@ -34,7 +34,7 @@
  * ## Token Storage
  *
  * Credentials are stored at:
- * - Default: `~/.composer/openai-oauth.json`
+ * - Default: `~/.maestro/openai-oauth.json`
  * - Custom: `$OPENAI_OAUTH_FILE`
  *
  * File is created with mode 0o600 (owner read/write only).

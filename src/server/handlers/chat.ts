@@ -348,7 +348,7 @@ export async function handleChat(
 		const slimValue = Array.isArray(slimHeader) ? slimHeader[0] : slimHeader;
 		const slimEvents = slimValue === "1" || slimValue === "true";
 		const slimToolCallArgsLimit = (() => {
-			const raw = process.env.COMPOSER_SLIM_TOOLCALL_ARGS_MAX_BYTES;
+			const raw = process.env.MAESTRO_SLIM_TOOLCALL_ARGS_MAX_BYTES;
 			if (!raw) return 4096;
 			const parsed = Number(raw);
 			if (!Number.isFinite(parsed) || parsed <= 0) return 4096;

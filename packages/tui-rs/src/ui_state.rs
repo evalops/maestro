@@ -89,7 +89,7 @@ pub fn save_queue_modes(steering_mode: QueueMode, follow_up_mode: QueueMode) -> 
 }
 
 fn ui_state_path() -> Option<PathBuf> {
-    if let Ok(path) = env::var("COMPOSER_UI_STATE") {
+    if let Ok(path) = env::var("MAESTRO_UI_STATE") {
         if !path.trim().is_empty() {
             let raw = PathBuf::from(path);
             if let Some(expanded) = expand_tilde(&raw) {
@@ -167,7 +167,7 @@ mod tests {
         // Test default behavior by temporarily checking if env var is unset
         // Note: Due to parallel test execution, we can't reliably clear env vars
         // Instead, verify the function returns a valid path structure
-        let current_env = std::env::var("COMPOSER_UI_STATE").ok();
+        let current_env = std::env::var("MAESTRO_UI_STATE").ok();
         if current_env.is_none() || current_env.as_ref().is_some_and(|v| v.trim().is_empty()) {
             let path = ui_state_path();
             if let Some(p) = path {
@@ -189,25 +189,25 @@ mod tests {
     #[test]
     fn test_ui_state_path_from_env() {
         // Save original value
-        let original = std::env::var("COMPOSER_UI_STATE").ok();
+        let original = std::env::var("MAESTRO_UI_STATE").ok();
 
-        std::env::set_var("COMPOSER_UI_STATE", "/tmp/custom-ui-state.json");
+        std::env::set_var("MAESTRO_UI_STATE", "/tmp/custom-ui-state.json");
         let path = ui_state_path();
         assert_eq!(path, Some(PathBuf::from("/tmp/custom-ui-state.json")));
 
         // Restore original value
         match original {
-            Some(v) => std::env::set_var("COMPOSER_UI_STATE", v),
-            None => std::env::remove_var("COMPOSER_UI_STATE"),
+            Some(v) => std::env::set_var("MAESTRO_UI_STATE", v),
+            None => std::env::remove_var("MAESTRO_UI_STATE"),
         }
     }
 
     #[test]
     fn test_ui_state_path_empty_env() {
         // Save original value
-        let original = std::env::var("COMPOSER_UI_STATE").ok();
+        let original = std::env::var("MAESTRO_UI_STATE").ok();
 
-        std::env::set_var("COMPOSER_UI_STATE", "   ");
+        std::env::set_var("MAESTRO_UI_STATE", "   ");
         let path = ui_state_path();
         // Should fall back to default when env var is empty/whitespace
         if let Some(p) = path {
@@ -220,17 +220,17 @@ mod tests {
 
         // Restore original value
         match original {
-            Some(v) => std::env::set_var("COMPOSER_UI_STATE", v),
-            None => std::env::remove_var("COMPOSER_UI_STATE"),
+            Some(v) => std::env::set_var("MAESTRO_UI_STATE", v),
+            None => std::env::remove_var("MAESTRO_UI_STATE"),
         }
     }
 
     #[test]
     fn test_ui_state_path_tilde_expansion() {
         // Save original value
-        let original = std::env::var("COMPOSER_UI_STATE").ok();
+        let original = std::env::var("MAESTRO_UI_STATE").ok();
 
-        std::env::set_var("COMPOSER_UI_STATE", "~/my-ui-state.json");
+        std::env::set_var("MAESTRO_UI_STATE", "~/my-ui-state.json");
         let path = ui_state_path();
         if let Some(p) = path {
             // Should not start with ~ after expansion
@@ -240,8 +240,8 @@ mod tests {
 
         // Restore original value
         match original {
-            Some(v) => std::env::set_var("COMPOSER_UI_STATE", v),
-            None => std::env::remove_var("COMPOSER_UI_STATE"),
+            Some(v) => std::env::set_var("MAESTRO_UI_STATE", v),
+            None => std::env::remove_var("MAESTRO_UI_STATE"),
         }
     }
 }

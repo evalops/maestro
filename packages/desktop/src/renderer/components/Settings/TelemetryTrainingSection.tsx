@@ -45,7 +45,7 @@ function buildTelemetrySource(status: TelemetryStatus | null) {
 	if (status.flagValue !== undefined) {
 		return {
 			sourceLabel: "Env flag",
-			sourceExplanation: `COMPOSER_TELEMETRY=${status.flagValue} controls the base telemetry setting.`,
+			sourceExplanation: `MAESTRO_TELEMETRY=${status.flagValue} controls the base telemetry setting.`,
 		};
 	}
 
@@ -134,7 +134,7 @@ function buildTrainingSource(status: TrainingStatus | null) {
 	if (status.flagValue !== undefined) {
 		return {
 			sourceLabel: "Env flag",
-			sourceExplanation: `COMPOSER_TRAINING_OPT_OUT=${status.flagValue} sets the base training preference.`,
+			sourceExplanation: `MAESTRO_TRAINING_OPT_OUT=${status.flagValue} sets the base training preference.`,
 		};
 	}
 
@@ -176,7 +176,7 @@ function buildTrainingReasonExplanation(status: TrainingStatus | null): string {
 	}
 
 	if (status.flagValue !== undefined) {
-		return `Base preference comes from COMPOSER_TRAINING_OPT_OUT=${status.flagValue}.`;
+		return `Base preference comes from MAESTRO_TRAINING_OPT_OUT=${status.flagValue}.`;
 	}
 
 	if (status.preference === "provider-default") {

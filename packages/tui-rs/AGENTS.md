@@ -27,7 +27,7 @@ This is a **native Rust TUI** with a fully native agent runtime, AI provider cli
 
 3. **Modal System**: Single `ActiveModal` enum in `app.rs` controls which modal is visible. Only one modal can be active at a time.
 
-4. **Session Persistence**: Sessions are JSONL files in `~/.composer/sessions/`. The format matches the TypeScript TUI for compatibility.
+4. **Session Persistence**: Sessions are JSONL files in `~/.maestro/sessions/`. The format matches the TypeScript TUI for compatibility.
 
 ### ⚠️ Critical: TypeScript vs Rust Architecture Differences
 
@@ -354,13 +354,13 @@ Multi-agent orchestration for complex tasks:
 
 Precedence (highest to lowest):
 1. CLI flags (`--model`, `--config key=value`)
-2. Environment variables (`COMPOSER_*`)
+2. Environment variables (`MAESTRO_*`)
 3. Active profile settings
-4. Project config (`.composer/config.toml`)
-5. Global config (`~/.composer/config.toml`)
+4. Project config (`.maestro/config.toml`)
+5. Global config (`~/.maestro/config.toml`)
 6. Built-in defaults
 
-Uses `once_cell::sync::Lazy<RwLock<ComposerConfig>>` for thread-safe global state.
+Uses `once_cell::sync::Lazy<RwLock<MaestroConfig>>` for thread-safe global state.
 
 ### Session Format (`session/entries.rs`)
 

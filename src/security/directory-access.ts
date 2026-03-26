@@ -254,7 +254,7 @@ export function getDefaultSafeDirectories(): string[] {
 	const candidates = [
 		...(process.platform === "win32" ? [] : ["/tmp", "/var/tmp"]),
 		tmpdir(),
-		join(homeDir, ".composer"),
+		join(homeDir, ".maestro"),
 	];
 	const seen = new Set<string>();
 	return candidates.filter((dir) => {

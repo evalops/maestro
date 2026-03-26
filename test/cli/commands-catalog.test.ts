@@ -19,7 +19,7 @@ describe("command catalog", () => {
 		const home = tempDir();
 		const work = tempDir();
 		return withEnv({ HOME: home }, () => {
-			const homeDir = join(home, ".composer", "commands");
+			const homeDir = join(home, ".maestro", "commands");
 			mkdirSync(homeDir, { recursive: true });
 			writeFileSync(
 				join(homeDir, "cmd.json"),
@@ -29,7 +29,7 @@ describe("command catalog", () => {
 					description: "home",
 				}),
 			);
-			const wsDir = join(work, ".composer", "commands");
+			const wsDir = join(work, ".maestro", "commands");
 			mkdirSync(wsDir, { recursive: true });
 			writeFileSync(
 				join(wsDir, "cmd.json"),

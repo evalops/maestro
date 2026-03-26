@@ -41,7 +41,7 @@
 //! # Example Usage
 //!
 //! ```rust,ignore
-//! use composer_tui::mcp::{McpClient, McpConfig, McpServerConfig};
+//! use maestro_tui::mcp::{McpClient, McpConfig, McpServerConfig};
 //!
 //! // Load configuration
 //! let config = McpConfig::load("/path/to/project")?;

@@ -339,11 +339,11 @@ export async function discoverAndLoadTypeScriptHooks(
 	const seenPaths = new Set<string>();
 
 	// Discover global hooks
-	const globalHooksDir = join(PATHS.COMPOSER_HOME, "hooks");
+	const globalHooksDir = join(PATHS.MAESTRO_HOME, "hooks");
 	const globalHookPaths = discoverHooksInDir(globalHooksDir);
 
 	// Discover project hooks
-	const projectHooksDir = join(cwd, ".composer", "hooks");
+	const projectHooksDir = join(cwd, ".maestro", "hooks");
 	const projectHookPaths = discoverHooksInDir(projectHooksDir);
 
 	// Combine all paths (global, project, configured)

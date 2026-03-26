@@ -5,7 +5,7 @@ import { isPlainObject, tryParseJson } from "../../utils/json.js";
 import { resolveEnvPath } from "../../utils/path-expansion.js";
 
 const ZEN_STATE_PATH =
-	resolveEnvPath(process.env.COMPOSER_ZEN_STATE) ??
+	resolveEnvPath(process.env.MAESTRO_ZEN_STATE) ??
 	resolve(getAgentDir(), "zen-state.json");
 
 const KEY_REGEX = /^[A-Za-z0-9._-]+$/;

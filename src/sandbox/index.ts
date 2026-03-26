@@ -42,11 +42,11 @@ export interface SandboxConfig {
 }
 
 /**
- * Loads sandbox configuration from .composer/sandbox.json if present.
+ * Loads sandbox configuration from .maestro/sandbox.json if present.
  * Returns undefined if no config file exists.
  */
 export function loadSandboxConfig(cwd: string): SandboxConfig | undefined {
-	const configPath = join(cwd, ".composer", "sandbox.json");
+	const configPath = join(cwd, ".maestro", "sandbox.json");
 	if (!existsSync(configPath)) {
 		return undefined;
 	}
@@ -112,7 +112,7 @@ export async function createSandbox(
 	options: CreateSandboxOptions = {},
 ): Promise<Sandbox | undefined> {
 	const cwd = options.cwd ?? process.cwd();
-	const isWebServer = process.env.COMPOSER_WEB_SERVER === "1";
+	const isWebServer = process.env.MAESTRO_WEB_SERVER === "1";
 
 	// Priority: explicit mode > env var > config file > auto-detect
 	let mode: SandboxMode = options.mode ?? "none";
@@ -120,7 +120,7 @@ export async function createSandbox(
 	let nativeConfig = options.native;
 
 	// Check environment variable (handle "undefined" string from process.env assignment)
-	const envModeRaw = process.env.COMPOSER_SANDBOX_MODE;
+	const envModeRaw = process.env.MAESTRO_SANDBOX_MODE;
 	const envMode =
 		envModeRaw && envModeRaw !== "undefined"
 			? (envModeRaw as SandboxMode)
@@ -147,7 +147,7 @@ export async function createSandbox(
 		case "local":
 			if (isWebServer) {
 				throw new Error(
-					"Local sandbox is disabled in web-server mode. Use Docker sandbox or COMPOSER_SANDBOX_MODE=none.",
+					"Local sandbox is disabled in web-server mode. Use Docker sandbox or MAESTRO_SANDBOX_MODE=none.",
 				);
 			}
 			return new LocalSandbox();

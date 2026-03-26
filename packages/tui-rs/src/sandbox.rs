@@ -135,7 +135,7 @@
 //! -------------------------------------------------------------------------
 //!
 //! ```rust,ignore
-//! use composer_tui::sandbox::{SandboxPolicy, spawn_sandboxed_command};
+//! use maestro_tui::sandbox::{SandboxPolicy, spawn_sandboxed_command};
 //!
 //! // Define security policy
 //! let policy = SandboxPolicy::WorkspaceWrite {
@@ -709,7 +709,7 @@ pub const SEATBELT_EXECUTABLE: &str = "/usr/bin/sandbox-exec";
 /// This variable is set to "seatbelt" on macOS or "landlock" on Linux when
 /// a command is executed in the sandbox. Commands can check this variable
 /// to detect sandbox execution and adjust their behavior accordingly.
-pub const SANDBOX_ENV_VAR: &str = "COMPOSER_SANDBOX";
+pub const SANDBOX_ENV_VAR: &str = "MAESTRO_SANDBOX";
 
 // ─────────────────────────────────────────────────────────────
 // macOS Seatbelt Implementation
@@ -1537,7 +1537,7 @@ pub fn sandbox_type() -> &'static str {
 /// # Usage Example
 ///
 /// ```rust,ignore
-/// use composer_tui::sandbox::{SandboxPolicy, spawn_sandboxed_command};
+/// use maestro_tui::sandbox::{SandboxPolicy, spawn_sandboxed_command};
 /// use std::collections::HashMap;
 ///
 /// let policy = SandboxPolicy::default();

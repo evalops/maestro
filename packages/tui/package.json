@@ -1,7 +1,7 @@
 {
 	"name": "@evalops/tui",
 	"version": "0.10.0",
-	"description": "Terminal UI library with differential rendering for Composer",
+	"description": "Terminal UI library with differential rendering for Maestro",
 	"type": "module",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -32,13 +32,13 @@
 		"differential-rendering",
 		"typescript",
 		"cli",
-		"composer"
+		"maestro"
 	],
 	"author": "EvalOps",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/evalops/composer.git",
+		"url": "git+https://github.com/evalops/maestro.git",
 		"directory": "packages/tui"
 	},
 	"engines": {

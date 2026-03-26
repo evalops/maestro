@@ -3,14 +3,14 @@
 Audience: users/operators managing session persistence.  
 Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Safety](SAFETY.md) · [Features](FEATURES.md)
 
-Composer persists conversation history in JSONL files under
-`~/.composer/agent/sessions/--<cwd>--`. Understanding the format helps when you
+Maestro persists conversation history in JSONL files under
+`~/.maestro/agent/sessions/--<cwd>--`. Understanding the format helps when you
 want to inspect, back up, or clean up sessions.
 
 ## Directory Layout
 
 ```
-~/.composer/agent/
+~/.maestro/agent/
 └─ sessions/
    └─ --Users-me-project--/
       ├─ 2025-01-15T18-05-23.982Z_<uuid>.jsonl
@@ -67,4 +67,4 @@ these without touching the JSONL by using:
 - Use `--no-session` in CI or ephemeral workspaces to avoid clutter.
 
 Future enhancements (continuous context, shared KBs) will reuse this directory,
-so keep it tidy but don’t remove unrelated files under `~/.composer/agent/`.
+so keep it tidy but don’t remove unrelated files under `~/.maestro/agent/`.

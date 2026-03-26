@@ -23,9 +23,9 @@ describe("Auto-Compaction", () => {
 
 	describe("getAutoCompactionConfig", () => {
 		it("returns default configuration", () => {
-			Reflect.deleteProperty(process.env, "COMPOSER_AUTOCOMPACT_ENABLED");
-			Reflect.deleteProperty(process.env, "COMPOSER_AUTOCOMPACT_PCT");
-			Reflect.deleteProperty(process.env, "COMPOSER_AUTOCOMPACT_MIN_MESSAGES");
+			Reflect.deleteProperty(process.env, "MAESTRO_AUTOCOMPACT_ENABLED");
+			Reflect.deleteProperty(process.env, "MAESTRO_AUTOCOMPACT_PCT");
+			Reflect.deleteProperty(process.env, "MAESTRO_AUTOCOMPACT_MIN_MESSAGES");
 
 			const config = getAutoCompactionConfig();
 
@@ -35,16 +35,16 @@ describe("Auto-Compaction", () => {
 			expect(config.keepRecentCount).toBe(6);
 		});
 
-		it("respects COMPOSER_AUTOCOMPACT_ENABLED=false", () => {
-			process.env.COMPOSER_AUTOCOMPACT_ENABLED = "false";
+		it("respects MAESTRO_AUTOCOMPACT_ENABLED=false", () => {
+			process.env.MAESTRO_AUTOCOMPACT_ENABLED = "false";
 
 			const config = getAutoCompactionConfig();
 
 			expect(config.enabled).toBe(false);
 		});
 
-		it("parses COMPOSER_AUTOCOMPACT_PCT", () => {
-			process.env.COMPOSER_AUTOCOMPACT_PCT = "75";
+		it("parses MAESTRO_AUTOCOMPACT_PCT", () => {
+			process.env.MAESTRO_AUTOCOMPACT_PCT = "75";
 
 			const config = getAutoCompactionConfig();
 
@@ -52,15 +52,15 @@ describe("Auto-Compaction", () => {
 		});
 
 		it("clamps threshold between 50 and 100", () => {
-			process.env.COMPOSER_AUTOCOMPACT_PCT = "40";
+			process.env.MAESTRO_AUTOCOMPACT_PCT = "40";
 			expect(getAutoCompactionConfig().thresholdPercent).toBe(50);
 
-			process.env.COMPOSER_AUTOCOMPACT_PCT = "150";
+			process.env.MAESTRO_AUTOCOMPACT_PCT = "150";
 			expect(getAutoCompactionConfig().thresholdPercent).toBe(100);
 		});
 
-		it("parses COMPOSER_AUTOCOMPACT_MIN_MESSAGES", () => {
-			process.env.COMPOSER_AUTOCOMPACT_MIN_MESSAGES = "20";
+		it("parses MAESTRO_AUTOCOMPACT_MIN_MESSAGES", () => {
+			process.env.MAESTRO_AUTOCOMPACT_MIN_MESSAGES = "20";
 
 			const config = getAutoCompactionConfig();
 
@@ -68,7 +68,7 @@ describe("Auto-Compaction", () => {
 		});
 
 		it("enforces minimum of 5 messages", () => {
-			process.env.COMPOSER_AUTOCOMPACT_MIN_MESSAGES = "2";
+			process.env.MAESTRO_AUTOCOMPACT_MIN_MESSAGES = "2";
 
 			const config = getAutoCompactionConfig();
 

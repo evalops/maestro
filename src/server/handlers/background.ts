@@ -112,7 +112,7 @@ export async function handleBackground(
 				{
 					path,
 					exists,
-					overridden: Boolean(process.env.COMPOSER_BACKGROUND_SETTINGS),
+					overridden: Boolean(process.env.MAESTRO_BACKGROUND_SETTINGS),
 				},
 				corsHeaders,
 			);

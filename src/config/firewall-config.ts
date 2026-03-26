@@ -7,7 +7,7 @@
  *
  * ## Configuration File
  *
- * Location: `~/.composer/firewall.json`
+ * Location: `~/.maestro/firewall.json`
  *
  * ```json
  * {
@@ -51,7 +51,7 @@ import { PATHS } from "./constants.js";
 
 const logger = createLogger("config:firewall");
 
-const CONFIG_PATH = join(PATHS.COMPOSER_HOME, "firewall.json");
+const CONFIG_PATH = join(PATHS.MAESTRO_HOME, "firewall.json");
 
 const firewallConfigSchema = Type.Object({
 	containment: Type.Optional(

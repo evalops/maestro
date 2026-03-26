@@ -7,18 +7,18 @@ import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 const DEFAULT_BASE_URL =
-	process.env.COMPOSER_BRIDGE_BASE_URL?.trim() || "http://localhost:8080";
+	process.env.MAESTRO_BRIDGE_BASE_URL?.trim() || "http://localhost:8080";
 const HOST_NAME =
-	process.env.COMPOSER_BRIDGE_HOST?.trim() || "com.evalops.composer_bridge";
+	process.env.MAESTRO_BRIDGE_HOST?.trim() || "com.evalops.composer_bridge";
 const COMMAND =
-	process.env.COMPOSER_BRIDGE_COMMAND?.trim() || "composer";
-const RAW_ARGS = process.env.COMPOSER_BRIDGE_ARGS?.trim() || "";
+	process.env.MAESTRO_BRIDGE_COMMAND?.trim() || "composer";
+const RAW_ARGS = process.env.MAESTRO_BRIDGE_ARGS?.trim() || "";
 const STATUS_POLL_INTERVAL_MS = Number.parseInt(
-	process.env.COMPOSER_BRIDGE_POLL_MS || "2000",
+	process.env.MAESTRO_BRIDGE_POLL_MS || "2000",
 	10,
 );
 const LAUNCH_TIMEOUT_MS = Number.parseInt(
-	process.env.COMPOSER_BRIDGE_LAUNCH_TIMEOUT_MS || "15000",
+	process.env.MAESTRO_BRIDGE_LAUNCH_TIMEOUT_MS || "15000",
 	10,
 );
 
@@ -119,9 +119,9 @@ function getPortFromBaseUrl(baseUrl) {
 
 function buildLaunchEnv() {
 	const env = { ...process.env };
-	if (!env.COMPOSER_WEB_REQUIRE_KEY) env.COMPOSER_WEB_REQUIRE_KEY = "0";
-	if (!env.COMPOSER_WEB_REQUIRE_REDIS) env.COMPOSER_WEB_REQUIRE_REDIS = "0";
-	if (!env.COMPOSER_WEB_ORIGIN) env.COMPOSER_WEB_ORIGIN = "*";
+	if (!env.MAESTRO_WEB_REQUIRE_KEY) env.MAESTRO_WEB_REQUIRE_KEY = "0";
+	if (!env.MAESTRO_WEB_REQUIRE_REDIS) env.MAESTRO_WEB_REQUIRE_REDIS = "0";
+	if (!env.MAESTRO_WEB_ORIGIN) env.MAESTRO_WEB_ORIGIN = "*";
 	return env;
 }
 

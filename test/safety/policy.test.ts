@@ -24,7 +24,7 @@ vi.mock("node:os", () => ({
 	homedir: () => "/mock-home",
 }));
 
-const POLICY_PATH = join("/mock-home", ".composer", "policy.json");
+const POLICY_PATH = join("/mock-home", ".maestro", "policy.json");
 
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReadFileSync = vi.mocked(fs.readFileSync);

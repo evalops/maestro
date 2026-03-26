@@ -16,7 +16,7 @@ describe("Database Field Encryption", () => {
 
 	describe("initEncryption", () => {
 		it("should return false when no key is configured", async () => {
-			Reflect.deleteProperty(process.env, "COMPOSER_DB_ENCRYPTION_KEY");
+			Reflect.deleteProperty(process.env, "MAESTRO_DB_ENCRYPTION_KEY");
 			const { initEncryption, isEncryptionEnabled } = await import(
 				"../../src/db/encryption.js"
 			);
@@ -29,7 +29,7 @@ describe("Database Field Encryption", () => {
 
 		it("should accept hex-encoded 32-byte key", async () => {
 			// 64 hex chars = 32 bytes
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 			const { initEncryption, isEncryptionEnabled } = await import(
 				"../../src/db/encryption.js"
@@ -43,7 +43,7 @@ describe("Database Field Encryption", () => {
 
 		it("should accept base64-encoded 32-byte key", async () => {
 			// 32 bytes in base64
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 			const { initEncryption, isEncryptionEnabled } = await import(
 				"../../src/db/encryption.js"
@@ -56,7 +56,7 @@ describe("Database Field Encryption", () => {
 		});
 
 		it("should reject keys with wrong length", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY = "tooshort";
+			process.env.MAESTRO_DB_ENCRYPTION_KEY = "tooshort";
 			const { initEncryption, isEncryptionEnabled } = await import(
 				"../../src/db/encryption.js"
 			);
@@ -70,7 +70,7 @@ describe("Database Field Encryption", () => {
 
 	describe("encryptField / decryptField", () => {
 		it("should encrypt and decrypt a value", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 			const { encryptField, decryptField } = await import(
 				"../../src/db/encryption.js"
@@ -86,7 +86,7 @@ describe("Database Field Encryption", () => {
 		});
 
 		it("should produce different ciphertext for same plaintext (due to random IV)", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 			const { encryptField } = await import("../../src/db/encryption.js");
 
@@ -98,7 +98,7 @@ describe("Database Field Encryption", () => {
 		});
 
 		it("should return plaintext unchanged when encryption is disabled", async () => {
-			Reflect.deleteProperty(process.env, "COMPOSER_DB_ENCRYPTION_KEY");
+			Reflect.deleteProperty(process.env, "MAESTRO_DB_ENCRYPTION_KEY");
 			const { initEncryption, encryptField } = await import(
 				"../../src/db/encryption.js"
 			);
@@ -111,7 +111,7 @@ describe("Database Field Encryption", () => {
 		});
 
 		it("should return unencrypted values unchanged when decrypting", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 			const { decryptField } = await import("../../src/db/encryption.js");
 
@@ -122,7 +122,7 @@ describe("Database Field Encryption", () => {
 		});
 
 		it("should handle empty strings", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 			const { encryptField, decryptField } = await import(
 				"../../src/db/encryption.js"
@@ -135,7 +135,7 @@ describe("Database Field Encryption", () => {
 		});
 
 		it("should handle unicode strings", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 			const { encryptField, decryptField } = await import(
 				"../../src/db/encryption.js"
@@ -149,7 +149,7 @@ describe("Database Field Encryption", () => {
 		});
 
 		it("should detect tampered ciphertext", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 			const { encryptField, decryptField } = await import(
 				"../../src/db/encryption.js"
@@ -165,7 +165,7 @@ describe("Database Field Encryption", () => {
 
 	describe("isEncrypted", () => {
 		it("should return true for encrypted values", async () => {
-			process.env.COMPOSER_DB_ENCRYPTION_KEY =
+			process.env.MAESTRO_DB_ENCRYPTION_KEY =
 				"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 			const { encryptField, isEncrypted } = await import(
 				"../../src/db/encryption.js"

@@ -273,7 +273,7 @@ export function parseSubagentType(typeStr: string): SubagentType | null {
  * Get subagent type from environment variable.
  */
 export function getSubagentTypeFromEnv(): SubagentType {
-	const envType = process.env.COMPOSER_SUBAGENT_TYPE?.toLowerCase();
+	const envType = process.env.MAESTRO_SUBAGENT_TYPE?.toLowerCase();
 	if (envType && envType in SUBAGENT_SPECS) {
 		return envType as SubagentType;
 	}

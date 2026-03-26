@@ -20,7 +20,7 @@ describe("skills/tool", () => {
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `composer-skills-tool-test-${Date.now()}`);
-		skillsDir = join(testDir, ".composer", "skills");
+		skillsDir = join(testDir, ".maestro", "skills");
 		mkdirSync(skillsDir, { recursive: true });
 	});
 
@@ -62,7 +62,7 @@ ${content}
 			const text = getResultText(result);
 
 			expect(text).toContain("No skills available");
-			expect(text).toContain(".composer/skills/");
+			expect(text).toContain(".maestro/skills/");
 		});
 
 		it("lists available skills", async () => {

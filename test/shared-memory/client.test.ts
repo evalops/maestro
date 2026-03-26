@@ -27,10 +27,10 @@ describe("shared-memory client", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		homeDir = mkdtempSync(join(tmpdir(), "composer-shared-memory-"));
-		vi.stubEnv("COMPOSER_HOME", homeDir);
-		vi.stubEnv("COMPOSER_SHARED_MEMORY_BASE", "https://memory.test");
-		vi.stubEnv("COMPOSER_SHARED_MEMORY_API_KEY", "");
-		vi.stubEnv("COMPOSER_SHARED_MEMORY_SESSION_ID", "");
+		vi.stubEnv("MAESTRO_HOME", homeDir);
+		vi.stubEnv("MAESTRO_SHARED_MEMORY_BASE", "https://memory.test");
+		vi.stubEnv("MAESTRO_SHARED_MEMORY_API_KEY", "");
+		vi.stubEnv("MAESTRO_SHARED_MEMORY_SESSION_ID", "");
 		vi.resetModules();
 	});
 
@@ -65,16 +65,16 @@ describe("shared-memory client", () => {
 			state: { foo: "bar" },
 		});
 
-		vi.stubEnv("COMPOSER_SHARED_MEMORY_BASE", "");
+		vi.stubEnv("MAESTRO_SHARED_MEMORY_BASE", "");
 		await vi.advanceTimersByTimeAsync(200);
 		expect(fetchMock).toHaveBeenCalledTimes(0);
 
-		vi.stubEnv("COMPOSER_SHARED_MEMORY_BASE", "https://memory.test");
+		vi.stubEnv("MAESTRO_SHARED_MEMORY_BASE", "https://memory.test");
 		await vi.advanceTimersByTimeAsync(1500);
 
 		expect(fetchMock).toHaveBeenCalled();
 		const parsed = syncBody ? JSON.parse(String(syncBody)) : null;
-		expect(parsed?.state?.composer?.foo).toBe("bar");
+		expect(parsed?.state?.maestro?.foo).toBe("bar");
 	});
 
 	it("uses session override for event ids", async () => {
@@ -91,7 +91,7 @@ describe("shared-memory client", () => {
 			return new Response("", { status: 200 });
 		});
 		vi.stubGlobal("fetch", fetchMock);
-		vi.stubEnv("COMPOSER_SHARED_MEMORY_SESSION_ID", "override-session");
+		vi.stubEnv("MAESTRO_SHARED_MEMORY_SESSION_ID", "override-session");
 
 		const { queueSharedMemoryUpdate } = await import(
 			"../../src/shared-memory/client.js"
@@ -139,8 +139,8 @@ describe("shared-memory client", () => {
 		await vi.advanceTimersByTimeAsync(1000);
 
 		const parsed = syncBody ? JSON.parse(String(syncBody)) : null;
-		expect(parsed?.state?.composer?.foo).toBe("bar");
-		expect(parsed?.state?.composer?.baz).toBe("qux");
+		expect(parsed?.state?.maestro?.foo).toBe("bar");
+		expect(parsed?.state?.maestro?.baz).toBe("qux");
 	});
 
 	it("backs off with retry-after on rate limiting", async () => {
@@ -446,11 +446,11 @@ describe("shared-memory client", () => {
 		await vi.advanceTimersByTimeAsync(1000);
 
 		const parsed = syncBody ? JSON.parse(String(syncBody)) : null;
-		const content = parsed?.state?.composer?.content as string | undefined;
+		const content = parsed?.state?.maestro?.content as string | undefined;
 		expect(content).toBeTruthy();
 		expect(content?.length).toBeLessThanOrEqual(4000);
 		expect(content?.endsWith("...")).toBe(true);
-		expect(parsed?.state?.composer?.keep).toBe("ok");
+		expect(parsed?.state?.maestro?.keep).toBe("ok");
 	});
 
 	it("trims oversized event payloads before sync", async () => {

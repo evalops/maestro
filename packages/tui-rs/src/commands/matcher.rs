@@ -46,7 +46,7 @@
 //! # Example Usage
 //!
 //! ```rust,ignore
-//! use composer_tui::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
+//! use maestro_tui::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
 //! use std::sync::Arc;
 //!
 //! let registry = Arc::new(build_command_registry());
@@ -209,7 +209,7 @@ mod scores {
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::commands::{build_command_registry, SlashCommandMatcher};
+/// use maestro_tui::commands::{build_command_registry, SlashCommandMatcher};
 /// use std::sync::Arc;
 ///
 /// let registry = Arc::new(build_command_registry());
@@ -462,7 +462,7 @@ impl SlashCommandMatcher {
 /// # Example Usage
 ///
 /// ```rust,ignore
-/// use composer_tui::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
+/// use maestro_tui::commands::{build_command_registry, SlashCommandMatcher, SlashCycleState};
 /// use std::sync::Arc;
 ///
 /// let registry = Arc::new(build_command_registry());

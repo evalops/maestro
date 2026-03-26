@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../src/runtime/background-settings.js", () => ({
 	getBackgroundSettingsPath: vi.fn(
-		() => "/home/user/.composer/agent/background.json",
+		() => "/home/user/.maestro/agent/background.json",
 	),
 	updateBackgroundTaskSettings: vi.fn(),
 }));

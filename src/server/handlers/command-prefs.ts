@@ -17,8 +17,7 @@ type CommandPrefs = {
 };
 
 const getPrefsPath = () =>
-	resolveEnvPath(process.env.COMPOSER_COMMAND_PREFS) ??
-	PATHS.COMMAND_PREFS_FILE;
+	resolveEnvPath(process.env.MAESTRO_COMMAND_PREFS) ?? PATHS.COMMAND_PREFS_FILE;
 
 function loadPrefs(): CommandPrefs {
 	try {

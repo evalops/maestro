@@ -10,13 +10,13 @@
  *
  * The plan system uses two types of files:
  * 1. **Plan Files** (.md): Human-readable markdown files containing the actual
- *    plan content, stored in the project's `.composer/plans/` directory.
+ *    plan content, stored in the project's `.maestro/plans/` directory.
  * 2. **State File** (JSON): A single file in the user's home directory that
  *    tracks which plan is currently active and its metadata.
  *
  * ```
- * ~/.composer/plan-state.json     # Tracks active plan globally
- * project/.composer/plans/        # Contains plan markdown files
+ * ~/.maestro/plan-state.json     # Tracks active plan globally
+ * project/.maestro/plans/        # Contains plan markdown files
  *   ├── feature-2024-01-15T10-30-00.md
  *   └── refactor-2024-01-16T14-20-00.md
  * ```
@@ -36,8 +36,8 @@
  *
  * ## Environment Variables
  *
- * - `COMPOSER_PLAN_FILE`: Override the default plan file path
- * - `COMPOSER_PLAN_DIR`: Override the directory for plan files
+ * - `MAESTRO_PLAN_FILE`: Override the default plan file path
+ * - `MAESTRO_PLAN_DIR`: Override the directory for plan files
  */
 
 import {
@@ -59,7 +59,7 @@ const logger = createLogger("plan-mode");
  * Plan mode state that persists across sessions.
  *
  * This interface represents the complete state of an active or completed plan,
- * stored in the global state file (~/.composer/plan-state.json).
+ * stored in the global state file (~/.maestro/plan-state.json).
  */
 export interface PlanModeState {
 	/** Whether plan mode is currently active (false = completed/abandoned) */
@@ -98,14 +98,14 @@ export interface PlanModeConfig {
  * Plans are stored in the current project, state in the user's home dir.
  */
 const DEFAULT_CONFIG: PlanModeConfig = {
-	planDir: join(process.cwd(), ".composer", "plans"),
-	stateFile: join(PATHS.COMPOSER_HOME, "plan-state.json"),
+	planDir: join(process.cwd(), ".maestro", "plans"),
+	stateFile: join(PATHS.MAESTRO_HOME, "plan-state.json"),
 };
 
 /**
  * Get plan mode configuration from environment.
  *
- * Reads COMPOSER_PLAN_DIR env var to allow custom plan storage location.
+ * Reads MAESTRO_PLAN_DIR env var to allow custom plan storage location.
  * The state file is always in the user's home directory since it needs
  * to track plans across different projects.
  *
@@ -114,10 +114,10 @@ const DEFAULT_CONFIG: PlanModeConfig = {
 export function getPlanModeConfig(): PlanModeConfig {
 	// Allow environment override for plan directory (useful for monorepos)
 	const planDir =
-		resolveEnvPath(process.env.COMPOSER_PLAN_DIR) ??
-		join(process.cwd(), ".composer", "plans");
+		resolveEnvPath(process.env.MAESTRO_PLAN_DIR) ??
+		join(process.cwd(), ".maestro", "plans");
 	// State file is always user-global to track active plan across projects
-	const stateFile = join(PATHS.COMPOSER_HOME, "plan-state.json");
+	const stateFile = join(PATHS.MAESTRO_HOME, "plan-state.json");
 
 	return {
 		planDir,
@@ -128,7 +128,7 @@ export function getPlanModeConfig(): PlanModeConfig {
 /**
  * Ensure the plan directory exists, creating it if necessary.
  *
- * Uses recursive creation to handle nested paths like .composer/plans.
+ * Uses recursive creation to handle nested paths like .maestro/plans.
  *
  * @param config - Plan mode configuration with planDir path
  */
@@ -151,7 +151,7 @@ function ensurePlanDir(config: PlanModeConfig): void {
  *
  * @example
  * generatePlanFilePath(config, "Add OAuth")
- * // → "/project/.composer/plans/add-oauth-2024-01-15T10-30-00-000Z.md"
+ * // → "/project/.maestro/plans/add-oauth-2024-01-15T10-30-00-000Z.md"
  */
 export function generatePlanFilePath(
 	config: PlanModeConfig = getPlanModeConfig(),
@@ -160,8 +160,8 @@ export function generatePlanFilePath(
 	ensurePlanDir(config);
 
 	// Environment variable takes precedence (useful for CI/testing)
-	if (process.env.COMPOSER_PLAN_FILE) {
-		const resolved = resolveEnvPath(process.env.COMPOSER_PLAN_FILE);
+	if (process.env.MAESTRO_PLAN_FILE) {
+		const resolved = resolveEnvPath(process.env.MAESTRO_PLAN_FILE);
 		if (resolved) {
 			return resolved;
 		}
@@ -222,7 +222,7 @@ export function savePlanModeState(
 	config: PlanModeConfig = getPlanModeConfig(),
 ): void {
 	try {
-		// Ensure ~/.composer directory exists
+		// Ensure ~/.maestro directory exists
 		const dir = dirname(config.stateFile);
 		if (!existsSync(dir)) {
 			mkdirSync(dir, { recursive: true });

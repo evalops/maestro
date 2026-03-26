@@ -1,6 +1,6 @@
 {
-  "name": "@evalops/composer",
-  "description": "Composer by EvalOps - Deterministic coding agent with TUI/CLI and Web UI for AI-assisted development",
+  "name": "@evalops/maestro",
+  "description": "Maestro by EvalOps - Deterministic coding agent with TUI/CLI and Web UI for AI-assisted development",
   "version": "0.10.0",
   "private": false,
   "type": "module",
@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "bin": {
-    "composer": "dist/cli.js"
+    "maestro": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -23,7 +23,7 @@
     "prebuild": "node ./scripts/ensure-deps.js",
     "build": "node ./scripts/ensure-dir.js ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --force && bun build ./src/cli.ts --target node --packages external --external tree-sitter --external tree-sitter-bash --outfile dist/cli.js && chmod +x dist/cli.js && node ./scripts/copy-themes.js",
     "start": "node --enable-source-maps dist/cli.js",
-    "start:native": "COMPOSER_AGENT_SCRIPT=\"$(pwd)/dist/cli.js\" ./packages/tui-rs/target/release/composer-tui",
+    "start:native": "MAESTRO_AGENT_SCRIPT=\"$(pwd)/dist/cli.js\" ./packages/tui-rs/target/release/maestro-tui",
     "dev": "node ./scripts/ensure-dir.js ./tmp/tsbuildinfo && tsc -b tsconfig.build.json --watch --preserveWatchOutput",
     "dev:all": "concurrently --names \"cli,test\" --prefix-colors \"cyan,yellow\" \"npm run dev\" \"npm run test:watch\"",
     "test:watch": "node ./scripts/run-vitest.js --watch",
@@ -50,10 +50,10 @@
     "bun:test": "node ./scripts/run-vitest.js --run",
     "bun:test:fast": "VITEST_FAST=1 node ./scripts/run-vitest.js --run",
     "bun:check": "bun run bun:lint && bunx tsc --noEmit",
-    "bun:compile": "npm run build && bun build ./dist/cli.js --compile --external tree-sitter --external tree-sitter-bash --outfile dist/composer-bun",
-    "bun:compile:bytecode": "npm run build && bun build ./dist/cli.js --compile --bytecode --external tree-sitter --external tree-sitter-bash --outfile dist/composer-bun-bytecode",
+    "bun:compile": "npm run build && bun build ./dist/cli.js --compile --external tree-sitter --external tree-sitter-bash --outfile dist/maestro-bun",
+    "bun:compile:bytecode": "npm run build && bun build ./dist/cli.js --compile --bytecode --external tree-sitter --external tree-sitter-bash --outfile dist/maestro-bun-bytecode",
     "bun:evals": "bun run build && bun run ./scripts/run-evals.js",
-    "compile:binary": "npm run bun:compile && echo \"Binary ready at dist/composer-bun\"",
+    "compile:binary": "npm run bun:compile && echo \"Binary ready at dist/maestro-bun\"",
     "cli": "node ./dist/cli.js",
     "verify-build": "bun scripts/verify-build.ts",
     "verify-build:packages": "VERIFY_PACKAGES=1 bun scripts/verify-build.ts",
@@ -69,14 +69,14 @@
     "openapi:generate": "bun scripts/generate-openapi.ts",
     "openapi:serve": "bun scripts/serve-openapi.ts",
     "nix:update-hash": "bash scripts/update-nix-hash.sh",
-    "dev:web": "bun run --filter @evalops/composer-web dev",
+    "dev:web": "bun run --filter @evalops/maestro-web dev",
     "dev:tui": "bun run --filter @evalops/tui dev",
     "dev:packages": "concurrently --names \"tui,web\" --prefix-colors \"magenta,green\" \"bun run dev:tui\" \"bun run dev:web\"",
     "guardian": "bash scripts/guardian.sh",
     "guardian:install-hook": "node scripts/install-guardian-hook.js",
-    "build:all": "bun run --filter @evalops/contracts build && bun run --filter @evalops/tui build && bun run --filter @evalops/composer-web build && bun run build && bun run --filter @evalops/ai build",
+    "build:all": "bun run --filter @evalops/contracts build && bun run --filter @evalops/tui build && bun run --filter @evalops/maestro-web build && bun run build && bun run --filter @evalops/ai build",
     "test:all": "npm run test && npm run test --workspaces --if-present",
-    "db:generate": "COMPOSER_DATABASE_TYPE=postgres drizzle-kit generate",
+    "db:generate": "MAESTRO_DATABASE_TYPE=postgres drizzle-kit generate",
     "db:migrate": "bun run src/db/migrate.ts",
     "db:migrate:status": "bun run -e \"import('./src/db/migrate.js').then(m => m.getMigrationStatus()).then(console.log)\"",
     "db:studio": "drizzle-kit studio",
@@ -93,6 +93,7 @@
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.966.0",
     "@crosscopy/clipboard": "^0.2.8",
+    "@daytonaio/sdk": "^0.155.0",
     "@evalops/contracts": "workspace:*",
     "@evalops/tui": "workspace:*",
     "@google/genai": "^1.35.0",
@@ -169,7 +170,7 @@
     "vitest": "^4.0.7"
   },
   "keywords": [
-    "composer",
+    "maestro",
     "evalops",
     "ai",
     "llm",
@@ -181,7 +182,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/evalops/composer.git"
+    "url": "git+https://github.com/evalops/maestro.git"
   },
   "engines": {
     "node": ">=20.0.0",

@@ -8,6 +8,7 @@
 			"node_modules",
 			".external",
 			"src/models/models.generated.ts",
+			"packages/slack-agent-ui/.dev-data",
 			"packages/vscode-extension/media",
 			"packages/tui-rs/target",
 			"packages/desktop/dist-electron",

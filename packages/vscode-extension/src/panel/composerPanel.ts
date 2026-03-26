@@ -38,7 +38,7 @@ export class ComposerPanel {
 
 		const panel = vscode.window.createWebviewPanel(
 			"composerPanel",
-			"Composer",
+			"Maestro",
 			{ viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
 			{
 				enableScripts: true,

@@ -1,4 +1,4 @@
-# Composer CLI - Visual Architecture
+# Maestro CLI - Visual Architecture
 
 Audience: contributors needing a system map; pair with `VSCODE_ARCHITECTURE.md` for extension specifics.  
 Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) · [Safety](SAFETY.md)
@@ -180,7 +180,7 @@ Nav: [Docs index](README.md) · [Contributor Runbook](CONTRIBUTOR_RUNBOOK.md) ·
 
 Environment Variables                  File-based Config
 ┌───────────────────┐                 ┌────────────────────┐
-│ ANTHROPIC_API_KEY │                 │ ~/.composer/       │
+│ ANTHROPIC_API_KEY │                 │ ~/.maestro/       │
 │ OPENAI_API_KEY    │                 │  ├─ models.json    │◄──┐
 │ GEMINI_API_KEY    │                 │  ├─ sessions/      │   │
 │ GROQ_API_KEY      │                 │  └─ .env           │   │
@@ -215,8 +215,8 @@ Factory CLI Integration                                        │
 │ ~/.factory/            │                                     │
 │  ├─ config.json        │─────────────────────────────────────┘
 │  └─ settings.json      │     Bidirectional sync
-└────────────────────────┘     • Import: Factory → Composer
-                               • Export: Composer → Factory
+└────────────────────────┘     • Import: Factory → Maestro
+                               • Export: Maestro → Factory
 ```
 
 ## Session Management
@@ -260,7 +260,7 @@ Factory CLI Integration                                        │
                   │
                   ▼
     ┌──────────────────────────┐
-    │ ~/.composer/sessions/    │
+    │ ~/.maestro/sessions/    │
     │   {uuid}.json            │
     │                          │
     │ • Header (metadata)      │

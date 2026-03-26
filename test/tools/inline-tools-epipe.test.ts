@@ -24,7 +24,7 @@ describe("inline tool execution (EPIPE)", () => {
 
 	beforeEach(() => {
 		testDir = join(tmpdir(), `inline-tools-epipe-${Date.now()}`);
-		composerDir = join(testDir, ".composer");
+		composerDir = join(testDir, ".maestro");
 		mkdirSync(composerDir, { recursive: true });
 	});
 

@@ -328,7 +328,7 @@ describe("QuotaView", () => {
 
 		it("shows not authenticated message when no token", async () => {
 			const { view, container } = createQuotaView();
-			Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_TOKEN");
+			Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_TOKEN");
 
 			await view.handleQuotaCommand(createContext("/quota"));
 
@@ -337,7 +337,7 @@ describe("QuotaView", () => {
 		});
 
 		it("shows quota status for authenticated user", async () => {
-			process.env.COMPOSER_ENTERPRISE_TOKEN = "test-token";
+			process.env.MAESTRO_ENTERPRISE_TOKEN = "test-token";
 			mockVerifyToken.mockReturnValue({
 				userId: "user-123",
 				orgId: "org-456",
@@ -365,11 +365,11 @@ describe("QuotaView", () => {
 			expect(rendered).toContain("Token Quota Status");
 			expect(rendered).toContain("45.0K");
 			expect(rendered).toContain("100.0K");
-			Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_TOKEN");
+			Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_TOKEN");
 		});
 
 		it("shows unlimited quota status", async () => {
-			process.env.COMPOSER_ENTERPRISE_TOKEN = "test-token";
+			process.env.MAESTRO_ENTERPRISE_TOKEN = "test-token";
 			mockVerifyToken.mockReturnValue({
 				userId: "user-123",
 				orgId: "org-456",
@@ -395,11 +395,11 @@ describe("QuotaView", () => {
 
 			const rendered = getRenderedText(container);
 			expect(rendered).toContain("Unlimited");
-			Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_TOKEN");
+			Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_TOKEN");
 		});
 
 		it("handles zero quota as unlimited (prevents division by zero)", async () => {
-			process.env.COMPOSER_ENTERPRISE_TOKEN = "test-token";
+			process.env.MAESTRO_ENTERPRISE_TOKEN = "test-token";
 			mockVerifyToken.mockReturnValue({
 				userId: "user-123",
 				orgId: "org-456",
@@ -426,7 +426,7 @@ describe("QuotaView", () => {
 			const rendered = getRenderedText(container);
 			expect(rendered).toContain("Unlimited");
 			expect(rendered).not.toContain("Infinity");
-			Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_TOKEN");
+			Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_TOKEN");
 		});
 
 		it("shows error for enterprise commands without database", () => {
@@ -502,7 +502,7 @@ describe("QuotaView", () => {
 		it("shows session override notice in enterprise mode", async () => {
 			vi.useFakeTimers();
 			try {
-				process.env.COMPOSER_ENTERPRISE_TOKEN = "test-token";
+				process.env.MAESTRO_ENTERPRISE_TOKEN = "test-token";
 				mockIsDatabaseConfigured.mockReturnValue(true);
 				mockVerifyToken.mockReturnValue({
 					userId: "user-123",
@@ -537,7 +537,7 @@ describe("QuotaView", () => {
 				expect(rendered).toContain("Session Override");
 				expect(rendered).toContain("25.0K");
 			} finally {
-				Reflect.deleteProperty(process.env, "COMPOSER_ENTERPRISE_TOKEN");
+				Reflect.deleteProperty(process.env, "MAESTRO_ENTERPRISE_TOKEN");
 				vi.useRealTimers();
 			}
 		});

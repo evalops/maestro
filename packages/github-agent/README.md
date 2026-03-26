@@ -1,6 +1,6 @@
 # @evalops/github-agent
 
-Autonomous GitHub agent for self-improvement. **Composer building Composer.**
+Autonomous GitHub agent for self-improvement. **Maestro building Maestro.**
 
 ## What It Does
 
@@ -72,7 +72,7 @@ github-agent owner/repo --issue 42
 Add this workflow to your repository:
 
 ```yaml
-name: Composer Self-Improvement
+name: Maestro Self-Improvement
 
 on:
   issues:
@@ -95,7 +95,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v1
       - run: bun install
-      - run: npx nx run composer:build:all --skip-nx-cache
+      - run: npx nx run maestro:build:all --skip-nx-cache
       - run: |
           cd packages/github-agent && bun run build
           node dist/main.js ${{ github.repository }} \
@@ -161,7 +161,7 @@ jobs:
 | `GITHUB_WEBHOOK_MODE` | Optional | `poll` / `webhook` / `hybrid` |
 | `GITHUB_WEBHOOK_ID` | Optional | Webhook ID (for redelivery) |
 | `GITHUB_WEBHOOK_REDELIVERY_INTERVAL` | Optional | Webhook redelivery interval in ms |
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Composer |
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key for Maestro |
 
 ## How It Works
 
@@ -178,7 +178,7 @@ When a new issue is labeled with `composer-task`:
 For each task:
 
 1. **Branch creation**: Creates a feature branch from main
-2. **Composer execution**: Runs `composer exec --full-auto` with the task
+2. **Maestro execution**: Runs `maestro exec --full-auto` with the task
 3. **Quality gates**: Tests, lint, and type checking must pass
 4. **Self-review**: Optional second pass to catch issues
 5. **PR creation**: Opens a PR with proper formatting

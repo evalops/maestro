@@ -111,7 +111,7 @@ export class FooterHintsController {
 				hasPromptQueue: queueData.hasQueue,
 				thinkingLevel: this.deps.getThinkingLevel(),
 				sandboxMode,
-				isSafeMode: process.env.COMPOSER_SAFE_MODE === "1",
+				isSafeMode: process.env.MAESTRO_SAFE_MODE === "1",
 				sandboxRequestedButMissing: sandboxRequested && !sandboxActive,
 				alertCount: this.deps.getUnseenAlertCount(),
 				reducedMotion: this.deps.isReducedMotion(),

@@ -1044,7 +1044,7 @@ approvalManager.stop();
 ┌─────────────────────────────────────────────────────────────────┐
 │                      AgentRunner                                 │
 │  ┌─────────────┐  ┌──────────────┐  ┌────────────────┐          │
-│  │ Composer    │  │ Tool         │  │ Cost           │          │
+│  │ Maestro    │  │ Tool         │  │ Cost           │          │
 │  │ Agent       │  │ Executor     │  │ Tracker        │          │
 │  └──────┬──────┘  └──────┬───────┘  └────────────────┘          │
 └─────────┼────────────────┼──────────────────────────────────────┘
@@ -1070,7 +1070,7 @@ approvalManager.stop();
 1. **Message received** → Socket Mode client receives event
 2. **Rate check** → RateLimiter validates user/channel limits
 3. **Context created** → SlackContext built with channel info, users, history
-4. **Agent runs** → Composer Agent processes with Claude API
+4. **Agent runs** → Maestro Agent processes with Claude API
 5. **Tools execute** → Commands run in Docker sandbox
 6. **Response sent** → Updates Slack message in real-time
 7. **Usage tracked** → CostTracker records token usage

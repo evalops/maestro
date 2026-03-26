@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::components::AsciiAnimation;
+//! use maestro_tui::components::AsciiAnimation;
 //!
 //! let mut animation = AsciiAnimation::new();
 //!
@@ -357,7 +357,7 @@ pub mod logos {
     ";
 
     /// Small composer logo
-    pub const COMPOSER_SMALL: &str = r"
+    pub const MAESTRO_SMALL: &str = r"
 ╔═╗┌─┐┌┬┐┌─┐┌─┐┌─┐┌─┐┬─┐
 ║  │ ││││├─┘│ │└─┐├┤ ├┬┘
 ╚═╝└─┘┴ ┴┴  └─┘└─┘└─┘┴└─
@@ -445,7 +445,7 @@ mod tests {
     #[allow(clippy::const_is_empty)]
     fn test_logos_not_empty() {
         assert!(!logos::COMPOSER.is_empty());
-        assert!(!logos::COMPOSER_SMALL.is_empty());
+        assert!(!logos::MAESTRO_SMALL.is_empty());
         assert!(!logos::AI_BRAIN.is_empty());
     }
 

@@ -62,7 +62,7 @@ pub fn is_blank_line(line: &Line<'_>) -> bool {
 /// ```rust
 /// use ratatui::text::{Line, Span};
 /// use ratatui::style::Stylize;
-/// use composer_tui::render_utils::prefix_lines;
+/// use maestro_tui::render_utils::prefix_lines;
 ///
 /// let lines = vec![
 ///     Line::from("First line"),

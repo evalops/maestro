@@ -27,7 +27,7 @@ function verifySessionOwnership(
 	if (typeof session.subject === "string" && session.subject) {
 		return session.subject === subject;
 	}
-	const strictMode = process.env.COMPOSER_STRICT_SESSION_ACCESS !== "false";
+	const strictMode = process.env.MAESTRO_STRICT_SESSION_ACCESS !== "false";
 	return !strictMode;
 }
 

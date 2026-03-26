@@ -73,11 +73,11 @@ describe("SessionCatalog", () => {
 
 	beforeEach(() => {
 		originalCwd = process.cwd();
-		originalEnv = process.env.COMPOSER_AGENT_DIR;
+		originalEnv = process.env.MAESTRO_AGENT_DIR;
 
 		testDir = join(tmpdir(), `composer-session-catalog-test-${Date.now()}`);
 		mkdirSync(testDir, { recursive: true });
-		process.env.COMPOSER_AGENT_DIR = testDir;
+		process.env.MAESTRO_AGENT_DIR = testDir;
 		process.chdir(testDir);
 	});
 
@@ -89,9 +89,9 @@ describe("SessionCatalog", () => {
 
 		process.chdir(originalCwd);
 		if (originalEnv === undefined) {
-			Reflect.deleteProperty(process.env, "COMPOSER_AGENT_DIR");
+			Reflect.deleteProperty(process.env, "MAESTRO_AGENT_DIR");
 		} else {
-			process.env.COMPOSER_AGENT_DIR = originalEnv;
+			process.env.MAESTRO_AGENT_DIR = originalEnv;
 		}
 
 		if (existsSync(testDir)) {

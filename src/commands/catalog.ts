@@ -26,7 +26,7 @@ export interface ResolvedCommand extends CommandDefinition {
 	source: string;
 }
 
-const HOME_DIR = join(PATHS.COMPOSER_HOME, "commands");
+const HOME_DIR = join(PATHS.MAESTRO_HOME, "commands");
 
 const escapeRegExp = (value: string): string =>
 	value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -66,7 +66,7 @@ export function parseCommandArgs(tokens: string[]): Record<string, string> {
 
 export function loadCommandCatalog(workspaceDir: string): ResolvedCommand[] {
 	const sources: string[] = [];
-	const workspaceCommandsDir = join(workspaceDir, ".composer", "commands");
+	const workspaceCommandsDir = join(workspaceDir, ".maestro", "commands");
 	sources.push(...listCommandFiles(HOME_DIR));
 	sources.push(...listCommandFiles(workspaceCommandsDir));
 

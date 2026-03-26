@@ -263,7 +263,7 @@ exit 1
 			writeFileSync(
 				scriptPath,
 				`#!/bin/bash
-if [ "$COMPOSER_HOOK_EVENT" = "PreToolUse" ]; then
+if [ "$MAESTRO_HOOK_EVENT" = "PreToolUse" ]; then
   echo '{"continue": true, "decision": "approve"}'
 else
   echo '{"decision": "block", "reason": "Wrong event type"}'
@@ -707,8 +707,8 @@ echo '{"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalCo
 
 	describe("Configuration Loading", () => {
 		it("should load hooks from project config file", async () => {
-			// Create .composer/hooks.json in test directory
-			const composerDir = join(testDir, ".composer");
+			// Create .maestro/hooks.json in test directory
+			const composerDir = join(testDir, ".maestro");
 			mkdirSync(composerDir, { recursive: true });
 
 			const scriptPath = join(scriptsDir, "project-hook.sh");
@@ -751,7 +751,7 @@ echo '{"continue": true, "decision": "approve"}'
 		});
 
 		it("should load hooks from environment variables", () => {
-			vi.stubEnv("COMPOSER_HOOKS_SESSION_START", "echo '{\"continue\": true}'");
+			vi.stubEnv("MAESTRO_HOOKS_SESSION_START", "echo '{\"continue\": true}'");
 
 			clearHookConfigCache();
 

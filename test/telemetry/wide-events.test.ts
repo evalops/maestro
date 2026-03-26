@@ -238,32 +238,32 @@ describe("getSamplingConfigFromEnv", () => {
 	});
 
 	it("parses sample rate from env", () => {
-		const originalEnv = process.env.COMPOSER_WIDE_EVENT_SAMPLE_RATE;
-		process.env.COMPOSER_WIDE_EVENT_SAMPLE_RATE = "0.25";
+		const originalEnv = process.env.MAESTRO_WIDE_EVENT_SAMPLE_RATE;
+		process.env.MAESTRO_WIDE_EVENT_SAMPLE_RATE = "0.25";
 
 		const config = getSamplingConfigFromEnv();
 		expect(config.successSampleRate).toBe(0.25);
 
 		// Restore
 		if (originalEnv === undefined) {
-			process.env.COMPOSER_WIDE_EVENT_SAMPLE_RATE = undefined;
+			process.env.MAESTRO_WIDE_EVENT_SAMPLE_RATE = undefined;
 		} else {
-			process.env.COMPOSER_WIDE_EVENT_SAMPLE_RATE = originalEnv;
+			process.env.MAESTRO_WIDE_EVENT_SAMPLE_RATE = originalEnv;
 		}
 	});
 
 	it("parses slow threshold from env", () => {
-		const originalEnv = process.env.COMPOSER_WIDE_EVENT_SLOW_THRESHOLD_MS;
-		process.env.COMPOSER_WIDE_EVENT_SLOW_THRESHOLD_MS = "10000";
+		const originalEnv = process.env.MAESTRO_WIDE_EVENT_SLOW_THRESHOLD_MS;
+		process.env.MAESTRO_WIDE_EVENT_SLOW_THRESHOLD_MS = "10000";
 
 		const config = getSamplingConfigFromEnv();
 		expect(config.slowThresholdMs).toBe(10000);
 
 		// Restore
 		if (originalEnv === undefined) {
-			process.env.COMPOSER_WIDE_EVENT_SLOW_THRESHOLD_MS = undefined;
+			process.env.MAESTRO_WIDE_EVENT_SLOW_THRESHOLD_MS = undefined;
 		} else {
-			process.env.COMPOSER_WIDE_EVENT_SLOW_THRESHOLD_MS = originalEnv;
+			process.env.MAESTRO_WIDE_EVENT_SLOW_THRESHOLD_MS = originalEnv;
 		}
 	});
 });

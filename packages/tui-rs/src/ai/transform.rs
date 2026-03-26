@@ -10,7 +10,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::ai::{transform_messages, Message, AiProvider};
+//! use maestro_tui::ai::{transform_messages, Message, AiProvider};
 //!
 //! let messages = vec![/* messages with thinking blocks */];
 //! let transformed = transform_messages(&messages, AiProvider::OpenAI);

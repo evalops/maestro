@@ -2,8 +2,8 @@
 //!
 //! Run with: cargo bench --bench batch_bench
 
-use composer_tui::tools::{BatchConfig, BatchExecutor, BatchToolCall};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use maestro_tui::tools::{BatchConfig, BatchExecutor, BatchToolCall};
 use serde_json::json;
 
 /// Benchmark batch executor creation

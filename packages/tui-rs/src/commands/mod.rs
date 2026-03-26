@@ -46,7 +46,7 @@
 //! # Usage Example
 //!
 //! ```rust,ignore
-//! use composer_tui::commands::{build_command_registry, SlashCommandMatcher};
+//! use maestro_tui::commands::{build_command_registry, SlashCommandMatcher};
 //! use std::sync::Arc;
 //!
 //! // Build the default command registry

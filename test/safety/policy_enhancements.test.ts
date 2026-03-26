@@ -9,7 +9,7 @@ import {
 	loadPolicy,
 } from "../../src/safety/policy.js";
 
-const MOCK_POLICY_PATH = join(homedir(), ".composer", "policy.json");
+const MOCK_POLICY_PATH = join(homedir(), ".maestro", "policy.json");
 
 describe("Policy Enhancements", () => {
 	beforeEach(() => {

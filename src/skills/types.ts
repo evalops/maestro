@@ -9,7 +9,7 @@
  * A skill definition.
  */
 export interface Skill {
-	/** Unique skill name (used in .composer/skills/<name>.md) */
+	/** Unique skill name (used in .maestro/skills/<name>.md) */
 	name: string;
 	/** Human-readable description */
 	description: string;

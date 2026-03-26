@@ -33,7 +33,7 @@ const OSC8_END: &str = "\x1b]8;;\x07";
 ///
 /// # Example
 /// ```
-/// use composer_tui::hyperlink::format_link;
+/// use maestro_tui::hyperlink::format_link;
 ///
 /// // With custom label
 /// let link = format_link("https://example.com", Some("Example"));

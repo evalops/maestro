@@ -7,15 +7,15 @@ import { loadCommandPrefs, saveCommandPrefs } from "../src/cli-tui/ui-state.js";
 const withTempPrefs = (fn: (path: string) => void) => {
 	const dir = mkdtempSync(join(tmpdir(), "composer-prefs-"));
 	const file = join(dir, "prefs.json");
-	const prev = process.env.COMPOSER_COMMAND_PREFS;
-	process.env.COMPOSER_COMMAND_PREFS = file;
+	const prev = process.env.MAESTRO_COMMAND_PREFS;
+	process.env.MAESTRO_COMMAND_PREFS = file;
 	try {
 		fn(file);
 	} finally {
 		if (prev === undefined) {
-			Reflect.deleteProperty(process.env, "COMPOSER_COMMAND_PREFS");
+			Reflect.deleteProperty(process.env, "MAESTRO_COMMAND_PREFS");
 		} else {
-			process.env.COMPOSER_COMMAND_PREFS = prev;
+			process.env.MAESTRO_COMMAND_PREFS = prev;
 		}
 	}
 };

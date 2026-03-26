@@ -20,7 +20,7 @@
 //! # Example
 //!
 //! ```rust
-//! use composer_tui::live_wrap::RowBuilder;
+//! use maestro_tui::live_wrap::RowBuilder;
 //!
 //! let mut rb = RowBuilder::new(40);
 //! rb.push_fragment("Hello ");

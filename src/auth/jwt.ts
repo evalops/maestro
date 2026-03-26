@@ -13,7 +13,7 @@ import {
 
 const logger = createLogger("auth");
 
-const envSecret = process.env.COMPOSER_JWT_SECRET || process.env.JWT_SECRET;
+const envSecret = process.env.MAESTRO_JWT_SECRET || process.env.JWT_SECRET;
 let JWT_SECRET: string;
 
 if (envSecret && envSecret.trim().length >= 32) {
@@ -21,15 +21,15 @@ if (envSecret && envSecret.trim().length >= 32) {
 } else if (process.env.NODE_ENV === "test") {
 	JWT_SECRET = crypto.randomBytes(32).toString("hex");
 	logger.warn(
-		"Generated ephemeral JWT secret for tests; set COMPOSER_JWT_SECRET for predictable behavior",
+		"Generated ephemeral JWT secret for tests; set MAESTRO_JWT_SECRET for predictable behavior",
 	);
 } else {
 	throw new Error(
-		"COMPOSER_JWT_SECRET must be set and at least 32 characters long",
+		"MAESTRO_JWT_SECRET must be set and at least 32 characters long",
 	);
 }
 
-const JWT_EXPIRY = process.env.COMPOSER_JWT_EXPIRY || "24h";
+const JWT_EXPIRY = process.env.MAESTRO_JWT_EXPIRY || "24h";
 const REFRESH_TOKEN_EXPIRY = "7d";
 
 export interface JwtPayload {

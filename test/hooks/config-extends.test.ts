@@ -11,7 +11,7 @@ import type { PreToolUseHookInput } from "../../src/hooks/types.js";
 import { withEnv } from "../utils/env.js";
 
 describe("hooks/config extends", () => {
-	const originalPreToolUse = process.env.COMPOSER_HOOKS_PRE_TOOL_USE;
+	const originalPreToolUse = process.env.MAESTRO_HOOKS_PRE_TOOL_USE;
 	let homeDir: string;
 	let workspaceDir: string;
 
@@ -19,8 +19,8 @@ describe("hooks/config extends", () => {
 		clearHookConfigCache();
 		homeDir = join(tmpdir(), `composer-hooks-home-${Date.now()}`);
 		workspaceDir = join(tmpdir(), `composer-hooks-workspace-${Date.now()}`);
-		mkdirSync(join(homeDir, ".composer"), { recursive: true });
-		mkdirSync(join(workspaceDir, ".composer"), { recursive: true });
+		mkdirSync(join(homeDir, ".maestro"), { recursive: true });
+		mkdirSync(join(workspaceDir, ".maestro"), { recursive: true });
 	});
 
 	afterEach(() => {
@@ -49,10 +49,10 @@ describe("hooks/config extends", () => {
 		withEnv(
 			{
 				HOME: homeDir,
-				COMPOSER_HOOKS_PRE_TOOL_USE: originalPreToolUse,
+				MAESTRO_HOOKS_PRE_TOOL_USE: originalPreToolUse,
 			},
 			() => {
-				const projectDir = join(workspaceDir, ".composer");
+				const projectDir = join(workspaceDir, ".maestro");
 
 				writeFileSync(
 					join(projectDir, "preset.json"),
@@ -108,7 +108,7 @@ describe("hooks/config extends", () => {
 		withEnv(
 			{
 				HOME: homeDir,
-				COMPOSER_HOOKS_PRE_TOOL_USE: originalPreToolUse,
+				MAESTRO_HOOKS_PRE_TOOL_USE: originalPreToolUse,
 			},
 			() => {
 				const nodeModules = join(
@@ -143,7 +143,7 @@ describe("hooks/config extends", () => {
 				);
 
 				writeFileSync(
-					join(workspaceDir, ".composer", "hooks.json"),
+					join(workspaceDir, ".maestro", "hooks.json"),
 					JSON.stringify(
 						{
 							extends: ["test-hook-preset"],
@@ -168,11 +168,11 @@ describe("hooks/config extends", () => {
 		withEnv(
 			{
 				HOME: homeDir,
-				COMPOSER_HOOKS_PRE_TOOL_USE: "env.sh",
+				MAESTRO_HOOKS_PRE_TOOL_USE: "env.sh",
 			},
 			() => {
 				writeFileSync(
-					join(homeDir, ".composer", "hooks.json"),
+					join(homeDir, ".maestro", "hooks.json"),
 					JSON.stringify(
 						{
 							hooks: {

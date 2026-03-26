@@ -243,10 +243,10 @@ function normalizeBaseUrl(value: string): string {
 }
 
 function readConfig(): SharedMemoryConfig | null {
-	const base = process.env.COMPOSER_SHARED_MEMORY_BASE?.trim();
+	const base = process.env.MAESTRO_SHARED_MEMORY_BASE?.trim();
 	if (!base) return null;
-	const apiKey = process.env.COMPOSER_SHARED_MEMORY_API_KEY?.trim();
-	const override = process.env.COMPOSER_SHARED_MEMORY_SESSION_ID?.trim();
+	const apiKey = process.env.MAESTRO_SHARED_MEMORY_API_KEY?.trim();
+	const override = process.env.MAESTRO_SHARED_MEMORY_SESSION_ID?.trim();
 	return {
 		baseUrl: normalizeBaseUrl(base),
 		apiKey: apiKey || undefined,
@@ -497,7 +497,7 @@ function schedulePersist(): void {
 }
 
 function getQueueFilePath(): string {
-	return join(PATHS.COMPOSER_HOME, "shared-memory-queue.json");
+	return join(PATHS.MAESTRO_HOME, "shared-memory-queue.json");
 }
 
 async function persistQueue(): Promise<void> {
@@ -532,7 +532,7 @@ async function persistQueue(): Promise<void> {
 			sessions,
 			stats: queueStats,
 		};
-		await mkdir(PATHS.COMPOSER_HOME, { recursive: true });
+		await mkdir(PATHS.MAESTRO_HOME, { recursive: true });
 		const tmp = `${path}.tmp`;
 		await writeFile(tmp, JSON.stringify(payload), "utf8");
 		await rename(tmp, path);

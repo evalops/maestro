@@ -7,16 +7,16 @@ Nav: [Docs index](README.md) · [Quickstart](QUICKSTART.md) · [Tools Reference]
 
 - `bun install` (workspace-aware)  
 - Node is pinned via `.node-version` (and `.nvmrc` for nvm users).
-- Keys: export provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) or place in `~/.composer/keys.json`.
+- Keys: export provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) or place in `~/.maestro/keys.json`.
 
 ## 1. Build & Verify (fresh repo)
 
 ```bash
-npx nx run composer:build --skip-nx-cache          # CLI fast path
-npx nx run composer:build:all --skip-nx-cache      # CLI + TUI + Web
+npx nx run maestro:build --skip-nx-cache           # CLI fast path
+npx nx run maestro:build:all --skip-nx-cache       # CLI + TUI + Web
 bun run bun:lint                                   # Biome + eval verifier
-npx nx run composer:test --skip-nx-cache           # Builds TUI/Web, then Vitest
-npx nx run composer:evals --skip-nx-cache          # Scenario runner
+npx nx run maestro:test --skip-nx-cache            # Builds TUI/Web, then Vitest
+npx nx run maestro:evals --skip-nx-cache           # Scenario runner
 ```
 
 Expected: all commands succeed; dist artifacts appear under `dist/`.
@@ -26,7 +26,7 @@ Expected: all commands succeed; dist artifacts appear under `dist/`.
 - `bun run dev` — TS watch (rebuilds `dist/`).
 - TUI: `bun run cli -- --provider anthropic --model claude-opus-4-6 "hi"`.
 - Web: `bun run web:dev` (server on `:8080`, Vite on `:3000`).
-- Package builds: `bun run --filter @evalops/tui build`, `bun run --filter @evalops/composer-web build`.
+- Package builds: `bun run --filter @evalops/tui build`, `bun run --filter @evalops/maestro-web build`.
 
 ## 3. Safety Checks
 
@@ -45,13 +45,13 @@ Expected: all commands succeed; dist artifacts appear under `dist/`.
 ## 5. Pre-PR Checklist
 
 - `bun run bun:lint`
-- `npx nx run composer:test --skip-nx-cache`
-- Build touched packages (e.g., `npx nx run tui:build`, `npx nx run composer-web:build`)
+- `npx nx run maestro:test --skip-nx-cache`
+- Build touched packages (e.g., `npx nx run tui:build`, `npx nx run maestro-web:build`)
 - Ensure docs updated if flags/options changed (source-of-truth notes above)
 
 ## 6. Troubleshooting Quickies
 
-- Missing keys → `composer --diag`
+- Missing keys → `maestro --diag`
 - Approval blocks → check firewall notes in `SAFETY.md`
 - Web tooling stuck → `curl http://localhost:8080/api/models` to validate server
 - Session issues → `docs/SESSIONS.md` for cleanup and flags

@@ -56,7 +56,7 @@ export function handleLimitsCommand(context: CommandExecutionContext): void {
 				formatLimitLine(
 					"BASH_DEFAULT_TIMEOUT_MS",
 					TOOL_CONFIG.BASH_DEFAULT_TIMEOUT_MS,
-					"COMPOSER_BASH_TIMEOUT_MS",
+					"MAESTRO_BASH_TIMEOUT_MS",
 				),
 				formatLimitLine("READ_DEFAULT_LIMIT", TOOL_CONFIG.READ_DEFAULT_LIMIT),
 				formatLimitLine(
@@ -72,12 +72,12 @@ export function handleLimitsCommand(context: CommandExecutionContext): void {
 				formatLimitLine(
 					"TUI_TOOL_MAX_CHARS",
 					toolOutputLimits.maxChars,
-					"COMPOSER_TUI_TOOL_MAX_CHARS",
+					"MAESTRO_TUI_TOOL_MAX_CHARS",
 				),
 				formatLimitLine(
 					"TUI_TOOL_MAX_LINES",
 					toolOutputLimits.maxLines,
-					"COMPOSER_TUI_TOOL_MAX_LINES",
+					"MAESTRO_TUI_TOOL_MAX_LINES",
 				),
 			],
 		},
@@ -88,12 +88,12 @@ export function handleLimitsCommand(context: CommandExecutionContext): void {
 				formatLimitLine(
 					"MAX_FILE_SIZE_BYTES",
 					LIMITS.MAX_FILE_SIZE_BYTES,
-					"COMPOSER_MAX_FILE_SIZE",
+					"MAESTRO_MAX_FILE_SIZE",
 				),
 				formatLimitLine(
 					"MAX_SEARCH_RESULTS",
 					LIMITS.MAX_SEARCH_RESULTS,
-					"COMPOSER_MAX_SEARCH_RESULTS",
+					"MAESTRO_MAX_SEARCH_RESULTS",
 				),
 				formatLimitLine("MAX_COMMAND_OUTPUT", LIMITS.MAX_COMMAND_OUTPUT),
 				formatLimitLine("TEST_TIMEOUT_MS", LIMITS.TEST_TIMEOUT_MS),
@@ -106,12 +106,12 @@ export function handleLimitsCommand(context: CommandExecutionContext): void {
 				formatLimitLine(
 					"REQUEST_TIMEOUT_MS",
 					API_CONFIG.REQUEST_TIMEOUT_MS,
-					"COMPOSER_API_TIMEOUT_MS",
+					"MAESTRO_API_TIMEOUT_MS",
 				),
 				formatLimitLine(
 					"TELEMETRY_SAMPLE_RATE",
 					API_CONFIG.TELEMETRY_SAMPLE_RATE,
-					"COMPOSER_TELEMETRY_SAMPLE",
+					"MAESTRO_TELEMETRY_SAMPLE",
 				),
 			],
 		},
@@ -122,7 +122,7 @@ export function handleLimitsCommand(context: CommandExecutionContext): void {
 				formatLimitLine(
 					"WRITE_BATCH_SIZE",
 					SESSION_CONFIG.WRITE_BATCH_SIZE,
-					"COMPOSER_SESSION_BATCH_SIZE",
+					"MAESTRO_SESSION_BATCH_SIZE",
 				),
 			],
 		},

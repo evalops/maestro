@@ -38,7 +38,7 @@ export class ImportExportView {
 		new Set([
 			normalize(resolve(process.cwd())),
 			normalize(getHomeDir()),
-			normalize(PATHS.COMPOSER_HOME),
+			normalize(PATHS.MAESTRO_HOME),
 			normalize(tmpdir()),
 		]),
 	);
@@ -167,7 +167,7 @@ export class ImportExportView {
 	async handleShareCommand(text: string): Promise<void> {
 		const parts = text.trim().split(/\s+/);
 		const customTarget = parts[1];
-		const baseDir = join(PATHS.COMPOSER_HOME, "share");
+		const baseDir = join(PATHS.MAESTRO_HOME, "share");
 		let outputPath: string;
 		try {
 			if (customTarget) {

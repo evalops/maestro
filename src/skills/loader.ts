@@ -9,8 +9,8 @@
  * - Domain expertise for specialized tasks
  *
  * Skills are discovered from:
- * - ~/.composer/skills/ (user skills)
- * - .composer/skills/ (project skills)
+ * - ~/.maestro/skills/ (user skills)
+ * - .maestro/skills/ (project skills)
  *
  * Each skill is a directory containing:
  * - SKILL.md or skill.md - Main skill file with YAML frontmatter
@@ -563,7 +563,7 @@ function scanSkillsDirectory(
  */
 function getSystemSkillsDir(): string {
 	// Allow explicit override for non-standard packaging layouts
-	const override = process.env.COMPOSER_SYSTEM_SKILLS_DIR;
+	const override = process.env.MAESTRO_SYSTEM_SKILLS_DIR;
 	if (override && existsSync(override)) {
 		return override;
 	}
@@ -605,8 +605,8 @@ export function loadSkills(
 } {
 	const includeSystem = options?.includeSystem ?? true;
 	const systemSkillsDir = includeSystem ? getSystemSkillsDir() : null;
-	const userSkillsDir = join(PATHS.COMPOSER_HOME, "skills");
-	const projectSkillsDir = join(workspaceDir, ".composer", "skills");
+	const userSkillsDir = join(PATHS.MAESTRO_HOME, "skills");
+	const projectSkillsDir = join(workspaceDir, ".maestro", "skills");
 
 	logger.debug("Scanning for skills", {
 		systemSkillsDir: systemSkillsDir ?? "(disabled)",

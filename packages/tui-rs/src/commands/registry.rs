@@ -33,7 +33,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use composer_tui::commands::{CommandRegistry, Command, CommandCategory, CommandOutput};
+//! use maestro_tui::commands::{CommandRegistry, Command, CommandCategory, CommandOutput};
 //!
 //! let mut registry = CommandRegistry::new();
 //!
@@ -101,7 +101,7 @@ use crate::tool_output::tool_output_limits;
 /// # Examples
 ///
 /// ```rust,ignore
-/// use composer_tui::commands::{CommandRegistry, build_command_registry};
+/// use maestro_tui::commands::{CommandRegistry, build_command_registry};
 /// use std::sync::Arc;
 ///
 /// // Build the default registry
@@ -153,7 +153,7 @@ impl CommandRegistry {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use composer_tui::commands::{CommandRegistry, Command, CommandCategory, CommandOutput};
+    /// use maestro_tui::commands::{CommandRegistry, Command, CommandCategory, CommandOutput};
     ///
     /// let mut registry = CommandRegistry::new();
     ///
@@ -201,7 +201,7 @@ impl CommandRegistry {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use composer_tui::commands::build_command_registry;
+    /// use maestro_tui::commands::build_command_registry;
     ///
     /// let registry = build_command_registry();
     ///
@@ -289,7 +289,7 @@ impl CommandRegistry {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use composer_tui::commands::build_command_registry;
+    /// use maestro_tui::commands::build_command_registry;
     ///
     /// let registry = build_command_registry();
     ///
@@ -495,7 +495,7 @@ fn parse_arguments(
 /// # Example
 ///
 /// ```rust,ignore
-/// use composer_tui::commands::build_command_registry;
+/// use maestro_tui::commands::build_command_registry;
 ///
 /// let registry = build_command_registry();
 ///
@@ -921,11 +921,11 @@ pub fn build_command_registry() -> CommandRegistry {
                     "Tool output (TUI):",
                     vec![
                         format!(
-                            "  TUI_TOOL_MAX_CHARS: {} (env: COMPOSER_TUI_TOOL_MAX_CHARS)",
+                            "  TUI_TOOL_MAX_CHARS: {} (env: MAESTRO_TUI_TOOL_MAX_CHARS)",
                             tool_limits.max_chars
                         ),
                         format!(
-                            "  TUI_TOOL_MAX_LINES: {} (env: COMPOSER_TUI_TOOL_MAX_LINES)",
+                            "  TUI_TOOL_MAX_LINES: {} (env: MAESTRO_TUI_TOOL_MAX_LINES)",
                             tool_limits.max_lines
                         ),
                     ],
@@ -933,7 +933,7 @@ pub fn build_command_registry() -> CommandRegistry {
                 sections.push((
                     "LSP diagnostics:",
                     vec![format!(
-                        "  MAX_DIAGNOSTICS_PER_FILE: {} (env: COMPOSER_LSP_MAX_DIAGNOSTICS)",
+                        "  MAX_DIAGNOSTICS_PER_FILE: {} (env: MAESTRO_LSP_MAX_DIAGNOSTICS)",
                         lsp_limit
                     )],
                 ));

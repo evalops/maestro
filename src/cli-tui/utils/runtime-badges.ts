@@ -39,7 +39,7 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 		badges.push("safe:on");
 	}
 
-	if (process.env.COMPOSER_PLAN_MODE === "1") {
+	if (process.env.MAESTRO_PLAN_MODE === "1") {
 		badges.push("plan:on");
 	}
 

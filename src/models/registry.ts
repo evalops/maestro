@@ -11,9 +11,9 @@
  * priority (later sources override earlier ones):
  *
  * 1. **Built-in Models**: Hardcoded in `src/models/builtin.ts`
- * 2. **User Config**: `~/.composer/models.json` or `~/.composer/models.jsonc`
- * 3. **Project Config**: `.composer/models.json` in current directory
- * 4. **Environment Variable**: `COMPOSER_MODELS_FILE` for custom path
+ * 2. **User Config**: `~/.maestro/models.json` or `~/.maestro/models.jsonc`
+ * 3. **Project Config**: `.maestro/models.json` in current directory
+ * 4. **Environment Variable**: `MAESTRO_MODELS_FILE` for custom path
  * 5. **CLI Flag**: `--models-file` for runtime override
  *
  * ## Configuration Format

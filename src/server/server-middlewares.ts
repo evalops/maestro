@@ -218,7 +218,7 @@ export function createAuthMiddleware(
 						401,
 						{
 							error:
-								"COMPOSER_WEB_API_KEY is required for all API requests. Set the environment variable or disable requirement explicitly with COMPOSER_WEB_REQUIRE_KEY=0 for local testing only.",
+								"MAESTRO_WEB_API_KEY is required for all API requests. Set the environment variable or disable requirement explicitly with MAESTRO_WEB_REQUIRE_KEY=0 for local testing only.",
 						},
 						corsHeaders,
 						req,

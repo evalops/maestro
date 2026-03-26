@@ -50,16 +50,16 @@ type AuditResponse = {
 };
 
 function getConfig(): SharedMemoryConfig {
-	const base = process.env.COMPOSER_SHARED_MEMORY_BASE?.trim();
+	const base = process.env.MAESTRO_SHARED_MEMORY_BASE?.trim();
 	if (!base) {
 		console.error(
 			chalk.red(
-				"COMPOSER_SHARED_MEMORY_BASE is not set. Configure shared memory to use this command.",
+				"MAESTRO_SHARED_MEMORY_BASE is not set. Configure shared memory to use this command.",
 			),
 		);
 		process.exit(1);
 	}
-	const apiKey = process.env.COMPOSER_SHARED_MEMORY_API_KEY?.trim();
+	const apiKey = process.env.MAESTRO_SHARED_MEMORY_API_KEY?.trim();
 	return {
 		baseUrl: base.replace(/\/+$/, ""),
 		apiKey: apiKey || undefined,

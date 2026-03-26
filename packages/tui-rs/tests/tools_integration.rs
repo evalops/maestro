@@ -2,7 +2,7 @@
 //!
 //! These tests verify the tool registry and related functionality work correctly.
 
-use composer_tui::tools::ToolRegistry;
+use maestro_tui::tools::ToolRegistry;
 
 // ============================================================================
 // Tool Registry Tests
@@ -258,10 +258,10 @@ fn test_registry_register_and_unregister() {
     assert!(registry.get("custom_tool").is_none());
 
     // Register a custom tool
-    let custom_tool = composer_tui::ai::Tool::new("custom_tool", "A custom test tool");
+    let custom_tool = maestro_tui::ai::Tool::new("custom_tool", "A custom test tool");
     registry.register(
         "custom_tool",
-        composer_tui::ToolDefinition {
+        maestro_tui::ToolDefinition {
             tool: custom_tool,
             requires_approval: false,
         },

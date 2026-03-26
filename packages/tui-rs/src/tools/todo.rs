@@ -91,7 +91,7 @@ struct TodoRecord {
 type TodoStore = HashMap<String, TodoRecord>;
 
 fn store_path() -> PathBuf {
-    if let Ok(path) = std::env::var("COMPOSER_TODO_FILE") {
+    if let Ok(path) = std::env::var("MAESTRO_TODO_FILE") {
         return PathBuf::from(path);
     }
     dirs::home_dir().map_or_else(
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn test_store_path_default() {
-        std::env::remove_var("COMPOSER_TODO_FILE");
+        std::env::remove_var("MAESTRO_TODO_FILE");
         let path = store_path();
         let path_str = path.to_string_lossy();
         assert!(
@@ -656,9 +656,9 @@ mod tests {
 
     #[test]
     fn test_store_path_from_env() {
-        std::env::set_var("COMPOSER_TODO_FILE", "/custom/path/todos.json");
+        std::env::set_var("MAESTRO_TODO_FILE", "/custom/path/todos.json");
         let path = store_path();
         assert_eq!(path, PathBuf::from("/custom/path/todos.json"));
-        std::env::remove_var("COMPOSER_TODO_FILE");
+        std::env::remove_var("MAESTRO_TODO_FILE");
     }
 }

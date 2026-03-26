@@ -17,10 +17,10 @@
  * ```typescript
  * import { executeSwarm, parsePlanFile } from "./swarm";
  *
- * const plan = parsePlanFile(".composer/plans/my-plan.md");
+ * const plan = parsePlanFile(".maestro/plans/my-plan.md");
  * const result = await executeSwarm({
  *   teammateCount: 3,
- *   planFile: ".composer/plans/my-plan.md",
+ *   planFile: ".maestro/plans/my-plan.md",
  *   tasks: plan.tasks,
  *   cwd: process.cwd(),
  * });

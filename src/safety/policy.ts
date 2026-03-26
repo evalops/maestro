@@ -7,7 +7,7 @@
  *
  * ## Policy File Location
  *
- * Policies are loaded from `~/.composer/policy.json`. This file is typically
+ * Policies are loaded from `~/.maestro/policy.json`. This file is typically
  * deployed by enterprise IT and should be protected with appropriate permissions.
  *
  * ## Policy Structure
@@ -231,7 +231,7 @@ const PolicySchema = Type.Object({
 
 const validatePolicy = compileTypeboxSchema(PolicySchema);
 
-const getPolicyPath = (): string => join(PATHS.COMPOSER_HOME, "policy.json");
+const getPolicyPath = (): string => join(PATHS.MAESTRO_HOME, "policy.json");
 
 let cachedPolicy: EnterprisePolicy | null = null;
 let policyWatcher: FSWatcher | undefined;
