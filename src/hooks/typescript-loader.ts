@@ -555,3 +555,18 @@ export function setGlobalSessionFile(sessionFile: string | null): void {
 export function clearLoadedTypeScriptHooks(): void {
 	loadedHooks.length = 0;
 }
+
+/**
+ * Get all tools registered by extensions.
+ *
+ * @returns Array of registered tools from all loaded extensions
+ *
+ * TODO: Implement tool registration in HookAPI and LoadedTypeScriptHook
+ * This is a stub for test compatibility - will be implemented in Phase 1.
+ */
+export function getExtensionRegisteredTools(): import(
+	"../agent/types.js"
+).AgentTool[] {
+	// Stub implementation - returns empty array until tool registration is implemented
+	return [];
+}

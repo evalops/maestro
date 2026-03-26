@@ -225,6 +225,7 @@ export {
 	setGlobalCwd,
 	setGlobalSessionFile,
 	clearLoadedTypeScriptHooks,
+	getExtensionRegisteredTools,
 } from "./typescript-loader.js";
 
 // UI context exports
