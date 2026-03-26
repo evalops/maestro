@@ -1,6 +1,36 @@
-// Bun Snapshot v1, https://goo.gl/fbAQLP
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`formatDiagnosticsReport matches snapshot with full data 1`] = `
+exports[`formatDiagnosticsReport > matches snapshot when optional data missing 1`] = `
+"Diagnostics
+
+Session
+ID: session-123
+File: /tmp/session-123.json
+
+Provider: anthropic
+Model: claude-sonnet-4-5
+Provider Name: Anthropic
+Model Name: Claude Sonnet
+Source: custom
+Base URL: https://api.anthropic.com
+Context Window: 200,000
+Max Tokens: 8,192
+
+API Key: missing
+
+Telemetry: disabled
+Reason: disabled
+Sample Rate: 0
+
+Training: provider default
+Reason: provider default
+
+LSP: no diagnostics
+
+Pending tools: none"
+`;
+
+exports[`formatDiagnosticsReport > matches snapshot with full data 1`] = `
 "Diagnostics
 
 Session
@@ -50,34 +80,4 @@ src/index.ts
 
 Pending Tools
 1. websearch (tool-1)"
-`;
-
-exports[`formatDiagnosticsReport matches snapshot when optional data missing 1`] = `
-"Diagnostics
-
-Session
-ID: session-123
-File: /tmp/session-123.json
-
-Provider: anthropic
-Model: claude-sonnet-4-5
-Provider Name: Anthropic
-Model Name: Claude Sonnet
-Source: custom
-Base URL: https://api.anthropic.com
-Context Window: 200,000
-Max Tokens: 8,192
-
-API Key: missing
-
-Telemetry: disabled
-Reason: disabled
-Sample Rate: 0
-
-Training: provider default
-Reason: provider default
-
-LSP: no diagnostics
-
-Pending tools: none"
 `;

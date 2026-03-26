@@ -11,6 +11,10 @@ const allowedOutside = [
 		allowedPrefixes: [join(repoRoot, "src") + sep],
 	},
 	{
+		filePrefix: join(packagesDir, "core", "src") + sep,
+		allowedPrefixes: [join(repoRoot, "src") + sep],
+	},
+	{
 		filePrefix: join(packagesDir, "governance", "src") + sep,
 		allowedPrefixes: [join(repoRoot, "src") + sep],
 	},

@@ -64,7 +64,7 @@ type QueueStatsSnapshot = {
 	batch_splits: number;
 	gzip_requests: number;
 	last_sent_at: string;
-	source: "composer";
+	source: "maestro";
 	instance_id: string;
 };
 
@@ -100,7 +100,7 @@ const STATE_TRIM_KEYS = [
 	"message",
 	"body",
 ];
-const REQUEST_ID_PREFIX = "composer";
+const REQUEST_ID_PREFIX = "maestro";
 const instanceId = randomUUID();
 
 const pendingBySession = new Map<string, PendingSession>();
@@ -599,7 +599,7 @@ function loadPersistedQueue(): void {
 function normalizeEvent(event: SharedMemoryEvent): SharedMemoryEvent {
 	return {
 		...event,
-		actor: event.actor ?? "composer",
+		actor: event.actor ?? "maestro",
 	};
 }
 
@@ -614,7 +614,7 @@ function buildStatsSnapshot(): QueueStatsSnapshot {
 		batch_splits: queueStats.batchSplits,
 		gzip_requests: queueStats.gzipRequests,
 		last_sent_at: sentAt,
-		source: "composer",
+		source: "maestro",
 		instance_id: instanceId,
 	};
 }
@@ -629,7 +629,7 @@ async function trySync(
 ): Promise<void> {
 	const payload: Record<string, JsonValue> = {};
 	if (state) {
-		payload.state = { composer: state } as JsonValue;
+		payload.state = { maestro: state } as JsonValue;
 	}
 	if (events.length) {
 		payload.events = events as JsonValue;
@@ -666,7 +666,7 @@ async function fallbackSync(
 		try {
 			const requestId = nextRequestId(REQUEST_ID_PREFIX);
 			const { body, headers } = prepareRequestBody(
-				{ state: { composer: state } },
+				{ state: { maestro: state } },
 				TARGET_MAX_BODY_BYTES,
 				supportsGzip,
 				config.apiKey,
@@ -1045,7 +1045,7 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 			...(pending.state ?? {}),
 			...update.state,
 			instanceId,
-			source: "composer",
+			source: "maestro",
 		};
 		const fitted = fitJsonToBytes(
 			mergedState,
@@ -1065,7 +1065,7 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 			pending.state = {
 				...(pending.state ?? {}),
 				instanceId,
-				source: "composer",
+				source: "maestro",
 			};
 		}
 		pending.updatedAt = Date.now();
@@ -1089,11 +1089,11 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 				? {
 						...(update.event.payload as Record<string, JsonValue>),
 						instanceId,
-						source: "composer",
+						source: "maestro",
 					}
 				: {
 						instanceId,
-						source: "composer",
+						source: "maestro",
 						value: update.event.payload ?? null,
 					};
 		const fittedPayload = fitJsonToBytes(payload, currentEventPayloadLimit(), [
@@ -1113,7 +1113,7 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 			...update.event,
 			type: normalizedType,
 			payload: fittedPayload.value as JsonValue,
-			id: update.event.id ?? nextEventId(`composer-${sessionKey}`),
+			id: update.event.id ?? nextEventId(`maestro-${sessionKey}`),
 		});
 		if (pending.events.length > MAX_PENDING_EVENTS) {
 			pending.events = pending.events.slice(-MAX_PENDING_EVENTS);

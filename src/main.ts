@@ -76,7 +76,7 @@
  * | Interactive | No messages, not RPC          | Full TUI with readline      |
  * | Single-shot | Messages provided, text/json  | Process and exit            |
  * | RPC         | --mode=rpc                    | JSON protocol over stdio    |
- * | Exec        | composer exec [prompt]        | Batch with structured output|
+ * | Exec        | maestro exec [prompt]        | Batch with structured output|
  *
  * ## Error Handling
  *
@@ -365,12 +365,12 @@ export async function main(args: string[]) {
 		process.exit(0);
 	}
 
-	// Handle `composer web` early exit (start the bundled web server + UI).
+	// Handle `maestro web` early exit (start the bundled web server + UI).
 	if (parsed.command === "web") {
 		if (parsed.messages.length > 0) {
 			console.error(
 				chalk.red(
-					"`composer web` does not accept prompt arguments. Use `composer` (interactive) or `composer exec` instead.",
+					"`maestro web` does not accept prompt arguments. Use `maestro` (interactive) or `maestro exec` instead.",
 				),
 			);
 			process.exit(1);
@@ -500,7 +500,7 @@ export async function main(args: string[]) {
 		if (parsed.execFullAuto && parsed.execReadOnly) {
 			console.error(
 				chalk.red(
-					"Cannot combine --full-auto with --read-only in composer exec.",
+					"Cannot combine --full-auto with --read-only in maestro exec.",
 				),
 			);
 			process.exit(1);
@@ -733,7 +733,7 @@ export async function main(args: string[]) {
 	let agentsInitPrompt: string | null = null;
 	let agentsInitPath: string | null = null;
 
-	// Handle "composer agents init" command to generate AGENTS.md
+	// Handle "maestro agents init" command to generate AGENTS.md
 	if (parsed.command === "agents") {
 		const { buildAgentsInitPrompt, handleAgentsInit } = await import(
 			"./cli/commands/agents.js"
@@ -741,7 +741,7 @@ export async function main(args: string[]) {
 		if (parsed.subcommand && parsed.subcommand !== "init") {
 			console.error(
 				chalk.red(
-					`Unknown agents subcommand: ${parsed.subcommand}. Try "composer agents init"`,
+					`Unknown agents subcommand: ${parsed.subcommand}. Try "maestro agents init"`,
 				),
 			);
 			process.exit(1);
@@ -797,7 +797,7 @@ export async function main(args: string[]) {
 			);
 			if (!lastExec) {
 				console.error(
-					chalk.red("No previous composer exec sessions were found."),
+					chalk.red("No previous maestro exec sessions were found."),
 				);
 				process.exit(1);
 			}

@@ -1,6 +1,15 @@
-// Bun Snapshot v1, https://goo.gl/fbAQLP
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`buildConfigShowSections produces snapshot for populated inspection 1`] = `
+exports[`buildConfigShowSections > handles empty collections 1`] = `
+"Configuration Inspection
+
+
+Config Sources
+
+No providers configured"
+`;
+
+exports[`buildConfigShowSections > produces snapshot for populated inspection 1`] = `
 "Configuration Inspection
 
 
@@ -21,13 +30,4 @@ File References (1)
 
 Environment Variables (1)
   missing ANTHROPIC_API_KEY: (not set)"
-`;
-
-exports[`buildConfigShowSections handles empty collections 1`] = `
-"Configuration Inspection
-
-
-Config Sources
-
-No providers configured"
 `;

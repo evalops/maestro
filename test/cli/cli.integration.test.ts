@@ -399,7 +399,7 @@ describe("CLI integration", () => {
 			]),
 		).rejects.toThrow("exit");
 		expect(exitCodes).toEqual([1]);
-		expect(output.join("\n")).toContain("composer anthropic login");
+		expect(output.join("\n")).toContain("maestro anthropic login");
 		exitSpy.mockRestore();
 	});
 });

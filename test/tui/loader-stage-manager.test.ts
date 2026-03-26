@@ -36,7 +36,7 @@ describe("LoaderStageManager dreaming stage", () => {
 		vi.advanceTimersByTime(5100);
 		expect(stageLabels.at(-1)).toBe(STAGE_DISPLAY_LABELS.dreaming);
 		expect(footerStages.at(-1)).toBe(STAGE_DISPLAY_LABELS.dreaming);
-		expect(hints.at(-1)).toBe("composer is pondering a haiku…");
+		expect(hints.at(-1)).toBe("maestro is pondering a haiku…");
 	});
 
 	it("clears Dreaming state when progressing to a tool stage", () => {

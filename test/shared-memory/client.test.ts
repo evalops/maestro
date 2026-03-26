@@ -106,7 +106,7 @@ describe("shared-memory client", () => {
 		const parsed = syncBody ? JSON.parse(String(syncBody)) : null;
 		const eventId = parsed?.events?.[0]?.id as string | undefined;
 		expect(eventId).toBeTruthy();
-		expect(eventId?.startsWith("composer-override-session-")).toBe(true);
+		expect(eventId?.startsWith("maestro-override-session-")).toBe(true);
 	});
 
 	it("merges state updates within a flush window", async () => {

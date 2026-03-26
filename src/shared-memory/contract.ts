@@ -92,7 +92,7 @@ export function httpStatusToErrorCode(status: number): SharedMemoryErrorCode {
 // Source Identifiers
 // =============================================================================
 
-export type SharedMemorySource = "composer" | "conductor";
+export type SharedMemorySource = "maestro" | "conductor";
 
 // =============================================================================
 // Capabilities Contract
@@ -130,7 +130,7 @@ export const DEFAULT_CAPABILITIES: SharedMemoryCapabilities = {
 // =============================================================================
 
 export interface SharedMemoryEvent {
-	/** Event type identifier (e.g., "composer.session.started") */
+	/** Event type identifier (e.g., "maestro.session.started") */
 	type: string;
 	/** Event payload data */
 	payload?: Record<string, unknown>;
@@ -164,7 +164,7 @@ export interface SharedMemoryStateBase {
  * Composer-specific state fields.
  */
 export interface ComposerState extends SharedMemoryStateBase {
-	source: "composer";
+	source: "maestro";
 	/** Current working directory */
 	cwd?: string;
 	/** Active model identifier */
@@ -201,7 +201,7 @@ export interface ConductorState extends SharedMemoryStateBase {
 export interface SharedMemorySyncRequest {
 	/** State updates keyed by source */
 	state?: {
-		composer?: ComposerState;
+		maestro?: ComposerState;
 		conductor?: ConductorState;
 	};
 	/** Events to append */
@@ -302,13 +302,13 @@ export const SHARED_MEMORY_CONFIG = {
  * Events should follow the pattern: {source}.{category}.{action}
  *
  * Examples:
- * - composer.session.started
- * - composer.message.saved
+ * - maestro.session.started
+ * - maestro.message.saved
  * - conductor.tool.executed
  * - conductor.session.updated
  */
 export const EVENT_TYPE_PREFIXES = {
-	COMPOSER: "composer.",
+	MAESTRO: "maestro.",
 	CONDUCTOR: "conductor.",
 } as const;
 
@@ -319,7 +319,7 @@ export const EVENT_TYPE_PREFIXES = {
 export function isComposerState(
 	state: SharedMemoryStateBase,
 ): state is ComposerState {
-	return state.source === "composer";
+	return state.source === "maestro";
 }
 
 export function isConductorState(

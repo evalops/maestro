@@ -89,9 +89,9 @@ export function createAuthSetup(params: {
 		if (authMode !== "api-key") {
 			const loginHint =
 				providerName === "anthropic"
-					? 'Run "composer anthropic login" (claude) or use /login to authenticate before retrying.'
+					? 'Run "maestro anthropic login" (claude) or use /login to authenticate before retrying.'
 					: providerName === "openai"
-						? 'Run "composer openai login" or use /login to authenticate before retrying.'
+						? 'Run "maestro openai login" or use /login to authenticate before retrying.'
 						: 'Run "/login" to authenticate before retrying.';
 			push(
 				`${loginHint} Or provide an API key for the selected provider.`,

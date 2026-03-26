@@ -300,7 +300,7 @@ export function buildConfigShowSections(
 }
 
 /**
- * Handle `composer config validate` command
+ * Handle `maestro config validate` command
  */
 export async function handleConfigValidate(): Promise<void> {
 	console.log(sectionHeading("Validating Configuration"));
@@ -371,7 +371,7 @@ export async function handleConfigValidate(): Promise<void> {
 }
 
 /**
- * Legacy renderer for `composer config show`
+ * Legacy renderer for `maestro config show`
  */
 function renderConfigShowLegacy(
 	inspection: ConfigInspection,
@@ -490,7 +490,7 @@ function renderConfigShowLegacy(
 }
 
 /**
- * Handle `composer config show` command
+ * Handle `maestro config show` command
  */
 export async function handleConfigShow(): Promise<void> {
 	const inspection: ConfigInspection = inspectConfig();
@@ -517,10 +517,10 @@ export async function handleConfigShow(): Promise<void> {
 }
 
 /**
- * Handle `composer config init` command
+ * Handle `maestro config init` command
  */
 export async function handleConfigInit(): Promise<void> {
-	console.log(sectionHeading("Initialize Composer Configuration"));
+	console.log(sectionHeading("Initialize Maestro Configuration"));
 
 	const readline = await import("node:readline/promises");
 	const rl = readline.createInterface({
@@ -1017,7 +1017,7 @@ export async function handleConfigLocal(): Promise<void> {
 			),
 		);
 		console.log(
-			muted("Tip: run `composer config local` again to check connectivity."),
+			muted("Tip: run `maestro config local` again to check connectivity."),
 		);
 
 		rl.close();

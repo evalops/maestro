@@ -350,11 +350,9 @@ function logMissingCredentialHints(provider: string): void {
 		);
 	}
 	if (provider === "anthropic") {
-		hints.push(
-			"Run `composer anthropic login` to provision OAuth credentials.",
-		);
+		hints.push("Run `maestro anthropic login` to provision OAuth credentials.");
 	} else if (provider === "openai") {
-		hints.push("Set OPENAI_API_KEY or run `composer openai login`.");
+		hints.push("Set OPENAI_API_KEY or run `maestro openai login`.");
 	}
 	logger.warn(hints.join(" "), { provider });
 }

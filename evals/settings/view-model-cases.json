@@ -407,14 +407,14 @@
 			"status": {
 				"preference": "opted-out",
 				"optOut": true,
-				"reason": "COMPOSER_TRAINING_OPT_OUT=true",
+				"reason": "MAESTRO_TRAINING_OPT_OUT=true",
 				"flagValue": "true"
 			}
 		},
 		"expected": {
 			"sourceLabel": "Env flag",
 			"overrideLabel": "None",
-			"reasonExplanation": "Base preference comes from COMPOSER_TRAINING_OPT_OUT=true."
+			"reasonExplanation": "Base preference comes from MAESTRO_TRAINING_OPT_OUT=true."
 		}
 	},
 	{
