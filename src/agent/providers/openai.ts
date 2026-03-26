@@ -100,6 +100,7 @@ import {
 	isStreamIdleTimeoutError,
 } from "../../providers/stream-idle-timeout.js";
 import { createLogger } from "../../utils/logger.js";
+import { mapThinkingLevelToOpenAIEffort } from "../thinking-level-mapper.js";
 import type {
 	Api,
 	AssistantMessage,
@@ -110,7 +111,6 @@ import type {
 	ReasoningEffort,
 	StreamOptions,
 } from "../types.js";
-import { mapThinkingLevelToOpenAIEffort } from "../thinking-level-mapper.js";
 
 const logger = createLogger("agent:providers:openai");
 import { streamResponsesApiSdk } from "./openai-responses-sdk.js";

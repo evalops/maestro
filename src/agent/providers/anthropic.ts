@@ -112,6 +112,7 @@ import {
 	isStreamIdleTimeoutError,
 } from "../../providers/stream-idle-timeout.js";
 import { createLogger } from "../../utils/logger.js";
+import { mapThinkingLevelToAnthropicBudget } from "../thinking-level-mapper.js";
 import type {
 	AgentTool,
 	AssistantMessage,
@@ -127,7 +128,6 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types.js";
-import { mapThinkingLevelToAnthropicBudget } from "../thinking-level-mapper.js";
 import {
 	createToolArgumentNormalizer,
 	describeValueType,

@@ -16,6 +16,7 @@ import {
 	withAbortableIdleTimeout,
 } from "../../providers/stream-idle-timeout.js";
 import { createLogger } from "../../utils/logger.js";
+import { mapThinkingLevelToOpenAIEffort } from "../thinking-level-mapper.js";
 import type {
 	AssistantMessage,
 	AssistantMessageEvent,
@@ -25,7 +26,6 @@ import type {
 	ThinkingContent,
 	ToolCall,
 } from "../types.js";
-import { mapThinkingLevelToOpenAIEffort } from "../thinking-level-mapper.js";
 import type { OpenAIOptions } from "./openai-shared.js";
 import { filterResponsesApiTools } from "./openai-shared.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";

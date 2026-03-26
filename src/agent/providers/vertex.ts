@@ -30,6 +30,7 @@ import {
 	withAbortableIdleTimeout,
 } from "../../providers/stream-idle-timeout.js";
 import { createLogger } from "../../utils/logger.js";
+import { mapThinkingLevelToGoogleBudget } from "../thinking-level-mapper.js";
 import type {
 	AssistantMessage,
 	AssistantMessageEvent,
@@ -42,7 +43,6 @@ import type {
 	ThinkingContent,
 	ToolCall,
 } from "../types.js";
-import { mapThinkingLevelToGoogleBudget } from "../thinking-level-mapper.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { createToolArgumentNormalizer } from "./tool-arguments.js";
 import { transformMessages } from "./transform-messages.js";
