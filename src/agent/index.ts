@@ -137,6 +137,7 @@ export {
 } from "./subagent-specs.js";
 export type {
 	AgentEvent,
+	AgentMessage,
 	AgentRunConfig,
 	AgentState,
 	AgentTool,
@@ -151,6 +152,7 @@ export type {
 	BranchSummaryMessage,
 	CompactionSummaryMessage,
 	Context,
+	CustomAgentMessages,
 	CustomMessages,
 	HookMessage,
 	ImageContent,
@@ -200,3 +202,4 @@ export {
 	countMessagesByRole,
 	getImageContent,
 } from "./type-guards.js";
+export { convertToLlm, isLlmMessage } from "./message-converter.js";

@@ -411,12 +411,46 @@ export interface CompactionSummaryMessage {
 }
 
 /**
- * Union type representing any message in a conversation.
+ * Union type representing LLM-native messages that can be sent to the model.
  *
- * A conversation is an ordered sequence of messages alternating between
- * user input, assistant responses, and tool results.
+ * A conversation with the LLM consists of user input, assistant responses,
+ * and tool results.
  */
 export type Message = UserMessage | AssistantMessage | ToolResultMessage;
+
+/**
+ * Empty interface for declaration merging to add custom message types.
+ *
+ * Consumers can extend this interface to add their own message types:
+ *
+ * @example
+ * ```typescript
+ * declare module "@evalops/maestro" {
+ *   interface CustomAgentMessages {
+ *     notification: { role: "notification"; text: string; timestamp: number };
+ *   }
+ * }
+ * ```
+ */
+// biome-ignore lint/suspicious/noEmptyInterface: Required for declaration merging
+export interface CustomAgentMessages {}
+
+/**
+ * Union type representing all messages in the agent conversation history.
+ *
+ * Includes both LLM-native messages (user, assistant, toolResult) and
+ * custom message types (hookMessage, branchSummary, compactionSummary,
+ * plus any types added via declaration merging).
+ *
+ * Custom messages are preserved in session history but filtered out
+ * before being sent to the LLM via {@link convertToLlm}.
+ */
+export type AgentMessage =
+	| Message
+	| HookMessage
+	| BranchSummaryMessage
+	| CompactionSummaryMessage
+	| CustomAgentMessages[keyof CustomAgentMessages];
 
 /**
  * Tool definition schema for API serialization.
