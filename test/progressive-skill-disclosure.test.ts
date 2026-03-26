@@ -13,9 +13,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
-	formatSkillsForSystemPrompt,
-	formatSkillMetadataOnly,
 	type LoadedSkill,
+	formatSkillMetadataOnly,
+	formatSkillsForSystemPrompt,
 } from "../src/skills/loader.js";
 
 describe("Progressive Skill Disclosure", () => {
@@ -86,7 +86,9 @@ gh pr create --title "feat: description" --body "..."
 		it("should use XML format for structured data", () => {
 			const result = formatSkillMetadataOnly(mockSkill);
 
-			expect(result).toMatch(/<skill\s+name="[^"]+"\s+description="[^"]+"\s*\/>/);
+			expect(result).toMatch(
+				/<skill\s+name="[^"]+"\s+description="[^"]+"\s*\/>/,
+			);
 		});
 
 		it("should escape XML special characters in description", () => {

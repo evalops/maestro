@@ -10,9 +10,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	type CacheRetention,
 	shouldEnableAnthropicCaching,
 	shouldEnableOpenAICaching,
-	type CacheRetention,
 } from "../src/agent/cache-retention-mapper.js";
 
 describe("Cache Retention Mapping", () => {

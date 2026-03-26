@@ -564,9 +564,8 @@ export function clearLoadedTypeScriptHooks(): void {
  * TODO: Implement tool registration in HookAPI and LoadedTypeScriptHook
  * This is a stub for test compatibility - will be implemented in Phase 1.
  */
-export function getExtensionRegisteredTools(): import(
-	"../agent/types.js"
-).AgentTool[] {
+// biome-ignore format: multiline import type syntax is invalid here in TypeScript
+export function getExtensionRegisteredTools(): import("../agent/types.js").AgentTool[] {
 	// Stub implementation - returns empty array until tool registration is implemented
 	return [];
 }
