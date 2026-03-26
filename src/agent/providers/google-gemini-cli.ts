@@ -25,6 +25,7 @@ import type {
 	Tool,
 	ToolCall,
 } from "../types.js";
+import { mapThinkingLevelToGoogleBudget } from "../thinking-level-mapper.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { createToolArgumentNormalizer } from "./tool-arguments.js";
 import { transformMessages } from "./transform-messages.js";
@@ -651,14 +652,11 @@ function buildThinkingConfig(
 		return config;
 	}
 
-	const budgets: Record<ReasoningEffort, number> = {
-		minimal: 128,
-		low: 2048,
-		medium: 8192,
-		high: 32768,
-		ultra: 65536,
-	};
-	config.thinkingBudget = budgets[thinking];
+	// Use unified thinking level mapper for budget
+	const thinkingBudget = mapThinkingLevelToGoogleBudget(thinking);
+	if (thinkingBudget) {
+		config.thinkingBudget = thinkingBudget;
+	}
 	return config;
 }
 

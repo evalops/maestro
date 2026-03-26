@@ -27,6 +27,7 @@ import type {
 	Tool,
 	ToolCall,
 } from "../types.js";
+import { mapThinkingLevelToGoogleBudget } from "../thinking-level-mapper.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { createToolArgumentNormalizer } from "./tool-arguments.js";
 import { transformMessages } from "./transform-messages.js";
@@ -393,18 +394,14 @@ function buildParams(
 
 	// Add thinking config based on reasoning level
 	if (options.thinking && model.reasoning) {
-		const budgets: Record<ReasoningEffort, number> = {
-			minimal: 128,
-			low: 2048,
-			medium: model.id.includes("2.5-pro") ? 8192 : 8192,
-			high: model.id.includes("2.5-pro") ? 32768 : 24576,
-			ultra: model.id.includes("2.5-pro") ? 65536 : 49152, // Maximum thinking for complex problems
-		};
-
-		config.thinkingConfig = {
-			includeThoughts: true,
-			thinkingBudget: budgets[options.thinking],
-		};
+		// Use unified thinking level mapper for budget
+		const thinkingBudget = mapThinkingLevelToGoogleBudget(options.thinking);
+		if (thinkingBudget) {
+			config.thinkingConfig = {
+				includeThoughts: true,
+				thinkingBudget,
+			};
+		}
 	}
 
 	if (options.signal) {

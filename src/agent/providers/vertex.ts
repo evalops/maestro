@@ -42,6 +42,7 @@ import type {
 	ThinkingContent,
 	ToolCall,
 } from "../types.js";
+import { mapThinkingLevelToGoogleBudget } from "../thinking-level-mapper.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
 import { createToolArgumentNormalizer } from "./tool-arguments.js";
 import { transformMessages } from "./transform-messages.js";
@@ -308,20 +309,17 @@ export async function* streamVertex(
 
 	// Add thinking config
 	if (options.thinking && model.reasoning) {
-		const budgets: Record<ReasoningEffort, number> = {
-			minimal: 128,
-			low: 2048,
-			medium: 8192,
-			high: 32768,
-			ultra: 65536, // Maximum thinking for complex problems
-		};
-		requestBody.generationConfig = {
-			...(requestBody.generationConfig as Record<string, unknown>),
-			thinkingConfig: {
-				includeThoughts: true,
-				thinkingBudget: budgets[options.thinking],
-			},
-		};
+		// Use unified thinking level mapper for budget
+		const thinkingBudget = mapThinkingLevelToGoogleBudget(options.thinking);
+		if (thinkingBudget) {
+			requestBody.generationConfig = {
+				...(requestBody.generationConfig as Record<string, unknown>),
+				thinkingConfig: {
+					includeThoughts: true,
+					thinkingBudget,
+				},
+			};
+		}
 	}
 
 	// Initialize partial message

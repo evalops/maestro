@@ -25,6 +25,7 @@ import type {
 	ThinkingContent,
 	ToolCall,
 } from "../types.js";
+import { mapThinkingLevelToOpenAIEffort } from "../thinking-level-mapper.js";
 import type { OpenAIOptions } from "./openai-shared.js";
 import { filterResponsesApiTools } from "./openai-shared.js";
 import { sanitizeSurrogates } from "./sanitize-unicode.js";
@@ -126,11 +127,9 @@ export async function* streamResponsesApiSdk(
 	const shouldIncludeSummary = summary !== undefined && summary !== null;
 
 	if (model.reasoning && (options.reasoningEffort || shouldIncludeSummary)) {
-		// OpenAI SDK only supports up to "high", map "ultra" to "high"
+		// Use unified thinking level mapper for reasoning effort
 		const effort = options.reasoningEffort
-			? options.reasoningEffort === "ultra"
-				? "high"
-				: options.reasoningEffort
+			? mapThinkingLevelToOpenAIEffort(options.reasoningEffort) ?? "medium"
 			: "medium";
 		if (shouldIncludeSummary) {
 			params.reasoning = { effort, summary };

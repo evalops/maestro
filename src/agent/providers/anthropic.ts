@@ -127,6 +127,7 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types.js";
+import { mapThinkingLevelToAnthropicBudget } from "../thinking-level-mapper.js";
 import {
 	createToolArgumentNormalizer,
 	describeValueType,
@@ -619,18 +620,14 @@ export async function* streamAnthropic(
 	}
 
 	if (options.thinking && model.reasoning) {
-		// Budget tokens based on reasoning effort level
-		const thinkingBudgets: Record<ReasoningEffort, number> = {
-			minimal: 1024,
-			low: 4096,
-			medium: 8192,
-			high: 16000,
-			ultra: 32000, // Maximum thinking budget for complex problems
-		};
-		requestBody.thinking = {
-			type: "enabled",
-			budget_tokens: thinkingBudgets[options.thinking] ?? 10000,
-		};
+		// Use unified thinking level mapper for budget tokens
+		const budgetTokens = mapThinkingLevelToAnthropicBudget(options.thinking);
+		if (budgetTokens) {
+			requestBody.thinking = {
+				type: "enabled",
+				budget_tokens: budgetTokens,
+			};
+		}
 	}
 
 	const headers: Record<string, string> = {

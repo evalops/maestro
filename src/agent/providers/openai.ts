@@ -110,6 +110,7 @@ import type {
 	ReasoningEffort,
 	StreamOptions,
 } from "../types.js";
+import { mapThinkingLevelToOpenAIEffort } from "../thinking-level-mapper.js";
 
 const logger = createLogger("agent:providers:openai");
 import { streamResponsesApiSdk } from "./openai-responses-sdk.js";
@@ -891,16 +892,16 @@ export async function* streamOpenAI(
 		requestBody.response_format = options.responseFormat;
 	}
 
-	// Add reasoning effort for reasoning-capable models
-	// Note: OpenAI API only supports up to "high", so map "ultra" to "high"
+	// Add reasoning effort for reasoning-capable models using unified thinking level mapper
 	if (
 		options.reasoningEffort &&
 		model.reasoning &&
 		compat.supportsReasoningEffort
 	) {
-		const effort =
-			options.reasoningEffort === "ultra" ? "high" : options.reasoningEffort;
-		requestBody.reasoning_effort = effort;
+		const effort = mapThinkingLevelToOpenAIEffort(options.reasoningEffort);
+		if (effort) {
+			requestBody.reasoning_effort = effort;
+		}
 	}
 
 	const headers: Record<string, string> = {
