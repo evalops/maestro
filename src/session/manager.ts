@@ -457,7 +457,7 @@ export class SessionManager {
 				source: "composer",
 			},
 			event: {
-				type: "composer.session.started",
+				type: "maestro.session.started",
 				payload: {
 					sessionId: this.sessionId,
 					model: sessionModelKey,
@@ -510,7 +510,7 @@ export class SessionManager {
 				source: "composer",
 			},
 			event: {
-				type: "composer.message.saved",
+				type: "maestro.message.saved",
 				payload: {
 					sessionId: this.sessionId,
 					messageId: entry.id,
@@ -791,7 +791,7 @@ export class SessionManager {
 					source: "composer",
 				},
 				event: {
-					type: "composer.session.summary",
+					type: "maestro.session.summary",
 					payload: {
 						sessionId: this.sessionId,
 						length: trimmed.length,

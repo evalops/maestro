@@ -231,10 +231,10 @@ export function silenceLogger(): void {
 
 /**
  * Redirect all logs to a file (useful for TUI mode)
- * @param filePath - Path to the log file (defaults to ~/.maestro/logs/composer.log)
+ * @param filePath - Path to the log file (defaults to ~/.maestro/logs/maestro.log)
  */
 export function redirectLoggerToFile(filePath?: string): void {
-	const logFile = filePath ?? join(PATHS.MAESTRO_HOME, "logs", "composer.log");
+	const logFile = filePath ?? join(PATHS.MAESTRO_HOME, "logs", "maestro.log");
 
 	// Ensure directory exists
 	try {

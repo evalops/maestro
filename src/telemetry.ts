@@ -306,16 +306,16 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 		const tracer = getTelemetryTracer();
 		tracer.startActiveSpan(`telemetry.${event.type}`, (span: Span) => {
 			span.setAttributes({
-				"composer.telemetry.type": event.type,
-				"composer.telemetry.timestamp": event.timestamp,
+				"maestro.telemetry.type": event.type,
+				"maestro.telemetry.timestamp": event.timestamp,
 			});
 
 			switch (event.type) {
 				case "tool-execution":
 					span.setAttributes({
-						"composer.tool.name": event.toolName,
-						"composer.tool.success": event.success,
-						"composer.tool.duration_ms": event.durationMs,
+						"maestro.tool.name": event.toolName,
+						"maestro.tool.success": event.success,
+						"maestro.tool.duration_ms": event.durationMs,
 					});
 					span.setStatus({
 						code: event.success ? SpanStatusCode.OK : SpanStatusCode.ERROR,
@@ -323,8 +323,8 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 					break;
 				case "evaluation":
 					span.setAttributes({
-						"composer.eval.scenario": event.scenario,
-						"composer.eval.success": event.success,
+						"maestro.eval.scenario": event.scenario,
+						"maestro.eval.success": event.success,
 					});
 					span.setStatus({
 						code: event.success ? SpanStatusCode.OK : SpanStatusCode.ERROR,
@@ -332,26 +332,26 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 					break;
 				case "loader-stage":
 					span.setAttributes({
-						"composer.loader.stage": event.stage,
-						"composer.loader.duration_ms": event.durationMs,
+						"maestro.loader.stage": event.stage,
+						"maestro.loader.duration_ms": event.durationMs,
 					});
 					span.setStatus({ code: SpanStatusCode.OK });
 					break;
 				case "sse":
 					span.setAttributes({
-						"composer.sse.sent": event.sent,
-						"composer.sse.skipped": event.skipped,
+						"maestro.sse.sent": event.sent,
+						"maestro.sse.skipped": event.skipped,
 					});
 					span.setStatus({ code: SpanStatusCode.OK });
 					break;
 				case "background-task":
 					span.setAttributes({
-						"composer.background.id": event.taskId,
-						"composer.background.event": event.event,
-						"composer.background.status": event.status,
-						"composer.background.restart_attempts": event.restartAttempts,
-						"composer.background.exit_code": event.exitCode ?? -1,
-						"composer.background.shell_mode": event.shellMode,
+						"maestro.background.id": event.taskId,
+						"maestro.background.event": event.event,
+						"maestro.background.status": event.status,
+						"maestro.background.restart_attempts": event.restartAttempts,
+						"maestro.background.exit_code": event.exitCode ?? -1,
+						"maestro.background.shell_mode": event.shellMode,
 					});
 					span.setStatus(
 						event.failureReason || event.status === "failed"
@@ -364,7 +364,7 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 						"http.method": event.method,
 						"http.route": event.path,
 						"http.status_code": event.statusCode,
-						"composer.api.duration_ms": event.durationMs,
+						"maestro.api.duration_ms": event.durationMs,
 					});
 					span.setStatus({
 						code:
@@ -375,15 +375,15 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 					break;
 				case "business-metric":
 					span.setAttributes({
-						"composer.metric.name": event.metric,
-						"composer.metric.value": event.value,
+						"maestro.metric.name": event.metric,
+						"maestro.metric.value": event.value,
 					});
 					if (event.metadata?.model) {
-						span.setAttribute("composer.metric.model", event.metadata.model);
+						span.setAttribute("maestro.metric.model", event.metadata.model);
 					}
 					if (event.metadata?.provider) {
 						span.setAttribute(
-							"composer.metric.provider",
+							"maestro.metric.provider",
 							event.metadata.provider,
 						);
 					}
@@ -391,13 +391,13 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 					break;
 				case "sandbox-violation":
 					span.setAttributes({
-						"composer.sandbox.event": event.event,
-						"composer.sandbox.tool": event.tool,
-						"composer.sandbox.action": event.action,
-						"composer.sandbox.reason": event.reason,
+						"maestro.sandbox.event": event.event,
+						"maestro.sandbox.tool": event.tool,
+						"maestro.sandbox.action": event.action,
+						"maestro.sandbox.reason": event.reason,
 					});
 					if (event.path) {
-						span.setAttribute("composer.sandbox.path", event.path);
+						span.setAttribute("maestro.sandbox.path", event.path);
 					}
 					span.setStatus({
 						code:
@@ -408,22 +408,22 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 					break;
 				case "canonical-turn":
 					span.setAttributes({
-						"composer.turn.id": event.turnId,
-						"composer.turn.number": event.turnNumber,
-						"composer.turn.session_id": event.sessionId,
-						"composer.turn.status": String(
+						"maestro.turn.id": event.turnId,
+						"maestro.turn.number": event.turnNumber,
+						"maestro.turn.session_id": event.sessionId,
+						"maestro.turn.status": String(
 							"status" in event ? event.status : "unknown",
 						),
-						"composer.turn.tool_count": Number(
+						"maestro.turn.tool_count": Number(
 							"toolCount" in event ? event.toolCount : 0,
 						),
-						"composer.turn.total_duration_ms": Number(
+						"maestro.turn.total_duration_ms": Number(
 							"totalDurationMs" in event ? event.totalDurationMs : 0,
 						),
-						"composer.turn.cost_usd": Number(
+						"maestro.turn.cost_usd": Number(
 							"costUsd" in event ? event.costUsd : 0,
 						),
-						"composer.turn.sampled": Boolean(
+						"maestro.turn.sampled": Boolean(
 							"sampled" in event ? event.sampled : true,
 						),
 					});
@@ -439,7 +439,7 @@ function recordOpenTelemetrySpan(event: TelemetryEvent): void {
 			}
 
 			if ("metadata" in event && event.metadata) {
-				span.setAttributes({ "composer.telemetry.has_metadata": true });
+				span.setAttributes({ "maestro.telemetry.has_metadata": true });
 			}
 
 			span.end();
