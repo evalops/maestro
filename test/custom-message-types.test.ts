@@ -9,13 +9,13 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { convertToLlm, isLlmMessage } from "../src/agent/message-converter.js";
 import type {
 	AgentMessage,
 	AssistantMessage,
 	Message,
 	UserMessage,
 } from "../src/agent/types.js";
-import { convertToLlm, isLlmMessage } from "../src/agent/message-converter.js";
 
 describe("Custom Message Types", () => {
 	describe("AgentMessage Type", () => {
@@ -37,7 +37,13 @@ describe("Custom Message Types", () => {
 					output: 5,
 					cacheRead: 0,
 					cacheWrite: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
 				},
 				stopReason: "stop",
 				timestamp: Date.now(),
@@ -96,7 +102,13 @@ describe("Custom Message Types", () => {
 						output: 5,
 						cacheRead: 0,
 						cacheWrite: 0,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
 					},
 					stopReason: "stop",
 					timestamp: 2,
@@ -144,7 +156,13 @@ describe("Custom Message Types", () => {
 						output: 5,
 						cacheRead: 0,
 						cacheWrite: 0,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
 					},
 					stopReason: "stop",
 					timestamp: 3,
@@ -182,7 +200,13 @@ describe("Custom Message Types", () => {
 						output: 5,
 						cacheRead: 0,
 						cacheWrite: 0,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
 					},
 					stopReason: "stop",
 					timestamp: 3,
@@ -192,7 +216,9 @@ describe("Custom Message Types", () => {
 			const llmMessages = convertToLlm(messages);
 
 			expect(llmMessages).toHaveLength(2);
-			expect(llmMessages.find((m) => m.role === "branchSummary")).toBeUndefined();
+			expect(
+				llmMessages.find((m) => m.role === "branchSummary"),
+			).toBeUndefined();
 		});
 
 		it("should filter out compactionSummary messages", () => {
@@ -241,7 +267,13 @@ describe("Custom Message Types", () => {
 						output: 5,
 						cacheRead: 0,
 						cacheWrite: 0,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
 					},
 					stopReason: "stop",
 					timestamp: 3,
@@ -296,7 +328,13 @@ describe("Custom Message Types", () => {
 					output: 5,
 					cacheRead: 0,
 					cacheWrite: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
 				},
 				stopReason: "stop",
 				timestamp: 2,
