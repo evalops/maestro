@@ -1590,6 +1590,7 @@ export class TuiRenderer {
 	async handleEvent(event: AgentEvent, state: AgentState): Promise<void> {
 		this.perfCollector.handleAgentEvent(event);
 		await this.agentEventBridge.handleEvent(event, state);
+		this.queueController.syncFromAgent();
 	}
 
 	renderInitialMessages(state: AgentState): void {
@@ -1688,21 +1689,25 @@ export class TuiRenderer {
 			);
 			return;
 		}
-		if (wasRunning) {
-			this.inputController.interruptNow({ keepPartial: false });
-			this.notificationView.showToast(
-				"Steering: interrupted current run",
-				"warn",
-			);
+		if (!wasRunning) {
+			void this.inputController.handleTextSubmit(text);
+			return;
 		}
-
-		const entry = this.queueController.enqueuePrompt(text, {
-			front: true,
-			kind: "steer",
-		});
-		if (!entry) {
-			context.showError("Prompt queue is not available.");
-		}
+		void this.agent
+			.steer(this.buildQueuedUserMessage({ text }))
+			.then(() => {
+				this.queueController.syncFromAgent();
+				this.notificationView.showToast(
+					"Queued steer for the next tool boundary.",
+					"info",
+				);
+				this.refreshFooterHint();
+			})
+			.catch((error) => {
+				const message =
+					error instanceof Error ? error.message : String(error ?? "unknown");
+				context.showError(`Failed to queue steer: ${message}`);
+			});
 	}
 
 	private async handleReviewCommand(
@@ -1767,14 +1772,23 @@ export class TuiRenderer {
 			);
 			return;
 		}
+		if (this.isAgentRunning) {
+			const payload = await this.inputController.prepareQueuedPayload(text);
+			if (!payload) {
+				return;
+			}
+			await this.agent.followUp(this.buildQueuedUserMessage(payload));
+			this.clearEditor();
+			this.queueController.syncFromAgent();
+			this.notificationView.showToast("Queued follow-up message.", "info");
+			this.refreshFooterHint();
+			return;
+		}
 		const queued = await this.inputController.handleFollowUpSubmit(text);
 		if (!queued) {
 			return;
 		}
 		this.clearEditor();
-		if (this.isAgentRunning) {
-			this.notificationView.showToast("Queued follow-up message.", "info");
-		}
 		this.refreshFooterHint();
 	}
 
@@ -1790,23 +1804,28 @@ export class TuiRenderer {
 			return;
 		}
 		if (this.isAgentRunning) {
-			this.inputController.interruptNow({ keepPartial: false });
+			await this.agent.steer(this.buildQueuedUserMessage(payload));
+			this.clearEditor();
+			this.queueController.syncFromAgent();
 			this.notificationView.showToast(
-				"Steering: interrupted current run",
-				"warn",
+				"Queued steer for the next tool boundary.",
+				"info",
 			);
-		}
-		const entry = this.queueController.enqueuePrompt(payload.text, {
-			front: true,
-			attachments: payload.attachments,
-			kind: "steer",
-		});
-		if (!entry) {
-			this.notificationView.showError("Prompt queue is not available.");
+			this.refreshFooterHint();
 			return;
 		}
-		this.clearEditor();
-		this.refreshFooterHint();
+		this.inputController.submitPreparedPayload(payload);
+	}
+
+	private buildQueuedUserMessage(payload: PromptPayload): AppMessage {
+		return {
+			role: "user",
+			content: payload.text,
+			attachments: payload.attachments?.length
+				? payload.attachments
+				: undefined,
+			timestamp: Date.now(),
+		};
 	}
 
 	// consumePendingAttachmentMarkers, handleClipboardImagePaste,

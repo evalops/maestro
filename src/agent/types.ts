@@ -1202,6 +1202,10 @@ export type AgentStreamEvent =
  * @typeParam TOriginal - Type of the original message
  */
 export interface QueuedMessage<TOriginal = AppMessage> {
+	/** Stable identifier for queue operations */
+	id: number;
+	/** When the message was queued */
+	createdAt: number;
 	/** Original message as received */
 	original: TOriginal;
 	/** Optional LLM-formatted version of the message */

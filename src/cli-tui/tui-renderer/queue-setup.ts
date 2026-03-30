@@ -50,6 +50,9 @@ export function createQueueController(params: {
 			refreshFooterHint,
 			requestRender,
 			persistUiState,
+			getQueuedMessagesSnapshot: () => agent.getQueuedMessagesSnapshot(),
+			cancelQueuedMessage: (id) => agent.removeQueuedMessage(id),
+			clearQueuedMessages: () => agent.clearQueuedMessages(),
 		},
 	});
 }

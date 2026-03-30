@@ -350,6 +350,7 @@ export class Agent {
 	private steeringMode: "all" | "one" = "all";
 	private followUpMode: "all" | "one" = "all";
 	private queueMode: "all" | "one" = "all";
+	private nextQueuedMessageId = 1;
 	private runningPrompt?: Promise<void>;
 	private resolveRunningPrompt?: () => void;
 	private contextManager: AgentContextManager;
@@ -682,6 +683,8 @@ export class Agent {
 	async steer(m: AppMessage): Promise<void> {
 		const transformed = await this.messageTransformer([m]);
 		this.steeringQueue.push({
+			id: this.nextQueuedMessageId++,
+			createdAt: Date.now(),
 			original: m,
 			llm: transformed[0],
 		});
@@ -695,6 +698,8 @@ export class Agent {
 	async followUp(m: AppMessage): Promise<void> {
 		const transformed = await this.messageTransformer([m]);
 		this.followUpQueue.push({
+			id: this.nextQueuedMessageId++,
+			createdAt: Date.now(),
 			original: m,
 			llm: transformed[0],
 		});
@@ -728,6 +733,41 @@ export class Agent {
 
 	getQueuedFollowUpCount(): number {
 		return this.followUpQueue.length;
+	}
+
+	getQueuedMessagesSnapshot(): {
+		steering: ReadonlyArray<QueuedMessage<AppMessage>>;
+		followUps: ReadonlyArray<QueuedMessage<AppMessage>>;
+	} {
+		return {
+			steering: [...this.steeringQueue],
+			followUps: [...this.followUpQueue],
+		};
+	}
+
+	removeQueuedMessage(id: number): QueuedMessage<AppMessage> | null {
+		const steeringIndex = this.steeringQueue.findIndex(
+			(message) => message.id === id,
+		);
+		if (steeringIndex !== -1) {
+			return this.steeringQueue.splice(steeringIndex, 1)[0] ?? null;
+		}
+		const followUpIndex = this.followUpQueue.findIndex(
+			(message) => message.id === id,
+		);
+		if (followUpIndex !== -1) {
+			return this.followUpQueue.splice(followUpIndex, 1)[0] ?? null;
+		}
+		return null;
+	}
+
+	clearQueuedMessages(): Array<QueuedMessage<AppMessage>> {
+		const queued = [...this.steeringQueue, ...this.followUpQueue].sort(
+			(a, b) => a.createdAt - b.createdAt || a.id - b.id,
+		);
+		this.steeringQueue = [];
+		this.followUpQueue = [];
+		return queued;
 	}
 
 	/**

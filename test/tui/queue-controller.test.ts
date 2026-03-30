@@ -1,8 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-	PromptQueue,
-	PromptQueueEvent,
-} from "../../src/cli-tui/prompt-queue.js";
+import { describe, expect, it, vi } from "vitest";
+import type { AppMessage, QueuedMessage } from "../../src/agent/types.js";
 import {
 	QueueController,
 	type QueueControllerCallbacks,
@@ -34,6 +31,26 @@ function createMockEditor(): QueueControllerOptions["editor"] {
 	} as unknown as QueueControllerOptions["editor"];
 }
 
+function createQueuedMessage(
+	id: number,
+	text: string,
+	createdAt: number,
+): QueuedMessage<AppMessage> {
+	return {
+		id,
+		createdAt,
+		llm: {
+			role: "user",
+			content: text,
+		},
+		original: {
+			role: "user",
+			content: text,
+			timestamp: createdAt,
+		},
+	};
+}
+
 function createMockCallbacks(
 	overrides: Partial<QueueControllerCallbacks> = {},
 ): QueueControllerCallbacks {
@@ -44,37 +61,13 @@ function createMockCallbacks(
 		refreshFooterHint: vi.fn(),
 		requestRender: vi.fn(),
 		persistUiState: vi.fn(),
-		...overrides,
-	};
-}
-
-interface MockPromptQueue {
-	subscribe: ReturnType<typeof vi.fn>;
-	cancel: ReturnType<typeof vi.fn>;
-	cancelAll: ReturnType<typeof vi.fn>;
-	clearActive: ReturnType<typeof vi.fn>;
-	getSnapshot: ReturnType<typeof vi.fn>;
-	_emit: (event: PromptQueueEvent) => void;
-}
-
-function createMockPromptQueue(): MockPromptQueue {
-	let subscribers: Array<(event: PromptQueueEvent) => void> = [];
-	return {
-		subscribe: vi.fn((fn: (event: PromptQueueEvent) => void) => {
-			subscribers.push(fn);
-			return () => {
-				subscribers = subscribers.filter((s) => s !== fn);
-			};
+		getQueuedMessagesSnapshot: vi.fn().mockReturnValue({
+			steering: [],
+			followUps: [],
 		}),
-		cancel: vi.fn().mockReturnValue(true),
-		cancelAll: vi.fn(),
-		clearActive: vi.fn(),
-		getSnapshot: vi.fn().mockReturnValue({ pending: [] }),
-		_emit: (event: PromptQueueEvent) => {
-			for (const sub of subscribers) {
-				sub(event);
-			}
-		},
+		cancelQueuedMessage: vi.fn().mockReturnValue(null),
+		clearQueuedMessages: vi.fn().mockReturnValue([]),
+		...overrides,
 	};
 }
 
@@ -90,6 +83,7 @@ describe("QueueController", () => {
 			expect(controller.getFollowUpMode()).toBe("all");
 			expect(controller.isFollowUpEnabled()).toBe(true);
 			expect(controller.isSteeringEnabled()).toBe(true);
+			expect(controller.hasQueue()).toBe(true);
 		});
 
 		it("uses initial modes when provided", () => {
@@ -107,42 +101,54 @@ describe("QueueController", () => {
 		});
 	});
 
-	describe("attach/detach", () => {
-		it("attaches queue and subscribes to events", () => {
-			const queue = createMockPromptQueue();
+	describe("agent sync", () => {
+		it("hydrates queued steers and follow-ups from the agent snapshot", () => {
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn().mockReturnValue({
+					steering: [createQueuedMessage(2, "steer", 20)],
+					followUps: [createQueuedMessage(3, "follow", 30)],
+				}),
+			});
 			const controller = new QueueController({
 				notificationView: createMockNotificationView(),
 				editor: createMockEditor(),
-				callbacks: createMockCallbacks(),
+				callbacks,
 			});
 
-			controller.attach(queue as unknown as PromptQueue);
+			controller.syncFromAgent();
 
-			expect(controller.hasQueue()).toBe(true);
-			expect(queue.subscribe).toHaveBeenCalled();
+			expect(controller.getQueuedSteeringCount()).toBe(1);
+			expect(controller.getQueuedFollowUpCount()).toBe(1);
+			expect(controller.getNextPreview()).toBe("steer: steer");
+			expect(callbacks.onQueueCountChange).toHaveBeenCalledWith(2);
+			expect(callbacks.requestRender).toHaveBeenCalled();
 		});
 
-		it("detaches queue and unsubscribes", () => {
-			const queue = createMockPromptQueue();
+		it("attach triggers an initial sync", () => {
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn().mockReturnValue({
+					steering: [createQueuedMessage(1, "queued", 10)],
+					followUps: [],
+				}),
+			});
 			const controller = new QueueController({
 				notificationView: createMockNotificationView(),
 				editor: createMockEditor(),
-				callbacks: createMockCallbacks(),
+				callbacks,
 			});
 
-			controller.attach(queue as unknown as PromptQueue);
-			controller.detach();
+			controller.attach({} as never);
 
-			expect(controller.hasQueue()).toBe(false);
+			expect(controller.getQueuedCount()).toBe(1);
 		});
 	});
 
 	describe("setMode", () => {
-		it("sets follow-up mode to all and enables follow-ups", () => {
+		it("persists and announces mode changes", () => {
 			const callbacks = createMockCallbacks();
 			const notificationView = createMockNotificationView();
 			const controller = new QueueController({
-				notificationView: notificationView,
+				notificationView,
 				editor: createMockEditor(),
 				callbacks,
 				initialFollowUpMode: "one",
@@ -151,35 +157,20 @@ describe("QueueController", () => {
 			controller.setMode("followUp", "all");
 
 			expect(controller.getFollowUpMode()).toBe("all");
-			expect(controller.isFollowUpEnabled()).toBe(true);
 			expect(callbacks.persistUiState).toHaveBeenCalledWith({
 				steeringMode: "all",
 				followUpMode: "all",
 			});
+			expect(callbacks.onModeChange).toHaveBeenCalledWith("followUp", "all");
 			expect(notificationView.showToast).toHaveBeenCalledWith(
 				expect.stringContaining("all"),
 				"success",
 			);
-			expect(callbacks.onModeChange).toHaveBeenCalledWith("followUp", "all");
-		});
-
-		it("sets steering mode to one", () => {
-			const callbacks = createMockCallbacks();
-			const controller = new QueueController({
-				notificationView: createMockNotificationView(),
-				editor: createMockEditor(),
-				callbacks,
-				initialSteeringMode: "all",
-			});
-
-			controller.setMode("steering", "one");
-
-			expect(controller.getSteeringMode()).toBe("one");
 		});
 	});
 
 	describe("cancel", () => {
-		it("returns false when no queue attached", () => {
+		it("returns false when no queued message exists", () => {
 			const controller = new QueueController({
 				notificationView: createMockNotificationView(),
 				editor: createMockEditor(),
@@ -189,105 +180,121 @@ describe("QueueController", () => {
 			expect(controller.cancel(1)).toBe(false);
 		});
 
-		it("cancels and refreshes hint on success", () => {
-			const queue = createMockPromptQueue();
-			const callbacks = createMockCallbacks();
+		it("removes the queued message and refreshes hints on success", () => {
+			let snapshot = {
+				steering: [createQueuedMessage(1, "steer", 10)],
+				followUps: [createQueuedMessage(2, "follow", 20)],
+			};
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn(() => snapshot),
+				cancelQueuedMessage: vi.fn((id: number) => {
+					const steering = snapshot.steering.find((entry) => entry.id === id);
+					if (steering) {
+						snapshot = {
+							...snapshot,
+							steering: snapshot.steering.filter((entry) => entry.id !== id),
+						};
+						return steering;
+					}
+					return null;
+				}),
+			});
 			const controller = new QueueController({
 				notificationView: createMockNotificationView(),
 				editor: createMockEditor(),
 				callbacks,
 			});
-			controller.attach(queue as unknown as PromptQueue);
+			controller.syncFromAgent();
 
 			const result = controller.cancel(1);
 
 			expect(result).toBe(true);
-			expect(queue.cancel).toHaveBeenCalledWith(1);
+			expect(controller.getQueuedSteeringCount()).toBe(0);
+			expect(controller.getQueuedFollowUpCount()).toBe(1);
 			expect(callbacks.refreshFooterHint).toHaveBeenCalled();
 		});
 	});
 
 	describe("cancelAll", () => {
-		it("cancels all prompts and clears preview", () => {
-			const queue = createMockPromptQueue();
+		it("clears every queued message and resets the preview", () => {
+			let snapshot = {
+				steering: [createQueuedMessage(1, "steer", 10)],
+				followUps: [createQueuedMessage(2, "follow", 20)],
+			};
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn(() => snapshot),
+				clearQueuedMessages: vi.fn(() => {
+					const cleared = [...snapshot.steering, ...snapshot.followUps];
+					snapshot = { steering: [], followUps: [] };
+					return cleared;
+				}),
+			});
 			const controller = new QueueController({
 				notificationView: createMockNotificationView(),
 				editor: createMockEditor(),
-				callbacks: createMockCallbacks(),
+				callbacks,
 			});
-			controller.attach(queue as unknown as PromptQueue);
+			controller.syncFromAgent();
 
-			controller.cancelAll();
+			controller.cancelAll({ silent: true });
 
-			expect(queue.cancelAll).toHaveBeenCalled();
+			expect(controller.getQueuedCount()).toBe(0);
 			expect(controller.getNextPreview()).toBeNull();
+			expect(callbacks.clearQueuedMessages).toHaveBeenCalled();
 		});
 	});
 
 	describe("restoreQueuedPrompts", () => {
-		it("does nothing when no queue attached", () => {
-			const editor = createMockEditor();
-			const controller = new QueueController({
-				notificationView: createMockNotificationView(),
-				editor: editor,
-				callbacks: createMockCallbacks(),
-			});
-
-			controller.restoreQueuedPrompts();
-
-			expect(editor.setText).not.toHaveBeenCalled();
-		});
-
-		it("restores active and pending prompts to editor", () => {
-			const queue = createMockPromptQueue();
-			queue.getSnapshot.mockReturnValue({
-				active: { id: 1, text: "Active prompt", kind: "prompt" },
-				pending: [
-					{ id: 2, text: "Pending 1", kind: "prompt" },
-					{ id: 3, text: "Pending 2", kind: "prompt" },
+		it("restores queued prompts in steer-then-follow-up order", () => {
+			let snapshot = {
+				steering: [
+					createQueuedMessage(2, "steer later", 20),
+					createQueuedMessage(1, "steer first", 10),
 				],
-			});
+				followUps: [createQueuedMessage(3, "follow", 30)],
+			};
 			const editor = createMockEditor();
 			const notificationView = createMockNotificationView();
-			const controller = new QueueController({
-				notificationView: notificationView,
-				editor: editor,
-				callbacks: createMockCallbacks(),
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn(() => snapshot),
+				clearQueuedMessages: vi.fn(() => {
+					const cleared = [...snapshot.steering, ...snapshot.followUps];
+					snapshot = { steering: [], followUps: [] };
+					return cleared;
+				}),
 			});
-			controller.attach(queue as unknown as PromptQueue);
+			const controller = new QueueController({
+				notificationView,
+				editor,
+				callbacks,
+			});
+			controller.syncFromAgent();
 
-			controller.restoreQueuedPrompts();
+			const restored = controller.restoreQueuedPrompts();
 
+			expect(restored.map((entry) => entry.id)).toEqual([1, 2, 3]);
 			expect(editor.setText).toHaveBeenCalledWith(
-				"Active prompt\n\nPending 1\n\nPending 2",
+				"steer first\n\nsteer later\n\nfollow",
 			);
-			expect(queue.cancelAll).toHaveBeenCalledWith({ silent: true });
-			expect(queue.clearActive).toHaveBeenCalled();
 			expect(notificationView.showToast).toHaveBeenCalledWith(
 				"Restored 3 queued prompts to the editor.",
 				"info",
 			);
 		});
 
-		it("does nothing when queue is empty", () => {
-			const queue = createMockPromptQueue();
-			queue.getSnapshot.mockReturnValue({ pending: [] });
-			const editor = createMockEditor();
+		it("returns an empty list when nothing is queued", () => {
 			const controller = new QueueController({
 				notificationView: createMockNotificationView(),
-				editor: editor,
+				editor: createMockEditor(),
 				callbacks: createMockCallbacks(),
 			});
-			controller.attach(queue as unknown as PromptQueue);
 
-			controller.restoreQueuedPrompts();
-
-			expect(editor.setText).not.toHaveBeenCalled();
+			expect(controller.restoreQueuedPrompts()).toEqual([]);
 		});
 	});
 
 	describe("buildQueueHint", () => {
-		it("returns null when agent is running", () => {
+		it("returns null while the agent is running", () => {
 			const callbacks = createMockCallbacks({
 				isAgentRunning: vi.fn().mockReturnValue(true),
 			});
@@ -300,94 +307,21 @@ describe("QueueController", () => {
 			expect(controller.buildQueueHint()).toBeNull();
 		});
 
-		it("returns null when no queued prompts", () => {
+		it("summarizes queued steers and follow-ups when idle", () => {
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn().mockReturnValue({
+					steering: [createQueuedMessage(1, "steer", 10)],
+					followUps: [createQueuedMessage(2, "follow", 20)],
+				}),
+			});
 			const controller = new QueueController({
 				notificationView: createMockNotificationView(),
 				editor: createMockEditor(),
-				callbacks: createMockCallbacks(),
+				callbacks,
 			});
+			controller.syncFromAgent();
 
-			expect(controller.buildQueueHint()).toBeNull();
-		});
-	});
-
-	describe("event handling", () => {
-		it("shows error notification on error event", () => {
-			const queue = createMockPromptQueue();
-			const notificationView = createMockNotificationView();
-			const controller = new QueueController({
-				notificationView: notificationView,
-				editor: createMockEditor(),
-				callbacks: createMockCallbacks(),
-			});
-			controller.attach(queue as unknown as PromptQueue);
-
-			queue._emit({
-				type: "error",
-				error: new Error("Test error"),
-				entry: {
-					id: 5,
-					text: "test",
-					createdAt: Date.now(),
-					kind: "prompt",
-				},
-			});
-
-			expect(notificationView.showError).toHaveBeenCalledWith(
-				"Prompt #5 failed: Test error",
-			);
-		});
-
-		it("shows info notification on enqueue when not running immediately", () => {
-			const queue = createMockPromptQueue();
-			const notificationView = createMockNotificationView();
-			const controller = new QueueController({
-				notificationView: notificationView,
-				editor: createMockEditor(),
-				callbacks: createMockCallbacks(),
-			});
-			controller.attach(queue as unknown as PromptQueue);
-
-			queue._emit({
-				type: "enqueue",
-				willRunImmediately: false,
-				entry: {
-					id: 2,
-					text: "test",
-					createdAt: Date.now(),
-					kind: "followUp",
-				},
-				pendingCount: 2,
-			});
-
-			expect(notificationView.showInfo).toHaveBeenCalledWith(
-				"Queued follow-up #2 (2 pending)",
-			);
-		});
-
-		it("shows info notification on cancel", () => {
-			const queue = createMockPromptQueue();
-			const notificationView = createMockNotificationView();
-			const controller = new QueueController({
-				notificationView: notificationView,
-				editor: createMockEditor(),
-				callbacks: createMockCallbacks(),
-			});
-			controller.attach(queue as unknown as PromptQueue);
-
-			queue._emit({
-				type: "cancel",
-				entry: {
-					id: 3,
-					text: "test",
-					createdAt: Date.now(),
-					kind: "prompt",
-				},
-			});
-
-			expect(notificationView.showInfo).toHaveBeenCalledWith(
-				"Removed queued prompt #3",
-			);
+			expect(controller.buildQueueHint()).toBe("1 steer, 1 follow-up queued");
 		});
 	});
 });

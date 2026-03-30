@@ -92,7 +92,7 @@ use crate::session::{
     ThinkingLevel, ThinkingLevelChange, TokenCost, TokenUsage as SessionTokenUsage, ToolInfo,
 };
 use crate::skills::{skills_to_prompt, LoadedSkill, SkillLoadError, SkillLoader, SkillRegistry};
-use crate::state::{AppState, ApprovalMode, Message, MessageRole};
+use crate::state::{AppState, ApprovalMode, Message, MessageRole, QueueMode};
 use crate::terminal::{self, TerminalCapabilities};
 use crate::tools::{ToolExecutor, ToolRegistry};
 use chrono::{Datelike, Utc};
@@ -625,6 +625,8 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                     agent.send_ready();
                     // Send session info with git branch
                     agent.send_session_info(&cwd, None, git_branch);
+                    let _ = agent.set_steering_mode(self.state.steering_mode);
+                    let _ = agent.set_follow_up_mode(self.state.follow_up_mode);
                 }
 
                 // Ensure busy is false so user can type
@@ -1083,9 +1085,39 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             self.state.busy = true;
             self.queued_prompt_inflight = None;
             if !was_busy {
-                if let Some(pending) = self.queued_prompts.pop_front() {
-                    self.queued_prompt_active = Some(pending.clone());
-                    self.state.add_user_message(pending.content);
+                let drain_count = match self.queued_prompts.front().map(|prompt| prompt.kind) {
+                    Some(PromptKind::Steer)
+                        if matches!(self.state.steering_mode, QueueMode::All) =>
+                    {
+                        self.queued_prompts
+                            .iter()
+                            .take_while(|prompt| prompt.kind == PromptKind::Steer)
+                            .count()
+                    }
+                    Some(PromptKind::FollowUp)
+                        if matches!(self.state.follow_up_mode, QueueMode::All) =>
+                    {
+                        self.queued_prompts
+                            .iter()
+                            .take_while(|prompt| prompt.kind == PromptKind::FollowUp)
+                            .count()
+                    }
+                    Some(_) => 1,
+                    None => 0,
+                };
+
+                let mut drained = Vec::new();
+                for _ in 0..drain_count {
+                    if let Some(pending) = self.queued_prompts.pop_front() {
+                        drained.push(pending);
+                    }
+                }
+
+                if let Some(active) = drained.first().cloned() {
+                    self.queued_prompt_active = Some(active);
+                    for pending in drained {
+                        self.state.add_user_message(pending.content);
+                    }
                     self.sync_queue_prompt_count();
                 } else {
                     self.queued_prompt_active = None;
@@ -3166,10 +3198,16 @@ Add the required fields and retry.",
                 let label = match kind {
                     QueueModeKind::Steering => {
                         self.state.steering_mode = mode;
+                        if let Some(agent) = &self.native_agent {
+                            let _ = agent.set_steering_mode(mode);
+                        }
                         "Steering"
                     }
                     QueueModeKind::FollowUp => {
                         self.state.follow_up_mode = mode;
+                        if let Some(agent) = &self.native_agent {
+                            let _ = agent.set_follow_up_mode(mode);
+                        }
                         "Follow-up"
                     }
                 };
@@ -3305,10 +3343,6 @@ Slash Commands:
             return Ok(false);
         }
         if self.state.busy {
-            if let Some(agent) = &self.native_agent {
-                agent.cancel_keep_queue();
-            }
-            self.state.status = Some("Steering: interrupted current run".to_string());
             return self.queue_prompt(content, PromptKind::Steer, true).await;
         }
         self.submit_prompt_with_kind(content, PromptKind::Steer)
@@ -3359,7 +3393,12 @@ Slash Commands:
     ) -> Option<QueuedPrompt> {
         let entry = QueuedPrompt { id, content, kind };
         if front {
-            self.queued_prompts.push_front(entry);
+            let insert_at = self
+                .queued_prompts
+                .iter()
+                .position(|prompt| prompt.kind != kind)
+                .unwrap_or(self.queued_prompts.len());
+            self.queued_prompts.insert(insert_at, entry);
         } else {
             self.queued_prompts.push_back(entry);
         }
@@ -4296,6 +4335,68 @@ mod tests {
         assert_eq!(app.state.queued_prompt_count, 1);
         assert_eq!(app.state.queued_follow_up_count, 0);
         assert_eq!(app.state.queued_steering_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_queue_response_start_drains_all_leading_steers_in_all_mode() {
+        let mut app = new_test_app();
+
+        let steer_one = app.reserve_queue_id();
+        let steer_two = app.reserve_queue_id();
+        let follow_up = app.reserve_queue_id();
+        app.enqueue_pending_prompt(steer_one, "steer one".to_string(), PromptKind::Steer, true);
+        app.enqueue_pending_prompt(steer_two, "steer two".to_string(), PromptKind::Steer, true);
+        app.enqueue_pending_prompt(
+            follow_up,
+            "follow-up".to_string(),
+            PromptKind::FollowUp,
+            false,
+        );
+
+        app.handle_agent_message(FromAgent::ResponseStart {
+            response_id: "resp-batch".to_string(),
+        })
+        .await
+        .expect("handle response start");
+
+        assert_eq!(app.state.queued_prompt_count, 1);
+        assert_eq!(app.state.queued_steering_count, 0);
+        assert_eq!(app.state.queued_follow_up_count, 1);
+        assert_eq!(
+            app.queued_prompt_active.as_ref().map(|prompt| prompt.id),
+            Some(steer_one)
+        );
+    }
+
+    #[test]
+    fn test_queue_enqueue_pending_prompt_preserves_steer_fifo() {
+        let mut app = new_test_app();
+
+        let steer_one = app.reserve_queue_id();
+        let follow_up = app.reserve_queue_id();
+        let steer_two = app.reserve_queue_id();
+        app.enqueue_pending_prompt(steer_one, "steer one".to_string(), PromptKind::Steer, true);
+        app.enqueue_pending_prompt(
+            follow_up,
+            "follow-up".to_string(),
+            PromptKind::FollowUp,
+            false,
+        );
+        app.enqueue_pending_prompt(steer_two, "steer two".to_string(), PromptKind::Steer, true);
+
+        let ordered: Vec<(u64, PromptKind)> = app
+            .queued_prompts
+            .iter()
+            .map(|prompt| (prompt.id, prompt.kind))
+            .collect();
+        assert_eq!(
+            ordered,
+            vec![
+                (steer_one, PromptKind::Steer),
+                (steer_two, PromptKind::Steer),
+                (follow_up, PromptKind::FollowUp),
+            ]
+        );
     }
 
     #[tokio::test]

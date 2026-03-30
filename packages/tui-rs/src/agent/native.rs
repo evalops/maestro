@@ -88,7 +88,7 @@
 //! When the user presses Escape or sends `AgentCommand::Cancel`, the token is
 //! triggered and the current request stops gracefully.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -114,6 +114,7 @@ use crate::safety::{
     apply_workflow_state_hooks, check_model_allowed, ActionFirewall, FirewallContext,
     FirewallVerdict, WorkflowStateTracker,
 };
+use crate::state::QueueMode;
 use crate::tools::{ToolExecutor, ToolRegistry};
 
 fn provider_id(provider: AiProvider) -> &'static str {
@@ -285,6 +286,12 @@ enum AgentCommand {
     ///
     /// Enables or disables the extended thinking mode and sets the token budget.
     SetThinking { enabled: bool, budget: u32 },
+
+    /// Update steering queue drain mode.
+    SetSteeringMode { mode: QueueMode },
+
+    /// Update follow-up queue drain mode.
+    SetFollowUpMode { mode: QueueMode },
 
     /// Update the system prompt
     ///
@@ -465,6 +472,9 @@ impl NativeAgent {
             compactor,
             retry_policy,
             pending_messages,
+            steering_mode: QueueMode::All,
+            follow_up_mode: QueueMode::All,
+            deferred_commands: VecDeque::new(),
             pending_tool_approvals: HashMap::new(),
             prompt_context: None,
         };
@@ -597,6 +607,22 @@ impl NativeAgent {
         self.command_tx
             .send(AgentCommand::SetThinking { enabled, budget })
             .map_err(|e| anyhow::anyhow!("Failed to set thinking: {e}"))?;
+        Ok(())
+    }
+
+    /// Set steering queue drain mode.
+    pub fn set_steering_mode(&self, mode: QueueMode) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetSteeringMode { mode })
+            .map_err(|e| anyhow::anyhow!("Failed to set steering mode: {e}"))?;
+        Ok(())
+    }
+
+    /// Set follow-up queue drain mode.
+    pub fn set_follow_up_mode(&self, mode: QueueMode) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::SetFollowUpMode { mode })
+            .map_err(|e| anyhow::anyhow!("Failed to set follow-up mode: {e}"))?;
         Ok(())
     }
 
@@ -755,6 +781,15 @@ struct NativeAgentRunner {
     /// automatically processed.
     pending_messages: MessageQueue,
 
+    /// Queue drain mode for steering messages.
+    steering_mode: QueueMode,
+
+    /// Queue drain mode for follow-up messages.
+    follow_up_mode: QueueMode,
+
+    /// Commands observed while the agent is inside a turn and deferred until idle.
+    deferred_commands: VecDeque<AgentCommand>,
+
     /// Buffered tool approvals that arrived out of order
     pending_tool_approvals: HashMap<String, (bool, Option<ToolResult>)>,
 
@@ -852,6 +887,261 @@ impl NativeAgentRunner {
                 *target = Some(context);
             }
         }
+    }
+
+    fn enqueue_pending_prompt(
+        &mut self,
+        content: String,
+        attachments: Vec<String>,
+        kind: PromptKind,
+        queue_id: Option<u64>,
+    ) {
+        let id = queue_id.unwrap_or_else(|| self.pending_messages.reserve_id());
+        let pending = if kind == PromptKind::Steer {
+            PendingMessage::urgent_with_kind_and_id_and_attachments(content, kind, id, attachments)
+        } else {
+            PendingMessage::with_kind_and_id_and_attachments(content, kind, id, attachments)
+        };
+        let dropped = self.pending_messages.push_message(pending);
+        if let Some(dropped) = dropped {
+            let _ = self.event_tx.send(FromAgent::Status {
+                message: format!(
+                    "Queue full, dropped oldest {}: {}...",
+                    dropped.kind.label(),
+                    &dropped.content[..dropped.content.len().min(30)]
+                ),
+            });
+        }
+        let stats = self.pending_messages.stats();
+        let label = kind.label();
+        let _ = self.event_tx.send(FromAgent::Status {
+            message: if stats.pending_count == 1 {
+                format!("Queued {label} #{id} (1 pending)")
+            } else {
+                format!("Queued {} #{} ({} pending)", label, id, stats.pending_count)
+            },
+        });
+    }
+
+    fn drain_pending_commands(&mut self) -> bool {
+        let mut cancelled = false;
+        while let Ok(cmd) = self.command_rx.try_recv() {
+            match cmd {
+                AgentCommand::Prompt {
+                    content,
+                    attachments,
+                    kind,
+                    queue_id,
+                } => {
+                    if kind == PromptKind::Prompt {
+                        self.deferred_commands.push_back(AgentCommand::Prompt {
+                            content,
+                            attachments,
+                            kind,
+                            queue_id,
+                        });
+                    } else {
+                        self.enqueue_pending_prompt(content, attachments, kind, queue_id);
+                    }
+                }
+                AgentCommand::Cancel { clear_pending } => {
+                    self.clear_pending_on_cancel = clear_pending;
+                    if clear_pending {
+                        let cleared = self.pending_messages.clear();
+                        if !cleared.is_empty() {
+                            let _ = self.event_tx.send(FromAgent::Status {
+                                message: format!("Cleared {} pending message(s)", cleared.len()),
+                            });
+                        }
+                    }
+                    self.pending_tool_approvals.clear();
+                    cancelled = true;
+                }
+                AgentCommand::CancelQueued { id } => {
+                    if let Some(removed) = self.pending_messages.remove_by_id(id) {
+                        let _ = self.event_tx.send(FromAgent::Status {
+                            message: format!(
+                                "Removed queued {} #{}",
+                                removed.kind.label(),
+                                removed.id
+                            ),
+                        });
+                    } else {
+                        let _ = self.event_tx.send(FromAgent::Status {
+                            message: format!("No queued prompt found with id #{id}"),
+                        });
+                    }
+                }
+                AgentCommand::SetThinking { enabled, budget } => {
+                    self.config.thinking_enabled = enabled;
+                    self.config.thinking_budget = budget;
+                }
+                AgentCommand::SetSteeringMode { mode } => {
+                    self.steering_mode = mode;
+                }
+                AgentCommand::SetFollowUpMode { mode } => {
+                    self.follow_up_mode = mode;
+                }
+                AgentCommand::SetSystemPrompt { system_prompt } => {
+                    self.config.system_prompt = Some(system_prompt);
+                }
+                other => {
+                    self.deferred_commands.push_back(other);
+                }
+            }
+        }
+        if cancelled {
+            if let Some(token) = &self.cancel_token {
+                token.cancel();
+            }
+        }
+        cancelled
+    }
+
+    fn drain_leading_pending_messages(
+        &mut self,
+        kind: PromptKind,
+        mode: QueueMode,
+    ) -> Vec<PendingMessage> {
+        let max_count = match mode {
+            QueueMode::All => usize::MAX,
+            QueueMode::One => 1,
+        };
+        self.pending_messages.drain_leading_kind(kind, max_count)
+    }
+
+    fn dequeue_next_turn_messages(&mut self, allow_follow_ups: bool) -> Vec<PendingMessage> {
+        let steering = self.drain_leading_pending_messages(PromptKind::Steer, self.steering_mode);
+        if !steering.is_empty() {
+            return steering;
+        }
+        if !allow_follow_ups {
+            return Vec::new();
+        }
+        self.drain_leading_pending_messages(PromptKind::FollowUp, self.follow_up_mode)
+    }
+
+    fn announce_next_turn_messages(&self, pending: &[PendingMessage]) {
+        let Some(first) = pending.first() else {
+            return;
+        };
+        let remaining = self.pending_messages.len();
+        let label = first.kind.label();
+        let message = if pending.len() == 1 {
+            if remaining > 0 {
+                format!(
+                    "Processing queued {label} #{} ({} remaining)...",
+                    first.id, remaining
+                )
+            } else {
+                format!("Processing queued {label} #{}...", first.id)
+            }
+        } else if remaining > 0 {
+            format!(
+                "Processing {} queued {} message(s) ({} remaining)...",
+                pending.len(),
+                label,
+                remaining
+            )
+        } else {
+            format!(
+                "Processing {} queued {} message(s)...",
+                pending.len(),
+                label
+            )
+        };
+        let _ = self.event_tx.send(FromAgent::Status { message });
+    }
+
+    async fn prepare_pending_message(
+        &mut self,
+        pending: &PendingMessage,
+    ) -> Result<Option<(Message, Option<String>)>> {
+        let mut prompt = pending.content.clone();
+        let mut attachments = pending.attachments.clone();
+        let mut prompt_context: Option<String> = None;
+
+        let hook_result = self
+            .hooks
+            .execute_user_prompt_submit(&prompt, attachments.len() as u32);
+        match hook_result {
+            HookResult::Block { reason } => {
+                let _ = self.event_tx.send(FromAgent::Error {
+                    message: format!("Prompt blocked by hook: {reason}"),
+                    fatal: false,
+                });
+                return Ok(None);
+            }
+            HookResult::ModifyInput { new_input } => {
+                Self::apply_message_hook_modification(&mut prompt, &mut attachments, new_input);
+            }
+            HookResult::InjectContext { context } => {
+                Self::merge_prompt_context(&mut prompt_context, context);
+            }
+            HookResult::Continue => {}
+        }
+
+        let hook_result =
+            self.hooks
+                .execute_pre_message(&prompt, &attachments, Some(&self.config.model));
+        match hook_result {
+            HookResult::Block { reason } => {
+                let _ = self.event_tx.send(FromAgent::Error {
+                    message: format!("Prompt blocked by hook: {reason}"),
+                    fatal: false,
+                });
+                return Ok(None);
+            }
+            HookResult::ModifyInput { new_input } => {
+                Self::apply_message_hook_modification(&mut prompt, &mut attachments, new_input);
+            }
+            HookResult::InjectContext { context } => {
+                Self::merge_prompt_context(&mut prompt_context, context);
+            }
+            HookResult::Continue => {}
+        }
+
+        let mut blocks = vec![ContentBlock::Text { text: prompt }];
+        let attachment_blocks = self.load_attachment_blocks(&attachments).await;
+        blocks.extend(attachment_blocks);
+
+        let content = if blocks.len() == 1 {
+            match &blocks[0] {
+                ContentBlock::Text { text } => MessageContent::text(text.clone()),
+                _ => MessageContent::Blocks(blocks),
+            }
+        } else {
+            MessageContent::Blocks(blocks)
+        };
+
+        Ok(Some((
+            Message {
+                role: Role::User,
+                content,
+            },
+            prompt_context,
+        )))
+    }
+
+    async fn append_pending_messages_for_turn(
+        &mut self,
+        pending: Vec<PendingMessage>,
+    ) -> Result<bool> {
+        let mut next_prompt_context: Option<String> = None;
+        let mut appended = false;
+        for pending_message in pending {
+            if let Some((message, prompt_context)) =
+                self.prepare_pending_message(&pending_message).await?
+            {
+                self.messages.push(message);
+                if let Some(context) = prompt_context {
+                    Self::merge_prompt_context(&mut next_prompt_context, context);
+                }
+                appended = true;
+            }
+        }
+        self.prompt_context = next_prompt_context;
+        Ok(appended)
     }
 
     fn stop_reason_label(reason: crate::ai::StopReason) -> &'static str {
@@ -964,7 +1254,15 @@ impl NativeAgentRunner {
 
     /// Run the background task loop
     async fn run(mut self) {
-        while let Some(cmd) = self.command_rx.recv().await {
+        loop {
+            let cmd = if let Some(cmd) = self.deferred_commands.pop_front() {
+                cmd
+            } else {
+                let Some(cmd) = self.command_rx.recv().await else {
+                    break;
+                };
+                cmd
+            };
             match cmd {
                 AgentCommand::Prompt {
                     content,
@@ -973,45 +1271,7 @@ impl NativeAgentRunner {
                     queue_id,
                 } => {
                     if self.busy {
-                        // Queue the message instead of rejecting it
-                        let id = queue_id.unwrap_or_else(|| self.pending_messages.reserve_id());
-                        let pending = if kind == PromptKind::Steer {
-                            PendingMessage::urgent_with_kind_and_id_and_attachments(
-                                content,
-                                kind,
-                                id,
-                                attachments,
-                            )
-                        } else {
-                            PendingMessage::with_kind_and_id_and_attachments(
-                                content,
-                                kind,
-                                id,
-                                attachments,
-                            )
-                        };
-                        let dropped = self.pending_messages.push_message(pending);
-                        if let Some(dropped) = dropped {
-                            let _ = self.event_tx.send(FromAgent::Status {
-                                message: format!(
-                                    "Queue full, dropped oldest {}: {}...",
-                                    dropped.kind.label(),
-                                    &dropped.content[..dropped.content.len().min(30)]
-                                ),
-                            });
-                        }
-                        let stats = self.pending_messages.stats();
-                        let label = kind.label();
-                        let _ = self.event_tx.send(FromAgent::Status {
-                            message: if stats.pending_count == 1 {
-                                format!("Queued {label} #{id} (1 pending)")
-                            } else {
-                                format!(
-                                    "Queued {} #{} ({} pending)",
-                                    label, id, stats.pending_count
-                                )
-                            },
-                        });
+                        self.enqueue_pending_prompt(content, attachments, kind, queue_id);
                         continue;
                     }
 
@@ -1181,184 +1441,6 @@ impl NativeAgentRunner {
                         response_id: "done".to_string(),
                         usage: None,
                     });
-
-                    // Process any pending messages that were queued while busy
-                    while let Some(pending) = self.pending_messages.pop() {
-                        let remaining = self.pending_messages.len();
-                        let label = pending.kind.label();
-                        let _ = self.event_tx.send(FromAgent::Status {
-                            message: if remaining > 0 {
-                                format!(
-                                    "Processing queued {} #{} ({} remaining)...",
-                                    label, pending.id, remaining
-                                )
-                            } else {
-                                format!("Processing queued {} #{}...", label, pending.id)
-                            },
-                        });
-
-                        self.busy = true;
-                        let mut prompt = pending.content.clone();
-                        let mut attachments = pending.attachments.clone();
-                        let mut prompt_context: Option<String> = None;
-
-                        // Execute UserPromptSubmit hooks
-                        let hook_result = self
-                            .hooks
-                            .execute_user_prompt_submit(&prompt, attachments.len() as u32);
-                        match hook_result {
-                            HookResult::Block { reason } => {
-                                let _ = self.event_tx.send(FromAgent::Error {
-                                    message: format!("Prompt blocked by hook: {reason}"),
-                                    fatal: false,
-                                });
-                                let _ = self.event_tx.send(FromAgent::ResponseEnd {
-                                    response_id: "blocked".to_string(),
-                                    usage: None,
-                                });
-                                self.busy = false;
-                                self.cancel_token = None;
-                                self.prompt_context = None;
-                                continue;
-                            }
-                            HookResult::ModifyInput { new_input } => {
-                                Self::apply_message_hook_modification(
-                                    &mut prompt,
-                                    &mut attachments,
-                                    new_input,
-                                );
-                            }
-                            HookResult::InjectContext { context } => {
-                                Self::merge_prompt_context(&mut prompt_context, context);
-                            }
-                            HookResult::Continue => {}
-                        }
-
-                        // Execute PreMessage hooks
-                        let hook_result = self.hooks.execute_pre_message(
-                            &prompt,
-                            &attachments,
-                            Some(&self.config.model),
-                        );
-                        match hook_result {
-                            HookResult::Block { reason } => {
-                                let _ = self.event_tx.send(FromAgent::Error {
-                                    message: format!("Prompt blocked by hook: {reason}"),
-                                    fatal: false,
-                                });
-                                let _ = self.event_tx.send(FromAgent::ResponseEnd {
-                                    response_id: "blocked".to_string(),
-                                    usage: None,
-                                });
-                                self.busy = false;
-                                self.cancel_token = None;
-                                self.prompt_context = None;
-                                continue;
-                            }
-                            HookResult::ModifyInput { new_input } => {
-                                Self::apply_message_hook_modification(
-                                    &mut prompt,
-                                    &mut attachments,
-                                    new_input,
-                                );
-                            }
-                            HookResult::InjectContext { context } => {
-                                Self::merge_prompt_context(&mut prompt_context, context);
-                            }
-                            HookResult::Continue => {}
-                        }
-
-                        self.prompt_context = prompt_context;
-
-                        let cancel_token = CancellationToken::new();
-                        self.cancel_token = Some(cancel_token.clone());
-
-                        // Add the pending message to conversation history
-                        let mut blocks = Vec::new();
-                        blocks.push(ContentBlock::Text { text: prompt });
-                        let attachment_blocks = self.load_attachment_blocks(&attachments).await;
-                        blocks.extend(attachment_blocks);
-
-                        let content = if blocks.len() == 1 {
-                            match &blocks[0] {
-                                ContentBlock::Text { text } => MessageContent::text(text.clone()),
-                                _ => MessageContent::Blocks(blocks),
-                            }
-                        } else {
-                            MessageContent::Blocks(blocks)
-                        };
-                        self.messages.push(Message {
-                            role: Role::User,
-                            content,
-                        });
-
-                        self.retry_policy.reset();
-
-                        // Run the agent loop for this pending message
-                        loop {
-                            let result = tokio::select! {
-                                res = self.run_loop() => res,
-                                () = cancel_token.cancelled() => {
-                                    Err(anyhow::anyhow!("Request cancelled"))
-                                }
-                            };
-
-                            match result {
-                                Ok(()) => break,
-                                Err(e) => {
-                                    let msg = e.to_string();
-                                    if msg == "Request cancelled" {
-                                        if self.clear_pending_on_cancel {
-                                            // Clear remaining pending messages on cancel
-                                            self.pending_messages.clear();
-                                        }
-                                        break;
-                                    }
-
-                                    let error_kind = super::retry::ErrorKind::classify(&msg);
-                                    match self.retry_policy.should_retry(error_kind) {
-                                        super::retry::RetryDecision::Retry {
-                                            delay,
-                                            attempt,
-                                            reason,
-                                        } => {
-                                            let _ = self.event_tx.send(FromAgent::Status {
-                                                message: format!(
-                                                    "{}. Retrying in {:.1}s (attempt {})...",
-                                                    reason,
-                                                    delay.as_secs_f64(),
-                                                    attempt
-                                                ),
-                                            });
-                                            tokio::time::sleep(delay).await;
-                                            if cancel_token.is_cancelled() {
-                                                if self.clear_pending_on_cancel {
-                                                    self.pending_messages.clear();
-                                                }
-                                                break;
-                                            }
-                                        }
-                                        super::retry::RetryDecision::GiveUp { reason } => {
-                                            let _ = self.event_tx.send(FromAgent::Error {
-                                                message: format!("Agent error: {msg} ({reason})"),
-                                                fatal: false,
-                                            });
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        self.busy = false;
-                        self.cancel_token = None;
-                        self.prompt_context = None;
-
-                        let _ = self.event_tx.send(FromAgent::ResponseEnd {
-                            response_id: "queued".to_string(),
-                            usage: None,
-                        });
-                    }
                 }
                 AgentCommand::Cancel { clear_pending } => {
                     if let Some(token) = &self.cancel_token {
@@ -1432,6 +1514,12 @@ impl NativeAgentRunner {
                 AgentCommand::SetThinking { enabled, budget } => {
                     self.config.thinking_enabled = enabled;
                     self.config.thinking_budget = budget;
+                }
+                AgentCommand::SetSteeringMode { mode } => {
+                    self.steering_mode = mode;
+                }
+                AgentCommand::SetFollowUpMode { mode } => {
+                    self.follow_up_mode = mode;
                 }
                 AgentCommand::SetSystemPrompt { system_prompt } => {
                     self.config.system_prompt = Some(system_prompt);
@@ -1534,7 +1622,7 @@ impl NativeAgentRunner {
 
     /// Run the agent loop until complete or interrupted
     async fn run_loop(&mut self) -> Result<()> {
-        loop {
+        'turn: loop {
             let response_id = Uuid::new_v4().to_string();
             let start_time = Instant::now();
             let mut stop_reason: Option<crate::ai::StopReason> = None;
@@ -1750,12 +1838,40 @@ impl NativeAgentRunner {
                 usage: Some(usage),
             });
 
+            if self.drain_pending_commands() {
+                return Err(anyhow::anyhow!("Request cancelled"));
+            }
+
             // If there are tool calls, handle them
             if !pending_tool_calls.is_empty() {
                 let mut tool_results: Vec<ContentBlock> = Vec::new();
                 let firewall = ActionFirewall::new(&self.config.cwd);
+                let mut deferred_steering: Vec<PendingMessage> = Vec::new();
+                let mut remaining_tool_calls: Vec<(
+                    String,
+                    String,
+                    serde_json::Value,
+                    Option<String>,
+                )> = Vec::new();
+                let mut pending_tool_calls_iter = pending_tool_calls.into_iter();
+                let mut processed_any_tool = false;
 
-                for (call_id, tool_name, args, parse_error) in pending_tool_calls {
+                while let Some((call_id, tool_name, args, parse_error)) =
+                    pending_tool_calls_iter.next()
+                {
+                    if processed_any_tool {
+                        if self.drain_pending_commands() {
+                            return Err(anyhow::anyhow!("Request cancelled"));
+                        }
+                        deferred_steering = self.dequeue_next_turn_messages(false);
+                        if !deferred_steering.is_empty() {
+                            remaining_tool_calls.push((call_id, tool_name, args, parse_error));
+                            remaining_tool_calls.extend(pending_tool_calls_iter);
+                            break;
+                        }
+                    }
+                    processed_any_tool = true;
+
                     if let Some(message) = parse_error {
                         let _ = self.event_tx.send(FromAgent::Error {
                             message: message.clone(),
@@ -1973,6 +2089,41 @@ impl NativeAgentRunner {
                     });
                 }
 
+                if deferred_steering.is_empty() {
+                    if self.drain_pending_commands() {
+                        return Err(anyhow::anyhow!("Request cancelled"));
+                    }
+                    deferred_steering = self.dequeue_next_turn_messages(false);
+                }
+
+                if !deferred_steering.is_empty() {
+                    for (call_id, tool_name, args, _parse_error) in remaining_tool_calls {
+                        let skipped_message = "Skipped due to queued user message.".to_string();
+                        let _ = self.event_tx.send(FromAgent::ToolCall {
+                            call_id: call_id.clone(),
+                            tool: tool_name.clone(),
+                            args: vault_credentials_in_json(&args),
+                            requires_approval: false,
+                        });
+                        let _ = self.event_tx.send(FromAgent::ToolStart {
+                            call_id: call_id.clone(),
+                        });
+                        let _ = self.event_tx.send(FromAgent::ToolOutput {
+                            call_id: call_id.clone(),
+                            content: skipped_message.clone(),
+                        });
+                        let _ = self.event_tx.send(FromAgent::ToolEnd {
+                            call_id: call_id.clone(),
+                            success: false,
+                        });
+                        tool_results.push(ContentBlock::ToolResult {
+                            tool_use_id: call_id,
+                            content: skipped_message,
+                            is_error: Some(true),
+                        });
+                    }
+                }
+
                 // Add tool results to history
                 self.messages.push(Message {
                     role: Role::User,
@@ -1981,8 +2132,19 @@ impl NativeAgentRunner {
 
                 clear_credentials();
 
+                if !deferred_steering.is_empty() {
+                    self.workflow_state.reset();
+                    self.announce_next_turn_messages(&deferred_steering);
+                    if self
+                        .append_pending_messages_for_turn(deferred_steering)
+                        .await?
+                    {
+                        continue 'turn;
+                    }
+                }
+
                 // Continue the loop to process the tool results
-                continue;
+                continue 'turn;
             }
 
             // No tool calls, we're done
@@ -2023,6 +2185,24 @@ impl NativeAgentRunner {
                     });
                 }
             }
+
+            if self.drain_pending_commands() {
+                return Err(anyhow::anyhow!("Request cancelled"));
+            }
+
+            let mut next_turn_messages = self.dequeue_next_turn_messages(true);
+            while !next_turn_messages.is_empty() {
+                self.workflow_state.reset();
+                self.announce_next_turn_messages(&next_turn_messages);
+                if self
+                    .append_pending_messages_for_turn(next_turn_messages)
+                    .await?
+                {
+                    continue 'turn;
+                }
+                next_turn_messages = self.dequeue_next_turn_messages(true);
+            }
+
             break;
         }
 

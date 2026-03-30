@@ -1,12 +1,11 @@
-import type { Attachment } from "../../agent/types.js";
+import type {
+	AppMessage,
+	Attachment,
+	QueuedMessage,
+} from "../../agent/types.js";
 import type { CustomEditor } from "../custom-editor.js";
 import type { NotificationView } from "../notification-view.js";
-import type {
-	PromptKind,
-	PromptQueue,
-	PromptQueueEvent,
-	QueuedPrompt,
-} from "../prompt-queue.js";
+import type { PromptKind, PromptQueue, QueuedPrompt } from "../prompt-queue.js";
 
 /**
  * Queue mode determines how prompts are handled when the agent is running.
@@ -15,6 +14,47 @@ import type {
  */
 export type QueueMode = "one" | "all";
 export type QueueModeKind = "steering" | "followUp";
+
+function queuePriority(kind: PromptKind): number {
+	return kind === "steer" ? 0 : kind === "followUp" ? 1 : 2;
+}
+
+function extractQueuedText(message: AppMessage): string {
+	if (message.role !== "user") {
+		return "";
+	}
+	if (typeof message.content === "string") {
+		return message.content;
+	}
+	return message.content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("\n")
+		.trim();
+}
+
+function extractQueuedAttachments(
+	message: AppMessage,
+): Attachment[] | undefined {
+	if (message.role !== "user" || !("attachments" in message)) {
+		return undefined;
+	}
+	const attachments = message.attachments;
+	return attachments?.length ? [...attachments] : undefined;
+}
+
+function toQueuedPrompt(
+	queued: QueuedMessage<AppMessage>,
+	kind: Exclude<PromptKind, "prompt">,
+): QueuedPrompt {
+	return {
+		id: queued.id,
+		createdAt: queued.createdAt,
+		kind,
+		text: extractQueuedText(queued.original),
+		attachments: extractQueuedAttachments(queued.original),
+	};
+}
 
 /**
  * Callbacks for the queue controller.
@@ -35,6 +75,15 @@ export interface QueueControllerCallbacks {
 		steeringMode?: QueueMode;
 		followUpMode?: QueueMode;
 	}): void;
+	/** Read queued messages from the agent */
+	getQueuedMessagesSnapshot(): {
+		steering: ReadonlyArray<QueuedMessage<AppMessage>>;
+		followUps: ReadonlyArray<QueuedMessage<AppMessage>>;
+	};
+	/** Cancel a queued message by id */
+	cancelQueuedMessage(id: number): QueuedMessage<AppMessage> | null;
+	/** Clear all queued messages */
+	clearQueuedMessages(): Array<QueuedMessage<AppMessage>>;
 }
 
 /**
@@ -49,25 +98,21 @@ export interface QueueControllerOptions {
 }
 
 /**
- * Controller for managing prompt queue state and operations.
- *
- * Handles:
- * - Queue mode switching (one vs all)
- * - Queue event handling
- * - Prompt restoration on interrupt
+ * Controller for managing steer/follow-up queue state and operations.
  */
 export class QueueController {
 	private readonly notificationView: NotificationView;
 	private readonly editor: CustomEditor;
 	private readonly callbacks: QueueControllerCallbacks;
 
+	// The interactive runtime still wires a PromptQueue, but steer/follow-up
+	// state is now sourced from the agent's real collaboration queues.
 	private promptQueue?: PromptQueue;
-	private promptQueueUnsubscribe?: () => void;
 	private steeringMode: QueueMode;
 	private followUpMode: QueueMode;
+	private queuedSteering: QueuedPrompt[] = [];
+	private queuedFollowUps: QueuedPrompt[] = [];
 	private queuedPromptCount = 0;
-	private queuedSteeringCount = 0;
-	private queuedFollowUpCount = 0;
 	private nextQueuedPreview: string | null = null;
 
 	constructor(options: QueueControllerOptions) {
@@ -78,35 +123,15 @@ export class QueueController {
 		this.followUpMode = options.initialFollowUpMode ?? "all";
 	}
 
-	/**
-	 * Attach a prompt queue to this controller.
-	 */
 	attach(queue: PromptQueue): void {
 		this.promptQueue = queue;
-		this.promptQueueUnsubscribe?.();
-		this.promptQueueUnsubscribe = queue.subscribe((event) =>
-			this.handleEvent(event),
-		);
-		// Sync counts immediately in case the queue already has pending entries.
-		this.updateQueuedPromptCount();
-		if (!this.callbacks.isAgentRunning()) {
-			this.callbacks.refreshFooterHint();
-		}
-		this.callbacks.requestRender();
+		this.syncFromAgent();
 	}
 
-	/**
-	 * Detach the prompt queue.
-	 */
 	detach(): void {
-		this.promptQueueUnsubscribe?.();
-		this.promptQueueUnsubscribe = undefined;
 		this.promptQueue = undefined;
 	}
 
-	/**
-	 * Get the current queue mode.
-	 */
 	getSteeringMode(): QueueMode {
 		return this.steeringMode;
 	}
@@ -115,9 +140,6 @@ export class QueueController {
 		return this.followUpMode;
 	}
 
-	/**
-	 * Check if follow-up queueing is enabled.
-	 */
 	isFollowUpEnabled(): boolean {
 		return this.followUpMode === "all";
 	}
@@ -126,38 +148,34 @@ export class QueueController {
 		return this.steeringMode === "all";
 	}
 
-	/**
-	 * Get count of queued prompts.
-	 */
 	getQueuedCount(): number {
 		return this.queuedPromptCount;
 	}
 
 	getQueuedSteeringCount(): number {
-		return this.queuedSteeringCount;
+		return this.queuedSteering.length;
 	}
 
 	getQueuedFollowUpCount(): number {
-		return this.queuedFollowUpCount;
+		return this.queuedFollowUps.length;
 	}
 
-	/**
-	 * Get preview text for next queued prompt.
-	 */
 	getNextPreview(): string | null {
 		return this.nextQueuedPreview;
 	}
 
-	/**
-	 * Check if a prompt queue is attached.
-	 */
-	hasQueue(): boolean {
-		return Boolean(this.promptQueue);
+	getPendingSteers(): QueuedPrompt[] {
+		return [...this.queuedSteering];
 	}
 
-	/**
-	 * Set the queue mode.
-	 */
+	getQueuedFollowUps(): QueuedPrompt[] {
+		return [...this.queuedFollowUps];
+	}
+
+	hasQueue(): boolean {
+		return true;
+	}
+
 	setMode(kind: QueueModeKind, mode: QueueMode): void {
 		if (kind === "steering") {
 			this.steeringMode = mode;
@@ -179,66 +197,25 @@ export class QueueController {
 		this.callbacks.onModeChange?.(kind, mode);
 	}
 
-	/**
-	 * Cancel a specific queued prompt.
-	 */
 	cancel(id: number): boolean {
-		if (!this.promptQueue) {
+		const removed = this.callbacks.cancelQueuedMessage(id);
+		if (!removed) {
 			return false;
 		}
-		const removed = this.promptQueue.cancel(id);
-		if (removed) {
-			this.updateQueuedPromptCount();
-			this.callbacks.refreshFooterHint();
-			return true;
-		}
-		return false;
+		this.syncFromAgent();
+		this.callbacks.refreshFooterHint();
+		return true;
 	}
 
-	/**
-	 * Cancel all queued prompts.
-	 */
-	cancelAll(options?: { silent?: boolean }): void {
-		this.promptQueue?.cancelAll?.(options);
-		this.nextQueuedPreview = null;
-		this.updateQueuedPromptCount();
+	cancelAll(_options?: { silent?: boolean }): void {
+		this.callbacks.clearQueuedMessages();
+		this.syncFromAgent();
 	}
 
-	/**
-	 * Enqueue a prompt, optionally prioritizing it ahead of existing entries.
-	 */
-	enqueuePrompt(
-		text: string,
-		options?: {
-			front?: boolean;
-			attachments?: Attachment[];
-			kind?: PromptKind;
-		},
-	): QueuedPrompt | null {
-		if (!this.promptQueue) {
-			return null;
-		}
-		return options?.front
-			? this.promptQueue.enqueueFront(
-					text,
-					options.attachments,
-					options.kind ?? "prompt",
-				)
-			: this.promptQueue.enqueue(
-					text,
-					options?.attachments,
-					options?.kind ?? "prompt",
-				);
-	}
-
-	/**
-	 * Get a snapshot of the current queue state.
-	 */
 	getSnapshot(): { active?: QueuedPrompt; pending: QueuedPrompt[] } {
-		if (!this.promptQueue) {
-			return { pending: [] };
-		}
-		return this.promptQueue.getSnapshot();
+		return {
+			pending: [...this.queuedSteering, ...this.queuedFollowUps],
+		};
 	}
 
 	canQueueSteering(): boolean {
@@ -249,115 +226,83 @@ export class QueueController {
 		return this.followUpMode === "all";
 	}
 
-	/**
-	 * Restore queued prompts to the editor on interrupt.
-	 */
 	restoreQueuedPrompts(): QueuedPrompt[] {
-		if (!this.promptQueue) {
+		const queuedKinds = new Map<number, Exclude<PromptKind, "prompt">>();
+		for (const entry of this.queuedSteering) {
+			queuedKinds.set(entry.id, "steer");
+		}
+		for (const entry of this.queuedFollowUps) {
+			queuedKinds.set(entry.id, "followUp");
+		}
+		const restored = this.callbacks
+			.clearQueuedMessages()
+			.map((entry) =>
+				toQueuedPrompt(entry, queuedKinds.get(entry.id) ?? "followUp"),
+			);
+
+		if (!restored.length) {
+			this.syncFromAgent();
 			return [];
 		}
-		const snapshot = this.promptQueue.getSnapshot();
-		const entries: QueuedPrompt[] = [];
-		const messages: string[] = [];
-		if (snapshot.active) {
-			messages.push(snapshot.active.text);
-			entries.push(snapshot.active);
-		}
-		for (const entry of snapshot.pending) {
-			messages.push(entry.text);
-			entries.push(entry);
-		}
-		if (!messages.length) {
-			return [];
-		}
-		const restored = messages.join("\n\n");
-		this.promptQueue.cancelAll?.({ silent: true });
-		this.promptQueue.clearActive?.();
-		this.editor.setText(restored);
+
+		const ordered = restored.sort(
+			(a, b) =>
+				queuePriority(a.kind) - queuePriority(b.kind) ||
+				a.createdAt - b.createdAt ||
+				a.id - b.id,
+		);
+		const segments = ordered
+			.map((entry) => entry.text.trim())
+			.filter((segment) => segment.length > 0);
+		this.editor.setText(segments.join("\n\n"));
 		this.notificationView.showToast(
-			`Restored ${messages.length} queued prompt${messages.length === 1 ? "" : "s"} to the editor.`,
+			`Restored ${ordered.length} queued prompt${ordered.length === 1 ? "" : "s"} to the editor.`,
 			"info",
 		);
-		this.updateQueuedPromptCount();
+		this.syncFromAgent();
 		this.callbacks.refreshFooterHint();
-		return entries;
+		return ordered;
 	}
 
-	/**
-	 * Build hint text for the queue.
-	 */
 	buildQueueHint(): string | null {
 		if (this.callbacks.isAgentRunning()) {
 			return null;
 		}
-		if (this.queuedSteeringCount > 0 || this.queuedFollowUpCount > 0) {
+		if (this.queuedSteering.length > 0 || this.queuedFollowUps.length > 0) {
 			const parts = [];
-			if (this.queuedSteeringCount > 0) {
-				parts.push(`${this.queuedSteeringCount} steer`);
+			if (this.queuedSteering.length > 0) {
+				parts.push(`${this.queuedSteering.length} steer`);
 			}
-			if (this.queuedFollowUpCount > 0) {
-				parts.push(`${this.queuedFollowUpCount} follow-up`);
+			if (this.queuedFollowUps.length > 0) {
+				parts.push(`${this.queuedFollowUps.length} follow-up`);
 			}
 			return `${parts.join(", ")} queued`;
 		}
 		if (this.nextQueuedPreview) {
 			return `Next queued: ${this.nextQueuedPreview}`;
 		}
-		if (this.queuedPromptCount > 0) {
-			return `${this.queuedPromptCount} queued ${this.queuedPromptCount === 1 ? "prompt" : "prompts"}`;
-		}
 		return null;
 	}
 
-	private handleEvent(event: PromptQueueEvent): void {
-		if (!this.promptQueue) {
-			return;
-		}
-		if (event.type === "error") {
-			const message = this.describeError(event.error);
-			this.notificationView.showError(
-				`Prompt #${event.entry.id} failed: ${message}`,
-			);
-		}
-		if (event.type === "enqueue" && !event.willRunImmediately) {
-			const label = this.describePromptKind(event.entry.kind);
-			this.notificationView.showInfo(
-				`Queued ${label} #${event.entry.id} (${event.pendingCount} pending)`,
-			);
-		}
-		if (event.type === "cancel") {
-			this.notificationView.showInfo(
-				`Removed queued prompt #${event.entry.id}`,
-			);
-		}
-		this.updateQueuedPromptCount();
-		if (!this.callbacks.isAgentRunning()) {
-			this.callbacks.refreshFooterHint();
-		}
-		this.callbacks.requestRender();
-	}
-
-	private updateQueuedPromptCount(): void {
-		if (!this.promptQueue) {
-			this.queuedPromptCount = 0;
-			this.queuedSteeringCount = 0;
-			this.queuedFollowUpCount = 0;
-			this.nextQueuedPreview = null;
-			return;
-		}
-		const snapshot = this.promptQueue.getSnapshot();
-		this.queuedPromptCount = snapshot.pending.length;
-		this.queuedSteeringCount = snapshot.pending.filter(
-			(entry) => entry.kind === "steer",
-		).length;
-		this.queuedFollowUpCount = snapshot.pending.filter(
-			(entry) => entry.kind === "followUp",
-		).length;
-		const next = snapshot.pending[0];
+	syncFromAgent(): void {
+		const snapshot = this.callbacks.getQueuedMessagesSnapshot();
+		this.queuedSteering = snapshot.steering
+			.map((entry) => toQueuedPrompt(entry, "steer"))
+			.sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+		this.queuedFollowUps = snapshot.followUps
+			.map((entry) => toQueuedPrompt(entry, "followUp"))
+			.sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+		this.queuedPromptCount =
+			this.queuedSteering.length + this.queuedFollowUps.length;
+		const next = this.queuedSteering[0] ?? this.queuedFollowUps[0];
 		this.nextQueuedPreview = next
 			? `${this.describePromptKind(next.kind)}: ${this.formatQueuedText(next.text, 60)}`
 			: null;
 		this.callbacks.onQueueCountChange?.(this.queuedPromptCount);
+		if (!this.callbacks.isAgentRunning()) {
+			this.callbacks.refreshFooterHint();
+		}
+		this.callbacks.requestRender();
 	}
 
 	private formatQueuedText(message: string, maxLength = 80): string {
@@ -366,13 +311,6 @@ export class QueueController {
 			return singleLine || "(empty message)";
 		}
 		return `${singleLine.slice(0, Math.max(0, maxLength - 1))}…`;
-	}
-
-	private describeError(error: unknown): string {
-		if (error instanceof Error) {
-			return error.message;
-		}
-		return String(error ?? "Unknown error");
 	}
 
 	private describePromptKind(kind: PromptKind): string {

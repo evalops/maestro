@@ -241,7 +241,12 @@ impl MessageQueue {
 
         // Handle priority messages
         if msg.priority > 0 {
-            self.queue.push_front(msg);
+            let insert_at = self
+                .queue
+                .iter()
+                .position(|existing| existing.priority < msg.priority)
+                .unwrap_or(self.queue.len());
+            self.queue.insert(insert_at, msg);
         } else {
             self.queue.push_back(msg);
         }
@@ -349,6 +354,32 @@ impl MessageQueue {
     /// Take all messages as a vector, clearing the queue
     pub fn take_all(&mut self) -> Vec<PendingMessage> {
         self.clear()
+    }
+
+    /// Drain up to `max_count` messages of the same kind from the front of the queue.
+    ///
+    /// If the front of the queue is a different kind, nothing is removed.
+    pub fn drain_leading_kind(
+        &mut self,
+        kind: PromptKind,
+        max_count: usize,
+    ) -> Vec<PendingMessage> {
+        if max_count == 0 {
+            return Vec::new();
+        }
+        let mut drained = Vec::new();
+        while drained.len() < max_count {
+            let Some(front) = self.queue.front() else {
+                break;
+            };
+            if front.kind != kind {
+                break;
+            }
+            if let Some(next) = self.queue.pop_front() {
+                drained.push(next);
+            }
+        }
+        drained
     }
 
     /// Drain messages that have been waiting longer than the threshold
@@ -465,6 +496,18 @@ mod tests {
 
         let msg = queue.pop().unwrap();
         assert_eq!(msg.content, "Normal 1");
+    }
+
+    #[test]
+    fn test_queue_urgent_preserves_fifo_within_priority() {
+        let mut queue = MessageQueue::new();
+
+        queue.push_urgent_with_kind("Steer 1", PromptKind::Steer);
+        queue.push("Follow 1");
+        queue.push_urgent_with_kind("Steer 2", PromptKind::Steer);
+
+        let contents: Vec<String> = queue.iter().map(|msg| msg.content.clone()).collect();
+        assert_eq!(contents, vec!["Steer 1", "Steer 2", "Follow 1"]);
     }
 
     #[test]
@@ -589,5 +632,24 @@ mod tests {
         let all = queue.take_all();
         assert_eq!(all.len(), 2);
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_drain_leading_kind_respects_front_kind_and_limit() {
+        let mut queue = MessageQueue::new();
+
+        queue.push_urgent_with_kind("Steer 1", PromptKind::Steer);
+        queue.push_urgent_with_kind("Steer 2", PromptKind::Steer);
+        queue.push_with_kind("Follow 1", PromptKind::FollowUp);
+
+        let drained = queue.drain_leading_kind(PromptKind::Steer, 1);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].content, "Steer 1");
+
+        let remaining: Vec<String> = queue.iter().map(|msg| msg.content.clone()).collect();
+        assert_eq!(remaining, vec!["Steer 2", "Follow 1"]);
+
+        let none = queue.drain_leading_kind(PromptKind::FollowUp, usize::MAX);
+        assert!(none.is_empty());
     }
 }

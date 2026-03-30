@@ -66,9 +66,7 @@ export class InputController {
 		if (!payload) {
 			return;
 		}
-		if (this.onInputCallback) {
-			this.onInputCallback(payload);
-		}
+		this.submitPreparedPayload(payload);
 	}
 
 	async handleFollowUpSubmit(text: string): Promise<boolean> {
@@ -77,10 +75,7 @@ export class InputController {
 			return false;
 		}
 		payload.kind = "followUp";
-		if (this.onInputCallback) {
-			this.onInputCallback(payload);
-		}
-		return true;
+		return this.submitPreparedPayload(payload);
 	}
 
 	handleInterruptRequest(): void {
@@ -116,6 +111,14 @@ export class InputController {
 			this.deps.editor.addToHistory(payload.text);
 		}
 		return payload;
+	}
+
+	submitPreparedPayload(payload: PromptPayload): boolean {
+		if (!this.onInputCallback) {
+			return false;
+		}
+		this.onInputCallback(payload);
+		return true;
 	}
 
 	private async preparePayload(text: string): Promise<PromptPayload | null> {
