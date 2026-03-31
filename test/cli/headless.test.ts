@@ -1,0 +1,91 @@
+import { describe, expect, it } from "vitest";
+import type { AssistantMessage } from "../../src/agent/types.js";
+import {
+	HEADLESS_PROTOCOL_VERSION,
+	buildHeadlessUsage,
+	classifyHeadlessError,
+} from "../../src/cli/headless.js";
+
+function assistantMessage(
+	overrides: Partial<AssistantMessage> = {},
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [],
+		model: "claude-opus-4-6",
+		provider: "anthropic",
+		stopReason: "stop",
+		usage: {
+			input: 1200,
+			output: 450,
+			cacheRead: 30,
+			cacheWrite: 15,
+			cost: {
+				input: 0.01,
+				output: 0.02,
+				cacheRead: 0,
+				cacheWrite: 0.001,
+				total: 0.031,
+			},
+		},
+		...overrides,
+	};
+}
+
+describe("headless protocol helpers", () => {
+	it("exports a concrete protocol version", () => {
+		expect(HEADLESS_PROTOCOL_VERSION).toBe("2026-03-30");
+	});
+
+	it("classifies cancellation-like errors", () => {
+		expect(classifyHeadlessError("Run interrupted by user", false)).toBe(
+			"cancelled",
+		);
+	});
+
+	it("classifies transient provider failures", () => {
+		expect(classifyHeadlessError("Rate limit exceeded", false)).toBe(
+			"transient",
+		);
+	});
+
+	it("classifies protocol parse failures", () => {
+		expect(classifyHeadlessError("Failed to parse JSON input", false)).toBe(
+			"protocol",
+		);
+	});
+
+	it("builds usage totals from assistant messages", () => {
+		expect(
+			buildHeadlessUsage(assistantMessage(), "claude-opus-4-6", "anthropic"),
+		).toEqual({
+			input_tokens: 1200,
+			output_tokens: 450,
+			cache_read_tokens: 30,
+			cache_write_tokens: 15,
+			total_tokens: 1695,
+			total_cost_usd: 0.031,
+			model_id: "claude-opus-4-6",
+			provider: "anthropic",
+		});
+	});
+
+	it("returns zeroed usage when usage metadata is missing", () => {
+		expect(
+			buildHeadlessUsage(
+				assistantMessage({ usage: undefined }),
+				"gpt-5.4",
+				"openai",
+			),
+		).toEqual({
+			input_tokens: 0,
+			output_tokens: 0,
+			cache_read_tokens: 0,
+			cache_write_tokens: 0,
+			total_tokens: 0,
+			total_cost_usd: 0,
+			model_id: "gpt-5.4",
+			provider: "openai",
+		});
+	});
+});

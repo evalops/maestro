@@ -8,21 +8,23 @@
  * essential messages needed for a chat interface:
  *
  * ## Messages from TUI to Agent (stdin):
+ * - { type: "init", system_prompt?: string, append_system_prompt?: string, thinking_level?: string, approval_mode?: string }
  * - { type: "prompt", content: string, attachments?: string[] }
  * - { type: "interrupt" }
  * - { type: "tool_response", call_id: string, approved: boolean, result?: object }
+ * - { type: "cancel" }
  * - { type: "shutdown" }
  *
  * ## Messages from Agent to TUI (stdout):
- * - { type: "ready", model: string, provider: string }
+ * - { type: "ready", protocol_version: string, model: string, provider: string, session_id?: string }
  * - { type: "response_start", response_id: string }
  * - { type: "response_chunk", response_id: string, content: string, is_thinking: boolean }
- * - { type: "response_end", response_id: string, usage?: object }
+ * - { type: "response_end", response_id: string, usage: object, tools_summary: object, duration_ms: number, ttft_ms?: number }
  * - { type: "tool_call", call_id: string, tool: string, args: object, requires_approval: boolean }
  * - { type: "tool_start", call_id: string }
  * - { type: "tool_output", call_id: string, content: string }
  * - { type: "tool_end", call_id: string, success: boolean }
- * - { type: "error", message: string, fatal: boolean }
+ * - { type: "error", message: string, fatal: boolean, error_type: "transient" | "fatal" | "tool" | "cancelled" | "protocol" }
  * - { type: "status", message: string }
  * - { type: "session_info", session_id?: string, cwd: string, git_branch?: string }
  */
@@ -56,6 +58,14 @@ interface PromptMessage {
 	attachments?: string[];
 }
 
+interface InitMessage {
+	type: "init";
+	system_prompt?: string;
+	append_system_prompt?: string;
+	thinking_level?: "off" | "minimal" | "low" | "medium" | "high" | "ultra";
+	approval_mode?: "auto" | "prompt" | "fail";
+}
+
 interface InterruptMessage {
 	type: "interrupt";
 }
@@ -80,6 +90,7 @@ interface ShutdownMessage {
 }
 
 type ToAgentMessage =
+	| InitMessage
 	| PromptMessage
 	| InterruptMessage
 	| ToolResponseMessage
@@ -92,8 +103,10 @@ type ToAgentMessage =
 
 interface ReadyMessage {
 	type: "ready";
+	protocol_version: string;
 	model: string;
 	provider: string;
+	session_id: string | null;
 }
 
 interface ResponseStartMessage {
@@ -111,13 +124,23 @@ interface ResponseChunkMessage {
 interface ResponseEndMessage {
 	type: "response_end";
 	response_id: string;
-	usage?: {
+	usage: {
 		input_tokens: number;
 		output_tokens: number;
 		cache_read_tokens: number;
 		cache_write_tokens: number;
-		cost?: number;
+		total_tokens: number;
+		total_cost_usd: number;
+		model_id: string;
+		provider: string;
 	};
+	tools_summary: {
+		tools_used: string[];
+		calls_succeeded: number;
+		calls_failed: number;
+	};
+	duration_ms: number;
+	ttft_ms?: number;
 }
 
 interface ToolCallMessage {
@@ -149,6 +172,7 @@ interface ErrorMessage {
 	type: "error";
 	message: string;
 	fatal: boolean;
+	error_type: "transient" | "fatal" | "tool" | "cancelled" | "protocol";
 }
 
 interface StatusMessage {
@@ -197,6 +221,203 @@ function generateMessageId(): string {
 
 const MAX_HEADLESS_ATTACHMENT_BYTES = 10 * 1024 * 1024; // 10MB, aligned with read tool
 const MAX_TEXT_ATTACHMENT_CHARS = 100_000;
+export const HEADLESS_PROTOCOL_VERSION = "2026-03-30";
+
+interface HeadlessResponseTelemetry {
+	responseId: string;
+	startedAtMs: number;
+	firstChunkAtMs?: number;
+	toolsUsed: Set<string>;
+	callsSucceeded: number;
+	callsFailed: number;
+}
+
+let currentResponseTelemetry: HeadlessResponseTelemetry | null = null;
+
+export function classifyHeadlessError(
+	message: string,
+	fatal: boolean,
+): ErrorMessage["error_type"] {
+	const normalized = message.toLowerCase();
+	if (
+		normalized.includes("cancel") ||
+		normalized.includes("abort") ||
+		normalized.includes("interrupted")
+	) {
+		return "cancelled";
+	}
+	if (
+		normalized.includes("rate limit") ||
+		normalized.includes("overloaded") ||
+		normalized.includes("timeout") ||
+		normalized.includes("temporar")
+	) {
+		return "transient";
+	}
+	if (
+		normalized.includes("tool") ||
+		normalized.includes("permission denied") ||
+		normalized.includes("approval")
+	) {
+		return "tool";
+	}
+	if (
+		normalized.includes("parse") ||
+		normalized.includes("protocol") ||
+		normalized.includes("json")
+	) {
+		return "protocol";
+	}
+	return fatal ? "fatal" : "tool";
+}
+
+function ensureCurrentResponseTelemetry(
+	responseId = currentMessageId || generateMessageId(),
+): HeadlessResponseTelemetry {
+	if (
+		currentResponseTelemetry &&
+		currentResponseTelemetry.responseId === responseId
+	) {
+		return currentResponseTelemetry;
+	}
+
+	currentResponseTelemetry = {
+		responseId,
+		startedAtMs: Date.now(),
+		toolsUsed: new Set<string>(),
+		callsSucceeded: 0,
+		callsFailed: 0,
+	};
+	return currentResponseTelemetry;
+}
+
+function noteResponseChunk(): void {
+	const telemetry = ensureCurrentResponseTelemetry();
+	if (!telemetry.firstChunkAtMs) {
+		telemetry.firstChunkAtMs = Date.now();
+	}
+}
+
+function noteToolExecution(toolName: string, success?: boolean): void {
+	const telemetry = ensureCurrentResponseTelemetry();
+	telemetry.toolsUsed.add(toolName);
+	if (success === true) {
+		telemetry.callsSucceeded++;
+	}
+	if (success === false) {
+		telemetry.callsFailed++;
+	}
+}
+
+function emptyUsage(
+	model: string,
+	provider: string,
+): ResponseEndMessage["usage"] {
+	return {
+		input_tokens: 0,
+		output_tokens: 0,
+		cache_read_tokens: 0,
+		cache_write_tokens: 0,
+		total_tokens: 0,
+		total_cost_usd: 0,
+		model_id: model,
+		provider,
+	};
+}
+
+export function buildHeadlessUsage(
+	message: AssistantMessage | undefined,
+	model: string,
+	provider: string,
+): ResponseEndMessage["usage"] {
+	if (!message?.usage) {
+		return emptyUsage(model, provider);
+	}
+
+	const usage = message.usage;
+	const totalTokens =
+		(usage.input ?? 0) +
+		(usage.output ?? 0) +
+		(usage.cacheRead ?? 0) +
+		(usage.cacheWrite ?? 0);
+
+	return {
+		input_tokens: usage.input ?? 0,
+		output_tokens: usage.output ?? 0,
+		cache_read_tokens: usage.cacheRead ?? 0,
+		cache_write_tokens: usage.cacheWrite ?? 0,
+		total_tokens: totalTokens,
+		total_cost_usd: usage.cost?.total ?? 0,
+		model_id: model,
+		provider,
+	};
+}
+
+function buildResponseEndMessage(
+	message: AssistantMessage | undefined,
+	model: string,
+	provider: string,
+): ResponseEndMessage {
+	const telemetry = ensureCurrentResponseTelemetry();
+	const now = Date.now();
+
+	return {
+		type: "response_end",
+		response_id: telemetry.responseId,
+		usage: buildHeadlessUsage(message, model, provider),
+		tools_summary: {
+			tools_used: Array.from(telemetry.toolsUsed).sort(),
+			calls_succeeded: telemetry.callsSucceeded,
+			calls_failed: telemetry.callsFailed,
+		},
+		duration_ms: Math.max(0, now - telemetry.startedAtMs),
+		ttft_ms: telemetry.firstChunkAtMs
+			? Math.max(0, telemetry.firstChunkAtMs - telemetry.startedAtMs)
+			: undefined,
+	};
+}
+
+function sendError(message: string, fatal: boolean): void {
+	send({
+		type: "error",
+		message,
+		fatal,
+		error_type: classifyHeadlessError(message, fatal),
+	});
+}
+
+function applyInitMessage(
+	agent: Agent,
+	msg: InitMessage,
+	approvalService?: ActionApprovalService,
+): string[] {
+	const applied: string[] = [];
+
+	if (typeof msg.system_prompt === "string") {
+		agent.setSystemPrompt(msg.system_prompt);
+		applied.push("system_prompt");
+	}
+
+	if (typeof msg.append_system_prompt === "string") {
+		const nextPrompt = agent.state.systemPrompt
+			? `${agent.state.systemPrompt}\n\n${msg.append_system_prompt}`
+			: msg.append_system_prompt;
+		agent.setSystemPrompt(nextPrompt);
+		applied.push("append_system_prompt");
+	}
+
+	if (msg.thinking_level) {
+		agent.setThinkingLevel(msg.thinking_level);
+		applied.push("thinking_level");
+	}
+
+	if (msg.approval_mode && approvalService) {
+		approvalService.setMode(msg.approval_mode);
+		applied.push("approval_mode");
+	}
+
+	return applied;
+}
 
 async function loadAttachments(paths: string[]): Promise<Attachment[]> {
 	const attachments: Attachment[] = [];
@@ -207,11 +428,7 @@ async function loadAttachments(paths: string[]): Promise<Attachment[]> {
 		try {
 			await access(absolutePath, constants.R_OK);
 		} catch {
-			send({
-				type: "error",
-				message: `Attachment not readable: ${rawPath}`,
-				fatal: false,
-			});
+			sendError(`Attachment not readable: ${rawPath}`, false);
 			continue;
 		}
 
@@ -219,22 +436,17 @@ async function loadAttachments(paths: string[]): Promise<Attachment[]> {
 		try {
 			fileStats = await stat(absolutePath);
 		} catch {
-			send({
-				type: "error",
-				message: `Attachment not found: ${rawPath}`,
-				fatal: false,
-			});
+			sendError(`Attachment not found: ${rawPath}`, false);
 			continue;
 		}
 
 		if (fileStats.size > MAX_HEADLESS_ATTACHMENT_BYTES) {
-			send({
-				type: "error",
-				message: `Attachment too large (${Math.round(
+			sendError(
+				`Attachment too large (${Math.round(
 					fileStats.size / (1024 * 1024),
 				)}MB): ${rawPath}`,
-				fatal: false,
-			});
+				false,
+			);
 			continue;
 		}
 
@@ -262,11 +474,7 @@ async function loadAttachments(paths: string[]): Promise<Attachment[]> {
 		// Attempt to treat as UTF-8 text document.
 		const text = buffer.toString("utf-8");
 		if (!text || text.includes("\u0000")) {
-			send({
-				type: "error",
-				message: `Unsupported attachment (not image/text): ${rawPath}`,
-				fatal: false,
-			});
+			sendError(`Unsupported attachment (not image/text): ${rawPath}`, false);
 			continue;
 		}
 
@@ -304,6 +512,7 @@ function handleAssistantMessageEvent(
 ): void {
 	switch (event.type) {
 		case "text_delta":
+			noteResponseChunk();
 			send({
 				type: "response_chunk",
 				response_id: messageId,
@@ -313,6 +522,7 @@ function handleAssistantMessageEvent(
 			break;
 
 		case "thinking_delta":
+			noteResponseChunk();
 			send({
 				type: "response_chunk",
 				response_id: messageId,
@@ -337,6 +547,13 @@ function handleAgentEvent(event: AgentEvent): void {
 				break;
 			}
 			currentMessageId = generateMessageId();
+			currentResponseTelemetry = {
+				responseId: currentMessageId,
+				startedAtMs: Date.now(),
+				toolsUsed: new Set<string>(),
+				callsSucceeded: 0,
+				callsFailed: 0,
+			};
 			send({
 				type: "response_start",
 				response_id: currentMessageId,
@@ -357,32 +574,19 @@ function handleAgentEvent(event: AgentEvent): void {
 			if (event.message.role !== "assistant") {
 				break;
 			}
-			// Extract usage from assistant messages
-			let usage: ResponseEndMessage["usage"];
-			const msg = event.message;
-
-			if (msg.role === "assistant") {
-				const assistantMsg = msg as AssistantMessage;
-				if (assistantMsg.usage) {
-					usage = {
-						input_tokens: assistantMsg.usage.input ?? 0,
-						output_tokens: assistantMsg.usage.output ?? 0,
-						cache_read_tokens: assistantMsg.usage.cacheRead ?? 0,
-						cache_write_tokens: assistantMsg.usage.cacheWrite ?? 0,
-						cost: assistantMsg.usage.cost?.total,
-					};
-				}
-			}
-
-			send({
-				type: "response_end",
-				response_id: currentMessageId,
-				usage,
-			});
+			send(
+				buildResponseEndMessage(
+					event.message as AssistantMessage,
+					event.message.model,
+					event.message.provider,
+				),
+			);
+			currentResponseTelemetry = null;
 			break;
 		}
 
 		case "tool_execution_start":
+			noteToolExecution(event.toolName);
 			send({
 				type: "tool_call",
 				call_id: event.toolCallId,
@@ -397,6 +601,7 @@ function handleAgentEvent(event: AgentEvent): void {
 			break;
 
 		case "tool_execution_end":
+			noteToolExecution(event.toolName, !event.isError);
 			send({
 				type: "tool_end",
 				call_id: event.toolCallId,
@@ -416,11 +621,7 @@ function handleAgentEvent(event: AgentEvent): void {
 			break;
 
 		case "error":
-			send({
-				type: "error",
-				message: event.message,
-				fatal: false,
-			});
+			sendError(event.message, false);
 			break;
 
 		case "status":
@@ -473,8 +674,10 @@ export async function runHeadlessMode(
 	const model = agent.state.model;
 	send({
 		type: "ready",
+		protocol_version: HEADLESS_PROTOCOL_VERSION,
 		model: model.id,
 		provider: model.provider,
+		session_id: sessionManager.getSessionId() ?? null,
 	});
 
 	// Send session info
@@ -503,6 +706,18 @@ export async function runHeadlessMode(
 			const msg = JSON.parse(line) as ToAgentMessage;
 
 			switch (msg.type) {
+				case "init": {
+					const applied = applyInitMessage(agent, msg, approvalService);
+					send({
+						type: "status",
+						message:
+							applied.length > 0
+								? `Initialized: ${applied.join(", ")}`
+								: "Init received with no changes",
+					});
+					break;
+				}
+
 				case "prompt":
 					if (msg.attachments && msg.attachments.length > 0) {
 						const loaded = await loadAttachments(msg.attachments);
@@ -530,21 +745,19 @@ export async function runHeadlessMode(
 						if (msg.approved) {
 							const resolved = approvalService.approve(msg.call_id);
 							if (!resolved) {
-								send({
-									type: "error",
-									message: `No pending approval found for call_id: ${msg.call_id}`,
-									fatal: false,
-								});
+								sendError(
+									`No pending approval found for call_id: ${msg.call_id}`,
+									false,
+								);
 							}
 						} else {
 							const reason = msg.result?.error ?? "Denied by user";
 							const resolved = approvalService.deny(msg.call_id, reason);
 							if (!resolved) {
-								send({
-									type: "error",
-									message: `No pending approval found for call_id: ${msg.call_id}`,
-									fatal: false,
-								});
+								sendError(
+									`No pending approval found for call_id: ${msg.call_id}`,
+									false,
+								);
 							}
 						}
 					} else {
@@ -566,11 +779,7 @@ export async function runHeadlessMode(
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			send({
-				type: "error",
-				message: `Failed to parse command: ${message}`,
-				fatal: false,
-			});
+			sendError(`Failed to parse command: ${message}`, false);
 		}
 	});
 
