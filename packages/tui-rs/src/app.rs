@@ -1721,7 +1721,8 @@ Add the required fields and retry.",
             return false;
         }
         let input = self.state.input();
-        !input.trim().is_empty() && !input.trim_start().starts_with('!')
+        let trimmed = input.trim_start();
+        !input.trim().is_empty() && !trimmed.starts_with('/') && !trimmed.starts_with('!')
     }
 
     /// Handle keys in file search modal
@@ -5057,7 +5058,7 @@ mod tests {
     }
 
     #[test]
-    fn test_should_submit_on_tab_only_when_idle_with_non_shell_input() {
+    fn test_should_submit_on_tab_only_when_idle_with_non_blocked_input() {
         let mut app = new_test_app();
         assert!(!app.should_submit_on_tab());
 
@@ -5073,6 +5074,12 @@ mod tests {
         assert!(!app.should_submit_on_tab());
 
         app.state.set_input("!ls");
+        assert!(!app.should_submit_on_tab());
+
+        app.state.set_input("/help");
+        assert!(!app.should_submit_on_tab());
+
+        app.state.set_input(" /help");
         assert!(!app.should_submit_on_tab());
 
         app.state.set_input("submit me");
@@ -5104,6 +5111,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(app.state.input(), "!ls");
+        assert!(app.state.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_tab_does_not_submit_idle_slash_draft_with_leading_space() {
+        let mut app = new_test_app();
+        app.state.set_input(" /help");
+
+        app.handle_key(KeyCode::Tab, CrosstermModifiers::NONE)
+            .await
+            .unwrap();
+
+        assert_eq!(app.state.input(), " /help");
         assert!(app.state.messages.is_empty());
     }
 
