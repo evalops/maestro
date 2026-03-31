@@ -5,7 +5,7 @@ import type {
 } from "../../agent/types.js";
 import type { CustomEditor } from "../custom-editor.js";
 import type { NotificationView } from "../notification-view.js";
-import type { PromptKind, PromptQueue, QueuedPrompt } from "../prompt-queue.js";
+import type { PromptKind, QueuedPrompt } from "../prompt-queue.js";
 import { getQueuedFollowUpEditBindingLabel } from "./queued-follow-up-edit-binding.js";
 
 /**
@@ -126,10 +126,6 @@ export class QueueController {
 	private readonly notificationView: NotificationView;
 	private readonly editor: CustomEditor;
 	private readonly callbacks: QueueControllerCallbacks;
-
-	// The interactive runtime still wires a PromptQueue, but steer/follow-up
-	// state is now sourced from the agent's real collaboration queues.
-	private promptQueue?: PromptQueue;
 	private steeringMode: QueueMode;
 	private followUpMode: QueueMode;
 	private queuedSteering: QueuedPrompt[] = [];
@@ -143,15 +139,6 @@ export class QueueController {
 		this.callbacks = options.callbacks;
 		this.steeringMode = options.initialSteeringMode ?? "all";
 		this.followUpMode = options.initialFollowUpMode ?? "all";
-	}
-
-	attach(queue: PromptQueue): void {
-		this.promptQueue = queue;
-		this.syncFromAgent();
-	}
-
-	detach(): void {
-		this.promptQueue = undefined;
 	}
 
 	getSteeringMode(): QueueMode {

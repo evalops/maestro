@@ -1,16 +1,22 @@
 import type { Component } from "@evalops/tui";
 import { visibleWidth } from "@evalops/tui";
 import { theme } from "../theme/theme.js";
+import { getQueuedFollowUpEditBindingLabel } from "./queue/queued-follow-up-edit-binding.js";
 
 export class InstructionPanelComponent implements Component {
 	private shortcuts = [
+		{ keys: "enter", desc: "send / steer" },
+		{ keys: "tab", desc: "send / queue" },
+		{
+			keys: getQueuedFollowUpEditBindingLabel().toLowerCase(),
+			desc: "edit queued follow-up",
+		},
 		{ keys: "esc", desc: "interrupt" },
 		{ keys: "ctrl+c", desc: "clear" },
 		{ keys: "ctrl+c×2", desc: "exit" },
 		{ keys: "ctrl+k", desc: "delete line" },
 		{ keys: "ctrl+g", desc: "external editor" },
 		{ keys: "ctrl+v", desc: "paste image" },
-		{ keys: "tab / alt+enter", desc: "queue follow-up (while running)" },
 		{ keys: "ctrl+z", desc: "suspend" },
 		{ keys: "shift+tab", desc: "thinking level" },
 		{ keys: "ctrl+p", desc: "cycle models" },

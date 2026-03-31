@@ -397,7 +397,8 @@ impl App {
             state.follow_up_mode = mode;
         }
         let queued_follow_up_edit_binding = detect_queued_follow_up_edit_binding();
-        state.queued_follow_up_edit_binding_label = queued_follow_up_edit_binding.display();
+        let queued_follow_up_edit_binding_label = queued_follow_up_edit_binding.display();
+        state.queued_follow_up_edit_binding_label = queued_follow_up_edit_binding_label.clone();
 
         let loader = SkillLoader::new();
         let (loaded_skills, skill_load_errors) = loader.load_all_with_paths();
@@ -429,7 +430,9 @@ impl App {
             clipboard: ClipboardManager::new(),
             model_selector: ModelSelector::new(),
             theme_selector: ThemeSelector::new(),
-            shortcuts_help: ShortcutsHelp::new(),
+            shortcuts_help: ShortcutsHelp::new_with_queue_binding_label(
+                queued_follow_up_edit_binding_label,
+            ),
             usage_tracker: crate::usage::UsageTracker::new(),
             prompt_history,
             tool_history: crate::tools::ToolHistory::default(),
@@ -1519,6 +1522,10 @@ Add the required fields and retry.",
                     self.state.set_input("");
                 }
             }
+            KeyCode::Tab if self.should_submit_on_tab() => {
+                let input = self.state.take_input();
+                self.submit_prompt(input).await?;
+            }
 
             // Navigation
             KeyCode::Up => {
@@ -1576,7 +1583,7 @@ Add the required fields and retry.",
                 // Ctrl+T: toggle last tool call expansion
                 self.toggle_last_tool_call();
             }
-            KeyCode::Tab if !self.state.busy => {
+            KeyCode::Tab if !self.state.busy && self.state.input().is_empty() => {
                 // Tab: toggle thinking on last assistant message with thinking
                 self.toggle_last_thinking();
             }
@@ -1645,22 +1652,21 @@ Add the required fields and retry.",
                         self.execute_slash_command().await?;
                     } else if self.state.busy {
                         let input = self.state.input().to_string();
-                        let ok = if alt {
-                            self.handle_follow_up_submit(input).await?
+                        if alt && input.trim_start().starts_with('!') {
+                            self.state.insert_char('\n');
                         } else {
-                            self.handle_steer_submit(input).await?
-                        };
-                        if ok {
-                            self.editing_queued_follow_up = None;
-                            self.state.set_input("");
+                            let ok = if alt {
+                                self.handle_follow_up_submit(input).await?
+                            } else {
+                                self.handle_steer_submit(input).await?
+                            };
+                            if ok {
+                                self.editing_queued_follow_up = None;
+                                self.state.set_input("");
+                            }
                         }
                     } else if alt {
-                        let input = self.state.input().to_string();
-                        let ok = self.handle_follow_up_submit(input).await?;
-                        if ok {
-                            self.editing_queued_follow_up = None;
-                            self.state.set_input("");
-                        }
+                        self.state.insert_char('\n');
                     } else {
                         let input = self.state.take_input();
                         self.submit_prompt(input).await?;
@@ -1708,6 +1714,14 @@ Add the required fields and retry.",
 
     fn should_queue_follow_up_on_tab(&self) -> bool {
         self.state.can_queue_follow_up_shortcut()
+    }
+
+    fn should_submit_on_tab(&self) -> bool {
+        if self.state.busy {
+            return false;
+        }
+        let input = self.state.input();
+        !input.trim().is_empty() && !input.trim_start().starts_with('!')
     }
 
     /// Handle keys in file search modal
@@ -3360,7 +3374,8 @@ Add the required fields and retry.",
 
     /// Show help message
     fn show_help(&mut self) {
-        let help_text = r"
+        let help_text = format!(
+            r"
 Composer TUI - Keyboard Shortcuts
 
 Navigation:
@@ -3372,15 +3387,16 @@ Navigation:
 
 Input:
   Enter         Send message (steer while running)
-  Tab           Queue follow-up (while running)
-  Alt+Enter     Queue follow-up (while running)
+  Tab           Send message / queue follow-up (while running)
+  Alt+Enter     Queue follow-up (alternate while running)
+  {}     Edit last queued follow-up
   @             Open file search
   /             Start slash command
   Ctrl+U        Clear input
   Esc           Cancel / Close modal
 
 Toggle:
-  Tab           Toggle thinking expansion
+  Tab           Toggle thinking expansion (when input empty)
   Ctrl+T        Toggle tool call expansion
 
 Modals:
@@ -3407,7 +3423,9 @@ Slash Commands:
   /files        Search files
   /commands     Open command palette
   /quit         Exit
-";
+",
+            self.state.queued_follow_up_edit_binding_label
+        );
         self.state.add_system_message(help_text.trim().to_string());
     }
 
@@ -5031,8 +5049,88 @@ mod tests {
         app.state.set_input("/help");
         assert!(!app.should_queue_follow_up_on_tab());
 
+        app.state.set_input("!ls");
+        assert!(!app.should_queue_follow_up_on_tab());
+
         app.state.set_input("follow-up");
         assert!(app.should_queue_follow_up_on_tab());
+    }
+
+    #[test]
+    fn test_should_submit_on_tab_only_when_idle_with_non_shell_input() {
+        let mut app = new_test_app();
+        assert!(!app.should_submit_on_tab());
+
+        app.state.busy = true;
+        app.state.set_input("submit me");
+        assert!(!app.should_submit_on_tab());
+
+        app.state.busy = false;
+        app.state.set_input("");
+        assert!(!app.should_submit_on_tab());
+
+        app.state.set_input("   ");
+        assert!(!app.should_submit_on_tab());
+
+        app.state.set_input("!ls");
+        assert!(!app.should_submit_on_tab());
+
+        app.state.set_input("submit me");
+        assert!(app.should_submit_on_tab());
+    }
+
+    #[tokio::test]
+    async fn test_tab_submits_when_idle_with_non_shell_input() {
+        let mut app = new_test_app();
+        app.state.set_input("ship it");
+
+        app.handle_key(KeyCode::Tab, CrosstermModifiers::NONE)
+            .await
+            .unwrap();
+
+        assert_eq!(app.state.input(), "");
+        let last = app.state.messages.last().expect("user message");
+        assert_eq!(last.role, MessageRole::User);
+        assert_eq!(last.content, "ship it");
+    }
+
+    #[tokio::test]
+    async fn test_tab_does_not_submit_idle_shell_draft() {
+        let mut app = new_test_app();
+        app.state.set_input("!ls");
+
+        app.handle_key(KeyCode::Tab, CrosstermModifiers::NONE)
+            .await
+            .unwrap();
+
+        assert_eq!(app.state.input(), "!ls");
+        assert!(app.state.messages.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_alt_enter_inserts_newline_when_idle() {
+        let mut app = new_test_app();
+        app.state.set_input("hello");
+
+        app.handle_key(KeyCode::Enter, CrosstermModifiers::ALT)
+            .await
+            .unwrap();
+
+        assert_eq!(app.state.input(), "hello\n");
+    }
+
+    #[tokio::test]
+    async fn test_alt_enter_inserts_newline_for_busy_shell_draft() {
+        let mut app = new_test_app();
+        app.state.busy = true;
+        app.state.set_input("!ls");
+
+        app.handle_key(KeyCode::Enter, CrosstermModifiers::ALT)
+            .await
+            .unwrap();
+
+        assert_eq!(app.state.input(), "!ls\n");
+        assert_eq!(app.state.queued_prompt_count, 0);
     }
 
     #[tokio::test]

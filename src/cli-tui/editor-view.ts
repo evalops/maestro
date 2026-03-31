@@ -1,5 +1,9 @@
 import type { CommandEntry } from "./commands/types.js";
 import type { CustomEditor } from "./custom-editor.js";
+import {
+	canQueueFollowUpShortcut,
+	isBlockedFollowUpShortcutDraft,
+} from "./queue/follow-up-shortcut.js";
 
 interface EditorViewOptions {
 	editor: CustomEditor;
@@ -96,22 +100,40 @@ export class EditorView {
 			if (previousOnTab?.() === true) {
 				return true;
 			}
-			if (!this.options.shouldFollowUp?.() || !this.options.onFollowUp) {
-				return false;
-			}
 			const text = this.options.editor.getText();
-			if (text.trimStart().startsWith("/")) {
+			if (
+				isBlockedFollowUpShortcutDraft(text) &&
+				text.trimStart().startsWith("!")
+			) {
+				return true;
+			}
+			const canUseTabShortcut = canQueueFollowUpShortcut({
+				text,
+				hasAttachments: this.options.canSubmitEmpty?.() === true,
+			});
+			if (!canUseTabShortcut) {
 				return false;
 			}
-			return handleSubmit(text, this.options.onFollowUp);
+			if (this.options.shouldFollowUp?.() && this.options.onFollowUp) {
+				return handleSubmit(text, this.options.onFollowUp);
+			}
+			return handleSubmit(text, this.options.onSubmit);
 		};
 		editor.onFollowUp = () => {
 			if (this.options.shouldFollowUp && !this.options.shouldFollowUp()) {
 				this.options.editor.insertText("\n");
 				return;
 			}
+			const text = this.options.editor.getText();
+			if (
+				isBlockedFollowUpShortcutDraft(text) &&
+				text.trimStart().startsWith("!")
+			) {
+				this.options.editor.insertText("\n");
+				return;
+			}
 			if (this.options.onFollowUp) {
-				handleSubmit(this.options.editor.getText(), this.options.onFollowUp);
+				handleSubmit(text, this.options.onFollowUp);
 			}
 		};
 	}

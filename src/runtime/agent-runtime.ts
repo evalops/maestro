@@ -65,7 +65,6 @@ export class AgentRuntimeController {
 
 	attachRenderer(renderer: TuiRenderer): void {
 		this.renderer = renderer;
-		renderer.attachPromptQueue(this.promptQueue);
 		renderer.setInterruptCallback((options) => this.interrupt(options));
 	}
 

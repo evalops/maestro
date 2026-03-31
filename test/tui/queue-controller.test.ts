@@ -200,7 +200,7 @@ describe("QueueController", () => {
 			);
 		});
 
-		it("attach triggers an initial sync", () => {
+		it("syncFromAgent hydrates state without a renderer-side prompt queue attachment", () => {
 			const callbacks = createMockCallbacks({
 				getQueuedMessagesSnapshot: vi.fn().mockReturnValue({
 					steering: [createQueuedMessage(1, "queued", 10)],
@@ -213,7 +213,7 @@ describe("QueueController", () => {
 				callbacks,
 			});
 
-			controller.attach({} as never);
+			controller.syncFromAgent();
 
 			expect(controller.getQueuedCount()).toBe(1);
 		});
