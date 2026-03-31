@@ -78,8 +78,8 @@ use crate::commands::{
 };
 use crate::components::{
     calculate_input_height, ApprovalController, ApprovalDecision, ApprovalModal, ApprovalRequest,
-    ChatInputWidget, ChatView, CommandPalette, FileSearchModal, ModelSelector, SessionSwitcher,
-    ShortcutsHelp, ThemeSelector,
+    ChatInputWidget, ChatInputWidgetOptions, ChatView, CommandPalette, FileSearchModal,
+    ModelSelector, SessionSwitcher, ShortcutsHelp, ThemeSelector,
 };
 use crate::files::get_workspace_files;
 use crate::git;
@@ -140,7 +140,30 @@ struct PendingModelChange {
 #[derive(Debug, Clone, Copy)]
 struct QueuedPromptCursor {
     id: u64,
-    kind: PromptKind,
+}
+
+fn queued_follow_up_edit_binding_for_terminal_name(
+    terminal_name: &str,
+    in_tmux: bool,
+) -> crate::key_hints::KeyBinding {
+    if in_tmux || terminal_name.eq_ignore_ascii_case("tmux") {
+        return crate::key_hints::shift(KeyCode::Left);
+    }
+
+    match terminal_name.to_ascii_lowercase().as_str() {
+        "apple_terminal" | "warp" | "warpterminal" | "vscode" => {
+            crate::key_hints::shift(KeyCode::Left)
+        }
+        _ => crate::key_hints::alt(KeyCode::Up),
+    }
+}
+
+fn detect_queued_follow_up_edit_binding() -> crate::key_hints::KeyBinding {
+    let terminal_info = crate::terminal_info::TerminalInfo::get();
+    queued_follow_up_edit_binding_for_terminal_name(
+        &terminal_info.name,
+        std::env::var_os("TMUX").is_some(),
+    )
 }
 
 /// Main application struct - the central coordinator.
@@ -283,6 +306,18 @@ pub struct App {
 
     /// Cached git branch for session info updates.
     current_git_branch: Option<String>,
+
+    /// Keyboard shortcut used to restore the last queued follow-up.
+    queued_follow_up_edit_binding: crate::key_hints::KeyBinding,
+
+    /// Follow-up currently being edited out of the queue.
+    editing_queued_follow_up: Option<QueuedPrompt>,
+
+    /// Interrupt should immediately submit the next queued steering batch.
+    submit_queued_steering_after_interrupt: bool,
+
+    /// Interrupt should restore queued prompts into the composer after the run ends.
+    restore_queued_prompts_after_interrupt: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -361,6 +396,8 @@ impl App {
         if let Some(mode) = queue_modes.follow_up_mode {
             state.follow_up_mode = mode;
         }
+        let queued_follow_up_edit_binding = detect_queued_follow_up_edit_binding();
+        state.queued_follow_up_edit_binding_label = queued_follow_up_edit_binding.display();
 
         let loader = SkillLoader::new();
         let (loaded_skills, skill_load_errors) = loader.load_all_with_paths();
@@ -410,6 +447,10 @@ impl App {
             last_mcp_status_refresh: None,
             pending_model_change: None,
             current_git_branch: None,
+            queued_follow_up_edit_binding,
+            editing_queued_follow_up: None,
+            submit_queued_steering_after_interrupt: false,
+            restore_queued_prompts_after_interrupt: false,
         }
     }
 
@@ -1079,6 +1120,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             }
             _ => None,
         };
+        let mut needs_post_interrupt_queue = false;
 
         if matches!(msg, FromAgent::ResponseStart { .. }) {
             let was_busy = self.state.busy;
@@ -1165,14 +1207,13 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 // Clear busy state when response completes
                 self.state.busy = false;
                 self.queued_prompt_active = None;
-                self.queued_prompt_inflight =
-                    self.queued_prompts
-                        .front()
-                        .map(|prompt| QueuedPromptCursor {
-                            id: prompt.id,
-                            kind: prompt.kind,
-                        });
+                self.queued_prompt_inflight = None;
+                self.queued_prompt_inflight = self
+                    .queued_prompts
+                    .front()
+                    .map(|prompt| QueuedPromptCursor { id: prompt.id });
                 self.sync_queue_prompt_count();
+                needs_post_interrupt_queue = true;
             }
             FromAgent::Error { .. } => {
                 // Clear busy state on error
@@ -1180,6 +1221,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 self.queued_prompt_inflight = None;
                 self.queued_prompt_active = None;
                 self.sync_queue_prompt_count();
+                needs_post_interrupt_queue = true;
             }
             FromAgent::ToolCall {
                 call_id,
@@ -1317,6 +1359,10 @@ Add the required fields and retry.",
             }
             self.record_assistant_message(&response_id, usage);
         }
+
+        if needs_post_interrupt_queue {
+            let _ = self.maybe_handle_post_interrupt_queue().await?;
+        }
         Ok(())
     }
 
@@ -1380,19 +1426,44 @@ Add the required fields and retry.",
             ActiveModal::None => {}
         }
 
+        if self
+            .try_restore_last_queued_follow_up(code, modifiers)
+            .await?
+        {
+            return Ok(());
+        }
+
         match code {
             // Quit
             KeyCode::Char('c') if ctrl => {
                 if self.state.busy {
-                    // Interrupt the agent
+                    let has_queued_steering = self.state.queued_steering_count > 0;
+                    self.submit_queued_steering_after_interrupt = has_queued_steering;
+                    self.restore_queued_prompts_after_interrupt =
+                        !has_queued_steering && self.state.queued_prompt_count > 0;
+
                     if let Some(agent) = &self.native_agent {
-                        agent.cancel();
+                        if self.state.queued_prompt_count > 0 {
+                            agent.cancel_keep_queue();
+                        } else {
+                            agent.cancel();
+                        }
+                    } else {
+                        self.state.busy = false;
+                        self.queued_prompt_inflight = None;
+                        self.queued_prompt_active = None;
+                        if self.submit_queued_steering_after_interrupt {
+                            self.submit_queued_steering_after_interrupt = false;
+                            let batch = self.drain_queued_steering_batch_for_interrupt();
+                            self.restore_queued_prompts_to_input(batch);
+                        } else if self.restore_queued_prompts_after_interrupt {
+                            self.restore_queued_prompts_after_interrupt = false;
+                            let batch = self.drain_queued_prompts_for_restore();
+                            self.restore_queued_prompts_to_input(batch);
+                        } else {
+                            self.sync_queue_prompt_count();
+                        }
                     }
-                    self.state.busy = false;
-                    self.queued_prompts.clear();
-                    self.queued_prompt_inflight = None;
-                    self.queued_prompt_active = None;
-                    self.sync_queue_prompt_count();
                 } else {
                     self.should_quit = true;
                 }
@@ -1439,6 +1510,14 @@ Add the required fields and retry.",
             // Tab for slash command completion
             KeyCode::Tab if self.state.input().starts_with('/') => {
                 self.handle_slash_tab();
+            }
+            KeyCode::Tab if self.should_queue_follow_up_on_tab() => {
+                let input = self.state.input().to_string();
+                let ok = self.handle_follow_up_submit(input).await?;
+                if ok {
+                    self.editing_queued_follow_up = None;
+                    self.state.set_input("");
+                }
             }
 
             // Navigation
@@ -1572,12 +1651,14 @@ Add the required fields and retry.",
                             self.handle_steer_submit(input).await?
                         };
                         if ok {
+                            self.editing_queued_follow_up = None;
                             self.state.set_input("");
                         }
                     } else if alt {
                         let input = self.state.input().to_string();
                         let ok = self.handle_follow_up_submit(input).await?;
                         if ok {
+                            self.editing_queued_follow_up = None;
                             self.state.set_input("");
                         }
                     } else {
@@ -1623,6 +1704,10 @@ Add the required fields and retry.",
         }
 
         Ok(())
+    }
+
+    fn should_queue_follow_up_on_tab(&self) -> bool {
+        self.state.can_queue_follow_up_shortcut()
     }
 
     /// Handle keys in file search modal
@@ -3121,6 +3206,20 @@ Add the required fields and retry.",
                     msg.push_str(&format!(
                         "- steer: {steer_count}, follow-up: {follow_up_count}\n"
                     ));
+                    if let Some(summary) = Self::describe_next_queue_batch(
+                        steer_count,
+                        self.state.steering_mode,
+                        "at the next tool boundary",
+                    ) {
+                        msg.push_str(&format!("**Next steering batch:** {summary}\n"));
+                    }
+                    if let Some(summary) = Self::describe_next_queue_batch(
+                        follow_up_count,
+                        self.state.follow_up_mode,
+                        "after turn end",
+                    ) {
+                        msg.push_str(&format!("**Next follow-up batch:** {summary}\n"));
+                    }
                 }
                 if let Some(active) = &self.queued_prompt_active {
                     msg.push_str(&format!(
@@ -3273,6 +3372,7 @@ Navigation:
 
 Input:
   Enter         Send message (steer while running)
+  Tab           Queue follow-up (while running)
   Alt+Enter     Queue follow-up (while running)
   @             Open file search
   /             Start slash command
@@ -3413,6 +3513,24 @@ Slash Commands:
         None
     }
 
+    fn enqueue_follow_up_front_for_edit(&mut self, entry: QueuedPrompt) -> Option<QueuedPrompt> {
+        let insert_at = self
+            .queued_prompts
+            .iter()
+            .position(|prompt| prompt.kind == PromptKind::FollowUp)
+            .unwrap_or(self.queued_prompts.len());
+        self.queued_prompts.insert(insert_at, entry);
+        let inflight_offset = usize::from(self.queued_prompt_inflight.is_some());
+        let effective_len = self.queued_prompts.len().saturating_sub(inflight_offset);
+        if effective_len > MAX_PENDING_MESSAGES {
+            let dropped = self.queued_prompts.pop_back();
+            self.sync_queue_prompt_count();
+            return dropped;
+        }
+        self.sync_queue_prompt_count();
+        None
+    }
+
     fn remove_queued_prompt(&mut self, id: u64) -> Option<QueuedPrompt> {
         let index = self
             .queued_prompts
@@ -3421,6 +3539,71 @@ Slash Commands:
         let removed = self.queued_prompts.remove(index);
         self.sync_queue_prompt_count();
         removed
+    }
+
+    async fn try_restore_last_queued_follow_up(
+        &mut self,
+        code: KeyCode,
+        modifiers: CrosstermModifiers,
+    ) -> Result<bool> {
+        if code != self.queued_follow_up_edit_binding.key
+            || modifiers != self.queued_follow_up_edit_binding.modifiers
+        {
+            return Ok(false);
+        }
+
+        if let Some(current) = self.capture_edited_queued_follow_up() {
+            if self.state.queued_follow_up_count == 0 {
+                return Ok(false);
+            }
+            if let Some(agent) = &self.native_agent {
+                agent
+                    .requeue_follow_up_front(current.content.clone(), vec![], current.id)
+                    .await?;
+            }
+            let dropped = self.enqueue_follow_up_front_for_edit(current);
+            if let Some(dropped) = dropped {
+                self.state.status = Some(format!(
+                    "Queue full, dropped oldest {}.",
+                    dropped.kind.label()
+                ));
+            }
+        }
+
+        let inflight_id = self.queued_prompt_inflight.map(|cursor| cursor.id);
+        let queued_id = self
+            .queued_prompts
+            .iter()
+            .rev()
+            .find(|prompt| prompt.kind == PromptKind::FollowUp && Some(prompt.id) != inflight_id)
+            .map(|prompt| prompt.id);
+        let Some(id) = queued_id else {
+            return Ok(false);
+        };
+
+        let Some(restored) = self.remove_queued_prompt(id) else {
+            return Ok(false);
+        };
+        if let Some(agent) = &self.native_agent {
+            agent.cancel_queued(id);
+        }
+        self.state.set_input(&restored.content);
+        self.update_slash_state();
+        self.editing_queued_follow_up = Some(restored.clone());
+        self.state
+            .status
+            .replace(format!("Editing queued follow-up #{}.", restored.id));
+        Ok(true)
+    }
+
+    fn capture_edited_queued_follow_up(&self) -> Option<QueuedPrompt> {
+        let current = self.editing_queued_follow_up.clone()?;
+        let content = self.state.input().to_string();
+        let trimmed = content.trim();
+        if trimmed.is_empty() || trimmed.starts_with('/') {
+            return None;
+        }
+        Some(QueuedPrompt { content, ..current })
     }
 
     fn format_queue_snippet(text: &str, max_len: usize) -> String {
@@ -3440,27 +3623,165 @@ Slash Commands:
         truncated
     }
 
+    fn merge_queued_prompt_batch(batch: &[QueuedPrompt]) -> String {
+        batch
+            .iter()
+            .map(|prompt| prompt.content.trim())
+            .filter(|content| !content.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    fn describe_next_queue_batch(count: usize, mode: QueueMode, timing: &str) -> Option<String> {
+        if count == 0 {
+            return None;
+        }
+        let batch = if count == 1 {
+            "1 message".to_string()
+        } else {
+            match mode {
+                QueueMode::All => format!("all {count} messages"),
+                QueueMode::One => format!("1 of {count} messages"),
+            }
+        };
+        Some(format!("{batch} {timing}"))
+    }
+
+    fn drain_queued_steering_batch_for_interrupt(&mut self) -> Vec<QueuedPrompt> {
+        let drain_count = match self.state.steering_mode {
+            QueueMode::All => self
+                .queued_prompts
+                .iter()
+                .take_while(|prompt| prompt.kind == PromptKind::Steer)
+                .count(),
+            QueueMode::One => self
+                .queued_prompts
+                .front()
+                .filter(|prompt| prompt.kind == PromptKind::Steer)
+                .map(|_| 1)
+                .unwrap_or(0),
+        };
+        let mut drained = Vec::new();
+        for _ in 0..drain_count {
+            if let Some(prompt) = self.queued_prompts.pop_front() {
+                drained.push(prompt);
+            }
+        }
+        self.sync_queue_prompt_count();
+        drained
+    }
+
+    fn drain_queued_prompts_for_restore(&mut self) -> Vec<QueuedPrompt> {
+        let drained = self.queued_prompts.drain(..).collect::<Vec<_>>();
+        self.sync_queue_prompt_count();
+        drained
+    }
+
+    fn cancel_native_queued_batch(&self, batch: &[QueuedPrompt]) {
+        if let Some(agent) = &self.native_agent {
+            for prompt in batch {
+                agent.cancel_queued(prompt.id);
+            }
+        }
+    }
+
+    fn restore_queued_prompts_to_input(&mut self, batch: Vec<QueuedPrompt>) {
+        if batch.is_empty() {
+            return;
+        }
+        let existing_draft = self.state.input().to_string();
+        let merged_existing_draft = !existing_draft.trim().is_empty();
+        let mut restored = Self::merge_queued_prompt_batch(&batch);
+        if merged_existing_draft {
+            if !restored.trim().is_empty() {
+                restored.push_str("\n\n");
+            }
+            restored.push_str(&existing_draft);
+        }
+        self.cancel_native_queued_batch(&batch);
+        self.state.set_input(&restored);
+        self.update_slash_state();
+        self.editing_queued_follow_up = if !merged_existing_draft
+            && batch.len() == 1
+            && batch[0].kind == PromptKind::FollowUp
+        {
+            Some(batch[0].clone())
+        } else {
+            None
+        };
+        self.state.status = Some(format!(
+            "Restored {} queued prompt{} to the composer.",
+            batch.len(),
+            if batch.len() == 1 { "" } else { "s" }
+        ));
+    }
+
+    async fn maybe_handle_post_interrupt_queue(&mut self) -> Result<bool> {
+        if self.submit_queued_steering_after_interrupt {
+            self.submit_queued_steering_after_interrupt = false;
+            self.queued_prompt_inflight = None;
+            self.queued_prompt_active = None;
+            let batch = self.drain_queued_steering_batch_for_interrupt();
+            if batch.is_empty() {
+                return Ok(false);
+            }
+            let merged = Self::merge_queued_prompt_batch(&batch);
+            self.cancel_native_queued_batch(&batch);
+            if merged.trim().is_empty() {
+                return Ok(false);
+            }
+            self.state.status = Some(if batch.len() == 1 {
+                "Submitting queued steer.".to_string()
+            } else {
+                format!("Submitting {} queued steers.", batch.len())
+            });
+            self.submit_prompt(merged).await?;
+            return Ok(true);
+        }
+
+        if self.restore_queued_prompts_after_interrupt {
+            self.restore_queued_prompts_after_interrupt = false;
+            self.queued_prompt_inflight = None;
+            self.queued_prompt_active = None;
+            let batch = self.drain_queued_prompts_for_restore();
+            self.restore_queued_prompts_to_input(batch);
+        }
+
+        Ok(false)
+    }
+
     fn sync_queue_prompt_count(&mut self) {
+        let inflight_id = self.queued_prompt_inflight.map(|cursor| cursor.id);
+        let mut total_count: usize = 0;
         let mut steer_count: usize = 0;
         let mut follow_up_count: usize = 0;
+        let mut steering_preview: Vec<String> = Vec::new();
+        let mut follow_up_preview: Vec<String> = Vec::new();
+
         for prompt in &self.queued_prompts {
+            if Some(prompt.id) == inflight_id {
+                continue;
+            }
+
+            total_count += 1;
             match prompt.kind {
-                PromptKind::Steer => steer_count += 1,
-                PromptKind::FollowUp => follow_up_count += 1,
+                PromptKind::Steer => {
+                    steer_count += 1;
+                    steering_preview.push(Self::format_queue_snippet(&prompt.content, 120));
+                }
+                PromptKind::FollowUp => {
+                    follow_up_count += 1;
+                    follow_up_preview.push(Self::format_queue_snippet(&prompt.content, 120));
+                }
                 PromptKind::Prompt => {}
             }
         }
-        let inflight_offset = usize::from(self.queued_prompt_inflight.is_some());
-        self.state.queued_prompt_count = self.queued_prompts.len().saturating_sub(inflight_offset);
-        if let Some(inflight) = self.queued_prompt_inflight {
-            match inflight.kind {
-                PromptKind::Steer => steer_count = steer_count.saturating_sub(1),
-                PromptKind::FollowUp => follow_up_count = follow_up_count.saturating_sub(1),
-                PromptKind::Prompt => {}
-            }
-        }
+
+        self.state.queued_prompt_count = total_count;
         self.state.queued_steering_count = steer_count;
         self.state.queued_follow_up_count = follow_up_count;
+        self.state.queued_steering_preview = steering_preview;
+        self.state.queued_follow_up_preview = follow_up_preview;
     }
 
     /// Submit a prompt to the agent
@@ -3629,8 +3950,18 @@ Slash Commands:
                 };
 
                 // Create widget just to calculate cursor position
-                let input_widget =
-                    ChatInputWidget::new(&state.textarea, "", state.busy, 0, None, None);
+                let input_widget = ChatInputWidget::new(
+                    &state.textarea,
+                    "",
+                    ChatInputWidgetOptions {
+                        busy: state.busy,
+                        elapsed_secs: 0,
+                        thinking_header: None,
+                        can_queue_follow_up: state.can_queue_follow_up_shortcut(),
+                        queue_summary: None,
+                        pending_input_preview: None,
+                    },
+                );
 
                 if let Some((cursor_x, cursor_y)) = input_widget.cursor_pos(input_area) {
                     frame.set_cursor_position((cursor_x, cursor_y));
@@ -4399,29 +4730,150 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_describe_next_queue_batch_is_mode_aware() {
+        assert_eq!(
+            App::describe_next_queue_batch(0, QueueMode::All, "after turn end"),
+            None
+        );
+        assert_eq!(
+            App::describe_next_queue_batch(1, QueueMode::All, "after turn end"),
+            Some("1 message after turn end".to_string())
+        );
+        assert_eq!(
+            App::describe_next_queue_batch(3, QueueMode::All, "after turn end"),
+            Some("all 3 messages after turn end".to_string())
+        );
+        assert_eq!(
+            App::describe_next_queue_batch(3, QueueMode::One, "at the next tool boundary"),
+            Some("1 of 3 messages at the next tool boundary".to_string())
+        );
+    }
+
+    #[test]
+    fn test_merge_queued_prompt_batch_joins_non_empty_segments() {
+        let merged = App::merge_queued_prompt_batch(&[
+            QueuedPrompt {
+                id: 1,
+                content: "steer first".to_string(),
+                kind: PromptKind::Steer,
+            },
+            QueuedPrompt {
+                id: 2,
+                content: "   ".to_string(),
+                kind: PromptKind::Steer,
+            },
+            QueuedPrompt {
+                id: 3,
+                content: "steer second".to_string(),
+                kind: PromptKind::Steer,
+            },
+        ]);
+
+        assert_eq!(merged, "steer first\n\nsteer second");
+    }
+
+    #[test]
+    fn test_drain_queued_steering_batch_for_interrupt_respects_mode() {
+        let mut app = new_test_app();
+        let steer_one = app.reserve_queue_id();
+        let steer_two = app.reserve_queue_id();
+        let follow_up = app.reserve_queue_id();
+        app.enqueue_pending_prompt(steer_one, "steer one".to_string(), PromptKind::Steer, true);
+        app.enqueue_pending_prompt(steer_two, "steer two".to_string(), PromptKind::Steer, true);
+        app.enqueue_pending_prompt(
+            follow_up,
+            "follow-up".to_string(),
+            PromptKind::FollowUp,
+            false,
+        );
+
+        let drained_all = app.drain_queued_steering_batch_for_interrupt();
+        assert_eq!(drained_all.len(), 2);
+        assert_eq!(app.queued_prompts.len(), 1);
+        assert_eq!(app.queued_prompts.front().unwrap().id, follow_up);
+
+        let mut app = new_test_app();
+        app.state.steering_mode = QueueMode::One;
+        let steer_one = app.reserve_queue_id();
+        let steer_two = app.reserve_queue_id();
+        app.enqueue_pending_prompt(steer_one, "steer one".to_string(), PromptKind::Steer, true);
+        app.enqueue_pending_prompt(steer_two, "steer two".to_string(), PromptKind::Steer, true);
+
+        let drained_one = app.drain_queued_steering_batch_for_interrupt();
+        assert_eq!(drained_one.len(), 1);
+        assert_eq!(drained_one[0].id, steer_one);
+        assert_eq!(app.queued_prompts.front().unwrap().id, steer_two);
+    }
+
     #[tokio::test]
     async fn test_queue_counts_clear_on_interrupt() {
         let mut app = new_test_app();
 
         let follow_up_id = app.reserve_queue_id();
-        let steer_id = app.reserve_queue_id();
         app.enqueue_pending_prompt(
             follow_up_id,
             "follow-up".to_string(),
             PromptKind::FollowUp,
             false,
         );
-        app.enqueue_pending_prompt(steer_id, "steer".to_string(), PromptKind::Steer, false);
         app.state.busy = true;
 
         app.handle_key(KeyCode::Char('c'), CrosstermModifiers::CONTROL)
             .await
             .expect("interrupt");
 
+        assert_eq!(app.state.input(), "follow-up");
         assert_eq!(app.state.queued_prompt_count, 0);
-        assert_eq!(app.state.queued_follow_up_count, 0);
-        assert_eq!(app.state.queued_steering_count, 0);
         assert!(app.queued_prompts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_interrupt_restore_merges_existing_input_after_queued_prompts() {
+        let mut app = new_test_app();
+
+        let follow_up_id = app.reserve_queue_id();
+        app.enqueue_pending_prompt(
+            follow_up_id,
+            "follow-up".to_string(),
+            PromptKind::FollowUp,
+            false,
+        );
+        app.state.set_input("existing draft");
+        app.state.busy = true;
+
+        app.handle_key(KeyCode::Char('c'), CrosstermModifiers::CONTROL)
+            .await
+            .expect("interrupt");
+
+        assert_eq!(app.state.input(), "follow-up\n\nexisting draft");
+        assert_eq!(app.state.queued_prompt_count, 0);
+        assert!(app.queued_prompts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_interrupt_with_queued_steer_restores_steering_batch_without_agent() {
+        let mut app = new_test_app();
+
+        let steer_id = app.reserve_queue_id();
+        let follow_up_id = app.reserve_queue_id();
+        app.enqueue_pending_prompt(steer_id, "steer".to_string(), PromptKind::Steer, true);
+        app.enqueue_pending_prompt(
+            follow_up_id,
+            "follow-up".to_string(),
+            PromptKind::FollowUp,
+            false,
+        );
+        app.state.busy = true;
+
+        app.handle_key(KeyCode::Char('c'), CrosstermModifiers::CONTROL)
+            .await
+            .expect("interrupt");
+
+        assert_eq!(app.state.input(), "steer");
+        assert_eq!(app.state.queued_prompt_count, 1);
+        assert_eq!(app.state.queued_follow_up_count, 1);
+        assert_eq!(app.queued_prompts.front().unwrap().id, follow_up_id);
     }
 
     #[tokio::test]
@@ -4434,10 +4886,7 @@ mod tests {
         }
 
         let inflight_id = app.queued_prompts.front().unwrap().id;
-        app.queued_prompt_inflight = Some(QueuedPromptCursor {
-            id: inflight_id,
-            kind: PromptKind::FollowUp,
-        });
+        app.queued_prompt_inflight = Some(QueuedPromptCursor { id: inflight_id });
         app.sync_queue_prompt_count();
 
         let new_id = app.reserve_queue_id();
@@ -4466,15 +4915,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_alt_up_restores_most_recent_queued_follow_up() {
+        let mut app = new_test_app();
+        app.queued_follow_up_edit_binding = crate::key_hints::alt(KeyCode::Up);
+        app.state.queued_follow_up_edit_binding_label = "Alt+Up".to_string();
+
+        let follow_up_id = app.reserve_queue_id();
+        let steer_id = app.reserve_queue_id();
+        app.enqueue_pending_prompt(
+            follow_up_id,
+            "follow-up draft".to_string(),
+            PromptKind::FollowUp,
+            false,
+        );
+        app.enqueue_pending_prompt(
+            steer_id,
+            "pending steer".to_string(),
+            PromptKind::Steer,
+            true,
+        );
+
+        app.handle_key(KeyCode::Up, CrosstermModifiers::ALT)
+            .await
+            .expect("restore queued follow-up");
+
+        assert_eq!(app.state.input(), "follow-up draft");
+        assert_eq!(app.state.queued_follow_up_count, 0);
+        assert_eq!(app.state.queued_steering_count, 1);
+        assert_eq!(app.queued_prompts.len(), 1);
+        assert_eq!(app.queued_prompts.front().unwrap().id, steer_id);
+    }
+
+    #[tokio::test]
+    async fn test_alt_up_cycles_to_older_queued_follow_up_without_losing_current_draft() {
+        let mut app = new_test_app();
+        app.queued_follow_up_edit_binding = crate::key_hints::alt(KeyCode::Up);
+        app.state.queued_follow_up_edit_binding_label = "Alt+Up".to_string();
+
+        let first_id = app.reserve_queue_id();
+        let second_id = app.reserve_queue_id();
+        app.enqueue_pending_prompt(
+            first_id,
+            "follow-up first".to_string(),
+            PromptKind::FollowUp,
+            false,
+        );
+        app.enqueue_pending_prompt(
+            second_id,
+            "follow-up second".to_string(),
+            PromptKind::FollowUp,
+            false,
+        );
+
+        app.handle_key(KeyCode::Up, CrosstermModifiers::ALT)
+            .await
+            .expect("restore newest queued follow-up");
+        assert_eq!(app.state.input(), "follow-up second");
+
+        app.state.set_input("follow-up second edited");
+
+        app.handle_key(KeyCode::Up, CrosstermModifiers::ALT)
+            .await
+            .expect("cycle to older queued follow-up");
+
+        assert_eq!(app.state.input(), "follow-up first");
+        let queued: Vec<(u64, String)> = app
+            .queued_prompts
+            .iter()
+            .map(|prompt| (prompt.id, prompt.content.clone()))
+            .collect();
+        assert_eq!(
+            queued,
+            vec![(second_id, "follow-up second edited".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_queued_follow_up_edit_binding_prefers_shift_left_for_special_terminals() {
+        assert_eq!(
+            queued_follow_up_edit_binding_for_terminal_name("Apple_Terminal", false),
+            crate::key_hints::shift(KeyCode::Left)
+        );
+        assert_eq!(
+            queued_follow_up_edit_binding_for_terminal_name("WarpTerminal", false),
+            crate::key_hints::shift(KeyCode::Left)
+        );
+        assert_eq!(
+            queued_follow_up_edit_binding_for_terminal_name("vscode", false),
+            crate::key_hints::shift(KeyCode::Left)
+        );
+        assert_eq!(
+            queued_follow_up_edit_binding_for_terminal_name("WezTerm", false),
+            crate::key_hints::alt(KeyCode::Up)
+        );
+        assert_eq!(
+            queued_follow_up_edit_binding_for_terminal_name("iTerm.app", true),
+            crate::key_hints::shift(KeyCode::Left)
+        );
+    }
+
+    #[test]
+    fn test_should_queue_follow_up_on_tab_only_when_busy_with_non_command_input() {
+        let mut app = new_test_app();
+        assert!(!app.should_queue_follow_up_on_tab());
+
+        app.state.busy = true;
+        app.state.follow_up_mode = QueueMode::One;
+        app.state.set_input("follow-up");
+        assert!(!app.should_queue_follow_up_on_tab());
+
+        app.state.follow_up_mode = QueueMode::All;
+        app.state.set_input("");
+        assert!(!app.should_queue_follow_up_on_tab());
+
+        app.state.set_input("/help");
+        assert!(!app.should_queue_follow_up_on_tab());
+
+        app.state.set_input("follow-up");
+        assert!(app.should_queue_follow_up_on_tab());
+    }
+
+    #[tokio::test]
     async fn test_queue_counts_clear_on_error() {
         let mut app = new_test_app();
 
         let id = app.reserve_queue_id();
         app.enqueue_pending_prompt(id, "follow-up".to_string(), PromptKind::FollowUp, false);
-        app.queued_prompt_inflight = Some(QueuedPromptCursor {
-            id,
-            kind: PromptKind::FollowUp,
-        });
+        app.queued_prompt_inflight = Some(QueuedPromptCursor { id });
         app.sync_queue_prompt_count();
 
         app.state.busy = true;

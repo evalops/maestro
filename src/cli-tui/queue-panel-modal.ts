@@ -21,6 +21,8 @@ export class QueuePanelModal implements Component {
 	private selectedIndex = 0;
 	private steeringMode: "one" | "all" = "all";
 	private followUpMode: "one" | "all" = "all";
+	private nextSteeringBatchSummary: string | null = null;
+	private nextFollowUpBatchSummary: string | null = null;
 
 	constructor(private readonly options: QueuePanelModalOptions) {}
 
@@ -29,11 +31,15 @@ export class QueuePanelModal implements Component {
 		pending: QueuedPrompt[],
 		steeringMode: "one" | "all",
 		followUpMode: "one" | "all",
+		nextSteeringBatchSummary: string | null,
+		nextFollowUpBatchSummary: string | null,
 	): void {
 		this.activePrompt = active;
 		this.pendingPrompts = pending;
 		this.steeringMode = steeringMode;
 		this.followUpMode = followUpMode;
+		this.nextSteeringBatchSummary = nextSteeringBatchSummary;
+		this.nextFollowUpBatchSummary = nextFollowUpBatchSummary;
 		// Clamp selected index
 		if (this.selectedIndex >= pending.length) {
 			this.selectedIndex = Math.max(0, pending.length - 1);
@@ -76,6 +82,28 @@ export class QueuePanelModal implements Component {
 		lines.push(
 			`${chalk.hex(borderColor)("│ ")}${steeringLine}${chalk.hex(borderColor)(" │")}`,
 		);
+		if (this.nextSteeringBatchSummary) {
+			const steeringBatchLine = padLine(
+				chalk.hex("#94a3b8")(
+					`Next steering batch: ${this.nextSteeringBatchSummary}`,
+				),
+				width - 4,
+			);
+			lines.push(
+				`${chalk.hex(borderColor)("│ ")}${steeringBatchLine}${chalk.hex(borderColor)(" │")}`,
+			);
+		}
+		if (this.nextFollowUpBatchSummary) {
+			const followUpBatchLine = padLine(
+				chalk.hex("#94a3b8")(
+					`Next follow-up batch: ${this.nextFollowUpBatchSummary}`,
+				),
+				width - 4,
+			);
+			lines.push(
+				`${chalk.hex(borderColor)("│ ")}${followUpBatchLine}${chalk.hex(borderColor)(" │")}`,
+			);
+		}
 
 		lines.push(
 			`${chalk.hex(borderColor)("│ ")}${" ".repeat(width - 4)}${chalk.hex(borderColor)(" │")}`,

@@ -1,4 +1,5 @@
 import { Editor, KittyKeys, isCtrlD, isShiftTab } from "@evalops/tui";
+import { matchesQueuedFollowUpEditBinding } from "./queue/queued-follow-up-edit-binding.js";
 
 type CustomEditorBinding = {
 	description: string;
@@ -9,8 +10,7 @@ type CustomEditorBinding = {
 
 const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 	{
-		description:
-			"Tab cycles slash hints when provided (unless autocomplete is open)",
+		description: "Tab cycles slash hints or queues a follow-up while running",
 		matches: (data) => data === "\t",
 		when: (editor) => Boolean(editor.onTab) && !editor.isShowingAutocomplete(),
 		handle: (editor) => editor.onTab?.() === true,
@@ -137,6 +137,13 @@ const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 			editor.onCtrlC?.();
 			return true;
 		},
+	},
+	{
+		description: "Edits queued follow-ups",
+		matches: (data) => matchesQueuedFollowUpEditBinding(data),
+		when: (editor) =>
+			Boolean(editor.onShortcut) && !editor.isShowingAutocomplete(),
+		handle: (editor) => editor.onShortcut?.("edit-last-follow-up") === true,
 	},
 	{
 		description: "Up arrow navigates history (when autocomplete is hidden)",

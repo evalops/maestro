@@ -8,7 +8,9 @@ export interface InterruptCallbacks {
 	/** Called when interrupt is executed */
 	onInterrupt?(options: { keepPartial: boolean }): void;
 	/** Called after interrupt to restore queued prompts */
-	restoreQueuedPrompts?(): void;
+	restoreQueuedPrompts?(options: { keepPartial: boolean }): void;
+	/** Whether queued steering will be applied immediately on interrupt */
+	hasQueuedSteering?(): boolean;
 	/** Get working footer hint text */
 	getWorkingHint(): string;
 	/** Check if we're in minimal mode */
@@ -94,12 +96,19 @@ export class InterruptController {
 		if (this.interruptTimeout) {
 			clearTimeout(this.interruptTimeout);
 		}
+		const queuedSteering = this.callbacks.hasQueuedSteering?.() === true;
 		if (!this.callbacks.isMinimalMode()) {
 			this.notificationView.showInfo(
-				"Press Esc to discard, K to keep partial response",
+				queuedSteering
+					? "Press Esc to interrupt and apply queued steering, K to keep partial response"
+					: "Press Esc to discard, K to keep partial response",
 			);
 		}
-		this.footer.setHint("Esc=discard | K=keep partial");
+		this.footer.setHint(
+			queuedSteering
+				? "Esc=apply steer | K=keep partial"
+				: "Esc=discard | K=keep partial",
+		);
 		this.interruptTimeout = setTimeout(() => {
 			this.clear();
 		}, 5000);
@@ -121,7 +130,7 @@ export class InterruptController {
 		}
 
 		this.callbacks.onInterrupt?.(options);
-		this.callbacks.restoreQueuedPrompts?.();
+		this.callbacks.restoreQueuedPrompts?.(options);
 	}
 
 	/**

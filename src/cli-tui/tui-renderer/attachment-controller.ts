@@ -59,7 +59,19 @@ export class AttachmentController {
 	 */
 	consumeAttachments(text: string): PromptPayload {
 		const { text: updatedText, attachments } =
-			this.consumePendingAttachmentMarkers(text);
+			this.resolvePendingAttachmentMarkers(text, { consume: true });
+		return {
+			text: updatedText,
+			attachments: attachments.length > 0 ? attachments : undefined,
+		};
+	}
+
+	/**
+	 * Build the current prompt payload without consuming the editor markers.
+	 */
+	snapshotAttachments(text: string): PromptPayload {
+		const { text: updatedText, attachments } =
+			this.resolvePendingAttachmentMarkers(text, { consume: false });
 		return {
 			text: updatedText,
 			attachments: attachments.length > 0 ? attachments : undefined,
@@ -141,7 +153,10 @@ export class AttachmentController {
 
 	// ─── Internal ──────────────────────────────────────────────────────────
 
-	private consumePendingAttachmentMarkers(text: string): {
+	private resolvePendingAttachmentMarkers(
+		text: string,
+		options: { consume: boolean },
+	): {
 		text: string;
 		attachments: Attachment[];
 	} {
@@ -159,7 +174,9 @@ export class AttachmentController {
 			updated = updated.split(marker).join(replacement);
 			attachments.push(attachment);
 		}
-		this.clearPendingAttachments();
+		if (options.consume) {
+			this.clearPendingAttachments();
+		}
 		return { text: updated, attachments };
 	}
 }

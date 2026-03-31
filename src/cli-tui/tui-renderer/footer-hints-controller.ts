@@ -46,6 +46,8 @@ export interface FooterHintsControllerDeps {
 		hasQueue: boolean;
 		queueHint: string | null;
 	};
+	/** Get the active running-state hint. */
+	getRunningHint: () => string | null;
 	/** Get the current thinking level. */
 	getThinkingLevel: () => ThinkingLevel | null | undefined;
 	/** Get unseen alert count. */
@@ -119,10 +121,6 @@ export class FooterHintsController {
 			}),
 		);
 
-		if (this.deps.isAgentRunning()) {
-			return;
-		}
-
 		const hints: FooterHint[] = [];
 		const pushHint = (
 			type: FooterHint["type"],
@@ -132,6 +130,15 @@ export class FooterHintsController {
 			if (message.trim().length === 0) return;
 			hints.push({ type, message, priority });
 		};
+
+		if (this.deps.isAgentRunning()) {
+			const runningHint = this.deps.getRunningHint();
+			if (runningHint) {
+				pushHint("custom", runningHint, 150);
+			}
+			this.deps.setHints(hints);
+			return;
+		}
 
 		if (this.deps.idleFooterHint) {
 			pushHint("custom", this.deps.idleFooterHint, 20);

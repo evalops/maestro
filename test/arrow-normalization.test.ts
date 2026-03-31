@@ -5,6 +5,7 @@ import type {
 } from "../packages/tui/src/autocomplete.js";
 import { Editor } from "../packages/tui/src/components/editor.js";
 import { CustomEditor } from "../src/cli-tui/custom-editor.js";
+import { getQueuedFollowUpEditBindingSequence } from "../src/cli-tui/queue/queued-follow-up-edit-binding.js";
 
 class StubAutocomplete implements AutocompleteProvider {
 	getSuggestions(): { items: AutocompleteItem[]; prefix: string } | null {
@@ -67,5 +68,29 @@ describe("arrow key normalization", () => {
 
 		editor.handleInput("\x1bOB"); // Down (SS3)
 		expect(editor.getCursor().line).toBe(1);
+	});
+
+	it("routes queued follow-up edit shortcuts before normal navigation", () => {
+		const editor = new CustomEditor();
+		const shortcuts: string[] = [];
+		let historyCalls = 0;
+		const bindingSequence = getQueuedFollowUpEditBindingSequence();
+		const otherSequence =
+			bindingSequence === "\x1b[1;2D" ? "\x1b[1;3A" : "\x1b[1;2D";
+
+		editor.onShortcut = (shortcut) => {
+			shortcuts.push(shortcut);
+			return true;
+		};
+		editor.onHistoryNavigate = () => {
+			historyCalls += 1;
+			return true;
+		};
+
+		editor.handleInput(bindingSequence);
+		editor.handleInput(otherSequence);
+
+		expect(shortcuts).toEqual(["edit-last-follow-up"]);
+		expect(historyCalls).toBe(0);
 	});
 });

@@ -6,7 +6,8 @@ export function createInterruptController(params: {
 	footer: FooterComponent;
 	notificationView: NotificationView;
 	onInterrupt: (options?: { keepPartial?: boolean }) => void;
-	restoreQueuedPrompts: () => void;
+	restoreQueuedPrompts: (options: { keepPartial: boolean }) => void;
+	hasQueuedSteering: () => boolean;
 	getWorkingHint: () => string;
 	isMinimalMode: () => boolean;
 	isAgentRunning: () => boolean;
@@ -17,6 +18,7 @@ export function createInterruptController(params: {
 		notificationView,
 		onInterrupt,
 		restoreQueuedPrompts,
+		hasQueuedSteering,
 		getWorkingHint,
 		isMinimalMode,
 		isAgentRunning,
@@ -29,6 +31,7 @@ export function createInterruptController(params: {
 		callbacks: {
 			onInterrupt,
 			restoreQueuedPrompts,
+			hasQueuedSteering,
 			getWorkingHint,
 			isMinimalMode,
 			isAgentRunning,

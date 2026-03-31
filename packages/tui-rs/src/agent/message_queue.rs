@@ -261,6 +261,35 @@ impl MessageQueue {
         None
     }
 
+    /// Push a message to the front of its kind without jumping ahead of other kinds.
+    ///
+    /// This keeps steering messages ahead of follow-ups while allowing the caller
+    /// to preserve an edited follow-up at the front of the follow-up subsection.
+    pub fn push_message_front_of_kind(&mut self, msg: PendingMessage) -> Option<PendingMessage> {
+        self.total_queued += 1;
+
+        let mut msg = msg;
+        if msg.id == 0 {
+            msg.id = self.reserve_id();
+        } else if msg.id >= self.next_id {
+            self.next_id = msg.id.saturating_add(1).max(1);
+        }
+
+        let insert_at = self
+            .queue
+            .iter()
+            .position(|existing| existing.kind == msg.kind)
+            .unwrap_or(self.queue.len());
+        self.queue.insert(insert_at, msg);
+
+        if self.max_size > 0 && self.queue.len() > self.max_size {
+            self.dropped_count += 1;
+            return self.queue.pop_back();
+        }
+
+        None
+    }
+
     /// Push a high-priority message to the front of the queue
     pub fn push_urgent(&mut self, content: impl Into<String>) -> Option<PendingMessage> {
         self.push_urgent_with_kind(content, PromptKind::Prompt)

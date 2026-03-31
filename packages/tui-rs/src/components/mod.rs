@@ -143,7 +143,10 @@ pub use file_search::FileSearchModal;
 pub use input::{EditorWidget, InputWidget};
 pub use layout::{column_layout, row_layout, BoxWidget};
 pub(crate) use message::calculate_input_height;
-pub use message::{ChatInputWidget, ChatView, MessageWidget, StatusBarWidget, ToolCallWidget};
+pub use message::{
+    ChatInputWidget, ChatInputWidgetOptions, ChatView, MessageWidget, StatusBarWidget,
+    ToolCallWidget,
+};
 pub use model_selector::ModelSelector;
 pub use rate_limit::{
     format_duration_compact, format_elapsed, CreditsDisplay, RateLimitDisplay, RateLimitState,

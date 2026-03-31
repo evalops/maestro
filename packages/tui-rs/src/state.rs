@@ -456,6 +456,15 @@ pub struct AppState {
     /// Number of queued follow-up prompts.
     pub queued_follow_up_count: usize,
 
+    /// Preview snippets for queued steering prompts.
+    pub queued_steering_preview: Vec<String>,
+
+    /// Preview snippets for queued follow-up prompts.
+    pub queued_follow_up_preview: Vec<String>,
+
+    /// Keyboard shortcut label for editing the last queued follow-up.
+    pub queued_follow_up_edit_binding_label: String,
+
     /// Cached MCP connected server count for runtime badges.
     pub mcp_connected: usize,
 
@@ -530,6 +539,9 @@ impl AppState {
             queued_prompt_count: 0,                 // No queued prompts
             queued_steering_count: 0,               // No queued steering prompts
             queued_follow_up_count: 0,              // No queued follow-up prompts
+            queued_steering_preview: Vec::new(),
+            queued_follow_up_preview: Vec::new(),
+            queued_follow_up_edit_binding_label: "Alt+Up".to_string(),
             mcp_connected: 0,
             mcp_tool_count: 0,
         }
@@ -552,6 +564,15 @@ impl AppState {
     /// This pattern avoids explicit `if let Some(x) = ...` blocks.
     pub fn elapsed_busy_secs(&self) -> u64 {
         self.busy_since.map_or(0, |since| since.elapsed().as_secs())
+    }
+
+    #[must_use]
+    pub fn can_queue_follow_up_shortcut(&self) -> bool {
+        if !self.busy || !self.follow_up_mode.allows_queue() {
+            return false;
+        }
+        let text = self.textarea.text();
+        !text.trim().is_empty() && !text.trim_start().starts_with('/')
     }
 
     /// Handle a message from the agent.
@@ -1989,6 +2010,27 @@ mod tests {
         state.busy_since = Some(Instant::now());
         // Should be 0 or very small (just started)
         assert!(state.elapsed_busy_secs() < 2);
+    }
+
+    #[test]
+    fn test_can_queue_follow_up_shortcut_requires_busy_queueable_non_command_input() {
+        let mut state = AppState::new();
+        state.textarea.set_text("follow-up");
+        assert!(!state.can_queue_follow_up_shortcut());
+
+        state.busy = true;
+        state.follow_up_mode = QueueMode::One;
+        assert!(!state.can_queue_follow_up_shortcut());
+
+        state.follow_up_mode = QueueMode::All;
+        state.textarea.set_text("/help");
+        assert!(!state.can_queue_follow_up_shortcut());
+
+        state.textarea.set_text("   ");
+        assert!(!state.can_queue_follow_up_shortcut());
+
+        state.textarea.set_text("follow-up");
+        assert!(state.can_queue_follow_up_shortcut());
     }
 
     // ============================================================

@@ -681,13 +681,7 @@ export class Agent {
 	 * @param m - Message to queue
 	 */
 	async steer(m: AppMessage): Promise<void> {
-		const transformed = await this.messageTransformer([m]);
-		this.steeringQueue.push({
-			id: this.nextQueuedMessageId++,
-			createdAt: Date.now(),
-			original: m,
-			llm: transformed[0],
-		});
+		await this.enqueueQueuedMessage("steer", m);
 	}
 
 	/**
@@ -696,12 +690,20 @@ export class Agent {
 	 * @param m - Message to queue
 	 */
 	async followUp(m: AppMessage): Promise<void> {
-		const transformed = await this.messageTransformer([m]);
-		this.followUpQueue.push({
-			id: this.nextQueuedMessageId++,
-			createdAt: Date.now(),
-			original: m,
-			llm: transformed[0],
+		await this.enqueueQueuedMessage("followUp", m);
+	}
+
+	/**
+	 * Re-inserts a follow-up at the front of the follow-up queue.
+	 */
+	async prependFollowUp(
+		m: AppMessage,
+		options?: { id?: number; createdAt?: number },
+	): Promise<void> {
+		await this.enqueueQueuedMessage("followUp", m, {
+			position: "front",
+			id: options?.id,
+			createdAt: options?.createdAt,
 		});
 	}
 
@@ -711,6 +713,42 @@ export class Agent {
 	 */
 	async queueMessage(m: AppMessage): Promise<void> {
 		await this.followUp(m);
+	}
+
+	private async enqueueQueuedMessage(
+		kind: "steer" | "followUp",
+		message: AppMessage,
+		options?: {
+			position?: "front" | "back";
+			id?: number;
+			createdAt?: number;
+		},
+	): Promise<void> {
+		const transformed = await this.messageTransformer([message]);
+		const id = options?.id ?? this.nextQueuedMessageId++;
+		if (id >= this.nextQueuedMessageId) {
+			this.nextQueuedMessageId = id + 1;
+		}
+		const queued = {
+			id,
+			createdAt: options?.createdAt ?? Date.now(),
+			original: message,
+			llm: transformed[0],
+		};
+		const position = options?.position ?? "back";
+		if (kind === "steer") {
+			if (position === "front") {
+				this.steeringQueue.unshift(queued);
+			} else {
+				this.steeringQueue.push(queued);
+			}
+			return;
+		}
+		if (position === "front") {
+			this.followUpQueue.unshift(queued);
+		} else {
+			this.followUpQueue.push(queued);
+		}
 	}
 
 	/**

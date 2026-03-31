@@ -127,7 +127,7 @@ use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
 use crate::runtime_badges::{build_runtime_badges, RuntimeBadgeParams};
 use crate::session::ThinkingLevel;
-use crate::state::{ApprovalMode, Message, MessageRole, ToolCallStatus};
+use crate::state::{ApprovalMode, Message, MessageRole, QueueMode, ToolCallStatus};
 use crate::tool_output::{clamp_tool_output, format_tool_output_truncation, tool_output_limits};
 use crate::wrapping::{word_wrap_lines, RtOptions};
 use std::collections::HashSet;
@@ -1054,10 +1054,14 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 /// let widget = ChatInputWidget::new(
 ///     &state.textarea,
 ///     "Type a message...",
-///     busy,
-///     elapsed_secs,
-///     thinking_header,
-///     queue_summary,
+///     ChatInputWidgetOptions {
+///         busy,
+///         elapsed_secs,
+///         thinking_header,
+///         can_queue_follow_up,
+///         queue_summary,
+///         pending_input_preview,
+///     },
 /// );
 /// frame.render_widget(widget, area);
 ///
@@ -1071,7 +1075,19 @@ pub struct ChatInputWidget<'a> {
     busy: bool,
     elapsed_secs: u64,
     thinking_header: Option<&'a str>,
+    can_queue_follow_up: bool,
     queue_summary: Option<QueueSummary>,
+    pending_input_preview: Option<PendingInputPreview>,
+}
+
+#[derive(Debug)]
+pub struct ChatInputWidgetOptions<'a> {
+    pub busy: bool,
+    pub elapsed_secs: u64,
+    pub thinking_header: Option<&'a str>,
+    pub can_queue_follow_up: bool,
+    pub queue_summary: Option<QueueSummary>,
+    pub pending_input_preview: Option<PendingInputPreview>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1095,22 +1111,189 @@ impl QueueSummary {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PendingInputPreview {
+    pub steering: Vec<String>,
+    pub follow_up: Vec<String>,
+    pub steering_mode: QueueMode,
+    pub follow_up_mode: QueueMode,
+    pub follow_up_edit_binding_label: String,
+}
+
+const PREVIEW_LINE_LIMIT: usize = 3;
+const INTERRUPT_STEERING_DESCRIPTION: &str = "Ctrl+C interrupt and apply now";
+const EDIT_LAST_QUEUED_FOLLOW_UP_DESCRIPTION: &str = "edit queued follow-ups";
+
+impl PendingInputPreview {
+    #[must_use]
+    pub fn from_state(state: &crate::state::AppState) -> Option<Self> {
+        let preview = Self {
+            steering: state.queued_steering_preview.clone(),
+            follow_up: state.queued_follow_up_preview.clone(),
+            steering_mode: state.steering_mode,
+            follow_up_mode: state.follow_up_mode,
+            follow_up_edit_binding_label: state.queued_follow_up_edit_binding_label.clone(),
+        };
+        (!preview.is_empty()).then_some(preview)
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.steering.is_empty() && self.follow_up.is_empty()
+    }
+
+    #[must_use]
+    pub fn desired_height(&self, width: u16) -> u16 {
+        self.build_lines(width).len() as u16
+    }
+
+    fn build_lines(&self, width: u16) -> Vec<Line<'static>> {
+        if self.is_empty() || width < 4 {
+            return Vec::new();
+        }
+
+        let dim_style = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM);
+        let mut lines = Vec::new();
+
+        if !self.steering.is_empty() {
+            Self::push_section(
+                &mut lines,
+                width,
+                &Self::section_title(
+                    "Queued steering after next tool boundary",
+                    self.steering.len(),
+                    self.steering_mode,
+                ),
+                &self.steering,
+                false,
+            );
+            lines.extend(word_wrap_lines(
+                &[Line::from(Span::styled(
+                    format!("  {INTERRUPT_STEERING_DESCRIPTION}"),
+                    dim_style,
+                ))],
+                RtOptions::new(width as usize)
+                    .subsequent_indent(Line::from(Span::styled("    ", dim_style))),
+            ));
+        }
+
+        if !self.follow_up.is_empty() {
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            Self::push_section(
+                &mut lines,
+                width,
+                &Self::section_title(
+                    "Queued follow-ups after turn end",
+                    self.follow_up.len(),
+                    self.follow_up_mode,
+                ),
+                &self.follow_up,
+                true,
+            );
+            lines.extend(word_wrap_lines(
+                &[Line::from(Span::styled(
+                    format!(
+                        "  {} {EDIT_LAST_QUEUED_FOLLOW_UP_DESCRIPTION}",
+                        self.follow_up_edit_binding_label
+                    ),
+                    dim_style,
+                ))],
+                RtOptions::new(width as usize)
+                    .subsequent_indent(Line::from(Span::styled("    ", dim_style))),
+            ));
+        }
+
+        lines
+    }
+
+    fn section_title(base: &str, count: usize, mode: QueueMode) -> String {
+        if count <= 1 {
+            return base.to_string();
+        }
+        let note = match mode {
+            QueueMode::All => format!("next batch: all {count}"),
+            QueueMode::One => format!("next batch: 1 of {count}"),
+        };
+        format!("{base} ({note})")
+    }
+
+    fn push_section(
+        lines: &mut Vec<Line<'static>>,
+        width: u16,
+        title: &str,
+        entries: &[String],
+        italic: bool,
+    ) {
+        let dim_style = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM);
+        let header = Line::from(vec![
+            Span::styled("• ", dim_style),
+            Span::styled(title.to_string(), dim_style),
+        ]);
+        lines.extend(word_wrap_lines(
+            &[header],
+            RtOptions::new(width as usize)
+                .subsequent_indent(Line::from(Span::styled("  ", dim_style))),
+        ));
+
+        for entry in entries {
+            let entry_style = if italic {
+                dim_style.add_modifier(Modifier::ITALIC)
+            } else {
+                dim_style
+            };
+            let source_lines: Vec<Line<'static>> = entry
+                .lines()
+                .map(|line| Line::from(Span::styled(line.to_string(), entry_style)))
+                .collect();
+            let wrapped = word_wrap_lines(
+                &source_lines,
+                RtOptions::new(width as usize)
+                    .initial_indent(Line::from(Span::styled("  ↳ ", dim_style)))
+                    .subsequent_indent(Line::from(Span::styled("    ", dim_style))),
+            );
+            let wrapped_len = wrapped.len();
+            lines.extend(wrapped.into_iter().take(PREVIEW_LINE_LIMIT));
+            if wrapped_len > PREVIEW_LINE_LIMIT {
+                lines.push(Line::from(Span::styled("    …", entry_style)));
+            }
+        }
+    }
+
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() {
+            return;
+        }
+        let lines = self.build_lines(area.width);
+        if lines.is_empty() {
+            return;
+        }
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .render(area, buf);
+    }
+}
+
 impl<'a> ChatInputWidget<'a> {
     pub fn new(
         textarea: &'a TextArea,
         placeholder: &'a str,
-        busy: bool,
-        elapsed_secs: u64,
-        thinking_header: Option<&'a str>,
-        queue_summary: Option<QueueSummary>,
+        options: ChatInputWidgetOptions<'a>,
     ) -> Self {
         Self {
             textarea,
             placeholder,
-            busy,
-            elapsed_secs,
-            thinking_header,
-            queue_summary,
+            busy: options.busy,
+            elapsed_secs: options.elapsed_secs,
+            thinking_header: options.thinking_header,
+            can_queue_follow_up: options.can_queue_follow_up,
+            queue_summary: options.queue_summary,
+            pending_input_preview: options.pending_input_preview,
         }
     }
 
@@ -1137,8 +1320,21 @@ impl<'a> ChatInputWidget<'a> {
             width: input_area.width.saturating_sub(2),
             height: input_area.height.saturating_sub(2),
         };
+        let preview_height = self
+            .pending_input_preview
+            .as_ref()
+            .map_or(0, |preview| preview.desired_height(inner.width));
+        let textarea_area = Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(preview_height),
+            width: inner.width,
+            height: inner.height.saturating_sub(preview_height),
+        };
+        if textarea_area.height == 0 {
+            return None;
+        }
 
-        self.textarea.cursor_pos(inner)
+        self.textarea.cursor_pos(textarea_area)
     }
 }
 
@@ -1174,6 +1370,11 @@ impl Widget for ChatInputWidget<'_> {
                 spans.extend(shimmer_spans("Working"));
             }
 
+            let follow_up_note = if self.can_queue_follow_up {
+                " | Tab queue follow-up"
+            } else {
+                ""
+            };
             let queue_note = if let Some(summary) = self.queue_summary {
                 if summary.is_empty() {
                     String::new()
@@ -1195,7 +1396,7 @@ impl Widget for ChatInputWidget<'_> {
                 String::new()
             };
             spans.push(Span::styled(
-                format!(" ({elapsed}{queue_note} | ESC to interrupt) "),
+                format!(" ({elapsed}{follow_up_note}{queue_note} | ESC to interrupt) "),
                 Style::default().fg(Color::DarkGray),
             ));
             Line::from(spans)
@@ -1211,6 +1412,30 @@ impl Widget for ChatInputWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
+        let preview_height = self
+            .pending_input_preview
+            .as_ref()
+            .map_or(0, |preview| preview.desired_height(inner.width));
+        if let Some(preview) = &self.pending_input_preview {
+            let preview_area = Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: preview_height.min(inner.height),
+            };
+            preview.render(preview_area, buf);
+        }
+
+        let textarea_area = Rect {
+            x: inner.x,
+            y: inner.y.saturating_add(preview_height),
+            width: inner.width,
+            height: inner.height.saturating_sub(preview_height),
+        };
+        if textarea_area.height == 0 {
+            return;
+        }
+
         let text_style = Style::default();
         let placeholder_style = Style::default().fg(Color::DarkGray);
 
@@ -1218,7 +1443,7 @@ impl Widget for ChatInputWidget<'_> {
             .style(text_style)
             .placeholder(self.placeholder, placeholder_style);
 
-        textarea_widget.render(inner, buf);
+        textarea_widget.render(textarea_area, buf);
     }
 }
 
@@ -1240,7 +1465,13 @@ pub(crate) fn calculate_input_height(state: &crate::state::AppState, area: Rect)
     }
 
     let inner_width = area.width.saturating_sub(2).max(1);
-    let desired_inner_lines = state.textarea.desired_height(inner_width).max(1);
+    let preview_height = PendingInputPreview::from_state(state)
+        .map_or(0, |preview| preview.desired_height(inner_width));
+    let desired_inner_lines = state
+        .textarea
+        .desired_height(inner_width)
+        .max(1)
+        .saturating_add(preview_height);
 
     let max_total_for_input = available_after_status
         .saturating_sub(MIN_MESSAGES_HEIGHT)
@@ -1641,17 +1872,21 @@ impl Widget for ChatView<'_> {
         let input_widget = ChatInputWidget::new(
             &self.state.textarea,
             "Type a message...",
-            self.state.busy,
-            self.state.elapsed_busy_secs(),
-            self.state.thinking_header.as_deref(),
-            if self.state.queued_prompt_count > 0 {
-                Some(QueueSummary::new(
-                    self.state.queued_prompt_count,
-                    self.state.queued_steering_count,
-                    self.state.queued_follow_up_count,
-                ))
-            } else {
-                None
+            ChatInputWidgetOptions {
+                busy: self.state.busy,
+                elapsed_secs: self.state.elapsed_busy_secs(),
+                thinking_header: self.state.thinking_header.as_deref(),
+                can_queue_follow_up: self.state.can_queue_follow_up_shortcut(),
+                queue_summary: if self.state.queued_prompt_count > 0 {
+                    Some(QueueSummary::new(
+                        self.state.queued_prompt_count,
+                        self.state.queued_steering_count,
+                        self.state.queued_follow_up_count,
+                    ))
+                } else {
+                    None
+                },
+                pending_input_preview: PendingInputPreview::from_state(self.state),
             },
         );
         input_widget.render(chunks[1], buf);
@@ -1831,5 +2066,127 @@ impl ChatView<'_> {
                     .add_modifier(Modifier::ITALIC),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buffer_lines(buf: &Buffer, width: u16, height: u16) -> Vec<String> {
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pending_input_preview_is_empty_without_items() {
+        let preview = PendingInputPreview::default();
+        assert_eq!(preview.desired_height(48), 0);
+    }
+
+    #[test]
+    fn pending_input_preview_renders_sections() {
+        let preview = PendingInputPreview {
+            steering: vec!["steer first".to_string()],
+            follow_up: vec!["follow later".to_string()],
+            steering_mode: QueueMode::All,
+            follow_up_mode: QueueMode::All,
+            follow_up_edit_binding_label: "Shift+Left".to_string(),
+        };
+        let width = 96;
+        let height = preview.desired_height(width);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        preview.render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("Queued steering after next"));
+        assert!(rendered.contains("Queued follow-ups after turn end"));
+        assert!(rendered.contains("steer first"));
+        assert!(rendered.contains("Ctrl+C interrupt and apply now"));
+        assert!(rendered.contains("follow later"));
+        assert!(rendered.contains("Shift+Left edit queued follow-ups"));
+    }
+
+    #[test]
+    fn pending_input_preview_describes_next_batch_for_multiple_items() {
+        let preview = PendingInputPreview {
+            steering: vec!["steer first".to_string(), "steer second".to_string()],
+            follow_up: vec![
+                "follow first".to_string(),
+                "follow second".to_string(),
+                "follow third".to_string(),
+            ],
+            steering_mode: QueueMode::One,
+            follow_up_mode: QueueMode::All,
+            follow_up_edit_binding_label: "Alt+Up".to_string(),
+        };
+        let width = 128;
+        let height = preview.desired_height(width);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        preview.render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("Queued steering after next tool boundary (next batch: 1 of 2)"));
+        assert!(rendered.contains("Queued follow-ups after turn end (next batch: all 3)"));
+    }
+
+    #[test]
+    fn busy_input_title_shows_follow_up_shortcut_when_available() {
+        let mut textarea = TextArea::new();
+        textarea.set_text("follow-up");
+        let widget = ChatInputWidget::new(
+            &textarea,
+            "",
+            ChatInputWidgetOptions {
+                busy: true,
+                elapsed_secs: 12,
+                thinking_header: None,
+                can_queue_follow_up: true,
+                queue_summary: Some(QueueSummary::new(2, 1, 1)),
+                pending_input_preview: None,
+            },
+        );
+        let width = 120;
+        let height = 4;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        widget.render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("Tab queue follow-up"));
+        assert!(rendered.contains("2 queued (1 steer, 1 follow-up)"));
+    }
+
+    #[test]
+    fn busy_input_title_hides_follow_up_shortcut_when_unavailable() {
+        let textarea = TextArea::new();
+        let widget = ChatInputWidget::new(
+            &textarea,
+            "",
+            ChatInputWidgetOptions {
+                busy: true,
+                elapsed_secs: 12,
+                thinking_header: None,
+                can_queue_follow_up: false,
+                queue_summary: Some(QueueSummary::new(1, 0, 1)),
+                pending_input_preview: None,
+            },
+        );
+        let width = 120;
+        let height = 4;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        widget.render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(!rendered.contains("Tab queue follow-up"));
+        assert!(rendered.contains("1 queued (1 follow-up)"));
     }
 }
