@@ -267,6 +267,13 @@ enum AgentCommand {
         queue_id: Option<u64>,
     },
 
+    /// Reinsert a follow-up at the front of the follow-up subsection.
+    RequeueFollowUpFront {
+        content: String,
+        attachments: Vec<String>,
+        queue_id: u64,
+    },
+
     /// Cancel the current operation
     ///
     /// Triggers the cancellation token to stop the active AI request.
@@ -567,6 +574,22 @@ impl NativeAgent {
                 queue_id,
             })
             .map_err(|e| anyhow::anyhow!("Failed to send prompt: {e}"))?;
+        Ok(())
+    }
+
+    pub async fn requeue_follow_up_front(
+        &self,
+        content: String,
+        attachments: Vec<String>,
+        queue_id: u64,
+    ) -> Result<()> {
+        self.command_tx
+            .send(AgentCommand::RequeueFollowUpFront {
+                content,
+                attachments,
+                queue_id,
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to requeue follow-up: {e}"))?;
         Ok(())
     }
 
@@ -923,6 +946,30 @@ impl NativeAgentRunner {
         });
     }
 
+    fn requeue_follow_up_front(
+        &mut self,
+        content: String,
+        attachments: Vec<String>,
+        queue_id: u64,
+    ) {
+        let pending = PendingMessage::with_kind_and_id_and_attachments(
+            content,
+            PromptKind::FollowUp,
+            queue_id,
+            attachments,
+        );
+        let dropped = self.pending_messages.push_message_front_of_kind(pending);
+        if let Some(dropped) = dropped {
+            let _ = self.event_tx.send(FromAgent::Status {
+                message: format!(
+                    "Queue full, dropped oldest {}: {}...",
+                    dropped.kind.label(),
+                    &dropped.content[..dropped.content.len().min(30)]
+                ),
+            });
+        }
+    }
+
     fn drain_pending_commands(&mut self) -> bool {
         let mut cancelled = false;
         while let Ok(cmd) = self.command_rx.try_recv() {
@@ -971,6 +1018,13 @@ impl NativeAgentRunner {
                             message: format!("No queued prompt found with id #{id}"),
                         });
                     }
+                }
+                AgentCommand::RequeueFollowUpFront {
+                    content,
+                    attachments,
+                    queue_id,
+                } => {
+                    self.requeue_follow_up_front(content, attachments, queue_id);
                 }
                 AgentCommand::SetThinking { enabled, budget } => {
                     self.config.thinking_enabled = enabled;
@@ -1264,6 +1318,14 @@ impl NativeAgentRunner {
                 cmd
             };
             match cmd {
+                AgentCommand::RequeueFollowUpFront {
+                    content,
+                    attachments,
+                    queue_id,
+                } => {
+                    self.requeue_follow_up_front(content, attachments, queue_id);
+                    continue;
+                }
                 AgentCommand::Prompt {
                     content,
                     attachments,

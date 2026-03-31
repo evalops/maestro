@@ -53,6 +53,19 @@ export function createQueueController(params: {
 			getQueuedMessagesSnapshot: () => agent.getQueuedMessagesSnapshot(),
 			cancelQueuedMessage: (id) => agent.removeQueuedMessage(id),
 			clearQueuedMessages: () => agent.clearQueuedMessages(),
+			prependQueuedFollowUp: async (entry) => {
+				await agent.prependFollowUp(
+					{
+						role: "user",
+						content: entry.text,
+						attachments: entry.attachments?.length
+							? entry.attachments
+							: undefined,
+						timestamp: entry.createdAt,
+					},
+					{ id: entry.id, createdAt: entry.createdAt },
+				);
+			},
 		},
 	});
 }

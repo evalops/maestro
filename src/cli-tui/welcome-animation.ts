@@ -22,11 +22,11 @@ const CANVAS_WIDTH = PANEL_WIDTHS.welcome;
 
 /** Keyboard shortcuts - Claude Code style */
 const SHORTCUTS = [
-	{ key: "Tab", desc: "autocomplete" },
+	{ key: "Tab", desc: "queue/autocomplete" },
 	{ key: "@", desc: "mention files" },
 	{ key: "/help", desc: "commands" },
 	{ key: "Ctrl+V", desc: "paste image" },
-	{ key: "Alt+Enter", desc: "follow-up (running)" },
+	{ key: "Alt+Enter", desc: "queue (running)" },
 	{ key: "Ctrl+C", desc: "cancel" },
 ] as const;
 

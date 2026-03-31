@@ -25,7 +25,7 @@ const HOTKEYS_MARKDOWN = `
 |-----|--------|
 | \`Enter\` | Send message (steer while running) |
 | \`Shift+Enter\` | New line |
-| \`Alt+Enter\` | Queue follow-up (while running) |
+| \`Tab\` / \`Alt+Enter\` | Queue follow-up (while running) |
 | \`Ctrl+W\` / \`Option+Backspace\` | Delete word backwards |
 | \`Ctrl+U\` | Delete to start of line |
 | \`Ctrl+K\` | Delete to end of line / Command palette |

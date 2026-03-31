@@ -1,12 +1,9 @@
 import type { TUI } from "@evalops/tui";
-import type { FooterComponent } from "../footer.js";
 import type { LoaderView } from "../loader/loader-view.js";
 
 interface RunControllerOptions {
 	loaderView: LoaderView;
-	footer: FooterComponent;
 	ui: TUI;
-	workingHint: string;
 	setEditorDisabled: (disabled: boolean) => void;
 	focusEditor: () => void;
 	clearEditor: () => void;
@@ -25,7 +22,7 @@ export class RunController {
 		this.options.setEditorDisabled(true);
 		this.options.loaderView.start();
 		if (!this.options.inMinimalMode()) {
-			this.options.footer.setHint(this.options.workingHint);
+			this.options.refreshFooterHint();
 		}
 		this.options.ui.requestRender();
 	}

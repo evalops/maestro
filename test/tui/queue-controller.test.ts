@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AppMessage, QueuedMessage } from "../../src/agent/types.js";
+import type { QueuedPrompt } from "../../src/cli-tui/prompt-queue.js";
 import {
 	QueueController,
 	type QueueControllerCallbacks,
 	type QueueControllerOptions,
 } from "../../src/cli-tui/queue/queue-controller.js";
+import { getQueuedFollowUpEditBindingLabel } from "../../src/cli-tui/queue/queued-follow-up-edit-binding.js";
 
 function createMockNotificationView(): QueueControllerOptions["notificationView"] {
 	return {
@@ -67,6 +69,7 @@ function createMockCallbacks(
 		}),
 		cancelQueuedMessage: vi.fn().mockReturnValue(null),
 		clearQueuedMessages: vi.fn().mockReturnValue([]),
+		prependQueuedFollowUp: vi.fn(async () => {}),
 		...overrides,
 	};
 }
@@ -122,6 +125,79 @@ describe("QueueController", () => {
 			expect(controller.getNextPreview()).toBe("steer: steer");
 			expect(callbacks.onQueueCountChange).toHaveBeenCalledWith(2);
 			expect(callbacks.requestRender).toHaveBeenCalled();
+		});
+
+		it("builds an inline preview grouped by steering and follow-ups", () => {
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn().mockReturnValue({
+					steering: [
+						createQueuedMessage(1, "steer first", 10),
+						createQueuedMessage(2, "steer second", 20),
+					],
+					followUps: [createQueuedMessage(3, "follow later", 30)],
+				}),
+			});
+			const controller = new QueueController({
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
+				callbacks,
+			});
+
+			controller.syncFromAgent();
+
+			expect(controller.buildInlinePreview()).toBe(
+				[
+					"Queued steering after next tool boundary (next batch: all 2)",
+					"  ↳ steer first",
+					"  ↳ steer second",
+					"  Esc interrupt and apply now",
+					"",
+					"Queued follow-ups after turn end",
+					"  ↳ follow later",
+					`  ${getQueuedFollowUpEditBindingLabel()} edit queued follow-ups`,
+				].join("\n"),
+			);
+		});
+
+		it("describes one-at-a-time batches when multiple prompts are queued", () => {
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn().mockReturnValue({
+					steering: [
+						createQueuedMessage(1, "steer first", 10),
+						createQueuedMessage(2, "steer second", 20),
+					],
+					followUps: [
+						createQueuedMessage(3, "follow first", 30),
+						createQueuedMessage(4, "follow second", 40),
+						createQueuedMessage(5, "follow third", 50),
+					],
+				}),
+			});
+			const controller = new QueueController({
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
+				callbacks,
+				initialSteeringMode: "one",
+				initialFollowUpMode: "one",
+			});
+
+			controller.syncFromAgent();
+
+			expect(controller.getNextSteeringBatchSummary()).toBe(
+				"1 of 2 messages at the next tool boundary",
+			);
+			expect(controller.getNextFollowUpBatchSummary()).toBe(
+				"1 of 3 messages after turn end",
+			);
+			expect(controller.buildInlinePreview()).toContain(
+				"Queued steering after next tool boundary (next batch: 1 of 2)",
+			);
+			expect(controller.buildInlinePreview()).toContain(
+				"Esc interrupt and apply now",
+			);
+			expect(controller.buildInlinePreview()).toContain(
+				"Queued follow-ups after turn end (next batch: 1 of 3)",
+			);
 		});
 
 		it("attach triggers an initial sync", () => {
@@ -282,6 +358,40 @@ describe("QueueController", () => {
 			);
 		});
 
+		it("appends the current composer draft after restored queued prompts", () => {
+			let snapshot = {
+				steering: [createQueuedMessage(1, "steer first", 10)],
+				followUps: [createQueuedMessage(2, "follow later", 20)],
+			};
+			const editor = createMockEditor();
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn(() => snapshot),
+				clearQueuedMessages: vi.fn(() => {
+					const cleared = [...snapshot.steering, ...snapshot.followUps];
+					snapshot = { steering: [], followUps: [] };
+					return cleared;
+				}),
+			});
+			const controller = new QueueController({
+				notificationView: createMockNotificationView(),
+				editor,
+				callbacks,
+			});
+			controller.syncFromAgent();
+
+			const restored = controller.restoreQueuedPrompts({
+				id: 99,
+				createdAt: 30,
+				kind: "prompt",
+				text: "existing draft",
+			});
+
+			expect(restored.map((entry) => entry.id)).toEqual([1, 2, 99]);
+			expect(editor.setText).toHaveBeenCalledWith(
+				"steer first\n\nfollow later\n\nexisting draft",
+			);
+		});
+
 		it("returns an empty list when nothing is queued", () => {
 			const controller = new QueueController({
 				notificationView: createMockNotificationView(),
@@ -290,6 +400,174 @@ describe("QueueController", () => {
 			});
 
 			expect(controller.restoreQueuedPrompts()).toEqual([]);
+		});
+	});
+
+	describe("restoreLastQueuedFollowUp", () => {
+		it("pops the newest queued follow-up without touching queued steers", () => {
+			let snapshot = {
+				steering: [createQueuedMessage(1, "steer", 10)],
+				followUps: [
+					createQueuedMessage(2, "follow first", 20),
+					createQueuedMessage(3, "follow second", 30),
+				],
+			};
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn(() => snapshot),
+				cancelQueuedMessage: vi.fn((id: number) => {
+					const removed = snapshot.followUps.find((entry) => entry.id === id);
+					if (!removed) {
+						return null;
+					}
+					snapshot = {
+						...snapshot,
+						followUps: snapshot.followUps.filter((entry) => entry.id !== id),
+					};
+					return removed;
+				}),
+			});
+			const controller = new QueueController({
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
+				callbacks,
+			});
+			controller.syncFromAgent();
+
+			const restored = controller.restoreLastQueuedFollowUp();
+
+			expect(restored?.id).toBe(3);
+			expect(restored?.kind).toBe("followUp");
+			expect(restored?.text).toBe("follow second");
+			expect(controller.getQueuedSteeringCount()).toBe(1);
+			expect(controller.getQueuedFollowUpCount()).toBe(1);
+		});
+	});
+
+	describe("restoreQueuedFollowUpForEditing", () => {
+		it("cycles to the next older follow-up without losing the current edited draft", async () => {
+			let snapshot = {
+				steering: [],
+				followUps: [
+					createQueuedMessage(1, "follow first", 10),
+					createQueuedMessage(2, "follow second", 20),
+				],
+			};
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn(() => snapshot),
+				cancelQueuedMessage: vi.fn((id: number) => {
+					const removed = snapshot.followUps.find((entry) => entry.id === id);
+					if (!removed) {
+						return null;
+					}
+					snapshot = {
+						...snapshot,
+						followUps: snapshot.followUps.filter((entry) => entry.id !== id),
+					};
+					return removed;
+				}),
+				prependQueuedFollowUp: vi.fn(async (entry: QueuedPrompt) => {
+					snapshot = {
+						...snapshot,
+						followUps: [
+							createQueuedMessage(entry.id, entry.text, entry.createdAt),
+							...snapshot.followUps,
+						],
+					};
+				}),
+			});
+			const controller = new QueueController({
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
+				callbacks,
+			});
+			controller.syncFromAgent();
+			const initial = controller.restoreLastQueuedFollowUp();
+
+			const restored = await controller.restoreQueuedFollowUpForEditing({
+				...(initial as QueuedPrompt),
+				text: "follow second edited",
+			});
+
+			expect(restored?.id).toBe(1);
+			expect(restored?.text).toBe("follow first");
+			expect(controller.getQueuedFollowUpCount()).toBe(1);
+			expect(controller.getQueuedFollowUps()[0]?.text).toBe(
+				"follow second edited",
+			);
+		});
+	});
+
+	describe("drainSteeringBatchForInterrupt", () => {
+		it("removes the queued steering batch and preserves follow-ups", () => {
+			let snapshot = {
+				steering: [
+					createQueuedMessage(1, "steer first", 10),
+					createQueuedMessage(2, "steer second", 20),
+				],
+				followUps: [createQueuedMessage(3, "follow later", 30)],
+			};
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn(() => snapshot),
+				cancelQueuedMessage: vi.fn((id: number) => {
+					const removed = snapshot.steering.find((entry) => entry.id === id);
+					if (!removed) {
+						return null;
+					}
+					snapshot = {
+						...snapshot,
+						steering: snapshot.steering.filter((entry) => entry.id !== id),
+					};
+					return removed;
+				}),
+			});
+			const controller = new QueueController({
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
+				callbacks,
+			});
+			controller.syncFromAgent();
+
+			const drained = controller.drainSteeringBatchForInterrupt();
+
+			expect(drained.map((entry) => entry.id)).toEqual([1, 2]);
+			expect(controller.getQueuedSteeringCount()).toBe(0);
+			expect(controller.getQueuedFollowUpCount()).toBe(1);
+		});
+
+		it("respects one-at-a-time steering mode", () => {
+			let snapshot = {
+				steering: [
+					createQueuedMessage(1, "steer first", 10),
+					createQueuedMessage(2, "steer second", 20),
+				],
+				followUps: [],
+			};
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn(() => snapshot),
+				cancelQueuedMessage: vi.fn((id: number) => {
+					const removed = snapshot.steering.find((entry) => entry.id === id);
+					if (!removed) {
+						return null;
+					}
+					snapshot = {
+						...snapshot,
+						steering: snapshot.steering.filter((entry) => entry.id !== id),
+					};
+					return removed;
+				}),
+			});
+			const controller = new QueueController({
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
+				callbacks,
+				initialSteeringMode: "one",
+			});
+			controller.syncFromAgent();
+
+			const drained = controller.drainSteeringBatchForInterrupt();
+
+			expect(drained.map((entry) => entry.id)).toEqual([1]);
+			expect(controller.getQueuedSteeringCount()).toBe(1);
 		});
 	});
 
@@ -322,6 +600,38 @@ describe("QueueController", () => {
 			controller.syncFromAgent();
 
 			expect(controller.buildQueueHint()).toBe("1 steer, 1 follow-up queued");
+		});
+	});
+
+	describe("buildRunningHint", () => {
+		it("adds the busy shortcut only when follow-ups can queue right now", () => {
+			const callbacks = createMockCallbacks({
+				getQueuedMessagesSnapshot: vi.fn().mockReturnValue({
+					steering: [createQueuedMessage(1, "steer", 10)],
+					followUps: [createQueuedMessage(2, "follow", 20)],
+				}),
+			});
+			const controller = new QueueController({
+				notificationView: createMockNotificationView(),
+				editor: createMockEditor(),
+				callbacks,
+			});
+			controller.syncFromAgent();
+
+			expect(
+				controller.buildRunningHint({
+					baseHint: "Working… press esc to interrupt",
+					canQueueFollowUp: true,
+				}),
+			).toBe(
+				"Working… press esc to interrupt • Tab queue follow-up • 1 steer, 1 follow-up queued",
+			);
+			expect(
+				controller.buildRunningHint({
+					baseHint: "Working… press esc to interrupt",
+					canQueueFollowUp: false,
+				}),
+			).toBe("Working… press esc to interrupt • 1 steer, 1 follow-up queued");
 		});
 	});
 });

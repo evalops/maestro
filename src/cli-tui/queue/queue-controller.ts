@@ -6,6 +6,7 @@ import type {
 import type { CustomEditor } from "../custom-editor.js";
 import type { NotificationView } from "../notification-view.js";
 import type { PromptKind, PromptQueue, QueuedPrompt } from "../prompt-queue.js";
+import { getQueuedFollowUpEditBindingLabel } from "./queued-follow-up-edit-binding.js";
 
 /**
  * Queue mode determines how prompts are handled when the agent is running.
@@ -14,6 +15,25 @@ import type { PromptKind, PromptQueue, QueuedPrompt } from "../prompt-queue.js";
  */
 export type QueueMode = "one" | "all";
 export type QueueModeKind = "steering" | "followUp";
+const MAX_INLINE_PREVIEW_ITEMS = 3;
+const MAX_INLINE_PREVIEW_CHARS = 72;
+
+function getEditLastFollowUpHint(): string {
+	return `${getQueuedFollowUpEditBindingLabel()} edit queued follow-ups`;
+}
+
+function getInterruptSteeringHint(): string {
+	return "Esc interrupt and apply now";
+}
+
+function formatNextBatchNote(count: number, mode: QueueMode): string | null {
+	if (count <= 1) {
+		return null;
+	}
+	return mode === "all"
+		? `next batch: all ${count}`
+		: `next batch: 1 of ${count}`;
+}
 
 function queuePriority(kind: PromptKind): number {
 	return kind === "steer" ? 0 : kind === "followUp" ? 1 : 2;
@@ -84,6 +104,8 @@ export interface QueueControllerCallbacks {
 	cancelQueuedMessage(id: number): QueuedMessage<AppMessage> | null;
 	/** Clear all queued messages */
 	clearQueuedMessages(): Array<QueuedMessage<AppMessage>>;
+	/** Reinsert an edited follow-up at the front of the follow-up queue */
+	prependQueuedFollowUp(entry: QueuedPrompt): Promise<void>;
 }
 
 /**
@@ -172,6 +194,22 @@ export class QueueController {
 		return [...this.queuedFollowUps];
 	}
 
+	getNextSteeringBatchSummary(): string | null {
+		return this.describeNextBatch(
+			"steer",
+			this.queuedSteering.length,
+			this.steeringMode,
+		);
+	}
+
+	getNextFollowUpBatchSummary(): string | null {
+		return this.describeNextBatch(
+			"followUp",
+			this.queuedFollowUps.length,
+			this.followUpMode,
+		);
+	}
+
 	hasQueue(): boolean {
 		return true;
 	}
@@ -226,7 +264,7 @@ export class QueueController {
 		return this.followUpMode === "all";
 	}
 
-	restoreQueuedPrompts(): QueuedPrompt[] {
+	restoreQueuedPrompts(currentDraft?: QueuedPrompt | null): QueuedPrompt[] {
 		const queuedKinds = new Map<number, Exclude<PromptKind, "prompt">>();
 		for (const entry of this.queuedSteering) {
 			queuedKinds.set(entry.id, "steer");
@@ -251,6 +289,9 @@ export class QueueController {
 				a.createdAt - b.createdAt ||
 				a.id - b.id,
 		);
+		if (currentDraft) {
+			ordered.push(currentDraft);
+		}
 		const segments = ordered
 			.map((entry) => entry.text.trim())
 			.filter((segment) => segment.length > 0);
@@ -264,19 +305,59 @@ export class QueueController {
 		return ordered;
 	}
 
+	restoreLastQueuedFollowUp(): QueuedPrompt | null {
+		const latest = this.queuedFollowUps.at(-1);
+		if (!latest) {
+			return null;
+		}
+		const removed = this.callbacks.cancelQueuedMessage(latest.id);
+		if (!removed) {
+			this.syncFromAgent();
+			return null;
+		}
+		const restored = toQueuedPrompt(removed, "followUp");
+		this.syncFromAgent();
+		return restored;
+	}
+
+	async restoreQueuedFollowUpForEditing(
+		currentDraft?: QueuedPrompt | null,
+	): Promise<QueuedPrompt | null> {
+		if (currentDraft && this.queuedFollowUps.length === 0) {
+			return null;
+		}
+		if (currentDraft) {
+			await this.callbacks.prependQueuedFollowUp(currentDraft);
+			this.syncFromAgent();
+		}
+		return this.restoreLastQueuedFollowUp();
+	}
+
+	drainSteeringBatchForInterrupt(): QueuedPrompt[] {
+		if (this.queuedSteering.length === 0) {
+			return [];
+		}
+		const limit = this.steeringMode === "all" ? this.queuedSteering.length : 1;
+		const drained: QueuedPrompt[] = [];
+		for (const queued of this.queuedSteering.slice(0, limit)) {
+			const removed = this.callbacks.cancelQueuedMessage(queued.id);
+			if (!removed) {
+				continue;
+			}
+			drained.push(toQueuedPrompt(removed, "steer"));
+		}
+		this.syncFromAgent();
+		this.callbacks.refreshFooterHint();
+		return drained.sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+	}
+
 	buildQueueHint(): string | null {
 		if (this.callbacks.isAgentRunning()) {
 			return null;
 		}
-		if (this.queuedSteering.length > 0 || this.queuedFollowUps.length > 0) {
-			const parts = [];
-			if (this.queuedSteering.length > 0) {
-				parts.push(`${this.queuedSteering.length} steer`);
-			}
-			if (this.queuedFollowUps.length > 0) {
-				parts.push(`${this.queuedFollowUps.length} follow-up`);
-			}
-			return `${parts.join(", ")} queued`;
+		const queuedSummary = this.buildQueuedSummary();
+		if (queuedSummary) {
+			return queuedSummary;
 		}
 		if (this.nextQueuedPreview) {
 			return `Next queued: ${this.nextQueuedPreview}`;
@@ -284,14 +365,62 @@ export class QueueController {
 		return null;
 	}
 
+	buildRunningHint(options?: {
+		baseHint?: string;
+		canQueueFollowUp?: boolean;
+	}): string {
+		const segments = [
+			options?.baseHint?.trim() || "Working… press esc to interrupt",
+		];
+		if (options?.canQueueFollowUp) {
+			segments.push("Tab queue follow-up");
+		}
+		const queuedSummary = this.buildQueuedSummary();
+		if (queuedSummary) {
+			segments.push(queuedSummary);
+		}
+		return segments.join(" • ");
+	}
+
+	buildInlinePreview(): string {
+		const sections: string[] = [];
+		if (this.queuedSteering.length > 0) {
+			sections.push(
+				this.buildInlinePreviewSection(
+					this.buildInlinePreviewTitle(
+						"Queued steering after next tool boundary",
+						this.queuedSteering.length,
+						this.steeringMode,
+					),
+					this.queuedSteering,
+					getInterruptSteeringHint(),
+				),
+			);
+		}
+		if (this.queuedFollowUps.length > 0) {
+			sections.push(
+				this.buildInlinePreviewSection(
+					this.buildInlinePreviewTitle(
+						"Queued follow-ups after turn end",
+						this.queuedFollowUps.length,
+						this.followUpMode,
+					),
+					this.queuedFollowUps,
+					getEditLastFollowUpHint(),
+				),
+			);
+		}
+		return sections.join("\n\n");
+	}
+
 	syncFromAgent(): void {
 		const snapshot = this.callbacks.getQueuedMessagesSnapshot();
-		this.queuedSteering = snapshot.steering
-			.map((entry) => toQueuedPrompt(entry, "steer"))
-			.sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
-		this.queuedFollowUps = snapshot.followUps
-			.map((entry) => toQueuedPrompt(entry, "followUp"))
-			.sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+		this.queuedSteering = snapshot.steering.map((entry) =>
+			toQueuedPrompt(entry, "steer"),
+		);
+		this.queuedFollowUps = snapshot.followUps.map((entry) =>
+			toQueuedPrompt(entry, "followUp"),
+		);
 		this.queuedPromptCount =
 			this.queuedSteering.length + this.queuedFollowUps.length;
 		const next = this.queuedSteering[0] ?? this.queuedFollowUps[0];
@@ -299,9 +428,7 @@ export class QueueController {
 			? `${this.describePromptKind(next.kind)}: ${this.formatQueuedText(next.text, 60)}`
 			: null;
 		this.callbacks.onQueueCountChange?.(this.queuedPromptCount);
-		if (!this.callbacks.isAgentRunning()) {
-			this.callbacks.refreshFooterHint();
-		}
+		this.callbacks.refreshFooterHint();
 		this.callbacks.requestRender();
 	}
 
@@ -321,5 +448,68 @@ export class QueueController {
 			return "follow-up";
 		}
 		return "prompt";
+	}
+
+	private buildQueuedSummary(): string | null {
+		if (this.queuedSteering.length === 0 && this.queuedFollowUps.length === 0) {
+			return null;
+		}
+		const parts = [];
+		if (this.queuedSteering.length > 0) {
+			parts.push(`${this.queuedSteering.length} steer`);
+		}
+		if (this.queuedFollowUps.length > 0) {
+			parts.push(`${this.queuedFollowUps.length} follow-up`);
+		}
+		return `${parts.join(", ")} queued`;
+	}
+
+	private describeNextBatch(
+		kind: Exclude<PromptKind, "prompt">,
+		count: number,
+		mode: QueueMode,
+	): string | null {
+		if (count === 0) {
+			return null;
+		}
+		const timing =
+			kind === "steer" ? "at the next tool boundary" : "after turn end";
+		const batch =
+			count === 1
+				? "1 message"
+				: mode === "all"
+					? `all ${count} messages`
+					: `1 of ${count} messages`;
+		return `${batch} ${timing}`;
+	}
+
+	private buildInlinePreviewTitle(
+		base: string,
+		count: number,
+		mode: QueueMode,
+	): string {
+		const note = formatNextBatchNote(count, mode);
+		return note ? `${base} (${note})` : base;
+	}
+
+	private buildInlinePreviewSection(
+		title: string,
+		entries: QueuedPrompt[],
+		footer?: string,
+	): string {
+		const lines = [title];
+		for (const entry of entries.slice(0, MAX_INLINE_PREVIEW_ITEMS)) {
+			lines.push(
+				`  ↳ ${this.formatQueuedText(entry.text, MAX_INLINE_PREVIEW_CHARS)}`,
+			);
+		}
+		const remaining = entries.length - MAX_INLINE_PREVIEW_ITEMS;
+		if (remaining > 0) {
+			lines.push(`  … ${remaining} more`);
+		}
+		if (footer) {
+			lines.push(`  ${footer}`);
+		}
+		return lines.join("\n");
 	}
 }

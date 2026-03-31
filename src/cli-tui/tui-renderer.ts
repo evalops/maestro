@@ -84,7 +84,11 @@ import type { OAuthFlowController } from "./oauth/index.js";
 import { OllamaView } from "./ollama-view.js";
 import type { PlanView } from "./plan-view.js";
 import type { PlanController } from "./plan/plan-controller.js";
-import type { PromptPayload, PromptQueue } from "./prompt-queue.js";
+import type {
+	PromptPayload,
+	PromptQueue,
+	QueuedPrompt,
+} from "./prompt-queue.js";
 import {
 	type QueueController,
 	type QueueMode,
@@ -285,6 +289,7 @@ export class TuiRenderer {
 	private statusContainer: Container;
 	private editor: CustomEditor;
 	private editorContainer: Container; // Container to swap between editor and selector
+	private queuedInputPreview: Text;
 	private footer: FooterComponent;
 	private agent: Agent;
 	private sessionManager: SessionManager;
@@ -373,6 +378,7 @@ export class TuiRenderer {
 	private historyController!: HistoryController;
 	private attachmentController!: AttachmentController;
 	private queueController: QueueController;
+	private editingQueuedFollowUp: QueuedPrompt | null = null;
 	private queuePanelController?: QueuePanelController;
 	// Default to soft deduplication so repeated streamed lines don't appear in the TUI.
 	// Users can still override via /clean or env/UI state.
@@ -577,7 +583,9 @@ export class TuiRenderer {
 		});
 		this.editorContainer = new Container(); // Container to hold editor or selector
 		this.slashHintBar = new SlashHintBar();
+		this.queuedInputPreview = new Text("", 1, 0);
 		this.editorContainer.addChild(this.slashHintBar);
+		this.editorContainer.addChild(this.queuedInputPreview);
 		this.editorContainer.addChild(this.editor); // Start with editor
 		this.modalManager = new ModalManager(
 			this.editorContainer,
@@ -680,9 +688,13 @@ export class TuiRenderer {
 			refreshQueuePanel: () => this.queuePanelController?.refreshPanel(),
 			isAgentRunning: () => this.isAgentRunning,
 			refreshFooterHint: () => this.refreshFooterHint(),
-			requestRender: () => this.ui.requestRender(),
+			requestRender: () => {
+				this.updateQueuedInputPreview();
+				this.ui.requestRender();
+			},
 			persistUiState: (state) => this.persistUiState(state),
 		});
+		this.updateQueuedInputPreview();
 
 		this.oauthFlowController = createOAuthFlowController({
 			modalManager: this.modalManager,
@@ -714,11 +726,12 @@ export class TuiRenderer {
 			footer: this.footer,
 			notificationView: this.notificationView,
 			onInterrupt: (options) => this.inputController.notifyInterrupt(options),
-			restoreQueuedPrompts: () => {
-				const restored = this.queueController.restoreQueuedPrompts();
-				this.attachmentController.restoreQueuedAttachments(restored);
+			restoreQueuedPrompts: (options) => {
+				void this.handleInterruptedQueue(options);
 			},
-			getWorkingHint: () => this.workingFooterHint,
+			hasQueuedSteering: () =>
+				this.queueController.getQueuedSteeringCount() > 0,
+			getWorkingHint: () => this.buildWorkingFooterHint(),
 			isMinimalMode: () => this.isMinimalMode(),
 			isAgentRunning: () => this.isAgentRunning,
 			refreshFooterHint: () => this.refreshFooterHint(),
@@ -748,6 +761,7 @@ export class TuiRenderer {
 					hasQueue: this.queueController.hasQueue(),
 					queueHint: this.queueController.buildQueueHint(),
 				}),
+				getRunningHint: () => this.buildWorkingFooterHint(),
 				getThinkingLevel: () => this.agent.state.thinkingLevel,
 				getUnseenAlertCount: () => this.footer.getUnseenAlertCount(),
 				getHookStatusHints: () => this.hookUiController.getHookStatusHints(),
@@ -824,9 +838,7 @@ export class TuiRenderer {
 		});
 		this.runController = new RunController({
 			loaderView: this.loaderView,
-			footer: this.footer,
 			ui: this.ui,
-			workingHint: this.workingFooterHint,
 			setEditorDisabled: (_disabled) => {
 				this.editor.disableSubmit = false;
 			},
@@ -1508,6 +1520,7 @@ export class TuiRenderer {
 			onCtrlD: () => this.inputController.handleCtrlDExit(),
 			showCommandPalette: () => this.commandPaletteView.showCommandPalette(),
 			showFileSearch: () => this.fileSearchView.showFileSearch(),
+			onEditLastQueuedFollowUp: () => this.editLastQueuedFollowUp(),
 		});
 
 		// Set up MCP and Composer event handlers for notifications
@@ -1663,6 +1676,162 @@ export class TuiRenderer {
 		this.modalManager.push(contextView);
 	}
 
+	private updateQueuedInputPreview(): void {
+		const preview = this.queueController.buildInlinePreview();
+		this.queuedInputPreview.setText(preview ? chalk.dim(preview) : "");
+		this.viewportController.markEditorDirty();
+		this.updateScrollViewport();
+	}
+
+	private editLastQueuedFollowUp(): boolean {
+		if (this.queueController.getQueuedFollowUpCount() === 0) {
+			return false;
+		}
+		const currentDraft = this.captureEditedQueuedFollowUpDraft();
+		void this.rotateQueuedFollowUpForEditing(currentDraft);
+		return true;
+	}
+
+	private restoreQueuedPromptBatchToEditor(entries: QueuedPrompt[]): void {
+		if (entries.length === 0) {
+			return;
+		}
+		this.editingQueuedFollowUp =
+			entries.length === 1 && entries[0]?.kind === "followUp"
+				? entries[0]
+				: null;
+		this.attachmentController.clearPendingAttachments();
+		if (entries.some((entry) => (entry.attachments?.length ?? 0) > 0)) {
+			this.attachmentController.restoreQueuedAttachments(entries);
+		} else {
+			this.editor.setText(entries.map((entry) => entry.text).join("\n\n"));
+		}
+		this.ui.requestRender();
+	}
+
+	private captureCurrentComposerDraftForQueueRestore(): QueuedPrompt | null {
+		const payload = this.attachmentController.snapshotAttachments(
+			this.editor.getText(),
+		);
+		const hasText = payload.text.trim().length > 0;
+		const hasAttachments = (payload.attachments?.length ?? 0) > 0;
+		if (!hasText && !hasAttachments) {
+			return null;
+		}
+		return {
+			id: 0,
+			createdAt: Date.now(),
+			kind: "prompt",
+			text: payload.text,
+			attachments: payload.attachments,
+		};
+	}
+
+	private captureEditedQueuedFollowUpDraft(): QueuedPrompt | null {
+		if (!this.editingQueuedFollowUp) {
+			return null;
+		}
+		const payload = this.attachmentController.snapshotAttachments(
+			this.editor.getText(),
+		);
+		const hasText = payload.text.trim().length > 0;
+		const hasAttachments = (payload.attachments?.length ?? 0) > 0;
+		if (!hasText && !hasAttachments) {
+			return null;
+		}
+		if (payload.text.trimStart().startsWith("/")) {
+			return null;
+		}
+		return {
+			...this.editingQueuedFollowUp,
+			text: payload.text,
+			attachments: payload.attachments,
+		};
+	}
+
+	private async rotateQueuedFollowUpForEditing(
+		currentDraft: QueuedPrompt | null,
+	): Promise<void> {
+		try {
+			const restored =
+				await this.queueController.restoreQueuedFollowUpForEditing(
+					currentDraft,
+				);
+			if (!restored) {
+				return;
+			}
+			this.restoreQueuedPromptBatchToEditor([restored]);
+		} catch (error) {
+			this.showError(
+				error instanceof Error
+					? error.message
+					: "Failed to rotate queued follow-up for editing.",
+			);
+		}
+	}
+
+	private mergeQueuedPromptBatch(entries: QueuedPrompt[]): PromptPayload {
+		const text = entries
+			.map((entry) => entry.text.trim())
+			.filter((segment) => segment.length > 0)
+			.join("\n\n");
+		const attachments = entries.flatMap((entry) => entry.attachments ?? []);
+		return {
+			text,
+			attachments: attachments.length > 0 ? attachments : undefined,
+		};
+	}
+
+	private async handleInterruptedQueue(options: {
+		keepPartial: boolean;
+	}): Promise<void> {
+		if (!options.keepPartial) {
+			const steeringBatch =
+				this.queueController.drainSteeringBatchForInterrupt();
+			if (steeringBatch.length > 0) {
+				try {
+					await this.agent.waitForIdle();
+					const payload = this.mergeQueuedPromptBatch(steeringBatch);
+					if (
+						payload.text.trim().length > 0 ||
+						(payload.attachments?.length ?? 0) > 0
+					) {
+						void this.agent
+							.prompt(payload.text, payload.attachments)
+							.catch((error) => {
+								this.restoreQueuedPromptBatchToEditor(steeringBatch);
+								const message =
+									error instanceof Error
+										? error.message
+										: String(error ?? "unknown");
+								this.notificationView.showError(
+									`Failed to submit queued steering: ${message}`,
+								);
+							});
+					}
+					this.notificationView.showToast(
+						steeringBatch.length === 1
+							? "Submitting queued steer."
+							: `Submitting ${steeringBatch.length} queued steers.`,
+						"info",
+					);
+					return;
+				} catch (error) {
+					this.restoreQueuedPromptBatchToEditor(steeringBatch);
+					const message =
+						error instanceof Error ? error.message : String(error ?? "unknown");
+					this.notificationView.showError(
+						`Failed to submit queued steering: ${message}`,
+					);
+					return;
+				}
+			}
+		}
+		const currentDraft = this.captureCurrentComposerDraftForQueueRestore();
+		const restored = this.queueController.restoreQueuedPrompts(currentDraft);
+		this.restoreQueuedPromptBatchToEditor(restored);
+	}
+
 	private handleFooterCommand(context: CommandExecutionContext): void {
 		this.uiStateController.handleFooterCommand(context, {
 			getToastHistory: (count: number) => this.footer.getToastHistory(count),
@@ -1762,6 +1931,7 @@ export class TuiRenderer {
 	private clearEditor(): void {
 		this.editor.setText("");
 		this.attachmentController.clearPendingAttachments();
+		this.editingQueuedFollowUp = null;
 		this.ui.requestRender();
 	}
 
@@ -1989,6 +2159,24 @@ export class TuiRenderer {
 
 	public refreshFooterHint(): void {
 		this.footerHintsController.refresh();
+	}
+
+	private buildWorkingFooterHint(): string {
+		return this.queueController.buildRunningHint({
+			baseHint: this.workingFooterHint,
+			canQueueFollowUp: this.canQueueFollowUpWhileRunning(),
+		});
+	}
+
+	private canQueueFollowUpWhileRunning(): boolean {
+		if (!this.isAgentRunning || !this.queueController.canQueueFollowUp()) {
+			return false;
+		}
+		const text = this.editor.getText();
+		if (text.trim().length === 0) {
+			return this.attachmentController.hasPendingAttachments();
+		}
+		return !text.trimStart().startsWith("/");
 	}
 
 	private handleEditorTyping(): void {

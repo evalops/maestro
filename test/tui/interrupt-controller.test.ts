@@ -28,6 +28,7 @@ function createMockCallbacks(
 	return {
 		onInterrupt: vi.fn(),
 		restoreQueuedPrompts: vi.fn(),
+		hasQueuedSteering: vi.fn().mockReturnValue(false),
 		getWorkingHint: vi.fn().mockReturnValue("Working…"),
 		isMinimalMode: vi.fn().mockReturnValue(false),
 		isAgentRunning: vi.fn().mockReturnValue(true),
@@ -95,6 +96,28 @@ describe("InterruptController", () => {
 			);
 		});
 
+		it("shows a steering-specific hint when queued steering exists", () => {
+			const callbacks = createMockCallbacks({
+				hasQueuedSteering: vi.fn().mockReturnValue(true),
+			});
+			const footer = createMockFooter();
+			const notificationView = createMockNotificationView();
+			const controller = new InterruptController({
+				footer,
+				notificationView,
+				callbacks,
+			});
+
+			controller.handleInterruptRequest();
+
+			expect(footer.setHint).toHaveBeenCalledWith(
+				"Esc=apply steer | K=keep partial",
+			);
+			expect(notificationView.showInfo).toHaveBeenCalledWith(
+				"Press Esc to interrupt and apply queued steering, K to keep partial response",
+			);
+		});
+
 		it("does not show info when in minimal mode", () => {
 			const callbacks = createMockCallbacks({
 				isMinimalMode: vi.fn().mockReturnValue(true),
@@ -127,7 +150,9 @@ describe("InterruptController", () => {
 			expect(callbacks.onInterrupt).toHaveBeenCalledWith({
 				keepPartial: false,
 			});
-			expect(callbacks.restoreQueuedPrompts).toHaveBeenCalled();
+			expect(callbacks.restoreQueuedPrompts).toHaveBeenCalledWith({
+				keepPartial: false,
+			});
 			expect(notificationView.showToast).toHaveBeenCalledWith(
 				"Interrupted current run",
 				"warn",
@@ -161,6 +186,9 @@ describe("InterruptController", () => {
 			expect(result).toBe(true);
 			expect(controller.isArmed()).toBe(false);
 			expect(callbacks.onInterrupt).toHaveBeenCalledWith({ keepPartial: true });
+			expect(callbacks.restoreQueuedPrompts).toHaveBeenCalledWith({
+				keepPartial: true,
+			});
 			expect(notificationView.showToast).toHaveBeenCalledWith(
 				"Interrupted - keeping partial response",
 				"info",

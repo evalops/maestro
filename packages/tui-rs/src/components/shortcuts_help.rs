@@ -231,6 +231,11 @@ impl ShortcutsHelp {
         ));
         self.add(Shortcut::new(
             ShortcutCategory::Input,
+            "Tab",
+            "Queue follow-up (while running)",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Input,
             "Alt+Enter",
             "Queue follow-up (while running)",
         ));

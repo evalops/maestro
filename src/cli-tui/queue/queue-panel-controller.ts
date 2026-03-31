@@ -131,6 +131,8 @@ export class QueuePanelController {
 			snapshot.pending,
 			this.options.queueController.getSteeringMode(),
 			this.options.queueController.getFollowUpMode(),
+			this.options.queueController.getNextSteeringBatchSummary(),
+			this.options.queueController.getNextFollowUpBatchSummary(),
 		);
 		this.options.modalManager.push(this.modal);
 	}
@@ -142,6 +144,8 @@ export class QueuePanelController {
 			snapshot.pending,
 			this.options.queueController.getSteeringMode(),
 			this.options.queueController.getFollowUpMode(),
+			this.options.queueController.getNextSteeringBatchSummary(),
+			this.options.queueController.getNextFollowUpBatchSummary(),
 		);
 		if (this.options.modalManager.getActiveModal() === this.modal) {
 			this.options.ui.requestRender();
@@ -170,6 +174,16 @@ export class QueuePanelController {
 				: "one-at-a-time (steering pauses while running)";
 		lines.push(`Follow-up mode: ${followUpLabel}`);
 		lines.push(`Steering mode: ${steeringLabel}`);
+		const nextSteeringBatch =
+			this.options.queueController.getNextSteeringBatchSummary();
+		if (nextSteeringBatch) {
+			lines.push(`Next steering batch: ${nextSteeringBatch}`);
+		}
+		const nextFollowUpBatch =
+			this.options.queueController.getNextFollowUpBatchSummary();
+		if (nextFollowUpBatch) {
+			lines.push(`Next follow-up batch: ${nextFollowUpBatch}`);
+		}
 		if (snapshot.active) {
 			lines.push(
 				`Active: #${snapshot.active.id} – ${this.formatQueuedText(snapshot.active.text)}`,

@@ -25,18 +25,23 @@ interface EditorViewOptions {
 	onCtrlD?: () => void;
 	showCommandPalette: () => void;
 	showFileSearch: () => void;
+	onEditLastQueuedFollowUp?: () => boolean;
 }
 
 export class EditorView {
 	constructor(private readonly options: EditorViewOptions) {
 		const editor = options.editor;
-		const handleSubmit = (text: string, submit: (value: string) => void) => {
+		const handleSubmit = (
+			text: string,
+			submit: (value: string) => void,
+		): boolean => {
 			const trimmed = text.trim();
 			if (!trimmed) {
 				if (this.options.canSubmitEmpty?.()) {
 					submit("");
+					return true;
 				}
-				return;
+				return false;
 			}
 			this.options.onFirstInput();
 			const command = this.options
@@ -49,10 +54,12 @@ export class EditorView {
 				if (outcome && typeof (outcome as Promise<void>).then === "function") {
 					void outcome;
 				}
-				return;
+				return true;
 			}
 			submit(trimmed);
+			return true;
 		};
+		const previousOnTab = editor.onTab;
 		editor.onEscape = () => {
 			if (this.options.shouldInterrupt() && this.options.onInterrupt) {
 				this.options.onInterrupt();
@@ -73,6 +80,9 @@ export class EditorView {
 				this.options.showFileSearch();
 				return true;
 			}
+			if (shortcut === "edit-last-follow-up") {
+				return this.options.onEditLastQueuedFollowUp?.() === true;
+			}
 			// 'k' during interrupt-armed state keeps partial response
 			if (shortcut === "k" && this.options.onKeepPartial) {
 				return this.options.onKeepPartial();
@@ -81,6 +91,19 @@ export class EditorView {
 		};
 		editor.onSubmit = (text) => {
 			handleSubmit(text, this.options.onSubmit);
+		};
+		editor.onTab = () => {
+			if (previousOnTab?.() === true) {
+				return true;
+			}
+			if (!this.options.shouldFollowUp?.() || !this.options.onFollowUp) {
+				return false;
+			}
+			const text = this.options.editor.getText();
+			if (text.trimStart().startsWith("/")) {
+				return false;
+			}
+			return handleSubmit(text, this.options.onFollowUp);
 		};
 		editor.onFollowUp = () => {
 			if (this.options.shouldFollowUp && !this.options.shouldFollowUp()) {
