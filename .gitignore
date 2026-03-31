@@ -17,6 +17,7 @@ node_modules/
 # Misc artifacts
 out.html
 tmp/
+/logs/
 *.tsbuildinfo
 src/**/*.d.ts
 src/**/*.d.ts.map
