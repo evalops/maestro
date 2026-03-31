@@ -1054,12 +1054,14 @@ fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
 /// let widget = ChatInputWidget::new(
 ///     &state.textarea,
 ///     "Type a message...",
-///     busy,
-///     elapsed_secs,
-///     thinking_header,
-///     can_queue_follow_up,
-///     queue_summary,
-///     pending_input_preview,
+///     ChatInputWidgetOptions {
+///         busy,
+///         elapsed_secs,
+///         thinking_header,
+///         can_queue_follow_up,
+///         queue_summary,
+///         pending_input_preview,
+///     },
 /// );
 /// frame.render_widget(widget, area);
 ///
@@ -1076,6 +1078,16 @@ pub struct ChatInputWidget<'a> {
     can_queue_follow_up: bool,
     queue_summary: Option<QueueSummary>,
     pending_input_preview: Option<PendingInputPreview>,
+}
+
+#[derive(Debug)]
+pub struct ChatInputWidgetOptions<'a> {
+    pub busy: bool,
+    pub elapsed_secs: u64,
+    pub thinking_header: Option<&'a str>,
+    pub can_queue_follow_up: bool,
+    pub queue_summary: Option<QueueSummary>,
+    pub pending_input_preview: Option<PendingInputPreview>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1271,22 +1283,17 @@ impl<'a> ChatInputWidget<'a> {
     pub fn new(
         textarea: &'a TextArea,
         placeholder: &'a str,
-        busy: bool,
-        elapsed_secs: u64,
-        thinking_header: Option<&'a str>,
-        can_queue_follow_up: bool,
-        queue_summary: Option<QueueSummary>,
-        pending_input_preview: Option<PendingInputPreview>,
+        options: ChatInputWidgetOptions<'a>,
     ) -> Self {
         Self {
             textarea,
             placeholder,
-            busy,
-            elapsed_secs,
-            thinking_header,
-            can_queue_follow_up,
-            queue_summary,
-            pending_input_preview,
+            busy: options.busy,
+            elapsed_secs: options.elapsed_secs,
+            thinking_header: options.thinking_header,
+            can_queue_follow_up: options.can_queue_follow_up,
+            queue_summary: options.queue_summary,
+            pending_input_preview: options.pending_input_preview,
         }
     }
 
@@ -1865,20 +1872,22 @@ impl Widget for ChatView<'_> {
         let input_widget = ChatInputWidget::new(
             &self.state.textarea,
             "Type a message...",
-            self.state.busy,
-            self.state.elapsed_busy_secs(),
-            self.state.thinking_header.as_deref(),
-            self.state.can_queue_follow_up_shortcut(),
-            if self.state.queued_prompt_count > 0 {
-                Some(QueueSummary::new(
-                    self.state.queued_prompt_count,
-                    self.state.queued_steering_count,
-                    self.state.queued_follow_up_count,
-                ))
-            } else {
-                None
+            ChatInputWidgetOptions {
+                busy: self.state.busy,
+                elapsed_secs: self.state.elapsed_busy_secs(),
+                thinking_header: self.state.thinking_header.as_deref(),
+                can_queue_follow_up: self.state.can_queue_follow_up_shortcut(),
+                queue_summary: if self.state.queued_prompt_count > 0 {
+                    Some(QueueSummary::new(
+                        self.state.queued_prompt_count,
+                        self.state.queued_steering_count,
+                        self.state.queued_follow_up_count,
+                    ))
+                } else {
+                    None
+                },
+                pending_input_preview: PendingInputPreview::from_state(self.state),
             },
-            PendingInputPreview::from_state(self.state),
         );
         input_widget.render(chunks[1], buf);
 
@@ -2135,12 +2144,14 @@ mod tests {
         let widget = ChatInputWidget::new(
             &textarea,
             "",
-            true,
-            12,
-            None,
-            true,
-            Some(QueueSummary::new(2, 1, 1)),
-            None,
+            ChatInputWidgetOptions {
+                busy: true,
+                elapsed_secs: 12,
+                thinking_header: None,
+                can_queue_follow_up: true,
+                queue_summary: Some(QueueSummary::new(2, 1, 1)),
+                pending_input_preview: None,
+            },
         );
         let width = 120;
         let height = 4;
@@ -2159,12 +2170,14 @@ mod tests {
         let widget = ChatInputWidget::new(
             &textarea,
             "",
-            true,
-            12,
-            None,
-            false,
-            Some(QueueSummary::new(1, 0, 1)),
-            None,
+            ChatInputWidgetOptions {
+                busy: true,
+                elapsed_secs: 12,
+                thinking_header: None,
+                can_queue_follow_up: false,
+                queue_summary: Some(QueueSummary::new(1, 0, 1)),
+                pending_input_preview: None,
+            },
         );
         let width = 120;
         let height = 4;
