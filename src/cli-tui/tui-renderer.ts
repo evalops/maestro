@@ -84,11 +84,8 @@ import type { OAuthFlowController } from "./oauth/index.js";
 import { OllamaView } from "./ollama-view.js";
 import type { PlanView } from "./plan-view.js";
 import type { PlanController } from "./plan/plan-controller.js";
-import type {
-	PromptPayload,
-	PromptQueue,
-	QueuedPrompt,
-} from "./prompt-queue.js";
+import type { PromptPayload, QueuedPrompt } from "./prompt-queue.js";
+import { canQueueFollowUpShortcut } from "./queue/follow-up-shortcut.js";
 import {
 	type QueueController,
 	type QueueMode,
@@ -1530,10 +1527,6 @@ export class TuiRenderer {
 		});
 	}
 
-	attachPromptQueue(queue: PromptQueue): void {
-		this.queueController.attach(queue);
-	}
-
 	public async ensureContextBudgetBeforePrompt(): Promise<void> {
 		await this.compactionController.ensureContextBudgetBeforePrompt();
 	}
@@ -2172,11 +2165,10 @@ export class TuiRenderer {
 		if (!this.isAgentRunning || !this.queueController.canQueueFollowUp()) {
 			return false;
 		}
-		const text = this.editor.getText();
-		if (text.trim().length === 0) {
-			return this.attachmentController.hasPendingAttachments();
-		}
-		return !text.trimStart().startsWith("/");
+		return canQueueFollowUpShortcut({
+			text: this.editor.getText(),
+			hasAttachments: this.attachmentController.hasPendingAttachments(),
+		});
 	}
 
 	private handleEditorTyping(): void {
@@ -2345,7 +2337,6 @@ export class TuiRenderer {
 	stop(): void {
 		this.slashHintController?.dispose();
 		this.loaderView.stop();
-		this.queueController.detach();
 		this.backgroundTasksController.stop();
 		// Clean up MCP and composer event listeners
 		this.mcpEventsController.stop();

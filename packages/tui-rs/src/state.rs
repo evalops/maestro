@@ -572,7 +572,9 @@ impl AppState {
             return false;
         }
         let text = self.textarea.text();
-        !text.trim().is_empty() && !text.trim_start().starts_with('/')
+        !text.trim().is_empty()
+            && !text.trim_start().starts_with('/')
+            && !text.trim_start().starts_with('!')
     }
 
     /// Handle a message from the agent.
@@ -2024,6 +2026,9 @@ mod tests {
 
         state.follow_up_mode = QueueMode::All;
         state.textarea.set_text("/help");
+        assert!(!state.can_queue_follow_up_shortcut());
+
+        state.textarea.set_text("!ls");
         assert!(!state.can_queue_follow_up_shortcut());
 
         state.textarea.set_text("   ");

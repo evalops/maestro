@@ -161,6 +161,15 @@ impl ShortcutsHelp {
     /// Create a new shortcuts help with default Composer shortcuts
     #[must_use]
     pub fn new() -> Self {
+        Self::new_with_queue_binding_label("Alt+Up")
+    }
+
+    /// Create a new shortcuts help with a terminal-aware queued follow-up edit binding label.
+    #[must_use]
+    pub fn new_with_queue_binding_label(
+        queued_follow_up_edit_binding_label: impl Into<String>,
+    ) -> Self {
+        let queued_follow_up_edit_binding_label = queued_follow_up_edit_binding_label.into();
         let mut help = Self {
             shortcuts: Vec::new(),
             visible: false,
@@ -171,7 +180,7 @@ impl ShortcutsHelp {
         };
 
         // Add default shortcuts
-        help.add_default_shortcuts();
+        help.add_default_shortcuts(&queued_follow_up_edit_binding_label);
         help
     }
 
@@ -189,7 +198,7 @@ impl ShortcutsHelp {
     }
 
     /// Add default Composer shortcuts
-    fn add_default_shortcuts(&mut self) {
+    fn add_default_shortcuts(&mut self, queued_follow_up_edit_binding_label: &str) {
         // Navigation
         self.add(Shortcut::new(
             ShortcutCategory::Navigation,
@@ -229,15 +238,23 @@ impl ShortcutsHelp {
             "Enter",
             "Submit message (steer while running)",
         ));
-        self.add(Shortcut::new(
-            ShortcutCategory::Input,
-            "Tab",
-            "Queue follow-up (while running)",
-        ));
+        self.add(
+            Shortcut::new(
+                ShortcutCategory::Input,
+                "Tab",
+                "Submit message / queue follow-up",
+            )
+            .with_context("queues while running"),
+        );
         self.add(Shortcut::new(
             ShortcutCategory::Input,
             "Alt+Enter",
-            "Queue follow-up (while running)",
+            "Queue follow-up (alternate while running)",
+        ));
+        self.add(Shortcut::new(
+            ShortcutCategory::Input,
+            queued_follow_up_edit_binding_label,
+            "Edit last queued follow-up",
         ));
         self.add(Shortcut::new(
             ShortcutCategory::Input,
@@ -349,7 +366,7 @@ impl ShortcutsHelp {
         ));
         self.add(
             Shortcut::new(ShortcutCategory::Tools, "Tab", "Toggle last thinking block")
-                .with_context("when not busy"),
+                .with_context("when input empty"),
         );
 
         // View
@@ -719,6 +736,22 @@ mod tests {
         assert!(!help.visible);
         assert!(!help.shortcuts.is_empty());
         assert!(help.filter.is_none());
+    }
+
+    #[test]
+    fn test_shortcuts_help_uses_custom_queue_binding_label() {
+        let help = ShortcutsHelp::new_with_queue_binding_label("Shift+Left");
+
+        assert!(help
+            .shortcuts
+            .iter()
+            .any(|shortcut| shortcut.keys == "Shift+Left"
+                && shortcut.description == "Edit last queued follow-up"));
+        assert!(help.shortcuts.iter().any(|shortcut| {
+            shortcut.keys == "Tab"
+                && shortcut.description == "Submit message / queue follow-up"
+                && shortcut.context_hint.as_deref() == Some("queues while running")
+        }));
     }
 
     #[test]

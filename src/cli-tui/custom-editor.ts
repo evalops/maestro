@@ -10,7 +10,7 @@ type CustomEditorBinding = {
 
 const CUSTOM_EDITOR_KEYMAP: CustomEditorBinding[] = [
 	{
-		description: "Tab cycles slash hints or queues a follow-up while running",
+		description: "Tab cycles slash hints, sends, or queues while running",
 		matches: (data) => data === "\t",
 		when: (editor) => Boolean(editor.onTab) && !editor.isShowingAutocomplete(),
 		handle: (editor) => editor.onTab?.() === true,

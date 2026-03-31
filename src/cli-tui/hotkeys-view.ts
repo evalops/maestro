@@ -2,13 +2,18 @@ import type { Container, TUI } from "@evalops/tui";
 import { Markdown, Spacer, Text } from "@evalops/tui";
 import chalk from "chalk";
 import { getMarkdownTheme } from "../theme/theme.js";
+import { getQueuedFollowUpEditBindingLabel } from "./queue/queued-follow-up-edit-binding.js";
 
 interface HotkeysViewOptions {
 	chatContainer: Container;
 	ui: TUI;
 }
 
-const HOTKEYS_MARKDOWN = `
+export function buildHotkeysMarkdown(
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	const queuedFollowUpEditBinding = getQueuedFollowUpEditBindingLabel(env);
+	return `
 **Navigation**
 | Key | Action |
 |-----|--------|
@@ -25,7 +30,9 @@ const HOTKEYS_MARKDOWN = `
 |-----|--------|
 | \`Enter\` | Send message (steer while running) |
 | \`Shift+Enter\` | New line |
-| \`Tab\` / \`Alt+Enter\` | Queue follow-up (while running) |
+| \`Tab\` | Send message / Queue follow-up (while running) |
+| \`Alt+Enter\` | Queue follow-up (alternate while running) |
+| \`${queuedFollowUpEditBinding}\` | Edit last queued follow-up |
 | \`Ctrl+W\` / \`Option+Backspace\` | Delete word backwards |
 | \`Ctrl+U\` | Delete to start of line |
 | \`Ctrl+K\` | Delete to end of line / Command palette |
@@ -56,6 +63,7 @@ const HOTKEYS_MARKDOWN = `
 | \`!\` | Run bash command |
 | \`Drop files\` | Attach files to message |
 `;
+}
 
 export class HotkeysView {
 	constructor(private readonly options: HotkeysViewOptions) {}
@@ -68,7 +76,7 @@ export class HotkeysView {
 		this.options.chatContainer.addChild(new Spacer(1));
 		this.options.chatContainer.addChild(
 			new Markdown(
-				HOTKEYS_MARKDOWN.trim(),
+				buildHotkeysMarkdown().trim(),
 				undefined,
 				undefined,
 				undefined,

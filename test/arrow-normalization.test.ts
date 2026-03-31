@@ -5,6 +5,7 @@ import type {
 } from "../packages/tui/src/autocomplete.js";
 import { Editor } from "../packages/tui/src/components/editor.js";
 import { CustomEditor } from "../src/cli-tui/custom-editor.js";
+import { EditorView } from "../src/cli-tui/editor-view.js";
 import { getQueuedFollowUpEditBindingSequence } from "../src/cli-tui/queue/queued-follow-up-edit-binding.js";
 
 class StubAutocomplete implements AutocompleteProvider {
@@ -92,5 +93,27 @@ describe("arrow key normalization", () => {
 
 		expect(shortcuts).toEqual(["edit-last-follow-up"]);
 		expect(historyCalls).toBe(0);
+	});
+
+	it("treats Tab on shell drafts as a no-op instead of opening autocomplete", () => {
+		const editor = new CustomEditor();
+		editor.setAutocompleteProvider(new StubAutocomplete());
+		editor.setText("!ls");
+
+		new EditorView({
+			editor,
+			getCommandEntries: () => [],
+			onFirstInput: vi.fn(),
+			onSubmit: vi.fn(),
+			shouldFollowUp: () => false,
+			shouldInterrupt: () => false,
+			showCommandPalette: vi.fn(),
+			showFileSearch: vi.fn(),
+		});
+
+		editor.handleInput("\t");
+
+		expect(editor.getText()).toBe("!ls");
+		expect(editor.isShowingAutocomplete()).toBe(false);
 	});
 });

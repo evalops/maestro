@@ -11,6 +11,7 @@
 
 import { Container, Text, visibleWidth } from "@evalops/tui";
 import { theme } from "../theme/theme.js";
+import { getQueuedFollowUpEditBindingLabel } from "./queue/queued-follow-up-edit-binding.js";
 import { PANEL_WIDTHS } from "./utils/layout.js";
 import { shimmerText } from "./utils/shimmer.js";
 
@@ -21,14 +22,14 @@ const TAGLINE = "deterministic coding agent";
 const CANVAS_WIDTH = PANEL_WIDTHS.welcome;
 
 /** Keyboard shortcuts - Claude Code style */
-const SHORTCUTS = [
-	{ key: "Tab", desc: "queue/autocomplete" },
-	{ key: "@", desc: "mention files" },
-	{ key: "/help", desc: "commands" },
-	{ key: "Ctrl+V", desc: "paste image" },
-	{ key: "Alt+Enter", desc: "queue (running)" },
-	{ key: "Ctrl+C", desc: "cancel" },
-] as const;
+function getShortcuts() {
+	return [
+		{ key: "Enter", desc: "send/steer" },
+		{ key: "Tab", desc: "send/queue" },
+		{ key: getQueuedFollowUpEditBindingLabel(), desc: "edit queue" },
+		{ key: "/help", desc: "commands" },
+	] as const;
+}
 
 // ── WelcomeAnimation Component ───────────────────────────────────────────────
 
@@ -122,7 +123,7 @@ export class WelcomeAnimation extends Container {
 	}
 
 	private buildShortcutsLine(): string {
-		const parts = SHORTCUTS.map(({ key, desc }) => {
+		const parts = getShortcuts().map(({ key, desc }) => {
 			const keyPart = theme.fg("muted", key);
 			const descPart = theme.fg("dim", desc);
 			return `${keyPart}${theme.fg("borderMuted", ":")}${descPart}`;
