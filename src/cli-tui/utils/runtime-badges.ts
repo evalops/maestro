@@ -74,12 +74,17 @@ export function buildRuntimeBadges(params: RuntimeBadgeParams): string[] {
 	// MCP servers status
 	const mcpStatus = mcpManager.getStatus();
 	const connectedMcp = mcpStatus.servers.filter((s) => s.connected).length;
-	if (connectedMcp > 0) {
+	const failedMcp = mcpStatus.servers.filter(
+		(s) => !s.connected && typeof s.error === "string",
+	).length;
+	if (connectedMcp > 0 || failedMcp > 0) {
 		const totalTools = mcpStatus.servers.reduce(
 			(sum, s) => sum + s.tools.length,
 			0,
 		);
-		badges.push(`mcp:${connectedMcp}(${totalTools})`);
+		const toolSuffix = connectedMcp > 0 ? `(${totalTools})` : "";
+		const failureSuffix = failedMcp > 0 ? `!${failedMcp}` : "";
+		badges.push(`mcp:${connectedMcp}${toolSuffix}${failureSuffix}`);
 	}
 
 	const backgroundCounts = getBackgroundTaskCounts();
