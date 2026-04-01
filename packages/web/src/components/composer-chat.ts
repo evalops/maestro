@@ -28,6 +28,7 @@ import {
 	reconstructArtifactsFromMessages,
 } from "../services/artifacts.js";
 import { dataStore } from "../services/data-store.js";
+import { formatWebRuntimeStatus } from "../services/runtime-status.js";
 import { summarizeWebToolCalls } from "../services/tool-summary.js";
 import "./command-drawer.js";
 import { executeWebSlashCommand } from "./composer-chat-slash-commands.js";
@@ -309,10 +310,20 @@ export class ComposerChat extends LitElement {
 			color: var(--accent-red, #ef4444);
 		}
 
+		.pill.info {
+			background: rgba(20, 184, 166, 0.12);
+			color: var(--accent, #14b8a6);
+		}
+
 		.status-note {
 			color: var(--accent-yellow, #eab308);
 			text-transform: uppercase;
 			letter-spacing: 0.04em;
+		}
+
+		.status-item.runtime-status {
+			border-color: rgba(20, 184, 166, 0.18);
+			background: rgba(20, 184, 166, 0.04);
 		}
 
 		.status-dot {
@@ -765,6 +776,7 @@ export class ComposerChat extends LitElement {
 	@state() private messages: UiMessage[] = [];
 	@state() private loading = false;
 	@state() private error: string | null = null;
+	@state() private runtimeStatus: string | null = null;
 	@state() private currentModel = "";
 	@state() private theme: "dark" | "light" = "dark";
 	@state() private transportPreference: "auto" | "sse" | "ws" = "auto";
@@ -1372,6 +1384,7 @@ export class ComposerChat extends LitElement {
 				e instanceof Error ? e.message : "Failed to load shared session";
 			this.showToast(this.error, "error");
 		} finally {
+			this.runtimeStatus = null;
 			this.loading = false;
 		}
 	}
@@ -2163,6 +2176,7 @@ export class ComposerChat extends LitElement {
 
 	private async createNewSession() {
 		this.error = null;
+		this.runtimeStatus = null;
 		try {
 			const session = await this.apiClient.createSession("New Chat");
 			this.currentSessionId = session.id;
@@ -2310,6 +2324,7 @@ export class ComposerChat extends LitElement {
 
 	private async selectSession(sessionId: string) {
 		this.currentSessionId = sessionId;
+		this.runtimeStatus = null;
 		try {
 			const session = await this.apiClient.getSession(sessionId);
 			if (!session || !session.id) {
@@ -2516,6 +2531,7 @@ export class ComposerChat extends LitElement {
 		// Start loading
 		this.loading = true;
 		this.error = null;
+		this.runtimeStatus = null;
 
 		// Add assistant message placeholder
 		const assistantMessage: UiMessage = {
@@ -2814,6 +2830,15 @@ export class ComposerChat extends LitElement {
 						break;
 					}
 
+					case "status":
+					case "compaction": {
+						const nextRuntimeStatus = formatWebRuntimeStatus(agentEvent);
+						if (nextRuntimeStatus) {
+							this.runtimeStatus = nextRuntimeStatus;
+						}
+						break;
+					}
+
 					case "action_approval_required": {
 						this.enqueueApprovalRequest(agentEvent.request);
 						break;
@@ -2922,10 +2947,13 @@ export class ComposerChat extends LitElement {
 				);
 			}
 
+			this.runtimeStatus = null;
+
 			// Refresh sessions list
 			await this.loadSessions();
 		} catch (e) {
 			this.error = e instanceof Error ? e.message : "Failed to send message";
+			this.runtimeStatus = null;
 			if (!hasAssistantMessageProgress(assistantMessage)) {
 				this.messages = this.messages.slice(0, -1);
 			} else {
@@ -3448,7 +3476,7 @@ export class ComposerChat extends LitElement {
 				<button class="toggle-sidebar-btn" @click=${this.toggleSidebar} title=${this.sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}>
 					${this.sidebarOpen ? this.renderIcon("chevron-left") : this.renderIcon("chevron-right")}
 				</button>
-				<h1>Composer</h1>
+				<h1>Maestro</h1>
 			</div>
 			<div class="status-bar">
 						<div class="status-item active">
@@ -3505,6 +3533,14 @@ export class ComposerChat extends LitElement {
 							<span>MSGS</span>
 							<span class="muted">${this.messages.length}</span>
 						</div>
+						${
+							this.runtimeStatus
+								? html`<div class="status-item runtime-status" title="Current agent runtime status">
+										<span>AGENT</span>
+										<span class="pill info">${this.runtimeStatus}</span>
+									</div>`
+								: ""
+						}
 						<button class="icon-btn" title="Refresh status" @click=${this.refreshStatus}>${this.renderIcon("refresh")}</button>
 						${
 							lastUpdated

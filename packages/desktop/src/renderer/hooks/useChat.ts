@@ -11,6 +11,7 @@ import {
 	createAssistantStreamingState,
 	normalizeServerMessage,
 } from "../lib/chat-message-state";
+import { formatDesktopRuntimeStatus } from "../lib/runtime-status";
 import type { Message, ThinkingLevel } from "../lib/types";
 
 export interface UseChatOptions {
@@ -22,6 +23,7 @@ export interface UseChatReturn {
 	messages: Message[];
 	isLoading: boolean;
 	error: string | null;
+	runtimeStatus: string | null;
 	sendMessage: (content: string) => Promise<void>;
 	clearError: () => void;
 	clearMessages: () => void;
@@ -34,10 +36,12 @@ export function useChat(
 	const [messages, setMessages] = useState<Message[]>([]);
 	const [isLoading, setIsLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [runtimeStatus, setRuntimeStatus] = useState<string | null>(null);
 	const abortControllerRef = useRef<AbortController | null>(null);
 
 	// Load session messages when sessionId changes
 	useEffect(() => {
+		setRuntimeStatus(null);
 		if (!sessionId) {
 			setMessages([]);
 			return;
@@ -75,6 +79,7 @@ export function useChat(
 			setMessages((prev) => [...prev, userMessage]);
 			setIsLoading(true);
 			setError(null);
+			setRuntimeStatus(null);
 
 			// Create abort controller for this request
 			abortControllerRef.current = new AbortController();
@@ -107,6 +112,11 @@ export function useChat(
 					messages: [...messages, userMessage],
 					thinkingLevel: options.thinkingLevel,
 				})) {
+					const nextRuntimeStatus = formatDesktopRuntimeStatus(event);
+					if (nextRuntimeStatus) {
+						setRuntimeStatus(nextRuntimeStatus);
+						continue;
+					}
 					if (event.type === "done") break;
 					updateAssistantMessage((lastMsg) => {
 						applyAgentEventToMessage(lastMsg, event, streamingState);
@@ -122,6 +132,7 @@ export function useChat(
 				// Remove the failed assistant message
 				setMessages((prev) => prev.slice(0, -1));
 			} finally {
+				setRuntimeStatus(null);
 				setIsLoading(false);
 				abortControllerRef.current = null;
 			}
@@ -135,6 +146,7 @@ export function useChat(
 
 	const clearMessages = useCallback(() => {
 		setMessages([]);
+		setRuntimeStatus(null);
 	}, []);
 
 	// Cleanup on unmount
@@ -150,6 +162,7 @@ export function useChat(
 		messages,
 		isLoading,
 		error,
+		runtimeStatus,
 		sendMessage,
 		clearError,
 		clearMessages,

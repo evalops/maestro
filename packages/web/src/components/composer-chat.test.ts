@@ -28,6 +28,21 @@ describe("ComposerChat", () => {
 		assert.equal(title?.textContent, "Maestro");
 	});
 
+	it("renders runtime status in the header status bar", async () => {
+		(element as unknown as { runtimeStatus: string }).runtimeStatus =
+			"Compacting conversation...";
+		await element.updateComplete;
+
+		const runtimeStatus = element.shadowRoot?.querySelector(
+			".status-item.runtime-status",
+		);
+		assert.ok(runtimeStatus);
+		assert.include(
+			runtimeStatus?.textContent || "",
+			"Compacting conversation...",
+		);
+	});
+
 	it("accepts custom api endpoint", async () => {
 		element = await fixture(
 			html`<composer-chat api-endpoint="http://custom.com"></composer-chat>`,

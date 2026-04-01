@@ -1,21 +1,28 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatContainer } from "../../packages/desktop/src/renderer/components/Chat/ChatContainer";
 import { Message } from "../../packages/desktop/src/renderer/components/Chat/Message";
 import { Header } from "../../packages/desktop/src/renderer/components/Header/Header";
 
+const useChatMock = vi.fn();
+
 vi.mock("../../packages/desktop/src/renderer/hooks/useChat", () => ({
-	useChat: () => ({
-		messages: [],
-		isLoading: false,
-		error: null,
-		sendMessage: async () => {},
-		clearError: () => {},
-		clearMessages: () => {},
-	}),
+	useChat: (...args: unknown[]) => useChatMock(...args),
 }));
 
 describe("desktop chat UI", () => {
+	beforeEach(() => {
+		useChatMock.mockReturnValue({
+			messages: [],
+			isLoading: false,
+			error: null,
+			runtimeStatus: null,
+			sendMessage: async () => {},
+			clearError: () => {},
+			clearMessages: () => {},
+		});
+	});
+
 	it("renders Maestro branding in the header", () => {
 		const html = renderToStaticMarkup(
 			<Header
@@ -57,5 +64,22 @@ describe("desktop chat UI", () => {
 
 		expect(html).toContain("Welcome to Maestro");
 		expect(html).not.toContain("Welcome to Composer");
+	});
+
+	it("renders runtime status while the agent is working", () => {
+		useChatMock.mockReturnValue({
+			messages: [],
+			isLoading: true,
+			error: null,
+			runtimeStatus: "Compacting conversation...",
+			sendMessage: async () => {},
+			clearError: () => {},
+			clearMessages: () => {},
+		});
+
+		const html = renderToStaticMarkup(<ChatContainer sessionId="session-1" />);
+
+		expect(html).toContain("Compacting conversation...");
+		expect(html).toContain("Agent");
 	});
 });
