@@ -4,6 +4,10 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
+	registerPostCompactionCleanup,
+	resetPostCompactionCleanupRegistry,
+} from "../../src/agent/compaction-cleanup.js";
+import {
 	type CompactionAgent,
 	type CompactionSessionManager,
 	performCompaction,
@@ -94,6 +98,35 @@ function getReplacedMessages(agent: CompactionAgent): AppMessage[] {
 }
 
 describe("performCompaction", () => {
+	it("runs registered post-compaction cleanup hooks", async () => {
+		const messages = buildConversation(10);
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+		const cleanup = vi.fn();
+		const dispose = registerPostCompactionCleanup("test-cleanup", cleanup);
+
+		try {
+			await performCompaction({
+				agent,
+				sessionManager,
+				auto: true,
+				customInstructions: "Focus on APIs",
+			});
+		} finally {
+			dispose();
+			resetPostCompactionCleanupRegistry();
+		}
+
+		expect(cleanup).toHaveBeenCalledWith(
+			expect.objectContaining({
+				auto: true,
+				customInstructions: "Focus on APIs",
+				compactedCount: expect.any(Number),
+				firstKeptEntryIndex: expect.any(Number),
+			}),
+		);
+	});
+
 	it("returns failure when too few messages", async () => {
 		const messages = buildConversation(2); // 4 messages, below keepCount+1=7
 		const agent = createMockAgent(messages);

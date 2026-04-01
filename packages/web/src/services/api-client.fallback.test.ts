@@ -134,7 +134,9 @@ describe("ApiClient fallback resolution", () => {
 		const headers = new Headers(init.headers);
 		expect(headers.get("authorization")).toBe("Bearer access-token");
 		expect(headers.get("x-composer-api-key")).toBe("api-key");
+		expect(headers.get("x-maestro-api-key")).toBe("api-key");
 		expect(headers.get("x-composer-csrf")).toBe("csrf-token");
+		expect(headers.get("x-maestro-csrf")).toBe("csrf-token");
 	});
 
 	it("bootstraps auth-aware artifact viewer blobs when header auth is required", async () => {
@@ -182,6 +184,9 @@ describe("ApiClient fallback resolution", () => {
 		const artifactHeaders = new Headers(artifactInit.headers);
 		expect(artifactHeaders.get("authorization")).toBe("Bearer access-token");
 		expect(artifactHeaders.get("x-composer-artifact-access")).toBe(
+			"artifact-token",
+		);
+		expect(artifactHeaders.get("x-maestro-artifact-access")).toBe(
 			"artifact-token",
 		);
 		expect(URL.createObjectURL).toHaveBeenCalledTimes(1);

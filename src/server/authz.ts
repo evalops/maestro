@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { type JWTPayload, createRemoteJWKSet, jwtVerify } from "jose";
 import {
 	authenticateRequest,
+	getRequestHeader,
 	getRequestToken,
 	secureCompare,
 	sendJson,
@@ -133,11 +134,13 @@ export function requireCsrf(
 		);
 		return false;
 	}
-	const header =
-		req.headers["x-composer-csrf"] ||
-		req.headers["x-csrf-token"] ||
-		req.headers["x-xsrf-token"];
-	const value = Array.isArray(header) ? header[0] : header;
+	const value = getRequestHeader(
+		req,
+		"x-composer-csrf",
+		"x-maestro-csrf",
+		"x-csrf-token",
+		"x-xsrf-token",
+	);
 	if (!value || !secureCompare(String(value), CSRF_TOKEN)) {
 		sendJson(
 			res,

@@ -227,9 +227,13 @@ describe("ApiClient chat streaming", () => {
 		const headers = new Headers((init as RequestInit).headers);
 		expect(headers.get("authorization")).toBe("Bearer access-token");
 		expect(headers.get("x-composer-api-key")).toBe("api-key");
+		expect(headers.get("x-maestro-api-key")).toBe("api-key");
 		expect(headers.get("x-composer-csrf")).toBe("csrf-token");
+		expect(headers.get("x-maestro-csrf")).toBe("csrf-token");
 		expect(headers.get("x-composer-client-tools")).toBe("1");
+		expect(headers.get("x-maestro-client-tools")).toBe("1");
 		expect(headers.get("x-composer-slim-events")).toBe("1");
+		expect(headers.get("x-maestro-slim-events")).toBe("1");
 	});
 
 	it("uses SSE when WebSocket transport is selected but auth headers are required", async () => {

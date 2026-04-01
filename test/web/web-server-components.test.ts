@@ -13,6 +13,7 @@ import { RateLimiter } from "../../src/server/rate-limiter.js";
 import {
 	ApiError,
 	createCorsHeaders,
+	getRequestToken,
 	respondWithApiError,
 	sendJson,
 } from "../../src/server/server-utils.js";
@@ -181,6 +182,23 @@ describe("createCorsHeaders", () => {
 		expect(allowHeaders).toContain("X-Composer-Client");
 		expect(allowHeaders).toContain("X-Composer-Client-Tools");
 		expect(allowHeaders).toContain("X-Composer-Slim-Events");
+		expect(allowHeaders).toContain("X-Maestro-Api-Key");
+		expect(allowHeaders).toContain("X-Maestro-Csrf");
+		expect(allowHeaders).toContain("X-Maestro-Client");
+		expect(allowHeaders).toContain("X-Maestro-Client-Tools");
+		expect(allowHeaders).toContain("X-Maestro-Slim-Events");
+	});
+});
+
+describe("getRequestToken", () => {
+	it("accepts Maestro API key headers", () => {
+		const req = {
+			headers: {
+				"x-maestro-api-key": "maestro-key",
+			},
+		} as unknown as IncomingMessage;
+
+		expect(getRequestToken(req)).toBe("maestro-key");
 	});
 });
 

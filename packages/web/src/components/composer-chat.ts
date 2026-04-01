@@ -28,6 +28,7 @@ import {
 	reconstructArtifactsFromMessages,
 } from "../services/artifacts.js";
 import { dataStore } from "../services/data-store.js";
+import { summarizeWebToolCalls } from "../services/tool-summary.js";
 import "./command-drawer.js";
 import { executeWebSlashCommand } from "./composer-chat-slash-commands.js";
 import {
@@ -3326,6 +3327,7 @@ export class ComposerChat extends LitElement {
 					.attachments=${msg.attachments || []}
 					.thinking=${(msg as MessageWithThinking).thinking || ""}
 					.tools=${msg.tools || []}
+					.toolSummaryLabels=${summarizeWebToolCalls(msg.tools || [])}
 					.cleanMode=${this.cleanMode}
 					.streaming=${isStreaming}
 					.compact=${this.compactMode}

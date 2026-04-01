@@ -39,6 +39,10 @@ import type {
 	ComposerSession,
 	ComposerSessionSummary,
 } from "@evalops/contracts";
+import {
+	scanOutboundSensitiveContent,
+	summarizeOutboundSensitiveFindings,
+} from "../../safety/outbound-secret-preflight.js";
 import { createLogger } from "../../utils/logger.js";
 import { getAuthSubject } from "../authz.js";
 import {
@@ -82,6 +86,26 @@ export type {
 const logger = createLogger("sessions-handler");
 const sessionIdPattern = /^[a-zA-Z0-9._-]+$/;
 const attachmentIdPattern = /^[a-zA-Z0-9._-]+$/;
+
+function sendSensitiveContentBlockedResponse(
+	req: IncomingMessage,
+	res: ServerResponse,
+	cors: Record<string, string>,
+	action: "export" | "share",
+	findings: ReturnType<typeof summarizeOutboundSensitiveFindings>,
+): void {
+	sendJson(
+		res,
+		409,
+		{
+			error: `Sensitive content detected. Review and confirm before continuing with this ${action}.`,
+			code: "sensitive_content_detected",
+			details: findings,
+		},
+		cors,
+		req,
+	);
+}
 
 /**
  * Verify that the authenticated subject has access to the session.
@@ -469,12 +493,31 @@ export async function handleSessionShare(
 			return;
 		}
 
-		const options = await readJsonBody<SessionShareOptions>(req);
+		const options = await readJsonBody<
+			SessionShareOptions & { allowSensitiveContent?: boolean }
+		>(req);
 		const expiresInHours = Math.min(options.expiresInHours ?? 24, 168); // Max 1 week
 		const maxAccesses =
 			options.maxAccesses === null
 				? null // explicit unlimited
 				: Math.max(1, options.maxAccesses ?? 100); // default finite, clamp minimum
+
+		if (!options.allowSensitiveContent) {
+			const scan = scanOutboundSensitiveContent({
+				title: session.title,
+				messages: session.messages || [],
+			});
+			if (scan.blockingFindings.length > 0) {
+				sendSensitiveContentBlockedResponse(
+					req,
+					res,
+					cors,
+					"share",
+					summarizeOutboundSensitiveFindings(scan.blockingFindings),
+				);
+				return;
+			}
+		}
 
 		// Generate a share token
 		const shareToken = crypto.randomBytes(32).toString("base64url");
@@ -683,9 +726,28 @@ export async function handleSessionExport(
 			return;
 		}
 
-		const options = await readJsonBody<SessionExportFormat>(req);
+		const options = await readJsonBody<
+			SessionExportFormat & { allowSensitiveContent?: boolean }
+		>(req);
 		const format = options.format || "json";
 		const messages = session.messages || [];
+
+		if (!options.allowSensitiveContent) {
+			const scan = scanOutboundSensitiveContent({
+				title: session.title,
+				messages,
+			});
+			if (scan.blockingFindings.length > 0) {
+				sendSensitiveContentBlockedResponse(
+					req,
+					res,
+					cors,
+					"export",
+					summarizeOutboundSensitiveFindings(scan.blockingFindings),
+				);
+				return;
+			}
+		}
 
 		let content: string;
 		let contentType: string;

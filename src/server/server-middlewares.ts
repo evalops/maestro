@@ -7,6 +7,7 @@ import type { Middleware } from "./middleware.js";
 import type { RateLimiter, TieredRateLimiter } from "./rate-limiter.js";
 import {
 	authenticateRequest,
+	getRequestHeader,
 	secureCompare,
 	sendJson,
 } from "./server-utils.js";
@@ -258,11 +259,13 @@ export function createCsrfMiddleware(
 		if (!pathname.startsWith("/api")) {
 			return next();
 		}
-		const header =
-			req.headers["x-composer-csrf"] ||
-			req.headers["x-csrf-token"] ||
-			req.headers["x-xsrf-token"];
-		const value = Array.isArray(header) ? header[0] : header;
+		const value = getRequestHeader(
+			req,
+			"x-composer-csrf",
+			"x-maestro-csrf",
+			"x-csrf-token",
+			"x-xsrf-token",
+		);
 		if (!value || !secureCompare(String(value), token)) {
 			sendJson(
 				res,

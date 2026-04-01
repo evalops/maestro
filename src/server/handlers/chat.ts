@@ -58,7 +58,12 @@ import {
 import { publishArtifactUpdate } from "../artifacts-live-reload.js";
 import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
-import { ApiError, respondWithApiError, sendJson } from "../server-utils.js";
+import {
+	ApiError,
+	getRequestHeader,
+	respondWithApiError,
+	sendJson,
+} from "../server-utils.js";
 import { createSessionManagerForRequest } from "../session-scope.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import { SseSession, sendSSE, sendSessionUpdate } from "../sse-session.js";
@@ -254,9 +259,12 @@ export async function handleChat(
 		const registeredModel = await getRegisteredModel(chatReq.model);
 
 		// Parse approval mode from request header (allows per-request override)
-		const header = req.headers["x-composer-approval-mode"];
 		const headerApproval = normalizeApprovalMode(
-			Array.isArray(header) ? header[0] : header,
+			getRequestHeader(
+				req,
+				"x-composer-approval-mode",
+				"x-maestro-approval-mode",
+			) ?? undefined,
 		);
 
 		const effectiveApproval = resolveApprovalModeForRequest({
@@ -267,17 +275,18 @@ export async function handleChat(
 		});
 
 		// Create the agent with the resolved configuration
-		const clientToolsHeader = (() => {
-			const header = req.headers["x-composer-client-tools"];
-			const raw = Array.isArray(header) ? header[0] : header;
-			return raw?.trim() === "1";
-		})();
+		const clientToolsHeader =
+			getRequestHeader(
+				req,
+				"x-composer-client-tools",
+				"x-maestro-client-tools",
+			) === "1";
 
-		const clientHeader = (() => {
-			const header = req.headers["x-composer-client"];
-			const raw = Array.isArray(header) ? header[0] : header;
-			return raw?.trim().toLowerCase();
-		})();
+		const clientHeader = getRequestHeader(
+			req,
+			"x-composer-client",
+			"x-maestro-client",
+		)?.toLowerCase();
 
 		const agent = await createAgent(
 			registeredModel,
@@ -344,8 +353,11 @@ export async function handleChat(
 		const { enterpriseContext } = await import("../../enterprise/context.js");
 
 		const toolArgsByCallId = new Map<string, Record<string, unknown>>();
-		const slimHeader = req.headers["x-composer-slim-events"];
-		const slimValue = Array.isArray(slimHeader) ? slimHeader[0] : slimHeader;
+		const slimValue = getRequestHeader(
+			req,
+			"x-composer-slim-events",
+			"x-maestro-slim-events",
+		);
 		const slimEvents = slimValue === "1" || slimValue === "true";
 		const slimToolCallArgsLimit = (() => {
 			const raw = process.env.MAESTRO_SLIM_TOOLCALL_ARGS_MAX_BYTES;

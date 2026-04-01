@@ -7,6 +7,13 @@ import {
 	handleSharedSession,
 } from "../src/server/handlers/sessions.js";
 
+function makeTestAnthropicToken(): string {
+	return [
+		"sk-ant-api03-",
+		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-abcdefghijklmAA",
+	].join("");
+}
+
 function createMockSessionManager() {
 	return {
 		listSessions: vi.fn().mockResolvedValue([
@@ -41,6 +48,22 @@ function createMockSessionManager() {
 					messages: [
 						{ role: "user", content: "Hello" },
 						{ role: "assistant", content: "Hi there!" },
+					],
+				});
+			}
+			if (id === "secret-session") {
+				return Promise.resolve({
+					id: "secret-session",
+					title: "Secret Session",
+					owner: "anon",
+					createdAt: "2024-01-01T00:00:00Z",
+					updatedAt: "2024-01-02T00:00:00Z",
+					messageCount: 1,
+					messages: [
+						{
+							role: "user",
+							content: `Deploy with token ${makeTestAnthropicToken()}`,
+						},
 					],
 				});
 			}
@@ -243,6 +266,80 @@ describe("Session Endpoints", () => {
 			await handleSessions(req, res, { id: "not-found" }, corsHeaders);
 
 			expect(getStatus()).toBe(404);
+		});
+	});
+
+	describe("handleSessionShare", () => {
+		it("blocks sharing when high-confidence sensitive content is detected", async () => {
+			const req = createMockRequest("POST", {});
+			const { res, getStatus, getBody } = createMockResponse();
+
+			await handleSessionShare(req, res, { id: "secret-session" }, corsHeaders);
+
+			expect(getStatus()).toBe(409);
+			expect(getBody()).toEqual(
+				expect.objectContaining({
+					code: "sensitive_content_detected",
+				}),
+			);
+		});
+
+		it("allows sharing when sensitive-content override is provided", async () => {
+			const req = createMockRequest("POST", { allowSensitiveContent: true });
+			const { res, getStatus, getBody } = createMockResponse();
+
+			await handleSessionShare(req, res, { id: "secret-session" }, corsHeaders);
+
+			expect(getStatus()).toBe(201);
+			expect(getBody()).toEqual(
+				expect.objectContaining({
+					shareToken: expect.any(String),
+				}),
+			);
+		});
+	});
+
+	describe("handleSessionExport", () => {
+		it("blocks export when high-confidence sensitive content is detected", async () => {
+			const req = createMockRequest("POST", { format: "json" });
+			const { res, getStatus, getBody } = createMockResponse();
+
+			await handleSessionExport(
+				req,
+				res,
+				{ id: "secret-session" },
+				corsHeaders,
+			);
+
+			expect(getStatus()).toBe(409);
+			expect(getBody()).toEqual(
+				expect.objectContaining({
+					code: "sensitive_content_detected",
+				}),
+			);
+		});
+
+		it("allows export when sensitive-content override is provided", async () => {
+			const req = createMockRequest("POST", {
+				format: "json",
+				allowSensitiveContent: true,
+			});
+			const { res, getStatus, getHeaders, getBody } = createMockResponse();
+
+			await handleSessionExport(
+				req,
+				res,
+				{ id: "secret-session" },
+				corsHeaders,
+			);
+
+			expect(getStatus()).toBe(200);
+			expect(getHeaders()["Content-Type"]).toBe("application/json");
+			expect(getBody()).toEqual(
+				expect.objectContaining({
+					id: "secret-session",
+				}),
+			);
 		});
 	});
 

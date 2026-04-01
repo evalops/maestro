@@ -34,6 +34,7 @@
  */
 
 import type { SessionEntry } from "../session/types.js";
+import { runPostCompactionCleanup } from "./compaction-cleanup.js";
 import { convertAppMessageToLlm } from "./custom-messages.js";
 import type { Api, AppMessage, AssistantMessage, Usage } from "./types.js";
 
@@ -1005,6 +1006,12 @@ export async function performCompaction(params: {
 	agent.clearTransientRunState?.();
 	sessionManager.saveMessage(summaryMessage);
 	sessionManager.saveMessage(resumeMessage);
+	await runPostCompactionCleanup({
+		auto,
+		customInstructions,
+		compactedCount: older.length,
+		firstKeptEntryIndex: boundary,
+	});
 
 	return {
 		success: true,

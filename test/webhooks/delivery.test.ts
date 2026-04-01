@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signPayload, verifySignature } from "../../src/webhooks/delivery.js";
+import {
+	buildWebhookDeliveryHeaders,
+	signPayload,
+	verifySignature,
+} from "../../src/webhooks/delivery.js";
 
 describe("Webhook Delivery", () => {
 	describe("signPayload", () => {
@@ -157,6 +161,16 @@ describe("Webhook Delivery", () => {
 			expect(payload.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 			expect(payload.data.severity).toBeDefined();
 			expect(payload.data.message).toBeDefined();
+		});
+	});
+
+	describe("buildWebhookDeliveryHeaders", () => {
+		it("emits both composer and maestro signature headers", () => {
+			const headers = buildWebhookDeliveryHeaders("sig-123");
+
+			expect(headers["X-Composer-Signature"]).toBe("sig-123");
+			expect(headers["X-Maestro-Signature"]).toBe("sig-123");
+			expect(headers["Content-Type"]).toBe("application/json");
 		});
 	});
 });
