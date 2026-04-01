@@ -13,6 +13,7 @@ import {
 	type RawMessage,
 	convertToComposerMessage,
 } from "../lib/message-converter.js";
+import { formatVscodeRuntimeStatus } from "../lib/runtime-status.js";
 import {
 	type SummaryMessage,
 	summarizeVscodeToolCall,
@@ -762,6 +763,7 @@ export class ComposerSidebarProvider
 
 		this._messages.push(userMsg);
 		this._context.workspaceState.update("composer.messages", this._messages);
+		this._view?.webview.postMessage({ type: "runtime_status_clear" });
 
 		const thinkingEditor = vscode.window.activeTextEditor;
 		const thinkingLine = thinkingEditor?.selection.active.line;
@@ -872,6 +874,14 @@ export class ComposerSidebarProvider
 						result: getEventProp<unknown>("result"),
 						isError: getEventProp<boolean>("isError"),
 					});
+				} else if (event.type === "status" || event.type === "compaction") {
+					const statusText = formatVscodeRuntimeStatus(event);
+					if (statusText) {
+						this._view?.webview.postMessage({
+							type: "runtime_status",
+							value: statusText,
+						});
+					}
 				} else if (event.type === "text_delta") {
 					// Fallback for flat events if any
 					const text = getEventProp<string>("text");
@@ -954,6 +964,7 @@ export class ComposerSidebarProvider
 					"composer.messages",
 					this._messages,
 				);
+				this._view?.webview.postMessage({ type: "runtime_status_clear" });
 				this._view?.webview.postMessage({ type: "done" });
 			} else if (!assistantHasContent) {
 				this._removeAssistantMessage(assistantMsg);
@@ -965,6 +976,7 @@ export class ComposerSidebarProvider
 				}
 				const message =
 					error instanceof Error ? error.message : "Unknown error";
+				this._view?.webview.postMessage({ type: "runtime_status_clear" });
 				this._view?.webview.postMessage({ type: "error", value: message });
 				vscode.window.showErrorMessage(message);
 			}

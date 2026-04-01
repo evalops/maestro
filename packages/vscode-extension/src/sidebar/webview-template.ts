@@ -149,6 +149,19 @@ export function getWebviewStyles(): string {
 			color: var(--text-secondary);
 		}
 
+		.runtime-status {
+			display: none;
+			font-size: 11px;
+			padding: 6px 12px;
+			background: rgba(255, 255, 255, 0.04);
+			border-bottom: 1px solid var(--border-color);
+			color: var(--text-secondary);
+		}
+
+		.runtime-status.visible {
+			display: block;
+		}
+
 		.context-row {
 			display: flex;
 			align-items: center;
@@ -461,10 +474,18 @@ export function getWebviewScript(): string {
 				case 'approval_resolved':
 					updateApprovalStatus(message.requestId, message.decision);
 					break;
+				case 'runtime_status':
+					setRuntimeStatus(message.value);
+					break;
+				case 'runtime_status_clear':
+					clearRuntimeStatus();
+					break;
 				case 'done':
+					clearRuntimeStatus();
 					resetAssistantState();
 					break;
 				case 'error':
+					clearRuntimeStatus();
 					discardPendingAssistantMessage();
 					showError(message.value);
 					break;
@@ -478,6 +499,7 @@ export function getWebviewScript(): string {
 					}
 					resetAssistantState();
 					activeToolCalls.clear();
+					clearRuntimeStatus();
 					setBusy(false);
 					break;
 				case 'busy':
@@ -548,6 +570,24 @@ export function getWebviewScript(): string {
 				});
 				container.appendChild(row);
 			}
+		}
+
+		function setRuntimeStatus(text) {
+			const el = document.getElementById('runtime-status');
+			if (!el) return;
+			if (!text) {
+				clearRuntimeStatus();
+				return;
+			}
+			el.textContent = text;
+			el.classList.add('visible');
+		}
+
+		function clearRuntimeStatus() {
+			const el = document.getElementById('runtime-status');
+			if (!el) return;
+			el.textContent = '';
+			el.classList.remove('visible');
 		}
 
 		window.removePinned = (path) => {
@@ -1015,6 +1055,7 @@ export function getWebviewHtml(options: WebviewTemplateOptions): string {
 					<h2>Maestro Agent</h2>
 					<div id="status-dot" class="status-dot"></div>
 				</div>
+				<div id="runtime-status" class="runtime-status"></div>
 
 				<div id="context-bar" class="context-bar">
 					<!-- Populated by JS -->

@@ -204,6 +204,12 @@ sealed class AgentEvent {
         val aborted: Boolean? = null
     ) : AgentEvent()
 
+    data class Status(
+        val type: String = "status",
+        val status: String,
+        val details: Map<String, Any?> = emptyMap()
+    ) : AgentEvent()
+
     data class MessageStart(
         val type: String = "message_start",
         val message: ComposerMessage
@@ -233,6 +239,16 @@ sealed class AgentEvent {
         val toolName: String,
         val result: Any?,
         val isError: Boolean
+    ) : AgentEvent()
+
+    data class Compaction(
+        val type: String = "compaction",
+        val summary: String,
+        val firstKeptEntryIndex: Int,
+        val tokensBefore: Int,
+        val auto: Boolean? = null,
+        val customInstructions: String? = null,
+        val timestamp: String
     ) : AgentEvent()
 
     data class ClientToolRequest(

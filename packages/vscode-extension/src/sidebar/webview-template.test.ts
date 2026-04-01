@@ -29,4 +29,18 @@ describe("webview template", () => {
 		expect(html).toContain("tool.summaryLabel || tool.name");
 		expect(html).toContain("summaryLabel || name");
 	});
+
+	it("renders runtime status UI hooks", () => {
+		const html = getWebviewHtml({
+			nonce: "nonce",
+			vendorUri: { toString: () => "vendor.js" } as never,
+			styleUri: { toString: () => "style.css" } as never,
+			cspSource: "vscode-resource:",
+			cspConnect: "http://localhost:8080",
+		});
+
+		expect(html).toContain('id="runtime-status"');
+		expect(html).toContain("case 'runtime_status'");
+		expect(html).toContain("case 'runtime_status_clear'");
+	});
 });
