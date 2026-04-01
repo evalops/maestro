@@ -81,6 +81,7 @@ use crate::components::{
     ChatInputWidget, ChatInputWidgetOptions, ChatView, CommandPalette, FileSearchModal,
     ModelSelector, SessionSwitcher, ShortcutsHelp, ThemeSelector,
 };
+use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::get_workspace_files;
 use crate::git;
 use crate::mcp::{McpConfigScope, McpTransport};
@@ -165,6 +166,32 @@ fn detect_queued_follow_up_edit_binding() -> crate::key_hints::KeyBinding {
         &terminal_info.name,
         std::env::var_os("TMUX").is_some(),
     )
+}
+
+fn build_mcp_config_watcher() -> ConfigWatcher {
+    let mut builder = ConfigWatcherBuilder::new().debounce(Duration::from_millis(250));
+
+    if let Some(home) = dirs::home_dir() {
+        builder = builder
+            .watch(home.join(".composer").join("mcp.json"))
+            .watch(home.join(".composer").join("enterprise").join("mcp.json"));
+    }
+
+    builder
+        .watch(".composer/mcp.json")
+        .watch(".composer/mcp.local.json")
+        .build()
+        .unwrap_or_default()
+}
+
+fn is_mcp_config_path(path: &std::path::Path) -> bool {
+    path.ends_with(std::path::Path::new(".composer").join("mcp.json"))
+        || path.ends_with(std::path::Path::new(".composer").join("mcp.local.json"))
+        || path.ends_with(
+            std::path::Path::new(".composer")
+                .join("enterprise")
+                .join("mcp.json"),
+        )
 }
 
 fn format_mcp_scope_label(scope: McpConfigScope) -> &'static str {
@@ -384,6 +411,9 @@ pub struct App {
     /// Last time we refreshed MCP status for runtime badges.
     last_mcp_status_refresh: Option<Instant>,
 
+    /// Watches MCP config files so status badges refresh immediately after edits.
+    config_watcher: ConfigWatcher,
+
     /// Pending model change awaiting agent confirmation.
     pending_model_change: Option<PendingModelChange>,
 
@@ -531,6 +561,7 @@ impl App {
             current_model: String::new(),
             current_thinking_level: ThinkingLevel::Off,
             last_mcp_status_refresh: None,
+            config_watcher: build_mcp_config_watcher(),
             pending_model_change: None,
             current_git_branch: None,
             queued_follow_up_edit_binding,
@@ -668,6 +699,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             // Poll for messages from the agent (async operation).
             // This handles streaming responses, tool calls, etc.
             self.poll_agent().await?;
+
+            // Apply MCP config changes before the periodic refresh so edits
+            // show up in the footer as soon as the watcher delivers them.
+            self.poll_config_watcher().await;
 
             // Refresh MCP badge counts periodically without blocking the UI.
             self.refresh_mcp_badges().await;
@@ -1189,10 +1224,15 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     }
 
     async fn refresh_mcp_badges(&mut self) {
+        self.refresh_mcp_badges_with_force(false).await;
+    }
+
+    async fn refresh_mcp_badges_with_force(&mut self, force: bool) {
         let now = Instant::now();
-        if self
-            .last_mcp_status_refresh
-            .is_some_and(|last| now.duration_since(last) < Duration::from_secs(5))
+        if !force
+            && self
+                .last_mcp_status_refresh
+                .is_some_and(|last| now.duration_since(last) < Duration::from_secs(5))
         {
             return;
         }
@@ -1200,6 +1240,28 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
         if let Ok(servers) = self.tool_executor.mcp_status().await {
             self.update_mcp_badge_counts(&servers);
+        }
+    }
+
+    async fn poll_config_watcher(&mut self) {
+        while let Some(event) = self.config_watcher.poll() {
+            self.handle_config_event(event).await;
+        }
+    }
+
+    async fn handle_config_event(&mut self, event: ConfigEvent) {
+        match event {
+            ConfigEvent::Changed(path)
+            | ConfigEvent::Created(path)
+            | ConfigEvent::Deleted(path)
+                if is_mcp_config_path(&path) =>
+            {
+                self.refresh_mcp_badges_with_force(true).await;
+            }
+            ConfigEvent::Error(message) => {
+                self.state.status = Some(format!("Config watcher error: {message}"));
+            }
+            _ => {}
         }
     }
 
@@ -5313,6 +5375,22 @@ mod tests {
     }
 
     #[test]
+    fn test_is_mcp_config_path_matches_supported_files() {
+        assert!(is_mcp_config_path(std::path::Path::new(
+            ".composer/mcp.json"
+        )));
+        assert!(is_mcp_config_path(std::path::Path::new(
+            ".composer/mcp.local.json"
+        )));
+        assert!(is_mcp_config_path(std::path::Path::new(
+            "/tmp/home/.composer/enterprise/mcp.json"
+        )));
+        assert!(!is_mcp_config_path(std::path::Path::new(
+            ".composer/config.toml"
+        )));
+    }
+
+    #[test]
     fn test_update_mcp_badge_counts_tracks_failures() {
         let mut app = new_test_app();
         app.update_mcp_badge_counts(&[
@@ -5341,6 +5419,42 @@ mod tests {
         assert_eq!(app.state.mcp_connected, 1);
         assert_eq!(app.state.mcp_tool_count, 2);
         assert_eq!(app.state.mcp_failed, 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_config_event_forces_mcp_badge_refresh() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join(".composer")).expect("create config dir");
+
+        let mut app = new_test_app();
+        app.tool_executor = ToolExecutor::new(temp.path().display().to_string());
+        app.last_mcp_status_refresh = Some(Instant::now());
+        app.state.mcp_connected = 7;
+        app.state.mcp_tool_count = 9;
+        app.state.mcp_failed = 2;
+
+        app.handle_config_event(ConfigEvent::Changed(std::path::PathBuf::from(
+            ".composer/mcp.json",
+        )))
+        .await;
+
+        assert_eq!(app.state.mcp_connected, 0);
+        assert_eq!(app.state.mcp_tool_count, 0);
+        assert_eq!(app.state.mcp_failed, 0);
+        assert!(app.last_mcp_status_refresh.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_handle_config_event_reports_watcher_errors() {
+        let mut app = new_test_app();
+
+        app.handle_config_event(ConfigEvent::Error("watch failed".to_string()))
+            .await;
+
+        assert_eq!(
+            app.state.status.as_deref(),
+            Some("Config watcher error: watch failed")
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────
