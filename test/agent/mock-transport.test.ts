@@ -369,4 +369,71 @@ describe("Agent mock transport", () => {
 		expect(events.some((e) => e.type === "turn_start")).toBe(true);
 		expect(events.some((e) => e.type === "turn_end")).toBe(true);
 	});
+
+	it("clears stale agent errors before a subsequent successful prompt", async () => {
+		class FailThenSucceedTransport implements AgentTransport {
+			private attempts = 0;
+
+			async *continue(
+				_messages: Message[],
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				yield* (async function* empty(): AsyncGenerator<AgentEvent> {})();
+				throw new Error("Not used in this test");
+			}
+
+			async *run(): AsyncGenerator<AgentEvent, void, unknown> {
+				this.attempts += 1;
+				if (this.attempts === 1) {
+					throw new Error("first run failed");
+				}
+
+				const assistant: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: "recovered" }],
+					api: "openai-completions",
+					provider: "mock",
+					model: "mock",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				};
+
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new FailThenSucceedTransport(),
+			initialState: { model: mockModel },
+		});
+
+		await expect(agent.prompt("fail first")).rejects.toThrow(
+			"first run failed",
+		);
+		expect(agent.state.error).toBe("first run failed");
+
+		await agent.prompt("try again");
+
+		expect(agent.state.error).toBeUndefined();
+		const finalAssistant = [...agent.state.messages]
+			.reverse()
+			.find(
+				(message): message is AssistantMessage => message.role === "assistant",
+			);
+		expect(finalAssistant?.content.find(isTextContent)?.text).toBe("recovered");
+	});
 });

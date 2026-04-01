@@ -70,6 +70,7 @@ function createMockAgent(messages: AppMessage[]): CompactionAgent {
 			.fn()
 			.mockResolvedValue(createAssistantMessage("LLM summary of conversation")),
 		replaceMessages: vi.fn(),
+		clearTransientRunState: vi.fn(),
 	};
 }
 
@@ -137,6 +138,16 @@ describe("performCompaction", () => {
 		expect(replaced[1]?.role).toBe("user");
 		// Must contain some kept messages from the end
 		expect(replaced.length).toBeGreaterThan(2);
+	});
+
+	it("clears transient agent state after compaction when supported", async () => {
+		const messages = buildConversation(10);
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+
+		await performCompaction({ agent, sessionManager });
+
+		expect(agent.clearTransientRunState).toHaveBeenCalledOnce();
 	});
 
 	it("uses renderSummaryText callback when provided", async () => {
