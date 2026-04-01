@@ -19,7 +19,7 @@ describe("actions", () => {
 	});
 
 	it("returns friendly labels", () => {
-		expect(getActionLabel("web")).toBe("Open Composer");
+		expect(getActionLabel("web")).toBe("Open Maestro");
 		expect(getActionLabel("docs")).toBe("View Documentation");
 		expect(getActionLabel("tui")).toBe("Launch Terminal UI");
 	});

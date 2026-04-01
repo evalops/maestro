@@ -8,7 +8,7 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.project.DumbAware
 
 /**
- * Action to add a file to the Composer context.
+ * Action to add a file to the Maestro context.
  */
 class AddToContextAction : AnAction(), DumbAware {
 
@@ -24,7 +24,7 @@ class AddToContextAction : AnAction(), DumbAware {
             .getNotificationGroup("Composer Notifications")
             .createNotification(
                 "Added to Context",
-                "File '${file.name}' added to Composer context.",
+                "File '${file.name}' added to Maestro context.",
                 com.intellij.notification.NotificationType.INFORMATION
             )
             .notify(project)

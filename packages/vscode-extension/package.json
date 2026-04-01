@@ -1,6 +1,6 @@
 {
 	"name": "maestro-vscode",
-	"displayName": "Composer",
+	"displayName": "Maestro",
 	"description": "Use Maestro's deterministic AI assistant inside VS Code.",
 	"publisher": "evalops",
 	"version": "0.10.0",
@@ -31,7 +31,7 @@
 			"activitybar": [
 				{
 					"id": "composer-sidebar",
-					"title": "Composer",
+					"title": "Maestro",
 					"icon": "$(hubot)"
 				}
 			]
@@ -48,42 +48,42 @@
 		"commands": [
 			{
 				"command": "composer.openPanel",
-				"title": "Composer: Open Assistant Panel",
-				"category": "Composer"
+				"title": "Maestro: Open Assistant Panel",
+				"category": "Maestro"
 			},
 			{
 				"command": "composer.openDocs",
-				"title": "Composer: Open Documentation",
-				"category": "Composer"
+				"title": "Maestro: Open Documentation",
+				"category": "Maestro"
 			},
 			{
 				"command": "composer.clearChat",
 				"title": "Clear Chat",
-				"category": "Composer",
+				"category": "Maestro",
 				"icon": "$(clear-all)"
 			},
 			{
 				"command": "composer.switchSession",
 				"title": "Switch Session",
-				"category": "Composer",
+				"category": "Maestro",
 				"icon": "$(history)"
 			},
 			{
 				"command": "composer.addToContext",
 				"title": "Add File to Context",
-				"category": "Composer",
+				"category": "Maestro",
 				"icon": "$(pin)"
 			},
 			{
 				"command": "composer.removeFromContext",
 				"title": "Remove File from Context",
-				"category": "Composer",
+				"category": "Maestro",
 				"icon": "$(close)"
 			},
 			{
 				"command": "composer.showCommandPicker",
 				"title": "Run Command",
-				"category": "Composer",
+				"category": "Maestro",
 				"icon": "$(terminal)"
 			}
 		],
@@ -113,12 +113,12 @@
 			]
 		},
 		"configuration": {
-			"title": "Composer",
+			"title": "Maestro",
 			"properties": {
 				"composer.apiEndpoint": {
 					"type": "string",
 					"default": "http://localhost:8080",
-					"description": "URL of the Composer API server"
+					"description": "URL of the Maestro API server"
 				},
 				"composer.model": {
 					"type": "string",

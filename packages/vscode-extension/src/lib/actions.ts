@@ -21,6 +21,6 @@ export function getActionLabel(action: ComposerAction): string {
 		case "tui":
 			return "Launch Terminal UI";
 		default:
-			return "Open Composer";
+			return "Open Maestro";
 	}
 }

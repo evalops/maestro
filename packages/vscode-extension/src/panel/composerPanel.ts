@@ -136,7 +136,7 @@ export class ComposerPanel {
 				<meta charset="UTF-8" />
 				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ${this.apiOrigin}; img-src https: data:; script-src 'nonce-${nonce}' ${cspSource}; style-src 'unsafe-inline';" />
 				<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-				<title>Composer Assistant</title>
+				<title>Maestro Assistant</title>
 				<style>
 					:root {
                         --bg-primary: var(--vscode-editor-background);
@@ -300,7 +300,7 @@ export class ComposerPanel {
 			<body>
 				<div class="container">
                     <div class="header">
-                        <h1>Composer</h1>
+                        <h1>Maestro</h1>
                         <p>Deterministic AI Agent for Engineering</p>
                     </div>
 
@@ -309,7 +309,7 @@ export class ComposerPanel {
                             <span class="card-title">Local Workspace</span>
                             <span id="server-badge" class="status-badge offline">Offline</span>
                         </div>
-                        <p style="margin-bottom: 16px;">Connect to your local Composer instance for full file access and terminal control.</p>
+                        <p style="margin-bottom: 16px;">Connect to your local Maestro instance for full file access and terminal control.</p>
 
                         <div id="local-actions" class="actions" style="display:none">
                              <button id="btn-open-local" class="action">
@@ -317,7 +317,7 @@ export class ComposerPanel {
                             </button>
                         </div>
 				<div id="local-placeholder" style="font-size: 13px; color: var(--text-secondary); font-style: italic;">
-					Server not detected at ${this.statusDisplayTarget}. Run <code>npm run web</code> to start.
+					Server not detected at ${this.statusDisplayTarget}. Run <code>maestro web</code> to start.
 				</div>
 
                         <div class="server-status">
