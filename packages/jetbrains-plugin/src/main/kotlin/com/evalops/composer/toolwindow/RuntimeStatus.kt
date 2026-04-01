@@ -5,12 +5,13 @@ import com.evalops.composer.api.AgentEvent
 fun formatRuntimeStatus(event: AgentEvent): String? {
     return when (event) {
         is AgentEvent.Status -> {
-            if (event.status.isBlank()) {
+            val status = event.status.trim()
+            if (status.isEmpty()) {
                 null
-            } else if (event.status == "compacting") {
+            } else if (status == "compacting") {
                 "Compacting conversation..."
             } else {
-                "Status: ${event.status}"
+                "Status: $status"
             }
         }
         is AgentEvent.Compaction -> {

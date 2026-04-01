@@ -22,6 +22,16 @@ describe("vscode runtime status", () => {
 		).toBe("Status: planning");
 	});
 
+	it("trims status values before formatting", () => {
+		expect(
+			formatVscodeRuntimeStatus({
+				type: "status",
+				status: " compacting ",
+				details: {},
+			}),
+		).toBe("Compacting conversation...");
+	});
+
 	it("formats compaction events", () => {
 		expect(
 			formatVscodeRuntimeStatus({
