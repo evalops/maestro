@@ -130,6 +130,19 @@ describe("buildMcpServerViewModel", () => {
 		expect(viewModel.resources).toEqual([]);
 		expect(viewModel.prompts).toEqual([]);
 	});
+
+	it("falls back to a generic error message for blank server errors", () => {
+		const viewModel = buildMcpServerViewModel(
+			{
+				name: "blank-error",
+				connected: false,
+				error: "   ",
+			},
+			null,
+		);
+
+		expect(viewModel.errorLabel).toBe("Connection failed.");
+	});
 });
 
 describe("buildComposerProfilesViewModel", () => {

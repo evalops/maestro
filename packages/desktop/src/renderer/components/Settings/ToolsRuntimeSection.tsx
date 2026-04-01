@@ -104,6 +104,14 @@ function formatCountLabel(
 	return `${count} ${count === 1 ? singular : plural}`;
 }
 
+function formatMcpErrorLabel(error: string | undefined): string | null {
+	if (typeof error !== "string") {
+		return null;
+	}
+
+	return error.trim() || "Connection failed.";
+}
+
 export function buildLspViewModel(
 	status: LspStatus | null,
 	detections: LspDetection[],
@@ -151,7 +159,7 @@ export function buildMcpServerViewModel(
 		isExpanded: expandedServer === server.name,
 		sourceLabel,
 		transportLabel,
-		errorLabel: server.error ?? null,
+		errorLabel: formatMcpErrorLabel(server.error),
 		toolCount,
 		tools,
 		toolDetailsLabel:
