@@ -193,7 +193,9 @@ class ComposerPanel(private val project: Project) : SimpleToolWindowPanel(true, 
 
         if (settings.showToolDetails) {
             message.tools?.forEach { tool ->
-                val toolLabel = JBLabel("${tool.name}: ${tool.status}")
+                val statusText = tool.status.name.lowercase()
+                val summaryLabel = summarizeToolCall(tool)
+                val toolLabel = JBLabel("$summaryLabel: $statusText")
                 toolLabel.icon = when (tool.status) {
                     ToolCallStatus.COMPLETED -> AllIcons.Actions.Commit
                     ToolCallStatus.ERROR -> AllIcons.General.Error
@@ -201,6 +203,8 @@ class ComposerPanel(private val project: Project) : SimpleToolWindowPanel(true, 
                     ToolCallStatus.PENDING -> AllIcons.Actions.Execute
                 }
                 toolLabel.font = toolLabel.font.deriveFont(11f)
+                toolLabel.toolTipText =
+                    if (summaryLabel == tool.name) tool.name else "${tool.name} ($statusText)"
                 toolsPanel.add(toolLabel)
             }
         }

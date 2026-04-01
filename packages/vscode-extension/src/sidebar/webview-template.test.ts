@@ -16,4 +16,17 @@ describe("webview template", () => {
 		expect(html).not.toContain("Composer Chat");
 		expect(html).not.toContain("Composer Agent");
 	});
+
+	it("renders tool summary labels for live and historical tool cards", () => {
+		const html = getWebviewHtml({
+			nonce: "nonce",
+			vendorUri: { toString: () => "vendor.js" } as never,
+			styleUri: { toString: () => "style.css" } as never,
+			cspSource: "vscode-resource:",
+			cspConnect: "http://localhost:8080",
+		});
+
+		expect(html).toContain("tool.summaryLabel || tool.name");
+		expect(html).toContain("summaryLabel || name");
+	});
 });
