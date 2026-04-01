@@ -13,6 +13,45 @@ import type { ComposerState, LoadedComposer } from "./types.js";
 
 const logger = createLogger("composers:manager");
 
+function cloneComposer(composer: LoadedComposer): LoadedComposer {
+	return {
+		...composer,
+		tools: composer.tools ? [...composer.tools] : undefined,
+		denyTools: composer.denyTools ? [...composer.denyTools] : undefined,
+		triggers: composer.triggers
+			? {
+					files: composer.triggers.files
+						? [...composer.triggers.files]
+						: undefined,
+					directories: composer.triggers.directories
+						? [...composer.triggers.directories]
+						: undefined,
+					keywords: composer.triggers.keywords
+						? [...composer.triggers.keywords]
+						: undefined,
+				}
+			: undefined,
+		permissions: composer.permissions
+			? {
+					...composer.permissions,
+					tools: composer.permissions.tools
+						? { ...composer.permissions.tools }
+						: undefined,
+					bash: composer.permissions.bash
+						? { ...composer.permissions.bash }
+						: undefined,
+				}
+			: undefined,
+	};
+}
+
+function cloneState(state: ComposerState): ComposerState {
+	return {
+		active: state.active ? cloneComposer(state.active) : null,
+		available: state.available.map(cloneComposer),
+	};
+}
+
 export interface ComposerManagerEvents {
 	activated: (composer: LoadedComposer) => void;
 	deactivated: (composer: LoadedComposer) => void;
@@ -48,21 +87,21 @@ export class ComposerManager extends EventEmitter {
 		this.baseTemperature = agent.state.temperature;
 		this.baseTopP = agent.state.topP;
 		this.baseThinkingLevel = agent.state.thinkingLevel;
-		this.state.available = loadComposers(projectRoot);
+		this.state.available = loadComposers(projectRoot).map(cloneComposer);
 	}
 
 	/**
 	 * Get the current state
 	 */
 	getState(): Readonly<ComposerState> {
-		return this.state;
+		return cloneState(this.state);
 	}
 
 	/**
 	 * Reload available composers from disk
 	 */
 	reload(projectRoot?: string): void {
-		this.state.available = loadComposers(projectRoot);
+		this.state.available = loadComposers(projectRoot).map(cloneComposer);
 	}
 
 	/**
@@ -146,7 +185,7 @@ export class ComposerManager extends EventEmitter {
 				const lowerPrompt = prompt.toLowerCase();
 				for (const keyword of composer.triggers.keywords) {
 					if (lowerPrompt.includes(keyword.toLowerCase())) {
-						return composer;
+						return cloneComposer(composer);
 					}
 				}
 			}
@@ -175,7 +214,7 @@ export class ComposerManager extends EventEmitter {
 				for (const pattern of composer.triggers.files) {
 					const normalizedPattern = normalizePattern(pattern);
 					if (minimatch(normalizedPath, normalizedPattern, matchOptions)) {
-						return composer;
+						return cloneComposer(composer);
 					}
 				}
 			}
@@ -188,7 +227,7 @@ export class ComposerManager extends EventEmitter {
 						normalizedPath.startsWith(normalizedPattern) ||
 						minimatch(normalizedPath, normalizedPattern, matchOptions)
 					) {
-						return composer;
+						return cloneComposer(composer);
 					}
 				}
 			}
@@ -297,8 +336,9 @@ export class ComposerManager extends EventEmitter {
 			this.agent.setThinkingLevel(composer.thinkingLevel);
 		}
 
-		this.state.active = composer;
-		this.emit("activated", composer);
+		const activeComposer = cloneComposer(composer);
+		this.state.active = activeComposer;
+		this.emit("activated", cloneComposer(activeComposer));
 		return true;
 	}
 }
