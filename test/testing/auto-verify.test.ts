@@ -321,6 +321,19 @@ describe("Auto-Verify Service", () => {
 
 			expect(result).toBe(false);
 		});
+
+		it("respects ignore patterns relative to the service workspace", () => {
+			const result = shouldTriggerTests(
+				"/tmp/maestro-workspace/src/generated/file.ts",
+				{
+					...getAutoVerifyConfig(),
+					ignorePatterns: ["src/generated/**"],
+				},
+				"/tmp/maestro-workspace",
+			);
+
+			expect(result).toBe(false);
+		});
 	});
 
 	describe("isTestFile", () => {
@@ -508,6 +521,150 @@ describe("Auto-Verify Service", () => {
 			service.recordFileChange(join(testDir, "src/foo.ts"));
 
 			expect(service.getDirtyFiles()).toHaveLength(0);
+		});
+
+		it("applies ignore patterns relative to the service cwd", () => {
+			const service = createAutoVerifyService(testDir, {
+				ignorePatterns: ["src/generated/**"],
+			});
+			const ignoredFile = join(testDir, "src/generated/foo.ts");
+
+			require("node:fs").mkdirSync(join(testDir, "src/generated"), {
+				recursive: true,
+			});
+			writeFileSync(ignoredFile, "export const generated = true;");
+
+			service.recordFileChange(ignoredFile);
+
+			expect(service.getDirtyFiles()).toHaveLength(0);
+		});
+
+		it("retries pending dirty files after cooldown expires", async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+			const sourceFile = join(testDir, "src/foo.ts");
+			const testFile = join(testDir, "test/foo.test.ts");
+
+			require("node:fs").mkdirSync(join(testDir, "src"), { recursive: true });
+			require("node:fs").mkdirSync(join(testDir, "test"), { recursive: true });
+			writeFileSync(sourceFile, "export const foo = 1;");
+			writeFileSync(testFile, "test('foo', () => {});");
+
+			const service = createAutoVerifyService(testDir, {
+				debounceDelayMs: 10,
+				cooldownMs: 50,
+			});
+			const runTestsSpy = vi.spyOn(service, "runTests").mockResolvedValue({
+				success: true,
+				totalTests: 1,
+				passedTests: 1,
+				failedTests: 0,
+				skippedTests: 0,
+				durationMs: 1,
+				failures: [],
+				command: "bun test",
+				output: "ok",
+			});
+			Reflect.set(service as object, "lastTestRun", Date.now());
+
+			service.recordFileChange(sourceFile);
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(runTestsSpy).not.toHaveBeenCalled();
+			expect(service.getDirtyFiles()).toEqual([sourceFile]);
+
+			await vi.advanceTimersByTimeAsync(40);
+
+			expect(runTestsSpy).toHaveBeenCalledTimes(1);
+			expect(runTestsSpy).toHaveBeenCalledWith(["test/foo.test.ts"]);
+			expect(service.getDirtyFiles()).toHaveLength(0);
+			vi.useRealTimers();
+		});
+
+		it("retries pending dirty files after the current run finishes", async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+			const sourceFile = join(testDir, "src/foo.ts");
+			const testFile = join(testDir, "test/foo.test.ts");
+
+			require("node:fs").mkdirSync(join(testDir, "src"), { recursive: true });
+			require("node:fs").mkdirSync(join(testDir, "test"), { recursive: true });
+			writeFileSync(sourceFile, "export const foo = 1;");
+			writeFileSync(testFile, "test('foo', () => {});");
+
+			const service = createAutoVerifyService(testDir, {
+				debounceDelayMs: 10,
+				cooldownMs: 0,
+			});
+			const runTestsSpy = vi.spyOn(service, "runTests").mockResolvedValue({
+				success: true,
+				totalTests: 1,
+				passedTests: 1,
+				failedTests: 0,
+				skippedTests: 0,
+				durationMs: 1,
+				failures: [],
+				command: "bun test",
+				output: "ok",
+			});
+			Reflect.set(service as object, "isRunning", true);
+
+			service.recordFileChange(sourceFile);
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(runTestsSpy).not.toHaveBeenCalled();
+			expect(service.getDirtyFiles()).toEqual([sourceFile]);
+
+			Reflect.set(service as object, "isRunning", false);
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(runTestsSpy).toHaveBeenCalledTimes(1);
+			expect(runTestsSpy).toHaveBeenCalledWith(["test/foo.test.ts"]);
+			expect(service.getDirtyFiles()).toHaveLength(0);
+			vi.useRealTimers();
+		});
+
+		it("pauses pending dirty files while disabled and resumes them when re-enabled", async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+			const sourceFile = join(testDir, "src/foo.ts");
+			const testFile = join(testDir, "test/foo.test.ts");
+
+			require("node:fs").mkdirSync(join(testDir, "src"), { recursive: true });
+			require("node:fs").mkdirSync(join(testDir, "test"), { recursive: true });
+			writeFileSync(sourceFile, "export const foo = 1;");
+			writeFileSync(testFile, "test('foo', () => {});");
+
+			const service = createAutoVerifyService(testDir, {
+				debounceDelayMs: 10,
+				cooldownMs: 0,
+			});
+			const runTestsSpy = vi.spyOn(service, "runTests").mockResolvedValue({
+				success: true,
+				totalTests: 1,
+				passedTests: 1,
+				failedTests: 0,
+				skippedTests: 0,
+				durationMs: 1,
+				failures: [],
+				command: "bun test",
+				output: "ok",
+			});
+
+			service.recordFileChange(sourceFile);
+			service.setConfig({ enabled: false });
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(runTestsSpy).not.toHaveBeenCalled();
+			expect(service.getDirtyFiles()).toEqual([sourceFile]);
+
+			service.setConfig({ enabled: true });
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(runTestsSpy).toHaveBeenCalledTimes(1);
+			expect(runTestsSpy).toHaveBeenCalledWith(["test/foo.test.ts"]);
+			expect(service.getDirtyFiles()).toHaveLength(0);
+			vi.useRealTimers();
 		});
 
 		it("stops cleanly", () => {

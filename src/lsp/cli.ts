@@ -132,7 +132,7 @@ function printHelp() {
 	console.log(`
 LSP Debug CLI
 
-Usage: composer-lsp <command> [options]
+Usage: maestro-lsp <command> [options]
 
 Commands:
   diagnostics [file]     Get LSP diagnostics for a file (or all available)
@@ -143,12 +143,12 @@ Commands:
   help                   Show this help message
 
 Examples:
-  composer-lsp diagnostics src/main.ts
-  composer-lsp diagnostics
-  composer-lsp symbols "MyClass"
-  composer-lsp document-symbols src/index.ts
-  composer-lsp definition src/index.ts 10 4
-  composer-lsp references src/index.ts 10 4 false
+  maestro-lsp diagnostics src/main.ts
+  maestro-lsp diagnostics
+  maestro-lsp symbols "MyClass"
+  maestro-lsp document-symbols src/index.ts
+  maestro-lsp definition src/index.ts 10 4
+  maestro-lsp references src/index.ts 10 4 false
 `);
 }
 

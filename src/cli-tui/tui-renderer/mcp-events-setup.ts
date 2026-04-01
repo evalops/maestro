@@ -136,7 +136,7 @@ export function createMcpEventsController(params: {
 	// Composer activation handlers
 	handlers.composerActivated = (composer) => {
 		notificationView.showToast(
-			`Composer "${composer.name}" activated`,
+			`Maestro "${composer.name}" activated`,
 			"success",
 		);
 		refreshFooterHint();
@@ -144,7 +144,7 @@ export function createMcpEventsController(params: {
 
 	handlers.composerDeactivated = (composer) => {
 		notificationView.showToast(
-			`Composer "${composer.name}" deactivated`,
+			`Maestro "${composer.name}" deactivated`,
 			"info",
 		);
 		refreshFooterHint();

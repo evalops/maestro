@@ -42,7 +42,8 @@ impl CheckpointManager {
             metadata: HashMap::new(),
         };
 
-        self.active_checkpoints.insert(checkpoint_id.clone(), checkpoint.clone());
+        self.active_checkpoints
+            .insert(checkpoint_id.clone(), checkpoint.clone());
 
         // Persist to disk
         self.persist_checkpoint(&checkpoint).await?;
@@ -54,7 +55,11 @@ impl CheckpointManager {
     }
 
     /// Backup a file before modifying it
-    pub async fn backup_file(&mut self, checkpoint_id: &str, file_path: &Path) -> anyhow::Result<()> {
+    pub async fn backup_file(
+        &mut self,
+        checkpoint_id: &str,
+        file_path: &Path,
+    ) -> anyhow::Result<()> {
         // Read current file content if it exists
         let content = if file_path.exists() {
             Some(fs::read_to_string(file_path).await?)
@@ -63,18 +68,23 @@ impl CheckpointManager {
         };
 
         {
-            let checkpoint = self.active_checkpoints
+            let checkpoint = self
+                .active_checkpoints
                 .get_mut(checkpoint_id)
                 .ok_or_else(|| anyhow::anyhow!("Checkpoint not found: {}", checkpoint_id))?;
 
-            if checkpoint.state != CheckpointState::Created && checkpoint.state != CheckpointState::Active {
-                anyhow::bail!("Cannot backup to checkpoint in state {:?}", checkpoint.state);
+            if checkpoint.state != CheckpointState::Created
+                && checkpoint.state != CheckpointState::Active
+            {
+                anyhow::bail!(
+                    "Cannot backup to checkpoint in state {:?}",
+                    checkpoint.state
+                );
             }
 
-            checkpoint.file_backups.insert(
-                file_path.to_string_lossy().to_string(),
-                content,
-            );
+            checkpoint
+                .file_backups
+                .insert(file_path.to_string_lossy().to_string(), content);
             checkpoint.state = CheckpointState::Active;
         }
 
@@ -86,7 +96,11 @@ impl CheckpointManager {
     }
 
     /// Capture git state for potential rollback
-    pub async fn capture_git_state(&mut self, checkpoint_id: &str, repo_path: &Path) -> anyhow::Result<()> {
+    pub async fn capture_git_state(
+        &mut self,
+        checkpoint_id: &str,
+        repo_path: &Path,
+    ) -> anyhow::Result<()> {
         // Get current HEAD commit
         let output = tokio::process::Command::new("git")
             .args(["rev-parse", "HEAD"])
@@ -98,7 +112,8 @@ impl CheckpointManager {
             let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
             {
-                let checkpoint = self.active_checkpoints
+                let checkpoint = self
+                    .active_checkpoints
                     .get_mut(checkpoint_id)
                     .ok_or_else(|| anyhow::anyhow!("Checkpoint not found: {}", checkpoint_id))?;
                 checkpoint.git_state = Some(commit);
@@ -114,7 +129,8 @@ impl CheckpointManager {
     /// Commit the checkpoint (mark as complete, no rollback needed)
     pub async fn commit(&mut self, checkpoint_id: &str) -> anyhow::Result<()> {
         {
-            let checkpoint = self.active_checkpoints
+            let checkpoint = self
+                .active_checkpoints
                 .get_mut(checkpoint_id)
                 .ok_or_else(|| anyhow::anyhow!("Checkpoint not found: {}", checkpoint_id))?;
             checkpoint.state = CheckpointState::Committed;
@@ -130,7 +146,8 @@ impl CheckpointManager {
     pub async fn rollback(&mut self, checkpoint_id: &str) -> anyhow::Result<RollbackResult> {
         // First, extract file backups and update state
         let file_backups = {
-            let checkpoint = self.active_checkpoints
+            let checkpoint = self
+                .active_checkpoints
                 .get_mut(checkpoint_id)
                 .ok_or_else(|| anyhow::anyhow!("Checkpoint not found: {}", checkpoint_id))?;
 
@@ -188,8 +205,13 @@ impl CheckpointManager {
     }
 
     /// Rollback git changes if needed
-    pub async fn rollback_git(&mut self, checkpoint_id: &str, repo_path: &Path) -> anyhow::Result<()> {
-        let checkpoint = self.active_checkpoints
+    pub async fn rollback_git(
+        &mut self,
+        checkpoint_id: &str,
+        repo_path: &Path,
+    ) -> anyhow::Result<()> {
+        let checkpoint = self
+            .active_checkpoints
             .get(checkpoint_id)
             .ok_or_else(|| anyhow::anyhow!("Checkpoint not found: {}", checkpoint_id))?;
 
@@ -247,10 +269,11 @@ impl CheckpointManager {
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "json") {
+            if path.extension().is_some_and(|e| e == "json") {
                 let content = fs::read_to_string(&path).await?;
                 if let Ok(checkpoint) = serde_json::from_str::<Checkpoint>(&content) {
-                    self.active_checkpoints.insert(checkpoint.id.clone(), checkpoint);
+                    self.active_checkpoints
+                        .insert(checkpoint.id.clone(), checkpoint);
                     count += 1;
                 }
             }
@@ -268,16 +291,23 @@ impl CheckpointManager {
         }
 
         // Collect completed checkpoints that can be removed
-        let to_remove: Vec<_> = self.active_checkpoints
+        let to_remove: Vec<_> = self
+            .active_checkpoints
             .iter()
             .filter(|(_, c)| {
-                matches!(c.state, CheckpointState::Committed | CheckpointState::RolledBack)
+                matches!(
+                    c.state,
+                    CheckpointState::Committed | CheckpointState::RolledBack
+                )
             })
             .map(|(id, _)| id.clone())
             .collect();
 
         // Calculate how many we need to remove to get back under limit
-        let excess = self.active_checkpoints.len().saturating_sub(self.max_checkpoints);
+        let excess = self
+            .active_checkpoints
+            .len()
+            .saturating_sub(self.max_checkpoints);
         let remove_count = excess.min(to_remove.len());
 
         for id in to_remove.iter().take(remove_count) {

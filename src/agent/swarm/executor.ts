@@ -45,6 +45,50 @@ const TEAMMATE_NAMES = [
 	"Kappa",
 ];
 
+function toSafeTaskTempBasename(taskId: string): string {
+	const safeId = taskId
+		.replace(/[^A-Za-z0-9_-]+/g, "_")
+		.replace(/^_+|_+$/g, "");
+	return `swarm-task-${safeId || "task"}.md`;
+}
+
+function cloneTask(task: SwarmTask): SwarmTask {
+	return {
+		...task,
+		files: task.files ? [...task.files] : undefined,
+		dependsOn: task.dependsOn ? [...task.dependsOn] : undefined,
+	};
+}
+
+function cloneTeammate(teammate: SwarmTeammate): SwarmTeammate {
+	return {
+		...teammate,
+		currentTask: teammate.currentTask
+			? cloneTask(teammate.currentTask)
+			: undefined,
+		completedTasks: [...teammate.completedTasks],
+	};
+}
+
+function cloneConfig(config: SwarmConfig): SwarmConfig {
+	return {
+		...config,
+		tasks: config.tasks.map(cloneTask),
+	};
+}
+
+function cloneState(state: SwarmState): SwarmState {
+	return {
+		...state,
+		config: cloneConfig(state.config),
+		teammates: state.teammates.map(cloneTeammate),
+		pendingTasks: state.pendingTasks.map(cloneTask),
+		activeTasks: new Map(state.activeTasks),
+		completedTasks: new Set(state.completedTasks),
+		failedTasks: new Set(state.failedTasks),
+	};
+}
+
 /**
  * SwarmExecutor manages a swarm of parallel agent instances.
  */
@@ -122,7 +166,7 @@ export class SwarmExecutor {
 	 * Get the current swarm state.
 	 */
 	getState(): SwarmState {
-		return { ...this.state };
+		return cloneState(this.state);
 	}
 
 	/**
@@ -142,9 +186,11 @@ export class SwarmExecutor {
 			const teammate = this.state.teammates.find((t) => t.id === teammateId);
 			if (teammate) {
 				teammate.status = "cancelled";
+				teammate.currentTask = undefined;
 			}
 		}
 
+		this.state.activeTasks.clear();
 		this.processes.clear();
 		logger.info("Swarm cancelled", { swarmId: this.state.id });
 	}
@@ -282,7 +328,7 @@ export class SwarmExecutor {
 	 * Spawn a subprocess agent for a teammate.
 	 */
 	private spawnTeammate(teammate: SwarmTeammate, task: SwarmTask): void {
-		const tmpFile = join(tmpdir(), `swarm-task-${task.id}.md`);
+		const tmpFile = join(tmpdir(), toSafeTaskTempBasename(task.id));
 
 		// Build prompt for the teammate
 		let prompt = `# Swarm Task: ${task.id}\n\n`;
@@ -300,12 +346,16 @@ export class SwarmExecutor {
 
 		const args = [
 			"--no-session",
-			...(this.state.config.model ? ["--model", this.state.config.model] : []),
+			...(task.model
+				? ["--model", task.model]
+				: this.state.config.model
+					? ["--model", this.state.config.model]
+					: []),
 			"exec",
 			tmpFile,
 		];
 
-		const proc = spawn("composer", args, {
+		const proc = spawn("maestro", args, {
 			cwd: this.state.config.cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 			env: {
@@ -354,6 +404,19 @@ export class SwarmExecutor {
 
 			this.state.activeTasks.delete(taskId);
 
+			if (
+				this.state.status === "cancelled" ||
+				teammate.status === "cancelled"
+			) {
+				teammate.status = "cancelled";
+				this.emit({
+					type: "teammate_complete",
+					swarmId: this.state.id,
+					teammate,
+				});
+				return;
+			}
+
 			if (code === 0 && !teammate.error) {
 				teammate.status = "completed";
 				teammate.completedTasks.push(taskId);
@@ -389,10 +452,12 @@ export class SwarmExecutor {
 				teammate,
 			});
 
-			// Reset teammate for potential reuse
+			// Only recycle idle teammates while the swarm still has work left.
 			if (
-				teammate.status === "completed" ||
-				this.state.config.continueOnFailure
+				this.state.status === "running" &&
+				(this.state.pendingTasks.length > 0 ||
+					this.state.activeTasks.size > 0) &&
+				(teammate.status === "completed" || this.state.config.continueOnFailure)
 			) {
 				teammate.status = "pending";
 				teammate.error = undefined;
@@ -402,9 +467,34 @@ export class SwarmExecutor {
 		proc.on("error", (err) => {
 			clearTimeout(timeoutHandle);
 			this.processes.delete(teammate.id);
+			this.state.activeTasks.delete(task.id);
+
+			try {
+				unlinkSync(tmpFile);
+			} catch {
+				// Ignore cleanup errors
+			}
+
+			teammate.completedAt = Date.now();
+			teammate.currentTask = undefined;
+			teammate.output = output || errorOutput;
+
+			if (
+				this.state.status === "cancelled" ||
+				teammate.status === "cancelled"
+			) {
+				teammate.status = "cancelled";
+				teammate.currentTask = undefined;
+				this.emit({
+					type: "teammate_complete",
+					swarmId: this.state.id,
+					teammate,
+				});
+				return;
+			}
+
 			teammate.status = "failed";
 			teammate.error = err.message;
-			this.state.activeTasks.delete(task.id);
 			this.state.failedTasks.add(task.id);
 
 			this.emit({
@@ -414,6 +504,26 @@ export class SwarmExecutor {
 				taskId: task.id,
 				error: err.message,
 			});
+
+			if (!this.state.config.continueOnFailure) {
+				this.state.status = "failed";
+			}
+
+			this.emit({
+				type: "teammate_complete",
+				swarmId: this.state.id,
+				teammate,
+			});
+
+			if (
+				this.state.status === "running" &&
+				(this.state.pendingTasks.length > 0 ||
+					this.state.activeTasks.size > 0) &&
+				this.state.config.continueOnFailure
+			) {
+				teammate.status = "pending";
+				teammate.error = undefined;
+			}
 		});
 	}
 
@@ -421,15 +531,14 @@ export class SwarmExecutor {
 	 * Wait for any active task to complete.
 	 */
 	private waitForAnyCompletion(): Promise<void> {
+		const initialActiveCount = this.state.activeTasks.size;
 		return new Promise((resolve) => {
 			const checkInterval = setInterval(() => {
-				// Check if any task completed
-				const activeCount = this.state.activeTasks.size;
-				const runningTeammates = this.state.teammates.filter(
-					(t) => t.status === "running",
-				).length;
-
-				if (runningTeammates < activeCount || this.state.status !== "running") {
+				// Resolve as soon as at least one active task exits or the swarm stops.
+				if (
+					this.state.activeTasks.size < initialActiveCount ||
+					this.state.status !== "running"
+				) {
 					clearInterval(checkInterval);
 					resolve();
 				}

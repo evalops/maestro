@@ -291,7 +291,7 @@ function handleExport(ctx: MemoryRenderContext, path?: string): void {
 	const store = exportMemories();
 	const outputPath = path
 		? resolve(ctx.cwd, path)
-		: resolve(ctx.cwd, "composer-memories.json");
+		: resolve(ctx.cwd, "maestro-memories.json");
 
 	try {
 		writeFileSync(outputPath, JSON.stringify(store, null, 2), "utf-8");

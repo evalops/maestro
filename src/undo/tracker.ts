@@ -27,6 +27,22 @@ const logger = createLogger("undo:tracker");
 
 const DEFAULT_MAX_CHANGES = 100;
 
+function cloneChange(change: FileChange): FileChange {
+	return { ...change };
+}
+
+function cloneCheckpoint(checkpoint: Checkpoint): Checkpoint {
+	return { ...checkpoint };
+}
+
+function cloneState(state: ChangeTrackerState): ChangeTrackerState {
+	return {
+		changes: state.changes.map(cloneChange),
+		checkpoints: state.checkpoints.map(cloneCheckpoint),
+		maxChanges: state.maxChanges,
+	};
+}
+
 /**
  * Generates a unique change ID.
  */
@@ -149,7 +165,7 @@ export class ChangeTracker {
 		sinceTimestamp?: number;
 		path?: string;
 	}): FileChange[] {
-		let changes = [...this.state.changes];
+		let changes = this.state.changes;
 
 		if (options?.toolName) {
 			changes = changes.filter((c) => c.toolName === options.toolName);
@@ -162,14 +178,14 @@ export class ChangeTracker {
 			changes = changes.filter((c) => c.path === options.path);
 		}
 
-		return changes;
+		return changes.map(cloneChange);
 	}
 
 	/**
 	 * Get the last N changes.
 	 */
 	getLastChanges(count: number): FileChange[] {
-		return this.state.changes.slice(-count);
+		return this.state.changes.slice(-count).map(cloneChange);
 	}
 
 	/**
@@ -323,14 +339,14 @@ export class ChangeTracker {
 			changeCount: checkpoint.changeCount,
 		});
 
-		return checkpoint;
+		return cloneCheckpoint(checkpoint);
 	}
 
 	/**
 	 * Get all checkpoints.
 	 */
 	getCheckpoints(): Checkpoint[] {
-		return [...this.state.checkpoints];
+		return this.state.checkpoints.map(cloneCheckpoint);
 	}
 
 	/**
@@ -411,14 +427,14 @@ export class ChangeTracker {
 	 * Export state for persistence.
 	 */
 	export(): ChangeTrackerState {
-		return { ...this.state };
+		return cloneState(this.state);
 	}
 
 	/**
 	 * Import state from persistence.
 	 */
 	import(state: ChangeTrackerState): void {
-		this.state = { ...state };
+		this.state = cloneState(state);
 	}
 }
 

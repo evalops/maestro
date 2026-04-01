@@ -170,7 +170,7 @@ export class UiStateController {
 
 		if (tokens.length === 0 || tokens[0] === "help") {
 			context.showInfo(
-				`Footer mode is ${this.describeFooterMode(this.footerMode)}. Use "/footer ensemble" for the full Composer Ensemble or "/footer solo" for the minimal Solo style.`,
+				`Footer mode is ${this.describeFooterMode(this.footerMode)}. Use "/footer ensemble" for the full Maestro Ensemble or "/footer solo" for the minimal Solo style.`,
 			);
 			return;
 		}

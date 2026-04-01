@@ -211,7 +211,7 @@ describe("FooterComponent", () => {
 	});
 
 	describe("Display Layout", () => {
-		it("should show composer branding on brand line", () => {
+		it("should show maestro branding on brand line", () => {
 			const state = createMockState([
 				createAssistantMessage({ input: 1000, output: 500 }),
 			]);
@@ -220,7 +220,7 @@ describe("FooterComponent", () => {
 			const rendered = footer.render(120);
 
 			const brandLine = brandLineFrom(rendered);
-			expect(brandLine).toContain("◆ composer");
+			expect(brandLine).toContain("◆ Maestro");
 		});
 
 		it("shows static responding stage badge", () => {
@@ -269,7 +269,7 @@ describe("FooterComponent", () => {
 			expect(pathStatsLine).toContain("Dreaming");
 		});
 
-		it("should show model name next to composer branding", () => {
+		it("should show model name next to maestro branding", () => {
 			const state = createMockState([
 				createAssistantMessage({ input: 1000, output: 500 }),
 			]);
@@ -280,7 +280,7 @@ describe("FooterComponent", () => {
 			// Model and brand are now on the brand line (line 1)
 			const brandLine = brandLineFrom(rendered);
 			expect(brandLine).toContain("claude-sonnet-4");
-			expect(brandLine).toContain("◆ composer");
+			expect(brandLine).toContain("◆ Maestro");
 		});
 
 		it("should prioritize model name over brand when width is too small", () => {
@@ -387,14 +387,14 @@ describe("FooterComponent", () => {
 	});
 
 	describe("Solo mode", () => {
-		it("renders minimal stats without composer branding", () => {
+		it("renders minimal stats without maestro branding", () => {
 			const state = createMockState([
 				createAssistantMessage({ input: 1000, output: 500 }),
 			]);
 			const footer = new FooterComponent(state, "solo");
 			const rendered = footer.render(120);
 			const statsLine = statsLineFrom(rendered);
-			expect(statsLine).not.toContain("composer");
+			expect(statsLine).not.toContain("Maestro");
 			expect(rendered).toHaveLength(2);
 		});
 

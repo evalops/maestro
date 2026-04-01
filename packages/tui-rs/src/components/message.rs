@@ -613,7 +613,7 @@ impl Widget for MessageWidget<'_> {
                     let (prefix, label, color) = if self.message.kind == MessageKind::System {
                         ("• ", "System", Color::Yellow)
                     } else {
-                        ("• ", "Composer", Color::Magenta)
+                        ("• ", "Maestro", Color::Magenta)
                     };
                     header_spans.push(Span::styled(
                         prefix,
@@ -2056,7 +2056,7 @@ impl ChatView<'_> {
 
         if area.height == 0 || renderable_messages.is_empty() {
             // Show welcome message
-            let welcome = Paragraph::new("Welcome to Composer! Type a message to get started.")
+            let welcome = Paragraph::new("Welcome to Maestro! Type a message to get started.")
                 .style(Style::default().fg(Color::DarkGray))
                 .wrap(Wrap { trim: false });
             welcome.render(area, buf);
@@ -2332,5 +2332,45 @@ mod tests {
         assert!(rendered.contains("Read package.json"));
         assert!(rendered.contains("· read"));
         assert!(rendered.contains("/Users/jonathanhaas/Documents/Projects/maestro/package.json"));
+    }
+
+    #[test]
+    fn assistant_messages_render_maestro_header() {
+        let message = Message {
+            id: "msg-2".to_string(),
+            role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
+            content: "Hello".to_string(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: vec![],
+            usage: None,
+            timestamp: SystemTime::UNIX_EPOCH,
+            thinking_expanded: false,
+        };
+
+        let width = 80;
+        let height = calculate_message_height(&message, width, &HashSet::new(), true);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        MessageWidget::new(&message).render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("• Maestro"));
+        assert!(!rendered.contains("• Composer"));
+    }
+
+    #[test]
+    fn empty_chat_view_uses_maestro_welcome_copy() {
+        let state = crate::state::AppState::default();
+        let width = 100;
+        let height = 20;
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        ChatView::new(&state).render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("Welcome to Maestro! Type a message to get started."));
+        assert!(!rendered.contains("Welcome to Composer! Type a message to get started."));
     }
 }

@@ -502,7 +502,7 @@ export function createApiServer(config: ApiServerConfig): ApiServerInstance {
 			if (!channel) return { ok: false, error: "Failed to open DM channel" };
 			await client.chat.postMessage({
 				channel,
-				text: `Composer control plane login code: ${opts.code}\n\nThis code expires in 10 minutes.`,
+				text: `Maestro control plane login code: ${opts.code}\n\nThis code expires in 10 minutes.`,
 			});
 			return { ok: true };
 		} catch (err) {

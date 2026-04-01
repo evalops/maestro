@@ -281,7 +281,7 @@ pub struct ClientInfo {
 impl Default for ClientInfo {
     fn default() -> Self {
         Self {
-            name: "composer-tui".to_string(),
+            name: "maestro-tui".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
@@ -585,6 +585,9 @@ mod tests {
         let req = McpRequest::initialize(1, &ClientInfo::default());
         assert_eq!(req.method, "initialize");
         assert!(req.params.is_some());
+        let params = req.params.expect("initialize params");
+        assert_eq!(params["clientInfo"]["name"], "maestro-tui");
+        assert_ne!(params["clientInfo"]["name"], "composer-tui");
     }
 
     #[test]

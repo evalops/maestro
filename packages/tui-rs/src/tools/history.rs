@@ -1020,7 +1020,12 @@ impl ToolHistory {
             .filter(|(_, s)| s.total > 0)
             .map(|(k, v)| (k.as_str(), v))
             .collect();
-        ranked.sort_by(|a, b| b.1.avg_duration().cmp(&a.1.avg_duration()));
+        ranked.sort_by(|a, b| {
+            b.1.avg_duration()
+                .cmp(&a.1.avg_duration())
+                .then_with(|| b.1.total_duration.cmp(&a.1.total_duration))
+                .then_with(|| a.0.cmp(b.0))
+        });
         ranked.truncate(limit);
         ranked
     }
@@ -1034,7 +1039,12 @@ impl ToolHistory {
             .filter(|(_, s)| s.total > 0)
             .map(|(k, v)| (k.as_str(), v))
             .collect();
-        ranked.sort_by(|a, b| a.1.avg_duration().cmp(&b.1.avg_duration()));
+        ranked.sort_by(|a, b| {
+            a.1.avg_duration()
+                .cmp(&b.1.avg_duration())
+                .then_with(|| a.1.total_duration.cmp(&b.1.total_duration))
+                .then_with(|| a.0.cmp(b.0))
+        });
         ranked.truncate(limit);
         ranked
     }
@@ -1921,39 +1931,51 @@ mod tests {
 
     // ==================== ToolHistory analysis method tests ====================
 
+    fn record_test_execution(
+        history: &mut ToolHistory,
+        id: &str,
+        tool_name: &str,
+        success: bool,
+        duration: Duration,
+    ) {
+        history.start(id, tool_name, json!({}));
+        history.in_progress.insert(
+            id.to_string(),
+            Instant::now().checked_sub(duration).unwrap(),
+        );
+
+        if success {
+            history.complete(id, "ok".to_string());
+        } else {
+            history.fail(id, "error".to_string());
+        }
+    }
+
     fn create_test_history() -> ToolHistory {
         let mut history = ToolHistory::new(100);
 
         // read: 5 calls, 4 success, avg 100ms
         for i in 0..5 {
             let id = format!("read-{}", i);
-            history.start(&id, "read", json!({}));
-            std::thread::sleep(Duration::from_millis(1)); // Simulate some time passing
-            if i < 4 {
-                history.complete(&id, "ok".to_string());
-            } else {
-                history.fail(&id, "error".to_string());
-            }
+            record_test_execution(&mut history, &id, "read", i < 4, Duration::from_millis(100));
         }
 
         // write: 3 calls, 2 success, avg 200ms
         for i in 0..3 {
             let id = format!("write-{}", i);
-            history.start(&id, "write", json!({}));
-            std::thread::sleep(Duration::from_millis(2));
-            if i < 2 {
-                history.complete(&id, "ok".to_string());
-            } else {
-                history.fail(&id, "error".to_string());
-            }
+            record_test_execution(
+                &mut history,
+                &id,
+                "write",
+                i < 2,
+                Duration::from_millis(200),
+            );
         }
 
-        // bash: 2 calls, 0 success (100% failure rate)
+        // bash: 2 calls, 0 success, avg 300ms
         for i in 0..2 {
             let id = format!("bash-{}", i);
-            history.start(&id, "bash", json!({}));
-            std::thread::sleep(Duration::from_millis(3));
-            history.fail(&id, "error".to_string());
+            record_test_execution(&mut history, &id, "bash", false, Duration::from_millis(300));
         }
 
         history
@@ -1996,13 +2018,13 @@ mod tests {
         let slowest = history.slowest_tools(10);
         assert_eq!(slowest.len(), 3);
 
-        // bash should be slowest (3ms sleep per call)
+        // bash should be slowest (300ms avg per call)
         assert_eq!(slowest[0].0, "bash");
 
-        // write should be second (2ms sleep per call)
+        // write should be second (200ms avg per call)
         assert_eq!(slowest[1].0, "write");
 
-        // read should be fastest (1ms sleep per call)
+        // read should be fastest (100ms avg per call)
         assert_eq!(slowest[2].0, "read");
     }
 
@@ -2021,6 +2043,37 @@ mod tests {
 
         // bash should be slowest
         assert_eq!(fastest[2].0, "bash");
+    }
+
+    #[test]
+    fn test_history_speed_rankings_are_deterministic_on_ties() {
+        let mut history = ToolHistory::new(10);
+
+        let mut beta = ToolStats::default();
+        beta.record(true, Duration::from_millis(100));
+        beta.record(true, Duration::from_millis(100));
+
+        let mut omega = ToolStats::default();
+        omega.record(true, Duration::from_millis(100));
+
+        let mut alpha = ToolStats::default();
+        alpha.record(true, Duration::from_millis(100));
+
+        history.stats.insert("beta".to_string(), beta);
+        history.stats.insert("omega".to_string(), omega);
+        history.stats.insert("alpha".to_string(), alpha);
+
+        let slowest = history.slowest_tools(10);
+        assert_eq!(slowest.len(), 3);
+        assert_eq!(slowest[0].0, "beta");
+        assert_eq!(slowest[1].0, "alpha");
+        assert_eq!(slowest[2].0, "omega");
+
+        let fastest = history.fastest_tools(10);
+        assert_eq!(fastest.len(), 3);
+        assert_eq!(fastest[0].0, "alpha");
+        assert_eq!(fastest[1].0, "omega");
+        assert_eq!(fastest[2].0, "beta");
     }
 
     #[test]

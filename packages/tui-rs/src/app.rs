@@ -3700,7 +3700,7 @@ Add the required fields and retry.",
     fn show_help(&mut self) {
         let help_text = format!(
             r"
-Composer TUI - Keyboard Shortcuts
+Maestro TUI - Keyboard Shortcuts
 
 Navigation:
   Up/Down       Scroll messages / Navigate completions
@@ -5659,6 +5659,16 @@ mod tests {
 
         app.state.set_input("submit me");
         assert!(app.should_submit_on_tab());
+    }
+
+    #[test]
+    fn test_show_help_uses_maestro_branding() {
+        let mut app = new_test_app();
+        app.show_help();
+
+        let last = app.state.messages.last().expect("help message");
+        assert!(last.content.contains("Maestro TUI - Keyboard Shortcuts"));
+        assert!(!last.content.contains("Composer TUI - Keyboard Shortcuts"));
     }
 
     #[tokio::test]

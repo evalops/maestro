@@ -124,7 +124,7 @@ Always flag uncertainties, assumptions, or blind spots so the summoner knows whe
 					return;
 				}
 
-				const seer = spawn("composer", args, {
+				const seer = spawn("maestro", args, {
 					stdio: ["pipe", "pipe", "pipe"],
 				});
 

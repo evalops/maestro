@@ -126,7 +126,7 @@ impl std::error::Error for TransportError {}
 /// use maestro_tui::headless::transport::TransportConfig;
 ///
 /// let config = TransportConfig {
-///     cli_path: "composer".to_string(),
+///     cli_path: "maestro".to_string(),
 ///     cwd: Some("/path/to/project".to_string()),
 ///     extra_args: vec!["--model".to_string(), "claude-3-opus".to_string()],
 ///     env: vec![("DEBUG".to_string(), "1".to_string())],
@@ -134,7 +134,7 @@ impl std::error::Error for TransportError {}
 /// ```
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
-    /// Path to the composer CLI (default: "composer")
+    /// Path to the Maestro CLI (default: "maestro")
     pub cli_path: String,
     /// Working directory for the agent
     pub cwd: Option<String>,
@@ -147,7 +147,7 @@ pub struct TransportConfig {
 impl Default for TransportConfig {
     fn default() -> Self {
         Self {
-            cli_path: "composer".to_string(),
+            cli_path: "maestro".to_string(),
             cwd: None,
             extra_args: Vec::new(),
             env: Vec::new(),
@@ -184,7 +184,7 @@ impl Default for TransportConfig {
 /// use maestro_tui::headless::transport::AgentTransportBuilder;
 ///
 /// let mut transport = AgentTransportBuilder::new()
-///     .cli_path("composer")
+///     .cli_path("maestro")
 ///     .spawn()?;
 ///
 /// // Wait for agent to be ready
@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn transport_config_defaults() {
         let config = TransportConfig::default();
-        assert_eq!(config.cli_path, "composer");
+        assert_eq!(config.cli_path, "maestro");
         assert!(config.cwd.is_none());
         assert!(config.extra_args.is_empty());
     }

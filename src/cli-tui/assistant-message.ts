@@ -295,7 +295,7 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	private buildHeader(cleaned: boolean): string {
-		const brand = theme.fg("accent", "* COMPOSER");
+		const brand = theme.fg("accent", "* MAESTRO");
 		const base = `${brand} ${theme.fg("muted", "· response")}`;
 		return cleaned ? `${base} ${theme.fg("muted", "· cleaned")}` : base;
 	}

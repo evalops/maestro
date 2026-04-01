@@ -52,16 +52,23 @@ fn default_tiers() -> Vec<ModelTier> {
 }
 
 /// Static task type to capability mapping to avoid recreation on every call
-static TASK_TYPE_CAPABILITIES: LazyLock<HashMap<TaskType, Vec<&'static str>>> = LazyLock::new(|| {
-    let mut map = HashMap::new();
-    map.insert(TaskType::Implement, vec!["feature-impl", "architecture"]);
-    map.insert(TaskType::Fix, vec!["bug-fix", "simple-refactor", "complex-debug"]);
-    map.insert(TaskType::Refactor, vec!["simple-refactor", "refactor", "architecture"]);
-    map.insert(TaskType::Test, vec!["test-write", "feature-impl"]);
-    map.insert(TaskType::Document, vec!["doc-update"]);
-    map.insert(TaskType::Security, vec!["security-fix", "complex-debug"]);
-    map
-});
+static TASK_TYPE_CAPABILITIES: LazyLock<HashMap<TaskType, Vec<&'static str>>> =
+    LazyLock::new(|| {
+        let mut map = HashMap::new();
+        map.insert(TaskType::Implement, vec!["feature-impl", "architecture"]);
+        map.insert(
+            TaskType::Fix,
+            vec!["bug-fix", "simple-refactor", "complex-debug"],
+        );
+        map.insert(
+            TaskType::Refactor,
+            vec!["simple-refactor", "refactor", "architecture"],
+        );
+        map.insert(TaskType::Test, vec!["test-write", "feature-impl"]);
+        map.insert(TaskType::Document, vec!["doc-update"]);
+        map.insert(TaskType::Security, vec!["security-fix", "complex-debug"]);
+        map
+    });
 
 /// Routing result
 #[derive(Debug, Clone)]
@@ -122,7 +129,10 @@ impl Cascader {
     pub fn route(&mut self, task: &Task, context: &TaskContext) -> RoutingResult {
         self.stats.total_routings += 1;
 
-        let needed = TASK_TYPE_CAPABILITIES.get(&context.task_type).cloned().unwrap_or_default();
+        let needed = TASK_TYPE_CAPABILITIES
+            .get(&context.task_type)
+            .cloned()
+            .unwrap_or_default();
 
         // Find eligible tiers
         let mut eligible: Vec<_> = self
@@ -131,7 +141,10 @@ impl Cascader {
             .iter()
             .filter(|tier| {
                 tier.max_complexity >= context.complexity
-                    && tier.capabilities.iter().any(|c| needed.contains(&c.as_str()))
+                    && tier
+                        .capabilities
+                        .iter()
+                        .any(|c| needed.contains(&c.as_str()))
             })
             .collect();
 
@@ -144,14 +157,18 @@ impl Cascader {
 
         // Get default tier safely (first tier, or create a default if empty)
         let default_tier = || {
-            self.config.tiers.first().cloned().unwrap_or_else(|| ModelTier {
-                name: "fallback".to_string(),
-                model: "claude-sonnet-4-20250514".to_string(),
-                cost_per_1k_input: 0.003,
-                cost_per_1k_output: 0.015,
-                capabilities: vec!["feature-impl".to_string()],
-                max_complexity: Complexity::Medium,
-            })
+            self.config
+                .tiers
+                .first()
+                .cloned()
+                .unwrap_or_else(|| ModelTier {
+                    name: "fallback".to_string(),
+                    model: "claude-sonnet-4-20250514".to_string(),
+                    cost_per_1k_input: 0.003,
+                    cost_per_1k_output: 0.015,
+                    capabilities: vec!["feature-impl".to_string()],
+                    max_complexity: Complexity::Medium,
+                })
         };
 
         let (selected, reason) = if let Some(tier) = eligible.first() {
@@ -164,12 +181,20 @@ impl Cascader {
             )
         } else if self.config.fallback_to_higher {
             (
-                self.config.tiers.last().cloned().unwrap_or_else(default_tier),
+                self.config
+                    .tiers
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(default_tier),
                 "Fallback to advanced tier".to_string(),
             )
         } else {
             (
-                self.config.tiers.iter().find(|t| t.name == "standard").cloned()
+                self.config
+                    .tiers
+                    .iter()
+                    .find(|t| t.name == "standard")
+                    .cloned()
                     .unwrap_or_else(default_tier),
                 "Default to standard tier".to_string(),
             )
@@ -177,7 +202,12 @@ impl Cascader {
 
         // Escalate on retry
         let (selected, reason) = if context.previous_attempts > 0 {
-            let current_idx = self.config.tiers.iter().position(|t| t.name == selected.name).unwrap_or(0);
+            let current_idx = self
+                .config
+                .tiers
+                .iter()
+                .position(|t| t.name == selected.name)
+                .unwrap_or(0);
             if current_idx < self.config.tiers.len() - 1 {
                 (
                     self.config.tiers[current_idx + 1].clone(),
@@ -194,10 +224,16 @@ impl Cascader {
         };
 
         // Update stats
-        *self.stats.routings_by_tier.entry(selected.name.clone()).or_insert(0) += 1;
+        *self
+            .stats
+            .routings_by_tier
+            .entry(selected.name.clone())
+            .or_insert(0) += 1;
 
         // Estimate cost
-        let tokens = context.estimated_tokens.unwrap_or(self.estimate_tokens(task, context));
+        let tokens = context
+            .estimated_tokens
+            .unwrap_or(self.estimate_tokens(task, context));
         let estimated_cost = (tokens as f64 * selected.cost_per_1k_input) / 1000.0
             + (tokens as f64 * 0.3 * selected.cost_per_1k_output) / 1000.0;
 
@@ -284,10 +320,14 @@ impl Cascader {
         };
 
         let actual_total: f64 = self.cost_history.iter().map(|h| h.cost_usd).sum();
-        let advanced_total: f64 = self.cost_history.iter().map(|h| {
-            (h.tokens as f64 * advanced.cost_per_1k_input) / 1000.0
-                + (h.tokens as f64 * 0.3 * advanced.cost_per_1k_output) / 1000.0
-        }).sum();
+        let advanced_total: f64 = self
+            .cost_history
+            .iter()
+            .map(|h| {
+                (h.tokens as f64 * advanced.cost_per_1k_input) / 1000.0
+                    + (h.tokens as f64 * 0.3 * advanced.cost_per_1k_output) / 1000.0
+            })
+            .sum();
 
         if advanced_total == 0.0 {
             0.0

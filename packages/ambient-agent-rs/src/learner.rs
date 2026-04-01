@@ -80,7 +80,7 @@ impl Learner {
         self.update_patterns(&outcome);
 
         // Persist periodically
-        if self.outcomes.len() % 10 == 0 {
+        if self.outcomes.len().is_multiple_of(10) {
             self.persist().await?;
         }
 
@@ -131,15 +131,18 @@ impl Learner {
     fn update_pattern(&mut self, pattern_type: PatternType, key: &str, outcome: &Outcome) {
         let pattern_key = (pattern_type.clone(), key.to_string());
 
-        let pattern = self.patterns.entry(pattern_key).or_insert_with(|| LearnedPattern {
-            pattern_type,
-            key: key.to_string(),
-            success_rate: 0.5, // Start with neutral
-            sample_count: 0,
-            avg_confidence: 0.0,
-            avg_cost: 0.0,
-            last_updated: Utc::now(),
-        });
+        let pattern = self
+            .patterns
+            .entry(pattern_key)
+            .or_insert_with(|| LearnedPattern {
+                pattern_type,
+                key: key.to_string(),
+                success_rate: 0.5, // Start with neutral
+                sample_count: 0,
+                avg_confidence: 0.0,
+                avg_cost: 0.0,
+                last_updated: Utc::now(),
+            });
 
         // Exponential moving average for success rate
         let alpha = 0.1; // Learning rate
@@ -151,7 +154,8 @@ impl Learner {
 
         // Update running averages
         let n = pattern.sample_count as f64;
-        pattern.avg_confidence = ((n - 1.0) * pattern.avg_confidence + outcome.confidence_predicted) / n;
+        pattern.avg_confidence =
+            ((n - 1.0) * pattern.avg_confidence + outcome.confidence_predicted) / n;
         pattern.avg_cost = ((n - 1.0) * pattern.avg_cost + outcome.cost_usd) / n;
 
         pattern.last_updated = Utc::now();
@@ -194,7 +198,10 @@ impl Learner {
         }
 
         // Check repo pattern
-        if let Some(pattern) = self.patterns.get(&(PatternType::Repo, event.repository.clone())) {
+        if let Some(pattern) = self
+            .patterns
+            .get(&(PatternType::Repo, event.repository.clone()))
+        {
             if pattern.sample_count >= self.min_samples_for_pattern {
                 adjustment += (pattern.success_rate - 0.5) * 0.1;
                 factors += 1;
@@ -202,7 +209,10 @@ impl Learner {
         }
 
         // Check event type pattern
-        if let Some(pattern) = self.patterns.get(&(PatternType::EventType, format!("{:?}", event.event_type))) {
+        if let Some(pattern) = self
+            .patterns
+            .get(&(PatternType::EventType, format!("{:?}", event.event_type)))
+        {
             if pattern.sample_count >= self.min_samples_for_pattern {
                 adjustment += (pattern.success_rate - 0.5) * 0.15;
                 factors += 1;
@@ -225,10 +235,17 @@ impl Learner {
     }
 
     /// Get patterns sorted by success rate
-    pub fn get_top_patterns(&self, pattern_type: PatternType, limit: usize) -> Vec<&LearnedPattern> {
-        let mut patterns: Vec<_> = self.patterns
+    pub fn get_top_patterns(
+        &self,
+        pattern_type: PatternType,
+        limit: usize,
+    ) -> Vec<&LearnedPattern> {
+        let mut patterns: Vec<_> = self
+            .patterns
             .values()
-            .filter(|p| p.pattern_type == pattern_type && p.sample_count >= self.min_samples_for_pattern)
+            .filter(|p| {
+                p.pattern_type == pattern_type && p.sample_count >= self.min_samples_for_pattern
+            })
             .collect();
 
         patterns.sort_by(|a, b| b.success_rate.partial_cmp(&a.success_rate).unwrap());
@@ -255,7 +272,11 @@ impl Learner {
 
         // Recent performance (last 24 hours)
         let cutoff = Utc::now() - Duration::hours(24);
-        let recent: Vec<_> = self.outcomes.iter().filter(|o| o.timestamp > cutoff).collect();
+        let recent: Vec<_> = self
+            .outcomes
+            .iter()
+            .filter(|o| o.timestamp > cutoff)
+            .collect();
         let recent_success_rate = if recent.is_empty() {
             0.0
         } else {
@@ -283,7 +304,7 @@ impl Learner {
 
         let data = LearnerData {
             outcomes: self.outcomes.clone(),
-            patterns: self.patterns.iter().map(|(_, v)| v.clone()).collect(),
+            patterns: self.patterns.values().cloned().collect(),
         };
 
         let json = serde_json::to_string_pretty(&data)?;
@@ -347,7 +368,11 @@ mod tests {
             tokens_used: 1000,
             cost_usd: 0.01,
             duration_secs: 60,
-            failure_reason: if success { None } else { Some("test failure".to_string()) },
+            failure_reason: if success {
+                None
+            } else {
+                Some("test failure".to_string())
+            },
             labels: labels.iter().map(|s| s.to_string()).collect(),
             repo: "test/repo".to_string(),
             timestamp: Utc::now(),
@@ -362,7 +387,10 @@ mod tests {
         // Record several outcomes with "bug" label
         // EMA with alpha=0.1 starting from 0.5 after 5 successes gives ~0.70
         for _ in 0..5 {
-            learner.record_outcome(make_outcome(true, vec!["bug"])).await.unwrap();
+            learner
+                .record_outcome(make_outcome(true, vec!["bug"]))
+                .await
+                .unwrap();
         }
 
         // Should have learned pattern - rate should be above initial 0.5
@@ -379,7 +407,10 @@ mod tests {
         {
             let mut learner = Learner::new(path.clone());
             for _ in 0..5 {
-                learner.record_outcome(make_outcome(true, vec!["test"])).await.unwrap();
+                learner
+                    .record_outcome(make_outcome(true, vec!["test"]))
+                    .await
+                    .unwrap();
             }
             learner.persist().await.unwrap();
         }

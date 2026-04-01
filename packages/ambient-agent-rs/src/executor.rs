@@ -24,9 +24,8 @@ static FILE_CHANGE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     ).unwrap()
 });
 
-static MARKDOWN_FILE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?s)```(?:\w+)?\n// File: ([^\n]+)\n(.*?)```").unwrap()
-});
+static MARKDOWN_FILE_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)```(?:\w+)?\n// File: ([^\n]+)\n(.*?)```").unwrap());
 
 /// Protected file patterns that should never be modified
 static PROTECTED_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -47,9 +46,7 @@ static PROTECTED_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
 /// Allowed test commands (whitelist for security)
 static ALLOWED_TEST_COMMANDS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     vec![
-        "npm", "yarn", "pnpm", "bun",
-        "cargo", "go", "pytest", "python",
-        "ruby", "rspec", "bundle",
+        "npm", "yarn", "pnpm", "bun", "cargo", "go", "pytest", "python", "ruby", "rspec", "bundle",
         "make", "gradle", "mvn",
     ]
 });
@@ -153,14 +150,20 @@ impl Executor {
     pub async fn execute(&self, plan: &TaskPlan, routing: &RoutingResult) -> ExecutionResult {
         let mut logs = vec![];
         logs.push(format!("Executing: {}", plan.summary));
-        logs.push(format!("Using model: {} ({})", routing.model, routing.tier.name));
+        logs.push(format!(
+            "Using model: {} ({})",
+            routing.model, routing.tier.name
+        ));
 
         // Build the prompt
         let (system_prompt, user_prompt) = self.build_prompts(plan).await;
         logs.push("Built prompts".to_string());
 
         // Call the LLM with retries
-        let response = match self.call_llm_with_retry(&routing.model, &system_prompt, &user_prompt).await {
+        let response = match self
+            .call_llm_with_retry(&routing.model, &system_prompt, &user_prompt)
+            .await
+        {
             Ok(resp) => {
                 logs.push(format!(
                     "LLM response received ({} input, {} output tokens)",
@@ -225,7 +228,10 @@ impl Executor {
                     changes.push(change);
                 }
                 Err(e) => {
-                    let err_msg = format!("Failed to apply {} {}: {}", parsed.action, parsed.file_path, e);
+                    let err_msg = format!(
+                        "Failed to apply {} {}: {}",
+                        parsed.action, parsed.file_path, e
+                    );
                     error!("{}", err_msg);
                     errors.push(err_msg.clone());
                     logs.push(err_msg);
@@ -298,7 +304,7 @@ Rules:
 8. NEVER modify files outside the project directory
 9. When using websearch/codesearch for up-to-date information, include the current year ({current_year}) in the query unless the user specifies a different year or a historical range
 
-Think step by step about the implementation before writing code."#;
+Think step by step about the implementation before writing code."#
         );
 
         // Build user prompt with context
@@ -328,7 +334,12 @@ Think step by step about the implementation before writing code."#;
         // Add task breakdown
         user_prompt.push_str("## Tasks\n");
         for (i, task) in plan.tasks.iter().enumerate() {
-            user_prompt.push_str(&format!("{}. {:?}: {}\n", i + 1, task.task_type, task.prompt));
+            user_prompt.push_str(&format!(
+                "{}. {:?}: {}\n",
+                i + 1,
+                task.task_type,
+                task.prompt
+            ));
         }
 
         (system_prompt, user_prompt)
@@ -396,7 +407,7 @@ Think step by step about the implementation before writing code."#;
         // For new files, verify the path components don't escape
         // by checking each component. Split on both / and \ for cross-platform safety.
         let normalized: PathBuf = path
-            .split(|c| c == '/' || c == '\\')
+            .split(['/', '\\'])
             .filter(|c| !c.is_empty() && *c != ".")
             .collect();
         let final_path = working_dir.join(&normalized);
@@ -434,7 +445,11 @@ Think step by step about the implementation before writing code."#;
 
         for attempt in 0..self.config.max_retries {
             if attempt > 0 {
-                info!("Retrying LLM call (attempt {}/{})", attempt + 1, self.config.max_retries);
+                info!(
+                    "Retrying LLM call (attempt {}/{})",
+                    attempt + 1,
+                    self.config.max_retries
+                );
                 tokio::time::sleep(delay).await;
                 delay *= 2; // Exponential backoff
             }
@@ -501,13 +516,22 @@ Think step by step about the implementation before writing code."#;
 
         // Parse <file_change> blocks using static pattern
         for cap in FILE_CHANGE_PATTERN.captures_iter(response) {
-            let action = cap.get(1).map(|m| m.as_str().to_lowercase()).unwrap_or_default();
-            let file_path = cap.get(2).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+            let action = cap
+                .get(1)
+                .map(|m| m.as_str().to_lowercase())
+                .unwrap_or_default();
+            let file_path = cap
+                .get(2)
+                .map(|m| m.as_str().trim().to_string())
+                .unwrap_or_default();
             let content = cap.get(3).map(|m| m.as_str().trim().to_string());
 
             // Validate action
             if !valid_actions.contains(&action.as_str()) {
-                warn!("Invalid action '{}' for path '{}', skipping", action, file_path);
+                warn!(
+                    "Invalid action '{}' for path '{}', skipping",
+                    action, file_path
+                );
                 continue;
             }
 
@@ -525,7 +549,10 @@ Think step by step about the implementation before writing code."#;
             debug!("No <file_change> blocks found, trying markdown fallback");
 
             for cap in MARKDOWN_FILE_PATTERN.captures_iter(response) {
-                let file_path = cap.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+                let file_path = cap
+                    .get(1)
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default();
                 let content = cap.get(2).map(|m| m.as_str().to_string());
 
                 if !file_path.is_empty() {
@@ -558,7 +585,9 @@ Think step by step about the implementation before writing code."#;
                     fs::create_dir_all(parent).await?;
                 }
 
-                let content = change.content.as_ref()
+                let content = change
+                    .content
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("Create action requires content"))?;
 
                 fs::write(&full_path, content).await?;
@@ -575,7 +604,9 @@ Think step by step about the implementation before writing code."#;
                 })
             }
             "modify" => {
-                let content = change.content.as_ref()
+                let content = change
+                    .content
+                    .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("Modify action requires content"))?;
 
                 // Count old lines for diff stats
@@ -655,13 +686,17 @@ Think step by step about the implementation before writing code."#;
             Command::new(parts[0])
                 .args(&parts[1..])
                 .current_dir(&self.config.working_dir)
-                .output()
-        ).await;
+                .output(),
+        )
+        .await;
 
         let output = match output_result {
             Ok(Ok(output)) => output,
             Ok(Err(e)) => anyhow::bail!("Failed to execute test command: {}", e),
-            Err(_) => anyhow::bail!("Test command timed out after {} seconds", self.config.test_timeout_secs),
+            Err(_) => anyhow::bail!(
+                "Test command timed out after {} seconds",
+                self.config.test_timeout_secs
+            ),
         };
 
         let stdout = String::from_utf8_lossy(&output.stdout);

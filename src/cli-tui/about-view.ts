@@ -72,7 +72,7 @@ export class AboutView {
 			"╭─────────────────────────────✷────────────────────────────╮",
 		);
 		const title = chalk.hex("#f472b6")(
-			"│           ✦ composer about ✦           │",
+			"│           ✦ maestro about ✦            │",
 		);
 		const bottom = chalk.hex("#7c3aed")(
 			"╰──────────────────────────────────────────────────────────╯",
@@ -154,7 +154,7 @@ export class AboutView {
 		const lines = [
 			`${this.badge("cwd")}${cwd}`,
 			`${this.badge("session")}${sessionDir}`,
-			`${this.badge("composer")}${composerDir}`,
+			`${this.badge("maestro")}${composerDir}`,
 		];
 		return this.section("paths", lines);
 	}
@@ -238,7 +238,7 @@ export class AboutView {
 			return chalk.dim("(no files to archive)");
 		}
 		const quoted = paths.map((value) => this.quotePath(value));
-		const firstLine = "tar czf composer-about.tgz";
+		const firstLine = "tar czf maestro-about.tgz";
 		const subsequent = quoted.map((value) => `  ${value}`);
 		return [firstLine, ...subsequent].join(" \\\n");
 	}

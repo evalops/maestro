@@ -82,4 +82,38 @@ describe("createMcpEventsController", () => {
 
 		expect((mcpManager as EventEmitter).listenerCount("error")).toBe(0);
 	});
+
+	it("shows Maestro-branded toasts for composer activation changes", () => {
+		const notificationView = createNotificationView();
+		const refreshFooterHint = vi.fn();
+		const controller = createMcpEventsController({
+			notificationView: notificationView as never,
+			refreshFooterHint,
+		});
+
+		(composerManager as EventEmitter).emit("activated", {
+			name: "Focus Mode",
+		});
+		(composerManager as EventEmitter).emit("deactivated", {
+			name: "Focus Mode",
+		});
+
+		expect(notificationView.showToast).toHaveBeenNthCalledWith(
+			1,
+			'Maestro "Focus Mode" activated',
+			"success",
+		);
+		expect(notificationView.showToast).toHaveBeenNthCalledWith(
+			2,
+			'Maestro "Focus Mode" deactivated',
+			"info",
+		);
+		expect(notificationView.showToast).not.toHaveBeenCalledWith(
+			expect.stringContaining('Composer "Focus Mode"'),
+			expect.anything(),
+		);
+		expect(refreshFooterHint).toHaveBeenCalledTimes(2);
+
+		controller.stop();
+	});
 });

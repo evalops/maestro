@@ -66,6 +66,13 @@ pub struct PrCreator {
 }
 
 impl PrCreator {
+    fn format_pr_body(body: &str) -> String {
+        format!(
+            "{}\n\n---\n*Created by [Ambient Agent](https://github.com/evalops/maestro)*",
+            body
+        )
+    }
+
     /// Create a new PR creator
     pub fn new(config: PrCreatorConfig) -> Self {
         let client = Client::builder()
@@ -78,6 +85,7 @@ impl PrCreator {
     }
 
     /// Create a PR for the given changes
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_pr(
         &self,
         repo_path: &Path,
@@ -92,7 +100,10 @@ impl PrCreator {
         let branch_name = self.generate_branch_name(source_event);
 
         // Step 1: Create and checkout branch
-        if let Err(e) = self.create_branch(repo_path, &branch_name, base_branch).await {
+        if let Err(e) = self
+            .create_branch(repo_path, &branch_name, base_branch)
+            .await
+        {
             return PrCreationResult {
                 success: false,
                 pr_number: None,
@@ -104,7 +115,9 @@ impl PrCreator {
 
         // Step 2: Write file changes to disk
         if let Err(e) = self.write_changes_to_disk(repo_path, changes).await {
-            let _ = self.cleanup_branch(repo_path, &branch_name, base_branch).await;
+            let _ = self
+                .cleanup_branch(repo_path, &branch_name, base_branch)
+                .await;
             return PrCreationResult {
                 success: false,
                 pr_number: None,
@@ -117,7 +130,9 @@ impl PrCreator {
         // Step 3: Stage and commit changes
         if let Err(e) = self.commit_changes(repo_path, changes, title).await {
             // Try to cleanup
-            let _ = self.cleanup_branch(repo_path, &branch_name, base_branch).await;
+            let _ = self
+                .cleanup_branch(repo_path, &branch_name, base_branch)
+                .await;
             return PrCreationResult {
                 success: false,
                 pr_number: None,
@@ -129,7 +144,9 @@ impl PrCreator {
 
         // Step 4: Push branch
         if let Err(e) = self.push_branch(repo_path, &branch_name).await {
-            let _ = self.cleanup_branch(repo_path, &branch_name, base_branch).await;
+            let _ = self
+                .cleanup_branch(repo_path, &branch_name, base_branch)
+                .await;
             return PrCreationResult {
                 success: false,
                 pr_number: None,
@@ -157,7 +174,9 @@ impl PrCreator {
             Err(e) => {
                 error!("Failed to create PR: {}", e);
                 // Clean up local branch on PR creation failure
-                let _ = self.cleanup_branch(repo_path, &branch_name, base_branch).await;
+                let _ = self
+                    .cleanup_branch(repo_path, &branch_name, base_branch)
+                    .await;
                 PrCreationResult {
                     success: false,
                     pr_number: None,
@@ -259,8 +278,11 @@ impl PrCreator {
                     }
                     if let Some(content) = &change.content {
                         fs::write(&file_path, content).await?;
-                        debug!("Wrote renamed file: {} -> {}",
-                            change.old_path.as_deref().unwrap_or("?"), change.file);
+                        debug!(
+                            "Wrote renamed file: {} -> {}",
+                            change.old_path.as_deref().unwrap_or("?"),
+                            change.file
+                        );
                     }
                 }
             }
@@ -304,24 +326,17 @@ impl PrCreator {
         }
 
         // Check if there are staged changes
-        let status = self.run_git_command(repo_path, &["status", "--porcelain"]).await?;
+        let status = self
+            .run_git_command(repo_path, &["status", "--porcelain"])
+            .await?;
         if status.trim().is_empty() {
             anyhow::bail!("No changes to commit");
         }
 
         // Commit with configured author
         let author = format!("{} <{}>", self.config.author_name, self.config.author_email);
-        self.run_git_command(
-            repo_path,
-            &[
-                "commit",
-                "-m",
-                message,
-                "--author",
-                &author,
-            ],
-        )
-        .await?;
+        self.run_git_command(repo_path, &["commit", "-m", message, "--author", &author])
+            .await?;
 
         info!("Committed {} changes", changes.len());
         Ok(())
@@ -347,10 +362,7 @@ impl PrCreator {
     ) -> anyhow::Result<(u64, String)> {
         let url = format!("{}/repos/{}/pulls", self.config.api_base_url, repo_name);
 
-        let pr_body = format!(
-            "{}\n\n---\n*Created by [Ambient Agent](https://github.com/evalops/composer)*",
-            body
-        );
+        let pr_body = Self::format_pr_body(body);
 
         let payload = serde_json::json!({
             "title": title,
@@ -623,5 +635,13 @@ mod tests {
 
         let branch_name = creator.generate_branch_name(&event);
         assert!(branch_name.starts_with("ambient/fix-the-bug-in-login"));
+    }
+
+    #[test]
+    fn test_format_pr_body_uses_maestro_repo_link() {
+        let body = PrCreator::format_pr_body("Implemented fixes");
+        assert!(body.contains("Created by [Ambient Agent]"));
+        assert!(body.contains("https://github.com/evalops/maestro"));
+        assert!(!body.contains("https://github.com/evalops/composer"));
     }
 }

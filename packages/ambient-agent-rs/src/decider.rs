@@ -10,9 +10,8 @@ use std::sync::LazyLock;
 use tracing::info;
 
 /// Static regex pattern for identifying files in text
-static FILE_PATH_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"`([^`]+\.[a-z]+)`").unwrap()
-});
+static FILE_PATH_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"`([^`]+\.[a-z]+)`").unwrap());
 
 /// Configuration for the Decider
 #[derive(Debug, Clone)]
@@ -472,7 +471,10 @@ impl Decider {
         }];
 
         // Add test task if needed
-        if matches!(main_type, TaskType::Fix | TaskType::Implement | TaskType::Security) {
+        if matches!(
+            main_type,
+            TaskType::Fix | TaskType::Implement | TaskType::Security
+        ) {
             tasks.push(Task {
                 id: format!("{}_test", base_id),
                 task_type: TaskType::Test,
@@ -505,7 +507,10 @@ impl Decider {
             TaskType::Refactor
         } else if content.contains("test") || content.contains("coverage") {
             TaskType::Test
-        } else if content.contains("doc") || content.contains("readme") || content.contains("comment") {
+        } else if content.contains("doc")
+            || content.contains("readme")
+            || content.contains("comment")
+        {
             TaskType::Document
         } else if content.contains("security") || content.contains("vulnerability") {
             TaskType::Security
@@ -546,7 +551,11 @@ impl Decider {
             }
         }
 
-        files.into_iter().collect::<std::collections::HashSet<_>>().into_iter().collect()
+        files
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     /// Assess risks
@@ -559,12 +568,17 @@ impl Decider {
         )
         .to_lowercase();
 
-        if content.contains("breaking") || content.contains("api change") || content.contains("migration") {
+        if content.contains("breaking")
+            || content.contains("api change")
+            || content.contains("migration")
+        {
             risks.push(Risk {
                 risk_type: RiskType::BreakingChange,
                 severity: Severity::High,
                 description: "This change may break existing functionality".to_string(),
-                mitigation: Some("Ensure backward compatibility or document migration steps".to_string()),
+                mitigation: Some(
+                    "Ensure backward compatibility or document migration steps".to_string(),
+                ),
             });
         }
 

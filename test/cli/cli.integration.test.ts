@@ -266,6 +266,20 @@ describe("CLI integration", () => {
 		exitSpy.mockRestore();
 	});
 
+	it("prints maestro version output", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["--version"])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([0]);
+		const combined = output.join("\n");
+		expect(combined).toContain("Maestro v");
+		expect(combined).not.toContain("Composer v");
+		exitSpy.mockRestore();
+	});
+
 	it("prints providers summary for filter", async () => {
 		const exitCodes: number[] = [];
 		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
@@ -275,6 +289,21 @@ describe("CLI integration", () => {
 		await main(["models", "providers", "--provider", "openrouter"]);
 		expect(exitCodes).toEqual([0]);
 		expect(output.join("\n")).toContain("openrouter");
+		exitSpy.mockRestore();
+	});
+
+	it("prints maestro models help for unknown models subcommand", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["models", "wat"])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		const combined = output.join("\n");
+		expect(combined).toContain("Unknown models subcommand: wat");
+		expect(combined).toContain("maestro models list");
+		expect(combined).not.toContain("composer models list");
 		exitSpy.mockRestore();
 	});
 
@@ -400,6 +429,92 @@ describe("CLI integration", () => {
 		).rejects.toThrow("exit");
 		expect(exitCodes).toEqual([1]);
 		expect(output.join("\n")).toContain("maestro anthropic login");
+		exitSpy.mockRestore();
+	});
+
+	it("prints maestro usage for unknown hooks subcommand", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		const { handleHooksCommand } = await import(
+			"../../src/cli/commands/hooks.js"
+		);
+		await expect(handleHooksCommand("wat")).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		const combined = output.join("\n");
+		expect(combined).toContain("Unknown hooks subcommand: wat");
+		expect(combined).toContain("Try: maestro hooks status");
+		expect(combined).not.toContain("composer hooks status");
+		exitSpy.mockRestore();
+	});
+
+	it("shows memory subcommand help before requiring shared memory config", async () => {
+		Reflect.deleteProperty(process.env, "MAESTRO_SHARED_MEMORY_BASE");
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		const { handleMemoryCommand } = await import(
+			"../../src/cli/commands/memory.js"
+		);
+		await expect(handleMemoryCommand("wat", [])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		const combined = output.join("\n");
+		expect(combined).toContain("Unknown memory subcommand: wat");
+		expect(combined).toContain("maestro memory [status]");
+		expect(combined).not.toContain("composer memory [status]");
+		expect(combined).not.toContain("MAESTRO_SHARED_MEMORY_BASE is not set");
+		exitSpy.mockRestore();
+	});
+
+	it("reports missing memory session id before requiring shared memory config", async () => {
+		Reflect.deleteProperty(process.env, "MAESTRO_SHARED_MEMORY_BASE");
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		const { handleMemoryCommand } = await import(
+			"../../src/cli/commands/memory.js"
+		);
+		await expect(handleMemoryCommand("session", [])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		const combined = output.join("\n");
+		expect(combined).toContain("Session id required.");
+		expect(combined).not.toContain("MAESTRO_SHARED_MEMORY_BASE is not set");
+		exitSpy.mockRestore();
+	});
+
+	it("prints maestro config help for unknown config subcommand", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["config", "wat"])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		const combined = output.join("\n");
+		expect(combined).toContain("Unknown config subcommand: wat");
+		expect(combined).toContain("maestro config validate");
+		expect(combined).not.toContain("composer config validate");
+		exitSpy.mockRestore();
+	});
+
+	it("prints maestro cost help for unknown cost subcommand", async () => {
+		const exitCodes: number[] = [];
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+			exitCodes.push(Number(code ?? 0));
+			throw new Error("exit");
+		});
+		await expect(main(["cost", "wat"])).rejects.toThrow("exit");
+		expect(exitCodes).toEqual([1]);
+		const combined = output.join("\n");
+		expect(combined).toContain("Unknown cost subcommand: wat");
+		expect(combined).toContain("maestro cost [today]");
+		expect(combined).not.toContain("composer cost [today]");
 		exitSpy.mockRestore();
 	});
 });

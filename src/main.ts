@@ -355,7 +355,7 @@ export async function main(args: string[]) {
 
 	// Handle --version early exit (before any async operations)
 	if (parsed.version) {
-		console.log(`Composer v${VERSION}`);
+		console.log(`Maestro v${VERSION}`);
 		process.exit(0);
 	}
 
@@ -617,16 +617,16 @@ export async function main(args: string[]) {
 				);
 				console.log(chalk.dim("\nAvailable commands:"));
 				console.log(
-					chalk.dim("  composer config validate  - Validate configuration"),
+					chalk.dim("  maestro config validate  - Validate configuration"),
 				);
 				console.log(
-					chalk.dim("  composer config show      - Show configuration details"),
+					chalk.dim("  maestro config show      - Show configuration details"),
 				);
 				console.log(
-					chalk.dim("  composer config init      - Initialize configuration"),
+					chalk.dim("  maestro config init      - Initialize configuration"),
 				);
 				console.log(
-					chalk.dim("  composer config local     - Manage local providers"),
+					chalk.dim("  maestro config local     - Manage local providers"),
 				);
 				process.exit(1);
 		}
@@ -688,27 +688,23 @@ export async function main(args: string[]) {
 				console.log(chalk.dim("\nAvailable commands:"));
 				console.log(
 					chalk.dim(
-						"  composer cost [today]     - Show today's costs (default)",
+						"  maestro cost [today]     - Show today's costs (default)",
 					),
 				);
 				console.log(
-					chalk.dim("  composer cost yesterday   - Show yesterday's costs"),
+					chalk.dim("  maestro cost yesterday   - Show yesterday's costs"),
+				);
+				console.log(chalk.dim("  maestro cost week        - Show last 7 days"));
+				console.log(
+					chalk.dim("  maestro cost month       - Show last 30 days"),
 				);
 				console.log(
-					chalk.dim("  composer cost week        - Show last 7 days"),
+					chalk.dim("  maestro cost all         - Show all time costs"),
 				);
 				console.log(
-					chalk.dim("  composer cost month       - Show last 30 days"),
+					chalk.dim("  maestro cost breakdown   - Detailed breakdown"),
 				);
-				console.log(
-					chalk.dim("  composer cost all         - Show all time costs"),
-				);
-				console.log(
-					chalk.dim("  composer cost breakdown   - Detailed breakdown"),
-				);
-				console.log(
-					chalk.dim("  composer cost clear       - Clear usage data"),
-				);
+				console.log(chalk.dim("  maestro cost clear       - Clear usage data"));
 				process.exit(1);
 		}
 	}
@@ -736,11 +732,11 @@ export async function main(args: string[]) {
 				console.log(chalk.dim("\nAvailable commands:"));
 				console.log(
 					chalk.dim(
-						"  composer models list             - List registered models",
+						"  maestro models list             - List registered models",
 					),
 				);
 				console.log(
-					chalk.dim("  composer models providers        - Summarize providers"),
+					chalk.dim("  maestro models providers        - Summarize providers"),
 				);
 				process.exit(1);
 		}

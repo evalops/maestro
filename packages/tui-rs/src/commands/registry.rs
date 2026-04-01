@@ -1192,7 +1192,7 @@ pub fn build_command_registry() -> CommandRegistry {
             CommandCategory::Diagnostics,
             Box::new(|_| {
                 Ok(CommandOutput::Message(format!(
-                    "Composer TUI v{}",
+                    "Maestro TUI v{}",
                     env!("CARGO_PKG_VERSION")
                 )))
             }),
@@ -1743,6 +1743,15 @@ mod tests {
         let registry = build_command_registry();
         let result = registry.execute("/version", "/tmp", None, None);
         assert!(result.is_ok());
+        match result.unwrap() {
+            CommandOutput::Message(message) => {
+                assert_eq!(
+                    message,
+                    format!("Maestro TUI v{}", env!("CARGO_PKG_VERSION"))
+                );
+            }
+            other => panic!("expected version message, got {other:?}"),
+        }
     }
 
     #[test]

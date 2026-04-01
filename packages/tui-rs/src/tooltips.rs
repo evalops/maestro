@@ -50,4 +50,18 @@ mod tests {
             assert!(!tip.starts_with('#'), "Comments should be filtered out");
         }
     }
+
+    #[test]
+    fn tooltips_use_maestro_branding() {
+        for tip in TOOLTIPS.iter() {
+            assert!(
+                !tip.contains("Composer"),
+                "Tooltip should not use stale Composer branding: {tip}"
+            );
+            assert!(
+                !tip.contains("composer --resume"),
+                "Tooltip should not use stale composer command name: {tip}"
+            );
+        }
+    }
 }

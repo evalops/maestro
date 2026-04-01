@@ -22,6 +22,25 @@ const baseAssistant: AssistantMessage = {
 };
 
 describe("AssistantMessageComponent", () => {
+	it("renders a Maestro response header", () => {
+		const renderable: RenderableAssistantMessage = {
+			kind: "assistant",
+			textBlocks: ["Hello"],
+			thinkingBlocks: [],
+			toolCalls: [],
+			stopReason: "stop",
+			cleaned: false,
+			raw: baseAssistant,
+		};
+
+		const component = new AssistantMessageComponent(renderable);
+		component.updateContent(renderable, { streaming: false });
+
+		const output = stripAnsiSequences(component.render(80).join("\n"));
+		expect(output).toContain("* MAESTRO");
+		expect(output).not.toContain("* COMPOSER");
+	});
+
 	it("renders streaming thinking summaries", () => {
 		const renderable: RenderableAssistantMessage = {
 			kind: "assistant",

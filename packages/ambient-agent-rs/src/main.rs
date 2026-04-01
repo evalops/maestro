@@ -4,7 +4,7 @@
 
 use ambient_agent::{
     daemon::{DaemonBuilder, DaemonCommand},
-    ipc::{IpcClient, default_socket_path},
+    ipc::{default_socket_path, IpcClient},
     types::*,
 };
 use clap::{Parser, Subcommand};
@@ -14,7 +14,7 @@ use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 /// CLI-specific config that gets converted to/from AmbientConfig
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct CliConfig {
     #[serde(default)]
     repos: Vec<CliRepoConfig>,
@@ -39,17 +39,11 @@ struct CliThresholds {
     ask_human: f64,
 }
 
-fn default_auto_execute() -> f64 { 0.8 }
-fn default_ask_human() -> f64 { 0.5 }
-
-impl Default for CliConfig {
-    fn default() -> Self {
-        Self {
-            repos: vec![],
-            thresholds: CliThresholds::default(),
-            github_token: None,
-        }
-    }
+fn default_auto_execute() -> f64 {
+    0.8
+}
+fn default_ask_human() -> f64 {
+    0.5
 }
 
 impl From<CliConfig> for AmbientConfig {
@@ -156,37 +150,23 @@ async fn main() -> anyhow::Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     match cli.command {
-        Commands::Start { foreground } => {
-            cmd_start(&cli.config, cli.data_dir, foreground).await
-        }
-        Commands::Stop => {
-            cmd_stop().await
-        }
-        Commands::Status => {
-            cmd_status().await
-        }
-        Commands::Stats => {
-            cmd_stats().await
-        }
-        Commands::Watch { repo } => {
-            cmd_watch(&cli.config, &repo).await
-        }
-        Commands::Unwatch { repo } => {
-            cmd_unwatch(&cli.config, &repo).await
-        }
-        Commands::List => {
-            cmd_list(&cli.config).await
-        }
-        Commands::Init { force } => {
-            cmd_init(&cli.config, force).await
-        }
-        Commands::Validate => {
-            cmd_validate(&cli.config).await
-        }
+        Commands::Start { foreground } => cmd_start(&cli.config, cli.data_dir, foreground).await,
+        Commands::Stop => cmd_stop().await,
+        Commands::Status => cmd_status().await,
+        Commands::Stats => cmd_stats().await,
+        Commands::Watch { repo } => cmd_watch(&cli.config, &repo).await,
+        Commands::Unwatch { repo } => cmd_unwatch(&cli.config, &repo).await,
+        Commands::List => cmd_list(&cli.config).await,
+        Commands::Init { force } => cmd_init(&cli.config, force).await,
+        Commands::Validate => cmd_validate(&cli.config).await,
     }
 }
 
-async fn cmd_start(config_path: &PathBuf, data_dir: Option<PathBuf>, _foreground: bool) -> anyhow::Result<()> {
+async fn cmd_start(
+    config_path: &PathBuf,
+    data_dir: Option<PathBuf>,
+    _foreground: bool,
+) -> anyhow::Result<()> {
     info!("Starting Ambient Agent");
 
     let cli_config = load_config(config_path).await?;
@@ -361,7 +341,10 @@ async fn cmd_init(config_path: &PathBuf, force: bool) -> anyhow::Result<()> {
     println!("Created config file: {}", config_path.display());
     println!();
     println!("Next steps:");
-    println!("  1. Edit {} to add your GitHub token", config_path.display());
+    println!(
+        "  1. Edit {} to add your GitHub token",
+        config_path.display()
+    );
     println!("  2. Run 'ambient watch owner/repo' to add repositories");
     println!("  3. Run 'ambient start' to begin watching");
 
@@ -420,7 +403,10 @@ async fn cmd_validate(config_path: &PathBuf) -> anyhow::Result<()> {
 
 async fn load_config(path: &PathBuf) -> anyhow::Result<CliConfig> {
     if !path.exists() {
-        anyhow::bail!("Config file not found: {}. Run 'ambient init' to create one.", path.display());
+        anyhow::bail!(
+            "Config file not found: {}. Run 'ambient init' to create one.",
+            path.display()
+        );
     }
 
     let content = tokio::fs::read_to_string(path).await?;

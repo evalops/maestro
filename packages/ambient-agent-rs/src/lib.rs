@@ -33,42 +33,42 @@
 //! 3. **Learn from outcomes** - Merged PRs reinforce patterns; rejected PRs update priors
 //! 4. **Swarm for complexity** - Simple tasks = single agent; complex = spawn teammates
 
-pub mod types;
-pub mod event_bus;
-pub mod decider;
-pub mod critic;
 pub mod cascader;
 pub mod checkpoint;
-pub mod learner;
-pub mod executor;
-pub mod ipc;
+pub mod critic;
 pub mod daemon;
+pub mod decider;
+pub mod event_bus;
+pub mod executor;
 pub mod github_watcher;
+pub mod ipc;
+pub mod learner;
 pub mod pr_creator;
+pub mod types;
 
-pub use types::*;
-pub use event_bus::EventBus;
-pub use decider::Decider;
-pub use critic::Critic;
 pub use cascader::Cascader;
 pub use checkpoint::CheckpointManager;
-pub use learner::Learner;
-pub use executor::Executor;
+pub use critic::Critic;
 pub use daemon::AmbientDaemon;
+pub use decider::Decider;
+pub use event_bus::EventBus;
+pub use executor::Executor;
 pub use github_watcher::GitHubWatcher;
+pub use learner::Learner;
 pub use pr_creator::PrCreator;
+pub use types::*;
 
 /// Prelude for convenient imports
 pub mod prelude {
-    pub use crate::types::*;
-    pub use crate::event_bus::EventBus;
-    pub use crate::decider::Decider;
-    pub use crate::critic::Critic;
     pub use crate::cascader::Cascader;
     pub use crate::checkpoint::CheckpointManager;
-    pub use crate::learner::Learner;
-    pub use crate::executor::Executor;
+    pub use crate::critic::Critic;
     pub use crate::daemon::AmbientDaemon;
+    pub use crate::decider::Decider;
+    pub use crate::event_bus::EventBus;
+    pub use crate::executor::Executor;
     pub use crate::github_watcher::{GitHubWatcher, GitHubWatcherConfig};
+    pub use crate::learner::Learner;
     pub use crate::pr_creator::{PrCreator, PrCreatorConfig};
+    pub use crate::types::*;
 }

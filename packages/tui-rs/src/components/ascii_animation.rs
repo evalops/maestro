@@ -75,28 +75,28 @@ pub const ROBOT_FRAMES: &[&str] = &[
 pub const TERMINAL_FRAMES: &[&str] = &[
     r"
   ╔══════════════╗
-  ║ composer_    ║
+  ║ maestro_     ║
   ║ █            ║
   ║              ║
   ╚══════════════╝
     ",
     r"
   ╔══════════════╗
-  ║ composer_█   ║
+  ║ maestro_█    ║
   ║              ║
   ║              ║
   ╚══════════════╝
     ",
     r"
   ╔══════════════╗
-  ║ composer_    ║
+  ║ maestro_     ║
   ║ > thinking   ║
   ║   █          ║
   ╚══════════════╝
     ",
     r"
   ╔══════════════╗
-  ║ composer_    ║
+  ║ maestro_     ║
   ║ > thinking...║
   ║              ║
   ╚══════════════╝
@@ -390,6 +390,14 @@ mod tests {
     fn test_animation_specific_variant() {
         let anim = AsciiAnimation::robot();
         assert_eq!(anim.variant_count(), 1);
+    }
+
+    #[test]
+    fn test_terminal_animation_uses_maestro_prompt() {
+        let anim = AsciiAnimation::terminal();
+        let frame = anim.current_frame();
+        assert!(frame.contains("maestro_"));
+        assert!(!frame.contains("composer_"));
     }
 
     #[test]

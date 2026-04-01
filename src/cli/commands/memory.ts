@@ -266,13 +266,15 @@ export async function handleMemoryCommand(
 	subcommand: string | undefined,
 	args: string[],
 ): Promise<void> {
-	const config = getConfig();
 	switch (subcommand) {
 		case undefined:
-		case "status":
+		case "status": {
+			const config = getConfig();
 			await printStatus(config);
 			return;
+		}
 		case "capabilities": {
+			const config = getConfig();
 			const caps = (await fetchJson(
 				config,
 				"/capabilities",
@@ -287,6 +289,7 @@ export async function handleMemoryCommand(
 				console.error(chalk.red("Session id required."));
 				process.exit(1);
 			}
+			const config = getConfig();
 			await printSessionMetrics(config, sessionId);
 			return;
 		}
@@ -296,6 +299,7 @@ export async function handleMemoryCommand(
 				console.error(chalk.red("Session id required."));
 				process.exit(1);
 			}
+			const config = getConfig();
 			const limit = args[1] ? Number.parseInt(args[1], 10) : undefined;
 			await printAudit(config, sessionId, limit);
 			return;
@@ -306,10 +310,12 @@ export async function handleMemoryCommand(
 				console.error(chalk.red("Session id required."));
 				process.exit(1);
 			}
+			const config = getConfig();
 			await exportMetrics(config, sessionId);
 			return;
 		}
 		case "watch": {
+			const config = getConfig();
 			const sessionId = args[0];
 			const intervalMs = parseInterval(args[1]);
 			console.log(
@@ -338,12 +344,12 @@ export async function handleMemoryCommand(
 		default:
 			console.error(chalk.red(`Unknown memory subcommand: ${subcommand}`));
 			console.log(chalk.dim("\nAvailable commands:"));
-			console.log(chalk.dim("  composer memory [status]"));
-			console.log(chalk.dim("  composer memory capabilities"));
-			console.log(chalk.dim("  composer memory session <id>"));
-			console.log(chalk.dim("  composer memory audit <id> [limit]"));
-			console.log(chalk.dim("  composer memory export <id>"));
-			console.log(chalk.dim("  composer memory watch [id] [intervalMs]"));
+			console.log(chalk.dim("  maestro memory [status]"));
+			console.log(chalk.dim("  maestro memory capabilities"));
+			console.log(chalk.dim("  maestro memory session <id>"));
+			console.log(chalk.dim("  maestro memory audit <id> [limit]"));
+			console.log(chalk.dim("  maestro memory export <id>"));
+			console.log(chalk.dim("  maestro memory watch [id] [intervalMs]"));
 			process.exit(1);
 	}
 }
