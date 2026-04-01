@@ -220,6 +220,7 @@ pub use async_transport::{
 // Session persistence
 pub use session::{
     delete_session, list_sessions, SessionEntry, SessionMetadata, SessionReader, SessionRecorder,
+    SessionReplay,
 };
 
 // Supervisor with reconnection

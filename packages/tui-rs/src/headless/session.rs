@@ -88,7 +88,7 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use super::messages::{FromAgentMessage, ToAgentMessage, TokenUsage};
+use super::messages::{AgentState, FromAgentMessage, InitConfig, ToAgentMessage, TokenUsage};
 
 /// A recorded session entry (either a sent or received message).
 ///
@@ -189,6 +189,12 @@ pub struct SessionMetadata {
     pub model: Option<String>,
     /// Provider used in this session
     pub provider: Option<String>,
+    /// Headless protocol version reported by the agent
+    #[serde(default)]
+    pub protocol_version: Option<String>,
+    /// Session ID reported by the agent itself
+    #[serde(default)]
+    pub agent_session_id: Option<String>,
     /// Working directory
     pub cwd: Option<String>,
     /// Git branch (if any)
@@ -212,6 +218,8 @@ impl SessionMetadata {
             title: None,
             model: None,
             provider: None,
+            protocol_version: None,
+            agent_session_id: None,
             cwd: None,
             git_branch: None,
             total_input_tokens: 0,
@@ -395,14 +403,26 @@ impl SessionRecorder {
         // Update metadata
         match message {
             FromAgentMessage::Ready {
-                model, provider, ..
+                protocol_version,
+                model,
+                provider,
+                session_id,
             } => {
                 self.metadata.model = Some(model.clone());
                 self.metadata.provider = Some(provider.clone());
+                self.metadata.protocol_version = protocol_version.clone();
+                if session_id.is_some() {
+                    self.metadata.agent_session_id = session_id.clone();
+                }
             }
             FromAgentMessage::SessionInfo {
-                cwd, git_branch, ..
+                session_id,
+                cwd,
+                git_branch,
             } => {
+                if session_id.is_some() {
+                    self.metadata.agent_session_id = session_id.clone();
+                }
                 self.metadata.cwd = Some(cwd.clone());
                 self.metadata.git_branch = git_branch.clone();
             }
@@ -491,6 +511,15 @@ pub struct SessionReader {
     entries: Vec<SessionEntry>,
     /// Session metadata
     metadata: SessionMetadata,
+}
+
+/// Reconstructed headless session state derived from the recorded JSONL log.
+#[derive(Debug, Clone)]
+pub struct SessionReplay {
+    /// Current reconstructed agent state after replaying recorded events.
+    pub state: AgentState,
+    /// Most recent init configuration sent to the headless agent, if any.
+    pub last_init: Option<InitConfig>,
 }
 
 impl SessionReader {
@@ -591,6 +620,48 @@ impl SessionReader {
             })
             .collect()
     }
+
+    /// Return the last init configuration sent to the headless agent, if any.
+    #[must_use]
+    pub fn last_init(&self) -> Option<InitConfig> {
+        self.entries.iter().rev().find_map(|entry| match entry {
+            SessionEntry::Sent {
+                message:
+                    ToAgentMessage::Init {
+                        system_prompt,
+                        append_system_prompt,
+                        thinking_level,
+                        approval_mode,
+                    },
+                ..
+            } => Some(InitConfig {
+                system_prompt: system_prompt.clone(),
+                append_system_prompt: append_system_prompt.clone(),
+                thinking_level: *thinking_level,
+                approval_mode: *approval_mode,
+            }),
+            _ => None,
+        })
+    }
+
+    /// Replay the recorded agent messages into an `AgentState`.
+    #[must_use]
+    pub fn replay_state(&self) -> AgentState {
+        let mut state = AgentState::default();
+        for message in self.received_messages() {
+            let _ = state.handle_message((*message).clone());
+        }
+        state
+    }
+
+    /// Build a resumable snapshot from the recorded session log.
+    #[must_use]
+    pub fn replay(&self) -> SessionReplay {
+        SessionReplay {
+            state: self.replay_state(),
+            last_init: self.last_init(),
+        }
+    }
 }
 
 /// List available sessions in a directory
@@ -689,6 +760,144 @@ mod tests {
         assert_eq!(reader.prompts()[0], "Hello, world!");
         assert_eq!(reader.metadata().title.as_deref(), Some("Hello, world!"));
         assert_eq!(reader.metadata().model.as_deref(), Some("claude-3-opus"));
+        assert_eq!(
+            reader.metadata().protocol_version.as_deref(),
+            Some("2026-03-30")
+        );
+        assert_eq!(
+            reader.metadata().agent_session_id.as_deref(),
+            Some("sess_123")
+        );
+    }
+
+    #[test]
+    fn test_session_reader_replay_restores_state_and_init() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+
+        recorder
+            .record_sent(&ToAgentMessage::Init {
+                system_prompt: Some("You are Maestro".to_string()),
+                append_system_prompt: Some("Stay concise".to_string()),
+                thinking_level: Some(super::super::messages::ThinkingLevel::High),
+                approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+            })
+            .unwrap();
+
+        recorder
+            .record_received(&FromAgentMessage::Ready {
+                protocol_version: Some("2026-03-30".to_string()),
+                model: "claude-3-opus".to_string(),
+                provider: "anthropic".to_string(),
+                session_id: Some("sess_ready".to_string()),
+            })
+            .unwrap();
+        recorder
+            .record_received(&FromAgentMessage::SessionInfo {
+                session_id: Some("sess_info".to_string()),
+                cwd: "/tmp/project".to_string(),
+                git_branch: Some("main".to_string()),
+            })
+            .unwrap();
+        recorder
+            .record_received(&FromAgentMessage::ResponseStart {
+                response_id: "resp_1".to_string(),
+            })
+            .unwrap();
+        recorder
+            .record_received(&FromAgentMessage::ResponseChunk {
+                response_id: "resp_1".to_string(),
+                content: "Partial reply".to_string(),
+                is_thinking: false,
+            })
+            .unwrap();
+        recorder
+            .record_received(&FromAgentMessage::ToolCall {
+                call_id: "call_1".to_string(),
+                tool: "bash".to_string(),
+                args: serde_json::json!({ "cmd": "git status" }),
+                requires_approval: true,
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let reader = SessionReader::load(sessions_dir, &id).unwrap();
+        let replay = reader.replay();
+
+        assert_eq!(
+            replay.last_init,
+            Some(InitConfig {
+                system_prompt: Some("You are Maestro".to_string()),
+                append_system_prompt: Some("Stay concise".to_string()),
+                thinking_level: Some(super::super::messages::ThinkingLevel::High),
+                approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+            })
+        );
+        assert_eq!(replay.state.protocol_version.as_deref(), Some("2026-03-30"));
+        assert_eq!(replay.state.session_id.as_deref(), Some("sess_info"));
+        assert_eq!(replay.state.cwd.as_deref(), Some("/tmp/project"));
+        assert_eq!(replay.state.git_branch.as_deref(), Some("main"));
+        assert!(replay.state.is_ready);
+        assert!(replay.state.is_responding);
+        assert_eq!(
+            replay
+                .state
+                .current_response
+                .as_ref()
+                .map(|response| response.text.as_str()),
+            Some("Partial reply")
+        );
+        assert_eq!(replay.state.pending_approvals.len(), 1);
+        assert_eq!(replay.state.pending_approvals[0].tool, "bash");
+    }
+
+    #[test]
+    fn test_last_init_returns_most_recent_init_message() {
+        let tmp = TempDir::new().unwrap();
+        let sessions_dir = tmp.path();
+
+        let mut recorder = SessionRecorder::new(sessions_dir).unwrap();
+        let id = recorder.id().to_string();
+
+        recorder
+            .record_sent(&ToAgentMessage::Init {
+                system_prompt: Some("First".to_string()),
+                append_system_prompt: None,
+                thinking_level: Some(super::super::messages::ThinkingLevel::Low),
+                approval_mode: Some(super::super::messages::ApprovalMode::Auto),
+            })
+            .unwrap();
+        recorder
+            .record_sent(&ToAgentMessage::Prompt {
+                content: "Hello".to_string(),
+                attachments: None,
+            })
+            .unwrap();
+        recorder
+            .record_sent(&ToAgentMessage::Init {
+                system_prompt: Some("Second".to_string()),
+                append_system_prompt: None,
+                thinking_level: Some(super::super::messages::ThinkingLevel::Ultra),
+                approval_mode: Some(super::super::messages::ApprovalMode::Fail),
+            })
+            .unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+
+        let reader = SessionReader::load(sessions_dir, &id).unwrap();
+        assert_eq!(
+            reader.last_init(),
+            Some(InitConfig {
+                system_prompt: Some("Second".to_string()),
+                append_system_prompt: None,
+                thinking_level: Some(super::super::messages::ThinkingLevel::Ultra),
+                approval_mode: Some(super::super::messages::ApprovalMode::Fail),
+            })
+        );
     }
 
     #[test]
