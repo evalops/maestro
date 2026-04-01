@@ -8,6 +8,8 @@ use serde_json::Value;
 pub const MCP_TOOLS_LIST_CHANGED_METHOD: &str = "notifications/tools/list_changed";
 pub const MCP_RESOURCES_LIST_CHANGED_METHOD: &str = "notifications/resources/list_changed";
 pub const MCP_PROMPTS_LIST_CHANGED_METHOD: &str = "notifications/prompts/list_changed";
+pub const MCP_PROGRESS_METHOD: &str = "notifications/progress";
+pub const MCP_LOG_MESSAGE_METHOD: &str = "notifications/message";
 
 /// JSON-RPC request message
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +177,38 @@ impl McpNotification {
     pub fn is_prompts_list_changed(&self) -> bool {
         self.method == MCP_PROMPTS_LIST_CHANGED_METHOD
     }
+
+    #[must_use]
+    pub fn is_progress_notification(&self) -> bool {
+        self.method == MCP_PROGRESS_METHOD
+    }
+
+    #[must_use]
+    pub fn is_log_message_notification(&self) -> bool {
+        self.method == MCP_LOG_MESSAGE_METHOD
+    }
+
+    #[must_use]
+    pub fn progress_params(&self) -> Option<McpProgressNotificationParams> {
+        if !self.is_progress_notification() {
+            return None;
+        }
+
+        self.params
+            .as_ref()
+            .and_then(|params| serde_json::from_value(params.clone()).ok())
+    }
+
+    #[must_use]
+    pub fn log_message_params(&self) -> Option<McpLoggingMessageNotificationParams> {
+        if !self.is_log_message_notification() {
+            return None;
+        }
+
+        self.params
+            .as_ref()
+            .and_then(|params| serde_json::from_value(params.clone()).ok())
+    }
 }
 
 /// JSON-RPC message received from an MCP server.
@@ -204,6 +238,36 @@ impl std::fmt::Display for McpError {
 }
 
 impl std::error::Error for McpError {}
+
+/// Parameters for an MCP progress notification.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpProgressNotificationParams {
+    /// Progress token associated with the request.
+    #[serde(default)]
+    pub progress_token: Value,
+    /// Current progress value.
+    pub progress: f64,
+    /// Optional total for percentage-based progress.
+    #[serde(default)]
+    pub total: Option<f64>,
+    /// Optional progress message.
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Parameters for an MCP logging notification.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct McpLoggingMessageNotificationParams {
+    /// Logging severity from the server.
+    pub level: String,
+    /// Optional logger name.
+    #[serde(default)]
+    pub logger: Option<String>,
+    /// Logged payload.
+    #[serde(default)]
+    pub data: Value,
+}
 
 /// Client information sent during initialization
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -562,6 +626,47 @@ mod tests {
             McpIncomingMessage::Notification(notification) => {
                 assert!(notification.is_tools_list_changed());
                 assert!(notification.is_list_changed_notification());
+            }
+            McpIncomingMessage::Response(_) => panic!("expected notification"),
+        }
+    }
+
+    #[test]
+    fn test_progress_notification_params() {
+        let json = r#"{
+            "jsonrpc":"2.0",
+            "method":"notifications/progress",
+            "params":{"progressToken":"abc","progress":4,"total":10,"message":"Indexing"}
+        }"#;
+        let message: McpIncomingMessage = serde_json::from_str(json).unwrap();
+        match message {
+            McpIncomingMessage::Notification(notification) => {
+                assert!(notification.is_progress_notification());
+                let params = notification.progress_params().expect("progress params");
+                assert_eq!(params.progress_token, Value::String("abc".to_string()));
+                assert!((params.progress - 4.0).abs() < f64::EPSILON);
+                assert_eq!(params.total, Some(10.0));
+                assert_eq!(params.message.as_deref(), Some("Indexing"));
+            }
+            McpIncomingMessage::Response(_) => panic!("expected notification"),
+        }
+    }
+
+    #[test]
+    fn test_log_message_notification_params() {
+        let json = r#"{
+            "jsonrpc":"2.0",
+            "method":"notifications/message",
+            "params":{"level":"warning","logger":"mcp","data":{"detail":"slow"}}
+        }"#;
+        let message: McpIncomingMessage = serde_json::from_str(json).unwrap();
+        match message {
+            McpIncomingMessage::Notification(notification) => {
+                assert!(notification.is_log_message_notification());
+                let params = notification.log_message_params().expect("logging params");
+                assert_eq!(params.level, "warning");
+                assert_eq!(params.logger.as_deref(), Some("mcp"));
+                assert_eq!(params.data["detail"], Value::String("slow".to_string()));
             }
             McpIncomingMessage::Response(_) => panic!("expected notification"),
         }

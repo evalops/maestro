@@ -56,6 +56,44 @@ pub enum McpError {
     Json(#[from] serde_json::Error),
 }
 
+/// Runtime notification surfaced from an MCP server.
+#[derive(Debug, Clone, PartialEq)]
+pub enum McpRuntimeEvent {
+    ToolsListChanged {
+        server: String,
+    },
+    ResourcesListChanged {
+        server: String,
+    },
+    PromptsListChanged {
+        server: String,
+    },
+    Progress {
+        server: String,
+        progress: f64,
+        total: Option<f64>,
+        message: Option<String>,
+    },
+    Log {
+        server: String,
+        level: String,
+        logger: Option<String>,
+        data: serde_json::Value,
+    },
+}
+
+impl McpRuntimeEvent {
+    #[must_use]
+    pub fn changes_tools(&self) -> bool {
+        matches!(self, Self::ToolsListChanged { .. })
+    }
+
+    #[must_use]
+    pub fn affects_badges(&self) -> bool {
+        self.changes_tools()
+    }
+}
+
 /// Connection backend type
 #[allow(clippy::large_enum_variant)]
 enum ConnectionBackend {
@@ -353,28 +391,49 @@ impl McpConnection {
         Ok(())
     }
 
-    /// Drain pending server notifications and refresh cached lists when needed.
-    pub async fn poll_notifications(&mut self) -> Result<bool, McpError> {
+    /// Drain pending server notifications, refresh cached lists when needed, and surface runtime events.
+    pub async fn poll_notifications(&mut self) -> Result<Vec<McpRuntimeEvent>, McpError> {
         if self.config.transport == McpTransport::Stdio && self.initialized {
             self.ensure_stdio_connected().await?;
         }
 
-        let mut changed = false;
+        let server = self.server_name().to_string();
+        let mut events = Vec::new();
 
         while let Some(notification) = self.try_recv_notification() {
             if notification.is_tools_list_changed() {
                 self.refresh_tools().await?;
-                changed = true;
+                events.push(McpRuntimeEvent::ToolsListChanged {
+                    server: server.clone(),
+                });
             } else if notification.is_resources_list_changed() {
                 self.refresh_resources().await?;
-                changed = true;
+                events.push(McpRuntimeEvent::ResourcesListChanged {
+                    server: server.clone(),
+                });
             } else if notification.is_prompts_list_changed() {
                 self.refresh_prompts().await?;
-                changed = true;
+                events.push(McpRuntimeEvent::PromptsListChanged {
+                    server: server.clone(),
+                });
+            } else if let Some(params) = notification.progress_params() {
+                events.push(McpRuntimeEvent::Progress {
+                    server: server.clone(),
+                    progress: params.progress,
+                    total: params.total,
+                    message: params.message,
+                });
+            } else if let Some(params) = notification.log_message_params() {
+                events.push(McpRuntimeEvent::Log {
+                    server: server.clone(),
+                    level: params.level,
+                    logger: params.logger,
+                    data: params.data,
+                });
             }
         }
 
-        Ok(changed)
+        Ok(events)
     }
 
     /// Get available tools
@@ -669,16 +728,19 @@ impl McpClient {
     }
 
     /// Drain pending server notifications across all active connections.
-    pub async fn poll_notifications(&self) -> Result<bool, McpError> {
-        let connections = self.connections.read().await;
-        let mut changed = false;
+    pub async fn poll_notifications(&self) -> Result<Vec<McpRuntimeEvent>, McpError> {
+        let connections = {
+            let guard = self.connections.read().await;
+            guard.values().cloned().collect::<Vec<_>>()
+        };
+        let mut events = Vec::new();
 
-        for conn in connections.values() {
+        for conn in connections {
             let mut conn = conn.lock().await;
-            changed |= conn.poll_notifications().await?;
+            events.extend(conn.poll_notifications().await?);
         }
 
-        Ok(changed)
+        Ok(events)
     }
 
     /// Disconnect from all servers
@@ -1177,6 +1239,156 @@ mod tests {
         addr
     }
 
+    async fn start_sse_runtime_event_server() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let notifications_sent = Arc::new(AtomicBool::new(false));
+        let sse_sender = Arc::new(Mutex::new(None::<mpsc::UnboundedSender<String>>));
+
+        tokio::spawn({
+            let notifications_sent = Arc::clone(&notifications_sent);
+            let sse_sender = Arc::clone(&sse_sender);
+            async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let notifications_sent = Arc::clone(&notifications_sent);
+                    let sse_sender = Arc::clone(&sse_sender);
+
+                    tokio::spawn(async move {
+                        let Some((path, body)) = read_http_request(&mut socket).await else {
+                            return;
+                        };
+
+                        if path == "/sse" {
+                            let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+                            {
+                                let mut sender = sse_sender.lock().await;
+                                *sender = Some(tx);
+                            }
+
+                            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                            if socket.write_all(headers.as_bytes()).await.is_err() {
+                                return;
+                            }
+
+                            while let Some(event) = rx.recv().await {
+                                let payload = format!("data: {event}\n\n");
+                                if socket.write_all(payload.as_bytes()).await.is_err() {
+                                    break;
+                                }
+                            }
+                            return;
+                        }
+
+                        let request = serde_json::from_str::<serde_json::Value>(&body)
+                            .unwrap_or_else(|_| serde_json::json!({}));
+                        let method = request
+                            .get("method")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let request_id = request.get("id").and_then(serde_json::Value::as_u64);
+
+                        let response_event = match method.as_str() {
+                            "initialize" => Some(
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request_id,
+                                    "result": {
+                                        "protocolVersion": "2024-11-05",
+                                        "capabilities": {"tools": {}},
+                                        "serverInfo": {"name": "runtime", "version": "1.0.0"}
+                                    }
+                                })
+                                .to_string(),
+                            ),
+                            "tools/list" => {
+                                if !notifications_sent.swap(true, AtomicOrdering::SeqCst) {
+                                    let sse_sender = Arc::clone(&sse_sender);
+                                    tokio::spawn(async move {
+                                        send_sse_event_when_ready(
+                                            Arc::clone(&sse_sender),
+                                            serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "method": "notifications/progress",
+                                                "params": {
+                                                    "progressToken": "job-1",
+                                                    "progress": 4,
+                                                    "total": 10,
+                                                    "message": "Indexing"
+                                                }
+                                            })
+                                            .to_string(),
+                                        )
+                                        .await;
+                                        send_sse_event_when_ready(
+                                            sse_sender,
+                                            serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "method": "notifications/message",
+                                                "params": {
+                                                    "level": "warning",
+                                                    "data": "Slow response"
+                                                }
+                                            })
+                                            .to_string(),
+                                        )
+                                        .await;
+                                    });
+                                }
+
+                                Some(
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": request_id,
+                                        "result": {"tools": [{
+                                            "name": "runtime_tool",
+                                            "description": "Runtime tool"
+                                        }]}
+                                    })
+                                    .to_string(),
+                                )
+                            }
+                            "resources/list" => Some(
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request_id,
+                                    "result": {"resources": []}
+                                })
+                                .to_string(),
+                            ),
+                            "prompts/list" => Some(
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request_id,
+                                    "result": {"prompts": []}
+                                })
+                                .to_string(),
+                            ),
+                            _ => None,
+                        };
+
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            "{}",
+                        )
+                        .await;
+
+                        if let Some(event) = response_event {
+                            send_sse_event_when_ready(Arc::clone(&sse_sender), event).await;
+                        }
+                    });
+                }
+            }
+        });
+
+        addr
+    }
+
     #[test]
     fn test_is_mcp_tool() {
         assert!(McpClient::is_mcp_tool("mcp__server__tool"));
@@ -1237,10 +1449,11 @@ mod tests {
         conn.connect().await.expect("connect");
         assert_eq!(conn.tools().len(), 1);
 
-        let changed = tokio::time::timeout(Duration::from_secs(2), async {
+        let events = tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if conn.poll_notifications().await.expect("poll notifications") {
-                    break true;
+                let events = conn.poll_notifications().await.expect("poll notifications");
+                if !events.is_empty() {
+                    break events;
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -1248,8 +1461,59 @@ mod tests {
         .await
         .expect("notification timeout");
 
-        assert!(changed);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, McpRuntimeEvent::ToolsListChanged { server } if server == "test")));
         assert_eq!(conn.tools().len(), 2);
         assert_eq!(conn.tools()[1].name, "second_tool");
+    }
+
+    #[tokio::test]
+    async fn sse_runtime_notifications_surface_progress_and_logs() {
+        let addr = start_sse_runtime_event_server().await;
+        let mut config = stub_config("runtime");
+        config.transport = McpTransport::Sse;
+        config.command = None;
+        config.url = Some(format!("http://{addr}"));
+        config.timeout = Some(2_000);
+
+        let mut conn = McpConnection::new(config);
+        conn.connect().await.expect("connect");
+
+        let events = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let events = conn.poll_notifications().await.expect("poll notifications");
+                if events.len() >= 2 {
+                    break events;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("notification timeout");
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            McpRuntimeEvent::Progress {
+                server,
+                progress,
+                total,
+                message,
+            } if server == "runtime"
+                && (*progress - 4.0).abs() < f64::EPSILON
+                && *total == Some(10.0)
+                && message.as_deref() == Some("Indexing")
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            McpRuntimeEvent::Log {
+                server,
+                level,
+                data,
+                ..
+            } if server == "runtime"
+                && level == "warning"
+                && data == &serde_json::Value::String("Slow response".to_string())
+        )));
     }
 }
