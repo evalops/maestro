@@ -3,21 +3,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+async function loadInteractionTracker() {
+	return import("../src/interaction/user-interaction.js");
+}
+
 describe("Notification Hooks", () => {
 	const testDir = join(tmpdir(), `composer-hooks-test-${Date.now()}`);
 	const originalEnv = { ...process.env };
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		// Reset environment by setting to empty string (not undefined which becomes "undefined")
 		process.env.MAESTRO_NOTIFY_PROGRAM = "";
 		process.env.MAESTRO_NOTIFY_EVENTS = "";
 		process.env.MAESTRO_NOTIFY_TIMEOUT = "";
+		process.env.MAESTRO_NOTIFY_IDLE_MS = "";
+		process.env.MAESTRO_NOTIFY_TERMINAL = "";
 
 		// Create test directory
 		mkdirSync(testDir, { recursive: true });
 
 		// Clear module cache to reset config
 		vi.resetModules();
+		vi.useRealTimers();
+		const { resetUserInteractionTracking } = await loadInteractionTracker();
+		resetUserInteractionTracking(0);
 	});
 
 	afterEach(() => {
@@ -111,6 +120,17 @@ describe("Notification Hooks", () => {
 			clearNotificationConfigCache();
 
 			expect(isNotificationEnabled("turn-complete")).toBe(false);
+		});
+
+		it("should return true when terminal notifications are enabled for the event", async () => {
+			process.env.MAESTRO_NOTIFY_TERMINAL = "true";
+			process.env.MAESTRO_NOTIFY_EVENTS = "turn-complete";
+
+			const { isNotificationEnabled, clearNotificationConfigCache } =
+				await import("../src/hooks/notification-hooks.js");
+			clearNotificationConfigCache();
+
+			expect(isNotificationEnabled("turn-complete")).toBe(true);
 		});
 
 		it("should return false when event not in configured events", async () => {
@@ -296,6 +316,74 @@ describe("Notification Hooks", () => {
 			);
 
 			expect(payload).toBeNull();
+		});
+	});
+
+	describe("sendNotification", () => {
+		it("sends terminal notifications without an external program", async () => {
+			process.env.MAESTRO_NOTIFY_TERMINAL = "true";
+			process.env.MAESTRO_NOTIFY_EVENTS = "turn-complete";
+			process.env.MAESTRO_NOTIFY_IDLE_MS = "0";
+
+			const stdoutSpy = vi
+				.spyOn(process.stdout, "write")
+				.mockImplementation(() => true);
+
+			const { sendNotification, clearNotificationConfigCache } = await import(
+				"../src/hooks/notification-hooks.js"
+			);
+			clearNotificationConfigCache();
+
+			await sendNotification({
+				type: "turn-complete",
+				timestamp: new Date().toISOString(),
+				cwd: "/tmp/project",
+				lastAssistantMessage: "Done!",
+			});
+
+			expect(stdoutSpy).toHaveBeenCalled();
+			expect(stdoutSpy.mock.calls[0]?.[0]).toContain("Done!");
+
+			stdoutSpy.mockRestore();
+		});
+
+		it("waits for idle before sending completion notifications", async () => {
+			process.env.MAESTRO_NOTIFY_TERMINAL = "true";
+			process.env.MAESTRO_NOTIFY_EVENTS = "turn-complete";
+			process.env.MAESTRO_NOTIFY_IDLE_MS = "6000";
+
+			vi.useFakeTimers();
+			vi.setSystemTime(0);
+			const { recordUserInteraction, resetUserInteractionTracking } =
+				await loadInteractionTracker();
+			resetUserInteractionTracking(0);
+
+			const stdoutSpy = vi
+				.spyOn(process.stdout, "write")
+				.mockImplementation(() => true);
+
+			const { sendNotification, clearNotificationConfigCache } = await import(
+				"../src/hooks/notification-hooks.js"
+			);
+			clearNotificationConfigCache();
+
+			const promise = sendNotification({
+				type: "turn-complete",
+				timestamp: new Date().toISOString(),
+				cwd: "/tmp/project",
+				lastAssistantMessage: "Done!",
+			});
+
+			await vi.advanceTimersByTimeAsync(3000);
+			expect(stdoutSpy).not.toHaveBeenCalled();
+
+			recordUserInteraction(3000);
+
+			await vi.advanceTimersByTimeAsync(3000);
+			await promise;
+
+			expect(stdoutSpy).not.toHaveBeenCalled();
+			stdoutSpy.mockRestore();
 		});
 	});
 });

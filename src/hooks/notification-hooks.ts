@@ -8,6 +8,7 @@
  *   MAESTRO_NOTIFY_PROGRAM=/path/to/script
  *   MAESTRO_NOTIFY_EVENTS=turn-complete,session-end (comma-separated, or "all")
  *   MAESTRO_NOTIFY_TERMINAL=true (enables OSC 9 terminal notifications)
+ *   MAESTRO_NOTIFY_IDLE_MS=6000 (delay completion notifications until user idle)
  *
  * The program receives a JSON payload as its first argument with event details.
  *
@@ -23,9 +24,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentEvent, AppMessage } from "../agent/types.js";
 import { PATHS } from "../config/constants.js";
+import { getTimeSinceLastUserInteraction } from "../interaction/user-interaction.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("hooks:notify");
+const DEFAULT_IDLE_THRESHOLD_MS = 6_000;
 
 export type NotificationEventType =
 	| "turn-complete"
@@ -51,6 +54,7 @@ export interface NotificationHooksConfig {
 	program?: string;
 	events?: NotificationEventType[];
 	timeout?: number;
+	idleThresholdMs?: number;
 	/** Enable OSC 9 terminal notifications (iTerm2, Ghostty, WezTerm, Windows Terminal) */
 	terminalNotify?: boolean;
 }
@@ -68,6 +72,7 @@ export function loadNotificationConfig(): NotificationHooksConfig {
 	const config: NotificationHooksConfig = {
 		events: [],
 		timeout: DEFAULT_TIMEOUT_MS,
+		idleThresholdMs: DEFAULT_IDLE_THRESHOLD_MS,
 	};
 
 	// Check environment variables first
@@ -110,6 +115,14 @@ export function loadNotificationConfig(): NotificationHooksConfig {
 		}
 	}
 
+	const envIdleThreshold = process.env.MAESTRO_NOTIFY_IDLE_MS;
+	if (envIdleThreshold) {
+		const parsed = Number.parseInt(envIdleThreshold, 10);
+		if (!Number.isNaN(parsed) && parsed >= 0) {
+			config.idleThresholdMs = parsed;
+		}
+	}
+
 	// Terminal notifications via OSC 9
 	const envTerminal = process.env.MAESTRO_NOTIFY_TERMINAL;
 	if (envTerminal === "true" || envTerminal === "1") {
@@ -130,6 +143,9 @@ export function loadNotificationConfig(): NotificationHooksConfig {
 				}
 				if (fileConfig.notify?.timeout) {
 					config.timeout = fileConfig.notify.timeout;
+				}
+				if (fileConfig.notify?.idleThresholdMs !== undefined) {
+					config.idleThresholdMs = fileConfig.notify.idleThresholdMs;
 				}
 				if (
 					fileConfig.notify?.terminalNotify !== undefined &&
@@ -162,7 +178,9 @@ export function isNotificationEnabled(
 ): boolean {
 	const config = loadNotificationConfig();
 	return Boolean(
-		config.program && config.events && config.events.includes(eventType),
+		(config.program || config.terminalNotify) &&
+			config.events &&
+			config.events.includes(eventType),
 	);
 }
 
@@ -175,18 +193,36 @@ export async function sendNotification(
 ): Promise<void> {
 	const config = loadNotificationConfig();
 
-	if (!config.program) {
-		return;
-	}
-
 	if (!config.events?.includes(payload.type)) {
 		return;
 	}
 
-	const jsonPayload = JSON.stringify(payload);
+	if (!config.program && !config.terminalNotify) {
+		return;
+	}
+
+	const shouldSend = await waitForIdleWindow(payload, config.idleThresholdMs);
+	if (!shouldSend) {
+		logger.debug("Skipped notification due to recent user interaction", {
+			type: payload.type,
+		});
+		return;
+	}
+
+	if (config.terminalNotify) {
+		sendTerminalNotification("Maestro", buildTerminalNotificationBody(payload));
+	}
+
+	if (!config.program) {
+		return;
+	}
 
 	try {
-		await executeNotifyProgram(config.program, jsonPayload, config.timeout);
+		await executeNotifyProgram(
+			config.program,
+			JSON.stringify(payload),
+			config.timeout,
+		);
 		logger.debug("Notification sent", { type: payload.type });
 	} catch (error) {
 		logger.warn("Notification hook failed", {
@@ -230,6 +266,46 @@ export function notifyTurnComplete(summary: string): void {
 	}
 
 	// External program is handled by sendNotification with full payload
+}
+
+function buildTerminalNotificationBody(
+	payload: NotificationPayload,
+): string | undefined {
+	switch (payload.type) {
+		case "turn-complete":
+			return payload.lastAssistantMessage ?? "Turn complete";
+		case "session-start":
+			return `Session started in ${payload.cwd}`;
+		case "session-end":
+			return payload.lastAssistantMessage ?? "Session complete";
+		case "tool-execution":
+			return payload.toolName
+				? `${payload.toolName} finished`
+				: "Tool execution complete";
+		case "error":
+			return payload.error ?? "Agent error";
+	}
+}
+
+function requiresIdleWindow(type: NotificationEventType): boolean {
+	return type === "turn-complete" || type === "session-end";
+}
+
+async function waitForIdleWindow(
+	payload: NotificationPayload,
+	idleThresholdMs = DEFAULT_IDLE_THRESHOLD_MS,
+): Promise<boolean> {
+	if (!requiresIdleWindow(payload.type) || idleThresholdMs <= 0) {
+		return true;
+	}
+
+	const remainingDelay = idleThresholdMs - getTimeSinceLastUserInteraction();
+	if (remainingDelay <= 0) {
+		return true;
+	}
+
+	await new Promise((resolve) => setTimeout(resolve, remainingDelay));
+	return getTimeSinceLastUserInteraction() >= idleThresholdMs;
 }
 
 /**
