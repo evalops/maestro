@@ -32,6 +32,16 @@ describe("web runtime status", () => {
 		).toBe("Status: planning");
 	});
 
+	it("trims status values before formatting", () => {
+		expect(
+			formatWebRuntimeStatus({
+				type: "status",
+				status: " compacting ",
+				details: {},
+			}),
+		).toBe("Compacting conversation...");
+	});
+
 	it("formats compaction events", () => {
 		expect(
 			formatWebRuntimeStatus({
