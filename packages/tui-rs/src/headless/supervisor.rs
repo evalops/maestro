@@ -12,8 +12,8 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::async_transport::{AsyncAgentTransport, AsyncTransportConfig, AsyncTransportError};
-use super::messages::{AgentEvent, InitConfig, ToAgentMessage};
-use super::session::SessionRecorder;
+use super::messages::{AgentEvent, AgentState, InitConfig, ToAgentMessage};
+use super::session::{SessionRecorder, SessionReplay};
 
 /// Supervisor configuration
 #[derive(Debug, Clone)]
@@ -96,6 +96,8 @@ pub struct AgentSupervisor {
     transport: Option<AsyncAgentTransport>,
     /// Last init config to replay after reconnects
     last_init: Option<InitConfig>,
+    /// Current supervisor-owned agent state
+    state: AgentState,
     /// Event sender
     event_tx: mpsc::UnboundedSender<SupervisorEvent>,
     /// Event receiver
@@ -121,6 +123,7 @@ impl AgentSupervisor {
             config,
             transport: None,
             last_init: None,
+            state: AgentState::default(),
             event_tx,
             event_rx,
             health_status: HealthStatus::Unknown,
@@ -136,6 +139,19 @@ impl AgentSupervisor {
     pub fn with_session_recorder(mut self, recorder: SessionRecorder) -> Self {
         self.session_recorder = Some(recorder);
         self
+    }
+
+    /// Seed the supervisor with a replayed session snapshot.
+    #[must_use]
+    pub fn with_session_replay(mut self, replay: SessionReplay) -> Self {
+        self.restore_session_replay(replay);
+        self
+    }
+
+    /// Restore the supervisor's saved init config and reconstructed agent state.
+    pub fn restore_session_replay(&mut self, replay: SessionReplay) {
+        self.state = replay.state;
+        self.last_init = replay.last_init;
     }
 
     /// Connect to the agent
@@ -265,6 +281,15 @@ impl AgentSupervisor {
         }
     }
 
+    fn apply_agent_event(&mut self, event: &AgentEvent) {
+        if let Some(msg) = event_to_message(event) {
+            let _ = self.state.handle_message(msg.clone());
+            if let Some(ref mut recorder) = self.session_recorder {
+                let _ = recorder.record_received(&msg);
+            }
+        }
+    }
+
     /// Poll for events (non-blocking)
     pub fn poll(&mut self) -> Option<SupervisorEvent> {
         // First check for transport events
@@ -273,14 +298,7 @@ impl AgentSupervisor {
                 match result {
                     Ok(event) => {
                         self.last_response = Some(Instant::now());
-
-                        // Record to session if available
-                        if let Some(ref mut recorder) = self.session_recorder {
-                            // Convert event back to message for recording
-                            if let Some(msg) = event_to_message(&event) {
-                                let _ = recorder.record_received(&msg);
-                            }
-                        }
+                        self.apply_agent_event(&event);
 
                         return Some(SupervisorEvent::Agent(Box::new(event)));
                     }
@@ -319,13 +337,7 @@ impl AgentSupervisor {
             match transport.recv().await {
                 Ok(event) => {
                     self.last_response = Some(Instant::now());
-
-                    // Record to session if available
-                    if let Some(ref mut recorder) = self.session_recorder {
-                        if let Some(msg) = event_to_message(&event) {
-                            let _ = recorder.record_received(&msg);
-                        }
-                    }
+                    self.apply_agent_event(&event);
 
                     return Some(SupervisorEvent::Agent(Box::new(event)));
                 }
@@ -353,6 +365,12 @@ impl AgentSupervisor {
     #[must_use]
     pub fn is_connected(&self) -> bool {
         self.transport.is_some()
+    }
+
+    /// Get a reference to the current supervisor-owned agent state.
+    #[must_use]
+    pub fn state(&self) -> &AgentState {
+        &self.state
     }
 
     /// Get the underlying transport (if connected)
@@ -499,6 +517,7 @@ fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMess
 pub struct SupervisorBuilder {
     config: SupervisorConfig,
     session_recorder: Option<SessionRecorder>,
+    session_replay: Option<SessionReplay>,
 }
 
 impl SupervisorBuilder {
@@ -507,6 +526,7 @@ impl SupervisorBuilder {
         Self {
             config: SupervisorConfig::default(),
             session_recorder: None,
+            session_replay: None,
         }
     }
 
@@ -556,12 +576,22 @@ impl SupervisorBuilder {
         self
     }
 
+    /// Seed the supervisor with a replayed session snapshot.
+    #[must_use]
+    pub fn session_replay(mut self, replay: SessionReplay) -> Self {
+        self.session_replay = Some(replay);
+        self
+    }
+
     /// Build the supervisor
     #[must_use]
     pub fn build(self) -> AgentSupervisor {
         let mut supervisor = AgentSupervisor::new(self.config);
         if let Some(recorder) = self.session_recorder {
             supervisor = supervisor.with_session_recorder(recorder);
+        }
+        if let Some(replay) = self.session_replay {
+            supervisor = supervisor.with_session_replay(replay);
         }
         supervisor
     }
@@ -607,6 +637,30 @@ mod tests {
 
         assert!(!supervisor.is_connected());
         assert_eq!(supervisor.health(), HealthStatus::Unknown);
+        assert!(supervisor.state().model.is_none());
+    }
+
+    #[test]
+    fn test_supervisor_builder_restores_session_replay() {
+        let replay = SessionReplay {
+            state: AgentState {
+                model: Some("claude-3-opus".to_string()),
+                provider: Some("anthropic".to_string()),
+                is_ready: true,
+                ..AgentState::default()
+            },
+            last_init: Some(InitConfig {
+                system_prompt: Some("You are Maestro".to_string()),
+                append_system_prompt: None,
+                thinking_level: Some(super::super::messages::ThinkingLevel::High),
+                approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+            }),
+        };
+
+        let supervisor = SupervisorBuilder::new().session_replay(replay).build();
+        assert_eq!(supervisor.state().model.as_deref(), Some("claude-3-opus"));
+        assert_eq!(supervisor.state().provider.as_deref(), Some("anthropic"));
+        assert!(supervisor.state().is_ready);
     }
 
     #[test]
@@ -687,6 +741,156 @@ done
         permissions.set_mode(0o755);
         fs::set_permissions(&script_path, permissions)?;
         Ok(script_path)
+    }
+
+    #[cfg(unix)]
+    fn create_streaming_headless_script(dir: &Path) -> std::io::Result<std::path::PathBuf> {
+        let script_path = dir.join("fake-maestro-headless-stream.sh");
+        fs::write(
+            &script_path,
+            r#"#!/bin/sh
+printf '{"type":"ready","protocol_version":"2026-03-30","model":"test","provider":"test","session_id":"sess_ready"}\n'
+printf '{"type":"session_info","session_id":"sess_state","cwd":"/tmp/project","git_branch":"main"}\n'
+printf '{"type":"response_start","response_id":"resp_1"}\n'
+printf '{"type":"response_chunk","response_id":"resp_1","content":"Partial reply","is_thinking":false}\n'
+while IFS= read -r line; do
+  :
+done
+"#,
+        )?;
+
+        let mut permissions = fs::metadata(&script_path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions)?;
+        Ok(script_path)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn supervisor_recv_updates_replayed_state_from_transport_events() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script_path = create_streaming_headless_script(temp.path()).expect("script");
+
+        let mut config = SupervisorConfig::default();
+        config.transport.cli_path = script_path.to_string_lossy().into_owned();
+        config.auto_reconnect = false;
+
+        let mut supervisor = AgentSupervisor::new(config);
+        supervisor.connect().await.expect("connect");
+
+        for _ in 0..4 {
+            let event = supervisor.recv().await.expect("event");
+            assert!(matches!(event, SupervisorEvent::Agent(_)));
+        }
+
+        assert_eq!(
+            supervisor.state().protocol_version.as_deref(),
+            Some("2026-03-30")
+        );
+        assert_eq!(supervisor.state().model.as_deref(), Some("test"));
+        assert_eq!(supervisor.state().provider.as_deref(), Some("test"));
+        assert_eq!(supervisor.state().session_id.as_deref(), Some("sess_state"));
+        assert_eq!(supervisor.state().cwd.as_deref(), Some("/tmp/project"));
+        assert_eq!(supervisor.state().git_branch.as_deref(), Some("main"));
+        assert!(supervisor.state().is_ready);
+        assert!(supervisor.state().is_responding);
+        assert_eq!(
+            supervisor
+                .state()
+                .current_response
+                .as_ref()
+                .map(|response| response.text.as_str()),
+            Some("Partial reply")
+        );
+
+        supervisor.disconnect();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_replays_saved_init_from_restored_session_snapshot() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let log_path = temp.path().join("agent-stdin.log");
+        let script_path = create_test_headless_script(temp.path()).expect("script");
+        fs::write(&log_path, "").expect("create log");
+
+        let mut config = SupervisorConfig::default();
+        config.transport.cli_path = script_path.to_string_lossy().into_owned();
+        config.transport.env.push((
+            "MAESTRO_TEST_LOG".to_string(),
+            log_path.to_string_lossy().into_owned(),
+        ));
+        config.auto_reconnect = false;
+
+        let init = InitConfig {
+            system_prompt: Some("system prompt".to_string()),
+            append_system_prompt: Some("appendix".to_string()),
+            thinking_level: Some(super::super::messages::ThinkingLevel::High),
+            approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+        };
+        let replay = SessionReplay {
+            state: AgentState {
+                session_id: Some("sess_replayed".to_string()),
+                last_status: Some("Resuming session".to_string()),
+                is_ready: true,
+                ..AgentState::default()
+            },
+            last_init: Some(init.clone()),
+        };
+
+        let mut supervisor = AgentSupervisor::new(config).with_session_replay(replay);
+        assert_eq!(
+            supervisor.state().session_id.as_deref(),
+            Some("sess_replayed")
+        );
+        assert_eq!(
+            supervisor.state().last_status.as_deref(),
+            Some("Resuming session")
+        );
+        assert!(supervisor.state().is_ready);
+
+        supervisor.connect().await.expect("connect");
+        for _ in 0..20 {
+            let log_contents = fs::read_to_string(&log_path).expect("read log");
+            if log_contents.contains(r#""type":"init""#) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        supervisor.disconnect();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let logged_inits: Vec<_> = fs::read_to_string(&log_path)
+            .expect("read log")
+            .lines()
+            .filter_map(|line| {
+                let message = serde_json::from_str::<ToAgentMessage>(line).expect("parse message");
+                match message {
+                    ToAgentMessage::Init {
+                        system_prompt,
+                        append_system_prompt,
+                        thinking_level,
+                        approval_mode,
+                    } => Some((
+                        system_prompt,
+                        append_system_prompt,
+                        thinking_level,
+                        approval_mode,
+                    )),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            logged_inits,
+            vec![(
+                init.system_prompt,
+                init.append_system_prompt,
+                init.thinking_level,
+                init.approval_mode,
+            )]
+        );
     }
 
     #[cfg(unix)]
