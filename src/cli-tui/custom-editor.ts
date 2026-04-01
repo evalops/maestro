@@ -1,4 +1,5 @@
 import { Editor, KittyKeys, isCtrlD, isShiftTab } from "@evalops/tui";
+import { recordUserInteraction } from "../interaction/user-interaction.js";
 import { matchesQueuedFollowUpEditBinding } from "./queue/queued-follow-up-edit-binding.js";
 
 type CustomEditorBinding = {
@@ -227,6 +228,7 @@ export class CustomEditor extends Editor {
 	public onPasteImage?: () => void;
 
 	override handleInput(rawData: string): void {
+		recordUserInteraction();
 		const data = this.normalizeArrowInput(rawData);
 		if (this.tryHandleKeyBindings(data)) return;
 

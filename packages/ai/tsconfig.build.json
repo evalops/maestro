@@ -17,6 +17,7 @@
 		"../../src/theme/**/*.ts",
 		"../../src/safety/**/*.ts",
 		"../../src/tracking/**/*.ts",
+		"../../src/interaction/**/*.ts",
 		"../../src/config/constants.ts",
 		"../../src/config/env-vars.ts",
 		"../../src/config/firewall-config.ts",
