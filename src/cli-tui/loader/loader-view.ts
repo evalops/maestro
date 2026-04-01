@@ -99,8 +99,12 @@ export class LoaderView {
 		this.stageManager.maybeTransitionToResponding();
 	}
 
-	registerToolStage(toolCallId: string, toolName: string): void {
-		this.stageManager.registerToolStage(toolCallId, toolName);
+	registerToolStage(
+		toolCallId: string,
+		toolName: string,
+		args: Record<string, unknown> = {},
+	): void {
+		this.stageManager.registerToolStage(toolCallId, toolName, args);
 	}
 
 	markToolComplete(toolCallId: string): void {

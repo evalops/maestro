@@ -1,3 +1,4 @@
+import { summarizeToolUse } from "../../utils/tool-use-summary.js";
 import {
 	STAGE_DISPLAY_LABELS,
 	formatWorkingStageLabel,
@@ -18,8 +19,11 @@ interface LoaderStageManagerOptions {
 
 export class LoaderStageManager {
 	private stages: LoaderStageEntry[] = [];
-	private toolStageMeta = new Map<string, { toolName: string }>();
-	private toolStagesByName = new Map<string, string[]>();
+	private toolStageMeta = new Map<
+		string,
+		{ toolName: string; summary: string; groupKey: string }
+	>();
+	private toolStagesByGroup = new Map<string, string[]>();
 	private completedToolStages = new Set<string>();
 	private completedStageKeys = new Set<string>();
 	private currentStageKey: string | null = null;
@@ -57,12 +61,18 @@ export class LoaderStageManager {
 		}
 	}
 
-	registerToolStage(toolCallId: string, toolName: string): void {
+	registerToolStage(
+		toolCallId: string,
+		toolName: string,
+		args: Record<string, unknown> = {},
+	): void {
 		if (this.toolStageMeta.has(toolCallId)) {
 			this.updateStage(toolCallId);
 			return;
 		}
-		this.toolStageMeta.set(toolCallId, { toolName });
+		const summary = summarizeToolUse(toolName, args);
+		const groupKey = `${toolName}:${summary}`;
+		this.toolStageMeta.set(toolCallId, { toolName, summary, groupKey });
 		const respondingIndex = this.stages.findIndex(
 			(stage) => stage.key === "responding",
 		);
@@ -70,12 +80,12 @@ export class LoaderStageManager {
 			respondingIndex === -1 ? this.stages.length : respondingIndex;
 		this.stages.splice(insertIndex, 0, {
 			key: toolCallId,
-			label: formatWorkingStageLabel(toolName),
+			label: formatWorkingStageLabel(summary),
 		});
-		const group = this.toolStagesByName.get(toolName) ?? [];
+		const group = this.toolStagesByGroup.get(groupKey) ?? [];
 		group.push(toolCallId);
-		this.toolStagesByName.set(toolName, group);
-		this.refreshToolStageLabels(toolName);
+		this.toolStagesByGroup.set(groupKey, group);
+		this.refreshToolStageLabels(groupKey);
 		this.updateStage(toolCallId);
 	}
 
@@ -114,7 +124,7 @@ export class LoaderStageManager {
 			{ key: "responding", label: STAGE_DISPLAY_LABELS.responding },
 		];
 		this.toolStageMeta.clear();
-		this.toolStagesByName.clear();
+		this.toolStagesByGroup.clear();
 		this.completedToolStages.clear();
 		this.completedStageKeys.clear();
 		this.currentStageKey = null;
@@ -126,7 +136,7 @@ export class LoaderStageManager {
 		this.clearDreamingState(false);
 		this.stages = [];
 		this.toolStageMeta.clear();
-		this.toolStagesByName.clear();
+		this.toolStagesByGroup.clear();
 		this.completedToolStages.clear();
 		this.completedStageKeys.clear();
 		this.currentStageKey = null;
@@ -171,17 +181,18 @@ export class LoaderStageManager {
 		if (key === "responding") return STAGE_DISPLAY_LABELS.responding;
 		const toolMeta = this.toolStageMeta.get(key);
 		if (toolMeta) {
-			return formatWorkingStageLabel(toolMeta.toolName);
+			return formatWorkingStageLabel(toolMeta.summary);
 		}
 		return key;
 	}
 
-	private refreshToolStageLabels(toolName: string): void {
-		const entries = this.toolStagesByName.get(toolName);
+	private refreshToolStageLabels(groupKey: string): void {
+		const entries = this.toolStagesByGroup.get(groupKey);
 		if (!entries || entries.length === 0) return;
 		const total = entries.length;
 		entries.forEach((key, index) => {
-			const label = formatWorkingStageLabel(toolName, index + 1, total);
+			const summary = this.toolStageMeta.get(key)?.summary ?? key;
+			const label = formatWorkingStageLabel(summary, index + 1, total);
 			this.renameStage(key, label);
 		});
 	}

@@ -43,8 +43,10 @@ describe("LoaderStageManager dreaming stage", () => {
 		const { manager, stageLabels, hints } = createManager();
 		manager.start();
 		vi.advanceTimersByTime(5100);
-		manager.registerToolStage("tool-1", "search");
-		expect(stageLabels.at(-1)).toContain("Working · search");
+		manager.registerToolStage("tool-1", "read", {
+			file_path: "/tmp/config.json",
+		});
+		expect(stageLabels.at(-1)).toContain("Working · Read config.json");
 		expect(hints.at(-1)).toBeNull();
 	});
 });

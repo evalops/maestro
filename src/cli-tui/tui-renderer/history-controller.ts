@@ -163,9 +163,8 @@ export class HistoryController {
 		const lines = [`## ${title}`, ""];
 		for (const entry of entries) {
 			const status = entry.isError ? "✗" : "✓";
-			lines.push(
-				`${status} ${entry.tool} (${formatDuration(entry.durationMs)})`,
-			);
+			const label = entry.summary ?? entry.tool;
+			lines.push(`${status} ${label} (${formatDuration(entry.durationMs)})`);
 		}
 		this.callbacks.pushCommandOutput(lines.join("\n"));
 	}
@@ -209,10 +208,13 @@ export class HistoryController {
 		const lines = [`## History for "${name}"`, ""];
 		for (const entry of entries) {
 			const status = entry.isError ? "✗" : "✓";
+			const label = entry.summary ?? entry.tool;
 			const preview = entry.preview
-				? formatPreview(entry.preview, 80)
-				: "(no output)";
-			lines.push(`${status} ${formatDuration(entry.durationMs)} - ${preview}`);
+				? ` · ${formatPreview(entry.preview, 80)}`
+				: "";
+			lines.push(
+				`${status} ${formatDuration(entry.durationMs)} - ${label}${preview}`,
+			);
 		}
 		this.callbacks.pushCommandOutput(lines.join("\n"));
 	}

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
+	buildHeadlessToolsSummary,
 	buildHeadlessUsage,
 	classifyHeadlessError,
 } from "../../src/cli/headless.js";
@@ -86,6 +87,22 @@ describe("headless protocol helpers", () => {
 			total_cost_usd: 0,
 			model_id: "gpt-5.4",
 			provider: "openai",
+		});
+	});
+
+	it("builds headless tool summaries with concise labels", () => {
+		expect(
+			buildHeadlessToolsSummary({
+				toolsUsed: new Set(["bash", "read"]),
+				callsSucceeded: 2,
+				callsFailed: 1,
+				summaryLabels: ["Read config.json", "Ran npm test", "Read config.json"],
+			}),
+		).toEqual({
+			tools_used: ["bash", "read"],
+			calls_succeeded: 2,
+			calls_failed: 1,
+			summary_labels: ["Read config.json", "Ran npm test", "Read config.json"],
 		});
 	});
 });

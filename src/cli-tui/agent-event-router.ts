@@ -67,11 +67,13 @@ export class AgentEventRouter {
 				this.options.loaderView.registerToolStage(
 					event.toolCallId,
 					event.toolName,
+					event.args,
 				);
 				this.options.sessionContext.recordToolUsage(event.toolName);
 				this.options.sessionContext.recordToolStart(
 					event.toolCallId,
 					event.toolName,
+					event.args,
 				);
 				this.options.streamingView.ensureToolComponent(
 					event.toolCallId,
