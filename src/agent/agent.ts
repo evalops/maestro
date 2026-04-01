@@ -657,6 +657,20 @@ export class Agent {
 	}
 
 	/**
+	 * Clear transient run state without touching message history or queued inputs.
+	 *
+	 * This is useful before starting a fresh run, or after operations like
+	 * compaction that rewrite history while the agent is otherwise idle.
+	 */
+	clearTransientRunState(): void {
+		this._state.isStreaming = false;
+		this._state.streamMessage = null;
+		this._state.pendingToolCalls.clear();
+		this._state.error = undefined;
+		this._partialAccepted = null;
+	}
+
+	/**
 	 * Appends a single message to the conversation history.
 	 *
 	 * @param m - Message to append
@@ -933,6 +947,8 @@ export class Agent {
 			);
 		}
 
+		this.clearTransientRunState();
+
 		// Set up running prompt tracking
 		this.runningPrompt = new Promise<void>((resolve) => {
 			this.resolveRunningPrompt = resolve;
@@ -1106,6 +1122,8 @@ export class Agent {
 		if (this._state.messages.length === 0) {
 			throw new Error("No messages to continue from");
 		}
+
+		this.clearTransientRunState();
 
 		// Set up running prompt tracking
 		this.runningPrompt = new Promise<void>((resolve) => {

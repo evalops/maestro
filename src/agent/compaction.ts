@@ -798,6 +798,7 @@ export interface CompactionAgent {
 		systemPrompt: string,
 	): Promise<AssistantMessage>;
 	replaceMessages(messages: AppMessage[]): void;
+	clearTransientRunState?(): void;
 }
 
 /**
@@ -958,6 +959,7 @@ export async function performCompaction(params: {
 	const keep = messages.slice(boundary);
 	const newMessages = [summaryMessage as AppMessage, resumeMessage, ...keep];
 	agent.replaceMessages(newMessages);
+	agent.clearTransientRunState?.();
 	sessionManager.saveMessage(summaryMessage);
 	sessionManager.saveMessage(resumeMessage);
 
