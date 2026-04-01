@@ -93,7 +93,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -428,7 +428,7 @@ pub struct ToolExecutor {
     cache: RwLock<ToolResultCache>,
 
     /// MCP client for resource tools (lazy-initialized)
-    mcp_client: tokio::sync::Mutex<Option<crate::mcp::McpClient>>,
+    mcp_client: tokio::sync::Mutex<Option<Arc<crate::mcp::McpClient>>>,
 
     /// MCP tool annotations for approval hints
     mcp_tool_annotations: RwLock<HashMap<String, crate::mcp::McpToolAnnotations>>,
@@ -581,9 +581,7 @@ impl ToolExecutor {
         }
     }
 
-    async fn ensure_mcp_client(
-        &self,
-    ) -> Result<tokio::sync::MutexGuard<'_, Option<McpClient>>, String> {
+    async fn ensure_mcp_client(&self) -> Result<Arc<McpClient>, String> {
         let config = load_mcp_config(Some(Path::new(&self.cwd)));
         let servers: Vec<_> = config.enabled_servers().cloned().collect();
         let desired_configs: HashMap<String, crate::mcp::McpServerConfig> = servers
@@ -606,14 +604,10 @@ impl ToolExecutor {
             .read()
             .map(|attempts| attempts.clone())
             .unwrap_or_default();
-        let mut guard = self.mcp_client.lock().await;
-        if guard.is_none() {
-            *guard = Some(McpClient::new());
-        }
-
-        let client = guard
-            .as_ref()
-            .ok_or_else(|| "Failed to initialize MCP client".to_string())?;
+        let client = {
+            let mut guard = self.mcp_client.lock().await;
+            Arc::clone(guard.get_or_insert_with(|| Arc::new(McpClient::new())))
+        };
 
         for (name, previous) in &previous_configs {
             if desired_configs.get(name) != Some(previous) {
@@ -679,17 +673,13 @@ impl ToolExecutor {
             }
         }
 
-        Ok(guard)
+        Ok(client)
     }
 
     /// Get MCP server status snapshots for UI display
     pub async fn mcp_status(&self) -> Result<Vec<McpServerStatus>, String> {
         let config = load_mcp_config(Some(Path::new(&self.cwd)));
-        let guard = self.ensure_mcp_client().await?;
-        let client = match guard.as_ref() {
-            Some(client) => client,
-            None => return Ok(Vec::new()),
-        };
+        let client = self.ensure_mcp_client().await?;
 
         let connected: std::collections::HashSet<_> =
             client.connected_servers().await.into_iter().collect();
@@ -730,10 +720,7 @@ impl ToolExecutor {
         server: &str,
         uri: &str,
     ) -> Result<crate::mcp::protocol::ResourceReadResult, String> {
-        let guard = self.ensure_mcp_client().await?;
-        let client = guard
-            .as_ref()
-            .ok_or_else(|| "No MCP servers configured".to_string())?;
+        let client = self.ensure_mcp_client().await?;
         client
             .read_resource(server, uri)
             .await
@@ -747,10 +734,7 @@ impl ToolExecutor {
         name: &str,
         arguments: Option<HashMap<String, String>>,
     ) -> Result<crate::mcp::PromptGetResult, String> {
-        let guard = self.ensure_mcp_client().await?;
-        let client = guard
-            .as_ref()
-            .ok_or_else(|| "No MCP servers configured".to_string())?;
+        let client = self.ensure_mcp_client().await?;
         client
             .get_prompt(server, name, arguments)
             .await
@@ -794,6 +778,34 @@ impl ToolExecutor {
     pub async fn ensure_mcp_annotations(&self) -> Result<(), String> {
         let _ = self.ensure_mcp_client().await?;
         Ok(())
+    }
+
+    /// Drain live MCP notifications and refresh cached metadata when server lists change.
+    pub async fn poll_mcp_updates(&self) -> Result<bool, String> {
+        let client = {
+            let guard = self.mcp_client.lock().await;
+            guard.as_ref().cloned()
+        };
+        let Some(client) = client else {
+            return Ok(false);
+        };
+
+        let changed = client
+            .poll_notifications()
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if changed {
+            let annotations = client.list_tool_annotations().await;
+            if let Ok(mut map) = self.mcp_tool_annotations.write() {
+                map.clear();
+                for (name, meta) in annotations {
+                    map.insert(name.to_lowercase(), meta);
+                }
+            }
+        }
+
+        Ok(changed)
     }
 
     /// Get MCP tool annotations if available
@@ -1202,13 +1214,9 @@ impl ToolExecutor {
         call_id: &str,
     ) -> ToolResult {
         if McpClient::is_mcp_tool(tool_name) {
-            let guard = match self.ensure_mcp_client().await {
-                Ok(guard) => guard,
+            let client = match self.ensure_mcp_client().await {
+                Ok(client) => client,
                 Err(err) => return ToolResult::failure(err),
-            };
-            let client = match guard.as_ref() {
-                Some(client) => client,
-                None => return ToolResult::failure("No MCP servers configured".to_string()),
             };
 
             match client
@@ -2514,18 +2522,9 @@ impl ToolExecutor {
             "gh_repo" => gh::gh_repo(args.clone(), &self.cwd).await,
             "mcp_list_resources" => {
                 let server_filter = args.get("server").and_then(|v| v.as_str());
-                let guard = match self.ensure_mcp_client().await {
-                    Ok(guard) => guard,
+                let client = match self.ensure_mcp_client().await {
+                    Ok(client) => client,
                     Err(err) => return ToolResult::failure(err),
-                };
-                let client = match guard.as_ref() {
-                    Some(client) => client,
-                    None => {
-                        return ToolResult::success(
-                            "No MCP resources available. Either no servers are connected or they don't expose resources.".to_string(),
-                        )
-                        .with_details(serde_json::json!({ "servers": [] }));
-                    }
                 };
 
                 let mut resources = client.list_all_resources().await;
@@ -2575,18 +2574,9 @@ impl ToolExecutor {
             }
             "mcp_list_prompts" => {
                 let server_filter = args.get("server").and_then(|v| v.as_str());
-                let guard = match self.ensure_mcp_client().await {
-                    Ok(guard) => guard,
+                let client = match self.ensure_mcp_client().await {
+                    Ok(client) => client,
                     Err(err) => return ToolResult::failure(err),
-                };
-                let client = match guard.as_ref() {
-                    Some(client) => client,
-                    None => {
-                        return ToolResult::success(
-                            "No MCP prompts available. Either no servers are connected or they don't expose prompts.".to_string(),
-                        )
-                        .with_details(serde_json::json!({ "servers": [] }));
-                    }
                 };
 
                 let mut prompts = client.list_all_prompts().await;
@@ -2641,15 +2631,9 @@ impl ToolExecutor {
                     return ToolResult::failure("server and uri are required".to_string());
                 }
 
-                let guard = match self.ensure_mcp_client().await {
-                    Ok(guard) => guard,
+                let client = match self.ensure_mcp_client().await {
+                    Ok(client) => client,
                     Err(err) => return ToolResult::failure(err),
-                };
-                let client = match guard.as_ref() {
-                    Some(client) => client,
-                    None => {
-                        return ToolResult::failure("No MCP servers configured".to_string());
-                    }
                 };
 
                 match client.read_resource(server, uri).await {
@@ -2708,15 +2692,9 @@ impl ToolExecutor {
                             .collect::<HashMap<String, String>>()
                     });
 
-                let guard = match self.ensure_mcp_client().await {
-                    Ok(guard) => guard,
+                let client = match self.ensure_mcp_client().await {
+                    Ok(client) => client,
                     Err(err) => return ToolResult::failure(err),
-                };
-                let client = match guard.as_ref() {
-                    Some(client) => client,
-                    None => {
-                        return ToolResult::failure("No MCP servers configured".to_string());
-                    }
                 };
 
                 match client.get_prompt(server, name, arguments).await {

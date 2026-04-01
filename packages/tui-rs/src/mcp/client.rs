@@ -15,9 +15,9 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use super::config::{expand_env_vars, McpServerConfig, McpTransport};
 use super::http::HttpConnection;
 use super::protocol::{
-    ClientInfo, InitializeResult, McpPrompt, McpRequest, McpResource, McpResponse, McpTool,
-    McpToolAnnotations, McpToolResult, PromptGetResult, PromptsListResult, ResourceReadResult,
-    ResourcesListResult, ToolsListResult,
+    ClientInfo, InitializeResult, McpIncomingMessage, McpNotification, McpPrompt, McpRequest,
+    McpResource, McpResponse, McpTool, McpToolAnnotations, McpToolResult, PromptGetResult,
+    PromptsListResult, ResourceReadResult, ResourcesListResult, ToolsListResult,
 };
 
 /// Error type for MCP operations
@@ -63,7 +63,7 @@ enum ConnectionBackend {
     Stdio {
         process: Child,
         stdin: tokio::process::ChildStdin,
-        response_rx: mpsc::UnboundedReceiver<McpResponse>,
+        notification_rx: mpsc::UnboundedReceiver<McpNotification>,
     },
     /// HTTP/SSE connection
     Http(HttpConnection),
@@ -222,7 +222,7 @@ impl McpConnection {
             .ok_or_else(|| McpError::ConnectionFailed("Failed to get stdout".to_string()))?;
 
         // Set up response reader
-        let (response_tx, response_rx) = mpsc::unbounded_channel();
+        let (notification_tx, notification_rx) = mpsc::unbounded_channel();
         let pending = self.pending.clone();
 
         // Spawn stdout reader task
@@ -235,17 +235,21 @@ impl McpConnection {
                 match reader.read_line(&mut line).await {
                     Ok(0) => break, // EOF
                     Ok(_) => {
-                        if let Ok(response) = serde_json::from_str::<McpResponse>(&line) {
-                            // Try to send to pending request
-                            if let Some(id) = response.id {
-                                let mut pending = pending.lock().await;
-                                if let Some(sender) = pending.remove(&id) {
-                                    let _ = sender.send(response);
-                                    continue;
+                        if let Ok(message) = serde_json::from_str::<McpIncomingMessage>(&line) {
+                            match message {
+                                McpIncomingMessage::Response(response) => {
+                                    if let Some(id) = response.id {
+                                        let mut pending = pending.lock().await;
+                                        if let Some(sender) = pending.remove(&id) {
+                                            let _ = sender.send(response);
+                                            continue;
+                                        }
+                                    }
+                                }
+                                McpIncomingMessage::Notification(notification) => {
+                                    let _ = notification_tx.send(notification);
                                 }
                             }
-                            // Otherwise send to general receiver
-                            let _ = response_tx.send(response);
                         }
                     }
                     Err(_) => break,
@@ -256,7 +260,7 @@ impl McpConnection {
         self.backend = Some(ConnectionBackend::Stdio {
             process: child,
             stdin,
-            response_rx,
+            notification_rx,
         });
 
         // Initialize the connection
@@ -294,6 +298,12 @@ impl McpConnection {
 
     /// Refresh the list of available tools
     pub async fn refresh_tools(&mut self) -> Result<(), McpError> {
+        if let Some(ConnectionBackend::Http(ref mut http)) = self.backend {
+            http.refresh_tools().await?;
+            self.tools = http.tools().to_vec();
+            return Ok(());
+        }
+
         let request = McpRequest::list_tools(self.next_id());
         let response = self.send_request(request).await?;
 
@@ -307,6 +317,12 @@ impl McpConnection {
 
     /// Refresh the list of available resources
     pub async fn refresh_resources(&mut self) -> Result<(), McpError> {
+        if let Some(ConnectionBackend::Http(ref mut http)) = self.backend {
+            http.refresh_resources().await?;
+            self.resources = http.resources().to_vec();
+            return Ok(());
+        }
+
         let request = McpRequest::list_resources(self.next_id());
         let response = self.send_request(request).await?;
 
@@ -320,6 +336,12 @@ impl McpConnection {
 
     /// Refresh the list of available prompts
     pub async fn refresh_prompts(&mut self) -> Result<(), McpError> {
+        if let Some(ConnectionBackend::Http(ref mut http)) = self.backend {
+            http.refresh_prompts().await?;
+            self.prompts = http.prompts().to_vec();
+            return Ok(());
+        }
+
         let request = McpRequest::list_prompts(self.next_id());
         let response = self.send_request(request).await?;
 
@@ -329,6 +351,30 @@ impl McpConnection {
 
         self.prompts = prompts_result.prompts;
         Ok(())
+    }
+
+    /// Drain pending server notifications and refresh cached lists when needed.
+    pub async fn poll_notifications(&mut self) -> Result<bool, McpError> {
+        if self.config.transport == McpTransport::Stdio && self.initialized {
+            self.ensure_stdio_connected().await?;
+        }
+
+        let mut changed = false;
+
+        while let Some(notification) = self.try_recv_notification() {
+            if notification.is_tools_list_changed() {
+                self.refresh_tools().await?;
+                changed = true;
+            } else if notification.is_resources_list_changed() {
+                self.refresh_resources().await?;
+                changed = true;
+            } else if notification.is_prompts_list_changed() {
+                self.refresh_prompts().await?;
+                changed = true;
+            }
+        }
+
+        Ok(changed)
     }
 
     /// Get available tools
@@ -531,11 +577,13 @@ impl McpConnection {
     ///
     /// Returns any pending notifications from the server that weren't
     /// responses to specific requests (e.g., progress updates, log messages).
-    pub fn try_recv_notification(&mut self) -> Option<McpResponse> {
-        if let Some(ConnectionBackend::Stdio { response_rx, .. }) = &mut self.backend {
-            response_rx.try_recv().ok()
-        } else {
-            None
+    pub fn try_recv_notification(&mut self) -> Option<McpNotification> {
+        match &mut self.backend {
+            Some(ConnectionBackend::Stdio {
+                notification_rx, ..
+            }) => notification_rx.try_recv().ok(),
+            Some(ConnectionBackend::Http(http)) => http.try_recv_notification(),
+            None => None,
         }
     }
 
@@ -618,6 +666,19 @@ impl McpClient {
             conn.disconnect().await;
         }
         Ok(())
+    }
+
+    /// Drain pending server notifications across all active connections.
+    pub async fn poll_notifications(&self) -> Result<bool, McpError> {
+        let connections = self.connections.read().await;
+        let mut changed = false;
+
+        for conn in connections.values() {
+            let mut conn = conn.lock().await;
+            changed |= conn.poll_notifications().await?;
+        }
+
+        Ok(changed)
     }
 
     /// Disconnect from all servers
@@ -864,8 +925,15 @@ impl Default for McpClient {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
     use super::*;
     use crate::mcp::config::McpServerConfig;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::{mpsc, Mutex};
 
     fn stub_config(name: &str) -> McpServerConfig {
         McpServerConfig {
@@ -882,6 +950,231 @@ mod tests {
             disabled: false,
             scope: crate::mcp::McpConfigScope::User,
         }
+    }
+
+    async fn read_http_request(socket: &mut TcpStream) -> Option<(String, String)> {
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 1024];
+
+        loop {
+            let bytes_read = socket.read(&mut chunk).await.ok()?;
+            if bytes_read == 0 {
+                return None;
+            }
+            buffer.extend_from_slice(&chunk[..bytes_read]);
+            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let header_end = buffer.windows(4).position(|window| window == b"\r\n\r\n")?;
+        let header_bytes = &buffer[..header_end];
+        let header_text = String::from_utf8_lossy(header_bytes);
+        let request_line = header_text.lines().next()?;
+        let path = request_line.split_whitespace().nth(1)?.to_string();
+        let content_length = header_text
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                if name.eq_ignore_ascii_case("content-length") {
+                    value.trim().parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+
+        let mut body = buffer[(header_end + 4)..].to_vec();
+        while body.len() < content_length {
+            let bytes_read = socket.read(&mut chunk).await.ok()?;
+            if bytes_read == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..bytes_read]);
+        }
+
+        Some((
+            path,
+            String::from_utf8_lossy(&body[..content_length]).to_string(),
+        ))
+    }
+
+    async fn write_http_response(
+        socket: &mut TcpStream,
+        status_line: &str,
+        content_type: &str,
+        body: &str,
+    ) {
+        let response = format!(
+            "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
+        let _ = socket.shutdown().await;
+    }
+
+    async fn send_sse_event_when_ready(
+        sse_sender: Arc<Mutex<Option<mpsc::UnboundedSender<String>>>>,
+        event: String,
+    ) {
+        for _ in 0..100 {
+            if let Some(sender) = sse_sender.lock().await.clone() {
+                let _ = sender.send(event);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn start_sse_notification_server() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let current_tool_version = Arc::new(AtomicUsize::new(0));
+        let notification_sent = Arc::new(AtomicBool::new(false));
+        let sse_sender = Arc::new(Mutex::new(None::<mpsc::UnboundedSender<String>>));
+
+        tokio::spawn({
+            let current_tool_version = Arc::clone(&current_tool_version);
+            let notification_sent = Arc::clone(&notification_sent);
+            let sse_sender = Arc::clone(&sse_sender);
+            async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let current_tool_version = Arc::clone(&current_tool_version);
+                    let notification_sent = Arc::clone(&notification_sent);
+                    let sse_sender = Arc::clone(&sse_sender);
+
+                    tokio::spawn(async move {
+                        let Some((path, body)) = read_http_request(&mut socket).await else {
+                            return;
+                        };
+
+                        if path == "/sse" {
+                            let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+                            {
+                                let mut sender = sse_sender.lock().await;
+                                *sender = Some(tx);
+                            }
+
+                            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                            if socket.write_all(headers.as_bytes()).await.is_err() {
+                                return;
+                            }
+
+                            while let Some(event) = rx.recv().await {
+                                let payload = format!("data: {event}\n\n");
+                                if socket.write_all(payload.as_bytes()).await.is_err() {
+                                    break;
+                                }
+                            }
+                            return;
+                        }
+
+                        let request = serde_json::from_str::<serde_json::Value>(&body)
+                            .unwrap_or_else(|_| serde_json::json!({}));
+                        let method = request
+                            .get("method")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let request_id = request.get("id").and_then(serde_json::Value::as_u64);
+
+                        let response_event = match method.as_str() {
+                            "initialize" => Some(
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request_id,
+                                    "result": {
+                                        "protocolVersion": "2024-11-05",
+                                        "capabilities": {"tools": {}},
+                                        "serverInfo": {"name": "test", "version": "1.0.0"}
+                                    }
+                                })
+                                .to_string(),
+                            ),
+                            "tools/list" => {
+                                let version = current_tool_version.load(AtomicOrdering::SeqCst);
+                                if !notification_sent.swap(true, AtomicOrdering::SeqCst) {
+                                    current_tool_version.store(1, AtomicOrdering::SeqCst);
+                                    let sse_sender = Arc::clone(&sse_sender);
+                                    tokio::spawn(async move {
+                                        send_sse_event_when_ready(
+                                            sse_sender,
+                                            serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "method": "notifications/tools/list_changed"
+                                            })
+                                            .to_string(),
+                                        )
+                                        .await;
+                                    });
+                                }
+
+                                let tools = if version == 0 {
+                                    vec![serde_json::json!({
+                                        "name": "first_tool",
+                                        "description": "Initial tool"
+                                    })]
+                                } else {
+                                    vec![
+                                        serde_json::json!({
+                                            "name": "first_tool",
+                                            "description": "Initial tool"
+                                        }),
+                                        serde_json::json!({
+                                            "name": "second_tool",
+                                            "description": "Updated tool"
+                                        }),
+                                    ]
+                                };
+
+                                Some(
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": request_id,
+                                        "result": {"tools": tools}
+                                    })
+                                    .to_string(),
+                                )
+                            }
+                            "resources/list" => Some(
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request_id,
+                                    "result": {"resources": []}
+                                })
+                                .to_string(),
+                            ),
+                            "prompts/list" => Some(
+                                serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": request_id,
+                                    "result": {"prompts": []}
+                                })
+                                .to_string(),
+                            ),
+                            _ => None,
+                        };
+
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            "{}",
+                        )
+                        .await;
+
+                        if let Some(event) = response_event {
+                            send_sse_event_when_ready(Arc::clone(&sse_sender), event).await;
+                        }
+                    });
+                }
+            }
+        });
+
+        addr
     }
 
     #[test]
@@ -929,5 +1222,34 @@ mod tests {
 
         assert_eq!(server, "my__local");
         assert_eq!(tool, "tool");
+    }
+
+    #[tokio::test]
+    async fn sse_list_changed_notifications_refresh_cached_tools() {
+        let addr = start_sse_notification_server().await;
+        let mut config = stub_config("test");
+        config.transport = McpTransport::Sse;
+        config.command = None;
+        config.url = Some(format!("http://{addr}"));
+        config.timeout = Some(2_000);
+
+        let mut conn = McpConnection::new(config);
+        conn.connect().await.expect("connect");
+        assert_eq!(conn.tools().len(), 1);
+
+        let changed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if conn.poll_notifications().await.expect("poll notifications") {
+                    break true;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("notification timeout");
+
+        assert!(changed);
+        assert_eq!(conn.tools().len(), 2);
+        assert_eq!(conn.tools()[1].name, "second_tool");
     }
 }
