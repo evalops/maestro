@@ -781,21 +781,24 @@ impl ToolExecutor {
     }
 
     /// Drain live MCP notifications and refresh cached metadata when server lists change.
-    pub async fn poll_mcp_updates(&self) -> Result<bool, String> {
+    pub async fn poll_mcp_updates(&self) -> Result<Vec<crate::mcp::McpRuntimeEvent>, String> {
         let client = {
             let guard = self.mcp_client.lock().await;
             guard.as_ref().cloned()
         };
         let Some(client) = client else {
-            return Ok(false);
+            return Ok(Vec::new());
         };
 
-        let changed = client
+        let events = client
             .poll_notifications()
             .await
             .map_err(|err| err.to_string())?;
 
-        if changed {
+        if events
+            .iter()
+            .any(crate::mcp::McpRuntimeEvent::changes_tools)
+        {
             let annotations = client.list_tool_annotations().await;
             if let Ok(mut map) = self.mcp_tool_annotations.write() {
                 map.clear();
@@ -805,7 +808,7 @@ impl ToolExecutor {
             }
         }
 
-        Ok(changed)
+        Ok(events)
     }
 
     /// Get MCP tool annotations if available

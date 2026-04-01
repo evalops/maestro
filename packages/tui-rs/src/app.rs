@@ -84,7 +84,7 @@ use crate::components::{
 use crate::config_watcher::{ConfigEvent, ConfigWatcher, ConfigWatcherBuilder};
 use crate::files::get_workspace_files;
 use crate::git;
-use crate::mcp::{McpConfigScope, McpTransport};
+use crate::mcp::{McpConfigScope, McpRuntimeEvent, McpTransport};
 use crate::safety::{
     check_model_allowed, check_path_allowed, check_session_limits, FirewallVerdict,
 };
@@ -220,6 +220,86 @@ fn format_mcp_error_label(error: Option<&str>) -> Option<String> {
             trimmed.to_string()
         }
     })
+}
+
+fn trim_optional_message(message: Option<&str>) -> Option<&str> {
+    message.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+fn format_mcp_progress_status(
+    server: &str,
+    progress: f64,
+    total: Option<f64>,
+    message: Option<&str>,
+) -> String {
+    let message = trim_optional_message(message);
+    if let Some(total) = total.filter(|value| value.is_finite() && *value > 0.0) {
+        let percent = ((progress / total) * 100.0).round().clamp(0.0, 100.0) as i64;
+        if let Some(message) = message {
+            format!("MCP {server}: {message} ({percent}%)")
+        } else {
+            format!("MCP {server}: {percent}%")
+        }
+    } else if let Some(message) = message {
+        format!("MCP {server}: {message}")
+    } else {
+        format!("MCP {server}: in progress")
+    }
+}
+
+fn format_mcp_log_data(data: &serde_json::Value) -> String {
+    let text = match data {
+        serde_json::Value::String(message) => message.clone(),
+        serde_json::Value::Null => "null".to_string(),
+        other => {
+            serde_json::to_string(other).unwrap_or_else(|_| "[Unserializable data]".to_string())
+        }
+    };
+
+    text.chars().take(100).collect()
+}
+
+fn format_mcp_runtime_event_status(event: &McpRuntimeEvent) -> Option<String> {
+    match event {
+        McpRuntimeEvent::ToolsListChanged { server } => {
+            Some(format!("MCP server \"{server}\" tools updated"))
+        }
+        McpRuntimeEvent::ResourcesListChanged { server } => {
+            Some(format!("MCP server \"{server}\" resources updated"))
+        }
+        McpRuntimeEvent::PromptsListChanged { server } => {
+            Some(format!("MCP server \"{server}\" prompts updated"))
+        }
+        McpRuntimeEvent::Progress {
+            server,
+            progress,
+            total,
+            message,
+        } => Some(format_mcp_progress_status(
+            server,
+            *progress,
+            *total,
+            message.as_deref(),
+        )),
+        McpRuntimeEvent::Log {
+            server,
+            level,
+            data,
+            ..
+        } => match level.as_str() {
+            "warning" | "error" | "critical" | "alert" | "emergency" => {
+                Some(format!("[{server}] {}", format_mcp_log_data(data)))
+            }
+            _ => None,
+        },
+    }
 }
 
 fn render_mcp_status_lines(servers: &[crate::tools::McpServerStatus]) -> Vec<String> {
@@ -1249,8 +1329,19 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
     async fn poll_mcp_updates(&mut self) {
         match self.tool_executor.poll_mcp_updates().await {
-            Ok(true) => self.refresh_mcp_badges_with_force(true).await,
-            Ok(false) => {}
+            Ok(events) => {
+                if events.iter().any(McpRuntimeEvent::affects_badges) {
+                    self.refresh_mcp_badges_with_force(true).await;
+                }
+
+                if let Some(status) = events
+                    .iter()
+                    .rev()
+                    .find_map(format_mcp_runtime_event_status)
+                {
+                    self.state.status = Some(status);
+                }
+            }
             Err(err) => {
                 self.state.status = Some(format!("MCP update error: {err}"));
             }
@@ -5469,6 +5560,45 @@ mod tests {
             app.state.status.as_deref(),
             Some("Config watcher error: watch failed")
         );
+    }
+
+    #[test]
+    fn test_format_mcp_runtime_event_status_for_progress() {
+        let status = format_mcp_runtime_event_status(&McpRuntimeEvent::Progress {
+            server: "docs".to_string(),
+            progress: 5.0,
+            total: Some(8.0),
+            message: Some("Indexing".to_string()),
+        });
+
+        assert_eq!(status.as_deref(), Some("MCP docs: Indexing (63%)"));
+    }
+
+    #[test]
+    fn test_format_mcp_runtime_event_status_for_warning_logs() {
+        let status = format_mcp_runtime_event_status(&McpRuntimeEvent::Log {
+            server: "docs".to_string(),
+            level: "warning".to_string(),
+            logger: Some("mcp".to_string()),
+            data: serde_json::json!({"detail":"slow response"}),
+        });
+
+        assert_eq!(
+            status.as_deref(),
+            Some(r#"[docs] {"detail":"slow response"}"#)
+        );
+    }
+
+    #[test]
+    fn test_format_mcp_runtime_event_status_ignores_info_logs() {
+        let status = format_mcp_runtime_event_status(&McpRuntimeEvent::Log {
+            server: "docs".to_string(),
+            level: "info".to_string(),
+            logger: None,
+            data: serde_json::Value::String("ready".to_string()),
+        });
+
+        assert!(status.is_none());
     }
 
     // ─────────────────────────────────────────────────────────────────────────
