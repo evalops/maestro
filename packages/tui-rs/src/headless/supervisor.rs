@@ -94,6 +94,8 @@ pub struct AgentSupervisor {
     config: SupervisorConfig,
     /// Current transport (if connected)
     transport: Option<AsyncAgentTransport>,
+    /// Last init config to replay after reconnects
+    last_init: Option<InitConfig>,
     /// Event sender
     event_tx: mpsc::UnboundedSender<SupervisorEvent>,
     /// Event receiver
@@ -118,6 +120,7 @@ impl AgentSupervisor {
         Self {
             config,
             transport: None,
+            last_init: None,
             event_tx,
             event_rx,
             health_status: HealthStatus::Unknown,
@@ -138,7 +141,7 @@ impl AgentSupervisor {
     /// Connect to the agent
     pub async fn connect(&mut self) -> Result<(), AsyncTransportError> {
         let transport = AsyncAgentTransport::spawn(self.config.transport.clone()).await?;
-        self.transport = Some(transport);
+        self.set_transport(transport)?;
         self.health_status = HealthStatus::Healthy;
         self.reconnect_attempts = 0;
         let _ = self.event_tx.send(SupervisorEvent::Connected);
@@ -179,7 +182,7 @@ impl AgentSupervisor {
 
             match AsyncAgentTransport::spawn(self.config.transport.clone()).await {
                 Ok(transport) => {
-                    self.transport = Some(transport);
+                    self.set_transport(transport)?;
                     self.health_status = HealthStatus::Healthy;
                     self.reconnect_attempts = 0;
                     let _ = self.event_tx.send(SupervisorEvent::Connected);
@@ -231,12 +234,35 @@ impl AgentSupervisor {
 
     /// Configure the agent before sending prompts
     pub fn init(&mut self, config: InitConfig) -> Result<(), AsyncTransportError> {
-        self.send(ToAgentMessage::Init {
-            system_prompt: config.system_prompt,
-            append_system_prompt: config.append_system_prompt,
+        self.last_init = Some(config.clone());
+        self.send(Self::init_message(&config))
+    }
+
+    fn replay_saved_init(&mut self) -> Result<(), AsyncTransportError> {
+        if let Some(config) = self.last_init.clone() {
+            self.send(Self::init_message(&config))?;
+        }
+        Ok(())
+    }
+
+    fn set_transport(&mut self, transport: AsyncAgentTransport) -> Result<(), AsyncTransportError> {
+        self.transport = Some(transport);
+        if let Err(error) = self.replay_saved_init() {
+            if let Some(transport) = self.transport.take() {
+                let _ = transport.shutdown();
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn init_message(config: &InitConfig) -> ToAgentMessage {
+        ToAgentMessage::Init {
+            system_prompt: config.system_prompt.clone(),
+            append_system_prompt: config.append_system_prompt.clone(),
             thinking_level: config.thinking_level,
             approval_mode: config.approval_mode,
-        })
+        }
     }
 
     /// Poll for events (non-blocking)
@@ -551,6 +577,10 @@ impl Default for SupervisorBuilder {
 mod tests {
     use super::*;
     use crate::headless::{HeadlessErrorType, TokenUsage};
+    use std::fs;
+
+    #[cfg(unix)]
+    use std::{os::unix::fs::PermissionsExt, path::Path};
 
     #[test]
     fn test_supervisor_config_defaults() {
@@ -637,5 +667,86 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[cfg(unix)]
+    fn create_test_headless_script(dir: &Path) -> std::io::Result<std::path::PathBuf> {
+        let script_path = dir.join("fake-maestro-headless.sh");
+        fs::write(
+            &script_path,
+            r#"#!/bin/sh
+log_file="${MAESTRO_TEST_LOG:?}"
+printf '{"type":"ready","model":"test","provider":"test"}\n'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log_file"
+done
+"#,
+        )?;
+
+        let mut permissions = fs::metadata(&script_path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions)?;
+        Ok(script_path)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reconnect_replays_last_init_config() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let log_path = temp.path().join("agent-stdin.log");
+        let script_path = create_test_headless_script(temp.path()).expect("script");
+
+        let mut config = SupervisorConfig::default();
+        config.transport.cli_path = script_path.to_string_lossy().into_owned();
+        config.transport.env.push((
+            "MAESTRO_TEST_LOG".to_string(),
+            log_path.to_string_lossy().into_owned(),
+        ));
+        config.auto_reconnect = false;
+
+        let init = InitConfig {
+            system_prompt: Some("system prompt".to_string()),
+            append_system_prompt: Some("appendix".to_string()),
+            thinking_level: Some(super::super::messages::ThinkingLevel::High),
+            approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+        };
+
+        let mut supervisor = AgentSupervisor::new(config);
+        supervisor.connect().await.expect("connect");
+        supervisor.init(init.clone()).expect("initial init");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        supervisor.disconnect();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        supervisor.reconnect().await.expect("reconnect");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        supervisor.disconnect();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let logged_inits: Vec<_> = fs::read_to_string(&log_path)
+            .expect("read log")
+            .lines()
+            .map(|line| serde_json::from_str::<ToAgentMessage>(line).expect("parse message"))
+            .collect();
+
+        assert_eq!(logged_inits.len(), 2);
+        for message in logged_inits {
+            match message {
+                ToAgentMessage::Init {
+                    system_prompt,
+                    append_system_prompt,
+                    thinking_level,
+                    approval_mode,
+                } => {
+                    assert_eq!(system_prompt, init.system_prompt);
+                    assert_eq!(append_system_prompt, init.append_system_prompt);
+                    assert_eq!(thinking_level, init.thinking_level);
+                    assert_eq!(approval_mode, init.approval_mode);
+                }
+                other => panic!("expected init replay, got {other:?}"),
+            }
+        }
     }
 }
