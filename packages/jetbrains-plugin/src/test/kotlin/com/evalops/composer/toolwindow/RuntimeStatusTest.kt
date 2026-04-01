@@ -14,6 +14,12 @@ class RuntimeStatusTest {
     }
 
     @Test
+    fun `trims status values before formatting`() {
+        val event = AgentEvent.Status(status = " compacting ")
+        assertEquals("Compacting conversation...", formatRuntimeStatus(event))
+    }
+
+    @Test
     fun `formats compaction events`() {
         val event = AgentEvent.Compaction(
             summary = "Summary",
