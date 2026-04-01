@@ -204,8 +204,9 @@ mod transport;
 
 // Core message types
 pub use messages::{
-    ActiveTool, AgentEvent, AgentState, FromAgentMessage, PendingApproval, StreamingResponse,
-    ToAgentMessage, TokenUsage, ToolResult,
+    ActiveTool, AgentEvent, AgentState, ApprovalMode, FromAgentMessage, HeadlessErrorType,
+    InitConfig, PendingApproval, StreamingResponse, ThinkingLevel, ToAgentMessage, TokenUsage,
+    ToolResult,
 };
 
 // Sync transport

@@ -394,7 +394,9 @@ impl SessionRecorder {
 
         // Update metadata
         match message {
-            FromAgentMessage::Ready { model, provider } => {
+            FromAgentMessage::Ready {
+                model, provider, ..
+            } => {
                 self.metadata.model = Some(model.clone());
                 self.metadata.provider = Some(provider.clone());
             }
@@ -670,8 +672,10 @@ mod tests {
         // Record a response
         recorder
             .record_received(&FromAgentMessage::Ready {
+                protocol_version: Some("2026-03-30".to_string()),
                 model: "claude-3-opus".to_string(),
                 provider: "anthropic".to_string(),
+                session_id: Some("sess_123".to_string()),
             })
             .unwrap();
 
@@ -787,6 +791,9 @@ mod tests {
             cache_read_tokens: 0,
             cache_write_tokens: 0,
             cost: None,
+            total_tokens: None,
+            model_id: None,
+            provider: None,
         });
 
         metadata.add_usage(&TokenUsage {
@@ -795,6 +802,9 @@ mod tests {
             cache_read_tokens: 0,
             cache_write_tokens: 0,
             cost: None,
+            total_tokens: None,
+            model_id: None,
+            provider: None,
         });
 
         assert_eq!(metadata.total_input_tokens, 250);

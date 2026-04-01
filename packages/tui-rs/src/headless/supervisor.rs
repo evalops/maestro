@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::async_transport::{AsyncAgentTransport, AsyncTransportConfig, AsyncTransportError};
-use super::messages::{AgentEvent, ToAgentMessage};
+use super::messages::{AgentEvent, InitConfig, ToAgentMessage};
 use super::session::SessionRecorder;
 
 /// Supervisor configuration
@@ -70,7 +70,7 @@ pub enum HealthStatus {
 #[derive(Debug, Clone)]
 pub enum SupervisorEvent {
     /// Agent event (pass-through)
-    Agent(AgentEvent),
+    Agent(Box<AgentEvent>),
     /// Connection established
     Connected,
     /// Connection lost
@@ -229,6 +229,16 @@ impl AgentSupervisor {
         })
     }
 
+    /// Configure the agent before sending prompts
+    pub fn init(&mut self, config: InitConfig) -> Result<(), AsyncTransportError> {
+        self.send(ToAgentMessage::Init {
+            system_prompt: config.system_prompt,
+            append_system_prompt: config.append_system_prompt,
+            thinking_level: config.thinking_level,
+            approval_mode: config.approval_mode,
+        })
+    }
+
     /// Poll for events (non-blocking)
     pub fn poll(&mut self) -> Option<SupervisorEvent> {
         // First check for transport events
@@ -246,7 +256,7 @@ impl AgentSupervisor {
                             }
                         }
 
-                        return Some(SupervisorEvent::Agent(event));
+                        return Some(SupervisorEvent::Agent(Box::new(event)));
                     }
                     Err(e) => {
                         self.transport = None;
@@ -291,7 +301,7 @@ impl AgentSupervisor {
                         }
                     }
 
-                    return Some(SupervisorEvent::Agent(event));
+                    return Some(SupervisorEvent::Agent(Box::new(event)));
                 }
                 Err(e) => {
                     self.transport = None;
@@ -350,9 +360,16 @@ impl AgentSupervisor {
 fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMessage> {
     use super::messages::FromAgentMessage;
     match event {
-        AgentEvent::Ready { model, provider } => Some(FromAgentMessage::Ready {
+        AgentEvent::Ready {
+            protocol_version,
+            model,
+            provider,
+            session_id,
+        } => Some(FromAgentMessage::Ready {
+            protocol_version: protocol_version.clone(),
             model: model.clone(),
             provider: provider.clone(),
+            session_id: session_id.clone(),
         }),
         AgentEvent::SessionInfo {
             session_id,
@@ -379,11 +396,15 @@ fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMess
             response_id,
             usage,
             tools_summary,
+            duration_ms,
+            ttft_ms,
             ..
         } => Some(FromAgentMessage::ResponseEnd {
             response_id: response_id.clone(),
             usage: usage.clone(),
             tools_summary: tools_summary.clone(),
+            duration_ms: *duration_ms,
+            ttft_ms: *ttft_ms,
         }),
         AgentEvent::ToolCall {
             call_id,
@@ -418,9 +439,14 @@ fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMess
             call_id: call_id.clone(),
             success: *success,
         }),
-        AgentEvent::Error { message, fatal } => Some(FromAgentMessage::Error {
+        AgentEvent::Error {
+            message,
+            fatal,
+            error_type,
+        } => Some(FromAgentMessage::Error {
             message: message.clone(),
             fatal: *fatal,
+            error_type: *error_type,
         }),
         AgentEvent::Status { message } => Some(FromAgentMessage::Status {
             message: message.clone(),
@@ -524,6 +550,7 @@ impl Default for SupervisorBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::headless::{HeadlessErrorType, TokenUsage};
 
     #[test]
     fn test_supervisor_config_defaults() {
@@ -550,5 +577,65 @@ mod tests {
 
         assert!(!supervisor.is_connected());
         assert_eq!(supervisor.health(), HealthStatus::Unknown);
+    }
+
+    #[test]
+    fn event_to_message_preserves_headless_metadata() {
+        let ready = event_to_message(&AgentEvent::Ready {
+            protocol_version: Some("2026-03-30".to_string()),
+            model: "claude-3-opus".to_string(),
+            provider: "anthropic".to_string(),
+            session_id: Some("sess_123".to_string()),
+        })
+        .expect("ready message");
+        assert!(matches!(
+            ready,
+            super::super::messages::FromAgentMessage::Ready {
+                protocol_version: Some(ref version),
+                session_id: Some(ref session_id),
+                ..
+            } if version == "2026-03-30" && session_id == "sess_123"
+        ));
+
+        let response_end = event_to_message(&AgentEvent::ResponseEnd {
+            response_id: "resp_1".to_string(),
+            usage: Some(TokenUsage {
+                input_tokens: 10,
+                output_tokens: 20,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cost: Some(0.1),
+                total_tokens: Some(30),
+                model_id: Some("claude-sonnet".to_string()),
+                provider: Some("anthropic".to_string()),
+            }),
+            tools_summary: None,
+            duration_ms: Some(2400),
+            ttft_ms: Some(150),
+            full_text: Some("Hello".to_string()),
+        })
+        .expect("response end message");
+        assert!(matches!(
+            response_end,
+            super::super::messages::FromAgentMessage::ResponseEnd {
+                duration_ms: Some(2400),
+                ttft_ms: Some(150),
+                ..
+            }
+        ));
+
+        let error = event_to_message(&AgentEvent::Error {
+            message: "cancelled".to_string(),
+            fatal: false,
+            error_type: Some(HeadlessErrorType::Cancelled),
+        })
+        .expect("error message");
+        assert!(matches!(
+            error,
+            super::super::messages::FromAgentMessage::Error {
+                error_type: Some(HeadlessErrorType::Cancelled),
+                ..
+            }
+        ));
     }
 }

@@ -1344,6 +1344,9 @@ Always use tools when they would be helpful. Be concise and direct in your respo
                 cache_read_tokens: entry.usage.cache_read,
                 cache_write_tokens: entry.usage.cache_write,
                 cost: entry.usage.cost.as_ref().map(|c| c.total),
+                total_tokens: None,
+                model_id: None,
+                provider: None,
             };
             let _ = self.usage_tracker.add_turn_for_model(&entry.model, &usage);
         }
@@ -4473,6 +4476,9 @@ fn to_headless_usage(usage: &crate::agent::TokenUsage) -> crate::headless::Token
         cache_read_tokens: usage.cache_read_tokens,
         cache_write_tokens: usage.cache_write_tokens,
         cost: usage.cost,
+        total_tokens: Some(usage.input_tokens + usage.output_tokens),
+        model_id: None,
+        provider: None,
     }
 }
 
