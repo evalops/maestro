@@ -31,6 +31,9 @@ export interface McpServerViewModel {
 	name: string;
 	summary: string;
 	isExpanded: boolean;
+	sourceLabel: string | null;
+	transportLabel: string | null;
+	errorLabel: string | null;
 	toolCount: number;
 	tools: Array<{ name: string; description?: string }>;
 	toolDetailsLabel: string | null;
@@ -59,6 +62,46 @@ export interface ToolsRuntimeSectionProps {
 	onRefreshComposers: () => Promise<void> | void;
 	onActivateComposer: () => Promise<void> | void;
 	onDeactivateComposer: () => Promise<void> | void;
+}
+
+function formatMcpScopeLabel(scope: McpServerStatus["scope"]): string | null {
+	switch (scope) {
+		case "enterprise":
+			return "Enterprise config";
+		case "plugin":
+			return "Plugin config";
+		case "project":
+			return "Project config";
+		case "local":
+			return "Local config";
+		case "user":
+			return "User config";
+		default:
+			return null;
+	}
+}
+
+function formatMcpTransportLabel(
+	transport: McpServerStatus["transport"],
+): string | null {
+	switch (transport) {
+		case "stdio":
+			return "stdio";
+		case "http":
+			return "HTTP";
+		case "sse":
+			return "SSE";
+		default:
+			return null;
+	}
+}
+
+function formatCountLabel(
+	count: number,
+	singular: string,
+	plural: string,
+): string {
+	return `${count} ${count === 1 ? singular : plural}`;
 }
 
 export function buildLspViewModel(
@@ -91,11 +134,24 @@ export function buildMcpServerViewModel(
 		: (server.tools ?? 0);
 	const resources = server.resources ?? [];
 	const prompts = server.prompts ?? [];
+	const sourceLabel = formatMcpScopeLabel(server.scope);
+	const transportLabel = formatMcpTransportLabel(server.transport);
+	const summaryParts = [
+		server.connected ? "Connected" : "Offline",
+		sourceLabel,
+		transportLabel ? `via ${transportLabel}` : null,
+		formatCountLabel(toolCount, "tool", "tools"),
+		formatCountLabel(resources.length, "resource", "resources"),
+		formatCountLabel(prompts.length, "prompt", "prompts"),
+	].filter((part): part is string => Boolean(part));
 
 	return {
 		name: server.name,
-		summary: `${server.connected ? "Connected" : "Offline"} · ${toolCount} tools · ${resources.length} resources · ${prompts.length} prompts`,
+		summary: summaryParts.join(" · "),
 		isExpanded: expandedServer === server.name,
+		sourceLabel,
+		transportLabel,
+		errorLabel: server.error ?? null,
 		toolCount,
 		tools,
 		toolDetailsLabel:
@@ -274,6 +330,25 @@ export function ToolsRuntimeSection({
 									</button>
 									{server.isExpanded && (
 										<div className="border-t border-line-subtle/60 px-3 py-2 space-y-2 text-[11px] text-text-muted">
+											{(server.sourceLabel || server.transportLabel) && (
+												<div className="flex flex-wrap gap-1">
+													{server.sourceLabel && (
+														<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
+															{server.sourceLabel}
+														</span>
+													)}
+													{server.transportLabel && (
+														<span className="px-2 py-0.5 rounded-full border border-line-subtle/60 bg-bg-secondary/60 text-text-secondary">
+															{server.transportLabel}
+														</span>
+													)}
+												</div>
+											)}
+											{server.errorLabel && (
+												<div className="rounded-lg border border-error/40 bg-error/10 px-2.5 py-2 text-error">
+													{server.errorLabel}
+												</div>
+											)}
 											{server.tools.length > 0 ? (
 												<div>
 													<div className="text-text-tertiary uppercase tracking-wide text-[10px] mb-1">

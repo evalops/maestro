@@ -8,7 +8,7 @@
 		"build": {
 			"executor": "nx:run-commands",
 			"options": {
-				"command": "cd packages/desktop && bun run build:vite",
+				"command": "cd packages/desktop && bun run build",
 				"forwardAllArgs": true
 			}
 		},
