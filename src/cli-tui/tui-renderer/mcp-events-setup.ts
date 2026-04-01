@@ -3,6 +3,7 @@
  *
  * This module sets up event listeners for MCP server lifecycle events:
  * - Server connections/disconnections
+ * - Server errors
  * - Tool list changes (debounced)
  * - Progress notifications
  * - Log messages (warnings/errors only)
@@ -15,6 +16,7 @@ import type { NotificationView } from "../notification-view.js";
 export interface McpEventHandlers {
 	connected?: (data: { name: string; tools: number }) => void;
 	disconnected?: (data: { name: string }) => void;
+	error?: (data: { name: string; error: string }) => void;
 	toolsChanged?: (data: { name: string }) => void;
 	progress?: (data: {
 		name: string;
@@ -59,6 +61,16 @@ export function createMcpEventsController(params: {
 	// Disconnection handler
 	handlers.disconnected = ({ name }) => {
 		notificationView.showToast(`MCP server "${name}" disconnected`, "warn");
+		refreshFooterHint();
+	};
+
+	// Error handler
+	handlers.error = ({ name, error }) => {
+		const errorLabel = error.trim() || "Connection failed.";
+		notificationView.showToast(
+			`MCP server "${name}" error: ${errorLabel}`,
+			"warn",
+		);
 		refreshFooterHint();
 	};
 
@@ -141,6 +153,7 @@ export function createMcpEventsController(params: {
 	// Register event handlers
 	mcpManager.on("connected", handlers.connected);
 	mcpManager.on("disconnected", handlers.disconnected);
+	mcpManager.on("error", handlers.error);
 	mcpManager.on("tools_changed", handlers.toolsChanged);
 	mcpManager.on("progress", handlers.progress);
 	mcpManager.on("log", handlers.log);
@@ -161,6 +174,9 @@ export function createMcpEventsController(params: {
 			}
 			if (handlers.disconnected) {
 				mcpManager.off("disconnected", handlers.disconnected);
+			}
+			if (handlers.error) {
+				mcpManager.off("error", handlers.error);
 			}
 			if (handlers.toolsChanged) {
 				mcpManager.off("tools_changed", handlers.toolsChanged);
