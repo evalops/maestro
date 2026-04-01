@@ -6,6 +6,7 @@
 
 import type { Container, ScrollContainer } from "@evalops/tui";
 import type { Agent } from "../../agent/agent.js";
+import { isCompactionResumePromptText } from "../../agent/compaction.js";
 import { listSessionBackups } from "../../agent/session-recovery.js";
 import type { SessionRecoveryManager } from "../../agent/session-recovery.js";
 import type {
@@ -76,7 +77,11 @@ export class SessionStateController {
 								(c): c is { type: "text"; text: string } => c.type === "text",
 							);
 				const textContent = textBlocks.map((c) => c.text).join("");
-				if (textContent && !textContent.startsWith("[Context compaction:")) {
+				if (
+					textContent &&
+					!textContent.startsWith("[Context compaction:") &&
+					!isCompactionResumePromptText(textContent)
+				) {
 					this.deps.editor.addToHistory(textContent);
 				}
 			}

@@ -1,4 +1,9 @@
 import { Container, Spacer, type TUI, Text } from "@evalops/tui";
+import {
+	isCompactionResumePromptMessage,
+	isDecoratedCompactionSummaryMessage,
+} from "../agent/compaction.js";
+import { isCompactionSummaryMessage } from "../agent/type-guards.js";
 import type { AgentState, AppMessage } from "../agent/types.js";
 import {
 	createRenderableMessage,
@@ -9,6 +14,7 @@ import {
 import { getTypeScriptHookMessageRenderer } from "../hooks/index.js";
 import { theme } from "../theme/theme.js";
 import { AssistantMessageComponent } from "./assistant-message.js";
+import { CompactBoundaryMessageComponent } from "./compact-boundary-message.js";
 import { HookMessageComponent } from "./hook-message.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 import { UserMessageComponent } from "./user-message.js";
@@ -41,6 +47,7 @@ function createZenSeparator(): Container {
 export class MessageView {
 	private isFirstUserMessage = true;
 	private messageCount = 0;
+	private suppressNextCompactionResumePrompt = false;
 
 	constructor(private readonly options: MessageViewOptions) {}
 
@@ -52,7 +59,38 @@ export class MessageView {
 		return this.options.getHideThinkingBlocks?.() ?? false;
 	}
 
+	private addCompactionBoundary(timestamp?: number): void {
+		if (this.isZenMode() && this.messageCount > 0) {
+			this.options.chatContainer.addChild(createZenSeparator());
+		}
+		this.options.chatContainer.addChild(
+			new CompactBoundaryMessageComponent(timestamp),
+		);
+		this.messageCount++;
+	}
+
 	addMessage(message: AppMessage): void {
+		if (isCompactionSummaryMessage(message)) {
+			this.addCompactionBoundary(message.timestamp);
+			this.suppressNextCompactionResumePrompt = false;
+			return;
+		}
+		if (isDecoratedCompactionSummaryMessage(message)) {
+			this.addCompactionBoundary(message.timestamp);
+			this.suppressNextCompactionResumePrompt = true;
+			return;
+		}
+		if (
+			this.suppressNextCompactionResumePrompt &&
+			isCompactionResumePromptMessage(message)
+		) {
+			this.suppressNextCompactionResumePrompt = false;
+			return;
+		}
+		if (this.suppressNextCompactionResumePrompt) {
+			this.suppressNextCompactionResumePrompt = false;
+		}
+
 		if (message.role === "branchSummary") {
 			const hookMessage = {
 				role: "hookMessage" as const,
@@ -60,24 +98,6 @@ export class MessageView {
 				content: `Branch summary:\n\n${message.summary}`,
 				display: true,
 				details: { fromId: message.fromId },
-				timestamp: message.timestamp,
-			};
-			if (this.isZenMode() && this.messageCount > 0) {
-				this.options.chatContainer.addChild(createZenSeparator());
-			}
-			const renderer = getTypeScriptHookMessageRenderer(hookMessage.customType);
-			const component = new HookMessageComponent(hookMessage, renderer);
-			this.options.chatContainer.addChild(component);
-			this.messageCount++;
-			return;
-		}
-		if (message.role === "compactionSummary") {
-			const hookMessage = {
-				role: "hookMessage" as const,
-				customType: "compactionSummary",
-				content: `Compaction summary:\n\n${message.summary}`,
-				display: true,
-				details: { tokensBefore: message.tokensBefore },
 				timestamp: message.timestamp,
 			};
 			if (this.isZenMode() && this.messageCount > 0) {
@@ -190,6 +210,7 @@ export class MessageView {
 	renderInitialMessages(state: AgentState): void {
 		this.isFirstUserMessage = true;
 		this.messageCount = 0;
+		this.suppressNextCompactionResumePrompt = false;
 		this.options.toolComponents.clear();
 		this.options.pendingTools.clear();
 		for (const message of state.messages) {
