@@ -138,6 +138,17 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToAgentMessage {
+    /// Configure agent behavior before the first prompt
+    Init {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        system_prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        append_system_prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking_level: Option<ThinkingLevel>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval_mode: Option<ApprovalMode>,
+    },
     /// Send a user prompt
     Prompt {
         content: String,
@@ -157,6 +168,40 @@ pub enum ToAgentMessage {
     Cancel,
     /// Shut down the agent
     Shutdown,
+}
+
+/// Optional agent initialization settings sent before the first prompt.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InitConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub append_system_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_level: Option<ThinkingLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<ApprovalMode>,
+}
+
+/// Headless thinking effort configuration.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingLevel {
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Ultra,
+}
+
+/// Headless approval behavior for tool calls.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    Auto,
+    Prompt,
+    Fail,
 }
 
 /// Result of a tool execution
@@ -222,7 +267,14 @@ pub struct ToolResult {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromAgentMessage {
     /// Agent is ready
-    Ready { model: String, provider: String },
+    Ready {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        protocol_version: Option<String>,
+        model: String,
+        provider: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
     /// Response streaming started
     ResponseStart { response_id: String },
     /// Response chunk (text or thinking)
@@ -238,6 +290,10 @@ pub enum FromAgentMessage {
         usage: Option<TokenUsage>,
         #[serde(default)]
         tools_summary: Option<ResponseToolsSummary>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttft_ms: Option<u64>,
     },
     /// Tool call (may require approval)
     ToolCall {
@@ -253,7 +309,12 @@ pub enum FromAgentMessage {
     /// Tool execution ended
     ToolEnd { call_id: String, success: bool },
     /// Error occurred
-    Error { message: String, fatal: bool },
+    Error {
+        message: String,
+        fatal: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_type: Option<HeadlessErrorType>,
+    },
     /// Status update
     Status { message: String },
     /// Conversation history was compacted into a summary
@@ -282,8 +343,19 @@ pub struct TokenUsage {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
-    #[serde(default)]
+    #[serde(
+        default,
+        rename = "total_cost_usd",
+        alias = "cost",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cost: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// Summary of the tools used during a response.
@@ -302,8 +374,20 @@ pub struct ResponseToolsSummary {
 impl TokenUsage {
     #[must_use]
     pub fn total_tokens(&self) -> u64 {
-        self.input_tokens + self.output_tokens
+        self.total_tokens
+            .unwrap_or(self.input_tokens + self.output_tokens)
     }
+}
+
+/// Structured error category emitted by the headless protocol.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadlessErrorType {
+    Transient,
+    Fatal,
+    Tool,
+    Cancelled,
+    Protocol,
 }
 
 // =============================================================================
@@ -357,6 +441,7 @@ impl TokenUsage {
 #[derive(Debug, Clone, Default)]
 pub struct AgentState {
     /// Model information
+    pub protocol_version: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
     /// Session information
@@ -371,8 +456,14 @@ pub struct AgentState {
     pub active_tools: HashMap<String, ActiveTool>,
     /// Last error message
     pub last_error: Option<String>,
+    /// Last structured error type
+    pub last_error_type: Option<HeadlessErrorType>,
     /// Last status message
     pub last_status: Option<String>,
+    /// Last response duration
+    pub last_response_duration_ms: Option<u64>,
+    /// Last time-to-first-token telemetry
+    pub last_ttft_ms: Option<u64>,
     /// Whether the agent is ready
     pub is_ready: bool,
     /// Whether currently processing a response
@@ -429,11 +520,23 @@ impl AgentState {
     /// Handle an incoming message and update state
     pub fn handle_message(&mut self, msg: FromAgentMessage) -> Option<AgentEvent> {
         match msg {
-            FromAgentMessage::Ready { model, provider } => {
+            FromAgentMessage::Ready {
+                protocol_version,
+                model,
+                provider,
+                session_id,
+            } => {
+                self.protocol_version = protocol_version.clone();
                 self.model = Some(model.clone());
                 self.provider = Some(provider.clone());
+                self.session_id = session_id.clone();
                 self.is_ready = true;
-                Some(AgentEvent::Ready { model, provider })
+                Some(AgentEvent::Ready {
+                    protocol_version,
+                    model,
+                    provider,
+                    session_id,
+                })
             }
 
             FromAgentMessage::SessionInfo {
@@ -478,18 +581,24 @@ impl AgentState {
                 response_id,
                 usage,
                 tools_summary,
+                duration_ms,
+                ttft_ms,
             } => {
                 if let Some(ref mut response) = self.current_response {
                     if response.response_id == response_id {
                         response.usage = usage.clone();
                     }
                 }
+                self.last_response_duration_ms = duration_ms;
+                self.last_ttft_ms = ttft_ms;
                 self.is_responding = false;
                 let response = self.current_response.take();
                 Some(AgentEvent::ResponseEnd {
                     response_id,
                     usage,
                     tools_summary,
+                    duration_ms,
+                    ttft_ms,
                     full_text: response.map(|r| r.text),
                 })
             }
@@ -558,9 +667,18 @@ impl AgentState {
                 })
             }
 
-            FromAgentMessage::Error { message, fatal } => {
+            FromAgentMessage::Error {
+                message,
+                fatal,
+                error_type,
+            } => {
                 self.last_error = Some(message.clone());
-                Some(AgentEvent::Error { message, fatal })
+                self.last_error_type = error_type;
+                Some(AgentEvent::Error {
+                    message,
+                    fatal,
+                    error_type,
+                })
             }
 
             FromAgentMessage::Status { message } => {
@@ -599,8 +717,10 @@ impl AgentState {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Ready {
+        protocol_version: Option<String>,
         model: String,
         provider: String,
+        session_id: Option<String>,
     },
     SessionInfo {
         session_id: Option<String>,
@@ -619,6 +739,8 @@ pub enum AgentEvent {
         response_id: String,
         usage: Option<TokenUsage>,
         tools_summary: Option<ResponseToolsSummary>,
+        duration_ms: Option<u64>,
+        ttft_ms: Option<u64>,
         full_text: Option<String>,
     },
     ToolCall {
@@ -647,6 +769,7 @@ pub enum AgentEvent {
     Error {
         message: String,
         fatal: bool,
+        error_type: Option<HeadlessErrorType>,
     },
     Status {
         message: String,
@@ -667,12 +790,19 @@ mod tests {
 
     #[test]
     fn parse_ready_message() {
-        let json = r#"{"type":"ready","model":"claude-3-opus","provider":"anthropic"}"#;
+        let json = r#"{"type":"ready","protocol_version":"2026-03-30","model":"claude-3-opus","provider":"anthropic","session_id":"sess_123"}"#;
         let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
         match msg {
-            FromAgentMessage::Ready { model, provider } => {
+            FromAgentMessage::Ready {
+                protocol_version,
+                model,
+                provider,
+                session_id,
+            } => {
+                assert_eq!(protocol_version.as_deref(), Some("2026-03-30"));
                 assert_eq!(model, "claude-3-opus");
                 assert_eq!(provider, "anthropic");
+                assert_eq!(session_id.as_deref(), Some("sess_123"));
             }
             _ => panic!("Expected Ready message"),
         }
@@ -698,19 +828,29 @@ mod tests {
 
     #[test]
     fn parse_response_end_with_tools_summary() {
-        let json = r#"{"type":"response_end","response_id":"abc","usage":{"input_tokens":1,"output_tokens":2,"cache_read_tokens":0,"cache_write_tokens":0},"tools_summary":{"tools_used":["read","bash"],"calls_succeeded":1,"calls_failed":1,"summary_labels":["Read package.json","Ran cargo test"]}}"#;
+        let json = r#"{"type":"response_end","response_id":"abc","usage":{"input_tokens":1,"output_tokens":2,"cache_read_tokens":0,"cache_write_tokens":0,"total_tokens":3,"total_cost_usd":0.25,"model_id":"claude-sonnet","provider":"anthropic"},"tools_summary":{"tools_used":["read","bash"],"calls_succeeded":1,"calls_failed":1,"summary_labels":["Read package.json","Ran cargo test"]},"duration_ms":2500,"ttft_ms":120}"#;
         let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
         match msg {
             FromAgentMessage::ResponseEnd {
                 response_id,
+                usage,
                 tools_summary,
+                duration_ms,
+                ttft_ms,
                 ..
             } => {
                 assert_eq!(response_id, "abc");
+                let usage = usage.expect("expected usage");
+                assert_eq!(usage.total_tokens(), 3);
+                assert_eq!(usage.cost, Some(0.25));
+                assert_eq!(usage.model_id.as_deref(), Some("claude-sonnet"));
+                assert_eq!(usage.provider.as_deref(), Some("anthropic"));
                 let tools_summary = tools_summary.expect("expected tools summary");
                 assert_eq!(tools_summary.tools_used, vec!["read", "bash"]);
                 assert_eq!(tools_summary.calls_succeeded, 1);
                 assert_eq!(tools_summary.calls_failed, 1);
+                assert_eq!(duration_ms, Some(2500));
+                assert_eq!(ttft_ms, Some(120));
                 assert_eq!(
                     tools_summary.summary_labels,
                     vec!["Read package.json", "Ran cargo test"]
@@ -751,8 +891,32 @@ mod tests {
     }
 
     #[test]
+    fn serialize_init_message() {
+        let msg = ToAgentMessage::Init {
+            system_prompt: Some("You are Maestro".to_string()),
+            append_system_prompt: None,
+            thinking_level: Some(ThinkingLevel::High),
+            approval_mode: Some(ApprovalMode::Prompt),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"init""#));
+        assert!(json.contains(r#""system_prompt":"You are Maestro""#));
+        assert!(json.contains(r#""thinking_level":"high""#));
+        assert!(json.contains(r#""approval_mode":"prompt""#));
+    }
+
+    #[test]
     fn state_handles_response_stream() {
         let mut state = AgentState::default();
+        state.handle_message(FromAgentMessage::Ready {
+            protocol_version: Some("2026-03-30".to_string()),
+            model: "claude-3-opus".to_string(),
+            provider: "anthropic".to_string(),
+            session_id: Some("sess_123".to_string()),
+        });
+
+        assert_eq!(state.protocol_version.as_deref(), Some("2026-03-30"));
+        assert_eq!(state.session_id.as_deref(), Some("sess_123"));
 
         // Start response
         state.handle_message(FromAgentMessage::ResponseStart {
@@ -785,9 +949,33 @@ mod tests {
                 calls_failed: 0,
                 summary_labels: vec!["Read package.json".to_string()],
             }),
+            duration_ms: Some(2300),
+            ttft_ms: Some(150),
         });
         assert!(!state.is_responding);
         assert!(state.current_response.is_none());
+        assert_eq!(state.last_response_duration_ms, Some(2300));
+        assert_eq!(state.last_ttft_ms, Some(150));
+    }
+
+    #[test]
+    fn state_tracks_structured_errors() {
+        let mut state = AgentState::default();
+        let event = state.handle_message(FromAgentMessage::Error {
+            message: "Cancelled by user".to_string(),
+            fatal: false,
+            error_type: Some(HeadlessErrorType::Cancelled),
+        });
+
+        assert_eq!(state.last_error.as_deref(), Some("Cancelled by user"));
+        assert_eq!(state.last_error_type, Some(HeadlessErrorType::Cancelled));
+        assert!(matches!(
+            event,
+            Some(AgentEvent::Error {
+                error_type: Some(HeadlessErrorType::Cancelled),
+                ..
+            })
+        ));
     }
 
     #[test]

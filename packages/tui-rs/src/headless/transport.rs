@@ -83,7 +83,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use super::messages::{AgentEvent, AgentState, FromAgentMessage, ToAgentMessage};
+use super::messages::{AgentEvent, AgentState, FromAgentMessage, InitConfig, ToAgentMessage};
 
 /// Error type for transport operations
 #[derive(Debug)]
@@ -347,6 +347,16 @@ impl AgentTransport {
         })
     }
 
+    /// Configure the agent before sending prompts
+    pub fn init(&self, config: InitConfig) -> Result<(), TransportError> {
+        self.send(ToAgentMessage::Init {
+            system_prompt: config.system_prompt,
+            append_system_prompt: config.append_system_prompt,
+            thinking_level: config.thinking_level,
+            approval_mode: config.approval_mode,
+        })
+    }
+
     /// Send a prompt with file attachments
     pub fn prompt_with_attachments(
         &self,
@@ -426,9 +436,16 @@ impl AgentTransport {
     /// Update local state based on an event
     fn update_local_state(&mut self, event: &AgentEvent) {
         match event {
-            AgentEvent::Ready { model, provider } => {
+            AgentEvent::Ready {
+                protocol_version,
+                model,
+                provider,
+                session_id,
+            } => {
+                self.state.protocol_version = protocol_version.clone();
                 self.state.model = Some(model.clone());
                 self.state.provider = Some(provider.clone());
+                self.state.session_id = session_id.clone();
                 self.state.is_ready = true;
             }
             AgentEvent::SessionInfo {
@@ -443,8 +460,22 @@ impl AgentTransport {
             AgentEvent::ResponseStart { .. } => {
                 self.state.is_responding = true;
             }
-            AgentEvent::ResponseEnd { .. } => {
+            AgentEvent::ResponseEnd {
+                duration_ms,
+                ttft_ms,
+                ..
+            } => {
+                self.state.last_response_duration_ms = *duration_ms;
+                self.state.last_ttft_ms = *ttft_ms;
                 self.state.is_responding = false;
+            }
+            AgentEvent::Error {
+                message,
+                error_type,
+                ..
+            } => {
+                self.state.last_error = Some(message.clone());
+                self.state.last_error_type = *error_type;
             }
             _ => {}
         }
