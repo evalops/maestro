@@ -28,7 +28,6 @@ import {
 	createAutoVerifyService,
 	formatTestResult,
 	getAutoVerifyConfig,
-	getGlobalAutoVerifyService,
 	isTestFile,
 	shouldTriggerTests,
 } from "./auto-verify.js";
@@ -39,6 +38,17 @@ const logger = createLogger("test-verification-hook");
  * Tools that modify files and should trigger test verification.
  */
 const FILE_MODIFYING_TOOLS = new Set(["edit", "write", "notebook_edit"]);
+let registeredTestVerificationHookUnregisters: Array<() => void> = [];
+let registeredTestVerificationService: AutoVerifyService | null = null;
+
+function clearRegisteredTestVerificationHooks(): void {
+	for (const unregister of registeredTestVerificationHookUnregisters) {
+		unregister();
+	}
+	registeredTestVerificationHookUnregisters = [];
+	registeredTestVerificationService?.stop();
+	registeredTestVerificationService = null;
+}
 
 /**
  * Extract file path from tool input based on tool type.
@@ -137,12 +147,17 @@ export function registerTestVerificationHooks(
 	cwd: string,
 	options: TestVerificationHookOptions = {},
 ): AutoVerifyService {
-	const config = getAutoVerifyConfig();
+	const config = { ...getAutoVerifyConfig(), ...options.config };
 
 	// Skip registration if disabled
 	if (!config.enabled) {
+		clearRegisteredTestVerificationHooks();
 		logger.info("Test verification disabled, skipping hook registration");
-		return getGlobalAutoVerifyService(cwd);
+		const service = createAutoVerifyService(cwd, options.config);
+		if (options.onTestComplete) {
+			service.setOnTestComplete(options.onTestComplete);
+		}
+		return service;
 	}
 
 	// Create or get the service
@@ -159,9 +174,13 @@ export function registerTestVerificationHooks(
 		callback: createTestVerificationCallback(service),
 	};
 
+	clearRegisteredTestVerificationHooks();
+	registeredTestVerificationService = service;
+
 	// Register for each file-modifying tool
 	for (const toolName of FILE_MODIFYING_TOOLS) {
-		registerHook("PostToolUse", hookConfig, toolName);
+		const unregister = registerHook("PostToolUse", hookConfig, toolName);
+		registeredTestVerificationHookUnregisters.push(unregister);
 		logger.debug("Registered test verification hook", { toolName });
 	}
 
@@ -188,6 +207,13 @@ export interface TestVerificationState {
 	lastRunTime: number | null;
 }
 
+function cloneTestResult(result: TestResult): TestResult {
+	return {
+		...result,
+		failures: result.failures.map((failure) => ({ ...failure })),
+	};
+}
+
 /**
  * Create a test verification state tracker.
  *
@@ -202,25 +228,34 @@ export function createTestVerificationStateTracker(
 } {
 	let lastResult: TestResult | null = null;
 	let lastRunTime: number | null = null;
+	let isDestroyed = false;
 
 	// Track test completion
-	const originalCallback = service.getConfig();
-	service.setOnTestComplete((result) => {
-		lastResult = result;
+	const originalCallback = service.getOnTestComplete();
+	const trackerCallback = (result: TestResult) => {
+		originalCallback?.(result);
+		if (isDestroyed) {
+			return;
+		}
+		lastResult = cloneTestResult(result);
 		lastRunTime = Date.now();
-	});
+	};
+	service.setOnTestComplete(trackerCallback);
 
 	return {
 		getState(): TestVerificationState {
 			return {
 				isRunning: service.isTestRunning(),
 				pendingFiles: service.getDirtyFiles().length,
-				lastResult,
+				lastResult: lastResult ? cloneTestResult(lastResult) : null,
 				lastRunTime,
 			};
 		},
 		destroy(): void {
-			// Cleanup if needed
+			isDestroyed = true;
+			if (service.getOnTestComplete() === trackerCallback) {
+				service.setOnTestComplete(originalCallback);
+			}
 		},
 	};
 }

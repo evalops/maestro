@@ -276,6 +276,7 @@ export function findTestFilesForSource(
 export function shouldTriggerTests(
 	filePath: string,
 	config: AutoVerifyConfig,
+	cwd = process.cwd(),
 ): boolean {
 	// Only trigger for code files
 	const codeExtensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
@@ -297,7 +298,7 @@ export function shouldTriggerTests(
 
 	// Get relative path for pattern matching
 	const relativePath = isAbsolute(filePath)
-		? relative(process.cwd(), filePath)
+		? relative(cwd, filePath)
 		: filePath;
 
 	// Check ignore patterns
@@ -533,8 +534,26 @@ export class AutoVerifyService {
 	/**
 	 * Set callback for test completion.
 	 */
-	setOnTestComplete(callback: (result: TestResult) => void): void {
+	setOnTestComplete(callback?: (result: TestResult) => void): void {
 		this.onTestComplete = callback;
+	}
+
+	private scheduleMaybeRunTests(delayMs: number): void {
+		if (this.tracker.debounceTimer) {
+			clearTimeout(this.tracker.debounceTimer);
+		}
+
+		this.tracker.debounceTimer = setTimeout(() => {
+			this.tracker.debounceTimer = null;
+			void this.maybeRunTests();
+		}, delayMs);
+	}
+
+	/**
+	 * Get the current test completion callback.
+	 */
+	getOnTestComplete(): ((result: TestResult) => void) | undefined {
+		return this.onTestComplete;
 	}
 
 	/**
@@ -542,30 +561,29 @@ export class AutoVerifyService {
 	 */
 	recordFileChange(filePath: string): void {
 		if (!this.config.enabled) return;
-		if (!shouldTriggerTests(filePath, this.config)) return;
+		if (!shouldTriggerTests(filePath, this.config, this.cwd)) return;
 
 		this.tracker.files.add(filePath);
 		this.tracker.lastModified = Date.now();
 
 		logger.debug("File change recorded", { filePath });
 
-		// Reset debounce timer
-		if (this.tracker.debounceTimer) {
-			clearTimeout(this.tracker.debounceTimer);
-		}
-
-		this.tracker.debounceTimer = setTimeout(() => {
-			this.maybeRunTests();
-		}, this.config.debounceDelayMs);
+		this.scheduleMaybeRunTests(this.config.debounceDelayMs);
 	}
 
 	/**
 	 * Check if we should run tests and do so if appropriate.
 	 */
 	private async maybeRunTests(): Promise<void> {
+		if (!this.config.enabled) {
+			logger.debug("Skipping test run - auto verify disabled");
+			return;
+		}
+
 		// Skip if already running
 		if (this.isRunning) {
 			logger.debug("Skipping test run - already running");
+			this.scheduleMaybeRunTests(this.config.debounceDelayMs);
 			return;
 		}
 
@@ -578,9 +596,11 @@ export class AutoVerifyService {
 		// Skip if cooldown hasn't passed
 		const timeSinceLastRun = Date.now() - this.lastTestRun;
 		if (timeSinceLastRun < this.config.cooldownMs) {
+			const remaining = this.config.cooldownMs - timeSinceLastRun;
 			logger.debug("Skipping test run - cooldown active", {
-				remaining: this.config.cooldownMs - timeSinceLastRun,
+				remaining,
 			});
+			this.scheduleMaybeRunTests(remaining);
 			return;
 		}
 
@@ -830,7 +850,20 @@ export class AutoVerifyService {
 	 * Update configuration.
 	 */
 	setConfig(config: Partial<AutoVerifyConfig>): void {
+		const wasEnabled = this.config.enabled;
 		this.config = { ...this.config, ...config };
+
+		if (!this.config.enabled) {
+			if (this.tracker.debounceTimer) {
+				clearTimeout(this.tracker.debounceTimer);
+				this.tracker.debounceTimer = null;
+			}
+			return;
+		}
+
+		if (!wasEnabled && this.tracker.files.size > 0) {
+			this.scheduleMaybeRunTests(this.config.debounceDelayMs);
+		}
 	}
 
 	/**
