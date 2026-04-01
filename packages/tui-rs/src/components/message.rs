@@ -129,6 +129,7 @@ use crate::runtime_badges::{build_runtime_badges, RuntimeBadgeParams};
 use crate::session::ThinkingLevel;
 use crate::state::{ApprovalMode, Message, MessageRole, QueueMode, ToolCallStatus};
 use crate::tool_output::{clamp_tool_output, format_tool_output_truncation, tool_output_limits};
+use crate::tool_summary::summarize_tool_use;
 use crate::wrapping::{word_wrap_lines, RtOptions};
 use std::collections::HashSet;
 use std::time::SystemTime;
@@ -312,6 +313,20 @@ fn get_tool_icon(tool: &str) -> &'static str {
     }
 }
 
+fn format_tool_status_summary(status: ToolCallStatus, summary: &str) -> String {
+    match status {
+        ToolCallStatus::Completed => summary.to_string(),
+        ToolCallStatus::Running => format!("Running · {summary}"),
+        ToolCallStatus::Failed => format!("Failed · {summary}"),
+        ToolCallStatus::Pending => format!("Pending · {summary}"),
+        ToolCallStatus::Blocked => format!("Blocked · {summary}"),
+    }
+}
+
+fn should_show_tool_args_preview(summary: &str, args_preview: &str) -> bool {
+    !args_preview.is_empty() && !summary.contains(args_preview)
+}
+
 /// Check if a message should be rendered
 /// Skip empty assistant messages (no content AND no tool calls)
 pub fn should_render_message(message: &Message) -> bool {
@@ -381,13 +396,15 @@ pub fn calculate_message_height(
         } else {
             !expanded_tools.contains(&tc.call_id)
         };
+        let summary_label = summarize_tool_use(&tc.tool, &tc.args);
         let args_preview =
             get_tool_args_preview(&tc.tool, &tc.args, width.saturating_sub(20) as usize);
+        let show_args_preview = should_show_tool_args_preview(&summary_label, &args_preview);
 
         // header line
         height += 1;
 
-        if !args_preview.is_empty() {
+        if show_args_preview {
             height += 1;
         }
 
@@ -702,14 +719,16 @@ impl Widget for MessageWidget<'_> {
                 !expanded
             };
 
-            // Status bullet and verb (Codex style)
-            let (bullet, bullet_style, verb) = match tool_call.status {
-                ToolCallStatus::Running => ("●", Style::default().fg(Color::Cyan), "Calling"),
-                ToolCallStatus::Completed => ("●", Style::default().fg(Color::Green), "Called"),
-                ToolCallStatus::Failed => ("●", Style::default().fg(Color::Red), "Failed"),
-                ToolCallStatus::Pending => ("○", Style::default().fg(Color::Yellow), "Pending"),
-                ToolCallStatus::Blocked => ("●", Style::default().fg(Color::Magenta), "Blocked"),
+            // Status bullet plus concise summary label.
+            let (bullet, bullet_style) = match tool_call.status {
+                ToolCallStatus::Running => ("●", Style::default().fg(Color::Cyan)),
+                ToolCallStatus::Completed => ("●", Style::default().fg(Color::Green)),
+                ToolCallStatus::Failed => ("●", Style::default().fg(Color::Red)),
+                ToolCallStatus::Pending => ("○", Style::default().fg(Color::Yellow)),
+                ToolCallStatus::Blocked => ("●", Style::default().fg(Color::Magenta)),
             };
+            let summary_label = summarize_tool_use(&tool_call.tool, &tool_call.args);
+            let header_label = format_tool_status_summary(tool_call.status, &summary_label);
 
             // Get tool args preview for inline display
             let args_preview = get_tool_args_preview(
@@ -717,23 +736,27 @@ impl Widget for MessageWidget<'_> {
                 &tool_call.args,
                 area.width.saturating_sub(20) as usize,
             );
+            let show_args_preview = should_show_tool_args_preview(&summary_label, &args_preview);
 
             // Get tool-specific icon
             let tool_icon = get_tool_icon(&tool_call.tool);
 
-            // Header line: λ Called bash #12345678  [+]
+            // Header line: λ Read package.json · read #12345678  [+]
             let header_line = Line::from(vec![
                 Span::styled(bullet, bullet_style.add_modifier(Modifier::BOLD)),
                 Span::raw(" "),
                 Span::styled(tool_icon, Style::default().fg(Color::Cyan)),
                 Span::raw(" "),
-                Span::styled(verb, Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw(" "),
                 Span::styled(
-                    tool_call.tool.clone(),
+                    header_label,
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format!("· {}", tool_call.tool),
+                    Style::default().fg(Color::DarkGray),
                 ),
                 Span::raw(" "),
                 Span::styled(
@@ -757,7 +780,7 @@ impl Widget for MessageWidget<'_> {
             y += 1;
 
             // Show args preview inline with tree prefix
-            if y < max_y && !args_preview.is_empty() {
+            if y < max_y && show_args_preview {
                 let preview_line = Line::from(vec![
                     Span::styled("  └ ", Style::default().fg(Color::DarkGray)),
                     Span::styled(args_preview.clone(), Style::default().fg(Color::DarkGray)),
@@ -2196,5 +2219,41 @@ mod tests {
         let rendered = buffer_lines(&buf, width, height).join("\n");
         assert!(!rendered.contains("Tab queue follow-up"));
         assert!(rendered.contains("1 queued (1 follow-up)"));
+    }
+
+    #[test]
+    fn tool_calls_render_concise_summary_labels() {
+        let message = Message {
+            id: "msg-1".to_string(),
+            role: MessageRole::Assistant,
+            content: String::new(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: vec![crate::state::ToolCallState {
+                call_id: "call-12345678".to_string(),
+                tool: "read".to_string(),
+                args: serde_json::json!({
+                    "file_path": "/Users/jonathanhaas/Documents/Projects/maestro/package.json"
+                }),
+                status: ToolCallStatus::Completed,
+                output: String::new(),
+            }],
+            usage: None,
+            timestamp: SystemTime::UNIX_EPOCH,
+            thinking_expanded: false,
+        };
+
+        let width = 100;
+        let height = calculate_message_height(&message, width, &HashSet::new(), true);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+
+        MessageWidget::new(&message)
+            .with_expanded_tools(&HashSet::new())
+            .render(Rect::new(0, 0, width, height), &mut buf);
+
+        let rendered = buffer_lines(&buf, width, height).join("\n");
+        assert!(rendered.contains("Read package.json"));
+        assert!(rendered.contains("· read"));
+        assert!(rendered.contains("/Users/jonathanhaas/Documents/Projects/maestro/package.json"));
     }
 }
