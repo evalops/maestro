@@ -9,7 +9,7 @@ export function formatWebRuntimeStatus(
 	event: RuntimeStatusEvent,
 ): string | null {
 	switch (event.type) {
-		case "status":
+		case "status": {
 			const status = event.status.trim();
 			if (!status) {
 				return null;
@@ -17,6 +17,7 @@ export function formatWebRuntimeStatus(
 			return status === "compacting"
 				? "Compacting conversation..."
 				: `Status: ${status}`;
+		}
 		case "compaction":
 			return event.auto
 				? "Compacted conversation automatically"
