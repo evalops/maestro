@@ -62,6 +62,8 @@ describe("buildMcpServerViewModel", () => {
 			{
 				name: "filesystem",
 				connected: true,
+				scope: "project",
+				transport: "stdio",
 				tools: [{ name: "read_file", description: "Read a file" }],
 				resources: ["repo://root"],
 				prompts: ["summarize"],
@@ -70,9 +72,12 @@ describe("buildMcpServerViewModel", () => {
 		);
 
 		expect(viewModel.summary).toBe(
-			"Connected · 1 tools · 1 resources · 1 prompts",
+			"Connected · Project config · via stdio · 1 tool · 1 resource · 1 prompt",
 		);
 		expect(viewModel.isExpanded).toBe(true);
+		expect(viewModel.sourceLabel).toBe("Project config");
+		expect(viewModel.transportLabel).toBe("stdio");
+		expect(viewModel.errorLabel).toBeNull();
 		expect(viewModel.toolCount).toBe(1);
 		expect(viewModel.tools).toEqual([
 			{ name: "read_file", description: "Read a file" },
@@ -85,17 +90,23 @@ describe("buildMcpServerViewModel", () => {
 			{
 				name: "remote",
 				connected: false,
+				scope: "user",
+				transport: "http",
 				tools: 3,
 				resources: [],
 				prompts: [],
+				error: "Connection refused",
 			},
 			null,
 		);
 
 		expect(viewModel.summary).toBe(
-			"Offline · 3 tools · 0 resources · 0 prompts",
+			"Offline · User config · via HTTP · 3 tools · 0 resources · 0 prompts",
 		);
 		expect(viewModel.isExpanded).toBe(false);
+		expect(viewModel.sourceLabel).toBe("User config");
+		expect(viewModel.transportLabel).toBe("HTTP");
+		expect(viewModel.errorLabel).toBe("Connection refused");
 		expect(viewModel.tools).toEqual([]);
 		expect(viewModel.toolDetailsLabel).toBe(
 			"3 tools reported (details unavailable).",
@@ -112,9 +123,25 @@ describe("buildMcpServerViewModel", () => {
 		);
 
 		expect(viewModel.toolCount).toBe(0);
+		expect(viewModel.sourceLabel).toBeNull();
+		expect(viewModel.transportLabel).toBeNull();
+		expect(viewModel.errorLabel).toBeNull();
 		expect(viewModel.toolDetailsLabel).toBe("No tools reported.");
 		expect(viewModel.resources).toEqual([]);
 		expect(viewModel.prompts).toEqual([]);
+	});
+
+	it("falls back to a generic error message for blank server errors", () => {
+		const viewModel = buildMcpServerViewModel(
+			{
+				name: "blank-error",
+				connected: false,
+				error: "   ",
+			},
+			null,
+		);
+
+		expect(viewModel.errorLabel).toBe("Connection failed.");
 	});
 });
 
