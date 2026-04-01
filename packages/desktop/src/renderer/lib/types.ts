@@ -77,6 +77,14 @@ export interface AgentEvent {
 	partialResult?: unknown;
 	result?: unknown;
 	isError?: boolean;
+	status?: string;
+	details?: Record<string, unknown>;
+	summary?: string;
+	firstKeptEntryIndex?: number;
+	tokensBefore?: number;
+	auto?: boolean;
+	customInstructions?: string;
+	timestamp?: string;
 }
 
 export interface WorkspaceStatus {

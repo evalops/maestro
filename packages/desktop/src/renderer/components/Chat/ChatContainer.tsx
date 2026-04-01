@@ -24,10 +24,8 @@ export function ChatContainer({
 	thinkingLevel = "off",
 }: ChatContainerProps) {
 	const messagesEndRef = useRef<HTMLDivElement>(null);
-	const { messages, isLoading, error, sendMessage, clearError } = useChat(
-		sessionId ?? undefined,
-		{ thinkingLevel },
-	);
+	const { messages, isLoading, error, runtimeStatus, sendMessage, clearError } =
+		useChat(sessionId ?? undefined, { thinkingLevel });
 
 	// Auto-scroll to bottom when new messages arrive
 	// biome-ignore lint/correctness/useExhaustiveDependencies: We intentionally scroll when messages change
@@ -252,6 +250,27 @@ export function ChatContainer({
 					)}
 				</div>
 			</div>
+
+			{runtimeStatus && (
+				<div
+					className="flex-shrink-0 px-4 py-2 animate-slide-up"
+					style={{
+						background:
+							"linear-gradient(180deg, rgba(20, 184, 166, 0.08) 0%, transparent 100%)",
+						borderTop: "1px solid rgba(20, 184, 166, 0.18)",
+					}}
+				>
+					<div className="max-w-3xl mx-auto flex items-center gap-3 text-accent">
+						<div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
+						<span className="text-xs font-medium tracking-wide uppercase">
+							Agent
+						</span>
+						<span className="text-sm text-text-primary normal-case tracking-normal">
+							{runtimeStatus}
+						</span>
+					</div>
+				</div>
+			)}
 
 			{/* Error Banner */}
 			{error && (
