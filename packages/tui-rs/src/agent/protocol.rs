@@ -514,6 +514,29 @@ pub enum FromAgent {
         message: String,
     },
 
+    /// Conversation history was compacted into a summary.
+    Compaction {
+        /// Generated summary of compacted messages.
+        summary: String,
+
+        /// Index of the first transcript entry kept after compaction.
+        first_kept_entry_index: usize,
+
+        /// Estimated token count before compaction.
+        tokens_before: u64,
+
+        /// Whether this was automatically triggered.
+        #[serde(default)]
+        auto: bool,
+
+        /// Optional custom instructions used while summarizing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        custom_instructions: Option<String>,
+
+        /// RFC 3339 timestamp when compaction occurred.
+        timestamp: String,
+    },
+
     /// Session info update
     ///
     /// Provides context about the current session (working directory, git branch).
@@ -662,5 +685,20 @@ mod tests {
         let json = r#"{"type":"tool_call","call_id":"abc","tool":"read","args":{"path":"/foo"},"requires_approval":true}"#;
         let msg: FromAgent = serde_json::from_str(json).unwrap();
         assert!(matches!(msg, FromAgent::ToolCall { tool, .. } if tool == "read"));
+    }
+
+    #[test]
+    fn test_from_agent_compaction() {
+        let json = r###"{"type":"compaction","summary":"## Conversation Summary","first_kept_entry_index":4,"tokens_before":12345,"auto":true,"timestamp":"2026-03-31T12:00:00Z"}"###;
+        let msg: FromAgent = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            msg,
+            FromAgent::Compaction {
+                first_kept_entry_index,
+                tokens_before,
+                auto,
+                ..
+            } if first_kept_entry_index == 4 && tokens_before == 12345 && auto
+        ));
     }
 }

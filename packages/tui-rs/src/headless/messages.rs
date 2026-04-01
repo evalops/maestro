@@ -256,6 +256,17 @@ pub enum FromAgentMessage {
     Error { message: String, fatal: bool },
     /// Status update
     Status { message: String },
+    /// Conversation history was compacted into a summary
+    Compaction {
+        summary: String,
+        first_kept_entry_index: usize,
+        tokens_before: u64,
+        #[serde(default)]
+        auto: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        custom_instructions: Option<String>,
+        timestamp: String,
+    },
     /// Session information
     SessionInfo {
         session_id: Option<String>,
@@ -556,6 +567,21 @@ impl AgentState {
                 self.last_status = Some(message.clone());
                 Some(AgentEvent::Status { message })
             }
+            FromAgentMessage::Compaction {
+                summary,
+                first_kept_entry_index,
+                tokens_before,
+                auto,
+                custom_instructions,
+                timestamp,
+            } => Some(AgentEvent::Compaction {
+                summary,
+                first_kept_entry_index,
+                tokens_before,
+                auto,
+                custom_instructions,
+                timestamp,
+            }),
         }
     }
 
@@ -625,6 +651,14 @@ pub enum AgentEvent {
     Status {
         message: String,
     },
+    Compaction {
+        summary: String,
+        first_kept_entry_index: usize,
+        tokens_before: u64,
+        auto: bool,
+        custom_instructions: Option<String>,
+        timestamp: String,
+    },
 }
 
 #[cfg(test)]
@@ -687,6 +721,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_compaction_message() {
+        let json = r###"{"type":"compaction","summary":"## Conversation Summary","first_kept_entry_index":3,"tokens_before":9000,"auto":true,"timestamp":"2026-03-31T12:00:00Z"}"###;
+        let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            FromAgentMessage::Compaction {
+                first_kept_entry_index,
+                tokens_before,
+                auto,
+                ..
+            } => {
+                assert_eq!(first_kept_entry_index, 3);
+                assert_eq!(tokens_before, 9000);
+                assert!(auto);
+            }
+            _ => panic!("Expected Compaction message"),
+        }
+    }
+
+    #[test]
     fn serialize_prompt_message() {
         let msg = ToAgentMessage::Prompt {
             content: "Hello".to_string(),
@@ -735,5 +788,28 @@ mod tests {
         });
         assert!(!state.is_responding);
         assert!(state.current_response.is_none());
+    }
+
+    #[test]
+    fn state_handles_compaction_event() {
+        let mut state = AgentState::default();
+        let event = state.handle_message(FromAgentMessage::Compaction {
+            summary: "## Conversation Summary".to_string(),
+            first_kept_entry_index: 2,
+            tokens_before: 7000,
+            auto: false,
+            custom_instructions: None,
+            timestamp: "2026-03-31T12:00:00Z".to_string(),
+        });
+
+        assert!(matches!(
+            event,
+            Some(AgentEvent::Compaction {
+                first_kept_entry_index,
+                tokens_before,
+                auto,
+                ..
+            }) if first_kept_entry_index == 2 && tokens_before == 7000 && !auto
+        ));
     }
 }

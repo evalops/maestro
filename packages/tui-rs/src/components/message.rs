@@ -127,7 +127,7 @@ use crate::components::textarea::{TextArea, TextAreaWidget};
 use crate::effects::shimmer_spans;
 use crate::runtime_badges::{build_runtime_badges, RuntimeBadgeParams};
 use crate::session::ThinkingLevel;
-use crate::state::{ApprovalMode, Message, MessageRole, QueueMode, ToolCallStatus};
+use crate::state::{ApprovalMode, Message, MessageKind, MessageRole, QueueMode, ToolCallStatus};
 use crate::tool_output::{clamp_tool_output, format_tool_output_truncation, tool_output_limits};
 use crate::tool_summary::summarize_tool_use;
 use crate::wrapping::{word_wrap_lines, RtOptions};
@@ -330,6 +330,10 @@ fn should_show_tool_args_preview(summary: &str, args_preview: &str) -> bool {
 /// Check if a message should be rendered
 /// Skip empty assistant messages (no content AND no tool calls)
 pub fn should_render_message(message: &Message) -> bool {
+    if message.is_compaction_boundary() {
+        return true;
+    }
+
     // User messages always render
     if message.role == MessageRole::User {
         return true;
@@ -358,6 +362,19 @@ pub fn calculate_message_height(
 
     // Empty line before message (separator)
     height += 1;
+
+    if message.is_compaction_boundary() {
+        height += 1;
+        if !message.content.is_empty() {
+            let md_lines = parse_markdown_lines(&message.content);
+            let wrap_opts = RtOptions::new(content_width)
+                .initial_indent(Line::from("  "))
+                .subsequent_indent(Line::from("  "));
+            let wrapped_lines = word_wrap_lines(&md_lines, wrap_opts);
+            height += wrapped_lines.len() as u16;
+        }
+        return height;
+    }
 
     // Header line with role and timestamp
     height += 1;
@@ -513,6 +530,65 @@ impl Widget for MessageWidget<'_> {
             y += 1;
         }
 
+        if self.message.is_compaction_boundary() {
+            let timestamp = format_timestamp(self.message.timestamp);
+            let boundary = Line::from(vec![
+                Span::styled(
+                    "  ✻ ",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled(
+                    "Conversation compacted",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                ),
+                Span::styled(
+                    format!("  {timestamp}"),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ]);
+            Paragraph::new(boundary).render(
+                Rect {
+                    y,
+                    height: 1,
+                    ..area
+                },
+                buf,
+            );
+            y += 1;
+
+            if y < max_y && !self.message.content.is_empty() {
+                let md_lines = parse_markdown_lines(&self.message.content);
+                let wrap_opts = RtOptions::new(area.width.saturating_sub(4).max(1) as usize)
+                    .initial_indent(Line::from("  "))
+                    .subsequent_indent(Line::from("  "));
+                let wrapped_lines = word_wrap_lines(&md_lines, wrap_opts);
+                let available = max_y.saturating_sub(y) as usize;
+                Paragraph::new(
+                    wrapped_lines
+                        .into_iter()
+                        .take(available)
+                        .collect::<Vec<_>>(),
+                )
+                .wrap(Wrap { trim: false })
+                .render(
+                    Rect {
+                        x: area.x,
+                        y,
+                        width: area.width,
+                        height: max_y.saturating_sub(y),
+                    },
+                    buf,
+                );
+            }
+            return;
+        }
+
         // Role header with prefix and timestamp (Codex style)
         if y < max_y {
             let mut header_spans: Vec<Span<'static>> = Vec::new();
@@ -534,18 +610,18 @@ impl Widget for MessageWidget<'_> {
                     ));
                 }
                 MessageRole::Assistant => {
-                    // Assistant messages: "• Composer" prefix
+                    let (prefix, label, color) = if self.message.kind == MessageKind::System {
+                        ("• ", "System", Color::Yellow)
+                    } else {
+                        ("• ", "Composer", Color::Magenta)
+                    };
                     header_spans.push(Span::styled(
-                        "• ",
-                        Style::default()
-                            .fg(Color::Magenta)
-                            .add_modifier(Modifier::DIM),
+                        prefix,
+                        Style::default().fg(color).add_modifier(Modifier::DIM),
                     ));
                     header_spans.push(Span::styled(
-                        "Composer",
-                        Style::default()
-                            .fg(Color::Magenta)
-                            .add_modifier(Modifier::BOLD),
+                        label,
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
                     ));
                 }
             }
@@ -2226,6 +2302,7 @@ mod tests {
         let message = Message {
             id: "msg-1".to_string(),
             role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
             content: String::new(),
             thinking: String::new(),
             streaming: false,

@@ -94,7 +94,7 @@ use crate::session::{
     ThinkingLevel, ThinkingLevelChange, TokenCost, TokenUsage as SessionTokenUsage, ToolInfo,
 };
 use crate::skills::{skills_to_prompt, LoadedSkill, SkillLoadError, SkillLoader, SkillRegistry};
-use crate::state::{AppState, ApprovalMode, Message, MessageRole, QueueMode};
+use crate::state::{AppState, ApprovalMode, Message, MessageKind, MessageRole, QueueMode};
 use crate::terminal::{self, TerminalCapabilities};
 use crate::tools::{ToolExecutor, ToolRegistry};
 use chrono::{Datelike, Utc};
@@ -1315,6 +1315,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         summary: String,
         first_kept_entry_index: usize,
         tokens_before: u64,
+        auto: bool,
         custom_instructions: Option<String>,
     ) {
         if self.ensure_session_started().is_err() {
@@ -1326,7 +1327,7 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             summary,
             first_kept_entry_index,
             tokens_before,
-            auto: false,
+            auto,
             custom_instructions,
         });
         self.write_session_entry(entry);
@@ -1561,6 +1562,28 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             }
             FromAgent::SessionInfo { cwd, .. } => {
                 self.state.status = Some(format!("Session in: {cwd}"));
+            }
+            FromAgent::Compaction {
+                summary,
+                first_kept_entry_index,
+                tokens_before,
+                auto,
+                custom_instructions,
+                timestamp,
+            } => {
+                self.state.apply_compaction(
+                    summary.clone(),
+                    *first_kept_entry_index,
+                    parse_rfc3339_system_time(timestamp).unwrap_or_else(|_| SystemTime::now()),
+                );
+                self.record_compaction_entry(
+                    summary.clone(),
+                    *first_kept_entry_index,
+                    *tokens_before,
+                    *auto,
+                    custom_instructions.clone(),
+                );
+                return Ok(());
             }
             FromAgent::ResponseEnd { .. } => {
                 // Clear busy state when response completes
@@ -2133,28 +2156,7 @@ Add the required fields and retry.",
                     // Load and restore the session
                     match self.session_manager.load_session(&session_id) {
                         Ok(session) => {
-                            // Clear current messages
-                            self.state.messages.clear();
-
-                            // Restore messages from session
-                            for app_msg in &session.messages {
-                                let role = match app_msg {
-                                    AppMessage::User { .. } => MessageRole::User,
-                                    AppMessage::Assistant { .. } => MessageRole::Assistant,
-                                    AppMessage::ToolResult { .. } => continue, // Skip tool results
-                                };
-                                self.state.messages.push(Message {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    role,
-                                    content: app_msg.text_content(),
-                                    thinking: String::new(),
-                                    streaming: false,
-                                    tool_calls: Vec::new(),
-                                    usage: None,
-                                    timestamp: std::time::SystemTime::now(),
-                                    thinking_expanded: false,
-                                });
-                            }
+                            restore_visible_session_messages(&mut self.state, &session);
 
                             self.state.session_id = Some(session_id.clone());
                             self.state.status = Some(format!("Resumed session: {session_id}"));
@@ -2638,7 +2640,7 @@ Add the required fields and retry.",
                     .messages
                     .iter()
                     .rev()
-                    .find(|m| m.role == MessageRole::Assistant && !m.content.is_empty())
+                    .find(|m| m.is_assistant_reply() && !m.content.is_empty())
                 {
                     match self.clipboard.copy(&msg.content) {
                         Ok(()) => {
@@ -2686,7 +2688,14 @@ Add the required fields and retry.",
             }
             CommandAction::CompactConversation(instructions) => {
                 // Compact conversation by summarizing older messages
-                let msg_count = self.state.messages.len();
+                let transcript_messages: Vec<_> = self
+                    .state
+                    .messages
+                    .iter()
+                    .filter(|message| message.counts_toward_compaction_index())
+                    .cloned()
+                    .collect();
+                let msg_count = transcript_messages.len();
                 if msg_count <= 4 {
                     self.state.status = Some("Conversation too short to compact".to_string());
                     return;
@@ -2701,7 +2710,7 @@ Add the required fields and retry.",
                 let mut summary = String::new();
                 summary.push_str("## Conversation Summary\n\n");
 
-                for (i, msg) in self.state.messages.iter().take(to_summarize).enumerate() {
+                for (i, msg) in transcript_messages.iter().take(to_summarize).enumerate() {
                     let role = match msg.role {
                         MessageRole::User => "User",
                         MessageRole::Assistant => "Assistant",
@@ -2719,17 +2728,15 @@ Add the required fields and retry.",
                     summary.push_str(&format!("\n*Focus: {instr}*\n"));
                 }
 
-                // Remove old messages and add summary
-                let kept: Vec<_> = self.state.messages.drain(to_summarize..).collect();
-                self.state.messages.clear();
                 let summary_clone = summary.clone();
-                self.state.add_system_message(summary);
-                self.state.messages.extend(kept);
+                self.state
+                    .apply_compaction(summary, to_summarize, SystemTime::now());
 
                 self.record_compaction_entry(
                     summary_clone,
                     to_summarize,
                     tokens_before,
+                    false,
                     instructions.clone(),
                 );
 
@@ -4151,7 +4158,7 @@ Slash Commands:
                 .state
                 .messages
                 .iter()
-                .any(|message| message.role == MessageRole::Assistant);
+                .any(|message| message.is_assistant_reply());
             if has_assistant {
                 // We don't have usage entries for this session; fail closed.
                 None
@@ -4402,6 +4409,48 @@ fn system_time_to_millis(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn parse_rfc3339_system_time(timestamp: &str) -> Result<SystemTime> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(timestamp)?;
+    let millis = parsed.timestamp_millis();
+    if millis < 0 {
+        anyhow::bail!("negative timestamp");
+    }
+    Ok(UNIX_EPOCH + Duration::from_millis(millis as u64))
+}
+
+fn restore_visible_session_messages(state: &mut AppState, session: &ParsedSession) {
+    state.messages.clear();
+
+    for app_msg in &session.messages {
+        let role = match app_msg {
+            AppMessage::User { .. } => MessageRole::User,
+            AppMessage::Assistant { .. } => MessageRole::Assistant,
+            AppMessage::ToolResult { .. } => continue,
+        };
+
+        state.messages.push(Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            role,
+            kind: MessageKind::Regular,
+            content: app_msg.text_content(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
+        });
+    }
+
+    for compaction in &session.compactions {
+        state.apply_compaction(
+            compaction.summary.clone(),
+            compaction.first_kept_entry_index,
+            parse_rfc3339_system_time(&compaction.timestamp).unwrap_or_else(|_| SystemTime::now()),
+        );
+    }
 }
 
 fn to_session_usage(usage: &crate::agent::TokenUsage) -> SessionTokenUsage {
@@ -4910,6 +4959,216 @@ mod tests {
         // Edge case: exactly 4 messages shouldn't compact
         let msg_count_small = 4;
         assert!(msg_count_small <= 4);
+    }
+
+    #[test]
+    fn test_restore_visible_session_messages_applies_compactions() {
+        let mut state = AppState::new();
+        let session = ParsedSession {
+            header: SessionHeader {
+                id: "session-1".to_string(),
+                timestamp: "2026-03-31T12:00:00Z".to_string(),
+                cwd: "/tmp".to_string(),
+                model: "anthropic/claude-sonnet-4-5".to_string(),
+                model_metadata: None,
+                thinking_level: ThinkingLevel::Medium,
+                system_prompt: None,
+                tools: Vec::new(),
+                branched_from: None,
+            },
+            messages: vec![
+                AppMessage::User {
+                    content: MessageContent::Text("User one".to_string()),
+                    attachments: None,
+                    timestamp: 1,
+                },
+                AppMessage::Assistant {
+                    content: vec![SessionContentBlock::Text {
+                        text: "Assistant one".to_string(),
+                    }],
+                    api: None,
+                    provider: None,
+                    model: None,
+                    usage: None,
+                    stop_reason: None,
+                    timestamp: 2,
+                },
+                AppMessage::User {
+                    content: MessageContent::Text("User two".to_string()),
+                    attachments: None,
+                    timestamp: 3,
+                },
+                AppMessage::Assistant {
+                    content: vec![SessionContentBlock::Text {
+                        text: "Assistant two".to_string(),
+                    }],
+                    api: None,
+                    provider: None,
+                    model: None,
+                    usage: None,
+                    stop_reason: None,
+                    timestamp: 4,
+                },
+                AppMessage::User {
+                    content: MessageContent::Text("User three".to_string()),
+                    attachments: None,
+                    timestamp: 5,
+                },
+                AppMessage::Assistant {
+                    content: vec![SessionContentBlock::Text {
+                        text: "Assistant three".to_string(),
+                    }],
+                    api: None,
+                    provider: None,
+                    model: None,
+                    usage: None,
+                    stop_reason: None,
+                    timestamp: 6,
+                },
+            ],
+            meta: None,
+            stats: Default::default(),
+            thinking_level_changes: Vec::new(),
+            model_changes: Vec::new(),
+            compactions: vec![CompactionEntry {
+                timestamp: "2026-03-31T12:05:00Z".to_string(),
+                summary: "## Conversation Summary".to_string(),
+                first_kept_entry_index: 4,
+                tokens_before: 1000,
+                auto: true,
+                custom_instructions: None,
+            }],
+            usage_entries: Vec::new(),
+            file_path: "/tmp/session-1.jsonl".to_string(),
+        };
+
+        restore_visible_session_messages(&mut state, &session);
+
+        assert_eq!(state.messages.len(), 3);
+        assert!(state.messages[0].is_compaction_boundary());
+        assert_eq!(state.messages[0].content, "## Conversation Summary");
+        assert_eq!(
+            state.messages[0].timestamp,
+            parse_rfc3339_system_time("2026-03-31T12:05:00Z").unwrap()
+        );
+        assert_eq!(state.messages[1].content, "User three");
+        assert_eq!(state.messages[2].content, "Assistant three");
+    }
+
+    #[test]
+    fn test_restore_visible_session_messages_applies_multiple_compactions_in_order() {
+        let mut state = AppState::new();
+        let session = ParsedSession {
+            header: SessionHeader {
+                id: "session-2".to_string(),
+                timestamp: "2026-03-31T12:00:00Z".to_string(),
+                cwd: "/tmp".to_string(),
+                model: "anthropic/claude-sonnet-4-5".to_string(),
+                model_metadata: None,
+                thinking_level: ThinkingLevel::Medium,
+                system_prompt: None,
+                tools: Vec::new(),
+                branched_from: None,
+            },
+            messages: vec![
+                AppMessage::User {
+                    content: MessageContent::Text("User one".to_string()),
+                    attachments: None,
+                    timestamp: 1,
+                },
+                AppMessage::Assistant {
+                    content: vec![SessionContentBlock::Text {
+                        text: "Assistant one".to_string(),
+                    }],
+                    api: None,
+                    provider: None,
+                    model: None,
+                    usage: None,
+                    stop_reason: None,
+                    timestamp: 2,
+                },
+                AppMessage::User {
+                    content: MessageContent::Text("User two".to_string()),
+                    attachments: None,
+                    timestamp: 3,
+                },
+                AppMessage::Assistant {
+                    content: vec![SessionContentBlock::Text {
+                        text: "Assistant two".to_string(),
+                    }],
+                    api: None,
+                    provider: None,
+                    model: None,
+                    usage: None,
+                    stop_reason: None,
+                    timestamp: 4,
+                },
+                AppMessage::User {
+                    content: MessageContent::Text("User three".to_string()),
+                    attachments: None,
+                    timestamp: 5,
+                },
+                AppMessage::Assistant {
+                    content: vec![SessionContentBlock::Text {
+                        text: "Assistant three".to_string(),
+                    }],
+                    api: None,
+                    provider: None,
+                    model: None,
+                    usage: None,
+                    stop_reason: None,
+                    timestamp: 6,
+                },
+                AppMessage::User {
+                    content: MessageContent::Text("User four".to_string()),
+                    attachments: None,
+                    timestamp: 7,
+                },
+                AppMessage::Assistant {
+                    content: vec![SessionContentBlock::Text {
+                        text: "Assistant four".to_string(),
+                    }],
+                    api: None,
+                    provider: None,
+                    model: None,
+                    usage: None,
+                    stop_reason: None,
+                    timestamp: 8,
+                },
+            ],
+            meta: None,
+            stats: Default::default(),
+            thinking_level_changes: Vec::new(),
+            model_changes: Vec::new(),
+            compactions: vec![
+                CompactionEntry {
+                    timestamp: "2026-03-31T12:05:00Z".to_string(),
+                    summary: "## First Summary".to_string(),
+                    first_kept_entry_index: 4,
+                    tokens_before: 1000,
+                    auto: true,
+                    custom_instructions: None,
+                },
+                CompactionEntry {
+                    timestamp: "2026-03-31T12:10:00Z".to_string(),
+                    summary: "## Second Summary".to_string(),
+                    first_kept_entry_index: 2,
+                    tokens_before: 1200,
+                    auto: true,
+                    custom_instructions: None,
+                },
+            ],
+            usage_entries: Vec::new(),
+            file_path: "/tmp/session-2.jsonl".to_string(),
+        };
+
+        restore_visible_session_messages(&mut state, &session);
+
+        assert_eq!(state.messages.len(), 3);
+        assert!(state.messages[0].is_compaction_boundary());
+        assert_eq!(state.messages[0].content, "## Second Summary");
+        assert_eq!(state.messages[1].content, "User four");
+        assert_eq!(state.messages[2].content, "Assistant four");
     }
 
     #[test]

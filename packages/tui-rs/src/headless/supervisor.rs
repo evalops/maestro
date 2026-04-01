@@ -425,6 +425,21 @@ fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMess
         AgentEvent::Status { message } => Some(FromAgentMessage::Status {
             message: message.clone(),
         }),
+        AgentEvent::Compaction {
+            summary,
+            first_kept_entry_index,
+            tokens_before,
+            auto,
+            custom_instructions,
+            timestamp,
+        } => Some(FromAgentMessage::Compaction {
+            summary: summary.clone(),
+            first_kept_entry_index: *first_kept_entry_index,
+            tokens_before: *tokens_before,
+            auto: *auto,
+            custom_instructions: custom_instructions.clone(),
+            timestamp: timestamp.clone(),
+        }),
     }
 }
 
