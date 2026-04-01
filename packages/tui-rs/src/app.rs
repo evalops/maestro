@@ -37,7 +37,7 @@
 // IMPORTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // `Arc` (Atomic Reference Counted) is a thread-safe reference-counted pointer.
@@ -302,6 +302,71 @@ fn format_mcp_runtime_event_status(event: &McpRuntimeEvent) -> Option<String> {
     }
 }
 
+fn format_mcp_connection_status(name: &str, tools: usize) -> String {
+    let label = if tools == 1 { "tool" } else { "tools" };
+    format!("MCP server \"{name}\" connected ({tools} {label})")
+}
+
+fn format_mcp_disconnection_status(name: &str) -> String {
+    format!("MCP server \"{name}\" disconnected")
+}
+
+fn format_mcp_connection_error_status(name: &str, error: Option<&str>) -> String {
+    let error_label =
+        format_mcp_error_label(error).unwrap_or_else(|| "Connection failed.".to_string());
+    format!("MCP server \"{name}\" error: {error_label}")
+}
+
+fn format_mcp_server_transition_status(
+    previous: Option<&crate::tools::McpServerStatus>,
+    current: Option<&crate::tools::McpServerStatus>,
+) -> Option<String> {
+    match (previous, current) {
+        (_, Some(server)) if server.connected => {
+            if previous.is_none_or(|status| !status.connected) {
+                Some(format_mcp_connection_status(
+                    &server.name,
+                    server.tools.len(),
+                ))
+            } else {
+                None
+            }
+        }
+        (Some(previous), Some(server)) => {
+            let previous_error = format_mcp_error_label(previous.error.as_deref());
+            let current_error = format_mcp_error_label(server.error.as_deref());
+
+            if current_error != previous_error {
+                current_error.as_deref().map(|_| {
+                    format_mcp_connection_error_status(&server.name, server.error.as_deref())
+                })
+            } else if previous.connected && !server.connected {
+                Some(format_mcp_disconnection_status(&server.name))
+            } else {
+                None
+            }
+        }
+        (None, Some(server)) => server
+            .error
+            .as_deref()
+            .map(|_| format_mcp_connection_error_status(&server.name, server.error.as_deref())),
+        (Some(previous), None) if previous.connected => {
+            Some(format_mcp_disconnection_status(&previous.name))
+        }
+        _ => None,
+    }
+}
+
+fn snapshot_mcp_server_statuses(
+    servers: &[crate::tools::McpServerStatus],
+) -> HashMap<String, crate::tools::McpServerStatus> {
+    servers
+        .iter()
+        .cloned()
+        .map(|server| (server.name.clone(), server))
+        .collect()
+}
+
 fn render_mcp_status_lines(servers: &[crate::tools::McpServerStatus]) -> Vec<String> {
     let mut lines = vec!["Model Context Protocol".to_string(), String::new()];
 
@@ -491,6 +556,9 @@ pub struct App {
     /// Last time we refreshed MCP status for runtime badges.
     last_mcp_status_refresh: Option<Instant>,
 
+    /// Last observed MCP server status snapshots for transition messages.
+    last_mcp_server_statuses: HashMap<String, crate::tools::McpServerStatus>,
+
     /// Watches MCP config files so status badges refresh immediately after edits.
     config_watcher: ConfigWatcher,
 
@@ -641,6 +709,7 @@ impl App {
             current_model: String::new(),
             current_thinking_level: ThinkingLevel::Off,
             last_mcp_status_refresh: None,
+            last_mcp_server_statuses: HashMap::new(),
             config_watcher: build_mcp_config_watcher(),
             pending_model_change: None,
             current_git_branch: None,
@@ -1323,7 +1392,39 @@ Always use tools when they would be helpful. Be concise and direct in your respo
         self.last_mcp_status_refresh = Some(now);
 
         if let Ok(servers) = self.tool_executor.mcp_status().await {
+            let mut status_message = None;
+            let current_statuses = snapshot_mcp_server_statuses(&servers);
+
+            for server in &servers {
+                if let Some(message) = format_mcp_server_transition_status(
+                    self.last_mcp_server_statuses.get(&server.name),
+                    Some(server),
+                ) {
+                    status_message = Some(message);
+                }
+            }
+
+            let mut removed_servers = self
+                .last_mcp_server_statuses
+                .keys()
+                .filter(|name| !current_statuses.contains_key(*name))
+                .cloned()
+                .collect::<Vec<_>>();
+            removed_servers.sort();
+            for name in removed_servers {
+                if let Some(message) = format_mcp_server_transition_status(
+                    self.last_mcp_server_statuses.get(&name),
+                    None,
+                ) {
+                    status_message = Some(message);
+                }
+            }
+
             self.update_mcp_badge_counts(&servers);
+            self.last_mcp_server_statuses = current_statuses;
+            if let Some(message) = status_message {
+                self.state.status = Some(message);
+            }
         }
     }
 
@@ -5524,6 +5625,77 @@ mod tests {
         assert_eq!(app.state.mcp_connected, 1);
         assert_eq!(app.state.mcp_tool_count, 2);
         assert_eq!(app.state.mcp_failed, 1);
+    }
+
+    #[test]
+    fn test_format_mcp_server_transition_status_for_connection() {
+        let status = format_mcp_server_transition_status(
+            None,
+            Some(&crate::tools::McpServerStatus {
+                name: "docs".to_string(),
+                connected: true,
+                scope: McpConfigScope::Project,
+                transport: McpTransport::Stdio,
+                error: None,
+                tools: vec!["read".to_string(), "write".to_string()],
+                resources: Vec::new(),
+                prompts: Vec::new(),
+            }),
+        );
+
+        assert_eq!(
+            status.as_deref(),
+            Some("MCP server \"docs\" connected (2 tools)")
+        );
+    }
+
+    #[test]
+    fn test_format_mcp_server_transition_status_for_disconnection() {
+        let previous = crate::tools::McpServerStatus {
+            name: "docs".to_string(),
+            connected: true,
+            scope: McpConfigScope::Project,
+            transport: McpTransport::Stdio,
+            error: None,
+            tools: vec!["read".to_string()],
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        };
+
+        let status = format_mcp_server_transition_status(Some(&previous), None);
+
+        assert_eq!(status.as_deref(), Some("MCP server \"docs\" disconnected"));
+    }
+
+    #[test]
+    fn test_format_mcp_server_transition_status_for_error_change() {
+        let previous = crate::tools::McpServerStatus {
+            name: "docs".to_string(),
+            connected: false,
+            scope: McpConfigScope::Project,
+            transport: McpTransport::Stdio,
+            error: Some("timed out".to_string()),
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        };
+        let current = crate::tools::McpServerStatus {
+            name: "docs".to_string(),
+            connected: false,
+            scope: McpConfigScope::Project,
+            transport: McpTransport::Stdio,
+            error: Some(String::new()),
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        };
+
+        let status = format_mcp_server_transition_status(Some(&previous), Some(&current));
+
+        assert_eq!(
+            status.as_deref(),
+            Some("MCP server \"docs\" error: Connection failed.")
+        );
     }
 
     #[tokio::test]
