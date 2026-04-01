@@ -31,8 +31,12 @@ export class SessionContext {
 		this.promptHistory.add(text);
 	}
 
-	recordToolStart(toolCallId: string, toolName: string): void {
-		this.toolHistory.recordStart(toolCallId, toolName);
+	recordToolStart(
+		toolCallId: string,
+		toolName: string,
+		args: Record<string, unknown> = {},
+	): void {
+		this.toolHistory.recordStart(toolCallId, toolName, args);
 	}
 
 	recordToolEnd(

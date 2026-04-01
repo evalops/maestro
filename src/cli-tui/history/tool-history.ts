@@ -9,6 +9,7 @@ import {
 import { dirname } from "node:path";
 import type { ToolResultMessage } from "../../agent/types.js";
 import { PATHS } from "../../config/constants.js";
+import { summarizeToolUse } from "../../utils/tool-use-summary.js";
 import {
 	type HistoryPersistence,
 	resolveHistorySettings,
@@ -16,6 +17,7 @@ import {
 
 export interface ToolHistoryEntry {
 	tool: string;
+	summary?: string;
 	timestamp: number;
 	durationMs?: number;
 	isError?: boolean;
@@ -33,6 +35,7 @@ export interface ToolHistoryConfig {
 interface InFlightToolCall {
 	tool: string;
 	startedAt: number;
+	summary: string;
 }
 
 const DEFAULT_MAX_ENTRIES = 1000;
@@ -57,9 +60,17 @@ export class ToolHistoryStore {
 		this.loadFromDisk();
 	}
 
-	recordStart(toolCallId: string, toolName: string): void {
+	recordStart(
+		toolCallId: string,
+		toolName: string,
+		args: Record<string, unknown> = {},
+	): void {
 		if (!toolCallId || !toolName) return;
-		this.inflight.set(toolCallId, { tool: toolName, startedAt: Date.now() });
+		this.inflight.set(toolCallId, {
+			tool: toolName,
+			startedAt: Date.now(),
+			summary: summarizeToolUse(toolName, args),
+		});
 	}
 
 	recordEnd(
@@ -75,6 +86,7 @@ export class ToolHistoryStore {
 		const durationMs = started ? Date.now() - started.startedAt : undefined;
 		const entry: ToolHistoryEntry = {
 			tool: toolName,
+			summary: started?.summary ?? summarizeToolUse(toolName),
 			timestamp: Date.now(),
 			durationMs,
 			isError,

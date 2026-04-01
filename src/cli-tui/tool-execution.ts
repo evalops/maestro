@@ -1,5 +1,6 @@
 import { Container, Spacer, Text } from "@evalops/tui";
 import { type ThemeColor, theme } from "../theme/theme.js";
+import { summarizeToolUse } from "../utils/tool-use-summary.js";
 import {
 	type ToolRenderer,
 	createToolRenderer,
@@ -161,7 +162,10 @@ export class ToolExecutionComponent extends Container {
 
 	private buildTopLine(): string {
 		const icon = this.getToolIcon();
-		const label = `${icon} ${this.toolName.toLowerCase()}`;
+		const label = `${icon} ${summarizeToolUse(
+			this.toolName,
+			this.partialArgs,
+		)}`;
 		const status = this.getStatus();
 		const {
 			label: statusLabel,

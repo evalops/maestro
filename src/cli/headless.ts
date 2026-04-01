@@ -47,6 +47,7 @@ import type { SessionManager } from "../session/manager.js";
 import { isSupportedImageFormat } from "../tools/image-processor.js";
 import { getCurrentBranch, isInsideGitRepository } from "../utils/git.js";
 import { normalizePath } from "../utils/path-validation.js";
+import { summarizeToolUse } from "../utils/tool-use-summary.js";
 
 // =============================================================================
 // Messages from TUI to Agent
@@ -138,6 +139,7 @@ interface ResponseEndMessage {
 		tools_used: string[];
 		calls_succeeded: number;
 		calls_failed: number;
+		summary_labels?: string[];
 	};
 	duration_ms: number;
 	ttft_ms?: number;
@@ -228,6 +230,7 @@ interface HeadlessResponseTelemetry {
 	startedAtMs: number;
 	firstChunkAtMs?: number;
 	toolsUsed: Set<string>;
+	toolSummaryLabels: string[];
 	callsSucceeded: number;
 	callsFailed: number;
 }
@@ -285,6 +288,7 @@ function ensureCurrentResponseTelemetry(
 		responseId,
 		startedAtMs: Date.now(),
 		toolsUsed: new Set<string>(),
+		toolSummaryLabels: [],
 		callsSucceeded: 0,
 		callsFailed: 0,
 	};
@@ -298,9 +302,19 @@ function noteResponseChunk(): void {
 	}
 }
 
-function noteToolExecution(toolName: string, success?: boolean): void {
+function noteToolExecution(
+	toolName: string,
+	args?: Record<string, unknown>,
+	success?: boolean,
+): void {
 	const telemetry = ensureCurrentResponseTelemetry();
 	telemetry.toolsUsed.add(toolName);
+	if (args) {
+		const summary = summarizeToolUse(toolName, args);
+		if (!telemetry.toolSummaryLabels.includes(summary)) {
+			telemetry.toolSummaryLabels.push(summary);
+		}
+	}
 	if (success === true) {
 		telemetry.callsSucceeded++;
 	}
@@ -353,6 +367,21 @@ export function buildHeadlessUsage(
 	};
 }
 
+export function buildHeadlessToolsSummary(params: {
+	toolsUsed: Iterable<string>;
+	callsSucceeded: number;
+	callsFailed: number;
+	summaryLabels?: Iterable<string>;
+}): ResponseEndMessage["tools_summary"] {
+	const summaryLabels = Array.from(params.summaryLabels ?? []).filter(Boolean);
+	return {
+		tools_used: Array.from(params.toolsUsed).sort(),
+		calls_succeeded: params.callsSucceeded,
+		calls_failed: params.callsFailed,
+		summary_labels: summaryLabels.length > 0 ? summaryLabels : undefined,
+	};
+}
+
 function buildResponseEndMessage(
 	message: AssistantMessage | undefined,
 	model: string,
@@ -365,11 +394,12 @@ function buildResponseEndMessage(
 		type: "response_end",
 		response_id: telemetry.responseId,
 		usage: buildHeadlessUsage(message, model, provider),
-		tools_summary: {
-			tools_used: Array.from(telemetry.toolsUsed).sort(),
-			calls_succeeded: telemetry.callsSucceeded,
-			calls_failed: telemetry.callsFailed,
-		},
+		tools_summary: buildHeadlessToolsSummary({
+			toolsUsed: telemetry.toolsUsed,
+			callsSucceeded: telemetry.callsSucceeded,
+			callsFailed: telemetry.callsFailed,
+			summaryLabels: telemetry.toolSummaryLabels,
+		}),
 		duration_ms: Math.max(0, now - telemetry.startedAtMs),
 		ttft_ms: telemetry.firstChunkAtMs
 			? Math.max(0, telemetry.firstChunkAtMs - telemetry.startedAtMs)
@@ -551,6 +581,7 @@ function handleAgentEvent(event: AgentEvent): void {
 				responseId: currentMessageId,
 				startedAtMs: Date.now(),
 				toolsUsed: new Set<string>(),
+				toolSummaryLabels: [],
 				callsSucceeded: 0,
 				callsFailed: 0,
 			};
@@ -586,7 +617,7 @@ function handleAgentEvent(event: AgentEvent): void {
 		}
 
 		case "tool_execution_start":
-			noteToolExecution(event.toolName);
+			noteToolExecution(event.toolName, event.args);
 			send({
 				type: "tool_call",
 				call_id: event.toolCallId,
@@ -601,7 +632,7 @@ function handleAgentEvent(event: AgentEvent): void {
 			break;
 
 		case "tool_execution_end":
-			noteToolExecution(event.toolName, !event.isError);
+			noteToolExecution(event.toolName, undefined, !event.isError);
 			send({
 				type: "tool_end",
 				call_id: event.toolCallId,
