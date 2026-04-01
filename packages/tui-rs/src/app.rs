@@ -5056,6 +5056,122 @@ mod tests {
     }
 
     #[test]
+    fn test_restore_visible_session_messages_applies_multiple_compactions_in_order() {
+        let mut state = AppState::new();
+        let session = ParsedSession {
+            header: SessionHeader {
+                id: "session-2".to_string(),
+                timestamp: "2026-03-31T12:00:00Z".to_string(),
+                cwd: "/tmp".to_string(),
+                model: "anthropic/claude-sonnet-4-5".to_string(),
+                model_metadata: None,
+                thinking_level: ThinkingLevel::Medium,
+                system_prompt: None,
+                tools: Vec::new(),
+                branched_from: None,
+            },
+            messages: vec![
+                AppMessage::User {
+                    content: MessageContent::Text("User one".to_string()),
+                    attachments: None,
+                    timestamp: 1,
+                },
+                AppMessage::Assistant {
+                    content: vec![SessionContentBlock::Text {
+                        text: "Assistant one".to_string(),
+                    }],
+                    api: None,
+                    provider: None,
+                    model: None,
+                    usage: None,
+                    stop_reason: None,
+                    timestamp: 2,
+                },
+                AppMessage::User {
+                    content: MessageContent::Text("User two".to_string()),
+                    attachments: None,
+                    timestamp: 3,
+                },
+                AppMessage::Assistant {
+                    content: vec![SessionContentBlock::Text {
+                        text: "Assistant two".to_string(),
+                    }],
+                    api: None,
+                    provider: None,
+                    model: None,
+                    usage: None,
+                    stop_reason: None,
+                    timestamp: 4,
+                },
+                AppMessage::User {
+                    content: MessageContent::Text("User three".to_string()),
+                    attachments: None,
+                    timestamp: 5,
+                },
+                AppMessage::Assistant {
+                    content: vec![SessionContentBlock::Text {
+                        text: "Assistant three".to_string(),
+                    }],
+                    api: None,
+                    provider: None,
+                    model: None,
+                    usage: None,
+                    stop_reason: None,
+                    timestamp: 6,
+                },
+                AppMessage::User {
+                    content: MessageContent::Text("User four".to_string()),
+                    attachments: None,
+                    timestamp: 7,
+                },
+                AppMessage::Assistant {
+                    content: vec![SessionContentBlock::Text {
+                        text: "Assistant four".to_string(),
+                    }],
+                    api: None,
+                    provider: None,
+                    model: None,
+                    usage: None,
+                    stop_reason: None,
+                    timestamp: 8,
+                },
+            ],
+            meta: None,
+            stats: Default::default(),
+            thinking_level_changes: Vec::new(),
+            model_changes: Vec::new(),
+            compactions: vec![
+                CompactionEntry {
+                    timestamp: "2026-03-31T12:05:00Z".to_string(),
+                    summary: "## First Summary".to_string(),
+                    first_kept_entry_index: 4,
+                    tokens_before: 1000,
+                    auto: true,
+                    custom_instructions: None,
+                },
+                CompactionEntry {
+                    timestamp: "2026-03-31T12:10:00Z".to_string(),
+                    summary: "## Second Summary".to_string(),
+                    first_kept_entry_index: 2,
+                    tokens_before: 1200,
+                    auto: true,
+                    custom_instructions: None,
+                },
+            ],
+            usage_entries: Vec::new(),
+            file_path: "/tmp/session-2.jsonl".to_string(),
+        };
+
+        restore_visible_session_messages(&mut state, &session);
+
+        assert_eq!(state.messages.len(), 3);
+        assert!(state.messages[0].is_compaction_boundary());
+        assert_eq!(state.messages[0].content, "## Second Summary");
+        assert_eq!(state.messages[1].content, "User four");
+        assert_eq!(state.messages[2].content, "Assistant four");
+    }
+
+    #[test]
     fn test_scroll_boundary_handling() {
         let mut state = AppState::new();
 
