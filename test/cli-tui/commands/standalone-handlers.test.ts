@@ -337,9 +337,21 @@ vi.mock("../../../src/mcp/index.js", () => ({
 				{
 					name: "test-server",
 					connected: true,
+					scope: "project",
+					transport: "stdio",
 					tools: [{ name: "test_tool" }],
 					resources: ["resource://test"],
 					prompts: ["my-prompt"],
+				},
+				{
+					name: "broken-server",
+					connected: false,
+					scope: "user",
+					transport: "http",
+					tools: [],
+					resources: [],
+					prompts: [],
+					error: "Connection refused",
 				},
 			],
 		})),
@@ -354,6 +366,7 @@ import {
 	handleMcpPromptsCommand,
 	handleMcpResourcesCommand,
 } from "../../../src/cli-tui/commands/mcp-handlers.js";
+import { mcpManager } from "../../../src/mcp/index.js";
 
 function createMcpCtx(rawInput: string): McpRenderContext {
 	return {
@@ -378,6 +391,45 @@ describe("mcp-handlers", () => {
 			);
 			expect(ctx.addContent).toHaveBeenCalledWith(
 				expect.stringContaining("test-server"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Source: Project config"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Transport: stdio"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("broken-server"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Transport: HTTP"),
+			);
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Error: Connection refused"),
+			);
+		});
+
+		it("falls back to a generic message for blank server errors", () => {
+			vi.mocked(mcpManager.getStatus).mockReturnValueOnce({
+				servers: [
+					{
+						name: "blank-error",
+						connected: false,
+						scope: "user",
+						transport: "http",
+						tools: [],
+						resources: [],
+						prompts: [],
+						error: "   ",
+					},
+				],
+			});
+
+			const ctx = createMcpCtx("/mcp");
+			handleMcpCommand(ctx);
+
+			expect(ctx.addContent).toHaveBeenCalledWith(
+				expect.stringContaining("Error: Connection failed."),
 			);
 		});
 
