@@ -10,12 +10,13 @@ export function formatWebRuntimeStatus(
 ): string | null {
 	switch (event.type) {
 		case "status":
-			if (!event.status.trim()) {
+			const status = event.status.trim();
+			if (!status) {
 				return null;
 			}
-			return event.status === "compacting"
+			return status === "compacting"
 				? "Compacting conversation..."
-				: `Status: ${event.status}`;
+				: `Status: ${status}`;
 		case "compaction":
 			return event.auto
 				? "Compacted conversation automatically"

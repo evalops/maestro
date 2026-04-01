@@ -12,6 +12,16 @@ describe("web runtime status", () => {
 		).toBe("Compacting conversation...");
 	});
 
+	it("trims status events before formatting", () => {
+		expect(
+			formatWebRuntimeStatus({
+				type: "status",
+				status: " compacting ",
+				details: {},
+			}),
+		).toBe("Compacting conversation...");
+	});
+
 	it("formats generic status events", () => {
 		expect(
 			formatWebRuntimeStatus({
