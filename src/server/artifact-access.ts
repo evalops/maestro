@@ -1,8 +1,11 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import { getRequestHeader } from "./server-utils.js";
 
 export const ARTIFACT_ACCESS_QUERY_PARAM = "composerArtifactToken";
 export const ARTIFACT_ACCESS_HEADER = "x-composer-artifact-access";
+export const MAESTRO_ARTIFACT_ACCESS_QUERY_PARAM = "maestroArtifactToken";
+export const MAESTRO_ARTIFACT_ACCESS_HEADER = "x-maestro-artifact-access";
 
 const DEFAULT_ARTIFACT_ACCESS_TTL_MS = 5 * 60 * 1000;
 const CONFIGURED_ARTIFACT_ACCESS_TTL_MS = Number.parseInt(
@@ -267,9 +270,11 @@ export function getArtifactAccessGrantFromRequest(
 export function getArtifactAccessTokenFromRequest(
 	req: IncomingMessage,
 ): string | null {
-	const header = req.headers?.[ARTIFACT_ACCESS_HEADER];
-	const headerValue = Array.isArray(header) ? header[0] : header;
-	return headerValue?.trim() || null;
+	return getRequestHeader(
+		req,
+		ARTIFACT_ACCESS_HEADER,
+		MAESTRO_ARTIFACT_ACCESS_HEADER,
+	);
 }
 
 export function redactArtifactAccessTokenInUrl(
@@ -278,12 +283,18 @@ export function redactArtifactAccessTokenInUrl(
 	if (!rawUrl) return "/";
 	try {
 		const url = new URL(rawUrl, "http://localhost");
-		if (!url.searchParams.has(ARTIFACT_ACCESS_QUERY_PARAM)) {
+		if (
+			!url.searchParams.has(ARTIFACT_ACCESS_QUERY_PARAM) &&
+			!url.searchParams.has(MAESTRO_ARTIFACT_ACCESS_QUERY_PARAM)
+		) {
 			return rawUrl;
 		}
 		const params = Array.from(url.searchParams.entries()).map(
 			([key, value]) => {
-				if (key === ARTIFACT_ACCESS_QUERY_PARAM) {
+				if (
+					key === ARTIFACT_ACCESS_QUERY_PARAM ||
+					key === MAESTRO_ARTIFACT_ACCESS_QUERY_PARAM
+				) {
 					return `${key}=[REDACTED]`;
 				}
 				return `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
@@ -292,7 +303,10 @@ export function redactArtifactAccessTokenInUrl(
 		return `${url.pathname}${params.length > 0 ? `?${params.join("&")}` : ""}`;
 	} catch {
 		return rawUrl.replace(
-			new RegExp(`(${ARTIFACT_ACCESS_QUERY_PARAM}=)[^&\\s]+`, "g"),
+			new RegExp(
+				`((?:${ARTIFACT_ACCESS_QUERY_PARAM}|${MAESTRO_ARTIFACT_ACCESS_QUERY_PARAM})=)[^&\\s]+`,
+				"g",
+			),
 			"$1[REDACTED]",
 		);
 	}

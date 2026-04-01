@@ -1,6 +1,6 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { ApiClient } from "../services/api-client.js";
+import { type ApiClient, ApiClientError } from "../services/api-client.js";
 
 type NoticeType = "info" | "error" | "success";
 
@@ -122,6 +122,7 @@ export class ComposerShareDialog extends LitElement {
 	@state() private expiresHours = 24;
 	@state() private maxAccesses: number | null = 100;
 	@state() private result: ShareResult | null = null;
+	@state() private allowSensitiveContent = false;
 
 	private close() {
 		this.dispatchEvent(
@@ -147,6 +148,7 @@ export class ComposerShareDialog extends LitElement {
 			const response = await this.apiClient.shareSession(this.sessionId, {
 				expiresInHours: Math.min(168, Math.max(1, this.expiresHours)),
 				maxAccesses: this.maxAccesses,
+				allowSensitiveContent: this.allowSensitiveContent,
 			});
 			const origin =
 				typeof window !== "undefined"
@@ -161,8 +163,18 @@ export class ComposerShareDialog extends LitElement {
 				maxAccesses: response.maxAccesses,
 			};
 		} catch (error) {
-			this.errorText =
-				error instanceof Error ? error.message : "Failed to create share link";
+			if (
+				error instanceof ApiClientError &&
+				error.payload?.code === "sensitive_content_detected"
+			) {
+				this.allowSensitiveContent = true;
+				this.errorText = `${error.message} Run share again to confirm.`;
+			} else {
+				this.errorText =
+					error instanceof Error
+						? error.message
+						: "Failed to create share link";
+			}
 		} finally {
 			this.loading = false;
 		}
@@ -234,6 +246,11 @@ export class ComposerShareDialog extends LitElement {
 					`
 						: html`<div class="modal-help">
 							Generates a read-only link for viewing this session in the web UI.
+							${
+								this.allowSensitiveContent
+									? " Sensitive content was detected, so the next share click confirms that you still want to publish it."
+									: ""
+							}
 						</div>`
 				}
 
@@ -262,7 +279,13 @@ export class ComposerShareDialog extends LitElement {
 								@click=${this.createLink}
 								?disabled=${this.loading}
 							>
-								${this.loading ? "Creating..." : "Create link"}
+								${
+									this.loading
+										? "Creating..."
+										: this.allowSensitiveContent
+											? "Share Anyway"
+											: "Create link"
+								}
 							</button>
 						`
 					}

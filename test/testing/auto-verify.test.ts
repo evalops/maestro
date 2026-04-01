@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +19,7 @@ import {
 	getAutoVerifyConfig,
 	isTestFile,
 	parseTestOutput,
+	planNxTestRun,
 	shouldTriggerTests,
 } from "../../src/testing/auto-verify.js";
 
@@ -196,6 +203,73 @@ describe("Auto-Verify Service", () => {
 		});
 	});
 
+	describe("planNxTestRun", () => {
+		it("returns null outside Nx workspaces", () => {
+			expect(planNxTestRun([join(testDir, "src/foo.ts")], testDir)).toBeNull();
+		});
+
+		it("maps changed files to a single Nx project test target", () => {
+			mkdirSync(join(testDir, "packages/web/src"), { recursive: true });
+			writeFileSync(join(testDir, "nx.json"), "{}");
+			writeFileSync(
+				join(testDir, "packages/web/project.json"),
+				JSON.stringify({
+					name: "maestro-web",
+					root: "packages/web",
+					sourceRoot: "packages/web/src",
+					targets: { test: {} },
+				}),
+			);
+
+			const plan = planNxTestRun(
+				[join(testDir, "packages/web/src/chat.ts")],
+				testDir,
+			);
+
+			expect(plan).toEqual({
+				command: "npx nx run maestro-web:test --skip-nx-cache",
+				projectNames: ["maestro-web"],
+			});
+		});
+
+		it("groups multiple Nx projects into a run-many command", () => {
+			mkdirSync(join(testDir, "packages/web/src"), { recursive: true });
+			mkdirSync(join(testDir, "packages/tui/src"), { recursive: true });
+			writeFileSync(join(testDir, "nx.json"), "{}");
+			writeFileSync(
+				join(testDir, "packages/web/project.json"),
+				JSON.stringify({
+					name: "maestro-web",
+					root: "packages/web",
+					sourceRoot: "packages/web/src",
+					targets: { test: {} },
+				}),
+			);
+			writeFileSync(
+				join(testDir, "packages/tui/project.json"),
+				JSON.stringify({
+					name: "tui",
+					root: "packages/tui",
+					sourceRoot: "packages/tui/src",
+					targets: { test: {} },
+				}),
+			);
+
+			const plan = planNxTestRun(
+				[
+					join(testDir, "packages/web/src/chat.ts"),
+					join(testDir, "packages/tui/src/app.ts"),
+				],
+				testDir,
+			);
+
+			expect(plan).toEqual({
+				command: "npx nx run-many -t test -p maestro-web,tui --skip-nx-cache",
+				projectNames: ["maestro-web", "tui"],
+			});
+		});
+	});
+
 	describe("findTestFilesForSource", () => {
 		it("finds .test.ts files in same directory", () => {
 			const sourceFile = join(testDir, "src/utils/helper.ts");
@@ -203,7 +277,7 @@ describe("Auto-Verify Service", () => {
 
 			// Create files
 			const srcDir = join(testDir, "src/utils");
-			require("node:fs").mkdirSync(srcDir, { recursive: true });
+			mkdirSync(srcDir, { recursive: true });
 			writeFileSync(sourceFile, "export const foo = 1;");
 			writeFileSync(testFile, "test('foo', () => {});");
 
@@ -218,7 +292,7 @@ describe("Auto-Verify Service", () => {
 
 			// Create files
 			const srcDir = join(testDir, "src");
-			require("node:fs").mkdirSync(srcDir, { recursive: true });
+			mkdirSync(srcDir, { recursive: true });
 			writeFileSync(sourceFile, "export const bar = 2;");
 			writeFileSync(testFile, "test('bar', () => {});");
 
@@ -232,10 +306,10 @@ describe("Auto-Verify Service", () => {
 			const testFile = join(testDir, "test/lib/parser.test.ts");
 
 			// Create files
-			require("node:fs").mkdirSync(join(testDir, "src/lib"), {
+			mkdirSync(join(testDir, "src/lib"), {
 				recursive: true,
 			});
-			require("node:fs").mkdirSync(join(testDir, "test/lib"), {
+			mkdirSync(join(testDir, "test/lib"), {
 				recursive: true,
 			});
 			writeFileSync(sourceFile, "export const parse = () => {};");
@@ -249,7 +323,7 @@ describe("Auto-Verify Service", () => {
 		it("returns empty array when no test files found", () => {
 			const sourceFile = join(testDir, "src/no-tests.ts");
 
-			require("node:fs").mkdirSync(join(testDir, "src"), { recursive: true });
+			mkdirSync(join(testDir, "src"), { recursive: true });
 			writeFileSync(sourceFile, "export const x = 1;");
 
 			const testFiles = findTestFilesForSource(sourceFile, testDir);
@@ -529,7 +603,7 @@ describe("Auto-Verify Service", () => {
 			});
 			const ignoredFile = join(testDir, "src/generated/foo.ts");
 
-			require("node:fs").mkdirSync(join(testDir, "src/generated"), {
+			mkdirSync(join(testDir, "src/generated"), {
 				recursive: true,
 			});
 			writeFileSync(ignoredFile, "export const generated = true;");
@@ -545,8 +619,8 @@ describe("Auto-Verify Service", () => {
 			const sourceFile = join(testDir, "src/foo.ts");
 			const testFile = join(testDir, "test/foo.test.ts");
 
-			require("node:fs").mkdirSync(join(testDir, "src"), { recursive: true });
-			require("node:fs").mkdirSync(join(testDir, "test"), { recursive: true });
+			mkdirSync(join(testDir, "src"), { recursive: true });
+			mkdirSync(join(testDir, "test"), { recursive: true });
 			writeFileSync(sourceFile, "export const foo = 1;");
 			writeFileSync(testFile, "test('foo', () => {});");
 
@@ -587,8 +661,8 @@ describe("Auto-Verify Service", () => {
 			const sourceFile = join(testDir, "src/foo.ts");
 			const testFile = join(testDir, "test/foo.test.ts");
 
-			require("node:fs").mkdirSync(join(testDir, "src"), { recursive: true });
-			require("node:fs").mkdirSync(join(testDir, "test"), { recursive: true });
+			mkdirSync(join(testDir, "src"), { recursive: true });
+			mkdirSync(join(testDir, "test"), { recursive: true });
 			writeFileSync(sourceFile, "export const foo = 1;");
 			writeFileSync(testFile, "test('foo', () => {});");
 
@@ -630,8 +704,8 @@ describe("Auto-Verify Service", () => {
 			const sourceFile = join(testDir, "src/foo.ts");
 			const testFile = join(testDir, "test/foo.test.ts");
 
-			require("node:fs").mkdirSync(join(testDir, "src"), { recursive: true });
-			require("node:fs").mkdirSync(join(testDir, "test"), { recursive: true });
+			mkdirSync(join(testDir, "src"), { recursive: true });
+			mkdirSync(join(testDir, "test"), { recursive: true });
 			writeFileSync(sourceFile, "export const foo = 1;");
 			writeFileSync(testFile, "test('foo', () => {});");
 

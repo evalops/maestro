@@ -454,7 +454,7 @@ export class SessionManager {
 				cwd: process.cwd(),
 				model: sessionModelKey,
 				updatedAt: entry.timestamp,
-				source: "composer",
+				source: "maestro",
 			},
 			event: {
 				type: "maestro.session.started",
@@ -507,7 +507,7 @@ export class SessionManager {
 				updatedAt: entry.timestamp,
 				lastMessageId: entry.id,
 				lastMessageRole: message.role,
-				source: "composer",
+				source: "maestro",
 			},
 			event: {
 				type: "maestro.message.saved",
@@ -788,7 +788,7 @@ export class SessionManager {
 					sessionId: this.sessionId,
 					updatedAt: new Date().toISOString(),
 					summary: trimmed,
-					source: "composer",
+					source: "maestro",
 				},
 				event: {
 					type: "maestro.session.summary",

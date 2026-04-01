@@ -1,6 +1,6 @@
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import type { ApiClient } from "../services/api-client.js";
+import { type ApiClient, ApiClientError } from "../services/api-client.js";
 
 type NoticeType = "info" | "error" | "success";
 type ExportFormat = "json" | "markdown" | "text";
@@ -115,6 +115,7 @@ export class ComposerExportDialog extends LitElement {
 	@state() private loading = false;
 	@state() private errorText: string | null = null;
 	@state() private format: ExportFormat = "json";
+	@state() private allowSensitiveContent = false;
 
 	private close() {
 		this.dispatchEvent(
@@ -149,6 +150,7 @@ export class ComposerExportDialog extends LitElement {
 		try {
 			const response = await this.apiClient.exportSession(this.sessionId, {
 				format: this.format,
+				allowSensitiveContent: this.allowSensitiveContent,
 			});
 			if (!response.ok) {
 				throw new Error(
@@ -166,7 +168,16 @@ export class ComposerExportDialog extends LitElement {
 			this.notify("Export downloaded", "success", 1500);
 			this.close();
 		} catch (error) {
-			this.errorText = error instanceof Error ? error.message : "Export failed";
+			if (
+				error instanceof ApiClientError &&
+				error.payload?.code === "sensitive_content_detected"
+			) {
+				this.allowSensitiveContent = true;
+				this.errorText = `${error.message} Run export again to confirm.`;
+			} else {
+				this.errorText =
+					error instanceof Error ? error.message : "Export failed";
+			}
 		} finally {
 			this.loading = false;
 		}
@@ -195,6 +206,11 @@ export class ComposerExportDialog extends LitElement {
 
 				<div class="modal-help">
 					Downloads the full session including attachment content.
+					${
+						this.allowSensitiveContent
+							? " Sensitive content was detected, so the next export click confirms that you still want to download it."
+							: ""
+					}
 				</div>
 
 				${
@@ -210,7 +226,13 @@ export class ComposerExportDialog extends LitElement {
 						@click=${this.exportSession}
 						?disabled=${this.loading}
 					>
-						${this.loading ? "Exporting..." : "Download"}
+						${
+							this.loading
+								? "Exporting..."
+								: this.allowSensitiveContent
+									? "Download Anyway"
+									: "Download"
+						}
 					</button>
 				</div>
 			</div>

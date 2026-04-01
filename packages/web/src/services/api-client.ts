@@ -179,6 +179,7 @@ const VALIDATE_AGENT_EVENTS = Boolean(import.meta.env?.DEV);
 const VALIDATE_CHAT_REQUESTS = Boolean(import.meta.env?.DEV);
 const VALIDATE_API_RESPONSES = Boolean(import.meta.env?.DEV);
 const ARTIFACT_ACCESS_HEADER = "X-Composer-Artifact-Access";
+const MAESTRO_ARTIFACT_ACCESS_HEADER = "X-Maestro-Artifact-Access";
 
 export interface ApiClientAuthConfig {
 	accessToken?: string | null;
@@ -717,15 +718,18 @@ export class ApiClient {
 		}
 		if (auth.apiKey && !requestHeaders.has("X-Composer-Api-Key")) {
 			requestHeaders.set("X-Composer-Api-Key", auth.apiKey);
+			requestHeaders.set("X-Maestro-Api-Key", auth.apiKey);
 		}
 		if (
 			auth.csrfToken &&
 			!requestHeaders.has("X-Composer-Csrf") &&
+			!requestHeaders.has("X-Maestro-Csrf") &&
 			!requestHeaders.has("X-Csrf-Token") &&
 			!requestHeaders.has("X-Xsrf-Token") &&
 			!["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase())
 		) {
 			requestHeaders.set("X-Composer-Csrf", auth.csrfToken);
+			requestHeaders.set("X-Maestro-Csrf", auth.csrfToken);
 		}
 
 		return requestHeaders;
@@ -746,6 +750,7 @@ export class ApiClient {
 		const requestHeaders = this.buildRequestHeaders(headers, "GET");
 		if (artifactAccessToken) {
 			requestHeaders.set(ARTIFACT_ACCESS_HEADER, artifactAccessToken);
+			requestHeaders.set(MAESTRO_ARTIFACT_ACCESS_HEADER, artifactAccessToken);
 		}
 		return requestHeaders;
 	}
@@ -928,6 +933,7 @@ export class ApiClient {
 	async *chat(request: ChatRequest): AsyncGenerator<string, void, unknown> {
 		const response = await this.openChatStream(request, {
 			"x-composer-slim-events": "1",
+			"x-maestro-slim-events": "1",
 		});
 
 		const reader = response.body!.getReader();
@@ -1054,7 +1060,9 @@ export class ApiClient {
 	): AsyncGenerator<AgentEvent, void, unknown> {
 		const response = await this.openChatStream(request, {
 			"x-composer-client-tools": "1",
+			"x-maestro-client-tools": "1",
 			"x-composer-slim-events": "1",
+			"x-maestro-slim-events": "1",
 		});
 
 		const reader = response.body!.getReader();
@@ -1459,7 +1467,11 @@ export class ApiClient {
 	 */
 	async shareSession(
 		sessionId: string,
-		options?: { expiresInHours?: number; maxAccesses?: number | null },
+		options?: {
+			expiresInHours?: number;
+			maxAccesses?: number | null;
+			allowSensitiveContent?: boolean;
+		},
 	): Promise<{
 		shareToken: string;
 		shareUrl: string;
@@ -1483,12 +1495,16 @@ export class ApiClient {
 
 	async exportSession(
 		sessionId: string,
-		options?: { format?: "json" | "markdown" | "text" },
+		options?: {
+			format?: "json" | "markdown" | "text";
+			allowSensitiveContent?: boolean;
+		},
 	): Promise<Response> {
 		return await this.tryFallbackFetch(
 			`/api/sessions/${encodeURIComponent(sessionId)}/export`,
 			this.buildJsonRequestInit("POST", {
 				format: options?.format || "json",
+				allowSensitiveContent: options?.allowSensitiveContent ?? false,
 			}),
 		);
 	}

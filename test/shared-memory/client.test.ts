@@ -21,6 +21,13 @@ const createCapabilitiesResponse = (
 		status: 200,
 	});
 
+function makeTestAnthropicToken(): string {
+	return [
+		"sk-ant-api03-",
+		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-abcdefghijklmAA",
+	].join("");
+}
+
 describe("shared-memory client", () => {
 	let homeDir: string;
 
@@ -488,5 +495,70 @@ describe("shared-memory client", () => {
 		expect(content?.length).toBeLessThanOrEqual(4000);
 		expect(content?.endsWith("...")).toBe(true);
 		expect(payload?.keep).toBe("ok");
+	});
+
+	it("drops shared-memory state when sensitive content is detected", async () => {
+		const fetchMock = vi.fn(async (input: RequestInfo) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url.endsWith("/capabilities")) {
+				return createCapabilitiesResponse();
+			}
+			return new Response("", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { queueSharedMemoryUpdate } = await import(
+			"../../src/shared-memory/client.js"
+		);
+		const token = makeTestAnthropicToken();
+		queueSharedMemoryUpdate({
+			sessionId: "session-a",
+			state: {
+				token,
+			},
+		});
+
+		await vi.advanceTimersByTimeAsync(1000);
+
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("drops sensitive events while still syncing safe state", async () => {
+		let syncBody: unknown = null;
+		const fetchMock = vi.fn(async (input: RequestInfo, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url.endsWith("/capabilities")) {
+				return createCapabilitiesResponse();
+			}
+			if (url.includes("/sync")) {
+				syncBody = init?.body ?? null;
+			}
+			return new Response("", { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { queueSharedMemoryUpdate } = await import(
+			"../../src/shared-memory/client.js"
+		);
+		const token = makeTestAnthropicToken();
+		queueSharedMemoryUpdate({
+			sessionId: "session-a",
+			state: { foo: "bar" },
+		});
+		queueSharedMemoryUpdate({
+			sessionId: "session-a",
+			event: {
+				type: "demo.event",
+				payload: {
+					authorization: `Bearer ${token}`,
+				},
+			},
+		});
+
+		await vi.advanceTimersByTimeAsync(1000);
+
+		const parsed = syncBody ? JSON.parse(String(syncBody)) : null;
+		expect(parsed?.state?.maestro?.foo).toBe("bar");
+		expect(parsed?.events).toBeUndefined();
 	});
 });

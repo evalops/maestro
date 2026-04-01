@@ -27,6 +27,7 @@ import {
 import { publishArtifactUpdate } from "../artifacts-live-reload.js";
 import { getAuthSubject } from "../authz.js";
 import { getAgentCircuitBreaker } from "../circuit-breaker.js";
+import { getRequestHeader } from "../server-utils.js";
 import { createSessionManagerForRequest } from "../session-scope.js";
 import { convertComposerMessagesToApp } from "../session-serialization.js";
 import type { SseContext, SseSkipListener } from "../sse-session.js";
@@ -398,9 +399,12 @@ export function handleChatWebSocket(
 			const registeredModel = await getRegisteredModel(chatReq.model);
 
 			const headerApproval = (() => {
-				const header = req.headers["x-composer-approval-mode"];
 				const headerMode = normalizeApprovalMode(
-					Array.isArray(header) ? header[0] : header,
+					getRequestHeader(
+						req,
+						"x-composer-approval-mode",
+						"x-maestro-approval-mode",
+					) ?? undefined,
 				);
 				if (headerMode) {
 					return headerMode;
@@ -420,16 +424,22 @@ export function handleChatWebSocket(
 				if (typeof clientToolsFromQuery === "boolean") {
 					return clientToolsFromQuery;
 				}
-				const header = req.headers["x-composer-client-tools"];
-				const raw = Array.isArray(header) ? header[0] : header;
-				return raw?.trim() === "1";
+				return (
+					getRequestHeader(
+						req,
+						"x-composer-client-tools",
+						"x-maestro-client-tools",
+					) === "1"
+				);
 			})();
 
 			const clientHeader = (() => {
 				if (clientHeaderFromQuery) return clientHeaderFromQuery.toLowerCase();
-				const header = req.headers["x-composer-client"];
-				const raw = Array.isArray(header) ? header[0] : header;
-				return raw?.trim().toLowerCase();
+				return getRequestHeader(
+					req,
+					"x-composer-client",
+					"x-maestro-client",
+				)?.toLowerCase();
 			})();
 
 			const agent = await createAgent(
@@ -463,8 +473,11 @@ export function handleChatWebSocket(
 			const { enterpriseContext } = await import("../../enterprise/context.js");
 
 			const toolArgsByCallId = new Map<string, Record<string, unknown>>();
-			const slimHeader = req.headers["x-composer-slim-events"];
-			const slimValue = Array.isArray(slimHeader) ? slimHeader[0] : slimHeader;
+			const slimValue = getRequestHeader(
+				req,
+				"x-composer-slim-events",
+				"x-maestro-slim-events",
+			);
 			const slimEvents =
 				typeof slimFromQuery === "boolean" ? slimFromQuery : slimValue === "1";
 			const slimToolCallArgsLimit = (() => {

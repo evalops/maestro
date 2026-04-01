@@ -122,6 +122,30 @@ describe("artifact access grants", () => {
 		});
 	});
 
+	it("accepts artifact access grants from maestro headers", () => {
+		const access = issueArtifactAccessGrant({
+			sessionId: "session-1",
+			scope: "scope-1",
+			filename: "preview.html",
+			actions: ["view"],
+			now: 1_000,
+			expiresInMs: 30_000,
+		});
+
+		expect(
+			getArtifactAccessGrantFromRequest(
+				makeReq("/api/sessions/session-1/artifacts/preview.html/view", {
+					"x-maestro-artifact-access": access.token,
+				}),
+				2_000,
+			),
+		).toMatchObject({
+			sessionId: "session-1",
+			scope: "scope-1",
+			filename: "preview.html",
+		});
+	});
+
 	it("redacts artifact access tokens from logged urls", () => {
 		expect(
 			redactArtifactAccessTokenInUrl(
@@ -129,6 +153,16 @@ describe("artifact access grants", () => {
 			),
 		).toBe(
 			"/api/sessions/session-1/artifacts.zip?download=1&composerArtifactToken=[REDACTED]",
+		);
+	});
+
+	it("redacts maestro artifact access tokens from logged urls", () => {
+		expect(
+			redactArtifactAccessTokenInUrl(
+				"/api/sessions/session-1/artifacts.zip?download=1&maestroArtifactToken=token-123",
+			),
+		).toBe(
+			"/api/sessions/session-1/artifacts.zip?download=1&maestroArtifactToken=[REDACTED]",
 		);
 	});
 });

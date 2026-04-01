@@ -71,6 +71,13 @@ export function createCorsHeaders(origin: string): Record<string, string> {
 		"X-Composer-Client-Tools",
 		"X-Composer-Csrf",
 		"X-Composer-Slim-Events",
+		"X-Maestro-Artifact-Access",
+		"X-Maestro-Api-Key",
+		"X-Maestro-Approval-Mode",
+		"X-Maestro-Client",
+		"X-Maestro-Client-Tools",
+		"X-Maestro-Csrf",
+		"X-Maestro-Slim-Events",
 		"X-Csrf-Token",
 		"X-Xsrf-Token",
 	];
@@ -224,19 +231,31 @@ export function secureCompare(value: string, secret: string): boolean {
 	return timingSafeEqual(hashProvided, hashSecret);
 }
 
+export function getRequestHeader(
+	req: IncomingMessage,
+	...names: string[]
+): string | null {
+	const headers = req.headers ?? {};
+	for (const name of names) {
+		const value = headers[name.toLowerCase()];
+		if (Array.isArray(value)) {
+			const first = value[0]?.trim();
+			if (first) return first;
+			continue;
+		}
+		if (typeof value === "string" && value.trim()) {
+			return value.trim();
+		}
+	}
+	return null;
+}
+
 export function getRequestToken(req: IncomingMessage): string | null {
 	const authHeader = req.headers.authorization;
 	if (authHeader?.startsWith("Bearer ")) {
 		return authHeader.slice(7).trim() || null;
 	}
-	const apiKeyHeader = req.headers["x-composer-api-key"];
-	if (Array.isArray(apiKeyHeader)) {
-		return apiKeyHeader[0]?.trim() || null;
-	}
-	if (typeof apiKeyHeader === "string") {
-		return apiKeyHeader.trim() || null;
-	}
-	return null;
+	return getRequestHeader(req, "x-composer-api-key", "x-maestro-api-key");
 }
 
 export function authenticateRequest(

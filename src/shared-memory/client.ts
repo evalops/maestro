@@ -4,6 +4,10 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { PATHS } from "../config/constants.js";
+import {
+	scanOutboundSensitiveContent,
+	summarizeOutboundSensitiveFindings,
+} from "../safety/outbound-secret-preflight.js";
 import { createLogger } from "../utils/logger.js";
 import { DEFAULT_CAPABILITIES, SHARED_MEMORY_CONFIG } from "./contract.js";
 
@@ -1041,36 +1045,58 @@ export function queueSharedMemoryUpdate(update: SharedMemoryUpdate): void {
 	const pending = getPendingSession(sessionKey);
 
 	if (update.state) {
-		const mergedState = {
-			...(pending.state ?? {}),
-			...update.state,
-			instanceId,
-			source: "maestro",
-		};
-		const fitted = fitJsonToBytes(
-			mergedState,
-			TARGET_MAX_BODY_BYTES,
-			STATE_TRIM_KEYS,
-		);
-		if (fitted.trimmed) {
-			queueStats.trimmedStates += 1;
-		}
-		if (
-			fitted.value &&
-			typeof fitted.value === "object" &&
-			!Array.isArray(fitted.value)
-		) {
-			pending.state = fitted.value as Record<string, JsonValue>;
+		const scan = scanOutboundSensitiveContent(update.state);
+		if (scan.blockingFindings.length > 0) {
+			queueStats.droppedStates += 1;
+			logger.warn("Blocked shared memory state containing sensitive content", {
+				sessionId: sessionKey,
+				findings: summarizeOutboundSensitiveFindings(scan.blockingFindings),
+			});
 		} else {
-			pending.state = {
+			const mergedState = {
 				...(pending.state ?? {}),
+				...update.state,
 				instanceId,
 				source: "maestro",
 			};
+			const fitted = fitJsonToBytes(
+				mergedState,
+				TARGET_MAX_BODY_BYTES,
+				STATE_TRIM_KEYS,
+			);
+			if (fitted.trimmed) {
+				queueStats.trimmedStates += 1;
+			}
+			if (
+				fitted.value &&
+				typeof fitted.value === "object" &&
+				!Array.isArray(fitted.value)
+			) {
+				pending.state = fitted.value as Record<string, JsonValue>;
+			} else {
+				pending.state = {
+					...(pending.state ?? {}),
+					instanceId,
+					source: "maestro",
+				};
+			}
+			pending.updatedAt = Date.now();
 		}
-		pending.updatedAt = Date.now();
 	}
 	if (update.event) {
+		const scan = scanOutboundSensitiveContent(update.event.payload ?? null);
+		if (scan.blockingFindings.length > 0) {
+			queueStats.droppedEvents += 1;
+			pending.updatedAt = Date.now();
+			scheduleFlush(pending);
+			schedulePersist();
+			logger.warn("Blocked shared memory event containing sensitive content", {
+				sessionId: sessionKey,
+				type: update.event.type,
+				findings: summarizeOutboundSensitiveFindings(scan.blockingFindings),
+			});
+			return;
+		}
 		const normalizedType = normalizeEventType(update.event.type);
 		if (!normalizedType) {
 			queueStats.droppedEvents += 1;

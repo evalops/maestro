@@ -464,6 +464,96 @@ describe("handleChat", () => {
 		expect(update.assistantMessageEvent.toolCallArgsTruncated).toBe(true);
 	});
 
+	it("accepts maestro slim-events headers", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = { "x-maestro-slim-events": "true" };
+		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
+
+		const res = makeRes();
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async () => {
+				type EventCallback = (e: unknown) => void;
+				let subscriber: EventCallback | undefined;
+				return {
+					state: {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					},
+					subscribe: (fn: EventCallback) => {
+						subscriber = fn;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt: async () => {
+						subscriber?.({
+							type: "message_update",
+							message: { role: "assistant", content: [] },
+							assistantMessageEvent: {
+								type: "toolcall_delta",
+								contentIndex: 0,
+								delta: '{"path":"/tmp/two.txt"}',
+								partial: {
+									role: "assistant",
+									content: [
+										{
+											type: "toolCall",
+											id: "call_2",
+											name: "read_file",
+											arguments: { path: "/tmp/two.txt" },
+										},
+									],
+								},
+							},
+						});
+						subscriber?.({
+							type: "message_end",
+							message: { role: "assistant" },
+						});
+					},
+					abort: () => {},
+				} as unknown as Agent;
+			},
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		const events = res.body
+			.split("\n\n")
+			.map((line) => line.trim())
+			.filter((line) => line.startsWith("data: "))
+			.map((line) => line.replace(/^data:\s*/, ""))
+			.filter((payload) => payload !== "[DONE]")
+			.map((payload) => JSON.parse(payload));
+		const update = events.find((event) => event.type === "message_update");
+
+		expect(update).toBeTruthy();
+		expect(update.assistantMessageEvent.toolCallId).toBe("call_2");
+		expect(update.assistantMessageEvent.toolCallArgs).toEqual({
+			path: "/tmp/two.txt",
+		});
+	});
+
 	it("uses the stored session approval mode when no header override is set", async () => {
 		setApprovalModeForSession("session-approval", "fail");
 
@@ -535,6 +625,65 @@ describe("handleChat", () => {
 		req.method = "POST";
 		req.url = "/api/chat";
 		req.headers = { "x-composer-approval-mode": "auto" };
+		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
+
+		const res = makeRes();
+		let capturedApproval: string | null = null;
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async (_model, _thinking, approval) => {
+				capturedApproval = approval;
+				type EventCallback = (e: unknown) => void;
+				let subscriber: EventCallback | undefined;
+				return {
+					state: {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					},
+					subscribe: (fn: EventCallback) => {
+						subscriber = fn;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt: async () => {
+						subscriber?.({
+							type: "message_end",
+							message: { role: "assistant" },
+						});
+					},
+					abort: () => {},
+				} as unknown as Agent;
+			},
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "auto",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		expect(capturedApproval).toBe("auto");
+	});
+
+	it("honors a maestro approval header override", async () => {
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = { "x-maestro-approval-mode": "auto" };
 		req.end(JSON.stringify({ messages: [{ role: "user", content: "hi" }] }));
 
 		const res = makeRes();

@@ -49,6 +49,23 @@ export interface DeliveryResult {
 	error?: string;
 }
 
+export function buildWebhookDeliveryHeaders(
+	signature?: string,
+): Record<string, string> {
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+		"User-Agent": "Maestro-Webhooks/1.0",
+		"X-Webhook-Id": crypto.randomUUID(),
+	};
+
+	if (signature) {
+		headers["X-Composer-Signature"] = signature;
+		headers["X-Maestro-Signature"] = signature;
+	}
+
+	return headers;
+}
+
 // ============================================================================
 // HMAC SIGNING
 // ============================================================================
@@ -134,16 +151,7 @@ async function deliverHttp(
 	timeoutMs = 30_000,
 ): Promise<DeliveryResult> {
 	const startTime = Date.now();
-
-	const headers: Record<string, string> = {
-		"Content-Type": "application/json",
-		"User-Agent": "Maestro-Webhooks/1.0",
-		"X-Webhook-Id": crypto.randomUUID(),
-	};
-
-	if (signature) {
-		headers["X-Composer-Signature"] = signature;
-	}
+	const headers = buildWebhookDeliveryHeaders(signature);
 
 	try {
 		const controller = new AbortController();

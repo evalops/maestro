@@ -274,6 +274,25 @@ export class ComposerMessage extends LitElement {
 			letter-spacing: 0.05em;
 		}
 
+		.tool-summaries {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 0.4rem;
+			margin: 0.55rem 0 0.85rem;
+		}
+
+		.tool-summary-chip {
+			display: inline-flex;
+			align-items: center;
+			padding: 0.18rem 0.5rem;
+			border: 1px solid var(--border-primary, #1e2023);
+			background: var(--bg-elevated, #161719);
+			color: var(--text-secondary, #8b8d91);
+			font-size: 0.65rem;
+			letter-spacing: 0.04em;
+			text-transform: uppercase;
+		}
+
 		.content > composer-tool-execution {
 			display: block;
 			margin-top: 1rem;
@@ -525,6 +544,7 @@ export class ComposerMessage extends LitElement {
 		argsTruncated?: boolean;
 		result?: unknown;
 	}> = [];
+	@property({ attribute: false }) toolSummaryLabels: string[] = [];
 	@property({ attribute: false })
 	attachments: Array<{
 		id: string;
@@ -741,6 +761,9 @@ export class ComposerMessage extends LitElement {
 				: this.thinking;
 		const hasThinking = thinkingText && thinkingText.length > 0;
 		const hasTools = this.tools && this.tools.length > 0;
+		const summaryLabels = Array.isArray(this.toolSummaryLabels)
+			? this.toolSummaryLabels
+			: [];
 
 		return html`
 			<div class="message ${this.role} ${this.compact ? "compact" : ""}">
@@ -781,6 +804,18 @@ export class ComposerMessage extends LitElement {
 
 						${this.renderContent()}
 						${this.renderAttachments()}
+						${
+							summaryLabels.length > 0
+								? html`
+							<div class="tool-summaries">
+								${summaryLabels.map(
+									(label) =>
+										html`<span class="tool-summary-chip">${label}</span>`,
+								)}
+							</div>
+						`
+								: ""
+						}
 
 						${
 							hasTools

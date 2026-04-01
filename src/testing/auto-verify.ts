@@ -12,7 +12,7 @@
  * - MAESTRO_AUTO_TEST_COMMAND: Custom test command (auto-detected if not set)
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { minimatch } from "minimatch";
 import { createLogger } from "../utils/logger.js";
@@ -95,6 +95,23 @@ export interface AutoVerifyConfig {
 	maxTestFiles: number;
 }
 
+interface NxProjectConfig {
+	name: string;
+	root: string;
+	sourceRoot?: string;
+	testTarget?: string;
+}
+
+interface NxWorkspaceConfig {
+	root: string;
+	projects: NxProjectConfig[];
+}
+
+export interface NxTestPlan {
+	command: string;
+	projectNames: string[];
+}
+
 const DEFAULT_CONFIG: AutoVerifyConfig = {
 	enabled: true,
 	debounceDelayMs: 2000,
@@ -114,6 +131,8 @@ const DEFAULT_CONFIG: AutoVerifyConfig = {
 	cooldownMs: 10000,
 	maxTestFiles: 5,
 };
+
+const nxWorkspaceCache = new Map<string, NxWorkspaceConfig | null>();
 
 /**
  * Get auto-verify configuration from environment.
@@ -208,6 +227,177 @@ export function buildTestCommand(
 			// Fallback to npm test with file hints
 			return `npm test -- ${files}`;
 	}
+}
+
+function normalizeProjectPath(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	const normalized = normalizeForMatch(value)
+		.replace(/^\.\/+/, "")
+		.replace(/\/+$/, "");
+	return normalized.length > 0 ? normalized : ".";
+}
+
+function findNxWorkspaceRoot(cwd: string): string | null {
+	let current = cwd;
+	while (true) {
+		if (existsSync(join(current, "nx.json"))) {
+			return current;
+		}
+		const parent = dirname(current);
+		if (parent === current) {
+			return null;
+		}
+		current = parent;
+	}
+}
+
+function discoverProjectJsonFiles(root: string): string[] {
+	const results: string[] = [];
+	const stack = [root];
+	while (stack.length > 0) {
+		const current = stack.pop();
+		if (!current) continue;
+		for (const entry of readdirSync(current, { withFileTypes: true })) {
+			if (entry.name === "node_modules" || entry.name === ".git") continue;
+			const fullPath = join(current, entry.name);
+			if (entry.isDirectory()) {
+				stack.push(fullPath);
+				continue;
+			}
+			if (entry.isFile() && entry.name === "project.json") {
+				results.push(fullPath);
+			}
+		}
+	}
+	return results;
+}
+
+function loadNxWorkspace(cwd: string): NxWorkspaceConfig | null {
+	const workspaceRoot = findNxWorkspaceRoot(cwd);
+	if (!workspaceRoot) return null;
+	const cached = nxWorkspaceCache.get(workspaceRoot);
+	if (cached !== undefined) return cached;
+
+	const projects: NxProjectConfig[] = [];
+	for (const projectPath of discoverProjectJsonFiles(workspaceRoot)) {
+		try {
+			const parsed = JSON.parse(readFileSync(projectPath, "utf-8")) as {
+				name?: unknown;
+				root?: unknown;
+				sourceRoot?: unknown;
+				targets?: Record<string, unknown>;
+			};
+			if (typeof parsed.name !== "string" || parsed.name.trim().length === 0) {
+				continue;
+			}
+			const testTarget =
+				parsed.targets && typeof parsed.targets.test === "object"
+					? "test"
+					: undefined;
+			projects.push({
+				name: parsed.name,
+				root:
+					normalizeProjectPath(
+						typeof parsed.root === "string" ? parsed.root : undefined,
+					) ?? ".",
+				sourceRoot: normalizeProjectPath(
+					typeof parsed.sourceRoot === "string" ? parsed.sourceRoot : undefined,
+				),
+				testTarget,
+			});
+		} catch {
+			// Ignore invalid project.json entries.
+		}
+	}
+
+	projects.sort((left, right) => {
+		const leftKey = left.sourceRoot ?? left.root;
+		const rightKey = right.sourceRoot ?? right.root;
+		return rightKey.length - leftKey.length;
+	});
+
+	const workspace: NxWorkspaceConfig = { root: workspaceRoot, projects };
+	nxWorkspaceCache.set(workspaceRoot, workspace);
+	return workspace;
+}
+
+function resolveNxProjectForFile(
+	filePath: string,
+	workspace: NxWorkspaceConfig,
+): NxProjectConfig | null {
+	const absolute = isAbsolute(filePath)
+		? filePath
+		: join(workspace.root, filePath);
+	const relativePath = normalizeForMatch(relative(workspace.root, absolute));
+	if (
+		relativePath.startsWith("../") ||
+		relativePath === ".." ||
+		relativePath.length === 0
+	) {
+		return null;
+	}
+
+	for (const project of workspace.projects) {
+		for (const candidate of [project.sourceRoot, project.root]) {
+			if (!candidate) continue;
+			if (candidate === ".") {
+				return project;
+			}
+			if (
+				relativePath === candidate ||
+				relativePath.startsWith(`${candidate}/`)
+			) {
+				return project;
+			}
+		}
+	}
+	return null;
+}
+
+export function planNxTestRun(
+	changedFiles: string[],
+	cwd: string,
+): NxTestPlan | null {
+	const workspace = loadNxWorkspace(cwd);
+	if (!workspace) return null;
+
+	const matchedProjects = new Map<string, NxProjectConfig>();
+	for (const file of changedFiles) {
+		const project = resolveNxProjectForFile(file, workspace);
+		if (!project?.testTarget) continue;
+		matchedProjects.set(project.name, project);
+	}
+
+	const projects = Array.from(matchedProjects.values());
+	if (projects.length === 0) return null;
+
+	if (projects.length === 1) {
+		const [project] = projects;
+		if (!project) return null;
+		return {
+			command: `npx nx run ${project.name}:${project.testTarget} --skip-nx-cache`,
+			projectNames: [project.name],
+		};
+	}
+
+	const targets = new Set(projects.map((project) => project.testTarget));
+	const projectNames = projects.map((project) => project.name);
+	if (targets.size === 1) {
+		return {
+			command: `npx nx run-many -t ${projects[0]?.testTarget ?? "test"} -p ${projectNames.join(",")} --skip-nx-cache`,
+			projectNames,
+		};
+	}
+
+	return {
+		command: projectNames
+			.map((projectName) => {
+				const project = matchedProjects.get(projectName);
+				return `npx nx run ${projectName}:${project?.testTarget ?? "test"} --skip-nx-cache`;
+			})
+			.join(" && "),
+		projectNames,
+	};
 }
 
 /**
@@ -604,9 +794,22 @@ export class AutoVerifyService {
 			return;
 		}
 
+		const changedFiles = Array.from(this.tracker.files);
+		const nxPlan = planNxTestRun(changedFiles, this.cwd);
+		if (nxPlan) {
+			logger.info("Running Nx project tests", {
+				command: nxPlan.command,
+				projects: nxPlan.projectNames,
+				changedFiles,
+			});
+			this.tracker.files.clear();
+			await this.runCommand(nxPlan.command, "unknown");
+			return;
+		}
+
 		// Find test files for dirty source files
 		const testFiles = new Set<string>();
-		for (const file of this.tracker.files) {
+		for (const file of changedFiles) {
 			if (isTestFile(file)) {
 				// If the test file itself changed, run it directly
 				testFiles.add(relative(this.cwd, file));
@@ -630,7 +833,7 @@ export class AutoVerifyService {
 
 		logger.info("Running tests", {
 			testFiles: filesToRun,
-			changedFiles: Array.from(this.tracker.files),
+			changedFiles,
 		});
 
 		// Clear tracker before running
@@ -643,11 +846,20 @@ export class AutoVerifyService {
 	 * Force running tests for specific files.
 	 */
 	async runTests(testFiles: string[]): Promise<TestResult> {
+		const command = buildTestCommand(this.runner, testFiles, this.config);
+		return await this.runCommand(command, this.runner);
+	}
+
+	private async runCommand(
+		command: string,
+		runner: TestRunner,
+		timeoutMs = this.config.timeoutMs,
+		outputLimit = 5000,
+		maxBuffer = 10 * 1024 * 1024,
+	): Promise<TestResult> {
 		this.isRunning = true;
 		this.lastTestRun = Date.now();
 		const startTime = Date.now();
-
-		const command = buildTestCommand(this.runner, testFiles, this.config);
 
 		try {
 			const { execSync } = await import("node:child_process");
@@ -658,10 +870,10 @@ export class AutoVerifyService {
 			try {
 				output = execSync(command, {
 					cwd: this.cwd,
-					timeout: this.config.timeoutMs,
+					timeout: timeoutMs,
 					encoding: "utf-8",
 					stdio: ["pipe", "pipe", "pipe"],
-					maxBuffer: 10 * 1024 * 1024, // 10MB
+					maxBuffer,
 				});
 				success = true;
 			} catch (error) {
@@ -672,7 +884,7 @@ export class AutoVerifyService {
 			}
 
 			const durationMs = Date.now() - startTime;
-			const parsed = parseTestOutput(output, this.runner);
+			const parsed = parseTestOutput(output, runner);
 
 			const result: TestResult = {
 				success: success && (parsed.failedTests || 0) === 0,
@@ -683,7 +895,7 @@ export class AutoVerifyService {
 				durationMs,
 				failures: parsed.failures || [],
 				command,
-				output: output.slice(-5000), // Keep last 5KB
+				output: output.slice(-outputLimit),
 			};
 
 			logger.info("Test run complete", {
@@ -734,75 +946,13 @@ export class AutoVerifyService {
 	 */
 	async runAllTests(): Promise<TestResult> {
 		const command = this.config.customCommand || this.getDefaultTestCommand();
-		this.isRunning = true;
-		this.lastTestRun = Date.now();
-		const startTime = Date.now();
-
-		try {
-			const { execSync } = await import("node:child_process");
-
-			let output: string;
-			let success: boolean;
-
-			try {
-				output = execSync(command, {
-					cwd: this.cwd,
-					timeout: this.config.timeoutMs * 3, // Longer timeout for full run
-					encoding: "utf-8",
-					stdio: ["pipe", "pipe", "pipe"],
-					maxBuffer: 50 * 1024 * 1024, // 50MB for full output
-				});
-				success = true;
-			} catch (error) {
-				const execError = error as { stdout?: string; stderr?: string };
-				output = (execError.stdout || "") + (execError.stderr || "");
-				success = false;
-			}
-
-			const durationMs = Date.now() - startTime;
-			const parsed = parseTestOutput(output, this.runner);
-
-			const result: TestResult = {
-				success: success && (parsed.failedTests || 0) === 0,
-				totalTests: parsed.totalTests || 0,
-				passedTests: parsed.passedTests || 0,
-				failedTests: parsed.failedTests || 0,
-				skippedTests: parsed.skippedTests || 0,
-				durationMs,
-				failures: parsed.failures || [],
-				command,
-				output: output.slice(-10000), // Keep last 10KB
-			};
-
-			this.onTestComplete?.(result);
-			return result;
-		} catch (error) {
-			const durationMs = Date.now() - startTime;
-			const errorMessage =
-				error instanceof Error ? error.message : String(error);
-
-			const result: TestResult = {
-				success: false,
-				totalTests: 0,
-				passedTests: 0,
-				failedTests: 0,
-				skippedTests: 0,
-				durationMs,
-				failures: [
-					{
-						testName: "Test execution",
-						errorMessage: `Failed to run tests: ${errorMessage}`,
-					},
-				],
-				command,
-				output: errorMessage,
-			};
-
-			this.onTestComplete?.(result);
-			return result;
-		} finally {
-			this.isRunning = false;
-		}
+		return await this.runCommand(
+			command,
+			this.runner,
+			this.config.timeoutMs * 3,
+			10000,
+			50 * 1024 * 1024,
+		);
 	}
 
 	/**
