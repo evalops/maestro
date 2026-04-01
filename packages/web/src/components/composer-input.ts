@@ -5,7 +5,7 @@
 import type { ComposerAttachment } from "@evalops/contracts";
 import { LitElement, css, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
-import { ApiClient } from "../services/api-client.js";
+import { ApiClient, type McpServerStatus } from "../services/api-client.js";
 import {
 	WEB_SLASH_COMMANDS,
 	type WebSlashCommand,
@@ -34,6 +34,32 @@ type MentionStatus = {
 	kind: "loading" | "error";
 	message: string;
 };
+
+interface McpToolItem {
+	id: string;
+	server: string;
+	tool: string;
+	label: string;
+	description?: string;
+	badge: string;
+}
+
+function sanitizeMcpName(value: string): string {
+	return value.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function buildMcpToolName(server: string, tool: string): string {
+	return `mcp__${sanitizeMcpName(server)}__${tool}`;
+}
+
+function getMcpBadge(
+	server: Pick<McpServerStatus, "scope" | "transport">,
+): string {
+	if (server.scope) {
+		return server.scope;
+	}
+	return server.transport === "stdio" ? "stdio" : "remote";
+}
 
 declare global {
 	interface Window {
@@ -218,6 +244,28 @@ export class ComposerInput extends LitElement {
 			background: rgba(239, 68, 68, 0.08);
 		}
 
+		.mcp-button {
+			width: 34px;
+			height: 34px;
+			padding: 0;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			border: 1px solid var(--border-primary, #1e2023);
+			color: var(--text-tertiary, #5c5e62);
+			cursor: pointer;
+			transition: all 0.15s ease;
+			font-size: 0.52rem;
+			letter-spacing: 0.04em;
+		}
+
+		.mcp-button:hover:not(:disabled),
+		.mcp-button.active {
+			background: var(--bg-elevated, #161719);
+			color: var(--text-primary, #e8e9eb);
+		}
+
 		.attachments {
 			display: flex;
 			flex-wrap: wrap;
@@ -302,6 +350,57 @@ export class ComposerInput extends LitElement {
 		.suggestion-item:hover, .suggestion-item.selected {
 			background: var(--accent-amber-dim, rgba(212, 160, 18, 0.12));
 			color: var(--accent-amber, #d4a012);
+		}
+
+		.suggestion-meta {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 0.75rem;
+		}
+
+		.suggestion-main {
+			display: flex;
+			flex-direction: column;
+			gap: 0.2rem;
+			min-width: 0;
+		}
+
+		.suggestion-label {
+			font-weight: 600;
+		}
+
+		.suggestion-subtitle {
+			font-size: 0.68rem;
+			color: var(--text-tertiary, #6b7280);
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.suggestion-badge {
+			border: 1px solid var(--border-primary, #1e2023);
+			background: var(--bg-elevated, #161719);
+			color: var(--text-secondary, #9ca3af);
+			padding: 0.12rem 0.42rem;
+			font-size: 0.62rem;
+			text-transform: uppercase;
+			letter-spacing: 0.08em;
+			flex-shrink: 0;
+		}
+
+		.suggestion-description {
+			margin-top: 0.28rem;
+			font-size: 0.72rem;
+			color: var(--text-secondary, #9ca3af);
+			line-height: 1.45;
+		}
+
+		.suggestion-empty {
+			padding: 0.75rem;
+			color: var(--text-secondary, #9ca3af);
+			font-family: var(--font-mono, monospace);
+			font-size: 0.75rem;
 		}
 
 		.mention-status {
@@ -425,11 +524,18 @@ export class ComposerInput extends LitElement {
 	@state() private attachments: ComposerAttachment[] = [];
 	@state() private voiceSupported = false;
 	@state() private voiceActive = false;
+	@state() private mcpTools: McpToolItem[] = [];
+	@state() private filteredMcpTools: McpToolItem[] = [];
+	@state() private mcpLoading = false;
+	@state() private mcpError: string | null = null;
+	@state() private toolPickerOpen = false;
 
 	private maxLength = 10000;
 	private allFiles: string[] = [];
 	private filesLoaded = false;
 	private filesPromise: Promise<string[]> | null = null;
+	private mcpLoaded = false;
+	private mcpPromise: Promise<McpToolItem[]> | null = null;
 	private localApiClient: ApiClient | null = null;
 	private mentionMatch: { start: number; end: number; query: string } | null =
 		null;
@@ -504,6 +610,86 @@ export class ComposerInput extends LitElement {
 		this.prefetchFiles();
 	}
 
+	private async loadMcpTools(): Promise<McpToolItem[]> {
+		if (this.mcpLoaded) {
+			return this.mcpTools;
+		}
+
+		if (!this.mcpPromise) {
+			this.mcpLoading = true;
+			this.mcpError = null;
+			const client = this.getApiClient() as ApiClient & {
+				getMcpStatus?: () => Promise<{ servers?: McpServerStatus[] }>;
+			};
+			if (typeof client.getMcpStatus !== "function") {
+				this.mcpLoading = false;
+				this.mcpError = "MCP status unavailable.";
+				throw new Error("MCP status unavailable");
+			}
+
+			this.mcpPromise = client
+				.getMcpStatus()
+				.then((status) => {
+					const tools: McpToolItem[] = [];
+					const seen = new Set<string>();
+					for (const server of status.servers ?? []) {
+						if (!server.connected || !Array.isArray(server.tools)) continue;
+						for (const tool of server.tools) {
+							if (!tool?.name) continue;
+							const id = buildMcpToolName(server.name, tool.name);
+							if (seen.has(id)) continue;
+							seen.add(id);
+							tools.push({
+								id,
+								server: server.name,
+								tool: tool.name,
+								label: `${server.name}/${tool.name}`,
+								description: tool.description,
+								badge: getMcpBadge(server),
+							});
+						}
+					}
+					this.mcpTools = tools;
+					this.filteredMcpTools = tools;
+					this.mcpLoaded = true;
+					return tools;
+				})
+				.catch((error) => {
+					const message =
+						error instanceof Error && error.message
+							? error.message
+							: "Failed to load MCP tools.";
+					this.mcpError = message;
+					this.filteredMcpTools = [];
+					throw error;
+				})
+				.finally(() => {
+					this.mcpLoading = false;
+					this.mcpPromise = null;
+				});
+		}
+
+		return this.mcpPromise;
+	}
+
+	private async openMcpPicker() {
+		this.toolPickerOpen = true;
+		this.showSuggestions = false;
+		this.mentionStatus = null;
+		this.suggestionIndex = 0;
+		this.filteredMcpTools = this.mcpTools;
+
+		try {
+			await this.loadMcpTools();
+		} catch {
+			// mcpError already set in loadMcpTools
+		}
+	}
+
+	private closeMcpPicker() {
+		this.toolPickerOpen = false;
+	}
+
 	private async checkMention(textarea: HTMLTextAreaElement) {
 		const requestId = ++this.checkMentionCounter;
 		const cursor = textarea.selectionStart;
@@ -519,6 +705,7 @@ export class ComposerInput extends LitElement {
 				end: cursor,
 				query: match[1] ?? "",
 			};
+			this.closeMcpPicker();
 
 			if (!this.filesLoaded) {
 				this.showSuggestions = false;
@@ -659,7 +846,11 @@ export class ComposerInput extends LitElement {
 		}
 
 		// Slash cycling (Tab / Shift+Tab) if not showing file suggestions
-		if (!this.showSuggestions && this.value.trim().startsWith("/")) {
+		if (
+			!this.showSuggestions &&
+			!this.toolPickerOpen &&
+			this.value.trim().startsWith("/")
+		) {
 			if (e.key === "Tab") {
 				e.preventDefault();
 				this.cycleSlash(e.shiftKey);
@@ -694,6 +885,43 @@ export class ComposerInput extends LitElement {
 			if (e.key === "Escape") {
 				e.preventDefault();
 				this.showSuggestions = false;
+				return;
+			}
+		}
+
+		if (this.toolPickerOpen) {
+			if (e.key === "ArrowDown") {
+				e.preventDefault();
+				if (this.filteredMcpTools.length > 0) {
+					this.suggestionIndex =
+						(this.suggestionIndex + 1) % this.filteredMcpTools.length;
+					this.scrollSelectedIntoView();
+				}
+				return;
+			}
+			if (e.key === "ArrowUp") {
+				e.preventDefault();
+				if (this.filteredMcpTools.length > 0) {
+					this.suggestionIndex =
+						(this.suggestionIndex - 1 + this.filteredMcpTools.length) %
+						this.filteredMcpTools.length;
+					this.scrollSelectedIntoView();
+				}
+				return;
+			}
+			if (e.key === "Enter" || e.key === "Tab") {
+				e.preventDefault();
+				const selectedTool = this.filteredMcpTools[this.suggestionIndex];
+				if (selectedTool) {
+					this.selectMcpSuggestion(selectedTool);
+				} else {
+					this.closeMcpPicker();
+				}
+				return;
+			}
+			if (e.key === "Escape") {
+				e.preventDefault();
+				this.closeMcpPicker();
 				return;
 			}
 		}
@@ -852,6 +1080,29 @@ export class ComposerInput extends LitElement {
 				const newCursorPos = before.length + file.length + cursorOffset;
 				textarea.setSelectionRange(newCursorPos, newCursorPos);
 			}
+		});
+	}
+
+	private selectMcpSuggestion(tool: McpToolItem) {
+		const textarea = this.getTextarea();
+		const start = textarea?.selectionStart ?? this.value.length;
+		const end = textarea?.selectionEnd ?? start;
+		const before = this.value.slice(0, start);
+		const after = this.value.slice(end);
+		const insertion = `@${tool.id} `;
+		const newValue = `${before}${insertion}${after}`;
+		this.value = newValue;
+		this.closeMcpPicker();
+
+		requestAnimationFrame(() => {
+			const nextTextarea = this.getTextarea();
+			if (!nextTextarea) return;
+			nextTextarea.value = newValue;
+			nextTextarea.style.height = "auto";
+			nextTextarea.style.height = `${Math.min(nextTextarea.scrollHeight, 240)}px`;
+			nextTextarea.focus();
+			const cursorPos = before.length + insertion.length;
+			nextTextarea.setSelectionRange(cursorPos, cursorPos);
 		});
 	}
 
@@ -1031,6 +1282,7 @@ export class ComposerInput extends LitElement {
 		this.value = "";
 		this.attachments = [];
 		this.showSuggestions = false;
+		this.closeMcpPicker();
 		this.mentionStatus = null;
 		const textarea = this.getTextarea();
 		if (textarea) {
@@ -1096,7 +1348,7 @@ export class ComposerInput extends LitElement {
 						: null
 				}
 				${
-					this.mentionStatus && !this.showSuggestions
+					this.mentionStatus && !this.showSuggestions && !this.toolPickerOpen
 						? html`
 							<div class="mention-status ${this.mentionStatus.kind === "error" ? "error" : ""}">
 								${this.mentionStatus.message}
@@ -1105,22 +1357,62 @@ export class ComposerInput extends LitElement {
 						: null
 				}
 				${
-					this.showSuggestions
+					this.toolPickerOpen
 						? html`
-					<div class="suggestions">
-						${this.filteredFiles.map(
-							(file, i) => html`
-							<div
-								class="suggestion-item ${i === this.suggestionIndex ? "selected" : ""}"
-								@click=${() => this.selectSuggestion(file)}
-							>
-								${file}
-							</div>
-						`,
-						)}
-					</div>
-				`
-						: ""
+								<div class="suggestions">
+									${
+										this.mcpLoading
+											? html`<div class="suggestion-empty">Loading MCP tools...</div>`
+											: this.mcpError
+												? html`<div class="suggestion-empty">${this.mcpError}</div>`
+												: this.filteredMcpTools.length === 0
+													? html`<div class="suggestion-empty">
+															No MCP tools available. Configure servers in
+															<code>.maestro/mcp.json</code>.
+													  </div>`
+													: this.filteredMcpTools.map(
+															(tool, i) => html`
+																<div
+																	class="suggestion-item ${i === this.suggestionIndex ? "selected" : ""}"
+																	@mousedown=${(event: Event) => event.preventDefault()}
+																	@click=${() => this.selectMcpSuggestion(tool)}
+																>
+																	<div class="suggestion-meta">
+																		<div class="suggestion-main">
+																			<div class="suggestion-label">${tool.label}</div>
+																			<div class="suggestion-subtitle">@${tool.id}</div>
+																		</div>
+																		<div class="suggestion-badge">${tool.badge}</div>
+																	</div>
+																	${
+																		tool.description
+																			? html`<div class="suggestion-description">
+																					${tool.description}
+																			  </div>`
+																			: null
+																	}
+																</div>
+															`,
+														)
+									}
+								</div>
+						  `
+						: this.showSuggestions
+							? html`
+									<div class="suggestions">
+										${this.filteredFiles.map(
+											(file, i) => html`
+												<div
+													class="suggestion-item ${i === this.suggestionIndex ? "selected" : ""}"
+													@click=${() => this.selectSuggestion(file)}
+												>
+													${file}
+												</div>
+											`,
+										)}
+									</div>
+							  `
+							: ""
 				}
 				<div class="input-wrapper ${this.voiceActive ? "recording" : ""}">
 					<textarea
@@ -1129,7 +1421,7 @@ export class ComposerInput extends LitElement {
 						@focus=${this.handleTextareaFocus}
 						@keydown=${this.handleKeyDown}
 						?disabled=${this.disabled}
-						placeholder="> Type a message or use slash commands: /run /config /help"
+						placeholder="> Type a message, use /commands, mention files with @, or insert MCP tools"
 						maxlength=${this.maxLength}
 						rows="1"
 					></textarea>
@@ -1163,6 +1455,26 @@ export class ComposerInput extends LitElement {
 							aria-pressed=${this.voiceActive ? "true" : "false"}
 						>
 							${this.voiceActive ? "REC" : "MIC"}
+						</button>
+						<button
+							class="mcp-button ${this.toolPickerOpen ? "active" : ""}"
+							?disabled=${this.disabled}
+							@click=${() => {
+								if (this.toolPickerOpen) {
+									this.closeMcpPicker();
+								} else {
+									void this.openMcpPicker();
+								}
+							}}
+							title=${
+								this.mcpLoading
+									? "Loading MCP tools"
+									: this.mcpError
+										? "MCP tools unavailable"
+										: "Insert MCP tool"
+							}
+						>
+							MCP
 						</button>
 						<button
 							@click=${this.submit}
@@ -1213,7 +1525,7 @@ export class ComposerInput extends LitElement {
 			${
 				this.showHint
 					? html`<div class="hint">
-							<kbd>↵</kbd> send • <kbd>⇧</kbd> + <kbd>↵</kbd> newline • <kbd>@</kbd> mention file
+							<kbd>↵</kbd> send • <kbd>⇧</kbd> + <kbd>↵</kbd> newline • <kbd>@</kbd> mention file • <kbd>MCP</kbd> tools
 					  </div>`
 					: null
 			}

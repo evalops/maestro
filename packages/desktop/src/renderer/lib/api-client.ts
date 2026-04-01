@@ -195,6 +195,8 @@ export interface LspDetections {
 export interface McpServerStatus {
 	name: string;
 	connected: boolean;
+	scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+	transport?: "stdio" | "http" | "sse";
 	tools?:
 		| Array<{
 				name: string;

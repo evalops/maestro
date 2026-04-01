@@ -68,6 +68,8 @@ export interface McpServerStatus {
 	name: string;
 	connected: boolean;
 	error?: string;
+	scope?: McpScope;
+	transport: McpTransport;
 	tools: McpTool[];
 	resources: string[];
 	prompts: string[];
