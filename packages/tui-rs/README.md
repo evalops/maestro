@@ -182,7 +182,7 @@ src/
 | `/theme [name]` | Change theme |
 | `/diag` | Show diagnostics |
 | `/compact` | Summarize older messages |
-| `/mcp` | Show MCP configuration help |
+| `/mcp` | Show MCP server status |
 
 ## Status
 

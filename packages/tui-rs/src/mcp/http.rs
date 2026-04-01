@@ -483,6 +483,7 @@ mod tests {
             timeout: Some(5000),
             enabled: true,
             disabled: false,
+            scope: crate::mcp::McpConfigScope::User,
         }
     }
 

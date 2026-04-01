@@ -699,10 +699,11 @@ pub use mcp::{
     // Configuration
     load_mcp_config, // Load config from standard locations
     // Client types
-    McpClient,     // Manages multiple server connections
-    McpConfig,     // Merged configuration from all sources
-    McpConnection, // Single server connection
-    McpError,      // Error type for MCP operations
+    McpClient,      // Manages multiple server connections
+    McpConfig,      // Merged configuration from all sources
+    McpConfigScope, // Config provenance for MCP servers
+    McpConnection,  // Single server connection
+    McpError,       // Error type for MCP operations
 
     // Protocol types
     McpRequest,                             // JSON-RPC request message

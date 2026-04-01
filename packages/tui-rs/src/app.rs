@@ -83,6 +83,7 @@ use crate::components::{
 };
 use crate::files::get_workspace_files;
 use crate::git;
+use crate::mcp::{McpConfigScope, McpTransport};
 use crate::safety::{
     check_model_allowed, check_path_allowed, check_session_limits, FirewallVerdict,
 };
@@ -164,6 +165,88 @@ fn detect_queued_follow_up_edit_binding() -> crate::key_hints::KeyBinding {
         &terminal_info.name,
         std::env::var_os("TMUX").is_some(),
     )
+}
+
+fn format_mcp_scope_label(scope: McpConfigScope) -> &'static str {
+    match scope {
+        McpConfigScope::Enterprise => "Enterprise config",
+        McpConfigScope::Local => "Local config",
+        McpConfigScope::Project => "Project config",
+        McpConfigScope::User => "User config",
+    }
+}
+
+fn format_mcp_transport_label(transport: McpTransport) -> &'static str {
+    match transport {
+        McpTransport::Http => "HTTP",
+        McpTransport::Sse => "SSE",
+        McpTransport::Stdio => "stdio",
+    }
+}
+
+fn format_mcp_error_label(error: Option<&str>) -> Option<String> {
+    error.map(|message| {
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            "Connection failed.".to_string()
+        } else {
+            trimmed.to_string()
+        }
+    })
+}
+
+fn render_mcp_status_lines(servers: &[crate::tools::McpServerStatus]) -> Vec<String> {
+    let mut lines = vec!["Model Context Protocol".to_string(), String::new()];
+
+    if servers.is_empty() {
+        lines.push("No MCP servers configured.".to_string());
+        lines.push(String::new());
+        lines.push("Add servers to ~/.composer/mcp.json or .composer/mcp.json:".to_string());
+        lines.push(String::new());
+        lines.push(
+            "{ \"mcpServers\": { \"my-server\": { \"command\": \"npx\", \"args\": [\"-y\", \"@example/mcp-server\"] } } }"
+                .to_string(),
+        );
+        return lines;
+    }
+
+    for server in servers {
+        let status = if server.connected {
+            "connected"
+        } else {
+            "disconnected"
+        };
+        lines.push(format!("- {} ({status})", server.name));
+        lines.push(format!(
+            "  Source: {}",
+            format_mcp_scope_label(server.scope)
+        ));
+        lines.push(format!(
+            "  Transport: {}",
+            format_mcp_transport_label(server.transport)
+        ));
+
+        if server.connected {
+            if !server.tools.is_empty() {
+                lines.push(format!("  Tools: {}", server.tools.join(", ")));
+            }
+            if !server.resources.is_empty() {
+                lines.push(format!("  Resources: {}", server.resources.len()));
+            }
+            if !server.prompts.is_empty() {
+                lines.push(format!("  Prompts: {}", server.prompts.join(", ")));
+            }
+        } else {
+            lines.push("  Not connected".to_string());
+            if let Some(error_label) = format_mcp_error_label(server.error.as_deref()) {
+                lines.push(format!("  Error: {error_label}"));
+            }
+        }
+    }
+
+    lines.push(String::new());
+    lines.push("Subcommands: /mcp resources, /mcp prompts".to_string());
+    lines
 }
 
 /// Main application struct - the central coordinator.
@@ -1096,8 +1179,13 @@ Always use tools when they would be helpful. Be concise and direct in your respo
     fn update_mcp_badge_counts(&mut self, servers: &[crate::tools::McpServerStatus]) {
         let connected = servers.iter().filter(|server| server.connected).count();
         let tool_count: usize = servers.iter().map(|server| server.tools.len()).sum();
+        let failed = servers
+            .iter()
+            .filter(|server| !server.connected && server.error.is_some())
+            .count();
         self.state.mcp_connected = connected;
         self.state.mcp_tool_count = tool_count;
+        self.state.mcp_failed = failed;
     }
 
     async fn refresh_mcp_badges(&mut self) {
@@ -2743,47 +2831,7 @@ Add the required fields and retry.",
             McpAction::Status => match self.tool_executor.mcp_status().await {
                 Ok(servers) => {
                     self.update_mcp_badge_counts(&servers);
-                    let mut lines = Vec::new();
-                    lines.push("Model Context Protocol".to_string());
-                    lines.push(String::new());
-
-                    if servers.is_empty() {
-                        lines.push("No MCP servers configured.".to_string());
-                        lines.push(String::new());
-                        lines.push(
-                            "Add servers to ~/.composer/mcp.json or .composer/mcp.json:"
-                                .to_string(),
-                        );
-                        lines.push(String::new());
-                        lines.push(
-                            "{ \"mcpServers\": { \"my-server\": { \"command\": \"npx\", \"args\": [\"-y\", \"@example/mcp-server\"] } } }".to_string(),
-                        );
-                    } else {
-                        for server in servers {
-                            let status = if server.connected {
-                                "connected"
-                            } else {
-                                "disconnected"
-                            };
-                            lines.push(format!("- {} ({})", server.name, status));
-                            if server.connected {
-                                if !server.tools.is_empty() {
-                                    lines.push(format!("  Tools: {}", server.tools.join(", ")));
-                                }
-                                if !server.resources.is_empty() {
-                                    lines.push(format!("  Resources: {}", server.resources.len()));
-                                }
-                                if !server.prompts.is_empty() {
-                                    lines.push(format!("  Prompts: {}", server.prompts.join(", ")));
-                                }
-                            } else {
-                                lines.push("  Not connected".to_string());
-                            }
-                        }
-                        lines.push(String::new());
-                        lines.push("Subcommands: /mcp resources, /mcp prompts".to_string());
-                    }
-
+                    let lines = render_mcp_status_lines(&servers);
                     self.state.add_system_message(lines.join("\n"));
                 }
                 Err(err) => {
@@ -5225,6 +5273,74 @@ mod tests {
 
         state.status = Some("Connected".to_string());
         assert_eq!(state.status, Some("Connected".to_string()));
+    }
+
+    #[test]
+    fn test_render_mcp_status_lines_include_source_transport_and_error() {
+        let lines = render_mcp_status_lines(&[crate::tools::McpServerStatus {
+            name: "remote".to_string(),
+            connected: false,
+            scope: McpConfigScope::Project,
+            transport: McpTransport::Sse,
+            error: Some("Connection refused".to_string()),
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        }]);
+
+        let rendered = lines.join("\n");
+        assert!(rendered.contains("- remote (disconnected)"));
+        assert!(rendered.contains("Source: Project config"));
+        assert!(rendered.contains("Transport: SSE"));
+        assert!(rendered.contains("Error: Connection refused"));
+    }
+
+    #[test]
+    fn test_render_mcp_status_lines_use_blank_error_fallback() {
+        let lines = render_mcp_status_lines(&[crate::tools::McpServerStatus {
+            name: "offline".to_string(),
+            connected: false,
+            scope: McpConfigScope::User,
+            transport: McpTransport::Stdio,
+            error: Some("   ".to_string()),
+            tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+        }]);
+
+        let rendered = lines.join("\n");
+        assert!(rendered.contains("Error: Connection failed."));
+    }
+
+    #[test]
+    fn test_update_mcp_badge_counts_tracks_failures() {
+        let mut app = new_test_app();
+        app.update_mcp_badge_counts(&[
+            crate::tools::McpServerStatus {
+                name: "connected".to_string(),
+                connected: true,
+                scope: McpConfigScope::Project,
+                transport: McpTransport::Stdio,
+                error: None,
+                tools: vec!["read".to_string(), "write".to_string()],
+                resources: Vec::new(),
+                prompts: Vec::new(),
+            },
+            crate::tools::McpServerStatus {
+                name: "failed".to_string(),
+                connected: false,
+                scope: McpConfigScope::User,
+                transport: McpTransport::Http,
+                error: Some("timed out".to_string()),
+                tools: Vec::new(),
+                resources: Vec::new(),
+                prompts: Vec::new(),
+            },
+        ]);
+
+        assert_eq!(app.state.mcp_connected, 1);
+        assert_eq!(app.state.mcp_tool_count, 2);
+        assert_eq!(app.state.mcp_failed, 1);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

@@ -4,8 +4,8 @@
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use maestro_tui::mcp::{
-    load_mcp_config, McpClient, McpConfig, McpContent, McpRequest, McpResponse, McpServerConfig,
-    McpTool, McpToolResult, McpTransport,
+    load_mcp_config, McpClient, McpConfig, McpConfigScope, McpContent, McpRequest, McpResponse,
+    McpServerConfig, McpTool, McpToolResult, McpTransport,
 };
 use serde_json::json;
 use std::collections::HashMap;
@@ -118,6 +118,7 @@ fn bench_mcp_server_config(c: &mut Criterion) {
                 timeout: Some(30000),
                 enabled: true,
                 disabled: false,
+                scope: McpConfigScope::User,
             };
             black_box(config)
         });
@@ -136,6 +137,7 @@ fn bench_mcp_server_config(c: &mut Criterion) {
             timeout: Some(30000),
             enabled: true,
             disabled: false,
+            scope: McpConfigScope::User,
         };
 
         b.iter(|| {
