@@ -1,11 +1,49 @@
 import chalk from "chalk";
-import { mcpManager } from "../../mcp/index.js";
+import { type McpServerStatus, mcpManager } from "../../mcp/index.js";
 
 export interface McpRenderContext {
 	rawInput: string;
 	addContent(content: string): void;
 	showError(message: string): void;
 	requestRender(): void;
+}
+
+function formatMcpScopeLabel(scope: McpServerStatus["scope"]): string | null {
+	switch (scope) {
+		case "enterprise":
+			return "Enterprise config";
+		case "plugin":
+			return "Plugin config";
+		case "project":
+			return "Project config";
+		case "local":
+			return "Local config";
+		case "user":
+			return "User config";
+		default:
+			return null;
+	}
+}
+
+function formatMcpTransportLabel(
+	transport: McpServerStatus["transport"],
+): string {
+	switch (transport) {
+		case "http":
+			return "HTTP";
+		case "sse":
+			return "SSE";
+		default:
+			return "stdio";
+	}
+}
+
+function formatMcpErrorLabel(error: string | undefined): string | null {
+	if (typeof error !== "string") {
+		return null;
+	}
+
+	return error.trim() || "Connection failed.";
 }
 
 export function handleMcpCommand(renderCtx: McpRenderContext): void {
@@ -38,6 +76,11 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 		for (const server of status.servers) {
 			const statusIcon = server.connected ? chalk.green("●") : chalk.red("○");
 			lines.push(`${statusIcon} ${server.name}`);
+			const scopeLabel = formatMcpScopeLabel(server.scope);
+			if (scopeLabel) {
+				lines.push(`    Source: ${scopeLabel}`);
+			}
+			lines.push(`    Transport: ${formatMcpTransportLabel(server.transport)}`);
 			if (server.connected) {
 				if (server.tools.length > 0) {
 					lines.push(
@@ -52,6 +95,10 @@ export function handleMcpCommand(renderCtx: McpRenderContext): void {
 				}
 			} else {
 				lines.push(`    ${chalk.dim("Not connected")}`);
+				const errorLabel = formatMcpErrorLabel(server.error);
+				if (errorLabel) {
+					lines.push(`    ${chalk.red(`Error: ${errorLabel}`)}`);
+				}
 			}
 		}
 		lines.push("");
