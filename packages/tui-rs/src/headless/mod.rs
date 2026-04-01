@@ -144,7 +144,7 @@
 //! use maestro_tui::headless::{AsyncAgentTransportBuilder, ToAgentMessage};
 //!
 //! let mut transport = AsyncAgentTransportBuilder::new()
-//!     .cli_path("composer")
+//!     .cli_path("maestro")
 //!     .cwd("/path/to/project")
 //!     .spawn()
 //!     .await?;
@@ -174,7 +174,7 @@
 //!
 //! // Build supervisor with reconnection
 //! let mut supervisor = SupervisorBuilder::new()
-//!     .cli_path("composer")
+//!     .cli_path("maestro")
 //!     .session_recorder(recorder)
 //!     .max_reconnect_attempts(5)
 //!     .build();

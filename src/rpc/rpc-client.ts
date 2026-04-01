@@ -1,7 +1,7 @@
 /**
- * RPC Client for Composer Agent
+ * RPC Client for Maestro Agent
  *
- * Provides a typed TypeScript client for interacting with Composer
+ * Provides a typed TypeScript client for interacting with Maestro
  * over JSON-over-stdio RPC.
  *
  * @module rpc/rpc-client
@@ -24,7 +24,7 @@ import { isAgentEvent, isErrorResponse } from "./rpc-types.js";
  * Options for creating an RPC client.
  */
 export interface RpcClientOptions {
-	/** Path to the Composer CLI executable */
+	/** Path to the Maestro CLI executable */
 	cliPath?: string;
 	/** Working directory for the agent */
 	cwd?: string;
@@ -35,7 +35,7 @@ export interface RpcClientOptions {
 }
 
 /**
- * Typed RPC client for Composer Agent.
+ * Typed RPC client for Maestro Agent.
  *
  * @example
  * ```ts
@@ -69,7 +69,7 @@ export class RpcClient extends EventEmitter {
 	constructor(options: RpcClientOptions = {}) {
 		super();
 		this.options = {
-			cliPath: options.cliPath ?? "composer",
+			cliPath: options.cliPath ?? "maestro",
 			cwd: options.cwd ?? process.cwd(),
 			env: options.env ?? {},
 			timeout: options.timeout ?? 30000,
@@ -77,7 +77,7 @@ export class RpcClient extends EventEmitter {
 	}
 
 	/**
-	 * Start the Composer agent process.
+	 * Start the Maestro agent process.
 	 */
 	async start(): Promise<void> {
 		if (this.process) {
@@ -138,7 +138,7 @@ export class RpcClient extends EventEmitter {
 	}
 
 	/**
-	 * Stop the Composer agent process.
+	 * Stop the Maestro agent process.
 	 */
 	stop(): void {
 		this.cleanup();

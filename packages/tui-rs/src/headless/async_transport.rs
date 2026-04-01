@@ -17,7 +17,7 @@ use super::messages::{AgentEvent, AgentState, FromAgentMessage, ToAgentMessage};
 /// Configuration for the async agent transport
 #[derive(Debug, Clone)]
 pub struct AsyncTransportConfig {
-    /// Path to the composer CLI (default: "composer")
+    /// Path to the Maestro CLI (default: "maestro")
     pub cli_path: String,
     /// Working directory for the agent
     pub cwd: Option<String>,
@@ -34,7 +34,7 @@ pub struct AsyncTransportConfig {
 impl Default for AsyncTransportConfig {
     fn default() -> Self {
         Self {
-            cli_path: "composer".to_string(),
+            cli_path: "maestro".to_string(),
             cwd: None,
             extra_args: Vec::new(),
             env: Vec::new(),
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn async_config_defaults() {
         let config = AsyncTransportConfig::default();
-        assert_eq!(config.cli_path, "composer");
+        assert_eq!(config.cli_path, "maestro");
         assert!(config.cwd.is_none());
         assert!(config.extra_args.is_empty());
         assert!(config.read_timeout.is_none());
