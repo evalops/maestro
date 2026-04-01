@@ -7,6 +7,7 @@
 import type { Stats } from "node:fs";
 import { existsSync, readFileSync } from "node:fs";
 import { v4 as uuidv4 } from "uuid";
+import { isDecoratedCompactionSummaryMessage } from "../agent/compaction.js";
 import {
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
@@ -75,14 +76,7 @@ export function extractTextFromContent(
 }
 
 export function isLikelyCompactionSummary(message: AppMessage): boolean {
-	if (message.role !== "assistant") return false;
-	const text = extractTextFromContent(message.content).trim();
-	if (!text) return false;
-	return (
-		text.includes("Another language model started to solve this problem") ||
-		text.includes("(Compacted") ||
-		text.includes("_Local summary of prior discussion")
-	);
+	return isDecoratedCompactionSummaryMessage(message);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

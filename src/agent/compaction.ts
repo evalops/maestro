@@ -69,6 +69,13 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 };
 
 /**
+ * Internal user prompt appended after compaction so the model resumes from the
+ * summarized context on the next turn.
+ */
+export const COMPACTION_RESUME_PROMPT =
+	"Use the above summary to resume the plan from where we left off.";
+
+/**
  * Result of a compaction operation, ready to be persisted.
  */
 export interface CompactionResult {
@@ -576,6 +583,46 @@ export function decorateSummaryText(
 }
 
 /**
+ * Check whether text matches the decorated compaction summary format.
+ */
+export function isDecoratedCompactionSummaryText(text: string): boolean {
+	const normalized = text.trim();
+	if (!normalized) return false;
+	return (
+		normalized.includes(
+			"Another language model started to solve this problem",
+		) ||
+		normalized.includes("(Compacted") ||
+		normalized.includes("_Local summary of prior discussion")
+	);
+}
+
+/**
+ * Check whether a message is a decorated assistant compaction summary.
+ */
+export function isDecoratedCompactionSummaryMessage(
+	message: AppMessage,
+): boolean {
+	if (message.role !== "assistant") return false;
+	return isDecoratedCompactionSummaryText(extractMessageText(message));
+}
+
+/**
+ * Check whether text matches the internal post-compaction resume prompt.
+ */
+export function isCompactionResumePromptText(text: string): boolean {
+	return text.trim() === COMPACTION_RESUME_PROMPT;
+}
+
+/**
+ * Check whether a message is the internal post-compaction resume prompt.
+ */
+export function isCompactionResumePromptMessage(message: AppMessage): boolean {
+	if (message.role !== "user") return false;
+	return isCompactionResumePromptText(extractMessageText(message));
+}
+
+/**
  * Merge a history summary with a turn prefix summary for split turn compaction.
  *
  * When compaction splits a turn, we generate two summaries:
@@ -765,13 +812,9 @@ export function findPreviousSummary(
 	messages: AppMessage[],
 ): string | undefined {
 	for (const message of messages) {
-		if (message.role === "assistant") {
+		if (isDecoratedCompactionSummaryMessage(message)) {
 			const text = extractMessageText(message);
-			if (
-				text.includes("Another language model started to solve this problem") ||
-				text.includes("(Compacted") ||
-				text.includes("_Local summary of prior discussion")
-			) {
+			if (text) {
 				return text;
 			}
 		}
@@ -939,7 +982,7 @@ export async function performCompaction(params: {
 		content: [
 			{
 				type: "text",
-				text: "Use the above summary to resume the plan from where we left off.",
+				text: COMPACTION_RESUME_PROMPT,
 			},
 		],
 		timestamp: Date.now(),
