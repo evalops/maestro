@@ -289,11 +289,13 @@ class ComposerApiClient(
         return when (type) {
             "agent_start" -> AgentEvent.AgentStart()
             "agent_end" -> gson.fromJson(data, AgentEvent.AgentEnd::class.java)
+            "status" -> gson.fromJson(data, AgentEvent.Status::class.java)
             "message_start" -> gson.fromJson(data, AgentEvent.MessageStart::class.java)
             "message_update" -> gson.fromJson(data, AgentEvent.MessageUpdate::class.java)
             "message_end" -> gson.fromJson(data, AgentEvent.MessageEnd::class.java)
             "tool_execution_start" -> gson.fromJson(data, AgentEvent.ToolExecutionStart::class.java)
             "tool_execution_end" -> gson.fromJson(data, AgentEvent.ToolExecutionEnd::class.java)
+            "compaction" -> gson.fromJson(data, AgentEvent.Compaction::class.java)
             "client_tool_request" -> gson.fromJson(data, AgentEvent.ClientToolRequest::class.java)
             "action_approval_required" -> gson.fromJson(data, AgentEvent.ActionApprovalRequired::class.java)
             "action_approval_resolved" -> gson.fromJson(data, AgentEvent.ActionApprovalResolved::class.java)

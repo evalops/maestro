@@ -40,6 +40,8 @@ class ComposerPanel(private val project: Project) : SimpleToolWindowPanel(true, 
     private val inputArea = JBTextArea(3, 40)
     private val sendButton = JButton("Send")
     private val statusLabel = JBLabel("Disconnected")
+    private var connected = false
+    private var runtimeStatusText: String? = null
 
     init {
         // Messages panel setup
@@ -100,6 +102,7 @@ class ComposerPanel(private val project: Project) : SimpleToolWindowPanel(true, 
         // Register listeners
         projectService.addMessageListener { messages -> updateMessages(messages) }
         projectService.addProcessingListener { processing -> updateProcessingState(processing) }
+        projectService.addEventListener { event -> handleRuntimeEvent(event) }
         appService.addConnectionListener { connected -> updateConnectionState(connected) }
 
         // Initial state
@@ -237,13 +240,39 @@ class ComposerPanel(private val project: Project) : SimpleToolWindowPanel(true, 
             sendButton.isEnabled = !processing
             inputArea.isEnabled = !processing
             sendButton.text = if (processing) "Processing..." else "Send"
+            if (!processing) {
+                runtimeStatusText = null
+                refreshStatusLabel()
+            }
         }
     }
 
     private fun updateConnectionState(connected: Boolean) {
         ApplicationManager.getApplication().invokeLater {
-            statusLabel.text = if (connected) "Connected to ${settings.apiEndpoint}" else "Disconnected"
-            statusLabel.icon = if (connected) AllIcons.General.InspectionsOK else AllIcons.General.Error
+            this.connected = connected
+            refreshStatusLabel()
+        }
+    }
+
+    private fun handleRuntimeEvent(event: AgentEvent) {
+        val statusText = formatRuntimeStatus(event) ?: return
+        ApplicationManager.getApplication().invokeLater {
+            runtimeStatusText = statusText
+            refreshStatusLabel()
+        }
+    }
+
+    private fun refreshStatusLabel() {
+        statusLabel.text = when {
+            runtimeStatusText != null && connected -> "Connected • $runtimeStatusText"
+            runtimeStatusText != null -> runtimeStatusText
+            connected -> "Connected to ${settings.apiEndpoint}"
+            else -> "Disconnected"
+        }
+        statusLabel.icon = when {
+            !connected -> AllIcons.General.Error
+            runtimeStatusText != null -> AllIcons.General.Information
+            else -> AllIcons.General.InspectionsOK
         }
     }
 
