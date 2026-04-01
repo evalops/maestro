@@ -357,6 +357,22 @@ class ComposerProjectService(private val project: Project) : Disposable {
                 }
             }
 
+            is AgentEvent.ToolExecutionStart,
+            is AgentEvent.ToolExecutionEnd -> {
+                val updated = synchronized(messagesLock) {
+                    val nextMessages = applyLiveToolEvent(_messages, event)
+                    if (nextMessages == _messages) {
+                        false
+                    } else {
+                        _messages = nextMessages.toMutableList()
+                        true
+                    }
+                }
+                if (updated) {
+                    notifyMessageListeners()
+                }
+            }
+
             is AgentEvent.ClientToolRequest -> {
                 // Execute client tool
                 scope.launch {
