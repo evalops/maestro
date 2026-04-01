@@ -700,6 +700,10 @@ Always use tools when they would be helpful. Be concise and direct in your respo
             // This handles streaming responses, tool calls, etc.
             self.poll_agent().await?;
 
+            // Drain live MCP notifications so list changes refresh the UI
+            // without waiting for a reconnect or a manual status check.
+            self.poll_mcp_updates().await;
+
             // Apply MCP config changes before the periodic refresh so edits
             // show up in the footer as soon as the watcher delivers them.
             self.poll_config_watcher().await;
@@ -1240,6 +1244,16 @@ Always use tools when they would be helpful. Be concise and direct in your respo
 
         if let Ok(servers) = self.tool_executor.mcp_status().await {
             self.update_mcp_badge_counts(&servers);
+        }
+    }
+
+    async fn poll_mcp_updates(&mut self) {
+        match self.tool_executor.poll_mcp_updates().await {
+            Ok(true) => self.refresh_mcp_badges_with_force(true).await,
+            Ok(false) => {}
+            Err(err) => {
+                self.state.status = Some(format!("MCP update error: {err}"));
+            }
         }
     }
 

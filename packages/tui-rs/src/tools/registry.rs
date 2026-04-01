@@ -796,6 +796,31 @@ impl ToolExecutor {
         Ok(())
     }
 
+    /// Drain live MCP notifications and refresh cached metadata when server lists change.
+    pub async fn poll_mcp_updates(&self) -> Result<bool, String> {
+        let guard = self.mcp_client.lock().await;
+        let Some(client) = guard.as_ref() else {
+            return Ok(false);
+        };
+
+        let changed = client
+            .poll_notifications()
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if changed {
+            let annotations = client.list_tool_annotations().await;
+            if let Ok(mut map) = self.mcp_tool_annotations.write() {
+                map.clear();
+                for (name, meta) in annotations {
+                    map.insert(name.to_lowercase(), meta);
+                }
+            }
+        }
+
+        Ok(changed)
+    }
+
     /// Get MCP tool annotations if available
     pub fn tool_annotations(&self, name: &str) -> Option<crate::mcp::McpToolAnnotations> {
         let key = name.to_lowercase();

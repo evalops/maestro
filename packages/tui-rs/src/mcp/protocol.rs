@@ -5,6 +5,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub const MCP_TOOLS_LIST_CHANGED_METHOD: &str = "notifications/tools/list_changed";
+pub const MCP_RESOURCES_LIST_CHANGED_METHOD: &str = "notifications/resources/list_changed";
+pub const MCP_PROMPTS_LIST_CHANGED_METHOD: &str = "notifications/prompts/list_changed";
+
 /// JSON-RPC request message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpRequest {
@@ -135,6 +139,50 @@ impl McpResponse {
             None => Err("No result in response".to_string()),
         }
     }
+}
+
+/// JSON-RPC notification message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpNotification {
+    /// JSON-RPC version
+    pub jsonrpc: String,
+    /// Notification method
+    pub method: String,
+    /// Optional notification params
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<Value>,
+}
+
+impl McpNotification {
+    #[must_use]
+    pub fn is_list_changed_notification(&self) -> bool {
+        self.is_tools_list_changed()
+            || self.is_resources_list_changed()
+            || self.is_prompts_list_changed()
+    }
+
+    #[must_use]
+    pub fn is_tools_list_changed(&self) -> bool {
+        self.method == MCP_TOOLS_LIST_CHANGED_METHOD
+    }
+
+    #[must_use]
+    pub fn is_resources_list_changed(&self) -> bool {
+        self.method == MCP_RESOURCES_LIST_CHANGED_METHOD
+    }
+
+    #[must_use]
+    pub fn is_prompts_list_changed(&self) -> bool {
+        self.method == MCP_PROMPTS_LIST_CHANGED_METHOD
+    }
+}
+
+/// JSON-RPC message received from an MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum McpIncomingMessage {
+    Notification(McpNotification),
+    Response(McpResponse),
 }
 
 /// JSON-RPC error
@@ -504,6 +552,19 @@ mod tests {
         let resp: McpResponse = serde_json::from_str(json).unwrap();
         assert!(resp.is_error());
         assert_eq!(resp.error.as_ref().unwrap().code, -32600);
+    }
+
+    #[test]
+    fn test_incoming_message_deserialize_notification() {
+        let json = r#"{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"#;
+        let message: McpIncomingMessage = serde_json::from_str(json).unwrap();
+        match message {
+            McpIncomingMessage::Notification(notification) => {
+                assert!(notification.is_tools_list_changed());
+                assert!(notification.is_list_changed_notification());
+            }
+            McpIncomingMessage::Response(_) => panic!("expected notification"),
+        }
     }
 
     #[test]

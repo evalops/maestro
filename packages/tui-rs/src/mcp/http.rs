@@ -16,9 +16,9 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use super::client::McpError;
 use super::config::{expand_env_vars, McpServerConfig, McpTransport};
 use super::protocol::{
-    ClientInfo, InitializeResult, McpPrompt, McpRequest, McpResource, McpResponse, McpTool,
-    McpToolResult, PromptGetResult, PromptsListResult, ResourceReadResult, ResourcesListResult,
-    ToolsListResult,
+    ClientInfo, InitializeResult, McpIncomingMessage, McpNotification, McpPrompt, McpRequest,
+    McpResource, McpResponse, McpTool, McpToolResult, PromptGetResult, PromptsListResult,
+    ResourceReadResult, ResourcesListResult, ToolsListResult,
 };
 
 /// HTTP-based MCP connection
@@ -41,8 +41,8 @@ pub struct HttpConnection {
     prompts: Vec<McpPrompt>,
     /// Whether initialized
     initialized: bool,
-    /// SSE event receiver (for SSE transport)
-    sse_rx: Option<mpsc::UnboundedReceiver<McpResponse>>,
+    /// SSE notification receiver (for SSE transport)
+    notification_rx: Option<mpsc::UnboundedReceiver<McpNotification>>,
     /// Pending SSE requests
     pending_sse: Arc<Mutex<HashMap<u64, oneshot::Sender<McpResponse>>>>,
     /// SSE task handle
@@ -72,7 +72,7 @@ impl HttpConnection {
             resources: Vec::new(),
             prompts: Vec::new(),
             initialized: false,
-            sse_rx: None,
+            notification_rx: None,
             pending_sse: Arc::new(Mutex::new(HashMap::new())),
             sse_task: None,
         })
@@ -100,7 +100,7 @@ impl HttpConnection {
     async fn connect_sse(&mut self) -> Result<(), McpError> {
         // Start SSE event stream
         let (tx, rx) = mpsc::unbounded_channel();
-        self.sse_rx = Some(rx);
+        self.notification_rx = Some(rx);
 
         let url = format!("{}/sse", self.base_url.trim_end_matches('/'));
         let pending = self.pending_sse.clone();
@@ -129,18 +129,21 @@ impl HttpConnection {
             while let Some(event) = stream.next().await {
                 match event {
                     Ok(ev) => {
-                        // Parse SSE data as JSON-RPC response
-                        if let Ok(response) = serde_json::from_str::<McpResponse>(&ev.data) {
-                            // Check if this is a response to a pending request
-                            if let Some(id) = response.id {
-                                let mut pending = pending.lock().await;
-                                if let Some(sender) = pending.remove(&id) {
-                                    let _ = sender.send(response);
-                                    continue;
+                        if let Ok(message) = serde_json::from_str::<McpIncomingMessage>(&ev.data) {
+                            match message {
+                                McpIncomingMessage::Response(response) => {
+                                    if let Some(id) = response.id {
+                                        let mut pending = pending.lock().await;
+                                        if let Some(sender) = pending.remove(&id) {
+                                            let _ = sender.send(response);
+                                            continue;
+                                        }
+                                    }
+                                }
+                                McpIncomingMessage::Notification(notification) => {
+                                    let _ = tx.send(notification);
                                 }
                             }
-                            // Otherwise send to general channel
-                            let _ = tx.send(response);
                         }
                     }
                     Err(e) => {
@@ -242,6 +245,13 @@ impl HttpConnection {
     /// Get server name
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Try to receive a server notification (non-blocking).
+    pub fn try_recv_notification(&mut self) -> Option<McpNotification> {
+        self.notification_rx
+            .as_mut()
+            .and_then(|rx| rx.try_recv().ok())
     }
 
     /// Call a tool
@@ -446,7 +456,7 @@ impl HttpConnection {
         if let Some(task) = self.sse_task.take() {
             task.abort();
         }
-        self.sse_rx = None;
+        self.notification_rx = None;
         self.initialized = false;
     }
 
