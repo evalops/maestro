@@ -412,6 +412,14 @@ export async function main(args: string[]) {
 		pipeProcessEventsToLogger();
 	}
 
+	const startupProfilingEnabled = process.env.MAESTRO_STARTUP_PROFILE === "1";
+	const logStartupPhase = (label: string, startedAt: number) => {
+		if (!startupProfilingEnabled) return;
+		console.error(
+			`[startup] ${label}: ${Math.round(performance.now() - startedAt)}ms`,
+		);
+	};
+
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 1: Environment and Telemetry Initialization
 	// ─────────────────────────────────────────────────────────────────────────────
@@ -420,18 +428,31 @@ export async function main(args: string[]) {
 	// This is non-blocking (void) to avoid startup latency
 	void initOpenTelemetry("composer-cli");
 
-	// Pre-load model registry before any UI needs it
-	// This includes built-in models and any custom models from user config
-	await ensureModelsLoaded();
+	const bootstrapParallelStart = performance.now();
+	const modelLoadPromise = (async () => {
+		const startedAt = performance.now();
+		await ensureModelsLoaded();
+		logStartupPhase("models.loaded", startedAt);
+	})();
+	const enterpriseContextPromise = (async () => {
+		const startedAt = performance.now();
+		const { enterpriseContext } = await import("./enterprise/context.js");
+		await enterpriseContext.initialize();
+		logStartupPhase("enterprise.initialized", startedAt);
+		return enterpriseContext;
+	})();
+
+	// Pre-load model registry and enterprise context in parallel. These are
+	// independent startup costs, so overlapping them reduces cold-start latency.
+	const [enterpriseContext] = await Promise.all([
+		enterpriseContextPromise,
+		modelLoadPromise,
+	]);
+	logStartupPhase("bootstrap.parallel", bootstrapParallelStart);
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 2: Enterprise Context Initialization
 	// ─────────────────────────────────────────────────────────────────────────────
-
-	// Initialize enterprise context for user/org tracking
-	// This enables audit logging and policy enforcement in enterprise deployments
-	const { enterpriseContext } = await import("./enterprise/context.js");
-	await enterpriseContext.initialize();
 
 	// Initialize audit integration if enterprise features are available
 	// This logs all tool executions, model interactions, and session events
@@ -974,8 +995,10 @@ export async function main(args: string[]) {
 	// PHASE 12: MCP (Model Context Protocol) Integration
 	// ─────────────────────────────────────────────────────────────────────────────
 
+	const mcpInitStartedAt = performance.now();
 	const { initializeMcpServers } = await import("./bootstrap/mcp-setup.js");
 	initializeMcpServers({ agent, baseTools, cwd: process.cwd() });
+	logStartupPhase("mcp.bootstrap_queued", mcpInitStartedAt);
 
 	// Determine mode early to know if we should print messages
 	const isInteractive = parsed.messages.length === 0;

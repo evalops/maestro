@@ -127,4 +127,100 @@ describe("composer-input mention lookup", () => {
 
 		expect(el.apiClient.getFiles).toHaveBeenCalledTimes(1);
 	});
+
+	it("loads MCP tools into the picker and inserts the canonical tool mention", async () => {
+		const el = document.createElement("composer-input") as HTMLElement & {
+			apiClient: {
+				getFiles: ReturnType<typeof vi.fn>;
+				getMcpStatus: ReturnType<typeof vi.fn>;
+			};
+			updateComplete?: Promise<void>;
+		};
+
+		el.apiClient = {
+			getFiles: vi.fn().mockResolvedValue([]),
+			getMcpStatus: vi.fn().mockResolvedValue({
+				servers: [
+					{
+						name: "github",
+						connected: true,
+						scope: "project",
+						transport: "http",
+						tools: [{ name: "search", description: "Search repository code" }],
+						resources: [],
+						prompts: [],
+					},
+				],
+			}),
+		};
+
+		document.body.appendChild(el);
+		await el.updateComplete;
+
+		const button = el.shadowRoot?.querySelector(
+			".mcp-button",
+		) as HTMLButtonElement;
+		button.click();
+
+		await expect
+			.poll(
+				() =>
+					el.shadowRoot
+						?.querySelector(".suggestion-label")
+						?.textContent?.trim() ?? "",
+			)
+			.toBe("github/search");
+
+		expect(
+			el.shadowRoot?.querySelector(".suggestion-badge")?.textContent?.trim(),
+		).toBe("project");
+
+		const suggestion = el.shadowRoot?.querySelector(
+			".suggestion-item",
+		) as HTMLDivElement;
+		suggestion.click();
+
+		await expect
+			.poll(
+				() =>
+					(
+						el.shadowRoot?.querySelector(
+							"textarea",
+						) as HTMLTextAreaElement | null
+					)?.value ?? "",
+			)
+			.toBe("@mcp__github__search ");
+	});
+
+	it("shows an MCP picker error when tool status cannot be loaded", async () => {
+		const el = document.createElement("composer-input") as HTMLElement & {
+			apiClient: {
+				getFiles: ReturnType<typeof vi.fn>;
+				getMcpStatus: ReturnType<typeof vi.fn>;
+			};
+			updateComplete?: Promise<void>;
+		};
+
+		el.apiClient = {
+			getFiles: vi.fn().mockResolvedValue([]),
+			getMcpStatus: vi.fn().mockRejectedValue(new Error("mcp unavailable")),
+		};
+
+		document.body.appendChild(el);
+		await el.updateComplete;
+
+		const button = el.shadowRoot?.querySelector(
+			".mcp-button",
+		) as HTMLButtonElement;
+		button.click();
+
+		await expect
+			.poll(
+				() =>
+					el.shadowRoot
+						?.querySelector(".suggestion-empty")
+						?.textContent?.trim() ?? "",
+			)
+			.toContain("mcp unavailable");
+	});
 });

@@ -210,6 +210,28 @@ export interface AttachmentTextExtractionResponse {
 	cached?: boolean;
 }
 
+export interface McpToolDefinition {
+	name: string;
+	description?: string;
+	inputSchema?: unknown;
+	annotations?: Record<string, unknown>;
+}
+
+export interface McpServerStatus {
+	name: string;
+	connected: boolean;
+	scope?: "enterprise" | "plugin" | "project" | "local" | "user";
+	transport?: "stdio" | "http" | "sse";
+	tools?: McpToolDefinition[] | number;
+	resources?: string[];
+	prompts?: string[];
+	error?: string;
+}
+
+export interface McpStatus {
+	servers: McpServerStatus[];
+}
+
 export type SessionArtifactAccessAction = "view" | "file" | "events" | "zip";
 
 interface SessionArtifactAccessResponse {
@@ -1850,8 +1872,8 @@ export class ApiClient {
 	}
 
 	// MCP
-	async getMcpStatus(): Promise<Record<string, unknown>> {
-		return await this.fetchJsonWithFallback("/api/mcp");
+	async getMcpStatus(): Promise<McpStatus> {
+		return (await this.fetchJsonWithFallback("/api/mcp")) as McpStatus;
 	}
 
 	// Background Tasks

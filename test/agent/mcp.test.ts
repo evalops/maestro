@@ -232,7 +232,12 @@ describe("MCP client manager", () => {
 		const manager = createManager();
 		await manager.configure({
 			servers: [
-				{ name: "test", transport: "stdio", command: "nonexistent-cmd" },
+				{
+					name: "test",
+					transport: "stdio",
+					command: "nonexistent-cmd",
+					scope: "project",
+				},
 			],
 		});
 
@@ -240,6 +245,29 @@ describe("MCP client manager", () => {
 		expect(status.servers).toHaveLength(1);
 		expect(status.servers[0]!.name).toBe("test");
 		expect(status.servers[0]!.connected).toBe(false);
+		expect(status.servers[0]!.scope).toBe("project");
+		expect(status.servers[0]!.transport).toBe("stdio");
+	});
+
+	it("includes the last connection error in status", async () => {
+		const manager = createManager();
+		await manager.configure({
+			servers: [
+				{
+					name: "broken",
+					transport: "stdio",
+					command: "nonexistent-cmd",
+					scope: "local",
+				},
+			],
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const status = manager.getStatus();
+		expect(status.servers[0]!.scope).toBe("local");
+		expect(status.servers[0]!.transport).toBe("stdio");
+		expect(status.servers[0]!.error).toBeTruthy();
 	});
 
 	it("clears reconnect timers on disconnectAll", async () => {

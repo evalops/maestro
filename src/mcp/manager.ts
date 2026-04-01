@@ -119,6 +119,9 @@ export class McpClientManager extends EventEmitter {
 	/** Map of server name to pending reconnect timer */
 	private reconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+	/** Last connection or runtime error reported for each configured server */
+	private lastErrors = new Map<string, string>();
+
 	/** Current configuration */
 	private config: McpConfig = { servers: [] };
 
@@ -300,6 +303,7 @@ export class McpClientManager extends EventEmitter {
 				prompts,
 				reconnectAttempts: 0,
 			});
+			this.lastErrors.delete(name);
 
 			// Set up notification handlers after adding to servers map
 			// to avoid race condition where notifications arrive before server is tracked
@@ -308,6 +312,7 @@ export class McpClientManager extends EventEmitter {
 			this.emit("connected", { name, tools: tools.length, isReconnect });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
+			this.lastErrors.set(name, message);
 			logger.error(
 				"Failed to connect to server",
 				error instanceof Error ? error : new Error(message),
@@ -602,6 +607,9 @@ export class McpClientManager extends EventEmitter {
 			servers.push({
 				name: config.name,
 				connected: !!connected,
+				error: this.lastErrors.get(config.name),
+				scope: config.scope,
+				transport: config.transport,
 				tools: connected?.tools ?? [],
 				resources: connected?.resources ?? [],
 				prompts: connected?.prompts ?? [],
