@@ -1,15 +1,15 @@
-# Composer Tips
+# Maestro Tips
 # Lines starting with # are comments and ignored
 
 Use /compact when the conversation gets long to summarize history and free up context.
 Start a fresh idea with /clear; the previous session stays available in history.
 Type / to see available commands; Tab autocompletes slash commands.
 Press Esc to interrupt the agent while it's working.
-Paste large content and Composer will summarize it for you.
+Paste large content and Maestro will summarize it for you.
 Use /model to switch between different AI models.
 Run shell commands directly with the Bash tool.
-Composer can read and edit files across your entire codebase.
+Maestro can read and edit files across your entire codebase.
 Use /help to see all available commands and features.
 Press Ctrl+C twice to force quit if needed.
-Composer remembers context from your entire conversation.
-You can resume previous sessions with composer --resume.
+Maestro remembers context from your entire conversation.
+You can resume previous sessions with maestro --resume.

@@ -180,7 +180,7 @@ export class ImportExportView {
 					.replace(/[:.]/g, "-")
 					.replace("T", "_")
 					.replace("Z", "");
-				outputPath = join(baseDir, `composer-share-${timestamp}.html`);
+				outputPath = join(baseDir, `maestro-share-${timestamp}.html`);
 			}
 
 			const filePath = await exportSessionToHtml(

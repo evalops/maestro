@@ -211,7 +211,7 @@ export class FooterHintsController {
 			);
 		} else {
 			this.callbacks.showToast(
-				`Context ${percent.toFixed(1)}% used (${label}). Composer will auto-compact soon.`,
+				`Context ${percent.toFixed(1)}% used (${label}). Maestro will auto-compact soon.`,
 				"warn",
 			);
 		}

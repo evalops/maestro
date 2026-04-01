@@ -82,14 +82,14 @@ function injectLiveReloadWithAuth(
 	          if (data && data.type === "artifact_updated") {
 	            reload();
 	          }
-	        } catch (err) { console.error("[Composer] Failed to parse live reload event:", err); }
+	        } catch (err) { console.error("[Maestro] Failed to parse live reload event:", err); }
 	      };
 	    }`
 			};
 	    Promise.resolve(connect()).catch((err) => {
-	      console.error("[Composer] Failed to setup live reload transport:", err);
+	      console.error("[Maestro] Failed to setup live reload transport:", err);
 	    });
-	  } catch (err) { console.error("[Composer] Failed to setup live reload EventSource:", err); }
+	  } catch (err) { console.error("[Maestro] Failed to setup live reload EventSource:", err); }
 	})();
 	`.trim();
 	const script = `<script>\n${escapeScriptContent(scriptBody)}\n</script>`;
@@ -134,7 +134,7 @@ function injectArtifactsSnapshotRuntime(
   try {
     window.artifacts = ${escapeScriptContent(JSON.stringify(snapshot))};
   } catch (err) {
-    console.error("[Composer] Failed to initialize artifacts snapshot:", err);
+    console.error("[Maestro] Failed to initialize artifacts snapshot:", err);
     window.artifacts = {};
   }
 
@@ -554,7 +554,7 @@ export async function handleSessionArtifactViewer(
 		const isHtml = String(mime).startsWith("text/html");
 		const { accessToken, grant } = resolveArtifactAccessContext(req);
 
-		const title = `Composer Artifact · ${filename}`;
+		const title = `Maestro Artifact · ${filename}`;
 		const viewerUrl = buildSessionArtifactViewerUrl(sessionId, filename);
 
 		const eventsUrl = canUseArtifactAccess(grant, "events")
@@ -743,7 +743,7 @@ window.addEventListener("message", (e) => {
 
       const triggerRefresh = () => {
         void refreshViewer().catch((err) => {
-          console.error("[Composer] Failed to refresh viewer:", err);
+          console.error("[Maestro] Failed to refresh viewer:", err);
         });
       };
 
@@ -754,7 +754,7 @@ window.addEventListener("message", (e) => {
         }
         button.addEventListener("click", () => {
           void downloadViewerResource(url, fallbackName).catch((err) => {
-            console.error("[Composer] Failed to download artifact:", err);
+            console.error("[Maestro] Failed to download artifact:", err);
           });
         });
       };
@@ -805,9 +805,9 @@ window.addEventListener("message", (e) => {
         }`
 				};
         Promise.resolve(connect()).catch((err) => {
-          console.error("[Composer] Failed to setup viewer live reload transport:", err);
+          console.error("[Maestro] Failed to setup viewer live reload transport:", err);
         });
-      } catch (err) { console.error("[Composer] Failed to setup viewer EventSource:", err); }`
+      } catch (err) { console.error("[Maestro] Failed to setup viewer EventSource:", err); }`
 					: ""
 			}
     </script>

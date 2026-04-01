@@ -1,7 +1,32 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+	afterAll,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
+
+const mockConversationsOpen = vi.fn();
+const mockPostMessage = vi.fn();
+
+vi.mock("@slack/web-api", () => ({
+	WebClient: vi.fn(function MockWebClient() {
+		return {
+			conversations: {
+				open: mockConversationsOpen,
+			},
+			chat: {
+				postMessage: mockPostMessage,
+			},
+		};
+	}),
+}));
+
 import {
 	type ApiServerInstance,
 	createApiServer,
@@ -48,6 +73,13 @@ describe("ApiServer (workspace-scoped)", () => {
 			workingDir: testDir,
 		});
 		await server.start();
+	});
+
+	beforeEach(() => {
+		mockConversationsOpen.mockReset();
+		mockPostMessage.mockReset();
+		mockConversationsOpen.mockResolvedValue({ channel: { id: "D_TEST" } });
+		mockPostMessage.mockResolvedValue({ ok: true });
 	});
 
 	afterAll(async () => {
@@ -99,6 +131,34 @@ describe("ApiServer (workspace-scoped)", () => {
 		const data = (await res.json()) as string[];
 		expect(data).toContain("rest_api");
 		expect(data).toContain("hubspot");
+	});
+
+	it("POST /api/auth/request-code sends Maestro-branded Slack DM copy", async () => {
+		const res = await fetch(`${base}/api/auth/request-code`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				teamId,
+				userId: "U_TEST_ADMIN",
+			}),
+		});
+		expect(res.status).toBe(200);
+		expect(mockConversationsOpen).toHaveBeenCalledWith({
+			users: "U_TEST_ADMIN",
+		});
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				channel: "D_TEST",
+				text: expect.stringMatching(
+					/^Maestro control plane login code: \d{6}\n\nThis code expires in 10 minutes\.$/,
+				),
+			}),
+		);
+		expect(mockPostMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				text: expect.stringContaining("Composer control plane login code"),
+			}),
+		);
 	});
 
 	it("POST /api/workspaces/:teamId/connectors adds a connector", async () => {

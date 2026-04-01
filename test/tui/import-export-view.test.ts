@@ -143,4 +143,18 @@ describe("ImportExportView.handleExportCommand", () => {
 			).resolveExportPath("/etc/composer-export.html"),
 		).toThrow(/Export path must be inside/);
 	});
+
+	it("defaults share exports to a maestro filename", async () => {
+		const htmlSpy = vi
+			.spyOn(exporter, "exportSessionToHtml")
+			.mockImplementation(
+				async (_manager, _state, outputPath) => outputPath ?? "",
+			);
+		spies.push(htmlSpy);
+		const { view } = buildView();
+		await view.handleShareCommand("/share");
+		const defaultPath = htmlSpy.mock.calls[0]?.[2];
+		expect(defaultPath).toContain("maestro-share-");
+		expect(defaultPath).not.toContain("composer-share-");
+	});
 });

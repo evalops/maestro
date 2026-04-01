@@ -1,5 +1,6 @@
 import type * as fs from "node:fs";
 import { describe, expect, it, vi } from "vitest";
+import { stripAnsiSequences } from "../../src/cli-tui/utils/text-formatting.js";
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof fs>();
 	return {
@@ -38,10 +39,14 @@ describe("AboutView", () => {
 			telemetryStatus: () => "enabled",
 			getApprovalMode: () => "auto",
 		});
-		const card = about.buildAboutCard();
-		expect(card).toContain("composer about");
+		const card = stripAnsiSequences(about.buildAboutCard());
+		expect(card).toContain("maestro about");
 		expect(card).toContain("[status]");
 		expect(card).toContain("git");
 		expect(card).toContain("Session directory");
+		expect(card).toContain("▣ maestro ");
+		expect(card).toContain("tar czf maestro-about.tgz");
+		expect(card).not.toContain("▣ composer ");
+		expect(card).not.toContain("composer-about.tgz");
 	});
 });

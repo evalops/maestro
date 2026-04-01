@@ -5,7 +5,7 @@ import { formatGuardianResult, runGuardian } from "./runner.js";
 import type { GuardianTarget } from "./types.js";
 
 function printHelp(): void {
-	console.log(`Composer Guardian
+	console.log(`Maestro Guardian
 
 Usage: guardian [--staged|--all] [--json] [--no-env] [--quiet] [--trigger <label>]
 

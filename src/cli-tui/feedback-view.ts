@@ -74,7 +74,7 @@ export class FeedbackView {
 
 		const infoSection = [
 			chalk.bold("Bug report info"),
-			`Composer: ${this.options.version || "unknown"}`,
+			`Maestro: ${this.options.version || "unknown"}`,
 			`Session ID: ${sessionId}`,
 			sessionDirLine,
 			`Model: ${model ? `${model.provider}/${model.id}` : "unknown"}`,
@@ -121,7 +121,7 @@ export class FeedbackView {
 			? `${this.options.agent.state.model.provider}/${this.options.agent.state.model.id}`
 			: "unknown";
 		const snapshot = this.collectHealthSnapshot();
-		const plain = `Composer feedback\nVersion: ${this.options.version}\nSession: ${sessionId}\nSession file: ${sessionFile}\nModel: ${model}\nTool failures: ${snapshot.toolFailures}\nFlags: ${this.buildRuntimeFlagsLine()}\n\nWhat happened?\n\nWhat did you expect instead?\n\nAnything else we should know?`;
+		const plain = `Maestro feedback\nVersion: ${this.options.version}\nSession: ${sessionId}\nSession file: ${sessionFile}\nModel: ${model}\nTool failures: ${snapshot.toolFailures}\nFlags: ${this.buildRuntimeFlagsLine()}\n\nWhat happened?\n\nWhat did you expect instead?\n\nAnything else we should know?`;
 
 		const copied = this.copyTextToClipboard(plain);
 		const body = `${chalk.bold("Feedback template")}\n${plain}\n\n${
@@ -301,7 +301,7 @@ ${tarCommand}${
 			return chalk.dim("(no files to archive)");
 		}
 		const quoted = paths.map((value) => this.quotePath(value));
-		const firstLine = "tar czf composer-bug-report.tgz";
+		const firstLine = "tar czf maestro-bug-report.tgz";
 		const subsequent = quoted.map((value) => `  ${value}`);
 		return [firstLine, ...subsequent].join(" \\\n");
 	}

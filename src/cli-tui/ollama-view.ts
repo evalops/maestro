@@ -161,7 +161,7 @@ export class OllamaView {
 			freshness ? ` ${freshness}` : ""
 		}`;
 		const readyHint = chalk.dim(
-			`Composer-ready models: ${localIndex.readyNames.size || localIndex.readyTailNames.size ? "highlighted" : "none"}`,
+			`Maestro-ready models: ${localIndex.readyNames.size || localIndex.readyTailNames.size ? "highlighted" : "none"}`,
 		);
 		this.renderText(`${header}\n${readyHint}\n\n${lines.join("\n")}`);
 	}
@@ -323,7 +323,7 @@ Use /ollama list to view installed models.
 Use /ollama pull <model> to download one (e.g. /ollama pull llama3).
 Use /ollama ps to see currently running models.
 Use /ollama show <model> to inspect metadata.
-Use /ollama use <model> to switch Composer to a local model.
+Use /ollama use <model> to switch Maestro to a local model.
 Use /ollama doctor to diagnose daemon + disk health.`;
 		this.renderText(message);
 	}

@@ -107,4 +107,59 @@ describe("session artifact viewer auth", () => {
 		expect(response.getBody()).toContain("x-composer-artifact-access");
 		expect(response.getBody()).not.toContain("composerArtifactToken=");
 	});
+
+	it("brands the artifact viewer as Maestro", async () => {
+		const access = issueArtifactAccessGrant({
+			sessionId: "session-1",
+			scope: "scope-1",
+			filename: "preview.html",
+			actions: ["view", "file", "events", "zip"],
+		});
+		const req = createMockRequest(
+			"/api/sessions/session-1/artifacts/preview.html/view",
+			access.token,
+		);
+		const response = createMockResponse();
+
+		await handleSessionArtifactViewer(
+			req,
+			response.res,
+			{ id: "session-1", filename: "preview.html" },
+			{ "Access-Control-Allow-Origin": "*" },
+		);
+
+		expect(response.getStatus()).toBe(200);
+		expect(response.getBody()).toContain(
+			"<title>Maestro Artifact · preview.html</title>",
+		);
+		expect(response.getBody()).toContain(
+			'<div class="title">Maestro Artifact · preview.html</div>',
+		);
+		expect(response.getBody()).not.toContain("Composer Artifact");
+	});
+
+	it("uses Maestro console labels in injected viewer scripts", async () => {
+		const access = issueArtifactAccessGrant({
+			sessionId: "session-1",
+			scope: "scope-1",
+			filename: "preview.html",
+			actions: ["view", "file", "events", "zip"],
+		});
+		const req = createMockRequest(
+			"/api/sessions/session-1/artifacts/preview.html/view",
+			access.token,
+		);
+		const response = createMockResponse();
+
+		await handleSessionArtifactViewer(
+			req,
+			response.res,
+			{ id: "session-1", filename: "preview.html" },
+			{ "Access-Control-Allow-Origin": "*" },
+		);
+
+		expect(response.getStatus()).toBe(200);
+		expect(response.getBody()).toContain("[Maestro]");
+		expect(response.getBody()).not.toContain("[Composer]");
+	});
 });

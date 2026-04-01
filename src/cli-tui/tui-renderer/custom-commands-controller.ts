@@ -159,7 +159,7 @@ export class CustomCommandsController {
 		const prompt = renderCommandPrompt(cmd, args);
 		this.callbacks.setEditorText(prompt);
 		this.callbacks.showToast(
-			`Inserted command "${cmd.name}" into the composer. Edit then submit.`,
+			`Inserted command "${cmd.name}" into Maestro. Edit then submit.`,
 			"info",
 		);
 		this.callbacks.requestRender();

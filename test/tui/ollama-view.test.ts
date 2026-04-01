@@ -117,6 +117,8 @@ describe("OllamaView", () => {
 		const rendered = text?.render(120).join("\n") ?? "";
 		expect(rendered).toContain("/ollama list");
 		expect(rendered).toContain("/ollama use");
+		expect(rendered).toContain("switch Maestro to a local model");
+		expect(rendered).not.toContain("switch Composer to a local model");
 	});
 
 	it("runs ollama list and prints parsed output", async () => {
@@ -137,6 +139,8 @@ describe("OllamaView", () => {
 		);
 		const rendered = text?.render(120).join("\n") ?? "";
 		expect(rendered).toContain("llama3");
+		expect(rendered).toContain("Maestro-ready models: highlighted");
+		expect(rendered).not.toContain("Composer-ready models");
 	});
 
 	it("suggests popular models when pull target missing", async () => {

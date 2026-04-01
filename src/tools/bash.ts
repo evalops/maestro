@@ -219,7 +219,7 @@ Timeout: 90s default, 600s max. Output truncates at 40KB.`,
 					content: [
 						{
 							type: "text",
-							text: `Composer Guardian blocked ${guardCheck.trigger ?? "git"}\n\n${formatGuardianResult(guardian)}`,
+							text: `Maestro Guardian blocked ${guardCheck.trigger ?? "git"}\n\n${formatGuardianResult(guardian)}`,
 						},
 					],
 					details: undefined,

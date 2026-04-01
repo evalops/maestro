@@ -3,6 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentToolResult } from "../../src/agent/types.js";
+import {
+	formatGuardianResult,
+	runGuardian,
+	shouldGuardCommand,
+} from "../../src/guardian/index.js";
 import { bashTool } from "../../src/tools/bash.js";
 import { toolRegistry } from "../../src/tools/index.js";
 
@@ -92,6 +97,36 @@ describe("bash tool", () => {
 			expect(result.isError).toBeFalsy();
 			const output = getTextOutput(result);
 			expect(output).toContain("successfully");
+		});
+	});
+
+	describe("guardian integration", () => {
+		it("uses maestro wording when guardian blocks execution", async () => {
+			vi.mocked(shouldGuardCommand).mockReturnValueOnce({
+				shouldGuard: true,
+				trigger: "git",
+			});
+			vi.mocked(runGuardian).mockResolvedValueOnce({
+				status: "failed",
+				exitCode: 1,
+				startedAt: Date.now(),
+				durationMs: 5,
+				target: "staged",
+				trigger: "git",
+				filesScanned: 1,
+				summary: "blocked",
+				toolResults: [],
+			});
+			vi.mocked(formatGuardianResult).mockReturnValueOnce("blocked details");
+
+			const result = await bashTool.execute("bash-guardian-1", {
+				command: "git push",
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Maestro Guardian blocked git");
+			expect(output).toContain("blocked details");
+			expect(output).not.toContain("Composer Guardian blocked git");
 		});
 	});
 

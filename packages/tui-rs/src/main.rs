@@ -143,8 +143,8 @@ fn infer_provider_from_model(model: &str) -> &'static str {
 /// - **Raw Identifiers**: `r#continue` uses `r#` prefix because `continue` is
 ///   a reserved keyword in Rust. This lets us use it as an identifier anyway.
 #[derive(Parser, Debug)]
-#[command(name = "composer-tui")]
-#[command(about = "Native terminal interface for Composer")]
+#[command(name = "maestro-tui")]
+#[command(about = "Native terminal interface for Maestro")]
 struct Args {
     /// Provider to use (e.g., anthropic, openai).
     /// When None, we infer from the model name.
@@ -289,4 +289,20 @@ async fn main() -> Result<()> {
     // We use this instead of returning because we need to pass the exit code
     // to the shell. This function never returns (it's marked `-> !`).
     std::process::exit(exit_code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn args_use_maestro_branding() {
+        let command = Args::command();
+        assert_eq!(command.get_name(), "maestro-tui");
+        assert_eq!(
+            command.get_about().map(|about| about.to_string()),
+            Some("Native terminal interface for Maestro".to_string())
+        );
+    }
 }

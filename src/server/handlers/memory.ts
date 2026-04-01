@@ -147,7 +147,7 @@ export async function handleMemory(
 				const store = exportMemories();
 				const outputPath = data.path
 					? resolve(process.cwd(), data.path)
-					: resolve(process.cwd(), "composer-memories.json");
+					: resolve(process.cwd(), "maestro-memories.json");
 				writeFileSync(outputPath, JSON.stringify(store, null, 2), "utf-8");
 				sendJson(
 					res,

@@ -8,7 +8,7 @@ import {
 export async function handleHooksCommand(subcommand?: string): Promise<void> {
 	if (subcommand && subcommand !== "status") {
 		console.error(chalk.red(`Unknown hooks subcommand: ${subcommand}`));
-		console.error(chalk.dim("Try: composer hooks status"));
+		console.error(chalk.dim("Try: maestro hooks status"));
 		process.exit(1);
 	}
 

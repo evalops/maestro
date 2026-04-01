@@ -273,7 +273,7 @@ impl<'a> SessionExporter<'a> {
 
         // Footer
         writeln!(md, "---").unwrap();
-        writeln!(md, "*Exported from Composer*").unwrap();
+        writeln!(md, "*Exported from Maestro*").unwrap();
 
         md
     }
@@ -489,7 +489,7 @@ impl<'a> SessionExporter<'a> {
         }
 
         // Footer
-        writeln!(html, r#"<div class="footer">Exported from Composer</div>"#).unwrap();
+        writeln!(html, r#"<div class="footer">Exported from Maestro</div>"#).unwrap();
         writeln!(html, "</body>\n</html>").unwrap();
 
         html
@@ -758,6 +758,8 @@ mod tests {
         assert!(md.contains("Hello!"));
         assert!(md.contains("## Assistant"));
         assert!(md.contains("Hi there!"));
+        assert!(md.contains("*Exported from Maestro*"));
+        assert!(!md.contains("*Exported from Composer*"));
     }
 
     #[test]
@@ -781,6 +783,8 @@ mod tests {
         assert!(html.contains("<!DOCTYPE html>"));
         assert!(html.contains("<title>Conversation</title>"));
         assert!(html.contains("Hello!"));
+        assert!(html.contains(r#"<div class="footer">Exported from Maestro</div>"#));
+        assert!(!html.contains("Exported from Composer"));
     }
 
     #[test]

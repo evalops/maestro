@@ -304,6 +304,17 @@ describe("memory-handlers", () => {
 			);
 		});
 
+		it("exports to a maestro filename by default", () => {
+			const ctx = createMemoryCtx("/memory export");
+			handleMemoryCommand(ctx);
+			expect(ctx.showSuccess).toHaveBeenCalledWith(
+				expect.stringContaining("maestro-memories.json"),
+			);
+			expect(ctx.showSuccess).not.toHaveBeenCalledWith(
+				expect.stringContaining("composer-memories.json"),
+			);
+		});
+
 		it("handles delete with id", () => {
 			const ctx = createMemoryCtx("/memory delete mem_123");
 			handleMemoryCommand(ctx);

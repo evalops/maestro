@@ -147,7 +147,7 @@ export function createCommandRegistry({
 			{
 				name: "guardian",
 				description:
-					"Run Composer Guardian (Semgrep + secrets) or toggle enforcement",
+					"Run Maestro Guardian (Semgrep + secrets) or toggle enforcement",
 				usage: "/guardian [run|status|enable|disable|all]",
 				tags: ["safety", "git"],
 				examples: ["/guardian", "/guardian status", "/guardian disable"],
@@ -441,7 +441,7 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "about",
-				description: "Show Composer build, env, and git info",
+				description: "Show Maestro build, env, and git info",
 				usage: "/about",
 				tags: ["system", "diagnostics"],
 			},
@@ -690,7 +690,7 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "update",
-				description: "Check for Composer CLI updates",
+				description: "Check for Maestro CLI updates",
 				usage: "/update",
 				tags: ["system"],
 			},
@@ -777,7 +777,7 @@ export function createCommandRegistry({
 		buildEntry(
 			{
 				name: "config",
-				description: "Validate and inspect Composer configuration",
+				description: "Validate and inspect Maestro configuration",
 				usage: "/config [summary|sources|providers|env|files|help]",
 				tags: ["config"],
 				examples: ["/config", "/config sources"],

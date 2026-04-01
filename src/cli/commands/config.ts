@@ -719,8 +719,8 @@ You are a helpful AI coding assistant.
 			const envExamplePath = join(process.cwd(), ".env.example");
 			const envVarName = apiKeyField.apiKeyEnv ?? "";
 			const envContent = existsSync(envExamplePath)
-				? `\n# Added by composer init\n${envVarName}=your-api-key-here\n`
-				: `# Composer Configuration\n${envVarName}=your-api-key-here\n`;
+				? `\n# Added by maestro init\n${envVarName}=your-api-key-here\n`
+				: `# Maestro Configuration\n${envVarName}=your-api-key-here\n`;
 
 			if (existsSync(envExamplePath)) {
 				const fs = await import("node:fs/promises");
@@ -742,8 +742,8 @@ You are a helpful AI coding assistant.
 		if (createPrompts) {
 			console.log(muted("  2. Edit .maestro/prompts/system.md"));
 		}
-		console.log(muted("  3. Run: composer models list"));
-		console.log(muted('  4. Start using: composer "your prompt"\n'));
+		console.log(muted("  3. Run: maestro models list"));
+		console.log(muted('  4. Start using: maestro "your prompt"\n'));
 
 		rl.close();
 	} catch (error) {

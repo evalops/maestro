@@ -124,6 +124,22 @@ describe("command-registry-integration", () => {
 		expect(commands.length).toBe(entries.length);
 	});
 
+	it("uses maestro descriptions for guardian, about, and config", () => {
+		const opts = createMockOptions();
+		const { commands } = buildCommandRegistry(opts);
+		const guardian = commands.find((command) => command.name === "guardian");
+		const about = commands.find((command) => command.name === "about");
+		const config = commands.find((command) => command.name === "config");
+
+		expect(guardian?.description).toBe(
+			"Run Maestro Guardian (Semgrep + secrets) or toggle enforcement",
+		);
+		expect(about?.description).toBe("Show Maestro build, env, and git info");
+		expect(config?.description).toBe(
+			"Validate and inspect Maestro configuration",
+		);
+	});
+
 	it("every entry has a valid command with name and description", () => {
 		const opts = createMockOptions();
 		const { entries } = buildCommandRegistry(opts);
@@ -353,6 +369,14 @@ describe("command-registry-integration", () => {
 		for (let i = 0; i < entries.length; i++) {
 			expect(commands[i]).toBe(entries[i]!.command);
 		}
+	});
+
+	it("describes /update using Maestro branding", () => {
+		const opts = createMockOptions();
+		const { commands } = buildCommandRegistry(opts);
+		const updateCommand = commands.find((command) => command.name === "update");
+
+		expect(updateCommand?.description).toBe("Check for Maestro CLI updates");
 	});
 
 	it("no duplicate command names in the registry", () => {

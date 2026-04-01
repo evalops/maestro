@@ -160,7 +160,7 @@ impl WelcomeScreen {
             Span::raw(welcome_text),
             Span::raw(" "),
             Span::styled(
-                "Composer",
+                "Maestro",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -408,7 +408,7 @@ pub struct SplashScreen {
 impl Default for SplashScreen {
     fn default() -> Self {
         Self {
-            title: "Composer".to_string(),
+            title: "Maestro".to_string(),
             subtitle: None,
             show_logo: true,
         }
@@ -519,6 +519,20 @@ mod tests {
     }
 
     #[test]
+    fn test_welcome_screen_uses_maestro_branding() {
+        let welcome = WelcomeScreen::new().animations(false);
+        let lines = welcome.build_content(Rect::new(0, 0, 80, 24));
+        let rendered = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("Welcome to Maestro"));
+        assert!(!rendered.contains("Welcome to Composer"));
+    }
+
+    #[test]
     fn test_onboarding_step_navigation() {
         assert_eq!(OnboardingStep::Welcome.next(), OnboardingStep::Auth);
         assert_eq!(OnboardingStep::Auth.prev(), OnboardingStep::Welcome);
@@ -563,5 +577,12 @@ mod tests {
         assert_eq!(splash.title, "Test");
         assert_eq!(splash.subtitle.as_deref(), Some("Loading..."));
         assert!(!splash.show_logo);
+    }
+
+    #[test]
+    fn test_splash_screen_default_title_uses_maestro() {
+        let splash = SplashScreen::default();
+        assert_eq!(splash.title, "Maestro");
+        assert_ne!(splash.title, "Composer");
     }
 }
