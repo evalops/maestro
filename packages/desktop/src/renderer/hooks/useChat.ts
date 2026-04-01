@@ -41,9 +41,9 @@ export function useChat(
 
 	// Load session messages when sessionId changes
 	useEffect(() => {
+		setRuntimeStatus(null);
 		if (!sessionId) {
 			setMessages([]);
-			setRuntimeStatus(null);
 			return;
 		}
 

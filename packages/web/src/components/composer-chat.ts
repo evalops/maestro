@@ -2176,6 +2176,7 @@ export class ComposerChat extends LitElement {
 
 	private async createNewSession() {
 		this.error = null;
+		this.runtimeStatus = null;
 		try {
 			const session = await this.apiClient.createSession("New Chat");
 			this.currentSessionId = session.id;
@@ -2323,6 +2324,7 @@ export class ComposerChat extends LitElement {
 
 	private async selectSession(sessionId: string) {
 		this.currentSessionId = sessionId;
+		this.runtimeStatus = null;
 		try {
 			const session = await this.apiClient.getSession(sessionId);
 			if (!session || !session.id) {
