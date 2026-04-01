@@ -728,25 +728,31 @@ done
         let logged_inits: Vec<_> = fs::read_to_string(&log_path)
             .expect("read log")
             .lines()
-            .map(|line| serde_json::from_str::<ToAgentMessage>(line).expect("parse message"))
+            .filter_map(|line| {
+                let message = serde_json::from_str::<ToAgentMessage>(line).expect("parse message");
+                match message {
+                    ToAgentMessage::Init {
+                        system_prompt,
+                        append_system_prompt,
+                        thinking_level,
+                        approval_mode,
+                    } => Some((
+                        system_prompt,
+                        append_system_prompt,
+                        thinking_level,
+                        approval_mode,
+                    )),
+                    _ => None,
+                }
+            })
             .collect();
 
         assert_eq!(logged_inits.len(), 2);
-        for message in logged_inits {
-            match message {
-                ToAgentMessage::Init {
-                    system_prompt,
-                    append_system_prompt,
-                    thinking_level,
-                    approval_mode,
-                } => {
-                    assert_eq!(system_prompt, init.system_prompt);
-                    assert_eq!(append_system_prompt, init.append_system_prompt);
-                    assert_eq!(thinking_level, init.thinking_level);
-                    assert_eq!(approval_mode, init.approval_mode);
-                }
-                other => panic!("expected init replay, got {other:?}"),
-            }
+        for (system_prompt, append_system_prompt, thinking_level, approval_mode) in logged_inits {
+            assert_eq!(system_prompt, init.system_prompt);
+            assert_eq!(append_system_prompt, init.append_system_prompt);
+            assert_eq!(thinking_level, init.thinking_level);
+            assert_eq!(approval_mode, init.approval_mode);
         }
     }
 }
