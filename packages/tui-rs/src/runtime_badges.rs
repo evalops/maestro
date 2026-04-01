@@ -23,6 +23,7 @@ pub struct RuntimeBadgeParams {
     pub thinking_level: ThinkingLevel,
     pub mcp_connected: usize,
     pub mcp_tool_count: usize,
+    pub mcp_failed: usize,
     pub alert_count: usize,
 }
 
@@ -58,10 +59,20 @@ pub fn build_runtime_badges(params: RuntimeBadgeParams) -> RuntimeBadges {
         core.push(format!("think:{label}"));
     }
 
-    if params.mcp_connected > 0 {
+    if params.mcp_connected > 0 || params.mcp_failed > 0 {
+        let tool_suffix = if params.mcp_connected > 0 {
+            format!("({})", params.mcp_tool_count)
+        } else {
+            String::new()
+        };
+        let failure_suffix = if params.mcp_failed > 0 {
+            format!("!{}", params.mcp_failed)
+        } else {
+            String::new()
+        };
         core.push(format!(
-            "mcp:{}({})",
-            params.mcp_connected, params.mcp_tool_count
+            "mcp:{}{}{}",
+            params.mcp_connected, tool_suffix, failure_suffix
         ));
     }
 
@@ -216,4 +227,37 @@ fn is_musl_env() -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_runtime_badges_show_mcp_failures_without_connected_servers() {
+        let badges = build_runtime_badges(RuntimeBadgeParams {
+            approval_mode: ApprovalMode::Selective,
+            thinking_level: ThinkingLevel::Off,
+            mcp_connected: 0,
+            mcp_tool_count: 0,
+            mcp_failed: 2,
+            alert_count: 0,
+        });
+
+        assert!(badges.core.contains(&"mcp:0!2".to_string()));
+    }
+
+    #[test]
+    fn test_runtime_badges_show_connected_and_failed_mcp_servers() {
+        let badges = build_runtime_badges(RuntimeBadgeParams {
+            approval_mode: ApprovalMode::Selective,
+            thinking_level: ThinkingLevel::Off,
+            mcp_connected: 1,
+            mcp_tool_count: 3,
+            mcp_failed: 2,
+            alert_count: 0,
+        });
+
+        assert!(badges.core.contains(&"mcp:1(3)!2".to_string()));
+    }
 }

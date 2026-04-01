@@ -880,6 +880,7 @@ mod tests {
             timeout: None,
             enabled: true,
             disabled: false,
+            scope: crate::mcp::McpConfigScope::User,
         }
     }
 

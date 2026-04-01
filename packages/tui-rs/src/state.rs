@@ -470,6 +470,9 @@ pub struct AppState {
 
     /// Cached MCP tool count for runtime badges.
     pub mcp_tool_count: usize,
+
+    /// Cached MCP failed server count for runtime badges.
+    pub mcp_failed: usize,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -544,6 +547,7 @@ impl AppState {
             queued_follow_up_edit_binding_label: "Alt+Up".to_string(),
             mcp_connected: 0,
             mcp_tool_count: 0,
+            mcp_failed: 0,
         }
     }
 

@@ -1539,6 +1539,7 @@ pub struct StatusBarWidget<'a> {
     thinking_level: Option<ThinkingLevel>,
     mcp_connected: usize,
     mcp_tool_count: usize,
+    mcp_failed: usize,
     alert_count: usize,
 }
 
@@ -1562,6 +1563,7 @@ impl<'a> StatusBarWidget<'a> {
             thinking_level: None,
             mcp_connected: 0,
             mcp_tool_count: 0,
+            mcp_failed: 0,
             alert_count: 0,
         }
     }
@@ -1598,9 +1600,10 @@ impl<'a> StatusBarWidget<'a> {
     }
 
     #[must_use]
-    pub fn with_mcp_status(mut self, connected: usize, tool_count: usize) -> Self {
+    pub fn with_mcp_status(mut self, connected: usize, tool_count: usize, failed: usize) -> Self {
         self.mcp_connected = connected;
         self.mcp_tool_count = tool_count;
+        self.mcp_failed = failed;
         self
     }
 
@@ -1689,6 +1692,7 @@ impl Widget for StatusBarWidget<'_> {
                 thinking_level: self.thinking_level.unwrap_or(ThinkingLevel::Off),
                 mcp_connected: self.mcp_connected,
                 mcp_tool_count: self.mcp_tool_count,
+                mcp_failed: self.mcp_failed,
                 alert_count: self.alert_count,
             })
         });
@@ -1930,7 +1934,11 @@ impl Widget for ChatView<'_> {
             .with_queue_badge(queue_badge.as_deref())
             .with_approval_mode(self.state.approval_mode)
             .with_thinking_level(self.state.thinking_level)
-            .with_mcp_status(self.state.mcp_connected, self.state.mcp_tool_count)
+            .with_mcp_status(
+                self.state.mcp_connected,
+                self.state.mcp_tool_count,
+                self.state.mcp_failed,
+            )
             .with_alert_count(alert_count);
             status_widget.render(chunks[2], buf);
         }

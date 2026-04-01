@@ -120,7 +120,7 @@ use super::web_fetch::{WebFetchArgs, WebFetchTool};
 use crate::agent::{FromAgent, ToolDefinition, ToolResult};
 use crate::ai::Tool;
 use crate::lsp;
-use crate::mcp::{load_mcp_config, McpClient, McpContent};
+use crate::mcp::{load_mcp_config, McpClient, McpConfigScope, McpContent, McpTransport};
 use crate::safety::{
     expand_tilde, is_tilde_path, require_plan, run_validators_with_diagnostics, ActionFirewall,
     FirewallVerdict,
@@ -348,6 +348,9 @@ fn is_probably_binary(data: &[u8]) -> bool {
 pub struct McpServerStatus {
     pub name: String,
     pub connected: bool,
+    pub scope: McpConfigScope,
+    pub transport: McpTransport,
+    pub error: Option<String>,
     pub tools: Vec<String>,
     pub resources: Vec<String>,
     pub prompts: Vec<String>,
@@ -428,6 +431,9 @@ pub struct ToolExecutor {
 
     /// MCP tool annotations for approval hints
     mcp_tool_annotations: RwLock<HashMap<String, crate::mcp::McpToolAnnotations>>,
+
+    /// Last connection error for configured MCP servers.
+    mcp_last_errors: RwLock<HashMap<String, String>>,
 }
 
 impl ToolExecutor {
@@ -488,6 +494,7 @@ impl ToolExecutor {
             cache: RwLock::new(ToolResultCache::default()),
             mcp_client: tokio::sync::Mutex::new(None),
             mcp_tool_annotations: RwLock::new(HashMap::new()),
+            mcp_last_errors: RwLock::new(HashMap::new()),
         }
     }
 
@@ -530,6 +537,7 @@ impl ToolExecutor {
             cache: RwLock::new(ToolResultCache::new(cache_config)),
             mcp_client: tokio::sync::Mutex::new(None),
             mcp_tool_annotations: RwLock::new(HashMap::new()),
+            mcp_last_errors: RwLock::new(HashMap::new()),
         }
     }
 
@@ -570,10 +578,19 @@ impl ToolExecutor {
             let config = load_mcp_config(Some(Path::new(&self.cwd)));
             let client = McpClient::new();
             let servers: Vec<_> = config.enabled_servers().cloned().collect();
+            let mut last_errors = HashMap::new();
             for server in servers {
                 if let Err(err) = client.connect(server.clone()).await {
-                    eprintln!("[mcp] Failed to connect to server {}: {}", server.name, err);
+                    let message = err.to_string();
+                    eprintln!(
+                        "[mcp] Failed to connect to server {}: {}",
+                        server.name, message
+                    );
+                    last_errors.insert(server.name.clone(), message);
                 }
+            }
+            if let Ok(mut map) = self.mcp_last_errors.write() {
+                *map = last_errors;
             }
             let annotations = client.list_tool_annotations().await;
             if let Ok(mut map) = self.mcp_tool_annotations.write() {
@@ -604,6 +621,11 @@ impl ToolExecutor {
             client.list_all_resources().await.into_iter().collect();
         let prompts_map: HashMap<String, Vec<String>> =
             client.list_all_prompts().await.into_iter().collect();
+        let last_errors = self
+            .mcp_last_errors
+            .read()
+            .map(|errors| errors.clone())
+            .unwrap_or_default();
 
         let mut statuses = Vec::new();
         for server in config.enabled_servers() {
@@ -611,6 +633,9 @@ impl ToolExecutor {
             let status = McpServerStatus {
                 name: name.clone(),
                 connected: connected.contains(&name),
+                scope: server.scope,
+                transport: server.transport,
+                error: last_errors.get(&name).cloned(),
                 tools: tools_map.get(&name).cloned().unwrap_or_default(),
                 resources: resources_map.get(&name).cloned().unwrap_or_default(),
                 prompts: prompts_map.get(&name).cloned().unwrap_or_default(),
@@ -4200,6 +4225,50 @@ mod tests {
         assert!(registry.get("glob").is_some());
         assert!(registry.get("grep").is_some());
         assert!(registry.get("edit").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_mcp_status_includes_scope_transport_and_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_dir = temp.path().join(".composer");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+
+        let server_name = "status-parity-test-server";
+        std::fs::write(
+            config_dir.join("mcp.json"),
+            format!(
+                r#"{{
+  "servers": [
+    {{
+      "name": "{server_name}",
+      "transport": "stdio",
+      "command": "missing-test-command"
+    }}
+  ]
+}}"#
+            ),
+        )
+        .expect("write mcp config");
+
+        let executor = ToolExecutor::new(temp.path().display().to_string());
+        {
+            let mut client = executor.mcp_client.lock().await;
+            *client = Some(crate::mcp::McpClient::new());
+        }
+        if let Ok(mut errors) = executor.mcp_last_errors.write() {
+            errors.insert(server_name.to_string(), "Connection refused".to_string());
+        }
+
+        let statuses = executor.mcp_status().await.expect("mcp status");
+        let server = statuses
+            .into_iter()
+            .find(|status| status.name == server_name)
+            .expect("status entry");
+
+        assert_eq!(server.scope, crate::mcp::McpConfigScope::Project);
+        assert_eq!(server.transport, crate::mcp::McpTransport::Stdio);
+        assert_eq!(server.error.as_deref(), Some("Connection refused"));
+        assert!(!server.connected);
     }
 
     #[test]

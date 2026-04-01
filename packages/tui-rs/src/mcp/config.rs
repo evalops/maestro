@@ -21,6 +21,21 @@ pub enum McpTransport {
     Sse,
 }
 
+/// Configuration source for an MCP server definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum McpConfigScope {
+    /// User-wide config in ~/.composer/mcp.json
+    #[default]
+    User,
+    /// Project-local override in .composer/mcp.local.json
+    Local,
+    /// Project-shared config in .composer/mcp.json
+    Project,
+    /// Enterprise override in ~/.composer/enterprise/mcp.json
+    Enterprise,
+}
+
 /// Configuration for a single MCP server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
@@ -66,6 +81,10 @@ pub struct McpServerConfig {
     /// Whether this server is disabled (alternative to enabled: false)
     #[serde(default)]
     pub disabled: bool,
+
+    /// Config source for UI provenance.
+    #[serde(skip, default)]
+    pub scope: McpConfigScope,
 }
 
 fn default_true() -> bool {
@@ -181,24 +200,24 @@ pub fn load_mcp_config(project_root: Option<&Path>) -> McpConfig {
     // User config (lowest precedence)
     if let Some(home) = dirs::home_dir() {
         let user_path = home.join(".composer").join("mcp.json");
-        load_config_file(&user_path, &mut merged);
+        load_config_file(&user_path, McpConfigScope::User, &mut merged);
     }
 
     // Project configs
     if let Some(root) = project_root {
         // Local config (git-ignored)
         let local_path = root.join(".composer").join("mcp.local.json");
-        load_config_file(&local_path, &mut merged);
+        load_config_file(&local_path, McpConfigScope::Local, &mut merged);
 
         // Project config
         let project_path = root.join(".composer").join("mcp.json");
-        load_config_file(&project_path, &mut merged);
+        load_config_file(&project_path, McpConfigScope::Project, &mut merged);
     }
 
     // Enterprise config (highest precedence)
     if let Some(home) = dirs::home_dir() {
         let enterprise_path = home.join(".composer").join("enterprise").join("mcp.json");
-        load_config_file(&enterprise_path, &mut merged);
+        load_config_file(&enterprise_path, McpConfigScope::Enterprise, &mut merged);
     }
 
     McpConfig {
@@ -207,7 +226,11 @@ pub fn load_mcp_config(project_root: Option<&Path>) -> McpConfig {
 }
 
 /// Load a single config file and merge into the map
-fn load_config_file(path: &Path, merged: &mut HashMap<String, McpServerConfig>) {
+fn load_config_file(
+    path: &Path,
+    scope: McpConfigScope,
+    merged: &mut HashMap<String, McpServerConfig>,
+) {
     if !path.exists() {
         return;
     }
@@ -229,7 +252,8 @@ fn load_config_file(path: &Path, merged: &mut HashMap<String, McpServerConfig>) 
     };
 
     // Process array-style servers
-    for server in raw.servers {
+    for mut server in raw.servers {
+        server.scope = scope;
         if server.disabled || !server.enabled {
             merged.remove(&server.name);
         } else if server.validate().is_ok() {
@@ -257,6 +281,7 @@ fn load_config_file(path: &Path, merged: &mut HashMap<String, McpServerConfig>) 
             timeout: None,
             enabled: true,
             disabled: false,
+            scope,
         };
 
         if server.validate().is_ok() {
@@ -318,6 +343,7 @@ mod tests {
             timeout: None,
             enabled: true,
             disabled: false,
+            scope: McpConfigScope::User,
         };
         assert!(server.validate().is_ok());
     }
@@ -336,6 +362,7 @@ mod tests {
             timeout: None,
             enabled: true,
             disabled: false,
+            scope: McpConfigScope::User,
         };
         assert!(server.validate().is_err());
     }
@@ -354,6 +381,7 @@ mod tests {
             timeout: None,
             enabled: true,
             disabled: false,
+            scope: McpConfigScope::User,
         };
         assert!(server.validate().is_ok());
     }
@@ -372,6 +400,7 @@ mod tests {
             timeout: None,
             enabled: true,
             disabled: false,
+            scope: McpConfigScope::User,
         };
         assert!(server.validate().is_err());
     }
@@ -390,6 +419,7 @@ mod tests {
             timeout: None,
             enabled: true,
             disabled: false,
+            scope: McpConfigScope::User,
         };
         assert!(server.validate().is_err());
     }
@@ -408,6 +438,7 @@ mod tests {
             timeout: None,
             enabled: true,
             disabled: false,
+            scope: McpConfigScope::User,
         };
         assert!(server.is_enabled());
 
@@ -417,6 +448,24 @@ mod tests {
         server.enabled = true;
         server.disabled = true;
         assert!(!server.is_enabled());
+    }
+
+    #[test]
+    fn test_load_config_file_tracks_scope() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("mcp.json");
+        std::fs::write(
+            &path,
+            r#"{ "mcpServers": { "scope-test": { "command": "npx", "args": ["-y", "@example/server"] } } }"#,
+        )
+        .expect("write mcp config");
+
+        let mut merged = HashMap::new();
+        load_config_file(&path, McpConfigScope::Project, &mut merged);
+
+        let server = merged.get("scope-test").expect("server");
+        assert_eq!(server.scope, McpConfigScope::Project);
+        assert_eq!(server.transport, McpTransport::Stdio);
     }
 
     #[test]
