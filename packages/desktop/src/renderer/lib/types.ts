@@ -4,6 +4,11 @@
  * These types mirror the contracts package for use in the renderer.
  */
 
+import type {
+	ComposerMessage,
+	ComposerToolCallContent,
+} from "@evalops/contracts";
+
 export interface Message {
 	id?: string;
 	role: "user" | "assistant";
@@ -57,14 +62,21 @@ export interface AgentEvent {
 		contentIndex?: number;
 		delta?: string;
 		content?: string;
-		message?: Message;
-		partial?: Message;
+		message?: ComposerMessage;
+		partial?: ComposerMessage;
 		toolCallId?: string;
 		toolCallName?: string;
 		toolCallArgs?: Record<string, unknown>;
 		toolCallArgsTruncated?: boolean;
+		toolCall?: ComposerToolCallContent;
 	};
-	message?: Message;
+	message?: Message | ComposerMessage;
+	toolCallId?: string;
+	toolName?: string;
+	args?: Record<string, unknown>;
+	partialResult?: unknown;
+	result?: unknown;
+	isError?: boolean;
 }
 
 export interface WorkspaceStatus {

@@ -18,7 +18,7 @@ import type {
 const DEFAULT_BASE_URL =
 	import.meta.env.VITE_MAESTRO_BASE_URL ?? "http://localhost:8080";
 const DEFAULT_CSRF_TOKEN =
-	import.meta.env.VITE_MAESTRO_CSRF_TOKEN ?? "composer-desktop-csrf";
+	import.meta.env.VITE_MAESTRO_CSRF_TOKEN ?? "maestro-desktop-csrf";
 const MAX_SSE_BUFFER = 1024 * 1024; // 1MB
 
 export type ApprovalMode = "auto" | "prompt" | "fail";
@@ -294,7 +294,12 @@ export class ApiClient {
 			...options,
 			headers: {
 				"Content-Type": "application/json",
-				...(needsCsrf ? { "x-composer-csrf": this.csrfToken } : {}),
+				...(needsCsrf
+					? {
+							"x-composer-csrf": this.csrfToken,
+							"x-maestro-csrf": this.csrfToken,
+						}
+					: {}),
 				...options?.headers,
 			},
 		});
@@ -457,7 +462,10 @@ export class ApiClient {
 	async deleteSession(sessionId: string): Promise<void> {
 		await fetch(`${this.baseUrl}/api/sessions/${sessionId}`, {
 			method: "DELETE",
-			headers: { "x-composer-csrf": this.csrfToken },
+			headers: {
+				"x-composer-csrf": this.csrfToken,
+				"x-maestro-csrf": this.csrfToken,
+			},
 		});
 	}
 
@@ -473,7 +481,9 @@ export class ApiClient {
 			headers: {
 				"Content-Type": "application/json",
 				"x-composer-slim-events": "1",
+				"x-maestro-slim-events": "1",
 				"x-composer-csrf": this.csrfToken,
+				"x-maestro-csrf": this.csrfToken,
 			},
 			body: JSON.stringify({ ...request, stream: true }),
 		});

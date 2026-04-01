@@ -15,6 +15,9 @@ import {
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { useComposer } from "./hooks/useComposer";
 
+const DESKTOP_SETTINGS_STORAGE_KEY = "maestro-desktop-settings";
+const LEGACY_DESKTOP_SETTINGS_STORAGE_KEY = "composer-desktop-settings";
+
 const DEFAULT_SETTINGS: DesktopSettings = {
 	showTimestamps: true,
 	density: "comfortable",
@@ -38,7 +41,9 @@ export default function App() {
 	} = useComposer();
 	useEffect(() => {
 		try {
-			const stored = localStorage.getItem("composer-desktop-settings");
+			const stored =
+				localStorage.getItem(DESKTOP_SETTINGS_STORAGE_KEY) ??
+				localStorage.getItem(LEGACY_DESKTOP_SETTINGS_STORAGE_KEY);
 			if (stored) {
 				const parsed = JSON.parse(stored) as DesktopSettings;
 				setSettings({ ...DEFAULT_SETTINGS, ...parsed });
@@ -51,7 +56,7 @@ export default function App() {
 	useEffect(() => {
 		try {
 			localStorage.setItem(
-				"composer-desktop-settings",
+				DESKTOP_SETTINGS_STORAGE_KEY,
 				JSON.stringify(settings),
 			);
 		} catch (error) {
