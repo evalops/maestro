@@ -127,7 +127,7 @@ export function Header({
 							className="text-sm font-semibold text-text-primary"
 							style={{ letterSpacing: "-0.02em" }}
 						>
-							Composer
+							Maestro
 						</span>
 					</div>
 				</div>

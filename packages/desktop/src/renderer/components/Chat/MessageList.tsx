@@ -84,7 +84,7 @@ export function MessageList({
 					<div className="flex-1 py-2">
 						<div className="flex items-center gap-2 mb-2">
 							<span className="text-xs font-medium text-text-secondary tracking-wide uppercase">
-								Composer
+								Maestro
 							</span>
 						</div>
 						<div className="typing-indicator">

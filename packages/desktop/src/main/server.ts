@@ -1,7 +1,7 @@
 /**
  * Backend Server Management
  *
- * Spawns and manages the Composer backend server process.
+ * Spawns and manages the Maestro backend server process.
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
@@ -24,7 +24,7 @@ const DEV_UI_ORIGIN = process.env.VITE_DEV_SERVER_URL
 	? process.env.VITE_DEV_SERVER_URL.replace(/\/$/, "")
 	: `http://localhost:${DEV_UI_PORT ?? "5173"}`;
 const CSRF_TOKEN =
-	process.env.MAESTRO_DESKTOP_CSRF_TOKEN ?? "composer-desktop-csrf";
+	process.env.MAESTRO_DESKTOP_CSRF_TOKEN ?? "maestro-desktop-csrf";
 
 /**
  * Get the path to the web server module
@@ -68,7 +68,7 @@ async function waitForServer(
 }
 
 /**
- * Start the Composer backend server
+ * Start the Maestro backend server
  */
 export async function startServer(): Promise<boolean> {
 	if (serverProcess && serverReady) {
@@ -77,7 +77,7 @@ export async function startServer(): Promise<boolean> {
 	}
 
 	const webServerPath = getWebServerPath();
-	console.log("Starting Composer server from:", webServerPath);
+	console.log("Starting Maestro server from:", webServerPath);
 
 	return new Promise((resolve) => {
 		try {
@@ -93,7 +93,7 @@ export async function startServer(): Promise<boolean> {
 					MAESTRO_WEB_REQUIRE_REDIS: "0",
 					MAESTRO_WEB_CSRF_TOKEN: CSRF_TOKEN,
 					// Set a JWT secret for local desktop use (not exposed externally)
-					MAESTRO_JWT_SECRET: "composer-desktop-local-jwt-secret-key-32chars",
+					MAESTRO_JWT_SECRET: "maestro-desktop-local-jwt-secret-key-32chars",
 					// Allow CORS from Vite dev server and Electron
 					MAESTRO_WEB_ORIGIN: DEV_UI_ORIGIN,
 				},
@@ -149,7 +149,7 @@ export async function startServer(): Promise<boolean> {
 }
 
 /**
- * Stop the Composer backend server
+ * Stop the Maestro backend server
  */
 export function stopServer(): void {
 	if (serverProcess) {

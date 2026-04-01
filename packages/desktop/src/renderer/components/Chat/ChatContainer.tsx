@@ -62,7 +62,7 @@ export function ChatContainer({
 						</svg>
 					</div>
 					<h2 className="text-title text-text-primary mb-2">
-						Welcome to Composer
+						Welcome to Maestro
 					</h2>
 					<p className="text-sm text-text-secondary max-w-sm">
 						Start a new session to begin chatting with your AI assistant.

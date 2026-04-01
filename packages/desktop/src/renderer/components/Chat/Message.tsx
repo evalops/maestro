@@ -5,6 +5,7 @@
  */
 
 import { useState } from "react";
+import { summarizeDesktopToolCalls } from "../../lib/tool-summary";
 import type { ToolCall as ToolCallType } from "../../lib/types";
 import { Markdown } from "../common";
 import { ToolCall } from "./ToolCall";
@@ -36,6 +37,9 @@ export function Message({
 	const hasThinking = thinking !== undefined;
 	const thinkingContent = (thinking ?? "").trim();
 	const hasThinkingContent = thinkingContent.length > 0;
+	const toolSummaryLabels = toolCalls
+		? summarizeDesktopToolCalls(toolCalls)
+		: [];
 
 	const formatTime = (dateString?: string) => {
 		if (!dateString) return "";
@@ -133,7 +137,7 @@ export function Message({
 					} ${isUser ? "justify-end" : ""}`}
 				>
 					<span className="text-label text-text-secondary">
-						{isUser ? "You" : "Composer"}
+						{isUser ? "You" : "Maestro"}
 					</span>
 					{timestamp && showTimestamp && (
 						<span className="text-[10px] text-text-muted font-mono tabular-nums">
@@ -211,6 +215,18 @@ export function Message({
 				{/* Tool Calls */}
 				{toolCalls && toolCalls.length > 0 && (
 					<div className="mt-4 space-y-3 w-full">
+						{toolSummaryLabels.length > 0 && (
+							<div className="flex flex-wrap gap-2">
+								{toolSummaryLabels.map((label) => (
+									<span
+										key={label}
+										className="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary border border-line-subtle bg-bg-elevated"
+									>
+										{label}
+									</span>
+								))}
+							</div>
+						)}
 						{toolCalls.map((toolCall, index) => (
 							<ToolCall
 								key={toolCall.id ?? index}

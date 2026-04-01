@@ -6,6 +6,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiClient } from "../lib/api-client";
+import {
+	applyAgentEventToMessage,
+	createAssistantStreamingState,
+	normalizeServerMessage,
+} from "../lib/chat-message-state";
 import type { Message, ThinkingLevel } from "../lib/types";
 
 export interface UseChatOptions {
@@ -42,7 +47,11 @@ export function useChat(
 			try {
 				const session = await apiClient.getSession(sessionId);
 				if (session?.messages) {
-					setMessages(session.messages);
+					setMessages(
+						session.messages
+							.map((message) => normalizeServerMessage(message))
+							.filter((message): message is Message => message !== null),
+					);
 				}
 			} catch (err) {
 				console.error("Failed to load session:", err);
@@ -81,9 +90,7 @@ export function useChat(
 				setMessages((prev) => [...prev, assistantMessage]);
 
 				// Stream the response
-				let fullContent = "";
-				const thinkingBlocks = new Map<number, string>();
-				let currentThinkingIndex: number | null = null;
+				const streamingState = createAssistantStreamingState();
 				const updateAssistantMessage = (update: (message: Message) => void) => {
 					setMessages((prev) => {
 						const updated = [...prev];
@@ -101,44 +108,9 @@ export function useChat(
 					thinkingLevel: options.thinkingLevel,
 				})) {
 					if (event.type === "done") break;
-
-					if (event.type === "message_update" && event.assistantMessageEvent) {
-						const msgEvent = event.assistantMessageEvent;
-						if (msgEvent.type === "text_delta" && msgEvent.delta) {
-							fullContent += msgEvent.delta;
-							updateAssistantMessage((lastMsg) => {
-								lastMsg.content = fullContent;
-							});
-						} else if (msgEvent.type === "thinking_start") {
-							if (typeof msgEvent.contentIndex === "number") {
-								currentThinkingIndex = msgEvent.contentIndex;
-								thinkingBlocks.set(msgEvent.contentIndex, "");
-								updateAssistantMessage((lastMsg) => {
-									lastMsg.thinking = "";
-								});
-							}
-						} else if (
-							msgEvent.type === "thinking_delta" &&
-							typeof msgEvent.contentIndex === "number"
-						) {
-							if (currentThinkingIndex === null) {
-								currentThinkingIndex = msgEvent.contentIndex;
-								if (!thinkingBlocks.has(msgEvent.contentIndex)) {
-									thinkingBlocks.set(msgEvent.contentIndex, "");
-								}
-							}
-							const activeIndex = currentThinkingIndex ?? msgEvent.contentIndex;
-							const current = thinkingBlocks.get(activeIndex) || "";
-							thinkingBlocks.set(activeIndex, current + (msgEvent.delta ?? ""));
-							updateAssistantMessage((lastMsg) => {
-								lastMsg.thinking = Array.from(thinkingBlocks.values()).join(
-									"\n\n",
-								);
-							});
-						} else if (msgEvent.type === "thinking_end") {
-							currentThinkingIndex = null;
-						}
-					}
+					updateAssistantMessage((lastMsg) => {
+						applyAgentEventToMessage(lastMsg, event, streamingState);
+					});
 				}
 			} catch (err) {
 				if (err instanceof Error && err.name === "AbortError") {
