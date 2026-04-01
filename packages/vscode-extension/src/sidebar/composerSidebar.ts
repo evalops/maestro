@@ -6,7 +6,6 @@ import { buildComposerUrl } from "../lib/actions.js";
 import {
 	ApiClient,
 	type CommandDefinition,
-	type Message,
 	type Session,
 } from "../lib/api-client.js";
 import type { ThinkingManager } from "../lib/decorations.js";
@@ -14,6 +13,11 @@ import {
 	type RawMessage,
 	convertToComposerMessage,
 } from "../lib/message-converter.js";
+import {
+	type SummaryMessage,
+	summarizeVscodeToolCall,
+	withToolSummaryLabels,
+} from "../lib/tool-summary.js";
 import { getWebviewHtml } from "./webview-template.js";
 
 export class ComposerSidebarProvider
@@ -23,7 +27,7 @@ export class ComposerSidebarProvider
 
 	private _view?: vscode.WebviewView;
 	private _apiClient: ApiClient;
-	private _messages: Message[] = [];
+	private _messages: SummaryMessage[] = [];
 	private _currentSessionId?: string;
 	private _disposables: vscode.Disposable[] = [];
 	private _isProcessing = false;
@@ -45,9 +49,9 @@ export class ComposerSidebarProvider
 
 		// Load history from state
 		const savedMessages =
-			this._context.workspaceState.get<Message[]>("composer.messages");
+			this._context.workspaceState.get<SummaryMessage[]>("composer.messages");
 		if (savedMessages) {
-			this._messages = savedMessages;
+			this._messages = savedMessages.map(withToolSummaryLabels);
 		}
 		const savedSessionId =
 			this._context.workspaceState.get<string>("composer.sessionId");
@@ -209,7 +213,7 @@ export class ComposerSidebarProvider
 		try {
 			const session = await this._apiClient.getSession(sessionId);
 			this._currentSessionId = session.id;
-			this._messages = session.messages;
+			this._messages = session.messages.map(withToolSummaryLabels);
 			this._context.workspaceState.update("composer.messages", this._messages);
 			this._context.workspaceState.update(
 				"composer.sessionId",
@@ -744,7 +748,7 @@ export class ComposerSidebarProvider
 		}
 		// -------------------------
 
-		const userMsg: Message = {
+		const userMsg: SummaryMessage = {
 			role: "user",
 			content: finalContent,
 			timestamp: new Date().toISOString(),
@@ -762,7 +766,7 @@ export class ComposerSidebarProvider
 		const thinkingEditor = vscode.window.activeTextEditor;
 		const thinkingLine = thinkingEditor?.selection.active.line;
 
-		let assistantMsg: Message | undefined;
+		let assistantMsg: SummaryMessage | undefined;
 		let assistantHasContent = false;
 
 		try {
@@ -830,7 +834,7 @@ export class ComposerSidebarProvider
 					// Update history with the authoritative message
 					const message = getEventProp<RawMessage>("message");
 					if (!message) continue;
-					const msg = convertToComposerMessage(message);
+					const msg = withToolSummaryLabels(convertToComposerMessage(message));
 					if (msg.role === "assistant") {
 						// Update the assistant message we are building
 						// We replace it in the array to ensure we have tools/usage etc.
@@ -850,11 +854,16 @@ export class ComposerSidebarProvider
 						this._messages,
 					);
 				} else if (event.type === "tool_execution_start") {
+					const toolName = getEventProp<string>("toolName");
+					const args = getEventProp<Record<string, unknown>>("args") ?? {};
 					this._view?.webview.postMessage({
 						type: "tool_start",
 						id: getEventProp<string>("toolCallId"),
-						name: getEventProp<string>("toolName"),
-						args: getEventProp<Record<string, unknown>>("args"),
+						name: toolName,
+						summaryLabel: toolName
+							? summarizeVscodeToolCall(toolName, args)
+							: undefined,
+						args,
 					});
 				} else if (event.type === "tool_execution_end") {
 					this._view?.webview.postMessage({
@@ -1017,7 +1026,7 @@ export class ComposerSidebarProvider
 		}
 	}
 
-	private _removeAssistantMessage(target?: Message) {
+	private _removeAssistantMessage(target?: SummaryMessage) {
 		if (!target) return;
 		const index = this._messages.indexOf(target);
 		if (index !== -1) {

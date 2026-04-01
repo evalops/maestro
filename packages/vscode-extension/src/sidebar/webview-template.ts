@@ -445,7 +445,12 @@ export function getWebviewScript(): string {
 					hideThinking();
 					break;
 				case 'tool_start':
-					createToolCall(message.id, message.name, message.args);
+					createToolCall(
+						message.id,
+						message.name,
+						message.summaryLabel,
+						message.args,
+					);
 					break;
 				case 'tool_end':
 					updateToolResult(message.id, message.result, message.isError);
@@ -580,10 +585,14 @@ export function getWebviewScript(): string {
 							toolDiv.className = 'tool-call';
 							toolDiv.innerHTML = \`
 								<div class="tool-header" onclick="this.parentElement.classList.toggle('expanded')">
-									<span class="tool-name">\${tool.name}</span>
+									<span class="tool-name" title="\${tool.name}">\${tool.summaryLabel || tool.name}</span>
 									<span class="tool-status">Completed</span>
 								</div>
 								<div class="tool-body">
+									<div class="tool-section">
+										<div class="tool-section-title">Tool</div>
+										<div class="tool-code">\${tool.name}</div>
+									</div>
 									<div class="tool-section">
 										<div class="tool-section-title">Arguments</div>
 										<div class="tool-code">\${JSON.stringify(tool.args, null, 2)}</div>
@@ -643,7 +652,7 @@ export function getWebviewScript(): string {
 			}
 		}
 
-		function createToolCall(id, name, args) {
+		function createToolCall(id, name, summaryLabel, args) {
 			if (!currentAssistantMessage) createAssistantMessage();
 			const content = currentAssistantMessage.querySelector('.message-content');
 
@@ -651,10 +660,14 @@ export function getWebviewScript(): string {
 			toolDiv.className = 'tool-call';
 			toolDiv.innerHTML = \`
 				<div class="tool-header" onclick="this.parentElement.classList.toggle('expanded')">
-					<span class="tool-name">\${name}</span>
+					<span class="tool-name" title="\${name}">\${summaryLabel || name}</span>
 					<span class="tool-status">Running...</span>
 				</div>
 				<div class="tool-body">
+					<div class="tool-section">
+						<div class="tool-section-title">Tool</div>
+						<div class="tool-code">\${name}</div>
+					</div>
 					<div class="tool-section">
 						<div class="tool-section-title">Arguments</div>
 						<div class="tool-code">\${JSON.stringify(args, null, 2)}</div>
