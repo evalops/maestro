@@ -37,7 +37,7 @@ pub enum McpConfigScope {
 }
 
 /// Configuration for a single MCP server
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerConfig {
     /// Unique server name (must be alphanumeric with _ or -)
     pub name: String,
