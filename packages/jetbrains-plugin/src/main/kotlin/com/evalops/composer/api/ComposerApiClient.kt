@@ -45,8 +45,38 @@ class ComposerApiClient(
         private const val CLIENT_HEADER = "X-Composer-Client"
         private const val CLIENT_VERSION_HEADER = "X-Composer-Client-Version"
         private const val CLIENT_TOOLS_HEADER = "X-Composer-Client-Tools"
+        private const val SLIM_EVENTS_HEADER = "X-Composer-Slim-Events"
+        private const val MAESTRO_CLIENT_HEADER = "X-Maestro-Client"
+        private const val MAESTRO_CLIENT_TOOLS_HEADER = "X-Maestro-Client-Tools"
+        private const val MAESTRO_SLIM_EVENTS_HEADER = "X-Maestro-Slim-Events"
         private const val CLIENT_NAME = "jetbrains"
         private const val CLIENT_VERSION = "0.10.0"
+
+        @JvmStatic
+        internal fun applyClientHeaders(
+            builder: Request.Builder,
+            includeClientTools: Boolean = false,
+            includeSlimEvents: Boolean = false
+        ): Request.Builder {
+            builder
+                .header(CLIENT_HEADER, CLIENT_NAME)
+                .header(MAESTRO_CLIENT_HEADER, CLIENT_NAME)
+                .header(CLIENT_VERSION_HEADER, CLIENT_VERSION)
+
+            if (includeClientTools) {
+                builder
+                    .header(CLIENT_TOOLS_HEADER, "1")
+                    .header(MAESTRO_CLIENT_TOOLS_HEADER, "1")
+            }
+
+            if (includeSlimEvents) {
+                builder
+                    .header(SLIM_EVENTS_HEADER, "1")
+                    .header(MAESTRO_SLIM_EVENTS_HEADER, "1")
+            }
+
+            return builder
+        }
     }
 
     /**
@@ -54,10 +84,10 @@ class ComposerApiClient(
      */
     fun createSession(title: String? = null): Session {
         val body = gson.toJson(mapOf("title" to title)).toRequestBody(jsonMediaType)
-        val request = Request.Builder()
+        val request = applyClientHeaders(
+            Request.Builder()
             .url("$baseUrl/api/sessions")
-            .header(CLIENT_HEADER, CLIENT_NAME)
-            .header(CLIENT_VERSION_HEADER, CLIENT_VERSION)
+        )
             .post(body)
             .build()
 
@@ -74,10 +104,10 @@ class ComposerApiClient(
      * List all sessions.
      */
     fun listSessions(): List<SessionSummary> {
-        val request = Request.Builder()
+        val request = applyClientHeaders(
+            Request.Builder()
             .url("$baseUrl/api/sessions")
-            .header(CLIENT_HEADER, CLIENT_NAME)
-            .header(CLIENT_VERSION_HEADER, CLIENT_VERSION)
+        )
             .get()
             .build()
 
@@ -97,10 +127,10 @@ class ComposerApiClient(
      * Get a specific session by ID.
      */
     fun getSession(sessionId: String): Session {
-        val request = Request.Builder()
+        val request = applyClientHeaders(
+            Request.Builder()
             .url("$baseUrl/api/sessions/$sessionId")
-            .header(CLIENT_HEADER, CLIENT_NAME)
-            .header(CLIENT_VERSION_HEADER, CLIENT_VERSION)
+        )
             .get()
             .build()
 
@@ -117,10 +147,10 @@ class ComposerApiClient(
      * Get available models.
      */
     fun getModels(): List<Model> {
-        val request = Request.Builder()
+        val request = applyClientHeaders(
+            Request.Builder()
             .url("$baseUrl/api/models")
-            .header(CLIENT_HEADER, CLIENT_NAME)
-            .header(CLIENT_VERSION_HEADER, CLIENT_VERSION)
+        )
             .get()
             .build()
 
@@ -146,12 +176,13 @@ class ComposerApiClient(
         onComplete: () -> Unit
     ): EventSource {
         val body = gson.toJson(request.copy(stream = true)).toRequestBody(jsonMediaType)
-        val httpRequest = Request.Builder()
+        val httpRequest = applyClientHeaders(
+            Request.Builder()
             .url("$baseUrl/api/chat")
-            .header(CLIENT_HEADER, CLIENT_NAME)
-            .header(CLIENT_VERSION_HEADER, CLIENT_VERSION)
-            .header(CLIENT_TOOLS_HEADER, "1")
-            .header("Accept", "text/event-stream")
+            .header("Accept", "text/event-stream"),
+            includeClientTools = true,
+            includeSlimEvents = true
+        )
             .post(body)
             .build()
 
@@ -193,10 +224,10 @@ class ComposerApiClient(
     fun submitClientToolResult(toolCallId: String, content: List<Map<String, Any?>>, isError: Boolean) {
         val result = ClientToolResult(toolCallId, content, isError)
         val body = gson.toJson(result).toRequestBody(jsonMediaType)
-        val request = Request.Builder()
+        val request = applyClientHeaders(
+            Request.Builder()
             .url("$baseUrl/api/chat/client-tool-result")
-            .header(CLIENT_HEADER, CLIENT_NAME)
-            .header(CLIENT_VERSION_HEADER, CLIENT_VERSION)
+        )
             .post(body)
             .build()
 
@@ -213,10 +244,10 @@ class ComposerApiClient(
     fun submitApproval(requestId: String, decision: String) {
         val approval = ApprovalDecision(requestId, decision)
         val body = gson.toJson(approval).toRequestBody(jsonMediaType)
-        val request = Request.Builder()
+        val request = applyClientHeaders(
+            Request.Builder()
             .url("$baseUrl/api/chat/approval")
-            .header(CLIENT_HEADER, CLIENT_NAME)
-            .header(CLIENT_VERSION_HEADER, CLIENT_VERSION)
+        )
             .post(body)
             .build()
 
@@ -232,10 +263,10 @@ class ComposerApiClient(
      */
     fun healthCheck(): Boolean {
         return try {
-            val request = Request.Builder()
+            val request = applyClientHeaders(
+                Request.Builder()
                 .url("$baseUrl/api/health")
-                .header(CLIENT_HEADER, CLIENT_NAME)
-                .header(CLIENT_VERSION_HEADER, CLIENT_VERSION)
+            )
                 .get()
                 .build()
 

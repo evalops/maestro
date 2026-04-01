@@ -7,13 +7,13 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.wm.ToolWindowManager
 
 /**
- * Action to focus the Composer tool window.
+ * Action to focus the Maestro tool window.
  */
 class FocusComposerAction : AnAction(), DumbAware {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val toolWindow = ToolWindowManager.getInstance(project).getToolWindow("Composer")
+        val toolWindow = ToolWindowManager.getInstance(project).getToolWindow("Maestro")
         toolWindow?.show()
     }
 

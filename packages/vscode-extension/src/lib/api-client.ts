@@ -47,6 +47,7 @@ export type SessionSummary = Contracts.ComposerSessionSummary;
 export type ChatRequest = Contracts.ComposerChatRequest;
 
 const MAX_SSE_BUFFER = 1024 * 1024; // 1MB safeguard
+const CLIENT_NAME = "vscode";
 
 type ParsedSseEvent = {
 	event?: string;
@@ -111,6 +112,29 @@ export interface CommandDefinition {
 	args?: Array<{ name: string; required?: boolean }>;
 }
 
+type HeaderOptions = {
+	includeClientTools?: boolean;
+	includeSlimEvents?: boolean;
+};
+
+function createRequestHeaders(
+	options: HeaderOptions = {},
+): Record<string, string> {
+	const headers: Record<string, string> = {
+		"x-composer-client": CLIENT_NAME,
+		"x-maestro-client": CLIENT_NAME,
+	};
+	if (options.includeClientTools) {
+		headers["x-composer-client-tools"] = "1";
+		headers["x-maestro-client-tools"] = "1";
+	}
+	if (options.includeSlimEvents) {
+		headers["x-composer-slim-events"] = "1";
+		headers["x-maestro-slim-events"] = "1";
+	}
+	return headers;
+}
+
 export class ApiClient {
 	public readonly baseUrl: string;
 
@@ -121,7 +145,9 @@ export class ApiClient {
 	// ... existing methods ...
 
 	async getCommands(): Promise<CommandDefinition[]> {
-		const response = await fetch(`${this.baseUrl}/api/commands`);
+		const response = await fetch(`${this.baseUrl}/api/commands`, {
+			headers: createRequestHeaders(),
+		});
 		const data = (await safeJson(response)) as {
 			commands: CommandDefinition[];
 		};
@@ -139,7 +165,10 @@ export class ApiClient {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				"x-composer-slim-events": "1",
+				...createRequestHeaders({
+					includeClientTools: true,
+					includeSlimEvents: true,
+				}),
 			},
 			body: JSON.stringify({ ...request, stream: true }),
 			signal,
@@ -200,7 +229,9 @@ export class ApiClient {
 
 	async getModels(): Promise<Model[]> {
 		try {
-			const res = await fetch(`${this.baseUrl}/api/models`);
+			const res = await fetch(`${this.baseUrl}/api/models`, {
+				headers: createRequestHeaders(),
+			});
 			const data = (await safeJson(res)) as { models: Model[] };
 			return data.models || [];
 		} catch (e) {
@@ -214,6 +245,7 @@ export class ApiClient {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
+				...createRequestHeaders(),
 			},
 			body: JSON.stringify({ title }),
 		});
@@ -221,13 +253,17 @@ export class ApiClient {
 	}
 
 	async listSessions(): Promise<SessionSummary[]> {
-		const response = await fetch(`${this.baseUrl}/api/sessions`);
+		const response = await fetch(`${this.baseUrl}/api/sessions`, {
+			headers: createRequestHeaders(),
+		});
 		const data = (await safeJson(response)) as { sessions: SessionSummary[] };
 		return data.sessions || [];
 	}
 
 	async getSession(id: string): Promise<Session> {
-		const response = await fetch(`${this.baseUrl}/api/sessions/${id}`);
+		const response = await fetch(`${this.baseUrl}/api/sessions/${id}`, {
+			headers: createRequestHeaders(),
+		});
 		return (await safeJson(response)) as Session;
 	}
 
@@ -236,6 +272,7 @@ export class ApiClient {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
+				...createRequestHeaders(),
 			},
 			body: JSON.stringify({ requestId, decision }),
 		});
@@ -260,6 +297,7 @@ export class ApiClient {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
+					...createRequestHeaders(),
 				},
 				body: JSON.stringify({ toolCallId, content, isError }),
 			},

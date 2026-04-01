@@ -992,14 +992,14 @@ export function getWebviewHtml(options: WebviewTemplateOptions): string {
 			<meta charset="UTF-8">
 			<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ${cspConnect} https: http: wss: ws:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${cspSource};">
 			<meta name="viewport" content="width=device-width, initial-scale=1.0">
-			<title>Composer Chat</title>
+			<title>Maestro Chat</title>
 			<link href="${styleUri}" rel="stylesheet">
 			<style>${getWebviewStyles()}</style>
 		</head>
 		<body>
 			<div class="container">
 				<div class="header">
-					<h2>Composer Agent</h2>
+					<h2>Maestro Agent</h2>
 					<div id="status-dot" class="status-dot"></div>
 				</div>
 

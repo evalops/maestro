@@ -87,7 +87,7 @@ class ComposerApplicationService : Disposable {
             if (connected) {
                 try {
                     _availableModels = apiClient.getModels()
-                    logger.info("Loaded ${_availableModels.size} models from Composer server")
+                    logger.info("Loaded ${_availableModels.size} models from Maestro server")
                 } catch (e: Exception) {
                     logger.warn("Failed to load models", e)
                 }

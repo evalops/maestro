@@ -7,12 +7,12 @@ import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.DumbAware
 
 /**
- * Action to open Composer settings.
+ * Action to open Maestro settings.
  */
 class OpenSettingsAction : AnAction(), DumbAware {
 
     override fun actionPerformed(e: AnActionEvent) {
-        ShowSettingsUtil.getInstance().showSettingsDialog(e.project, "Composer")
+        ShowSettingsUtil.getInstance().showSettingsDialog(e.project, "Maestro")
     }
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
