@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
+	buildHeadlessCompactionMessage,
 	buildHeadlessToolsSummary,
 	buildHeadlessUsage,
 	classifyHeadlessError,
@@ -103,6 +104,26 @@ describe("headless protocol helpers", () => {
 			calls_succeeded: 2,
 			calls_failed: 1,
 			summary_labels: ["Read config.json", "Ran npm test", "Read config.json"],
+		});
+	});
+
+	it("builds headless compaction messages", () => {
+		expect(
+			buildHeadlessCompactionMessage({
+				type: "compaction",
+				summary: "## Conversation Summary",
+				firstKeptEntryIndex: 4,
+				tokensBefore: 12000,
+				auto: true,
+				timestamp: "2026-03-31T12:00:00Z",
+			}),
+		).toEqual({
+			type: "compaction",
+			summary: "## Conversation Summary",
+			first_kept_entry_index: 4,
+			tokens_before: 12000,
+			auto: true,
+			timestamp: "2026-03-31T12:00:00Z",
 		});
 	});
 });

@@ -26,6 +26,7 @@
  * - { type: "tool_end", call_id: string, success: boolean }
  * - { type: "error", message: string, fatal: boolean, error_type: "transient" | "fatal" | "tool" | "cancelled" | "protocol" }
  * - { type: "status", message: string }
+ * - { type: "compaction", summary: string, first_kept_entry_index: number, tokens_before: number, auto: boolean, custom_instructions?: string, timestamp: string }
  * - { type: "session_info", session_id?: string, cwd: string, git_branch?: string }
  */
 
@@ -182,6 +183,16 @@ interface StatusMessage {
 	message: string;
 }
 
+interface CompactionMessage {
+	type: "compaction";
+	summary: string;
+	first_kept_entry_index: number;
+	tokens_before: number;
+	auto: boolean;
+	custom_instructions?: string;
+	timestamp: string;
+}
+
 interface SessionInfoMessage {
 	type: "session_info";
 	session_id: string | null;
@@ -200,6 +211,7 @@ type FromAgentMessage =
 	| ToolEndMessage
 	| ErrorMessage
 	| StatusMessage
+	| CompactionMessage
 	| SessionInfoMessage;
 
 // =============================================================================
@@ -380,6 +392,23 @@ export function buildHeadlessToolsSummary(params: {
 		calls_failed: params.callsFailed,
 		summary_labels: summaryLabels.length > 0 ? summaryLabels : undefined,
 	};
+}
+
+export function buildHeadlessCompactionMessage(
+	event: Extract<AgentEvent, { type: "compaction" }>,
+): CompactionMessage {
+	const message: CompactionMessage = {
+		type: "compaction",
+		summary: event.summary,
+		first_kept_entry_index: event.firstKeptEntryIndex,
+		tokens_before: event.tokensBefore,
+		auto: Boolean(event.auto),
+		timestamp: event.timestamp,
+	};
+	if (event.customInstructions) {
+		message.custom_instructions = event.customInstructions;
+	}
+	return message;
 }
 
 function buildResponseEndMessage(
@@ -662,6 +691,10 @@ function handleAgentEvent(event: AgentEvent): void {
 			});
 			break;
 
+		case "compaction":
+			send(buildHeadlessCompactionMessage(event));
+			break;
+
 		// Events we don't forward
 		case "agent_start":
 		case "agent_end":
@@ -671,7 +704,6 @@ function handleAgentEvent(event: AgentEvent): void {
 		case "tool_retry_required":
 		case "tool_retry_resolved":
 		case "client_tool_request":
-		case "compaction":
 			// Not needed for basic TUI
 			break;
 

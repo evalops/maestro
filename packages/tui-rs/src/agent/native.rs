@@ -94,6 +94,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use base64::{engine::general_purpose::STANDARD, Engine};
+use chrono::Utc;
 use tokio::fs;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -135,6 +136,48 @@ fn policy_model_id(model: &str) -> String {
         let provider = AiProvider::from_model(model);
         format!("{}/{}", provider_id(provider), model)
     }
+}
+
+fn is_tool_result_only_user_message(message: &Message) -> bool {
+    message.role == Role::User
+        && matches!(
+            &message.content,
+            MessageContent::Blocks(blocks)
+                if !blocks.is_empty()
+                    && blocks
+                        .iter()
+                        .all(|block| matches!(block, ContentBlock::ToolResult { .. }))
+        )
+}
+
+fn count_transcript_entries_before(messages: &[Message], first_kept_index: usize) -> usize {
+    messages
+        .iter()
+        .take(first_kept_index.min(messages.len()))
+        .filter(|message| !is_tool_result_only_user_message(message))
+        .count()
+}
+
+fn emit_compaction_event(
+    event_tx: &mpsc::UnboundedSender<FromAgent>,
+    messages: &[Message],
+    summary: &str,
+    cut_point: Option<&super::compaction::CutPoint>,
+    auto: bool,
+) {
+    let first_kept_entry_index = cut_point
+        .map(|point| count_transcript_entries_before(messages, point.first_kept_index))
+        .unwrap_or(0);
+    let tokens_before = cut_point.map(|point| point.tokens_before).unwrap_or(0);
+
+    let _ = event_tx.send(FromAgent::Compaction {
+        summary: summary.to_string(),
+        first_kept_entry_index,
+        tokens_before,
+        auto,
+        custom_instructions: None,
+        timestamp: Utc::now().to_rfc3339(),
+    });
 }
 
 /// Configuration for the native agent
@@ -1830,7 +1873,6 @@ impl NativeAgentRunner {
                                     "[agent] Compacted {} messages{}",
                                     result.compacted_count, split_note
                                 );
-                                self.messages = result.messages;
                                 // Notify the UI about compaction with details
                                 let status_msg = if let Some(ref cut_point) = result.cut_point {
                                     format!(
@@ -1846,9 +1888,17 @@ impl NativeAgentRunner {
                                         result.compacted_count
                                     )
                                 };
+                                emit_compaction_event(
+                                    &self.event_tx,
+                                    &self.messages,
+                                    result.summary.as_deref().unwrap_or(&status_msg),
+                                    result.cut_point.as_ref(),
+                                    false,
+                                );
                                 let _ = self.event_tx.send(FromAgent::Status {
                                     message: status_msg,
                                 });
+                                self.messages = result.messages;
                             }
                             // Hooks can also handle overflow
                             if self.hooks.handle_overflow() {
@@ -2225,7 +2275,6 @@ impl NativeAgentRunner {
                         "[agent] Auto-compacted {} messages{}",
                         result.compacted_count, split_note
                     );
-                    self.messages = result.messages;
 
                     // Notify the UI about auto-compaction
                     let status_msg = if let Some(ref cut_point) = result.cut_point {
@@ -2242,9 +2291,17 @@ impl NativeAgentRunner {
                             result.compacted_count
                         )
                     };
+                    emit_compaction_event(
+                        &self.event_tx,
+                        &self.messages,
+                        result.summary.as_deref().unwrap_or(&status_msg),
+                        result.cut_point.as_ref(),
+                        true,
+                    );
                     let _ = self.event_tx.send(FromAgent::Status {
                         message: status_msg,
                     });
+                    self.messages = result.messages;
                 }
             }
 

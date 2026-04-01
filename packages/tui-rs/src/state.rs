@@ -70,6 +70,9 @@ pub struct Message {
     /// Who sent this message (User or Assistant).
     pub role: MessageRole,
 
+    /// Visual/message semantics used by the TUI.
+    pub kind: MessageKind,
+
     /// The main message content.
     /// For streaming messages, this is appended to chunk by chunk.
     pub content: String,
@@ -100,6 +103,23 @@ pub struct Message {
     pub thinking_expanded: bool,
 }
 
+impl Message {
+    #[must_use]
+    pub fn is_assistant_reply(&self) -> bool {
+        self.role == MessageRole::Assistant && self.kind == MessageKind::Regular
+    }
+
+    #[must_use]
+    pub fn counts_toward_compaction_index(&self) -> bool {
+        self.kind == MessageKind::Regular
+    }
+
+    #[must_use]
+    pub fn is_compaction_boundary(&self) -> bool {
+        self.kind == MessageKind::CompactionBoundary
+    }
+}
+
 /// Who sent the message.
 ///
 /// # Rust Concepts Used
@@ -120,6 +140,13 @@ pub enum MessageRole {
     User,
     /// Message from the AI assistant
     Assistant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageKind {
+    Regular,
+    System,
+    CompactionBoundary,
 }
 
 /// State of a tool call.
@@ -621,6 +648,7 @@ impl AppState {
                 self.messages.push(Message {
                     id: response_id,
                     role: MessageRole::Assistant,
+                    kind: MessageKind::Regular,
                     content: String::new(),
                     thinking: String::new(),
                     streaming: true, // Will receive more content
@@ -683,7 +711,7 @@ impl AppState {
                     .messages
                     .iter_mut()
                     .rev()
-                    .find(|m| m.role == MessageRole::Assistant)
+                    .find(|m| m.is_assistant_reply())
                 {
                     msg.tool_calls.push(ToolCallState {
                         call_id,
@@ -758,6 +786,8 @@ impl AppState {
             FromAgent::Status { message } => {
                 self.status = Some(message);
             }
+
+            FromAgent::Compaction { .. } => {}
 
             // Session info updated
             FromAgent::SessionInfo {
@@ -834,6 +864,7 @@ impl AppState {
         self.messages.push(Message {
             id: id.clone(), // Clone because we return it and store it
             role: MessageRole::User,
+            kind: MessageKind::Regular,
             content,
             thinking: String::new(),
             streaming: false, // User messages are complete immediately
@@ -1323,6 +1354,7 @@ impl AppState {
         self.messages.push(Message {
             id,
             role: MessageRole::Assistant, // Display as assistant
+            kind: MessageKind::System,
             content,
             thinking: String::new(),
             streaming: false,
@@ -1331,6 +1363,50 @@ impl AppState {
             timestamp: SystemTime::now(),
             thinking_expanded: false,
         });
+    }
+
+    fn transcript_insert_position(&self, first_kept_entry_index: usize) -> usize {
+        if first_kept_entry_index == 0 {
+            return 0;
+        }
+
+        let mut transcript_count = 0usize;
+        for (index, message) in self.messages.iter().enumerate() {
+            if !message.counts_toward_compaction_index() {
+                continue;
+            }
+            if transcript_count == first_kept_entry_index {
+                return index;
+            }
+            transcript_count += 1;
+        }
+
+        self.messages.len()
+    }
+
+    pub fn apply_compaction(
+        &mut self,
+        summary: String,
+        first_kept_entry_index: usize,
+        timestamp: SystemTime,
+    ) {
+        let insert_pos = self.transcript_insert_position(first_kept_entry_index);
+        self.messages.drain(..insert_pos);
+        self.messages.insert(
+            0,
+            Message {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: MessageRole::Assistant,
+                kind: MessageKind::CompactionBoundary,
+                content: summary,
+                thinking: String::new(),
+                streaming: false,
+                tool_calls: Vec::new(),
+                usage: None,
+                timestamp,
+                thinking_expanded: false,
+            },
+        );
     }
 
     /// Toggle whether thinking is expanded for a message.
@@ -1892,6 +1968,7 @@ mod tests {
         assert_eq!(state.messages.len(), 1);
         assert_eq!(state.messages[0].content, "System info");
         assert_eq!(state.messages[0].role, MessageRole::Assistant);
+        assert_eq!(state.messages[0].kind, MessageKind::System);
         assert!(!state.messages[0].streaming);
     }
 
@@ -2054,6 +2131,7 @@ mod tests {
         state.messages.push(Message {
             id: "msg-1".to_string(),
             role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
             content: String::new(),
             thinking: String::new(),
             streaming: false,
@@ -2083,6 +2161,7 @@ mod tests {
         state.messages.push(Message {
             id: "msg-1".to_string(),
             role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
             content: String::new(),
             thinking: String::new(),
             streaming: false,
@@ -2519,6 +2598,7 @@ mod tests {
         let msg = Message {
             id: "msg-1".to_string(),
             role: MessageRole::User,
+            kind: MessageKind::Regular,
             content: "Hello".to_string(),
             thinking: String::new(),
             streaming: false,
@@ -2531,5 +2611,50 @@ mod tests {
         let cloned = msg.clone();
         assert_eq!(cloned.id, msg.id);
         assert_eq!(cloned.content, msg.content);
+    }
+
+    #[test]
+    fn test_apply_compaction_replaces_older_transcript_messages() {
+        let mut state = AppState::new();
+        state.add_system_message("System note".to_string());
+        state.add_user_message("User one".to_string());
+        state.add_system_message("Another note".to_string());
+        state.messages.push(Message {
+            id: "assistant-1".to_string(),
+            role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
+            content: "Assistant one".to_string(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
+        });
+        state.add_user_message("User two".to_string());
+        state.messages.push(Message {
+            id: "assistant-2".to_string(),
+            role: MessageRole::Assistant,
+            kind: MessageKind::Regular,
+            content: "Assistant two".to_string(),
+            thinking: String::new(),
+            streaming: false,
+            tool_calls: Vec::new(),
+            usage: None,
+            timestamp: SystemTime::now(),
+            thinking_expanded: false,
+        });
+
+        state.apply_compaction(
+            "## Conversation Summary\n\n1. **User**: User one".to_string(),
+            2,
+            SystemTime::UNIX_EPOCH,
+        );
+
+        assert_eq!(state.messages.len(), 3);
+        assert!(state.messages[0].is_compaction_boundary());
+        assert_eq!(state.messages[0].timestamp, SystemTime::UNIX_EPOCH);
+        assert_eq!(state.messages[1].content, "User two");
+        assert_eq!(state.messages[2].content, "Assistant two");
     }
 }
