@@ -130,6 +130,7 @@ const MAX_READ_SIZE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_GREP_LINES: usize = 100;
 const MAX_LIST_LINES: usize = 200;
 const MAX_DIFF_LINES: usize = 400;
+const MCP_RECONNECT_RETRY_COOLDOWN: Duration = Duration::from_secs(30);
 
 fn shell_escape(arg: &str) -> String {
     if arg.is_empty() {
@@ -434,6 +435,12 @@ pub struct ToolExecutor {
 
     /// Last connection error for configured MCP servers.
     mcp_last_errors: RwLock<HashMap<String, String>>,
+
+    /// Last synced MCP config snapshot, keyed by server name.
+    mcp_synced_configs: RwLock<HashMap<String, crate::mcp::McpServerConfig>>,
+
+    /// Last reconnect attempt timestamp for configured MCP servers.
+    mcp_last_connect_attempts: RwLock<HashMap<String, Instant>>,
 }
 
 impl ToolExecutor {
@@ -495,6 +502,8 @@ impl ToolExecutor {
             mcp_client: tokio::sync::Mutex::new(None),
             mcp_tool_annotations: RwLock::new(HashMap::new()),
             mcp_last_errors: RwLock::new(HashMap::new()),
+            mcp_synced_configs: RwLock::new(HashMap::new()),
+            mcp_last_connect_attempts: RwLock::new(HashMap::new()),
         }
     }
 
@@ -538,6 +547,8 @@ impl ToolExecutor {
             mcp_client: tokio::sync::Mutex::new(None),
             mcp_tool_annotations: RwLock::new(HashMap::new()),
             mcp_last_errors: RwLock::new(HashMap::new()),
+            mcp_synced_configs: RwLock::new(HashMap::new()),
+            mcp_last_connect_attempts: RwLock::new(HashMap::new()),
         }
     }
 
@@ -573,34 +584,101 @@ impl ToolExecutor {
     async fn ensure_mcp_client(
         &self,
     ) -> Result<tokio::sync::MutexGuard<'_, Option<McpClient>>, String> {
+        let config = load_mcp_config(Some(Path::new(&self.cwd)));
+        let servers: Vec<_> = config.enabled_servers().cloned().collect();
+        let desired_configs: HashMap<String, crate::mcp::McpServerConfig> = servers
+            .iter()
+            .cloned()
+            .map(|server| (server.name.clone(), server))
+            .collect();
+        let previous_configs = self
+            .mcp_synced_configs
+            .read()
+            .map(|configs| configs.clone())
+            .unwrap_or_default();
+        let mut last_errors = self
+            .mcp_last_errors
+            .read()
+            .map(|errors| errors.clone())
+            .unwrap_or_default();
+        let mut last_attempts = self
+            .mcp_last_connect_attempts
+            .read()
+            .map(|attempts| attempts.clone())
+            .unwrap_or_default();
         let mut guard = self.mcp_client.lock().await;
         if guard.is_none() {
-            let config = load_mcp_config(Some(Path::new(&self.cwd)));
-            let client = McpClient::new();
-            let servers: Vec<_> = config.enabled_servers().cloned().collect();
-            let mut last_errors = HashMap::new();
-            for server in servers {
-                if let Err(err) = client.connect(server.clone()).await {
-                    let message = err.to_string();
-                    eprintln!(
-                        "[mcp] Failed to connect to server {}: {}",
-                        server.name, message
-                    );
-                    last_errors.insert(server.name.clone(), message);
-                }
-            }
-            if let Ok(mut map) = self.mcp_last_errors.write() {
-                *map = last_errors;
-            }
-            let annotations = client.list_tool_annotations().await;
-            if let Ok(mut map) = self.mcp_tool_annotations.write() {
-                map.clear();
-                for (name, meta) in annotations {
-                    map.insert(name.to_lowercase(), meta);
-                }
-            }
-            *guard = Some(client);
+            *guard = Some(McpClient::new());
         }
+
+        let client = guard
+            .as_ref()
+            .ok_or_else(|| "Failed to initialize MCP client".to_string())?;
+
+        for (name, previous) in &previous_configs {
+            if desired_configs.get(name) != Some(previous) {
+                let _ = client.disconnect(name).await;
+            }
+        }
+
+        let connected: std::collections::HashSet<_> =
+            client.connected_servers().await.into_iter().collect();
+        let now = Instant::now();
+
+        for server in &servers {
+            let name = &server.name;
+            let config_changed = previous_configs.get(name) != Some(server);
+            let is_connected = connected.contains(name);
+            let retry_allowed = match last_attempts.get(name) {
+                Some(last_attempt) => {
+                    now.duration_since(*last_attempt) >= MCP_RECONNECT_RETRY_COOLDOWN
+                }
+                None => true,
+            };
+
+            if config_changed || (!is_connected && retry_allowed) {
+                match client.connect(server.clone()).await {
+                    Ok(()) => {
+                        last_errors.remove(name);
+                    }
+                    Err(err) => {
+                        let message = err.to_string();
+                        if last_errors.get(name) != Some(&message) {
+                            eprintln!(
+                                "[mcp] Failed to connect to server {}: {}",
+                                server.name, message
+                            );
+                        }
+                        last_errors.insert(name.clone(), message);
+                    }
+                }
+                last_attempts.insert(name.clone(), Instant::now());
+            } else if is_connected {
+                last_errors.remove(name);
+            }
+        }
+
+        last_errors.retain(|name, _| desired_configs.contains_key(name));
+        last_attempts.retain(|name, _| desired_configs.contains_key(name));
+
+        if let Ok(mut map) = self.mcp_synced_configs.write() {
+            *map = desired_configs;
+        }
+        if let Ok(mut map) = self.mcp_last_errors.write() {
+            *map = last_errors;
+        }
+        if let Ok(mut map) = self.mcp_last_connect_attempts.write() {
+            *map = last_attempts;
+        }
+
+        let annotations = client.list_tool_annotations().await;
+        if let Ok(mut map) = self.mcp_tool_annotations.write() {
+            map.clear();
+            for (name, meta) in annotations {
+                map.insert(name.to_lowercase(), meta);
+            }
+        }
+
         Ok(guard)
     }
 
@@ -4184,6 +4262,8 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
     use crate::tools::details;
 
     struct EnvGuard {
@@ -4215,6 +4295,38 @@ mod tests {
         }
     }
 
+    fn write_mcp_config(config_dir: &Path, servers: Vec<serde_json::Value>) -> std::io::Result<()> {
+        std::fs::write(
+            config_dir.join("mcp.json"),
+            serde_json::to_string(&serde_json::json!({ "servers": servers }))
+                .expect("serialize mcp config"),
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn failing_counter_server(server_name: &str, counter_path: &Path) -> serde_json::Value {
+        serde_json::json!({
+            "name": server_name,
+            "transport": "stdio",
+            "command": "sh",
+            "timeout": 50,
+            "args": [
+                "-c",
+                "count=$(cat \"$1\" 2>/dev/null || echo 0); echo $((count + 1)) > \"$1\"; exit 1",
+                "sh",
+                counter_path.display().to_string()
+            ]
+        })
+    }
+
+    #[cfg(not(windows))]
+    fn read_counter(counter_path: &Path) -> usize {
+        std::fs::read_to_string(counter_path)
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0)
+    }
+
     #[test]
     fn test_registry_has_default_tools() {
         let registry = ToolRegistry::new();
@@ -4234,30 +4346,17 @@ mod tests {
         std::fs::create_dir_all(&config_dir).expect("create config dir");
 
         let server_name = "status-parity-test-server";
-        std::fs::write(
-            config_dir.join("mcp.json"),
-            format!(
-                r#"{{
-  "servers": [
-    {{
-      "name": "{server_name}",
-      "transport": "stdio",
-      "command": "missing-test-command"
-    }}
-  ]
-}}"#
-            ),
+        write_mcp_config(
+            &config_dir,
+            vec![serde_json::json!({
+                "name": server_name,
+                "transport": "stdio",
+                "command": "missing-test-command"
+            })],
         )
         .expect("write mcp config");
 
         let executor = ToolExecutor::new(temp.path().display().to_string());
-        {
-            let mut client = executor.mcp_client.lock().await;
-            *client = Some(crate::mcp::McpClient::new());
-        }
-        if let Ok(mut errors) = executor.mcp_last_errors.write() {
-            errors.insert(server_name.to_string(), "Connection refused".to_string());
-        }
 
         let statuses = executor.mcp_status().await.expect("mcp status");
         let server = statuses
@@ -4267,8 +4366,119 @@ mod tests {
 
         assert_eq!(server.scope, crate::mcp::McpConfigScope::Project);
         assert_eq!(server.transport, crate::mcp::McpTransport::Stdio);
-        assert_eq!(server.error.as_deref(), Some("Connection refused"));
+        assert!(server.error.is_some());
         assert!(!server.connected);
+    }
+
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn test_mcp_status_retries_failed_servers_after_cooldown() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_dir = temp.path().join(".composer");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+
+        let server_name = "retry-test-server";
+        let counter_path = temp.path().join("retry-count.txt");
+        write_mcp_config(
+            &config_dir,
+            vec![failing_counter_server(server_name, &counter_path)],
+        )
+        .expect("write mcp config");
+
+        let executor = ToolExecutor::new(temp.path().display().to_string());
+
+        let _ = executor.mcp_status().await.expect("first mcp status");
+        assert_eq!(read_counter(&counter_path), 1);
+
+        let _ = executor.mcp_status().await.expect("second mcp status");
+        assert_eq!(read_counter(&counter_path), 1);
+
+        if let Ok(mut attempts) = executor.mcp_last_connect_attempts.write() {
+            attempts.insert(
+                server_name.to_string(),
+                Instant::now()
+                    .checked_sub(MCP_RECONNECT_RETRY_COOLDOWN + Duration::from_secs(1))
+                    .expect("retry backoff timestamp"),
+            );
+        }
+
+        let _ = executor.mcp_status().await.expect("third mcp status");
+        assert_eq!(read_counter(&counter_path), 2);
+    }
+
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn test_mcp_status_reloads_changed_server_config() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_dir = temp.path().join(".composer");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+
+        let server_name = "reload-test-server";
+        let first_counter_path = temp.path().join("reload-count-a.txt");
+        let second_counter_path = temp.path().join("reload-count-b.txt");
+        write_mcp_config(
+            &config_dir,
+            vec![failing_counter_server(server_name, &first_counter_path)],
+        )
+        .expect("write initial mcp config");
+
+        let executor = ToolExecutor::new(temp.path().display().to_string());
+
+        let _ = executor.mcp_status().await.expect("first mcp status");
+        assert_eq!(read_counter(&first_counter_path), 1);
+        assert_eq!(read_counter(&second_counter_path), 0);
+
+        write_mcp_config(
+            &config_dir,
+            vec![failing_counter_server(server_name, &second_counter_path)],
+        )
+        .expect("write updated mcp config");
+
+        let _ = executor.mcp_status().await.expect("second mcp status");
+        assert_eq!(read_counter(&first_counter_path), 1);
+        assert_eq!(read_counter(&second_counter_path), 1);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_status_clears_removed_server_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config_dir = temp.path().join(".composer");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+
+        let server_name = "removed-status-server";
+        write_mcp_config(
+            &config_dir,
+            vec![serde_json::json!({
+                "name": server_name,
+                "transport": "stdio",
+                "command": "missing-test-command"
+            })],
+        )
+        .expect("write initial mcp config");
+
+        let executor = ToolExecutor::new(temp.path().display().to_string());
+
+        let _ = executor.mcp_status().await.expect("initial mcp status");
+        assert!(executor
+            .mcp_last_errors
+            .read()
+            .expect("mcp errors")
+            .contains_key(server_name));
+
+        write_mcp_config(&config_dir, Vec::new()).expect("write empty mcp config");
+
+        let statuses = executor.mcp_status().await.expect("updated mcp status");
+        assert!(statuses.is_empty());
+        assert!(!executor
+            .mcp_last_errors
+            .read()
+            .expect("mcp errors")
+            .contains_key(server_name));
+        assert!(!executor
+            .mcp_synced_configs
+            .read()
+            .expect("mcp configs")
+            .contains_key(server_name));
     }
 
     #[test]
