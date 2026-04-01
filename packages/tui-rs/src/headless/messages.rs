@@ -236,6 +236,8 @@ pub enum FromAgentMessage {
         response_id: String,
         #[serde(default)]
         usage: Option<TokenUsage>,
+        #[serde(default)]
+        tools_summary: Option<ResponseToolsSummary>,
     },
     /// Tool call (may require approval)
     ToolCall {
@@ -271,6 +273,19 @@ pub struct TokenUsage {
     pub cache_write_tokens: u64,
     #[serde(default)]
     pub cost: Option<f64>,
+}
+
+/// Summary of the tools used during a response.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResponseToolsSummary {
+    #[serde(default)]
+    pub tools_used: Vec<String>,
+    #[serde(default)]
+    pub calls_succeeded: u64,
+    #[serde(default)]
+    pub calls_failed: u64,
+    #[serde(default)]
+    pub summary_labels: Vec<String>,
 }
 
 impl TokenUsage {
@@ -448,7 +463,11 @@ impl AgentState {
                 })
             }
 
-            FromAgentMessage::ResponseEnd { response_id, usage } => {
+            FromAgentMessage::ResponseEnd {
+                response_id,
+                usage,
+                tools_summary,
+            } => {
                 if let Some(ref mut response) = self.current_response {
                     if response.response_id == response_id {
                         response.usage = usage.clone();
@@ -459,6 +478,7 @@ impl AgentState {
                 Some(AgentEvent::ResponseEnd {
                     response_id,
                     usage,
+                    tools_summary,
                     full_text: response.map(|r| r.text),
                 })
             }
@@ -572,6 +592,7 @@ pub enum AgentEvent {
     ResponseEnd {
         response_id: String,
         usage: Option<TokenUsage>,
+        tools_summary: Option<ResponseToolsSummary>,
         full_text: Option<String>,
     },
     ToolCall {
@@ -642,6 +663,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_response_end_with_tools_summary() {
+        let json = r#"{"type":"response_end","response_id":"abc","usage":{"input_tokens":1,"output_tokens":2,"cache_read_tokens":0,"cache_write_tokens":0},"tools_summary":{"tools_used":["read","bash"],"calls_succeeded":1,"calls_failed":1,"summary_labels":["Read package.json","Ran cargo test"]}}"#;
+        let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            FromAgentMessage::ResponseEnd {
+                response_id,
+                tools_summary,
+                ..
+            } => {
+                assert_eq!(response_id, "abc");
+                let tools_summary = tools_summary.expect("expected tools summary");
+                assert_eq!(tools_summary.tools_used, vec!["read", "bash"]);
+                assert_eq!(tools_summary.calls_succeeded, 1);
+                assert_eq!(tools_summary.calls_failed, 1);
+                assert_eq!(
+                    tools_summary.summary_labels,
+                    vec!["Read package.json", "Ran cargo test"]
+                );
+            }
+            _ => panic!("Expected ResponseEnd message"),
+        }
+    }
+
+    #[test]
     fn serialize_prompt_message() {
         let msg = ToAgentMessage::Prompt {
             content: "Hello".to_string(),
@@ -681,6 +726,12 @@ mod tests {
         state.handle_message(FromAgentMessage::ResponseEnd {
             response_id: "resp1".to_string(),
             usage: None,
+            tools_summary: Some(ResponseToolsSummary {
+                tools_used: vec!["read".to_string()],
+                calls_succeeded: 1,
+                calls_failed: 0,
+                summary_labels: vec!["Read package.json".to_string()],
+            }),
         });
         assert!(!state.is_responding);
         assert!(state.current_response.is_none());

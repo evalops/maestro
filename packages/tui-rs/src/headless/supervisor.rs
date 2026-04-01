@@ -376,10 +376,14 @@ fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMess
             is_thinking: *is_thinking,
         }),
         AgentEvent::ResponseEnd {
-            response_id, usage, ..
+            response_id,
+            usage,
+            tools_summary,
+            ..
         } => Some(FromAgentMessage::ResponseEnd {
             response_id: response_id.clone(),
             usage: usage.clone(),
+            tools_summary: tools_summary.clone(),
         }),
         AgentEvent::ToolCall {
             call_id,

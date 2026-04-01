@@ -212,6 +212,7 @@ pub mod config_watcher;
 /// Ported from OpenAI Codex CLI (MIT licensed).
 pub mod text_format;
 pub mod tool_output;
+pub mod tool_summary;
 
 /// Live/incremental text wrapping for streaming content.
 /// Allows text to be pushed in fragments and wrapped correctly.
