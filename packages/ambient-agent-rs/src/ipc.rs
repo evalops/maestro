@@ -21,7 +21,7 @@ use tracing::{info, warn};
 /// Default socket path
 pub fn default_socket_path() -> PathBuf {
     dirs::runtime_dir()
-        .or_else(|| dirs::data_local_dir())
+        .or_else(dirs::data_local_dir)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("ambient-agent.sock")
 }
@@ -29,7 +29,7 @@ pub fn default_socket_path() -> PathBuf {
 /// Auth token file path (next to socket)
 pub fn auth_token_path() -> PathBuf {
     dirs::runtime_dir()
-        .or_else(|| dirs::data_local_dir())
+        .or_else(dirs::data_local_dir)
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("ambient-agent.token")
 }
@@ -131,7 +131,8 @@ pub fn verify_token_constant_time(provided: &str, expected: &str) -> bool {
     provided
         .bytes()
         .zip(expected.bytes())
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 /// IPC Server that runs alongside the daemon
@@ -188,7 +189,9 @@ impl IpcServer {
 
     /// Accept a connection
     pub async fn accept(&self) -> anyhow::Result<UnixStream> {
-        let listener = self.listener.as_ref()
+        let listener = self
+            .listener
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Server not bound"))?;
         let (stream, _) = listener.accept().await?;
         Ok(stream)
@@ -200,9 +203,11 @@ impl IpcServer {
         if token.len() != self.auth_token.len() {
             return false;
         }
-        token.bytes()
+        token
+            .bytes()
             .zip(self.auth_token.bytes())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
     }
 
     /// Read a request from a stream with timeout
@@ -213,7 +218,8 @@ impl IpcServer {
             reader.read_line(&mut line).await?;
             let request: IpcRequest = serde_json::from_str(&line)?;
             Ok::<_, anyhow::Error>(request)
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(request)) => Ok(request),
@@ -223,14 +229,18 @@ impl IpcServer {
     }
 
     /// Write a response to a stream with timeout
-    pub async fn write_response(stream: &mut UnixStream, response: &IpcResponse) -> anyhow::Result<()> {
+    pub async fn write_response(
+        stream: &mut UnixStream,
+        response: &IpcResponse,
+    ) -> anyhow::Result<()> {
         let result = timeout(IPC_TIMEOUT, async {
             let json = serde_json::to_string(response)?;
             stream.write_all(json.as_bytes()).await?;
             stream.write_all(b"\n").await?;
             stream.flush().await?;
             Ok::<_, anyhow::Error>(())
-        }).await;
+        })
+        .await;
 
         match result {
             Ok(Ok(())) => Ok(()),
@@ -270,7 +280,10 @@ impl IpcClient {
     /// Create a new IPC client
     pub fn new(socket_path: PathBuf) -> Self {
         let token_path = socket_path.with_extension("token");
-        Self { socket_path, token_path }
+        Self {
+            socket_path,
+            token_path,
+        }
     }
 
     /// Check if daemon is running (socket exists)
@@ -295,8 +308,9 @@ impl IpcClient {
 
         let result = timeout(
             Duration::from_secs(5),
-            UnixStream::connect(&self.socket_path)
-        ).await;
+            UnixStream::connect(&self.socket_path),
+        )
+        .await;
 
         match result {
             Ok(Ok(stream)) => Ok(stream),
@@ -319,7 +333,8 @@ impl IpcClient {
             stream.write_all(b"\n").await?;
             stream.flush().await?;
             Ok::<_, anyhow::Error>(())
-        }).await;
+        })
+        .await;
 
         match write_result {
             Ok(Ok(())) => {}
@@ -334,7 +349,8 @@ impl IpcClient {
             reader.read_line(&mut line).await?;
             let response: IpcResponse = serde_json::from_str(&line)?;
             Ok::<_, anyhow::Error>(response)
-        }).await;
+        })
+        .await;
 
         match read_result {
             Ok(Ok(response)) => Ok(response),
@@ -416,7 +432,9 @@ mod tests {
                 IpcResponse::Unauthorized
             };
 
-            IpcServer::write_response(&mut stream, &response).await.unwrap();
+            IpcServer::write_response(&mut stream, &response)
+                .await
+                .unwrap();
         });
 
         // Give server time to start

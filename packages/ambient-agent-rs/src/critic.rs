@@ -34,21 +34,48 @@ impl Default for CriticConfig {
 /// Security patterns to detect
 static SECURITY_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     vec![
-        (Regex::new(r"eval\s*\(").unwrap(), "Use of eval() is dangerous"),
-        (Regex::new(r"innerHTML\s*=").unwrap(), "innerHTML can lead to XSS"),
-        (Regex::new(r"dangerouslySetInnerHTML").unwrap(), "dangerouslySetInnerHTML can lead to XSS"),
-        (Regex::new(r"exec\s*\(").unwrap(), "Potential command injection via exec()"),
-        (Regex::new(r#"password\s*[:=]\s*['"][^'"]+['"]"#).unwrap(), "Hardcoded password detected"),
-        (Regex::new(r#"(?i)api[_-]?key\s*[:=]\s*['"][^'"]+['"]"#).unwrap(), "Hardcoded API key detected"),
+        (
+            Regex::new(r"eval\s*\(").unwrap(),
+            "Use of eval() is dangerous",
+        ),
+        (
+            Regex::new(r"innerHTML\s*=").unwrap(),
+            "innerHTML can lead to XSS",
+        ),
+        (
+            Regex::new(r"dangerouslySetInnerHTML").unwrap(),
+            "dangerouslySetInnerHTML can lead to XSS",
+        ),
+        (
+            Regex::new(r"exec\s*\(").unwrap(),
+            "Potential command injection via exec()",
+        ),
+        (
+            Regex::new(r#"password\s*[:=]\s*['"][^'"]+['"]"#).unwrap(),
+            "Hardcoded password detected",
+        ),
+        (
+            Regex::new(r#"(?i)api[_-]?key\s*[:=]\s*['"][^'"]+['"]"#).unwrap(),
+            "Hardcoded API key detected",
+        ),
     ]
 });
 
 /// Performance patterns to detect
 static PERFORMANCE_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
     vec![
-        (Regex::new(r"\.map\([^)]+\)\.filter\(").unwrap(), "Consider combining map and filter"),
-        (Regex::new(r"for\s*\([^)]+\)\s*\{[^}]*await").unwrap(), "Sequential await in loop - consider Promise.all"),
-        (Regex::new(r"JSON\.parse\(JSON\.stringify").unwrap(), "Expensive deep clone"),
+        (
+            Regex::new(r"\.map\([^)]+\)\.filter\(").unwrap(),
+            "Consider combining map and filter",
+        ),
+        (
+            Regex::new(r"for\s*\([^)]+\)\s*\{[^}]*await").unwrap(),
+            "Sequential await in loop - consider Promise.all",
+        ),
+        (
+            Regex::new(r"JSON\.parse\(JSON\.stringify").unwrap(),
+            "Expensive deep clone",
+        ),
     ]
 });
 
@@ -78,11 +105,7 @@ impl Critic {
     }
 
     /// Critique an execution result
-    pub async fn critique(
-        &self,
-        plan: &TaskPlan,
-        result: &ExecutionResult,
-    ) -> CriticResult {
+    pub async fn critique(&self, plan: &TaskPlan, result: &ExecutionResult) -> CriticResult {
         let mut issues = vec![];
         let suggestions = vec![];
 
@@ -103,7 +126,9 @@ impl Critic {
 
         // Calculate confidence
         let confidence = self.calculate_confidence(&issues);
-        let has_blockers = issues.iter().any(|i| i.severity == CriticIssueSeverity::Blocker);
+        let has_blockers = issues
+            .iter()
+            .any(|i| i.severity == CriticIssueSeverity::Blocker);
         let approved = !has_blockers && confidence >= self.config.approval_threshold;
 
         CriticResult {
@@ -232,7 +257,8 @@ impl Critic {
                 severity: CriticIssueSeverity::Blocker,
                 issue_type: CriticIssueType::Correctness,
                 location: None,
-                description: "No files were changed - implementation appears incomplete".to_string(),
+                description: "No files were changed - implementation appears incomplete"
+                    .to_string(),
             });
         }
 

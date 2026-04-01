@@ -203,11 +203,7 @@ impl GitHubWatcher {
 
             // Emit event
             let is_pr = issue.pull_request.is_some();
-            let event_type = if is_pr {
-                "pull_request"
-            } else {
-                "issues"
-            };
+            let event_type = if is_pr { "pull_request" } else { "issues" };
 
             let raw_event = RawEvent {
                 source: WatcherType::GitHubPoll,

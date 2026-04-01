@@ -30,7 +30,7 @@ impl Default for EventBusConfig {
         Self {
             persist_dir: PathBuf::from(".ambient/events"),
             max_in_memory_events: 1000,
-            dedupe_window_secs: 3600, // 1 hour
+            dedupe_window_secs: 3600,      // 1 hour
             event_ttl_secs: 7 * 24 * 3600, // 7 days
         }
     }
@@ -93,7 +93,8 @@ impl EventBus {
             self.state.clone(),
             self.config.persist_dir.clone(),
             self.config.event_ttl_secs,
-        ).await
+        )
+        .await
     }
 
     /// Subscribe to events
@@ -326,13 +327,18 @@ impl EventBus {
             let mut completed: Vec<_> = state
                 .events
                 .iter()
-                .filter(|(_, e)| e.status == EventStatus::Completed || e.status == EventStatus::Skipped)
+                .filter(|(_, e)| {
+                    e.status == EventStatus::Completed || e.status == EventStatus::Skipped
+                })
                 .map(|(id, e)| (id.clone(), e.created_at))
                 .collect();
 
             completed.sort_by(|a, b| a.1.cmp(&b.1));
 
-            let excess = state.events.len().saturating_sub(self.config.max_in_memory_events);
+            let excess = state
+                .events
+                .len()
+                .saturating_sub(self.config.max_in_memory_events);
             let to_remove_completed = excess.min(completed.len());
 
             for (id, _) in completed.into_iter().take(to_remove_completed) {
@@ -344,13 +350,18 @@ impl EventBus {
                 let mut active: Vec<_> = state
                     .events
                     .iter()
-                    .filter(|(_, e)| e.status == EventStatus::Pending || e.status == EventStatus::Processing)
+                    .filter(|(_, e)| {
+                        e.status == EventStatus::Pending || e.status == EventStatus::Processing
+                    })
                     .map(|(id, e)| (id.clone(), e.created_at))
                     .collect();
 
                 active.sort_by(|a, b| a.1.cmp(&b.1));
 
-                let still_excess = state.events.len().saturating_sub(self.config.max_in_memory_events);
+                let still_excess = state
+                    .events
+                    .len()
+                    .saturating_sub(self.config.max_in_memory_events);
                 for (id, _) in active.into_iter().take(still_excess) {
                     warn!("Dropping active event {} due to memory pressure", id);
                     state.events.remove(&id);
@@ -483,9 +494,11 @@ fn extract_payload(raw: &RawEvent) -> EventPayload {
             payload.labels = labels
                 .iter()
                 .filter_map(|l| {
-                    l.as_str()
-                        .map(|s| s.to_string())
-                        .or_else(|| l.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                    l.as_str().map(|s| s.to_string()).or_else(|| {
+                        l.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string())
+                    })
                 })
                 .collect();
         }
@@ -532,21 +545,21 @@ fn detect_flags(payload: &EventPayload) -> EventFlags {
 
     // Check for high priority
     let high_priority_labels = ["urgent", "critical", "security", "p0", "p1"];
-    if payload
-        .labels
-        .iter()
-        .any(|l| high_priority_labels.iter().any(|hp| l.to_lowercase().contains(hp)))
-    {
+    if payload.labels.iter().any(|l| {
+        high_priority_labels
+            .iter()
+            .any(|hp| l.to_lowercase().contains(hp))
+    }) {
         flags.high_priority = true;
     }
 
     // Check for approval requirement
     let approval_labels = ["needs-approval", "manual", "breaking"];
-    if payload
-        .labels
-        .iter()
-        .any(|l| approval_labels.iter().any(|al| l.to_lowercase().contains(al)))
-    {
+    if payload.labels.iter().any(|l| {
+        approval_labels
+            .iter()
+            .any(|al| l.to_lowercase().contains(al))
+    }) {
         flags.requires_approval = true;
     }
 
@@ -567,7 +580,8 @@ async fn get_repo_context(repo_name: &str) -> anyhow::Result<Repository> {
 
     // Clone repository if it doesn't exist
     if !std::path::Path::new(&repo_path).join(".git").exists() {
-        clone_repository(&repo_url, &repo_path).await
+        clone_repository(&repo_url, &repo_path)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to clone repository {}: {}", repo_name, e))?;
     }
 
@@ -665,7 +679,7 @@ async fn load_persisted_events(
 
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        if path.extension().map_or(false, |ext| ext == "json") {
+        if path.extension().is_some_and(|ext| ext == "json") {
             match tokio::fs::read_to_string(&path).await {
                 Ok(content) => {
                     if let Ok(event) = serde_json::from_str::<NormalizedEvent>(&content) {
@@ -691,10 +705,7 @@ async fn load_persisted_events(
     }
 
     let state = state.read().await;
-    info!(
-        "Loaded {} persisted events",
-        state.events.len()
-    );
+    info!("Loaded {} persisted events", state.events.len());
 
     Ok(())
 }

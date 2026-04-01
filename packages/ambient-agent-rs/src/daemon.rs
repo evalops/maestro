@@ -10,7 +10,10 @@ use crate::{
     decider::{Decider, DeciderConfig},
     event_bus::{EventBus, EventBusConfig},
     executor::{Executor, ExecutorConfig},
-    ipc::{IpcCommand, IpcResponse, IpcServer, StatusResponse, default_socket_path, verify_token_constant_time},
+    ipc::{
+        default_socket_path, verify_token_constant_time, IpcCommand, IpcResponse, IpcServer,
+        StatusResponse,
+    },
     learner::{Learner, Outcome},
     pr_creator::{PrCreator, PrCreatorConfig},
     types::*,
@@ -22,6 +25,7 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
 /// Commands sent to the daemon
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum DaemonCommand {
     /// Pause processing
@@ -165,7 +169,9 @@ impl AmbientDaemon {
         self.load_state().await?;
 
         // Start IPC server
-        let mut ipc_server = self.ipc_server.take()
+        let mut ipc_server = self
+            .ipc_server
+            .take()
             .ok_or_else(|| anyhow::anyhow!("IPC server already taken"))?;
         ipc_server.bind().await?;
 
@@ -176,7 +182,9 @@ impl AmbientDaemon {
         let mut event_rx = self.event_bus.read().await.subscribe();
 
         // Take ownership of command receiver
-        let mut command_rx = self.command_rx.take()
+        let mut command_rx = self
+            .command_rx
+            .take()
             .ok_or_else(|| anyhow::anyhow!("Daemon already running"))?;
 
         // Clone Arc references for IPC handler
@@ -201,40 +209,44 @@ impl AmbientDaemon {
                         tokio::spawn(async move {
                             if let Ok(request) = IpcServer::read_request(&mut stream).await {
                                 // Verify authentication token using constant-time comparison
-                                let response = if !verify_token_constant_time(&request.token, &token) {
-                                    warn!("IPC request with invalid token");
-                                    IpcResponse::Unauthorized
-                                } else {
-                                    match request.command {
-                                        IpcCommand::Ping => IpcResponse::Pong,
-                                        IpcCommand::Stop => {
-                                            let _ = cmd_tx.send(DaemonCommand::Shutdown).await;
-                                            IpcResponse::Ok(Some("Stopping daemon".to_string()))
+                                let response =
+                                    if !verify_token_constant_time(&request.token, &token) {
+                                        warn!("IPC request with invalid token");
+                                        IpcResponse::Unauthorized
+                                    } else {
+                                        match request.command {
+                                            IpcCommand::Ping => IpcResponse::Pong,
+                                            IpcCommand::Stop => {
+                                                let _ = cmd_tx.send(DaemonCommand::Shutdown).await;
+                                                IpcResponse::Ok(Some("Stopping daemon".to_string()))
+                                            }
+                                            IpcCommand::Status => {
+                                                let status_val = status.read().await;
+                                                IpcResponse::Status(StatusResponse {
+                                                    running: *status_val == DaemonStatus::Running,
+                                                    status: format!("{:?}", *status_val),
+                                                    uptime_secs: (Utc::now() - start_time)
+                                                        .num_seconds()
+                                                        as u64,
+                                                    pid: std::process::id(),
+                                                })
+                                            }
+                                            IpcCommand::Stats => {
+                                                let mut s = stats.read().await.clone();
+                                                s.uptime_secs =
+                                                    (Utc::now() - start_time).num_seconds() as u64;
+                                                IpcResponse::Stats(s.into())
+                                            }
+                                            IpcCommand::Pause => {
+                                                let _ = cmd_tx.send(DaemonCommand::Pause).await;
+                                                IpcResponse::Ok(Some("Pausing daemon".to_string()))
+                                            }
+                                            IpcCommand::Resume => {
+                                                let _ = cmd_tx.send(DaemonCommand::Resume).await;
+                                                IpcResponse::Ok(Some("Resuming daemon".to_string()))
+                                            }
                                         }
-                                        IpcCommand::Status => {
-                                            let status_val = status.read().await;
-                                            IpcResponse::Status(StatusResponse {
-                                                running: *status_val == DaemonStatus::Running,
-                                                status: format!("{:?}", *status_val),
-                                                uptime_secs: (Utc::now() - start_time).num_seconds() as u64,
-                                                pid: std::process::id(),
-                                            })
-                                        }
-                                        IpcCommand::Stats => {
-                                            let mut s = stats.read().await.clone();
-                                            s.uptime_secs = (Utc::now() - start_time).num_seconds() as u64;
-                                            IpcResponse::Stats(s.into())
-                                        }
-                                        IpcCommand::Pause => {
-                                            let _ = cmd_tx.send(DaemonCommand::Pause).await;
-                                            IpcResponse::Ok(Some("Pausing daemon".to_string()))
-                                        }
-                                        IpcCommand::Resume => {
-                                            let _ = cmd_tx.send(DaemonCommand::Resume).await;
-                                            IpcResponse::Ok(Some("Resuming daemon".to_string()))
-                                        }
-                                    }
-                                };
+                                    };
                                 let _ = IpcServer::write_response(&mut stream, &response).await;
                             }
                         });
@@ -358,7 +370,11 @@ impl AmbientDaemon {
                             "Learner upgraded action to Execute, creating plan for event {}",
                             event.id
                         );
-                        self.decider.read().await.create_plan_for_event(&event).await
+                        self.decider
+                            .read()
+                            .await
+                            .create_plan_for_event(&event)
+                            .await
                     }
                 };
                 self.execute_plan(event, plan).await;
@@ -381,13 +397,19 @@ impl AmbientDaemon {
         let start_time = Utc::now();
 
         // Determine the main task type from the plan
-        let main_task_type = plan.tasks.first()
+        let main_task_type = plan
+            .tasks
+            .first()
             .map(|t| t.task_type)
             .unwrap_or(TaskType::Fix);
 
         // Create checkpoint
-        let checkpoint_id = match self.checkpoint_mgr.write().await
-            .create(&plan.task_id, &plan.summary).await
+        let checkpoint_id = match self
+            .checkpoint_mgr
+            .write()
+            .await
+            .create(&plan.task_id, &plan.summary)
+            .await
         {
             Ok(id) => id,
             Err(e) => {
@@ -400,7 +422,11 @@ impl AmbientDaemon {
         let task = Task {
             id: plan.task_id.clone(),
             task_type: main_task_type,
-            prompt: format!("{}\n\n{}", event.title, event.body.as_deref().unwrap_or_default()),
+            prompt: format!(
+                "{}\n\n{}",
+                event.title,
+                event.body.as_deref().unwrap_or_default()
+            ),
             files: plan.files.clone(),
             depends_on: vec![],
             priority: event.priority,
@@ -472,7 +498,13 @@ impl AmbientDaemon {
         // Handle result
         if critique.approved {
             // Commit checkpoint
-            if let Err(e) = self.checkpoint_mgr.write().await.commit(&checkpoint_id).await {
+            if let Err(e) = self
+                .checkpoint_mgr
+                .write()
+                .await
+                .commit(&checkpoint_id)
+                .await
+            {
                 error!("Failed to commit checkpoint: {}", e);
             }
 
@@ -481,15 +513,18 @@ impl AmbientDaemon {
             let pr_body = self.generate_pr_body(&plan, &result, &critique);
             let repo_path = std::path::Path::new(&event.repo.path);
 
-            let pr_result = self.pr_creator.create_pr(
-                repo_path,
-                &event.repository,
-                &event.repo.default_branch,
-                &pr_title,
-                &pr_body,
-                &result.changes,
-                &event,
-            ).await;
+            let pr_result = self
+                .pr_creator
+                .create_pr(
+                    repo_path,
+                    &event.repository,
+                    &event.repo.default_branch,
+                    &pr_title,
+                    &pr_body,
+                    &result.changes,
+                    &event,
+                )
+                .await;
 
             if pr_result.success {
                 info!(
@@ -511,7 +546,13 @@ impl AmbientDaemon {
                 warn!("  - {:?}: {}", issue.severity, issue.description);
             }
 
-            if let Err(e) = self.checkpoint_mgr.write().await.rollback(&checkpoint_id).await {
+            if let Err(e) = self
+                .checkpoint_mgr
+                .write()
+                .await
+                .rollback(&checkpoint_id)
+                .await
+            {
                 error!("Failed to rollback: {}", e);
             }
         }
@@ -634,7 +675,9 @@ impl DaemonBuilder {
     }
 
     pub fn build(self) -> anyhow::Result<AmbientDaemon> {
-        let config = self.config.ok_or_else(|| anyhow::anyhow!("Config required"))?;
+        let config = self
+            .config
+            .ok_or_else(|| anyhow::anyhow!("Config required"))?;
         let data_dir = self.data_dir.unwrap_or_else(|| {
             dirs::data_local_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
@@ -689,9 +732,7 @@ mod tests {
         let cmd_tx = daemon.get_command_sender();
 
         // Spawn daemon in background
-        let daemon_handle = tokio::spawn(async move {
-            daemon.run().await
-        });
+        let daemon_handle = tokio::spawn(async move { daemon.run().await });
 
         // Give it a moment to start
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
