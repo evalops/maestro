@@ -179,6 +179,14 @@ pub struct AgentStateCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_protocol_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_info: Option<super::messages::ClientInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<super::messages::ClientCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_role: Option<super::messages::ConnectionRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
@@ -192,6 +200,10 @@ pub struct AgentStateCheckpoint {
     pub current_response: Option<StreamingResponse>,
     #[serde(default)]
     pub pending_approvals: Vec<PendingApproval>,
+    #[serde(default)]
+    pub pending_client_tools: Vec<PendingApproval>,
+    #[serde(default)]
+    pub pending_user_inputs: Vec<PendingApproval>,
     #[serde(default)]
     pub tracked_tools: Vec<PendingApproval>,
     #[serde(default)]
@@ -217,6 +229,10 @@ impl AgentStateCheckpoint {
     pub fn from_state(state: &AgentState) -> Self {
         Self {
             protocol_version: state.protocol_version.clone(),
+            client_protocol_version: state.client_protocol_version.clone(),
+            client_info: state.client_info.clone(),
+            capabilities: state.capabilities.clone(),
+            connection_role: state.connection_role,
             model: state.model.clone(),
             provider: state.provider.clone(),
             session_id: state.session_id.clone(),
@@ -224,6 +240,8 @@ impl AgentStateCheckpoint {
             git_branch: state.git_branch.clone(),
             current_response: state.current_response.clone(),
             pending_approvals: state.pending_approvals.clone(),
+            pending_client_tools: state.pending_client_tools.clone(),
+            pending_user_inputs: state.pending_user_inputs.clone(),
             tracked_tools: state.tracked_tools.values().cloned().collect(),
             active_tools: state
                 .active_tools
@@ -249,6 +267,10 @@ impl AgentStateCheckpoint {
     pub fn into_state(self) -> AgentState {
         AgentState {
             protocol_version: self.protocol_version,
+            client_protocol_version: self.client_protocol_version,
+            client_info: self.client_info,
+            capabilities: self.capabilities,
+            connection_role: self.connection_role,
             model: self.model,
             provider: self.provider,
             session_id: self.session_id,
@@ -256,6 +278,8 @@ impl AgentStateCheckpoint {
             git_branch: self.git_branch,
             current_response: self.current_response,
             pending_approvals: self.pending_approvals,
+            pending_client_tools: self.pending_client_tools,
+            pending_user_inputs: self.pending_user_inputs,
             tracked_tools: self
                 .tracked_tools
                 .into_iter()

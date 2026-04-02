@@ -24,6 +24,7 @@ import {
 	TodoContextSource,
 } from "./agent/context-providers.js";
 import { Agent, ProviderTransport } from "./agent/index.js";
+import type { ClientToolExecutionService } from "./agent/transport.js";
 import type { AgentTool, ThinkingLevel } from "./agent/types.js";
 import {
 	disposeCheckpointService,
@@ -53,6 +54,7 @@ import { configureSafeMode } from "./safety/safe-mode.js";
 import type { WebServerContext } from "./server/app-context.js";
 import { recordApiRequest } from "./telemetry.js";
 import { artifactsClientTool } from "./tools/artifacts-client.js";
+import { askUserClientTool } from "./tools/ask-user-client.js";
 import {
 	codingTools,
 	conductorClientTools,
@@ -397,10 +399,12 @@ async function createAgent(
 	approvalMode: ApprovalMode = DEFAULT_APPROVAL_MODE,
 	options?: {
 		enableClientTools?: boolean;
+		useClientAskUser?: boolean;
 		includeVscodeTools?: boolean;
 		includeJetBrainsTools?: boolean;
 		includeConductorTools?: boolean;
 		approvalService?: ActionApprovalService;
+		clientToolService?: ClientToolExecutionService;
 	},
 ): Promise<Agent> {
 	const sessionTokenCounter = async (sessionId: string) => {
@@ -445,9 +449,11 @@ async function createAgent(
 		getAuthContext: async (provider: string) => authResolver(provider),
 		approvalService:
 			options?.approvalService ?? new WebActionApprovalService(approvalMode),
-		clientToolService: options?.enableClientTools
-			? clientToolService
-			: undefined,
+		clientToolService:
+			options?.clientToolService ??
+			(options?.enableClientTools || options?.useClientAskUser
+				? clientToolService
+				: undefined),
 		sessionTokenCounter,
 		auditLogger,
 	});
@@ -457,7 +463,12 @@ async function createAgent(
 	// Only include IDE client tools when a compatible client is connected.
 	// Without a connected client, these tools will hang waiting for responses.
 	const mcpTools = getAllMcpTools();
-	const tools: AgentTool[] = [...codingTools, ...mcpTools];
+	const baseTools = options?.useClientAskUser
+		? codingTools.map((tool) =>
+				tool.name === "ask_user" ? askUserClientTool : tool,
+			)
+		: codingTools;
+	const tools: AgentTool[] = [...baseTools, ...mcpTools];
 	if (options?.includeVscodeTools) {
 		tools.push(...vscodeTools);
 	}

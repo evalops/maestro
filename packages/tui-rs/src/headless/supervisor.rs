@@ -101,6 +101,11 @@ enum ManagedIncoming {
         state: Box<AgentState>,
         last_init: Option<InitConfig>,
     },
+    Reset {
+        reason: String,
+        state: Box<AgentState>,
+        last_init: Option<InitConfig>,
+    },
     Heartbeat,
 }
 
@@ -143,6 +148,15 @@ impl ManagedTransport {
                     RemoteIncoming::Snapshot { state, last_init } => {
                         ManagedIncoming::Snapshot { state, last_init }
                     }
+                    RemoteIncoming::Reset {
+                        reason,
+                        state,
+                        last_init,
+                    } => ManagedIncoming::Reset {
+                        reason,
+                        state,
+                        last_init,
+                    },
                     RemoteIncoming::Heartbeat => ManagedIncoming::Heartbeat,
                 })
             }),
@@ -161,6 +175,15 @@ impl ManagedTransport {
                         RemoteIncoming::Snapshot { state, last_init } => {
                             ManagedIncoming::Snapshot { state, last_init }
                         }
+                        RemoteIncoming::Reset {
+                            reason,
+                            state,
+                            last_init,
+                        } => ManagedIncoming::Reset {
+                            reason,
+                            state,
+                            last_init,
+                        },
                         RemoteIncoming::Heartbeat => ManagedIncoming::Heartbeat,
                     })
             }
@@ -434,11 +457,11 @@ impl AgentSupervisor {
     }
 
     fn apply_agent_message(&mut self, message: FromAgentMessage) -> Option<SupervisorEvent> {
-        let event = self.state.handle_message(message.clone())?;
+        let event = self.state.handle_message(message.clone());
         if let Some(ref mut recorder) = self.session_recorder {
             let _ = recorder.record_received(&message);
         }
-        Some(SupervisorEvent::Agent(Box::new(event)))
+        event.map(|event| SupervisorEvent::Agent(Box::new(event)))
     }
 
     fn handle_transport_error(&mut self, error: AsyncTransportError) -> SupervisorEvent {
@@ -456,6 +479,15 @@ impl AgentSupervisor {
                 self.apply_agent_message(message)
             }
             ManagedIncoming::Snapshot { state, last_init } => {
+                self.last_response = Some(Instant::now());
+                self.apply_snapshot(*state, last_init);
+                None
+            }
+            ManagedIncoming::Reset {
+                reason: _reason,
+                state,
+                last_init,
+            } => {
                 self.last_response = Some(Instant::now());
                 self.apply_snapshot(*state, last_init);
                 None

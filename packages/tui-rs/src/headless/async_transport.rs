@@ -12,7 +12,10 @@ use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use super::messages::{AgentEvent, AgentState, FromAgentMessage, InitConfig, ToAgentMessage};
+use super::messages::{
+    AgentEvent, AgentState, ClientCapabilities, ClientInfo, ConnectionRole, FromAgentMessage,
+    InitConfig, ServerRequestType, ToAgentMessage,
+};
 
 /// Configuration for the async agent transport
 #[derive(Debug, Clone)]
@@ -163,14 +166,26 @@ impl AsyncAgentTransport {
             .await;
         });
 
-        Ok(Self {
+        let transport = Self {
             message_tx,
             event_rx,
             state: AgentState::default(),
             cancel_token,
             _reader_handle: reader_handle,
             _writer_handle: writer_handle,
-        })
+        };
+        transport.send(ToAgentMessage::Hello {
+            protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-tui-rs".to_string(),
+                version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
+            }),
+            capabilities: Some(ClientCapabilities {
+                server_requests: Some(vec![ServerRequestType::Approval]),
+            }),
+            role: Some(ConnectionRole::Controller),
+        })?;
+        Ok(transport)
     }
 
     /// Writer loop - sends messages to agent stdin

@@ -83,7 +83,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
-use super::messages::{AgentEvent, AgentState, FromAgentMessage, InitConfig, ToAgentMessage};
+use super::messages::{
+    AgentEvent, AgentState, ClientCapabilities, ClientInfo, ConnectionRole, FromAgentMessage,
+    InitConfig, ServerRequestType, ToAgentMessage,
+};
 
 /// Error type for transport operations
 #[derive(Debug)]
@@ -259,12 +262,24 @@ impl AgentTransport {
             Self::reader_loop(stdout, child, reader_tx);
         });
 
-        Ok(Self {
+        let transport = Self {
             tx: to_agent_tx,
             rx: from_agent_rx,
             state: AgentState::default(),
             _process_handle: process_handle,
-        })
+        };
+        transport.send(ToAgentMessage::Hello {
+            protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-tui-rs".to_string(),
+                version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
+            }),
+            capabilities: Some(ClientCapabilities {
+                server_requests: Some(vec![ServerRequestType::Approval]),
+            }),
+            role: Some(ConnectionRole::Controller),
+        })?;
+        Ok(transport)
     }
 
     /// Writer loop - sends messages to the agent's stdin
