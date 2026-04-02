@@ -1369,7 +1369,17 @@ done
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         supervisor.reconnect().await.expect("reconnect");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        for _ in 0..40 {
+            let logged_init_count = fs::read_to_string(&log_path)
+                .expect("read log")
+                .lines()
+                .filter(|line| line.contains(r#""type":"init""#))
+                .count();
+            if logged_init_count >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
 
         supervisor.disconnect();
         tokio::time::sleep(Duration::from_millis(50)).await;
