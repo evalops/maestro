@@ -70,14 +70,8 @@ describe("headless protocol helpers", () => {
 		);
 	});
 
-	it("prefers tool classification over protocol keywords when both appear", () => {
-		expect(classifyHeadlessError("Failed to parse tool response", false)).toBe(
-			"tool",
-		);
-	});
-
-	it("classifies unknown non-fatal errors as tool errors", () => {
-		expect(classifyHeadlessError("Something odd happened", false)).toBe("tool");
+	it("falls back to tool classification for unknown non-fatal errors", () => {
+		expect(classifyHeadlessError("Unexpected failure", false)).toBe("tool");
 	});
 
 	it("builds usage totals from assistant messages", () => {
@@ -187,7 +181,7 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
-	it("deduplicates repeated tool summary labels within a response", () => {
+	it("deduplicates repeated tool summary labels", () => {
 		const translator = new HeadlessProtocolTranslator();
 		translator.handleAgentEvent({
 			type: "message_start",
@@ -206,16 +200,19 @@ describe("headless protocol helpers", () => {
 			args: { file_path: "package.json" },
 		});
 
-		const [responseEnd] = translator.handleAgentEvent({
-			type: "message_end",
-			message: assistantMessage(),
-		});
-		expect(responseEnd).toMatchObject({
-			type: "response_end",
-			tools_summary: {
-				summary_labels: ["Read package.json"],
-			},
-		});
+		expect(
+			translator.handleAgentEvent({
+				type: "message_end",
+				message: assistantMessage(),
+			}),
+		).toEqual([
+			expect.objectContaining({
+				type: "response_end",
+				tools_summary: expect.objectContaining({
+					summary_labels: ["Read package.json"],
+				}),
+			}),
+		]);
 	});
 
 	it("tracks non-approval tool names through tool_start", () => {

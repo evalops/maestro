@@ -9,7 +9,7 @@ use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{timeout, Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use super::messages::{AgentEvent, AgentState, FromAgentMessage, InitConfig, ToAgentMessage};
@@ -372,14 +372,25 @@ impl AsyncAgentTransport {
 
     /// Try to receive an event without blocking
     pub fn try_recv(&mut self) -> Option<Result<AgentEvent, AsyncTransportError>> {
-        self.try_recv_message()
-            .map(|result| self.apply_transport_result(result))
+        loop {
+            let result = self.try_recv_message()?;
+            match self.apply_transport_result(result) {
+                Ok(Some(event)) => return Some(Ok(event)),
+                Ok(None) => continue,
+                Err(error) => return Some(Err(error)),
+            }
+        }
     }
 
     /// Receive an event, blocking until one is available
     pub async fn recv(&mut self) -> Result<AgentEvent, AsyncTransportError> {
-        let result = self.recv_message().await?;
-        self.apply_transport_result(Ok(result))
+        loop {
+            let result = self.recv_message().await?;
+            match self.apply_transport_result(Ok(result))? {
+                Some(event) => return Ok(event),
+                None => continue,
+            }
+        }
     }
 
     pub(super) fn try_recv_message(
@@ -406,23 +417,29 @@ impl AsyncAgentTransport {
         &mut self,
         duration: Duration,
     ) -> Result<AgentEvent, AsyncTransportError> {
-        let result = match timeout(duration, self.event_rx.recv()).await {
-            Ok(Some(result)) => result,
-            Ok(None) => return Err(AsyncTransportError::ChannelClosed),
-            Err(_) => return Err(AsyncTransportError::Timeout),
-        };
-        self.apply_transport_result(result)
+        let deadline = Instant::now() + duration;
+        loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or(AsyncTransportError::Timeout)?;
+            let result = match timeout(remaining, self.event_rx.recv()).await {
+                Ok(Some(result)) => result,
+                Ok(None) => return Err(AsyncTransportError::ChannelClosed),
+                Err(_) => return Err(AsyncTransportError::Timeout),
+            };
+            match self.apply_transport_result(result)? {
+                Some(event) => return Ok(event),
+                None => continue,
+            }
+        }
     }
 
     fn apply_transport_result(
         &mut self,
         result: Result<FromAgentMessage, AsyncTransportError>,
-    ) -> Result<AgentEvent, AsyncTransportError> {
+    ) -> Result<Option<AgentEvent>, AsyncTransportError> {
         match result {
-            Ok(message) => self
-                .state
-                .handle_message(message)
-                .ok_or_else(|| AsyncTransportError::ParseFailed("No event produced".to_string())),
+            Ok(message) => Ok(self.state.handle_message(message)),
             Err(error) => Err(error),
         }
     }
@@ -529,6 +546,7 @@ impl Default for AsyncAgentTransportBuilder {
 
 #[cfg(test)]
 mod tests {
+    use super::super::messages::FromAgentMessage;
     use super::*;
 
     #[test]
@@ -573,5 +591,44 @@ mod tests {
 
         let err = AsyncTransportError::ProcessExited(Some(1));
         assert!(err.to_string().contains("exited"));
+    }
+
+    #[test]
+    fn try_recv_skips_messages_without_events() {
+        let (_message_tx, message_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) =
+            mpsc::unbounded_channel::<Result<FromAgentMessage, AsyncTransportError>>();
+        event_tx
+            .send(Ok(FromAgentMessage::Ready {
+                protocol_version: Some("2026-03-30".to_string()),
+                model: "test".to_string(),
+                provider: "test".to_string(),
+                session_id: None,
+            }))
+            .expect("send ready");
+        event_tx
+            .send(Ok(FromAgentMessage::Status {
+                message: "ready".to_string(),
+            }))
+            .expect("send status");
+
+        let cancel_token = CancellationToken::new();
+        let noop = tokio::spawn(async {});
+        let mut transport = AsyncAgentTransport {
+            message_tx: _message_tx,
+            event_rx,
+            state: AgentState::default(),
+            cancel_token,
+            _reader_handle: noop,
+            _writer_handle: tokio::spawn(async move {
+                let _ = message_rx;
+            }),
+        };
+
+        let event = transport.try_recv().expect("ready event").expect("ok");
+        assert!(matches!(event, AgentEvent::Ready { .. }));
+
+        let event = transport.try_recv().expect("status event").expect("ok");
+        assert!(matches!(event, AgentEvent::Status { ref message } if message == "ready"));
     }
 }

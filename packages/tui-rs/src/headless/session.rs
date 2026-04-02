@@ -536,6 +536,38 @@ impl SessionRecorder {
         &self.metadata
     }
 
+    /// Get the current replay state tracked by the recorder.
+    #[must_use]
+    pub fn replay_state(&self) -> &AgentState {
+        &self.replay_state
+    }
+
+    /// Get the last init config tracked by the recorder.
+    #[must_use]
+    pub fn last_init(&self) -> Option<&InitConfig> {
+        self.last_init.as_ref()
+    }
+
+    /// Replace the reconstructed replay state with a snapshot and persist it.
+    pub fn apply_snapshot(
+        &mut self,
+        state: AgentState,
+        last_init: Option<InitConfig>,
+    ) -> std::io::Result<()> {
+        self.replay_state = state;
+        self.last_init = last_init;
+        self.metadata.model = self.replay_state.model.clone();
+        self.metadata.provider = self.replay_state.provider.clone();
+        self.metadata.protocol_version = self.replay_state.protocol_version.clone();
+        if self.replay_state.session_id.is_some() {
+            self.metadata.agent_session_id = self.replay_state.session_id.clone();
+        }
+        self.metadata.cwd = self.replay_state.cwd.clone();
+        self.metadata.git_branch = self.replay_state.git_branch.clone();
+        self.metadata.updated_at = current_timestamp();
+        self.maybe_write_checkpoint(true)
+    }
+
     /// Record a sent message
     pub fn record_sent(&mut self, message: &ToAgentMessage) -> std::io::Result<()> {
         let entry = SessionEntry::sent(message.clone());

@@ -402,34 +402,42 @@ impl AgentTransport {
 
     /// Try to receive an event without blocking
     pub fn try_recv(&mut self) -> Option<Result<AgentEvent, TransportError>> {
-        match self.rx.try_recv() {
-            Ok(result) => Some(self.apply_transport_result(result)),
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => Some(Err(TransportError::ChannelError(
-                "Channel disconnected".to_string(),
-            ))),
+        loop {
+            match self.rx.try_recv() {
+                Ok(result) => match self.apply_transport_result(result) {
+                    Some(result) => return Some(result),
+                    None => continue,
+                },
+                Err(mpsc::TryRecvError::Empty) => return None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Some(Err(TransportError::ChannelError(
+                        "Channel disconnected".to_string(),
+                    )));
+                }
+            }
         }
     }
 
     /// Receive an event, blocking until one is available
     pub fn recv(&mut self) -> Result<AgentEvent, TransportError> {
-        let result = self
-            .rx
-            .recv()
-            .map_err(|e| TransportError::ChannelError(e.to_string()))?;
-        self.apply_transport_result(result)
+        loop {
+            let result = self
+                .rx
+                .recv()
+                .map_err(|e| TransportError::ChannelError(e.to_string()))?;
+            if let Some(result) = self.apply_transport_result(result) {
+                return result;
+            }
+        }
     }
 
     fn apply_transport_result(
         &mut self,
         result: Result<FromAgentMessage, TransportError>,
-    ) -> Result<AgentEvent, TransportError> {
+    ) -> Option<Result<AgentEvent, TransportError>> {
         match result {
-            Ok(message) => self
-                .state
-                .handle_message(message)
-                .ok_or_else(|| TransportError::ChannelError("No event produced".to_string())),
-            Err(error) => Err(error),
+            Ok(message) => self.state.handle_message(message).map(Ok),
+            Err(error) => Some(Err(error)),
         }
     }
 
@@ -538,5 +546,41 @@ mod tests {
         assert_eq!(builder.config.cwd, Some("/home/user/project".to_string()));
         assert_eq!(builder.config.extra_args.len(), 2);
         assert_eq!(builder.config.env.len(), 1);
+    }
+
+    #[test]
+    fn try_recv_skips_messages_without_events() {
+        let (tx, rx) = mpsc::channel::<Result<FromAgentMessage, TransportError>>();
+        tx.send(Ok(FromAgentMessage::SessionInfo {
+            session_id: Some("sess_123".to_string()),
+            cwd: "/tmp/project".to_string(),
+            git_branch: Some("main".to_string()),
+        }))
+        .unwrap();
+        tx.send(Ok(FromAgentMessage::Status {
+            message: "working".to_string(),
+        }))
+        .unwrap();
+
+        let process_handle = thread::spawn(|| {});
+        let mut transport = AgentTransport {
+            tx,
+            rx,
+            state: AgentState::default(),
+            _process_handle: process_handle,
+        };
+
+        let session_info = transport.try_recv().expect("session info").expect("ok");
+        assert!(matches!(
+            session_info,
+            AgentEvent::SessionInfo {
+                ref cwd,
+                git_branch: Some(ref git_branch),
+                ..
+            } if cwd == "/tmp/project" && git_branch == "main"
+        ));
+
+        let status = transport.try_recv().expect("status event").expect("ok");
+        assert!(matches!(status, AgentEvent::Status { ref message } if message == "working"));
     }
 }

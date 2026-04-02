@@ -345,25 +345,29 @@ impl AgentSupervisor {
         };
 
         transport.send(msg.clone())?;
-        self.state.handle_sent_message(&msg);
-
-        if let ToAgentMessage::Init {
-            system_prompt,
-            append_system_prompt,
-            thinking_level,
-            approval_mode,
-        } = &msg
-        {
-            self.last_init = Some(InitConfig {
-                system_prompt: system_prompt.clone(),
-                append_system_prompt: append_system_prompt.clone(),
-                thinking_level: *thinking_level,
-                approval_mode: *approval_mode,
-            });
-        }
-
         if let Some(ref mut recorder) = self.session_recorder {
             let _ = recorder.record_sent(&msg);
+            self.state = recorder.replay_state().clone();
+            self.last_init = recorder
+                .last_init()
+                .cloned()
+                .or_else(|| self.last_init.clone());
+        } else {
+            self.state.handle_sent_message(&msg);
+            if let ToAgentMessage::Init {
+                system_prompt,
+                append_system_prompt,
+                thinking_level,
+                approval_mode,
+            } = &msg
+            {
+                self.last_init = Some(InitConfig {
+                    system_prompt: system_prompt.clone(),
+                    append_system_prompt: append_system_prompt.clone(),
+                    thinking_level: *thinking_level,
+                    approval_mode: *approval_mode,
+                });
+            }
         }
 
         Ok(())
@@ -418,9 +422,11 @@ impl AgentSupervisor {
     }
 
     fn apply_snapshot(&mut self, state: AgentState, last_init: Option<InitConfig>) {
+        let resolved_last_init = last_init.or_else(|| self.last_init.clone());
         self.state = state;
-        if let Some(last_init) = last_init {
-            self.last_init = Some(last_init);
+        self.last_init = resolved_last_init.clone();
+        if let Some(ref mut recorder) = self.session_recorder {
+            let _ = recorder.apply_snapshot(self.state.clone(), resolved_last_init.clone());
         }
         let _ = self.event_tx.send(SupervisorEvent::StateHydrated {
             session_id: self.state.session_id.clone(),
@@ -1130,6 +1136,63 @@ mod tests {
                 .and_then(|init| init.system_prompt.as_deref()),
             Some("Saved system prompt")
         );
+    }
+
+    #[test]
+    fn session_recorder_keeps_last_init_in_sync_with_sent_messages() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = temp.path();
+        let mut recorder = SessionRecorder::new(sessions_dir).expect("recorder");
+        recorder
+            .record_sent(&ToAgentMessage::Init {
+                system_prompt: Some("Saved system prompt".to_string()),
+                append_system_prompt: None,
+                thinking_level: Some(super::super::messages::ThinkingLevel::Medium),
+                approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+            })
+            .expect("record init");
+        recorder.flush().expect("flush");
+        let session_id = recorder.id().to_string();
+        drop(recorder);
+
+        let replay = SessionReader::load(sessions_dir, &session_id)
+            .expect("load session")
+            .replay();
+        let recorder = SessionRecorder::resume(sessions_dir, &session_id).expect("resume recorder");
+
+        assert_eq!(recorder.last_init(), replay.last_init);
+    }
+
+    #[test]
+    fn apply_snapshot_keeps_session_recorder_state_in_sync() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = temp.path();
+        let recorder = SessionRecorder::new(sessions_dir).expect("recorder");
+        let mut supervisor =
+            AgentSupervisor::new(SupervisorConfig::default()).with_session_recorder(recorder);
+        let snapshot_state = AgentState {
+            model: Some("gpt-5.4".to_string()),
+            provider: Some("openai".to_string()),
+            session_id: Some("sess_remote".to_string()),
+            is_ready: true,
+            ..AgentState::default()
+        };
+        let snapshot_init = InitConfig {
+            system_prompt: Some("Persisted prompt".to_string()),
+            append_system_prompt: None,
+            thinking_level: Some(super::super::messages::ThinkingLevel::High),
+            approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+        };
+
+        supervisor.apply_snapshot(snapshot_state.clone(), Some(snapshot_init.clone()));
+
+        let recorder = supervisor
+            .session_recorder
+            .as_ref()
+            .expect("session recorder");
+        assert_eq!(recorder.replay_state(), &snapshot_state);
+        assert_eq!(recorder.last_init(), Some(&snapshot_init));
+        assert_eq!(supervisor.last_init.as_ref(), Some(&snapshot_init));
     }
 
     #[test]
