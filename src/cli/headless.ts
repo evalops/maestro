@@ -6,6 +6,10 @@
  * remote runtimes stay aligned.
  */
 
+import {
+	type HeadlessToAgentMessageType,
+	headlessToAgentMessageTypes,
+} from "@evalops/contracts";
 import type { ActionApprovalService } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
@@ -37,6 +41,14 @@ export {
 	buildHeadlessUsage,
 	classifyHeadlessError,
 };
+
+function isHeadlessToAgentMessageType(
+	value: string,
+): value is HeadlessToAgentMessageType {
+	return headlessToAgentMessageTypes.includes(
+		value as HeadlessToAgentMessageType,
+	);
+}
 
 function send(msg: HeadlessFromAgentMessage): void {
 	process.stdout.write(`${JSON.stringify(msg)}\n`);
@@ -156,7 +168,22 @@ export async function runHeadlessMode(
 	rl.on("line", async (line: string) => {
 		let msg: HeadlessToAgentMessage;
 		try {
-			msg = JSON.parse(line) as HeadlessToAgentMessage;
+			const parsed = JSON.parse(line) as {
+				type?: string;
+			};
+			if (
+				typeof parsed !== "object" ||
+				parsed === null ||
+				typeof parsed.type !== "string" ||
+				!isHeadlessToAgentMessageType(parsed.type)
+			) {
+				sendError(
+					"Failed to parse command: Unknown headless command type",
+					false,
+				);
+				return;
+			}
+			msg = parsed as HeadlessToAgentMessage;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			sendError(`Failed to parse command: ${message}`, false);

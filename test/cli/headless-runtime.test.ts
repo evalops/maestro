@@ -102,4 +102,71 @@ describe("runHeadlessMode", () => {
 			),
 		).toBe(false);
 	});
+
+	it("rejects unknown headless command types at the protocol boundary", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn(),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+		);
+
+		await vi.waitFor(() => {
+			expect(onLine).toBeTypeOf("function");
+			expect(onClose).toBeTypeOf("function");
+		});
+
+		await onLine?.(JSON.stringify({ type: "totally_unknown_command" }));
+		onClose?.();
+		await runPromise;
+
+		const messages = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.map(
+				(line) =>
+					JSON.parse(line) as {
+						type: string;
+						message?: string;
+					},
+			);
+		expect(messages).toContainEqual({
+			type: "error",
+			message: "Failed to parse command: Unknown headless command type",
+			fatal: false,
+			error_type: "protocol",
+		});
+	});
 });

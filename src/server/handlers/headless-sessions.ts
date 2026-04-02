@@ -5,6 +5,7 @@ import {
 	headlessConnectionRoles,
 	headlessServerRequestTypes,
 	headlessThinkingLevels,
+	headlessToAgentMessageTypes,
 	headlessUtilityOperations,
 } from "@evalops/contracts";
 import { type Static, type TSchema, Type } from "@sinclair/typebox";
@@ -76,7 +77,7 @@ const HeadlessSessionCreateSchema = Type.Object({
 
 const HeadlessMessageSchema = Type.Object(
 	{
-		type: Type.String(),
+		type: stringLiteralUnion(headlessToAgentMessageTypes),
 	},
 	{ additionalProperties: true },
 );
