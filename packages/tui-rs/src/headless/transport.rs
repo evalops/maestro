@@ -85,7 +85,7 @@ use std::thread;
 
 use super::messages::{
     AgentEvent, AgentState, ClientCapabilities, ClientInfo, ConnectionRole, FromAgentMessage,
-    InitConfig, ServerRequestType, ToAgentMessage,
+    InitConfig, ServerRequestType, ToAgentMessage, UtilityOperation,
 };
 
 /// Error type for transport operations
@@ -276,6 +276,7 @@ impl AgentTransport {
             }),
             capabilities: Some(ClientCapabilities {
                 server_requests: Some(vec![ServerRequestType::Approval]),
+                utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
             role: Some(ConnectionRole::Controller),
         })?;

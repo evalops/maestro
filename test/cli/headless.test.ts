@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { headlessProtocolVersion } from "@evalops/contracts";
 import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
@@ -45,7 +46,7 @@ function assistantMessage(
 
 describe("headless protocol helpers", () => {
 	it("exports a concrete protocol version", () => {
-		expect(HEADLESS_PROTOCOL_VERSION).toBe("2026-03-30");
+		expect(HEADLESS_PROTOCOL_VERSION).toBe(headlessProtocolVersion);
 	});
 
 	it("classifies cancellation-like errors", () => {

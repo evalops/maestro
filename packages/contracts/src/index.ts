@@ -43,6 +43,8 @@
  * @module @evalops/contracts
  */
 
+export * from "./headless-protocol-generated.js";
+
 /**
  * Role of a message in the conversation.
  *

@@ -1,0 +1,20 @@
+{
+	"protocolVersion": "2026-04-02",
+	"serverRequestTypes": ["approval", "client_tool", "user_input"],
+	"serverRequestResolutions": [
+		"approved",
+		"denied",
+		"completed",
+		"failed",
+		"answered",
+		"cancelled"
+	],
+	"serverRequestResolvedBy": ["user", "policy", "client", "runtime"],
+	"connectionRoles": ["viewer", "controller"],
+	"thinkingLevels": ["off", "minimal", "low", "medium", "high", "ultra"],
+	"approvalModes": ["auto", "prompt", "fail"],
+	"errorTypes": ["transient", "fatal", "tool", "cancelled", "protocol"],
+	"utilityOperations": ["command_exec"],
+	"utilityCommandStreams": ["stdout", "stderr"],
+	"utilityCommandShellModes": ["shell", "direct"]
+}

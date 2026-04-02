@@ -94,7 +94,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Current headless protocol version shared with the TypeScript runtime.
-pub const HEADLESS_PROTOCOL_VERSION: &str = "2026-03-30";
+pub use super::generated_protocol::HEADLESS_PROTOCOL_VERSION;
 
 // =============================================================================
 // Messages from TUI to Agent
@@ -197,6 +197,23 @@ pub enum ToAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+    /// Start a utility command on the runtime
+    UtilityCommandStart {
+        command_id: String,
+        command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env: Option<HashMap<String, String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shell_mode: Option<UtilityCommandShellMode>,
+    },
+    /// Terminate a utility command on the runtime
+    UtilityCommandTerminate {
+        command_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
+    },
     /// Cancel the current operation
     Cancel,
     /// Shut down the agent
@@ -229,6 +246,8 @@ pub struct ClientInfo {
 pub struct ClientCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_requests: Option<Vec<ServerRequestType>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub utility_operations: Option<Vec<UtilityOperation>>,
 }
 
 /// Role granted to the attached headless connection.
@@ -258,6 +277,29 @@ pub enum ApprovalMode {
     Auto,
     Prompt,
     Fail,
+}
+
+/// Utility-plane operations negotiated for the connection.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UtilityOperation {
+    CommandExec,
+}
+
+/// Output stream emitted by a running utility command.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UtilityCommandStream {
+    Stdout,
+    Stderr,
+}
+
+/// Shell launch mode for utility commands.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UtilityCommandShellMode {
+    Shell,
+    Direct,
 }
 
 /// Result of a tool execution
@@ -440,6 +482,33 @@ pub enum FromAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<ConnectionRole>,
     },
+    /// Utility command started on the runtime
+    UtilityCommandStarted {
+        command_id: String,
+        command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        shell_mode: UtilityCommandShellMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid: Option<u32>,
+    },
+    /// Utility command output chunk
+    UtilityCommandOutput {
+        command_id: String,
+        stream: UtilityCommandStream,
+        content: String,
+    },
+    /// Utility command completed on the runtime
+    UtilityCommandExited {
+        command_id: String,
+        success: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signal: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
 }
 
 /// Token usage statistics
@@ -601,6 +670,8 @@ pub struct AgentState {
     pub pending_user_inputs: Vec<PendingApproval>,
     /// Active tool executions
     pub active_tools: HashMap<String, ActiveTool>,
+    /// Active utility-plane commands
+    pub active_utility_commands: HashMap<String, ActiveUtilityCommand>,
     /// Tracks tool metadata until a tool run completes, even when approval is not required.
     pub tracked_tools: HashMap<String, PendingApproval>,
     /// Last error message
@@ -665,6 +736,17 @@ pub struct ActiveTool {
     pub started: std::time::Instant,
 }
 
+/// A utility command currently executing
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveUtilityCommand {
+    pub command_id: String,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub shell_mode: UtilityCommandShellMode,
+    pub pid: Option<u32>,
+    pub output: String,
+}
+
 impl AgentState {
     /// Handle an outbound message and update optimistic local state.
     pub fn handle_sent_message(&mut self, msg: &ToAgentMessage) {
@@ -694,6 +776,7 @@ impl AgentState {
                 self.pending_client_tools.clear();
                 self.pending_user_inputs.clear();
                 self.active_tools.clear();
+                self.active_utility_commands.clear();
                 self.tracked_tools.clear();
                 self.is_responding = false;
             }
@@ -730,12 +813,15 @@ impl AgentState {
                         .retain(|p| p.call_id != *request_id);
                 }
             },
+            ToAgentMessage::UtilityCommandStart { .. } => {}
+            ToAgentMessage::UtilityCommandTerminate { .. } => {}
             ToAgentMessage::Shutdown => {
                 self.current_response = None;
                 self.pending_approvals.clear();
                 self.pending_client_tools.clear();
                 self.pending_user_inputs.clear();
                 self.active_tools.clear();
+                self.active_utility_commands.clear();
                 self.tracked_tools.clear();
                 self.is_ready = false;
                 self.is_responding = false;
@@ -789,6 +875,40 @@ impl AgentState {
                 self.client_info = client_info;
                 self.capabilities = capabilities;
                 self.connection_role = role;
+                None
+            }
+            FromAgentMessage::UtilityCommandStarted {
+                command_id,
+                command,
+                cwd,
+                shell_mode,
+                pid,
+            } => {
+                self.active_utility_commands.insert(
+                    command_id.clone(),
+                    ActiveUtilityCommand {
+                        command_id,
+                        command,
+                        cwd,
+                        shell_mode,
+                        pid,
+                        output: String::new(),
+                    },
+                );
+                None
+            }
+            FromAgentMessage::UtilityCommandOutput {
+                command_id,
+                content,
+                ..
+            } => {
+                if let Some(command) = self.active_utility_commands.get_mut(&command_id) {
+                    command.output.push_str(&content);
+                }
+                None
+            }
+            FromAgentMessage::UtilityCommandExited { command_id, .. } => {
+                self.active_utility_commands.remove(&command_id);
                 None
             }
 
@@ -1378,19 +1498,23 @@ mod tests {
     #[test]
     fn serialize_hello_message() {
         let msg = ToAgentMessage::Hello {
-            protocol_version: Some("2026-03-30".to_string()),
+            protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
             client_info: Some(ClientInfo {
                 name: "maestro-tui-rs".to_string(),
                 version: Some("0.1.0".to_string()),
             }),
             capabilities: Some(ClientCapabilities {
                 server_requests: Some(vec![ServerRequestType::Approval]),
+                utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
             role: Some(ConnectionRole::Controller),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"hello""#));
-        assert!(json.contains(r#""protocol_version":"2026-03-30""#));
+        assert!(json.contains(&format!(
+            r#""protocol_version":"{}""#,
+            HEADLESS_PROTOCOL_VERSION
+        )));
         assert!(json.contains(r#""name":"maestro-tui-rs""#));
         assert!(json.contains(r#""role":"controller""#));
     }
@@ -1581,18 +1705,19 @@ mod tests {
         let mut state = AgentState::default();
 
         state.handle_sent_message(&ToAgentMessage::Hello {
-            protocol_version: Some("2026-03-30".to_string()),
+            protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
             client_info: Some(ClientInfo {
                 name: "maestro-tui-rs".to_string(),
                 version: Some("0.1.0".to_string()),
             }),
             capabilities: Some(ClientCapabilities {
                 server_requests: Some(vec![ServerRequestType::Approval]),
+                utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
             role: Some(ConnectionRole::Controller),
         });
         let event = state.handle_message(FromAgentMessage::ConnectionInfo {
-            client_protocol_version: Some("2026-03-30".to_string()),
+            client_protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
             client_info: Some(ClientInfo {
                 name: "maestro-web".to_string(),
                 version: Some("1.2.3".to_string()),
@@ -1602,12 +1727,16 @@ mod tests {
                     ServerRequestType::Approval,
                     ServerRequestType::ClientTool,
                 ]),
+                utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
             role: Some(ConnectionRole::Viewer),
         });
 
         assert!(event.is_none());
-        assert_eq!(state.client_protocol_version.as_deref(), Some("2026-03-30"));
+        assert_eq!(
+            state.client_protocol_version.as_deref(),
+            Some(HEADLESS_PROTOCOL_VERSION)
+        );
         assert_eq!(
             state.client_info.as_ref().map(|info| info.name.as_str()),
             Some("maestro-web")

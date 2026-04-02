@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::messages::{
     AgentEvent, AgentState, ClientCapabilities, ClientInfo, ConnectionRole, FromAgentMessage,
-    InitConfig, ServerRequestType, ToAgentMessage,
+    InitConfig, ServerRequestType, ToAgentMessage, UtilityOperation,
 };
 
 /// Configuration for the async agent transport
@@ -182,6 +182,7 @@ impl AsyncAgentTransport {
             }),
             capabilities: Some(ClientCapabilities {
                 server_requests: Some(vec![ServerRequestType::Approval]),
+                utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
             role: Some(ConnectionRole::Controller),
         })?;
