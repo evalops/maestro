@@ -1,8 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { join, relative, resolve, sep } from "node:path";
 
-let cachedFiles: string[] | null = null;
-let cachedAt = 0;
+const cache = new Map<string, { files: string[]; cachedAt: number }>();
 
 function runRgFiles(cwd: string): string[] | null {
 	const result = spawnSync("rg", ["--files"], {
@@ -103,13 +102,14 @@ function runGitFiles(cwd: string): string[] | null {
 	return scoped;
 }
 
-export function getWorkspaceFiles(limit = 2000): string[] {
+export function getWorkspaceFiles(limit = 2000, cwdInput?: string): string[] {
 	const now = Date.now();
-	const cwd = resolve(process.cwd());
+	const cwd = resolve(cwdInput ?? process.cwd());
 
 	// Refresh cache every 30 seconds
-	if (cachedFiles && now - cachedAt < 30_000) {
-		return cachedFiles.slice(0, limit);
+	const cached = cache.get(cwd);
+	if (cached && now - cached.cachedAt < 30_000) {
+		return cached.files.slice(0, limit);
 	}
 
 	let files = runRgFiles(cwd);
@@ -121,8 +121,7 @@ export function getWorkspaceFiles(limit = 2000): string[] {
 	}
 
 	if (files === null) {
-		cachedFiles = [];
-		cachedAt = now;
+		cache.set(cwd, { files: [], cachedAt: now });
 		return [];
 	}
 
@@ -130,7 +129,6 @@ export function getWorkspaceFiles(limit = 2000): string[] {
 		.map((file) => file.replace(/^[.][/\\]/, ""))
 		.filter((file) => file.length > 0);
 
-	cachedFiles = normalized;
-	cachedAt = now;
+	cache.set(cwd, { files: normalized, cachedAt: now });
 	return normalized.slice(0, limit);
 }

@@ -91,8 +91,8 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 use super::messages::{
-    ActiveTool, AgentState, FromAgentMessage, InitConfig, PendingApproval, StreamingResponse,
-    ToAgentMessage, TokenUsage,
+    ActiveFileWatch, ActiveTool, AgentState, FromAgentMessage, InitConfig, PendingApproval,
+    StreamingResponse, ToAgentMessage, TokenUsage,
 };
 
 /// A recorded session entry (either a sent or received message).
@@ -185,6 +185,15 @@ pub struct ActiveUtilityCommandCheckpoint {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActiveFileWatchCheckpoint {
+    pub watch_id: String,
+    pub root_dir: String,
+    pub include_patterns: Option<Vec<String>>,
+    pub exclude_patterns: Option<Vec<String>>,
+    pub debounce_ms: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentStateCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_version: Option<String>,
@@ -230,6 +239,8 @@ pub struct AgentStateCheckpoint {
     pub active_tools: Vec<ActiveToolCheckpoint>,
     #[serde(default)]
     pub active_utility_commands: Vec<ActiveUtilityCommandCheckpoint>,
+    #[serde(default)]
+    pub active_file_watches: Vec<ActiveFileWatchCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -290,6 +301,17 @@ impl AgentStateCheckpoint {
                     shell_mode: command.shell_mode,
                     pid: command.pid,
                     output: command.output.clone(),
+                })
+                .collect(),
+            active_file_watches: state
+                .active_file_watches
+                .values()
+                .map(|watch| ActiveFileWatchCheckpoint {
+                    watch_id: watch.watch_id.clone(),
+                    root_dir: watch.root_dir.clone(),
+                    include_patterns: watch.include_patterns.clone(),
+                    exclude_patterns: watch.exclude_patterns.clone(),
+                    debounce_ms: watch.debounce_ms,
                 })
                 .collect(),
             last_error: state.last_error.clone(),
@@ -360,6 +382,22 @@ impl AgentStateCheckpoint {
                             shell_mode: command.shell_mode,
                             pid: command.pid,
                             output: command.output,
+                        },
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
+            active_file_watches: self
+                .active_file_watches
+                .into_iter()
+                .map(|watch| {
+                    (
+                        watch.watch_id.clone(),
+                        ActiveFileWatch {
+                            watch_id: watch.watch_id,
+                            root_dir: watch.root_dir,
+                            include_patterns: watch.include_patterns,
+                            exclude_patterns: watch.exclude_patterns,
+                            debounce_ms: watch.debounce_ms,
                         },
                     )
                 })

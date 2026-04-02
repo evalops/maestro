@@ -223,6 +223,29 @@ pub enum ToAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         eof: Option<bool>,
     },
+    /// Search workspace file paths on the runtime
+    UtilityFileSearch {
+        search_id: String,
+        query: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
+    /// Start a filesystem watch on the runtime
+    UtilityFileWatchStart {
+        watch_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root_dir: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        include_patterns: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exclude_patterns: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        debounce_ms: Option<u32>,
+    },
+    /// Stop a filesystem watch on the runtime
+    UtilityFileWatchStop { watch_id: String },
     /// Cancel the current operation
     Cancel,
     /// Shut down the agent
@@ -314,6 +337,8 @@ pub enum ApprovalMode {
 #[serde(rename_all = "snake_case")]
 pub enum UtilityOperation {
     CommandExec,
+    FileSearch,
+    FileWatch,
 }
 
 /// Output stream emitted by a running utility command.
@@ -330,6 +355,16 @@ pub enum UtilityCommandStream {
 pub enum UtilityCommandShellMode {
     Shell,
     Direct,
+}
+
+/// File change type emitted by a running file watch.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UtilityFileWatchChangeType {
+    Create,
+    Modify,
+    Delete,
+    Rename,
 }
 
 /// Result of a tool execution
@@ -356,6 +391,13 @@ pub enum ClientToolResultContent {
         #[serde(rename = "mimeType")]
         mime_type: String,
     },
+}
+
+/// Ranked file path match returned by a runtime file search.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UtilityFileSearchMatch {
+    pub path: String,
+    pub score: i32,
 }
 
 // =============================================================================
@@ -549,6 +591,39 @@ pub enum FromAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// File path search completed on the runtime
+    UtilityFileSearchResults {
+        search_id: String,
+        query: String,
+        cwd: String,
+        results: Vec<UtilityFileSearchMatch>,
+        truncated: bool,
+    },
+    /// File watch started on the runtime
+    UtilityFileWatchStarted {
+        watch_id: String,
+        root_dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        include_patterns: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exclude_patterns: Option<Vec<String>>,
+        debounce_ms: u32,
+    },
+    /// File watch emitted a change event
+    UtilityFileWatchEvent {
+        watch_id: String,
+        change_type: UtilityFileWatchChangeType,
+        path: String,
+        relative_path: String,
+        timestamp: u64,
+        is_directory: bool,
+    },
+    /// File watch stopped on the runtime
+    UtilityFileWatchStopped {
+        watch_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
 }
 
 /// Token usage statistics
@@ -715,6 +790,8 @@ pub struct AgentState {
     pub active_tools: HashMap<String, ActiveTool>,
     /// Active utility-plane commands
     pub active_utility_commands: HashMap<String, ActiveUtilityCommand>,
+    /// Active utility-plane file watches
+    pub active_file_watches: HashMap<String, ActiveFileWatch>,
     /// Tracks tool metadata until a tool run completes, even when approval is not required.
     pub tracked_tools: HashMap<String, PendingApproval>,
     /// Last error message
@@ -790,6 +867,16 @@ pub struct ActiveUtilityCommand {
     pub output: String,
 }
 
+/// A file watch currently active on the runtime.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveFileWatch {
+    pub watch_id: String,
+    pub root_dir: String,
+    pub include_patterns: Option<Vec<String>>,
+    pub exclude_patterns: Option<Vec<String>>,
+    pub debounce_ms: u32,
+}
+
 impl AgentState {
     /// Handle an outbound message and update optimistic local state.
     pub fn handle_sent_message(&mut self, msg: &ToAgentMessage) {
@@ -839,6 +926,7 @@ impl AgentState {
                 self.pending_user_inputs.clear();
                 self.active_tools.clear();
                 self.active_utility_commands.clear();
+                self.active_file_watches.clear();
                 self.tracked_tools.clear();
                 self.is_responding = false;
             }
@@ -878,6 +966,9 @@ impl AgentState {
             ToAgentMessage::UtilityCommandStart { .. } => {}
             ToAgentMessage::UtilityCommandTerminate { .. } => {}
             ToAgentMessage::UtilityCommandStdin { .. } => {}
+            ToAgentMessage::UtilityFileSearch { .. } => {}
+            ToAgentMessage::UtilityFileWatchStart { .. } => {}
+            ToAgentMessage::UtilityFileWatchStop { .. } => {}
             ToAgentMessage::Shutdown => {
                 self.current_response = None;
                 self.pending_approvals.clear();
@@ -885,6 +976,7 @@ impl AgentState {
                 self.pending_user_inputs.clear();
                 self.active_tools.clear();
                 self.active_utility_commands.clear();
+                self.active_file_watches.clear();
                 self.tracked_tools.clear();
                 self.is_ready = false;
                 self.is_responding = false;
@@ -980,6 +1072,31 @@ impl AgentState {
             }
             FromAgentMessage::UtilityCommandExited { command_id, .. } => {
                 self.active_utility_commands.remove(&command_id);
+                None
+            }
+            FromAgentMessage::UtilityFileSearchResults { .. } => None,
+            FromAgentMessage::UtilityFileWatchStarted {
+                watch_id,
+                root_dir,
+                include_patterns,
+                exclude_patterns,
+                debounce_ms,
+            } => {
+                self.active_file_watches.insert(
+                    watch_id.clone(),
+                    ActiveFileWatch {
+                        watch_id,
+                        root_dir,
+                        include_patterns,
+                        exclude_patterns,
+                        debounce_ms,
+                    },
+                );
+                None
+            }
+            FromAgentMessage::UtilityFileWatchEvent { .. } => None,
+            FromAgentMessage::UtilityFileWatchStopped { watch_id, .. } => {
+                self.active_file_watches.remove(&watch_id);
                 None
             }
 
@@ -1648,6 +1765,45 @@ mod tests {
     }
 
     #[test]
+    fn serialize_utility_file_search_message() {
+        let msg = ToAgentMessage::UtilityFileSearch {
+            search_id: "search_src".to_string(),
+            query: "headless".to_string(),
+            cwd: Some("/tmp/project".to_string()),
+            limit: Some(25),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"utility_file_search""#));
+        assert!(json.contains(r#""search_id":"search_src""#));
+        assert!(json.contains(r#""query":"headless""#));
+        assert!(json.contains(r#""limit":25"#));
+    }
+
+    #[test]
+    fn parse_utility_file_watch_event_message() {
+        let json = r#"{"type":"utility_file_watch_event","watch_id":"watch_src","change_type":"modify","path":"/tmp/project/src/app.ts","relative_path":"src/app.ts","timestamp":1234,"is_directory":false}"#;
+        let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            FromAgentMessage::UtilityFileWatchEvent {
+                watch_id,
+                change_type,
+                path,
+                relative_path,
+                timestamp,
+                is_directory,
+            } => {
+                assert_eq!(watch_id, "watch_src");
+                assert_eq!(change_type, UtilityFileWatchChangeType::Modify);
+                assert_eq!(path, "/tmp/project/src/app.ts");
+                assert_eq!(relative_path, "src/app.ts");
+                assert_eq!(timestamp, 1234);
+                assert!(!is_directory);
+            }
+            _ => panic!("Expected UtilityFileWatchEvent message"),
+        }
+    }
+
+    #[test]
     fn state_handles_response_stream() {
         let mut state = AgentState::default();
         state.handle_message(FromAgentMessage::Ready {
@@ -1722,6 +1878,34 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn state_tracks_and_clears_file_watches() {
+        let mut state = AgentState::default();
+        state.handle_message(FromAgentMessage::UtilityFileWatchStarted {
+            watch_id: "watch_src".to_string(),
+            root_dir: "/tmp/project".to_string(),
+            include_patterns: Some(vec!["src/**".to_string()]),
+            exclude_patterns: Some(vec!["dist/**".to_string()]),
+            debounce_ms: 50,
+        });
+
+        assert_eq!(state.active_file_watches.len(), 1);
+        assert_eq!(
+            state
+                .active_file_watches
+                .get("watch_src")
+                .map(|watch| watch.root_dir.as_str()),
+            Some("/tmp/project")
+        );
+
+        state.handle_message(FromAgentMessage::UtilityFileWatchStopped {
+            watch_id: "watch_src".to_string(),
+            reason: Some("Stopped by controller".to_string()),
+        });
+
+        assert!(state.active_file_watches.is_empty());
     }
 
     #[test]

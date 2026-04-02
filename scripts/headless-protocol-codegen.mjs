@@ -83,6 +83,24 @@ export const headlessUtilityCommandShellModes = ${toTsConst(
 	)};
 export type HeadlessUtilityCommandShellMode =
 \t(typeof headlessUtilityCommandShellModes)[number];
+
+export const headlessUtilityFileWatchChangeTypes = ${toTsConst(
+		manifest.utilityFileWatchChangeTypes,
+	)};
+export type HeadlessUtilityFileWatchChangeType =
+\t(typeof headlessUtilityFileWatchChangeTypes)[number];
+
+export const headlessToAgentMessageTypes = ${toTsConst(
+		manifest.toAgentMessageTypes,
+	)};
+export type HeadlessToAgentMessageType =
+\t(typeof headlessToAgentMessageTypes)[number];
+
+export const headlessFromAgentMessageTypes = ${toTsConst(
+		manifest.fromAgentMessageTypes,
+	)};
+export type HeadlessFromAgentMessageType =
+\t(typeof headlessFromAgentMessageTypes)[number];
 `;
 }
 
@@ -140,6 +158,15 @@ pub const HEADLESS_UTILITY_COMMAND_STREAMS: &[&str] = ${toRustArray(
 	)};
 pub const HEADLESS_UTILITY_COMMAND_SHELL_MODES: &[&str] = ${toRustArray(
 		manifest.utilityCommandShellModes,
+	)};
+pub const HEADLESS_UTILITY_FILE_WATCH_CHANGE_TYPES: &[&str] = ${toRustArray(
+		manifest.utilityFileWatchChangeTypes,
+	)};
+pub const HEADLESS_TO_AGENT_MESSAGE_TYPES: &[&str] = ${toRustArray(
+		manifest.toAgentMessageTypes,
+	)};
+pub const HEADLESS_FROM_AGENT_MESSAGE_TYPES: &[&str] = ${toRustArray(
+		manifest.fromAgentMessageTypes,
 	)};
 `;
 }

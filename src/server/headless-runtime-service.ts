@@ -24,6 +24,8 @@ import {
 	loadPromptAttachments,
 } from "../cli/headless-protocol.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
+import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
+import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import type { SessionManager } from "../session/manager.js";
@@ -377,6 +379,40 @@ export class HeadlessSessionRuntime {
 			}
 		},
 	);
+	private readonly fileWatches = new HeadlessUtilityFileWatchManager(
+		(event) => {
+			switch (event.type) {
+				case "started":
+					this.publish({
+						type: "utility_file_watch_started",
+						watch_id: event.watch_id,
+						root_dir: event.root_dir,
+						include_patterns: event.include_patterns,
+						exclude_patterns: event.exclude_patterns,
+						debounce_ms: event.debounce_ms,
+					});
+					return;
+				case "event":
+					this.publish({
+						type: "utility_file_watch_event",
+						watch_id: event.watch_id,
+						change_type: event.change_type,
+						path: event.path,
+						relative_path: event.relative_path,
+						timestamp: event.timestamp,
+						is_directory: event.is_directory,
+					});
+					return;
+				case "stopped":
+					this.publish({
+						type: "utility_file_watch_stopped",
+						watch_id: event.watch_id,
+						reason: event.reason,
+					});
+					return;
+			}
+		},
+	);
 	private readonly subscribers = new Map<string, HeadlessSubscriberMailbox>();
 	private readonly connections = new Map<string, HeadlessConnectionRecord>();
 	private controllerConnectionId: string | null = null;
@@ -489,6 +525,7 @@ export class HeadlessSessionRuntime {
 		this.disposed = true;
 		this.running = false;
 		await this.utilityCommands.dispose();
+		this.fileWatches.dispose();
 		this.agent.abort();
 		this.unsubscribeServerRequestEvents();
 	}
@@ -1093,6 +1130,11 @@ export class HeadlessSessionRuntime {
 						? "Interrupted while utility command was still running"
 						: "Cancelled while utility command was still running",
 				);
+				this.fileWatches.dispose(
+					msg.type === "interrupt"
+						? "Interrupted while file watch was still running"
+						: "Cancelled while file watch was still running",
+				);
 				this.agent.abort();
 				this.publishSnapshot();
 				return;
@@ -1117,6 +1159,9 @@ export class HeadlessSessionRuntime {
 				applyOutgoingHeadlessMessage(this.state, msg);
 				await this.utilityCommands.dispose(
 					"Headless runtime shutdown while utility command was still running",
+				);
+				this.fileWatches.dispose(
+					"Headless runtime shutdown while file watch was still running",
 				);
 				this.agent.abort();
 				this.disposed = true;
@@ -1156,6 +1201,49 @@ export class HeadlessSessionRuntime {
 					msg.content,
 					msg.eof,
 				);
+				return;
+			case "utility_file_search":
+				if (
+					!this.state.capabilities?.utility_operations?.includes("file_search")
+				) {
+					throw new Error(
+						"utility_file_search requires file_search capability",
+					);
+				}
+				{
+					const result = searchWorkspaceFiles({
+						query: msg.query,
+						cwd: msg.cwd,
+						limit: msg.limit,
+					});
+					this.publish({
+						type: "utility_file_search_results",
+						search_id: msg.search_id,
+						query: result.query,
+						cwd: result.cwd,
+						results: result.results,
+						truncated: result.truncated,
+					});
+				}
+				return;
+			case "utility_file_watch_start":
+				if (
+					!this.state.capabilities?.utility_operations?.includes("file_watch")
+				) {
+					throw new Error(
+						"utility_file_watch_start requires file_watch capability",
+					);
+				}
+				await this.fileWatches.start({
+					watch_id: msg.watch_id,
+					root_dir: msg.root_dir,
+					include_patterns: msg.include_patterns,
+					exclude_patterns: msg.exclude_patterns,
+					debounce_ms: msg.debounce_ms,
+				});
+				return;
+			case "utility_file_watch_stop":
+				this.fileWatches.stop(msg.watch_id, "Stopped by controller");
 				return;
 		}
 	}
