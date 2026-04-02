@@ -250,6 +250,27 @@ pub struct ClientCapabilities {
     pub utility_operations: Option<Vec<UtilityOperation>>,
 }
 
+/// Snapshot of a live headless connection attached to a runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectionState {
+    pub connection_id: String,
+    pub role: ConnectionRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_protocol_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_info: Option<ClientInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ClientCapabilities>,
+    #[serde(default)]
+    pub subscription_count: usize,
+    #[serde(default)]
+    pub attached_subscription_count: usize,
+    #[serde(default)]
+    pub controller_lease_granted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_expires_at: Option<String>,
+}
+
 /// Role granted to the attached headless connection.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -474,6 +495,8 @@ pub enum FromAgentMessage {
     /// Connection metadata negotiated by the client
     ConnectionInfo {
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         client_protocol_version: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_info: Option<ClientInfo>,
@@ -481,6 +504,14 @@ pub enum FromAgentMessage {
         capabilities: Option<ClientCapabilities>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<ConnectionRole>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection_count: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        controller_connection_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_expires_at: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connections: Option<Vec<ConnectionState>>,
     },
     /// Utility command started on the runtime
     UtilityCommandStarted {
@@ -652,8 +683,11 @@ pub struct AgentState {
     pub client_info: Option<ClientInfo>,
     pub capabilities: Option<ClientCapabilities>,
     pub connection_role: Option<ConnectionRole>,
+    pub connection_count: usize,
     pub subscriber_count: usize,
     pub controller_subscription_id: Option<String>,
+    pub controller_connection_id: Option<String>,
+    pub connections: Vec<ConnectionState>,
     pub model: Option<String>,
     pub provider: Option<String>,
     /// Session information
@@ -760,7 +794,26 @@ impl AgentState {
                 self.client_protocol_version = protocol_version.clone();
                 self.client_info = client_info.clone();
                 self.capabilities = capabilities.clone();
-                self.connection_role = *role;
+                self.connection_role = Some(role.unwrap_or(ConnectionRole::Controller));
+                self.connection_count = 1;
+                self.controller_connection_id = match self.connection_role {
+                    Some(ConnectionRole::Controller) => Some("local".to_string()),
+                    _ => None,
+                };
+                self.connections = vec![ConnectionState {
+                    connection_id: "local".to_string(),
+                    role: self.connection_role.unwrap_or(ConnectionRole::Controller),
+                    client_protocol_version: protocol_version.clone(),
+                    client_info: client_info.clone(),
+                    capabilities: capabilities.clone(),
+                    subscription_count: 1,
+                    attached_subscription_count: 1,
+                    controller_lease_granted: matches!(
+                        self.connection_role,
+                        Some(ConnectionRole::Controller)
+                    ),
+                    lease_expires_at: None,
+                }];
             }
             ToAgentMessage::Init { .. } => {}
             ToAgentMessage::Prompt { .. } => {
@@ -866,15 +919,23 @@ impl AgentState {
                 })
             }
             FromAgentMessage::ConnectionInfo {
+                connection_id: _connection_id,
                 client_protocol_version,
                 client_info,
                 capabilities,
                 role,
+                connection_count,
+                controller_connection_id,
+                lease_expires_at: _lease_expires_at,
+                connections,
             } => {
                 self.client_protocol_version = client_protocol_version;
                 self.client_info = client_info;
                 self.capabilities = capabilities;
                 self.connection_role = role;
+                self.connection_count = connection_count.unwrap_or_default();
+                self.controller_connection_id = controller_connection_id;
+                self.connections = connections.unwrap_or_default();
                 None
             }
             FromAgentMessage::UtilityCommandStarted {
@@ -1442,15 +1503,21 @@ mod tests {
 
     #[test]
     fn parse_connection_info_message() {
-        let json = r#"{"type":"connection_info","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"role":"controller"}"#;
+        let json = r#"{"type":"connection_info","connection_id":"conn_remote","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"role":"controller","connection_count":1,"controller_connection_id":"conn_remote","connections":[{"connection_id":"conn_remote","role":"controller","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"subscription_count":1,"attached_subscription_count":1,"controller_lease_granted":true}]}"#;
         let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
         match msg {
             FromAgentMessage::ConnectionInfo {
+                connection_id,
                 client_protocol_version,
                 client_info,
                 capabilities,
                 role,
+                connection_count,
+                controller_connection_id,
+                connections,
+                ..
             } => {
+                assert_eq!(connection_id.as_deref(), Some("conn_remote"));
                 assert_eq!(client_protocol_version.as_deref(), Some("2026-03-30"));
                 assert_eq!(
                     client_info.as_ref().map(|info| info.name.as_str()),
@@ -1464,6 +1531,9 @@ mod tests {
                     Some(2)
                 );
                 assert_eq!(role, Some(ConnectionRole::Controller));
+                assert_eq!(connection_count, Some(1));
+                assert_eq!(controller_connection_id.as_deref(), Some("conn_remote"));
+                assert_eq!(connections.as_ref().map(Vec::len), Some(1));
             }
             _ => panic!("Expected ConnectionInfo message"),
         }
@@ -1717,6 +1787,7 @@ mod tests {
             role: Some(ConnectionRole::Controller),
         });
         let event = state.handle_message(FromAgentMessage::ConnectionInfo {
+            connection_id: Some("conn_remote".to_string()),
             client_protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
             client_info: Some(ClientInfo {
                 name: "maestro-web".to_string(),
@@ -1730,6 +1801,29 @@ mod tests {
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
             role: Some(ConnectionRole::Viewer),
+            connection_count: Some(1),
+            controller_connection_id: Some("conn_remote".to_string()),
+            lease_expires_at: None,
+            connections: Some(vec![ConnectionState {
+                connection_id: "conn_remote".to_string(),
+                role: ConnectionRole::Viewer,
+                client_protocol_version: Some(HEADLESS_PROTOCOL_VERSION.to_string()),
+                client_info: Some(ClientInfo {
+                    name: "maestro-web".to_string(),
+                    version: Some("1.2.3".to_string()),
+                }),
+                capabilities: Some(ClientCapabilities {
+                    server_requests: Some(vec![
+                        ServerRequestType::Approval,
+                        ServerRequestType::ClientTool,
+                    ]),
+                    utility_operations: Some(vec![UtilityOperation::CommandExec]),
+                }),
+                subscription_count: 1,
+                attached_subscription_count: 1,
+                controller_lease_granted: false,
+                lease_expires_at: None,
+            }]),
         });
 
         assert!(event.is_none());
@@ -1742,6 +1836,12 @@ mod tests {
             Some("maestro-web")
         );
         assert_eq!(state.connection_role, Some(ConnectionRole::Viewer));
+        assert_eq!(state.connection_count, 1);
+        assert_eq!(
+            state.controller_connection_id.as_deref(),
+            Some("conn_remote")
+        );
+        assert_eq!(state.connections.len(), 1);
         assert_eq!(
             state
                 .capabilities

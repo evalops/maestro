@@ -1144,7 +1144,7 @@ describe("headless session handlers", () => {
 			),
 		).rejects.toMatchObject({
 			statusCode: 409,
-			message: "Controller lease is already held by another subscriber",
+			message: "Controller lease is already held by another connection",
 		});
 	});
 
@@ -1814,7 +1814,10 @@ describe("headless session handlers", () => {
 			{ id: "sess_123" },
 		);
 
-		expect(runtime.send).toHaveBeenCalledWith({ type: "interrupt" });
+		expect(runtime.send).toHaveBeenCalledWith(
+			{ type: "interrupt" },
+			{ connectionId: undefined, subscriptionId: undefined },
+		);
 		expect(JSON.parse(res.body)).toEqual({ success: true });
 	});
 });

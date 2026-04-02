@@ -197,9 +197,15 @@ pub struct AgentStateCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_role: Option<super::messages::ConnectionRole>,
     #[serde(default)]
+    pub connection_count: usize,
+    #[serde(default)]
     pub subscriber_count: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controller_subscription_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_connection_id: Option<String>,
+    #[serde(default)]
+    pub connections: Vec<super::messages::ConnectionState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -249,8 +255,11 @@ impl AgentStateCheckpoint {
             client_info: state.client_info.clone(),
             capabilities: state.capabilities.clone(),
             connection_role: state.connection_role,
+            connection_count: state.connection_count,
             subscriber_count: state.subscriber_count,
             controller_subscription_id: state.controller_subscription_id.clone(),
+            controller_connection_id: state.controller_connection_id.clone(),
+            connections: state.connections.clone(),
             model: state.model.clone(),
             provider: state.provider.clone(),
             session_id: state.session_id.clone(),
@@ -301,8 +310,11 @@ impl AgentStateCheckpoint {
             client_info: self.client_info,
             capabilities: self.capabilities,
             connection_role: self.connection_role,
+            connection_count: self.connection_count,
             subscriber_count: self.subscriber_count,
             controller_subscription_id: self.controller_subscription_id,
+            controller_connection_id: self.controller_connection_id,
+            connections: self.connections,
             model: self.model,
             provider: self.provider,
             session_id: self.session_id,

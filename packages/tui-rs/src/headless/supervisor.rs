@@ -994,7 +994,11 @@ mod tests {
                             && path.ends_with("/subscribe")
                         {
                             let body = serde_json::json!({
+                                "connection_id": "conn_remote",
                                 "subscription_id": "sub_remote",
+                                "controller_connection_id": "conn_remote",
+                                "lease_expires_at": "2026-04-02T00:00:15Z",
+                                "heartbeat_interval_ms": 15000,
                                 "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
                                     .expect("valid snapshot json"),
                             })
@@ -1004,6 +1008,19 @@ mod tests {
                                 "HTTP/1.1 200 OK",
                                 "application/json",
                                 &body,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/heartbeat")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
                             )
                             .await;
                             return;

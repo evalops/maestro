@@ -308,10 +308,15 @@ export interface HeadlessSessionInfoMessage {
 
 export interface HeadlessConnectionInfoMessage {
 	type: "connection_info";
+	connection_id?: string;
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
 	role?: HeadlessConnectionRole;
+	connection_count?: number;
+	controller_connection_id?: string | null;
+	lease_expires_at?: string | null;
+	connections?: HeadlessConnectionState[];
 }
 
 export type HeadlessFromAgentMessage =
@@ -363,14 +368,29 @@ export interface HeadlessActiveUtilityCommandState {
 	output: string;
 }
 
+export interface HeadlessConnectionState {
+	connection_id: string;
+	role: HeadlessConnectionRole;
+	client_protocol_version?: string;
+	client_info?: HeadlessClientInfo;
+	capabilities?: HeadlessClientCapabilities;
+	subscription_count: number;
+	attached_subscription_count: number;
+	controller_lease_granted: boolean;
+	lease_expires_at?: string | null;
+}
+
 export interface HeadlessRuntimeState {
 	protocol_version?: string;
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
 	connection_role?: HeadlessConnectionRole;
+	connection_count: number;
 	subscriber_count: number;
 	controller_subscription_id?: string | null;
+	controller_connection_id?: string | null;
+	connections: HeadlessConnectionState[];
 	model?: string;
 	provider?: string;
 	session_id?: string | null;
@@ -396,7 +416,9 @@ export const HEADLESS_PROTOCOL_VERSION = headlessProtocolVersion;
 
 export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 	return {
+		connection_count: 0,
 		subscriber_count: 0,
+		connections: [],
 		pending_approvals: [],
 		pending_client_tools: [],
 		pending_user_inputs: [],
@@ -827,18 +849,28 @@ export class HeadlessProtocolTranslator {
 		};
 	}
 
-	buildConnectionInfoMessage(
-		hello: Pick<
-			HeadlessHelloMessage,
-			"protocol_version" | "client_info" | "capabilities" | "role"
-		>,
-	): HeadlessConnectionInfoMessage {
+	buildConnectionInfoMessage(metadata: {
+		connection_id?: string;
+		protocol_version?: string;
+		client_info?: HeadlessClientInfo;
+		capabilities?: HeadlessClientCapabilities;
+		role?: HeadlessConnectionRole;
+		connection_count?: number;
+		controller_connection_id?: string | null;
+		lease_expires_at?: string | null;
+		connections?: HeadlessConnectionState[];
+	}): HeadlessConnectionInfoMessage {
 		return {
 			type: "connection_info",
-			client_protocol_version: hello.protocol_version,
-			client_info: hello.client_info,
-			capabilities: hello.capabilities,
-			role: hello.role,
+			connection_id: metadata.connection_id,
+			client_protocol_version: metadata.protocol_version,
+			client_info: metadata.client_info,
+			capabilities: metadata.capabilities,
+			role: metadata.role,
+			connection_count: metadata.connection_count,
+			controller_connection_id: metadata.controller_connection_id,
+			lease_expires_at: metadata.lease_expires_at,
+			connections: metadata.connections,
 		};
 	}
 }
@@ -964,6 +996,22 @@ export function applyOutgoingHeadlessMessage(
 			state.client_info = msg.client_info;
 			state.capabilities = msg.capabilities;
 			state.connection_role = msg.role ?? state.connection_role ?? "controller";
+			state.connection_count = 1;
+			state.controller_connection_id =
+				state.connection_role === "controller" ? "local" : null;
+			state.connections = [
+				{
+					connection_id: "local",
+					role: state.connection_role,
+					client_protocol_version: msg.protocol_version,
+					client_info: msg.client_info,
+					capabilities: msg.capabilities,
+					subscription_count: 1,
+					attached_subscription_count: 1,
+					controller_lease_granted: state.connection_role === "controller",
+					lease_expires_at: null,
+				},
+			];
 			return;
 		case "init":
 			return;
@@ -1057,6 +1105,10 @@ export function applyIncomingHeadlessMessage(
 			state.client_info = msg.client_info;
 			state.capabilities = msg.capabilities;
 			state.connection_role = msg.role;
+			state.connection_count =
+				msg.connection_count ?? msg.connections?.length ?? 0;
+			state.controller_connection_id = msg.controller_connection_id;
+			state.connections = msg.connections ?? state.connections;
 			return;
 		case "session_info":
 			state.session_id = msg.session_id;

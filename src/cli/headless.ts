@@ -138,7 +138,20 @@ export async function runHeadlessMode(
 
 				case "hello":
 					applyOutgoingHeadlessMessage(state, msg);
-					sendMessage(translator.buildConnectionInfoMessage(msg));
+					sendMessage(
+						translator.buildConnectionInfoMessage({
+							connection_id: "local",
+							protocol_version: msg.protocol_version,
+							client_info: msg.client_info,
+							capabilities: msg.capabilities,
+							role: msg.role ?? "controller",
+							connection_count: 1,
+							controller_connection_id:
+								(msg.role ?? "controller") === "controller" ? "local" : null,
+							lease_expires_at: null,
+							connections: state.connections,
+						}),
+					);
 					if (
 						msg.protocol_version &&
 						msg.protocol_version !== HEADLESS_PROTOCOL_VERSION

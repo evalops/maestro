@@ -20,8 +20,8 @@ use tokio_util::sync::CancellationToken;
 use super::async_transport::AsyncTransportError;
 use super::messages::{
     ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities, ClientInfo, ConnectionRole,
-    FromAgentMessage, HeadlessErrorType, InitConfig, PendingApproval, StreamingResponse,
-    ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
+    ConnectionState, FromAgentMessage, HeadlessErrorType, InitConfig, PendingApproval,
+    StreamingResponse, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
 };
 
 /// Configuration for the remote headless transport.
@@ -101,6 +101,8 @@ pub enum RemoteIncoming {
 
 #[derive(Debug, Serialize)]
 struct RemoteSessionSubscribeRequest {
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    connection_id: Option<String>,
     #[serde(rename = "protocolVersion", skip_serializing_if = "Option::is_none")]
     protocol_version: Option<String>,
     #[serde(rename = "clientInfo", skip_serializing_if = "Option::is_none")]
@@ -119,7 +121,9 @@ struct RemoteSessionSubscribeRequest {
 
 #[derive(Debug, Deserialize)]
 struct RemoteSessionSubscriptionResponse {
+    connection_id: String,
     subscription_id: String,
+    heartbeat_interval_ms: u64,
     snapshot: RemoteRuntimeSnapshot,
 }
 
@@ -191,9 +195,15 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     connection_role: Option<ConnectionRole>,
     #[serde(default)]
+    connection_count: usize,
+    #[serde(default)]
     subscriber_count: usize,
     #[serde(default)]
     controller_subscription_id: Option<String>,
+    #[serde(default)]
+    controller_connection_id: Option<String>,
+    #[serde(default)]
+    connections: Vec<ConnectionState>,
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
@@ -242,8 +252,11 @@ impl RemoteRuntimeStateSnapshot {
             client_info: self.client_info,
             capabilities: self.capabilities,
             connection_role: self.connection_role,
+            connection_count: self.connection_count,
             subscriber_count: self.subscriber_count,
             controller_subscription_id: self.controller_subscription_id,
+            controller_connection_id: self.controller_connection_id,
+            connections: self.connections,
             model: self.model,
             provider: self.provider,
             session_id: self.session_id,
@@ -345,11 +358,24 @@ pub struct RemoteAgentTransport {
     event_rx: mpsc::UnboundedReceiver<Result<RemoteIncoming, AsyncTransportError>>,
     cancel_token: CancellationToken,
     session_id: String,
+    connection_id: String,
     subscription_id: String,
+    heartbeat_interval: Duration,
     state: AgentState,
     last_init: Option<InitConfig>,
     _reader_handle: tokio::task::JoinHandle<()>,
     _writer_handle: tokio::task::JoinHandle<()>,
+    _heartbeat_handle: tokio::task::JoinHandle<()>,
+}
+
+struct WriterLoopContext {
+    client: Client,
+    config: RemoteTransportConfig,
+    session_id: String,
+    connection_id: String,
+    subscription_id: String,
+    event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
+    cancel: CancellationToken,
 }
 
 impl RemoteAgentTransport {
@@ -360,16 +386,29 @@ impl RemoteAgentTransport {
             .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
 
         let attached_session = create_or_attach_session(&client, &config).await?;
-        let subscription =
-            subscribe_to_session(&client, &config, &attached_session.session_id).await?;
+        let bootstrap_connection_id = attached_session
+            .state
+            .connections
+            .first()
+            .map(|connection| connection.connection_id.clone());
+        let subscription = subscribe_to_session(
+            &client,
+            &config,
+            &attached_session.session_id,
+            bootstrap_connection_id.as_deref(),
+        )
+        .await?;
         let (session_id, cursor, last_init, state) = subscription.snapshot.into_state();
+        let connection_id = subscription.connection_id;
         let subscription_id = subscription.subscription_id;
+        let heartbeat_interval = Duration::from_millis(subscription.heartbeat_interval_ms.max(1));
 
         let (message_tx, message_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let cancel_token = CancellationToken::new();
         let reader_cancel = cancel_token.clone();
         let writer_cancel = cancel_token.clone();
+        let heartbeat_cancel = cancel_token.clone();
 
         let reader_handle = tokio::spawn(reader_loop(
             client.clone(),
@@ -381,13 +420,27 @@ impl RemoteAgentTransport {
             reader_cancel,
         ));
         let writer_handle = tokio::spawn(writer_loop(
-            client,
-            config,
-            session_id.clone(),
-            subscription_id.clone(),
+            WriterLoopContext {
+                client,
+                config: config.clone(),
+                session_id: session_id.clone(),
+                connection_id: connection_id.clone(),
+                subscription_id: subscription_id.clone(),
+                event_tx,
+                cancel: writer_cancel,
+            },
             message_rx,
-            event_tx,
-            writer_cancel,
+        ));
+        let heartbeat_handle = tokio::spawn(heartbeat_loop(
+            Client::builder()
+                .build()
+                .map_err(|error| AsyncTransportError::Remote(error.to_string()))?,
+            config.clone(),
+            session_id.clone(),
+            connection_id.clone(),
+            subscription_id.clone(),
+            heartbeat_interval,
+            heartbeat_cancel,
         ));
 
         Ok(Self {
@@ -395,11 +448,14 @@ impl RemoteAgentTransport {
             event_rx,
             cancel_token,
             session_id,
+            connection_id,
             subscription_id,
+            heartbeat_interval,
             state,
             last_init,
             _reader_handle: reader_handle,
             _writer_handle: writer_handle,
+            _heartbeat_handle: heartbeat_handle,
         })
     }
 
@@ -478,6 +534,14 @@ impl RemoteAgentTransport {
 
     pub fn subscription_id(&self) -> &str {
         &self.subscription_id
+    }
+
+    pub fn connection_id(&self) -> &str {
+        &self.connection_id
+    }
+
+    pub fn heartbeat_interval(&self) -> Duration {
+        self.heartbeat_interval
     }
 
     pub fn cancel_token(&self) -> CancellationToken {
@@ -564,12 +628,14 @@ async fn subscribe_to_session(
     client: &Client,
     config: &RemoteTransportConfig,
     session_id: &str,
+    connection_id: Option<&str>,
 ) -> Result<RemoteSessionSubscriptionResponse, AsyncTransportError> {
     let url = format!(
         "{}/api/headless/sessions/{session_id}/subscribe",
         config.base_url.trim_end_matches('/')
     );
     let request = RemoteSessionSubscribeRequest {
+        connection_id: connection_id.map(str::to_string),
         protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
         client_info: Some(ClientInfo {
             name: config.client_name.clone(),
@@ -604,6 +670,7 @@ async fn unsubscribe_from_session(
     config: &RemoteTransportConfig,
     session_id: &str,
     subscription_id: &str,
+    connection_id: Option<&str>,
 ) {
     let url = format!(
         "{}/api/headless/sessions/{session_id}/unsubscribe",
@@ -612,6 +679,7 @@ async fn unsubscribe_from_session(
     let _ignored = with_headers(
         client.post(url).json(&serde_json::json!({
             "subscriptionId": subscription_id,
+            "connectionId": connection_id,
         })),
         config,
         true,
@@ -620,15 +688,43 @@ async fn unsubscribe_from_session(
     .await;
 }
 
-async fn writer_loop(
-    client: Client,
-    config: RemoteTransportConfig,
-    session_id: String,
-    subscription_id: String,
-    mut rx: mpsc::UnboundedReceiver<ToAgentMessage>,
-    event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
-    cancel: CancellationToken,
-) {
+async fn heartbeat_session(
+    client: &Client,
+    config: &RemoteTransportConfig,
+    session_id: &str,
+    connection_id: &str,
+    subscription_id: &str,
+) -> Result<(), AsyncTransportError> {
+    let url = format!(
+        "{}/api/headless/sessions/{session_id}/heartbeat",
+        config.base_url.trim_end_matches('/')
+    );
+    let response = with_headers(
+        client.post(url).json(&serde_json::json!({
+            "connectionId": connection_id,
+            "subscriptionId": subscription_id,
+        })),
+        config,
+        true,
+    )
+    .send()
+    .await
+    .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
+
+    let _response: serde_json::Value = decode_json_response(response).await?;
+    Ok(())
+}
+
+async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver<ToAgentMessage>) {
+    let WriterLoopContext {
+        client,
+        config,
+        session_id,
+        connection_id,
+        subscription_id,
+        event_tx,
+        cancel,
+    } = context;
     let url = format!(
         "{}/api/headless/sessions/{session_id}/messages",
         config.base_url.trim_end_matches('/')
@@ -645,6 +741,8 @@ async fn writer_loop(
                 let response = with_headers(
                     client
                         .post(&url)
+                        .header("x-maestro-headless-connection-id", &connection_id)
+                        .header("x-composer-headless-connection-id", &connection_id)
                         .header("x-maestro-headless-subscriber-id", &subscription_id)
                         .header("x-composer-headless-subscriber-id", &subscription_id)
                         .json(&message),
@@ -657,7 +755,13 @@ async fn writer_loop(
                 match response {
                     Ok(response) if response.status().is_success() => {
                         if should_shutdown {
-                            unsubscribe_from_session(&client, &config, &session_id, &subscription_id)
+                            unsubscribe_from_session(
+                                &client,
+                                &config,
+                                &session_id,
+                                &subscription_id,
+                                Some(&connection_id),
+                            )
                                 .await;
                             cancel.cancel();
                             break;
@@ -672,6 +776,39 @@ async fn writer_loop(
                         let _ = event_tx.send(Err(AsyncTransportError::Remote(error.to_string())));
                         break;
                     }
+                }
+            }
+        }
+    }
+}
+
+async fn heartbeat_loop(
+    client: Client,
+    config: RemoteTransportConfig,
+    session_id: String,
+    connection_id: String,
+    subscription_id: String,
+    interval: Duration,
+    cancel: CancellationToken,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => break,
+            _ = ticker.tick() => {
+                if heartbeat_session(
+                    &client,
+                    &config,
+                    &session_id,
+                    &connection_id,
+                    &subscription_id,
+                )
+                .await
+                .is_err()
+                {
+                    // Best-effort liveness extension. Reader/writer paths surface hard failures.
                 }
             }
         }
@@ -999,7 +1136,11 @@ mod tests {
                             && path.ends_with("/subscribe")
                         {
                             let body = serde_json::json!({
+                                "connection_id": "conn_remote",
                                 "subscription_id": "sub_remote",
+                                "controller_connection_id": "conn_remote",
+                                "lease_expires_at": "2026-04-02T00:00:15Z",
+                                "heartbeat_interval_ms": 15000,
                                 "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
                                     .expect("valid snapshot json"),
                             })
@@ -1022,6 +1163,19 @@ mod tests {
                                 "HTTP/1.1 200 OK",
                                 "application/json",
                                 r#"{"success":true}"#,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/heartbeat")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
                             )
                             .await;
                             return;
@@ -1092,8 +1246,30 @@ mod tests {
                 utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
             }),
             connection_role: Some(ConnectionRole::Controller),
+            connection_count: 1,
             subscriber_count: 2,
             controller_subscription_id: Some("sub_remote".to_string()),
+            controller_connection_id: Some("conn_remote".to_string()),
+            connections: vec![ConnectionState {
+                connection_id: "conn_remote".to_string(),
+                role: ConnectionRole::Controller,
+                client_protocol_version: Some("2026-03-30".to_string()),
+                client_info: Some(ClientInfo {
+                    name: "maestro-tui-rs".to_string(),
+                    version: Some("0.1.0".to_string()),
+                }),
+                capabilities: Some(ClientCapabilities {
+                    server_requests: Some(vec![
+                        crate::headless::ServerRequestType::Approval,
+                        crate::headless::ServerRequestType::ClientTool,
+                    ]),
+                    utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
+                }),
+                subscription_count: 1,
+                attached_subscription_count: 1,
+                controller_lease_granted: true,
+                lease_expires_at: Some("2026-04-02T00:00:15Z".to_string()),
+            }],
             model: Some("gpt-5.4".to_string()),
             provider: Some("openai".to_string()),
             session_id: Some("session-1".to_string()),

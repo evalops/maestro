@@ -17,6 +17,7 @@ import {
 } from "../approval-mode-store.js";
 import { getAuthSubject } from "../authz.js";
 import type {
+	HeadlessRuntimeHeartbeatSnapshot,
 	HeadlessRuntimeStreamEnvelope,
 	HeadlessSessionRuntime,
 } from "../headless-runtime-service.js";
@@ -81,6 +82,7 @@ const HeadlessMessageSchema = Type.Object(
 );
 
 const HeadlessSessionSubscribeSchema = Type.Object({
+	connectionId: Type.Optional(Type.String()),
 	protocolVersion: Type.Optional(Type.String()),
 	clientInfo: Type.Optional(
 		Type.Object({
@@ -110,12 +112,20 @@ const HeadlessSessionUnsubscribeSchema = Type.Object({
 	subscriptionId: Type.String(),
 });
 
+const HeadlessSessionHeartbeatSchema = Type.Object({
+	connectionId: Type.Optional(Type.String()),
+	subscriptionId: Type.Optional(Type.String()),
+});
+
 type HeadlessSessionCreateInput = Static<typeof HeadlessSessionCreateSchema>;
 type HeadlessSessionSubscribeInput = Static<
 	typeof HeadlessSessionSubscribeSchema
 >;
 type HeadlessSessionUnsubscribeInput = Static<
 	typeof HeadlessSessionUnsubscribeSchema
+>;
+type HeadlessSessionHeartbeatInput = Static<
+	typeof HeadlessSessionHeartbeatSchema
 >;
 type HeadlessMessageInput = Static<typeof HeadlessMessageSchema>;
 
@@ -144,6 +154,16 @@ function getHeadlessSubscriberId(req: IncomingMessage): string | undefined {
 			req,
 			"x-composer-headless-subscriber-id",
 			"x-maestro-headless-subscriber-id",
+		) ?? undefined
+	);
+}
+
+function getHeadlessConnectionId(req: IncomingMessage): string | undefined {
+	return (
+		getRequestHeader(
+			req,
+			"x-composer-headless-connection-id",
+			"x-maestro-headless-connection-id",
 		) ?? undefined
 	);
 }
@@ -293,25 +313,23 @@ export async function handleHeadlessSessionSubscribe(
 			"viewer headless connections cannot negotiate user_input requests",
 		);
 	}
-	runtime.updateConnectionMetadata({
-		clientProtocolVersion: input.protocolVersion,
-		clientInfo: input.clientInfo,
-		capabilities: input.capabilities
-			? {
-					server_requests: input.capabilities.serverRequests,
-					utility_operations: input.capabilities.utilityOperations,
-				}
-			: undefined,
-		role,
-	});
 	try {
 		sendJson(
 			res,
 			200,
 			runtime.createSubscription({
+				connectionId: input.connectionId,
 				role,
 				explicit: true,
 				takeControl: input.takeControl,
+				clientProtocolVersion: input.protocolVersion,
+				clientInfo: input.clientInfo,
+				capabilities: input.capabilities
+					? {
+							server_requests: input.capabilities.serverRequests,
+							utility_operations: input.capabilities.utilityOperations,
+						}
+					: undefined,
 			}),
 			context.corsHeaders,
 			req,
@@ -319,9 +337,17 @@ export async function handleHeadlessSessionSubscribe(
 	} catch (error) {
 		if (
 			error instanceof Error &&
-			error.message === "Controller lease is already held by another subscriber"
+			error.message === "Controller lease is already held by another connection"
 		) {
 			throw new ApiError(409, error.message);
+		}
+		if (
+			error instanceof Error &&
+			(error.message === "Headless connection not found" ||
+				error.message ===
+					"Headless connection role does not match subscription role")
+		) {
+			throw new ApiError(400, error.message);
 		}
 		throw error;
 	}
@@ -342,6 +368,35 @@ export async function handleHeadlessSessionUnsubscribe(
 		throw new ApiError(404, "Headless subscriber not found");
 	}
 	sendJson(res, 200, { success: true }, context.corsHeaders, req);
+}
+
+export async function handleHeadlessSessionHeartbeat(
+	req: IncomingMessage,
+	res: ServerResponse,
+	context: WebServerContext,
+	params?: Record<string, string>,
+) {
+	const runtime = getRuntime(req, context, params?.id);
+	const input = await parseAndValidateJson<HeadlessSessionHeartbeatInput>(
+		req,
+		HeadlessSessionHeartbeatSchema,
+	);
+	let heartbeat: HeadlessRuntimeHeartbeatSnapshot;
+	try {
+		heartbeat = runtime.heartbeatConnection({
+			connectionId: input.connectionId ?? getHeadlessConnectionId(req),
+			subscriptionId: input.subscriptionId ?? getHeadlessSubscriberId(req),
+		});
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			error.message === "Headless connection not found"
+		) {
+			throw new ApiError(404, error.message);
+		}
+		throw error;
+	}
+	sendJson(res, 200, heartbeat, context.corsHeaders, req);
 }
 
 export function handleHeadlessSessionEvents(
@@ -431,7 +486,11 @@ export async function handleHeadlessSessionMessage(
 		HeadlessMessageSchema,
 	);
 	try {
-		runtime.assertCanSend(getHeadlessRole(req), getHeadlessSubscriberId(req));
+		runtime.assertCanSend(
+			getHeadlessRole(req),
+			getHeadlessSubscriberId(req),
+			getHeadlessConnectionId(req),
+		);
 	} catch (error) {
 		if (!(error instanceof Error)) {
 			throw error;
@@ -442,11 +501,20 @@ export async function handleHeadlessSessionMessage(
 		if (error.message === "Headless subscriber not found") {
 			throw new ApiError(404, error.message);
 		}
+		if (
+			error.message === "Headless connection not found" ||
+			error.message === "Headless connection does not have controller access"
+		) {
+			throw new ApiError(403, error.message);
+		}
 		if (error.message.includes("Controller lease")) {
 			throw new ApiError(409, error.message);
 		}
 		throw new ApiError(403, error.message);
 	}
-	await runtime.send(input as HeadlessToAgentMessage);
+	await runtime.send(input as HeadlessToAgentMessage, {
+		connectionId: getHeadlessConnectionId(req),
+		subscriptionId: getHeadlessSubscriberId(req),
+	});
 	sendJson(res, 200, { success: true }, context.corsHeaders, req);
 }
