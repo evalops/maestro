@@ -59,6 +59,7 @@ interface ActiveWatch {
 	exclude_patterns?: string[];
 	debounce_ms: number;
 	stopped: boolean;
+	started: boolean;
 }
 
 const DEFAULT_DEBOUNCE_MS = 100;
@@ -118,7 +119,9 @@ export class HeadlessUtilityFileWatchManager {
 			exclude_patterns: request.exclude_patterns,
 			debounce_ms: debounceMs,
 			stopped: false,
+			started: false,
 		};
+		this.watches.set(request.watch_id, active);
 		watcher.onFileChange((event) => {
 			if (active.stopped) {
 				return;
@@ -134,8 +137,21 @@ export class HeadlessUtilityFileWatchManager {
 			});
 		});
 
-		await watcher.start();
-		this.watches.set(request.watch_id, active);
+		try {
+			await watcher.start();
+		} catch (error) {
+			if (this.watches.get(request.watch_id) === active) {
+				this.watches.delete(request.watch_id);
+			}
+			if (active.stopped) {
+				return;
+			}
+			throw error;
+		}
+		if (this.watches.get(request.watch_id) !== active || active.stopped) {
+			return;
+		}
+		active.started = true;
 		this.emit({
 			type: "started",
 			watch_id: request.watch_id,
@@ -152,8 +168,8 @@ export class HeadlessUtilityFileWatchManager {
 			return;
 		}
 		active.stopped = true;
-		active.watcher.stop();
 		this.watches.delete(watchId);
+		active.watcher.stop();
 		this.emit({
 			type: "stopped",
 			watch_id: watchId,
