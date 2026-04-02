@@ -1430,16 +1430,13 @@ done
     #[tokio::test]
     async fn reconnect_replays_last_init_config() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let log_path = temp.path().join("agent-stdin.log");
         let script_path = create_test_headless_script(temp.path()).expect("script");
-        fs::write(&log_path, "").expect("create log");
+        let sessions_dir = temp.path().join("sessions");
+        let recorder = SessionRecorder::new(&sessions_dir).expect("recorder");
+        let session_id = recorder.id().to_string();
 
         let mut config = SupervisorConfig::default();
         config.transport.cli_path = script_path.to_string_lossy().into_owned();
-        config.transport.env.push((
-            "MAESTRO_TEST_LOG".to_string(),
-            log_path.to_string_lossy().into_owned(),
-        ));
         config.auto_reconnect = false;
 
         let init = InitConfig {
@@ -1449,49 +1446,34 @@ done
             approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
         };
 
-        let mut supervisor = AgentSupervisor::new(config);
+        let mut supervisor = AgentSupervisor::new(config).with_session_recorder(recorder);
         supervisor.connect().await.expect("connect");
         supervisor.init(init.clone()).expect("initial init");
-        tokio::time::sleep(Duration::from_millis(100)).await;
 
         supervisor.disconnect();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         supervisor.reconnect().await.expect("reconnect");
-        for _ in 0..200 {
-            let logged_init_count = fs::read_to_string(&log_path)
-                .expect("read log")
-                .lines()
-                .filter(|line| line.contains(r#""type":"init""#))
-                .count();
-            if logged_init_count >= 2 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-
         supervisor.disconnect();
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        supervisor.flush_session().expect("flush");
 
-        let logged_inits: Vec<_> = fs::read_to_string(&log_path)
-            .expect("read log")
-            .lines()
-            .filter_map(|line| {
-                let message = serde_json::from_str::<ToAgentMessage>(line).expect("parse message");
-                match message {
-                    ToAgentMessage::Init {
-                        system_prompt,
-                        append_system_prompt,
-                        thinking_level,
-                        approval_mode,
-                    } => Some((
-                        system_prompt,
-                        append_system_prompt,
-                        thinking_level,
-                        approval_mode,
-                    )),
-                    _ => None,
-                }
+        let logged_inits: Vec<_> = SessionReader::load(&sessions_dir, &session_id)
+            .expect("load session")
+            .sent_messages()
+            .into_iter()
+            .filter_map(|message| match message {
+                ToAgentMessage::Init {
+                    system_prompt,
+                    append_system_prompt,
+                    thinking_level,
+                    approval_mode,
+                } => Some((
+                    system_prompt.clone(),
+                    append_system_prompt.clone(),
+                    *thinking_level,
+                    *approval_mode,
+                )),
+                _ => None,
             })
             .collect();
 

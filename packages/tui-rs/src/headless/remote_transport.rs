@@ -851,6 +851,7 @@ mod tests {
         let mut transport = RemoteAgentTransport::connect(config)
             .await
             .expect("connect");
+        let cancel_token = transport.cancel_token();
         assert_eq!(transport.session_id(), "sess_remote");
         assert_eq!(transport.state().model.as_deref(), Some("gpt-5.4"));
         assert_eq!(transport.state().provider.as_deref(), Some("openai"));
@@ -900,7 +901,7 @@ mod tests {
             .any(|(name, value)| { name == "x-maestro-client" && value == "tui-rs" }));
 
         transport.shutdown().expect("shutdown");
-        transport.cancel_token().cancel();
+        assert!(cancel_token.is_cancelled());
     }
 
     #[tokio::test]
@@ -961,6 +962,7 @@ mod tests {
         let mut transport = RemoteAgentTransport::connect(config)
             .await
             .expect("connect");
+        let cancel_token = transport.cancel_token();
         assert_eq!(transport.state().last_status.as_deref(), Some("Attached"));
         assert_eq!(
             transport
@@ -987,6 +989,6 @@ mod tests {
         );
 
         transport.shutdown().expect("shutdown");
-        transport.cancel_token().cancel();
+        assert!(cancel_token.is_cancelled());
     }
 }
