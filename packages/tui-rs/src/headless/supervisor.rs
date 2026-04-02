@@ -991,6 +991,38 @@ mod tests {
                         }
 
                         if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/subscribe")
+                        {
+                            let body = serde_json::json!({
+                                "subscription_id": "sub_remote",
+                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
+                                    .expect("valid snapshot json"),
+                            })
+                            .to_string();
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                &body,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/unsubscribe")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"success":true}"#,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
                             && path.ends_with("/messages")
                         {
                             posted_bodies.lock().await.push(body);
