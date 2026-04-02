@@ -105,7 +105,7 @@ export class HeadlessUtilityCommandManager {
 			child = spawn(shell, [...args, request.command], {
 				cwd: resolvedCwd,
 				env,
-				stdio: ["ignore", "pipe", "pipe"],
+				stdio: ["pipe", "pipe", "pipe"],
 			});
 		} else {
 			const parsed = parseCommandArguments(request.command);
@@ -115,7 +115,7 @@ export class HeadlessUtilityCommandManager {
 			child = spawn(parsed[0]!, parsed.slice(1), {
 				cwd: resolvedCwd,
 				env,
-				stdio: ["ignore", "pipe", "pipe"],
+				stdio: ["pipe", "pipe", "pipe"],
 			});
 		}
 
@@ -194,6 +194,38 @@ export class HeadlessUtilityCommandManager {
 			return;
 		}
 		await killProcessTreeGracefully(pid);
+	}
+
+	async writeStdin(
+		commandId: string,
+		content: string,
+		eof = false,
+	): Promise<void> {
+		const active = this.commands.get(commandId);
+		if (!active) {
+			throw new Error(`Utility command not found: ${commandId}`);
+		}
+		const stdin = active.child.stdin;
+		if (!stdin || stdin.destroyed || stdin.writableEnded) {
+			if (!content && eof) {
+				return;
+			}
+			throw new Error(`Utility command stdin is not writable: ${commandId}`);
+		}
+		if (content) {
+			await new Promise<void>((resolve, reject) => {
+				stdin.write(content, (error) => {
+					if (error) {
+						reject(error);
+						return;
+					}
+					resolve();
+				});
+			});
+		}
+		if (eof && !stdin.destroyed && !stdin.writableEnded) {
+			stdin.end();
+		}
 	}
 
 	async dispose(reason = "Headless runtime disposed"): Promise<void> {

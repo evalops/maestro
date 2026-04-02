@@ -97,6 +97,36 @@ describe("HeadlessUtilityCommandManager", () => {
 		});
 	});
 
+	it("writes stdin to running commands and can close the stream", async () => {
+		const events: Array<Record<string, unknown>> = [];
+		manager = new HeadlessUtilityCommandManager((event) => {
+			events.push(event as Record<string, unknown>);
+		});
+
+		manager.start({
+			command_id: "cmd_stdin",
+			command: `"${process.execPath}" -e "process.stdin.setEncoding('utf8');let data='';process.stdin.on('data', chunk => data += chunk);process.stdin.on('end', () => process.stdout.write(data.toUpperCase()));"`,
+			shell_mode: "direct",
+		});
+
+		await manager.writeStdin("cmd_stdin", "hello world", true);
+		await waitForExit(events as Array<{ type: string }>);
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "output",
+				command_id: "cmd_stdin",
+				stream: "stdout",
+				content: "HELLO WORLD",
+			}),
+		);
+		expect(events.at(-1)).toMatchObject({
+			type: "exited",
+			command_id: "cmd_stdin",
+			success: true,
+		});
+	});
+
 	it("treats terminate as a no-op after natural exit", async () => {
 		const events: Array<Record<string, unknown>> = [];
 		manager = new HeadlessUtilityCommandManager((event) => {

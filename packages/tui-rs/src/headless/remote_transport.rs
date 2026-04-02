@@ -493,6 +493,19 @@ impl RemoteAgentTransport {
         })
     }
 
+    pub fn write_utility_command_stdin(
+        &self,
+        command_id: String,
+        content: String,
+        eof: bool,
+    ) -> Result<(), AsyncTransportError> {
+        self.send(ToAgentMessage::UtilityCommandStdin {
+            command_id,
+            content,
+            eof: Some(eof),
+        })
+    }
+
     pub fn shutdown(&self) -> Result<(), AsyncTransportError> {
         let result = self.send(ToAgentMessage::Shutdown);
         self.cancel_token.cancel();

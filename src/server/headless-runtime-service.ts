@@ -1142,6 +1142,20 @@ export class HeadlessSessionRuntime {
 			case "utility_command_terminate":
 				await this.utilityCommands.terminate(msg.command_id, msg.force);
 				return;
+			case "utility_command_stdin":
+				if (
+					!this.state.capabilities?.utility_operations?.includes("command_exec")
+				) {
+					throw new Error(
+						"utility_command_stdin requires command_exec capability",
+					);
+				}
+				await this.utilityCommands.writeStdin(
+					msg.command_id,
+					msg.content,
+					msg.eof,
+				);
+				return;
 		}
 	}
 

@@ -214,6 +214,13 @@ pub enum ToAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
     },
+    /// Write stdin to a running utility command
+    UtilityCommandStdin {
+        command_id: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        eof: Option<bool>,
+    },
     /// Cancel the current operation
     Cancel,
     /// Shut down the agent
@@ -868,6 +875,7 @@ impl AgentState {
             },
             ToAgentMessage::UtilityCommandStart { .. } => {}
             ToAgentMessage::UtilityCommandTerminate { .. } => {}
+            ToAgentMessage::UtilityCommandStdin { .. } => {}
             ToAgentMessage::Shutdown => {
                 self.current_response = None;
                 self.pending_approvals.clear();
@@ -1605,6 +1613,20 @@ mod tests {
         assert!(json.contains(r#""type":"server_request_response""#));
         assert!(json.contains(r#""request_id":"call_user_input""#));
         assert!(json.contains(r#""request_type":"user_input""#));
+    }
+
+    #[test]
+    fn serialize_utility_command_stdin_message() {
+        let msg = ToAgentMessage::UtilityCommandStdin {
+            command_id: "cmd_stdin".to_string(),
+            content: "hello maestro".to_string(),
+            eof: Some(true),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"utility_command_stdin""#));
+        assert!(json.contains(r#""command_id":"cmd_stdin""#));
+        assert!(json.contains(r#""content":"hello maestro""#));
+        assert!(json.contains(r#""eof":true"#));
     }
 
     #[test]

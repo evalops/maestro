@@ -323,6 +323,23 @@ export async function runHeadlessMode(
 					await utilityCommands.terminate(msg.command_id, msg.force);
 					break;
 
+				case "utility_command_stdin":
+					if (
+						!state.capabilities?.utility_operations?.includes("command_exec")
+					) {
+						sendError(
+							"utility_command_stdin requires command_exec capability",
+							false,
+						);
+						break;
+					}
+					await utilityCommands.writeStdin(
+						msg.command_id,
+						msg.content,
+						msg.eof,
+					);
+					break;
+
 				case "shutdown":
 					sendPendingRequestCancellations("Shutdown before request completed");
 					applyOutgoingHeadlessMessage(state, msg);
