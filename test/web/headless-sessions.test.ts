@@ -32,6 +32,7 @@ import {
 	type HeadlessRuntimeStreamEnvelope,
 } from "../../src/server/headless-runtime-service.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
+import { ApiError } from "../../src/server/server-utils.js";
 import { SessionManager } from "../../src/session/manager.js";
 
 const TEST_MODEL: RegisteredModel = {
@@ -1658,6 +1659,34 @@ describe("headless session handlers", () => {
 
 		req.emit("close");
 		expect(attached.stream.close).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects explicit SSE attaches with unknown subscription ids before sending headers", () => {
+		const runtime = {
+			attachSubscription: vi.fn().mockReturnValue(null),
+			createImplicitStream: vi.fn(),
+		};
+		const context = createContext({
+			headlessRuntimeService: {
+				getRuntime: vi.fn().mockReturnValue(runtime),
+			} as unknown as HeadlessRuntimeService,
+		});
+		const req = createJsonRequest(
+			"GET",
+			"/api/headless/sessions/sess_sse/events?subscriptionId=sub_missing",
+		);
+		const res = new MockResponse();
+
+		expect(() =>
+			handleHeadlessSessionEvents(
+				req,
+				res as unknown as ServerResponse,
+				context,
+				{ id: "sess_sse" },
+			),
+		).toThrowError(ApiError);
+		expect(res.headersSent).toBe(false);
+		expect(runtime.attachSubscription).toHaveBeenCalledWith("sub_missing");
 	});
 
 	it("streams a reset envelope when the requested replay cursor is stale", () => {

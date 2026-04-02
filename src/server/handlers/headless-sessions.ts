@@ -354,13 +354,6 @@ export function handleHeadlessSessionEvents(
 	const subscriptionId =
 		url.searchParams.get("subscriptionId") || getHeadlessSubscriberId(req);
 
-	res.writeHead(200, {
-		"Content-Type": "text/event-stream",
-		"Cache-Control": "no-cache",
-		Connection: "keep-alive",
-		...context.corsHeaders,
-	});
-
 	const stream = subscriptionId
 		? runtime.attachSubscription(subscriptionId)
 		: runtime.createImplicitStream({
@@ -370,6 +363,13 @@ export function handleHeadlessSessionEvents(
 	if (!stream) {
 		throw new ApiError(404, "Headless subscriber not found");
 	}
+
+	res.writeHead(200, {
+		"Content-Type": "text/event-stream",
+		"Cache-Control": "no-cache",
+		Connection: "keep-alive",
+		...context.corsHeaders,
+	});
 	let flushing = false;
 
 	const flush = () => {
