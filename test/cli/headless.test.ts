@@ -240,10 +240,13 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
-	it("keeps responding state unchanged on non-fatal errors", () => {
+	it("does not clear responding state on non-fatal errors", () => {
 		const state = createHeadlessRuntimeState();
-		state.is_responding = true;
 
+		applyIncomingHeadlessMessage(state, {
+			type: "response_start",
+			response_id: "resp_1",
+		});
 		applyIncomingHeadlessMessage(state, {
 			type: "error",
 			message: "Tool failed",
@@ -256,16 +259,18 @@ describe("headless protocol helpers", () => {
 		expect(state.last_error_type).toBe("tool");
 	});
 
-	it("accepts attachments up to the legacy 10MB default", async () => {
-		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-"));
-		const attachmentPath = join(tempDir, "large.txt");
+	it("accepts text attachments up to the 10MB default limit", async () => {
+		const tempDir = await mkdtemp(
+			join(tmpdir(), "maestro-headless-attachment-"),
+		);
+		const filePath = join(tempDir, "large.txt");
 		const errors: Array<{ message: string; fatal: boolean }> = [];
 
 		try {
-			await writeFile(attachmentPath, Buffer.alloc(9 * 1024 * 1024, 0x61));
+			await writeFile(filePath, Buffer.alloc(9 * 1024 * 1024, "a"));
 
 			const attachments = await loadPromptAttachments(
-				[attachmentPath],
+				[filePath],
 				(message, fatal) => {
 					errors.push({ message, fatal });
 				},
@@ -273,8 +278,11 @@ describe("headless protocol helpers", () => {
 
 			expect(errors).toEqual([]);
 			expect(attachments).toHaveLength(1);
-			expect(attachments[0]?.fileName).toBe("large.txt");
-			expect(attachments[0]?.size).toBe(9 * 1024 * 1024);
+			expect(attachments[0]).toMatchObject({
+				type: "document",
+				fileName: "large.txt",
+				size: 9 * 1024 * 1024,
+			});
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}

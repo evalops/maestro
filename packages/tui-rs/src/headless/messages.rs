@@ -1006,6 +1006,9 @@ mod tests {
     #[test]
     fn state_tracks_structured_errors() {
         let mut state = AgentState::default();
+        state.handle_message(FromAgentMessage::ResponseStart {
+            response_id: "resp1".to_string(),
+        });
         let event = state.handle_message(FromAgentMessage::Error {
             message: "Cancelled by user".to_string(),
             fatal: false,
@@ -1014,6 +1017,7 @@ mod tests {
 
         assert_eq!(state.last_error.as_deref(), Some("Cancelled by user"));
         assert_eq!(state.last_error_type, Some(HeadlessErrorType::Cancelled));
+        assert!(state.is_responding);
         assert!(matches!(
             event,
             Some(AgentEvent::Error {
