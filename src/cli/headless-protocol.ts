@@ -204,6 +204,7 @@ export interface HeadlessRuntimeState {
 	current_response?: HeadlessStreamingResponseState;
 	pending_approvals: HeadlessPendingApprovalState[];
 	active_tools: HeadlessActiveToolState[];
+	tracked_tools: HeadlessPendingApprovalState[];
 	last_error?: string;
 	last_error_type?: HeadlessErrorMessage["error_type"];
 	last_status?: string;
@@ -219,6 +220,7 @@ export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 	return {
 		pending_approvals: [],
 		active_tools: [],
+		tracked_tools: [],
 		is_ready: false,
 		is_responding: false,
 	};
@@ -725,18 +727,25 @@ export function applyOutgoingHeadlessMessage(
 			state.pending_approvals = state.pending_approvals.filter(
 				(approval) => approval.call_id !== msg.call_id,
 			);
+			if (!msg.approved) {
+				state.tracked_tools = state.tracked_tools.filter(
+					(tool) => tool.call_id !== msg.call_id,
+				);
+			}
 			return;
 		case "interrupt":
 		case "cancel":
 			state.current_response = undefined;
 			state.pending_approvals = [];
 			state.active_tools = [];
+			state.tracked_tools = [];
 			state.is_responding = false;
 			return;
 		case "shutdown":
 			state.current_response = undefined;
 			state.pending_approvals = [];
 			state.active_tools = [];
+			state.tracked_tools = [];
 			state.is_ready = false;
 			state.is_responding = false;
 			return;
@@ -787,6 +796,14 @@ export function applyIncomingHeadlessMessage(
 			state.is_responding = false;
 			return;
 		case "tool_call":
+			state.tracked_tools = [
+				...state.tracked_tools.filter((tool) => tool.call_id !== msg.call_id),
+				{
+					call_id: msg.call_id,
+					tool: msg.tool,
+					args: msg.args,
+				},
+			];
 			if (msg.requires_approval) {
 				state.pending_approvals = [
 					...state.pending_approvals.filter(
@@ -801,6 +818,9 @@ export function applyIncomingHeadlessMessage(
 			}
 			return;
 		case "tool_start": {
+			const tracked = state.tracked_tools.find(
+				(tool) => tool.call_id === msg.call_id,
+			);
 			const pending = state.pending_approvals.find(
 				(approval) => approval.call_id === msg.call_id,
 			);
@@ -808,7 +828,7 @@ export function applyIncomingHeadlessMessage(
 				...state.active_tools.filter((tool) => tool.call_id !== msg.call_id),
 				{
 					call_id: msg.call_id,
-					tool: pending?.tool ?? "unknown",
+					tool: tracked?.tool ?? pending?.tool ?? "unknown",
 					output: "",
 				},
 			];
@@ -827,6 +847,9 @@ export function applyIncomingHeadlessMessage(
 			);
 			state.pending_approvals = state.pending_approvals.filter(
 				(approval) => approval.call_id !== msg.call_id,
+			);
+			state.tracked_tools = state.tracked_tools.filter(
+				(tool) => tool.call_id !== msg.call_id,
 			);
 			return;
 		case "error":

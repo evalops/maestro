@@ -452,7 +452,7 @@ impl AgentSupervisor {
             ManagedIncoming::Snapshot { state, last_init } => {
                 self.last_response = Some(Instant::now());
                 self.apply_snapshot(*state, last_init);
-                self.event_rx.try_recv().ok()
+                None
             }
             ManagedIncoming::Heartbeat => {
                 self.last_response = Some(Instant::now());
@@ -1047,6 +1047,32 @@ mod tests {
         assert_eq!(supervisor.state().model.as_deref(), Some("claude-3-opus"));
         assert_eq!(supervisor.state().provider.as_deref(), Some("anthropic"));
         assert!(supervisor.state().is_ready);
+    }
+
+    #[test]
+    fn snapshot_incoming_preserves_existing_event_queue_order() {
+        let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+        let _ = supervisor.event_tx.send(SupervisorEvent::Connected);
+
+        let event = supervisor.handle_transport_incoming(ManagedIncoming::Snapshot {
+            state: Box::new(AgentState {
+                session_id: Some("sess_snapshot".to_string()),
+                ..AgentState::default()
+            }),
+            last_init: None,
+        });
+
+        assert!(event.is_none());
+        assert!(matches!(
+            supervisor.poll(),
+            Some(SupervisorEvent::Connected)
+        ));
+        assert!(matches!(
+            supervisor.poll(),
+            Some(SupervisorEvent::StateHydrated {
+                session_id: Some(ref session_id)
+            }) if session_id == "sess_snapshot"
+        ));
     }
 
     #[test]

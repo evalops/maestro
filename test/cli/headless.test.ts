@@ -3,10 +3,12 @@ import type { AssistantMessage } from "../../src/agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
 	HeadlessProtocolTranslator,
+	applyIncomingHeadlessMessage,
 	buildHeadlessCompactionMessage,
 	buildHeadlessToolsSummary,
 	buildHeadlessUsage,
 	classifyHeadlessError,
+	createHeadlessRuntimeState,
 } from "../../src/cli/headless-protocol.js";
 
 function assistantMessage(
@@ -145,6 +147,31 @@ describe("headless protocol helpers", () => {
 				type: "tool_output",
 				call_id: "call_123",
 				content: "first line",
+			},
+		]);
+	});
+
+	it("tracks non-approval tool names through tool_start", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "call_read",
+			tool: "read",
+			args: { file_path: "package.json" },
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_start",
+			call_id: "call_read",
+		});
+
+		expect(state.pending_approvals).toEqual([]);
+		expect(state.active_tools).toEqual([
+			{
+				call_id: "call_read",
+				tool: "read",
+				output: "",
 			},
 		]);
 	});

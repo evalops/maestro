@@ -110,6 +110,8 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     pending_approvals: Vec<PendingApproval>,
     #[serde(default)]
+    tracked_tools: Vec<PendingApproval>,
+    #[serde(default)]
     active_tools: Vec<RemoteActiveToolState>,
     #[serde(default)]
     last_error: Option<String>,
@@ -138,6 +140,11 @@ impl RemoteRuntimeStateSnapshot {
             git_branch: self.git_branch,
             current_response: self.current_response,
             pending_approvals: self.pending_approvals,
+            tracked_tools: self
+                .tracked_tools
+                .into_iter()
+                .map(|tool| (tool.call_id.clone(), tool))
+                .collect::<HashMap<_, _>>(),
             active_tools: self
                 .active_tools
                 .into_iter()
@@ -740,6 +747,11 @@ mod tests {
                 tool: "bash".to_string(),
                 args: serde_json::json!({"cmd": "ls"}),
             }],
+            tracked_tools: vec![PendingApproval {
+                call_id: "call-2".to_string(),
+                tool: "read".to_string(),
+                args: serde_json::json!({"path": "package.json"}),
+            }],
             active_tools: vec![RemoteActiveToolState {
                 call_id: "call-2".to_string(),
                 tool: "read".to_string(),
@@ -758,6 +770,7 @@ mod tests {
         assert_eq!(state.model.as_deref(), Some("gpt-5.4"));
         assert_eq!(state.provider.as_deref(), Some("openai"));
         assert_eq!(state.pending_approvals.len(), 1);
+        assert_eq!(state.tracked_tools.len(), 1);
         assert_eq!(state.active_tools.len(), 1);
         assert_eq!(state.last_error.as_deref(), Some("boom"));
         assert_eq!(state.last_status.as_deref(), Some("Working"));

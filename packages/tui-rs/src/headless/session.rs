@@ -81,6 +81,7 @@
 //! For reliability, call `flush()` after important events to ensure data is
 //! persisted to disk.
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -192,6 +193,8 @@ pub struct AgentStateCheckpoint {
     #[serde(default)]
     pub pending_approvals: Vec<PendingApproval>,
     #[serde(default)]
+    pub tracked_tools: Vec<PendingApproval>,
+    #[serde(default)]
     pub active_tools: Vec<ActiveToolCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
@@ -221,6 +224,7 @@ impl AgentStateCheckpoint {
             git_branch: state.git_branch.clone(),
             current_response: state.current_response.clone(),
             pending_approvals: state.pending_approvals.clone(),
+            tracked_tools: state.tracked_tools.values().cloned().collect(),
             active_tools: state
                 .active_tools
                 .values()
@@ -252,6 +256,11 @@ impl AgentStateCheckpoint {
             git_branch: self.git_branch,
             current_response: self.current_response,
             pending_approvals: self.pending_approvals,
+            tracked_tools: self
+                .tracked_tools
+                .into_iter()
+                .map(|tool| (tool.call_id.clone(), tool))
+                .collect::<HashMap<_, _>>(),
             active_tools: self
                 .active_tools
                 .into_iter()
