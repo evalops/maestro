@@ -120,9 +120,16 @@ export async function runHeadlessMode(
 	});
 
 	rl.on("line", async (line: string) => {
+		let msg: HeadlessToAgentMessage;
 		try {
-			const msg = JSON.parse(line) as HeadlessToAgentMessage;
+			msg = JSON.parse(line) as HeadlessToAgentMessage;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			sendError(`Failed to parse command: ${message}`, false);
+			return;
+		}
 
+		try {
 			switch (msg.type) {
 				case "init": {
 					const applied = applyInitMessage(agent, msg, approvalService);
@@ -316,11 +323,29 @@ export async function runHeadlessMode(
 						cwd: msg.cwd,
 						env: msg.env,
 						shell_mode: msg.shell_mode,
+						allow_stdin: msg.allow_stdin,
 					});
 					break;
 
 				case "utility_command_terminate":
 					await utilityCommands.terminate(msg.command_id, msg.force);
+					break;
+
+				case "utility_command_stdin":
+					if (
+						!state.capabilities?.utility_operations?.includes("command_exec")
+					) {
+						sendError(
+							"utility_command_stdin requires command_exec capability",
+							false,
+						);
+						break;
+					}
+					await utilityCommands.writeStdin(
+						msg.command_id,
+						msg.content,
+						msg.eof,
+					);
 					break;
 
 				case "shutdown":
@@ -334,7 +359,7 @@ export async function runHeadlessMode(
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			sendError(`Failed to parse command: ${message}`, false);
+			sendError(message, false);
 		}
 	});
 

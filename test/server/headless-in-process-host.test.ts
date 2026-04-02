@@ -193,4 +193,84 @@ describe("HeadlessInProcessHost", () => {
 		expect(finalSnapshot.state.active_utility_commands).toEqual([]);
 		stream.close();
 	});
+
+	it("writes stdin to utility commands over the in-process control plane", async () => {
+		const fakeAgent = new FakeAgent();
+		tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-in-process-"));
+		const sessionManager = new SessionManager(false, undefined, {
+			sessionDir: tempDir,
+		});
+		const runtimeService = new HeadlessRuntimeService();
+		const host = new HeadlessInProcessHost(runtimeService);
+
+		const snapshot = await host.ensureSession({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context: {
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			},
+			sessionManager,
+			capabilities: {
+				server_requests: ["approval"],
+				utility_operations: ["command_exec"],
+			},
+		});
+
+		const stream = host.attachStream({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			cursor: null,
+		});
+		expect((await readNextEnvelope(stream)).type).toBe("snapshot");
+
+		await host.send({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			message: {
+				type: "utility_command_start",
+				command_id: "cmd_stdin",
+				command: `"${process.execPath}" -e "process.stdin.setEncoding('utf8');let data='';process.stdin.on('data', chunk => data += chunk);process.stdin.on('end', () => process.stdout.write(data.toUpperCase()));"`,
+				shell_mode: "direct",
+				allow_stdin: true,
+			},
+		});
+		await host.send({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			message: {
+				type: "utility_command_stdin",
+				command_id: "cmd_stdin",
+				content: "hello maestro",
+				eof: true,
+			},
+		});
+
+		const seenMessages: HeadlessRuntimeStreamEnvelope[] = [];
+		while (
+			!seenMessages.some(
+				(event) =>
+					event.type === "message" &&
+					event.message.type === "utility_command_exited",
+			)
+		) {
+			seenMessages.push(await readNextEnvelope(stream));
+		}
+
+		expect(
+			seenMessages.some(
+				(event) =>
+					event.type === "message" &&
+					event.message.type === "utility_command_output" &&
+					event.message.command_id === "cmd_stdin" &&
+					event.message.content === "HELLO MAESTRO",
+			),
+		).toBe(true);
+
+		stream.close();
+	});
 });

@@ -128,12 +128,20 @@ export interface HeadlessUtilityCommandStartMessage {
 	cwd?: string;
 	env?: Record<string, string>;
 	shell_mode?: HeadlessUtilityCommandShellMode;
+	allow_stdin?: boolean;
 }
 
 export interface HeadlessUtilityCommandTerminateMessage {
 	type: "utility_command_terminate";
 	command_id: string;
 	force?: boolean;
+}
+
+export interface HeadlessUtilityCommandStdinMessage {
+	type: "utility_command_stdin";
+	command_id: string;
+	content: string;
+	eof?: boolean;
 }
 
 export interface HeadlessCancelMessage {
@@ -154,6 +162,7 @@ export type HeadlessToAgentMessage =
 	| HeadlessServerRequestResponseMessage
 	| HeadlessUtilityCommandStartMessage
 	| HeadlessUtilityCommandTerminateMessage
+	| HeadlessUtilityCommandStdinMessage
 	| HeadlessCancelMessage
 	| HeadlessShutdownMessage;
 
@@ -1042,6 +1051,7 @@ export function applyOutgoingHeadlessMessage(
 			return;
 		case "utility_command_start":
 		case "utility_command_terminate":
+		case "utility_command_stdin":
 			return;
 		case "server_request_response":
 			if (msg.request_type === "approval") {

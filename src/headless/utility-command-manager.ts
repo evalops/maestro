@@ -18,6 +18,7 @@ export interface HeadlessUtilityCommandStartRequest {
 	cwd?: string;
 	env?: Record<string, string>;
 	shell_mode?: HeadlessUtilityCommandShellMode;
+	allow_stdin?: boolean;
 }
 
 export interface HeadlessUtilityCommandStartedEvent {
@@ -55,6 +56,7 @@ interface ActiveCommand {
 	command: string;
 	cwd?: string;
 	shell_mode: HeadlessUtilityCommandShellMode;
+	allow_stdin: boolean;
 	output: string;
 	reason?: string;
 }
@@ -92,6 +94,7 @@ export class HeadlessUtilityCommandManager {
 		}
 
 		const shellMode = request.shell_mode ?? "shell";
+		const allowStdin = request.allow_stdin ?? false;
 		const { resolvedCwd } = validateShellParams(
 			request.command,
 			request.cwd,
@@ -105,7 +108,7 @@ export class HeadlessUtilityCommandManager {
 			child = spawn(shell, [...args, request.command], {
 				cwd: resolvedCwd,
 				env,
-				stdio: ["ignore", "pipe", "pipe"],
+				stdio: [allowStdin ? "pipe" : "ignore", "pipe", "pipe"],
 			});
 		} else {
 			const parsed = parseCommandArguments(request.command);
@@ -115,7 +118,7 @@ export class HeadlessUtilityCommandManager {
 			child = spawn(parsed[0]!, parsed.slice(1), {
 				cwd: resolvedCwd,
 				env,
-				stdio: ["ignore", "pipe", "pipe"],
+				stdio: [allowStdin ? "pipe" : "ignore", "pipe", "pipe"],
 			});
 		}
 
@@ -124,6 +127,7 @@ export class HeadlessUtilityCommandManager {
 			command: request.command,
 			cwd: resolvedCwd,
 			shell_mode: shellMode,
+			allow_stdin: allowStdin,
 			output: "",
 		};
 		this.commands.set(request.command_id, active);
@@ -194,6 +198,41 @@ export class HeadlessUtilityCommandManager {
 			return;
 		}
 		await killProcessTreeGracefully(pid);
+	}
+
+	async writeStdin(
+		commandId: string,
+		content: string,
+		eof = false,
+	): Promise<void> {
+		const active = this.commands.get(commandId);
+		if (!active) {
+			throw new Error(`Utility command not found: ${commandId}`);
+		}
+		if (!active.allow_stdin) {
+			throw new Error(`Utility command stdin is not enabled: ${commandId}`);
+		}
+		const stdin = active.child.stdin;
+		if (!stdin || stdin.destroyed || stdin.writableEnded) {
+			if (!content && eof) {
+				return;
+			}
+			throw new Error(`Utility command stdin is not writable: ${commandId}`);
+		}
+		if (content) {
+			await new Promise<void>((resolve, reject) => {
+				stdin.write(content, (error) => {
+					if (error) {
+						reject(error);
+						return;
+					}
+					resolve();
+				});
+			});
+		}
+		if (eof && !stdin.destroyed && !stdin.writableEnded) {
+			stdin.end();
+		}
 	}
 
 	async dispose(reason = "Headless runtime disposed"): Promise<void> {
