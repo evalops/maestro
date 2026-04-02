@@ -222,4 +222,56 @@ describe("ServerRequestManager", () => {
 			resolvedBy: "policy",
 		});
 	});
+
+	it("emits user input lifecycle events as a distinct request kind", () => {
+		const resolve = vi.fn().mockReturnValue(true);
+		const cancel = vi.fn().mockReturnValue(true);
+		const listener = vi.fn();
+		manager.subscribe(listener);
+
+		manager.registerClientTool({
+			id: "user_input_1",
+			sessionId: "sess_user_input",
+			toolName: "ask_user",
+			args: {
+				questions: [
+					{
+						header: "Library",
+						question: "Which library should we use?",
+						options: [
+							{ label: "Zod", description: "Use Zod schemas" },
+							{ label: "Valibot", description: "Use Valibot schemas" },
+						],
+					},
+				],
+			},
+			kind: "user_input",
+			resolve,
+			cancel,
+		});
+		manager.resolveClientTool(
+			"user_input_1",
+			[{ type: "text", text: "Zod" }],
+			false,
+		);
+
+		expect(listener).toHaveBeenNthCalledWith(1, {
+			type: "registered",
+			request: expect.objectContaining({
+				id: "user_input_1",
+				kind: "user_input",
+				sessionId: "sess_user_input",
+			}),
+		});
+		expect(listener).toHaveBeenNthCalledWith(2, {
+			type: "resolved",
+			request: expect.objectContaining({
+				id: "user_input_1",
+				kind: "user_input",
+			}),
+			resolution: "answered",
+			reason: undefined,
+			resolvedBy: "client",
+		});
+	});
 });

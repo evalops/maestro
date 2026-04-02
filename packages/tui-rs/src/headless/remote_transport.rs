@@ -107,7 +107,11 @@ struct RemoteSessionCreateRequest {
     thinking_level: Option<ThinkingLevel>,
     #[serde(rename = "approvalMode", skip_serializing_if = "Option::is_none")]
     approval_mode: Option<ApprovalMode>,
-    #[serde(rename = "enableClientTools", default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(
+        rename = "enableClientTools",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
     enable_client_tools: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     capabilities: Option<RemoteClientCapabilities>,
@@ -159,6 +163,8 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     pending_client_tools: Vec<PendingApproval>,
     #[serde(default)]
+    pending_user_inputs: Vec<PendingApproval>,
+    #[serde(default)]
     tracked_tools: Vec<PendingApproval>,
     #[serde(default)]
     active_tools: Vec<RemoteActiveToolState>,
@@ -194,6 +200,7 @@ impl RemoteRuntimeStateSnapshot {
             current_response: self.current_response,
             pending_approvals: self.pending_approvals,
             pending_client_tools: self.pending_client_tools,
+            pending_user_inputs: self.pending_user_inputs,
             tracked_tools: self
                 .tracked_tools
                 .into_iter()
@@ -892,6 +899,20 @@ mod tests {
                 tool: "artifacts".to_string(),
                 args: serde_json::json!({"command": "create", "filename": "report.txt"}),
             }],
+            pending_user_inputs: vec![PendingApproval {
+                call_id: "call-user-input".to_string(),
+                tool: "ask_user".to_string(),
+                args: serde_json::json!({
+                    "questions": [{
+                        "header": "Stack",
+                        "question": "Which schema library should we use?",
+                        "options": [{
+                            "label": "Zod",
+                            "description": "Use Zod schemas"
+                        }]
+                    }]
+                }),
+            }],
             tracked_tools: vec![PendingApproval {
                 call_id: "call-2".to_string(),
                 tool: "read".to_string(),
@@ -921,6 +942,7 @@ mod tests {
         );
         assert_eq!(state.pending_approvals.len(), 1);
         assert_eq!(state.pending_client_tools.len(), 1);
+        assert_eq!(state.pending_user_inputs.len(), 1);
         assert_eq!(state.tracked_tools.len(), 1);
         assert_eq!(state.active_tools.len(), 1);
         assert_eq!(state.last_error.as_deref(), Some("boom"));
@@ -1062,12 +1084,12 @@ mod tests {
         assert!(create_headers
             .iter()
             .any(|(name, value)| { name == "x-maestro-client" && value == "tui-rs" }));
-        assert!(create_headers.iter().any(|(name, value)| {
-            name == "x-maestro-headless-role" && value == "controller"
-        }));
-        assert!(create_headers.iter().any(|(name, value)| {
-            name == "x-composer-headless-role" && value == "controller"
-        }));
+        assert!(create_headers
+            .iter()
+            .any(|(name, value)| { name == "x-maestro-headless-role" && value == "controller" }));
+        assert!(create_headers
+            .iter()
+            .any(|(name, value)| { name == "x-composer-headless-role" && value == "controller" }));
 
         transport.shutdown().expect("shutdown");
         assert!(cancel_token.is_cancelled());

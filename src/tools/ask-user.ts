@@ -8,7 +8,7 @@
 import { type Static, Type } from "@sinclair/typebox";
 import { createTool } from "./tool-dsl.js";
 
-const questionOptionSchema = Type.Object({
+export const questionOptionSchema = Type.Object({
 	label: Type.String({
 		description:
 			"The display text for this option (1-5 words). Should clearly describe the choice.",
@@ -23,7 +23,7 @@ const questionOptionSchema = Type.Object({
 	}),
 });
 
-const questionSchema = Type.Object({
+export const questionSchema = Type.Object({
 	question: Type.String({
 		description:
 			'The complete question to ask. Should be clear, specific, and end with a question mark. E.g., "Which library should we use for date formatting?"',
@@ -51,7 +51,7 @@ const questionSchema = Type.Object({
 	),
 });
 
-const askUserSchema = Type.Object({
+export const askUserSchema = Type.Object({
 	questions: Type.Array(questionSchema, {
 		description: "Questions to ask the user (1-4 questions)",
 		minItems: 1,

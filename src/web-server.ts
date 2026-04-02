@@ -54,6 +54,7 @@ import { configureSafeMode } from "./safety/safe-mode.js";
 import type { WebServerContext } from "./server/app-context.js";
 import { recordApiRequest } from "./telemetry.js";
 import { artifactsClientTool } from "./tools/artifacts-client.js";
+import { askUserClientTool } from "./tools/ask-user-client.js";
 import {
 	codingTools,
 	conductorClientTools,
@@ -398,6 +399,7 @@ async function createAgent(
 	approvalMode: ApprovalMode = DEFAULT_APPROVAL_MODE,
 	options?: {
 		enableClientTools?: boolean;
+		useClientAskUser?: boolean;
 		includeVscodeTools?: boolean;
 		includeJetBrainsTools?: boolean;
 		includeConductorTools?: boolean;
@@ -449,7 +451,9 @@ async function createAgent(
 			options?.approvalService ?? new WebActionApprovalService(approvalMode),
 		clientToolService:
 			options?.clientToolService ??
-			(options?.enableClientTools ? clientToolService : undefined),
+			(options?.enableClientTools || options?.useClientAskUser
+				? clientToolService
+				: undefined),
 		sessionTokenCounter,
 		auditLogger,
 	});
@@ -459,7 +463,12 @@ async function createAgent(
 	// Only include IDE client tools when a compatible client is connected.
 	// Without a connected client, these tools will hang waiting for responses.
 	const mcpTools = getAllMcpTools();
-	const tools: AgentTool[] = [...codingTools, ...mcpTools];
+	const baseTools = options?.useClientAskUser
+		? codingTools.map((tool) =>
+				tool.name === "ask_user" ? askUserClientTool : tool,
+			)
+		: codingTools;
+	const tools: AgentTool[] = [...baseTools, ...mcpTools];
 	if (options?.includeVscodeTools) {
 		tools.push(...vscodeTools);
 	}

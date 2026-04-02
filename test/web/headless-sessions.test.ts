@@ -1018,9 +1018,39 @@ describe("headless session handlers", () => {
 			"prompt",
 			expect.objectContaining({
 				enableClientTools: true,
+				useClientAskUser: false,
 				includeVscodeTools: true,
 				includeJetBrainsTools: false,
 				includeConductorTools: false,
+			}),
+		);
+	});
+
+	it("enables client ask_user routing when user_input capability is negotiated", async () => {
+		const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
+		const context = createContext({ createAgent });
+		const req = createJsonRequest("POST", "/api/headless/sessions", {
+			model: TEST_MODEL.id,
+			capabilities: {
+				serverRequests: ["approval", "user_input"],
+			},
+		});
+		const res = new MockResponse();
+		res.req = req;
+
+		await handleHeadlessSessionCreate(
+			req,
+			res as unknown as ServerResponse,
+			context,
+		);
+
+		expect(createAgent).toHaveBeenCalledWith(
+			TEST_MODEL,
+			"off",
+			"prompt",
+			expect.objectContaining({
+				enableClientTools: undefined,
+				useClientAskUser: true,
 			}),
 		);
 	});
@@ -1048,6 +1078,31 @@ describe("headless session handlers", () => {
 			statusCode: 400,
 			message:
 				"client_tool capability is required when enableClientTools is true",
+		});
+	});
+
+	it("rejects viewer user_input capability negotiation", async () => {
+		const context = createContext({});
+		const req = createJsonRequest("POST", "/api/headless/sessions", {
+			model: TEST_MODEL.id,
+			role: "viewer",
+			capabilities: {
+				serverRequests: ["approval", "user_input"],
+			},
+		});
+		const res = new MockResponse();
+		res.req = req;
+
+		await expect(
+			handleHeadlessSessionCreate(
+				req,
+				res as unknown as ServerResponse,
+				context,
+			),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			message:
+				"viewer headless connections cannot negotiate user_input requests",
 		});
 	});
 
@@ -1081,6 +1136,132 @@ describe("headless session handlers", () => {
 			message: "Viewer headless connections cannot send messages",
 		});
 		expect(runtime.send).not.toHaveBeenCalled();
+	});
+
+	it("replays user input requests and resolves them through headless messages", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval", "user_input"],
+				},
+				context,
+				sessionManager,
+			});
+
+			const resultPromise = clientToolService.requestExecution(
+				"call_user_input",
+				"ask_user",
+				{
+					questions: [
+						{
+							header: "Stack",
+							question: "Which schema library should we use?",
+							options: [
+								{
+									label: "Zod",
+									description: "Use Zod schemas",
+								},
+							],
+						},
+					],
+				},
+				undefined,
+				runtime.id(),
+			);
+
+			fakeAgent.emit({
+				type: "client_tool_request",
+				toolCallId: "call_user_input",
+				toolName: "ask_user",
+				args: {
+					questions: [
+						{
+							header: "Stack",
+							question: "Which schema library should we use?",
+							options: [
+								{
+									label: "Zod",
+									description: "Use Zod schemas",
+								},
+							],
+						},
+					],
+				},
+			});
+
+			expect(runtime.getSnapshot().state.pending_user_inputs).toEqual([
+				{
+					call_id: "call_user_input",
+					tool: "ask_user",
+					args: {
+						questions: [
+							{
+								header: "Stack",
+								question: "Which schema library should we use?",
+								options: [
+									{
+										label: "Zod",
+										description: "Use Zod schemas",
+									},
+								],
+							},
+						],
+					},
+				},
+			]);
+
+			await runtime.send({
+				type: "client_tool_result",
+				call_id: "call_user_input",
+				content: [{ type: "text", text: "Use Zod" }],
+				is_error: false,
+			});
+
+			await expect(resultPromise).resolves.toEqual({
+				content: [{ type: "text", text: "Use Zod" }],
+				isError: false,
+			});
+
+			expect(runtime.getSnapshot().state.pending_user_inputs).toEqual([]);
+			expect(
+				runtime.replayFrom(0)?.some((entry) => {
+					if (entry.type !== "message") {
+						return false;
+					}
+					return (
+						entry.message.type === "server_request" &&
+						entry.message.request_type === "user_input"
+					);
+				}),
+			).toBe(true);
+			expect(
+				runtime.replayFrom(0)?.some((entry) => {
+					if (entry.type !== "message") {
+						return false;
+					}
+					return (
+						entry.message.type === "server_request_resolved" &&
+						entry.message.request_type === "user_input" &&
+						entry.message.resolution === "answered"
+					);
+				}),
+			).toBe(true);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("streams a snapshot envelope on initial SSE attach", () => {

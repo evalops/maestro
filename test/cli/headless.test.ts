@@ -273,6 +273,73 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
+	it("translates ask_user requests into user_input server requests", () => {
+		const translator = new HeadlessProtocolTranslator();
+		expect(
+			translator.handleAgentEvent({
+				type: "client_tool_request",
+				toolCallId: "call_user_input",
+				toolName: "ask_user",
+				args: {
+					questions: [
+						{
+							header: "Stack",
+							question: "Which schema library should we use?",
+							options: [
+								{
+									label: "Zod",
+									description: "Use Zod schemas",
+								},
+							],
+						},
+					],
+				},
+			}),
+		).toEqual([
+			{
+				type: "client_tool_request",
+				call_id: "call_user_input",
+				tool: "ask_user",
+				args: {
+					questions: [
+						{
+							header: "Stack",
+							question: "Which schema library should we use?",
+							options: [
+								{
+									label: "Zod",
+									description: "Use Zod schemas",
+								},
+							],
+						},
+					],
+				},
+			},
+			{
+				type: "server_request",
+				request_id: "call_user_input",
+				request_type: "user_input",
+				call_id: "call_user_input",
+				tool: "ask_user",
+				args: {
+					questions: [
+						{
+							header: "Stack",
+							question: "Which schema library should we use?",
+							options: [
+								{
+									label: "Zod",
+									description: "Use Zod schemas",
+								},
+							],
+						},
+					],
+				},
+				reason: "Agent requested structured user input",
+			},
+		]);
+	});
+
 	it("deduplicates repeated tool summary labels", () => {
 		const translator = new HeadlessProtocolTranslator();
 		translator.handleAgentEvent({
@@ -498,6 +565,82 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
+	it("tracks and resolves user input requests in runtime state", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "client_tool_request",
+			call_id: "call_user_input",
+			tool: "ask_user",
+			args: {
+				questions: [
+					{
+						header: "Stack",
+						question: "Which schema library should we use?",
+						options: [
+							{
+								label: "Zod",
+								description: "Use Zod schemas",
+							},
+						],
+					},
+				],
+			},
+		});
+
+		expect(state.pending_user_inputs).toEqual([
+			{
+				call_id: "call_user_input",
+				tool: "ask_user",
+				args: {
+					questions: [
+						{
+							header: "Stack",
+							question: "Which schema library should we use?",
+							options: [
+								{
+									label: "Zod",
+									description: "Use Zod schemas",
+								},
+							],
+						},
+					],
+				},
+			},
+		]);
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request_resolved",
+			request_id: "call_user_input",
+			request_type: "user_input",
+			call_id: "call_user_input",
+			resolution: "answered",
+			resolved_by: "client",
+		});
+
+		expect(state.pending_user_inputs).toEqual([]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_user_input",
+				tool: "ask_user",
+				args: {
+					questions: [
+						{
+							header: "Stack",
+							question: "Which schema library should we use?",
+							options: [
+								{
+									label: "Zod",
+									description: "Use Zod schemas",
+								},
+							],
+						},
+					],
+				},
+			},
+		]);
+	});
+
 	it("cancellation helper emits explicit cancelled resolutions for pending requests", () => {
 		const state = createHeadlessRuntimeState();
 
@@ -518,6 +661,28 @@ describe("headless protocol helpers", () => {
 			tool: "artifacts",
 			args: { command: "create", filename: "report.txt" },
 			reason: "Client tool artifacts requires local execution",
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "call_user_input",
+			request_type: "user_input",
+			call_id: "call_user_input",
+			tool: "ask_user",
+			args: {
+				questions: [
+					{
+						header: "Stack",
+						question: "Which schema library should we use?",
+						options: [
+							{
+								label: "Zod",
+								description: "Use Zod schemas",
+							},
+						],
+					},
+				],
+			},
+			reason: "Agent requested structured user input",
 		});
 
 		expect(
@@ -540,6 +705,15 @@ describe("headless protocol helpers", () => {
 				request_id: "call_client",
 				request_type: "client_tool",
 				call_id: "call_client",
+				resolution: "cancelled",
+				reason: "Interrupted before request completed",
+				resolved_by: "runtime",
+			},
+			{
+				type: "server_request_resolved",
+				request_id: "call_user_input",
+				request_type: "user_input",
+				call_id: "call_user_input",
 				resolution: "cancelled",
 				reason: "Interrupted before request completed",
 				resolved_by: "runtime",

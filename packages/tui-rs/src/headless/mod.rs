@@ -207,9 +207,9 @@ mod transport;
 pub use messages::{
     ActiveTool, AgentEvent, AgentState, ApprovalMode, ClientCapabilities, ClientInfo,
     ClientToolResultContent, ConnectionRole, FromAgentMessage, HeadlessErrorType, InitConfig,
-    PendingApproval, ServerRequestResolutionStatus,
-    ServerRequestResolvedBy, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
-    TokenUsage, ToolResult, HEADLESS_PROTOCOL_VERSION,
+    PendingApproval, ServerRequestResolutionStatus, ServerRequestResolvedBy, ServerRequestType,
+    StreamingResponse, ThinkingLevel, ToAgentMessage, TokenUsage, ToolResult,
+    HEADLESS_PROTOCOL_VERSION,
 };
 
 // Sync transport

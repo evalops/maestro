@@ -7,12 +7,13 @@ import type { ImageContent, TextContent } from "../agent/types.js";
 
 type ToolResultContent = TextContent | ImageContent;
 
-export type ServerRequestKind = "approval" | "client_tool";
+export type ServerRequestKind = "approval" | "client_tool" | "user_input";
 export type ServerRequestResolution =
 	| "approved"
 	| "denied"
 	| "completed"
 	| "failed"
+	| "answered"
 	| "cancelled";
 
 export interface PendingServerRequestSnapshot {
@@ -51,7 +52,7 @@ type ApprovalRequestEntry = PendingServerRequestSnapshot & {
 };
 
 type ClientToolRequestEntry = PendingServerRequestSnapshot & {
-	kind: "client_tool";
+	kind: "client_tool" | "user_input";
 	timeoutMs: number;
 	resolve: (content: ToolResultContent[], isError: boolean) => boolean;
 	cancel: (reason: string) => boolean;
@@ -73,6 +74,7 @@ type RegisterClientToolOptions = {
 	args: unknown;
 	reason?: string;
 	timeoutMs?: number;
+	kind?: "client_tool" | "user_input";
 	resolve: (content: ToolResultContent[], isError: boolean) => boolean;
 	cancel: (reason: string) => boolean;
 };
@@ -112,15 +114,18 @@ export class ServerRequestManager {
 	}
 
 	registerClientTool(options: RegisterClientToolOptions): void {
+		const kind = options.kind ?? "client_tool";
 		const entry: ClientToolRequestEntry = {
 			id: options.id,
-			kind: "client_tool",
+			kind,
 			sessionId: options.sessionId,
 			toolName: options.toolName,
 			args: options.args,
 			reason:
 				options.reason ??
-				`Client tool ${options.toolName} requires local execution`,
+				(kind === "user_input"
+					? "Agent requested structured user input"
+					: `Client tool ${options.toolName} requires local execution`),
 			timestamp: Date.now(),
 			timeoutMs: options.timeoutMs ?? DEFAULT_CLIENT_TOOL_TIMEOUT_MS,
 			resolve: options.resolve,
@@ -209,7 +214,7 @@ export class ServerRequestManager {
 		isError: boolean,
 	): boolean {
 		const entry = this.pending.get(id);
-		if (!entry || entry.kind !== "client_tool") {
+		if (!entry || entry.kind === "approval") {
 			return false;
 		}
 		const request = this.toSnapshot(entry);
@@ -219,8 +224,16 @@ export class ServerRequestManager {
 			this.emit({
 				type: "resolved",
 				request,
-				resolution: isError ? "failed" : "completed",
-				reason: isError ? "Client tool result reported an error" : undefined,
+				resolution: isError
+					? "failed"
+					: request.kind === "user_input"
+						? "answered"
+						: "completed",
+				reason: isError
+					? request.kind === "user_input"
+						? "User input request reported an error"
+						: "Client tool result reported an error"
+					: undefined,
 				resolvedBy: "client",
 			});
 		}

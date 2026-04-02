@@ -263,7 +263,9 @@ pub struct ToolResult {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientToolResultContent {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Image {
         data: String,
         #[serde(rename = "mimeType")]
@@ -487,6 +489,7 @@ pub enum HeadlessErrorType {
 pub enum ServerRequestType {
     Approval,
     ClientTool,
+    UserInput,
 }
 
 /// Actor that resolved a server request.
@@ -507,6 +510,7 @@ pub enum ServerRequestResolutionStatus {
     Denied,
     Completed,
     Failed,
+    Answered,
     Cancelled,
 }
 
@@ -578,6 +582,8 @@ pub struct AgentState {
     pub pending_approvals: Vec<PendingApproval>,
     /// Pending client-side tool execution requests
     pub pending_client_tools: Vec<PendingApproval>,
+    /// Pending structured user input requests
+    pub pending_user_inputs: Vec<PendingApproval>,
     /// Active tool executions
     pub active_tools: HashMap<String, ActiveTool>,
     /// Tracks tool metadata until a tool run completes, even when approval is not required.
@@ -671,6 +677,7 @@ impl AgentState {
                 self.current_response = None;
                 self.pending_approvals.clear();
                 self.pending_client_tools.clear();
+                self.pending_user_inputs.clear();
                 self.active_tools.clear();
                 self.tracked_tools.clear();
                 self.is_responding = false;
@@ -685,11 +692,13 @@ impl AgentState {
             }
             ToAgentMessage::ClientToolResult { call_id, .. } => {
                 self.pending_client_tools.retain(|p| p.call_id != *call_id);
+                self.pending_user_inputs.retain(|p| p.call_id != *call_id);
             }
             ToAgentMessage::Shutdown => {
                 self.current_response = None;
                 self.pending_approvals.clear();
                 self.pending_client_tools.clear();
+                self.pending_user_inputs.clear();
                 self.active_tools.clear();
                 self.tracked_tools.clear();
                 self.is_ready = false;
@@ -860,6 +869,7 @@ impl AgentState {
                 self.tracked_tools.remove(&call_id);
                 self.pending_approvals.retain(|p| p.call_id != call_id);
                 self.pending_client_tools.retain(|p| p.call_id != call_id);
+                self.pending_user_inputs.retain(|p| p.call_id != call_id);
                 Some(AgentEvent::ToolEnd {
                     call_id,
                     success,
@@ -880,12 +890,21 @@ impl AgentState {
                         args: args.clone(),
                     },
                 );
-                self.pending_client_tools.retain(|p| p.call_id != call_id);
-                self.pending_client_tools.push(PendingApproval {
-                    call_id,
-                    tool,
-                    args,
-                });
+                if tool == "ask_user" {
+                    self.pending_user_inputs.retain(|p| p.call_id != call_id);
+                    self.pending_user_inputs.push(PendingApproval {
+                        call_id,
+                        tool,
+                        args,
+                    });
+                } else {
+                    self.pending_client_tools.retain(|p| p.call_id != call_id);
+                    self.pending_client_tools.push(PendingApproval {
+                        call_id,
+                        tool,
+                        args,
+                    });
+                }
                 None
             }
 
@@ -921,6 +940,14 @@ impl AgentState {
                             args,
                         });
                     }
+                    ServerRequestType::UserInput => {
+                        self.pending_user_inputs.retain(|p| p.call_id != call_id);
+                        self.pending_user_inputs.push(PendingApproval {
+                            call_id,
+                            tool,
+                            args,
+                        });
+                    }
                 }
                 None
             }
@@ -941,6 +968,12 @@ impl AgentState {
                     ServerRequestType::ClientTool => {
                         self.pending_client_tools.retain(|p| p.call_id != call_id);
                         if resolution == ServerRequestResolutionStatus::Cancelled {
+                            self.tracked_tools.remove(&call_id);
+                        }
+                    }
+                    ServerRequestType::UserInput => {
+                        self.pending_user_inputs.retain(|p| p.call_id != call_id);
+                        if resolution != ServerRequestResolutionStatus::Answered {
                             self.tracked_tools.remove(&call_id);
                         }
                     }
@@ -1209,6 +1242,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_user_input_server_request_message() {
+        let json = r#"{"type":"server_request","request_id":"call_user_input","request_type":"user_input","call_id":"call_user_input","tool":"ask_user","args":{"questions":[{"header":"Stack","question":"Which schema library should we use?","options":[{"label":"Zod","description":"Use Zod schemas"}]}]},"reason":"Agent requested structured user input"}"#;
+        let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            FromAgentMessage::ServerRequest {
+                request_id,
+                request_type,
+                call_id,
+                tool,
+                args,
+                reason,
+            } => {
+                assert_eq!(request_id, "call_user_input");
+                assert_eq!(request_type, ServerRequestType::UserInput);
+                assert_eq!(call_id, "call_user_input");
+                assert_eq!(tool, "ask_user");
+                assert_eq!(args["questions"][0]["header"], "Stack");
+                assert_eq!(reason, "Agent requested structured user input");
+            }
+            _ => panic!("Expected ServerRequest message"),
+        }
+    }
+
+    #[test]
     fn parse_client_tool_request_message() {
         let json = r#"{"type":"client_tool_request","call_id":"call_client","tool":"artifacts","args":{"command":"create","filename":"report.txt"}}"#;
         let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
@@ -1239,7 +1296,10 @@ mod tests {
                 role,
             } => {
                 assert_eq!(client_protocol_version.as_deref(), Some("2026-03-30"));
-                assert_eq!(client_info.as_ref().map(|info| info.name.as_str()), Some("maestro-web"));
+                assert_eq!(
+                    client_info.as_ref().map(|info| info.name.as_str()),
+                    Some("maestro-web")
+                );
                 assert_eq!(
                     capabilities
                         .as_ref()
@@ -1494,7 +1554,10 @@ mod tests {
 
         assert!(event.is_none());
         assert_eq!(state.client_protocol_version.as_deref(), Some("2026-03-30"));
-        assert_eq!(state.client_info.as_ref().map(|info| info.name.as_str()), Some("maestro-web"));
+        assert_eq!(
+            state.client_info.as_ref().map(|info| info.name.as_str()),
+            Some("maestro-web")
+        );
         assert_eq!(state.connection_role, Some(ConnectionRole::Viewer));
         assert_eq!(
             state
@@ -1563,6 +1626,44 @@ mod tests {
         assert!(resolved.is_none());
         assert!(state.pending_client_tools.is_empty());
         assert!(state.tracked_tools.contains_key("call_client"));
+    }
+
+    #[test]
+    fn state_tracks_and_clears_user_input_requests() {
+        let mut state = AgentState::default();
+
+        let event = state.handle_message(FromAgentMessage::ClientToolRequest {
+            call_id: "call_user_input".to_string(),
+            tool: "ask_user".to_string(),
+            args: serde_json::json!({
+                "questions": [{
+                    "header": "Stack",
+                    "question": "Which schema library should we use?",
+                    "options": [{
+                        "label": "Zod",
+                        "description": "Use Zod schemas"
+                    }]
+                }]
+            }),
+        });
+
+        assert!(event.is_none());
+        assert_eq!(state.pending_user_inputs.len(), 1);
+        assert_eq!(state.pending_user_inputs[0].tool, "ask_user");
+        assert!(state.tracked_tools.contains_key("call_user_input"));
+
+        let resolved = state.handle_message(FromAgentMessage::ServerRequestResolved {
+            request_id: "call_user_input".to_string(),
+            request_type: ServerRequestType::UserInput,
+            call_id: "call_user_input".to_string(),
+            resolution: ServerRequestResolutionStatus::Answered,
+            reason: None,
+            resolved_by: ServerRequestResolvedBy::Client,
+        });
+
+        assert!(resolved.is_none());
+        assert!(state.pending_user_inputs.is_empty());
+        assert!(state.tracked_tools.contains_key("call_user_input"));
     }
 
     #[test]

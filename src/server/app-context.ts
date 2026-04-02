@@ -25,6 +25,7 @@ export interface WebServerServices {
 		approval: ApprovalMode,
 		options?: {
 			enableClientTools?: boolean;
+			useClientAskUser?: boolean;
 			includeVscodeTools?: boolean;
 			includeJetBrainsTools?: boolean;
 			includeConductorTools?: boolean;

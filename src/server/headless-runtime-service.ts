@@ -246,18 +246,23 @@ export class HeadlessSessionRuntime {
 			{
 				approvalService,
 				enableClientTools: options.enableClientTools,
-				clientToolService: options.enableClientTools
-					? {
-							requestExecution: (id, toolName, args, signal) =>
-								clientToolService.requestExecution(
-									id,
-									toolName,
-									args,
-									signal,
-									options.session_id,
-								),
-						}
-					: undefined,
+				useClientAskUser:
+					options.capabilities?.server_requests?.includes("user_input") ??
+					false,
+				clientToolService:
+					options.enableClientTools ||
+					options.capabilities?.server_requests?.includes("user_input")
+						? {
+								requestExecution: (id, toolName, args, signal) =>
+									clientToolService.requestExecution(
+										id,
+										toolName,
+										args,
+										signal,
+										options.session_id,
+									),
+							}
+						: undefined,
 				includeVscodeTools: options.client === "vscode",
 				includeJetBrainsTools: options.client === "jetbrains",
 				includeConductorTools: options.client === "conductor",

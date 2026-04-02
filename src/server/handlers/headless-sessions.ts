@@ -32,7 +32,11 @@ const HeadlessSessionCreateSchema = Type.Object({
 		Type.Object({
 			serverRequests: Type.Optional(
 				Type.Array(
-					Type.Union([Type.Literal("approval"), Type.Literal("client_tool")]),
+					Type.Union([
+						Type.Literal("approval"),
+						Type.Literal("client_tool"),
+						Type.Literal("user_input"),
+					]),
 					{ uniqueItems: true },
 				),
 			),
@@ -147,6 +151,15 @@ async function ensureRuntime(
 		throw new ApiError(
 			400,
 			"viewer headless connections cannot enable client-side tools",
+		);
+	}
+	if (
+		role === "viewer" &&
+		input.capabilities?.serverRequests?.includes("user_input")
+	) {
+		throw new ApiError(
+			400,
+			"viewer headless connections cannot negotiate user_input requests",
 		);
 	}
 	const headerApproval = normalizeApprovalMode(
