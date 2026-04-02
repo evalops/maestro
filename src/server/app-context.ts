@@ -4,6 +4,7 @@ import type {
 	ApprovalMode,
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
+import type { ClientToolExecutionService } from "../agent/transport.js";
 import type { ThinkingLevel } from "../agent/types.js";
 import type { RegisteredModel } from "../models/registry.js";
 import type { AuthCredential } from "../providers/auth.js";
@@ -28,6 +29,7 @@ export interface WebServerServices {
 			includeJetBrainsTools?: boolean;
 			includeConductorTools?: boolean;
 			approvalService?: ActionApprovalService;
+			clientToolService?: ClientToolExecutionService;
 		},
 	) => Promise<Agent>;
 	getRegisteredModel: (

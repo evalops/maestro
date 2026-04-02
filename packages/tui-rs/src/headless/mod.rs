@@ -205,9 +205,11 @@ mod transport;
 
 // Core message types
 pub use messages::{
-    ActiveTool, AgentEvent, AgentState, ApprovalMode, FromAgentMessage, HeadlessErrorType,
-    InitConfig, PendingApproval, StreamingResponse, ThinkingLevel, ToAgentMessage, TokenUsage,
-    ToolResult,
+    ActiveTool, AgentEvent, AgentState, ApprovalMode, ClientCapabilities, ClientInfo,
+    ClientToolResultContent, ConnectionRole, FromAgentMessage, HeadlessErrorType, InitConfig,
+    PendingApproval, ServerRequestResolutionStatus,
+    ServerRequestResolvedBy, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
+    TokenUsage, ToolResult, HEADLESS_PROTOCOL_VERSION,
 };
 
 // Sync transport

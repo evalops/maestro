@@ -24,6 +24,7 @@ import {
 	TodoContextSource,
 } from "./agent/context-providers.js";
 import { Agent, ProviderTransport } from "./agent/index.js";
+import type { ClientToolExecutionService } from "./agent/transport.js";
 import type { AgentTool, ThinkingLevel } from "./agent/types.js";
 import {
 	disposeCheckpointService,
@@ -401,6 +402,7 @@ async function createAgent(
 		includeJetBrainsTools?: boolean;
 		includeConductorTools?: boolean;
 		approvalService?: ActionApprovalService;
+		clientToolService?: ClientToolExecutionService;
 	},
 ): Promise<Agent> {
 	const sessionTokenCounter = async (sessionId: string) => {
@@ -445,9 +447,9 @@ async function createAgent(
 		getAuthContext: async (provider: string) => authResolver(provider),
 		approvalService:
 			options?.approvalService ?? new WebActionApprovalService(approvalMode),
-		clientToolService: options?.enableClientTools
-			? clientToolService
-			: undefined,
+		clientToolService:
+			options?.clientToolService ??
+			(options?.enableClientTools ? clientToolService : undefined),
 		sessionTokenCounter,
 		auditLogger,
 	});

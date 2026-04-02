@@ -6,6 +6,8 @@ import type { Agent } from "../agent/index.js";
 import type { AgentEvent, Attachment, ThinkingLevel } from "../agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
+	type HeadlessClientCapabilities,
+	type HeadlessClientInfo,
 	type HeadlessFromAgentMessage,
 	type HeadlessInitMessage,
 	HeadlessProtocolTranslator,
@@ -25,6 +27,11 @@ import { createLogger } from "../utils/logger.js";
 import type { WebServerContext } from "./app-context.js";
 import { WebActionApprovalService } from "./approval-service.js";
 import { getAgentCircuitBreaker } from "./circuit-breaker.js";
+import { clientToolService } from "./client-tools-service.js";
+import {
+	type ServerRequestLifecycleEvent,
+	serverRequestManager,
+} from "./server-request-manager.js";
 
 const logger = createLogger("server:headless-runtime");
 
@@ -61,19 +68,28 @@ export interface HeadlessRuntimeHeartbeatEnvelope {
 	cursor: number;
 }
 
-type RuntimeListener = (envelope: HeadlessRuntimeEventEnvelope) => void;
+export interface HeadlessRuntimeResetEnvelope {
+	type: "reset";
+	reason: "lagged" | "replay_gap";
+	snapshot: HeadlessRuntimeSnapshot;
+}
+
+export type HeadlessRuntimeStreamEnvelope =
+	| HeadlessRuntimeSnapshotEnvelope
+	| HeadlessRuntimeEventEnvelope
+	| HeadlessRuntimeHeartbeatEnvelope
+	| HeadlessRuntimeResetEnvelope;
+
+type RuntimeListener = (envelope: HeadlessRuntimeStreamEnvelope) => void;
 
 class HeadlessRuntimeBroker {
 	private nextCursor = 1;
 	private readonly listeners = new Set<RuntimeListener>();
-	private readonly events: HeadlessRuntimeEventEnvelope[] = [];
+	private readonly events: HeadlessRuntimeStreamEnvelope[] = [];
 
-	publish(message: HeadlessFromAgentMessage): HeadlessRuntimeEventEnvelope {
-		const envelope: HeadlessRuntimeEventEnvelope = {
-			type: "message",
-			cursor: this.nextCursor++,
-			message,
-		};
+	private publishEnvelope(
+		envelope: HeadlessRuntimeStreamEnvelope,
+	): HeadlessRuntimeStreamEnvelope {
 		this.events.push(envelope);
 		while (this.events.length > MAX_BUFFERED_EVENTS) {
 			this.events.shift();
@@ -84,19 +100,41 @@ class HeadlessRuntimeBroker {
 		return envelope;
 	}
 
+	publish(message: HeadlessFromAgentMessage): HeadlessRuntimeEventEnvelope {
+		const envelope: HeadlessRuntimeEventEnvelope = {
+			type: "message",
+			cursor: this.nextCursor++,
+			message,
+		};
+		return this.publishEnvelope(envelope) as HeadlessRuntimeEventEnvelope;
+	}
+
+	publishSnapshot(
+		createSnapshot: (cursor: number) => HeadlessRuntimeSnapshot,
+	): HeadlessRuntimeSnapshotEnvelope {
+		const cursor = this.nextCursor++;
+		const envelope: HeadlessRuntimeSnapshotEnvelope = {
+			type: "snapshot",
+			snapshot: createSnapshot(cursor),
+		};
+		return this.publishEnvelope(envelope) as HeadlessRuntimeSnapshotEnvelope;
+	}
+
 	currentCursor(): number {
 		return this.nextCursor - 1;
 	}
 
-	replayFrom(cursor: number): HeadlessRuntimeEventEnvelope[] | null {
+	replayFrom(cursor: number): HeadlessRuntimeStreamEnvelope[] | null {
 		if (this.events.length === 0) {
 			return [];
 		}
-		const earliest = this.events[0]?.cursor ?? this.nextCursor;
+		const earliest = this.getEnvelopeCursor(this.events[0]) ?? this.nextCursor;
 		if (cursor < earliest - 1) {
 			return null;
 		}
-		return this.events.filter((event) => event.cursor > cursor);
+		return this.events.filter(
+			(event) => (this.getEnvelopeCursor(event) ?? 0) > cursor,
+		);
 	}
 
 	subscribe(listener: RuntimeListener): () => void {
@@ -105,15 +143,38 @@ class HeadlessRuntimeBroker {
 			this.listeners.delete(listener);
 		};
 	}
+
+	private getEnvelopeCursor(
+		envelope: HeadlessRuntimeStreamEnvelope | undefined,
+	): number | undefined {
+		if (!envelope) {
+			return undefined;
+		}
+		switch (envelope.type) {
+			case "message":
+				return envelope.cursor;
+			case "heartbeat":
+				return envelope.cursor;
+			case "snapshot":
+			case "reset":
+				return envelope.snapshot.cursor;
+		}
+	}
 }
 
 type RuntimeOptions = {
 	scope_key: string;
 	session_id: string;
 	subject?: string;
+	clientProtocolVersion?: string;
+	clientInfo?: HeadlessClientInfo;
+	capabilities?: HeadlessClientCapabilities;
+	role?: "viewer" | "controller";
 	registeredModel: RegisteredModel;
 	thinkingLevel: ThinkingLevel;
 	approvalMode: ApprovalMode;
+	enableClientTools?: boolean;
+	client?: "vscode" | "jetbrains" | "conductor" | "generic";
 	context: Pick<WebServerContext, "createAgent">;
 	sessionManager: SessionManager;
 };
@@ -129,6 +190,9 @@ export class HeadlessSessionRuntime {
 	private readonly subject?: string;
 	private readonly sessionId: string;
 	private readonly scopeKey: string;
+	private readonly publishedServerRequestIds = new Set<string>();
+	private readonly suppressedApprovalResolutionIds = new Set<string>();
+	private readonly unsubscribeServerRequestEvents: () => void;
 	private lastInit: HeadlessInitMessage | null = null;
 	private running = false;
 	private disposed = false;
@@ -155,18 +219,48 @@ export class HeadlessSessionRuntime {
 			this.translator.buildReadyMessage(this.agent, this.sessionManager),
 		);
 		this.publish(this.translator.buildSessionInfoMessage(this.sessionManager));
+		this.updateConnectionMetadata({
+			clientProtocolVersion: options.clientProtocolVersion,
+			clientInfo: options.clientInfo,
+			capabilities: options.capabilities,
+			role: options.role,
+		});
+		this.unsubscribeServerRequestEvents = serverRequestManager.subscribe(
+			(event) => {
+				this.handleServerRequestEvent(event);
+			},
+		);
 	}
 
 	static async create(
 		options: RuntimeOptions,
 	): Promise<HeadlessSessionRuntime> {
-		const approvalService = new WebActionApprovalService(options.approvalMode);
+		const approvalService = new WebActionApprovalService(
+			options.approvalMode,
+			options.session_id,
+		);
 		const agent = await options.context.createAgent(
 			options.registeredModel,
 			options.thinkingLevel,
 			options.approvalMode,
 			{
 				approvalService,
+				enableClientTools: options.enableClientTools,
+				clientToolService: options.enableClientTools
+					? {
+							requestExecution: (id, toolName, args, signal) =>
+								clientToolService.requestExecution(
+									id,
+									toolName,
+									args,
+									signal,
+									options.session_id,
+								),
+						}
+					: undefined,
+				includeVscodeTools: options.client === "vscode",
+				includeJetBrainsTools: options.client === "jetbrains",
+				includeConductorTools: options.client === "conductor",
 			},
 		);
 		return new HeadlessSessionRuntime(options, agent, approvalService);
@@ -192,9 +286,13 @@ export class HeadlessSessionRuntime {
 		if (this.disposed) {
 			return;
 		}
+		this.cancelPendingServerRequests(
+			"Headless runtime disposed before request completed",
+		);
 		this.disposed = true;
 		this.running = false;
 		this.agent.abort();
+		this.unsubscribeServerRequestEvents();
 	}
 
 	getSnapshot(): HeadlessRuntimeSnapshot {
@@ -207,7 +305,7 @@ export class HeadlessSessionRuntime {
 		};
 	}
 
-	replayFrom(cursor: number): HeadlessRuntimeEventEnvelope[] | null {
+	replayFrom(cursor: number): HeadlessRuntimeStreamEnvelope[] | null {
 		return this.broker.replayFrom(cursor);
 	}
 
@@ -223,6 +321,30 @@ export class HeadlessSessionRuntime {
 		};
 	}
 
+	updateConnectionMetadata(metadata: {
+		clientProtocolVersion?: string;
+		clientInfo?: HeadlessClientInfo;
+		capabilities?: HeadlessClientCapabilities;
+		role?: "viewer" | "controller";
+	}): void {
+		if (
+			!metadata.clientProtocolVersion &&
+			!metadata.clientInfo &&
+			!metadata.capabilities &&
+			!metadata.role
+		) {
+			return;
+		}
+		this.publish(
+			this.translator.buildConnectionInfoMessage({
+				protocol_version: metadata.clientProtocolVersion,
+				client_info: metadata.clientInfo,
+				capabilities: metadata.capabilities,
+				role: metadata.role,
+			}),
+		);
+	}
+
 	async send(msg: HeadlessToAgentMessage): Promise<void> {
 		if (this.disposed) {
 			throw new Error("Headless runtime is no longer available");
@@ -230,6 +352,25 @@ export class HeadlessSessionRuntime {
 		this.updatedAt = Date.now();
 
 		switch (msg.type) {
+			case "hello": {
+				applyOutgoingHeadlessMessage(this.state, msg);
+				this.updateConnectionMetadata({
+					clientProtocolVersion: msg.protocol_version,
+					clientInfo: msg.client_info,
+					capabilities: msg.capabilities,
+					role: msg.role,
+				});
+				if (
+					msg.protocol_version &&
+					msg.protocol_version !== HEADLESS_PROTOCOL_VERSION
+				) {
+					this.publish({
+						type: "status",
+						message: `Client protocol ${msg.protocol_version} attached to server ${HEADLESS_PROTOCOL_VERSION}`,
+					});
+				}
+				return;
+			}
 			case "init": {
 				this.lastInit = msg;
 				applyOutgoingHeadlessMessage(this.state, msg);
@@ -275,20 +416,25 @@ export class HeadlessSessionRuntime {
 			}
 			case "interrupt":
 			case "cancel":
+				this.cancelPendingServerRequests(
+					msg.type === "interrupt"
+						? "Interrupted before request completed"
+						: "Cancelled before request completed",
+				);
 				applyOutgoingHeadlessMessage(this.state, msg);
 				this.agent.abort();
+				this.publishSnapshot();
 				return;
 			case "tool_response":
-				if (msg.approved) {
-					const resolved = this.approvalService.approve(msg.call_id);
-					if (!resolved) {
-						throw new Error(
-							`No pending approval found for call_id: ${msg.call_id}`,
-						);
-					}
-				} else {
-					const reason = msg.result?.error ?? "Denied by user";
-					const resolved = this.approvalService.deny(msg.call_id, reason);
+				{
+					const reason = msg.approved
+						? (msg.result?.output ?? "Approved")
+						: (msg.result?.error ?? "Denied by user");
+					const resolved = serverRequestManager.resolveApproval(msg.call_id, {
+						approved: msg.approved,
+						reason,
+						resolvedBy: "user",
+					});
 					if (!resolved) {
 						throw new Error(
 							`No pending approval found for call_id: ${msg.call_id}`,
@@ -296,11 +442,30 @@ export class HeadlessSessionRuntime {
 					}
 				}
 				applyOutgoingHeadlessMessage(this.state, msg);
+				this.publishSnapshot();
 				return;
+			case "client_tool_result": {
+				const resolved = clientToolService.resolve(
+					msg.call_id,
+					msg.content,
+					msg.is_error,
+				);
+				if (!resolved) {
+					throw new Error(
+						`No pending client tool request found for call_id: ${msg.call_id}`,
+					);
+				}
+				applyOutgoingHeadlessMessage(this.state, msg);
+				this.publishSnapshot();
+				return;
+			}
 			case "shutdown":
+				this.cancelPendingServerRequests("Shutdown before request completed");
 				applyOutgoingHeadlessMessage(this.state, msg);
 				this.agent.abort();
 				this.disposed = true;
+				this.unsubscribeServerRequestEvents();
+				this.publishSnapshot();
 				return;
 		}
 	}
@@ -322,19 +487,50 @@ export class HeadlessSessionRuntime {
 				error_type: "transient",
 			});
 		} finally {
+			this.cancelPendingServerRequests("Run ended before request completed");
 			this.running = false;
 			this.updatedAt = Date.now();
 		}
 	}
 
 	private publish(message: HeadlessFromAgentMessage): void {
+		if (message.type === "server_request") {
+			this.publishedServerRequestIds.add(message.request_id);
+		} else if (message.type === "server_request_resolved") {
+			this.publishedServerRequestIds.delete(message.request_id);
+		}
 		applyIncomingHeadlessMessage(this.state, message);
 		this.updatedAt = Date.now();
 		this.broker.publish(message);
 	}
 
+	private publishSnapshot(): void {
+		this.updatedAt = Date.now();
+		this.broker.publishSnapshot((cursor) => ({
+			protocolVersion: HEADLESS_PROTOCOL_VERSION,
+			session_id: this.sessionId,
+			cursor,
+			last_init: this.lastInit ? structuredClone(this.lastInit) : null,
+			state: structuredClone(this.state),
+		}));
+	}
+
 	private handleAgentEvent(event: AgentEvent): void {
+		if (
+			event.type === "action_approval_resolved" &&
+			this.suppressedApprovalResolutionIds.delete(event.request.id)
+		) {
+			this.sessionManager.updateSnapshot(
+				this.agent.state,
+				toSessionModelMetadata(this.registeredModel),
+			);
+			return;
+		}
+
 		for (const message of this.translator.handleAgentEvent(event)) {
+			if (message.type === "server_request_resolved") {
+				continue;
+			}
 			this.publish(message);
 		}
 
@@ -384,15 +580,60 @@ export class HeadlessSessionRuntime {
 			toSessionModelMetadata(this.registeredModel),
 		);
 	}
+
+	private cancelPendingServerRequests(reason: string): void {
+		serverRequestManager.cancelBySession(this.sessionId, reason, "runtime");
+	}
+
+	private handleServerRequestEvent(event: ServerRequestLifecycleEvent): void {
+		if (event.request.sessionId !== this.sessionId) {
+			return;
+		}
+
+		if (event.type === "registered") {
+			if (this.publishedServerRequestIds.has(event.request.id)) {
+				return;
+			}
+			this.publish({
+				type: "server_request",
+				request_id: event.request.id,
+				request_type: event.request.kind,
+				call_id: event.request.id,
+				tool: event.request.toolName,
+				args: event.request.args,
+				reason: event.request.reason,
+			});
+			return;
+		}
+
+		if (event.request.kind === "approval") {
+			this.suppressedApprovalResolutionIds.add(event.request.id);
+		}
+		this.publish({
+			type: "server_request_resolved",
+			request_id: event.request.id,
+			request_type: event.request.kind,
+			call_id: event.request.id,
+			resolution: event.resolution,
+			reason: event.reason,
+			resolved_by: event.resolvedBy,
+		});
+	}
 }
 
 type EnsureRuntimeOptions = {
 	scope_key: string;
 	sessionId?: string;
 	subject?: string;
+	clientProtocolVersion?: string;
+	clientInfo?: HeadlessClientInfo;
+	capabilities?: HeadlessClientCapabilities;
+	role?: "viewer" | "controller";
 	registeredModel: RegisteredModel;
 	thinkingLevel: ThinkingLevel;
 	approvalMode: ApprovalMode;
+	enableClientTools?: boolean;
+	client?: "vscode" | "jetbrains" | "conductor" | "generic";
 	context: Pick<WebServerContext, "createAgent">;
 	sessionManager: SessionManager;
 };
@@ -410,6 +651,12 @@ export class HeadlessRuntimeService {
 		if (options.sessionId) {
 			const existing = this.getRuntime(options.scope_key, options.sessionId);
 			if (existing) {
+				existing.updateConnectionMetadata({
+					clientProtocolVersion: options.clientProtocolVersion,
+					clientInfo: options.clientInfo,
+					capabilities: options.capabilities,
+					role: options.role,
+				});
 				return existing;
 			}
 		}
@@ -419,9 +666,15 @@ export class HeadlessRuntimeService {
 			scope_key: options.scope_key,
 			session_id: sessionId,
 			subject: options.subject,
+			clientProtocolVersion: options.clientProtocolVersion,
+			clientInfo: options.clientInfo,
+			capabilities: options.capabilities,
+			role: options.role,
 			registeredModel: options.registeredModel,
 			thinkingLevel: options.thinkingLevel,
 			approvalMode: options.approvalMode,
+			enableClientTools: options.enableClientTools,
+			client: options.client,
 			context: options.context,
 			sessionManager: options.sessionManager,
 		});

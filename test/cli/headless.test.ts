@@ -7,7 +7,9 @@ import {
 	HEADLESS_PROTOCOL_VERSION,
 	HeadlessProtocolTranslator,
 	applyIncomingHeadlessMessage,
+	applyOutgoingHeadlessMessage,
 	buildHeadlessCompactionMessage,
+	buildHeadlessServerRequestCancellationMessages,
 	buildHeadlessToolsSummary,
 	buildHeadlessUsage,
 	classifyHeadlessError,
@@ -181,6 +183,96 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
+	it("translates approval requests into legacy and server_request messages", () => {
+		const translator = new HeadlessProtocolTranslator();
+		expect(
+			translator.handleAgentEvent({
+				type: "action_approval_required",
+				request: {
+					id: "call_approval",
+					toolName: "bash",
+					args: { command: "rm -rf dist" },
+					reason: "Dangerous command",
+				},
+			}),
+		).toEqual([
+			{
+				type: "tool_call",
+				call_id: "call_approval",
+				tool: "bash",
+				args: { command: "rm -rf dist" },
+				requires_approval: true,
+			},
+			{
+				type: "server_request",
+				request_id: "call_approval",
+				request_type: "approval",
+				call_id: "call_approval",
+				tool: "bash",
+				args: { command: "rm -rf dist" },
+				reason: "Dangerous command",
+			},
+		]);
+	});
+
+	it("translates approval resolutions into server_request_resolved messages", () => {
+		const translator = new HeadlessProtocolTranslator();
+		expect(
+			translator.handleAgentEvent({
+				type: "action_approval_resolved",
+				request: {
+					id: "call_approval",
+					toolName: "bash",
+					args: { command: "rm -rf dist" },
+					reason: "Dangerous command",
+				},
+				decision: {
+					approved: false,
+					reason: "Denied by user",
+					resolvedBy: "user",
+				},
+			}),
+		).toEqual([
+			{
+				type: "server_request_resolved",
+				request_id: "call_approval",
+				request_type: "approval",
+				call_id: "call_approval",
+				resolution: "denied",
+				reason: "Denied by user",
+				resolved_by: "user",
+			},
+		]);
+	});
+
+	it("translates client tool requests into legacy and generic request messages", () => {
+		const translator = new HeadlessProtocolTranslator();
+		expect(
+			translator.handleAgentEvent({
+				type: "client_tool_request",
+				toolCallId: "call_client",
+				toolName: "artifacts",
+				args: { command: "create", filename: "report.txt" },
+			}),
+		).toEqual([
+			{
+				type: "client_tool_request",
+				call_id: "call_client",
+				tool: "artifacts",
+				args: { command: "create", filename: "report.txt" },
+			},
+			{
+				type: "server_request",
+				request_id: "call_client",
+				request_type: "client_tool",
+				call_id: "call_client",
+				tool: "artifacts",
+				args: { command: "create", filename: "report.txt" },
+				reason: "Client tool artifacts requires local execution",
+			},
+		]);
+	});
+
 	it("deduplicates repeated tool summary labels", () => {
 		const translator = new HeadlessProtocolTranslator();
 		translator.handleAgentEvent({
@@ -236,6 +328,311 @@ describe("headless protocol helpers", () => {
 				call_id: "call_read",
 				tool: "read",
 				output: "",
+			},
+		]);
+	});
+
+	it("tracks approval server requests in the runtime state", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "call_bash",
+			request_type: "approval",
+			call_id: "call_bash",
+			tool: "bash",
+			args: { command: "git push --force" },
+			reason: "Force push requires approval",
+		});
+
+		expect(state.pending_approvals).toEqual([
+			{
+				call_id: "call_bash",
+				tool: "bash",
+				args: { command: "git push --force" },
+			},
+		]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_bash",
+				tool: "bash",
+				args: { command: "git push --force" },
+			},
+		]);
+	});
+
+	it("tracks negotiated connection metadata in runtime state", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyOutgoingHeadlessMessage(state, {
+			type: "hello",
+			protocol_version: "2026-03-30",
+			client_info: { name: "maestro-tui-rs", version: "0.1.0" },
+			capabilities: { server_requests: ["approval"] },
+			role: "controller",
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "connection_info",
+			client_protocol_version: "2026-03-30",
+			client_info: { name: "maestro-tui-rs", version: "0.1.0" },
+			capabilities: { server_requests: ["approval"] },
+			role: "controller",
+		});
+
+		expect(state.client_protocol_version).toBe("2026-03-30");
+		expect(state.client_info).toEqual({
+			name: "maestro-tui-rs",
+			version: "0.1.0",
+		});
+		expect(state.capabilities).toEqual({
+			server_requests: ["approval"],
+		});
+		expect(state.connection_role).toBe("controller");
+	});
+
+	it("clears approval state on denied server_request_resolved messages", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "call_bash",
+			request_type: "approval",
+			call_id: "call_bash",
+			tool: "bash",
+			args: { command: "git push --force" },
+			reason: "Force push requires approval",
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request_resolved",
+			request_id: "call_bash",
+			request_type: "approval",
+			call_id: "call_bash",
+			resolution: "denied",
+			reason: "Denied by user",
+			resolved_by: "user",
+		});
+
+		expect(state.pending_approvals).toEqual([]);
+		expect(state.tracked_tools).toEqual([]);
+	});
+
+	it("tracks and clears pending client tool requests in runtime state", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "client_tool_request",
+			call_id: "call_client",
+			tool: "artifacts",
+			args: { command: "create", filename: "report.txt" },
+		});
+
+		expect(state.pending_client_tools).toEqual([
+			{
+				call_id: "call_client",
+				tool: "artifacts",
+				args: { command: "create", filename: "report.txt" },
+			},
+		]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_client",
+				tool: "artifacts",
+				args: { command: "create", filename: "report.txt" },
+			},
+		]);
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_end",
+			call_id: "call_client",
+			success: true,
+		});
+
+		expect(state.pending_client_tools).toEqual([]);
+		expect(state.tracked_tools).toEqual([]);
+	});
+
+	it("tracks generic client tool server requests in runtime state", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "call_client",
+			request_type: "client_tool",
+			call_id: "call_client",
+			tool: "artifacts",
+			args: { command: "create", filename: "report.txt" },
+			reason: "Client tool artifacts requires local execution",
+		});
+
+		expect(state.pending_client_tools).toEqual([
+			{
+				call_id: "call_client",
+				tool: "artifacts",
+				args: { command: "create", filename: "report.txt" },
+			},
+		]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_client",
+				tool: "artifacts",
+				args: { command: "create", filename: "report.txt" },
+			},
+		]);
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request_resolved",
+			request_id: "call_client",
+			request_type: "client_tool",
+			call_id: "call_client",
+			resolution: "completed",
+			resolved_by: "client",
+		});
+
+		expect(state.pending_client_tools).toEqual([]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_client",
+				tool: "artifacts",
+				args: { command: "create", filename: "report.txt" },
+			},
+		]);
+	});
+
+	it("cancellation helper emits explicit cancelled resolutions for pending requests", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "call_bash",
+			request_type: "approval",
+			call_id: "call_bash",
+			tool: "bash",
+			args: { command: "git push --force" },
+			reason: "Force push requires approval",
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "call_client",
+			request_type: "client_tool",
+			call_id: "call_client",
+			tool: "artifacts",
+			args: { command: "create", filename: "report.txt" },
+			reason: "Client tool artifacts requires local execution",
+		});
+
+		expect(
+			buildHeadlessServerRequestCancellationMessages(
+				state,
+				"Interrupted before request completed",
+			),
+		).toEqual([
+			{
+				type: "server_request_resolved",
+				request_id: "call_bash",
+				request_type: "approval",
+				call_id: "call_bash",
+				resolution: "cancelled",
+				reason: "Interrupted before request completed",
+				resolved_by: "runtime",
+			},
+			{
+				type: "server_request_resolved",
+				request_id: "call_client",
+				request_type: "client_tool",
+				call_id: "call_client",
+				resolution: "cancelled",
+				reason: "Interrupted before request completed",
+				resolved_by: "runtime",
+			},
+		]);
+	});
+
+	it("clears tracked client tools on cancelled server_request_resolved messages", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "call_client",
+			request_type: "client_tool",
+			call_id: "call_client",
+			tool: "artifacts",
+			args: { command: "create", filename: "report.txt" },
+			reason: "Client tool artifacts requires local execution",
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request_resolved",
+			request_id: "call_client",
+			request_type: "client_tool",
+			call_id: "call_client",
+			resolution: "cancelled",
+			reason: "Interrupted before request completed",
+			resolved_by: "runtime",
+		});
+
+		expect(state.pending_client_tools).toEqual([]);
+		expect(state.tracked_tools).toEqual([]);
+	});
+
+	it("clears pending client tool requests on outbound client tool results", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "client_tool_request",
+			call_id: "call_client",
+			tool: "artifacts",
+			args: { command: "create", filename: "report.txt" },
+		});
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_start",
+			call_id: "call_client",
+		});
+
+		applyOutgoingHeadlessMessage(state, {
+			type: "client_tool_result",
+			call_id: "call_client",
+			content: [{ type: "text", text: "ok" }],
+			is_error: false,
+		});
+
+		expect(state.pending_client_tools).toEqual([]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_client",
+				tool: "artifacts",
+				args: { command: "create", filename: "report.txt" },
+			},
+		]);
+	});
+
+	it("preserves tracked tools on approved server_request_resolved messages", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "call_bash",
+			request_type: "approval",
+			call_id: "call_bash",
+			tool: "bash",
+			args: { command: "git push --force" },
+			reason: "Force push requires approval",
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request_resolved",
+			request_id: "call_bash",
+			request_type: "approval",
+			call_id: "call_bash",
+			resolution: "approved",
+			reason: "Approved by user",
+			resolved_by: "user",
+		});
+
+		expect(state.pending_approvals).toEqual([]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_bash",
+				tool: "bash",
+				args: { command: "git push --force" },
 			},
 		]);
 	});

@@ -33,6 +33,23 @@ export interface HeadlessInitMessage {
 	approval_mode?: "auto" | "prompt" | "fail";
 }
 
+export interface HeadlessClientInfo {
+	name: string;
+	version?: string;
+}
+
+export interface HeadlessClientCapabilities {
+	server_requests?: Array<"approval" | "client_tool">;
+}
+
+export interface HeadlessHelloMessage {
+	type: "hello";
+	protocol_version?: string;
+	client_info?: HeadlessClientInfo;
+	capabilities?: HeadlessClientCapabilities;
+	role?: "viewer" | "controller";
+}
+
 export interface HeadlessInterruptMessage {
 	type: "interrupt";
 }
@@ -48,6 +65,23 @@ export interface HeadlessToolResponseMessage {
 	};
 }
 
+export interface HeadlessClientToolResultMessage {
+	type: "client_tool_result";
+	call_id: string;
+	content: Array<
+		| {
+				type: "text";
+				text: string;
+		  }
+		| {
+				type: "image";
+				data: string;
+				mimeType: string;
+		  }
+	>;
+	is_error: boolean;
+}
+
 export interface HeadlessCancelMessage {
 	type: "cancel";
 }
@@ -57,10 +91,12 @@ export interface HeadlessShutdownMessage {
 }
 
 export type HeadlessToAgentMessage =
+	| HeadlessHelloMessage
 	| HeadlessInitMessage
 	| HeadlessPromptMessage
 	| HeadlessInterruptMessage
 	| HeadlessToolResponseMessage
+	| HeadlessClientToolResultMessage
 	| HeadlessCancelMessage
 	| HeadlessShutdownMessage;
 
@@ -132,6 +168,33 @@ export interface HeadlessToolEndMessage {
 	success: boolean;
 }
 
+export interface HeadlessClientToolRequestMessage {
+	type: "client_tool_request";
+	call_id: string;
+	tool: string;
+	args: unknown;
+}
+
+export interface HeadlessServerRequestMessage {
+	type: "server_request";
+	request_id: string;
+	request_type: "approval" | "client_tool";
+	call_id: string;
+	tool: string;
+	args: unknown;
+	reason: string;
+}
+
+export interface HeadlessServerRequestResolvedMessage {
+	type: "server_request_resolved";
+	request_id: string;
+	request_type: "approval" | "client_tool";
+	call_id: string;
+	resolution: "approved" | "denied" | "completed" | "failed" | "cancelled";
+	reason?: string;
+	resolved_by: "user" | "policy" | "client" | "runtime";
+}
+
 export interface HeadlessErrorMessage {
 	type: "error";
 	message: string;
@@ -161,6 +224,14 @@ export interface HeadlessSessionInfoMessage {
 	git_branch: string | null;
 }
 
+export interface HeadlessConnectionInfoMessage {
+	type: "connection_info";
+	client_protocol_version?: string;
+	client_info?: HeadlessClientInfo;
+	capabilities?: HeadlessClientCapabilities;
+	role?: "viewer" | "controller";
+}
+
 export type HeadlessFromAgentMessage =
 	| HeadlessReadyMessage
 	| HeadlessResponseStartMessage
@@ -170,10 +241,14 @@ export type HeadlessFromAgentMessage =
 	| HeadlessToolStartMessage
 	| HeadlessToolOutputMessage
 	| HeadlessToolEndMessage
+	| HeadlessClientToolRequestMessage
+	| HeadlessServerRequestMessage
+	| HeadlessServerRequestResolvedMessage
 	| HeadlessErrorMessage
 	| HeadlessStatusMessage
 	| HeadlessCompactionMessage
-	| HeadlessSessionInfoMessage;
+	| HeadlessSessionInfoMessage
+	| HeadlessConnectionInfoMessage;
 
 export interface HeadlessStreamingResponseState {
 	response_id: string;
@@ -196,6 +271,10 @@ export interface HeadlessActiveToolState {
 
 export interface HeadlessRuntimeState {
 	protocol_version?: string;
+	client_protocol_version?: string;
+	client_info?: HeadlessClientInfo;
+	capabilities?: HeadlessClientCapabilities;
+	connection_role?: "viewer" | "controller";
 	model?: string;
 	provider?: string;
 	session_id?: string | null;
@@ -203,6 +282,7 @@ export interface HeadlessRuntimeState {
 	git_branch?: string | null;
 	current_response?: HeadlessStreamingResponseState;
 	pending_approvals: HeadlessPendingApprovalState[];
+	pending_client_tools: HeadlessPendingApprovalState[];
 	active_tools: HeadlessActiveToolState[];
 	tracked_tools: HeadlessPendingApprovalState[];
 	last_error?: string;
@@ -219,6 +299,7 @@ export const HEADLESS_PROTOCOL_VERSION = "2026-03-30";
 export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 	return {
 		pending_approvals: [],
+		pending_client_tools: [],
 		active_tools: [],
 		tracked_tools: [],
 		is_ready: false,
@@ -539,6 +620,15 @@ export class HeadlessProtocolTranslator {
 						args: event.request.args,
 						requires_approval: true,
 					},
+					{
+						type: "server_request",
+						request_id: event.request.id,
+						request_type: "approval",
+						call_id: event.request.id,
+						tool: event.request.toolName,
+						args: event.request.args,
+						reason: event.request.reason,
+					},
 				];
 			case "error":
 				return [
@@ -558,15 +648,43 @@ export class HeadlessProtocolTranslator {
 				];
 			case "compaction":
 				return [buildHeadlessCompactionMessage(event)];
+			case "client_tool_request":
+				return [
+					{
+						type: "client_tool_request",
+						call_id: event.toolCallId,
+						tool: event.toolName,
+						args: event.args,
+					},
+					{
+						type: "server_request",
+						request_id: event.toolCallId,
+						request_type: "client_tool",
+						call_id: event.toolCallId,
+						tool: event.toolName,
+						args: event.args,
+						reason: `Client tool ${event.toolName} requires local execution`,
+					},
+				];
 			case "agent_start":
 			case "agent_end":
 			case "turn_start":
 			case "turn_end":
-			case "action_approval_resolved":
 			case "tool_retry_required":
 			case "tool_retry_resolved":
-			case "client_tool_request":
 				return [];
+			case "action_approval_resolved":
+				return [
+					{
+						type: "server_request_resolved",
+						request_id: event.request.id,
+						request_type: "approval",
+						call_id: event.request.id,
+						resolution: event.decision.approved ? "approved" : "denied",
+						reason: event.decision.reason,
+						resolved_by: event.decision.resolvedBy,
+					},
+				];
 			default:
 				return [];
 		}
@@ -598,6 +716,21 @@ export class HeadlessProtocolTranslator {
 			session_id: sessionManager.getSessionId() ?? null,
 			cwd,
 			git_branch: gitBranch,
+		};
+	}
+
+	buildConnectionInfoMessage(
+		hello: Pick<
+			HeadlessHelloMessage,
+			"protocol_version" | "client_info" | "capabilities" | "role"
+		>,
+	): HeadlessConnectionInfoMessage {
+		return {
+			type: "connection_info",
+			client_protocol_version: hello.protocol_version,
+			client_info: hello.client_info,
+			capabilities: hello.capabilities,
+			role: hello.role,
 		};
 	}
 }
@@ -718,6 +851,12 @@ export function applyOutgoingHeadlessMessage(
 	msg: HeadlessToAgentMessage,
 ): void {
 	switch (msg.type) {
+		case "hello":
+			state.client_protocol_version = msg.protocol_version;
+			state.client_info = msg.client_info;
+			state.capabilities = msg.capabilities;
+			state.connection_role = msg.role ?? state.connection_role ?? "controller";
+			return;
 		case "init":
 			return;
 		case "prompt":
@@ -737,10 +876,16 @@ export function applyOutgoingHeadlessMessage(
 				);
 			}
 			return;
+		case "client_tool_result":
+			state.pending_client_tools = state.pending_client_tools.filter(
+				(request) => request.call_id !== msg.call_id,
+			);
+			return;
 		case "interrupt":
 		case "cancel":
 			state.current_response = undefined;
 			state.pending_approvals = [];
+			state.pending_client_tools = [];
 			state.active_tools = [];
 			state.tracked_tools = [];
 			state.is_responding = false;
@@ -748,6 +893,7 @@ export function applyOutgoingHeadlessMessage(
 		case "shutdown":
 			state.current_response = undefined;
 			state.pending_approvals = [];
+			state.pending_client_tools = [];
 			state.active_tools = [];
 			state.tracked_tools = [];
 			state.is_ready = false;
@@ -767,6 +913,12 @@ export function applyIncomingHeadlessMessage(
 			state.provider = msg.provider;
 			state.session_id = msg.session_id;
 			state.is_ready = true;
+			return;
+		case "connection_info":
+			state.client_protocol_version = msg.client_protocol_version;
+			state.client_info = msg.client_info;
+			state.capabilities = msg.capabilities;
+			state.connection_role = msg.role;
 			return;
 		case "session_info":
 			state.session_id = msg.session_id;
@@ -828,11 +980,18 @@ export function applyIncomingHeadlessMessage(
 			const pending = state.pending_approvals.find(
 				(approval) => approval.call_id === msg.call_id,
 			);
+			const pendingClientTool = state.pending_client_tools.find(
+				(request) => request.call_id === msg.call_id,
+			);
 			state.active_tools = [
 				...state.active_tools.filter((tool) => tool.call_id !== msg.call_id),
 				{
 					call_id: msg.call_id,
-					tool: tracked?.tool ?? pending?.tool ?? "unknown",
+					tool:
+						tracked?.tool ??
+						pending?.tool ??
+						pendingClientTool?.tool ??
+						"unknown",
 					output: "",
 				},
 			];
@@ -852,9 +1011,86 @@ export function applyIncomingHeadlessMessage(
 			state.pending_approvals = state.pending_approvals.filter(
 				(approval) => approval.call_id !== msg.call_id,
 			);
+			state.pending_client_tools = state.pending_client_tools.filter(
+				(request) => request.call_id !== msg.call_id,
+			);
 			state.tracked_tools = state.tracked_tools.filter(
 				(tool) => tool.call_id !== msg.call_id,
 			);
+			return;
+		case "client_tool_request":
+			state.tracked_tools = [
+				...state.tracked_tools.filter((tool) => tool.call_id !== msg.call_id),
+				{
+					call_id: msg.call_id,
+					tool: msg.tool,
+					args: msg.args,
+				},
+			];
+			state.pending_client_tools = [
+				...state.pending_client_tools.filter(
+					(request) => request.call_id !== msg.call_id,
+				),
+				{
+					call_id: msg.call_id,
+					tool: msg.tool,
+					args: msg.args,
+				},
+			];
+			return;
+		case "server_request":
+			state.tracked_tools = [
+				...state.tracked_tools.filter((tool) => tool.call_id !== msg.call_id),
+				{
+					call_id: msg.call_id,
+					tool: msg.tool,
+					args: msg.args,
+				},
+			];
+			if (msg.request_type === "approval") {
+				state.pending_approvals = [
+					...state.pending_approvals.filter(
+						(approval) => approval.call_id !== msg.call_id,
+					),
+					{
+						call_id: msg.call_id,
+						tool: msg.tool,
+						args: msg.args,
+					},
+				];
+			} else {
+				state.pending_client_tools = [
+					...state.pending_client_tools.filter(
+						(request) => request.call_id !== msg.call_id,
+					),
+					{
+						call_id: msg.call_id,
+						tool: msg.tool,
+						args: msg.args,
+					},
+				];
+			}
+			return;
+		case "server_request_resolved":
+			if (msg.request_type === "approval") {
+				state.pending_approvals = state.pending_approvals.filter(
+					(approval) => approval.call_id !== msg.call_id,
+				);
+				if (msg.resolution !== "approved") {
+					state.tracked_tools = state.tracked_tools.filter(
+						(tool) => tool.call_id !== msg.call_id,
+					);
+				}
+			} else {
+				state.pending_client_tools = state.pending_client_tools.filter(
+					(request) => request.call_id !== msg.call_id,
+				);
+				if (msg.resolution === "cancelled") {
+					state.tracked_tools = state.tracked_tools.filter(
+						(tool) => tool.call_id !== msg.call_id,
+					);
+				}
+			}
 			return;
 		case "error":
 			state.last_error = msg.message;
@@ -866,4 +1102,33 @@ export function applyIncomingHeadlessMessage(
 		case "compaction":
 			return;
 	}
+}
+
+export function buildHeadlessServerRequestCancellationMessages(
+	state: Pick<
+		HeadlessRuntimeState,
+		"pending_approvals" | "pending_client_tools"
+	>,
+	reason: string,
+): HeadlessServerRequestResolvedMessage[] {
+	return [
+		...state.pending_approvals.map((approval) => ({
+			type: "server_request_resolved" as const,
+			request_id: approval.call_id,
+			request_type: "approval" as const,
+			call_id: approval.call_id,
+			resolution: "cancelled" as const,
+			reason,
+			resolved_by: "runtime" as const,
+		})),
+		...state.pending_client_tools.map((request) => ({
+			type: "server_request_resolved" as const,
+			request_id: request.call_id,
+			request_type: "client_tool" as const,
+			call_id: request.call_id,
+			resolution: "cancelled" as const,
+			reason,
+			resolved_by: "runtime" as const,
+		})),
+	];
 }

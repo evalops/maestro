@@ -19,8 +19,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::async_transport::AsyncTransportError;
 use super::messages::{
-    AgentState, ApprovalMode, FromAgentMessage, HeadlessErrorType, InitConfig, PendingApproval,
-    StreamingResponse, ThinkingLevel, ToAgentMessage,
+    AgentState, ApprovalMode, ClientCapabilities, ClientInfo, ConnectionRole, FromAgentMessage,
+    HeadlessErrorType, InitConfig, PendingApproval, StreamingResponse, ThinkingLevel,
+    ToAgentMessage,
 };
 
 /// Configuration for the remote headless transport.
@@ -40,6 +41,16 @@ pub struct RemoteTransportConfig {
     pub thinking_level: Option<ThinkingLevel>,
     /// Optional approval mode used when creating a new runtime.
     pub approval_mode: Option<ApprovalMode>,
+    /// Whether to enable client-side tools for the remote runtime.
+    pub enable_client_tools: bool,
+    /// Optional client flavor used to select client-specific tools.
+    pub client: Option<String>,
+    /// Optional human-readable client name for handshake metadata.
+    pub client_name: String,
+    /// Optional human-readable client version for handshake metadata.
+    pub client_version: Option<String>,
+    /// Optional connection role used for HTTP attach/message permissions.
+    pub role: Option<String>,
     /// Additional headers to send on every request.
     pub headers: HashMap<String, String>,
     /// Delay between SSE reconnect attempts.
@@ -56,6 +67,11 @@ impl Default for RemoteTransportConfig {
             model: None,
             thinking_level: None,
             approval_mode: None,
+            enable_client_tools: false,
+            client: None,
+            client_name: "maestro-tui-rs".to_string(),
+            client_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
+            role: Some("controller".to_string()),
             headers: HashMap::new(),
             reconnect_delay: Duration::from_millis(500),
         }
@@ -68,12 +84,21 @@ pub enum RemoteIncoming {
         state: Box<AgentState>,
         last_init: Option<InitConfig>,
     },
+    Reset {
+        reason: String,
+        state: Box<AgentState>,
+        last_init: Option<InitConfig>,
+    },
     Message(FromAgentMessage),
     Heartbeat,
 }
 
 #[derive(Debug, Serialize)]
 struct RemoteSessionCreateRequest {
+    #[serde(rename = "protocolVersion", skip_serializing_if = "Option::is_none")]
+    protocol_version: Option<String>,
+    #[serde(rename = "clientInfo", skip_serializing_if = "Option::is_none")]
+    client_info: Option<ClientInfo>,
     #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -82,6 +107,20 @@ struct RemoteSessionCreateRequest {
     thinking_level: Option<ThinkingLevel>,
     #[serde(rename = "approvalMode", skip_serializing_if = "Option::is_none")]
     approval_mode: Option<ApprovalMode>,
+    #[serde(rename = "enableClientTools", default, skip_serializing_if = "std::ops::Not::not")]
+    enable_client_tools: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capabilities: Option<RemoteClientCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RemoteClientCapabilities {
+    #[serde(rename = "serverRequests")]
+    server_requests: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,6 +135,14 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     protocol_version: Option<String>,
     #[serde(default)]
+    client_protocol_version: Option<String>,
+    #[serde(default)]
+    client_info: Option<ClientInfo>,
+    #[serde(default)]
+    capabilities: Option<ClientCapabilities>,
+    #[serde(default)]
+    connection_role: Option<ConnectionRole>,
+    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     provider: Option<String>,
@@ -109,6 +156,8 @@ struct RemoteRuntimeStateSnapshot {
     current_response: Option<StreamingResponse>,
     #[serde(default)]
     pending_approvals: Vec<PendingApproval>,
+    #[serde(default)]
+    pending_client_tools: Vec<PendingApproval>,
     #[serde(default)]
     tracked_tools: Vec<PendingApproval>,
     #[serde(default)]
@@ -133,6 +182,10 @@ impl RemoteRuntimeStateSnapshot {
     fn into_agent_state(self) -> AgentState {
         AgentState {
             protocol_version: self.protocol_version,
+            client_protocol_version: self.client_protocol_version,
+            client_info: self.client_info,
+            capabilities: self.capabilities,
+            connection_role: self.connection_role,
             model: self.model,
             provider: self.provider,
             session_id: self.session_id,
@@ -140,6 +193,7 @@ impl RemoteRuntimeStateSnapshot {
             git_branch: self.git_branch,
             current_response: self.current_response,
             pending_approvals: self.pending_approvals,
+            pending_client_tools: self.pending_client_tools,
             tracked_tools: self
                 .tracked_tools
                 .into_iter()
@@ -194,6 +248,10 @@ impl RemoteRuntimeSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RemoteEnvelope {
     Snapshot {
+        snapshot: Box<RemoteRuntimeSnapshot>,
+    },
+    Reset {
+        reason: String,
         snapshot: Box<RemoteRuntimeSnapshot>,
     },
     Message {
@@ -321,6 +379,19 @@ impl RemoteAgentTransport {
                 self.last_init = last_init.clone();
                 Ok(RemoteIncoming::Snapshot { state, last_init })
             }
+            Ok(RemoteIncoming::Reset {
+                reason,
+                state,
+                last_init,
+            }) => {
+                self.state = (*state).clone();
+                self.last_init = last_init.clone();
+                Ok(RemoteIncoming::Reset {
+                    reason,
+                    state,
+                    last_init,
+                })
+            }
             Ok(RemoteIncoming::Message(message)) => {
                 let _ignored_event = self.state.handle_message(message.clone());
                 Ok(RemoteIncoming::Message(message))
@@ -340,10 +411,25 @@ async fn create_or_attach_session(
         config.base_url.trim_end_matches('/')
     );
     let request = RemoteSessionCreateRequest {
+        protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
+        client_info: Some(ClientInfo {
+            name: config.client_name.clone(),
+            version: config.client_version.clone(),
+        }),
         session_id: config.session_id.clone(),
         model: config.model.clone(),
         thinking_level: config.thinking_level,
         approval_mode: config.approval_mode,
+        enable_client_tools: config.enable_client_tools,
+        capabilities: Some(RemoteClientCapabilities {
+            server_requests: if config.enable_client_tools {
+                vec!["approval", "client_tool"]
+            } else {
+                vec!["approval"]
+            },
+        }),
+        client: config.client.clone(),
+        role: config.role.clone(),
     };
 
     let response = with_headers(client.post(url).json(&request), config, true)
@@ -474,6 +560,21 @@ async fn reader_loop(
                                         return;
                                     }
                                 }
+                                Ok(RemoteEnvelope::Reset { reason, snapshot }) => {
+                                    let (_snapshot_session_id, next_cursor, last_init, state) =
+                                        snapshot.into_state();
+                                    cursor = next_cursor;
+                                    if event_tx
+                                        .send(Ok(RemoteIncoming::Reset {
+                                            reason,
+                                            state: Box::new(state),
+                                            last_init,
+                                        }))
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
                                 Ok(RemoteEnvelope::Heartbeat { cursor: next_cursor }) => {
                                     cursor = next_cursor;
                                     if event_tx.send(Ok(RemoteIncoming::Heartbeat)).is_err() {
@@ -532,6 +633,10 @@ fn with_headers(
     }
     if let Some(csrf_token) = &config.csrf_token {
         request = request.header("x-maestro-csrf", csrf_token);
+    }
+    if let Some(role) = &config.role {
+        request = request.header("x-maestro-headless-role", role);
+        request = request.header("x-composer-headless-role", role);
     }
 
     let mut extra_headers = HeaderMap::new();
@@ -754,6 +859,18 @@ mod tests {
     fn remote_runtime_state_snapshot_maps_into_agent_state() {
         let snapshot = RemoteRuntimeStateSnapshot {
             protocol_version: Some("2026-03-30".to_string()),
+            client_protocol_version: Some("2026-03-30".to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-tui-rs".to_string(),
+                version: Some("0.1.0".to_string()),
+            }),
+            capabilities: Some(ClientCapabilities {
+                server_requests: Some(vec![
+                    crate::headless::ServerRequestType::Approval,
+                    crate::headless::ServerRequestType::ClientTool,
+                ]),
+            }),
+            connection_role: Some(ConnectionRole::Controller),
             model: Some("gpt-5.4".to_string()),
             provider: Some("openai".to_string()),
             session_id: Some("session-1".to_string()),
@@ -769,6 +886,11 @@ mod tests {
                 call_id: "call-1".to_string(),
                 tool: "bash".to_string(),
                 args: serde_json::json!({"cmd": "ls"}),
+            }],
+            pending_client_tools: vec![PendingApproval {
+                call_id: "call-client".to_string(),
+                tool: "artifacts".to_string(),
+                args: serde_json::json!({"command": "create", "filename": "report.txt"}),
             }],
             tracked_tools: vec![PendingApproval {
                 call_id: "call-2".to_string(),
@@ -792,13 +914,54 @@ mod tests {
         let state = snapshot.into_agent_state();
         assert_eq!(state.model.as_deref(), Some("gpt-5.4"));
         assert_eq!(state.provider.as_deref(), Some("openai"));
+        assert_eq!(state.client_protocol_version.as_deref(), Some("2026-03-30"));
+        assert_eq!(
+            state.client_info.as_ref().map(|info| info.name.as_str()),
+            Some("maestro-tui-rs")
+        );
         assert_eq!(state.pending_approvals.len(), 1);
+        assert_eq!(state.pending_client_tools.len(), 1);
         assert_eq!(state.tracked_tools.len(), 1);
         assert_eq!(state.active_tools.len(), 1);
         assert_eq!(state.last_error.as_deref(), Some("boom"));
         assert_eq!(state.last_status.as_deref(), Some("Working"));
         assert!(state.is_ready);
         assert!(state.is_responding);
+    }
+
+    #[test]
+    fn remote_session_create_request_serializes_client_tool_flags() {
+        let request = RemoteSessionCreateRequest {
+            protocol_version: Some("2026-03-30".to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-tui-rs".to_string(),
+                version: Some("0.1.0".to_string()),
+            }),
+            session_id: Some("sess_remote".to_string()),
+            model: Some("gpt-5.4".to_string()),
+            thinking_level: Some(ThinkingLevel::Low),
+            approval_mode: Some(ApprovalMode::Prompt),
+            enable_client_tools: true,
+            capabilities: Some(RemoteClientCapabilities {
+                server_requests: vec!["approval", "client_tool"],
+            }),
+            client: Some("vscode".to_string()),
+            role: Some("controller".to_string()),
+        };
+
+        let json = serde_json::to_value(request).expect("serialize request");
+        assert_eq!(json["protocolVersion"], "2026-03-30");
+        assert_eq!(json["clientInfo"]["name"], "maestro-tui-rs");
+        assert_eq!(json["clientInfo"]["version"], "0.1.0");
+        assert_eq!(json["sessionId"], "sess_remote");
+        assert_eq!(json["model"], "gpt-5.4");
+        assert_eq!(json["thinkingLevel"], "low");
+        assert_eq!(json["approvalMode"], "prompt");
+        assert_eq!(json["enableClientTools"], true);
+        assert_eq!(json["capabilities"]["serverRequests"][0], "approval");
+        assert_eq!(json["capabilities"]["serverRequests"][1], "client_tool");
+        assert_eq!(json["client"], "vscode");
+        assert_eq!(json["role"], "controller");
     }
 
     #[tokio::test]
@@ -899,6 +1062,12 @@ mod tests {
         assert!(create_headers
             .iter()
             .any(|(name, value)| { name == "x-maestro-client" && value == "tui-rs" }));
+        assert!(create_headers.iter().any(|(name, value)| {
+            name == "x-maestro-headless-role" && value == "controller"
+        }));
+        assert!(create_headers.iter().any(|(name, value)| {
+            name == "x-composer-headless-role" && value == "controller"
+        }));
 
         transport.shutdown().expect("shutdown");
         assert!(cancel_token.is_cancelled());
@@ -990,5 +1159,85 @@ mod tests {
 
         transport.shutdown().expect("shutdown");
         assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn remote_transport_applies_reset_events_as_snapshots() {
+        let initial_snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 1,
+            "last_init": {
+                "system_prompt": "Initial prompt"
+            },
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "tracked_tools": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let reset_event = serde_json::json!({
+            "type": "reset",
+            "reason": "lagged",
+            "snapshot": {
+                "protocolVersion": "2026-03-30",
+                "session_id": "sess_remote",
+                "cursor": 2,
+                "last_init": {
+                    "system_prompt": "Reset prompt"
+                },
+                "state": {
+                    "protocol_version": "2026-03-30",
+                    "model": "gpt-5.4",
+                    "provider": "openai",
+                    "session_id": "sess_remote",
+                    "pending_approvals": [],
+                    "tracked_tools": [],
+                    "active_tools": [],
+                    "last_status": "Reset snapshot",
+                    "is_ready": true,
+                    "is_responding": false
+                }
+            }
+        })
+        .to_string();
+
+        let (addr, _posted_bodies, _request_headers) =
+            spawn_remote_headless_server(initial_snapshot.to_string(), vec![reset_event]).await;
+
+        let config = RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        };
+
+        let mut transport = RemoteAgentTransport::connect(config)
+            .await
+            .expect("connect");
+
+        let incoming = transport.recv_incoming().await.expect("incoming reset");
+        match incoming {
+            RemoteIncoming::Reset { reason, .. } => {
+                assert_eq!(reason, "lagged");
+            }
+            other => panic!("expected remote reset, got {other:?}"),
+        }
+
+        assert_eq!(
+            transport.state().last_status.as_deref(),
+            Some("Reset snapshot")
+        );
+        assert_eq!(
+            transport
+                .last_init()
+                .and_then(|init| init.system_prompt.as_deref()),
+            Some("Reset prompt")
+        );
     }
 }

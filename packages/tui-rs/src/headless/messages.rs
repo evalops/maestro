@@ -93,6 +93,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Current headless protocol version shared with the TypeScript runtime.
+pub const HEADLESS_PROTOCOL_VERSION: &str = "2026-03-30";
+
 // =============================================================================
 // Messages from TUI to Agent
 // =============================================================================
@@ -138,6 +141,17 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToAgentMessage {
+    /// Declare client identity and negotiated capabilities for this connection
+    Hello {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        protocol_version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_info: Option<ClientInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capabilities: Option<ClientCapabilities>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<ConnectionRole>,
+    },
     /// Configure agent behavior before the first prompt
     Init {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -164,6 +178,12 @@ pub enum ToAgentMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         result: Option<ToolResult>,
     },
+    /// Submit the result of a client-side tool execution
+    ClientToolResult {
+        call_id: String,
+        content: Vec<ClientToolResultContent>,
+        is_error: bool,
+    },
     /// Cancel the current operation
     Cancel,
     /// Shut down the agent
@@ -181,6 +201,29 @@ pub struct InitConfig {
     pub thinking_level: Option<ThinkingLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval_mode: Option<ApprovalMode>,
+}
+
+/// Identifies the attached headless client.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientInfo {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// Negotiated client capabilities for the connection.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_requests: Option<Vec<ServerRequestType>>,
+}
+
+/// Role granted to the attached headless connection.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionRole {
+    Viewer,
+    Controller,
 }
 
 /// Headless thinking effort configuration.
@@ -214,6 +257,18 @@ pub struct ToolResult {
     /// Structured details about the tool execution
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
+}
+
+/// Content returned from a client-side tool execution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ClientToolResultContent {
+    Text { text: String },
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
 }
 
 // =============================================================================
@@ -308,6 +363,31 @@ pub enum FromAgentMessage {
     ToolOutput { call_id: String, content: String },
     /// Tool execution ended
     ToolEnd { call_id: String, success: bool },
+    /// Client-side tool execution requested
+    ClientToolRequest {
+        call_id: String,
+        tool: String,
+        args: serde_json::Value,
+    },
+    /// Structured server-to-client request (currently approvals)
+    ServerRequest {
+        request_id: String,
+        request_type: ServerRequestType,
+        call_id: String,
+        tool: String,
+        args: serde_json::Value,
+        reason: String,
+    },
+    /// Resolution of a structured server-to-client request
+    ServerRequestResolved {
+        request_id: String,
+        request_type: ServerRequestType,
+        call_id: String,
+        resolution: ServerRequestResolutionStatus,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        resolved_by: ServerRequestResolvedBy,
+    },
     /// Error occurred
     Error {
         message: String,
@@ -333,6 +413,17 @@ pub enum FromAgentMessage {
         session_id: Option<String>,
         cwd: String,
         git_branch: Option<String>,
+    },
+    /// Connection metadata negotiated by the client
+    ConnectionInfo {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_protocol_version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_info: Option<ClientInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capabilities: Option<ClientCapabilities>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<ConnectionRole>,
     },
 }
 
@@ -390,6 +481,35 @@ pub enum HeadlessErrorType {
     Protocol,
 }
 
+/// Type of server-driven request sent over the headless protocol.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerRequestType {
+    Approval,
+    ClientTool,
+}
+
+/// Actor that resolved a server request.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerRequestResolvedBy {
+    User,
+    Policy,
+    Client,
+    Runtime,
+}
+
+/// Approval resolution status for a server request.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerRequestResolutionStatus {
+    Approved,
+    Denied,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
 // =============================================================================
 // State tracking
 // =============================================================================
@@ -442,6 +562,10 @@ pub enum HeadlessErrorType {
 pub struct AgentState {
     /// Model information
     pub protocol_version: Option<String>,
+    pub client_protocol_version: Option<String>,
+    pub client_info: Option<ClientInfo>,
+    pub capabilities: Option<ClientCapabilities>,
+    pub connection_role: Option<ConnectionRole>,
     pub model: Option<String>,
     pub provider: Option<String>,
     /// Session information
@@ -452,6 +576,8 @@ pub struct AgentState {
     pub current_response: Option<StreamingResponse>,
     /// Pending tool calls requiring approval
     pub pending_approvals: Vec<PendingApproval>,
+    /// Pending client-side tool execution requests
+    pub pending_client_tools: Vec<PendingApproval>,
     /// Active tool executions
     pub active_tools: HashMap<String, ActiveTool>,
     /// Tracks tool metadata until a tool run completes, even when approval is not required.
@@ -522,6 +648,17 @@ impl AgentState {
     /// Handle an outbound message and update optimistic local state.
     pub fn handle_sent_message(&mut self, msg: &ToAgentMessage) {
         match msg {
+            ToAgentMessage::Hello {
+                protocol_version,
+                client_info,
+                capabilities,
+                role,
+            } => {
+                self.client_protocol_version = protocol_version.clone();
+                self.client_info = client_info.clone();
+                self.capabilities = capabilities.clone();
+                self.connection_role = *role;
+            }
             ToAgentMessage::Init { .. } => {}
             ToAgentMessage::Prompt { .. } => {
                 self.current_response = None;
@@ -533,6 +670,7 @@ impl AgentState {
             ToAgentMessage::Interrupt | ToAgentMessage::Cancel => {
                 self.current_response = None;
                 self.pending_approvals.clear();
+                self.pending_client_tools.clear();
                 self.active_tools.clear();
                 self.tracked_tools.clear();
                 self.is_responding = false;
@@ -545,9 +683,13 @@ impl AgentState {
                     self.tracked_tools.remove(call_id);
                 }
             }
+            ToAgentMessage::ClientToolResult { call_id, .. } => {
+                self.pending_client_tools.retain(|p| p.call_id != *call_id);
+            }
             ToAgentMessage::Shutdown => {
                 self.current_response = None;
                 self.pending_approvals.clear();
+                self.pending_client_tools.clear();
                 self.active_tools.clear();
                 self.tracked_tools.clear();
                 self.is_ready = false;
@@ -591,6 +733,18 @@ impl AgentState {
                     cwd,
                     git_branch,
                 })
+            }
+            FromAgentMessage::ConnectionInfo {
+                client_protocol_version,
+                client_info,
+                capabilities,
+                role,
+            } => {
+                self.client_protocol_version = client_protocol_version;
+                self.client_info = client_info;
+                self.capabilities = capabilities;
+                self.connection_role = role;
+                None
             }
 
             FromAgentMessage::ResponseStart { response_id } => {
@@ -705,11 +859,93 @@ impl AgentState {
                 let tool = self.active_tools.remove(&call_id);
                 self.tracked_tools.remove(&call_id);
                 self.pending_approvals.retain(|p| p.call_id != call_id);
+                self.pending_client_tools.retain(|p| p.call_id != call_id);
                 Some(AgentEvent::ToolEnd {
                     call_id,
                     success,
                     duration: tool.map(|t| t.started.elapsed()),
                 })
+            }
+
+            FromAgentMessage::ClientToolRequest {
+                call_id,
+                tool,
+                args,
+            } => {
+                self.tracked_tools.insert(
+                    call_id.clone(),
+                    PendingApproval {
+                        call_id: call_id.clone(),
+                        tool: tool.clone(),
+                        args: args.clone(),
+                    },
+                );
+                self.pending_client_tools.retain(|p| p.call_id != call_id);
+                self.pending_client_tools.push(PendingApproval {
+                    call_id,
+                    tool,
+                    args,
+                });
+                None
+            }
+
+            FromAgentMessage::ServerRequest {
+                call_id,
+                request_type,
+                tool,
+                args,
+                ..
+            } => {
+                self.tracked_tools.insert(
+                    call_id.clone(),
+                    PendingApproval {
+                        call_id: call_id.clone(),
+                        tool: tool.clone(),
+                        args: args.clone(),
+                    },
+                );
+                match request_type {
+                    ServerRequestType::Approval => {
+                        self.pending_approvals.retain(|p| p.call_id != call_id);
+                        self.pending_approvals.push(PendingApproval {
+                            call_id,
+                            tool,
+                            args,
+                        });
+                    }
+                    ServerRequestType::ClientTool => {
+                        self.pending_client_tools.retain(|p| p.call_id != call_id);
+                        self.pending_client_tools.push(PendingApproval {
+                            call_id,
+                            tool,
+                            args,
+                        });
+                    }
+                }
+                None
+            }
+
+            FromAgentMessage::ServerRequestResolved {
+                call_id,
+                request_type,
+                resolution,
+                ..
+            } => {
+                match request_type {
+                    ServerRequestType::Approval => {
+                        self.pending_approvals.retain(|p| p.call_id != call_id);
+                        if resolution != ServerRequestResolutionStatus::Approved {
+                            self.tracked_tools.remove(&call_id);
+                        }
+                    }
+                    ServerRequestType::ClientTool => {
+                        self.pending_client_tools.retain(|p| p.call_id != call_id);
+                        if resolution == ServerRequestResolutionStatus::Cancelled {
+                            self.tracked_tools.remove(&call_id);
+                        }
+                    }
+                }
+                None
             }
 
             FromAgentMessage::Error {
@@ -925,6 +1161,99 @@ mod tests {
     }
 
     #[test]
+    fn parse_server_request_message() {
+        let json = r#"{"type":"server_request","request_id":"call_approval","request_type":"approval","call_id":"call_approval","tool":"bash","args":{"command":"git push --force"},"reason":"Force push requires approval"}"#;
+        let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            FromAgentMessage::ServerRequest {
+                request_id,
+                request_type,
+                call_id,
+                tool,
+                args,
+                reason,
+            } => {
+                assert_eq!(request_id, "call_approval");
+                assert_eq!(request_type, ServerRequestType::Approval);
+                assert_eq!(call_id, "call_approval");
+                assert_eq!(tool, "bash");
+                assert_eq!(args["command"], "git push --force");
+                assert_eq!(reason, "Force push requires approval");
+            }
+            _ => panic!("Expected ServerRequest message"),
+        }
+    }
+
+    #[test]
+    fn parse_client_tool_server_request_message() {
+        let json = r#"{"type":"server_request","request_id":"call_client","request_type":"client_tool","call_id":"call_client","tool":"artifacts","args":{"command":"create","filename":"report.txt"},"reason":"Client tool artifacts requires local execution"}"#;
+        let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            FromAgentMessage::ServerRequest {
+                request_id,
+                request_type,
+                call_id,
+                tool,
+                args,
+                reason,
+            } => {
+                assert_eq!(request_id, "call_client");
+                assert_eq!(request_type, ServerRequestType::ClientTool);
+                assert_eq!(call_id, "call_client");
+                assert_eq!(tool, "artifacts");
+                assert_eq!(args["command"], "create");
+                assert_eq!(reason, "Client tool artifacts requires local execution");
+            }
+            _ => panic!("Expected ServerRequest message"),
+        }
+    }
+
+    #[test]
+    fn parse_client_tool_request_message() {
+        let json = r#"{"type":"client_tool_request","call_id":"call_client","tool":"artifacts","args":{"command":"create","filename":"report.txt"}}"#;
+        let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            FromAgentMessage::ClientToolRequest {
+                call_id,
+                tool,
+                args,
+            } => {
+                assert_eq!(call_id, "call_client");
+                assert_eq!(tool, "artifacts");
+                assert_eq!(args["command"], "create");
+                assert_eq!(args["filename"], "report.txt");
+            }
+            _ => panic!("Expected ClientToolRequest message"),
+        }
+    }
+
+    #[test]
+    fn parse_connection_info_message() {
+        let json = r#"{"type":"connection_info","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"role":"controller"}"#;
+        let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            FromAgentMessage::ConnectionInfo {
+                client_protocol_version,
+                client_info,
+                capabilities,
+                role,
+            } => {
+                assert_eq!(client_protocol_version.as_deref(), Some("2026-03-30"));
+                assert_eq!(client_info.as_ref().map(|info| info.name.as_str()), Some("maestro-web"));
+                assert_eq!(
+                    capabilities
+                        .as_ref()
+                        .and_then(|caps| caps.server_requests.as_ref())
+                        .map(|caps| caps.len()),
+                    Some(2)
+                );
+                assert_eq!(role, Some(ConnectionRole::Controller));
+            }
+            _ => panic!("Expected ConnectionInfo message"),
+        }
+    }
+
+    #[test]
     fn serialize_prompt_message() {
         let msg = ToAgentMessage::Prompt {
             content: "Hello".to_string(),
@@ -948,6 +1277,26 @@ mod tests {
         assert!(json.contains(r#""system_prompt":"You are Maestro""#));
         assert!(json.contains(r#""thinking_level":"high""#));
         assert!(json.contains(r#""approval_mode":"prompt""#));
+    }
+
+    #[test]
+    fn serialize_hello_message() {
+        let msg = ToAgentMessage::Hello {
+            protocol_version: Some("2026-03-30".to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-tui-rs".to_string(),
+                version: Some("0.1.0".to_string()),
+            }),
+            capabilities: Some(ClientCapabilities {
+                server_requests: Some(vec![ServerRequestType::Approval]),
+            }),
+            role: Some(ConnectionRole::Controller),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"hello""#));
+        assert!(json.contains(r#""protocol_version":"2026-03-30""#));
+        assert!(json.contains(r#""name":"maestro-tui-rs""#));
+        assert!(json.contains(r#""role":"controller""#));
     }
 
     #[test]
@@ -1079,5 +1428,167 @@ mod tests {
                 .map(|tool| tool.tool.as_str()),
             Some("read")
         );
+    }
+
+    #[test]
+    fn state_tracks_and_clears_server_request_approvals() {
+        let mut state = AgentState::default();
+
+        let event = state.handle_message(FromAgentMessage::ServerRequest {
+            request_id: "call_approval".to_string(),
+            request_type: ServerRequestType::Approval,
+            call_id: "call_approval".to_string(),
+            tool: "bash".to_string(),
+            args: serde_json::json!({ "command": "git push --force" }),
+            reason: "Force push requires approval".to_string(),
+        });
+
+        assert!(event.is_none());
+        assert_eq!(state.pending_approvals.len(), 1);
+        assert_eq!(state.pending_approvals[0].tool, "bash");
+        assert!(state.tracked_tools.contains_key("call_approval"));
+
+        let resolved = state.handle_message(FromAgentMessage::ServerRequestResolved {
+            request_id: "call_approval".to_string(),
+            request_type: ServerRequestType::Approval,
+            call_id: "call_approval".to_string(),
+            resolution: ServerRequestResolutionStatus::Denied,
+            reason: Some("Denied by user".to_string()),
+            resolved_by: ServerRequestResolvedBy::User,
+        });
+
+        assert!(resolved.is_none());
+        assert!(state.pending_approvals.is_empty());
+        assert!(!state.tracked_tools.contains_key("call_approval"));
+    }
+
+    #[test]
+    fn state_tracks_connection_metadata_from_hello_and_connection_info() {
+        let mut state = AgentState::default();
+
+        state.handle_sent_message(&ToAgentMessage::Hello {
+            protocol_version: Some("2026-03-30".to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-tui-rs".to_string(),
+                version: Some("0.1.0".to_string()),
+            }),
+            capabilities: Some(ClientCapabilities {
+                server_requests: Some(vec![ServerRequestType::Approval]),
+            }),
+            role: Some(ConnectionRole::Controller),
+        });
+        let event = state.handle_message(FromAgentMessage::ConnectionInfo {
+            client_protocol_version: Some("2026-03-30".to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-web".to_string(),
+                version: Some("1.2.3".to_string()),
+            }),
+            capabilities: Some(ClientCapabilities {
+                server_requests: Some(vec![
+                    ServerRequestType::Approval,
+                    ServerRequestType::ClientTool,
+                ]),
+            }),
+            role: Some(ConnectionRole::Viewer),
+        });
+
+        assert!(event.is_none());
+        assert_eq!(state.client_protocol_version.as_deref(), Some("2026-03-30"));
+        assert_eq!(state.client_info.as_ref().map(|info| info.name.as_str()), Some("maestro-web"));
+        assert_eq!(state.connection_role, Some(ConnectionRole::Viewer));
+        assert_eq!(
+            state
+                .capabilities
+                .as_ref()
+                .and_then(|caps| caps.server_requests.as_ref())
+                .map(|caps| caps.len()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn state_tracks_and_clears_client_tool_requests() {
+        let mut state = AgentState::default();
+
+        let event = state.handle_message(FromAgentMessage::ClientToolRequest {
+            call_id: "call_client".to_string(),
+            tool: "artifacts".to_string(),
+            args: serde_json::json!({ "command": "create", "filename": "report.txt" }),
+        });
+
+        assert!(event.is_none());
+        assert_eq!(state.pending_client_tools.len(), 1);
+        assert_eq!(state.pending_client_tools[0].tool, "artifacts");
+        assert!(state.tracked_tools.contains_key("call_client"));
+
+        state.handle_sent_message(&ToAgentMessage::ClientToolResult {
+            call_id: "call_client".to_string(),
+            content: vec![ClientToolResultContent::Text {
+                text: "created".to_string(),
+            }],
+            is_error: false,
+        });
+
+        assert!(state.pending_client_tools.is_empty());
+        assert!(state.tracked_tools.contains_key("call_client"));
+    }
+
+    #[test]
+    fn state_tracks_and_clears_generic_client_tool_server_requests() {
+        let mut state = AgentState::default();
+
+        let event = state.handle_message(FromAgentMessage::ServerRequest {
+            request_id: "call_client".to_string(),
+            request_type: ServerRequestType::ClientTool,
+            call_id: "call_client".to_string(),
+            tool: "artifacts".to_string(),
+            args: serde_json::json!({ "command": "create", "filename": "report.txt" }),
+            reason: "Client tool artifacts requires local execution".to_string(),
+        });
+
+        assert!(event.is_none());
+        assert_eq!(state.pending_client_tools.len(), 1);
+        assert_eq!(state.pending_client_tools[0].tool, "artifacts");
+        assert!(state.tracked_tools.contains_key("call_client"));
+
+        let resolved = state.handle_message(FromAgentMessage::ServerRequestResolved {
+            request_id: "call_client".to_string(),
+            request_type: ServerRequestType::ClientTool,
+            call_id: "call_client".to_string(),
+            resolution: ServerRequestResolutionStatus::Completed,
+            reason: None,
+            resolved_by: ServerRequestResolvedBy::Client,
+        });
+
+        assert!(resolved.is_none());
+        assert!(state.pending_client_tools.is_empty());
+        assert!(state.tracked_tools.contains_key("call_client"));
+    }
+
+    #[test]
+    fn state_clears_tracked_client_tool_on_cancelled_server_request() {
+        let mut state = AgentState::default();
+
+        state.handle_message(FromAgentMessage::ServerRequest {
+            request_id: "call_client".to_string(),
+            request_type: ServerRequestType::ClientTool,
+            call_id: "call_client".to_string(),
+            tool: "artifacts".to_string(),
+            args: serde_json::json!({ "command": "create", "filename": "report.txt" }),
+            reason: "Client tool artifacts requires local execution".to_string(),
+        });
+
+        let resolved = state.handle_message(FromAgentMessage::ServerRequestResolved {
+            request_id: "call_client".to_string(),
+            request_type: ServerRequestType::ClientTool,
+            call_id: "call_client".to_string(),
+            resolution: ServerRequestResolutionStatus::Cancelled,
+            reason: Some("Interrupted before request completed".to_string()),
+            resolved_by: ServerRequestResolvedBy::Runtime,
+        });
+
+        assert!(resolved.is_none());
+        assert!(state.pending_client_tools.is_empty());
+        assert!(!state.tracked_tools.contains_key("call_client"));
     }
 }

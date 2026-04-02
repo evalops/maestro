@@ -8,13 +8,47 @@ import {
 	resolveApprovalModeForRequest,
 } from "../approval-mode-store.js";
 import { getAuthSubject } from "../authz.js";
+import type {
+	HeadlessRuntimeResetEnvelope,
+	HeadlessRuntimeStreamEnvelope,
+	HeadlessSessionRuntime,
+} from "../headless-runtime-service.js";
 import { ApiError, getRequestHeader, sendJson } from "../server-utils.js";
 import { createSessionManagerForRequest } from "../session-scope.js";
 import { parseAndValidateJson } from "../validation.js";
 
 const HeadlessSessionCreateSchema = Type.Object({
 	sessionId: Type.Optional(Type.String()),
+	protocolVersion: Type.Optional(Type.String()),
+	clientInfo: Type.Optional(
+		Type.Object({
+			name: Type.String(),
+			version: Type.Optional(Type.String()),
+		}),
+	),
 	model: Type.Optional(Type.String()),
+	enableClientTools: Type.Optional(Type.Boolean()),
+	capabilities: Type.Optional(
+		Type.Object({
+			serverRequests: Type.Optional(
+				Type.Array(
+					Type.Union([Type.Literal("approval"), Type.Literal("client_tool")]),
+					{ uniqueItems: true },
+				),
+			),
+		}),
+	),
+	role: Type.Optional(
+		Type.Union([Type.Literal("viewer"), Type.Literal("controller")]),
+	),
+	client: Type.Optional(
+		Type.Union([
+			Type.Literal("generic"),
+			Type.Literal("vscode"),
+			Type.Literal("jetbrains"),
+			Type.Literal("conductor"),
+		]),
+	),
 	thinkingLevel: Type.Optional(
 		Type.Union([
 			Type.Literal("off"),
@@ -41,15 +75,45 @@ const HeadlessMessageSchema = Type.Object(
 	{ additionalProperties: true },
 );
 
+const MAX_HEADLESS_SUBSCRIBER_QUEUE =
+	Number.parseInt(process.env.MAESTRO_HEADLESS_SUBSCRIBER_QUEUE || "", 10) ||
+	128;
+
 type HeadlessSessionCreateInput = Static<typeof HeadlessSessionCreateSchema>;
 type HeadlessMessageInput = Static<typeof HeadlessMessageSchema>;
 
-function writeSse(res: ServerResponse, payload: unknown): void {
-	res.write(`data: ${JSON.stringify(payload)}\n\n`);
+function getHeadlessRole(
+	req: IncomingMessage,
+	explicitRole?: "viewer" | "controller",
+): "viewer" | "controller" {
+	if (explicitRole) {
+		return explicitRole;
+	}
+	const headerRole = getRequestHeader(
+		req,
+		"x-composer-headless-role",
+		"x-maestro-headless-role",
+	);
+	return headerRole === "viewer" ? "viewer" : "controller";
+}
+
+function writeSse(res: ServerResponse, payload: unknown): boolean {
+	return res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 function getScopeKey(req: IncomingMessage): string {
 	return getAuthSubject(req);
+}
+
+function buildResetEnvelope(
+	runtime: Pick<HeadlessSessionRuntime, "getSnapshot">,
+	reason: HeadlessRuntimeResetEnvelope["reason"],
+): HeadlessRuntimeResetEnvelope {
+	return {
+		type: "reset",
+		reason,
+		snapshot: runtime.getSnapshot(),
+	};
 }
 
 async function ensureRuntime(
@@ -58,6 +122,7 @@ async function ensureRuntime(
 	input: HeadlessSessionCreateInput,
 ) {
 	const sessionManager = createSessionManagerForRequest(req, false);
+	const role = getHeadlessRole(req, input.role);
 	const requestedSessionId = input.sessionId?.trim() || undefined;
 	if (requestedSessionId) {
 		const sessionFile = sessionManager.getSessionFileById(requestedSessionId);
@@ -69,6 +134,21 @@ async function ensureRuntime(
 
 	const registeredModel = await context.getRegisteredModel(input.model);
 	const subject = getAuthSubject(req);
+	if (
+		input.enableClientTools &&
+		!input.capabilities?.serverRequests?.includes("client_tool")
+	) {
+		throw new ApiError(
+			400,
+			"client_tool capability is required when enableClientTools is true",
+		);
+	}
+	if (role === "viewer" && input.enableClientTools) {
+		throw new ApiError(
+			400,
+			"viewer headless connections cannot enable client-side tools",
+		);
+	}
 	const headerApproval = normalizeApprovalMode(
 		getRequestHeader(
 			req,
@@ -87,9 +167,17 @@ async function ensureRuntime(
 		scope_key: getScopeKey(req),
 		sessionId: requestedSessionId,
 		subject,
+		clientProtocolVersion: input.protocolVersion,
+		clientInfo: input.clientInfo,
+		capabilities: input.capabilities
+			? { server_requests: input.capabilities.serverRequests }
+			: undefined,
+		role,
 		registeredModel,
 		thinkingLevel: (input.thinkingLevel ?? "off") as ThinkingLevel,
 		approvalMode: effectiveApproval,
+		enableClientTools: input.enableClientTools,
+		client: input.client,
 		context,
 		sessionManager,
 	});
@@ -157,33 +245,70 @@ export function handleHeadlessSessionEvents(
 		...context.corsHeaders,
 	});
 
+	const queue: HeadlessRuntimeStreamEnvelope[] = [];
+	let queuedReset: HeadlessRuntimeResetEnvelope | null = null;
+	let flushing = false;
+
+	const flush = () => {
+		if (flushing || res.writableEnded) {
+			return;
+		}
+		flushing = true;
+		while (!res.writableEnded) {
+			const next = queuedReset ?? queue.shift();
+			if (!next) {
+				flushing = false;
+				return;
+			}
+			if (next.type === "reset") {
+				queuedReset = null;
+			}
+			const wrote = writeSse(res, next);
+			if (!wrote) {
+				res.once("drain", () => {
+					flushing = false;
+					flush();
+				});
+				return;
+			}
+		}
+		flushing = false;
+	};
+
+	const enqueue = (envelope: HeadlessRuntimeStreamEnvelope) => {
+		if (res.writableEnded) {
+			return;
+		}
+		queue.push(envelope);
+		if (queue.length > MAX_HEADLESS_SUBSCRIBER_QUEUE) {
+			queue.length = 0;
+			queuedReset = buildResetEnvelope(runtime, "lagged");
+		}
+		flush();
+	};
+
 	if (cursor !== null && Number.isFinite(cursor)) {
 		const replay = runtime.replayFrom(cursor);
 		if (replay) {
 			for (const envelope of replay) {
-				writeSse(res, envelope);
+				enqueue(envelope);
 			}
 		} else {
-			writeSse(res, {
-				type: "snapshot",
-				snapshot: runtime.getSnapshot(),
-			});
+			enqueue(buildResetEnvelope(runtime, "replay_gap"));
 		}
 	} else {
-		writeSse(res, {
+		enqueue({
 			type: "snapshot",
 			snapshot: runtime.getSnapshot(),
 		});
 	}
 
 	const unsubscribe = runtime.subscribe((envelope) => {
-		if (!res.writableEnded) {
-			writeSse(res, envelope);
-		}
+		enqueue(envelope);
 	});
 	const heartbeat = setInterval(() => {
 		if (!res.writableEnded) {
-			writeSse(res, runtime.heartbeat());
+			enqueue(runtime.heartbeat());
 		}
 	}, 15000);
 	heartbeat.unref();
@@ -202,6 +327,9 @@ export async function handleHeadlessSessionMessage(
 	context: WebServerContext,
 	params?: Record<string, string>,
 ) {
+	if (getHeadlessRole(req) === "viewer") {
+		throw new ApiError(403, "Viewer headless connections cannot send messages");
+	}
 	const runtime = getRuntime(req, context, params?.id);
 	const input = await parseAndValidateJson<HeadlessMessageInput>(
 		req,

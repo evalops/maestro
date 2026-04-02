@@ -248,7 +248,7 @@ export class ActionApprovalService {
 	 * @returns true if request was found and resolved, false if not pending
 	 */
 	approve(id: string, note?: string): boolean {
-		return this.resolveEntry(id, {
+		return this.resolve(id, {
 			approved: true,
 			reason: note ?? "Approved",
 			resolvedBy: "user",
@@ -260,11 +260,19 @@ export class ActionApprovalService {
 	 * @returns true if request was found and resolved, false if not pending
 	 */
 	deny(id: string, reason?: string): boolean {
-		return this.resolveEntry(id, {
+		return this.resolve(id, {
 			approved: false,
 			reason: reason ?? "Denied",
 			resolvedBy: "user",
 		});
+	}
+
+	/**
+	 * Resolve a pending request with an explicit decision.
+	 * Used by remote/server adapters that need policy-driven cancellation.
+	 */
+	resolve(id: string, decision: ActionApprovalDecision): boolean {
+		return this.resolveEntry(id, decision);
 	}
 
 	/**
@@ -273,7 +281,7 @@ export class ActionApprovalService {
 	 */
 	clearPending(reason = "Approval cancelled"): void {
 		for (const id of Array.from(this.pending.keys())) {
-			this.resolveEntry(id, {
+			this.resolve(id, {
 				approved: false,
 				reason: reason,
 				resolvedBy: "policy",

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { type Static, Type } from "@sinclair/typebox";
 import type { WebServerContext } from "../app-context.js";
-import { approvalStore } from "../approval-store.js";
+import { serverRequestManager } from "../server-request-manager.js";
 import { respondWithApiError, sendJson } from "../server-utils.js";
 import { parseAndValidateJson } from "../validation.js";
 
@@ -22,9 +22,13 @@ export async function handleApproval(
 
 	try {
 		const body = await parseAndValidateJson<ApprovalInput>(req, ApprovalSchema);
-		const service = approvalStore.get(body.requestId);
+		const resolved = serverRequestManager.resolveApproval(body.requestId, {
+			approved: body.decision === "approved",
+			reason: body.reason,
+			resolvedBy: "user",
+		});
 
-		if (!service) {
+		if (!resolved) {
 			sendJson(
 				res,
 				404,
@@ -33,12 +37,6 @@ export async function handleApproval(
 				req,
 			);
 			return;
-		}
-
-		if (body.decision === "approved") {
-			service.approve(body.requestId, body.reason);
-		} else {
-			service.deny(body.requestId, body.reason);
 		}
 
 		sendJson(res, 200, { success: true }, corsHeaders, req);

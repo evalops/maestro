@@ -1,4 +1,5 @@
 import type { ImageContent, TextContent } from "../agent/types.js";
+import { serverRequestManager } from "./server-request-manager.js";
 
 /** Content types that can be returned from client tool execution */
 type ToolResultContent = TextContent | ImageContent;
@@ -16,6 +17,7 @@ export class ClientToolService {
 		toolName: string,
 		args: unknown,
 		signal?: AbortSignal,
+		sessionId?: string,
 	): Promise<{ content: ToolResultContent[]; isError: boolean }> {
 		if (signal?.aborted) {
 			return {
@@ -35,6 +37,7 @@ export class ClientToolService {
 				if (resolved) return;
 				resolved = true;
 				this.pending.delete(id);
+				serverRequestManager.unregister(id);
 				if (signal && onAbort) {
 					signal.removeEventListener("abort", onAbort);
 				}
@@ -63,42 +66,30 @@ export class ClientToolService {
 				}
 			}
 
-			// Add entry only once, after abort listener is registered
 			this.pending.set(id, { resolve: safeResolve, timestamp: Date.now() });
+			serverRequestManager.registerClientTool({
+				id,
+				sessionId,
+				toolName,
+				args,
+				resolve: (content, isError) => {
+					safeResolve({ content, isError });
+					return true;
+				},
+				cancel: (reason) => {
+					safeResolve({
+						content: [{ type: "text", text: reason } as TextContent],
+						isError: true,
+					});
+					return true;
+				},
+			});
 		});
 	}
 
 	resolve(id: string, content: ToolResultContent[], isError: boolean) {
-		const entry = this.pending.get(id);
-		if (entry) {
-			this.pending.delete(id);
-			entry.resolve({ content, isError });
-			return true;
-		}
-		return false;
-	}
-
-	cleanup() {
-		const now = Date.now();
-		const timeout = 60 * 1000; // 60 seconds - VS Code API calls should complete quickly
-		for (const [id, entry] of this.pending.entries()) {
-			if (now - entry.timestamp > timeout) {
-				this.pending.delete(id);
-				entry.resolve({
-					content: [
-						{
-							type: "text",
-							text: "Client tool execution timed out after 60 seconds. The VS Code extension may not be responding.",
-						} as TextContent,
-					],
-					isError: true,
-				});
-			}
-		}
+		return serverRequestManager.resolveClientTool(id, content, isError);
 	}
 }
 
 export const clientToolService = new ClientToolService();
-
-// Run cleanup periodically
-setInterval(() => clientToolService.cleanup(), 60 * 1000).unref();

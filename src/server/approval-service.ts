@@ -3,20 +3,31 @@ import {
 	type ActionApprovalRequest,
 	ActionApprovalService,
 } from "../agent/action-approval.js";
-import { approvalStore } from "./approval-store.js";
+import { serverRequestManager } from "./server-request-manager.js";
 
 export class WebActionApprovalService extends ActionApprovalService {
+	constructor(
+		mode?: ConstructorParameters<typeof ActionApprovalService>[0],
+		private readonly sessionId?: string,
+	) {
+		super(mode);
+	}
+
 	override async requestApproval(
 		request: ActionApprovalRequest,
 		signal?: AbortSignal,
 	): Promise<ActionApprovalDecision> {
 		if (this.requiresUserInteraction()) {
-			approvalStore.register(request.id, this);
+			serverRequestManager.registerApproval({
+				sessionId: this.sessionId,
+				request,
+				service: this,
+			});
 		}
 		try {
 			return await super.requestApproval(request, signal);
 		} finally {
-			approvalStore.unregister(request.id);
+			serverRequestManager.unregister(request.id);
 		}
 	}
 }
