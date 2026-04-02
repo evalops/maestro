@@ -29,6 +29,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 
 ## Feature Design Docs
 - [Design Index](design/INDEX.md) — comprehensive design documentation for all major subsystems.
+  - [Headless Control Plane](design/HEADLESS_CONTROL_PLANE.md) — session/control-plane design for headless remote attach, server requests, and subscriber backpressure.
   - Core Systems: Tool System, Agent State Machine, Context Management, Session Persistence
   - User Interface: TUI Rendering, Web UI Architecture
   - Safety & Security: Safety Firewall, Enterprise RBAC, OAuth Authentication
