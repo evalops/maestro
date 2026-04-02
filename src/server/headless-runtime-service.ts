@@ -141,10 +141,6 @@ class HeadlessSubscriberMailbox {
 		this.emit();
 	}
 
-	prime(envelope: HeadlessRuntimeStreamEnvelope): void {
-		this.queue.push(envelope);
-	}
-
 	next(): HeadlessRuntimeStreamEnvelope | null {
 		const next = this.queuedReset ?? this.queue.shift() ?? null;
 		if (next?.type === "reset") {
