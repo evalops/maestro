@@ -10,6 +10,7 @@ import {
 	parseCommandArguments,
 	validateShellParams,
 } from "../tools/shell-utils.js";
+import { appendHeadlessOutput } from "./output-buffer.js";
 
 export interface HeadlessUtilityCommandStartRequest {
 	command_id: string;
@@ -65,14 +66,6 @@ export interface HeadlessUtilityCommandSnapshot {
 	shell_mode: HeadlessUtilityCommandShellMode;
 	pid?: number;
 	output: string;
-}
-
-function appendOutput(existing: string, chunk: string): string {
-	const next = `${existing}${chunk}`;
-	if (next.length <= 32_768) {
-		return next;
-	}
-	return next.slice(next.length - 32_768);
 }
 
 export class HeadlessUtilityCommandManager {
@@ -145,7 +138,7 @@ export class HeadlessUtilityCommandManager {
 
 		child.stdout?.on("data", (chunk: Buffer) => {
 			const content = chunk.toString("utf8");
-			active.output = appendOutput(active.output, content);
+			active.output = appendHeadlessOutput(active.output, content);
 			this.emit({
 				type: "output",
 				command_id: request.command_id,
@@ -155,7 +148,7 @@ export class HeadlessUtilityCommandManager {
 		});
 		child.stderr?.on("data", (chunk: Buffer) => {
 			const content = chunk.toString("utf8");
-			active.output = appendOutput(active.output, content);
+			active.output = appendHeadlessOutput(active.output, content);
 			this.emit({
 				type: "output",
 				command_id: request.command_id,
@@ -179,14 +172,19 @@ export class HeadlessUtilityCommandManager {
 		});
 	}
 
-	async terminate(commandId: string, force = false): Promise<void> {
+	async terminate(
+		commandId: string,
+		force = false,
+		reason?: string,
+	): Promise<void> {
 		const active = this.commands.get(commandId);
 		if (!active) {
-			throw new Error(`Utility command not found: ${commandId}`);
+			return;
 		}
-		active.reason = force
-			? "Force terminated by controller"
-			: "Terminated by controller";
+		active.reason =
+			reason ??
+			active.reason ??
+			(force ? "Force terminated by controller" : "Terminated by controller");
 		const pid = active.child.pid;
 		if (!pid) {
 			return;
@@ -205,9 +203,8 @@ export class HeadlessUtilityCommandManager {
 			if (!active) {
 				continue;
 			}
-			active.reason = reason;
 			try {
-				await this.terminate(commandId);
+				await this.terminate(commandId, false, reason);
 			} catch {
 				// Best-effort shutdown.
 			}

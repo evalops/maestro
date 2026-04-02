@@ -26,6 +26,7 @@ import type {
 	AssistantMessageEvent,
 	Attachment,
 } from "../agent/types.js";
+import { appendHeadlessOutput } from "../headless/output-buffer.js";
 import type { SessionManager } from "../session/manager.js";
 import { isSupportedImageFormat } from "../tools/image-processor.js";
 import { getCurrentBranch, isInsideGitRepository } from "../utils/git.js";
@@ -455,14 +456,6 @@ export function classifyHeadlessError(
 		return "protocol";
 	}
 	return fatal ? "fatal" : "tool";
-}
-
-function appendHeadlessOutput(existing: string, chunk: string): string {
-	const next = `${existing}${chunk}`;
-	if (next.length <= 32_768) {
-		return next;
-	}
-	return next.slice(next.length - 32_768);
 }
 
 export function buildHeadlessUsage(

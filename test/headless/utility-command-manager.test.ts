@@ -96,4 +96,46 @@ describe("HeadlessUtilityCommandManager", () => {
 			reason: "Terminated by controller",
 		});
 	});
+
+	it("treats terminate as a no-op after natural exit", async () => {
+		const events: Array<Record<string, unknown>> = [];
+		manager = new HeadlessUtilityCommandManager((event) => {
+			events.push(event as Record<string, unknown>);
+		});
+
+		manager.start({
+			command_id: "cmd_quick_exit",
+			command: `"${process.execPath}" -e "process.exit(0)"`,
+			shell_mode: "direct",
+		});
+
+		await waitForExit(events as Array<{ type: string }>);
+		await expect(manager.terminate("cmd_quick_exit")).resolves.toBeUndefined();
+		expect(events.filter((event) => event.type === "exited")).toHaveLength(1);
+	});
+
+	it("preserves explicit disposal reasons", async () => {
+		const events: Array<Record<string, unknown>> = [];
+		manager = new HeadlessUtilityCommandManager((event) => {
+			events.push(event as Record<string, unknown>);
+		});
+
+		manager.start({
+			command_id: "cmd_dispose",
+			command: `"${process.execPath}" -e "setInterval(() => {}, 1000)"`,
+			shell_mode: "direct",
+		});
+
+		await manager.dispose(
+			"Interrupted while utility command was still running",
+		);
+		await waitForExit(events as Array<{ type: string }>);
+
+		expect(events.at(-1)).toMatchObject({
+			type: "exited",
+			command_id: "cmd_dispose",
+			success: false,
+			reason: "Interrupted while utility command was still running",
+		});
+	});
 });
