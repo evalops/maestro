@@ -12,6 +12,7 @@ export interface HeadlessInProcessSendOptions {
 	scopeKey: string;
 	sessionId: string;
 	role?: "viewer" | "controller";
+	connectionId?: string | null;
 	subscriptionId?: string | null;
 	message: HeadlessToAgentMessage;
 }
@@ -89,11 +90,21 @@ export class HeadlessInProcessHost {
 		options: HeadlessInProcessSendOptions,
 	): Promise<HeadlessRuntimeSnapshot> {
 		const runtime = this.getRuntime(options.scopeKey, options.sessionId);
+		const snapshot = runtime.getSnapshot();
+		const controllerConnectionId =
+			options.connectionId ??
+			((options.role ?? "controller") === "controller"
+				? (snapshot.state.controller_connection_id ?? undefined)
+				: undefined);
 		runtime.assertCanSend(
 			options.role ?? "controller",
 			options.subscriptionId ?? undefined,
+			controllerConnectionId,
 		);
-		await runtime.send(options.message);
+		await runtime.send(options.message, {
+			connectionId: controllerConnectionId,
+			subscriptionId: options.subscriptionId ?? undefined,
+		});
 		return runtime.getSnapshot();
 	}
 

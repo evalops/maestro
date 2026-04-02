@@ -1,3 +1,4 @@
+import type { HeadlessConnectionRole } from "@evalops/contracts";
 import type {
 	ActionApprovalService,
 	ApprovalMode,
@@ -9,6 +10,7 @@ import {
 	type HeadlessClientCapabilities,
 	type HeadlessClientInfo,
 	type HeadlessClientToolResultMessage,
+	type HeadlessConnectionState,
 	type HeadlessFromAgentMessage,
 	type HeadlessInitMessage,
 	HeadlessProtocolTranslator,
@@ -51,6 +53,14 @@ const MAX_SUBSCRIPTION_IDLE_MS =
 		process.env.MAESTRO_HEADLESS_SUBSCRIPTION_IDLE_MS || "",
 		10,
 	) || 30 * 1000;
+const CONNECTION_HEARTBEAT_INTERVAL_MS =
+	Number.parseInt(
+		process.env.MAESTRO_HEADLESS_CONNECTION_HEARTBEAT_INTERVAL_MS || "",
+		10,
+	) || 15 * 1000;
+const MAX_CONNECTION_IDLE_MS =
+	Number.parseInt(process.env.MAESTRO_HEADLESS_CONNECTION_IDLE_MS || "", 10) ||
+	CONNECTION_HEARTBEAT_INTERVAL_MS * 3;
 const MAX_IDLE_MS =
 	Number.parseInt(process.env.MAESTRO_HEADLESS_RUNTIME_IDLE_MS || "", 10) ||
 	30 * 60 * 1000;
@@ -86,11 +96,23 @@ export interface HeadlessRuntimeResetEnvelope {
 }
 
 export interface HeadlessRuntimeSubscriptionSnapshot {
+	connection_id: string;
 	subscription_id: string;
 	role: "viewer" | "controller";
 	controller_lease_granted: boolean;
 	controller_subscription_id: string | null;
+	controller_connection_id: string | null;
+	lease_expires_at: string | null;
+	heartbeat_interval_ms: number;
 	snapshot: HeadlessRuntimeSnapshot;
+}
+
+export interface HeadlessRuntimeHeartbeatSnapshot {
+	connection_id: string;
+	controller_lease_granted: boolean;
+	controller_connection_id: string | null;
+	lease_expires_at: string | null;
+	heartbeat_interval_ms: number;
 }
 
 export type HeadlessRuntimeStreamEnvelope =
@@ -101,6 +123,10 @@ export type HeadlessRuntimeStreamEnvelope =
 
 type RuntimeListener = (envelope: HeadlessRuntimeStreamEnvelope) => void;
 type SubscriberListener = () => void;
+
+function createConnectionId(): string {
+	return `conn_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
 
 function createSubscriptionId(): string {
 	return `sub_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -117,6 +143,7 @@ class HeadlessSubscriberMailbox {
 		readonly id: string,
 		readonly role: "viewer" | "controller",
 		readonly explicit: boolean,
+		readonly connectionId: string,
 	) {
 		this.detachedAt = explicit ? Date.now() : null;
 	}
@@ -176,11 +203,25 @@ class HeadlessSubscriberMailbox {
 		);
 	}
 
+	isAttached(): boolean {
+		return this.attached;
+	}
+
 	private emit(): void {
 		for (const listener of this.listeners) {
 			listener();
 		}
 	}
+}
+
+interface HeadlessConnectionRecord {
+	id: string;
+	role: HeadlessConnectionRole;
+	clientProtocolVersion?: string;
+	clientInfo?: HeadlessClientInfo;
+	capabilities?: HeadlessClientCapabilities;
+	subscriptionIds: Set<string>;
+	lastSeenAt: number;
 }
 
 export interface HeadlessAttachedSubscription {
@@ -337,7 +378,8 @@ export class HeadlessSessionRuntime {
 		},
 	);
 	private readonly subscribers = new Map<string, HeadlessSubscriberMailbox>();
-	private controllerSubscriptionId: string | null = null;
+	private readonly connections = new Map<string, HeadlessConnectionRecord>();
+	private controllerConnectionId: string | null = null;
 	private lastInit: HeadlessInitMessage | null = null;
 	private running = false;
 	private disposed = false;
@@ -364,12 +406,6 @@ export class HeadlessSessionRuntime {
 			this.translator.buildReadyMessage(this.agent, this.sessionManager),
 		);
 		this.publish(this.translator.buildSessionInfoMessage(this.sessionManager));
-		this.updateConnectionMetadata({
-			clientProtocolVersion: options.clientProtocolVersion,
-			clientInfo: options.clientInfo,
-			capabilities: options.capabilities,
-			role: options.role,
-		});
 		this.unsubscribeServerRequestEvents = serverRequestManager.subscribe(
 			(event) => {
 				this.handleServerRequestEvent(event);
@@ -444,7 +480,8 @@ export class HeadlessSessionRuntime {
 			subscriber.detach();
 		}
 		this.subscribers.clear();
-		this.controllerSubscriptionId = null;
+		this.connections.clear();
+		this.controllerConnectionId = null;
 		this.cancelPendingServerRequests(
 			"Headless runtime disposed before request completed",
 		);
@@ -475,39 +512,220 @@ export class HeadlessSessionRuntime {
 		return this.broker.subscribe(listener);
 	}
 
+	private getConnectionById(
+		connectionId: string | null | undefined,
+	): HeadlessConnectionRecord | undefined {
+		return connectionId ? this.connections.get(connectionId) : undefined;
+	}
+
+	private getPreferredConnection(): HeadlessConnectionRecord | undefined {
+		if (this.controllerConnectionId) {
+			const controller = this.connections.get(this.controllerConnectionId);
+			if (controller) {
+				return controller;
+			}
+		}
+		return Array.from(this.connections.values()).sort(
+			(left, right) => right.lastSeenAt - left.lastSeenAt,
+		)[0];
+	}
+
+	private getControllerSubscriptionId(): string | null {
+		const controller = this.getConnectionById(this.controllerConnectionId);
+		if (!controller) {
+			return null;
+		}
+		for (const subscriptionId of controller.subscriptionIds) {
+			if (this.subscribers.get(subscriptionId)?.isAttached()) {
+				return subscriptionId;
+			}
+		}
+		return controller.subscriptionIds.values().next().value ?? null;
+	}
+
+	private getLeaseExpiryIso(connection: HeadlessConnectionRecord): string {
+		return new Date(
+			connection.lastSeenAt + MAX_CONNECTION_IDLE_MS,
+		).toISOString();
+	}
+
+	private touchConnection(connectionId: string): void {
+		const connection = this.connections.get(connectionId);
+		if (!connection) {
+			return;
+		}
+		connection.lastSeenAt = Date.now();
+		this.updatedAt = connection.lastSeenAt;
+	}
+
+	private countAttachedSubscriptions(connectionId: string): number {
+		let attached = 0;
+		for (const subscriptionId of this.connections.get(connectionId)
+			?.subscriptionIds ?? []) {
+			if (this.subscribers.get(subscriptionId)?.isAttached()) {
+				attached += 1;
+			}
+		}
+		return attached;
+	}
+
+	private buildConnectionState(
+		connection: HeadlessConnectionRecord,
+	): HeadlessConnectionState {
+		return {
+			connection_id: connection.id,
+			role: connection.role,
+			client_protocol_version: connection.clientProtocolVersion,
+			client_info: connection.clientInfo,
+			capabilities: connection.capabilities,
+			subscription_count: connection.subscriptionIds.size,
+			attached_subscription_count: this.countAttachedSubscriptions(
+				connection.id,
+			),
+			controller_lease_granted: this.controllerConnectionId === connection.id,
+			lease_expires_at: this.getLeaseExpiryIso(connection),
+		};
+	}
+
+	private syncConnectionState(): void {
+		const preferred = this.getPreferredConnection();
+		this.state.connection_count = this.connections.size;
+		this.state.connections = Array.from(this.connections.values())
+			.map((connection) => this.buildConnectionState(connection))
+			.sort((left, right) =>
+				left.connection_id.localeCompare(right.connection_id),
+			);
+		this.state.controller_connection_id = this.controllerConnectionId;
+		this.state.controller_subscription_id = this.getControllerSubscriptionId();
+		this.state.client_protocol_version = preferred?.clientProtocolVersion;
+		this.state.client_info = preferred?.clientInfo;
+		this.state.capabilities = preferred?.capabilities;
+		this.state.connection_role = preferred?.role;
+	}
+
+	private emitConnectionInfo(connectionId?: string): void {
+		this.syncConnectionState();
+		const connection =
+			this.getConnectionById(connectionId) ?? this.getPreferredConnection();
+		if (!connection) {
+			return;
+		}
+		this.publish(
+			this.translator.buildConnectionInfoMessage({
+				connection_id: connection.id,
+				protocol_version: connection.clientProtocolVersion,
+				client_info: connection.clientInfo,
+				capabilities: connection.capabilities,
+				role: connection.role,
+				connection_count: this.state.connection_count,
+				controller_connection_id: this.controllerConnectionId,
+				lease_expires_at: this.getLeaseExpiryIso(connection),
+				connections: this.state.connections,
+			}),
+		);
+	}
+
+	private ensureConnection(metadata: {
+		connectionId?: string;
+		role?: HeadlessConnectionRole;
+		clientProtocolVersion?: string;
+		clientInfo?: HeadlessClientInfo;
+		capabilities?: HeadlessClientCapabilities;
+	}): HeadlessConnectionRecord {
+		const role = metadata.role ?? "controller";
+		const existing = metadata.connectionId
+			? this.connections.get(metadata.connectionId)
+			: undefined;
+		if (metadata.connectionId && !existing) {
+			throw new Error("Headless connection not found");
+		}
+		const connection =
+			existing ??
+			({
+				id: metadata.connectionId ?? createConnectionId(),
+				role,
+				subscriptionIds: new Set<string>(),
+				lastSeenAt: Date.now(),
+			} satisfies HeadlessConnectionRecord);
+		if (existing && metadata.role && existing.role !== metadata.role) {
+			throw new Error(
+				"Headless connection role does not match subscription role",
+			);
+		}
+		connection.clientProtocolVersion =
+			metadata.clientProtocolVersion ?? connection.clientProtocolVersion;
+		connection.clientInfo = metadata.clientInfo ?? connection.clientInfo;
+		connection.capabilities = metadata.capabilities ?? connection.capabilities;
+		connection.lastSeenAt = Date.now();
+		this.connections.set(connection.id, connection);
+		return connection;
+	}
+
 	createSubscription(options?: {
-		role?: "viewer" | "controller";
+		connectionId?: string;
+		role?: HeadlessConnectionRole;
 		explicit?: boolean;
+		announceConnectionInfo?: boolean;
 		takeControl?: boolean;
+		clientProtocolVersion?: string;
+		clientInfo?: HeadlessClientInfo;
+		capabilities?: HeadlessClientCapabilities;
 	}): HeadlessRuntimeSubscriptionSnapshot {
 		const role = options?.role ?? "controller";
 		const explicit = options?.explicit ?? true;
+		const announceConnectionInfo = options?.announceConnectionInfo ?? true;
+		const reusableControllerConnectionId =
+			!options?.connectionId &&
+			role === "controller" &&
+			this.controllerConnectionId &&
+			this.connections.get(this.controllerConnectionId)?.subscriptionIds
+				.size === 0
+				? this.controllerConnectionId
+				: undefined;
+		const connection = this.ensureConnection({
+			connectionId: options?.connectionId ?? reusableControllerConnectionId,
+			role,
+			clientProtocolVersion: options?.clientProtocolVersion,
+			clientInfo: options?.clientInfo,
+			capabilities: options?.capabilities,
+		});
 		if (
 			explicit &&
 			role === "controller" &&
-			this.controllerSubscriptionId &&
+			this.controllerConnectionId &&
+			this.controllerConnectionId !== connection.id &&
 			!options?.takeControl
 		) {
-			throw new Error("Controller lease is already held by another subscriber");
+			throw new Error("Controller lease is already held by another connection");
 		}
 		const subscriber = new HeadlessSubscriberMailbox(
 			createSubscriptionId(),
 			role,
 			explicit,
+			connection.id,
 		);
 		this.subscribers.set(subscriber.id, subscriber);
+		connection.subscriptionIds.add(subscriber.id);
 		if (explicit && role === "controller") {
-			this.controllerSubscriptionId = subscriber.id;
+			this.controllerConnectionId = connection.id;
 		}
 		this.updatedAt = Date.now();
+		if (announceConnectionInfo) {
+			this.emitConnectionInfo(connection.id);
+		} else {
+			this.syncConnectionState();
+		}
 		this.syncSubscriptionState(explicit);
 		return {
+			connection_id: connection.id,
 			subscription_id: subscriber.id,
 			role,
 			controller_lease_granted:
-				role === "controller" &&
-				this.controllerSubscriptionId === subscriber.id,
-			controller_subscription_id: this.controllerSubscriptionId,
+				role === "controller" && this.controllerConnectionId === connection.id,
+			controller_subscription_id: this.getControllerSubscriptionId(),
+			controller_connection_id: this.controllerConnectionId,
+			lease_expires_at: this.getLeaseExpiryIso(connection),
+			heartbeat_interval_ms: CONNECTION_HEARTBEAT_INTERVAL_MS,
 			snapshot: this.getSnapshot(),
 		};
 	}
@@ -520,7 +738,9 @@ export class HeadlessSessionRuntime {
 			return null;
 		}
 		this.updatedAt = Date.now();
+		this.touchConnection(subscriber.connectionId);
 		subscriber.attach();
+		this.syncSubscriptionState(false);
 		return {
 			id: subscriber.id,
 			next: () => subscriber.next(),
@@ -543,6 +763,7 @@ export class HeadlessSessionRuntime {
 		const created = this.createSubscription({
 			role: options.role ?? "controller",
 			explicit: false,
+			announceConnectionInfo: false,
 		});
 		const attached = this.attachSubscription(created.subscription_id);
 		if (!attached) {
@@ -580,8 +801,13 @@ export class HeadlessSessionRuntime {
 		}
 		subscriber.detach();
 		this.subscribers.delete(subscriptionId);
-		if (this.controllerSubscriptionId === subscriptionId) {
-			this.controllerSubscriptionId = null;
+		const connection = this.connections.get(subscriber.connectionId);
+		connection?.subscriptionIds.delete(subscriptionId);
+		if (connection && connection.subscriptionIds.size === 0) {
+			this.connections.delete(connection.id);
+			if (this.controllerConnectionId === connection.id) {
+				this.controllerConnectionId = null;
+			}
 		}
 		this.updatedAt = Date.now();
 		this.syncSubscriptionState(publish && subscriber.explicit);
@@ -591,38 +817,52 @@ export class HeadlessSessionRuntime {
 	assertCanSend(
 		role: "viewer" | "controller",
 		subscriptionId?: string | null,
+		connectionId?: string | null,
 	): void {
 		if (role === "viewer") {
 			throw new Error("Viewer headless connections cannot send messages");
 		}
-		if (!subscriptionId) {
-			if (this.controllerSubscriptionId) {
+		const subscriber = subscriptionId
+			? this.subscribers.get(subscriptionId)
+			: undefined;
+		const connection = subscriber
+			? this.connections.get(subscriber.connectionId)
+			: this.getConnectionById(connectionId);
+		if (!subscriptionId && !connection) {
+			if (this.controllerConnectionId) {
 				throw new Error(
-					"Controller lease is currently held by another subscriber",
+					"Controller lease is currently held by another connection",
 				);
 			}
 			return;
 		}
-		const subscriber = this.subscribers.get(subscriptionId);
-		if (!subscriber) {
+		if (subscriptionId && !subscriber) {
 			throw new Error("Headless subscriber not found");
 		}
-		if (subscriber.role !== "controller") {
+		if (!connection) {
+			throw new Error("Headless connection not found");
+		}
+		if (subscriber && subscriber.role !== "controller") {
 			throw new Error("Headless subscriber does not have controller access");
 		}
+		if (connection.role !== "controller") {
+			throw new Error("Headless connection does not have controller access");
+		}
 		if (
-			this.controllerSubscriptionId &&
-			this.controllerSubscriptionId !== subscriptionId
+			this.controllerConnectionId &&
+			this.controllerConnectionId !== connection.id
 		) {
 			throw new Error(
-				"Controller lease is currently held by another subscriber",
+				"Controller lease is currently held by another connection",
 			);
 		}
-		if (!this.controllerSubscriptionId && subscriber.explicit) {
-			this.controllerSubscriptionId = subscriptionId;
+		if (!this.controllerConnectionId) {
+			this.controllerConnectionId = connection.id;
+			this.emitConnectionInfo(connection.id);
 			this.syncSubscriptionState(true);
 		}
-		subscriber.touch();
+		this.touchConnection(connection.id);
+		subscriber?.touch();
 	}
 
 	hasSubscription(subscriptionId: string): boolean {
@@ -640,6 +880,32 @@ export class HeadlessSessionRuntime {
 		}
 	}
 
+	expireIdleConnections(now = Date.now()): void {
+		for (const [connectionId, connection] of Array.from(
+			this.connections.entries(),
+		)) {
+			const hasAttachedSubscription = Array.from(
+				connection.subscriptionIds,
+			).some((subscriptionId) =>
+				this.subscribers.get(subscriptionId)?.isAttached(),
+			);
+			if (hasAttachedSubscription) {
+				continue;
+			}
+			if (now - connection.lastSeenAt <= MAX_CONNECTION_IDLE_MS) {
+				continue;
+			}
+			for (const subscriptionId of Array.from(connection.subscriptionIds)) {
+				this.unsubscribe(subscriptionId, false);
+			}
+			this.connections.delete(connectionId);
+			if (this.controllerConnectionId === connectionId) {
+				this.controllerConnectionId = null;
+			}
+			this.syncSubscriptionState(true);
+		}
+	}
+
 	heartbeat(): HeadlessRuntimeHeartbeatEnvelope {
 		return {
 			type: "heartbeat",
@@ -647,7 +913,70 @@ export class HeadlessSessionRuntime {
 		};
 	}
 
+	heartbeatConnection(input: {
+		connectionId?: string | null;
+		subscriptionId?: string | null;
+	}): HeadlessRuntimeHeartbeatSnapshot {
+		const subscriber = input.subscriptionId
+			? this.subscribers.get(input.subscriptionId)
+			: undefined;
+		const connection = subscriber
+			? this.connections.get(subscriber.connectionId)
+			: this.getConnectionById(input.connectionId);
+		if (!connection) {
+			throw new Error("Headless connection not found");
+		}
+		this.touchConnection(connection.id);
+		this.syncSubscriptionState(false);
+		return {
+			connection_id: connection.id,
+			controller_lease_granted: this.controllerConnectionId === connection.id,
+			controller_connection_id: this.controllerConnectionId,
+			lease_expires_at: this.getLeaseExpiryIso(connection),
+			heartbeat_interval_ms: CONNECTION_HEARTBEAT_INTERVAL_MS,
+		};
+	}
+
+	registerConnection(metadata: {
+		connectionId?: string;
+		clientProtocolVersion?: string;
+		clientInfo?: HeadlessClientInfo;
+		capabilities?: HeadlessClientCapabilities;
+		role?: HeadlessConnectionRole;
+		takeControl?: boolean;
+	}): HeadlessRuntimeHeartbeatSnapshot {
+		const role = metadata.role ?? "controller";
+		const connection = this.ensureConnection({
+			connectionId: metadata.connectionId,
+			role,
+			clientProtocolVersion: metadata.clientProtocolVersion,
+			clientInfo: metadata.clientInfo,
+			capabilities: metadata.capabilities,
+		});
+		if (
+			role === "controller" &&
+			this.controllerConnectionId &&
+			this.controllerConnectionId !== connection.id &&
+			!metadata.takeControl
+		) {
+			throw new Error("Controller lease is already held by another connection");
+		}
+		if (role === "controller") {
+			this.controllerConnectionId = connection.id;
+		}
+		this.emitConnectionInfo(connection.id);
+		this.syncSubscriptionState(false);
+		return {
+			connection_id: connection.id,
+			controller_lease_granted: this.controllerConnectionId === connection.id,
+			controller_connection_id: this.controllerConnectionId,
+			lease_expires_at: this.getLeaseExpiryIso(connection),
+			heartbeat_interval_ms: CONNECTION_HEARTBEAT_INTERVAL_MS,
+		};
+	}
+
 	updateConnectionMetadata(metadata: {
+		connectionId?: string;
 		clientProtocolVersion?: string;
 		clientInfo?: HeadlessClientInfo;
 		capabilities?: HeadlessClientCapabilities;
@@ -661,17 +990,23 @@ export class HeadlessSessionRuntime {
 		) {
 			return;
 		}
-		this.publish(
-			this.translator.buildConnectionInfoMessage({
-				protocol_version: metadata.clientProtocolVersion,
-				client_info: metadata.clientInfo,
-				capabilities: metadata.capabilities,
-				role: metadata.role,
-			}),
-		);
+		const connection = this.ensureConnection({
+			connectionId: metadata.connectionId,
+			role: metadata.role,
+			clientProtocolVersion: metadata.clientProtocolVersion,
+			clientInfo: metadata.clientInfo,
+			capabilities: metadata.capabilities,
+		});
+		this.emitConnectionInfo(connection.id);
 	}
 
-	async send(msg: HeadlessToAgentMessage): Promise<void> {
+	async send(
+		msg: HeadlessToAgentMessage,
+		metadata?: {
+			connectionId?: string | null;
+			subscriptionId?: string | null;
+		},
+	): Promise<void> {
 		if (this.disposed) {
 			throw new Error("Headless runtime is no longer available");
 		}
@@ -680,7 +1015,12 @@ export class HeadlessSessionRuntime {
 		switch (msg.type) {
 			case "hello": {
 				applyOutgoingHeadlessMessage(this.state, msg);
+				const subscriber = metadata?.subscriptionId
+					? this.subscribers.get(metadata.subscriptionId)
+					: undefined;
 				this.updateConnectionMetadata({
+					connectionId:
+						subscriber?.connectionId ?? metadata?.connectionId ?? undefined,
 					clientProtocolVersion: msg.protocol_version,
 					clientInfo: msg.client_info,
 					capabilities: msg.capabilities,
@@ -938,8 +1278,8 @@ export class HeadlessSessionRuntime {
 	}
 
 	private syncSubscriptionState(publish: boolean): void {
+		this.syncConnectionState();
 		this.state.subscriber_count = this.subscribers.size;
-		this.state.controller_subscription_id = this.controllerSubscriptionId;
 		if (publish) {
 			this.publishSnapshot();
 		}
@@ -1088,12 +1428,6 @@ export class HeadlessRuntimeService {
 		if (options.sessionId) {
 			const existing = this.getRuntime(options.scope_key, options.sessionId);
 			if (existing) {
-				existing.updateConnectionMetadata({
-					clientProtocolVersion: options.clientProtocolVersion,
-					clientInfo: options.clientInfo,
-					capabilities: options.capabilities,
-					role: options.role,
-				});
 				return existing;
 			}
 		}
@@ -1115,6 +1449,19 @@ export class HeadlessRuntimeService {
 			context: options.context,
 			sessionManager: options.sessionManager,
 		});
+		if (
+			options.clientProtocolVersion ||
+			options.clientInfo ||
+			options.capabilities ||
+			options.role
+		) {
+			runtime.registerConnection({
+				clientProtocolVersion: options.clientProtocolVersion,
+				clientInfo: options.clientInfo,
+				capabilities: options.capabilities,
+				role: options.role,
+			});
+		}
 		this.runtimes.set(runtime.key(), runtime);
 		return runtime;
 	}
@@ -1134,6 +1481,7 @@ export class HeadlessRuntimeService {
 		const now = Date.now();
 		for (const [key, runtime] of this.runtimes.entries()) {
 			runtime.expireIdleSubscriptions(now);
+			runtime.expireIdleConnections(now);
 			if (runtime.isDisposed() || runtime.isIdle(now)) {
 				await runtime.dispose();
 				this.runtimes.delete(key);

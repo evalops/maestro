@@ -33,6 +33,7 @@ import {
 import {
 	handleHeadlessSessionCreate,
 	handleHeadlessSessionEvents,
+	handleHeadlessSessionHeartbeat,
 	handleHeadlessSessionMessage,
 	handleHeadlessSessionState,
 	handleHeadlessSessionSubscribe,
@@ -133,6 +134,12 @@ export function createRoutes(context: WebServerContext): Route[] {
 			path: "/api/headless/sessions/:id/unsubscribe",
 			handler: (req, res, params) =>
 				handleHeadlessSessionUnsubscribe(req, res, context, params),
+		},
+		{
+			method: "POST",
+			path: "/api/headless/sessions/:id/heartbeat",
+			handler: (req, res, params) =>
+				handleHeadlessSessionHeartbeat(req, res, context, params),
 		},
 		{
 			method: "POST",
