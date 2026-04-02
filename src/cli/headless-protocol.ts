@@ -82,6 +82,30 @@ export interface HeadlessClientToolResultMessage {
 	is_error: boolean;
 }
 
+export interface HeadlessServerRequestResponseMessage {
+	type: "server_request_response";
+	request_id: string;
+	request_type: "approval" | "client_tool" | "user_input";
+	approved?: boolean;
+	result?: {
+		success: boolean;
+		output: string;
+		error?: string;
+	};
+	content?: Array<
+		| {
+				type: "text";
+				text: string;
+		  }
+		| {
+				type: "image";
+				data: string;
+				mimeType: string;
+		  }
+	>;
+	is_error?: boolean;
+}
+
 export interface HeadlessCancelMessage {
 	type: "cancel";
 }
@@ -97,6 +121,7 @@ export type HeadlessToAgentMessage =
 	| HeadlessInterruptMessage
 	| HeadlessToolResponseMessage
 	| HeadlessClientToolResultMessage
+	| HeadlessServerRequestResponseMessage
 	| HeadlessCancelMessage
 	| HeadlessShutdownMessage;
 
@@ -898,6 +923,26 @@ export function applyOutgoingHeadlessMessage(
 			state.pending_user_inputs = state.pending_user_inputs.filter(
 				(request) => request.call_id !== msg.call_id,
 			);
+			return;
+		case "server_request_response":
+			if (msg.request_type === "approval") {
+				state.pending_approvals = state.pending_approvals.filter(
+					(approval) => approval.call_id !== msg.request_id,
+				);
+				if (!msg.approved) {
+					state.tracked_tools = state.tracked_tools.filter(
+						(tool) => tool.call_id !== msg.request_id,
+					);
+				}
+			} else if (msg.request_type === "client_tool") {
+				state.pending_client_tools = state.pending_client_tools.filter(
+					(request) => request.call_id !== msg.request_id,
+				);
+			} else {
+				state.pending_user_inputs = state.pending_user_inputs.filter(
+					(request) => request.call_id !== msg.request_id,
+				);
+			}
 			return;
 		case "interrupt":
 		case "cancel":

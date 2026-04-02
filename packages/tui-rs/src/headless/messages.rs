@@ -184,6 +184,19 @@ pub enum ToAgentMessage {
         content: Vec<ClientToolResultContent>,
         is_error: bool,
     },
+    /// Generic response to a pending server request
+    ServerRequestResponse {
+        request_id: String,
+        request_type: ServerRequestType,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approved: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<ToolResult>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<Vec<ClientToolResultContent>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
     /// Cancel the current operation
     Cancel,
     /// Shut down the agent
@@ -694,6 +707,27 @@ impl AgentState {
                 self.pending_client_tools.retain(|p| p.call_id != *call_id);
                 self.pending_user_inputs.retain(|p| p.call_id != *call_id);
             }
+            ToAgentMessage::ServerRequestResponse {
+                request_id,
+                request_type,
+                approved,
+                ..
+            } => match request_type {
+                ServerRequestType::Approval => {
+                    self.pending_approvals.retain(|p| p.call_id != *request_id);
+                    if approved != &Some(true) {
+                        self.tracked_tools.remove(request_id);
+                    }
+                }
+                ServerRequestType::ClientTool => {
+                    self.pending_client_tools
+                        .retain(|p| p.call_id != *request_id);
+                }
+                ServerRequestType::UserInput => {
+                    self.pending_user_inputs
+                        .retain(|p| p.call_id != *request_id);
+                }
+            },
             ToAgentMessage::Shutdown => {
                 self.current_response = None;
                 self.pending_approvals.clear();
@@ -1360,6 +1394,24 @@ mod tests {
     }
 
     #[test]
+    fn serialize_server_request_response_message() {
+        let msg = ToAgentMessage::ServerRequestResponse {
+            request_id: "call_user_input".to_string(),
+            request_type: ServerRequestType::UserInput,
+            approved: None,
+            result: None,
+            content: Some(vec![ClientToolResultContent::Text {
+                text: "Use Zod".to_string(),
+            }]),
+            is_error: Some(false),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"server_request_response""#));
+        assert!(json.contains(r#""request_id":"call_user_input""#));
+        assert!(json.contains(r#""request_type":"user_input""#));
+    }
+
+    #[test]
     fn state_handles_response_stream() {
         let mut state = AgentState::default();
         state.handle_message(FromAgentMessage::Ready {
@@ -1662,6 +1714,43 @@ mod tests {
         });
 
         assert!(resolved.is_none());
+        assert!(state.pending_user_inputs.is_empty());
+        assert!(state.tracked_tools.contains_key("call_user_input"));
+    }
+
+    #[test]
+    fn state_clears_user_input_on_sent_generic_server_request_response() {
+        let mut state = AgentState::default();
+
+        state.handle_message(FromAgentMessage::ServerRequest {
+            request_id: "call_user_input".to_string(),
+            request_type: ServerRequestType::UserInput,
+            call_id: "call_user_input".to_string(),
+            tool: "ask_user".to_string(),
+            args: serde_json::json!({
+                "questions": [{
+                    "header": "Stack",
+                    "question": "Which schema library should we use?",
+                    "options": [{
+                        "label": "Zod",
+                        "description": "Use Zod schemas"
+                    }]
+                }]
+            }),
+            reason: "Agent requested structured user input".to_string(),
+        });
+
+        state.handle_sent_message(&ToAgentMessage::ServerRequestResponse {
+            request_id: "call_user_input".to_string(),
+            request_type: ServerRequestType::UserInput,
+            approved: None,
+            result: None,
+            content: Some(vec![ClientToolResultContent::Text {
+                text: "Use Zod".to_string(),
+            }]),
+            is_error: Some(false),
+        });
+
         assert!(state.pending_user_inputs.is_empty());
         assert!(state.tracked_tools.contains_key("call_user_input"));
     }

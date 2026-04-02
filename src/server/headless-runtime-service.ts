@@ -8,10 +8,12 @@ import {
 	HEADLESS_PROTOCOL_VERSION,
 	type HeadlessClientCapabilities,
 	type HeadlessClientInfo,
+	type HeadlessClientToolResultMessage,
 	type HeadlessFromAgentMessage,
 	type HeadlessInitMessage,
 	HeadlessProtocolTranslator,
 	type HeadlessRuntimeState,
+	type HeadlessServerRequestResponseMessage,
 	type HeadlessToAgentMessage,
 	applyIncomingHeadlessMessage,
 	applyInitMessage,
@@ -431,39 +433,21 @@ export class HeadlessSessionRuntime {
 				this.publishSnapshot();
 				return;
 			case "tool_response":
-				{
-					const reason = msg.approved
-						? (msg.result?.output ?? "Approved")
-						: (msg.result?.error ?? "Denied by user");
-					const resolved = serverRequestManager.resolveApproval(msg.call_id, {
-						approved: msg.approved,
-						reason,
-						resolvedBy: "user",
-					});
-					if (!resolved) {
-						throw new Error(
-							`No pending approval found for call_id: ${msg.call_id}`,
-						);
-					}
-				}
+				this.resolveLegacyToolResponse(msg);
 				applyOutgoingHeadlessMessage(this.state, msg);
 				this.publishSnapshot();
 				return;
 			case "client_tool_result": {
-				const resolved = clientToolService.resolve(
-					msg.call_id,
-					msg.content,
-					msg.is_error,
-				);
-				if (!resolved) {
-					throw new Error(
-						`No pending client tool request found for call_id: ${msg.call_id}`,
-					);
-				}
+				this.resolveLegacyClientToolResult(msg);
 				applyOutgoingHeadlessMessage(this.state, msg);
 				this.publishSnapshot();
 				return;
 			}
+			case "server_request_response":
+				this.resolveServerRequestResponse(msg);
+				applyOutgoingHeadlessMessage(this.state, msg);
+				this.publishSnapshot();
+				return;
 			case "shutdown":
 				this.cancelPendingServerRequests("Shutdown before request completed");
 				applyOutgoingHeadlessMessage(this.state, msg);
@@ -623,6 +607,81 @@ export class HeadlessSessionRuntime {
 			reason: event.reason,
 			resolved_by: event.resolvedBy,
 		});
+	}
+
+	private resolveLegacyToolResponse(
+		msg: HeadlessToAgentMessage & { type: "tool_response" },
+	): void {
+		const reason = msg.approved
+			? (msg.result?.output ?? "Approved")
+			: (msg.result?.error ?? "Denied by user");
+		const resolved = serverRequestManager.resolveApproval(msg.call_id, {
+			approved: msg.approved,
+			reason,
+			resolvedBy: "user",
+		});
+		if (!resolved) {
+			throw new Error(`No pending approval found for call_id: ${msg.call_id}`);
+		}
+	}
+
+	private resolveLegacyClientToolResult(
+		msg: HeadlessClientToolResultMessage,
+	): void {
+		const resolved = clientToolService.resolve(
+			msg.call_id,
+			msg.content,
+			msg.is_error,
+		);
+		if (!resolved) {
+			throw new Error(
+				`No pending client tool request found for call_id: ${msg.call_id}`,
+			);
+		}
+	}
+
+	private resolveServerRequestResponse(
+		msg: HeadlessServerRequestResponseMessage,
+	): void {
+		const request = serverRequestManager.get(msg.request_id);
+		if (!request) {
+			throw new Error(
+				`No pending server request found for request_id: ${msg.request_id}`,
+			);
+		}
+		if (request.kind !== msg.request_type) {
+			throw new Error(
+				`Pending request ${msg.request_id} is ${request.kind}, not ${msg.request_type}`,
+			);
+		}
+
+		if (msg.request_type === "approval") {
+			const reason = msg.approved
+				? (msg.result?.output ?? "Approved")
+				: (msg.result?.error ?? "Denied by user");
+			const resolved = serverRequestManager.resolveApproval(msg.request_id, {
+				approved: msg.approved ?? false,
+				reason,
+				resolvedBy: "user",
+			});
+			if (!resolved) {
+				throw new Error(
+					`No pending approval found for request_id: ${msg.request_id}`,
+				);
+			}
+			return;
+		}
+
+		const resolved = clientToolService.resolve(
+			msg.request_id,
+			msg.content ?? [],
+			msg.is_error ?? false,
+		);
+		if (!resolved) {
+			throw new Error(
+				`No pending client tool request found for request_id: ${msg.request_id}`,
+			);
+		}
 	}
 }
 

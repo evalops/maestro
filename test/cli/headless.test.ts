@@ -779,6 +779,63 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
+	it("clears pending requests on outbound generic server request responses", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "call_user_input",
+			request_type: "user_input",
+			call_id: "call_user_input",
+			tool: "ask_user",
+			args: {
+				questions: [
+					{
+						header: "Stack",
+						question: "Which schema library should we use?",
+						options: [
+							{
+								label: "Zod",
+								description: "Use Zod schemas",
+							},
+						],
+					},
+				],
+			},
+			reason: "Agent requested structured user input",
+		});
+
+		applyOutgoingHeadlessMessage(state, {
+			type: "server_request_response",
+			request_id: "call_user_input",
+			request_type: "user_input",
+			content: [{ type: "text", text: "Use Zod" }],
+			is_error: false,
+		});
+
+		expect(state.pending_user_inputs).toEqual([]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_user_input",
+				tool: "ask_user",
+				args: {
+					questions: [
+						{
+							header: "Stack",
+							question: "Which schema library should we use?",
+							options: [
+								{
+									label: "Zod",
+									description: "Use Zod schemas",
+								},
+							],
+						},
+					],
+				},
+			},
+		]);
+	});
+
 	it("preserves tracked tools on approved server_request_resolved messages", () => {
 		const state = createHeadlessRuntimeState();
 

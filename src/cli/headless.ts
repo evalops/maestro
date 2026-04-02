@@ -206,6 +206,49 @@ export async function runHeadlessMode(
 					break;
 				}
 
+				case "server_request_response":
+					if (msg.request_type === "approval") {
+						if (approvalService) {
+							if (msg.approved) {
+								const resolved = approvalService.approve(msg.request_id);
+								if (!resolved) {
+									sendError(
+										`No pending approval found for request_id: ${msg.request_id}`,
+										false,
+									);
+								}
+							} else {
+								const reason = msg.result?.error ?? "Denied by user";
+								const resolved = approvalService.deny(msg.request_id, reason);
+								if (!resolved) {
+									sendError(
+										`No pending approval found for request_id: ${msg.request_id}`,
+										false,
+									);
+								}
+							}
+						} else {
+							sendMessage({
+								type: "status",
+								message: "Tool response ignored (auto-approval mode)",
+							});
+						}
+					} else {
+						const resolved = clientToolService.resolve(
+							msg.request_id,
+							msg.content ?? [],
+							msg.is_error ?? false,
+						);
+						if (!resolved) {
+							sendError(
+								`No pending client tool request found for request_id: ${msg.request_id}`,
+								false,
+							);
+						}
+					}
+					applyOutgoingHeadlessMessage(state, msg);
+					break;
+
 				case "shutdown":
 					sendPendingRequestCancellations("Shutdown before request completed");
 					applyOutgoingHeadlessMessage(state, msg);

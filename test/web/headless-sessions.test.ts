@@ -1264,6 +1264,89 @@ describe("headless session handlers", () => {
 		}
 	});
 
+	it("accepts generic server_request_response messages for user input requests", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval", "user_input"],
+				},
+				context,
+				sessionManager,
+			});
+
+			const resultPromise = clientToolService.requestExecution(
+				"call_user_input_generic",
+				"ask_user",
+				{
+					questions: [
+						{
+							header: "Stack",
+							question: "Which schema library should we use?",
+							options: [
+								{
+									label: "Zod",
+									description: "Use Zod schemas",
+								},
+							],
+						},
+					],
+				},
+				undefined,
+				runtime.id(),
+			);
+
+			fakeAgent.emit({
+				type: "client_tool_request",
+				toolCallId: "call_user_input_generic",
+				toolName: "ask_user",
+				args: {
+					questions: [
+						{
+							header: "Stack",
+							question: "Which schema library should we use?",
+							options: [
+								{
+									label: "Zod",
+									description: "Use Zod schemas",
+								},
+							],
+						},
+					],
+				},
+			});
+
+			await runtime.send({
+				type: "server_request_response",
+				request_id: "call_user_input_generic",
+				request_type: "user_input",
+				content: [{ type: "text", text: "Use Zod" }],
+				is_error: false,
+			});
+
+			await expect(resultPromise).resolves.toEqual({
+				content: [{ type: "text", text: "Use Zod" }],
+				isError: false,
+			});
+
+			expect(runtime.getSnapshot().state.pending_user_inputs).toEqual([]);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("streams a snapshot envelope on initial SSE attach", () => {
 		const snapshot: HeadlessRuntimeSnapshot = {
 			protocolVersion: HEADLESS_PROTOCOL_VERSION,
