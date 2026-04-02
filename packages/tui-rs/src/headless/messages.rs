@@ -205,7 +205,7 @@ pub enum ApprovalMode {
 }
 
 /// Result of a tool execution
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolResult {
     pub success: bool,
     pub output: String,
@@ -337,7 +337,7 @@ pub enum FromAgentMessage {
 }
 
 /// Token usage statistics
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -454,6 +454,8 @@ pub struct AgentState {
     pub pending_approvals: Vec<PendingApproval>,
     /// Active tool executions
     pub active_tools: HashMap<String, ActiveTool>,
+    /// Tracks tool metadata until a tool run completes, even when approval is not required.
+    pub tracked_tools: HashMap<String, PendingApproval>,
     /// Last error message
     pub last_error: Option<String>,
     /// Last structured error type
@@ -471,7 +473,7 @@ pub struct AgentState {
 }
 
 /// A response currently being streamed
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StreamingResponse {
     pub response_id: String,
     pub text: String,
@@ -500,7 +502,7 @@ impl StreamingResponse {
 }
 
 /// A tool call pending approval
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PendingApproval {
     pub call_id: String,
     pub tool: String,
@@ -508,7 +510,7 @@ pub struct PendingApproval {
 }
 
 /// A tool currently executing
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ActiveTool {
     pub call_id: String,
     pub tool: String,
@@ -517,6 +519,43 @@ pub struct ActiveTool {
 }
 
 impl AgentState {
+    /// Handle an outbound message and update optimistic local state.
+    pub fn handle_sent_message(&mut self, msg: &ToAgentMessage) {
+        match msg {
+            ToAgentMessage::Init { .. } => {}
+            ToAgentMessage::Prompt { .. } => {
+                self.current_response = None;
+                self.last_error = None;
+                self.last_error_type = None;
+                self.last_status = None;
+                self.is_responding = true;
+            }
+            ToAgentMessage::Interrupt | ToAgentMessage::Cancel => {
+                self.current_response = None;
+                self.pending_approvals.clear();
+                self.active_tools.clear();
+                self.tracked_tools.clear();
+                self.is_responding = false;
+            }
+            ToAgentMessage::ToolResponse {
+                call_id, approved, ..
+            } => {
+                let _ = self.remove_pending_approval(call_id);
+                if !approved {
+                    self.tracked_tools.remove(call_id);
+                }
+            }
+            ToAgentMessage::Shutdown => {
+                self.current_response = None;
+                self.pending_approvals.clear();
+                self.active_tools.clear();
+                self.tracked_tools.clear();
+                self.is_ready = false;
+                self.is_responding = false;
+            }
+        }
+    }
+
     /// Handle an incoming message and update state
     pub fn handle_message(&mut self, msg: FromAgentMessage) -> Option<AgentEvent> {
         match msg {
@@ -609,6 +648,14 @@ impl AgentState {
                 args,
                 requires_approval,
             } => {
+                self.tracked_tools.insert(
+                    call_id.clone(),
+                    PendingApproval {
+                        call_id: call_id.clone(),
+                        tool: tool.clone(),
+                        args: args.clone(),
+                    },
+                );
                 if requires_approval {
                     self.pending_approvals.push(PendingApproval {
                         call_id: call_id.clone(),
@@ -630,11 +677,9 @@ impl AgentState {
             }
 
             FromAgentMessage::ToolStart { call_id } => {
-                // Find the tool info from pending or create new
                 let tool = self
-                    .pending_approvals
-                    .iter()
-                    .find(|p| p.call_id == call_id)
+                    .tracked_tools
+                    .get(&call_id)
                     .map_or_else(|| "unknown".to_string(), |p| p.tool.clone());
 
                 self.active_tools.insert(
@@ -658,7 +703,7 @@ impl AgentState {
 
             FromAgentMessage::ToolEnd { call_id, success } => {
                 let tool = self.active_tools.remove(&call_id);
-                // Also remove from pending approvals
+                self.tracked_tools.remove(&call_id);
                 self.pending_approvals.retain(|p| p.call_id != call_id);
                 Some(AgentEvent::ToolEnd {
                     call_id,
@@ -961,6 +1006,9 @@ mod tests {
     #[test]
     fn state_tracks_structured_errors() {
         let mut state = AgentState::default();
+        state.handle_message(FromAgentMessage::ResponseStart {
+            response_id: "resp1".to_string(),
+        });
         let event = state.handle_message(FromAgentMessage::Error {
             message: "Cancelled by user".to_string(),
             fatal: false,
@@ -969,6 +1017,7 @@ mod tests {
 
         assert_eq!(state.last_error.as_deref(), Some("Cancelled by user"));
         assert_eq!(state.last_error_type, Some(HeadlessErrorType::Cancelled));
+        assert!(state.is_responding);
         assert!(matches!(
             event,
             Some(AgentEvent::Error {
@@ -999,5 +1048,36 @@ mod tests {
                 ..
             }) if first_kept_entry_index == 2 && tokens_before == 7000 && !auto
         ));
+    }
+
+    #[test]
+    fn state_preserves_tool_name_for_nonapproval_runs() {
+        let mut state = AgentState::default();
+
+        let tool_call = state.handle_message(FromAgentMessage::ToolCall {
+            call_id: "call_read".to_string(),
+            tool: "read".to_string(),
+            args: serde_json::json!({ "file_path": "package.json" }),
+            requires_approval: false,
+        });
+        assert!(matches!(
+            tool_call,
+            Some(AgentEvent::ToolCall { ref tool, .. }) if tool == "read"
+        ));
+
+        let tool_start = state.handle_message(FromAgentMessage::ToolStart {
+            call_id: "call_read".to_string(),
+        });
+        assert!(matches!(
+            tool_start,
+            Some(AgentEvent::ToolStart { ref tool, .. }) if tool == "read"
+        ));
+        assert_eq!(
+            state
+                .active_tools
+                .get("call_read")
+                .map(|tool| tool.tool.as_str()),
+            Some("read")
+        );
     }
 }

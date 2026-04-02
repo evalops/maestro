@@ -198,6 +198,7 @@
 mod async_transport;
 mod framing;
 mod messages;
+mod remote_transport;
 mod session;
 mod supervisor;
 mod transport;
@@ -216,6 +217,9 @@ pub use transport::{AgentTransport, AgentTransportBuilder, TransportConfig, Tran
 pub use async_transport::{
     AsyncAgentTransport, AsyncAgentTransportBuilder, AsyncTransportConfig, AsyncTransportError,
 };
+
+// Remote transport
+pub use remote_transport::{RemoteAgentTransport, RemoteIncoming, RemoteTransportConfig};
 
 // Session persistence
 pub use session::{

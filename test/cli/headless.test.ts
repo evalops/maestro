@@ -1,12 +1,19 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
+	HeadlessProtocolTranslator,
+	applyIncomingHeadlessMessage,
 	buildHeadlessCompactionMessage,
 	buildHeadlessToolsSummary,
 	buildHeadlessUsage,
 	classifyHeadlessError,
-} from "../../src/cli/headless.js";
+	createHeadlessRuntimeState,
+	loadPromptAttachments,
+} from "../../src/cli/headless-protocol.js";
 
 function assistantMessage(
 	overrides: Partial<AssistantMessage> = {},
@@ -51,10 +58,20 @@ describe("headless protocol helpers", () => {
 		);
 	});
 
+	it("classifies generic temporary provider failures as transient", () => {
+		expect(classifyHeadlessError("Temporary server error", false)).toBe(
+			"transient",
+		);
+	});
+
 	it("classifies protocol parse failures", () => {
 		expect(classifyHeadlessError("Failed to parse JSON input", false)).toBe(
 			"protocol",
 		);
+	});
+
+	it("falls back to tool classification for unknown non-fatal errors", () => {
+		expect(classifyHeadlessError("Unexpected failure", false)).toBe("tool");
 	});
 
 	it("builds usage totals from assistant messages", () => {
@@ -107,6 +124,22 @@ describe("headless protocol helpers", () => {
 		});
 	});
 
+	it("omits empty summary labels from the serialized tool summary", () => {
+		expect(
+			buildHeadlessToolsSummary({
+				toolsUsed: new Set(["read"]),
+				callsSucceeded: 1,
+				callsFailed: 0,
+				summaryLabels: [],
+			}),
+		).toEqual({
+			tools_used: ["read"],
+			calls_succeeded: 1,
+			calls_failed: 0,
+			summary_labels: undefined,
+		});
+	});
+
 	it("builds headless compaction messages", () => {
 		expect(
 			buildHeadlessCompactionMessage({
@@ -125,5 +158,133 @@ describe("headless protocol helpers", () => {
 			auto: true,
 			timestamp: "2026-03-31T12:00:00Z",
 		});
+	});
+
+	it("translates tool execution updates into tool_output chunks", () => {
+		const translator = new HeadlessProtocolTranslator();
+		expect(
+			translator.handleAgentEvent({
+				type: "tool_execution_update",
+				toolCallId: "call_123",
+				toolName: "bash",
+				args: {},
+				partialResult: {
+					content: [{ type: "text", text: "first line" }],
+				},
+			}),
+		).toEqual([
+			{
+				type: "tool_output",
+				call_id: "call_123",
+				content: "first line",
+			},
+		]);
+	});
+
+	it("deduplicates repeated tool summary labels", () => {
+		const translator = new HeadlessProtocolTranslator();
+		translator.handleAgentEvent({
+			type: "message_start",
+			message: assistantMessage(),
+		});
+		translator.handleAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_1",
+			toolName: "read",
+			args: { file_path: "package.json" },
+		});
+		translator.handleAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_2",
+			toolName: "read",
+			args: { file_path: "package.json" },
+		});
+
+		expect(
+			translator.handleAgentEvent({
+				type: "message_end",
+				message: assistantMessage(),
+			}),
+		).toEqual([
+			expect.objectContaining({
+				type: "response_end",
+				tools_summary: expect.objectContaining({
+					summary_labels: ["Read package.json"],
+				}),
+			}),
+		]);
+	});
+
+	it("tracks non-approval tool names through tool_start", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "call_read",
+			tool: "read",
+			args: { file_path: "package.json" },
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_start",
+			call_id: "call_read",
+		});
+
+		expect(state.pending_approvals).toEqual([]);
+		expect(state.active_tools).toEqual([
+			{
+				call_id: "call_read",
+				tool: "read",
+				output: "",
+			},
+		]);
+	});
+
+	it("does not clear responding state on non-fatal errors", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "response_start",
+			response_id: "resp_1",
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "error",
+			message: "Tool failed",
+			fatal: false,
+			error_type: "tool",
+		});
+
+		expect(state.is_responding).toBe(true);
+		expect(state.last_error).toBe("Tool failed");
+		expect(state.last_error_type).toBe("tool");
+	});
+
+	it("accepts text attachments up to the 10MB default limit", async () => {
+		const tempDir = await mkdtemp(
+			join(tmpdir(), "maestro-headless-attachment-"),
+		);
+		const filePath = join(tempDir, "large.txt");
+		const errors: Array<{ message: string; fatal: boolean }> = [];
+
+		try {
+			await writeFile(filePath, Buffer.alloc(9 * 1024 * 1024, "a"));
+
+			const attachments = await loadPromptAttachments(
+				[filePath],
+				(message, fatal) => {
+					errors.push({ message, fatal });
+				},
+			);
+
+			expect(errors).toEqual([]);
+			expect(attachments).toHaveLength(1);
+			expect(attachments[0]).toMatchObject({
+				type: "document",
+				fileName: "large.txt",
+				size: 9 * 1024 * 1024,
+			});
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
 	});
 });
