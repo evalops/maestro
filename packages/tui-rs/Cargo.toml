@@ -93,7 +93,7 @@ arboard = { version = "3", optional = true }
 mlua = { version = "0.10", features = ["lua54", "serialize", "vendored", "send"], optional = true }
 
 # WASM runtime for hook plugins (optional)
-wasmtime = { version = "27", optional = true }
+wasmtime = { version = "36", optional = true }
 
 # File watching for hot reload
 notify = { version = "7", optional = true }
