@@ -1,5 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { type Static, Type } from "@sinclair/typebox";
+import {
+	type HeadlessConnectionRole,
+	headlessApprovalModes,
+	headlessConnectionRoles,
+	headlessServerRequestTypes,
+	headlessThinkingLevels,
+	headlessUtilityOperations,
+} from "@evalops/contracts";
+import { type Static, type TSchema, Type } from "@sinclair/typebox";
 import type { ThinkingLevel } from "../../agent/types.js";
 import type { HeadlessToAgentMessage } from "../../cli/headless-protocol.js";
 import type { WebServerContext } from "../app-context.js";
@@ -16,6 +24,17 @@ import { ApiError, getRequestHeader, sendJson } from "../server-utils.js";
 import { createSessionManagerForRequest } from "../session-scope.js";
 import { parseAndValidateJson } from "../validation.js";
 
+function stringLiteralUnion<const T extends readonly string[]>(values: T) {
+	return Type.Unsafe<T[number]>(
+		Type.Union(
+			values.map((value) => Type.Literal(value)) as unknown as [
+				TSchema,
+				...TSchema[],
+			],
+		),
+	);
+}
+
 const HeadlessSessionCreateSchema = Type.Object({
 	sessionId: Type.Optional(Type.String()),
 	protocolVersion: Type.Optional(Type.String()),
@@ -30,20 +49,18 @@ const HeadlessSessionCreateSchema = Type.Object({
 	capabilities: Type.Optional(
 		Type.Object({
 			serverRequests: Type.Optional(
-				Type.Array(
-					Type.Union([
-						Type.Literal("approval"),
-						Type.Literal("client_tool"),
-						Type.Literal("user_input"),
-					]),
-					{ uniqueItems: true },
-				),
+				Type.Array(stringLiteralUnion(headlessServerRequestTypes), {
+					uniqueItems: true,
+				}),
+			),
+			utilityOperations: Type.Optional(
+				Type.Array(stringLiteralUnion(headlessUtilityOperations), {
+					uniqueItems: true,
+				}),
 			),
 		}),
 	),
-	role: Type.Optional(
-		Type.Union([Type.Literal("viewer"), Type.Literal("controller")]),
-	),
+	role: Type.Optional(stringLiteralUnion(headlessConnectionRoles)),
 	client: Type.Optional(
 		Type.Union([
 			Type.Literal("generic"),
@@ -52,23 +69,8 @@ const HeadlessSessionCreateSchema = Type.Object({
 			Type.Literal("conductor"),
 		]),
 	),
-	thinkingLevel: Type.Optional(
-		Type.Union([
-			Type.Literal("off"),
-			Type.Literal("minimal"),
-			Type.Literal("low"),
-			Type.Literal("medium"),
-			Type.Literal("high"),
-			Type.Literal("ultra"),
-		]),
-	),
-	approvalMode: Type.Optional(
-		Type.Union([
-			Type.Literal("auto"),
-			Type.Literal("prompt"),
-			Type.Literal("fail"),
-		]),
-	),
+	thinkingLevel: Type.Optional(stringLiteralUnion(headlessThinkingLevels)),
+	approvalMode: Type.Optional(stringLiteralUnion(headlessApprovalModes)),
 });
 
 const HeadlessMessageSchema = Type.Object(
@@ -89,20 +91,18 @@ const HeadlessSessionSubscribeSchema = Type.Object({
 	capabilities: Type.Optional(
 		Type.Object({
 			serverRequests: Type.Optional(
-				Type.Array(
-					Type.Union([
-						Type.Literal("approval"),
-						Type.Literal("client_tool"),
-						Type.Literal("user_input"),
-					]),
-					{ uniqueItems: true },
-				),
+				Type.Array(stringLiteralUnion(headlessServerRequestTypes), {
+					uniqueItems: true,
+				}),
+			),
+			utilityOperations: Type.Optional(
+				Type.Array(stringLiteralUnion(headlessUtilityOperations), {
+					uniqueItems: true,
+				}),
 			),
 		}),
 	),
-	role: Type.Optional(
-		Type.Union([Type.Literal("viewer"), Type.Literal("controller")]),
-	),
+	role: Type.Optional(stringLiteralUnion(headlessConnectionRoles)),
 	takeControl: Type.Optional(Type.Boolean()),
 });
 
@@ -121,8 +121,8 @@ type HeadlessMessageInput = Static<typeof HeadlessMessageSchema>;
 
 function getHeadlessRole(
 	req: IncomingMessage,
-	explicitRole?: "viewer" | "controller",
-): "viewer" | "controller" {
+	explicitRole?: HeadlessConnectionRole,
+): HeadlessConnectionRole {
 	if (explicitRole) {
 		return explicitRole;
 	}
@@ -215,7 +215,10 @@ async function ensureRuntime(
 		clientProtocolVersion: input.protocolVersion,
 		clientInfo: input.clientInfo,
 		capabilities: input.capabilities
-			? { server_requests: input.capabilities.serverRequests }
+			? {
+					server_requests: input.capabilities.serverRequests,
+					utility_operations: input.capabilities.utilityOperations,
+				}
 			: undefined,
 		role,
 		registeredModel,
@@ -294,7 +297,10 @@ export async function handleHeadlessSessionSubscribe(
 		clientProtocolVersion: input.protocolVersion,
 		clientInfo: input.clientInfo,
 		capabilities: input.capabilities
-			? { server_requests: input.capabilities.serverRequests }
+			? {
+					server_requests: input.capabilities.serverRequests,
+					utility_operations: input.capabilities.utilityOperations,
+				}
 			: undefined,
 		role,
 	});

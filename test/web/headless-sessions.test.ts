@@ -190,6 +190,7 @@ function createJsonRequest(
 }
 
 function createContext(overrides: Partial<WebServerContext>): WebServerContext {
+	const headlessRuntimeService = new HeadlessRuntimeService();
 	return {
 		corsHeaders: {},
 		staticMaxAge: 0,
@@ -206,7 +207,7 @@ function createContext(overrides: Partial<WebServerContext>): WebServerContext {
 		setModelSelection: vi.fn(),
 		acquireSse: () => null,
 		releaseSse: () => {},
-		headlessRuntimeService: new HeadlessRuntimeService(),
+		headlessRuntimeService,
 		...overrides,
 	};
 }

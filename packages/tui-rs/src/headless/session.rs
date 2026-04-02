@@ -175,6 +175,16 @@ pub struct ActiveToolCheckpoint {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActiveUtilityCommandCheckpoint {
+    pub command_id: String,
+    pub command: String,
+    pub cwd: Option<String>,
+    pub shell_mode: super::messages::UtilityCommandShellMode,
+    pub pid: Option<u32>,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentStateCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_version: Option<String>,
@@ -212,6 +222,8 @@ pub struct AgentStateCheckpoint {
     pub tracked_tools: Vec<PendingApproval>,
     #[serde(default)]
     pub active_tools: Vec<ActiveToolCheckpoint>,
+    #[serde(default)]
+    pub active_utility_commands: Vec<ActiveUtilityCommandCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -257,6 +269,18 @@ impl AgentStateCheckpoint {
                     tool: tool.tool.clone(),
                     output: tool.output.clone(),
                     elapsed_ms: tool.started.elapsed().as_millis() as u64,
+                })
+                .collect(),
+            active_utility_commands: state
+                .active_utility_commands
+                .values()
+                .map(|command| ActiveUtilityCommandCheckpoint {
+                    command_id: command.command_id.clone(),
+                    command: command.command.clone(),
+                    cwd: command.cwd.clone(),
+                    shell_mode: command.shell_mode,
+                    pid: command.pid,
+                    output: command.output.clone(),
                 })
                 .collect(),
             last_error: state.last_error.clone(),
@@ -311,6 +335,23 @@ impl AgentStateCheckpoint {
                     )
                 })
                 .collect(),
+            active_utility_commands: self
+                .active_utility_commands
+                .into_iter()
+                .map(|command| {
+                    (
+                        command.command_id.clone(),
+                        super::messages::ActiveUtilityCommand {
+                            command_id: command.command_id,
+                            command: command.command,
+                            cwd: command.cwd,
+                            shell_mode: command.shell_mode,
+                            pid: command.pid,
+                            output: command.output,
+                        },
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
             last_error: self.last_error,
             last_error_type: self.last_error_type,
             last_status: self.last_status,

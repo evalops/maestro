@@ -1,0 +1,107 @@
+import type { HeadlessToAgentMessage } from "../cli/headless-protocol.js";
+import type {
+	EnsureRuntimeOptions,
+	HeadlessAttachedSubscription,
+	HeadlessRuntimeService,
+	HeadlessRuntimeSnapshot,
+	HeadlessRuntimeStreamEnvelope,
+	HeadlessRuntimeSubscriptionSnapshot,
+} from "./headless-runtime-service.js";
+
+export interface HeadlessInProcessSendOptions {
+	scopeKey: string;
+	sessionId: string;
+	role?: "viewer" | "controller";
+	subscriptionId?: string | null;
+	message: HeadlessToAgentMessage;
+}
+
+export interface HeadlessInProcessSubscribeOptions {
+	scopeKey: string;
+	sessionId: string;
+	role?: "viewer" | "controller";
+	takeControl?: boolean;
+}
+
+export interface HeadlessInProcessStreamOptions {
+	scopeKey: string;
+	sessionId: string;
+	role?: "viewer" | "controller";
+	cursor?: number | null;
+}
+
+export class HeadlessInProcessHost {
+	constructor(private readonly runtimeService: HeadlessRuntimeService) {}
+
+	async ensureSession(
+		options: EnsureRuntimeOptions,
+	): Promise<HeadlessRuntimeSnapshot> {
+		const runtime = await this.runtimeService.ensureRuntime(options);
+		return runtime.getSnapshot();
+	}
+
+	getSnapshot(scopeKey: string, sessionId: string): HeadlessRuntimeSnapshot {
+		return this.getRuntime(scopeKey, sessionId).getSnapshot();
+	}
+
+	replayFrom(
+		scopeKey: string,
+		sessionId: string,
+		cursor: number,
+	): HeadlessRuntimeStreamEnvelope[] | null {
+		return this.getRuntime(scopeKey, sessionId).replayFrom(cursor);
+	}
+
+	subscribe(
+		options: HeadlessInProcessSubscribeOptions,
+	): HeadlessRuntimeSubscriptionSnapshot {
+		return this.getRuntime(
+			options.scopeKey,
+			options.sessionId,
+		).createSubscription({
+			role: options.role ?? "controller",
+			explicit: true,
+			takeControl: options.takeControl,
+		});
+	}
+
+	attachStream(
+		options: HeadlessInProcessStreamOptions,
+	): HeadlessAttachedSubscription {
+		return this.getRuntime(
+			options.scopeKey,
+			options.sessionId,
+		).createImplicitStream({
+			cursor: options.cursor ?? null,
+			role: options.role,
+		});
+	}
+
+	unsubscribe(
+		scopeKey: string,
+		sessionId: string,
+		subscriptionId: string,
+	): boolean {
+		return this.getRuntime(scopeKey, sessionId).unsubscribe(subscriptionId);
+	}
+
+	async send(
+		options: HeadlessInProcessSendOptions,
+	): Promise<HeadlessRuntimeSnapshot> {
+		const runtime = this.getRuntime(options.scopeKey, options.sessionId);
+		runtime.assertCanSend(
+			options.role ?? "controller",
+			options.subscriptionId ?? undefined,
+		);
+		await runtime.send(options.message);
+		return runtime.getSnapshot();
+	}
+
+	private getRuntime(scopeKey: string, sessionId: string) {
+		const runtime = this.runtimeService.getRuntime(scopeKey, sessionId);
+		if (!runtime) {
+			throw new Error(`Headless session not found: ${scopeKey}:${sessionId}`);
+		}
+		return runtime;
+	}
+}

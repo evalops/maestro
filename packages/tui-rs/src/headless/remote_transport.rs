@@ -19,9 +19,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::async_transport::AsyncTransportError;
 use super::messages::{
-    AgentState, ApprovalMode, ClientCapabilities, ClientInfo, ConnectionRole, FromAgentMessage,
-    HeadlessErrorType, InitConfig, PendingApproval, StreamingResponse, ThinkingLevel,
-    ToAgentMessage,
+    ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities, ClientInfo, ConnectionRole,
+    FromAgentMessage, HeadlessErrorType, InitConfig, PendingApproval, StreamingResponse,
+    ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
 };
 
 /// Configuration for the remote headless transport.
@@ -43,6 +43,8 @@ pub struct RemoteTransportConfig {
     pub approval_mode: Option<ApprovalMode>,
     /// Whether to enable client-side tools for the remote runtime.
     pub enable_client_tools: bool,
+    /// Whether to enable runtime command execution on the shared control plane.
+    pub enable_command_exec: bool,
     /// Optional client flavor used to select client-specific tools.
     pub client: Option<String>,
     /// Optional human-readable client name for handshake metadata.
@@ -70,6 +72,7 @@ impl Default for RemoteTransportConfig {
             thinking_level: None,
             approval_mode: None,
             enable_client_tools: false,
+            enable_command_exec: true,
             client: None,
             client_name: "maestro-tui-rs".to_string(),
             client_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
@@ -152,12 +155,26 @@ struct RemoteSessionCreateRequest {
 struct RemoteClientCapabilities {
     #[serde(rename = "serverRequests")]
     server_requests: Vec<&'static str>,
+    #[serde(rename = "utilityOperations", skip_serializing_if = "Vec::is_empty")]
+    utility_operations: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct RemoteActiveToolState {
     call_id: String,
     tool: String,
+    output: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteActiveUtilityCommandState {
+    command_id: String,
+    command: String,
+    #[serde(default)]
+    cwd: Option<String>,
+    shell_mode: UtilityCommandShellMode,
+    #[serde(default)]
+    pid: Option<u32>,
     output: String,
 }
 
@@ -199,6 +216,8 @@ struct RemoteRuntimeStateSnapshot {
     tracked_tools: Vec<PendingApproval>,
     #[serde(default)]
     active_tools: Vec<RemoteActiveToolState>,
+    #[serde(default)]
+    active_utility_commands: Vec<RemoteActiveUtilityCommandState>,
     #[serde(default)]
     last_error: Option<String>,
     #[serde(default)]
@@ -250,6 +269,23 @@ impl RemoteRuntimeStateSnapshot {
                             tool: tool.tool,
                             output: tool.output,
                             started: std::time::Instant::now(),
+                        },
+                    )
+                })
+                .collect(),
+            active_utility_commands: self
+                .active_utility_commands
+                .into_iter()
+                .map(|command| {
+                    (
+                        command.command_id.clone(),
+                        ActiveUtilityCommand {
+                            command_id: command.command_id,
+                            command: command.command,
+                            cwd: command.cwd,
+                            shell_mode: command.shell_mode,
+                            pid: command.pid,
+                            output: command.output,
                         },
                     )
                 })
@@ -373,6 +409,34 @@ impl RemoteAgentTransport {
             .map_err(|_| AsyncTransportError::ChannelClosed)
     }
 
+    pub fn start_utility_command(
+        &self,
+        command_id: String,
+        command: String,
+        cwd: Option<String>,
+        env: Option<HashMap<String, String>>,
+        shell_mode: Option<UtilityCommandShellMode>,
+    ) -> Result<(), AsyncTransportError> {
+        self.send(ToAgentMessage::UtilityCommandStart {
+            command_id,
+            command,
+            cwd,
+            env,
+            shell_mode,
+        })
+    }
+
+    pub fn terminate_utility_command(
+        &self,
+        command_id: String,
+        force: bool,
+    ) -> Result<(), AsyncTransportError> {
+        self.send(ToAgentMessage::UtilityCommandTerminate {
+            command_id,
+            force: Some(force),
+        })
+    }
+
     pub fn shutdown(&self) -> Result<(), AsyncTransportError> {
         let result = self.send(ToAgentMessage::Shutdown);
         self.cancel_token.cancel();
@@ -478,6 +542,11 @@ async fn create_or_attach_session(
             } else {
                 vec!["approval"]
             },
+            utility_operations: if config.enable_command_exec {
+                vec!["command_exec"]
+            } else {
+                Vec::new()
+            },
         }),
         client: config.client.clone(),
         role: config.role.clone(),
@@ -511,6 +580,11 @@ async fn subscribe_to_session(
                 vec!["approval", "client_tool"]
             } else {
                 vec!["approval"]
+            },
+            utility_operations: if config.enable_command_exec {
+                vec!["command_exec"]
+            } else {
+                Vec::new()
             },
         }),
         role: config.role.clone(),
@@ -1015,6 +1089,7 @@ mod tests {
                     crate::headless::ServerRequestType::Approval,
                     crate::headless::ServerRequestType::ClientTool,
                 ]),
+                utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
             }),
             connection_role: Some(ConnectionRole::Controller),
             subscriber_count: 2,
@@ -1064,6 +1139,14 @@ mod tests {
                 tool: "read".to_string(),
                 output: "partial".to_string(),
             }],
+            active_utility_commands: vec![RemoteActiveUtilityCommandState {
+                command_id: "cmd-1".to_string(),
+                command: "echo hi".to_string(),
+                cwd: Some("/tmp/project".to_string()),
+                shell_mode: UtilityCommandShellMode::Direct,
+                pid: Some(1234),
+                output: "hi\n".to_string(),
+            }],
             last_error: Some("boom".to_string()),
             last_error_type: Some(HeadlessErrorType::Tool),
             last_status: Some("Working".to_string()),
@@ -1091,6 +1174,7 @@ mod tests {
         );
         assert_eq!(state.tracked_tools.len(), 1);
         assert_eq!(state.active_tools.len(), 1);
+        assert_eq!(state.active_utility_commands.len(), 1);
         assert_eq!(state.last_error.as_deref(), Some("boom"));
         assert_eq!(state.last_status.as_deref(), Some("Working"));
         assert!(state.is_ready);
@@ -1112,6 +1196,7 @@ mod tests {
             enable_client_tools: true,
             capabilities: Some(RemoteClientCapabilities {
                 server_requests: vec!["approval", "client_tool"],
+                utility_operations: vec!["command_exec"],
             }),
             client: Some("vscode".to_string()),
             role: Some("controller".to_string()),

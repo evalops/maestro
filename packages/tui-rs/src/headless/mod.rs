@@ -197,6 +197,7 @@
 
 mod async_transport;
 mod framing;
+mod generated_protocol;
 mod messages;
 mod remote_transport;
 mod session;
@@ -209,7 +210,7 @@ pub use messages::{
     ClientToolResultContent, ConnectionRole, FromAgentMessage, HeadlessErrorType, InitConfig,
     PendingApproval, ServerRequestResolutionStatus, ServerRequestResolvedBy, ServerRequestType,
     StreamingResponse, ThinkingLevel, ToAgentMessage, TokenUsage, ToolResult,
-    HEADLESS_PROTOCOL_VERSION,
+    UtilityCommandShellMode, UtilityCommandStream, UtilityOperation, HEADLESS_PROTOCOL_VERSION,
 };
 
 // Sync transport

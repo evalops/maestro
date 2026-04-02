@@ -1,6 +1,19 @@
 import { constants } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
+import {
+	type HeadlessApprovalMode,
+	type HeadlessConnectionRole,
+	type HeadlessErrorType,
+	type HeadlessServerRequestResolution,
+	type HeadlessServerRequestResolvedBy,
+	type HeadlessServerRequestType,
+	type HeadlessThinkingLevel,
+	type HeadlessUtilityCommandShellMode,
+	type HeadlessUtilityCommandStream,
+	type HeadlessUtilityOperation,
+	headlessProtocolVersion,
+} from "@evalops/contracts";
 import { lookup as lookupMimeType } from "mime-types";
 
 import type { ActionApprovalService } from "../agent/action-approval.js";
@@ -13,6 +26,7 @@ import type {
 	AssistantMessageEvent,
 	Attachment,
 } from "../agent/types.js";
+import { appendHeadlessOutput } from "../headless/output-buffer.js";
 import type { SessionManager } from "../session/manager.js";
 import { isSupportedImageFormat } from "../tools/image-processor.js";
 import { getCurrentBranch, isInsideGitRepository } from "../utils/git.js";
@@ -29,8 +43,8 @@ export interface HeadlessInitMessage {
 	type: "init";
 	system_prompt?: string;
 	append_system_prompt?: string;
-	thinking_level?: "off" | "minimal" | "low" | "medium" | "high" | "ultra";
-	approval_mode?: "auto" | "prompt" | "fail";
+	thinking_level?: HeadlessThinkingLevel;
+	approval_mode?: HeadlessApprovalMode;
 }
 
 export interface HeadlessClientInfo {
@@ -39,7 +53,8 @@ export interface HeadlessClientInfo {
 }
 
 export interface HeadlessClientCapabilities {
-	server_requests?: Array<"approval" | "client_tool" | "user_input">;
+	server_requests?: HeadlessServerRequestType[];
+	utility_operations?: HeadlessUtilityOperation[];
 }
 
 export interface HeadlessHelloMessage {
@@ -47,7 +62,7 @@ export interface HeadlessHelloMessage {
 	protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
-	role?: "viewer" | "controller";
+	role?: HeadlessConnectionRole;
 }
 
 export interface HeadlessInterruptMessage {
@@ -85,7 +100,7 @@ export interface HeadlessClientToolResultMessage {
 export interface HeadlessServerRequestResponseMessage {
 	type: "server_request_response";
 	request_id: string;
-	request_type: "approval" | "client_tool" | "user_input";
+	request_type: HeadlessServerRequestType;
 	approved?: boolean;
 	result?: {
 		success: boolean;
@@ -106,6 +121,21 @@ export interface HeadlessServerRequestResponseMessage {
 	is_error?: boolean;
 }
 
+export interface HeadlessUtilityCommandStartMessage {
+	type: "utility_command_start";
+	command_id: string;
+	command: string;
+	cwd?: string;
+	env?: Record<string, string>;
+	shell_mode?: HeadlessUtilityCommandShellMode;
+}
+
+export interface HeadlessUtilityCommandTerminateMessage {
+	type: "utility_command_terminate";
+	command_id: string;
+	force?: boolean;
+}
+
 export interface HeadlessCancelMessage {
 	type: "cancel";
 }
@@ -122,6 +152,8 @@ export type HeadlessToAgentMessage =
 	| HeadlessToolResponseMessage
 	| HeadlessClientToolResultMessage
 	| HeadlessServerRequestResponseMessage
+	| HeadlessUtilityCommandStartMessage
+	| HeadlessUtilityCommandTerminateMessage
 	| HeadlessCancelMessage
 	| HeadlessShutdownMessage;
 
@@ -203,7 +235,7 @@ export interface HeadlessClientToolRequestMessage {
 export interface HeadlessServerRequestMessage {
 	type: "server_request";
 	request_id: string;
-	request_type: "approval" | "client_tool" | "user_input";
+	request_type: HeadlessServerRequestType;
 	call_id: string;
 	tool: string;
 	args: unknown;
@@ -213,24 +245,43 @@ export interface HeadlessServerRequestMessage {
 export interface HeadlessServerRequestResolvedMessage {
 	type: "server_request_resolved";
 	request_id: string;
-	request_type: "approval" | "client_tool" | "user_input";
+	request_type: HeadlessServerRequestType;
 	call_id: string;
-	resolution:
-		| "approved"
-		| "denied"
-		| "completed"
-		| "failed"
-		| "answered"
-		| "cancelled";
+	resolution: HeadlessServerRequestResolution;
 	reason?: string;
-	resolved_by: "user" | "policy" | "client" | "runtime";
+	resolved_by: HeadlessServerRequestResolvedBy;
+}
+
+export interface HeadlessUtilityCommandStartedMessage {
+	type: "utility_command_started";
+	command_id: string;
+	command: string;
+	cwd?: string;
+	shell_mode: HeadlessUtilityCommandShellMode;
+	pid?: number;
+}
+
+export interface HeadlessUtilityCommandOutputMessage {
+	type: "utility_command_output";
+	command_id: string;
+	stream: HeadlessUtilityCommandStream;
+	content: string;
+}
+
+export interface HeadlessUtilityCommandExitedMessage {
+	type: "utility_command_exited";
+	command_id: string;
+	success: boolean;
+	exit_code?: number | null;
+	signal?: string | null;
+	reason?: string;
 }
 
 export interface HeadlessErrorMessage {
 	type: "error";
 	message: string;
 	fatal: boolean;
-	error_type: "transient" | "fatal" | "tool" | "cancelled" | "protocol";
+	error_type: HeadlessErrorType;
 }
 
 export interface HeadlessStatusMessage {
@@ -260,7 +311,7 @@ export interface HeadlessConnectionInfoMessage {
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
-	role?: "viewer" | "controller";
+	role?: HeadlessConnectionRole;
 }
 
 export type HeadlessFromAgentMessage =
@@ -275,6 +326,9 @@ export type HeadlessFromAgentMessage =
 	| HeadlessClientToolRequestMessage
 	| HeadlessServerRequestMessage
 	| HeadlessServerRequestResolvedMessage
+	| HeadlessUtilityCommandStartedMessage
+	| HeadlessUtilityCommandOutputMessage
+	| HeadlessUtilityCommandExitedMessage
 	| HeadlessErrorMessage
 	| HeadlessStatusMessage
 	| HeadlessCompactionMessage
@@ -300,12 +354,21 @@ export interface HeadlessActiveToolState {
 	output: string;
 }
 
+export interface HeadlessActiveUtilityCommandState {
+	command_id: string;
+	command: string;
+	cwd?: string;
+	shell_mode: HeadlessUtilityCommandShellMode;
+	pid?: number;
+	output: string;
+}
+
 export interface HeadlessRuntimeState {
 	protocol_version?: string;
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
-	connection_role?: "viewer" | "controller";
+	connection_role?: HeadlessConnectionRole;
 	subscriber_count: number;
 	controller_subscription_id?: string | null;
 	model?: string;
@@ -318,6 +381,7 @@ export interface HeadlessRuntimeState {
 	pending_client_tools: HeadlessPendingApprovalState[];
 	pending_user_inputs: HeadlessPendingApprovalState[];
 	active_tools: HeadlessActiveToolState[];
+	active_utility_commands: HeadlessActiveUtilityCommandState[];
 	tracked_tools: HeadlessPendingApprovalState[];
 	last_error?: string;
 	last_error_type?: HeadlessErrorMessage["error_type"];
@@ -328,7 +392,7 @@ export interface HeadlessRuntimeState {
 	is_responding: boolean;
 }
 
-export const HEADLESS_PROTOCOL_VERSION = "2026-03-30";
+export const HEADLESS_PROTOCOL_VERSION = headlessProtocolVersion;
 
 export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 	return {
@@ -337,6 +401,7 @@ export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 		pending_client_tools: [],
 		pending_user_inputs: [],
 		active_tools: [],
+		active_utility_commands: [],
 		tracked_tools: [],
 		is_ready: false,
 		is_responding: false,
@@ -927,6 +992,9 @@ export function applyOutgoingHeadlessMessage(
 				(request) => request.call_id !== msg.call_id,
 			);
 			return;
+		case "utility_command_start":
+		case "utility_command_terminate":
+			return;
 		case "server_request_response":
 			if (msg.request_type === "approval") {
 				state.pending_approvals = state.pending_approvals.filter(
@@ -954,6 +1022,7 @@ export function applyOutgoingHeadlessMessage(
 			state.pending_client_tools = [];
 			state.pending_user_inputs = [];
 			state.active_tools = [];
+			state.active_utility_commands = [];
 			state.tracked_tools = [];
 			state.is_responding = false;
 			return;
@@ -963,6 +1032,7 @@ export function applyOutgoingHeadlessMessage(
 			state.pending_client_tools = [];
 			state.pending_user_inputs = [];
 			state.active_tools = [];
+			state.active_utility_commands = [];
 			state.tracked_tools = [];
 			state.is_ready = false;
 			state.is_responding = false;
@@ -1199,6 +1269,37 @@ export function applyIncomingHeadlessMessage(
 					);
 				}
 			}
+			return;
+		case "utility_command_started":
+			state.active_utility_commands = [
+				...state.active_utility_commands.filter(
+					(command) => command.command_id !== msg.command_id,
+				),
+				{
+					command_id: msg.command_id,
+					command: msg.command,
+					cwd: msg.cwd,
+					shell_mode: msg.shell_mode,
+					pid: msg.pid,
+					output: "",
+				},
+			];
+			return;
+		case "utility_command_output":
+			state.active_utility_commands = state.active_utility_commands.map(
+				(command) =>
+					command.command_id === msg.command_id
+						? {
+								...command,
+								output: appendHeadlessOutput(command.output, msg.content),
+							}
+						: command,
+			);
+			return;
+		case "utility_command_exited":
+			state.active_utility_commands = state.active_utility_commands.filter(
+				(command) => command.command_id !== msg.command_id,
+			);
 			return;
 		case "error":
 			state.last_error = msg.message;

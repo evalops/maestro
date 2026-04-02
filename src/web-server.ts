@@ -535,6 +535,8 @@ const SECURITY_HEADERS: Record<string, string> =
 			}
 		: {};
 
+const headlessRuntimeService = new HeadlessRuntimeService();
+
 const context: WebServerContext = {
 	corsHeaders: CORS_HEADERS,
 	staticMaxAge: STATIC_MAX_AGE,
@@ -548,7 +550,7 @@ const context: WebServerContext = {
 	setModelSelection: (model) => modelSelectionStore.set(model),
 	acquireSse: () => sseLimiter.tryAcquire(),
 	releaseSse: (token) => sseLimiter.release(token),
-	headlessRuntimeService: new HeadlessRuntimeService(),
+	headlessRuntimeService,
 };
 
 const routes = createRoutes(context);
