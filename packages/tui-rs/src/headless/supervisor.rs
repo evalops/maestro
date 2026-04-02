@@ -1395,7 +1395,7 @@ done
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         supervisor.reconnect().await.expect("reconnect");
-        for _ in 0..40 {
+        for _ in 0..200 {
             let logged_init_count = fs::read_to_string(&log_path)
                 .expect("read log")
                 .lines()

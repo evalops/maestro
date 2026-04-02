@@ -101,7 +101,7 @@ export interface HeadlessResponseEndMessage {
 		tools_used: string[];
 		calls_succeeded: number;
 		calls_failed: number;
-		summary_labels: string[];
+		summary_labels?: string[];
 	};
 	duration_ms: number;
 	ttft_ms?: number;
@@ -255,16 +255,9 @@ export function classifyHeadlessError(
 		normalized.includes("rate limit") ||
 		normalized.includes("overloaded") ||
 		normalized.includes("timeout") ||
-		normalized.includes("temporarily unavailable")
+		normalized.includes("temporar")
 	) {
 		return "transient";
-	}
-	if (
-		normalized.includes("parse") ||
-		normalized.includes("json") ||
-		normalized.includes("protocol")
-	) {
-		return "protocol";
 	}
 	if (
 		normalized.includes("tool") ||
@@ -272,6 +265,13 @@ export function classifyHeadlessError(
 		normalized.includes("approval")
 	) {
 		return "tool";
+	}
+	if (
+		normalized.includes("parse") ||
+		normalized.includes("json") ||
+		normalized.includes("protocol")
+	) {
+		return "protocol";
 	}
 	return fatal ? "fatal" : "tool";
 }
@@ -311,7 +311,8 @@ export function buildHeadlessToolsSummary(params: {
 		tools_used: [...params.toolsUsed].sort(),
 		calls_succeeded: params.callsSucceeded,
 		calls_failed: params.callsFailed,
-		summary_labels: params.summaryLabels,
+		summary_labels:
+			params.summaryLabels.length > 0 ? params.summaryLabels : undefined,
 	};
 }
 

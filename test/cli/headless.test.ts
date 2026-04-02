@@ -54,9 +54,21 @@ describe("headless protocol helpers", () => {
 		);
 	});
 
+	it("classifies generic temporary provider failures as transient", () => {
+		expect(classifyHeadlessError("Temporary server error", false)).toBe(
+			"transient",
+		);
+	});
+
 	it("classifies protocol parse failures", () => {
 		expect(classifyHeadlessError("Failed to parse JSON input", false)).toBe(
 			"protocol",
+		);
+	});
+
+	it("prefers tool classification over protocol keywords when both appear", () => {
+		expect(classifyHeadlessError("Failed to parse tool response", false)).toBe(
+			"tool",
 		);
 	});
 
@@ -111,6 +123,22 @@ describe("headless protocol helpers", () => {
 			calls_succeeded: 2,
 			calls_failed: 1,
 			summary_labels: ["Read config.json", "Ran npm test", "Read config.json"],
+		});
+	});
+
+	it("omits empty summary labels from the serialized tool summary", () => {
+		expect(
+			buildHeadlessToolsSummary({
+				toolsUsed: new Set(["read"]),
+				callsSucceeded: 1,
+				callsFailed: 0,
+				summaryLabels: [],
+			}),
+		).toEqual({
+			tools_used: ["read"],
+			calls_succeeded: 1,
+			calls_failed: 0,
+			summary_labels: undefined,
 		});
 	});
 
