@@ -5,6 +5,7 @@
 //! - Health monitoring with heartbeats
 //! - Graceful degradation
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
@@ -12,14 +13,17 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::async_transport::{AsyncAgentTransport, AsyncTransportConfig, AsyncTransportError};
-use super::messages::{AgentEvent, AgentState, InitConfig, ToAgentMessage};
-use super::session::{SessionRecorder, SessionReplay};
+use super::messages::{AgentEvent, AgentState, FromAgentMessage, InitConfig, ToAgentMessage};
+use super::remote_transport::{RemoteAgentTransport, RemoteIncoming, RemoteTransportConfig};
+use super::session::{SessionReader, SessionRecorder, SessionReplay};
 
 /// Supervisor configuration
 #[derive(Debug, Clone)]
 pub struct SupervisorConfig {
     /// Transport configuration
     pub transport: AsyncTransportConfig,
+    /// Optional remote transport configuration.
+    pub remote: Option<RemoteTransportConfig>,
     /// Maximum reconnection attempts (0 = infinite)
     pub max_reconnect_attempts: u32,
     /// Initial delay between reconnection attempts
@@ -40,6 +44,7 @@ impl Default for SupervisorConfig {
     fn default() -> Self {
         Self {
             transport: AsyncTransportConfig::default(),
+            remote: None,
             max_reconnect_attempts: 5,
             reconnect_delay: Duration::from_secs(1),
             max_reconnect_delay: Duration::from_secs(30),
@@ -73,6 +78,8 @@ pub enum SupervisorEvent {
     Agent(Box<AgentEvent>),
     /// Connection established
     Connected,
+    /// State was hydrated from replay or a remote snapshot.
+    StateHydrated { session_id: Option<String> },
     /// Connection lost
     Disconnected { error: String },
     /// Reconnecting
@@ -81,6 +88,98 @@ pub enum SupervisorEvent {
     HealthChanged { status: HealthStatus },
     /// Supervisor shutting down
     ShuttingDown,
+}
+
+enum ManagedTransport {
+    Local(AsyncAgentTransport),
+    Remote(RemoteAgentTransport),
+}
+
+enum ManagedIncoming {
+    Message(FromAgentMessage),
+    Snapshot {
+        state: Box<AgentState>,
+        last_init: Option<InitConfig>,
+    },
+    Heartbeat,
+}
+
+impl ManagedTransport {
+    fn send(&self, msg: ToAgentMessage) -> Result<(), AsyncTransportError> {
+        match self {
+            Self::Local(transport) => transport.send(msg),
+            Self::Remote(transport) => transport.send(msg),
+        }
+    }
+
+    fn shutdown(&self) -> Result<(), AsyncTransportError> {
+        match self {
+            Self::Local(transport) => transport.shutdown(),
+            Self::Remote(transport) => transport.shutdown(),
+        }
+    }
+
+    fn needs_init_replay(&self) -> bool {
+        matches!(self, Self::Local(_))
+    }
+
+    fn initial_snapshot(&self) -> Option<(AgentState, Option<InitConfig>)> {
+        match self {
+            Self::Local(_) => None,
+            Self::Remote(transport) => {
+                Some((transport.state().clone(), transport.last_init().cloned()))
+            }
+        }
+    }
+
+    fn try_recv_incoming(&mut self) -> Option<Result<ManagedIncoming, AsyncTransportError>> {
+        match self {
+            Self::Local(transport) => transport
+                .try_recv_message()
+                .map(|result| result.map(ManagedIncoming::Message)),
+            Self::Remote(transport) => transport.try_recv_incoming().map(|result| {
+                result.map(|incoming| match incoming {
+                    RemoteIncoming::Message(message) => ManagedIncoming::Message(message),
+                    RemoteIncoming::Snapshot { state, last_init } => {
+                        ManagedIncoming::Snapshot { state, last_init }
+                    }
+                    RemoteIncoming::Heartbeat => ManagedIncoming::Heartbeat,
+                })
+            }),
+        }
+    }
+
+    async fn recv_incoming(&mut self) -> Result<ManagedIncoming, AsyncTransportError> {
+        match self {
+            Self::Local(transport) => transport.recv_message().await.map(ManagedIncoming::Message),
+            Self::Remote(transport) => {
+                transport
+                    .recv_incoming()
+                    .await
+                    .map(|incoming| match incoming {
+                        RemoteIncoming::Message(message) => ManagedIncoming::Message(message),
+                        RemoteIncoming::Snapshot { state, last_init } => {
+                            ManagedIncoming::Snapshot { state, last_init }
+                        }
+                        RemoteIncoming::Heartbeat => ManagedIncoming::Heartbeat,
+                    })
+            }
+        }
+    }
+
+    fn local_transport(&self) -> Option<&AsyncAgentTransport> {
+        match self {
+            Self::Local(transport) => Some(transport),
+            Self::Remote(_) => None,
+        }
+    }
+
+    fn local_transport_mut(&mut self) -> Option<&mut AsyncAgentTransport> {
+        match self {
+            Self::Local(transport) => Some(transport),
+            Self::Remote(_) => None,
+        }
+    }
 }
 
 /// Agent supervisor
@@ -93,7 +192,7 @@ pub struct AgentSupervisor {
     /// Configuration
     config: SupervisorConfig,
     /// Current transport (if connected)
-    transport: Option<AsyncAgentTransport>,
+    transport: Option<ManagedTransport>,
     /// Last init config to replay after reconnects
     last_init: Option<InitConfig>,
     /// Current supervisor-owned agent state
@@ -154,9 +253,21 @@ impl AgentSupervisor {
         self.last_init = replay.last_init;
     }
 
+    async fn spawn_transport(&self) -> Result<ManagedTransport, AsyncTransportError> {
+        if let Some(remote) = self.config.remote.clone() {
+            RemoteAgentTransport::connect(remote)
+                .await
+                .map(ManagedTransport::Remote)
+        } else {
+            AsyncAgentTransport::spawn(self.config.transport.clone())
+                .await
+                .map(ManagedTransport::Local)
+        }
+    }
+
     /// Connect to the agent
     pub async fn connect(&mut self) -> Result<(), AsyncTransportError> {
-        let transport = AsyncAgentTransport::spawn(self.config.transport.clone()).await?;
+        let transport = self.spawn_transport().await?;
         self.set_transport(transport)?;
         self.health_status = HealthStatus::Healthy;
         self.reconnect_attempts = 0;
@@ -196,7 +307,7 @@ impl AgentSupervisor {
                 max_attempts,
             });
 
-            match AsyncAgentTransport::spawn(self.config.transport.clone()).await {
+            match self.spawn_transport().await {
                 Ok(transport) => {
                     self.set_transport(transport)?;
                     self.health_status = HealthStatus::Healthy;
@@ -229,15 +340,33 @@ impl AgentSupervisor {
 
     /// Send a message to the agent
     pub fn send(&mut self, msg: ToAgentMessage) -> Result<(), AsyncTransportError> {
-        // Record to session if available
+        let Some(transport) = &self.transport else {
+            return Err(AsyncTransportError::ChannelClosed);
+        };
+
+        transport.send(msg.clone())?;
+        self.state.handle_sent_message(&msg);
+
+        if let ToAgentMessage::Init {
+            system_prompt,
+            append_system_prompt,
+            thinking_level,
+            approval_mode,
+        } = &msg
+        {
+            self.last_init = Some(InitConfig {
+                system_prompt: system_prompt.clone(),
+                append_system_prompt: append_system_prompt.clone(),
+                thinking_level: *thinking_level,
+                approval_mode: *approval_mode,
+            });
+        }
+
         if let Some(ref mut recorder) = self.session_recorder {
             let _ = recorder.record_sent(&msg);
         }
 
-        match &self.transport {
-            Some(transport) => transport.send(msg),
-            None => Err(AsyncTransportError::ChannelClosed),
-        }
+        Ok(())
     }
 
     /// Send a prompt
@@ -261,13 +390,20 @@ impl AgentSupervisor {
         Ok(())
     }
 
-    fn set_transport(&mut self, transport: AsyncAgentTransport) -> Result<(), AsyncTransportError> {
+    fn set_transport(&mut self, transport: ManagedTransport) -> Result<(), AsyncTransportError> {
+        let should_replay_init = transport.needs_init_replay();
+        let snapshot = transport.initial_snapshot();
         self.transport = Some(transport);
-        if let Err(error) = self.replay_saved_init() {
-            if let Some(transport) = self.transport.take() {
-                let _ = transport.shutdown();
+        if let Some((state, last_init)) = snapshot {
+            self.apply_snapshot(state, last_init);
+        }
+        if should_replay_init {
+            if let Err(error) = self.replay_saved_init() {
+                if let Some(transport) = self.transport.take() {
+                    let _ = transport.shutdown();
+                }
+                return Err(error);
             }
-            return Err(error);
         }
         Ok(())
     }
@@ -281,39 +417,70 @@ impl AgentSupervisor {
         }
     }
 
-    fn apply_agent_event(&mut self, event: &AgentEvent) {
-        if let Some(msg) = event_to_message(event) {
-            let _ = self.state.handle_message(msg.clone());
-            if let Some(ref mut recorder) = self.session_recorder {
-                let _ = recorder.record_received(&msg);
+    fn apply_snapshot(&mut self, state: AgentState, last_init: Option<InitConfig>) {
+        self.state = state;
+        if let Some(last_init) = last_init {
+            self.last_init = Some(last_init);
+        }
+        let _ = self.event_tx.send(SupervisorEvent::StateHydrated {
+            session_id: self.state.session_id.clone(),
+        });
+    }
+
+    fn apply_agent_message(&mut self, message: FromAgentMessage) -> Option<SupervisorEvent> {
+        let event = self.state.handle_message(message.clone())?;
+        if let Some(ref mut recorder) = self.session_recorder {
+            let _ = recorder.record_received(&message);
+        }
+        Some(SupervisorEvent::Agent(Box::new(event)))
+    }
+
+    fn handle_transport_error(&mut self, error: AsyncTransportError) -> SupervisorEvent {
+        self.transport = None;
+        self.health_status = HealthStatus::Unhealthy;
+        SupervisorEvent::Disconnected {
+            error: error.to_string(),
+        }
+    }
+
+    fn handle_transport_incoming(&mut self, incoming: ManagedIncoming) -> Option<SupervisorEvent> {
+        match incoming {
+            ManagedIncoming::Message(message) => {
+                self.last_response = Some(Instant::now());
+                self.apply_agent_message(message)
+            }
+            ManagedIncoming::Snapshot { state, last_init } => {
+                self.last_response = Some(Instant::now());
+                self.apply_snapshot(*state, last_init);
+                self.event_rx.try_recv().ok()
+            }
+            ManagedIncoming::Heartbeat => {
+                self.last_response = Some(Instant::now());
+                None
             }
         }
     }
 
     /// Poll for events (non-blocking)
     pub fn poll(&mut self) -> Option<SupervisorEvent> {
-        // First check for transport events
-        if let Some(ref mut transport) = self.transport {
-            if let Some(result) = transport.try_recv() {
-                match result {
-                    Ok(event) => {
-                        self.last_response = Some(Instant::now());
-                        self.apply_agent_event(&event);
-
-                        return Some(SupervisorEvent::Agent(Box::new(event)));
-                    }
-                    Err(e) => {
-                        self.transport = None;
-                        self.health_status = HealthStatus::Unhealthy;
-                        let _ = self.event_tx.send(SupervisorEvent::Disconnected {
-                            error: e.to_string(),
-                        });
+        loop {
+            let next_result = match self.transport.as_mut() {
+                Some(transport) => transport.try_recv_incoming(),
+                None => None,
+            };
+            let Some(result) = next_result else {
+                break;
+            };
+            match result {
+                Ok(incoming) => {
+                    if let Some(event) = self.handle_transport_incoming(incoming) {
+                        return Some(event);
                     }
                 }
+                Err(error) => return Some(self.handle_transport_error(error)),
             }
         }
 
-        // Then check for supervisor events
         self.event_rx.try_recv().ok()
     }
 
@@ -332,26 +499,23 @@ impl AgentSupervisor {
     }
 
     async fn recv_internal(&mut self) -> Option<SupervisorEvent> {
-        // First check transport
-        if let Some(ref mut transport) = self.transport {
-            match transport.recv().await {
-                Ok(event) => {
-                    self.last_response = Some(Instant::now());
-                    self.apply_agent_event(&event);
-
-                    return Some(SupervisorEvent::Agent(Box::new(event)));
-                }
-                Err(e) => {
-                    self.transport = None;
-                    self.health_status = HealthStatus::Unhealthy;
-                    return Some(SupervisorEvent::Disconnected {
-                        error: e.to_string(),
-                    });
+        if self.transport.is_some() {
+            loop {
+                let result = {
+                    let transport = self.transport.as_mut()?;
+                    transport.recv_incoming().await
+                };
+                match result {
+                    Ok(incoming) => {
+                        if let Some(event) = self.handle_transport_incoming(incoming) {
+                            return Some(event);
+                        }
+                    }
+                    Err(error) => return Some(self.handle_transport_error(error)),
                 }
             }
         }
 
-        // If no transport, wait for supervisor events
         self.event_rx.recv().await
     }
 
@@ -376,12 +540,16 @@ impl AgentSupervisor {
     /// Get the underlying transport (if connected)
     #[must_use]
     pub fn transport(&self) -> Option<&AsyncAgentTransport> {
-        self.transport.as_ref()
+        self.transport
+            .as_ref()
+            .and_then(ManagedTransport::local_transport)
     }
 
     /// Get mutable transport
     pub fn transport_mut(&mut self) -> Option<&mut AsyncAgentTransport> {
-        self.transport.as_mut()
+        self.transport
+            .as_mut()
+            .and_then(ManagedTransport::local_transport_mut)
     }
 
     /// Shutdown the supervisor
@@ -400,9 +568,149 @@ impl AgentSupervisor {
     }
 }
 
-/// Convert an `AgentEvent` back to a `FromAgentMessage` for recording
-fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMessage> {
-    use super::messages::FromAgentMessage;
+/// Builder for `AgentSupervisor`
+pub struct SupervisorBuilder {
+    config: SupervisorConfig,
+    session_recorder: Option<SessionRecorder>,
+    session_replay: Option<SessionReplay>,
+}
+
+impl SupervisorBuilder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            config: SupervisorConfig::default(),
+            session_recorder: None,
+            session_replay: None,
+        }
+    }
+
+    /// Set the CLI path
+    pub fn cli_path(mut self, path: impl Into<String>) -> Self {
+        self.config.transport.cli_path = path.into();
+        self
+    }
+
+    /// Set working directory
+    pub fn cwd(mut self, cwd: impl Into<String>) -> Self {
+        self.config.transport.cwd = Some(cwd.into());
+        self
+    }
+
+    /// Attach to a remote headless runtime instead of spawning a local CLI.
+    #[must_use]
+    pub fn remote(mut self, config: RemoteTransportConfig) -> Self {
+        self.config.remote = Some(config);
+        self
+    }
+
+    /// Set the remote base URL, enabling remote transport if needed.
+    #[must_use]
+    pub fn remote_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.config
+            .remote
+            .get_or_insert_with(RemoteTransportConfig::default)
+            .base_url = base_url.into();
+        self
+    }
+
+    /// Set the remote API key, enabling remote transport if needed.
+    #[must_use]
+    pub fn remote_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.config
+            .remote
+            .get_or_insert_with(RemoteTransportConfig::default)
+            .api_key = Some(api_key.into());
+        self
+    }
+
+    /// Set the remote session id, enabling remote transport if needed.
+    #[must_use]
+    pub fn remote_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.config
+            .remote
+            .get_or_insert_with(RemoteTransportConfig::default)
+            .session_id = Some(session_id.into());
+        self
+    }
+
+    /// Resume a recorded local session by restoring replay state and continuing
+    /// to append to the same JSONL log.
+    pub fn resume_recorded_session(
+        mut self,
+        sessions_dir: impl AsRef<Path>,
+        session_id: &str,
+    ) -> std::io::Result<Self> {
+        let replay = SessionReader::load(sessions_dir.as_ref(), session_id)?.replay();
+        let recorder = SessionRecorder::resume(sessions_dir, session_id)?;
+        self.session_replay = Some(replay);
+        self.session_recorder = Some(recorder);
+        Ok(self)
+    }
+
+    /// Add an argument
+    pub fn arg(mut self, arg: impl Into<String>) -> Self {
+        self.config.transport.extra_args.push(arg.into());
+        self
+    }
+
+    /// Set max reconnection attempts
+    #[must_use]
+    pub fn max_reconnect_attempts(mut self, attempts: u32) -> Self {
+        self.config.max_reconnect_attempts = attempts;
+        self
+    }
+
+    /// Set initial reconnection delay
+    #[must_use]
+    pub fn reconnect_delay(mut self, delay: Duration) -> Self {
+        self.config.reconnect_delay = delay;
+        self
+    }
+
+    /// Enable/disable auto reconnect
+    #[must_use]
+    pub fn auto_reconnect(mut self, enabled: bool) -> Self {
+        self.config.auto_reconnect = enabled;
+        self
+    }
+
+    /// Attach a session recorder
+    #[must_use]
+    pub fn session_recorder(mut self, recorder: SessionRecorder) -> Self {
+        self.session_recorder = Some(recorder);
+        self
+    }
+
+    /// Seed the supervisor with a replayed session snapshot.
+    #[must_use]
+    pub fn session_replay(mut self, replay: SessionReplay) -> Self {
+        self.session_replay = Some(replay);
+        self
+    }
+
+    /// Build the supervisor
+    #[must_use]
+    pub fn build(self) -> AgentSupervisor {
+        let mut supervisor = AgentSupervisor::new(self.config);
+        if let Some(recorder) = self.session_recorder {
+            supervisor = supervisor.with_session_recorder(recorder);
+        }
+        if let Some(replay) = self.session_replay {
+            supervisor = supervisor.with_session_replay(replay);
+        }
+        supervisor
+    }
+}
+
+impl Default for SupervisorBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+fn event_to_message(event: &AgentEvent) -> Option<FromAgentMessage> {
     match event {
         AgentEvent::Ready {
             protocol_version,
@@ -513,104 +821,182 @@ fn event_to_message(event: &AgentEvent) -> Option<super::messages::FromAgentMess
     }
 }
 
-/// Builder for `AgentSupervisor`
-pub struct SupervisorBuilder {
-    config: SupervisorConfig,
-    session_recorder: Option<SessionRecorder>,
-    session_replay: Option<SessionReplay>,
-}
-
-impl SupervisorBuilder {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            config: SupervisorConfig::default(),
-            session_recorder: None,
-            session_replay: None,
-        }
-    }
-
-    /// Set the CLI path
-    pub fn cli_path(mut self, path: impl Into<String>) -> Self {
-        self.config.transport.cli_path = path.into();
-        self
-    }
-
-    /// Set working directory
-    pub fn cwd(mut self, cwd: impl Into<String>) -> Self {
-        self.config.transport.cwd = Some(cwd.into());
-        self
-    }
-
-    /// Add an argument
-    pub fn arg(mut self, arg: impl Into<String>) -> Self {
-        self.config.transport.extra_args.push(arg.into());
-        self
-    }
-
-    /// Set max reconnection attempts
-    #[must_use]
-    pub fn max_reconnect_attempts(mut self, attempts: u32) -> Self {
-        self.config.max_reconnect_attempts = attempts;
-        self
-    }
-
-    /// Set initial reconnection delay
-    #[must_use]
-    pub fn reconnect_delay(mut self, delay: Duration) -> Self {
-        self.config.reconnect_delay = delay;
-        self
-    }
-
-    /// Enable/disable auto reconnect
-    #[must_use]
-    pub fn auto_reconnect(mut self, enabled: bool) -> Self {
-        self.config.auto_reconnect = enabled;
-        self
-    }
-
-    /// Attach a session recorder
-    #[must_use]
-    pub fn session_recorder(mut self, recorder: SessionRecorder) -> Self {
-        self.session_recorder = Some(recorder);
-        self
-    }
-
-    /// Seed the supervisor with a replayed session snapshot.
-    #[must_use]
-    pub fn session_replay(mut self, replay: SessionReplay) -> Self {
-        self.session_replay = Some(replay);
-        self
-    }
-
-    /// Build the supervisor
-    #[must_use]
-    pub fn build(self) -> AgentSupervisor {
-        let mut supervisor = AgentSupervisor::new(self.config);
-        if let Some(recorder) = self.session_recorder {
-            supervisor = supervisor.with_session_recorder(recorder);
-        }
-        if let Some(replay) = self.session_replay {
-            supervisor = supervisor.with_session_replay(replay);
-        }
-        supervisor
-    }
-}
-
-impl Default for SupervisorBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::headless::{HeadlessErrorType, TokenUsage};
+    use std::collections::VecDeque;
     use std::fs;
+    use std::sync::Arc;
 
     #[cfg(unix)]
     use std::{os::unix::fs::PermissionsExt, path::Path};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::Mutex;
+
+    async fn read_http_request(
+        socket: &mut TcpStream,
+    ) -> Option<(String, Vec<(String, String)>, String)> {
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 1024];
+
+        loop {
+            let bytes_read = socket.read(&mut chunk).await.ok()?;
+            if bytes_read == 0 {
+                return None;
+            }
+            buffer.extend_from_slice(&chunk[..bytes_read]);
+            if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let header_end = buffer.windows(4).position(|window| window == b"\r\n\r\n")?;
+        let header_bytes = &buffer[..header_end];
+        let header_text = String::from_utf8_lossy(header_bytes);
+        let request_line = header_text.lines().next()?;
+        let path = request_line.split_whitespace().nth(1)?.to_string();
+        let headers = header_text
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+            })
+            .collect::<Vec<_>>();
+        let content_length = headers
+            .iter()
+            .find_map(|(name, value)| {
+                if name == "content-length" {
+                    value.parse::<usize>().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+
+        let mut body = buffer[(header_end + 4)..].to_vec();
+        while body.len() < content_length {
+            let bytes_read = socket.read(&mut chunk).await.ok()?;
+            if bytes_read == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..bytes_read]);
+        }
+
+        Some((
+            path,
+            headers,
+            String::from_utf8_lossy(&body[..content_length]).to_string(),
+        ))
+    }
+
+    async fn write_http_response(
+        socket: &mut TcpStream,
+        status_line: &str,
+        content_type: &str,
+        body: &str,
+    ) {
+        let response = format!(
+            "{status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
+        let _ = socket.shutdown().await;
+    }
+
+    async fn spawn_remote_headless_server(
+        snapshot_json: String,
+        sse_events: Vec<String>,
+    ) -> (
+        std::net::SocketAddr,
+        Arc<Mutex<Vec<String>>>,
+        Arc<Mutex<Vec<Vec<(String, String)>>>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let posted_bodies = Arc::new(Mutex::new(Vec::new()));
+        let request_headers = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::new(Mutex::new(VecDeque::from(sse_events)));
+
+        tokio::spawn({
+            let posted_bodies = Arc::clone(&posted_bodies);
+            let request_headers = Arc::clone(&request_headers);
+            let events = Arc::clone(&events);
+            async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let posted_bodies = Arc::clone(&posted_bodies);
+                    let request_headers = Arc::clone(&request_headers);
+                    let events = Arc::clone(&events);
+                    let snapshot_json = snapshot_json.clone();
+
+                    tokio::spawn(async move {
+                        let Some((path, headers, body)) = read_http_request(&mut socket).await
+                        else {
+                            return;
+                        };
+                        request_headers.lock().await.push(headers);
+
+                        if path == "/api/headless/sessions" {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                &snapshot_json,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/messages")
+                        {
+                            posted_bodies.lock().await.push(body);
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"success":true}"#,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/") && path.contains("/events?")
+                        {
+                            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                            if socket.write_all(headers.as_bytes()).await.is_err() {
+                                return;
+                            }
+                            while let Some(event) = events.lock().await.pop_front() {
+                                let payload = format!("data: {event}\n\n");
+                                if socket.write_all(payload.as_bytes()).await.is_err() {
+                                    break;
+                                }
+                            }
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            let _ = socket.shutdown().await;
+                            return;
+                        }
+
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "text/plain",
+                            "not found",
+                        )
+                        .await;
+                    });
+                }
+            }
+        });
+
+        (addr, posted_bodies, request_headers)
+    }
 
     #[test]
     fn test_supervisor_config_defaults() {
@@ -661,6 +1047,63 @@ mod tests {
         assert_eq!(supervisor.state().model.as_deref(), Some("claude-3-opus"));
         assert_eq!(supervisor.state().provider.as_deref(), Some("anthropic"));
         assert!(supervisor.state().is_ready);
+    }
+
+    #[test]
+    fn test_supervisor_builder_remote_config_helpers() {
+        let supervisor = SupervisorBuilder::new()
+            .remote_base_url("http://127.0.0.1:8080")
+            .remote_api_key("secret")
+            .remote_session_id("sess_remote")
+            .build();
+
+        let remote = supervisor.config.remote.expect("remote config");
+        assert_eq!(remote.base_url, "http://127.0.0.1:8080");
+        assert_eq!(remote.api_key.as_deref(), Some("secret"));
+        assert_eq!(remote.session_id.as_deref(), Some("sess_remote"));
+    }
+
+    #[test]
+    fn resume_recorded_session_restores_replay_and_recorder() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sessions_dir = temp.path();
+        let mut recorder = SessionRecorder::new(sessions_dir).expect("recorder");
+        let session_id = recorder.id().to_string();
+        recorder
+            .record_sent(&ToAgentMessage::Init {
+                system_prompt: Some("Saved system prompt".to_string()),
+                append_system_prompt: None,
+                thinking_level: Some(super::super::messages::ThinkingLevel::Medium),
+                approval_mode: Some(super::super::messages::ApprovalMode::Prompt),
+            })
+            .expect("record init");
+        recorder
+            .record_received(&FromAgentMessage::Ready {
+                protocol_version: Some("2026-03-30".to_string()),
+                model: "gpt-5.4".to_string(),
+                provider: "openai".to_string(),
+                session_id: Some("sess_saved".to_string()),
+            })
+            .expect("record ready");
+        recorder.flush().expect("flush");
+        drop(recorder);
+
+        let supervisor = SupervisorBuilder::new()
+            .resume_recorded_session(sessions_dir, &session_id)
+            .expect("resume builder")
+            .build();
+
+        assert_eq!(supervisor.state().model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(supervisor.state().provider.as_deref(), Some("openai"));
+        assert_eq!(supervisor.state().session_id.as_deref(), Some("sess_saved"));
+        assert!(supervisor.session_recorder.is_some());
+        assert_eq!(
+            supervisor
+                .last_init
+                .as_ref()
+                .and_then(|init| init.system_prompt.as_deref()),
+            Some("Saved system prompt")
+        );
     }
 
     #[test]
@@ -730,6 +1173,7 @@ mod tests {
             &script_path,
             r#"#!/bin/sh
 log_file="${MAESTRO_TEST_LOG:?}"
+: > "$log_file"
 printf '{"type":"ready","model":"test","provider":"test"}\n'
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$log_file"
@@ -899,6 +1343,7 @@ done
         let temp = tempfile::tempdir().expect("tempdir");
         let log_path = temp.path().join("agent-stdin.log");
         let script_path = create_test_headless_script(temp.path()).expect("script");
+        fs::write(&log_path, "").expect("create log");
 
         let mut config = SupervisorConfig::default();
         config.transport.cli_path = script_path.to_string_lossy().into_owned();
@@ -958,5 +1403,94 @@ done
             assert_eq!(thinking_level, init.thinking_level);
             assert_eq!(approval_mode, init.approval_mode);
         }
+    }
+
+    #[tokio::test]
+    async fn remote_connect_hydrates_state_without_replaying_init() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 0,
+            "last_init": {
+                "system_prompt": "Persisted prompt",
+                "approval_mode": "prompt"
+            },
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "cwd": "/tmp/project",
+                "git_branch": "main",
+                "pending_approvals": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let status_event = serde_json::json!({
+            "type": "message",
+            "cursor": 1,
+            "message": {
+                "type": "status",
+                "message": "Remote status"
+            }
+        })
+        .to_string();
+        let (addr, posted_bodies, request_headers) =
+            spawn_remote_headless_server(snapshot.to_string(), vec![status_event]).await;
+
+        let mut supervisor = SupervisorBuilder::new()
+            .remote_base_url(format!("http://{addr}"))
+            .remote_api_key("secret")
+            .remote_session_id("sess_remote")
+            .build();
+
+        supervisor.connect().await.expect("connect");
+
+        assert_eq!(supervisor.state().model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(supervisor.state().provider.as_deref(), Some("openai"));
+        assert_eq!(
+            supervisor.state().session_id.as_deref(),
+            Some("sess_remote")
+        );
+        assert_eq!(supervisor.state().last_status.as_deref(), Some("Attached"));
+
+        assert!(matches!(
+            supervisor.poll(),
+            Some(SupervisorEvent::StateHydrated {
+                session_id: Some(ref session_id)
+            }) if session_id == "sess_remote"
+        ));
+        assert!(matches!(
+            supervisor.poll(),
+            Some(SupervisorEvent::Connected)
+        ));
+        assert!(matches!(
+            supervisor.poll(),
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Agent(agent_event))
+                if matches!(
+                    *agent_event,
+                    AgentEvent::Status { ref message } if message == "Remote status"
+                )
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(posted_bodies.lock().await.is_empty());
+        let headers = request_headers.lock().await.clone();
+        assert!(headers.first().is_some_and(|request| {
+            request
+                .iter()
+                .any(|(name, value)| name == "authorization" && value == "Bearer secret")
+        }));
+
+        supervisor.disconnect();
     }
 }

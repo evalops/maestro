@@ -451,6 +451,8 @@ pub use headless::{
     FromAgentMessage, // Messages we receive from the agent
     HealthStatus,     // Agent health/readiness status
 
+    RemoteAgentTransport,
+    RemoteTransportConfig,
     // Session management
     SessionEntry,      // Single entry in a session file
     SessionMetadata,   // Session metadata (id, timestamp, etc.)

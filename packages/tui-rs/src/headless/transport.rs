@@ -202,8 +202,8 @@ impl Default for TransportConfig {
 pub struct AgentTransport {
     /// Sender for messages to the agent
     tx: Sender<ToAgentMessage>,
-    /// Receiver for events from the agent
-    rx: Receiver<Result<AgentEvent, TransportError>>,
+    /// Receiver for raw protocol messages from the agent
+    rx: Receiver<Result<FromAgentMessage, TransportError>>,
     /// Current agent state
     state: AgentState,
     /// Handle to check if process is still running
@@ -244,7 +244,8 @@ impl AgentTransport {
         let (to_agent_tx, to_agent_rx) = mpsc::channel::<ToAgentMessage>();
 
         // Channel for receiving events from agent
-        let (from_agent_tx, from_agent_rx) = mpsc::channel::<Result<AgentEvent, TransportError>>();
+        let (from_agent_tx, from_agent_rx) =
+            mpsc::channel::<Result<FromAgentMessage, TransportError>>();
 
         // Spawn writer thread
         let writer_tx = from_agent_tx.clone();
@@ -270,7 +271,7 @@ impl AgentTransport {
     fn writer_loop(
         mut stdin: std::process::ChildStdin,
         rx: Receiver<ToAgentMessage>,
-        error_tx: Sender<Result<AgentEvent, TransportError>>,
+        error_tx: Sender<Result<FromAgentMessage, TransportError>>,
     ) {
         for msg in rx {
             let json = match serde_json::to_string(&msg) {
@@ -297,10 +298,9 @@ impl AgentTransport {
     fn reader_loop(
         stdout: std::process::ChildStdout,
         mut child: Child,
-        tx: Sender<Result<AgentEvent, TransportError>>,
+        tx: Sender<Result<FromAgentMessage, TransportError>>,
     ) {
         let reader = BufReader::new(stdout);
-        let mut state = AgentState::default();
 
         for line in reader.lines() {
             match line {
@@ -308,10 +308,8 @@ impl AgentTransport {
                 Ok(line) => {
                     match serde_json::from_str::<FromAgentMessage>(&line) {
                         Ok(msg) => {
-                            if let Some(event) = state.handle_message(msg) {
-                                if tx.send(Ok(event)).is_err() {
-                                    break; // Receiver dropped
-                                }
+                            if tx.send(Ok(msg)).is_err() {
+                                break; // Receiver dropped
                             }
                         }
                         Err(e) => {
@@ -405,13 +403,7 @@ impl AgentTransport {
     /// Try to receive an event without blocking
     pub fn try_recv(&mut self) -> Option<Result<AgentEvent, TransportError>> {
         match self.rx.try_recv() {
-            Ok(result) => {
-                // Update local state for certain events
-                if let Ok(ref event) = result {
-                    self.update_local_state(event);
-                }
-                Some(result)
-            }
+            Ok(result) => Some(self.apply_transport_result(result)),
             Err(mpsc::TryRecvError::Empty) => None,
             Err(mpsc::TryRecvError::Disconnected) => Some(Err(TransportError::ChannelError(
                 "Channel disconnected".to_string(),
@@ -425,59 +417,19 @@ impl AgentTransport {
             .rx
             .recv()
             .map_err(|e| TransportError::ChannelError(e.to_string()))?;
-
-        if let Ok(ref event) = result {
-            self.update_local_state(event);
-        }
-
-        result
+        self.apply_transport_result(result)
     }
 
-    /// Update local state based on an event
-    fn update_local_state(&mut self, event: &AgentEvent) {
-        match event {
-            AgentEvent::Ready {
-                protocol_version,
-                model,
-                provider,
-                session_id,
-            } => {
-                self.state.protocol_version = protocol_version.clone();
-                self.state.model = Some(model.clone());
-                self.state.provider = Some(provider.clone());
-                self.state.session_id = session_id.clone();
-                self.state.is_ready = true;
-            }
-            AgentEvent::SessionInfo {
-                session_id,
-                cwd,
-                git_branch,
-            } => {
-                self.state.session_id = session_id.clone();
-                self.state.cwd = Some(cwd.clone());
-                self.state.git_branch = git_branch.clone();
-            }
-            AgentEvent::ResponseStart { .. } => {
-                self.state.is_responding = true;
-            }
-            AgentEvent::ResponseEnd {
-                duration_ms,
-                ttft_ms,
-                ..
-            } => {
-                self.state.last_response_duration_ms = *duration_ms;
-                self.state.last_ttft_ms = *ttft_ms;
-                self.state.is_responding = false;
-            }
-            AgentEvent::Error {
-                message,
-                error_type,
-                ..
-            } => {
-                self.state.last_error = Some(message.clone());
-                self.state.last_error_type = *error_type;
-            }
-            _ => {}
+    fn apply_transport_result(
+        &mut self,
+        result: Result<FromAgentMessage, TransportError>,
+    ) -> Result<AgentEvent, TransportError> {
+        match result {
+            Ok(message) => self
+                .state
+                .handle_message(message)
+                .ok_or_else(|| TransportError::ChannelError("No event produced".to_string())),
+            Err(error) => Err(error),
         }
     }
 

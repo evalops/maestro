@@ -1,9 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { ApprovalMode } from "../agent/action-approval.js";
+import type {
+	ActionApprovalService,
+	ApprovalMode,
+} from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
 import type { ThinkingLevel } from "../agent/types.js";
 import type { RegisteredModel } from "../models/registry.js";
 import type { AuthCredential } from "../providers/auth.js";
+import type { HeadlessRuntimeService } from "./headless-runtime-service.js";
 
 export interface WebServerConfig {
 	corsHeaders: Record<string, string>;
@@ -23,6 +27,7 @@ export interface WebServerServices {
 			includeVscodeTools?: boolean;
 			includeJetBrainsTools?: boolean;
 			includeConductorTools?: boolean;
+			approvalService?: ActionApprovalService;
 		},
 	) => Promise<Agent>;
 	getRegisteredModel: (
@@ -33,6 +38,7 @@ export interface WebServerServices {
 	setModelSelection: (model: RegisteredModel) => void;
 	acquireSse: () => symbol | null;
 	releaseSse: (token: symbol | null) => void;
+	headlessRuntimeService: HeadlessRuntimeService;
 }
 
 export type WebServerContext = WebServerConfig & WebServerServices;

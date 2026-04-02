@@ -12,9 +12,9 @@ import type { Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, parse } from "node:url";
 import { WebSocketServer } from "ws";
-import {
+import type {
 	ActionApprovalService,
-	type ApprovalMode,
+	ApprovalMode,
 } from "./agent/action-approval.js";
 import {
 	BackgroundTaskContextSource,
@@ -101,6 +101,7 @@ import { checkApiAuth } from "./server/authz.js";
 import { startAutomationScheduler } from "./server/automations/scheduler.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import { handleChatWebSocket } from "./server/handlers/chat-ws.js";
+import { HeadlessRuntimeService } from "./server/headless-runtime-service.js";
 import {
 	isOverloaded,
 	logError,
@@ -399,6 +400,7 @@ async function createAgent(
 		includeVscodeTools?: boolean;
 		includeJetBrainsTools?: boolean;
 		includeConductorTools?: boolean;
+		approvalService?: ActionApprovalService;
 	},
 ): Promise<Agent> {
 	const sessionTokenCounter = async (sessionId: string) => {
@@ -441,7 +443,8 @@ async function createAgent(
 
 	const transport = new ProviderTransport({
 		getAuthContext: async (provider: string) => authResolver(provider),
-		approvalService: new WebActionApprovalService(approvalMode),
+		approvalService:
+			options?.approvalService ?? new WebActionApprovalService(approvalMode),
 		clientToolService: options?.enableClientTools
 			? clientToolService
 			: undefined,
@@ -534,6 +537,7 @@ const context: WebServerContext = {
 	setModelSelection: (model) => modelSelectionStore.set(model),
 	acquireSse: () => sseLimiter.tryAcquire(),
 	releaseSse: (token) => sseLimiter.release(token),
+	headlessRuntimeService: new HeadlessRuntimeService(),
 };
 
 const routes = createRoutes(context);

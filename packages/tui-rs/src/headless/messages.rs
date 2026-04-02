@@ -205,7 +205,7 @@ pub enum ApprovalMode {
 }
 
 /// Result of a tool execution
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolResult {
     pub success: bool,
     pub output: String,
@@ -337,7 +337,7 @@ pub enum FromAgentMessage {
 }
 
 /// Token usage statistics
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -471,7 +471,7 @@ pub struct AgentState {
 }
 
 /// A response currently being streamed
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StreamingResponse {
     pub response_id: String,
     pub text: String,
@@ -500,7 +500,7 @@ impl StreamingResponse {
 }
 
 /// A tool call pending approval
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PendingApproval {
     pub call_id: String,
     pub tool: String,
@@ -508,7 +508,7 @@ pub struct PendingApproval {
 }
 
 /// A tool currently executing
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ActiveTool {
     pub call_id: String,
     pub tool: String,
@@ -517,6 +517,36 @@ pub struct ActiveTool {
 }
 
 impl AgentState {
+    /// Handle an outbound message and update optimistic local state.
+    pub fn handle_sent_message(&mut self, msg: &ToAgentMessage) {
+        match msg {
+            ToAgentMessage::Init { .. } => {}
+            ToAgentMessage::Prompt { .. } => {
+                self.current_response = None;
+                self.last_error = None;
+                self.last_error_type = None;
+                self.last_status = None;
+                self.is_responding = true;
+            }
+            ToAgentMessage::Interrupt | ToAgentMessage::Cancel => {
+                self.current_response = None;
+                self.pending_approvals.clear();
+                self.active_tools.clear();
+                self.is_responding = false;
+            }
+            ToAgentMessage::ToolResponse { call_id, .. } => {
+                let _ = self.remove_pending_approval(call_id);
+            }
+            ToAgentMessage::Shutdown => {
+                self.current_response = None;
+                self.pending_approvals.clear();
+                self.active_tools.clear();
+                self.is_ready = false;
+                self.is_responding = false;
+            }
+        }
+    }
+
     /// Handle an incoming message and update state
     pub fn handle_message(&mut self, msg: FromAgentMessage) -> Option<AgentEvent> {
         match msg {

@@ -30,6 +30,12 @@ import {
 	handleGuardianRun,
 	handleGuardianStatus,
 } from "./handlers/guardian.js";
+import {
+	handleHeadlessSessionCreate,
+	handleHeadlessSessionEvents,
+	handleHeadlessSessionMessage,
+	handleHeadlessSessionState,
+} from "./handlers/headless-sessions.js";
 import { handleReadyz } from "./handlers/health.js";
 import { handleLsp } from "./handlers/lsp.js";
 import { handleMcpStatus } from "./handlers/mcp.js";
@@ -96,6 +102,29 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "GET",
 			path: "/readyz",
 			handler: (req, res) => handleReadyz(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/headless/sessions",
+			handler: (req, res) => handleHeadlessSessionCreate(req, res, context),
+		},
+		{
+			method: "GET",
+			path: "/api/headless/sessions/:id",
+			handler: (req, res, params) =>
+				handleHeadlessSessionState(req, res, context, params),
+		},
+		{
+			method: "GET",
+			path: "/api/headless/sessions/:id/events",
+			handler: (req, res, params) =>
+				handleHeadlessSessionEvents(req, res, context, params),
+		},
+		{
+			method: "POST",
+			path: "/api/headless/sessions/:id/messages",
+			handler: (req, res, params) =>
+				handleHeadlessSessionMessage(req, res, context, params),
 		},
 		{
 			method: "GET",

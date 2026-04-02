@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
+	HeadlessProtocolTranslator,
 	buildHeadlessCompactionMessage,
 	buildHeadlessToolsSummary,
 	buildHeadlessUsage,
 	classifyHeadlessError,
-} from "../../src/cli/headless.js";
+} from "../../src/cli/headless-protocol.js";
 
 function assistantMessage(
 	overrides: Partial<AssistantMessage> = {},
@@ -125,5 +126,26 @@ describe("headless protocol helpers", () => {
 			auto: true,
 			timestamp: "2026-03-31T12:00:00Z",
 		});
+	});
+
+	it("translates tool execution updates into tool_output chunks", () => {
+		const translator = new HeadlessProtocolTranslator();
+		expect(
+			translator.handleAgentEvent({
+				type: "tool_execution_update",
+				toolCallId: "call_123",
+				toolName: "bash",
+				args: {},
+				partialResult: {
+					content: [{ type: "text", text: "first line" }],
+				},
+			}),
+		).toEqual([
+			{
+				type: "tool_output",
+				call_id: "call_123",
+				content: "first line",
+			},
+		]);
 	});
 });

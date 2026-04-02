@@ -84,11 +84,15 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use super::messages::{AgentState, FromAgentMessage, InitConfig, ToAgentMessage, TokenUsage};
+use super::messages::{
+    ActiveTool, AgentState, FromAgentMessage, InitConfig, PendingApproval, StreamingResponse,
+    ToAgentMessage, TokenUsage,
+};
 
 /// A recorded session entry (either a sent or received message).
 ///
@@ -122,6 +126,13 @@ pub enum SessionEntry {
         timestamp: u64,
         message: FromAgentMessage,
     },
+    /// Periodic checkpoint of reconstructed runtime state.
+    Checkpoint {
+        timestamp: u64,
+        state: Box<AgentStateCheckpoint>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_init: Option<InitConfig>,
+    },
 }
 
 impl SessionEntry {
@@ -149,6 +160,123 @@ impl SessionEntry {
         match self {
             SessionEntry::Sent { timestamp, .. } => *timestamp,
             SessionEntry::Received { timestamp, .. } => *timestamp,
+            SessionEntry::Checkpoint { timestamp, .. } => *timestamp,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActiveToolCheckpoint {
+    pub call_id: String,
+    pub tool: String,
+    pub output: String,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentStateCheckpoint {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_response: Option<StreamingResponse>,
+    #[serde(default)]
+    pub pending_approvals: Vec<PendingApproval>,
+    #[serde(default)]
+    pub active_tools: Vec<ActiveToolCheckpoint>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_type: Option<super::messages::HeadlessErrorType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_response_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_ttft_ms: Option<u64>,
+    #[serde(default)]
+    pub is_ready: bool,
+    #[serde(default)]
+    pub is_responding: bool,
+}
+
+impl AgentStateCheckpoint {
+    #[must_use]
+    pub fn from_state(state: &AgentState) -> Self {
+        Self {
+            protocol_version: state.protocol_version.clone(),
+            model: state.model.clone(),
+            provider: state.provider.clone(),
+            session_id: state.session_id.clone(),
+            cwd: state.cwd.clone(),
+            git_branch: state.git_branch.clone(),
+            current_response: state.current_response.clone(),
+            pending_approvals: state.pending_approvals.clone(),
+            active_tools: state
+                .active_tools
+                .values()
+                .map(|tool| ActiveToolCheckpoint {
+                    call_id: tool.call_id.clone(),
+                    tool: tool.tool.clone(),
+                    output: tool.output.clone(),
+                    elapsed_ms: tool.started.elapsed().as_millis() as u64,
+                })
+                .collect(),
+            last_error: state.last_error.clone(),
+            last_error_type: state.last_error_type,
+            last_status: state.last_status.clone(),
+            last_response_duration_ms: state.last_response_duration_ms,
+            last_ttft_ms: state.last_ttft_ms,
+            is_ready: state.is_ready,
+            is_responding: state.is_responding,
+        }
+    }
+
+    #[must_use]
+    pub fn into_state(self) -> AgentState {
+        AgentState {
+            protocol_version: self.protocol_version,
+            model: self.model,
+            provider: self.provider,
+            session_id: self.session_id,
+            cwd: self.cwd,
+            git_branch: self.git_branch,
+            current_response: self.current_response,
+            pending_approvals: self.pending_approvals,
+            active_tools: self
+                .active_tools
+                .into_iter()
+                .map(|tool| {
+                    let started = std::time::Instant::now()
+                        .checked_sub(Duration::from_millis(tool.elapsed_ms))
+                        .unwrap_or_else(std::time::Instant::now);
+                    (
+                        tool.call_id.clone(),
+                        ActiveTool {
+                            call_id: tool.call_id,
+                            tool: tool.tool,
+                            output: tool.output,
+                            started,
+                        },
+                    )
+                })
+                .collect(),
+            last_error: self.last_error,
+            last_error_type: self.last_error_type,
+            last_status: self.last_status,
+            last_response_duration_ms: self.last_response_duration_ms,
+            last_ttft_ms: self.last_ttft_ms,
+            is_ready: self.is_ready,
+            is_responding: self.is_responding,
         }
     }
 }
@@ -304,7 +432,15 @@ pub struct SessionRecorder {
     metadata: SessionMetadata,
     /// Path to metadata file
     metadata_path: PathBuf,
+    /// Reconstructed state including optimistic outbound actions.
+    replay_state: AgentState,
+    /// Last init message seen in the stream.
+    last_init: Option<InitConfig>,
+    /// Number of entries written since the last checkpoint.
+    entries_since_checkpoint: usize,
 }
+
+const CHECKPOINT_INTERVAL: usize = 25;
 
 impl SessionRecorder {
     /// Create a new session recorder
@@ -332,6 +468,9 @@ impl SessionRecorder {
             writer,
             metadata,
             metadata_path,
+            replay_state: AgentState::default(),
+            last_init: None,
+            entries_since_checkpoint: 0,
         })
     }
 
@@ -352,6 +491,9 @@ impl SessionRecorder {
 
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let writer = BufWriter::new(file);
+        let replay = SessionReader::load(sessions_dir, id)
+            .ok()
+            .map(|reader| reader.replay());
 
         Ok(Self {
             id: id.to_string(),
@@ -359,6 +501,11 @@ impl SessionRecorder {
             writer,
             metadata,
             metadata_path,
+            replay_state: replay
+                .as_ref()
+                .map_or_else(AgentState::default, |replay| replay.state.clone()),
+            last_init: replay.and_then(|replay| replay.last_init),
+            entries_since_checkpoint: 0,
         })
     }
 
@@ -384,6 +531,23 @@ impl SessionRecorder {
     pub fn record_sent(&mut self, message: &ToAgentMessage) -> std::io::Result<()> {
         let entry = SessionEntry::sent(message.clone());
         self.write_entry(&entry)?;
+        self.replay_state.handle_sent_message(message);
+        if let ToAgentMessage::Init {
+            system_prompt,
+            append_system_prompt,
+            thinking_level,
+            approval_mode,
+        } = message
+        {
+            self.last_init = Some(InitConfig {
+                system_prompt: system_prompt.clone(),
+                append_system_prompt: append_system_prompt.clone(),
+                thinking_level: *thinking_level,
+                approval_mode: *approval_mode,
+            });
+        }
+        self.entries_since_checkpoint += 1;
+        self.maybe_write_checkpoint(false)?;
 
         // Update metadata
         if let ToAgentMessage::Prompt { content, .. } = message {
@@ -399,6 +563,14 @@ impl SessionRecorder {
     pub fn record_received(&mut self, message: &FromAgentMessage) -> std::io::Result<()> {
         let entry = SessionEntry::received(message.clone());
         self.write_entry(&entry)?;
+        let _ = self.replay_state.handle_message(message.clone());
+        self.entries_since_checkpoint += 1;
+        self.maybe_write_checkpoint(matches!(
+            message,
+            FromAgentMessage::ResponseEnd { .. }
+                | FromAgentMessage::Error { .. }
+                | FromAgentMessage::Compaction { .. }
+        ))?;
 
         // Update metadata
         match message {
@@ -436,6 +608,21 @@ impl SessionRecorder {
         self.metadata.message_count += 1;
         self.metadata.updated_at = current_timestamp();
 
+        Ok(())
+    }
+
+    fn maybe_write_checkpoint(&mut self, force: bool) -> std::io::Result<()> {
+        if !force && self.entries_since_checkpoint < CHECKPOINT_INTERVAL {
+            return Ok(());
+        }
+
+        let checkpoint = SessionEntry::Checkpoint {
+            timestamp: current_timestamp(),
+            state: Box::new(AgentStateCheckpoint::from_state(&self.replay_state)),
+            last_init: self.last_init.clone(),
+        };
+        self.write_entry(&checkpoint)?;
+        self.entries_since_checkpoint = 0;
         Ok(())
     }
 
@@ -624,43 +811,66 @@ impl SessionReader {
     /// Return the last init configuration sent to the headless agent, if any.
     #[must_use]
     pub fn last_init(&self) -> Option<InitConfig> {
-        self.entries.iter().rev().find_map(|entry| match entry {
-            SessionEntry::Sent {
-                message:
-                    ToAgentMessage::Init {
-                        system_prompt,
-                        append_system_prompt,
-                        thinking_level,
-                        approval_mode,
-                    },
-                ..
-            } => Some(InitConfig {
-                system_prompt: system_prompt.clone(),
-                append_system_prompt: append_system_prompt.clone(),
-                thinking_level: *thinking_level,
-                approval_mode: *approval_mode,
-            }),
-            _ => None,
-        })
+        self.replay().last_init
     }
 
     /// Replay the recorded agent messages into an `AgentState`.
     #[must_use]
     pub fn replay_state(&self) -> AgentState {
+        self.replay().state
+    }
+
+    fn replay_parts(&self) -> (AgentState, Option<InitConfig>) {
         let mut state = AgentState::default();
-        for message in self.received_messages() {
-            let _ = state.handle_message((*message).clone());
+        let mut last_init = None;
+        let mut start_index = 0;
+
+        for (index, entry) in self.entries.iter().enumerate() {
+            if let SessionEntry::Checkpoint {
+                state: checkpoint,
+                last_init: checkpoint_init,
+                ..
+            } = entry
+            {
+                state = checkpoint.as_ref().clone().into_state();
+                last_init = checkpoint_init.clone();
+                start_index = index + 1;
+            }
         }
-        state
+
+        for entry in &self.entries[start_index..] {
+            match entry {
+                SessionEntry::Sent { message, .. } => {
+                    state.handle_sent_message(message);
+                    if let ToAgentMessage::Init {
+                        system_prompt,
+                        append_system_prompt,
+                        thinking_level,
+                        approval_mode,
+                    } = message
+                    {
+                        last_init = Some(InitConfig {
+                            system_prompt: system_prompt.clone(),
+                            append_system_prompt: append_system_prompt.clone(),
+                            thinking_level: *thinking_level,
+                            approval_mode: *approval_mode,
+                        });
+                    }
+                }
+                SessionEntry::Received { message, .. } => {
+                    let _ = state.handle_message(message.clone());
+                }
+                SessionEntry::Checkpoint { .. } => {}
+            }
+        }
+        (state, last_init)
     }
 
     /// Build a resumable snapshot from the recorded session log.
     #[must_use]
     pub fn replay(&self) -> SessionReplay {
-        SessionReplay {
-            state: self.replay_state(),
-            last_init: self.last_init(),
-        }
+        let (state, last_init) = self.replay_parts();
+        SessionReplay { state, last_init }
     }
 }
 
