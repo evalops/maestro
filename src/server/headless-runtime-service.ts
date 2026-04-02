@@ -446,10 +446,16 @@ export class HeadlessSessionRuntime {
 	createSubscription(options?: {
 		role?: "viewer" | "controller";
 		explicit?: boolean;
+		takeControl?: boolean;
 	}): HeadlessRuntimeSubscriptionSnapshot {
 		const role = options?.role ?? "controller";
 		const explicit = options?.explicit ?? true;
-		if (explicit && role === "controller" && this.controllerSubscriptionId) {
+		if (
+			explicit &&
+			role === "controller" &&
+			this.controllerSubscriptionId &&
+			!options?.takeControl
+		) {
 			throw new Error("Controller lease is already held by another subscriber");
 		}
 		const subscriber = new HeadlessSubscriberMailbox(

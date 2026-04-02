@@ -103,6 +103,7 @@ const HeadlessSessionSubscribeSchema = Type.Object({
 	role: Type.Optional(
 		Type.Union([Type.Literal("viewer"), Type.Literal("controller")]),
 	),
+	takeControl: Type.Optional(Type.Boolean()),
 });
 
 const HeadlessSessionUnsubscribeSchema = Type.Object({
@@ -301,7 +302,11 @@ export async function handleHeadlessSessionSubscribe(
 		sendJson(
 			res,
 			200,
-			runtime.createSubscription({ role, explicit: true }),
+			runtime.createSubscription({
+				role,
+				explicit: true,
+				takeControl: input.takeControl,
+			}),
 			context.corsHeaders,
 			req,
 		);

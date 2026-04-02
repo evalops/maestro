@@ -1146,6 +1146,60 @@ describe("headless session handlers", () => {
 		});
 	});
 
+	it("allows explicit controller takeover when requested", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const createReq = createJsonRequest("POST", "/api/headless/sessions", {
+			model: TEST_MODEL.id,
+		});
+		const createRes = new MockResponse();
+		createRes.req = createReq;
+		await handleHeadlessSessionCreate(
+			createReq,
+			createRes as unknown as ServerResponse,
+			context,
+		);
+		const sessionId = JSON.parse(createRes.body).session_id;
+
+		const firstReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${sessionId}/subscribe`,
+			{ role: "controller" },
+		);
+		const firstRes = new MockResponse();
+		firstRes.req = firstReq;
+		await handleHeadlessSessionSubscribe(
+			firstReq,
+			firstRes as unknown as ServerResponse,
+			context,
+			{ id: sessionId },
+		);
+		const first = JSON.parse(firstRes.body);
+
+		const secondReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${sessionId}/subscribe`,
+			{ role: "controller", takeControl: true },
+		);
+		const secondRes = new MockResponse();
+		secondRes.req = secondReq;
+		await handleHeadlessSessionSubscribe(
+			secondReq,
+			secondRes as unknown as ServerResponse,
+			context,
+			{ id: sessionId },
+		);
+		const second = JSON.parse(secondRes.body);
+
+		expect(second.subscription_id).not.toBe(first.subscription_id);
+		expect(second.controller_subscription_id).toBe(second.subscription_id);
+		expect(second.snapshot.state.controller_subscription_id).toBe(
+			second.subscription_id,
+		);
+	});
+
 	it("explicit unsubscribe releases the controller lease", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({

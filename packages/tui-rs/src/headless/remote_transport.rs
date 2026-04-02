@@ -51,6 +51,8 @@ pub struct RemoteTransportConfig {
     pub client_version: Option<String>,
     /// Optional connection role used for HTTP attach/message permissions.
     pub role: Option<String>,
+    /// Whether a controller subscription should take over an existing controller lease.
+    pub take_control: bool,
     /// Additional headers to send on every request.
     pub headers: HashMap<String, String>,
     /// Delay between SSE reconnect attempts.
@@ -72,6 +74,7 @@ impl Default for RemoteTransportConfig {
             client_name: "maestro-tui-rs".to_string(),
             client_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
             role: Some("controller".to_string()),
+            take_control: false,
             headers: HashMap::new(),
             reconnect_delay: Duration::from_millis(500),
         }
@@ -103,6 +106,12 @@ struct RemoteSessionSubscribeRequest {
     capabilities: Option<RemoteClientCapabilities>,
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
+    #[serde(
+        rename = "takeControl",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    take_control: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -505,6 +514,7 @@ async fn subscribe_to_session(
             },
         }),
         role: config.role.clone(),
+        take_control: config.take_control,
     };
 
     let response = with_headers(client.post(url).json(&request), config, true)
