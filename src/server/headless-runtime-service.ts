@@ -42,6 +42,14 @@ const MAX_BUFFERED_EVENTS =
 		process.env.MAESTRO_HEADLESS_RUNTIME_EVENT_BUFFER || "",
 		10,
 	) || 512;
+const MAX_SUBSCRIBER_MAILBOX_EVENTS =
+	Number.parseInt(process.env.MAESTRO_HEADLESS_SUBSCRIBER_QUEUE || "", 10) ||
+	128;
+const MAX_SUBSCRIPTION_IDLE_MS =
+	Number.parseInt(
+		process.env.MAESTRO_HEADLESS_SUBSCRIPTION_IDLE_MS || "",
+		10,
+	) || 30 * 1000;
 const MAX_IDLE_MS =
 	Number.parseInt(process.env.MAESTRO_HEADLESS_RUNTIME_IDLE_MS || "", 10) ||
 	30 * 60 * 1000;
@@ -76,6 +84,14 @@ export interface HeadlessRuntimeResetEnvelope {
 	snapshot: HeadlessRuntimeSnapshot;
 }
 
+export interface HeadlessRuntimeSubscriptionSnapshot {
+	subscription_id: string;
+	role: "viewer" | "controller";
+	controller_lease_granted: boolean;
+	controller_subscription_id: string | null;
+	snapshot: HeadlessRuntimeSnapshot;
+}
+
 export type HeadlessRuntimeStreamEnvelope =
 	| HeadlessRuntimeSnapshotEnvelope
 	| HeadlessRuntimeEventEnvelope
@@ -83,6 +99,100 @@ export type HeadlessRuntimeStreamEnvelope =
 	| HeadlessRuntimeResetEnvelope;
 
 type RuntimeListener = (envelope: HeadlessRuntimeStreamEnvelope) => void;
+type SubscriberListener = () => void;
+
+function createSubscriptionId(): string {
+	return `sub_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+class HeadlessSubscriberMailbox {
+	private readonly listeners = new Set<SubscriberListener>();
+	private readonly queue: HeadlessRuntimeStreamEnvelope[] = [];
+	private queuedReset: HeadlessRuntimeResetEnvelope | null = null;
+	private detachedAt: number | null;
+	private attached = false;
+
+	constructor(
+		readonly id: string,
+		readonly role: "viewer" | "controller",
+		readonly explicit: boolean,
+	) {
+		this.detachedAt = explicit ? Date.now() : null;
+	}
+
+	onAvailable(listener: SubscriberListener): () => void {
+		this.listeners.add(listener);
+		return () => {
+			this.listeners.delete(listener);
+		};
+	}
+
+	enqueue(
+		envelope: HeadlessRuntimeStreamEnvelope,
+		createReset: (
+			reason: HeadlessRuntimeResetEnvelope["reason"],
+		) => HeadlessRuntimeResetEnvelope,
+	): void {
+		this.queue.push(envelope);
+		if (this.queue.length > MAX_SUBSCRIBER_MAILBOX_EVENTS) {
+			this.queue.length = 0;
+			this.queuedReset = createReset("lagged");
+		}
+		this.emit();
+	}
+
+	prime(envelope: HeadlessRuntimeStreamEnvelope): void {
+		this.queue.push(envelope);
+	}
+
+	next(): HeadlessRuntimeStreamEnvelope | null {
+		const next = this.queuedReset ?? this.queue.shift() ?? null;
+		if (next?.type === "reset") {
+			this.queuedReset = null;
+		}
+		return next;
+	}
+
+	attach(): void {
+		this.attached = true;
+		this.detachedAt = null;
+		this.emit();
+	}
+
+	detach(): void {
+		this.attached = false;
+		this.detachedAt = Date.now();
+	}
+
+	touch(): void {
+		if (this.explicit && !this.attached) {
+			this.detachedAt = Date.now();
+		}
+	}
+
+	isExpired(now = Date.now()): boolean {
+		return (
+			this.explicit &&
+			!this.attached &&
+			this.detachedAt !== null &&
+			now - this.detachedAt > MAX_SUBSCRIPTION_IDLE_MS
+		);
+	}
+
+	private emit(): void {
+		for (const listener of this.listeners) {
+			listener();
+		}
+	}
+}
+
+export interface HeadlessAttachedSubscription {
+	id: string;
+	next(): HeadlessRuntimeStreamEnvelope | null;
+	onAvailable(listener: SubscriberListener): () => void;
+	enqueue(envelope: HeadlessRuntimeStreamEnvelope): void;
+	close(): void;
+}
 
 class HeadlessRuntimeBroker {
 	private nextCursor = 1;
@@ -195,6 +305,8 @@ export class HeadlessSessionRuntime {
 	private readonly publishedServerRequestIds = new Set<string>();
 	private readonly suppressedApprovalResolutionIds = new Set<string>();
 	private readonly unsubscribeServerRequestEvents: () => void;
+	private readonly subscribers = new Map<string, HeadlessSubscriberMailbox>();
+	private controllerSubscriptionId: string | null = null;
 	private lastInit: HeadlessInitMessage | null = null;
 	private running = false;
 	private disposed = false;
@@ -286,16 +398,26 @@ export class HeadlessSessionRuntime {
 	}
 
 	isIdle(now = Date.now()): boolean {
-		return !this.running && now - this.updatedAt > MAX_IDLE_MS;
+		return (
+			!this.running &&
+			this.subscribers.size === 0 &&
+			now - this.updatedAt > MAX_IDLE_MS
+		);
 	}
 
 	dispose(): void {
 		if (this.disposed) {
 			return;
 		}
+		for (const subscriber of this.subscribers.values()) {
+			subscriber.detach();
+		}
+		this.subscribers.clear();
+		this.controllerSubscriptionId = null;
 		this.cancelPendingServerRequests(
 			"Headless runtime disposed before request completed",
 		);
+		this.syncSubscriptionState(false);
 		this.disposed = true;
 		this.running = false;
 		this.agent.abort();
@@ -319,6 +441,165 @@ export class HeadlessSessionRuntime {
 	subscribe(listener: RuntimeListener): () => void {
 		this.updatedAt = Date.now();
 		return this.broker.subscribe(listener);
+	}
+
+	createSubscription(options?: {
+		role?: "viewer" | "controller";
+		explicit?: boolean;
+	}): HeadlessRuntimeSubscriptionSnapshot {
+		const role = options?.role ?? "controller";
+		const explicit = options?.explicit ?? true;
+		if (explicit && role === "controller" && this.controllerSubscriptionId) {
+			throw new Error("Controller lease is already held by another subscriber");
+		}
+		const subscriber = new HeadlessSubscriberMailbox(
+			createSubscriptionId(),
+			role,
+			explicit,
+		);
+		this.subscribers.set(subscriber.id, subscriber);
+		if (explicit && role === "controller") {
+			this.controllerSubscriptionId = subscriber.id;
+		}
+		this.updatedAt = Date.now();
+		this.syncSubscriptionState(explicit);
+		return {
+			subscription_id: subscriber.id,
+			role,
+			controller_lease_granted:
+				role === "controller" &&
+				this.controllerSubscriptionId === subscriber.id,
+			controller_subscription_id: this.controllerSubscriptionId,
+			snapshot: this.getSnapshot(),
+		};
+	}
+
+	attachSubscription(
+		subscriptionId: string,
+	): HeadlessAttachedSubscription | null {
+		const subscriber = this.subscribers.get(subscriptionId);
+		if (!subscriber) {
+			return null;
+		}
+		this.updatedAt = Date.now();
+		subscriber.attach();
+		return {
+			id: subscriber.id,
+			next: () => subscriber.next(),
+			onAvailable: (listener) => subscriber.onAvailable(listener),
+			enqueue: (envelope) => {
+				subscriber.enqueue(envelope, (reason) =>
+					this.buildResetEnvelope(reason),
+				);
+			},
+			close: () => {
+				subscriber.detach();
+			},
+		};
+	}
+
+	createImplicitStream(options: {
+		cursor: number | null;
+		role?: "viewer" | "controller";
+	}): HeadlessAttachedSubscription {
+		const created = this.createSubscription({
+			role: options.role ?? "controller",
+			explicit: false,
+		});
+		const attached = this.attachSubscription(created.subscription_id);
+		if (!attached) {
+			throw new Error("Failed to attach implicit headless subscriber");
+		}
+		if (options.cursor !== null && Number.isFinite(options.cursor)) {
+			const replay = this.replayFrom(options.cursor);
+			if (replay) {
+				for (const envelope of replay) {
+					attached.enqueue(envelope);
+				}
+			} else {
+				attached.enqueue(this.buildResetEnvelope("replay_gap"));
+			}
+		} else {
+			attached.enqueue({
+				type: "snapshot",
+				snapshot: this.getSnapshot(),
+			});
+		}
+		const baseClose = attached.close;
+		return {
+			...attached,
+			close: () => {
+				baseClose();
+				this.unsubscribe(created.subscription_id, false);
+			},
+		};
+	}
+
+	unsubscribe(subscriptionId: string, publish = true): boolean {
+		const subscriber = this.subscribers.get(subscriptionId);
+		if (!subscriber) {
+			return false;
+		}
+		subscriber.detach();
+		this.subscribers.delete(subscriptionId);
+		if (this.controllerSubscriptionId === subscriptionId) {
+			this.controllerSubscriptionId = null;
+		}
+		this.updatedAt = Date.now();
+		this.syncSubscriptionState(publish && subscriber.explicit);
+		return true;
+	}
+
+	assertCanSend(
+		role: "viewer" | "controller",
+		subscriptionId?: string | null,
+	): void {
+		if (role === "viewer") {
+			throw new Error("Viewer headless connections cannot send messages");
+		}
+		if (!subscriptionId) {
+			if (this.controllerSubscriptionId) {
+				throw new Error(
+					"Controller lease is currently held by another subscriber",
+				);
+			}
+			return;
+		}
+		const subscriber = this.subscribers.get(subscriptionId);
+		if (!subscriber) {
+			throw new Error("Headless subscriber not found");
+		}
+		if (subscriber.role !== "controller") {
+			throw new Error("Headless subscriber does not have controller access");
+		}
+		if (
+			this.controllerSubscriptionId &&
+			this.controllerSubscriptionId !== subscriptionId
+		) {
+			throw new Error(
+				"Controller lease is currently held by another subscriber",
+			);
+		}
+		if (!this.controllerSubscriptionId && subscriber.explicit) {
+			this.controllerSubscriptionId = subscriptionId;
+			this.syncSubscriptionState(true);
+		}
+		subscriber.touch();
+	}
+
+	hasSubscription(subscriptionId: string): boolean {
+		return this.subscribers.has(subscriptionId);
+	}
+
+	expireIdleSubscriptions(now = Date.now()): void {
+		for (const [subscriptionId, subscriber] of Array.from(
+			this.subscribers.entries(),
+		)) {
+			if (!subscriber.isExpired(now)) {
+				continue;
+			}
+			this.unsubscribe(subscriptionId, subscriber.explicit);
+		}
 	}
 
 	heartbeat(): HeadlessRuntimeHeartbeatEnvelope {
@@ -489,19 +770,26 @@ export class HeadlessSessionRuntime {
 			this.publishedServerRequestIds.delete(message.request_id);
 		}
 		applyIncomingHeadlessMessage(this.state, message);
+		this.syncSubscriptionState(false);
 		this.updatedAt = Date.now();
-		this.broker.publish(message);
+		const envelope = this.broker.publish(message);
+		for (const subscriber of this.subscribers.values()) {
+			subscriber.enqueue(envelope, (reason) => this.buildResetEnvelope(reason));
+		}
 	}
 
 	private publishSnapshot(): void {
 		this.updatedAt = Date.now();
-		this.broker.publishSnapshot((cursor) => ({
+		const envelope = this.broker.publishSnapshot((cursor) => ({
 			protocolVersion: HEADLESS_PROTOCOL_VERSION,
 			session_id: this.sessionId,
 			cursor,
 			last_init: this.lastInit ? structuredClone(this.lastInit) : null,
 			state: structuredClone(this.state),
 		}));
+		for (const subscriber of this.subscribers.values()) {
+			subscriber.enqueue(envelope, (reason) => this.buildResetEnvelope(reason));
+		}
 	}
 
 	private handleAgentEvent(event: AgentEvent): void {
@@ -572,6 +860,24 @@ export class HeadlessSessionRuntime {
 
 	private cancelPendingServerRequests(reason: string): void {
 		serverRequestManager.cancelBySession(this.sessionId, reason, "runtime");
+	}
+
+	private buildResetEnvelope(
+		reason: HeadlessRuntimeResetEnvelope["reason"],
+	): HeadlessRuntimeResetEnvelope {
+		return {
+			type: "reset",
+			reason,
+			snapshot: this.getSnapshot(),
+		};
+	}
+
+	private syncSubscriptionState(publish: boolean): void {
+		this.state.subscriber_count = this.subscribers.size;
+		this.state.controller_subscription_id = this.controllerSubscriptionId;
+		if (publish) {
+			this.publishSnapshot();
+		}
 	}
 
 	private handleServerRequestEvent(event: ServerRequestLifecycleEvent): void {
@@ -760,6 +1066,7 @@ export class HeadlessRuntimeService {
 	private cleanup(): void {
 		const now = Date.now();
 		for (const [key, runtime] of this.runtimes.entries()) {
+			runtime.expireIdleSubscriptions(now);
 			if (runtime.isDisposed() || runtime.isIdle(now)) {
 				runtime.dispose();
 				this.runtimes.delete(key);

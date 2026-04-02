@@ -306,6 +306,8 @@ export interface HeadlessRuntimeState {
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
 	connection_role?: "viewer" | "controller";
+	subscriber_count: number;
+	controller_subscription_id?: string | null;
 	model?: string;
 	provider?: string;
 	session_id?: string | null;
@@ -330,6 +332,7 @@ export const HEADLESS_PROTOCOL_VERSION = "2026-03-30";
 
 export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 	return {
+		subscriber_count: 0,
 		pending_approvals: [],
 		pending_client_tools: [],
 		pending_user_inputs: [],

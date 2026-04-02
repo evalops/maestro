@@ -35,6 +35,8 @@ import {
 	handleHeadlessSessionEvents,
 	handleHeadlessSessionMessage,
 	handleHeadlessSessionState,
+	handleHeadlessSessionSubscribe,
+	handleHeadlessSessionUnsubscribe,
 } from "./handlers/headless-sessions.js";
 import { handleReadyz } from "./handlers/health.js";
 import { handleLsp } from "./handlers/lsp.js";
@@ -119,6 +121,18 @@ export function createRoutes(context: WebServerContext): Route[] {
 			path: "/api/headless/sessions/:id/events",
 			handler: (req, res, params) =>
 				handleHeadlessSessionEvents(req, res, context, params),
+		},
+		{
+			method: "POST",
+			path: "/api/headless/sessions/:id/subscribe",
+			handler: (req, res, params) =>
+				handleHeadlessSessionSubscribe(req, res, context, params),
+		},
+		{
+			method: "POST",
+			path: "/api/headless/sessions/:id/unsubscribe",
+			handler: (req, res, params) =>
+				handleHeadlessSessionUnsubscribe(req, res, context, params),
 		},
 		{
 			method: "POST",

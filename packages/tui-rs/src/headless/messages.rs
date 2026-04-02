@@ -583,6 +583,8 @@ pub struct AgentState {
     pub client_info: Option<ClientInfo>,
     pub capabilities: Option<ClientCapabilities>,
     pub connection_role: Option<ConnectionRole>,
+    pub subscriber_count: usize,
+    pub controller_subscription_id: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
     /// Session information
