@@ -269,7 +269,9 @@ impl RemoteAgentTransport {
     }
 
     pub fn shutdown(&self) -> Result<(), AsyncTransportError> {
-        self.send(ToAgentMessage::Shutdown)
+        let result = self.send(ToAgentMessage::Shutdown);
+        self.cancel_token.cancel();
+        result
     }
 
     pub(super) fn try_recv_incoming(
