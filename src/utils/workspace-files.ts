@@ -2,6 +2,26 @@ import { spawnSync } from "node:child_process";
 import { join, relative, resolve, sep } from "node:path";
 
 const cache = new Map<string, { files: string[]; cachedAt: number }>();
+const CACHE_TTL_MS = 30_000;
+const MAX_CACHE_ENTRIES = 16;
+
+function pruneExpiredCache(now: number): void {
+	for (const [cwd, entry] of cache) {
+		if (now - entry.cachedAt >= CACHE_TTL_MS) {
+			cache.delete(cwd);
+		}
+	}
+}
+
+function evictOldestCacheEntry(): void {
+	while (cache.size >= MAX_CACHE_ENTRIES) {
+		const oldestKey = cache.keys().next().value;
+		if (oldestKey === undefined) {
+			return;
+		}
+		cache.delete(oldestKey);
+	}
+}
 
 function runRgFiles(cwd: string): string[] | null {
 	const result = spawnSync("rg", ["--files"], {
@@ -106,9 +126,11 @@ export function getWorkspaceFiles(limit = 2000, cwdInput?: string): string[] {
 	const now = Date.now();
 	const cwd = resolve(cwdInput ?? process.cwd());
 
+	pruneExpiredCache(now);
+
 	// Refresh cache every 30 seconds
 	const cached = cache.get(cwd);
-	if (cached && now - cached.cachedAt < 30_000) {
+	if (cached) {
 		return cached.files.slice(0, limit);
 	}
 
@@ -129,6 +151,7 @@ export function getWorkspaceFiles(limit = 2000, cwdInput?: string): string[] {
 		.map((file) => file.replace(/^[.][/\\]/, ""))
 		.filter((file) => file.length > 0);
 
+	evictOldestCacheEntry();
 	cache.set(cwd, { files: normalized, cachedAt: now });
 	return normalized.slice(0, limit);
 }
