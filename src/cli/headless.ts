@@ -120,9 +120,16 @@ export async function runHeadlessMode(
 	});
 
 	rl.on("line", async (line: string) => {
+		let msg: HeadlessToAgentMessage;
 		try {
-			const msg = JSON.parse(line) as HeadlessToAgentMessage;
+			msg = JSON.parse(line) as HeadlessToAgentMessage;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			sendError(`Failed to parse command: ${message}`, false);
+			return;
+		}
 
+		try {
 			switch (msg.type) {
 				case "init": {
 					const applied = applyInitMessage(agent, msg, approvalService);
@@ -351,7 +358,7 @@ export async function runHeadlessMode(
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			sendError(`Failed to parse command: ${message}`, false);
+			sendError(message, false);
 		}
 	});
 
