@@ -276,7 +276,7 @@ impl RemoteAgentTransport {
         &mut self,
     ) -> Option<Result<RemoteIncoming, AsyncTransportError>> {
         match self.event_rx.try_recv() {
-            Ok(result) => Some(result),
+            Ok(result) => Some(self.apply_incoming_result(result)),
             Err(mpsc::error::TryRecvError::Empty) => None,
             Err(mpsc::error::TryRecvError::Disconnected) => {
                 Some(Err(AsyncTransportError::ChannelClosed))
@@ -285,10 +285,12 @@ impl RemoteAgentTransport {
     }
 
     pub(super) async fn recv_incoming(&mut self) -> Result<RemoteIncoming, AsyncTransportError> {
-        self.event_rx
+        let result = self
+            .event_rx
             .recv()
             .await
-            .ok_or(AsyncTransportError::ChannelClosed)?
+            .ok_or(AsyncTransportError::ChannelClosed)?;
+        self.apply_incoming_result(result)
     }
 
     pub fn state(&self) -> &AgentState {
@@ -305,6 +307,25 @@ impl RemoteAgentTransport {
 
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel_token.clone()
+    }
+
+    fn apply_incoming_result(
+        &mut self,
+        result: Result<RemoteIncoming, AsyncTransportError>,
+    ) -> Result<RemoteIncoming, AsyncTransportError> {
+        match result {
+            Ok(RemoteIncoming::Snapshot { state, last_init }) => {
+                self.state = (*state).clone();
+                self.last_init = last_init.clone();
+                Ok(RemoteIncoming::Snapshot { state, last_init })
+            }
+            Ok(RemoteIncoming::Message(message)) => {
+                let _ignored_event = self.state.handle_message(message.clone());
+                Ok(RemoteIncoming::Message(message))
+            }
+            Ok(RemoteIncoming::Heartbeat) => Ok(RemoteIncoming::Heartbeat),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -846,6 +867,10 @@ mod tests {
             }
             other => panic!("expected remote status message, got {other:?}"),
         }
+        assert_eq!(
+            transport.state().last_status.as_deref(),
+            Some("Remote update")
+        );
 
         transport
             .send(ToAgentMessage::Interrupt)
@@ -871,6 +896,93 @@ mod tests {
         assert!(create_headers
             .iter()
             .any(|(name, value)| { name == "x-maestro-client" && value == "tui-rs" }));
+
+        transport.shutdown().expect("shutdown");
+        transport.cancel_token().cancel();
+    }
+
+    #[tokio::test]
+    async fn remote_transport_updates_cached_state_on_snapshot_events() {
+        let initial_snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 1,
+            "last_init": {
+                "system_prompt": "Initial prompt"
+            },
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "tracked_tools": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let snapshot_event = serde_json::json!({
+            "type": "snapshot",
+            "snapshot": {
+                "protocolVersion": "2026-03-30",
+                "session_id": "sess_remote",
+                "cursor": 2,
+                "last_init": {
+                    "system_prompt": "Updated prompt"
+                },
+                "state": {
+                    "protocol_version": "2026-03-30",
+                    "model": "gpt-5.4",
+                    "provider": "openai",
+                    "session_id": "sess_remote",
+                    "pending_approvals": [],
+                    "tracked_tools": [],
+                    "active_tools": [],
+                    "last_status": "Replayed snapshot",
+                    "is_ready": true,
+                    "is_responding": false
+                }
+            }
+        })
+        .to_string();
+
+        let (addr, _posted_bodies, _request_headers) =
+            spawn_remote_headless_server(initial_snapshot.to_string(), vec![snapshot_event]).await;
+
+        let config = RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        };
+
+        let mut transport = RemoteAgentTransport::connect(config)
+            .await
+            .expect("connect");
+        assert_eq!(transport.state().last_status.as_deref(), Some("Attached"));
+        assert_eq!(
+            transport
+                .last_init()
+                .and_then(|init| init.system_prompt.as_deref()),
+            Some("Initial prompt")
+        );
+
+        let incoming = transport.recv_incoming().await.expect("incoming snapshot");
+        match incoming {
+            RemoteIncoming::Snapshot { .. } => {}
+            other => panic!("expected remote snapshot, got {other:?}"),
+        }
+
+        assert_eq!(
+            transport.state().last_status.as_deref(),
+            Some("Replayed snapshot")
+        );
+        assert_eq!(
+            transport
+                .last_init()
+                .and_then(|init| init.system_prompt.as_deref()),
+            Some("Updated prompt")
+        );
 
         transport.shutdown().expect("shutdown");
         transport.cancel_token().cancel();
