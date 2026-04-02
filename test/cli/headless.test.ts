@@ -60,6 +60,10 @@ describe("headless protocol helpers", () => {
 		);
 	});
 
+	it("classifies unknown non-fatal errors as tool errors", () => {
+		expect(classifyHeadlessError("Something odd happened", false)).toBe("tool");
+	});
+
 	it("builds usage totals from assistant messages", () => {
 		expect(
 			buildHeadlessUsage(assistantMessage(), "claude-opus-4-6", "anthropic"),
@@ -149,6 +153,37 @@ describe("headless protocol helpers", () => {
 				content: "first line",
 			},
 		]);
+	});
+
+	it("deduplicates repeated tool summary labels within a response", () => {
+		const translator = new HeadlessProtocolTranslator();
+		translator.handleAgentEvent({
+			type: "message_start",
+			message: assistantMessage(),
+		});
+		translator.handleAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_1",
+			toolName: "read",
+			args: { file_path: "package.json" },
+		});
+		translator.handleAgentEvent({
+			type: "tool_execution_start",
+			toolCallId: "call_2",
+			toolName: "read",
+			args: { file_path: "package.json" },
+		});
+
+		const [responseEnd] = translator.handleAgentEvent({
+			type: "message_end",
+			message: assistantMessage(),
+		});
+		expect(responseEnd).toMatchObject({
+			type: "response_end",
+			tools_summary: {
+				summary_labels: ["Read package.json"],
+			},
+		});
 	});
 
 	it("tracks non-approval tool names through tool_start", () => {

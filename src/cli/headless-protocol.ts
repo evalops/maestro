@@ -273,7 +273,7 @@ export function classifyHeadlessError(
 	) {
 		return "tool";
 	}
-	return fatal ? "fatal" : "transient";
+	return fatal ? "fatal" : "tool";
 }
 
 export function buildHeadlessUsage(
@@ -383,7 +383,10 @@ export class HeadlessProtocolTranslator {
 		}
 		if (args) {
 			const summary = summarizeToolUse(toolName, args);
-			if (summary) {
+			if (
+				summary &&
+				!this.currentResponseTelemetry.toolSummaryLabels.includes(summary)
+			) {
 				this.currentResponseTelemetry.toolSummaryLabels.push(summary);
 			}
 		}
