@@ -25,6 +25,7 @@ Use this index to jump to the right guide quickly and see how the pieces connect
 - [Ambient Agent Design](design/AMBIENT_AGENT.md) — always-on GitHub agent daemon architecture.
 - [Patterns](patterns/INDEX.md) — implementation patterns (e.g., event suppression, tool error handling).
 - [Upstreams: pi-mono](upstreams/pi-mono.md) — notes on upstream inspirations/adaptations.
+- [Research: Codex app-server](research/LEARNINGS_CODEX_APP_SERVER.md) — learnings from OpenAI Codex's app-server for Maestro's headless and remote control-plane evolution.
 
 ## Feature Design Docs
 - [Design Index](design/INDEX.md) — comprehensive design documentation for all major subsystems.
