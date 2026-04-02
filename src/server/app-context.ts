@@ -8,7 +8,6 @@ import type { ClientToolExecutionService } from "../agent/transport.js";
 import type { ThinkingLevel } from "../agent/types.js";
 import type { RegisteredModel } from "../models/registry.js";
 import type { AuthCredential } from "../providers/auth.js";
-import type { HeadlessInProcessHost } from "./headless-in-process-host.js";
 import type { HeadlessRuntimeService } from "./headless-runtime-service.js";
 
 export interface WebServerConfig {
@@ -43,7 +42,6 @@ export interface WebServerServices {
 	acquireSse: () => symbol | null;
 	releaseSse: (token: symbol | null) => void;
 	headlessRuntimeService: HeadlessRuntimeService;
-	headlessInProcessHost: HeadlessInProcessHost;
 }
 
 export type WebServerContext = WebServerConfig & WebServerServices;

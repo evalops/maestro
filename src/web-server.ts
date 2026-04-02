@@ -103,7 +103,6 @@ import { checkApiAuth } from "./server/authz.js";
 import { startAutomationScheduler } from "./server/automations/scheduler.js";
 import { clientToolService } from "./server/client-tools-service.js";
 import { handleChatWebSocket } from "./server/handlers/chat-ws.js";
-import { HeadlessInProcessHost } from "./server/headless-in-process-host.js";
 import { HeadlessRuntimeService } from "./server/headless-runtime-service.js";
 import {
 	isOverloaded,
@@ -552,7 +551,6 @@ const context: WebServerContext = {
 	acquireSse: () => sseLimiter.tryAcquire(),
 	releaseSse: (token) => sseLimiter.release(token),
 	headlessRuntimeService,
-	headlessInProcessHost: new HeadlessInProcessHost(headlessRuntimeService),
 };
 
 const routes = createRoutes(context);

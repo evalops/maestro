@@ -451,7 +451,7 @@ export class HeadlessSessionRuntime {
 		this.syncSubscriptionState(false);
 		this.disposed = true;
 		this.running = false;
-		void this.utilityCommands.dispose();
+		await this.utilityCommands.dispose();
 		this.agent.abort();
 		this.unsubscribeServerRequestEvents();
 	}
@@ -1077,7 +1077,9 @@ export class HeadlessRuntimeService {
 	private readonly runtimes = new Map<string, HeadlessSessionRuntime>();
 
 	constructor() {
-		setInterval(() => this.cleanup(), 60 * 1000).unref();
+		setInterval(() => {
+			void this.cleanup();
+		}, 60 * 1000).unref();
 	}
 
 	async ensureRuntime(
@@ -1128,12 +1130,12 @@ export class HeadlessRuntimeService {
 		return runtime;
 	}
 
-	private cleanup(): void {
+	private async cleanup(): Promise<void> {
 		const now = Date.now();
 		for (const [key, runtime] of this.runtimes.entries()) {
 			runtime.expireIdleSubscriptions(now);
 			if (runtime.isDisposed() || runtime.isIdle(now)) {
-				void runtime.dispose();
+				await runtime.dispose();
 				this.runtimes.delete(key);
 			}
 		}

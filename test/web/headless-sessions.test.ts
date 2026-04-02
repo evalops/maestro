@@ -26,7 +26,6 @@ import {
 	handleHeadlessSessionSubscribe,
 	handleHeadlessSessionUnsubscribe,
 } from "../../src/server/handlers/headless-sessions.js";
-import { HeadlessInProcessHost } from "../../src/server/headless-in-process-host.js";
 import {
 	HeadlessRuntimeService,
 	type HeadlessRuntimeSnapshot,
@@ -209,7 +208,6 @@ function createContext(overrides: Partial<WebServerContext>): WebServerContext {
 		acquireSse: () => null,
 		releaseSse: () => {},
 		headlessRuntimeService,
-		headlessInProcessHost: new HeadlessInProcessHost(headlessRuntimeService),
 		...overrides,
 	};
 }
