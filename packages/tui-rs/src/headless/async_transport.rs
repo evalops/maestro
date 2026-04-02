@@ -593,8 +593,8 @@ mod tests {
         assert!(err.to_string().contains("exited"));
     }
 
-    #[test]
-    fn try_recv_skips_messages_without_events() {
+    #[tokio::test]
+    async fn try_recv_skips_messages_without_events() {
         let (_message_tx, message_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) =
             mpsc::unbounded_channel::<Result<FromAgentMessage, AsyncTransportError>>();

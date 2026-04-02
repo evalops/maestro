@@ -1160,7 +1160,7 @@ mod tests {
             .replay();
         let recorder = SessionRecorder::resume(sessions_dir, &session_id).expect("resume recorder");
 
-        assert_eq!(recorder.last_init(), replay.last_init);
+        assert_eq!(recorder.last_init(), replay.last_init.as_ref());
     }
 
     #[test]
@@ -1190,7 +1190,13 @@ mod tests {
             .session_recorder
             .as_ref()
             .expect("session recorder");
-        assert_eq!(recorder.replay_state(), &snapshot_state);
+        assert_eq!(recorder.replay_state().model, snapshot_state.model);
+        assert_eq!(recorder.replay_state().provider, snapshot_state.provider);
+        assert_eq!(
+            recorder.replay_state().session_id,
+            snapshot_state.session_id
+        );
+        assert_eq!(recorder.replay_state().is_ready, snapshot_state.is_ready);
         assert_eq!(recorder.last_init(), Some(&snapshot_init));
         assert_eq!(supervisor.last_init.as_ref(), Some(&snapshot_init));
     }

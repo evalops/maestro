@@ -550,17 +550,20 @@ mod tests {
 
     #[test]
     fn try_recv_skips_messages_without_events() {
-        let (tx, rx) = mpsc::channel::<Result<FromAgentMessage, TransportError>>();
-        tx.send(Ok(FromAgentMessage::SessionInfo {
-            session_id: Some("sess_123".to_string()),
-            cwd: "/tmp/project".to_string(),
-            git_branch: Some("main".to_string()),
-        }))
-        .unwrap();
-        tx.send(Ok(FromAgentMessage::Status {
-            message: "working".to_string(),
-        }))
-        .unwrap();
+        let (tx, _outgoing_rx) = mpsc::channel::<ToAgentMessage>();
+        let (incoming_tx, rx) = mpsc::channel::<Result<FromAgentMessage, TransportError>>();
+        incoming_tx
+            .send(Ok(FromAgentMessage::SessionInfo {
+                session_id: Some("sess_123".to_string()),
+                cwd: "/tmp/project".to_string(),
+                git_branch: Some("main".to_string()),
+            }))
+            .unwrap();
+        incoming_tx
+            .send(Ok(FromAgentMessage::Status {
+                message: "working".to_string(),
+            }))
+            .unwrap();
 
         let process_handle = thread::spawn(|| {});
         let mut transport = AgentTransport {
