@@ -23,12 +23,16 @@ import {
 	handleHeadlessSessionCreate,
 	handleHeadlessSessionEvents,
 	handleHeadlessSessionMessage,
+	handleHeadlessSessionSubscribe,
+	handleHeadlessSessionUnsubscribe,
 } from "../../src/server/handlers/headless-sessions.js";
 import {
 	HeadlessRuntimeService,
 	type HeadlessRuntimeSnapshot,
+	type HeadlessRuntimeStreamEnvelope,
 } from "../../src/server/headless-runtime-service.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
+import { ApiError } from "../../src/server/server-utils.js";
 import { SessionManager } from "../../src/session/manager.js";
 
 const TEST_MODEL: RegisteredModel = {
@@ -204,6 +208,60 @@ function createContext(overrides: Partial<WebServerContext>): WebServerContext {
 		releaseSse: () => {},
 		headlessRuntimeService: new HeadlessRuntimeService(),
 		...overrides,
+	};
+}
+
+function createMockAttachedStream(
+	initial: HeadlessRuntimeStreamEnvelope[] = [],
+	options?: { overflowSnapshot?: HeadlessRuntimeSnapshot },
+) {
+	const queue = [...initial];
+	const listeners = new Set<() => void>();
+	let queuedReset: HeadlessRuntimeStreamEnvelope | null = null;
+	return {
+		stream: {
+			id: "sub_test",
+			next: () => {
+				const next = queuedReset ?? queue.shift() ?? null;
+				if (queuedReset) {
+					queuedReset = null;
+				}
+				return next;
+			},
+			onAvailable: (listener: () => void) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			enqueue: (envelope: HeadlessRuntimeStreamEnvelope) => {
+				queue.push(envelope);
+				if (options?.overflowSnapshot && queue.length > 128) {
+					queue.length = 0;
+					queuedReset = {
+						type: "reset",
+						reason: "lagged",
+						snapshot: options.overflowSnapshot,
+					};
+				}
+				for (const listener of listeners) {
+					listener();
+				}
+			},
+			close: vi.fn(),
+		},
+		push: (envelope: HeadlessRuntimeStreamEnvelope) => {
+			queue.push(envelope);
+			if (options?.overflowSnapshot && queue.length > 128) {
+				queue.length = 0;
+				queuedReset = {
+					type: "reset",
+					reason: "lagged",
+					snapshot: options.overflowSnapshot,
+				};
+			}
+			for (const listener of listeners) {
+				listener();
+			}
+		},
 	};
 }
 
@@ -992,6 +1050,212 @@ describe("headless session handlers", () => {
 		expect(body.state.connection_role).toBe("viewer");
 	});
 
+	it("creates explicit subscriptions with controller lease metadata", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const createReq = createJsonRequest("POST", "/api/headless/sessions", {
+			model: TEST_MODEL.id,
+		});
+		const createRes = new MockResponse();
+		createRes.req = createReq;
+		await handleHeadlessSessionCreate(
+			createReq,
+			createRes as unknown as ServerResponse,
+			context,
+		);
+		const sessionId = JSON.parse(createRes.body).session_id;
+
+		const subscribeReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${sessionId}/subscribe`,
+			{
+				role: "controller",
+				protocolVersion: "2026-03-30",
+				clientInfo: { name: "maestro-tui-rs", version: "0.1.0" },
+			},
+		);
+		const subscribeRes = new MockResponse();
+		subscribeRes.req = subscribeReq;
+
+		await handleHeadlessSessionSubscribe(
+			subscribeReq,
+			subscribeRes as unknown as ServerResponse,
+			context,
+			{ id: sessionId },
+		);
+
+		const body = JSON.parse(subscribeRes.body);
+		expect(body.subscription_id).toEqual(expect.any(String));
+		expect(body.controller_lease_granted).toBe(true);
+		expect(body.controller_subscription_id).toBe(body.subscription_id);
+		expect(body.snapshot.state.subscriber_count).toBe(1);
+		expect(body.snapshot.state.controller_subscription_id).toBe(
+			body.subscription_id,
+		);
+	});
+
+	it("rejects a second explicit controller subscription while a lease is held", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const createReq = createJsonRequest("POST", "/api/headless/sessions", {
+			model: TEST_MODEL.id,
+		});
+		const createRes = new MockResponse();
+		createRes.req = createReq;
+		await handleHeadlessSessionCreate(
+			createReq,
+			createRes as unknown as ServerResponse,
+			context,
+		);
+		const sessionId = JSON.parse(createRes.body).session_id;
+
+		const firstReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${sessionId}/subscribe`,
+			{ role: "controller" },
+		);
+		const firstRes = new MockResponse();
+		firstRes.req = firstReq;
+		await handleHeadlessSessionSubscribe(
+			firstReq,
+			firstRes as unknown as ServerResponse,
+			context,
+			{ id: sessionId },
+		);
+
+		const secondReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${sessionId}/subscribe`,
+			{ role: "controller" },
+		);
+		const secondRes = new MockResponse();
+		secondRes.req = secondReq;
+		await expect(
+			handleHeadlessSessionSubscribe(
+				secondReq,
+				secondRes as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			),
+		).rejects.toMatchObject({
+			statusCode: 409,
+			message: "Controller lease is already held by another subscriber",
+		});
+	});
+
+	it("allows explicit controller takeover when requested", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const createReq = createJsonRequest("POST", "/api/headless/sessions", {
+			model: TEST_MODEL.id,
+		});
+		const createRes = new MockResponse();
+		createRes.req = createReq;
+		await handleHeadlessSessionCreate(
+			createReq,
+			createRes as unknown as ServerResponse,
+			context,
+		);
+		const sessionId = JSON.parse(createRes.body).session_id;
+
+		const firstReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${sessionId}/subscribe`,
+			{ role: "controller" },
+		);
+		const firstRes = new MockResponse();
+		firstRes.req = firstReq;
+		await handleHeadlessSessionSubscribe(
+			firstReq,
+			firstRes as unknown as ServerResponse,
+			context,
+			{ id: sessionId },
+		);
+		const first = JSON.parse(firstRes.body);
+
+		const secondReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${sessionId}/subscribe`,
+			{ role: "controller", takeControl: true },
+		);
+		const secondRes = new MockResponse();
+		secondRes.req = secondReq;
+		await handleHeadlessSessionSubscribe(
+			secondReq,
+			secondRes as unknown as ServerResponse,
+			context,
+			{ id: sessionId },
+		);
+		const second = JSON.parse(secondRes.body);
+
+		expect(second.subscription_id).not.toBe(first.subscription_id);
+		expect(second.controller_subscription_id).toBe(second.subscription_id);
+		expect(second.snapshot.state.controller_subscription_id).toBe(
+			second.subscription_id,
+		);
+	});
+
+	it("explicit unsubscribe releases the controller lease", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const createReq = createJsonRequest("POST", "/api/headless/sessions", {
+			model: TEST_MODEL.id,
+		});
+		const createRes = new MockResponse();
+		createRes.req = createReq;
+		await handleHeadlessSessionCreate(
+			createReq,
+			createRes as unknown as ServerResponse,
+			context,
+		);
+		const sessionId = JSON.parse(createRes.body).session_id;
+
+		const subscribeReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${sessionId}/subscribe`,
+			{ role: "controller" },
+		);
+		const subscribeRes = new MockResponse();
+		subscribeRes.req = subscribeReq;
+		await handleHeadlessSessionSubscribe(
+			subscribeReq,
+			subscribeRes as unknown as ServerResponse,
+			context,
+			{ id: sessionId },
+		);
+		const { subscription_id } = JSON.parse(subscribeRes.body);
+
+		const unsubscribeReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${sessionId}/unsubscribe`,
+			{ subscriptionId: subscription_id },
+		);
+		const unsubscribeRes = new MockResponse();
+		unsubscribeRes.req = unsubscribeReq;
+		await handleHeadlessSessionUnsubscribe(
+			unsubscribeReq,
+			unsubscribeRes as unknown as ServerResponse,
+			context,
+			{ id: sessionId },
+		);
+
+		expect(JSON.parse(unsubscribeRes.body)).toEqual({ success: true });
+		const runtime = context.headlessRuntimeService.getRuntime(
+			"anon",
+			sessionId,
+		);
+		expect(runtime?.getSnapshot().state.subscriber_count).toBe(0);
+		expect(runtime?.getSnapshot().state.controller_subscription_id).toBeNull();
+	});
+
 	it("passes client tool creation options through to the agent factory", async () => {
 		const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
 		const context = createContext({ createAgent });
@@ -1108,6 +1372,9 @@ describe("headless session handlers", () => {
 
 	it("rejects viewer headless message posts", async () => {
 		const runtime = {
+			assertCanSend: vi.fn().mockImplementation(() => {
+				throw new Error("Viewer headless connections cannot send messages");
+			}),
 			send: vi.fn().mockResolvedValue(undefined),
 		};
 		const context = createContext({
@@ -1355,11 +1622,17 @@ describe("headless session handlers", () => {
 			last_init: null,
 			state: createHeadlessRuntimeState(),
 		};
-		const unsubscribe = vi.fn();
+		const attached = createMockAttachedStream(
+			[
+				{
+					type: "snapshot",
+					snapshot,
+				},
+			],
+			{ overflowSnapshot: snapshot },
+		);
 		const runtime = {
-			getSnapshot: vi.fn().mockReturnValue(snapshot),
-			replayFrom: vi.fn().mockReturnValue([]),
-			subscribe: vi.fn().mockReturnValue(unsubscribe),
+			createImplicitStream: vi.fn().mockReturnValue(attached.stream),
 			heartbeat: vi.fn().mockReturnValue({ type: "heartbeat", cursor: 4 }),
 		};
 		const context = createContext({
@@ -1385,7 +1658,35 @@ describe("headless session handlers", () => {
 		expect(res.body).toContain('"session_id":"sess_sse"');
 
 		req.emit("close");
-		expect(unsubscribe).toHaveBeenCalledTimes(1);
+		expect(attached.stream.close).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects explicit SSE attaches with unknown subscription ids before sending headers", () => {
+		const runtime = {
+			attachSubscription: vi.fn().mockReturnValue(null),
+			createImplicitStream: vi.fn(),
+		};
+		const context = createContext({
+			headlessRuntimeService: {
+				getRuntime: vi.fn().mockReturnValue(runtime),
+			} as unknown as HeadlessRuntimeService,
+		});
+		const req = createJsonRequest(
+			"GET",
+			"/api/headless/sessions/sess_sse/events?subscriptionId=sub_missing",
+		);
+		const res = new MockResponse();
+
+		expect(() =>
+			handleHeadlessSessionEvents(
+				req,
+				res as unknown as ServerResponse,
+				context,
+				{ id: "sess_sse" },
+			),
+		).toThrowError(ApiError);
+		expect(res.headersSent).toBe(false);
+		expect(runtime.attachSubscription).toHaveBeenCalledWith("sub_missing");
 	});
 
 	it("streams a reset envelope when the requested replay cursor is stale", () => {
@@ -1396,10 +1697,15 @@ describe("headless session handlers", () => {
 			last_init: null,
 			state: createHeadlessRuntimeState(),
 		};
+		const attached = createMockAttachedStream([
+			{
+				type: "reset",
+				reason: "replay_gap",
+				snapshot,
+			},
+		]);
 		const runtime = {
-			getSnapshot: vi.fn().mockReturnValue(snapshot),
-			replayFrom: vi.fn().mockReturnValue(null),
-			subscribe: vi.fn().mockReturnValue(vi.fn()),
+			createImplicitStream: vi.fn().mockReturnValue(attached.stream),
 			heartbeat: vi.fn().mockReturnValue({ type: "heartbeat", cursor: 12 }),
 		};
 		const context = createContext({
@@ -1433,14 +1739,17 @@ describe("headless session handlers", () => {
 			last_init: null,
 			state: createHeadlessRuntimeState(),
 		};
-		let listener: ((envelope: unknown) => void) | undefined;
+		const attached = createMockAttachedStream(
+			[
+				{
+					type: "snapshot",
+					snapshot,
+				},
+			],
+			{ overflowSnapshot: snapshot },
+		);
 		const runtime = {
-			getSnapshot: vi.fn().mockReturnValue(snapshot),
-			replayFrom: vi.fn().mockReturnValue([]),
-			subscribe: vi.fn().mockImplementation((next) => {
-				listener = next;
-				return vi.fn();
-			}),
+			createImplicitStream: vi.fn().mockReturnValue(attached.stream),
 			heartbeat: vi.fn().mockReturnValue({ type: "heartbeat", cursor: 4 }),
 		};
 		const context = createContext({
@@ -1461,13 +1770,13 @@ describe("headless session handlers", () => {
 			{ id: "sess_sse" },
 		);
 
-		listener?.({
+		attached.push({
 			type: "message",
 			cursor: 5,
 			message: { type: "status", message: "first" },
 		});
 		for (let index = 0; index < 130; index += 1) {
-			listener?.({
+			attached.push({
 				type: "message",
 				cursor: 6 + index,
 				message: { type: "status", message: `queued-${index}` },
@@ -1481,6 +1790,7 @@ describe("headless session handlers", () => {
 
 	it("forwards message posts to the runtime", async () => {
 		const runtime = {
+			assertCanSend: vi.fn(),
 			send: vi.fn().mockResolvedValue(undefined),
 		};
 		const context = createContext({

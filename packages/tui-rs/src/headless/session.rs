@@ -186,6 +186,10 @@ pub struct AgentStateCheckpoint {
     pub capabilities: Option<super::messages::ClientCapabilities>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_role: Option<super::messages::ConnectionRole>,
+    #[serde(default)]
+    pub subscriber_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller_subscription_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,6 +237,8 @@ impl AgentStateCheckpoint {
             client_info: state.client_info.clone(),
             capabilities: state.capabilities.clone(),
             connection_role: state.connection_role,
+            subscriber_count: state.subscriber_count,
+            controller_subscription_id: state.controller_subscription_id.clone(),
             model: state.model.clone(),
             provider: state.provider.clone(),
             session_id: state.session_id.clone(),
@@ -271,6 +277,8 @@ impl AgentStateCheckpoint {
             client_info: self.client_info,
             capabilities: self.capabilities,
             connection_role: self.connection_role,
+            subscriber_count: self.subscriber_count,
+            controller_subscription_id: self.controller_subscription_id,
             model: self.model,
             provider: self.provider,
             session_id: self.session_id,

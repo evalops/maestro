@@ -9,7 +9,6 @@ import {
 } from "../approval-mode-store.js";
 import { getAuthSubject } from "../authz.js";
 import type {
-	HeadlessRuntimeResetEnvelope,
 	HeadlessRuntimeStreamEnvelope,
 	HeadlessSessionRuntime,
 } from "../headless-runtime-service.js";
@@ -79,11 +78,45 @@ const HeadlessMessageSchema = Type.Object(
 	{ additionalProperties: true },
 );
 
-const MAX_HEADLESS_SUBSCRIBER_QUEUE =
-	Number.parseInt(process.env.MAESTRO_HEADLESS_SUBSCRIBER_QUEUE || "", 10) ||
-	128;
+const HeadlessSessionSubscribeSchema = Type.Object({
+	protocolVersion: Type.Optional(Type.String()),
+	clientInfo: Type.Optional(
+		Type.Object({
+			name: Type.String(),
+			version: Type.Optional(Type.String()),
+		}),
+	),
+	capabilities: Type.Optional(
+		Type.Object({
+			serverRequests: Type.Optional(
+				Type.Array(
+					Type.Union([
+						Type.Literal("approval"),
+						Type.Literal("client_tool"),
+						Type.Literal("user_input"),
+					]),
+					{ uniqueItems: true },
+				),
+			),
+		}),
+	),
+	role: Type.Optional(
+		Type.Union([Type.Literal("viewer"), Type.Literal("controller")]),
+	),
+	takeControl: Type.Optional(Type.Boolean()),
+});
+
+const HeadlessSessionUnsubscribeSchema = Type.Object({
+	subscriptionId: Type.String(),
+});
 
 type HeadlessSessionCreateInput = Static<typeof HeadlessSessionCreateSchema>;
+type HeadlessSessionSubscribeInput = Static<
+	typeof HeadlessSessionSubscribeSchema
+>;
+type HeadlessSessionUnsubscribeInput = Static<
+	typeof HeadlessSessionUnsubscribeSchema
+>;
 type HeadlessMessageInput = Static<typeof HeadlessMessageSchema>;
 
 function getHeadlessRole(
@@ -105,19 +138,18 @@ function writeSse(res: ServerResponse, payload: unknown): boolean {
 	return res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function getScopeKey(req: IncomingMessage): string {
-	return getAuthSubject(req);
+function getHeadlessSubscriberId(req: IncomingMessage): string | undefined {
+	return (
+		getRequestHeader(
+			req,
+			"x-composer-headless-subscriber-id",
+			"x-maestro-headless-subscriber-id",
+		) ?? undefined
+	);
 }
 
-function buildResetEnvelope(
-	runtime: Pick<HeadlessSessionRuntime, "getSnapshot">,
-	reason: HeadlessRuntimeResetEnvelope["reason"],
-): HeadlessRuntimeResetEnvelope {
-	return {
-		type: "reset",
-		reason,
-		snapshot: runtime.getSnapshot(),
-	};
+function getScopeKey(req: IncomingMessage): string {
+	return getAuthSubject(req);
 }
 
 async function ensureRuntime(
@@ -237,6 +269,75 @@ export function handleHeadlessSessionState(
 	sendJson(res, 200, runtime.getSnapshot(), context.corsHeaders, req);
 }
 
+export async function handleHeadlessSessionSubscribe(
+	req: IncomingMessage,
+	res: ServerResponse,
+	context: WebServerContext,
+	params?: Record<string, string>,
+) {
+	const runtime = getRuntime(req, context, params?.id);
+	const input = await parseAndValidateJson<HeadlessSessionSubscribeInput>(
+		req,
+		HeadlessSessionSubscribeSchema,
+	);
+	const role = getHeadlessRole(req, input.role);
+	if (
+		role === "viewer" &&
+		input.capabilities?.serverRequests?.includes("user_input")
+	) {
+		throw new ApiError(
+			400,
+			"viewer headless connections cannot negotiate user_input requests",
+		);
+	}
+	runtime.updateConnectionMetadata({
+		clientProtocolVersion: input.protocolVersion,
+		clientInfo: input.clientInfo,
+		capabilities: input.capabilities
+			? { server_requests: input.capabilities.serverRequests }
+			: undefined,
+		role,
+	});
+	try {
+		sendJson(
+			res,
+			200,
+			runtime.createSubscription({
+				role,
+				explicit: true,
+				takeControl: input.takeControl,
+			}),
+			context.corsHeaders,
+			req,
+		);
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			error.message === "Controller lease is already held by another subscriber"
+		) {
+			throw new ApiError(409, error.message);
+		}
+		throw error;
+	}
+}
+
+export async function handleHeadlessSessionUnsubscribe(
+	req: IncomingMessage,
+	res: ServerResponse,
+	context: WebServerContext,
+	params?: Record<string, string>,
+) {
+	const runtime = getRuntime(req, context, params?.id);
+	const input = await parseAndValidateJson<HeadlessSessionUnsubscribeInput>(
+		req,
+		HeadlessSessionUnsubscribeSchema,
+	);
+	if (!runtime.unsubscribe(input.subscriptionId)) {
+		throw new ApiError(404, "Headless subscriber not found");
+	}
+	sendJson(res, 200, { success: true }, context.corsHeaders, req);
+}
+
 export function handleHeadlessSessionEvents(
 	req: IncomingMessage,
 	res: ServerResponse,
@@ -250,6 +351,18 @@ export function handleHeadlessSessionEvents(
 	);
 	const cursorParam = url.searchParams.get("cursor");
 	const cursor = cursorParam ? Number.parseInt(cursorParam, 10) : null;
+	const subscriptionId =
+		url.searchParams.get("subscriptionId") || getHeadlessSubscriberId(req);
+
+	const stream = subscriptionId
+		? runtime.attachSubscription(subscriptionId)
+		: runtime.createImplicitStream({
+				cursor,
+				role: getHeadlessRole(req),
+			});
+	if (!stream) {
+		throw new ApiError(404, "Headless subscriber not found");
+	}
 
 	res.writeHead(200, {
 		"Content-Type": "text/event-stream",
@@ -257,9 +370,6 @@ export function handleHeadlessSessionEvents(
 		Connection: "keep-alive",
 		...context.corsHeaders,
 	});
-
-	const queue: HeadlessRuntimeStreamEnvelope[] = [];
-	let queuedReset: HeadlessRuntimeResetEnvelope | null = null;
 	let flushing = false;
 
 	const flush = () => {
@@ -268,13 +378,10 @@ export function handleHeadlessSessionEvents(
 		}
 		flushing = true;
 		while (!res.writableEnded) {
-			const next = queuedReset ?? queue.shift();
+			const next = stream.next();
 			if (!next) {
 				flushing = false;
 				return;
-			}
-			if (next.type === "reset") {
-				queuedReset = null;
 			}
 			const wrote = writeSse(res, next);
 			if (!wrote) {
@@ -287,51 +394,23 @@ export function handleHeadlessSessionEvents(
 		}
 		flushing = false;
 	};
-
-	const enqueue = (envelope: HeadlessRuntimeStreamEnvelope) => {
-		if (res.writableEnded) {
-			return;
-		}
-		queue.push(envelope);
-		if (queue.length > MAX_HEADLESS_SUBSCRIBER_QUEUE) {
-			queue.length = 0;
-			queuedReset = buildResetEnvelope(runtime, "lagged");
-		}
-		flush();
-	};
-
-	if (cursor !== null && Number.isFinite(cursor)) {
-		const replay = runtime.replayFrom(cursor);
-		if (replay) {
-			for (const envelope of replay) {
-				enqueue(envelope);
-			}
-		} else {
-			enqueue(buildResetEnvelope(runtime, "replay_gap"));
-		}
-	} else {
-		enqueue({
-			type: "snapshot",
-			snapshot: runtime.getSnapshot(),
-		});
-	}
-
-	const unsubscribe = runtime.subscribe((envelope) => {
-		enqueue(envelope);
-	});
+	const stopListening = stream.onAvailable(flush);
 	const heartbeat = setInterval(() => {
 		if (!res.writableEnded) {
-			enqueue(runtime.heartbeat());
+			stream.enqueue(runtime.heartbeat());
+			flush();
 		}
 	}, 15000);
 	heartbeat.unref();
 
 	const cleanup = () => {
 		clearInterval(heartbeat);
-		unsubscribe();
+		stopListening();
+		stream.close();
 	};
 	req.on("close", cleanup);
 	res.on("close", cleanup);
+	flush();
 }
 
 export async function handleHeadlessSessionMessage(
@@ -340,14 +419,28 @@ export async function handleHeadlessSessionMessage(
 	context: WebServerContext,
 	params?: Record<string, string>,
 ) {
-	if (getHeadlessRole(req) === "viewer") {
-		throw new ApiError(403, "Viewer headless connections cannot send messages");
-	}
 	const runtime = getRuntime(req, context, params?.id);
 	const input = await parseAndValidateJson<HeadlessMessageInput>(
 		req,
 		HeadlessMessageSchema,
 	);
+	try {
+		runtime.assertCanSend(getHeadlessRole(req), getHeadlessSubscriberId(req));
+	} catch (error) {
+		if (!(error instanceof Error)) {
+			throw error;
+		}
+		if (error.message === "Viewer headless connections cannot send messages") {
+			throw new ApiError(403, error.message);
+		}
+		if (error.message === "Headless subscriber not found") {
+			throw new ApiError(404, error.message);
+		}
+		if (error.message.includes("Controller lease")) {
+			throw new ApiError(409, error.message);
+		}
+		throw new ApiError(403, error.message);
+	}
 	await runtime.send(input as HeadlessToAgentMessage);
 	sendJson(res, 200, { success: true }, context.corsHeaders, req);
 }

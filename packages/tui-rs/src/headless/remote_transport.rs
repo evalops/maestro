@@ -51,6 +51,8 @@ pub struct RemoteTransportConfig {
     pub client_version: Option<String>,
     /// Optional connection role used for HTTP attach/message permissions.
     pub role: Option<String>,
+    /// Whether a controller subscription should take over an existing controller lease.
+    pub take_control: bool,
     /// Additional headers to send on every request.
     pub headers: HashMap<String, String>,
     /// Delay between SSE reconnect attempts.
@@ -72,6 +74,7 @@ impl Default for RemoteTransportConfig {
             client_name: "maestro-tui-rs".to_string(),
             client_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
             role: Some("controller".to_string()),
+            take_control: false,
             headers: HashMap::new(),
             reconnect_delay: Duration::from_millis(500),
         }
@@ -91,6 +94,30 @@ pub enum RemoteIncoming {
     },
     Message(FromAgentMessage),
     Heartbeat,
+}
+
+#[derive(Debug, Serialize)]
+struct RemoteSessionSubscribeRequest {
+    #[serde(rename = "protocolVersion", skip_serializing_if = "Option::is_none")]
+    protocol_version: Option<String>,
+    #[serde(rename = "clientInfo", skip_serializing_if = "Option::is_none")]
+    client_info: Option<ClientInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capabilities: Option<RemoteClientCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(
+        rename = "takeControl",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    take_control: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteSessionSubscriptionResponse {
+    subscription_id: String,
+    snapshot: RemoteRuntimeSnapshot,
 }
 
 #[derive(Debug, Serialize)]
@@ -147,6 +174,10 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     connection_role: Option<ConnectionRole>,
     #[serde(default)]
+    subscriber_count: usize,
+    #[serde(default)]
+    controller_subscription_id: Option<String>,
+    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     provider: Option<String>,
@@ -192,6 +223,8 @@ impl RemoteRuntimeStateSnapshot {
             client_info: self.client_info,
             capabilities: self.capabilities,
             connection_role: self.connection_role,
+            subscriber_count: self.subscriber_count,
+            controller_subscription_id: self.controller_subscription_id,
             model: self.model,
             provider: self.provider,
             session_id: self.session_id,
@@ -276,6 +309,7 @@ pub struct RemoteAgentTransport {
     event_rx: mpsc::UnboundedReceiver<Result<RemoteIncoming, AsyncTransportError>>,
     cancel_token: CancellationToken,
     session_id: String,
+    subscription_id: String,
     state: AgentState,
     last_init: Option<InitConfig>,
     _reader_handle: tokio::task::JoinHandle<()>,
@@ -289,8 +323,11 @@ impl RemoteAgentTransport {
             .build()
             .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
 
-        let snapshot = create_or_attach_session(&client, &config).await?;
-        let (session_id, cursor, last_init, state) = snapshot.into_state();
+        let attached_session = create_or_attach_session(&client, &config).await?;
+        let subscription =
+            subscribe_to_session(&client, &config, &attached_session.session_id).await?;
+        let (session_id, cursor, last_init, state) = subscription.snapshot.into_state();
+        let subscription_id = subscription.subscription_id;
 
         let (message_tx, message_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -302,6 +339,7 @@ impl RemoteAgentTransport {
             client.clone(),
             config.clone(),
             session_id.clone(),
+            subscription_id.clone(),
             cursor,
             event_tx.clone(),
             reader_cancel,
@@ -310,6 +348,7 @@ impl RemoteAgentTransport {
             client,
             config,
             session_id.clone(),
+            subscription_id.clone(),
             message_rx,
             event_tx,
             writer_cancel,
@@ -320,6 +359,7 @@ impl RemoteAgentTransport {
             event_rx,
             cancel_token,
             session_id,
+            subscription_id,
             state,
             last_init,
             _reader_handle: reader_handle,
@@ -370,6 +410,10 @@ impl RemoteAgentTransport {
 
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    pub fn subscription_id(&self) -> &str {
+        &self.subscription_id
     }
 
     pub fn cancel_token(&self) -> CancellationToken {
@@ -447,10 +491,66 @@ async fn create_or_attach_session(
     decode_json_response(response).await
 }
 
+async fn subscribe_to_session(
+    client: &Client,
+    config: &RemoteTransportConfig,
+    session_id: &str,
+) -> Result<RemoteSessionSubscriptionResponse, AsyncTransportError> {
+    let url = format!(
+        "{}/api/headless/sessions/{session_id}/subscribe",
+        config.base_url.trim_end_matches('/')
+    );
+    let request = RemoteSessionSubscribeRequest {
+        protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
+        client_info: Some(ClientInfo {
+            name: config.client_name.clone(),
+            version: config.client_version.clone(),
+        }),
+        capabilities: Some(RemoteClientCapabilities {
+            server_requests: if config.enable_client_tools {
+                vec!["approval", "client_tool"]
+            } else {
+                vec!["approval"]
+            },
+        }),
+        role: config.role.clone(),
+        take_control: config.take_control,
+    };
+
+    let response = with_headers(client.post(url).json(&request), config, true)
+        .send()
+        .await
+        .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
+
+    decode_json_response(response).await
+}
+
+async fn unsubscribe_from_session(
+    client: &Client,
+    config: &RemoteTransportConfig,
+    session_id: &str,
+    subscription_id: &str,
+) {
+    let url = format!(
+        "{}/api/headless/sessions/{session_id}/unsubscribe",
+        config.base_url.trim_end_matches('/')
+    );
+    let _ignored = with_headers(
+        client.post(url).json(&serde_json::json!({
+            "subscriptionId": subscription_id,
+        })),
+        config,
+        true,
+    )
+    .send()
+    .await;
+}
+
 async fn writer_loop(
     client: Client,
     config: RemoteTransportConfig,
     session_id: String,
+    subscription_id: String,
     mut rx: mpsc::UnboundedReceiver<ToAgentMessage>,
     event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
     cancel: CancellationToken,
@@ -469,7 +569,11 @@ async fn writer_loop(
                 };
                 let should_shutdown = matches!(message, ToAgentMessage::Shutdown);
                 let response = with_headers(
-                    client.post(&url).json(&message),
+                    client
+                        .post(&url)
+                        .header("x-maestro-headless-subscriber-id", &subscription_id)
+                        .header("x-composer-headless-subscriber-id", &subscription_id)
+                        .json(&message),
                     &config,
                     true,
                 )
@@ -479,6 +583,8 @@ async fn writer_loop(
                 match response {
                     Ok(response) if response.status().is_success() => {
                         if should_shutdown {
+                            unsubscribe_from_session(&client, &config, &session_id, &subscription_id)
+                                .await;
                             cancel.cancel();
                             break;
                         }
@@ -502,6 +608,7 @@ async fn reader_loop(
     client: Client,
     config: RemoteTransportConfig,
     session_id: String,
+    subscription_id: String,
     initial_cursor: u64,
     event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
     cancel: CancellationToken,
@@ -515,7 +622,7 @@ async fn reader_loop(
         }
 
         let url = format!(
-            "{}/api/headless/sessions/{session_id}/events?cursor={cursor}",
+            "{}/api/headless/sessions/{session_id}/events?cursor={cursor}&subscriptionId={subscription_id}",
             config.base_url.trim_end_matches('/')
         );
         let response = match with_headers(client.get(url), &config, false).send().await {
@@ -815,6 +922,38 @@ mod tests {
                         }
 
                         if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/subscribe")
+                        {
+                            let body = serde_json::json!({
+                                "subscription_id": "sub_remote",
+                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
+                                    .expect("valid snapshot json"),
+                            })
+                            .to_string();
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                &body,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/unsubscribe")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"success":true}"#,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
                             && path.ends_with("/messages")
                         {
                             posted_bodies.lock().await.push(body);
@@ -878,6 +1017,8 @@ mod tests {
                 ]),
             }),
             connection_role: Some(ConnectionRole::Controller),
+            subscriber_count: 2,
+            controller_subscription_id: Some("sub_remote".to_string()),
             model: Some("gpt-5.4".to_string()),
             provider: Some("openai".to_string()),
             session_id: Some("session-1".to_string()),
@@ -943,6 +1084,11 @@ mod tests {
         assert_eq!(state.pending_approvals.len(), 1);
         assert_eq!(state.pending_client_tools.len(), 1);
         assert_eq!(state.pending_user_inputs.len(), 1);
+        assert_eq!(state.subscriber_count, 2);
+        assert_eq!(
+            state.controller_subscription_id.as_deref(),
+            Some("sub_remote")
+        );
         assert_eq!(state.tracked_tools.len(), 1);
         assert_eq!(state.active_tools.len(), 1);
         assert_eq!(state.last_error.as_deref(), Some("boom"));
@@ -1038,6 +1184,7 @@ mod tests {
             .expect("connect");
         let cancel_token = transport.cancel_token();
         assert_eq!(transport.session_id(), "sess_remote");
+        assert_eq!(transport.subscription_id(), "sub_remote");
         assert_eq!(transport.state().model.as_deref(), Some("gpt-5.4"));
         assert_eq!(transport.state().provider.as_deref(), Some("openai"));
         assert_eq!(transport.state().last_status.as_deref(), Some("Attached"));
@@ -1078,6 +1225,12 @@ mod tests {
 
         let headers = request_headers.lock().await.clone();
         let create_headers = headers.first().expect("create request headers");
+        let subscribe_headers = headers.get(1).expect("subscribe request headers");
+        let message_headers = headers.iter().find(|entry| {
+            entry.iter().any(|(name, value)| {
+                name == "x-maestro-headless-subscriber-id" && value == "sub_remote"
+            })
+        });
         assert!(create_headers
             .iter()
             .any(|(name, value)| { name == "authorization" && value == "Bearer secret" }));
@@ -1090,6 +1243,10 @@ mod tests {
         assert!(create_headers
             .iter()
             .any(|(name, value)| { name == "x-composer-headless-role" && value == "controller" }));
+        assert!(subscribe_headers
+            .iter()
+            .any(|(name, value)| { name == "x-maestro-headless-role" && value == "controller" }));
+        assert!(message_headers.is_some());
 
         transport.shutdown().expect("shutdown");
         assert!(cancel_token.is_cancelled());
