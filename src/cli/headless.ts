@@ -8,6 +8,7 @@
 
 import type { ActionApprovalService } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
+import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
 import { clientToolService } from "../server/client-tools-service.js";
 import type { SessionManager } from "../session/manager.js";
 import {
@@ -69,6 +70,38 @@ export async function runHeadlessMode(
 			sendMessage(message);
 		}
 	};
+	const utilityCommands = new HeadlessUtilityCommandManager((event) => {
+		switch (event.type) {
+			case "started":
+				sendMessage({
+					type: "utility_command_started",
+					command_id: event.command_id,
+					command: event.command,
+					cwd: event.cwd,
+					shell_mode: event.shell_mode,
+					pid: event.pid,
+				});
+				return;
+			case "output":
+				sendMessage({
+					type: "utility_command_output",
+					command_id: event.command_id,
+					stream: event.stream,
+					content: event.content,
+				});
+				return;
+			case "exited":
+				sendMessage({
+					type: "utility_command_exited",
+					command_id: event.command_id,
+					success: event.success,
+					exit_code: event.exit_code,
+					signal: event.signal,
+					reason: event.reason,
+				});
+				return;
+		}
+	});
 
 	agent.subscribe((event) => {
 		for (const message of translator.handleAgentEvent(event)) {
@@ -146,6 +179,11 @@ export async function runHeadlessMode(
 							: "Cancelled before request completed",
 					);
 					applyOutgoingHeadlessMessage(state, msg);
+					await utilityCommands.dispose(
+						msg.type === "interrupt"
+							? "Interrupted while utility command was still running"
+							: "Cancelled while utility command was still running",
+					);
 					agent.abort();
 					break;
 
@@ -249,9 +287,35 @@ export async function runHeadlessMode(
 					applyOutgoingHeadlessMessage(state, msg);
 					break;
 
+				case "utility_command_start":
+					if (
+						!state.capabilities?.utility_operations?.includes("command_exec")
+					) {
+						sendError(
+							"utility_command_start requires command_exec capability",
+							false,
+						);
+						break;
+					}
+					await utilityCommands.start({
+						command_id: msg.command_id,
+						command: msg.command,
+						cwd: msg.cwd,
+						env: msg.env,
+						shell_mode: msg.shell_mode,
+					});
+					break;
+
+				case "utility_command_terminate":
+					await utilityCommands.terminate(msg.command_id, msg.force);
+					break;
+
 				case "shutdown":
 					sendPendingRequestCancellations("Shutdown before request completed");
 					applyOutgoingHeadlessMessage(state, msg);
+					await utilityCommands.dispose(
+						"Headless runtime shutdown while utility command was still running",
+					);
 					process.exit(0);
 					break;
 			}

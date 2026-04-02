@@ -21,6 +21,7 @@ import {
 	createHeadlessRuntimeState,
 	loadPromptAttachments,
 } from "../cli/headless-protocol.js";
+import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
 import type { RegisteredModel } from "../models/registry.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import type { SessionManager } from "../session/manager.js";
@@ -301,6 +302,40 @@ export class HeadlessSessionRuntime {
 	private readonly publishedServerRequestIds = new Set<string>();
 	private readonly suppressedApprovalResolutionIds = new Set<string>();
 	private readonly unsubscribeServerRequestEvents: () => void;
+	private readonly utilityCommands = new HeadlessUtilityCommandManager(
+		(event) => {
+			switch (event.type) {
+				case "started":
+					this.publish({
+						type: "utility_command_started",
+						command_id: event.command_id,
+						command: event.command,
+						cwd: event.cwd,
+						shell_mode: event.shell_mode,
+						pid: event.pid,
+					});
+					return;
+				case "output":
+					this.publish({
+						type: "utility_command_output",
+						command_id: event.command_id,
+						stream: event.stream,
+						content: event.content,
+					});
+					return;
+				case "exited":
+					this.publish({
+						type: "utility_command_exited",
+						command_id: event.command_id,
+						success: event.success,
+						exit_code: event.exit_code,
+						signal: event.signal,
+						reason: event.reason,
+					});
+					return;
+			}
+		},
+	);
 	private readonly subscribers = new Map<string, HeadlessSubscriberMailbox>();
 	private controllerSubscriptionId: string | null = null;
 	private lastInit: HeadlessInitMessage | null = null;
@@ -401,7 +436,7 @@ export class HeadlessSessionRuntime {
 		);
 	}
 
-	dispose(): void {
+	async dispose(): Promise<void> {
 		if (this.disposed) {
 			return;
 		}
@@ -416,6 +451,7 @@ export class HeadlessSessionRuntime {
 		this.syncSubscriptionState(false);
 		this.disposed = true;
 		this.running = false;
+		void this.utilityCommands.dispose();
 		this.agent.abort();
 		this.unsubscribeServerRequestEvents();
 	}
@@ -712,6 +748,11 @@ export class HeadlessSessionRuntime {
 						: "Cancelled before request completed",
 				);
 				applyOutgoingHeadlessMessage(this.state, msg);
+				await this.utilityCommands.dispose(
+					msg.type === "interrupt"
+						? "Interrupted while utility command was still running"
+						: "Cancelled while utility command was still running",
+				);
 				this.agent.abort();
 				this.publishSnapshot();
 				return;
@@ -734,10 +775,32 @@ export class HeadlessSessionRuntime {
 			case "shutdown":
 				this.cancelPendingServerRequests("Shutdown before request completed");
 				applyOutgoingHeadlessMessage(this.state, msg);
+				await this.utilityCommands.dispose(
+					"Headless runtime shutdown while utility command was still running",
+				);
 				this.agent.abort();
 				this.disposed = true;
 				this.unsubscribeServerRequestEvents();
 				this.publishSnapshot();
+				return;
+			case "utility_command_start":
+				if (
+					!this.state.capabilities?.utility_operations?.includes("command_exec")
+				) {
+					throw new Error(
+						"utility_command_start requires command_exec capability",
+					);
+				}
+				await this.utilityCommands.start({
+					command_id: msg.command_id,
+					command: msg.command,
+					cwd: msg.cwd,
+					env: msg.env,
+					shell_mode: msg.shell_mode,
+				});
+				return;
+			case "utility_command_terminate":
+				await this.utilityCommands.terminate(msg.command_id, msg.force);
 				return;
 		}
 	}
@@ -993,7 +1056,7 @@ export class HeadlessSessionRuntime {
 	}
 }
 
-type EnsureRuntimeOptions = {
+export type EnsureRuntimeOptions = {
 	scope_key: string;
 	sessionId?: string;
 	subject?: string;
@@ -1070,7 +1133,7 @@ export class HeadlessRuntimeService {
 		for (const [key, runtime] of this.runtimes.entries()) {
 			runtime.expireIdleSubscriptions(now);
 			if (runtime.isDisposed() || runtime.isIdle(now)) {
-				runtime.dispose();
+				void runtime.dispose();
 				this.runtimes.delete(key);
 			}
 		}
