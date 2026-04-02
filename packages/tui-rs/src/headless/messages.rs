@@ -207,6 +207,8 @@ pub enum ToAgentMessage {
         env: Option<HashMap<String, String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shell_mode: Option<UtilityCommandShellMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        allow_stdin: Option<bool>,
     },
     /// Terminate a utility command on the runtime
     UtilityCommandTerminate {
@@ -1613,6 +1615,22 @@ mod tests {
         assert!(json.contains(r#""type":"server_request_response""#));
         assert!(json.contains(r#""request_id":"call_user_input""#));
         assert!(json.contains(r#""request_type":"user_input""#));
+    }
+
+    #[test]
+    fn serialize_utility_command_start_message_with_stdin() {
+        let msg = ToAgentMessage::UtilityCommandStart {
+            command_id: "cmd_stdin".to_string(),
+            command: "cat".to_string(),
+            cwd: None,
+            env: None,
+            shell_mode: Some(UtilityCommandShellMode::Direct),
+            allow_stdin: Some(true),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"utility_command_start""#));
+        assert!(json.contains(r#""command_id":"cmd_stdin""#));
+        assert!(json.contains(r#""allow_stdin":true"#));
     }
 
     #[test]

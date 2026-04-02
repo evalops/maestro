@@ -235,6 +235,7 @@ describe("HeadlessInProcessHost", () => {
 				command_id: "cmd_stdin",
 				command: `"${process.execPath}" -e "process.stdin.setEncoding('utf8');let data='';process.stdin.on('data', chunk => data += chunk);process.stdin.on('end', () => process.stdout.write(data.toUpperCase()));"`,
 				shell_mode: "direct",
+				allow_stdin: true,
 			},
 		});
 		await host.send({

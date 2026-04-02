@@ -107,6 +107,7 @@ describe("HeadlessUtilityCommandManager", () => {
 			command_id: "cmd_stdin",
 			command: `"${process.execPath}" -e "process.stdin.setEncoding('utf8');let data='';process.stdin.on('data', chunk => data += chunk);process.stdin.on('end', () => process.stdout.write(data.toUpperCase()));"`,
 			shell_mode: "direct",
+			allow_stdin: true,
 		});
 
 		await manager.writeStdin("cmd_stdin", "hello world", true);
@@ -125,6 +126,55 @@ describe("HeadlessUtilityCommandManager", () => {
 			command_id: "cmd_stdin",
 			success: true,
 		});
+	});
+
+	it("defaults utility commands to closed stdin so EOF-driven commands still exit", async () => {
+		const events: Array<Record<string, unknown>> = [];
+		manager = new HeadlessUtilityCommandManager((event) => {
+			events.push(event as Record<string, unknown>);
+		});
+
+		manager.start({
+			command_id: "cmd_eof",
+			command: `"${process.execPath}" -e "process.stdin.resume();process.stdin.on('end', () => process.stdout.write('EOF'));"`,
+			shell_mode: "direct",
+		});
+
+		await waitForExit(events as Array<{ type: string }>);
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "output",
+				command_id: "cmd_eof",
+				stream: "stdout",
+				content: "EOF",
+			}),
+		);
+		expect(events.at(-1)).toMatchObject({
+			type: "exited",
+			command_id: "cmd_eof",
+			success: true,
+		});
+	});
+
+	it("rejects stdin writes for commands that did not opt into stdin piping", async () => {
+		const events: Array<Record<string, unknown>> = [];
+		manager = new HeadlessUtilityCommandManager((event) => {
+			events.push(event as Record<string, unknown>);
+		});
+
+		manager.start({
+			command_id: "cmd_no_stdin",
+			command: `"${process.execPath}" -e "setInterval(() => {}, 1000)"`,
+			shell_mode: "direct",
+		});
+
+		await expect(manager.writeStdin("cmd_no_stdin", "hello")).rejects.toThrow(
+			"Utility command stdin is not enabled: cmd_no_stdin",
+		);
+
+		await manager.terminate("cmd_no_stdin");
+		await waitForExit(events as Array<{ type: string }>);
 	});
 
 	it("treats terminate as a no-op after natural exit", async () => {

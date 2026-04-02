@@ -1137,6 +1137,7 @@ export class HeadlessSessionRuntime {
 					cwd: msg.cwd,
 					env: msg.env,
 					shell_mode: msg.shell_mode,
+					allow_stdin: msg.allow_stdin,
 				});
 				return;
 			case "utility_command_terminate":

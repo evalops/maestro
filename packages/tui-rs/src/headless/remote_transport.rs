@@ -472,6 +472,7 @@ impl RemoteAgentTransport {
         cwd: Option<String>,
         env: Option<HashMap<String, String>>,
         shell_mode: Option<UtilityCommandShellMode>,
+        allow_stdin: Option<bool>,
     ) -> Result<(), AsyncTransportError> {
         self.send(ToAgentMessage::UtilityCommandStart {
             command_id,
@@ -479,6 +480,7 @@ impl RemoteAgentTransport {
             cwd,
             env,
             shell_mode,
+            allow_stdin,
         })
     }
 

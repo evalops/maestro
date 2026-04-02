@@ -323,6 +323,7 @@ export async function runHeadlessMode(
 						cwd: msg.cwd,
 						env: msg.env,
 						shell_mode: msg.shell_mode,
+						allow_stdin: msg.allow_stdin,
 					});
 					break;
 

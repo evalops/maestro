@@ -128,6 +128,7 @@ export interface HeadlessUtilityCommandStartMessage {
 	cwd?: string;
 	env?: Record<string, string>;
 	shell_mode?: HeadlessUtilityCommandShellMode;
+	allow_stdin?: boolean;
 }
 
 export interface HeadlessUtilityCommandTerminateMessage {
