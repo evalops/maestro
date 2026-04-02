@@ -230,7 +230,7 @@ const MAX_HEADLESS_ATTACHMENT_BYTES =
 	Number.parseInt(
 		process.env.MAESTRO_HEADLESS_MAX_ATTACHMENT_BYTES || "",
 		10,
-	) || 8 * 1024 * 1024;
+	) || 10 * 1024 * 1024;
 const MAX_TEXT_ATTACHMENT_CHARS =
 	Number.parseInt(process.env.MAESTRO_HEADLESS_MAX_TEXT_CHARS || "", 10) ||
 	200_000;
@@ -859,7 +859,6 @@ export function applyIncomingHeadlessMessage(
 		case "error":
 			state.last_error = msg.message;
 			state.last_error_type = msg.error_type;
-			state.is_responding = false;
 			return;
 		case "status":
 			state.last_status = msg.message;

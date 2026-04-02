@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
@@ -9,6 +12,7 @@ import {
 	buildHeadlessUsage,
 	classifyHeadlessError,
 	createHeadlessRuntimeState,
+	loadPromptAttachments,
 } from "../../src/cli/headless-protocol.js";
 
 function assistantMessage(
@@ -237,5 +241,45 @@ describe("headless protocol helpers", () => {
 				output: "",
 			},
 		]);
+	});
+
+	it("keeps responding state unchanged on non-fatal errors", () => {
+		const state = createHeadlessRuntimeState();
+		state.is_responding = true;
+
+		applyIncomingHeadlessMessage(state, {
+			type: "error",
+			message: "Tool failed",
+			fatal: false,
+			error_type: "tool",
+		});
+
+		expect(state.is_responding).toBe(true);
+		expect(state.last_error).toBe("Tool failed");
+		expect(state.last_error_type).toBe("tool");
+	});
+
+	it("accepts attachments up to the legacy 10MB default", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-"));
+		const attachmentPath = join(tempDir, "large.txt");
+		const errors: Array<{ message: string; fatal: boolean }> = [];
+
+		try {
+			await writeFile(attachmentPath, Buffer.alloc(9 * 1024 * 1024, 0x61));
+
+			const attachments = await loadPromptAttachments(
+				[attachmentPath],
+				(message, fatal) => {
+					errors.push({ message, fatal });
+				},
+			);
+
+			expect(errors).toEqual([]);
+			expect(attachments).toHaveLength(1);
+			expect(attachments[0]?.fileName).toBe("large.txt");
+			expect(attachments[0]?.size).toBe(9 * 1024 * 1024);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
 	});
 });
