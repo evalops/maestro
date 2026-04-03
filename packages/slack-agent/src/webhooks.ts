@@ -119,6 +119,7 @@ export function createWebhookServer(
 	callback: WebhookCallback,
 ): WebhookServerInstance {
 	const maxBody = config.maxBodySize ?? 1024 * 1024;
+	let boundPort = config.port;
 
 	const server = createServer(
 		async (req: IncomingMessage, res: ServerResponse) => {
@@ -213,13 +214,27 @@ export function createWebhookServer(
 	);
 
 	return {
-		port: config.port,
+		get port() {
+			return boundPort;
+		},
 		start: () =>
-			new Promise<void>((resolve) => {
-				server.listen(config.port, () => {
-					logger.logInfo(`Webhook server listening on port ${config.port}`);
+			new Promise<void>((resolve, reject) => {
+				const handleError = (error: Error) => {
+					server.off("listening", handleListening);
+					reject(error);
+				};
+				const handleListening = () => {
+					server.off("error", handleError);
+					const address = server.address();
+					if (address && typeof address === "object") {
+						boundPort = address.port;
+					}
+					logger.logInfo(`Webhook server listening on port ${boundPort}`);
 					resolve();
-				});
+				};
+				server.once("error", handleError);
+				server.once("listening", handleListening);
+				server.listen(config.port);
 			}),
 		stop: () =>
 			new Promise<void>((resolve, reject) => {
