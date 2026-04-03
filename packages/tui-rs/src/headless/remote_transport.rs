@@ -493,6 +493,17 @@ struct WriterLoopContext {
     cancel: CancellationToken,
 }
 
+struct HeartbeatLoopContext {
+    client: Client,
+    config: RemoteTransportConfig,
+    session_id: String,
+    connection_id: String,
+    subscription_id: String,
+    event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
+    interval: Duration,
+    cancel: CancellationToken,
+}
+
 struct RemoteShutdownContext {
     client: Client,
     config: RemoteTransportConfig,
@@ -554,22 +565,23 @@ impl RemoteAgentTransport {
                 session_id: session_id.clone(),
                 connection_id: connection_id.clone(),
                 subscription_id: subscription_id.clone(),
-                event_tx,
+                event_tx: event_tx.clone(),
                 cancel: writer_cancel,
             },
             message_rx,
         ));
-        let heartbeat_handle = tokio::spawn(heartbeat_loop(
-            Client::builder()
+        let heartbeat_handle = tokio::spawn(heartbeat_loop(HeartbeatLoopContext {
+            client: Client::builder()
                 .build()
                 .map_err(|error| AsyncTransportError::Remote(error.to_string()))?,
-            config.clone(),
-            session_id.clone(),
-            connection_id.clone(),
-            subscription_id.clone(),
-            heartbeat_interval,
-            heartbeat_cancel,
-        ));
+            config: config.clone(),
+            session_id: session_id.clone(),
+            connection_id: connection_id.clone(),
+            subscription_id: subscription_id.clone(),
+            event_tx,
+            interval: heartbeat_interval,
+            cancel: heartbeat_cancel,
+        }));
 
         let transport = Self {
             message_tx,
@@ -1101,6 +1113,10 @@ fn should_retry_message_error(error: &AsyncTransportError) -> bool {
     }
 }
 
+fn should_surface_heartbeat_error(error: &AsyncTransportError) -> bool {
+    !error.is_retryable() || error.uses_stale_reference_retry_budget()
+}
+
 async fn send_message_with_retry(
     client: &Client,
     config: &RemoteTransportConfig,
@@ -1161,15 +1177,17 @@ async fn send_message_with_retry(
     ))
 }
 
-async fn heartbeat_loop(
-    client: Client,
-    config: RemoteTransportConfig,
-    session_id: String,
-    connection_id: String,
-    subscription_id: String,
-    interval: Duration,
-    cancel: CancellationToken,
-) {
+async fn heartbeat_loop(context: HeartbeatLoopContext) {
+    let HeartbeatLoopContext {
+        client,
+        config,
+        session_id,
+        connection_id,
+        subscription_id,
+        event_tx,
+        interval,
+        cancel,
+    } = context;
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -1177,17 +1195,23 @@ async fn heartbeat_loop(
         tokio::select! {
             () = cancel.cancelled() => break,
             _ = ticker.tick() => {
-                if heartbeat_session(
+                match heartbeat_session(
                     &client,
                     &config,
                     &session_id,
                     &connection_id,
                     &subscription_id,
                 )
-                .await
-                .is_err()
-                {
-                    // Best-effort liveness extension. Reader/writer paths surface hard failures.
+                .await {
+                    Ok(()) => {}
+                    Err(error) => {
+                        if !should_surface_heartbeat_error(&error) {
+                            continue;
+                        }
+                        let _ = event_tx.send(Err(error));
+                        cancel.cancel();
+                        break;
+                    }
                 }
             }
         }
@@ -2549,6 +2573,158 @@ mod tests {
             }
         ));
 
+        transport.shutdown().expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn remote_transport_surfaces_non_retryable_heartbeat_failures() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+
+                    if path == "/api/headless/connections" {
+                        let body = serde_json::json!({
+                            "session_id": "sess_remote",
+                            "connection_id": "conn_remote",
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &body,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
+                        let body = serde_json::json!({
+                            "connection_id": "conn_remote",
+                            "subscription_id": "sub_remote",
+                            "controller_connection_id": "conn_remote",
+                            "lease_expires_at": "2026-04-02T00:00:15Z",
+                            "heartbeat_interval_ms": 1,
+                            "snapshot": {
+                                "protocolVersion": "2026-03-30",
+                                "session_id": "sess_remote",
+                                "cursor": 0,
+                                "state": {
+                                    "protocol_version": "2026-03-30",
+                                    "session_id": "sess_remote",
+                                    "pending_approvals": [],
+                                    "active_tools": [],
+                                    "active_utility_commands": [],
+                                    "active_file_watches": [],
+                                    "is_ready": true,
+                                    "is_responding": false
+                                }
+                            }
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &body,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.contains("/events?") {
+                        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                        if socket.write_all(headers.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/heartbeat") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "application/json",
+                            r#"{"error":"route not found"}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/disconnect")
+                    {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/unsubscribe")
+                    {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"success":true}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    write_http_response(
+                        &mut socket,
+                        "HTTP/1.1 404 Not Found",
+                        "text/plain",
+                        "not found",
+                    )
+                    .await;
+                });
+            }
+        });
+
+        let mut transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+        let cancel_token = transport.cancel_token();
+
+        let error = tokio::time::timeout(Duration::from_secs(1), transport.recv_incoming())
+            .await
+            .expect("heartbeat failure should arrive before timeout")
+            .expect_err("heartbeat failure should surface as an incoming error");
+        assert!(matches!(
+            error,
+            AsyncTransportError::RemoteStatus {
+                status: 404,
+                retryable: false,
+                kind: RemoteErrorKind::Other,
+                ..
+            }
+        ));
+
+        for _ in 0..50 {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(cancel_token.is_cancelled());
         transport.shutdown().expect("shutdown");
     }
 
