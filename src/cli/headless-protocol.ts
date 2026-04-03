@@ -11,6 +11,7 @@ import {
 	type HeadlessThinkingLevel,
 	type HeadlessUtilityCommandShellMode,
 	type HeadlessUtilityCommandStream,
+	type HeadlessUtilityFileWatchChangeType,
 	type HeadlessUtilityOperation,
 	headlessProtocolVersion,
 } from "@evalops/contracts";
@@ -144,6 +145,28 @@ export interface HeadlessUtilityCommandStdinMessage {
 	eof?: boolean;
 }
 
+export interface HeadlessUtilityFileSearchMessage {
+	type: "utility_file_search";
+	search_id: string;
+	query: string;
+	cwd?: string;
+	limit?: number;
+}
+
+export interface HeadlessUtilityFileWatchStartMessage {
+	type: "utility_file_watch_start";
+	watch_id: string;
+	root_dir?: string;
+	include_patterns?: string[];
+	exclude_patterns?: string[];
+	debounce_ms?: number;
+}
+
+export interface HeadlessUtilityFileWatchStopMessage {
+	type: "utility_file_watch_stop";
+	watch_id: string;
+}
+
 export interface HeadlessCancelMessage {
 	type: "cancel";
 }
@@ -163,6 +186,9 @@ export type HeadlessToAgentMessage =
 	| HeadlessUtilityCommandStartMessage
 	| HeadlessUtilityCommandTerminateMessage
 	| HeadlessUtilityCommandStdinMessage
+	| HeadlessUtilityFileSearchMessage
+	| HeadlessUtilityFileWatchStartMessage
+	| HeadlessUtilityFileWatchStopMessage
 	| HeadlessCancelMessage
 	| HeadlessShutdownMessage;
 
@@ -286,6 +312,45 @@ export interface HeadlessUtilityCommandExitedMessage {
 	reason?: string;
 }
 
+export interface HeadlessUtilityFileSearchMatch {
+	path: string;
+	score: number;
+}
+
+export interface HeadlessUtilityFileSearchResultsMessage {
+	type: "utility_file_search_results";
+	search_id: string;
+	query: string;
+	cwd: string;
+	results: HeadlessUtilityFileSearchMatch[];
+	truncated: boolean;
+}
+
+export interface HeadlessUtilityFileWatchStartedMessage {
+	type: "utility_file_watch_started";
+	watch_id: string;
+	root_dir: string;
+	include_patterns?: string[];
+	exclude_patterns?: string[];
+	debounce_ms: number;
+}
+
+export interface HeadlessUtilityFileWatchEventMessage {
+	type: "utility_file_watch_event";
+	watch_id: string;
+	change_type: HeadlessUtilityFileWatchChangeType;
+	path: string;
+	relative_path: string;
+	timestamp: number;
+	is_directory: boolean;
+}
+
+export interface HeadlessUtilityFileWatchStoppedMessage {
+	type: "utility_file_watch_stopped";
+	watch_id: string;
+	reason?: string;
+}
+
 export interface HeadlessErrorMessage {
 	type: "error";
 	message: string;
@@ -343,6 +408,10 @@ export type HeadlessFromAgentMessage =
 	| HeadlessUtilityCommandStartedMessage
 	| HeadlessUtilityCommandOutputMessage
 	| HeadlessUtilityCommandExitedMessage
+	| HeadlessUtilityFileSearchResultsMessage
+	| HeadlessUtilityFileWatchStartedMessage
+	| HeadlessUtilityFileWatchEventMessage
+	| HeadlessUtilityFileWatchStoppedMessage
 	| HeadlessErrorMessage
 	| HeadlessStatusMessage
 	| HeadlessCompactionMessage
@@ -375,6 +444,14 @@ export interface HeadlessActiveUtilityCommandState {
 	shell_mode: HeadlessUtilityCommandShellMode;
 	pid?: number;
 	output: string;
+}
+
+export interface HeadlessActiveFileWatchState {
+	watch_id: string;
+	root_dir: string;
+	include_patterns?: string[];
+	exclude_patterns?: string[];
+	debounce_ms: number;
 }
 
 export interface HeadlessConnectionState {
@@ -411,6 +488,7 @@ export interface HeadlessRuntimeState {
 	pending_user_inputs: HeadlessPendingApprovalState[];
 	active_tools: HeadlessActiveToolState[];
 	active_utility_commands: HeadlessActiveUtilityCommandState[];
+	active_file_watches: HeadlessActiveFileWatchState[];
 	tracked_tools: HeadlessPendingApprovalState[];
 	last_error?: string;
 	last_error_type?: HeadlessErrorMessage["error_type"];
@@ -433,6 +511,7 @@ export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 		pending_user_inputs: [],
 		active_tools: [],
 		active_utility_commands: [],
+		active_file_watches: [],
 		tracked_tools: [],
 		is_ready: false,
 		is_responding: false,
@@ -1052,6 +1131,9 @@ export function applyOutgoingHeadlessMessage(
 		case "utility_command_start":
 		case "utility_command_terminate":
 		case "utility_command_stdin":
+		case "utility_file_search":
+		case "utility_file_watch_start":
+		case "utility_file_watch_stop":
 			return;
 		case "server_request_response":
 			if (msg.request_type === "approval") {
@@ -1081,6 +1163,7 @@ export function applyOutgoingHeadlessMessage(
 			state.pending_user_inputs = [];
 			state.active_tools = [];
 			state.active_utility_commands = [];
+			state.active_file_watches = [];
 			state.tracked_tools = [];
 			state.is_responding = false;
 			return;
@@ -1091,6 +1174,7 @@ export function applyOutgoingHeadlessMessage(
 			state.pending_user_inputs = [];
 			state.active_tools = [];
 			state.active_utility_commands = [];
+			state.active_file_watches = [];
 			state.tracked_tools = [];
 			state.is_ready = false;
 			state.is_responding = false;
@@ -1361,6 +1445,29 @@ export function applyIncomingHeadlessMessage(
 		case "utility_command_exited":
 			state.active_utility_commands = state.active_utility_commands.filter(
 				(command) => command.command_id !== msg.command_id,
+			);
+			return;
+		case "utility_file_search_results":
+			return;
+		case "utility_file_watch_started":
+			state.active_file_watches = [
+				...state.active_file_watches.filter(
+					(watch) => watch.watch_id !== msg.watch_id,
+				),
+				{
+					watch_id: msg.watch_id,
+					root_dir: msg.root_dir,
+					include_patterns: msg.include_patterns,
+					exclude_patterns: msg.exclude_patterns,
+					debounce_ms: msg.debounce_ms,
+				},
+			];
+			return;
+		case "utility_file_watch_event":
+			return;
+		case "utility_file_watch_stopped":
+			state.active_file_watches = state.active_file_watches.filter(
+				(watch) => watch.watch_id !== msg.watch_id,
 			);
 			return;
 		case "error":

@@ -18,6 +18,50 @@ pub const HEADLESS_CONNECTION_ROLES: &[&str] = &["viewer", "controller"];
 pub const HEADLESS_THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "ultra"];
 pub const HEADLESS_APPROVAL_MODES: &[&str] = &["auto", "prompt", "fail"];
 pub const HEADLESS_ERROR_TYPES: &[&str] = &["transient", "fatal", "tool", "cancelled", "protocol"];
-pub const HEADLESS_UTILITY_OPERATIONS: &[&str] = &["command_exec"];
+pub const HEADLESS_UTILITY_OPERATIONS: &[&str] = &["command_exec", "file_search", "file_watch"];
 pub const HEADLESS_UTILITY_COMMAND_STREAMS: &[&str] = &["stdout", "stderr"];
 pub const HEADLESS_UTILITY_COMMAND_SHELL_MODES: &[&str] = &["shell", "direct"];
+pub const HEADLESS_UTILITY_FILE_WATCH_CHANGE_TYPES: &[&str] =
+    &["create", "modify", "delete", "rename"];
+pub const HEADLESS_TO_AGENT_MESSAGE_TYPES: &[&str] = &[
+    "hello",
+    "init",
+    "prompt",
+    "interrupt",
+    "tool_response",
+    "client_tool_result",
+    "server_request_response",
+    "utility_command_start",
+    "utility_command_terminate",
+    "utility_command_stdin",
+    "utility_file_search",
+    "utility_file_watch_start",
+    "utility_file_watch_stop",
+    "cancel",
+    "shutdown",
+];
+pub const HEADLESS_FROM_AGENT_MESSAGE_TYPES: &[&str] = &[
+    "ready",
+    "response_start",
+    "response_chunk",
+    "response_end",
+    "tool_call",
+    "tool_start",
+    "tool_output",
+    "tool_end",
+    "client_tool_request",
+    "server_request",
+    "server_request_resolved",
+    "utility_command_started",
+    "utility_command_output",
+    "utility_command_exited",
+    "utility_file_search_results",
+    "utility_file_watch_started",
+    "utility_file_watch_event",
+    "utility_file_watch_stopped",
+    "error",
+    "status",
+    "compaction",
+    "session_info",
+    "connection_info",
+];

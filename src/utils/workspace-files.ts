@@ -1,8 +1,33 @@
 import { spawnSync } from "node:child_process";
 import { join, relative, resolve, sep } from "node:path";
 
-let cachedFiles: string[] | null = null;
-let cachedAt = 0;
+const cache = new Map<string, { files: string[]; cachedAt: number }>();
+const CACHE_TTL_MS = 30_000;
+export const WORKSPACE_FILES_MAX_CACHE_ENTRIES = 16;
+
+function pruneCache(now: number): void {
+	for (const [cwd, entry] of cache) {
+		if (now - entry.cachedAt >= CACHE_TTL_MS) {
+			cache.delete(cwd);
+		}
+	}
+	while (cache.size > WORKSPACE_FILES_MAX_CACHE_ENTRIES) {
+		const oldestKey = cache.keys().next().value;
+		if (!oldestKey) {
+			break;
+		}
+		cache.delete(oldestKey);
+	}
+}
+
+function setCacheEntry(
+	cwd: string,
+	entry: { files: string[]; cachedAt: number },
+): void {
+	cache.delete(cwd);
+	cache.set(cwd, entry);
+	pruneCache(entry.cachedAt);
+}
 
 function runRgFiles(cwd: string): string[] | null {
 	const result = spawnSync("rg", ["--files"], {
@@ -103,13 +128,18 @@ function runGitFiles(cwd: string): string[] | null {
 	return scoped;
 }
 
-export function getWorkspaceFiles(limit = 2000): string[] {
+export function getWorkspaceFiles(limit = 2000, cwdInput?: string): string[] {
 	const now = Date.now();
-	const cwd = resolve(process.cwd());
+	const cwd = resolve(cwdInput ?? process.cwd());
 
-	// Refresh cache every 30 seconds
-	if (cachedFiles && now - cachedAt < 30_000) {
-		return cachedFiles.slice(0, limit);
+	const cached = cache.get(cwd);
+	if (cached && now - cached.cachedAt < CACHE_TTL_MS) {
+		cache.delete(cwd);
+		cache.set(cwd, cached);
+		return cached.files.slice(0, limit);
+	}
+	if (cached) {
+		cache.delete(cwd);
 	}
 
 	let files = runRgFiles(cwd);
@@ -121,8 +151,7 @@ export function getWorkspaceFiles(limit = 2000): string[] {
 	}
 
 	if (files === null) {
-		cachedFiles = [];
-		cachedAt = now;
+		setCacheEntry(cwd, { files: [], cachedAt: now });
 		return [];
 	}
 
@@ -130,7 +159,6 @@ export function getWorkspaceFiles(limit = 2000): string[] {
 		.map((file) => file.replace(/^[.][/\\]/, ""))
 		.filter((file) => file.length > 0);
 
-	cachedFiles = normalized;
-	cachedAt = now;
+	setCacheEntry(cwd, { files: normalized, cachedAt: now });
 	return normalized.slice(0, limit);
 }

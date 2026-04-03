@@ -58,7 +58,11 @@ export const headlessErrorTypes = [
 ] as const;
 export type HeadlessErrorType = (typeof headlessErrorTypes)[number];
 
-export const headlessUtilityOperations = ["command_exec"] as const;
+export const headlessUtilityOperations = [
+	"command_exec",
+	"file_search",
+	"file_watch",
+] as const;
 export type HeadlessUtilityOperation =
 	(typeof headlessUtilityOperations)[number];
 
@@ -69,3 +73,60 @@ export type HeadlessUtilityCommandStream =
 export const headlessUtilityCommandShellModes = ["shell", "direct"] as const;
 export type HeadlessUtilityCommandShellMode =
 	(typeof headlessUtilityCommandShellModes)[number];
+
+export const headlessUtilityFileWatchChangeTypes = [
+	"create",
+	"modify",
+	"delete",
+	"rename",
+] as const;
+export type HeadlessUtilityFileWatchChangeType =
+	(typeof headlessUtilityFileWatchChangeTypes)[number];
+
+export const headlessToAgentMessageTypes = [
+	"hello",
+	"init",
+	"prompt",
+	"interrupt",
+	"tool_response",
+	"client_tool_result",
+	"server_request_response",
+	"utility_command_start",
+	"utility_command_terminate",
+	"utility_command_stdin",
+	"utility_file_search",
+	"utility_file_watch_start",
+	"utility_file_watch_stop",
+	"cancel",
+	"shutdown",
+] as const;
+export type HeadlessToAgentMessageType =
+	(typeof headlessToAgentMessageTypes)[number];
+
+export const headlessFromAgentMessageTypes = [
+	"ready",
+	"response_start",
+	"response_chunk",
+	"response_end",
+	"tool_call",
+	"tool_start",
+	"tool_output",
+	"tool_end",
+	"client_tool_request",
+	"server_request",
+	"server_request_resolved",
+	"utility_command_started",
+	"utility_command_output",
+	"utility_command_exited",
+	"utility_file_search_results",
+	"utility_file_watch_started",
+	"utility_file_watch_event",
+	"utility_file_watch_stopped",
+	"error",
+	"status",
+	"compaction",
+	"session_info",
+	"connection_info",
+] as const;
+export type HeadlessFromAgentMessageType =
+	(typeof headlessFromAgentMessageTypes)[number];

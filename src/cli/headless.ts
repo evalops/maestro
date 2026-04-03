@@ -6,9 +6,15 @@
  * remote runtimes stay aligned.
  */
 
+import {
+	type HeadlessToAgentMessageType,
+	headlessToAgentMessageTypes,
+} from "@evalops/contracts";
 import type { ActionApprovalService } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
+import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
+import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
 import { clientToolService } from "../server/client-tools-service.js";
 import type { SessionManager } from "../session/manager.js";
 import {
@@ -35,6 +41,14 @@ export {
 	buildHeadlessUsage,
 	classifyHeadlessError,
 };
+
+function isHeadlessToAgentMessageType(
+	value: string,
+): value is HeadlessToAgentMessageType {
+	return headlessToAgentMessageTypes.includes(
+		value as HeadlessToAgentMessageType,
+	);
+}
 
 function send(msg: HeadlessFromAgentMessage): void {
 	process.stdout.write(`${JSON.stringify(msg)}\n`);
@@ -102,6 +116,38 @@ export async function runHeadlessMode(
 				return;
 		}
 	});
+	const fileWatches = new HeadlessUtilityFileWatchManager((event) => {
+		switch (event.type) {
+			case "started":
+				sendMessage({
+					type: "utility_file_watch_started",
+					watch_id: event.watch_id,
+					root_dir: event.root_dir,
+					include_patterns: event.include_patterns,
+					exclude_patterns: event.exclude_patterns,
+					debounce_ms: event.debounce_ms,
+				});
+				return;
+			case "event":
+				sendMessage({
+					type: "utility_file_watch_event",
+					watch_id: event.watch_id,
+					change_type: event.change_type,
+					path: event.path,
+					relative_path: event.relative_path,
+					timestamp: event.timestamp,
+					is_directory: event.is_directory,
+				});
+				return;
+			case "stopped":
+				sendMessage({
+					type: "utility_file_watch_stopped",
+					watch_id: event.watch_id,
+					reason: event.reason,
+				});
+				return;
+		}
+	});
 
 	agent.subscribe((event) => {
 		for (const message of translator.handleAgentEvent(event)) {
@@ -122,7 +168,22 @@ export async function runHeadlessMode(
 	rl.on("line", async (line: string) => {
 		let msg: HeadlessToAgentMessage;
 		try {
-			msg = JSON.parse(line) as HeadlessToAgentMessage;
+			const parsed = JSON.parse(line) as {
+				type?: string;
+			};
+			if (
+				typeof parsed !== "object" ||
+				parsed === null ||
+				typeof parsed.type !== "string" ||
+				!isHeadlessToAgentMessageType(parsed.type)
+			) {
+				sendError(
+					"Failed to parse command: Unknown headless command type",
+					false,
+				);
+				return;
+			}
+			msg = parsed as HeadlessToAgentMessage;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			sendError(`Failed to parse command: ${message}`, false);
@@ -203,6 +264,11 @@ export async function runHeadlessMode(
 						msg.type === "interrupt"
 							? "Interrupted while utility command was still running"
 							: "Cancelled while utility command was still running",
+					);
+					fileWatches.dispose(
+						msg.type === "interrupt"
+							? "Interrupted while file watch was still running"
+							: "Cancelled while file watch was still running",
 					);
 					agent.abort();
 					break;
@@ -348,11 +414,62 @@ export async function runHeadlessMode(
 					);
 					break;
 
+				case "utility_file_search":
+					if (
+						!state.capabilities?.utility_operations?.includes("file_search")
+					) {
+						sendError(
+							"utility_file_search requires file_search capability",
+							false,
+						);
+						break;
+					}
+					{
+						const result = searchWorkspaceFiles({
+							query: msg.query,
+							cwd: msg.cwd,
+							limit: msg.limit,
+						});
+						sendMessage({
+							type: "utility_file_search_results",
+							search_id: msg.search_id,
+							query: result.query,
+							cwd: result.cwd,
+							results: result.results,
+							truncated: result.truncated,
+						});
+					}
+					break;
+
+				case "utility_file_watch_start":
+					if (!state.capabilities?.utility_operations?.includes("file_watch")) {
+						sendError(
+							"utility_file_watch_start requires file_watch capability",
+							false,
+						);
+						break;
+					}
+					await fileWatches.start({
+						watch_id: msg.watch_id,
+						root_dir: msg.root_dir,
+						include_patterns: msg.include_patterns,
+						exclude_patterns: msg.exclude_patterns,
+						debounce_ms: msg.debounce_ms,
+					});
+					break;
+
+				case "utility_file_watch_stop":
+					fileWatches.stop(msg.watch_id, "Stopped by controller");
+					break;
+
 				case "shutdown":
 					sendPendingRequestCancellations("Shutdown before request completed");
 					applyOutgoingHeadlessMessage(state, msg);
 					await utilityCommands.dispose(
 						"Headless runtime shutdown while utility command was still running",
+					);
+					fileWatches.dispose(
+						"Headless runtime shutdown while file watch was still running",
 					);
 					process.exit(0);
 					break;

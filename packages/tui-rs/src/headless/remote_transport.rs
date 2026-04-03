@@ -19,9 +19,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::async_transport::AsyncTransportError;
 use super::messages::{
-    ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities, ClientInfo, ConnectionRole,
-    ConnectionState, FromAgentMessage, HeadlessErrorType, InitConfig, PendingApproval,
-    StreamingResponse, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
+    ActiveFileWatch, ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities,
+    ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage, HeadlessErrorType, InitConfig,
+    PendingApproval, StreamingResponse, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
 };
 
 /// Configuration for the remote headless transport.
@@ -45,6 +45,10 @@ pub struct RemoteTransportConfig {
     pub enable_client_tools: bool,
     /// Whether to enable runtime command execution on the shared control plane.
     pub enable_command_exec: bool,
+    /// Whether to enable workspace file path search on the shared control plane.
+    pub enable_file_search: bool,
+    /// Whether to enable runtime file watching on the shared control plane.
+    pub enable_file_watch: bool,
     /// Optional client flavor used to select client-specific tools.
     pub client: Option<String>,
     /// Optional human-readable client name for handshake metadata.
@@ -73,6 +77,8 @@ impl Default for RemoteTransportConfig {
             approval_mode: None,
             enable_client_tools: false,
             enable_command_exec: true,
+            enable_file_search: true,
+            enable_file_watch: true,
             client: None,
             client_name: "maestro-tui-rs".to_string(),
             client_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
@@ -183,6 +189,17 @@ struct RemoteActiveUtilityCommandState {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct RemoteActiveFileWatchState {
+    watch_id: String,
+    root_dir: String,
+    #[serde(default)]
+    include_patterns: Option<Vec<String>>,
+    #[serde(default)]
+    exclude_patterns: Option<Vec<String>>,
+    debounce_ms: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     protocol_version: Option<String>,
@@ -228,6 +245,8 @@ struct RemoteRuntimeStateSnapshot {
     active_tools: Vec<RemoteActiveToolState>,
     #[serde(default)]
     active_utility_commands: Vec<RemoteActiveUtilityCommandState>,
+    #[serde(default)]
+    active_file_watches: Vec<RemoteActiveFileWatchState>,
     #[serde(default)]
     last_error: Option<String>,
     #[serde(default)]
@@ -299,6 +318,22 @@ impl RemoteRuntimeStateSnapshot {
                             shell_mode: command.shell_mode,
                             pid: command.pid,
                             output: command.output,
+                        },
+                    )
+                })
+                .collect(),
+            active_file_watches: self
+                .active_file_watches
+                .into_iter()
+                .map(|watch| {
+                    (
+                        watch.watch_id.clone(),
+                        ActiveFileWatch {
+                            watch_id: watch.watch_id,
+                            root_dir: watch.root_dir,
+                            include_patterns: watch.include_patterns,
+                            exclude_patterns: watch.exclude_patterns,
+                            debounce_ms: watch.debounce_ms,
                         },
                     )
                 })
@@ -508,6 +543,42 @@ impl RemoteAgentTransport {
         })
     }
 
+    pub fn search_files(
+        &self,
+        search_id: String,
+        query: String,
+        cwd: Option<String>,
+        limit: Option<u32>,
+    ) -> Result<(), AsyncTransportError> {
+        self.send(ToAgentMessage::UtilityFileSearch {
+            search_id,
+            query,
+            cwd,
+            limit,
+        })
+    }
+
+    pub fn start_file_watch(
+        &self,
+        watch_id: String,
+        root_dir: Option<String>,
+        include_patterns: Option<Vec<String>>,
+        exclude_patterns: Option<Vec<String>>,
+        debounce_ms: Option<u32>,
+    ) -> Result<(), AsyncTransportError> {
+        self.send(ToAgentMessage::UtilityFileWatchStart {
+            watch_id,
+            root_dir,
+            include_patterns,
+            exclude_patterns,
+            debounce_ms,
+        })
+    }
+
+    pub fn stop_file_watch(&self, watch_id: String) -> Result<(), AsyncTransportError> {
+        self.send(ToAgentMessage::UtilityFileWatchStop { watch_id })
+    }
+
     pub fn shutdown(&self) -> Result<(), AsyncTransportError> {
         let result = self.send(ToAgentMessage::Shutdown);
         self.cancel_token.cancel();
@@ -596,6 +667,28 @@ impl RemoteAgentTransport {
     }
 }
 
+fn build_remote_utility_operations(config: &RemoteTransportConfig) -> Vec<&'static str> {
+    let mut operations = Vec::new();
+    if config.enable_command_exec {
+        operations.push("command_exec");
+    }
+    if config.enable_file_search {
+        operations.push("file_search");
+    }
+    if config.enable_file_watch {
+        operations.push("file_watch");
+    }
+    operations
+}
+
+fn build_remote_server_requests(config: &RemoteTransportConfig) -> Vec<&'static str> {
+    if config.enable_client_tools {
+        vec!["approval", "client_tool"]
+    } else {
+        vec!["approval"]
+    }
+}
+
 async fn create_or_attach_session(
     client: &Client,
     config: &RemoteTransportConfig,
@@ -616,16 +709,8 @@ async fn create_or_attach_session(
         approval_mode: config.approval_mode,
         enable_client_tools: config.enable_client_tools,
         capabilities: Some(RemoteClientCapabilities {
-            server_requests: if config.enable_client_tools {
-                vec!["approval", "client_tool"]
-            } else {
-                vec!["approval"]
-            },
-            utility_operations: if config.enable_command_exec {
-                vec!["command_exec"]
-            } else {
-                Vec::new()
-            },
+            server_requests: build_remote_server_requests(config),
+            utility_operations: build_remote_utility_operations(config),
         }),
         client: config.client.clone(),
         role: config.role.clone(),
@@ -657,16 +742,8 @@ async fn subscribe_to_session(
             version: config.client_version.clone(),
         }),
         capabilities: Some(RemoteClientCapabilities {
-            server_requests: if config.enable_client_tools {
-                vec!["approval", "client_tool"]
-            } else {
-                vec!["approval"]
-            },
-            utility_operations: if config.enable_command_exec {
-                vec!["command_exec"]
-            } else {
-                Vec::new()
-            },
+            server_requests: build_remote_server_requests(config),
+            utility_operations: build_remote_utility_operations(config),
         }),
         role: config.role.clone(),
         take_control: config.take_control,
@@ -1338,6 +1415,13 @@ mod tests {
                 pid: Some(1234),
                 output: "hi\n".to_string(),
             }],
+            active_file_watches: vec![RemoteActiveFileWatchState {
+                watch_id: "watch-1".to_string(),
+                root_dir: "/tmp/project".to_string(),
+                include_patterns: Some(vec!["src/**".to_string()]),
+                exclude_patterns: Some(vec!["dist/**".to_string()]),
+                debounce_ms: 100,
+            }],
             last_error: Some("boom".to_string()),
             last_error_type: Some(HeadlessErrorType::Tool),
             last_status: Some("Working".to_string()),
@@ -1366,6 +1450,7 @@ mod tests {
         assert_eq!(state.tracked_tools.len(), 1);
         assert_eq!(state.active_tools.len(), 1);
         assert_eq!(state.active_utility_commands.len(), 1);
+        assert_eq!(state.active_file_watches.len(), 1);
         assert_eq!(state.last_error.as_deref(), Some("boom"));
         assert_eq!(state.last_status.as_deref(), Some("Working"));
         assert!(state.is_ready);

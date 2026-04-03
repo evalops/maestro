@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -270,6 +270,181 @@ describe("HeadlessInProcessHost", () => {
 					event.message.content === "HELLO MAESTRO",
 			),
 		).toBe(true);
+
+		stream.close();
+	});
+
+	it("searches workspace files over the in-process control plane", async () => {
+		const fakeAgent = new FakeAgent();
+		tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-file-search-"));
+		await writeFile(
+			join(tempDir, "app.config.ts"),
+			"export const app = true;\n",
+		);
+		await writeFile(join(tempDir, "README.md"), "# Maestro\n");
+
+		const sessionManager = new SessionManager(false, undefined, {
+			sessionDir: tempDir,
+		});
+		const runtimeService = new HeadlessRuntimeService();
+		const host = new HeadlessInProcessHost(runtimeService);
+
+		const snapshot = await host.ensureSession({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context: {
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			},
+			sessionManager,
+			capabilities: {
+				server_requests: ["approval"],
+				utility_operations: ["file_search"],
+			},
+		});
+
+		const stream = host.attachStream({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			cursor: null,
+		});
+		expect((await readNextEnvelope(stream)).type).toBe("snapshot");
+
+		await host.send({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			message: {
+				type: "utility_file_search",
+				search_id: "search_files",
+				query: "app",
+				cwd: tempDir,
+				limit: 10,
+			},
+		});
+
+		const resultEnvelope = await readNextEnvelope(stream);
+		expect(resultEnvelope).toMatchObject({
+			type: "message",
+			message: {
+				type: "utility_file_search_results",
+				search_id: "search_files",
+				query: "app",
+				cwd: tempDir,
+				truncated: false,
+			},
+		});
+		if (
+			resultEnvelope.type !== "message" ||
+			resultEnvelope.message.type !== "utility_file_search_results"
+		) {
+			throw new Error("Expected utility_file_search_results message");
+		}
+		expect(resultEnvelope.message.results[0]?.path).toBe("app.config.ts");
+
+		stream.close();
+	});
+
+	it("streams file watch events over the in-process control plane", async () => {
+		const fakeAgent = new FakeAgent();
+		tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-file-watch-"));
+
+		const sessionManager = new SessionManager(false, undefined, {
+			sessionDir: tempDir,
+		});
+		const runtimeService = new HeadlessRuntimeService();
+		const host = new HeadlessInProcessHost(runtimeService);
+
+		const snapshot = await host.ensureSession({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context: {
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			},
+			sessionManager,
+			capabilities: {
+				server_requests: ["approval"],
+				utility_operations: ["file_watch"],
+			},
+		});
+
+		const stream = host.attachStream({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			cursor: null,
+		});
+		expect((await readNextEnvelope(stream)).type).toBe("snapshot");
+
+		await host.send({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			message: {
+				type: "utility_file_watch_start",
+				watch_id: "watch_src",
+				root_dir: tempDir,
+				debounce_ms: 10,
+			},
+		});
+
+		const startedEnvelope = await readNextEnvelope(stream);
+		expect(startedEnvelope).toMatchObject({
+			type: "message",
+			message: {
+				type: "utility_file_watch_started",
+				watch_id: "watch_src",
+				root_dir: tempDir,
+			},
+		});
+
+		await writeFile(join(tempDir, "watched.txt"), "hello watch\n");
+
+		let eventEnvelope: HeadlessRuntimeStreamEnvelope | null = null;
+		for (let attempt = 0; attempt < 10; attempt += 1) {
+			const next = await readNextEnvelope(stream);
+			if (
+				next.type === "message" &&
+				next.message.type === "utility_file_watch_event" &&
+				next.message.relative_path === "watched.txt"
+			) {
+				eventEnvelope = next;
+				break;
+			}
+		}
+		expect(eventEnvelope).not.toBeNull();
+		if (
+			!eventEnvelope ||
+			eventEnvelope.type !== "message" ||
+			eventEnvelope.message.type !== "utility_file_watch_event"
+		) {
+			throw new Error("Expected utility_file_watch_event message");
+		}
+		expect(eventEnvelope.message.watch_id).toBe("watch_src");
+		expect(eventEnvelope.message.relative_path).toBe("watched.txt");
+
+		await host.send({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+			message: {
+				type: "utility_file_watch_stop",
+				watch_id: "watch_src",
+			},
+		});
+
+		const stoppedEnvelope = await readNextEnvelope(stream);
+		expect(stoppedEnvelope).toMatchObject({
+			type: "message",
+			message: {
+				type: "utility_file_watch_stopped",
+				watch_id: "watch_src",
+			},
+		});
 
 		stream.close();
 	});
