@@ -52,6 +52,7 @@ export const HeadlessClientCapabilitiesSchema = Type.Object(
 				uniqueItems: true,
 			}),
 		),
+		raw_agent_events: Type.Optional(Type.Boolean()),
 	},
 	{ additionalProperties: false },
 );
@@ -452,6 +453,15 @@ export const HeadlessServerRequestResolvedMessageSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
+export const HeadlessRawAgentEventMessageSchema = Type.Object(
+	{
+		type: Type.Literal("raw_agent_event"),
+		event_type: Type.String(),
+		event: Type.Unknown(),
+	},
+	{ additionalProperties: false },
+);
+
 export const HeadlessUtilityCommandStartedMessageSchema = Type.Object(
 	{
 		type: Type.Literal("utility_command_started"),
@@ -665,6 +675,7 @@ export const headlessFromAgentMessageSchemasByType = {
 	client_tool_request: HeadlessClientToolRequestMessageSchema,
 	server_request: HeadlessServerRequestMessageSchema,
 	server_request_resolved: HeadlessServerRequestResolvedMessageSchema,
+	raw_agent_event: HeadlessRawAgentEventMessageSchema,
 	utility_command_started: HeadlessUtilityCommandStartedMessageSchema,
 	utility_command_resized: HeadlessUtilityCommandResizedMessageSchema,
 	utility_command_output: HeadlessUtilityCommandOutputMessageSchema,
@@ -718,6 +729,7 @@ export const HeadlessFromAgentMessageSchema = Type.Union([
 	HeadlessClientToolRequestMessageSchema,
 	HeadlessServerRequestMessageSchema,
 	HeadlessServerRequestResolvedMessageSchema,
+	HeadlessRawAgentEventMessageSchema,
 	HeadlessUtilityCommandStartedMessageSchema,
 	HeadlessUtilityCommandResizedMessageSchema,
 	HeadlessUtilityCommandOutputMessageSchema,

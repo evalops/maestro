@@ -52,6 +52,8 @@ pub struct RemoteTransportConfig {
     pub enable_file_read: bool,
     /// Whether to enable runtime file watching on the shared control plane.
     pub enable_file_watch: bool,
+    /// Whether to stream untranslated raw agent events for advanced clients.
+    pub enable_raw_agent_events: bool,
     /// Optional client flavor used to select client-specific tools.
     pub client: Option<String>,
     /// Optional human-readable client name for handshake metadata.
@@ -85,6 +87,7 @@ impl Default for RemoteTransportConfig {
             enable_file_search: true,
             enable_file_read: true,
             enable_file_watch: true,
+            enable_raw_agent_events: false,
             client: None,
             client_name: "maestro-tui-rs".to_string(),
             client_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
@@ -195,6 +198,12 @@ struct RemoteClientCapabilities {
     server_requests: Vec<&'static str>,
     #[serde(rename = "utilityOperations", skip_serializing_if = "Vec::is_empty")]
     utility_operations: Vec<&'static str>,
+    #[serde(
+        rename = "rawAgentEvents",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    raw_agent_events: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -793,6 +802,7 @@ async fn create_or_attach_connection(
         capabilities: Some(RemoteClientCapabilities {
             server_requests: build_remote_server_requests(config),
             utility_operations: build_remote_utility_operations(config),
+            raw_agent_events: config.enable_raw_agent_events,
         }),
         opt_out_notifications: config.opt_out_notifications.clone(),
         client: config.client.clone(),
@@ -828,6 +838,7 @@ async fn subscribe_to_session(
         capabilities: Some(RemoteClientCapabilities {
             server_requests: build_remote_server_requests(config),
             utility_operations: build_remote_utility_operations(config),
+            raw_agent_events: config.enable_raw_agent_events,
         }),
         role: config.role.clone(),
         opt_out_notifications: config.opt_out_notifications.clone(),
@@ -1431,6 +1442,7 @@ mod tests {
                     crate::headless::ServerRequestType::ClientTool,
                 ]),
                 utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
+                raw_agent_events: Some(true),
             }),
             opt_out_notifications: Some(vec!["status".to_string()]),
             connection_role: Some(ConnectionRole::Controller),
@@ -1452,6 +1464,7 @@ mod tests {
                         crate::headless::ServerRequestType::ClientTool,
                     ]),
                     utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
+                    raw_agent_events: Some(true),
                 }),
                 opt_out_notifications: Some(vec!["status".to_string()]),
                 subscription_count: 1,
@@ -1612,6 +1625,7 @@ mod tests {
             capabilities: Some(RemoteClientCapabilities {
                 server_requests: vec!["approval", "client_tool"],
                 utility_operations: vec!["command_exec"],
+                raw_agent_events: true,
             }),
             opt_out_notifications: vec!["status".to_string()],
             client: Some("vscode".to_string()),
@@ -1630,6 +1644,7 @@ mod tests {
         assert_eq!(json["enableClientTools"], true);
         assert_eq!(json["capabilities"]["serverRequests"][0], "approval");
         assert_eq!(json["capabilities"]["serverRequests"][1], "client_tool");
+        assert_eq!(json["capabilities"]["rawAgentEvents"], true);
         assert_eq!(json["optOutNotifications"][0], "status");
         assert_eq!(json["client"], "vscode");
         assert_eq!(json["role"], "controller");
@@ -1648,6 +1663,7 @@ mod tests {
             capabilities: Some(RemoteClientCapabilities {
                 server_requests: vec!["approval", "client_tool", "user_input"],
                 utility_operations: vec!["command_exec", "file_read", "file_watch"],
+                raw_agent_events: true,
             }),
             role: Some("viewer".to_string()),
             opt_out_notifications: vec!["status".to_string(), "heartbeat".to_string()],
@@ -1657,6 +1673,7 @@ mod tests {
         let json = serde_json::to_value(request).expect("serialize request");
         assert_eq!(json["connectionId"], "conn_remote");
         assert_eq!(json["role"], "viewer");
+        assert_eq!(json["capabilities"]["rawAgentEvents"], true);
         assert_eq!(json["optOutNotifications"][0], "status");
         assert_eq!(json["optOutNotifications"][1], "heartbeat");
     }

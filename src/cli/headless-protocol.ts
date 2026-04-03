@@ -59,6 +59,7 @@ export interface HeadlessClientInfo {
 export interface HeadlessClientCapabilities {
 	server_requests?: HeadlessServerRequestType[];
 	utility_operations?: HeadlessUtilityOperation[];
+	raw_agent_events?: boolean;
 }
 
 export interface HeadlessHelloMessage {
@@ -460,6 +461,12 @@ export interface HeadlessConnectionInfoMessage {
 	connections?: HeadlessConnectionState[];
 }
 
+export interface HeadlessRawAgentEventMessage {
+	type: "raw_agent_event";
+	event_type: AgentEvent["type"];
+	event: AgentEvent;
+}
+
 export type HeadlessFromAgentMessage =
 	| HeadlessHelloOkMessage
 	| HeadlessReadyMessage
@@ -473,6 +480,7 @@ export type HeadlessFromAgentMessage =
 	| HeadlessClientToolRequestMessage
 	| HeadlessServerRequestMessage
 	| HeadlessServerRequestResolvedMessage
+	| HeadlessRawAgentEventMessage
 	| HeadlessUtilityCommandStartedMessage
 	| HeadlessUtilityCommandResizedMessage
 	| HeadlessUtilityCommandOutputMessage
@@ -579,6 +587,16 @@ export interface HeadlessRuntimeState {
 }
 
 export const HEADLESS_PROTOCOL_VERSION = headlessProtocolVersion;
+
+export function buildHeadlessRawAgentEventMessage(
+	event: AgentEvent,
+): HeadlessRawAgentEventMessage {
+	return {
+		type: "raw_agent_event",
+		event_type: event.type,
+		event: structuredClone(event),
+	};
+}
 
 export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 	return {
@@ -1324,6 +1342,8 @@ export function applyIncomingHeadlessMessage(
 	msg: HeadlessFromAgentMessage,
 ): void {
 	switch (msg.type) {
+		case "raw_agent_event":
+			return;
 		case "hello_ok":
 			state.protocol_version = msg.protocol_version;
 			state.client_protocol_version = msg.client_protocol_version;

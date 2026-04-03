@@ -309,6 +309,8 @@ pub struct ClientCapabilities {
     pub server_requests: Option<Vec<ServerRequestType>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utility_operations: Option<Vec<UtilityOperation>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_agent_events: Option<bool>,
 }
 
 /// Snapshot of a live headless connection attached to a runtime.
@@ -627,6 +629,11 @@ pub enum FromAgentMessage {
         lease_expires_at: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         connections: Option<Vec<ConnectionState>>,
+    },
+    /// Raw agent event stream for advanced clients
+    RawAgentEvent {
+        event_type: String,
+        event: serde_json::Value,
     },
     /// Utility command started on the runtime
     UtilityCommandStarted {
@@ -1202,6 +1209,9 @@ impl AgentState {
                 self.connections = connections.unwrap_or_default();
                 None
             }
+            FromAgentMessage::RawAgentEvent { event_type, event } => {
+                Some(AgentEvent::RawAgentEvent { event_type, event })
+            }
             FromAgentMessage::UtilityCommandStarted {
                 command_id,
                 command,
@@ -1601,6 +1611,10 @@ fn pending_request_matches(pending: &PendingApproval, request_id: &str) -> bool 
 /// High-level events for the TUI to react to
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    RawAgentEvent {
+        event_type: String,
+        event: serde_json::Value,
+    },
     Ready {
         protocol_version: Option<String>,
         model: String,
@@ -1939,6 +1953,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_raw_agent_event_message() {
+        let json = r#"{"type":"raw_agent_event","event_type":"status","event":{"type":"status","status":"Working","details":{}}}"#;
+        let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            FromAgentMessage::RawAgentEvent { event_type, event } => {
+                assert_eq!(event_type, "status");
+                assert_eq!(event["type"], "status");
+                assert_eq!(event["status"], "Working");
+            }
+            _ => panic!("Expected RawAgentEvent message"),
+        }
+    }
+
+    #[test]
     fn serialize_prompt_message() {
         let msg = ToAgentMessage::Prompt {
             content: "Hello".to_string(),
@@ -1975,6 +2003,7 @@ mod tests {
             capabilities: Some(ClientCapabilities {
                 server_requests: Some(vec![ServerRequestType::Approval]),
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
+                raw_agent_events: Some(true),
             }),
             role: Some(ConnectionRole::Controller),
             opt_out_notifications: Some(vec!["status".to_string()]),
@@ -2440,6 +2469,7 @@ mod tests {
             capabilities: Some(ClientCapabilities {
                 server_requests: Some(vec![ServerRequestType::Approval]),
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
+                raw_agent_events: None,
             }),
             role: Some(ConnectionRole::Controller),
             opt_out_notifications: Some(vec!["status".to_string()]),
@@ -2457,6 +2487,7 @@ mod tests {
                     ServerRequestType::ClientTool,
                 ]),
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
+                raw_agent_events: Some(true),
             }),
             opt_out_notifications: Some(vec!["status".to_string(), "connection_info".to_string()]),
             role: Some(ConnectionRole::Viewer),
@@ -2477,6 +2508,7 @@ mod tests {
                         ServerRequestType::ClientTool,
                     ]),
                     utility_operations: Some(vec![UtilityOperation::CommandExec]),
+                    raw_agent_events: Some(true),
                 }),
                 opt_out_notifications: Some(vec![
                     "status".to_string(),
@@ -2523,6 +2555,27 @@ mod tests {
     }
 
     #[test]
+    fn state_emits_raw_agent_events() {
+        let mut state = AgentState::default();
+        let event = state.handle_message(FromAgentMessage::RawAgentEvent {
+            event_type: "status".to_string(),
+            event: serde_json::json!({
+                "type": "status",
+                "status": "Working",
+                "details": {},
+            }),
+        });
+
+        match event {
+            Some(AgentEvent::RawAgentEvent { event_type, event }) => {
+                assert_eq!(event_type, "status");
+                assert_eq!(event["status"], "Working");
+            }
+            _ => panic!("Expected raw agent event"),
+        }
+    }
+
+    #[test]
     fn state_tracks_protocol_version_from_hello_ok() {
         let mut state = AgentState::default();
 
@@ -2537,6 +2590,7 @@ mod tests {
             capabilities: Some(ClientCapabilities {
                 server_requests: Some(vec![ServerRequestType::Approval]),
                 utility_operations: Some(vec![UtilityOperation::FileRead]),
+                raw_agent_events: None,
             }),
             opt_out_notifications: Some(vec!["connection_info".to_string()]),
             role: Some(ConnectionRole::Controller),

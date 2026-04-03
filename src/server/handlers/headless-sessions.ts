@@ -75,6 +75,7 @@ const HeadlessCreateBaseProperties = {
 					uniqueItems: true,
 				}),
 			),
+			rawAgentEvents: Type.Optional(Type.Boolean()),
 		}),
 	),
 	optOutNotifications: Type.Optional(HeadlessOptOutNotificationsSchema),
@@ -126,6 +127,7 @@ const HeadlessSessionSubscribeSchema = Type.Object({
 					uniqueItems: true,
 				}),
 			),
+			rawAgentEvents: Type.Optional(Type.Boolean()),
 		}),
 	),
 	optOutNotifications: Type.Optional(HeadlessOptOutNotificationsSchema),
@@ -341,6 +343,7 @@ async function ensureRuntime(
 			? {
 					server_requests: input.capabilities.serverRequests,
 					utility_operations: input.capabilities.utilityOperations,
+					raw_agent_events: input.capabilities.rawAgentEvents,
 				}
 			: undefined,
 		optOutNotifications: input.optOutNotifications,
@@ -373,6 +376,7 @@ async function ensureConnection(
 			? {
 					server_requests: input.capabilities.serverRequests,
 					utility_operations: input.capabilities.utilityOperations,
+					raw_agent_events: input.capabilities.rawAgentEvents,
 				}
 			: undefined,
 		optOutNotifications: input.optOutNotifications,
@@ -479,6 +483,7 @@ export async function handleHeadlessSessionSubscribe(
 					? {
 							server_requests: input.capabilities.serverRequests,
 							utility_operations: input.capabilities.utilityOperations,
+							raw_agent_events: input.capabilities.rawAgentEvents,
 						}
 					: undefined,
 				optOutNotifications: input.optOutNotifications,

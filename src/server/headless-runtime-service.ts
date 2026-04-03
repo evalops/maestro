@@ -29,6 +29,7 @@ import {
 	applyIncomingHeadlessMessage,
 	applyInitMessage,
 	applyOutgoingHeadlessMessage,
+	buildHeadlessRawAgentEventMessage,
 	createHeadlessRuntimeState,
 	loadPromptAttachments,
 } from "../cli/headless-protocol.js";
@@ -165,6 +166,7 @@ class HeadlessSubscriberMailbox {
 	private queuedReset: HeadlessRuntimeResetEnvelope | null = null;
 	private detachedAt: number | null;
 	private attached = false;
+	private allowRawAgentEvents: boolean;
 
 	constructor(
 		readonly id: string,
@@ -172,8 +174,10 @@ class HeadlessSubscriberMailbox {
 		readonly explicit: boolean,
 		readonly connectionId: string,
 		readonly optOutNotifications: HeadlessNotificationType[] = [],
+		allowRawAgentEvents = false,
 	) {
 		this.detachedAt = explicit ? Date.now() : null;
+		this.allowRawAgentEvents = allowRawAgentEvents;
 	}
 
 	onAvailable(listener: SubscriberListener): () => void {
@@ -238,6 +242,14 @@ class HeadlessSubscriberMailbox {
 		return this.attached;
 	}
 
+	allowsRawAgentEvents(): boolean {
+		return this.allowRawAgentEvents;
+	}
+
+	setAllowRawAgentEvents(value: boolean): void {
+		this.allowRawAgentEvents = value;
+	}
+
 	private emit(): void {
 		for (const listener of this.listeners) {
 			listener();
@@ -247,16 +259,19 @@ class HeadlessSubscriberMailbox {
 	private shouldFilterEnvelope(
 		envelope: HeadlessRuntimeStreamEnvelope,
 	): boolean {
-		if (this.optOutNotifications.length === 0) {
+		if (envelope.type === "heartbeat") {
+			return this.optOutNotifications.includes("heartbeat");
+		}
+		if (envelope.type !== "message") {
 			return false;
 		}
 		if (
-			envelope.type === "heartbeat" &&
-			this.optOutNotifications.includes("heartbeat")
+			envelope.message.type === "raw_agent_event" &&
+			!this.allowRawAgentEvents
 		) {
 			return true;
 		}
-		if (envelope.type !== "message") {
+		if (this.optOutNotifications.length === 0) {
 			return false;
 		}
 		switch (envelope.message.type) {
@@ -920,6 +935,8 @@ export class HeadlessSessionRuntime {
 								utility_operations: this.state.capabilities.utility_operations
 									? [...this.state.capabilities.utility_operations]
 									: undefined,
+								raw_agent_events:
+									this.state.capabilities.raw_agent_events ?? undefined,
 							}
 						: undefined),
 				optOutNotifications:
@@ -944,7 +961,19 @@ export class HeadlessSessionRuntime {
 			: connection.optOutNotifications;
 		connection.lastSeenAt = Date.now();
 		this.connections.set(connection.id, connection);
+		this.syncSubscriberCapabilities(connection.id);
 		return connection;
+	}
+
+	private syncSubscriberCapabilities(connectionId: string): void {
+		const connection = this.connections.get(connectionId);
+		const allowRawAgentEvents =
+			connection?.capabilities?.raw_agent_events === true;
+		for (const subscriptionId of connection?.subscriptionIds ?? []) {
+			this.subscribers
+				.get(subscriptionId)
+				?.setAllowRawAgentEvents(allowRawAgentEvents);
+		}
 	}
 
 	createSubscription(options?: {
@@ -1003,6 +1032,7 @@ export class HeadlessSessionRuntime {
 			explicit,
 			connection.id,
 			options?.optOutNotifications ?? connection.optOutNotifications,
+			connection.capabilities?.raw_agent_events === true,
 		);
 		this.subscribers.set(subscriber.id, subscriber);
 		connection.subscriptionIds.add(subscriber.id);
@@ -1690,6 +1720,13 @@ export class HeadlessSessionRuntime {
 	}
 
 	private handleAgentEvent(event: AgentEvent): void {
+		if (
+			Array.from(this.connections.values()).some(
+				(connection) => connection.capabilities?.raw_agent_events,
+			)
+		) {
+			this.publish(buildHeadlessRawAgentEventMessage(event));
+		}
 		if (
 			event.type === "action_approval_required" &&
 			!this.approvalService.requiresUserInteraction()

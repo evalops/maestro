@@ -64,6 +64,7 @@ pub const HEADLESS_FROM_AGENT_MESSAGE_TYPES: &[&str] = &[
     "client_tool_request",
     "server_request",
     "server_request_resolved",
+    "raw_agent_event",
     "utility_command_started",
     "utility_command_resized",
     "utility_command_output",
