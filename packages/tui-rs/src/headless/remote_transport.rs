@@ -1293,10 +1293,10 @@ async fn reader_loop(
                                     }
                                 }
                                 Ok(RemoteEnvelope::Heartbeat { cursor: next_cursor }) => {
-                                    if !advances_remote_cursor(cursor, next_cursor) {
+                                    if !accepts_remote_heartbeat_cursor(cursor, next_cursor) {
                                         continue;
                                     }
-                                    cursor = next_cursor;
+                                    cursor = cursor.max(next_cursor);
                                     if event_tx.send(Ok(RemoteIncoming::Heartbeat)).is_err() {
                                         return;
                                     }
@@ -1332,6 +1332,10 @@ async fn reader_loop(
 
 fn advances_remote_cursor(current_cursor: u64, next_cursor: u64) -> bool {
     next_cursor > current_cursor
+}
+
+fn accepts_remote_heartbeat_cursor(current_cursor: u64, next_cursor: u64) -> bool {
+    next_cursor >= current_cursor
 }
 
 fn with_headers(
@@ -3084,6 +3088,85 @@ mod tests {
             Some("Remote update")
         );
         assert!(transport.try_recv_incoming().is_none());
+
+        transport.shutdown().expect("shutdown");
+        for _ in 0..50 {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn remote_transport_accepts_heartbeat_without_cursor_advance() {
+        let initial_snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 1,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "tracked_tools": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let first_status_event = serde_json::json!({
+            "type": "message",
+            "cursor": 2,
+            "message": {
+                "type": "status",
+                "message": "Remote update"
+            }
+        })
+        .to_string();
+        let nonadvancing_heartbeat_event = serde_json::json!({
+            "type": "heartbeat",
+            "cursor": 2
+        })
+        .to_string();
+
+        let (addr, _posted_bodies, _request_paths, _request_headers) =
+            spawn_remote_headless_server(
+                initial_snapshot.to_string(),
+                vec![first_status_event, nonadvancing_heartbeat_event],
+            )
+            .await;
+
+        let config = RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        };
+
+        let mut transport = RemoteAgentTransport::connect(config)
+            .await
+            .expect("connect");
+        let cancel_token = transport.cancel_token();
+
+        let incoming = transport
+            .recv_incoming()
+            .await
+            .expect("incoming status event");
+        match incoming {
+            RemoteIncoming::Message(FromAgentMessage::Status { message }) => {
+                assert_eq!(message, "Remote update");
+            }
+            other => panic!("expected remote status message, got {other:?}"),
+        }
+
+        let incoming = transport.recv_incoming().await.expect("incoming heartbeat");
+        assert!(matches!(incoming, RemoteIncoming::Heartbeat));
+        assert_eq!(
+            transport.state().last_status.as_deref(),
+            Some("Remote update")
+        );
 
         transport.shutdown().expect("shutdown");
         for _ in 0..50 {
