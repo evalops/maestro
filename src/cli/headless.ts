@@ -68,6 +68,15 @@ export async function runHeadlessMode(
 		applyIncomingHeadlessMessage(state, msg);
 		send(msg);
 	};
+	const shouldHandleServerRequestEvent = (
+		sessionId: string | undefined,
+	): boolean => {
+		const currentSessionId = sessionManager.getSessionId() ?? undefined;
+		if (!currentSessionId) {
+			return sessionId === undefined;
+		}
+		return sessionId === currentSessionId;
+	};
 
 	const cancelPendingServerRequests = (reason: string): void => {
 		const sessionId = sessionManager.getSessionId() ?? undefined;
@@ -163,6 +172,9 @@ export async function runHeadlessMode(
 	});
 
 	const unsubscribeServerRequests = serverRequestManager.subscribe((event) => {
+		if (!shouldHandleServerRequestEvent(event.request.sessionId)) {
+			return;
+		}
 		if (event.type === "registered") {
 			sendMessage({
 				type: "server_request",

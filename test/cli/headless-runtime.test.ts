@@ -441,6 +441,100 @@ describe("runHeadlessMode", () => {
 		});
 	});
 
+	it("filters unrelated session server requests from local headless output", async () => {
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+		const { serverRequestManager: runtimeServerRequestManager } = await import(
+			"../../src/server/server-request-manager.js"
+		);
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn(),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+		);
+
+		await vi.waitFor(() => {
+			expect(onClose).toBeTypeOf("function");
+		});
+
+		runtimeServerRequestManager.registerClientTool({
+			id: "other-session-request",
+			sessionId: "session-other",
+			toolName: "ask_user",
+			args: { prompt: "Other" },
+			kind: "user_input",
+			resolve: () => true,
+			cancel: () => true,
+		});
+		runtimeServerRequestManager.registerClientTool({
+			id: "current-session-request",
+			sessionId: "session-headless-test",
+			toolName: "ask_user",
+			args: { prompt: "Current" },
+			kind: "user_input",
+			resolve: () => true,
+			cancel: () => true,
+		});
+
+		await vi.waitFor(() => {
+			const requestIds = writes
+				.join("")
+				.trim()
+				.split("\n")
+				.filter(Boolean)
+				.map(
+					(line) =>
+						JSON.parse(line) as { type: string; [key: string]: unknown },
+				)
+				.filter((message) => message.type === "server_request")
+				.map((message) => message.request_id);
+			expect(requestIds).toContain("current-session-request");
+		});
+
+		onClose?.();
+		await runPromise;
+
+		const messages = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.map(
+				(line) => JSON.parse(line) as { type: string; [key: string]: unknown },
+			);
+		const requestIds = messages
+			.filter((message) => message.type === "server_request")
+			.map((message) => message.request_id);
+
+		expect(requestIds).toContain("current-session-request");
+		expect(requestIds).not.toContain("other-session-request");
+	});
+
 	it.skipIf(!supportsPty)(
 		"supports PTY utility command resize through the local headless protocol",
 		async () => {
