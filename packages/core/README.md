@@ -40,7 +40,7 @@ await sandbox.dispose()
 
 ## Message Types
 
-Maestro uses its own provider-agnostic message format internally. This differs from individual provider APIs (Anthropic, OpenAI, etc.) — the `ProviderTransport` handles translation automatically.
+Maestro uses its own normalized message format internally. This differs from individual provider APIs (Anthropic, OpenAI, etc.), and `ProviderTransport` handles the translation layer.
 
 | Maestro Internal | Anthropic API | OpenAI API |
 |-----------------|---------------|------------|

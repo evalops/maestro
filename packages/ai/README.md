@@ -1,6 +1,6 @@
 # @evalops/ai
 
-Shared Maestro AI SDK providing model registry, provider-agnostic transport, and agent event stream primitives. Used by the CLI, TUI, and web UI.
+Shared Maestro AI SDK providing model registry, multi-provider transport, and agent event stream primitives. Used by the CLI, TUI, and web UI.
 
 ## Supported Providers
 
