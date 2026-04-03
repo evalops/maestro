@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ActionApprovalService } from "../../src/agent/action-approval.js";
 import { getHeadlessPtyPythonCommand } from "../../src/headless/pty-helper.js";
+import { serverRequestManager } from "../../src/server/server-request-manager.js";
 
 type LineHandler = (line: string) => void | Promise<void>;
 type CloseHandler = () => void;
@@ -17,6 +19,9 @@ const supportsPty =
 
 describe("runHeadlessMode", () => {
 	afterEach(() => {
+		for (const request of serverRequestManager.listPending()) {
+			serverRequestManager.cancel(request.id, "test cleanup");
+		}
 		vi.restoreAllMocks();
 		vi.resetModules();
 		vi.doUnmock("node:readline");
@@ -253,6 +258,214 @@ describe("runHeadlessMode", () => {
 				"Failed to parse command: Invalid headless command: /unexpected Unexpected property",
 			fatal: false,
 			error_type: "protocol",
+		});
+	});
+
+	it("cancels the underlying pending approval when interrupted", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		let onAgentEvent: ((event: unknown) => void) | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+		const approvalService = new ActionApprovalService("prompt");
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn((handler: (event: unknown) => void) => {
+					onAgentEvent = handler;
+				}),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+			approvalService,
+		);
+
+		await vi.waitFor(() => {
+			expect(onLine).toBeTypeOf("function");
+			expect(onClose).toBeTypeOf("function");
+			expect(onAgentEvent).toBeTypeOf("function");
+		});
+
+		const request = {
+			id: "call_approval",
+			toolName: "bash",
+			args: { command: "rm -rf dist" },
+			reason: "Dangerous command",
+		};
+		const approvalPromise = approvalService.requestApproval(request);
+		onAgentEvent?.({
+			type: "action_approval_required",
+			request,
+		});
+
+		expect(approvalService.getPendingRequests()).toHaveLength(1);
+
+		await onLine?.(JSON.stringify({ type: "interrupt" }));
+
+		await vi.waitFor(() => {
+			expect(approvalService.getPendingRequests()).toHaveLength(0);
+		});
+		await expect(approvalPromise).resolves.toMatchObject({
+			approved: false,
+			reason: "Interrupted before request completed",
+			resolvedBy: "policy",
+		});
+
+		onClose?.();
+		await runPromise;
+
+		const messages = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.map(
+				(line) => JSON.parse(line) as { type: string; [key: string]: unknown },
+			);
+		expect(messages).toContainEqual({
+			type: "server_request_resolved",
+			request_id: "call_approval",
+			request_type: "approval",
+			call_id: "call_approval",
+			resolution: "cancelled",
+			reason: "Interrupted before request completed",
+			resolved_by: "runtime",
+		});
+	});
+
+	it("suppresses duplicate approval resolution messages after manager resolution", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		let onAgentEvent: ((event: unknown) => void) | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+		const approvalService = {
+			requiresUserInteraction: () => true,
+			resolve: vi.fn(() => true),
+		} as unknown as ActionApprovalService;
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn((handler: (event: unknown) => void) => {
+					onAgentEvent = handler;
+				}),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+			approvalService,
+		);
+
+		await vi.waitFor(() => {
+			expect(onLine).toBeTypeOf("function");
+			expect(onClose).toBeTypeOf("function");
+			expect(onAgentEvent).toBeTypeOf("function");
+		});
+
+		const request = {
+			id: "call_approval",
+			toolName: "bash",
+			args: { command: "rm -rf dist" },
+			reason: "Dangerous command",
+		};
+		onAgentEvent?.({
+			type: "action_approval_required",
+			request,
+		});
+
+		await onLine?.(
+			JSON.stringify({
+				type: "server_request_response",
+				request_id: "call_approval",
+				request_type: "approval",
+				approved: true,
+				result: { output: "Looks good" },
+			}),
+		);
+
+		onAgentEvent?.({
+			type: "action_approval_resolved",
+			request,
+			decision: {
+				approved: true,
+				reason: "Looks good",
+				resolvedBy: "user",
+			},
+		});
+
+		onClose?.();
+		await runPromise;
+
+		const messages = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.map(
+				(line) => JSON.parse(line) as { type: string; [key: string]: unknown },
+			);
+		const approvalResolutions = messages.filter(
+			(message) =>
+				message.type === "server_request_resolved" &&
+				message.request_id === "call_approval",
+		);
+
+		expect(approvalResolutions).toHaveLength(1);
+		expect(approvalResolutions[0]).toMatchObject({
+			type: "server_request_resolved",
+			request_id: "call_approval",
+			request_type: "approval",
+			call_id: "call_approval",
+			resolution: "approved",
+			reason: "Looks good",
+			resolved_by: "user",
 		});
 	});
 
