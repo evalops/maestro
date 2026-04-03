@@ -1246,6 +1246,9 @@ async fn reader_loop(
                             saw_event = true;
                             match serde_json::from_str::<RemoteEnvelope>(&event.data) {
                                 Ok(RemoteEnvelope::Message { cursor: next_cursor, message }) => {
+                                    if !advances_remote_cursor(cursor, next_cursor) {
+                                        continue;
+                                    }
                                     cursor = next_cursor;
                                     if event_tx
                                         .send(Ok(RemoteIncoming::Message(*message)))
@@ -1257,6 +1260,9 @@ async fn reader_loop(
                                 Ok(RemoteEnvelope::Snapshot { snapshot }) => {
                                     let (_snapshot_session_id, next_cursor, last_init, state) =
                                         snapshot.into_state();
+                                    if !advances_remote_cursor(cursor, next_cursor) {
+                                        continue;
+                                    }
                                     cursor = next_cursor;
                                     if event_tx
                                         .send(Ok(RemoteIncoming::Snapshot {
@@ -1271,6 +1277,9 @@ async fn reader_loop(
                                 Ok(RemoteEnvelope::Reset { reason, snapshot }) => {
                                     let (_snapshot_session_id, next_cursor, last_init, state) =
                                         snapshot.into_state();
+                                    if !advances_remote_cursor(cursor, next_cursor) {
+                                        continue;
+                                    }
                                     cursor = next_cursor;
                                     if event_tx
                                         .send(Ok(RemoteIncoming::Reset {
@@ -1284,6 +1293,9 @@ async fn reader_loop(
                                     }
                                 }
                                 Ok(RemoteEnvelope::Heartbeat { cursor: next_cursor }) => {
+                                    if !advances_remote_cursor(cursor, next_cursor) {
+                                        continue;
+                                    }
                                     cursor = next_cursor;
                                     if event_tx.send(Ok(RemoteIncoming::Heartbeat)).is_err() {
                                         return;
@@ -1323,6 +1335,10 @@ async fn reader_loop(
 
         tokio::time::sleep(reconnect_delay).await;
     }
+}
+
+fn advances_remote_cursor(current_cursor: u64, next_cursor: u64) -> bool {
+    next_cursor > current_cursor
 }
 
 fn with_headers(
@@ -2688,6 +2704,95 @@ mod tests {
                 .and_then(|init| init.system_prompt.as_deref()),
             Some("Updated prompt")
         );
+
+        transport.shutdown().expect("shutdown");
+        for _ in 0..50 {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn remote_transport_ignores_replayed_events_that_do_not_advance_cursor() {
+        let initial_snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 1,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "tracked_tools": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let first_status_event = serde_json::json!({
+            "type": "message",
+            "cursor": 2,
+            "message": {
+                "type": "status",
+                "message": "Remote update"
+            }
+        })
+        .to_string();
+        let replayed_status_event = serde_json::json!({
+            "type": "message",
+            "cursor": 2,
+            "message": {
+                "type": "status",
+                "message": "stale replay"
+            }
+        })
+        .to_string();
+        let heartbeat_event = serde_json::json!({
+            "type": "heartbeat",
+            "cursor": 3
+        })
+        .to_string();
+
+        let (addr, _posted_bodies, _request_paths, _request_headers) =
+            spawn_remote_headless_server(
+                initial_snapshot.to_string(),
+                vec![first_status_event, replayed_status_event, heartbeat_event],
+            )
+            .await;
+
+        let config = RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        };
+
+        let mut transport = RemoteAgentTransport::connect(config)
+            .await
+            .expect("connect");
+        let cancel_token = transport.cancel_token();
+
+        let incoming = transport
+            .recv_incoming()
+            .await
+            .expect("incoming status event");
+        match incoming {
+            RemoteIncoming::Message(FromAgentMessage::Status { message }) => {
+                assert_eq!(message, "Remote update");
+            }
+            other => panic!("expected remote status message, got {other:?}"),
+        }
+
+        let incoming = transport.recv_incoming().await.expect("incoming heartbeat");
+        assert!(matches!(incoming, RemoteIncoming::Heartbeat));
+        assert_eq!(
+            transport.state().last_status.as_deref(),
+            Some("Remote update")
+        );
+        assert!(transport.try_recv_incoming().is_none());
 
         transport.shutdown().expect("shutdown");
         for _ in 0..50 {
