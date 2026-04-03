@@ -261,6 +261,18 @@
 				"limit": { "kind": "number", "optional": true }
 			}
 		},
+		"HeadlessUtilityFileReadMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_read" },
+				"read_id": { "kind": "string" },
+				"path": { "kind": "string" },
+				"cwd": { "kind": "string", "optional": true },
+				"offset": { "kind": "number", "optional": true },
+				"limit": { "kind": "number", "optional": true }
+			}
+		},
 		"HeadlessUtilityFileWatchStartMessageSchema": {
 			"kind": "object",
 			"additionalProperties": false,
@@ -568,6 +580,22 @@
 						"name": "HeadlessUtilityFileSearchMatchSchema"
 					}
 				},
+				"truncated": { "kind": "boolean" }
+			}
+		},
+		"HeadlessUtilityFileReadResultMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_read_result" },
+				"read_id": { "kind": "string" },
+				"path": { "kind": "string" },
+				"relative_path": { "kind": "string" },
+				"cwd": { "kind": "string" },
+				"content": { "kind": "string" },
+				"start_line": { "kind": "number" },
+				"end_line": { "kind": "number" },
+				"total_lines": { "kind": "number" },
 				"truncated": { "kind": "boolean" }
 			}
 		},

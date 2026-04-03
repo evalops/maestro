@@ -14,6 +14,7 @@ import type { ActionApprovalService } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
+import { readWorkspaceFile } from "../headless/utility-file-read.js";
 import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
 import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
 import { clientToolService } from "../server/client-tools-service.js";
@@ -571,6 +572,33 @@ export async function runHeadlessMode(
 							query: result.query,
 							cwd: result.cwd,
 							results: result.results,
+							truncated: result.truncated,
+						});
+					}
+					break;
+
+				case "utility_file_read":
+					if (!state.capabilities?.utility_operations?.includes("file_read")) {
+						sendError("utility_file_read requires file_read capability", false);
+						break;
+					}
+					{
+						const result = await readWorkspaceFile({
+							path: msg.path,
+							cwd: msg.cwd,
+							offset: msg.offset,
+							limit: msg.limit,
+						});
+						sendMessage({
+							type: "utility_file_read_result",
+							read_id: msg.read_id,
+							path: result.path,
+							relative_path: result.relative_path,
+							cwd: result.cwd,
+							content: result.content,
+							start_line: result.start_line,
+							end_line: result.end_line,
+							total_lines: result.total_lines,
 							truncated: result.truncated,
 						});
 					}

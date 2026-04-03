@@ -33,6 +33,7 @@ import {
 	loadPromptAttachments,
 } from "../cli/headless-protocol.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
+import { readWorkspaceFile } from "../headless/utility-file-read.js";
 import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
 import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
 import type { RegisteredModel } from "../models/registry.js";
@@ -1461,6 +1462,33 @@ export class HeadlessSessionRuntime {
 						query: result.query,
 						cwd: result.cwd,
 						results: result.results,
+						truncated: result.truncated,
+					});
+				}
+				return;
+			case "utility_file_read":
+				if (
+					!this.state.capabilities?.utility_operations?.includes("file_read")
+				) {
+					throw new Error("utility_file_read requires file_read capability");
+				}
+				{
+					const result = await readWorkspaceFile({
+						path: msg.path,
+						cwd: msg.cwd,
+						offset: msg.offset,
+						limit: msg.limit,
+					});
+					this.publish({
+						type: "utility_file_read_result",
+						read_id: msg.read_id,
+						path: result.path,
+						relative_path: result.relative_path,
+						cwd: result.cwd,
+						content: result.content,
+						start_line: result.start_line,
+						end_line: result.end_line,
+						total_lines: result.total_lines,
 						truncated: result.truncated,
 					});
 				}

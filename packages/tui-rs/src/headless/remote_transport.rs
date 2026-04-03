@@ -48,6 +48,8 @@ pub struct RemoteTransportConfig {
     pub enable_command_exec: bool,
     /// Whether to enable workspace file path search on the shared control plane.
     pub enable_file_search: bool,
+    /// Whether to enable workspace file reads on the shared control plane.
+    pub enable_file_read: bool,
     /// Whether to enable runtime file watching on the shared control plane.
     pub enable_file_watch: bool,
     /// Optional client flavor used to select client-specific tools.
@@ -81,6 +83,7 @@ impl Default for RemoteTransportConfig {
             enable_client_tools: false,
             enable_command_exec: true,
             enable_file_search: true,
+            enable_file_read: true,
             enable_file_watch: true,
             client: None,
             client_name: "maestro-tui-rs".to_string(),
@@ -610,6 +613,23 @@ impl RemoteAgentTransport {
         })
     }
 
+    pub fn read_file(
+        &self,
+        read_id: String,
+        path: String,
+        cwd: Option<String>,
+        offset: Option<u32>,
+        limit: Option<u32>,
+    ) -> Result<(), AsyncTransportError> {
+        self.send(ToAgentMessage::UtilityFileRead {
+            read_id,
+            path,
+            cwd,
+            offset,
+            limit,
+        })
+    }
+
     pub fn start_file_watch(
         &self,
         watch_id: String,
@@ -726,6 +746,9 @@ fn build_remote_utility_operations(config: &RemoteTransportConfig) -> Vec<&'stat
     }
     if config.enable_file_search {
         operations.push("file_search");
+    }
+    if config.enable_file_read {
+        operations.push("file_read");
     }
     if config.enable_file_watch {
         operations.push("file_watch");
@@ -1604,7 +1627,7 @@ mod tests {
             }),
             capabilities: Some(RemoteClientCapabilities {
                 server_requests: vec!["approval", "client_tool", "user_input"],
-                utility_operations: vec!["command_exec", "file_watch"],
+                utility_operations: vec!["command_exec", "file_read", "file_watch"],
             }),
             role: Some("viewer".to_string()),
             opt_out_notifications: vec!["status".to_string(), "heartbeat".to_string()],
@@ -1875,6 +1898,72 @@ mod tests {
                 columns,
                 rows,
             } if command_id == "cmd_pty" && columns == 120 && rows == 40
+        ));
+
+        transport.shutdown().expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn remote_transport_sends_utility_file_read_messages() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 1,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "active_tools": [],
+                "active_utility_commands": [],
+                "active_file_watches": [],
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+
+        let (addr, posted_bodies, _request_headers) =
+            spawn_remote_headless_server(snapshot.to_string(), Vec::new()).await;
+
+        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+
+        transport
+            .read_file(
+                "read_src".to_string(),
+                "src/main.rs".to_string(),
+                Some("/tmp/project".to_string()),
+                Some(10),
+                Some(25),
+            )
+            .expect("send utility file read");
+
+        for _ in 0..50 {
+            if !posted_bodies.lock().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let posted = posted_bodies.lock().await.clone();
+        assert_eq!(posted.len(), 1);
+        let sent = serde_json::from_str::<ToAgentMessage>(&posted[0]).expect("parse sent message");
+        assert!(matches!(
+            sent,
+            ToAgentMessage::UtilityFileRead {
+                read_id,
+                path,
+                cwd,
+                offset,
+                limit,
+            } if read_id == "read_src"
+                && path == "src/main.rs"
+                && cwd.as_deref() == Some("/tmp/project")
+                && offset == Some(10)
+                && limit == Some(25)
         ));
 
         transport.shutdown().expect("shutdown");

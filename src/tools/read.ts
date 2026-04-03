@@ -31,6 +31,7 @@ import { extname, resolve as resolvePath } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { getLspConfig } from "../config/lsp-config.js";
 import { getDiagnostics } from "../lsp/index.js";
+import { isProbablyBinary } from "../utils/file-content.js";
 import {
 	isSharpAvailable,
 	isSupportedImageFormat,
@@ -155,27 +156,6 @@ function isImageFile(filePath: string): string | null {
 function guessLanguage(filePath: string): string | undefined {
 	const ext = extname(filePath).toLowerCase();
 	return LANGUAGE_BY_EXTENSION[ext];
-}
-
-/**
- * Detect if a buffer contains binary data.
- *
- * Uses a simple heuristic: checks the first 2KB for null bytes.
- * Null bytes are very rare in text files but common in binary files.
- *
- * @param buffer - Buffer to analyze
- * @returns true if the file appears to be binary
- */
-function isProbablyBinary(buffer: Buffer): boolean {
-	// Sample the first 2KB for efficiency
-	const sample = buffer.subarray(0, 2048);
-	for (const byte of sample) {
-		// Null bytes indicate binary content
-		if (byte === 0) {
-			return true;
-		}
-	}
-	return false;
 }
 
 /**

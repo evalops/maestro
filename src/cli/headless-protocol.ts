@@ -169,6 +169,15 @@ export interface HeadlessUtilityFileSearchMessage {
 	limit?: number;
 }
 
+export interface HeadlessUtilityFileReadMessage {
+	type: "utility_file_read";
+	read_id: string;
+	path: string;
+	cwd?: string;
+	offset?: number;
+	limit?: number;
+}
+
 export interface HeadlessUtilityFileWatchStartMessage {
 	type: "utility_file_watch_start";
 	watch_id: string;
@@ -204,6 +213,7 @@ export type HeadlessToAgentMessage =
 	| HeadlessUtilityCommandStdinMessage
 	| HeadlessUtilityCommandResizeMessage
 	| HeadlessUtilityFileSearchMessage
+	| HeadlessUtilityFileReadMessage
 	| HeadlessUtilityFileWatchStartMessage
 	| HeadlessUtilityFileWatchStopMessage
 	| HeadlessCancelMessage
@@ -354,6 +364,19 @@ export interface HeadlessUtilityFileSearchResultsMessage {
 	truncated: boolean;
 }
 
+export interface HeadlessUtilityFileReadResultMessage {
+	type: "utility_file_read_result";
+	read_id: string;
+	path: string;
+	relative_path: string;
+	cwd: string;
+	content: string;
+	start_line: number;
+	end_line: number;
+	total_lines: number;
+	truncated: boolean;
+}
+
 export interface HeadlessUtilityFileWatchStartedMessage {
 	type: "utility_file_watch_started";
 	watch_id: string;
@@ -440,6 +463,7 @@ export type HeadlessFromAgentMessage =
 	| HeadlessUtilityCommandOutputMessage
 	| HeadlessUtilityCommandExitedMessage
 	| HeadlessUtilityFileSearchResultsMessage
+	| HeadlessUtilityFileReadResultMessage
 	| HeadlessUtilityFileWatchStartedMessage
 	| HeadlessUtilityFileWatchEventMessage
 	| HeadlessUtilityFileWatchStoppedMessage
@@ -1198,6 +1222,7 @@ export function applyOutgoingHeadlessMessage(
 		case "utility_command_stdin":
 		case "utility_command_resize":
 		case "utility_file_search":
+		case "utility_file_read":
 		case "utility_file_watch_start":
 		case "utility_file_watch_stop":
 			return;
@@ -1568,6 +1593,7 @@ export function applyIncomingHeadlessMessage(
 			);
 			return;
 		case "utility_file_search_results":
+		case "utility_file_read_result":
 			return;
 		case "utility_file_watch_started":
 			state.active_file_watches = [

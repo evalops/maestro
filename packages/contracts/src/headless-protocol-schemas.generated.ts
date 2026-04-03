@@ -230,6 +230,18 @@ export const HeadlessUtilityFileSearchMessageSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
+export const HeadlessUtilityFileReadMessageSchema = Type.Object(
+	{
+		type: Type.Literal("utility_file_read"),
+		read_id: Type.String(),
+		path: Type.String(),
+		cwd: Type.Optional(Type.String()),
+		offset: Type.Optional(Type.Number()),
+		limit: Type.Optional(Type.Number()),
+	},
+	{ additionalProperties: false },
+);
+
 export const HeadlessUtilityFileWatchStartMessageSchema = Type.Object(
 	{
 		type: Type.Literal("utility_file_watch_start"),
@@ -277,6 +289,7 @@ export const headlessToAgentMessageSchemasByType = {
 	utility_command_stdin: HeadlessUtilityCommandStdinMessageSchema,
 	utility_command_resize: HeadlessUtilityCommandResizeMessageSchema,
 	utility_file_search: HeadlessUtilityFileSearchMessageSchema,
+	utility_file_read: HeadlessUtilityFileReadMessageSchema,
 	utility_file_watch_start: HeadlessUtilityFileWatchStartMessageSchema,
 	utility_file_watch_stop: HeadlessUtilityFileWatchStopMessageSchema,
 	cancel: HeadlessCancelMessageSchema,
@@ -489,6 +502,22 @@ export const HeadlessUtilityFileSearchResultsMessageSchema = Type.Object(
 	{ additionalProperties: false },
 );
 
+export const HeadlessUtilityFileReadResultMessageSchema = Type.Object(
+	{
+		type: Type.Literal("utility_file_read_result"),
+		read_id: Type.String(),
+		path: Type.String(),
+		relative_path: Type.String(),
+		cwd: Type.String(),
+		content: Type.String(),
+		start_line: Type.Number(),
+		end_line: Type.Number(),
+		total_lines: Type.Number(),
+		truncated: Type.Boolean(),
+	},
+	{ additionalProperties: false },
+);
+
 export const HeadlessUtilityFileWatchStartedMessageSchema = Type.Object(
 	{
 		type: Type.Literal("utility_file_watch_started"),
@@ -621,6 +650,7 @@ export const headlessFromAgentMessageSchemasByType = {
 	utility_command_output: HeadlessUtilityCommandOutputMessageSchema,
 	utility_command_exited: HeadlessUtilityCommandExitedMessageSchema,
 	utility_file_search_results: HeadlessUtilityFileSearchResultsMessageSchema,
+	utility_file_read_result: HeadlessUtilityFileReadResultMessageSchema,
 	utility_file_watch_started: HeadlessUtilityFileWatchStartedMessageSchema,
 	utility_file_watch_event: HeadlessUtilityFileWatchEventMessageSchema,
 	utility_file_watch_stopped: HeadlessUtilityFileWatchStoppedMessageSchema,
@@ -644,6 +674,7 @@ export const HeadlessToAgentMessageSchema = Type.Union([
 	HeadlessUtilityCommandStdinMessageSchema,
 	HeadlessUtilityCommandResizeMessageSchema,
 	HeadlessUtilityFileSearchMessageSchema,
+	HeadlessUtilityFileReadMessageSchema,
 	HeadlessUtilityFileWatchStartMessageSchema,
 	HeadlessUtilityFileWatchStopMessageSchema,
 	HeadlessCancelMessageSchema,
@@ -671,6 +702,7 @@ export const HeadlessFromAgentMessageSchema = Type.Union([
 	HeadlessUtilityCommandOutputMessageSchema,
 	HeadlessUtilityCommandExitedMessageSchema,
 	HeadlessUtilityFileSearchResultsMessageSchema,
+	HeadlessUtilityFileReadResultMessageSchema,
 	HeadlessUtilityFileWatchStartedMessageSchema,
 	HeadlessUtilityFileWatchEventMessageSchema,
 	HeadlessUtilityFileWatchStoppedMessageSchema,

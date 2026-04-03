@@ -83,6 +83,7 @@ export const headlessUtilityOperations = [
 	"command_exec",
 	"file_search",
 	"file_watch",
+	"file_read",
 ] as const;
 export type HeadlessUtilityOperation =
 	(typeof headlessUtilityOperations)[number];
@@ -121,6 +122,7 @@ export const headlessToAgentMessageTypes = [
 	"utility_command_stdin",
 	"utility_command_resize",
 	"utility_file_search",
+	"utility_file_read",
 	"utility_file_watch_start",
 	"utility_file_watch_stop",
 	"cancel",
@@ -146,6 +148,7 @@ export const headlessFromAgentMessageTypes = [
 	"utility_command_output",
 	"utility_command_exited",
 	"utility_file_search_results",
+	"utility_file_read_result",
 	"utility_file_watch_started",
 	"utility_file_watch_event",
 	"utility_file_watch_stopped",

@@ -25,7 +25,8 @@ pub const HEADLESS_NOTIFICATION_TYPES: &[&str] =
 pub const HEADLESS_THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "ultra"];
 pub const HEADLESS_APPROVAL_MODES: &[&str] = &["auto", "prompt", "fail"];
 pub const HEADLESS_ERROR_TYPES: &[&str] = &["transient", "fatal", "tool", "cancelled", "protocol"];
-pub const HEADLESS_UTILITY_OPERATIONS: &[&str] = &["command_exec", "file_search", "file_watch"];
+pub const HEADLESS_UTILITY_OPERATIONS: &[&str] =
+    &["command_exec", "file_search", "file_watch", "file_read"];
 pub const HEADLESS_UTILITY_COMMAND_STREAMS: &[&str] = &["stdout", "stderr"];
 pub const HEADLESS_UTILITY_COMMAND_SHELL_MODES: &[&str] = &["shell", "direct"];
 pub const HEADLESS_UTILITY_COMMAND_TERMINAL_MODES: &[&str] = &["pipe", "pty"];
@@ -44,6 +45,7 @@ pub const HEADLESS_TO_AGENT_MESSAGE_TYPES: &[&str] = &[
     "utility_command_stdin",
     "utility_command_resize",
     "utility_file_search",
+    "utility_file_read",
     "utility_file_watch_start",
     "utility_file_watch_stop",
     "cancel",
@@ -66,6 +68,7 @@ pub const HEADLESS_FROM_AGENT_MESSAGE_TYPES: &[&str] = &[
     "utility_command_output",
     "utility_command_exited",
     "utility_file_search_results",
+    "utility_file_read_result",
     "utility_file_watch_started",
     "utility_file_watch_event",
     "utility_file_watch_stopped",
