@@ -488,6 +488,15 @@ struct RemoteShutdownContext {
     config: RemoteTransportConfig,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RemoteRequestKind {
+    Bootstrap,
+    Subscribe,
+    Message,
+    Stream,
+    Heartbeat,
+}
+
 impl RemoteAgentTransport {
     /// Connect to a remote headless session and begin streaming events.
     pub async fn connect(config: RemoteTransportConfig) -> Result<Self, AsyncTransportError> {
@@ -933,10 +942,10 @@ async fn create_or_attach_connection(
         .send()
         .await
         .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
-        return decode_json_response(retry_response).await;
+        return decode_json_response(retry_response, RemoteRequestKind::Bootstrap).await;
     }
 
-    decode_json_response(response).await
+    decode_json_response(response, RemoteRequestKind::Bootstrap).await
 }
 
 async fn subscribe_to_session(
@@ -971,7 +980,7 @@ async fn subscribe_to_session(
         .await
         .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
 
-    decode_json_response(response).await
+    decode_json_response(response, RemoteRequestKind::Subscribe).await
 }
 
 async fn disconnect_connection(
@@ -1020,7 +1029,8 @@ async fn heartbeat_session(
     .await
     .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
 
-    let _response: serde_json::Value = decode_json_response(response).await?;
+    let _response: serde_json::Value =
+        decode_json_response(response, RemoteRequestKind::Heartbeat).await?;
     Ok(())
 }
 
@@ -1063,7 +1073,8 @@ async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver
                 match response {
                     Ok(response) if response.status().is_success() => {}
                     Ok(response) => {
-                        let error = response_status_error(response).await;
+                        let error =
+                            response_status_error(response, RemoteRequestKind::Message).await;
                         let _ = event_tx.send(Err(error));
                         break;
                     }
@@ -1141,7 +1152,11 @@ async fn reader_loop(
         };
 
         if response.status() != StatusCode::OK {
-            let _ = event_tx.send(Err(response_status_error(response).await));
+            let _ = event_tx.send(Err(response_status_error(
+                response,
+                RemoteRequestKind::Stream,
+            )
+            .await));
             tokio::time::sleep(reconnect_delay).await;
             continue;
         }
@@ -1274,9 +1289,10 @@ fn with_headers(
 
 async fn decode_json_response<T: for<'de> Deserialize<'de>>(
     response: reqwest::Response,
+    kind: RemoteRequestKind,
 ) -> Result<T, AsyncTransportError> {
     if !response.status().is_success() {
-        return Err(response_status_error(response).await);
+        return Err(response_status_error(response, kind).await);
     }
     response
         .json::<T>()
@@ -1284,7 +1300,28 @@ async fn decode_json_response<T: for<'de> Deserialize<'de>>(
         .map_err(|error| AsyncTransportError::Remote(error.to_string()))
 }
 
-async fn response_status_error(response: reqwest::Response) -> AsyncTransportError {
+fn is_retryable_remote_status(status: StatusCode, kind: RemoteRequestKind) -> bool {
+    match kind {
+        RemoteRequestKind::Bootstrap => !matches!(
+            status,
+            StatusCode::UNAUTHORIZED
+                | StatusCode::FORBIDDEN
+                | StatusCode::NOT_FOUND
+                | StatusCode::CONFLICT
+        ),
+        RemoteRequestKind::Subscribe
+        | RemoteRequestKind::Message
+        | RemoteRequestKind::Stream
+        | RemoteRequestKind::Heartbeat => {
+            !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+        }
+    }
+}
+
+async fn response_status_error(
+    response: reqwest::Response,
+    kind: RemoteRequestKind,
+) -> AsyncTransportError {
     let status = response.status();
     let body = response
         .text()
@@ -1297,7 +1334,11 @@ async fn response_status_error(response: reqwest::Response) -> AsyncTransportErr
     } else {
         format!("remote request failed with status {status}: {body}")
     };
-    AsyncTransportError::Remote(message)
+    AsyncTransportError::RemoteStatus {
+        status: status.as_u16(),
+        retryable: is_retryable_remote_status(status, kind),
+        message,
+    }
 }
 
 #[cfg(test)]
@@ -1980,6 +2021,181 @@ mod tests {
 
         assert_eq!(transport.connection_id(), "conn_fresh");
         assert_eq!(connection_requests.lock().await.len(), 2);
+
+        transport.shutdown().expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn remote_transport_classifies_bootstrap_conflict_as_non_retryable() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
+                return;
+            };
+            assert_eq!(path, "/api/headless/connections");
+            write_http_response(
+                &mut socket,
+                "HTTP/1.1 409 Conflict",
+                "application/json",
+                r#"{"error":"Controller lease is already held by another connection"}"#,
+            )
+            .await;
+        });
+
+        let error = match RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        {
+            Ok(_) => panic!("bootstrap conflict should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            AsyncTransportError::RemoteStatus {
+                status: 409,
+                retryable: false,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn remote_transport_classifies_stream_404_as_retryable() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+
+                    if path == "/api/headless/connections" {
+                        let body = serde_json::json!({
+                            "session_id": "sess_remote",
+                            "connection_id": "conn_remote",
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &body,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
+                        let body = serde_json::json!({
+                            "connection_id": "conn_remote",
+                            "subscription_id": "sub_remote",
+                            "controller_connection_id": "conn_remote",
+                            "lease_expires_at": "2026-04-02T00:00:15Z",
+                            "heartbeat_interval_ms": 15000,
+                            "snapshot": {
+                                "protocolVersion": "2026-03-30",
+                                "session_id": "sess_remote",
+                                "cursor": 0,
+                                "state": {
+                                    "protocol_version": "2026-03-30",
+                                    "session_id": "sess_remote",
+                                    "pending_approvals": [],
+                                    "active_tools": [],
+                                    "active_utility_commands": [],
+                                    "active_file_watches": [],
+                                    "is_ready": true,
+                                    "is_responding": false
+                                }
+                            }
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &body,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.contains("/events?") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "application/json",
+                            r#"{"error":"Headless subscriber not found"}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/disconnect")
+                    {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/heartbeat") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    write_http_response(
+                        &mut socket,
+                        "HTTP/1.1 404 Not Found",
+                        "text/plain",
+                        "not found",
+                    )
+                    .await;
+                });
+            }
+        });
+
+        let mut transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+
+        let error = transport
+            .recv_incoming()
+            .await
+            .expect_err("stream 404 should fail");
+        assert!(matches!(
+            error,
+            AsyncTransportError::RemoteStatus {
+                status: 404,
+                retryable: true,
+                ..
+            }
+        ));
 
         transport.shutdown().expect("shutdown");
     }

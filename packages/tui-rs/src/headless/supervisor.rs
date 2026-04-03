@@ -380,7 +380,9 @@ impl AgentSupervisor {
                     return Ok(());
                 }
                 Err(e) => {
-                    if max_attempts > 0 && self.reconnect_attempts >= max_attempts {
+                    if !e.is_retryable()
+                        || (max_attempts > 0 && self.reconnect_attempts >= max_attempts)
+                    {
                         self.health_status = HealthStatus::Unhealthy;
                         let _ = self.event_tx.send(SupervisorEvent::HealthChanged {
                             status: HealthStatus::Unhealthy,
@@ -546,8 +548,11 @@ impl AgentSupervisor {
     }
 
     fn handle_transport_disconnect(&mut self, error: AsyncTransportError) -> SupervisorEvent {
+        let should_retry = error.is_retryable();
         let event = self.handle_transport_error(error);
-        self.schedule_auto_reconnect();
+        if should_retry {
+            self.schedule_auto_reconnect();
+        }
         event
     }
 
@@ -1058,7 +1063,10 @@ mod tests {
     use crate::headless::{HeadlessErrorType, TokenUsage};
     use std::collections::VecDeque;
     use std::fs;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     #[cfg(unix)]
     use std::{os::unix::fs::PermissionsExt, path::Path};
@@ -2190,6 +2198,26 @@ done
     }
 
     #[tokio::test]
+    async fn non_retryable_remote_disconnect_does_not_schedule_auto_reconnect() {
+        let mut supervisor = SupervisorBuilder::new().build();
+
+        let disconnect =
+            supervisor.handle_transport_disconnect(AsyncTransportError::RemoteStatus {
+                status: 409,
+                retryable: false,
+                message: "remote request failed with status 409 Conflict".to_string(),
+            });
+        assert!(matches!(
+            disconnect,
+            SupervisorEvent::Disconnected { ref error }
+                if error.contains("409 Conflict")
+        ));
+        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
+        assert!(!supervisor.pending_auto_reconnect);
+        assert!(supervisor.poll().is_none());
+    }
+
+    #[tokio::test]
     async fn remote_auto_reconnect_reuses_bootstrapped_session_id() {
         let snapshot = serde_json::json!({
             "protocolVersion": "2026-03-30",
@@ -2303,6 +2331,71 @@ done
         );
 
         supervisor.disconnect();
+    }
+
+    #[tokio::test]
+    async fn remote_reconnect_stops_after_non_retryable_bootstrap_error() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let bootstrap_attempts = Arc::new(AtomicUsize::new(0));
+
+        tokio::spawn({
+            let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
+            async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
+                    tokio::spawn(async move {
+                        let Some((path, _headers, _body)) = read_http_request(&mut socket).await
+                        else {
+                            return;
+                        };
+                        if path == "/api/headless/connections" {
+                            bootstrap_attempts.fetch_add(1, Ordering::SeqCst);
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 409 Conflict",
+                                "application/json",
+                                r#"{"error":"Controller lease is already held by another connection"}"#,
+                            )
+                            .await;
+                            return;
+                        }
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "text/plain",
+                            "not found",
+                        )
+                        .await;
+                    });
+                }
+            }
+        });
+
+        let mut supervisor = SupervisorBuilder::new()
+            .remote_base_url(format!("http://{addr}"))
+            .max_reconnect_attempts(5)
+            .reconnect_delay(Duration::from_millis(1))
+            .build();
+
+        let error = supervisor
+            .reconnect()
+            .await
+            .expect_err("reconnect should fail");
+        assert!(matches!(
+            error,
+            AsyncTransportError::RemoteStatus {
+                status: 409,
+                retryable: false,
+                ..
+            }
+        ));
+        assert_eq!(bootstrap_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
+        assert!(!supervisor.pending_auto_reconnect);
     }
 
     #[tokio::test]
