@@ -119,6 +119,18 @@ impl std::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
+fn local_controller_capabilities() -> ClientCapabilities {
+    ClientCapabilities {
+        server_requests: Some(vec![
+            ServerRequestType::Approval,
+            ServerRequestType::UserInput,
+            ServerRequestType::ToolRetry,
+        ]),
+        utility_operations: Some(vec![UtilityOperation::CommandExec]),
+        raw_agent_events: None,
+    }
+}
+
 /// Configuration for the agent transport.
 ///
 /// Specifies how to spawn and configure the Node.js agent process.
@@ -274,11 +286,7 @@ impl AgentTransport {
                 name: "maestro-tui-rs".to_string(),
                 version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
             }),
-            capabilities: Some(ClientCapabilities {
-                server_requests: Some(vec![ServerRequestType::Approval]),
-                utility_operations: Some(vec![UtilityOperation::CommandExec]),
-                raw_agent_events: None,
-            }),
+            capabilities: Some(local_controller_capabilities()),
             role: Some(ConnectionRole::Controller),
             opt_out_notifications: None,
         })?;
@@ -564,6 +572,18 @@ mod tests {
         assert_eq!(builder.config.cwd, Some("/home/user/project".to_string()));
         assert_eq!(builder.config.extra_args.len(), 2);
         assert_eq!(builder.config.env.len(), 1);
+    }
+
+    #[test]
+    fn local_controller_capabilities_include_interactive_server_requests() {
+        assert_eq!(
+            local_controller_capabilities().server_requests,
+            Some(vec![
+                ServerRequestType::Approval,
+                ServerRequestType::UserInput,
+                ServerRequestType::ToolRetry,
+            ])
+        );
     }
 
     #[test]

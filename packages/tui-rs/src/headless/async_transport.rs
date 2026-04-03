@@ -140,6 +140,18 @@ impl AsyncTransportError {
     }
 }
 
+fn local_controller_capabilities() -> ClientCapabilities {
+    ClientCapabilities {
+        server_requests: Some(vec![
+            ServerRequestType::Approval,
+            ServerRequestType::UserInput,
+            ServerRequestType::ToolRetry,
+        ]),
+        utility_operations: Some(vec![UtilityOperation::CommandExec]),
+        raw_agent_events: None,
+    }
+}
+
 /// Handle for async communication with the agent process
 pub struct AsyncAgentTransport {
     /// Sender for outgoing messages
@@ -229,11 +241,7 @@ impl AsyncAgentTransport {
                 name: "maestro-tui-rs".to_string(),
                 version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
             }),
-            capabilities: Some(ClientCapabilities {
-                server_requests: Some(vec![ServerRequestType::Approval]),
-                utility_operations: Some(vec![UtilityOperation::CommandExec]),
-                raw_agent_events: None,
-            }),
+            capabilities: Some(local_controller_capabilities()),
             role: Some(ConnectionRole::Controller),
             opt_out_notifications: None,
         })?;
@@ -658,6 +666,18 @@ mod tests {
 
         let err = AsyncTransportError::ProcessExited(Some(1));
         assert!(err.to_string().contains("exited"));
+    }
+
+    #[test]
+    fn local_controller_capabilities_include_interactive_server_requests() {
+        assert_eq!(
+            local_controller_capabilities().server_requests,
+            Some(vec![
+                ServerRequestType::Approval,
+                ServerRequestType::UserInput,
+                ServerRequestType::ToolRetry,
+            ])
+        );
     }
 
     #[tokio::test]
