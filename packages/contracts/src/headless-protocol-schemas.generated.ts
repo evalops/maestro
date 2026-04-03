@@ -574,6 +574,7 @@ export const HeadlessUtilityFileWatchStoppedMessageSchema = Type.Object(
 export const HeadlessErrorMessageSchema = Type.Object(
 	{
 		type: Type.Literal("error"),
+		request_id: Type.Optional(Type.String()),
 		message: Type.String(),
 		fatal: Type.Boolean(),
 		error_type: stringLiteralUnion(headlessErrorTypes),

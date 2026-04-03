@@ -198,7 +198,7 @@ function renderTypeboxSchema(schema) {
 	}
 }
 
-function renderTsSchemas(payloadManifest, manifest) {
+function renderTsSchemas(payloadManifest) {
 	const enumRefs = new Set();
 	const schemaSections = [
 		payloadManifest.namedSchemas ?? {},
@@ -340,6 +340,11 @@ function formatTs(source, filePath = tsOutputPath) {
 			input: source,
 		},
 	);
+	if (result.error) {
+		throw new Error(
+			`Failed to launch Biome while formatting generated TypeScript protocol file: ${result.error.message}`,
+		);
+	}
 	if (result.status !== 0) {
 		throw new Error(
 			`Failed to format generated TypeScript protocol file: ${result.stderr || result.stdout}`,
@@ -412,6 +417,11 @@ function formatRust(source) {
 		encoding: "utf8",
 		input: source,
 	});
+	if (result.error) {
+		throw new Error(
+			`Failed to launch rustfmt while formatting generated Rust protocol file: ${result.error.message}`,
+		);
+	}
 	if (result.status !== 0) {
 		throw new Error(
 			`Failed to format generated Rust protocol file: ${result.stderr || result.stdout}`,
@@ -432,7 +442,7 @@ async function main() {
 		{
 			path: tsSchemaOutputPath,
 			content: formatTs(
-				renderTsSchemas(payloadManifest, manifest),
+				renderTsSchemas(payloadManifest),
 				tsSchemaOutputPath,
 			),
 		},

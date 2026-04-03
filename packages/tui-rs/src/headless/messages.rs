@@ -579,6 +579,8 @@ pub enum FromAgentMessage {
     },
     /// Error occurred
     Error {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
         message: String,
         fatal: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -915,6 +917,20 @@ pub struct AgentState {
     pub is_responding: bool,
 }
 
+const HEADLESS_OUTPUT_LIMIT: usize = 32_768;
+
+fn append_headless_output(existing: &mut String, chunk: &str) {
+    existing.push_str(chunk);
+    if existing.len() <= HEADLESS_OUTPUT_LIMIT {
+        return;
+    }
+    let mut drain_until = existing.len() - HEADLESS_OUTPUT_LIMIT;
+    while drain_until < existing.len() && !existing.is_char_boundary(drain_until) {
+        drain_until += 1;
+    }
+    existing.drain(..drain_until);
+}
+
 /// A response currently being streamed
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StreamingResponse {
@@ -1231,7 +1247,7 @@ impl AgentState {
                 ..
             } => {
                 if let Some(command) = self.active_utility_commands.get_mut(&command_id) {
-                    command.output.push_str(&content);
+                    append_headless_output(&mut command.output, &content);
                 }
                 None
             }
@@ -1531,6 +1547,7 @@ impl AgentState {
             }
 
             FromAgentMessage::Error {
+                request_id,
                 message,
                 fatal,
                 error_type,
@@ -1538,6 +1555,7 @@ impl AgentState {
                 self.last_error = Some(message.clone());
                 self.last_error_type = error_type;
                 Some(AgentEvent::Error {
+                    request_id,
                     message,
                     fatal,
                     error_type,
@@ -1634,6 +1652,7 @@ pub enum AgentEvent {
         duration: Option<std::time::Duration>,
     },
     Error {
+        request_id: Option<String>,
         message: String,
         fatal: bool,
         error_type: Option<HeadlessErrorType>,
@@ -2183,6 +2202,7 @@ mod tests {
             response_id: "resp1".to_string(),
         });
         let event = state.handle_message(FromAgentMessage::Error {
+            request_id: Some("read_missing".to_string()),
             message: "Cancelled by user".to_string(),
             fatal: false,
             error_type: Some(HeadlessErrorType::Cancelled),
@@ -2194,9 +2214,10 @@ mod tests {
         assert!(matches!(
             event,
             Some(AgentEvent::Error {
+                request_id: Some(ref request_id),
                 error_type: Some(HeadlessErrorType::Cancelled),
                 ..
-            })
+            }) if request_id == "read_missing"
         ));
     }
 
@@ -2284,6 +2305,40 @@ mod tests {
         assert_eq!(command.columns, Some(120));
         assert_eq!(command.rows, Some(40));
         assert_eq!(command.owner_connection_id.as_deref(), Some("conn_pty"));
+    }
+
+    #[test]
+    fn state_caps_active_utility_command_output() {
+        let mut state = AgentState::default();
+        state.handle_message(FromAgentMessage::UtilityCommandStarted {
+            command_id: "cmd_cap".to_string(),
+            command: "node app.js".to_string(),
+            cwd: Some("/tmp/project".to_string()),
+            shell_mode: UtilityCommandShellMode::Direct,
+            terminal_mode: UtilityCommandTerminalMode::Pipe,
+            pid: Some(321),
+            columns: None,
+            rows: None,
+            owner_connection_id: None,
+        });
+
+        state.handle_message(FromAgentMessage::UtilityCommandOutput {
+            command_id: "cmd_cap".to_string(),
+            stream: UtilityCommandStream::Stdout,
+            content: "a".repeat(HEADLESS_OUTPUT_LIMIT),
+        });
+        state.handle_message(FromAgentMessage::UtilityCommandOutput {
+            command_id: "cmd_cap".to_string(),
+            stream: UtilityCommandStream::Stdout,
+            content: "bcdef".to_string(),
+        });
+
+        let command = state
+            .active_utility_commands
+            .get("cmd_cap")
+            .expect("active utility command");
+        assert_eq!(command.output.len(), HEADLESS_OUTPUT_LIMIT);
+        assert!(command.output.ends_with("bcdef"));
     }
 
     #[test]

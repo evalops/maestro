@@ -405,6 +405,7 @@ export interface HeadlessUtilityFileWatchStoppedMessage {
 
 export interface HeadlessErrorMessage {
 	type: "error";
+	request_id?: string;
 	message: string;
 	fatal: boolean;
 	error_type: HeadlessErrorType;

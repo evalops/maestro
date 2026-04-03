@@ -844,10 +844,12 @@ fn event_to_message(event: &AgentEvent) -> Option<FromAgentMessage> {
             success: *success,
         }),
         AgentEvent::Error {
+            request_id,
             message,
             fatal,
             error_type,
         } => Some(FromAgentMessage::Error {
+            request_id: request_id.clone(),
             message: message.clone(),
             fatal: *fatal,
             error_type: *error_type,
@@ -1354,6 +1356,7 @@ mod tests {
         ));
 
         let error = event_to_message(&AgentEvent::Error {
+            request_id: None,
             message: "cancelled".to_string(),
             fatal: false,
             error_type: Some(HeadlessErrorType::Cancelled),
