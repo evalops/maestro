@@ -36,6 +36,8 @@ pub struct SupervisorConfig {
     pub max_reconnect_delay: Duration,
     /// Backoff multiplier for reconnection delay
     pub backoff_multiplier: f64,
+    /// Maximum total wall-clock time spent reconnecting before giving up.
+    pub max_reconnect_elapsed: Duration,
     /// Health check interval
     pub health_check_interval: Duration,
     /// Timeout for health check response
@@ -53,6 +55,7 @@ impl Default for SupervisorConfig {
             reconnect_delay: Duration::from_secs(1),
             max_reconnect_delay: Duration::from_secs(30),
             backoff_multiplier: 2.0,
+            max_reconnect_elapsed: Duration::from_secs(600),
             health_check_interval: Duration::from_secs(30),
             health_check_timeout: Duration::from_secs(5),
             auto_reconnect: true,
@@ -363,6 +366,7 @@ impl AgentSupervisor {
 
         let max_attempts = self.config.max_reconnect_attempts;
         let mut delay = self.config.reconnect_delay;
+        let reconnect_started_at = Instant::now();
 
         loop {
             self.reconnect_attempts += 1;
@@ -389,8 +393,10 @@ impl AgentSupervisor {
                     return Ok(());
                 }
                 Err(e) => {
+                    let reconnect_elapsed = reconnect_started_at.elapsed();
                     if !e.is_retryable()
                         || (max_attempts > 0 && self.reconnect_attempts >= max_attempts)
+                        || reconnect_elapsed >= self.config.max_reconnect_elapsed
                     {
                         self.health_status = HealthStatus::Unhealthy;
                         let _ = self.event_tx.send(SupervisorEvent::HealthChanged {
@@ -399,8 +405,21 @@ impl AgentSupervisor {
                         return Err(e);
                     }
 
-                    // Wait with backoff
-                    tokio::time::sleep(delay).await;
+                    // Wait with backoff, but never sleep past the reconnect budget.
+                    let remaining_budget = self
+                        .config
+                        .max_reconnect_elapsed
+                        .saturating_sub(reconnect_elapsed);
+                    let sleep_duration = delay.min(remaining_budget);
+                    if sleep_duration.is_zero() {
+                        self.health_status = HealthStatus::Unhealthy;
+                        let _ = self.event_tx.send(SupervisorEvent::HealthChanged {
+                            status: HealthStatus::Unhealthy,
+                        });
+                        return Err(e);
+                    }
+
+                    tokio::time::sleep(sleep_duration).await;
                     delay = Duration::from_secs_f64(
                         (delay.as_secs_f64() * self.config.backoff_multiplier)
                             .min(self.config.max_reconnect_delay.as_secs_f64()),
@@ -925,6 +944,13 @@ impl SupervisorBuilder {
         self
     }
 
+    /// Set maximum total wall-clock time allowed for a reconnect loop.
+    #[must_use]
+    pub fn max_reconnect_elapsed(mut self, elapsed: Duration) -> Self {
+        self.config.max_reconnect_elapsed = elapsed;
+        self
+    }
+
     /// Enable/disable auto reconnect
     #[must_use]
     pub fn auto_reconnect(mut self, enabled: bool) -> Self {
@@ -1358,6 +1384,7 @@ mod tests {
         let config = SupervisorConfig::default();
         assert_eq!(config.max_reconnect_attempts, 5);
         assert_eq!(config.reconnect_delay, Duration::from_secs(1));
+        assert_eq!(config.max_reconnect_elapsed, Duration::from_secs(600));
         assert!(config.auto_reconnect);
     }
 
@@ -2544,6 +2571,72 @@ done
             }
         ));
         assert_eq!(bootstrap_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
+        assert!(!supervisor.pending_auto_reconnect);
+    }
+
+    #[tokio::test]
+    async fn remote_reconnect_stops_after_elapsed_time_budget_for_retryable_errors() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let bootstrap_attempts = Arc::new(AtomicUsize::new(0));
+
+        tokio::spawn({
+            let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
+            async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let bootstrap_attempts = Arc::clone(&bootstrap_attempts);
+                    tokio::spawn(async move {
+                        let Some((path, _headers, _body)) = read_http_request(&mut socket).await
+                        else {
+                            return;
+                        };
+                        if path == "/api/headless/connections" {
+                            bootstrap_attempts.fetch_add(1, Ordering::SeqCst);
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 500 Internal Server Error",
+                                "application/json",
+                                r#"{"error":"temporary upstream failure"}"#,
+                            )
+                            .await;
+                            return;
+                        }
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "text/plain",
+                            "not found",
+                        )
+                        .await;
+                    });
+                }
+            }
+        });
+
+        let mut supervisor = SupervisorBuilder::new()
+            .remote_base_url(format!("http://{addr}"))
+            .max_reconnect_attempts(0)
+            .reconnect_delay(Duration::from_millis(5))
+            .max_reconnect_elapsed(Duration::from_millis(500))
+            .build();
+
+        let error = supervisor
+            .reconnect()
+            .await
+            .expect_err("reconnect should stop after the elapsed time budget");
+        assert!(matches!(
+            error,
+            AsyncTransportError::RemoteStatus {
+                status: 500,
+                retryable: true,
+                ..
+            }
+        ));
+        assert!(bootstrap_attempts.load(Ordering::SeqCst) >= 1);
         assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
         assert!(!supervisor.pending_auto_reconnect);
     }

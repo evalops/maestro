@@ -26,6 +26,16 @@ use super::messages::{
     UtilityCommandShellMode, UtilityCommandTerminalMode, UtilityOperation,
 };
 
+const MESSAGE_POST_MAX_RETRIES: u32 = 10;
+#[cfg(test)]
+const MESSAGE_POST_BASE_DELAY: Duration = Duration::from_millis(10);
+#[cfg(not(test))]
+const MESSAGE_POST_BASE_DELAY: Duration = Duration::from_millis(500);
+#[cfg(test)]
+const MESSAGE_POST_MAX_DELAY: Duration = Duration::from_millis(40);
+#[cfg(not(test))]
+const MESSAGE_POST_MAX_DELAY: Duration = Duration::from_secs(8);
+
 /// Configuration for the remote headless transport.
 #[derive(Debug, Clone)]
 pub struct RemoteTransportConfig {
@@ -1056,36 +1066,99 @@ async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver
                 let Some(message) = message else {
                     break;
                 };
-                let response = with_headers(
-                    client
-                        .post(&url)
-                        .header("x-maestro-headless-connection-id", &connection_id)
-                        .header("x-composer-headless-connection-id", &connection_id)
-                        .header("x-maestro-headless-subscriber-id", &subscription_id)
-                        .header("x-composer-headless-subscriber-id", &subscription_id)
-                        .json(&message),
+                match send_message_with_retry(
+                    &client,
                     &config,
-                    true,
+                    &url,
+                    &connection_id,
+                    &subscription_id,
+                    &message,
+                    &cancel,
                 )
-                .send()
-                .await;
-
-                match response {
-                    Ok(response) if response.status().is_success() => {}
-                    Ok(response) => {
-                        let error =
-                            response_status_error(response, RemoteRequestKind::Message).await;
-                        let _ = event_tx.send(Err(error));
-                        break;
-                    }
+                .await
+                {
+                    Ok(()) => {}
+                    Err(AsyncTransportError::Cancelled) => break,
                     Err(error) => {
-                        let _ = event_tx.send(Err(AsyncTransportError::Remote(error.to_string())));
+                        let _ = event_tx.send(Err(error));
                         break;
                     }
                 }
             }
         }
     }
+}
+
+fn should_retry_message_error(error: &AsyncTransportError) -> bool {
+    match error {
+        AsyncTransportError::Remote(_) => true,
+        AsyncTransportError::RemoteStatus {
+            retryable,
+            kind: RemoteErrorKind::Other,
+            ..
+        } => *retryable,
+        _ => false,
+    }
+}
+
+async fn send_message_with_retry(
+    client: &Client,
+    config: &RemoteTransportConfig,
+    url: &str,
+    connection_id: &str,
+    subscription_id: &str,
+    message: &ToAgentMessage,
+    cancel: &CancellationToken,
+) -> Result<(), AsyncTransportError> {
+    let mut delay = MESSAGE_POST_BASE_DELAY;
+
+    for attempt in 1..=MESSAGE_POST_MAX_RETRIES {
+        if cancel.is_cancelled() {
+            return Err(AsyncTransportError::Cancelled);
+        }
+
+        let result = with_headers(
+            client
+                .post(url)
+                .header("x-maestro-headless-connection-id", connection_id)
+                .header("x-composer-headless-connection-id", connection_id)
+                .header("x-maestro-headless-subscriber-id", subscription_id)
+                .header("x-composer-headless-subscriber-id", subscription_id)
+                .json(message),
+            config,
+            true,
+        )
+        .send()
+        .await;
+
+        match result {
+            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) => {
+                let error = response_status_error(response, RemoteRequestKind::Message).await;
+                if attempt == MESSAGE_POST_MAX_RETRIES || !should_retry_message_error(&error) {
+                    return Err(error);
+                }
+            }
+            Err(error) => {
+                let error = AsyncTransportError::Remote(error.to_string());
+                if attempt == MESSAGE_POST_MAX_RETRIES || !should_retry_message_error(&error) {
+                    return Err(error);
+                }
+            }
+        }
+
+        tokio::select! {
+            () = cancel.cancelled() => return Err(AsyncTransportError::Cancelled),
+            () = tokio::time::sleep(delay) => {}
+        }
+        delay = Duration::from_secs_f64(
+            (delay.as_secs_f64() * 2.0).min(MESSAGE_POST_MAX_DELAY.as_secs_f64()),
+        );
+    }
+
+    Err(AsyncTransportError::Remote(
+        "message retries exhausted unexpectedly".to_string(),
+    ))
 }
 
 async fn heartbeat_loop(
@@ -1349,7 +1422,10 @@ fn classify_remote_status(
             status,
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::CONFLICT
         ),
-        RemoteRequestKind::Message | RemoteRequestKind::Stream | RemoteRequestKind::Heartbeat => {
+        RemoteRequestKind::Message => {
+            status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+        }
+        RemoteRequestKind::Stream | RemoteRequestKind::Heartbeat => {
             !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
         }
     };
@@ -2302,6 +2378,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn retryability_keeps_generic_message_client_errors_non_retryable() {
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::BAD_REQUEST,
+                RemoteRequestKind::Message,
+                r#"{"error":"bad request"}"#,
+            ),
+            (false, RemoteErrorKind::Other)
+        );
+    }
+
+    #[test]
+    fn writer_retry_budget_ignores_stale_reference_errors() {
+        assert!(!should_retry_message_error(
+            &AsyncTransportError::RemoteStatus {
+                status: 404,
+                message: "remote request failed with status 404: Headless connection not found"
+                    .to_string(),
+                retryable: true,
+                kind: RemoteErrorKind::StaleConnection,
+            }
+        ));
+        assert!(!should_retry_message_error(
+            &AsyncTransportError::RemoteStatus {
+                status: 404,
+                message: "remote request failed with status 404: Headless subscriber not found"
+                    .to_string(),
+                retryable: true,
+                kind: RemoteErrorKind::StaleSubscriber,
+            }
+        ));
+    }
+
     #[tokio::test]
     async fn remote_transport_connects_sends_and_receives_events() {
         let snapshot = serde_json::json!({
@@ -2631,6 +2741,192 @@ mod tests {
                 columns,
                 rows,
             } if command_id == "cmd_pty" && columns == 120 && rows == 40
+        ));
+
+        transport.shutdown().expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn remote_transport_retries_retryable_message_post_failures() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 1,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "active_tools": [],
+                "active_utility_commands": [],
+                "active_file_watches": [],
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let posted_bodies = Arc::new(Mutex::new(Vec::new()));
+        let interrupt_attempts = Arc::new(AtomicUsize::new(0));
+
+        tokio::spawn({
+            let posted_bodies = Arc::clone(&posted_bodies);
+            let interrupt_attempts = Arc::clone(&interrupt_attempts);
+            async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let posted_bodies = Arc::clone(&posted_bodies);
+                    let interrupt_attempts = Arc::clone(&interrupt_attempts);
+                    let snapshot = snapshot.clone();
+
+                    tokio::spawn(async move {
+                        let Some((path, _headers, body)) = read_http_request(&mut socket).await
+                        else {
+                            return;
+                        };
+
+                        if path == "/api/headless/connections" {
+                            let body = serde_json::json!({
+                                "session_id": "sess_remote",
+                                "connection_id": "conn_remote",
+                            })
+                            .to_string();
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                &body,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/subscribe")
+                        {
+                            let body = serde_json::json!({
+                                "connection_id": "conn_remote",
+                                "subscription_id": "sub_remote",
+                                "controller_connection_id": "conn_remote",
+                                "lease_expires_at": "2026-04-02T00:00:15Z",
+                                "heartbeat_interval_ms": 15000,
+                                "snapshot": snapshot,
+                            })
+                            .to_string();
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                &body,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/disconnect")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/heartbeat")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/") && path.contains("/events?")
+                        {
+                            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                            let _ = socket.write_all(headers.as_bytes()).await;
+                            let (_tx, mut rx) = mpsc::unbounded_channel::<String>();
+                            while let Some(event) = rx.recv().await {
+                                let payload = format!("data: {event}\n\n");
+                                if socket.write_all(payload.as_bytes()).await.is_err() {
+                                    break;
+                                }
+                            }
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/messages")
+                        {
+                            posted_bodies.lock().await.push(body.clone());
+                            let message = serde_json::from_str::<ToAgentMessage>(&body)
+                                .expect("valid outbound message");
+                            if matches!(message, ToAgentMessage::Interrupt) {
+                                let attempt = interrupt_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                                if attempt == 1 {
+                                    write_http_response(
+                                        &mut socket,
+                                        "HTTP/1.1 500 Internal Server Error",
+                                        "application/json",
+                                        r#"{"error":"temporary upstream failure"}"#,
+                                    )
+                                    .await;
+                                    return;
+                                }
+                            }
+
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"success":true}"#,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "text/plain",
+                            "not found",
+                        )
+                        .await;
+                    });
+                }
+            }
+        });
+
+        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+
+        transport
+            .send(ToAgentMessage::Interrupt)
+            .expect("send interrupt");
+
+        let posted = wait_for_posted_bodies_len(&posted_bodies, 3).await;
+        assert_eq!(interrupt_attempts.load(Ordering::SeqCst), 2);
+        assert!(matches!(
+            serde_json::from_str::<ToAgentMessage>(&posted[1]).expect("parse retryable interrupt"),
+            ToAgentMessage::Interrupt
+        ));
+        assert!(matches!(
+            serde_json::from_str::<ToAgentMessage>(&posted[2]).expect("parse successful retry"),
+            ToAgentMessage::Interrupt
         ));
 
         transport.shutdown().expect("shutdown");
