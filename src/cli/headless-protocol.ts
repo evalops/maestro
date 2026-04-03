@@ -1475,7 +1475,7 @@ export function applyIncomingHeadlessMessage(
 			} else {
 				state.pending_tool_retries = [
 					...state.pending_tool_retries.filter(
-						(request) => getPendingRequestId(request) !== msg.request_id,
+						(request) => request.call_id !== msg.call_id,
 					),
 					toPendingRequestState({
 						call_id: msg.call_id,

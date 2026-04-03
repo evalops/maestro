@@ -701,8 +701,37 @@ describe("headless protocol helpers", () => {
 		]);
 
 		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "retry_2",
+			request_type: "tool_retry",
+			call_id: "call_bash",
+			tool: "bash",
+			args: {
+				tool_call_id: "call_bash",
+				args: { command: "ls" },
+				error_message: "Command failed again",
+				attempt: 2,
+			},
+			reason: "Retry bash command again",
+		});
+
+		expect(state.pending_tool_retries).toEqual([
+			{
+				call_id: "call_bash",
+				request_id: "retry_2",
+				tool: "bash",
+				args: {
+					tool_call_id: "call_bash",
+					args: { command: "ls" },
+					error_message: "Command failed again",
+					attempt: 2,
+				},
+			},
+		]);
+
+		applyIncomingHeadlessMessage(state, {
 			type: "server_request_resolved",
-			request_id: "retry_1",
+			request_id: "retry_2",
 			request_type: "tool_retry",
 			call_id: "call_bash",
 			resolution: "skipped",
