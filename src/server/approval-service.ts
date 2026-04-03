@@ -5,10 +5,12 @@ import {
 } from "../agent/action-approval.js";
 import { serverRequestManager } from "./server-request-manager.js";
 
+type SessionIdProvider = string | (() => string | undefined);
+
 export class ServerRequestActionApprovalService extends ActionApprovalService {
 	constructor(
 		mode?: ConstructorParameters<typeof ActionApprovalService>[0],
-		private readonly sessionId?: string,
+		private readonly sessionIdProvider?: SessionIdProvider,
 	) {
 		super(mode);
 	}
@@ -19,7 +21,7 @@ export class ServerRequestActionApprovalService extends ActionApprovalService {
 	): Promise<ActionApprovalDecision> {
 		if (this.requiresUserInteraction()) {
 			serverRequestManager.registerApproval({
-				sessionId: this.sessionId,
+				sessionId: this.getSessionId(),
 				request,
 				service: this,
 			});
@@ -29,6 +31,13 @@ export class ServerRequestActionApprovalService extends ActionApprovalService {
 		} finally {
 			serverRequestManager.unregister(request.id);
 		}
+	}
+
+	private getSessionId(): string | undefined {
+		if (typeof this.sessionIdProvider === "function") {
+			return this.sessionIdProvider();
+		}
+		return this.sessionIdProvider;
 	}
 }
 

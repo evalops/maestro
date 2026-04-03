@@ -71,6 +71,10 @@ export async function runHeadlessMode(
 	};
 
 	const cancelPendingServerRequests = (reason: string): void => {
+		const sessionId = sessionManager.getSessionId() ?? undefined;
+		if (sessionId) {
+			serverRequestManager.cancelBySession(sessionId, reason, "runtime");
+		}
 		for (const request of [
 			...state.pending_approvals,
 			...state.pending_client_tools,
