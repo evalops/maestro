@@ -190,6 +190,16 @@ describe("HeadlessInProcessHost", () => {
 		).toBe(true);
 
 		const finalSnapshot = host.getSnapshot("anon", snapshot.session_id);
+		expect(
+			seenMessages.some(
+				(event) =>
+					event.type === "message" &&
+					event.message.type === "utility_command_started" &&
+					event.message.command_id === "cmd_inline" &&
+					event.message.owner_connection_id ===
+						finalSnapshot.state.controller_connection_id,
+			),
+		).toBe(true);
 		expect(finalSnapshot.state.active_utility_commands).toEqual([]);
 		stream.close();
 	});
@@ -399,6 +409,8 @@ describe("HeadlessInProcessHost", () => {
 				type: "utility_file_watch_started",
 				watch_id: "watch_src",
 				root_dir: tempDir,
+				owner_connection_id: host.getSnapshot("anon", snapshot.session_id).state
+					.controller_connection_id,
 			},
 		});
 

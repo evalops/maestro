@@ -185,6 +185,8 @@ struct RemoteActiveUtilityCommandState {
     shell_mode: UtilityCommandShellMode,
     #[serde(default)]
     pid: Option<u32>,
+    #[serde(default)]
+    owner_connection_id: Option<String>,
     output: String,
 }
 
@@ -197,6 +199,8 @@ struct RemoteActiveFileWatchState {
     #[serde(default)]
     exclude_patterns: Option<Vec<String>>,
     debounce_ms: u32,
+    #[serde(default)]
+    owner_connection_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -317,6 +321,7 @@ impl RemoteRuntimeStateSnapshot {
                             cwd: command.cwd,
                             shell_mode: command.shell_mode,
                             pid: command.pid,
+                            owner_connection_id: command.owner_connection_id,
                             output: command.output,
                         },
                     )
@@ -334,6 +339,7 @@ impl RemoteRuntimeStateSnapshot {
                             include_patterns: watch.include_patterns,
                             exclude_patterns: watch.exclude_patterns,
                             debounce_ms: watch.debounce_ms,
+                            owner_connection_id: watch.owner_connection_id,
                         },
                     )
                 })
@@ -1413,6 +1419,7 @@ mod tests {
                 cwd: Some("/tmp/project".to_string()),
                 shell_mode: UtilityCommandShellMode::Direct,
                 pid: Some(1234),
+                owner_connection_id: Some("conn-1".to_string()),
                 output: "hi\n".to_string(),
             }],
             active_file_watches: vec![RemoteActiveFileWatchState {
@@ -1421,6 +1428,7 @@ mod tests {
                 include_patterns: Some(vec!["src/**".to_string()]),
                 exclude_patterns: Some(vec!["dist/**".to_string()]),
                 debounce_ms: 100,
+                owner_connection_id: Some("conn-1".to_string()),
             }],
             last_error: Some("boom".to_string()),
             last_error_type: Some(HeadlessErrorType::Tool),
@@ -1451,6 +1459,20 @@ mod tests {
         assert_eq!(state.active_tools.len(), 1);
         assert_eq!(state.active_utility_commands.len(), 1);
         assert_eq!(state.active_file_watches.len(), 1);
+        assert_eq!(
+            state
+                .active_utility_commands
+                .get("cmd-1")
+                .and_then(|command| command.owner_connection_id.as_deref()),
+            Some("conn-1")
+        );
+        assert_eq!(
+            state
+                .active_file_watches
+                .get("watch-1")
+                .and_then(|watch| watch.owner_connection_id.as_deref()),
+            Some("conn-1")
+        );
         assert_eq!(state.last_error.as_deref(), Some("boom"));
         assert_eq!(state.last_status.as_deref(), Some("Working"));
         assert!(state.is_ready);

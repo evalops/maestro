@@ -356,6 +356,7 @@ export class HeadlessSessionRuntime {
 						cwd: event.cwd,
 						shell_mode: event.shell_mode,
 						pid: event.pid,
+						owner_connection_id: event.owner_connection_id,
 					});
 					return;
 				case "output":
@@ -390,6 +391,7 @@ export class HeadlessSessionRuntime {
 						include_patterns: event.include_patterns,
 						exclude_patterns: event.exclude_patterns,
 						debounce_ms: event.debounce_ms,
+						owner_connection_id: event.owner_connection_id,
 					});
 					return;
 				case "event":
@@ -662,6 +664,42 @@ export class HeadlessSessionRuntime {
 		);
 	}
 
+	private getMessageConnectionId(metadata?: {
+		connectionId?: string | null;
+		subscriptionId?: string | null;
+	}): string | undefined {
+		const subscriber = metadata?.subscriptionId
+			? this.subscribers.get(metadata.subscriptionId)
+			: undefined;
+		return subscriber?.connectionId ?? metadata?.connectionId ?? undefined;
+	}
+
+	private async disposeOwnedUtilitiesForConnection(
+		connectionId: string,
+	): Promise<void> {
+		await this.utilityCommands.disposeOwnedByConnection(
+			connectionId,
+			"Owning connection closed while utility command was still running",
+		);
+		this.fileWatches.disposeOwnedByConnection(
+			connectionId,
+			"Owning connection closed while file watch was still running",
+		);
+	}
+
+	private async disposeConnection(
+		connection: HeadlessConnectionRecord,
+		publish: boolean,
+	): Promise<void> {
+		this.connections.delete(connection.id);
+		if (this.controllerConnectionId === connection.id) {
+			this.controllerConnectionId = null;
+		}
+		await this.disposeOwnedUtilitiesForConnection(connection.id);
+		this.updatedAt = Date.now();
+		this.syncSubscriptionState(publish);
+	}
+
 	private ensureConnection(metadata: {
 		connectionId?: string;
 		role?: HeadlessConnectionRole;
@@ -826,12 +864,12 @@ export class HeadlessSessionRuntime {
 			...attached,
 			close: () => {
 				baseClose();
-				this.unsubscribe(created.subscription_id, false);
+				void this.unsubscribe(created.subscription_id, false);
 			},
 		};
 	}
 
-	unsubscribe(subscriptionId: string, publish = true): boolean {
+	async unsubscribe(subscriptionId: string, publish = true): Promise<boolean> {
 		const subscriber = this.subscribers.get(subscriptionId);
 		if (!subscriber) {
 			return false;
@@ -841,10 +879,8 @@ export class HeadlessSessionRuntime {
 		const connection = this.connections.get(subscriber.connectionId);
 		connection?.subscriptionIds.delete(subscriptionId);
 		if (connection && connection.subscriptionIds.size === 0) {
-			this.connections.delete(connection.id);
-			if (this.controllerConnectionId === connection.id) {
-				this.controllerConnectionId = null;
-			}
+			await this.disposeConnection(connection, publish && subscriber.explicit);
+			return true;
 		}
 		this.updatedAt = Date.now();
 		this.syncSubscriptionState(publish && subscriber.explicit);
@@ -906,18 +942,18 @@ export class HeadlessSessionRuntime {
 		return this.subscribers.has(subscriptionId);
 	}
 
-	expireIdleSubscriptions(now = Date.now()): void {
+	async expireIdleSubscriptions(now = Date.now()): Promise<void> {
 		for (const [subscriptionId, subscriber] of Array.from(
 			this.subscribers.entries(),
 		)) {
 			if (!subscriber.isExpired(now)) {
 				continue;
 			}
-			this.unsubscribe(subscriptionId, subscriber.explicit);
+			await this.unsubscribe(subscriptionId, subscriber.explicit);
 		}
 	}
 
-	expireIdleConnections(now = Date.now()): void {
+	async expireIdleConnections(now = Date.now()): Promise<void> {
 		for (const [connectionId, connection] of Array.from(
 			this.connections.entries(),
 		)) {
@@ -933,11 +969,11 @@ export class HeadlessSessionRuntime {
 				continue;
 			}
 			for (const subscriptionId of Array.from(connection.subscriptionIds)) {
-				this.unsubscribe(subscriptionId, false);
+				await this.unsubscribe(subscriptionId, false);
 			}
-			this.connections.delete(connectionId);
-			if (this.controllerConnectionId === connectionId) {
-				this.controllerConnectionId = null;
+			const remaining = this.connections.get(connectionId);
+			if (remaining && remaining.subscriptionIds.size === 0) {
+				await this.disposeConnection(remaining, false);
 			}
 			this.syncSubscriptionState(true);
 		}
@@ -1183,6 +1219,7 @@ export class HeadlessSessionRuntime {
 					env: msg.env,
 					shell_mode: msg.shell_mode,
 					allow_stdin: msg.allow_stdin,
+					owner_connection_id: this.getMessageConnectionId(metadata),
 				});
 				return;
 			case "utility_command_terminate":
@@ -1240,6 +1277,7 @@ export class HeadlessSessionRuntime {
 					include_patterns: msg.include_patterns,
 					exclude_patterns: msg.exclude_patterns,
 					debounce_ms: msg.debounce_ms,
+					owner_connection_id: this.getMessageConnectionId(metadata),
 				});
 				return;
 			case "utility_file_watch_stop":
@@ -1583,8 +1621,8 @@ export class HeadlessRuntimeService {
 	private async cleanup(): Promise<void> {
 		const now = Date.now();
 		for (const [key, runtime] of this.runtimes.entries()) {
-			runtime.expireIdleSubscriptions(now);
-			runtime.expireIdleConnections(now);
+			await runtime.expireIdleSubscriptions(now);
+			await runtime.expireIdleConnections(now);
 			if (runtime.isDisposed() || runtime.isIdle(now)) {
 				await runtime.dispose();
 				this.runtimes.delete(key);

@@ -77,4 +77,54 @@ describe("HeadlessUtilityFileWatchManager", () => {
 		expect(manager.snapshot()).toEqual([]);
 		expect(events).toEqual([]);
 	});
+
+	it("disposes only file watches owned by a closing connection", async () => {
+		const events: Array<Record<string, unknown>> = [];
+		const { HeadlessUtilityFileWatchManager } = await import(
+			"../../src/headless/utility-file-watch-manager.js"
+		);
+
+		const manager = new HeadlessUtilityFileWatchManager((event) => {
+			events.push(event as Record<string, unknown>);
+		});
+
+		await manager.start({
+			watch_id: "watch_owned",
+			root_dir: process.cwd(),
+			owner_connection_id: "conn_owned",
+		});
+		await manager.start({
+			watch_id: "watch_other",
+			root_dir: process.cwd(),
+			owner_connection_id: "conn_other",
+		});
+
+		manager.disposeOwnedByConnection(
+			"conn_owned",
+			"Owning connection closed while file watch was still running",
+		);
+
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "started",
+				watch_id: "watch_owned",
+				owner_connection_id: "conn_owned",
+			}),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "stopped",
+				watch_id: "watch_owned",
+				reason: "Owning connection closed while file watch was still running",
+			}),
+		);
+		expect(manager.snapshot()).toEqual([
+			expect.objectContaining({
+				watch_id: "watch_other",
+				owner_connection_id: "conn_other",
+			}),
+		]);
+
+		manager.dispose();
+	});
 });

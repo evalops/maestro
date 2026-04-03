@@ -573,6 +573,8 @@ pub enum FromAgentMessage {
         shell_mode: UtilityCommandShellMode,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pid: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_connection_id: Option<String>,
     },
     /// Utility command output chunk
     UtilityCommandOutput {
@@ -608,6 +610,8 @@ pub enum FromAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exclude_patterns: Option<Vec<String>>,
         debounce_ms: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner_connection_id: Option<String>,
     },
     /// File watch emitted a change event
     UtilityFileWatchEvent {
@@ -864,6 +868,7 @@ pub struct ActiveUtilityCommand {
     pub cwd: Option<String>,
     pub shell_mode: UtilityCommandShellMode,
     pub pid: Option<u32>,
+    pub owner_connection_id: Option<String>,
     pub output: String,
 }
 
@@ -875,6 +880,7 @@ pub struct ActiveFileWatch {
     pub include_patterns: Option<Vec<String>>,
     pub exclude_patterns: Option<Vec<String>>,
     pub debounce_ms: u32,
+    pub owner_connection_id: Option<String>,
 }
 
 impl AgentState {
@@ -1046,6 +1052,7 @@ impl AgentState {
                 cwd,
                 shell_mode,
                 pid,
+                owner_connection_id,
             } => {
                 self.active_utility_commands.insert(
                     command_id.clone(),
@@ -1055,6 +1062,7 @@ impl AgentState {
                         cwd,
                         shell_mode,
                         pid,
+                        owner_connection_id,
                         output: String::new(),
                     },
                 );
@@ -1081,6 +1089,7 @@ impl AgentState {
                 include_patterns,
                 exclude_patterns,
                 debounce_ms,
+                owner_connection_id,
             } => {
                 self.active_file_watches.insert(
                     watch_id.clone(),
@@ -1090,6 +1099,7 @@ impl AgentState {
                         include_patterns,
                         exclude_patterns,
                         debounce_ms,
+                        owner_connection_id,
                     },
                 );
                 None
@@ -1883,14 +1893,31 @@ mod tests {
     #[test]
     fn state_tracks_and_clears_file_watches() {
         let mut state = AgentState::default();
+        state.handle_message(FromAgentMessage::UtilityCommandStarted {
+            command_id: "cmd_owned".to_string(),
+            command: "echo hi".to_string(),
+            cwd: Some("/tmp/project".to_string()),
+            shell_mode: UtilityCommandShellMode::Direct,
+            pid: Some(42),
+            owner_connection_id: Some("conn_owned".to_string()),
+        });
         state.handle_message(FromAgentMessage::UtilityFileWatchStarted {
             watch_id: "watch_src".to_string(),
             root_dir: "/tmp/project".to_string(),
             include_patterns: Some(vec!["src/**".to_string()]),
             exclude_patterns: Some(vec!["dist/**".to_string()]),
             debounce_ms: 50,
+            owner_connection_id: Some("conn_owned".to_string()),
         });
 
+        assert_eq!(state.active_utility_commands.len(), 1);
+        assert_eq!(
+            state
+                .active_utility_commands
+                .get("cmd_owned")
+                .and_then(|command| command.owner_connection_id.as_deref()),
+            Some("conn_owned")
+        );
         assert_eq!(state.active_file_watches.len(), 1);
         assert_eq!(
             state
@@ -1898,6 +1925,13 @@ mod tests {
                 .get("watch_src")
                 .map(|watch| watch.root_dir.as_str()),
             Some("/tmp/project")
+        );
+        assert_eq!(
+            state
+                .active_file_watches
+                .get("watch_src")
+                .and_then(|watch| watch.owner_connection_id.as_deref()),
+            Some("conn_owned")
         );
 
         state.handle_message(FromAgentMessage::UtilityFileWatchStopped {

@@ -13,6 +13,7 @@ export interface HeadlessUtilityFileWatchStartRequest {
 	include_patterns?: string[];
 	exclude_patterns?: string[];
 	debounce_ms?: number;
+	owner_connection_id?: string;
 }
 
 export interface HeadlessUtilityFileWatchStartedEvent {
@@ -22,6 +23,7 @@ export interface HeadlessUtilityFileWatchStartedEvent {
 	include_patterns?: string[];
 	exclude_patterns?: string[];
 	debounce_ms: number;
+	owner_connection_id?: string;
 }
 
 export interface HeadlessUtilityFileWatchEvent {
@@ -51,6 +53,7 @@ export interface HeadlessUtilityFileWatchSnapshot {
 	include_patterns?: string[];
 	exclude_patterns?: string[];
 	debounce_ms: number;
+	owner_connection_id?: string;
 }
 
 interface ActiveWatch {
@@ -59,6 +62,7 @@ interface ActiveWatch {
 	include_patterns?: string[];
 	exclude_patterns?: string[];
 	debounce_ms: number;
+	owner_connection_id?: string;
 	stopped: boolean;
 	started: boolean;
 }
@@ -93,6 +97,7 @@ export class HeadlessUtilityFileWatchManager {
 			include_patterns: active.include_patterns,
 			exclude_patterns: active.exclude_patterns,
 			debounce_ms: active.debounce_ms,
+			owner_connection_id: active.owner_connection_id,
 		}));
 	}
 
@@ -124,6 +129,7 @@ export class HeadlessUtilityFileWatchManager {
 			include_patterns: request.include_patterns,
 			exclude_patterns: request.exclude_patterns,
 			debounce_ms: debounceMs,
+			owner_connection_id: request.owner_connection_id,
 			stopped: false,
 			started: false,
 		};
@@ -165,6 +171,7 @@ export class HeadlessUtilityFileWatchManager {
 			include_patterns: request.include_patterns,
 			exclude_patterns: request.exclude_patterns,
 			debounce_ms: debounceMs,
+			owner_connection_id: request.owner_connection_id,
 		});
 	}
 
@@ -185,6 +192,15 @@ export class HeadlessUtilityFileWatchManager {
 
 	dispose(reason = "Headless runtime disposed"): void {
 		const watchIds = Array.from(this.watches.keys());
+		for (const watchId of watchIds) {
+			this.stop(watchId, reason);
+		}
+	}
+
+	disposeOwnedByConnection(connectionId: string, reason: string): void {
+		const watchIds = Array.from(this.watches.entries())
+			.filter(([, active]) => active.owner_connection_id === connectionId)
+			.map(([watchId]) => watchId);
 		for (const watchId of watchIds) {
 			this.stop(watchId, reason);
 		}
