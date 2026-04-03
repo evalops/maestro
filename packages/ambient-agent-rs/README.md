@@ -1,6 +1,6 @@
 # Ambient Agent
 
-An always-on GitHub agent that watches repositories, identifies work, and ships code autonomously via PRs.
+A long-running GitHub agent that watches repositories, identifies work, and opens pull requests.
 
 ## Architecture
 
@@ -28,7 +28,7 @@ Flow: WATCH → FILTER → DECIDE → PLAN → ROUTE → EXECUTE → CRITIQUE �
 ## Core Philosophy
 
 1. **PRs are the permission layer** - Agent can do anything, but nothing lands without human review
-2. **Confidence-gated autonomy** - High confidence → act; low confidence → ask
+2. **Confidence-gated execution** - High confidence → act; low confidence → ask
 3. **Learn from outcomes** - Merged PRs reinforce patterns; rejected PRs update priors
 4. **Swarm for complexity** - Simple tasks = single agent; complex = spawn teammates
 

@@ -1122,9 +1122,9 @@ Prevents abuse through per-user and per-channel request limits.
 
 ---
 
-## Enterprise Features
+## Multi-Workspace Features
 
-The slack-agent includes enterprise-grade features for production deployments supporting multiple workspaces and teams.
+The slack-agent includes features for multi-workspace and production-style deployments.
 
 ### Multi-Workspace OAuth
 

@@ -1,10 +1,10 @@
 # @evalops/github-agent
 
-Autonomous GitHub agent for self-improvement. **Maestro building Maestro.**
+GitHub automation agent for issue-driven repository workflows.
 
 ## What It Does
 
-This agent watches a GitHub repository for issues with specific labels, implements them, runs quality gates, and creates PRs - all autonomously.
+This agent watches a GitHub repository for issues with specific labels, implements the requested changes, runs quality gates, and opens pull requests.
 
 **Deep GitHub integration includes:**
 - REST + GraphQL usage with rate-limit awareness, pagination, and conditional requests
@@ -72,7 +72,7 @@ github-agent owner/repo --issue 42
 Add this workflow to your repository:
 
 ```yaml
-name: Maestro Self-Improvement
+name: Maestro GitHub Agent
 
 on:
   issues:
