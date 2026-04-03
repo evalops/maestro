@@ -47,6 +47,18 @@ impl Default for AsyncTransportConfig {
     }
 }
 
+/// Structured classification for remote HTTP/SSE transport failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteErrorKind {
+    Other,
+    StaleConnection,
+    StaleSubscriber,
+    ControllerLeaseConflict,
+    RoleConflict,
+    AccessDenied,
+    OwnershipConflict,
+}
+
 /// Error type for async transport operations
 #[derive(Debug)]
 pub enum AsyncTransportError {
@@ -66,6 +78,13 @@ pub enum AsyncTransportError {
     Cancelled,
     /// Remote HTTP/SSE transport error
     Remote(String),
+    /// Remote HTTP/SSE transport error with structured status metadata
+    RemoteStatus {
+        status: u16,
+        message: String,
+        retryable: bool,
+        kind: RemoteErrorKind,
+    },
 }
 
 const MAX_CONSECUTIVE_PARSE_ERRORS: usize = 5;
@@ -85,11 +104,38 @@ impl std::fmt::Display for AsyncTransportError {
             AsyncTransportError::Timeout => write!(f, "Operation timed out"),
             AsyncTransportError::Cancelled => write!(f, "Operation was cancelled"),
             AsyncTransportError::Remote(e) => write!(f, "Remote transport error: {e}"),
+            AsyncTransportError::RemoteStatus { message, .. } => {
+                write!(f, "Remote transport error: {message}")
+            }
         }
     }
 }
 
 impl std::error::Error for AsyncTransportError {}
+
+impl AsyncTransportError {
+    /// Whether the failed transport operation should be retried automatically.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            Self::RemoteStatus { retryable, .. } => *retryable,
+            _ => true,
+        }
+    }
+
+    /// Whether this error should consume the dedicated stale remote-reference
+    /// retry budget used for transient connection/subscriber misses.
+    #[must_use]
+    pub fn uses_stale_reference_retry_budget(&self) -> bool {
+        matches!(
+            self,
+            Self::RemoteStatus {
+                kind: RemoteErrorKind::StaleConnection | RemoteErrorKind::StaleSubscriber,
+                ..
+            }
+        )
+    }
+}
 
 /// Handle for async communication with the agent process
 pub struct AsyncAgentTransport {
