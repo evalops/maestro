@@ -845,17 +845,25 @@ fn build_remote_utility_operations(config: &RemoteTransportConfig) -> Vec<&'stat
 }
 
 fn build_remote_server_requests(config: &RemoteTransportConfig) -> Vec<&'static str> {
+    let mut requests = vec!["approval"];
     if config.enable_client_tools {
-        vec!["approval", "client_tool"]
-    } else {
-        vec!["approval"]
+        requests.push("client_tool");
     }
+    if build_remote_connection_role(config) != Some(ConnectionRole::Viewer) {
+        requests.push("user_input");
+        requests.push("tool_retry");
+    }
+    requests
 }
 
 fn build_remote_server_request_types(config: &RemoteTransportConfig) -> Vec<ServerRequestType> {
     let mut requests = vec![ServerRequestType::Approval];
     if config.enable_client_tools {
         requests.push(ServerRequestType::ClientTool);
+    }
+    if build_remote_connection_role(config) != Some(ConnectionRole::Viewer) {
+        requests.push(ServerRequestType::UserInput);
+        requests.push(ServerRequestType::ToolRetry);
     }
     requests
 }
@@ -1790,6 +1798,8 @@ mod tests {
                 server_requests: Some(vec![
                     crate::headless::ServerRequestType::Approval,
                     crate::headless::ServerRequestType::ClientTool,
+                    crate::headless::ServerRequestType::UserInput,
+                    crate::headless::ServerRequestType::ToolRetry,
                 ]),
                 utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
                 raw_agent_events: Some(true),
@@ -1812,6 +1822,8 @@ mod tests {
                     server_requests: Some(vec![
                         crate::headless::ServerRequestType::Approval,
                         crate::headless::ServerRequestType::ClientTool,
+                        crate::headless::ServerRequestType::UserInput,
+                        crate::headless::ServerRequestType::ToolRetry,
                     ]),
                     utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
                     raw_agent_events: Some(true),
@@ -1974,7 +1986,7 @@ mod tests {
             approval_mode: Some(ApprovalMode::Prompt),
             enable_client_tools: true,
             capabilities: Some(RemoteClientCapabilities {
-                server_requests: vec!["approval", "client_tool"],
+                server_requests: vec!["approval", "client_tool", "user_input", "tool_retry"],
                 utility_operations: vec!["command_exec"],
                 raw_agent_events: true,
             }),
@@ -1996,6 +2008,8 @@ mod tests {
         assert_eq!(json["enableClientTools"], true);
         assert_eq!(json["capabilities"]["serverRequests"][0], "approval");
         assert_eq!(json["capabilities"]["serverRequests"][1], "client_tool");
+        assert_eq!(json["capabilities"]["serverRequests"][2], "user_input");
+        assert_eq!(json["capabilities"]["serverRequests"][3], "tool_retry");
         assert_eq!(json["capabilities"]["rawAgentEvents"], true);
         assert_eq!(json["optOutNotifications"][0], "status");
         assert_eq!(json["client"], "vscode");
@@ -2028,6 +2042,57 @@ mod tests {
         assert_eq!(json["capabilities"]["rawAgentEvents"], true);
         assert_eq!(json["optOutNotifications"][0], "status");
         assert_eq!(json["optOutNotifications"][1], "heartbeat");
+    }
+
+    #[test]
+    fn remote_hello_message_includes_interactive_server_requests_for_controller() {
+        let message = build_remote_hello_message(&RemoteTransportConfig {
+            enable_client_tools: true,
+            ..RemoteTransportConfig::default()
+        });
+
+        let ToAgentMessage::Hello {
+            capabilities: Some(capabilities),
+            ..
+        } = message
+        else {
+            panic!("expected hello message");
+        };
+
+        assert_eq!(
+            capabilities.server_requests,
+            Some(vec![
+                ServerRequestType::Approval,
+                ServerRequestType::ClientTool,
+                ServerRequestType::UserInput,
+                ServerRequestType::ToolRetry,
+            ])
+        );
+    }
+
+    #[test]
+    fn remote_hello_message_omits_interactive_server_requests_for_viewer() {
+        let message = build_remote_hello_message(&RemoteTransportConfig {
+            enable_client_tools: true,
+            role: Some("viewer".to_string()),
+            ..RemoteTransportConfig::default()
+        });
+
+        let ToAgentMessage::Hello {
+            capabilities: Some(capabilities),
+            ..
+        } = message
+        else {
+            panic!("expected hello message");
+        };
+
+        assert_eq!(
+            capabilities.server_requests,
+            Some(vec![
+                ServerRequestType::Approval,
+                ServerRequestType::ClientTool
+            ])
+        );
     }
 
     #[tokio::test]
@@ -2998,7 +3063,11 @@ mod tests {
                 ..
             } if protocol_version.as_deref() == Some(HEADLESS_PROTOCOL_VERSION)
                 && client_info.as_ref().map(|info| info.name.as_str()) == Some("maestro-tui-rs")
-                && capabilities.as_ref().and_then(|items| items.server_requests.as_ref()).map(|items| items.len()) == Some(1)
+                && capabilities.as_ref().and_then(|items| items.server_requests.as_ref()) == Some(&vec![
+                    ServerRequestType::Approval,
+                    ServerRequestType::UserInput,
+                    ServerRequestType::ToolRetry,
+                ])
                 && role == Some(ConnectionRole::Controller)
         ));
 
