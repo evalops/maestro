@@ -637,7 +637,10 @@ impl AgentSupervisor {
             if self.transport.is_none() {
                 if self.pending_auto_reconnect {
                     self.pending_auto_reconnect = false;
-                    let _ = self.reconnect().await;
+                    if let Err(error) = self.reconnect().await {
+                        let disconnected = self.handle_transport_error(error);
+                        let _ = self.event_tx.send(disconnected);
+                    }
                     continue;
                 }
                 return self.event_rx.recv().await;
@@ -2023,6 +2026,46 @@ done
         ));
 
         supervisor.disconnect();
+    }
+
+    #[tokio::test]
+    async fn failed_auto_reconnect_emits_disconnected_instead_of_hanging() {
+        let mut config = SupervisorConfig::default();
+        config.transport.cli_path = "/definitely/missing/maestro-headless".to_string();
+        config.reconnect_delay = Duration::from_millis(1);
+        config.max_reconnect_attempts = 1;
+        config.auto_reconnect = true;
+
+        let mut supervisor = AgentSupervisor::new(config);
+        supervisor.pending_auto_reconnect = true;
+
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Reconnecting
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Reconnecting {
+                attempt: 1,
+                max_attempts: 1
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Unhealthy
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Disconnected { ref error })
+                if error.contains("Failed to spawn agent")
+        ));
+        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
+        assert!(!supervisor.pending_auto_reconnect);
+        assert!(!supervisor.is_connected());
     }
 
     #[cfg(unix)]
