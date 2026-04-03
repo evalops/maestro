@@ -36,6 +36,15 @@ export type HeadlessServerRequestResolvedBy =
 export const headlessConnectionRoles = ["viewer", "controller"] as const;
 export type HeadlessConnectionRole = (typeof headlessConnectionRoles)[number];
 
+export const headlessNotificationTypes = [
+	"status",
+	"heartbeat",
+	"connection_info",
+	"compaction",
+] as const;
+export type HeadlessNotificationType =
+	(typeof headlessNotificationTypes)[number];
+
 export const headlessThinkingLevels = [
 	"off",
 	"minimal",

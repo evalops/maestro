@@ -390,6 +390,61 @@ describe("headless session runtime", () => {
 		}
 	});
 
+	it("filters opted-out notification types from subscription mailboxes", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval"],
+					utility_operations: ["command_exec"],
+				},
+				context,
+				sessionManager,
+			});
+
+			const subscription = runtime.createSubscription({
+				role: "controller",
+				explicit: true,
+				optOutNotifications: ["status", "heartbeat", "connection_info"],
+			});
+			expect(subscription.opt_out_notifications).toEqual([
+				"status",
+				"heartbeat",
+				"connection_info",
+			]);
+
+			const attached = runtime.attachSubscription(subscription.subscription_id);
+			expect(attached).not.toBeNull();
+			expect(attached?.next()).toMatchObject({ type: "snapshot" });
+			expect(attached?.next()).toBeNull();
+
+			await runtime.send({
+				type: "init",
+				system_prompt: "Be terse",
+			});
+			expect(attached?.next()).toBeNull();
+
+			attached?.enqueue(runtime.heartbeat());
+			expect(attached?.next()).toBeNull();
+
+			await runtime.dispose();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("tracks negotiated connection metadata in runtime snapshots", async () => {
 		const fakeAgent = new FakeAgent();
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
@@ -2039,6 +2094,58 @@ describe("headless session handlers", () => {
 		expect(attached.stream.close).toHaveBeenCalledTimes(1);
 	});
 
+	it("passes explicit opt-out notifications through subscribe requests", async () => {
+		const runtime = {
+			createSubscription: vi.fn().mockReturnValue({
+				connection_id: "conn_remote",
+				subscription_id: "sub_remote",
+				opt_out_notifications: ["status", "heartbeat"],
+				role: "controller",
+				controller_lease_granted: true,
+				controller_subscription_id: "sub_remote",
+				controller_connection_id: "conn_remote",
+				lease_expires_at: "2026-04-02T00:00:15Z",
+				heartbeat_interval_ms: 15000,
+				snapshot: {
+					protocolVersion: HEADLESS_PROTOCOL_VERSION,
+					session_id: "sess_subscribe",
+					cursor: 1,
+					last_init: null,
+					state: createHeadlessRuntimeState(),
+				},
+			}),
+		};
+		const context = createContext({
+			headlessRuntimeService: {
+				getRuntime: vi.fn().mockReturnValue(runtime),
+			} as unknown as HeadlessRuntimeService,
+		});
+		const req = createJsonRequest(
+			"POST",
+			"/api/headless/sessions/sess_subscribe/subscribe",
+			{
+				optOutNotifications: ["status", "heartbeat"],
+			},
+		);
+		const res = new MockResponse();
+
+		await handleHeadlessSessionSubscribe(
+			req,
+			res as unknown as ServerResponse,
+			context,
+			{ id: "sess_subscribe" },
+		);
+
+		expect(runtime.createSubscription).toHaveBeenCalledWith(
+			expect.objectContaining({
+				optOutNotifications: ["status", "heartbeat"],
+			}),
+		);
+		expect(res.body).toContain(
+			'"opt_out_notifications":["status","heartbeat"]',
+		);
+	});
+
 	it("rejects explicit SSE attaches with unknown subscription ids before sending headers", () => {
 		const runtime = {
 			attachSubscription: vi.fn().mockReturnValue(null),
@@ -2107,6 +2214,53 @@ describe("headless session handlers", () => {
 		expect(res.body).toContain('"type":"reset"');
 		expect(res.body).toContain('"reason":"replay_gap"');
 		expect(res.body).toContain('"session_id":"sess_sse"');
+	});
+
+	it("passes opt-out notifications through implicit SSE attaches", () => {
+		const snapshot: HeadlessRuntimeSnapshot = {
+			protocolVersion: HEADLESS_PROTOCOL_VERSION,
+			session_id: "sess_sse",
+			cursor: 4,
+			last_init: null,
+			state: createHeadlessRuntimeState(),
+		};
+		const attached = createMockAttachedStream(
+			[
+				{
+					type: "snapshot",
+					snapshot,
+				},
+			],
+			{ overflowSnapshot: snapshot },
+		);
+		const runtime = {
+			createImplicitStream: vi.fn().mockReturnValue(attached.stream),
+			heartbeat: vi.fn().mockReturnValue({ type: "heartbeat", cursor: 4 }),
+		};
+		const context = createContext({
+			headlessRuntimeService: {
+				getRuntime: vi.fn().mockReturnValue(runtime),
+			} as unknown as HeadlessRuntimeService,
+		});
+		const req = createJsonRequest(
+			"GET",
+			"/api/headless/sessions/sess_sse/events?optOutNotifications=status,heartbeat",
+		);
+		const res = new MockResponse();
+
+		handleHeadlessSessionEvents(
+			req,
+			res as unknown as ServerResponse,
+			context,
+			{ id: "sess_sse" },
+		);
+
+		expect(runtime.createImplicitStream).toHaveBeenCalledWith(
+			expect.objectContaining({
+				optOutNotifications: ["status", "heartbeat"],
+			}),
+		);
+		req.emit("close");
 	});
 
 	it("coalesces lagged SSE subscribers into a reset envelope", () => {

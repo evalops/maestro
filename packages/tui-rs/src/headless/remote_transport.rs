@@ -57,6 +57,8 @@ pub struct RemoteTransportConfig {
     pub client_version: Option<String>,
     /// Optional connection role used for HTTP attach/message permissions.
     pub role: Option<String>,
+    /// Notification classes the subscriber does not want streamed live.
+    pub opt_out_notifications: Vec<String>,
     /// Whether a controller subscription should take over an existing controller lease.
     pub take_control: bool,
     /// Additional headers to send on every request.
@@ -83,6 +85,7 @@ impl Default for RemoteTransportConfig {
             client_name: "maestro-tui-rs".to_string(),
             client_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
             role: Some("controller".to_string()),
+            opt_out_notifications: vec![],
             take_control: false,
             headers: HashMap::new(),
             reconnect_delay: Duration::from_millis(500),
@@ -117,6 +120,8 @@ struct RemoteSessionSubscribeRequest {
     capabilities: Option<RemoteClientCapabilities>,
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
+    #[serde(rename = "optOutNotifications", skip_serializing_if = "Vec::is_empty")]
+    opt_out_notifications: Vec<String>,
     #[serde(
         rename = "takeControl",
         default,
@@ -752,6 +757,7 @@ async fn subscribe_to_session(
             utility_operations: build_remote_utility_operations(config),
         }),
         role: config.role.clone(),
+        opt_out_notifications: config.opt_out_notifications.clone(),
         take_control: config.take_control,
     };
 
@@ -1513,6 +1519,31 @@ mod tests {
         assert_eq!(json["capabilities"]["serverRequests"][1], "client_tool");
         assert_eq!(json["client"], "vscode");
         assert_eq!(json["role"], "controller");
+    }
+
+    #[test]
+    fn remote_session_subscribe_request_serializes_opt_out_notifications() {
+        let request = RemoteSessionSubscribeRequest {
+            connection_id: Some("conn_remote".to_string()),
+            protocol_version: Some("2026-04-02".to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-tui-rs".to_string(),
+                version: Some("0.1.0".to_string()),
+            }),
+            capabilities: Some(RemoteClientCapabilities {
+                server_requests: vec!["approval", "client_tool", "user_input"],
+                utility_operations: vec!["command_exec", "file_watch"],
+            }),
+            role: Some("viewer".to_string()),
+            opt_out_notifications: vec!["status".to_string(), "heartbeat".to_string()],
+            take_control: false,
+        };
+
+        let json = serde_json::to_value(request).expect("serialize request");
+        assert_eq!(json["connectionId"], "conn_remote");
+        assert_eq!(json["role"], "viewer");
+        assert_eq!(json["optOutNotifications"][0], "status");
+        assert_eq!(json["optOutNotifications"][1], "heartbeat");
     }
 
     #[tokio::test]

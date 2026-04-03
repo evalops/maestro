@@ -15,6 +15,8 @@ pub const HEADLESS_SERVER_REQUEST_RESOLUTIONS: &[&str] = &[
 ];
 pub const HEADLESS_SERVER_REQUEST_RESOLVED_BY: &[&str] = &["user", "policy", "client", "runtime"];
 pub const HEADLESS_CONNECTION_ROLES: &[&str] = &["viewer", "controller"];
+pub const HEADLESS_NOTIFICATION_TYPES: &[&str] =
+    &["status", "heartbeat", "connection_info", "compaction"];
 pub const HEADLESS_THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "ultra"];
 pub const HEADLESS_APPROVAL_MODES: &[&str] = &["auto", "prompt", "fail"];
 pub const HEADLESS_ERROR_TYPES: &[&str] = &["transient", "fatal", "tool", "cancelled", "protocol"];

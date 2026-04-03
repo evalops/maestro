@@ -8,6 +8,7 @@ import {
 	headlessApprovalModes,
 	headlessConnectionRoles,
 	headlessErrorTypes,
+	headlessNotificationTypes,
 	headlessServerRequestResolutions,
 	headlessServerRequestResolvedBy,
 	headlessServerRequestTypes,
@@ -51,6 +52,11 @@ export const HeadlessClientCapabilitiesSchema = Type.Object(
 		),
 	},
 	{ additionalProperties: false },
+);
+
+export const HeadlessOptOutNotificationsSchema = Type.Array(
+	stringLiteralUnion(headlessNotificationTypes),
+	{ uniqueItems: true },
 );
 
 export const HeadlessToolResponseResultSchema = Type.Object(
@@ -783,6 +789,7 @@ export const HeadlessRuntimeSubscriptionSnapshotSchema = Type.Object(
 	{
 		connection_id: Type.String(),
 		subscription_id: Type.String(),
+		opt_out_notifications: Type.Optional(HeadlessOptOutNotificationsSchema),
 		role: stringLiteralUnion(headlessConnectionRoles),
 		controller_lease_granted: Type.Boolean(),
 		controller_subscription_id: Type.Union([Type.String(), Type.Null()]),

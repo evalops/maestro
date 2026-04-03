@@ -1,5 +1,6 @@
 import {
 	type HeadlessConnectionRole,
+	type HeadlessNotificationType,
 	assertHeadlessFromAgentMessage,
 	assertHeadlessRuntimeHeartbeatSnapshot,
 	assertHeadlessRuntimeSnapshot,
@@ -107,6 +108,7 @@ export interface HeadlessRuntimeResetEnvelope {
 export interface HeadlessRuntimeSubscriptionSnapshot {
 	connection_id: string;
 	subscription_id: string;
+	opt_out_notifications?: HeadlessNotificationType[];
 	role: "viewer" | "controller";
 	controller_lease_granted: boolean;
 	controller_subscription_id: string | null;
@@ -153,6 +155,7 @@ class HeadlessSubscriberMailbox {
 		readonly role: "viewer" | "controller",
 		readonly explicit: boolean,
 		readonly connectionId: string,
+		readonly optOutNotifications: HeadlessNotificationType[] = [],
 	) {
 		this.detachedAt = explicit ? Date.now() : null;
 	}
@@ -170,6 +173,9 @@ class HeadlessSubscriberMailbox {
 			reason: HeadlessRuntimeResetEnvelope["reason"],
 		) => HeadlessRuntimeResetEnvelope,
 	): void {
+		if (this.shouldFilterEnvelope(envelope)) {
+			return;
+		}
 		this.queue.push(envelope);
 		if (this.queue.length > MAX_SUBSCRIBER_MAILBOX_EVENTS) {
 			this.queue.length = 0;
@@ -219,6 +225,33 @@ class HeadlessSubscriberMailbox {
 	private emit(): void {
 		for (const listener of this.listeners) {
 			listener();
+		}
+	}
+
+	private shouldFilterEnvelope(
+		envelope: HeadlessRuntimeStreamEnvelope,
+	): boolean {
+		if (this.optOutNotifications.length === 0) {
+			return false;
+		}
+		if (
+			envelope.type === "heartbeat" &&
+			this.optOutNotifications.includes("heartbeat")
+		) {
+			return true;
+		}
+		if (envelope.type !== "message") {
+			return false;
+		}
+		switch (envelope.message.type) {
+			case "status":
+				return this.optOutNotifications.includes("status");
+			case "connection_info":
+				return this.optOutNotifications.includes("connection_info");
+			case "compaction":
+				return this.optOutNotifications.includes("compaction");
+			default:
+				return false;
 		}
 	}
 }
@@ -788,6 +821,7 @@ export class HeadlessSessionRuntime {
 		explicit?: boolean;
 		announceConnectionInfo?: boolean;
 		takeControl?: boolean;
+		optOutNotifications?: HeadlessNotificationType[];
 		clientProtocolVersion?: string;
 		clientInfo?: HeadlessClientInfo;
 		capabilities?: HeadlessClientCapabilities;
@@ -824,6 +858,7 @@ export class HeadlessSessionRuntime {
 			role,
 			explicit,
 			connection.id,
+			options?.optOutNotifications,
 		);
 		this.subscribers.set(subscriber.id, subscriber);
 		connection.subscriptionIds.add(subscriber.id);
@@ -840,6 +875,10 @@ export class HeadlessSessionRuntime {
 		const snapshot: HeadlessRuntimeSubscriptionSnapshot = {
 			connection_id: connection.id,
 			subscription_id: subscriber.id,
+			opt_out_notifications:
+				subscriber.optOutNotifications.length > 0
+					? [...subscriber.optOutNotifications]
+					: undefined,
 			role,
 			controller_lease_granted:
 				role === "controller" && this.controllerConnectionId === connection.id,
@@ -889,11 +928,13 @@ export class HeadlessSessionRuntime {
 	createImplicitStream(options: {
 		cursor: number | null;
 		role?: "viewer" | "controller";
+		optOutNotifications?: HeadlessNotificationType[];
 	}): HeadlessAttachedSubscription {
 		const created = this.createSubscription({
 			role: options.role ?? "controller",
 			explicit: false,
 			announceConnectionInfo: false,
+			optOutNotifications: options.optOutNotifications,
 		});
 		const attached = this.attachSubscription(created.subscription_id);
 		if (!attached) {

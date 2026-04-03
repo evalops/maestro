@@ -672,6 +672,20 @@ impl SupervisorBuilder {
         self
     }
 
+    /// Opt out of specific live notification types on the remote subscription.
+    #[must_use]
+    pub fn remote_opt_out_notification(mut self, notification: impl Into<String>) -> Self {
+        let config = self
+            .config
+            .remote
+            .get_or_insert_with(RemoteTransportConfig::default);
+        let notification = notification.into();
+        if !config.opt_out_notifications.contains(&notification) {
+            config.opt_out_notifications.push(notification);
+        }
+        self
+    }
+
     /// Resume a recorded local session by restoring replay state and continuing
     /// to append to the same JSONL log.
     pub fn resume_recorded_session(

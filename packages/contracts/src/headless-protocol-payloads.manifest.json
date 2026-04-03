@@ -26,6 +26,11 @@
 				}
 			}
 		},
+		"HeadlessOptOutNotificationsSchema": {
+			"kind": "array",
+			"items": { "kind": "enumRef", "name": "headlessNotificationTypes" },
+			"uniqueItems": true
+		},
 		"HeadlessToolResponseResultSchema": {
 			"kind": "object",
 			"additionalProperties": false,
@@ -977,6 +982,11 @@
 			"properties": {
 				"connection_id": { "kind": "string" },
 				"subscription_id": { "kind": "string" },
+				"opt_out_notifications": {
+					"kind": "ref",
+					"name": "HeadlessOptOutNotificationsSchema",
+					"optional": true
+				},
 				"role": {
 					"kind": "enumRef",
 					"name": "headlessConnectionRoles"

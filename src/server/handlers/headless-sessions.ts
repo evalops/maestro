@@ -3,6 +3,7 @@ import {
 	type HeadlessConnectionRole,
 	headlessApprovalModes,
 	headlessConnectionRoles,
+	headlessNotificationTypes,
 	headlessServerRequestTypes,
 	headlessThinkingLevels,
 	headlessToAgentMessageSchemasByType,
@@ -42,6 +43,13 @@ function stringLiteralUnion<const T extends readonly string[]>(values: T) {
 		),
 	);
 }
+
+const HeadlessOptOutNotificationsSchema = Type.Array(
+	stringLiteralUnion(headlessNotificationTypes),
+	{
+		uniqueItems: true,
+	},
+);
 
 const HeadlessSessionCreateSchema = Type.Object({
 	sessionId: Type.Optional(Type.String()),
@@ -111,6 +119,7 @@ const HeadlessSessionSubscribeSchema = Type.Object({
 			),
 		}),
 	),
+	optOutNotifications: Type.Optional(HeadlessOptOutNotificationsSchema),
 	role: Type.Optional(stringLiteralUnion(headlessConnectionRoles)),
 	takeControl: Type.Optional(Type.Boolean()),
 });
@@ -197,6 +206,33 @@ function getHeadlessConnectionId(req: IncomingMessage): string | undefined {
 			"x-composer-headless-connection-id",
 			"x-maestro-headless-connection-id",
 		) ?? undefined
+	);
+}
+
+function parseOptOutNotifications(
+	req: IncomingMessage,
+): HeadlessSessionSubscribeInput["optOutNotifications"] {
+	const url = new URL(
+		req.url || "/",
+		`http://${req.headers.host || "localhost"}`,
+	);
+	const raw = url.searchParams.get("optOutNotifications");
+	if (!raw) {
+		return undefined;
+	}
+	const notifications = raw
+		.split(",")
+		.map((value) => value.trim())
+		.filter(Boolean);
+	if (notifications.length === 0) {
+		return undefined;
+	}
+	return validatePayload<
+		NonNullable<HeadlessSessionSubscribeInput["optOutNotifications"]>
+	>(
+		notifications,
+		HeadlessOptOutNotificationsSchema,
+		"query.optOutNotifications",
 	);
 }
 
@@ -385,6 +421,7 @@ export async function handleHeadlessSessionSubscribe(
 							utility_operations: input.capabilities.utilityOperations,
 						}
 					: undefined,
+				optOutNotifications: input.optOutNotifications,
 			}),
 			context.corsHeaders,
 			req,
@@ -475,6 +512,7 @@ export function handleHeadlessSessionEvents(
 		: runtime.createImplicitStream({
 				cursor,
 				role: getHeadlessRole(req),
+				optOutNotifications: parseOptOutNotifications(req),
 			});
 	if (!stream) {
 		throw new ApiError(404, "Headless subscriber not found");

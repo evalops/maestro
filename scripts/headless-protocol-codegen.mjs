@@ -65,6 +65,10 @@ export type HeadlessServerRequestResolvedBy =
 export const headlessConnectionRoles = ${toTsConst(manifest.connectionRoles)};
 export type HeadlessConnectionRole = (typeof headlessConnectionRoles)[number];
 
+export const headlessNotificationTypes = ${toTsConst(manifest.notificationTypes)};
+export type HeadlessNotificationType =
+\t(typeof headlessNotificationTypes)[number];
+
 export const headlessThinkingLevels = ${toTsConst(manifest.thinkingLevels)};
 export type HeadlessThinkingLevel = (typeof headlessThinkingLevels)[number];
 
@@ -333,6 +337,9 @@ pub const HEADLESS_SERVER_REQUEST_RESOLVED_BY: &[&str] = ${toRustArray(
 	)};
 pub const HEADLESS_CONNECTION_ROLES: &[&str] = ${toRustArray(
 		manifest.connectionRoles,
+	)};
+pub const HEADLESS_NOTIFICATION_TYPES: &[&str] = ${toRustArray(
+		manifest.notificationTypes,
 	)};
 pub const HEADLESS_THINKING_LEVELS: &[&str] = ${toRustArray(
 		manifest.thinkingLevels,
