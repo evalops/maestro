@@ -384,7 +384,10 @@ export async function runHeadlessMode(
 						cwd: msg.cwd,
 						env: msg.env,
 						shell_mode: msg.shell_mode,
+						terminal_mode: msg.terminal_mode,
 						allow_stdin: msg.allow_stdin,
+						columns: msg.columns,
+						rows: msg.rows,
 					});
 					break;
 
@@ -407,6 +410,19 @@ export async function runHeadlessMode(
 						msg.content,
 						msg.eof,
 					);
+					break;
+
+				case "utility_command_resize":
+					if (
+						!state.capabilities?.utility_operations?.includes("command_exec")
+					) {
+						sendError(
+							"utility_command_resize requires command_exec capability",
+							false,
+						);
+						break;
+					}
+					await utilityCommands.resize(msg.command_id, msg.columns, msg.rows);
 					break;
 
 				case "utility_file_search":
