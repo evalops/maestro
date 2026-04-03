@@ -1,6 +1,6 @@
 # Maestro JetBrains Plugin
 
-JetBrains IDE integration for [Maestro](https://github.com/evalops/maestro) - the deterministic AI coding assistant.
+JetBrains IDE integration for [Maestro](https://github.com/evalops/maestro), the AI coding assistant.
 
 ## Features
 

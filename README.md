@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/evalops/maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/evalops/maestro/actions/workflows/ci.yml)
 
-Maestro is a deterministic coding agent with multi-model support, featuring terminal (TUI/CLI), web, IDE (VS Code, JetBrains), browser (Conductor), Slack, and GitHub interfaces for AI-assisted development.
+Maestro is a coding agent with multi-model support, featuring terminal (TUI/CLI), web, IDE (VS Code, JetBrains), browser (Conductor), Slack, and GitHub interfaces for AI-assisted development.
 
 ---
 
@@ -36,7 +36,7 @@ Maestro is a deterministic coding agent with multi-model support, featuring term
 
 ## Concept
 
-Maestro exposes every capability through slash commands and git-aware helpers so you always know what changed and why. The agent is intentionally minimal: no hidden context juggling, no silent retries, just explicit tools you can chain together or script.
+Maestro exposes its capabilities through slash commands and git-aware helpers so you can inspect what changed and review it in git. The agent emphasizes explicit tools and visible state over opaque automation.
 
 Choose your interface:
 - **Terminal (TUI/CLI)**: Rich interactive terminal interface with keyboard shortcuts, file search, and command palette
@@ -63,11 +63,11 @@ The terminal is home for many developers—fast, scriptable, distraction-free. B
 
 **Conductor** brings browser automation to Maestro. The Chrome extension connects to Maestro's web server, giving the agent eyes and hands in the browser—read pages, click elements, fill forms, capture screenshots. Useful for web scraping, testing workflows, or any task that requires interacting with web applications.
 
-Same agent, same tools, same deterministic behavior—just different surfaces optimized for different contexts.
+Same agent, same tools, same core interaction model—just different surfaces optimized for different contexts.
 
 ### Who It's For
 
-Developers who want deterministic, scriptable AI assistance with full transparency. You value explicit commands over hidden heuristics, git-friendly edits over opaque patches, and the ability to reason about every action Maestro takes.
+Developers who want explicit, scriptable AI assistance with good visibility into what the agent is doing. You value direct commands over hidden heuristics, git-friendly edits over opaque patches, and the ability to inspect actions after the fact.
 
 ## Installation
 
@@ -558,10 +558,10 @@ Payloads include tool name, success flag, duration, and evaluation context. Use 
 
 ### Design Principles
 
-- **Slash-command first** – All actions are explicit and scriptable
-- **Deterministic tooling** – Filesystem changes via git-aware helpers
+- **Slash-command first** – Core actions are explicit and scriptable
+- **Git-aware tooling** – Filesystem changes go through git-friendly helpers
 - **EvalOps-ready** – Built-in scenario runners and cost tracking
-- **Provider-agnostic** – Portable across Anthropic, OpenAI, Gemini, Groq, etc.
+- **Multi-provider support** – Works across Anthropic, OpenAI, Gemini, Groq, and related providers
 
 ## Development Services (Docker)
 

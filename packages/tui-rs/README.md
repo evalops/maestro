@@ -8,7 +8,7 @@ The TypeScript TUI has limitations with SSH sessions where content that scrolls 
 
 1. **Native terminal scrollback**: Pushes content into the terminal's scrollback buffer using ANSI scroll regions (DECSTBM), persisting even over SSH
 2. **Differential rendering**: Only sends changed cells, minimizing bytes over slow connections
-3. **Native performance**: Rust + crossterm provides reliable terminal handling
+3. **Native performance**: Rust + crossterm handles terminal rendering directly
 4. **Standalone binary**: Single executable with native AI provider integrations - no Node.js runtime required
 
 ## Architecture
@@ -186,7 +186,7 @@ src/
 
 ## Status
 
-**Production-ready features:**
+**Current feature set:**
 - Native AI integration (Anthropic Claude, OpenAI GPT)
 - Full tool suite (bash, read, write, edit, glob, grep)
 - Extended thinking support

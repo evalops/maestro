@@ -1,13 +1,13 @@
 # Maestro for VS Code
 
-Use Maestro's deterministic AI assistant directly inside VS Code. Chat with AI, execute commands, and get intelligent code assistance without leaving your editor.
+Use Maestro directly inside VS Code. Chat with AI, execute commands, and get code assistance without leaving your editor.
 
 ## Features
 
 - **AI Chat Sidebar**: Interactive chat panel in the VS Code sidebar
 - **Code-Aware Assistance**: Get context-aware help for your current project
 - **Model Selection**: Choose from multiple AI providers (Anthropic, OpenAI, Google, etc.)
-- **Deterministic Tooling**: All operations use transparent, git-aware helpers
+- **Git-Aware Tooling**: Operations use git-friendly helpers you can inspect and review
 
 ## Requirements
 
