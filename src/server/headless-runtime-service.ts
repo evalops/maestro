@@ -671,8 +671,22 @@ export class HeadlessSessionRuntime {
 				sessionId: this.sessionId,
 			});
 		});
-		this.fileWatches.dispose(reason);
-		this.agent.abort();
+		try {
+			this.fileWatches.dispose(reason);
+		} catch (error) {
+			logger.warn("Failed to dispose headless file watches", {
+				error: error instanceof Error ? error.message : String(error),
+				sessionId: this.sessionId,
+			});
+		}
+		try {
+			this.agent.abort();
+		} catch (error) {
+			logger.warn("Failed to abort disposed headless agent", {
+				error: error instanceof Error ? error.message : String(error),
+				sessionId: this.sessionId,
+			});
+		}
 		this.finalizeDisposal();
 	}
 

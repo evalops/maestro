@@ -291,7 +291,7 @@ impl AgentSupervisor {
     pub fn restore_session_replay(&mut self, replay: SessionReplay) {
         self.state = replay.state;
         self.last_init = replay.last_init;
-        self.remember_remote_session_id(self.state.session_id.clone());
+        self.seed_remote_session_id_if_missing(self.state.session_id.clone());
     }
 
     async fn spawn_transport(&mut self) -> Result<ManagedTransport, AsyncTransportError> {
@@ -454,6 +454,14 @@ impl AgentSupervisor {
     fn remember_remote_session_id(&mut self, session_id: Option<String>) {
         if let (Some(remote), Some(session_id)) = (self.config.remote.as_mut(), session_id) {
             remote.session_id = Some(session_id);
+        }
+    }
+
+    fn seed_remote_session_id_if_missing(&mut self, session_id: Option<String>) {
+        if let (Some(remote), Some(session_id)) = (self.config.remote.as_mut(), session_id) {
+            if remote.session_id.is_none() {
+                remote.session_id = Some(session_id);
+            }
         }
     }
 
@@ -1461,6 +1469,37 @@ mod tests {
         assert_eq!(supervisor.state().model.as_deref(), Some("claude-3-opus"));
         assert_eq!(supervisor.state().provider.as_deref(), Some("anthropic"));
         assert!(supervisor.state().is_ready);
+    }
+
+    #[test]
+    fn session_replay_does_not_override_explicit_remote_session_id() {
+        let replay = SessionReplay {
+            state: AgentState {
+                session_id: Some("sess_replayed".to_string()),
+                is_ready: true,
+                ..AgentState::default()
+            },
+            last_init: None,
+        };
+
+        let supervisor = SupervisorBuilder::new()
+            .remote_base_url("http://127.0.0.1:8080")
+            .remote_session_id("sess_explicit")
+            .session_replay(replay)
+            .build();
+
+        assert_eq!(
+            supervisor
+                .config
+                .remote
+                .as_ref()
+                .and_then(|remote| remote.session_id.as_deref()),
+            Some("sess_explicit")
+        );
+        assert_eq!(
+            supervisor.state().session_id.as_deref(),
+            Some("sess_replayed")
+        );
     }
 
     #[test]
