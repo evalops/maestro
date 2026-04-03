@@ -3,6 +3,7 @@ import type { HeadlessToAgentMessage } from "../cli/headless-protocol.js";
 import type {
 	EnsureRuntimeOptions,
 	HeadlessAttachedSubscription,
+	HeadlessRuntimeConnectionClosedSnapshot,
 	HeadlessRuntimeService,
 	HeadlessRuntimeSnapshot,
 	HeadlessRuntimeStreamEnvelope,
@@ -16,6 +17,13 @@ export interface HeadlessInProcessSendOptions {
 	connectionId?: string | null;
 	subscriptionId?: string | null;
 	message: HeadlessToAgentMessage;
+}
+
+export interface HeadlessInProcessDisconnectOptions {
+	scopeKey: string;
+	sessionId: string;
+	connectionId?: string | null;
+	subscriptionId?: string | null;
 }
 
 export interface HeadlessInProcessSubscribeOptions {
@@ -89,6 +97,18 @@ export class HeadlessInProcessHost {
 		subscriptionId: string,
 	): Promise<boolean> {
 		return this.getRuntime(scopeKey, sessionId).unsubscribe(subscriptionId);
+	}
+
+	async disconnect(
+		options: HeadlessInProcessDisconnectOptions,
+	): Promise<HeadlessRuntimeConnectionClosedSnapshot> {
+		return this.getRuntime(
+			options.scopeKey,
+			options.sessionId,
+		).disconnectConnection({
+			connectionId: options.connectionId,
+			subscriptionId: options.subscriptionId,
+		});
 	}
 
 	async send(

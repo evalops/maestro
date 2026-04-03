@@ -29,6 +29,7 @@ import { clientToolService } from "../../src/server/client-tools-service.js";
 import {
 	handleHeadlessConnectionCreate,
 	handleHeadlessSessionCreate,
+	handleHeadlessSessionDisconnect,
 	handleHeadlessSessionEvents,
 	handleHeadlessSessionMessage,
 	handleHeadlessSessionSubscribe,
@@ -1879,6 +1880,53 @@ describe("headless session handlers", () => {
 		expect(runtime?.getSnapshot().state.controller_subscription_id).toBeNull();
 	});
 
+	it("explicit disconnect releases a registered controller connection", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const createReq = createJsonRequest("POST", "/api/headless/connections", {
+			model: TEST_MODEL.id,
+			role: "controller",
+		});
+		const createRes = new MockResponse();
+		createRes.req = createReq;
+		await handleHeadlessConnectionCreate(
+			createReq,
+			createRes as unknown as ServerResponse,
+			context,
+		);
+		const { session_id, connection_id } = JSON.parse(createRes.body);
+
+		const disconnectReq = createJsonRequest(
+			"POST",
+			`/api/headless/sessions/${session_id}/disconnect`,
+			{ connectionId: connection_id },
+		);
+		const disconnectRes = new MockResponse();
+		disconnectRes.req = disconnectReq;
+		await handleHeadlessSessionDisconnect(
+			disconnectReq,
+			disconnectRes as unknown as ServerResponse,
+			context,
+			{ id: session_id },
+		);
+
+		expect(JSON.parse(disconnectRes.body)).toEqual({
+			success: true,
+			connection_id,
+			controller_connection_id: null,
+			disconnected_subscription_ids: [],
+		});
+		const runtime = context.headlessRuntimeService.getRuntime(
+			"anon",
+			session_id,
+		);
+		expect(runtime?.getSnapshot().state.connection_count).toBe(0);
+		expect(runtime?.getSnapshot().state.controller_connection_id).toBeNull();
+		expect(runtime?.getSnapshot().state.subscriber_count).toBe(0);
+	});
+
 	it("explicit unsubscribe cleans up utility resources owned by that connection", async () => {
 		const fakeAgent = new FakeAgent();
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
@@ -1969,6 +2017,105 @@ describe("headless session handlers", () => {
 			expect(JSON.parse(unsubscribeRes.body)).toEqual({ success: true });
 			expect(runtime.getSnapshot().state.active_file_watches).toEqual([]);
 			expect(runtime.getSnapshot().state.controller_connection_id).toBeNull();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("explicit disconnect cleans up utility resources owned by that connection", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval"],
+					utility_operations: ["file_watch"],
+				},
+				context,
+				sessionManager,
+			});
+			const sessionId = runtime.getSnapshot().session_id;
+
+			const subscribeReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/subscribe`,
+				{ role: "controller" },
+			);
+			const subscribeRes = new MockResponse();
+			subscribeRes.req = subscribeReq;
+			await handleHeadlessSessionSubscribe(
+				subscribeReq,
+				subscribeRes as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			);
+			const { connection_id, subscription_id } = JSON.parse(subscribeRes.body);
+
+			const messageReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{
+					type: "utility_file_watch_start",
+					watch_id: "watch_owned_disconnect",
+					root_dir: tempDir,
+					debounce_ms: 10,
+				},
+				{
+					"x-maestro-headless-subscriber-id": subscription_id,
+					"x-maestro-headless-role": "controller",
+				},
+			);
+			const messageRes = new MockResponse();
+			messageRes.req = messageReq;
+			await handleHeadlessSessionMessage(
+				messageReq,
+				messageRes as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			);
+			expect(JSON.parse(messageRes.body)).toEqual({ success: true });
+			expect(runtime.getSnapshot().state.active_file_watches).toEqual([
+				expect.objectContaining({
+					watch_id: "watch_owned_disconnect",
+					owner_connection_id: connection_id,
+				}),
+			]);
+
+			const disconnectReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/disconnect`,
+				{ connectionId: connection_id },
+			);
+			const disconnectRes = new MockResponse();
+			disconnectRes.req = disconnectReq;
+			await handleHeadlessSessionDisconnect(
+				disconnectReq,
+				disconnectRes as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			);
+
+			expect(JSON.parse(disconnectRes.body)).toEqual({
+				success: true,
+				connection_id,
+				controller_connection_id: null,
+				disconnected_subscription_ids: [subscription_id],
+			});
+			expect(runtime.getSnapshot().state.active_file_watches).toEqual([]);
+			expect(runtime.getSnapshot().state.controller_connection_id).toBeNull();
+			expect(runtime.getSnapshot().state.subscriber_count).toBe(0);
+			expect(runtime.getSnapshot().state.connection_count).toBe(0);
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
