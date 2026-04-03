@@ -2390,6 +2390,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn writer_retry_budget_ignores_stale_reference_errors() {
+        assert!(!should_retry_message_error(
+            &AsyncTransportError::RemoteStatus {
+                status: 404,
+                message: "remote request failed with status 404: Headless connection not found"
+                    .to_string(),
+                retryable: true,
+                kind: RemoteErrorKind::StaleConnection,
+            }
+        ));
+        assert!(!should_retry_message_error(
+            &AsyncTransportError::RemoteStatus {
+                status: 404,
+                message: "remote request failed with status 404: Headless subscriber not found"
+                    .to_string(),
+                retryable: true,
+                kind: RemoteErrorKind::StaleSubscriber,
+            }
+        ));
+    }
+
     #[tokio::test]
     async fn remote_transport_connects_sends_and_receives_events() {
         let snapshot = serde_json::json!({
@@ -2833,7 +2855,13 @@ mod tests {
                         {
                             let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
                             let _ = socket.write_all(headers.as_bytes()).await;
-                            let _ = socket.shutdown().await;
+                            let (_tx, mut rx) = mpsc::unbounded_channel::<String>();
+                            while let Some(event) = rx.recv().await {
+                                let payload = format!("data: {event}\n\n");
+                                if socket.write_all(payload.as_bytes()).await.is_err() {
+                                    break;
+                                }
+                            }
                             return;
                         }
 
