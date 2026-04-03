@@ -13,7 +13,7 @@ Maestro is a coding agent with multi-model support, featuring terminal (TUI/CLI)
 - [Quick Start](#quick-start)
 - [API Keys & Providers](#api-keys)
 - [Slash Commands](#slash-commands)
-- [Tools Overview](#tools)
+- [Tools](#tools)
 - [Hooks](#hooks)
 - [Security](#security)
 - [Telemetry](#telemetry)
@@ -21,9 +21,9 @@ Maestro is a coding agent with multi-model support, featuring terminal (TUI/CLI)
 ## For Contributors
 
 - [EvalOps Workflows](#evalops-workflows)
+- [Development Services (Docker)](#development-services-docker)
 - [Building from Source](#from-source-bun--nx)
 - [Workspace Commands](#workspace-commands-bun--nx)
-- [Full Commands Reference](#full-commands-reference)
 - [Maestros & Background Tasks](#maestros-sub-agents)
 - [MCP Integration](#adding-your-own-tools)
 - [Packages](#packages)
@@ -49,25 +49,9 @@ Choose your interface:
 - **Ambient Agent**: Long-running GitHub daemon for repository monitoring and PR generation ([Ambient Maestro design](docs/design/AMBIENT_AGENT.md))
 - **Headless**: Scriptable automation for CI/CD and evaluation pipelines
 
-### Why Multiple Interfaces?
-
-The terminal is the primary interface, but the rest of the surfaces exist for workflows where a terminal session is not the best fit.
-
-**Web UI** exposes Maestro in a browser, including shared session links and the same core interaction model as the terminal.
-
-**IDE extensions** (VS Code, JetBrains) attach editor context such as diagnostics, go-to-definition, and references directly to agent interactions.
-
-**Slack** provides a shared team interface for queueing work, reviewing results, and running tasks from channels where people already coordinate.
-
-**GitHub Agent** is for repository-driven workflows where labels or issues trigger implementation, checks, and PR creation.
-
-**Conductor** connects browser automation to the Maestro web server for page inspection, form filling, screenshots, and browser-based test flows.
-
-The runtime model is shared across these interfaces, but each surface adds different context and controls around it.
-
 ### Who It's For
 
-Developers who want explicit, scriptable AI assistance with good visibility into what the agent is doing. You value direct commands over hidden heuristics, git-friendly edits over opaque patches, and the ability to inspect actions after the fact.
+Developers who want explicit, scriptable AI assistance with good visibility into what the agent is doing. The terminal is the primary interface; the other surfaces exist for workflows where a terminal session is not the best fit. The runtime model is shared across all interfaces, but each adds different context and controls.
 
 ## Installation
 
@@ -180,44 +164,30 @@ Example `~/.maestro/config.json` to add a short alias:
 
 Every operation is exposed as an explicit slash command. Type `/help` for the full list.
 
-### Essential Commands
-
 | Command | Description |
 |---------|-------------|
-| `/model` | Switch models mid-session (interactive selector) |
+| `/model` | Switch models (interactive selector) |
+| `/thinking` | Adjust reasoning level |
 | `/help` | List all available commands |
 | `/new` | Start a fresh session |
 | `/clear` | Clear context and restart |
-| `/export` | Export session to HTML |
+| `/export [file]` | Export session to HTML |
 | `/quit` | Exit (or Ctrl+C twice) |
-
-### Session Management
-
-| Command | Description |
-|---------|-------------|
-| `/session` | Show session info, mark favorites, add summaries |
+| `/session` | Session info, favorites, and summaries |
 | `/sessions` | List/load saved sessions |
-| `/cost` | View usage and cost breakdown |
-| `/stats` | Quick health pulse (status + cost) |
-
-### Development
-
-| Command | Description |
-|---------|-------------|
+| `/cost` | Usage and cost breakdown |
+| `/stats` | Quick health check |
 | `/diff <path>` | Show git diff for a file |
 | `/review` | Git status + diff summary |
 | `/undo` | Discard working tree changes |
 | `/run` | Execute project scripts |
 | `/plan` | Manage todo plans |
-
-### Configuration
-
-| Command | Description |
-|---------|-------------|
-| `/config` | Show configuration (sources, providers, env) |
+| `/config` | Show configuration |
 | `/diag` | Provider/API diagnostics |
 | `/approvals` | Toggle approval modes (auto/prompt/fail) |
-| `/thinking` | Adjust reasoning level for supported models |
+| `/login` | OAuth authentication |
+
+See the [full commands reference](#full-commands-reference) in the contributor section for the complete list.
 
 ## Tools
 
@@ -248,78 +218,11 @@ Every operation is exposed as an explicit slash command. Type `/help` for the fu
 
 ### API Compatibility Notes
 
-#### OpenAI Responses API (tool schema filtering)
-
-When using an OpenAI **Responses API** model (e.g. `api: "openai-responses"`), tool parameter schemas have stricter requirements than typical Chat Completions-style function calling.
-
-In practice, tool `parameters` often need to be a top-level JSON Schema `object` (the root must not be `anyOf`), and some composition keywords (like `allOf` / `not`) are not supported by Structured Outputs.
-
-Maestro will automatically **filter out tools** whose `parameters` schema uses these JSON Schema keywords at the **top level**:
-- `oneOf`, `anyOf`, `allOf`
-- `enum`
-- `not`
-
-Maestro logs a warning listing filtered tools (see `filterResponsesApiTools()`), but users may still be surprised if an external/MCP tool disappears.
-
-Workaround: wrap the constrained value inside an object:
-
-```json
-// ❌ filtered (top-level enum)
-{ "enum": ["a", "b", "c"] }
-
-// ✅ compatible (enum nested under properties)
-{
-  "type": "object",
-  "properties": { "value": { "enum": ["a", "b", "c"] } }
-}
-```
-
-References:
-- OpenAI docs: Structured Outputs supported schemas (`https://platform.openai.com/docs/guides/structured-outputs/supported-schemas`)
-- OpenAI docs: unsupported keywords (`https://platform.openai.com/docs/guides/structured-outputs/some-type-specific-keywords-are-not-yet-supported`)
-
-#### Reasoning summary & effort (Responses API only)
-
-Maestro enforces these guardrails for OpenAI-compatible providers:
-
-- `reasoningSummary` is only allowed for **Responses API** models (`api: "openai-responses"`) that are marked `reasoning: true`.
-- `reasoningEffort` is only sent when `compat.supportsReasoningEffort` is true.
-- If you enable these on unsupported models, Maestro fails fast with a clear error.
-
-For OpenAI-compatible vendors, set compat flags explicitly when needed:
-
-```json
-{
-  "providers": [
-    {
-      "id": "azure-openai",
-      "api": "openai-completions",
-      "baseUrl": "https://my-resource.openai.azure.com/openai/deployments/gpt-4/chat/completions?api-version=2024-02-15-preview",
-      "models": [
-        {
-          "id": "gpt-4o",
-          "name": "GPT-4o (Azure)",
-          "compat": { "supportsReasoningEffort": false }
-        }
-      ]
-    }
-  ]
-}
-```
+For OpenAI Responses API models, Maestro automatically filters tools with unsupported top-level JSON Schema keywords (`oneOf`, `anyOf`, `allOf`, `enum`, `not`). Wrap constrained values inside an object to work around this. See `docs/MODELS.md` for details on compat flags, reasoning summary/effort settings, and provider overrides.
 
 ### Framework Preference
 
-- Set a default stack for new tasks with `/framework <id>` (e.g., `fastapi`, `express`, `node`).
-- Scope defaults per user (default) or workspace via `/framework <id> --workspace`; clear with `/framework none`.
-- Discover options with `/framework list`.
-- Precedence: policy (locked) > policy > env override (`MAESTRO_FRAMEWORK_OVERRIDE`) > env default (`MAESTRO_DEFAULT_FRAMEWORK`) > workspace `.maestro/workspace.json` > user `~/.maestro/default-framework.json` > none.
-- Example policy (`~/.maestro/policy.json`):
-
-```json
-{
-  "framework": { "default": "fastapi", "locked": true }
-}
-```
+Set a default stack for new tasks with `/framework <id>` (e.g., `fastapi`, `express`, `node`). Scope per user or workspace via `--workspace`; clear with `/framework none`. Discover options with `/framework list`.
 
 ### Editor Features
 
@@ -378,9 +281,7 @@ See [Safety & Approvals](docs/SAFETY.md) for detailed configuration.
 
 ## Hooks
 
-Maestro supports lifecycle hooks for custom validation, logging, and automation. Hooks let you intercept tool calls, inject context, gate permissions, and integrate with external systems.
-
-### Quick Start
+Maestro supports lifecycle hooks for custom validation, logging, and automation. Hooks intercept tool calls, inject context, gate permissions, and integrate with external systems.
 
 ```bash
 # Via environment variable
@@ -417,47 +318,7 @@ Or via `.maestro/hooks.json` (project) or `~/.maestro/hooks.json` (user):
 | `PermissionRequest` | When approval is required |
 | `Notification` | On various notifications |
 
-### Hook Input/Output
-
-Hooks receive JSON via stdin:
-
-```json
-{
-  "hook_event_name": "PreToolUse",
-  "tool_name": "bash",
-  "tool_input": { "command": "rm -rf /tmp/test" },
-  "session_id": "abc123",
-  "cwd": "/path/to/project",
-  "timestamp": "2025-01-15T10:30:00Z"
-}
-```
-
-And return JSON via stdout:
-
-```json
-{
-  "continue": true,
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "allow"
-  }
-}
-```
-
-### Pattern Matching
-
-Matchers support:
-- `"*"` – matches all
-- `"bash|write|edit"` – matches any listed
-- Regular expressions for complex patterns
-
-### Use Cases
-
-- **CI gates**: Block commits without tests passing
-- **Audit logging**: Record all tool executions
-- **Custom validators**: Enforce project-specific rules
-- **Context injection**: Add relevant docs before tool runs
-- **Eval pipelines**: Score agent behavior with assertions
+Hooks receive JSON via stdin and return JSON via stdout. Matchers support `"*"` (all), `"bash|write|edit"` (any listed), and regular expressions.
 
 ## Telemetry
 
@@ -538,30 +399,7 @@ Each scenario specifies a command and expected output patterns:
 - **exitCode** – Expected process exit code
 - **timeout** – Optional timeout in milliseconds
 
-### Telemetry Integration
-
-Stream evaluation results to your analytics pipeline:
-
-```bash
-# Write to local log file
-export MAESTRO_TELEMETRY=true
-export MAESTRO_TELEMETRY_FILE=~/.maestro/telemetry.log
-
-# Or stream to endpoint
-export MAESTRO_TELEMETRY_ENDPOINT=https://your-evalops-dashboard.com/ingest
-
-# Control sampling rate (0.0 to 1.0)
-export MAESTRO_TELEMETRY_SAMPLE=0.25
-```
-
-Payloads include tool name, success flag, duration, and evaluation context. Use `npm run telemetry:report` to summarize success rates and durations from the log.
-
-### Design Principles
-
-- **Slash-command first** – Core actions are explicit and scriptable
-- **Git-aware tooling** – Filesystem changes go through git-friendly helpers
-- **EvalOps-ready** – Built-in scenario runners and cost tracking
-- **Multi-provider support** – Works across Anthropic, OpenAI, Gemini, Groq, and related providers
+Stream evaluation telemetry with `MAESTRO_TELEMETRY=true` and `MAESTRO_TELEMETRY_ENDPOINT`. Use `npm run telemetry:report` to summarize success rates from the log. See [Telemetry](#telemetry) for details.
 
 ## Development Services (Docker)
 
@@ -606,27 +444,20 @@ npm link                                        # Optional: link locally
 ```
 
 ### Binary Compilation
-```bash
-bun run compile:binary
-# Output: dist/maestro-bun
-```
 
-### Using the native Bun binary
-
-Build and distribute a single-file executable (no Node or repo needed):
+Build a single-file executable (no Node or repo needed):
 
 ```bash
-npm run bun:compile           # emits dist/maestro-bun
-chmod +x dist/maestro-bun   # if needed
-./dist/maestro-bun --help   # run it
+bun run compile:binary        # emits dist/maestro-bun
+chmod +x dist/maestro-bun    # if needed
+./dist/maestro-bun --help    # run it
 ```
 
 Notes:
 - Output is a glibc ELF; run on compatible Linux systems.
-- If you want tree-sitter bash parsing without the startup warning, keep these alongside the binary (or preserve their relative paths):
+- For tree-sitter bash parsing without the startup warning, keep these alongside the binary:
   - `node_modules/tree-sitter/prebuilds/linux-x64/tree-sitter.node`
   - `node_modules/tree-sitter-bash/prebuilds/linux-x64/tree-sitter-bash.node`
-- Bun’s bytecode mode (`--compile --bytecode`) currently fails on async-heavy bundles; the native binary above is the supported deliverable.
 
 ## Workspace Commands (Bun + Nx)
 
@@ -718,43 +549,21 @@ maestro [options] [messages...]
 
 ## Maestros (Sub-Agents)
 
-Maestros are specialized agent profiles with custom system prompts, tool restrictions, and model overrides. They are managed with `/maestro`, and the profile files live in `~/.maestro/composers/` (personal) or `.maestro/composers/` (project-specific).
-
-### Configuration
+Maestros are specialized agent profiles with custom system prompts, tool restrictions, and model overrides. Profile files live in `~/.maestro/composers/` (personal) or `.maestro/composers/` (project-specific).
 
 ```yaml
 # .maestro/composers/code-reviewer.yaml
 name: code-reviewer
 description: Focused code review assistant
 systemPrompt: |
-  You are a senior code reviewer. Focus on:
-  - Correctness and edge cases
-  - Security vulnerabilities
-  - Performance implications
-  - Code maintainability
-  
-  Be concise. Flag issues by severity (critical/warning/suggestion).
-  
-tools: [read, search, diff, gh_pr]  # Restricted tool set
-model: claude-opus-4-6     # Can override default model
+  You are a senior code reviewer. Be concise.
+  Flag issues by severity (critical/warning/suggestion).
+tools: [read, search, diff, gh_pr]
+model: claude-opus-4-6
 triggers:
   keywords: [review, pr, code review]
   files: ["*.ts", "*.tsx", "*.py", "*.go"]
 ```
-
-### Available Fields
-
-| Field | Description |
-|-------|-------------|
-| `name` | Unique identifier |
-| `description` | Shown in `/maestro list` |
-| `systemPrompt` | Custom instructions prepended to context |
-| `tools` | Array of allowed tools (omit for all tools) |
-| `model` | Override the default model |
-| `triggers.keywords` | Auto-activate on these words |
-| `triggers.files` | Auto-activate for these file patterns |
-
-### Commands
 
 ```bash
 /maestro list              # Show available maestros
@@ -762,73 +571,18 @@ triggers:
 /maestro deactivate        # Return to default agent
 ```
 
-For heavier delegation patterns (parallel tasks, long-running jobs), spawn a separate `maestro` process or write a helper tool the agent can call via `bash`.
-
 ## Background Tasks
 
-The `background_tasks` tool manages long-running processes with lifecycle management, auto-restart, and log persistence.
-
-### Actions
+The `background_tasks` tool manages long-running processes (dev servers, file watchers, tunnels) with lifecycle management, auto-restart, and log persistence.
 
 | Action | Description |
 |--------|-------------|
-| `start` | Launch a background command |
+| `start` | Launch a background command (supports `cwd`, `env`, `shell`, and `restart` policy) |
 | `stop` | Terminate a running task by ID |
 | `list` | View all active tasks with status and resource usage |
 | `logs` | Tail task output (default 40 lines, max 200) |
 
-### Example: Dev Server Workflow
-
-```bash
-# Start a dev server in the background
-maestro "Start the Next.js dev server"
-# Agent executes: background_tasks action=start command="npm run dev" cwd="./packages/web"
-
-# Make code changes...
-
-# Check for errors
-maestro "Show me the dev server logs"
-# Agent executes: background_tasks action=logs taskId="abc123" lines=50
-
-# Stop when done
-maestro "Stop all background tasks"
-# Agent executes: background_tasks action=stop taskId="abc123"
-```
-
-### Start Parameters
-
-```json
-{
-  "action": "start",
-  "command": "npm run dev",
-  "cwd": "./packages/web",
-  "env": { "PORT": "3001" },
-  "shell": true,
-  "restart": {
-    "maxAttempts": 3,
-    "delayMs": 1000,
-    "strategy": "exponential",
-    "maxDelayMs": 30000,
-    "jitterRatio": 0.1
-  }
-}
-```
-
-| Parameter | Description |
-|-----------|-------------|
-| `command` | Command to run |
-| `cwd` | Working directory |
-| `env` | Additional environment variables |
-| `shell` | Set `true` for pipes/redirects (e.g., `cmd1 \| cmd2`) |
-| `restart.maxAttempts` | Max restart attempts on failure (1-5) |
-| `restart.delayMs` | Delay between restarts (50-60000ms) |
-| `restart.strategy` | `"fixed"` or `"exponential"` backoff |
-
-### Log Storage
-
-- Logs persist to `~/.maestro/logs/background-<taskId>.log`
-- Files truncated at 5MB to prevent disk issues
-- Tasks auto-cleanup on Maestro exit
+Logs persist to `~/.maestro/logs/background-<taskId>.log` (truncated at 5MB). Tasks auto-cleanup on exit.
 
 ## Adding Your Own Tools
 
@@ -904,8 +658,6 @@ Sessions are JSONL in `~/.maestro/agent/sessions/`. Use:
 | [`ambient-agent-rs`](packages/ambient-agent-rs/README.md) | Long-running GitHub agent daemon (Ambient Maestro) |
 | [Maestro for VS Code](packages/vscode-extension/README.md) | VS Code extension with inline chat and IDE integration |
 | [Maestro for JetBrains](packages/jetbrains-plugin/README.md) | Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs |
-
-Doc map (start here): [docs/README.md](docs/README.md) → Quickstart → Feature Guide → Tools Reference → Safety. Web/TUI differences: parity appendix in [docs/WEB_UI.md](docs/WEB_UI.md).
 
 ## License
 
