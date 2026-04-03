@@ -908,21 +908,9 @@ export async function main(args: string[]) {
 			)
 		: new ActionApprovalService(approvalModeOverride);
 	const headlessClientToolService = isHeadlessMode
-		? {
-				requestExecution: (
-					id: string,
-					toolName: string,
-					args: Record<string, unknown>,
-					signal?: AbortSignal,
-				) =>
-					clientToolService.requestExecution(
-						id,
-						toolName,
-						args,
-						signal,
-						sessionManager.getSessionId() ?? undefined,
-					),
-			}
+		? clientToolService.forSession(
+				() => sessionManager.getSessionId() ?? undefined,
+			)
 		: undefined;
 	const toolRetryMode: ToolRetryMode =
 		isInteractiveTui && !isHeadlessMode ? "prompt" : "skip";

@@ -1,8 +1,10 @@
+import type { ClientToolExecutionService } from "../agent/transport.js";
 import type { ImageContent, TextContent } from "../agent/types.js";
 import { serverRequestManager } from "./server-request-manager.js";
 
 /** Content types that can be returned from client tool execution */
 type ToolResultContent = TextContent | ImageContent;
+type SessionIdProvider = string | (() => string | undefined);
 
 type PendingEntry = {
 	resolve: (result: { content: ToolResultContent[]; isError: boolean }) => void;
@@ -11,6 +13,19 @@ type PendingEntry = {
 
 export class ClientToolService {
 	private pending = new Map<string, PendingEntry>();
+
+	forSession(sessionIdProvider: SessionIdProvider): ClientToolExecutionService {
+		return {
+			requestExecution: (id, toolName, args, signal) =>
+				this.requestExecution(
+					id,
+					toolName,
+					args,
+					signal,
+					this.resolveSessionId(sessionIdProvider),
+				),
+		};
+	}
 
 	async requestExecution(
 		id: string,
@@ -90,6 +105,14 @@ export class ClientToolService {
 
 	resolve(id: string, content: ToolResultContent[], isError: boolean) {
 		return serverRequestManager.resolveClientTool(id, content, isError);
+	}
+
+	private resolveSessionId(
+		sessionIdProvider: SessionIdProvider,
+	): string | undefined {
+		return typeof sessionIdProvider === "function"
+			? sessionIdProvider()
+			: sessionIdProvider;
 	}
 }
 
