@@ -53,4 +53,28 @@ describe("HeadlessUtilityFileWatchManager", () => {
 		expect(manager.snapshot()).toEqual([]);
 		expect(events).toEqual([{ type: "stopped", watch_id: "watch_src" }]);
 	});
+
+	it("rejects missing watch roots without reporting a started watch", async () => {
+		const events: Array<{ type: string; watch_id: string }> = [];
+		const { HeadlessUtilityFileWatchManager } = await import(
+			"../../src/headless/utility-file-watch-manager.js"
+		);
+
+		const manager = new HeadlessUtilityFileWatchManager((event) => {
+			events.push({ type: event.type, watch_id: event.watch_id });
+		});
+
+		const missingRoot = `${process.cwd()}/definitely-missing-headless-watch-root`;
+
+		await expect(
+			manager.start({
+				watch_id: "missing_root",
+				root_dir: missingRoot,
+			}),
+		).rejects.toThrow(
+			`Utility file watch root directory does not exist: ${missingRoot}`,
+		);
+		expect(manager.snapshot()).toEqual([]);
+		expect(events).toEqual([]);
+	});
 });

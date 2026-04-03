@@ -409,7 +409,8 @@ describe("HeadlessInProcessHost", () => {
 			const next = await readNextEnvelope(stream);
 			if (
 				next.type === "message" &&
-				next.message.type === "utility_file_watch_event"
+				next.message.type === "utility_file_watch_event" &&
+				next.message.relative_path === "watched.txt"
 			) {
 				eventEnvelope = next;
 				break;

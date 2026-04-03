@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { HeadlessUtilityFileWatchChangeType } from "@evalops/contracts";
 import {
@@ -102,6 +103,11 @@ export class HeadlessUtilityFileWatchManager {
 
 		const rootDir = resolve(request.root_dir ?? process.cwd());
 		const debounceMs = Math.max(0, request.debounce_ms ?? DEFAULT_DEBOUNCE_MS);
+		if (!existsSync(rootDir)) {
+			throw new Error(
+				`Utility file watch root directory does not exist: ${rootDir}`,
+			);
+		}
 		const watcherConfig: FileWatcherConfig = {
 			rootDir,
 			recursive: true,
