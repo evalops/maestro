@@ -651,16 +651,21 @@ Sessions are JSONL in `~/.maestro/agent/sessions/`. Use:
 
 | Package | Description |
 |---------|-------------|
+| [`@evalops/maestro-core`](packages/core/README.md) | Agent loop, transport, types, and sandbox primitives — the engine behind all interfaces |
 | [`@evalops/ai`](packages/ai/README.md) | Shared AI SDK: model registry, provider transport, agent event streams |
+| [`@evalops/contracts`](packages/contracts/README.md) | Shared TypeScript definitions for frontend/backend integration |
 | [`@evalops/tui`](packages/tui/README.md) | Terminal UI library (TypeScript) with differential rendering |
-| [`tui-rs`](packages/tui-rs/README.md) | Native Rust TUI - standalone binary with native AI provider integrations |
-| [`@evalops/maestro-web`](packages/web/README.md) | Web interface for Maestro |
-| [`@evalops/contracts`](packages/contracts/README.md) | Shared TypeScript definitions |
+| [`tui-rs`](packages/tui-rs/README.md) | Native Rust TUI — standalone binary with native AI provider integrations |
+| [`@evalops/maestro-web`](packages/web/README.md) | Browser-based web interface |
+| [`@evalops/maestro-desktop`](packages/desktop/README.md) | Electron desktop app |
+| [`maestro-vscode`](packages/vscode-extension/README.md) | VS Code extension with inline chat and IDE integration |
+| [`maestro-jetbrains`](packages/jetbrains-plugin/README.md) | Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs |
 | [`@evalops/slack-agent`](packages/slack-agent/README.md) | Slack bot with Docker sandbox isolation |
+| [`@evalops/slack-agent-ui`](packages/slack-agent-ui) | Dashboard UI for the Slack agent (connector management, OAuth flows) |
 | [`@evalops/github-agent`](packages/github-agent/README.md) | GitHub automation agent for issue-driven workflows |
-| [`ambient-agent-rs`](packages/ambient-agent-rs/README.md) | Long-running GitHub agent daemon (Ambient Maestro) |
-| [Maestro for VS Code](packages/vscode-extension/README.md) | VS Code extension with inline chat and IDE integration |
-| [Maestro for JetBrains](packages/jetbrains-plugin/README.md) | Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs |
+| [`ambient-agent-rs`](packages/ambient-agent-rs/README.md) | Long-running GitHub agent daemon (Ambient Maestro, Rust) |
+| [`@evalops/governance`](packages/governance) | Safety pipeline, firewall, and policy enforcement for MCP-compatible agents |
+| [`@evalops/governance-mcp-server`](packages/governance-mcp-server) | MCP server exposing governance tools (firewall, policy, credential scanning) |
 
 ## License
 
