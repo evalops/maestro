@@ -1258,11 +1258,11 @@ async fn reader_loop(
                                     }
                                 }
                                 Ok(RemoteEnvelope::Snapshot { snapshot }) => {
-                                    let (_snapshot_session_id, next_cursor, last_init, state) =
-                                        snapshot.into_state();
-                                    if !advances_remote_cursor(cursor, next_cursor) {
+                                    if !advances_remote_cursor(cursor, snapshot.cursor) {
                                         continue;
                                     }
+                                    let (_snapshot_session_id, next_cursor, last_init, state) =
+                                        snapshot.into_state();
                                     cursor = next_cursor;
                                     if event_tx
                                         .send(Ok(RemoteIncoming::Snapshot {
@@ -1275,11 +1275,11 @@ async fn reader_loop(
                                     }
                                 }
                                 Ok(RemoteEnvelope::Reset { reason, snapshot }) => {
-                                    let (_snapshot_session_id, next_cursor, last_init, state) =
-                                        snapshot.into_state();
-                                    if !advances_remote_cursor(cursor, next_cursor) {
+                                    if !advances_remote_cursor(cursor, snapshot.cursor) {
                                         continue;
                                     }
+                                    let (_snapshot_session_id, next_cursor, last_init, state) =
+                                        snapshot.into_state();
                                     cursor = next_cursor;
                                     if event_tx
                                         .send(Ok(RemoteIncoming::Reset {
