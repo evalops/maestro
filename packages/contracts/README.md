@@ -9,7 +9,14 @@ bun install
 bun run --filter @evalops/contracts build
 ```
 
-The package emits ESM + declaration artifacts into `packages/contracts/dist`. Root builds (`npm run build` or `npm run build:all`) automatically invoke this step via TypeScript project references.
+The package emits ESM + declaration artifacts into `packages/contracts/dist`.
+Its build now regenerates the checked-in headless protocol artifacts first, so
+changes to the protocol manifest stay aligned with the generated TS and Rust
+surfaces.
+
+Root builds (`npm run build` or `npm run build:all`) also run the same headless
+protocol codegen step before TypeScript compilation, so local builds do not rely
+on a separate manual generation command.
 
 ## Usage
 
