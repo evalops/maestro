@@ -803,6 +803,142 @@ describe("runHeadlessMode", () => {
 		expect(requestIndex).toBeGreaterThan(toolCallIndex);
 	});
 
+	it("routes tool retry prompts through generic server request responses", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+		const { ServerRequestToolRetryService } = await import(
+			"../../src/server/tool-retry-service.js"
+		);
+		const toolRetryService = new ServerRequestToolRetryService(
+			"prompt",
+			() => "session-headless-test",
+		);
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn(),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+			undefined,
+			toolRetryService,
+		);
+
+		await vi.waitFor(() => {
+			expect(onLine).toBeTypeOf("function");
+			expect(onClose).toBeTypeOf("function");
+		});
+
+		await onLine?.(
+			JSON.stringify({
+				type: "hello",
+				capabilities: { server_requests: ["tool_retry"] },
+				role: "controller",
+			}),
+		);
+
+		const decisionPromise = toolRetryService.requestDecision({
+			id: "retry_1",
+			toolCallId: "call_bash",
+			toolName: "bash",
+			args: { command: "ls" },
+			errorMessage: "Command failed",
+			attempt: 1,
+			summary: "Retry bash command",
+		});
+
+		await vi.waitFor(() => {
+			const messages = writes
+				.join("")
+				.trim()
+				.split("\n")
+				.filter(Boolean)
+				.map(
+					(line) =>
+						JSON.parse(line) as { type: string; [key: string]: unknown },
+				);
+			expect(messages).toContainEqual({
+				type: "server_request",
+				request_id: "retry_1",
+				request_type: "tool_retry",
+				call_id: "call_bash",
+				tool: "bash",
+				args: {
+					tool_call_id: "call_bash",
+					args: { command: "ls" },
+					error_message: "Command failed",
+					attempt: 1,
+					summary: "Retry bash command",
+				},
+				reason: "Retry bash command",
+			});
+		});
+
+		await onLine?.(
+			JSON.stringify({
+				type: "server_request_response",
+				request_id: "retry_1",
+				request_type: "tool_retry",
+				decision_action: "retry",
+				reason: "Try again",
+			}),
+		);
+
+		await expect(decisionPromise).resolves.toEqual({
+			action: "retry",
+			reason: "Try again",
+			resolvedBy: "user",
+		});
+
+		onClose?.();
+		await runPromise;
+
+		const messages = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map(
+				(line) => JSON.parse(line) as { type: string; [key: string]: unknown },
+			);
+		expect(messages).toContainEqual({
+			type: "server_request_resolved",
+			request_id: "retry_1",
+			request_type: "tool_retry",
+			call_id: "call_bash",
+			resolution: "retried",
+			reason: "Try again",
+			resolved_by: "user",
+		});
+	});
+
 	it("suppresses approval-only output in auto approval mode", async () => {
 		let onClose: CloseHandler | undefined;
 		let onAgentEvent: ((event: unknown) => void) | undefined;

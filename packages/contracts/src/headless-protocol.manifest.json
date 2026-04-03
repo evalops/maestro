@@ -1,15 +1,19 @@
 {
 	"protocolVersion": "2026-04-02",
-	"serverRequestTypes": ["approval", "client_tool", "user_input"],
+	"serverRequestTypes": ["approval", "client_tool", "user_input", "tool_retry"],
 	"serverRequestResolutions": [
 		"approved",
 		"denied",
 		"completed",
 		"failed",
 		"answered",
+		"retried",
+		"skipped",
+		"aborted",
 		"cancelled"
 	],
 	"serverRequestResolvedBy": ["user", "policy", "client", "runtime"],
+	"toolRetryDecisionActions": ["retry", "skip", "abort"],
 	"connectionRoles": ["viewer", "controller"],
 	"notificationTypes": ["status", "heartbeat", "connection_info", "compaction"],
 	"thinkingLevels": ["off", "minimal", "low", "medium", "high", "ultra"],

@@ -24,6 +24,7 @@ import {
 	TodoContextSource,
 } from "./agent/context-providers.js";
 import { Agent, ProviderTransport } from "./agent/index.js";
+import type { ToolRetryService } from "./agent/tool-retry.js";
 import type { ClientToolExecutionService } from "./agent/transport.js";
 import type { AgentTool, ThinkingLevel } from "./agent/types.js";
 import {
@@ -405,6 +406,7 @@ async function createAgent(
 		includeConductorTools?: boolean;
 		approvalService?: ActionApprovalService;
 		clientToolService?: ClientToolExecutionService;
+		toolRetryService?: ToolRetryService;
 	},
 ): Promise<Agent> {
 	const sessionTokenCounter = async (sessionId: string) => {
@@ -449,6 +451,7 @@ async function createAgent(
 		getAuthContext: async (provider: string) => authResolver(provider),
 		approvalService:
 			options?.approvalService ?? new WebActionApprovalService(approvalMode),
+		toolRetryService: options?.toolRetryService,
 		clientToolService:
 			options?.clientToolService ??
 			(options?.enableClientTools || options?.useClientAskUser

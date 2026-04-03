@@ -9,6 +9,7 @@ export const headlessServerRequestTypes = [
 	"approval",
 	"client_tool",
 	"user_input",
+	"tool_retry",
 ] as const;
 export type HeadlessServerRequestType =
 	(typeof headlessServerRequestTypes)[number];
@@ -19,6 +20,9 @@ export const headlessServerRequestResolutions = [
 	"completed",
 	"failed",
 	"answered",
+	"retried",
+	"skipped",
+	"aborted",
 	"cancelled",
 ] as const;
 export type HeadlessServerRequestResolution =
@@ -32,6 +36,14 @@ export const headlessServerRequestResolvedBy = [
 ] as const;
 export type HeadlessServerRequestResolvedBy =
 	(typeof headlessServerRequestResolvedBy)[number];
+
+export const headlessToolRetryDecisionActions = [
+	"retry",
+	"skip",
+	"abort",
+] as const;
+export type HeadlessToolRetryDecisionAction =
+	(typeof headlessToolRetryDecisionActions)[number];
 
 export const headlessConnectionRoles = ["viewer", "controller"] as const;
 export type HeadlessConnectionRole = (typeof headlessConnectionRoles)[number];

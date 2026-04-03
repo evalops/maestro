@@ -12,6 +12,7 @@ import {
 } from "@evalops/contracts";
 import type { ActionApprovalService } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
+import type { ToolRetryService } from "../agent/tool-retry.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
 import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
 import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
@@ -78,6 +79,7 @@ export async function runHeadlessMode(
 	agent: Agent,
 	sessionManager: SessionManager,
 	approvalService?: ActionApprovalService,
+	toolRetryService?: ToolRetryService,
 ): Promise<void> {
 	const translator = new HeadlessProtocolTranslator();
 	const state = createHeadlessRuntimeState();
@@ -130,8 +132,13 @@ export async function runHeadlessMode(
 			...state.pending_approvals,
 			...state.pending_client_tools,
 			...state.pending_user_inputs,
+			...state.pending_tool_retries,
 		]) {
-			serverRequestManager.cancel(request.call_id, reason, "runtime");
+			serverRequestManager.cancel(
+				request.request_id ?? request.call_id,
+				reason,
+				"runtime",
+			);
 		}
 	};
 	const utilityCommands = new HeadlessUtilityCommandManager((event) => {
@@ -223,7 +230,7 @@ export async function runHeadlessMode(
 				type: "server_request",
 				request_id: event.request.id,
 				request_type: event.request.kind,
-				call_id: event.request.id,
+				call_id: event.request.callId,
 				tool: event.request.toolName,
 				args: event.request.args,
 				reason: event.request.reason,
@@ -234,7 +241,7 @@ export async function runHeadlessMode(
 			type: "server_request_resolved",
 			request_id: event.request.id,
 			request_type: event.request.kind,
-			call_id: event.request.id,
+			call_id: event.request.callId,
 			resolution: event.resolution,
 			reason: event.reason,
 			resolved_by: event.resolvedBy,
@@ -310,6 +317,11 @@ export async function runHeadlessMode(
 
 				case "hello":
 					applyOutgoingHeadlessMessage(state, msg);
+					toolRetryService?.setMode(
+						msg.capabilities?.server_requests?.includes("tool_retry")
+							? "prompt"
+							: "skip",
+					);
 					sendMessage(
 						translator.buildConnectionInfoMessage({
 							connection_id: LOCAL_HEADLESS_CONNECTION_ID,
@@ -447,6 +459,21 @@ export async function runHeadlessMode(
 								type: "status",
 								message: "Tool response ignored (auto-approval mode)",
 							});
+						}
+					} else if (msg.request_type === "tool_retry") {
+						const resolved = serverRequestManager.resolveToolRetry(
+							msg.request_id,
+							{
+								action: msg.decision_action ?? "abort",
+								reason: msg.reason,
+								resolvedBy: "user",
+							},
+						);
+						if (!resolved) {
+							sendError(
+								`No pending tool retry request found for request_id: ${msg.request_id}`,
+								false,
+							);
 						}
 					} else {
 						const resolved = clientToolService.resolve(

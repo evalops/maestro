@@ -13,6 +13,7 @@ import {
 	headlessServerRequestResolvedBy,
 	headlessServerRequestTypes,
 	headlessThinkingLevels,
+	headlessToolRetryDecisionActions,
 	headlessUtilityCommandShellModes,
 	headlessUtilityCommandStreams,
 	headlessUtilityCommandTerminalModes,
@@ -159,6 +160,10 @@ export const HeadlessServerRequestResponseMessageSchema = Type.Object(
 		request_type: stringLiteralUnion(headlessServerRequestTypes),
 		approved: Type.Optional(Type.Boolean()),
 		result: Type.Optional(HeadlessToolResponseResultSchema),
+		decision_action: Type.Optional(
+			stringLiteralUnion(headlessToolRetryDecisionActions),
+		),
+		reason: Type.Optional(Type.String()),
 		content: Type.Optional(Type.Array(HeadlessContentBlockSchema)),
 		is_error: Type.Optional(Type.Boolean()),
 	},
@@ -683,6 +688,7 @@ export type HeadlessFromAgentMessageInput = Static<
 export const HeadlessPendingToolStateSchema = Type.Object(
 	{
 		call_id: Type.String(),
+		request_id: Type.Optional(Type.String()),
 		tool: Type.String(),
 		args: Type.Unknown(),
 	},
@@ -764,6 +770,7 @@ export const HeadlessRuntimeStateSchema = Type.Object(
 		pending_approvals: Type.Array(HeadlessPendingToolStateSchema),
 		pending_client_tools: Type.Array(HeadlessPendingToolStateSchema),
 		pending_user_inputs: Type.Array(HeadlessPendingToolStateSchema),
+		pending_tool_retries: Type.Array(HeadlessPendingToolStateSchema),
 		active_tools: Type.Array(HeadlessActiveToolStateSchema),
 		active_utility_commands: Type.Array(
 			HeadlessActiveUtilityCommandStateSchema,

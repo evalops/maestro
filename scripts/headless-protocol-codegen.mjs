@@ -62,6 +62,12 @@ export const headlessServerRequestResolvedBy = ${toTsConst(
 export type HeadlessServerRequestResolvedBy =
 \t(typeof headlessServerRequestResolvedBy)[number];
 
+export const headlessToolRetryDecisionActions = ${toTsConst(
+		manifest.toolRetryDecisionActions,
+	)};
+export type HeadlessToolRetryDecisionAction =
+\t(typeof headlessToolRetryDecisionActions)[number];
+
 export const headlessConnectionRoles = ${toTsConst(manifest.connectionRoles)};
 export type HeadlessConnectionRole = (typeof headlessConnectionRoles)[number];
 
@@ -340,6 +346,9 @@ pub const HEADLESS_SERVER_REQUEST_RESOLUTIONS: &[&str] = ${toRustArray(
 	)};
 pub const HEADLESS_SERVER_REQUEST_RESOLVED_BY: &[&str] = ${toRustArray(
 		manifest.serverRequestResolvedBy,
+	)};
+pub const HEADLESS_TOOL_RETRY_DECISION_ACTIONS: &[&str] = ${toRustArray(
+		manifest.toolRetryDecisionActions,
 	)};
 pub const HEADLESS_CONNECTION_ROLES: &[&str] = ${toRustArray(
 		manifest.connectionRoles,

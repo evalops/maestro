@@ -198,6 +198,10 @@ pub enum ToAgentMessage {
         content: Option<Vec<ClientToolResultContent>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision_action: Option<ToolRetryDecisionAction>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     /// Start a utility command on the runtime
     UtilityCommandStart {
@@ -728,6 +732,7 @@ pub enum ServerRequestType {
     Approval,
     ClientTool,
     UserInput,
+    ToolRetry,
 }
 
 /// Actor that resolved a server request.
@@ -750,6 +755,18 @@ pub enum ServerRequestResolutionStatus {
     Failed,
     Answered,
     Cancelled,
+    Retried,
+    Skipped,
+    Aborted,
+}
+
+/// Decision action returned for a pending tool retry prompt.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRetryDecisionAction {
+    Retry,
+    Skip,
+    Abort,
 }
 
 // =============================================================================
@@ -828,6 +845,8 @@ pub struct AgentState {
     pub pending_client_tools: Vec<PendingApproval>,
     /// Pending structured user input requests
     pub pending_user_inputs: Vec<PendingApproval>,
+    /// Pending tool retry requests
+    pub pending_tool_retries: Vec<PendingApproval>,
     /// Active tool executions
     pub active_tools: HashMap<String, ActiveTool>,
     /// Active utility-plane commands
@@ -885,6 +904,8 @@ impl StreamingResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PendingApproval {
     pub call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
     pub tool: String,
     pub args: serde_json::Value,
 }
@@ -974,6 +995,7 @@ impl AgentState {
                 self.pending_approvals.clear();
                 self.pending_client_tools.clear();
                 self.pending_user_inputs.clear();
+                self.pending_tool_retries.clear();
                 self.active_tools.clear();
                 self.active_utility_commands.clear();
                 self.active_file_watches.clear();
@@ -999,18 +1021,23 @@ impl AgentState {
                 ..
             } => match request_type {
                 ServerRequestType::Approval => {
-                    self.pending_approvals.retain(|p| p.call_id != *request_id);
+                    self.pending_approvals
+                        .retain(|p| !pending_request_matches(p, request_id));
                     if approved != &Some(true) {
                         self.tracked_tools.remove(request_id);
                     }
                 }
                 ServerRequestType::ClientTool => {
                     self.pending_client_tools
-                        .retain(|p| p.call_id != *request_id);
+                        .retain(|p| !pending_request_matches(p, request_id));
                 }
                 ServerRequestType::UserInput => {
                     self.pending_user_inputs
-                        .retain(|p| p.call_id != *request_id);
+                        .retain(|p| !pending_request_matches(p, request_id));
+                }
+                ServerRequestType::ToolRetry => {
+                    self.pending_tool_retries
+                        .retain(|p| !pending_request_matches(p, request_id));
                 }
             },
             ToAgentMessage::UtilityCommandStart { .. } => {}
@@ -1025,6 +1052,7 @@ impl AgentState {
                 self.pending_approvals.clear();
                 self.pending_client_tools.clear();
                 self.pending_user_inputs.clear();
+                self.pending_tool_retries.clear();
                 self.active_tools.clear();
                 self.active_utility_commands.clear();
                 self.active_file_watches.clear();
@@ -1233,6 +1261,7 @@ impl AgentState {
                     call_id.clone(),
                     PendingApproval {
                         call_id: call_id.clone(),
+                        request_id: None,
                         tool: tool.clone(),
                         args: args.clone(),
                     },
@@ -1240,6 +1269,7 @@ impl AgentState {
                 if requires_approval {
                     self.pending_approvals.push(PendingApproval {
                         call_id: call_id.clone(),
+                        request_id: None,
                         tool: tool.clone(),
                         args: args.clone(),
                     });
@@ -1288,6 +1318,7 @@ impl AgentState {
                 self.pending_approvals.retain(|p| p.call_id != call_id);
                 self.pending_client_tools.retain(|p| p.call_id != call_id);
                 self.pending_user_inputs.retain(|p| p.call_id != call_id);
+                self.pending_tool_retries.retain(|p| p.call_id != call_id);
                 Some(AgentEvent::ToolEnd {
                     call_id,
                     success,
@@ -1304,6 +1335,7 @@ impl AgentState {
                     call_id.clone(),
                     PendingApproval {
                         call_id: call_id.clone(),
+                        request_id: None,
                         tool: tool.clone(),
                         args: args.clone(),
                     },
@@ -1312,6 +1344,7 @@ impl AgentState {
                     self.pending_user_inputs.retain(|p| p.call_id != call_id);
                     self.pending_user_inputs.push(PendingApproval {
                         call_id,
+                        request_id: None,
                         tool,
                         args,
                     });
@@ -1319,6 +1352,7 @@ impl AgentState {
                     self.pending_client_tools.retain(|p| p.call_id != call_id);
                     self.pending_client_tools.push(PendingApproval {
                         call_id,
+                        request_id: None,
                         tool,
                         args,
                     });
@@ -1327,25 +1361,37 @@ impl AgentState {
             }
 
             FromAgentMessage::ServerRequest {
+                request_id,
                 call_id,
                 request_type,
                 tool,
                 args,
                 ..
             } => {
-                self.tracked_tools.insert(
-                    call_id.clone(),
-                    PendingApproval {
-                        call_id: call_id.clone(),
-                        tool: tool.clone(),
-                        args: args.clone(),
-                    },
-                );
+                if request_type != ServerRequestType::ToolRetry
+                    || !self.tracked_tools.contains_key(&call_id)
+                {
+                    self.tracked_tools.insert(
+                        call_id.clone(),
+                        PendingApproval {
+                            call_id: call_id.clone(),
+                            request_id: None,
+                            tool: tool.clone(),
+                            args: args.clone(),
+                        },
+                    );
+                }
+                let request_id = if request_id == call_id {
+                    None
+                } else {
+                    Some(request_id)
+                };
                 match request_type {
                     ServerRequestType::Approval => {
                         self.pending_approvals.retain(|p| p.call_id != call_id);
                         self.pending_approvals.push(PendingApproval {
                             call_id,
+                            request_id,
                             tool,
                             args,
                         });
@@ -1354,6 +1400,7 @@ impl AgentState {
                         self.pending_client_tools.retain(|p| p.call_id != call_id);
                         self.pending_client_tools.push(PendingApproval {
                             call_id,
+                            request_id,
                             tool,
                             args,
                         });
@@ -1362,6 +1409,16 @@ impl AgentState {
                         self.pending_user_inputs.retain(|p| p.call_id != call_id);
                         self.pending_user_inputs.push(PendingApproval {
                             call_id,
+                            request_id,
+                            tool,
+                            args,
+                        });
+                    }
+                    ServerRequestType::ToolRetry => {
+                        self.pending_tool_retries.retain(|p| p.call_id != call_id);
+                        self.pending_tool_retries.push(PendingApproval {
+                            call_id,
+                            request_id,
                             tool,
                             args,
                         });
@@ -1371,6 +1428,7 @@ impl AgentState {
             }
 
             FromAgentMessage::ServerRequestResolved {
+                request_id,
                 call_id,
                 request_type,
                 resolution,
@@ -1378,22 +1436,29 @@ impl AgentState {
             } => {
                 match request_type {
                     ServerRequestType::Approval => {
-                        self.pending_approvals.retain(|p| p.call_id != call_id);
+                        self.pending_approvals
+                            .retain(|p| !pending_request_matches(p, &request_id));
                         if resolution != ServerRequestResolutionStatus::Approved {
                             self.tracked_tools.remove(&call_id);
                         }
                     }
                     ServerRequestType::ClientTool => {
-                        self.pending_client_tools.retain(|p| p.call_id != call_id);
+                        self.pending_client_tools
+                            .retain(|p| !pending_request_matches(p, &request_id));
                         if resolution == ServerRequestResolutionStatus::Cancelled {
                             self.tracked_tools.remove(&call_id);
                         }
                     }
                     ServerRequestType::UserInput => {
-                        self.pending_user_inputs.retain(|p| p.call_id != call_id);
+                        self.pending_user_inputs
+                            .retain(|p| !pending_request_matches(p, &request_id));
                         if resolution != ServerRequestResolutionStatus::Answered {
                             self.tracked_tools.remove(&call_id);
                         }
+                    }
+                    ServerRequestType::ToolRetry => {
+                        self.pending_tool_retries
+                            .retain(|p| !pending_request_matches(p, &request_id));
                     }
                 }
                 None
@@ -1443,6 +1508,10 @@ impl AgentState {
             .position(|p| p.call_id == call_id)?;
         Some(self.pending_approvals.remove(idx))
     }
+}
+
+fn pending_request_matches(pending: &PendingApproval, request_id: &str) -> bool {
+    pending.request_id.as_deref().unwrap_or(&pending.call_id) == request_id
 }
 
 /// High-level events for the TUI to react to
@@ -1808,6 +1877,8 @@ mod tests {
                 text: "Use Zod".to_string(),
             }]),
             is_error: Some(false),
+            decision_action: None,
+            reason: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"server_request_response""#));
@@ -2372,10 +2443,68 @@ mod tests {
                 text: "Use Zod".to_string(),
             }]),
             is_error: Some(false),
+            decision_action: None,
+            reason: None,
         });
 
         assert!(state.pending_user_inputs.is_empty());
         assert!(state.tracked_tools.contains_key("call_user_input"));
+    }
+
+    #[test]
+    fn state_tracks_and_clears_tool_retry_requests_by_request_id() {
+        let mut state = AgentState::default();
+
+        state.handle_message(FromAgentMessage::ToolCall {
+            call_id: "call_bash".to_string(),
+            tool: "bash".to_string(),
+            args: serde_json::json!({ "command": "ls" }),
+            requires_approval: false,
+        });
+
+        let event = state.handle_message(FromAgentMessage::ServerRequest {
+            request_id: "retry_1".to_string(),
+            request_type: ServerRequestType::ToolRetry,
+            call_id: "call_bash".to_string(),
+            tool: "bash".to_string(),
+            args: serde_json::json!({
+                "tool_call_id": "call_bash",
+                "args": { "command": "ls" },
+                "error_message": "Command failed",
+                "attempt": 1
+            }),
+            reason: "Retry bash command".to_string(),
+        });
+
+        assert!(event.is_none());
+        assert_eq!(state.pending_tool_retries.len(), 1);
+        assert_eq!(state.pending_tool_retries[0].call_id, "call_bash");
+        assert_eq!(
+            state.pending_tool_retries[0].request_id.as_deref(),
+            Some("retry_1")
+        );
+        assert_eq!(
+            state
+                .tracked_tools
+                .get("call_bash")
+                .and_then(|tool| tool.args.get("command"))
+                .and_then(serde_json::Value::as_str),
+            Some("ls")
+        );
+
+        state.handle_sent_message(&ToAgentMessage::ServerRequestResponse {
+            request_id: "retry_1".to_string(),
+            request_type: ServerRequestType::ToolRetry,
+            approved: None,
+            result: None,
+            content: None,
+            is_error: None,
+            decision_action: Some(ToolRetryDecisionAction::Retry),
+            reason: Some("Try again".to_string()),
+        });
+
+        assert!(state.pending_tool_retries.is_empty());
+        assert!(state.tracked_tools.contains_key("call_bash"));
     }
 
     #[test]

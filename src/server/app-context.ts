@@ -4,6 +4,7 @@ import type {
 	ApprovalMode,
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
+import type { ToolRetryService } from "../agent/tool-retry.js";
 import type { ClientToolExecutionService } from "../agent/transport.js";
 import type { ThinkingLevel } from "../agent/types.js";
 import type { RegisteredModel } from "../models/registry.js";
@@ -31,6 +32,7 @@ export interface WebServerServices {
 			includeConductorTools?: boolean;
 			approvalService?: ActionApprovalService;
 			clientToolService?: ClientToolExecutionService;
+			toolRetryService?: ToolRetryService;
 		},
 	) => Promise<Agent>;
 	getRegisteredModel: (

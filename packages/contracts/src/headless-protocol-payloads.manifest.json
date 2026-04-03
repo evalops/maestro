@@ -179,6 +179,12 @@
 					"name": "HeadlessToolResponseResultSchema",
 					"optional": true
 				},
+				"decision_action": {
+					"kind": "enumRef",
+					"name": "headlessToolRetryDecisionActions",
+					"optional": true
+				},
+				"reason": { "kind": "string", "optional": true },
 				"content": {
 					"kind": "array",
 					"items": { "kind": "ref", "name": "HeadlessContentBlockSchema" },
@@ -769,6 +775,7 @@
 			"additionalProperties": false,
 			"properties": {
 				"call_id": { "kind": "string" },
+				"request_id": { "kind": "string", "optional": true },
 				"tool": { "kind": "string" },
 				"args": { "kind": "unknown" }
 			}
@@ -922,6 +929,10 @@
 					"items": { "kind": "ref", "name": "HeadlessPendingToolStateSchema" }
 				},
 				"pending_user_inputs": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessPendingToolStateSchema" }
+				},
+				"pending_tool_retries": {
 					"kind": "array",
 					"items": { "kind": "ref", "name": "HeadlessPendingToolStateSchema" }
 				},

@@ -4,16 +4,21 @@
 // Do not edit manually; update `headless-protocol.manifest.json` instead.
 
 pub const HEADLESS_PROTOCOL_VERSION: &str = "2026-04-02";
-pub const HEADLESS_SERVER_REQUEST_TYPES: &[&str] = &["approval", "client_tool", "user_input"];
+pub const HEADLESS_SERVER_REQUEST_TYPES: &[&str] =
+    &["approval", "client_tool", "user_input", "tool_retry"];
 pub const HEADLESS_SERVER_REQUEST_RESOLUTIONS: &[&str] = &[
     "approved",
     "denied",
     "completed",
     "failed",
     "answered",
+    "retried",
+    "skipped",
+    "aborted",
     "cancelled",
 ];
 pub const HEADLESS_SERVER_REQUEST_RESOLVED_BY: &[&str] = &["user", "policy", "client", "runtime"];
+pub const HEADLESS_TOOL_RETRY_DECISION_ACTIONS: &[&str] = &["retry", "skip", "abort"];
 pub const HEADLESS_CONNECTION_ROLES: &[&str] = &["viewer", "controller"];
 pub const HEADLESS_NOTIFICATION_TYPES: &[&str] =
     &["status", "heartbeat", "connection_info", "compaction"];
