@@ -37,6 +37,8 @@ pub struct RemoteTransportConfig {
     pub csrf_token: Option<String>,
     /// Optional existing session id to attach to.
     pub session_id: Option<String>,
+    /// Optional existing connection id to reuse when reconnecting.
+    pub connection_id: Option<String>,
     /// Optional model override used when creating a new runtime.
     pub model: Option<String>,
     /// Optional thinking level used when creating a new runtime.
@@ -80,6 +82,7 @@ impl Default for RemoteTransportConfig {
             api_key: None,
             csrf_token: None,
             session_id: None,
+            connection_id: None,
             model: None,
             thinking_level: None,
             approval_mode: None,
@@ -165,6 +168,8 @@ struct RemoteConnectionCreateRequest {
     client_info: Option<ClientInfo>,
     #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
+    #[serde(rename = "connectionId", skip_serializing_if = "Option::is_none")]
+    connection_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     #[serde(rename = "thinkingLevel", skip_serializing_if = "Option::is_none")]
@@ -814,21 +819,18 @@ fn build_remote_server_requests(config: &RemoteTransportConfig) -> Vec<&'static 
     }
 }
 
-async fn create_or_attach_connection(
-    client: &Client,
+fn build_remote_connection_create_request(
     config: &RemoteTransportConfig,
-) -> Result<RemoteConnectionBootstrapResponse, AsyncTransportError> {
-    let url = format!(
-        "{}/api/headless/connections",
-        config.base_url.trim_end_matches('/')
-    );
-    let request = RemoteConnectionCreateRequest {
+    connection_id: Option<String>,
+) -> RemoteConnectionCreateRequest {
+    RemoteConnectionCreateRequest {
         protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
         client_info: Some(ClientInfo {
             name: config.client_name.clone(),
             version: config.client_version.clone(),
         }),
         session_id: config.session_id.clone(),
+        connection_id,
         model: config.model.clone(),
         thinking_level: config.thinking_level,
         approval_mode: config.approval_mode,
@@ -842,12 +844,44 @@ async fn create_or_attach_connection(
         client: config.client.clone(),
         role: config.role.clone(),
         take_control: config.take_control,
-    };
+    }
+}
 
-    let response = with_headers(client.post(url).json(&request), config, true)
+async fn create_or_attach_connection(
+    client: &Client,
+    config: &RemoteTransportConfig,
+) -> Result<RemoteConnectionBootstrapResponse, AsyncTransportError> {
+    let url = format!(
+        "{}/api/headless/connections",
+        config.base_url.trim_end_matches('/')
+    );
+    let response = with_headers(
+        client
+            .post(&url)
+            .json(&build_remote_connection_create_request(
+                config,
+                config.connection_id.clone(),
+            )),
+        config,
+        true,
+    )
+    .send()
+    .await
+    .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
+
+    if response.status() == StatusCode::NOT_FOUND && config.connection_id.is_some() {
+        let retry_response = with_headers(
+            client
+                .post(url)
+                .json(&build_remote_connection_create_request(config, None)),
+            config,
+            true,
+        )
         .send()
         .await
         .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
+        return decode_json_response(retry_response).await;
+    }
 
     decode_json_response(response).await
 }
@@ -1217,7 +1251,10 @@ async fn response_status_error(response: reqwest::Response) -> AsyncTransportErr
 mod tests {
     use super::*;
     use std::collections::VecDeque;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
@@ -1656,6 +1693,7 @@ mod tests {
                 version: Some("0.1.0".to_string()),
             }),
             session_id: Some("sess_remote".to_string()),
+            connection_id: Some("conn_remote".to_string()),
             model: Some("gpt-5.4".to_string()),
             thinking_level: Some(ThinkingLevel::Low),
             approval_mode: Some(ApprovalMode::Prompt),
@@ -1676,6 +1714,7 @@ mod tests {
         assert_eq!(json["clientInfo"]["name"], "maestro-tui-rs");
         assert_eq!(json["clientInfo"]["version"], "0.1.0");
         assert_eq!(json["sessionId"], "sess_remote");
+        assert_eq!(json["connectionId"], "conn_remote");
         assert_eq!(json["model"], "gpt-5.4");
         assert_eq!(json["thinkingLevel"], "low");
         assert_eq!(json["approvalMode"], "prompt");
@@ -1714,6 +1753,167 @@ mod tests {
         assert_eq!(json["capabilities"]["rawAgentEvents"], true);
         assert_eq!(json["optOutNotifications"][0], "status");
         assert_eq!(json["optOutNotifications"][1], "heartbeat");
+    }
+
+    #[tokio::test]
+    async fn remote_transport_retries_connection_bootstrap_without_stale_connection_id() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let bootstrap_attempt = Arc::new(AtomicUsize::new(0));
+        let connection_requests = Arc::new(Mutex::new(Vec::new()));
+
+        tokio::spawn({
+            let bootstrap_attempt = Arc::clone(&bootstrap_attempt);
+            let connection_requests = Arc::clone(&connection_requests);
+            async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        break;
+                    };
+
+                    tokio::spawn({
+                        let bootstrap_attempt = Arc::clone(&bootstrap_attempt);
+                        let connection_requests = Arc::clone(&connection_requests);
+                        async move {
+                            let Some((path, _headers, body)) = read_http_request(&mut socket).await
+                            else {
+                                return;
+                            };
+
+                            if path == "/api/headless/connections" {
+                                let attempt = bootstrap_attempt.fetch_add(1, Ordering::SeqCst) + 1;
+                                connection_requests.lock().await.push(body.clone());
+                                let request = serde_json::from_str::<serde_json::Value>(&body)
+                                    .expect("valid connection request");
+                                if attempt == 1 {
+                                    assert_eq!(
+                                        request
+                                            .get("connectionId")
+                                            .and_then(serde_json::Value::as_str),
+                                        Some("conn_stale")
+                                    );
+                                    write_http_response(
+                                        &mut socket,
+                                        "HTTP/1.1 404 Not Found",
+                                        "application/json",
+                                        r#"{"error":"Headless connection not found"}"#,
+                                    )
+                                    .await;
+                                    return;
+                                }
+                                assert!(request.get("connectionId").is_none());
+                                let body = serde_json::json!({
+                                    "session_id": "sess_remote",
+                                    "connection_id": "conn_fresh",
+                                })
+                                .to_string();
+                                write_http_response(
+                                    &mut socket,
+                                    "HTTP/1.1 200 OK",
+                                    "application/json",
+                                    &body,
+                                )
+                                .await;
+                                return;
+                            }
+
+                            if path.starts_with("/api/headless/sessions/")
+                                && path.ends_with("/subscribe")
+                            {
+                                let body = serde_json::json!({
+                                    "connection_id": "conn_fresh",
+                                    "subscription_id": "sub_remote",
+                                    "controller_connection_id": "conn_fresh",
+                                    "lease_expires_at": "2026-04-02T00:00:15Z",
+                                    "heartbeat_interval_ms": 15000,
+                                    "snapshot": {
+                                        "protocolVersion": "2026-03-30",
+                                        "session_id": "sess_remote",
+                                        "cursor": 0,
+                                        "state": {
+                                            "protocol_version": "2026-03-30",
+                                            "session_id": "sess_remote",
+                                            "pending_approvals": [],
+                                            "active_tools": [],
+                                            "active_utility_commands": [],
+                                            "active_file_watches": [],
+                                            "is_ready": true,
+                                            "is_responding": false
+                                        }
+                                    }
+                                })
+                                .to_string();
+                                write_http_response(
+                                    &mut socket,
+                                    "HTTP/1.1 200 OK",
+                                    "application/json",
+                                    &body,
+                                )
+                                .await;
+                                return;
+                            }
+
+                            if path.starts_with("/api/headless/sessions/")
+                                && path.ends_with("/disconnect")
+                            {
+                                write_http_response(
+                                    &mut socket,
+                                    "HTTP/1.1 200 OK",
+                                    "application/json",
+                                    r#"{"success":true,"connection_id":"conn_fresh","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
+                                )
+                                .await;
+                                return;
+                            }
+
+                            if path.starts_with("/api/headless/sessions/")
+                                && path.ends_with("/heartbeat")
+                            {
+                                write_http_response(
+                                    &mut socket,
+                                    "HTTP/1.1 200 OK",
+                                    "application/json",
+                                    r#"{"connection_id":"conn_fresh","controller_lease_granted":true,"controller_connection_id":"conn_fresh","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
+                                )
+                                .await;
+                                return;
+                            }
+
+                            if path.starts_with("/api/headless/sessions/")
+                                && path.contains("/events?")
+                            {
+                                let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                                let _ = socket.write_all(headers.as_bytes()).await;
+                                let _ = socket.shutdown().await;
+                                return;
+                            }
+
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 404 Not Found",
+                                "text/plain",
+                                "not found",
+                            )
+                            .await;
+                        }
+                    });
+                }
+            }
+        });
+
+        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            session_id: Some("sess_remote".to_string()),
+            connection_id: Some("conn_stale".to_string()),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+
+        assert_eq!(transport.connection_id(), "conn_fresh");
+        assert_eq!(connection_requests.lock().await.len(), 2);
+
+        transport.shutdown().expect("shutdown");
     }
 
     #[tokio::test]
