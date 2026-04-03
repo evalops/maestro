@@ -63,7 +63,6 @@ export async function runHeadlessMode(
 ): Promise<void> {
 	const translator = new HeadlessProtocolTranslator();
 	const state = createHeadlessRuntimeState();
-	const suppressedApprovalResolutionIds = new Set<string>();
 
 	const sendMessage = (msg: HeadlessFromAgentMessage): void => {
 		applyIncomingHeadlessMessage(state, msg);
@@ -164,11 +163,17 @@ export async function runHeadlessMode(
 	});
 
 	const unsubscribeServerRequests = serverRequestManager.subscribe((event) => {
-		if (event.type !== "resolved") {
+		if (event.type === "registered") {
+			sendMessage({
+				type: "server_request",
+				request_id: event.request.id,
+				request_type: event.request.kind,
+				call_id: event.request.id,
+				tool: event.request.toolName,
+				args: event.request.args,
+				reason: event.request.reason,
+			});
 			return;
-		}
-		if (event.request.kind === "approval") {
-			suppressedApprovalResolutionIds.add(event.request.id);
 		}
 		sendMessage({
 			type: "server_request_resolved",
@@ -193,13 +198,13 @@ export async function runHeadlessMode(
 				service: approvalService,
 			});
 		}
-		if (
-			event.type === "action_approval_resolved" &&
-			suppressedApprovalResolutionIds.delete(event.request.id)
-		) {
-			return;
-		}
 		for (const message of translator.handleAgentEvent(event)) {
+			if (
+				message.type === "server_request" ||
+				message.type === "server_request_resolved"
+			) {
+				continue;
+			}
 			sendMessage(message);
 		}
 	});

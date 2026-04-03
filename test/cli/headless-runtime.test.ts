@@ -357,15 +357,11 @@ describe("runHeadlessMode", () => {
 		});
 	});
 
-	it("suppresses duplicate approval resolution messages after manager resolution", async () => {
-		let onLine: LineHandler | undefined;
+	it("emits a single generic server_request for approval events", async () => {
 		let onClose: CloseHandler | undefined;
 		let onAgentEvent: ((event: unknown) => void) | undefined;
 		const readlineInterface = {
 			on(event: string, handler: LineHandler | CloseHandler) {
-				if (event === "line") {
-					onLine = handler as LineHandler;
-				}
 				if (event === "close") {
 					onClose = handler as CloseHandler;
 				}
@@ -405,39 +401,17 @@ describe("runHeadlessMode", () => {
 		);
 
 		await vi.waitFor(() => {
-			expect(onLine).toBeTypeOf("function");
 			expect(onClose).toBeTypeOf("function");
 			expect(onAgentEvent).toBeTypeOf("function");
 		});
 
-		const request = {
-			id: "call_approval",
-			toolName: "bash",
-			args: { command: "rm -rf dist" },
-			reason: "Dangerous command",
-		};
 		onAgentEvent?.({
 			type: "action_approval_required",
-			request,
-		});
-
-		await onLine?.(
-			JSON.stringify({
-				type: "server_request_response",
-				request_id: "call_approval",
-				request_type: "approval",
-				approved: true,
-				result: { output: "Looks good" },
-			}),
-		);
-
-		onAgentEvent?.({
-			type: "action_approval_resolved",
-			request,
-			decision: {
-				approved: true,
-				reason: "Looks good",
-				resolvedBy: "user",
+			request: {
+				id: "call_approval",
+				toolName: "bash",
+				args: { command: "rm -rf dist" },
+				reason: "Dangerous command",
 			},
 		});
 
@@ -451,21 +425,19 @@ describe("runHeadlessMode", () => {
 			.map(
 				(line) => JSON.parse(line) as { type: string; [key: string]: unknown },
 			);
-		const approvalResolutions = messages.filter(
+		const requests = messages.filter(
 			(message) =>
-				message.type === "server_request_resolved" &&
+				message.type === "server_request" &&
 				message.request_id === "call_approval",
 		);
 
-		expect(approvalResolutions).toHaveLength(1);
-		expect(approvalResolutions[0]).toMatchObject({
-			type: "server_request_resolved",
+		expect(requests).toHaveLength(1);
+		expect(requests[0]).toMatchObject({
+			type: "server_request",
 			request_id: "call_approval",
 			request_type: "approval",
 			call_id: "call_approval",
-			resolution: "approved",
-			reason: "Looks good",
-			resolved_by: "user",
+			tool: "bash",
 		});
 	});
 
