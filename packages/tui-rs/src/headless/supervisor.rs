@@ -230,6 +230,8 @@ pub struct AgentSupervisor {
     last_response: Option<Instant>,
     /// Reconnection attempt counter
     reconnect_attempts: u32,
+    /// Whether a reconnect should be attempted on the next async receive cycle
+    pending_auto_reconnect: bool,
     /// Session recorder (optional)
     session_recorder: Option<SessionRecorder>,
     /// Cancellation token
@@ -251,6 +253,7 @@ impl AgentSupervisor {
             health_status: HealthStatus::Unknown,
             last_response: None,
             reconnect_attempts: 0,
+            pending_auto_reconnect: false,
             session_recorder: None,
             cancel_token: CancellationToken::new(),
         }
@@ -307,6 +310,7 @@ impl AgentSupervisor {
             let _ = transport.shutdown();
         }
         self.last_response = None;
+        self.pending_auto_reconnect = false;
         self.health_status = HealthStatus::Unhealthy;
         let _ = self.event_tx.send(SupervisorEvent::Disconnected {
             error: "Disconnected by request".to_string(),
@@ -333,9 +337,13 @@ impl AgentSupervisor {
 
             match self.spawn_transport().await {
                 Ok(transport) => {
+                    if let Some(existing) = self.transport.take() {
+                        let _ = existing.shutdown();
+                    }
                     self.set_transport(transport)?;
                     self.health_status = HealthStatus::Healthy;
                     self.reconnect_attempts = 0;
+                    self.pending_auto_reconnect = false;
                     let _ = self.event_tx.send(SupervisorEvent::Connected);
                     let _ = self.event_tx.send(SupervisorEvent::HealthChanged {
                         status: HealthStatus::Healthy,
@@ -475,6 +483,18 @@ impl AgentSupervisor {
         }
     }
 
+    fn schedule_auto_reconnect(&mut self) {
+        if self.config.auto_reconnect {
+            self.pending_auto_reconnect = true;
+        }
+    }
+
+    fn handle_transport_disconnect(&mut self, error: AsyncTransportError) -> SupervisorEvent {
+        let event = self.handle_transport_error(error);
+        self.schedule_auto_reconnect();
+        event
+    }
+
     fn mark_response_received(&mut self, emit_health_event: bool) {
         self.last_response = Some(Instant::now());
         if emit_health_event && self.health_status != HealthStatus::Healthy {
@@ -518,6 +538,13 @@ impl AgentSupervisor {
                     >= self.config.health_check_interval + self.config.health_check_timeout =>
             {
                 self.health_status = HealthStatus::Unhealthy;
+                self.last_response = None;
+                if self.config.auto_reconnect {
+                    if let Some(transport) = self.transport.take() {
+                        let _ = transport.shutdown();
+                    }
+                    self.pending_auto_reconnect = true;
+                }
                 Some(SupervisorEvent::HealthChanged {
                     status: HealthStatus::Unhealthy,
                 })
@@ -574,7 +601,7 @@ impl AgentSupervisor {
                         return Some(event);
                     }
                 }
-                Err(error) => return Some(self.handle_transport_error(error)),
+                Err(error) => return Some(self.handle_transport_disconnect(error)),
             }
         }
 
@@ -608,6 +635,14 @@ impl AgentSupervisor {
             }
 
             if self.transport.is_none() {
+                if self.pending_auto_reconnect {
+                    self.pending_auto_reconnect = false;
+                    if let Err(error) = self.reconnect().await {
+                        let disconnected = self.handle_transport_error(error);
+                        let _ = self.event_tx.send(disconnected);
+                    }
+                    continue;
+                }
                 return self.event_rx.recv().await;
             }
 
@@ -634,7 +669,7 @@ impl AgentSupervisor {
                         return Some(event);
                     }
                 }
-                Err(error) => return Some(self.handle_transport_error(error)),
+                Err(error) => return Some(self.handle_transport_disconnect(error)),
             }
         }
     }
@@ -1262,6 +1297,19 @@ mod tests {
                 status: HealthStatus::Healthy
             })
         ));
+    }
+
+    #[test]
+    fn transport_disconnect_schedules_auto_reconnect_when_enabled() {
+        let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+        let event = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
+
+        assert!(matches!(
+            event,
+            SupervisorEvent::Disconnected { ref error }
+                if error == "Communication channel closed"
+        ));
+        assert!(supervisor.pending_auto_reconnect);
     }
 
     #[test]
@@ -1910,5 +1958,161 @@ done
         ));
 
         supervisor.disconnect();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn recv_auto_reconnects_after_transport_disconnect() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script_path = create_streaming_headless_script(temp.path()).expect("script");
+
+        let mut config = SupervisorConfig::default();
+        config.transport.cli_path = script_path.to_string_lossy().into_owned();
+        config.reconnect_delay = Duration::from_millis(5);
+        config.max_reconnect_attempts = 1;
+        config.auto_reconnect = true;
+
+        let mut supervisor = AgentSupervisor::new(config);
+        supervisor.connect().await.expect("connect");
+
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Connected)
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy
+            })
+        ));
+        for _ in 0..4 {
+            let _ = supervisor.recv().await.expect("initial agent event");
+        }
+
+        let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
+        assert!(matches!(
+            disconnect,
+            SupervisorEvent::Disconnected { ref error }
+                if error == "Communication channel closed"
+        ));
+
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Reconnecting
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Reconnecting {
+                attempt: 1,
+                max_attempts: 1
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Connected)
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Agent(agent_event))
+                if matches!(*agent_event, AgentEvent::Ready { .. })
+        ));
+
+        supervisor.disconnect();
+    }
+
+    #[tokio::test]
+    async fn failed_auto_reconnect_emits_disconnected_instead_of_hanging() {
+        let mut config = SupervisorConfig::default();
+        config.transport.cli_path = "/definitely/missing/maestro-headless".to_string();
+        config.reconnect_delay = Duration::from_millis(1);
+        config.max_reconnect_attempts = 1;
+        config.auto_reconnect = true;
+
+        let mut supervisor = AgentSupervisor::new(config);
+        supervisor.pending_auto_reconnect = true;
+
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Reconnecting
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Reconnecting {
+                attempt: 1,
+                max_attempts: 1
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Unhealthy
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Disconnected { ref error })
+                if error.contains("Failed to spawn agent")
+        ));
+        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
+        assert!(!supervisor.pending_auto_reconnect);
+        assert!(!supervisor.is_connected());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unhealthy_silence_schedules_auto_reconnect_for_next_recv() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script_path = create_streaming_headless_script(temp.path()).expect("script");
+
+        let mut config = SupervisorConfig::default();
+        config.transport.cli_path = script_path.to_string_lossy().into_owned();
+        config.health_check_interval = Duration::from_millis(10);
+        config.health_check_timeout = Duration::from_millis(10);
+        config.reconnect_delay = Duration::from_millis(5);
+        config.max_reconnect_attempts = 1;
+        config.auto_reconnect = true;
+
+        let mut supervisor = AgentSupervisor::new(config);
+        supervisor.connect().await.expect("connect");
+
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Connected)
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy
+            })
+        ));
+        for _ in 0..4 {
+            let _ = supervisor.recv().await.expect("initial agent event");
+        }
+
+        supervisor.health_status = HealthStatus::Degraded;
+        supervisor.last_response = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(25))
+                .expect("monotonic clock supports subtraction"),
+        );
+
+        assert!(matches!(
+            supervisor.due_health_transition(Instant::now()),
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Unhealthy
+            })
+        ));
+        assert!(!supervisor.is_connected());
+        assert!(supervisor.pending_auto_reconnect);
     }
 }
