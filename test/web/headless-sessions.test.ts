@@ -4,6 +4,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import {
+	HeadlessRuntimeHeartbeatSnapshotSchema,
+	HeadlessRuntimeSnapshotSchema,
+	HeadlessRuntimeStreamEnvelopeSchema,
+	HeadlessRuntimeSubscriptionSnapshotSchema,
+} from "@evalops/contracts";
+import { Value } from "@sinclair/typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -316,17 +323,68 @@ describe("headless session runtime", () => {
 				system_prompt: "Be precise",
 				thinking_level: "high",
 			});
+			expect(Value.Check(HeadlessRuntimeSnapshotSchema, snapshot)).toBe(true);
 			expect(fakeAgent.prompts).toEqual([
 				{ content: "Summarize the session", attachments: undefined },
 			]);
 			expect(snapshot.state.last_status).toBe("Prompt: Summarize the session");
 
 			const replay = runtime.replayFrom(0);
+			for (const envelope of replay ?? []) {
+				expect(Value.Check(HeadlessRuntimeStreamEnvelopeSchema, envelope)).toBe(
+					true,
+				);
+			}
 			expect(
 				replay?.map((entry) =>
 					entry.type === "message" ? entry.message.type : entry.type,
 				),
 			).toEqual(["ready", "session_info", "status", "status"]);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("emits subscription and heartbeat payloads that satisfy generated schemas", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval"],
+					utility_operations: ["command_exec"],
+				},
+				context,
+				sessionManager,
+			});
+
+			const subscription = runtime.createSubscription({
+				role: "controller",
+				explicit: true,
+			});
+			expect(
+				Value.Check(HeadlessRuntimeSubscriptionSnapshotSchema, subscription),
+			).toBe(true);
+
+			const heartbeat = runtime.heartbeatConnection({
+				subscriptionId: subscription.subscription_id,
+			});
+			expect(
+				Value.Check(HeadlessRuntimeHeartbeatSnapshotSchema, heartbeat),
+			).toBe(true);
+
+			await runtime.dispose();
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
