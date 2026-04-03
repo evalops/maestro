@@ -1,4 +1,11 @@
-import type { HeadlessConnectionRole } from "@evalops/contracts";
+import {
+	type HeadlessConnectionRole,
+	assertHeadlessFromAgentMessage,
+	assertHeadlessRuntimeHeartbeatSnapshot,
+	assertHeadlessRuntimeSnapshot,
+	assertHeadlessRuntimeStreamEnvelope,
+	assertHeadlessRuntimeSubscriptionSnapshot,
+} from "@evalops/contracts";
 import type {
 	ActionApprovalService,
 	ApprovalMode,
@@ -242,6 +249,10 @@ class HeadlessRuntimeBroker {
 	private publishEnvelope(
 		envelope: HeadlessRuntimeStreamEnvelope,
 	): HeadlessRuntimeStreamEnvelope {
+		assertHeadlessRuntimeStreamEnvelope(
+			envelope,
+			"headless runtime stream envelope",
+		);
 		this.events.push(envelope);
 		while (this.events.length > MAX_BUFFERED_EVENTS) {
 			this.events.shift();
@@ -533,13 +544,15 @@ export class HeadlessSessionRuntime {
 	}
 
 	getSnapshot(): HeadlessRuntimeSnapshot {
-		return {
+		const snapshot: HeadlessRuntimeSnapshot = {
 			protocolVersion: HEADLESS_PROTOCOL_VERSION,
 			session_id: this.sessionId,
 			cursor: this.broker.currentCursor(),
 			last_init: this.lastInit,
 			state: structuredClone(this.state),
 		};
+		assertHeadlessRuntimeSnapshot(snapshot, "headless runtime snapshot");
+		return snapshot;
 	}
 
 	replayFrom(cursor: number): HeadlessRuntimeStreamEnvelope[] | null {
@@ -824,7 +837,7 @@ export class HeadlessSessionRuntime {
 			this.syncConnectionState();
 		}
 		this.syncSubscriptionState(explicit);
-		return {
+		const snapshot: HeadlessRuntimeSubscriptionSnapshot = {
 			connection_id: connection.id,
 			subscription_id: subscriber.id,
 			role,
@@ -836,6 +849,11 @@ export class HeadlessSessionRuntime {
 			heartbeat_interval_ms: CONNECTION_HEARTBEAT_INTERVAL_MS,
 			snapshot: this.getSnapshot(),
 		};
+		assertHeadlessRuntimeSubscriptionSnapshot(
+			snapshot,
+			"headless runtime subscription snapshot",
+		);
+		return snapshot;
 	}
 
 	attachSubscription(
@@ -854,6 +872,10 @@ export class HeadlessSessionRuntime {
 			next: () => subscriber.next(),
 			onAvailable: (listener) => subscriber.onAvailable(listener),
 			enqueue: (envelope) => {
+				assertHeadlessRuntimeStreamEnvelope(
+					envelope,
+					"headless attached subscription envelope",
+				);
 				subscriber.enqueue(envelope, (reason) =>
 					this.buildResetEnvelope(reason),
 				);
@@ -1013,10 +1035,15 @@ export class HeadlessSessionRuntime {
 	}
 
 	heartbeat(): HeadlessRuntimeHeartbeatEnvelope {
-		return {
+		const envelope: HeadlessRuntimeHeartbeatEnvelope = {
 			type: "heartbeat",
 			cursor: this.broker.currentCursor(),
 		};
+		assertHeadlessRuntimeStreamEnvelope(
+			envelope,
+			"headless runtime heartbeat envelope",
+		);
+		return envelope;
 	}
 
 	heartbeatConnection(input: {
@@ -1034,13 +1061,18 @@ export class HeadlessSessionRuntime {
 		}
 		this.touchConnection(connection.id);
 		this.syncSubscriptionState(false);
-		return {
+		const snapshot: HeadlessRuntimeHeartbeatSnapshot = {
 			connection_id: connection.id,
 			controller_lease_granted: this.controllerConnectionId === connection.id,
 			controller_connection_id: this.controllerConnectionId,
 			lease_expires_at: this.getLeaseExpiryIso(connection),
 			heartbeat_interval_ms: CONNECTION_HEARTBEAT_INTERVAL_MS,
 		};
+		assertHeadlessRuntimeHeartbeatSnapshot(
+			snapshot,
+			"headless runtime heartbeat snapshot",
+		);
+		return snapshot;
 	}
 
 	registerConnection(metadata: {
@@ -1072,13 +1104,18 @@ export class HeadlessSessionRuntime {
 		}
 		this.emitConnectionInfo(connection.id);
 		this.syncSubscriptionState(false);
-		return {
+		const snapshot: HeadlessRuntimeHeartbeatSnapshot = {
 			connection_id: connection.id,
 			controller_lease_granted: this.controllerConnectionId === connection.id,
 			controller_connection_id: this.controllerConnectionId,
 			lease_expires_at: this.getLeaseExpiryIso(connection),
 			heartbeat_interval_ms: CONNECTION_HEARTBEAT_INTERVAL_MS,
 		};
+		assertHeadlessRuntimeHeartbeatSnapshot(
+			snapshot,
+			"headless runtime connection registration snapshot",
+		);
+		return snapshot;
 	}
 
 	updateConnectionMetadata(metadata: {
@@ -1361,6 +1398,7 @@ export class HeadlessSessionRuntime {
 	}
 
 	private publish(message: HeadlessFromAgentMessage): void {
+		assertHeadlessFromAgentMessage(message, "headless runtime message");
 		if (message.type === "server_request") {
 			this.publishedServerRequestIds.add(message.request_id);
 		} else if (message.type === "server_request_resolved") {
