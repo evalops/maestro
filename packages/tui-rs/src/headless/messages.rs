@@ -1547,7 +1547,7 @@ impl AgentState {
             }
 
             FromAgentMessage::Error {
-                request_id: _,
+                request_id,
                 message,
                 fatal,
                 error_type,
@@ -1555,7 +1555,7 @@ impl AgentState {
                 self.last_error = Some(message.clone());
                 self.last_error_type = error_type;
                 Some(AgentEvent::Error {
-                    request_id: None,
+                    request_id,
                     message,
                     fatal,
                     error_type,
@@ -2202,7 +2202,7 @@ mod tests {
             response_id: "resp1".to_string(),
         });
         let event = state.handle_message(FromAgentMessage::Error {
-            request_id: None,
+            request_id: Some("read_missing".to_string()),
             message: "Cancelled by user".to_string(),
             fatal: false,
             error_type: Some(HeadlessErrorType::Cancelled),
@@ -2214,9 +2214,10 @@ mod tests {
         assert!(matches!(
             event,
             Some(AgentEvent::Error {
+                request_id: Some(ref request_id),
                 error_type: Some(HeadlessErrorType::Cancelled),
                 ..
-            })
+            }) if request_id == "read_missing"
         ));
     }
 
