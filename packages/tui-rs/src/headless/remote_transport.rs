@@ -1443,9 +1443,10 @@ fn classify_remote_status(
         RemoteRequestKind::Message => {
             status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
         }
-        RemoteRequestKind::Stream | RemoteRequestKind::Heartbeat => {
-            !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-        }
+        RemoteRequestKind::Stream | RemoteRequestKind::Heartbeat => !matches!(
+            status,
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
+        ),
     };
     (retryable, RemoteErrorKind::Other)
 }
@@ -2336,6 +2337,140 @@ mod tests {
         transport.shutdown().expect("shutdown");
     }
 
+    #[tokio::test]
+    async fn remote_transport_classifies_generic_stream_404_as_non_retryable() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+
+                    if path == "/api/headless/connections" {
+                        let body = serde_json::json!({
+                            "session_id": "sess_remote",
+                            "connection_id": "conn_remote",
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &body,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
+                        let body = serde_json::json!({
+                            "connection_id": "conn_remote",
+                            "subscription_id": "sub_remote",
+                            "controller_connection_id": "conn_remote",
+                            "lease_expires_at": "2026-04-02T00:00:15Z",
+                            "heartbeat_interval_ms": 15000,
+                            "snapshot": {
+                                "protocolVersion": "2026-03-30",
+                                "session_id": "sess_remote",
+                                "cursor": 0,
+                                "state": {
+                                    "protocol_version": "2026-03-30",
+                                    "session_id": "sess_remote",
+                                    "pending_approvals": [],
+                                    "active_tools": [],
+                                    "active_utility_commands": [],
+                                    "active_file_watches": [],
+                                    "is_ready": true,
+                                    "is_responding": false
+                                }
+                            }
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &body,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.contains("/events?") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "application/json",
+                            r#"{"error":"route not found"}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/disconnect")
+                    {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/heartbeat") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "application/json",
+                            r#"{"error":"route not found"}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    write_http_response(
+                        &mut socket,
+                        "HTTP/1.1 404 Not Found",
+                        "text/plain",
+                        "not found",
+                    )
+                    .await;
+                });
+            }
+        });
+
+        let mut transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+
+        let error = transport
+            .recv_incoming()
+            .await
+            .expect_err("generic stream 404 should fail");
+        assert!(matches!(
+            error,
+            AsyncTransportError::RemoteStatus {
+                status: 404,
+                retryable: false,
+                kind: RemoteErrorKind::Other,
+                ..
+            }
+        ));
+
+        transport.shutdown().expect("shutdown");
+    }
+
     #[test]
     fn retryability_allows_recovery_from_stale_message_connection_errors() {
         assert_eq!(
@@ -2413,6 +2548,30 @@ mod tests {
                 r#"{"error":"Headless subscriber not found"}"#,
             ),
             (true, RemoteErrorKind::StaleSubscriber)
+        );
+    }
+
+    #[test]
+    fn retryability_keeps_generic_stream_404s_non_retryable() {
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::NOT_FOUND,
+                RemoteRequestKind::Stream,
+                r#"{"error":"route not found"}"#,
+            ),
+            (false, RemoteErrorKind::Other)
+        );
+    }
+
+    #[test]
+    fn retryability_keeps_generic_heartbeat_404s_non_retryable() {
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::NOT_FOUND,
+                RemoteRequestKind::Heartbeat,
+                r#"{"error":"route not found"}"#,
+            ),
+            (false, RemoteErrorKind::Other)
         );
     }
 
