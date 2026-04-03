@@ -96,6 +96,7 @@ const HeadlessSessionCreateSchema = Type.Object(HeadlessCreateBaseProperties);
 
 const HeadlessConnectionCreateSchema = Type.Object({
 	...HeadlessCreateBaseProperties,
+	connectionId: Type.Optional(Type.String()),
 	takeControl: Type.Optional(Type.Boolean()),
 });
 
@@ -378,6 +379,7 @@ async function ensureConnection(
 	});
 	const role = getHeadlessRole(req, input.role);
 	const heartbeat = runtime.registerConnection({
+		connectionId: input.connectionId,
 		clientProtocolVersion: input.protocolVersion,
 		clientInfo: input.clientInfo,
 		capabilities: input.capabilities

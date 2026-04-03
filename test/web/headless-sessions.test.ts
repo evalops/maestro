@@ -1453,6 +1453,77 @@ describe("headless session handlers", () => {
 		);
 	});
 
+	it("reuses an existing explicit connection when the caller provides connectionId", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const sessionManager = createSessionManagerForRequest(
+			createJsonRequest("POST", "/api/headless/sessions", {}),
+			false,
+		);
+		const { id: sessionId } = await sessionManager.createSession({
+			title: "Headless connection reuse",
+		});
+		const sessionFile = (
+			sessionManager as unknown as {
+				sessionFile: string;
+			}
+		).sessionFile;
+		const sessionLookupSpy = vi
+			.spyOn(SessionManager.prototype, "getSessionFileById")
+			.mockImplementation((id) => (id === sessionId ? sessionFile : null));
+
+		try {
+			const firstReq = createJsonRequest("POST", "/api/headless/connections", {
+				sessionId,
+				role: "controller",
+			});
+			const firstRes = new MockResponse();
+			firstRes.req = firstReq;
+			await handleHeadlessConnectionCreate(
+				firstReq,
+				firstRes as unknown as ServerResponse,
+				context,
+			);
+			const firstBody = JSON.parse(firstRes.body);
+
+			sessionLookupSpy.mockImplementation((id) =>
+				id === sessionId || id === firstBody.session_id ? sessionFile : null,
+			);
+
+			const secondReq = createJsonRequest("POST", "/api/headless/connections", {
+				sessionId: firstBody.session_id,
+				connectionId: firstBody.connection_id,
+				role: "controller",
+			});
+			const secondRes = new MockResponse();
+			secondRes.req = secondReq;
+			await handleHeadlessConnectionCreate(
+				secondReq,
+				secondRes as unknown as ServerResponse,
+				context,
+			);
+			const secondBody = JSON.parse(secondRes.body);
+
+			const runtime = context.headlessRuntimeService.getRuntime(
+				"anon",
+				firstBody.session_id,
+			);
+			if (!runtime) {
+				throw new Error("Expected headless runtime to exist");
+			}
+
+			expect(secondBody.connection_id).toBe(firstBody.connection_id);
+			expect(runtime.getSnapshot().state.connection_count).toBe(1);
+			expect(runtime.getSnapshot().state.controller_connection_id).toBe(
+				firstBody.connection_id,
+			);
+		} finally {
+			sessionLookupSpy.mockRestore();
+		}
+	});
+
 	it("rejects a second explicit controller subscription while a lease is held", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
