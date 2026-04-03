@@ -1732,6 +1732,48 @@ describe("headless session handlers", () => {
 		expect(runtime.isDisposed()).toBe(true);
 	});
 
+	it("best-effort disposal still finalizes when file watch cleanup throws", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const runtime = await context.headlessRuntimeService.ensureRuntime({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context,
+			sessionManager: createSessionManagerForRequest(
+				createJsonRequest("POST", "/api/headless/sessions", {}),
+				"headless",
+			),
+		});
+
+		const internals = runtime as unknown as {
+			fileWatches: {
+				dispose: (reason?: string) => void;
+			};
+			agent: {
+				abort: () => void;
+			};
+		};
+		const abortSpy = vi.spyOn(internals.agent, "abort");
+		const fileWatchDisposeSpy = vi
+			.spyOn(internals.fileWatches, "dispose")
+			.mockImplementationOnce(() => {
+				throw new Error("watch dispose failed");
+			});
+
+		expect(() =>
+			runtime.disposeBestEffort("best-effort cleanup after repeated failures"),
+		).not.toThrow();
+		expect(fileWatchDisposeSpy).toHaveBeenCalledWith(
+			"best-effort cleanup after repeated failures",
+		);
+		expect(abortSpy).toHaveBeenCalledTimes(1);
+		expect(runtime.isDisposed()).toBe(true);
+	});
+
 	it("continues cleanup when one runtime disposal fails", async () => {
 		const firstAgent = new FakeAgent();
 		const secondAgent = new FakeAgent();
