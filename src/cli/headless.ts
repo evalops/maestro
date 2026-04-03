@@ -221,17 +221,16 @@ export async function runHeadlessMode(
 		) {
 			return;
 		}
-		if (
+		const pendingApprovalRegistration =
 			event.type === "action_approval_required" &&
 			approvalService?.requiresUserInteraction() &&
 			!serverRequestManager.get(event.request.id)
-		) {
-			serverRequestManager.registerApproval({
-				sessionId: sessionManager.getSessionId() ?? undefined,
-				request: event.request,
-				service: approvalService,
-			});
-		}
+				? {
+						sessionId: sessionManager.getSessionId() ?? undefined,
+						request: event.request,
+						service: approvalService,
+					}
+				: null;
 		for (const message of translator.handleAgentEvent(event)) {
 			if (
 				message.type === "server_request" ||
@@ -240,6 +239,9 @@ export async function runHeadlessMode(
 				continue;
 			}
 			sendMessage(message);
+		}
+		if (pendingApprovalRegistration) {
+			serverRequestManager.registerApproval(pendingApprovalRegistration);
 		}
 	});
 
@@ -287,6 +289,7 @@ export async function runHeadlessMode(
 							protocol_version: msg.protocol_version,
 							client_info: msg.client_info,
 							capabilities: msg.capabilities,
+							opt_out_notifications: msg.opt_out_notifications,
 							role: msg.role ?? "controller",
 							connection_count: 1,
 							controller_connection_id:

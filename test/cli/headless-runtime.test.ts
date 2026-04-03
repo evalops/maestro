@@ -190,6 +190,80 @@ describe("runHeadlessMode", () => {
 		).toBe(false);
 	});
 
+	it("echoes negotiated opt-out notifications in hello connection info", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn(),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+		);
+
+		await vi.waitFor(() => {
+			expect(onLine).toBeTypeOf("function");
+			expect(onClose).toBeTypeOf("function");
+		});
+
+		await onLine?.(
+			JSON.stringify({
+				type: "hello",
+				protocol_version: "1.0",
+				client_info: { name: "maestro-test", version: "0.1.0" },
+				opt_out_notifications: ["status", "heartbeat"],
+				capabilities: {
+					utility_operations: ["command_exec"],
+				},
+				role: "controller",
+			}),
+		);
+		onClose?.();
+		await runPromise;
+
+		const connectionInfo = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map(
+				(line) => JSON.parse(line) as { type: string; [key: string]: unknown },
+			)
+			.find((message) => message.type === "connection_info");
+		expect(connectionInfo).toMatchObject({
+			type: "connection_info",
+			opt_out_notifications: ["status", "heartbeat"],
+		});
+	});
+
 	it("rejects unknown headless command types at the protocol boundary", async () => {
 		let onLine: LineHandler | undefined;
 		let onClose: CloseHandler | undefined;
@@ -509,6 +583,17 @@ describe("runHeadlessMode", () => {
 			call_id: "call_approval",
 			tool: "bash",
 		});
+		const toolCallIndex = messages.findIndex(
+			(message) =>
+				message.type === "tool_call" && message.call_id === "call_approval",
+		);
+		const requestIndex = messages.findIndex(
+			(message) =>
+				message.type === "server_request" &&
+				message.request_id === "call_approval",
+		);
+		expect(toolCallIndex).toBeGreaterThanOrEqual(0);
+		expect(requestIndex).toBeGreaterThan(toolCallIndex);
 	});
 
 	it("suppresses approval-only output in auto approval mode", async () => {
