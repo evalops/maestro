@@ -1402,6 +1402,15 @@ fn classify_remote_status(
             RemoteErrorKind::StaleConnection,
         );
     }
+    if trimmed_body.contains("Headless session not found")
+        || trimmed_body == "Session not found"
+        || trimmed_body.contains("\"error\":\"Session not found\"")
+    {
+        return (
+            !matches!(kind, RemoteRequestKind::Bootstrap),
+            RemoteErrorKind::StaleSession,
+        );
+    }
     if trimmed_body.contains("Headless subscriber not found") {
         return (
             matches!(
@@ -2359,6 +2368,38 @@ mod tests {
     }
 
     #[test]
+    fn retryability_keeps_session_not_found_retryable_after_bootstrap() {
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::NOT_FOUND,
+                RemoteRequestKind::Stream,
+                r#"{"error":"Headless session not found"}"#,
+            ),
+            (true, RemoteErrorKind::StaleSession)
+        );
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::NOT_FOUND,
+                RemoteRequestKind::Subscribe,
+                r#"{"error":"Headless session not found"}"#,
+            ),
+            (true, RemoteErrorKind::StaleSession)
+        );
+    }
+
+    #[test]
+    fn retryability_stops_bootstrap_session_not_found_retries() {
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::NOT_FOUND,
+                RemoteRequestKind::Bootstrap,
+                r#"{"error":"Headless session not found"}"#,
+            ),
+            (false, RemoteErrorKind::StaleSession)
+        );
+    }
+
+    #[test]
     fn retryability_keeps_controller_lease_conflicts_non_retryable() {
         assert_eq!(
             classify_remote_status(
@@ -2415,6 +2456,15 @@ mod tests {
                     .to_string(),
                 retryable: true,
                 kind: RemoteErrorKind::StaleConnection,
+            }
+        ));
+        assert!(!should_retry_message_error(
+            &AsyncTransportError::RemoteStatus {
+                status: 404,
+                message: "remote request failed with status 404: Headless session not found"
+                    .to_string(),
+                retryable: true,
+                kind: RemoteErrorKind::StaleSession,
             }
         ));
         assert!(!should_retry_message_error(

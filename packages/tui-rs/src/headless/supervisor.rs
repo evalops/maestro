@@ -2422,6 +2422,47 @@ done
         assert!(!supervisor.pending_auto_reconnect);
     }
 
+    #[test]
+    fn stale_session_disconnects_respect_retry_budget() {
+        let mut supervisor = SupervisorBuilder::new().max_reconnect_attempts(0).build();
+
+        for attempt in 1..=MAX_STALE_REMOTE_REFERENCE_RETRIES {
+            let disconnect =
+                supervisor.handle_transport_disconnect(AsyncTransportError::RemoteStatus {
+                    status: 404,
+                    retryable: true,
+                    kind: RemoteErrorKind::StaleSession,
+                    message: "remote request failed with status 404 Not Found: {\"error\":\"Headless session not found\"}".to_string(),
+                });
+            assert!(matches!(
+                disconnect,
+                SupervisorEvent::Disconnected { ref error }
+                    if error.contains("Headless session not found")
+            ));
+            assert_eq!(supervisor.stale_reference_retries, attempt);
+            assert!(supervisor.pending_auto_reconnect);
+            supervisor.pending_auto_reconnect = false;
+        }
+
+        let disconnect =
+            supervisor.handle_transport_disconnect(AsyncTransportError::RemoteStatus {
+                status: 404,
+                retryable: true,
+                kind: RemoteErrorKind::StaleSession,
+                message: "remote request failed with status 404 Not Found: {\"error\":\"Headless session not found\"}".to_string(),
+            });
+        assert!(matches!(
+            disconnect,
+            SupervisorEvent::Disconnected { ref error }
+                if error.contains("Headless session not found")
+        ));
+        assert_eq!(
+            supervisor.stale_reference_retries,
+            MAX_STALE_REMOTE_REFERENCE_RETRIES + 1
+        );
+        assert!(!supervisor.pending_auto_reconnect);
+    }
+
     #[tokio::test]
     async fn successful_remote_connect_resets_stale_reference_retry_budget() {
         let snapshot = serde_json::json!({

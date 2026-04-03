@@ -51,6 +51,7 @@ impl Default for AsyncTransportConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteErrorKind {
     Other,
+    StaleSession,
     StaleConnection,
     StaleSubscriber,
     ControllerLeaseConflict,
@@ -124,13 +125,15 @@ impl AsyncTransportError {
     }
 
     /// Whether this error should consume the dedicated stale remote-reference
-    /// retry budget used for transient connection/subscriber misses.
+    /// retry budget used for transient session/connection/subscriber misses.
     #[must_use]
     pub fn uses_stale_reference_retry_budget(&self) -> bool {
         matches!(
             self,
             Self::RemoteStatus {
-                kind: RemoteErrorKind::StaleConnection | RemoteErrorKind::StaleSubscriber,
+                kind: RemoteErrorKind::StaleSession
+                    | RemoteErrorKind::StaleConnection
+                    | RemoteErrorKind::StaleSubscriber,
                 ..
             }
         )
