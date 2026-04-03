@@ -1093,10 +1093,10 @@ fn should_retry_message_error(error: &AsyncTransportError) -> bool {
     match error {
         AsyncTransportError::Remote(_) => true,
         AsyncTransportError::RemoteStatus {
-            status,
+            retryable,
             kind: RemoteErrorKind::Other,
             ..
-        } => *status == StatusCode::TOO_MANY_REQUESTS.as_u16() || *status >= 500,
+        } => *retryable,
         _ => false,
     }
 }
