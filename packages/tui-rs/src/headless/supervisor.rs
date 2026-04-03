@@ -1994,7 +1994,11 @@ done
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(posted_bodies.lock().await.is_empty());
+        let posted_bodies = posted_bodies.lock().await.clone();
+        assert_eq!(posted_bodies.len(), 1);
+        let sent =
+            serde_json::from_str::<ToAgentMessage>(&posted_bodies[0]).expect("parse sent message");
+        assert!(matches!(sent, ToAgentMessage::Hello { .. }));
         let headers = request_headers.lock().await.clone();
         assert!(headers.first().is_some_and(|request| {
             request
