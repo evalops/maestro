@@ -1300,7 +1300,31 @@ async fn decode_json_response<T: for<'de> Deserialize<'de>>(
         .map_err(|error| AsyncTransportError::Remote(error.to_string()))
 }
 
-fn is_retryable_remote_status(status: StatusCode, kind: RemoteRequestKind) -> bool {
+fn is_retryable_remote_status(status: StatusCode, kind: RemoteRequestKind, body: &str) -> bool {
+    let trimmed_body = body.trim();
+
+    if trimmed_body.contains("Headless connection not found") {
+        return !matches!(kind, RemoteRequestKind::Bootstrap);
+    }
+    if trimmed_body.contains("Headless subscriber not found") {
+        return matches!(
+            kind,
+            RemoteRequestKind::Stream | RemoteRequestKind::Message | RemoteRequestKind::Heartbeat
+        );
+    }
+    if trimmed_body.contains("Controller lease") {
+        return false;
+    }
+    if trimmed_body.contains("role does not match subscription role") {
+        return false;
+    }
+    if trimmed_body.contains("does not have controller access") {
+        return false;
+    }
+    if trimmed_body.contains("owned by another connection") {
+        return false;
+    }
+
     match kind {
         RemoteRequestKind::Bootstrap => !matches!(
             status,
@@ -1309,10 +1333,11 @@ fn is_retryable_remote_status(status: StatusCode, kind: RemoteRequestKind) -> bo
                 | StatusCode::NOT_FOUND
                 | StatusCode::CONFLICT
         ),
-        RemoteRequestKind::Subscribe
-        | RemoteRequestKind::Message
-        | RemoteRequestKind::Stream
-        | RemoteRequestKind::Heartbeat => {
+        RemoteRequestKind::Subscribe => !matches!(
+            status,
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::CONFLICT
+        ),
+        RemoteRequestKind::Message | RemoteRequestKind::Stream | RemoteRequestKind::Heartbeat => {
             !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
         }
     }
@@ -1336,7 +1361,7 @@ async fn response_status_error(
     };
     AsyncTransportError::RemoteStatus {
         status: status.as_u16(),
-        retryable: is_retryable_remote_status(status, kind),
+        retryable: is_retryable_remote_status(status, kind, &body),
         message,
     }
 }
@@ -2198,6 +2223,24 @@ mod tests {
         ));
 
         transport.shutdown().expect("shutdown");
+    }
+
+    #[test]
+    fn retryability_allows_recovery_from_stale_message_connection_errors() {
+        assert!(is_retryable_remote_status(
+            StatusCode::FORBIDDEN,
+            RemoteRequestKind::Message,
+            r#"{"error":"Headless connection not found"}"#,
+        ));
+    }
+
+    #[test]
+    fn retryability_keeps_controller_lease_conflicts_non_retryable() {
+        assert!(!is_retryable_remote_status(
+            StatusCode::CONFLICT,
+            RemoteRequestKind::Subscribe,
+            r#"{"error":"Controller lease is already held by another connection"}"#,
+        ));
     }
 
     #[tokio::test]
