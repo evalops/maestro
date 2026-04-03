@@ -137,6 +137,13 @@ impl ManagedTransport {
         }
     }
 
+    fn remote_session_id(&self) -> Option<&str> {
+        match self {
+            Self::Local(_) => None,
+            Self::Remote(transport) => Some(transport.session_id()),
+        }
+    }
+
     fn try_recv_incoming(&mut self) -> Option<Result<ManagedIncoming, AsyncTransportError>> {
         match self {
             Self::Local(transport) => transport
@@ -277,11 +284,15 @@ impl AgentSupervisor {
     pub fn restore_session_replay(&mut self, replay: SessionReplay) {
         self.state = replay.state;
         self.last_init = replay.last_init;
+        self.remember_remote_session_id(self.state.session_id.clone());
     }
 
-    async fn spawn_transport(&self) -> Result<ManagedTransport, AsyncTransportError> {
-        if let Some(remote) = self.config.remote.clone() {
-            RemoteAgentTransport::connect(remote)
+    async fn spawn_transport(&mut self) -> Result<ManagedTransport, AsyncTransportError> {
+        if let Some(remote_config) = self.config.remote.as_mut() {
+            if remote_config.session_id.is_none() {
+                remote_config.session_id = self.state.session_id.clone();
+            }
+            RemoteAgentTransport::connect(remote_config.clone())
                 .await
                 .map(ManagedTransport::Remote)
         } else {
@@ -426,7 +437,14 @@ impl AgentSupervisor {
         Ok(())
     }
 
+    fn remember_remote_session_id(&mut self, session_id: Option<String>) {
+        if let (Some(remote), Some(session_id)) = (self.config.remote.as_mut(), session_id) {
+            remote.session_id = Some(session_id);
+        }
+    }
+
     fn set_transport(&mut self, transport: ManagedTransport) -> Result<(), AsyncTransportError> {
+        let remote_session_id = transport.remote_session_id().map(str::to_string);
         let should_replay_init = transport.needs_init_replay();
         let snapshot = transport.initial_snapshot();
         self.transport = Some(transport);
@@ -434,6 +452,9 @@ impl AgentSupervisor {
         if let Some((state, last_init)) = snapshot {
             self.apply_snapshot(state, last_init);
         }
+        self.remember_remote_session_id(
+            remote_session_id.or_else(|| self.state.session_id.clone()),
+        );
         if should_replay_init {
             if let Err(error) = self.replay_saved_init() {
                 if let Some(transport) = self.transport.take() {
@@ -458,6 +479,7 @@ impl AgentSupervisor {
         let resolved_last_init = last_init.or_else(|| self.last_init.clone());
         self.state = state;
         self.last_init = resolved_last_init.clone();
+        self.remember_remote_session_id(self.state.session_id.clone());
         if let Some(ref mut recorder) = self.session_recorder {
             let _ = recorder.apply_snapshot(self.state.clone(), resolved_last_init.clone());
         }
@@ -1088,17 +1110,28 @@ mod tests {
         std::net::SocketAddr,
         Arc<Mutex<Vec<String>>>,
         Arc<Mutex<Vec<Vec<(String, String)>>>>,
+        Arc<Mutex<Vec<(String, String)>>>,
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let posted_bodies = Arc::new(Mutex::new(Vec::new()));
         let request_headers = Arc::new(Mutex::new(Vec::new()));
+        let request_bodies = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::new(Mutex::new(VecDeque::from(sse_events)));
+        let snapshot_value =
+            serde_json::from_str::<serde_json::Value>(&snapshot_json).expect("valid snapshot json");
+        let snapshot_session_id = snapshot_value
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("sess_remote")
+            .to_string();
 
         tokio::spawn({
             let posted_bodies = Arc::clone(&posted_bodies);
             let request_headers = Arc::clone(&request_headers);
+            let request_bodies = Arc::clone(&request_bodies);
             let events = Arc::clone(&events);
+            let snapshot_session_id = snapshot_session_id.clone();
             async move {
                 loop {
                     let Ok((mut socket, _)) = listener.accept().await else {
@@ -1106,8 +1139,10 @@ mod tests {
                     };
                     let posted_bodies = Arc::clone(&posted_bodies);
                     let request_headers = Arc::clone(&request_headers);
+                    let request_bodies = Arc::clone(&request_bodies);
                     let events = Arc::clone(&events);
                     let snapshot_json = snapshot_json.clone();
+                    let snapshot_session_id = snapshot_session_id.clone();
 
                     tokio::spawn(async move {
                         let Some((path, headers, body)) = read_http_request(&mut socket).await
@@ -1115,10 +1150,14 @@ mod tests {
                             return;
                         };
                         request_headers.lock().await.push(headers);
+                        request_bodies
+                            .lock()
+                            .await
+                            .push((path.clone(), body.clone()));
 
                         if path == "/api/headless/connections" {
                             let body = serde_json::json!({
-                                "session_id": "sess_remote",
+                                "session_id": snapshot_session_id,
                                 "connection_id": "conn_remote",
                                 "controller_connection_id": "conn_remote",
                                 "lease_expires_at": "2026-04-02T00:00:15Z",
@@ -1229,7 +1268,7 @@ mod tests {
             }
         });
 
-        (addr, posted_bodies, request_headers)
+        (addr, posted_bodies, request_headers, request_bodies)
     }
 
     #[test]
@@ -1832,7 +1871,7 @@ done
             }
         })
         .to_string();
-        let (addr, posted_bodies, request_headers) =
+        let (addr, posted_bodies, request_headers, _request_bodies) =
             spawn_remote_headless_server(snapshot.to_string(), vec![status_event]).await;
 
         let mut supervisor = SupervisorBuilder::new()
@@ -1921,7 +1960,7 @@ done
             }
         })
         .to_string();
-        let (addr, _posted_bodies, _request_headers) =
+        let (addr, _posted_bodies, _request_headers, _request_bodies) =
             spawn_remote_headless_server(snapshot.to_string(), vec![status_event]).await;
 
         let mut supervisor = SupervisorBuilder::new()
@@ -2066,6 +2105,122 @@ done
         assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
         assert!(!supervisor.pending_auto_reconnect);
         assert!(!supervisor.is_connected());
+    }
+
+    #[tokio::test]
+    async fn remote_auto_reconnect_reuses_bootstrapped_session_id() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 0,
+            "last_init": {
+                "system_prompt": "Persisted prompt",
+                "approval_mode": "prompt"
+            },
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "cwd": "/tmp/project",
+                "git_branch": "main",
+                "pending_approvals": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let (addr, _posted_bodies, _request_headers, request_bodies) =
+            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
+
+        let mut supervisor = SupervisorBuilder::new()
+            .remote_base_url(format!("http://{addr}"))
+            .max_reconnect_attempts(1)
+            .reconnect_delay(Duration::from_millis(5))
+            .build();
+
+        supervisor.connect().await.expect("connect");
+        assert_eq!(
+            supervisor
+                .config
+                .remote
+                .as_ref()
+                .and_then(|config| config.session_id.as_deref()),
+            Some("sess_remote")
+        );
+
+        let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
+        assert!(matches!(
+            disconnect,
+            SupervisorEvent::Disconnected { ref error }
+                if error == "Communication channel closed"
+        ));
+
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::StateHydrated {
+                session_id: Some(ref session_id)
+            }) if session_id == "sess_remote"
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Connected)
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Reconnecting
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Reconnecting {
+                attempt: 1,
+                max_attempts: 1
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::StateHydrated {
+                session_id: Some(ref session_id)
+            }) if session_id == "sess_remote"
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Connected)
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy
+            })
+        ));
+
+        let request_bodies = request_bodies.lock().await.clone();
+        let connection_requests = request_bodies
+            .into_iter()
+            .filter(|(path, _body)| path == "/api/headless/connections")
+            .map(|(_path, body)| {
+                serde_json::from_str::<serde_json::Value>(&body).expect("valid connection body")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(connection_requests.len(), 2);
+        assert!(connection_requests[0].get("sessionId").is_none());
+        assert_eq!(
+            connection_requests[1]
+                .get("sessionId")
+                .and_then(serde_json::Value::as_str),
+            Some("sess_remote")
+        );
+
+        supervisor.disconnect();
     }
 
     #[cfg(unix)]
