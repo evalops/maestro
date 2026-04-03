@@ -448,6 +448,101 @@ describe("headless session runtime", () => {
 		}
 	});
 
+	it("streams raw_agent_event payloads only to raw-capable subscriptions", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				context,
+				sessionManager,
+			});
+
+			const plain = runtime.createSubscription({
+				role: "controller",
+				explicit: true,
+				capabilities: { server_requests: ["approval"] },
+			});
+			const raw = runtime.createSubscription({
+				role: "viewer",
+				explicit: true,
+				capabilities: {
+					server_requests: ["approval"],
+					raw_agent_events: true,
+				},
+			});
+
+			const plainAttached = runtime.attachSubscription(plain.subscription_id);
+			const rawAttached = runtime.attachSubscription(raw.subscription_id);
+			expect(plainAttached).not.toBeNull();
+			expect(rawAttached).not.toBeNull();
+
+			while (plainAttached?.next()) {
+				// drain initial snapshots/connection info
+			}
+			while (rawAttached?.next()) {
+				// drain initial snapshots/connection info
+			}
+
+			fakeAgent.emit({
+				type: "status",
+				status: "Working",
+				details: {},
+			});
+
+			const plainMessages: HeadlessRuntimeStreamEnvelope[] = [];
+			const rawMessages: HeadlessRuntimeStreamEnvelope[] = [];
+			for (
+				let next = plainAttached?.next();
+				next;
+				next = plainAttached?.next()
+			) {
+				plainMessages.push(next);
+			}
+			for (let next = rawAttached?.next(); next; next = rawAttached?.next()) {
+				rawMessages.push(next);
+			}
+
+			expect(
+				plainMessages
+					.filter((entry) => entry.type === "message")
+					.map((entry) => entry.message.type),
+			).toEqual(["status"]);
+			expect(
+				rawMessages
+					.filter((entry) => entry.type === "message")
+					.map((entry) => entry.message.type),
+			).toEqual(["raw_agent_event", "status"]);
+			expect(
+				rawMessages.find(
+					(entry) =>
+						entry.type === "message" &&
+						entry.message.type === "raw_agent_event",
+				),
+			).toMatchObject({
+				type: "message",
+				message: {
+					type: "raw_agent_event",
+					event_type: "status",
+				},
+			});
+
+			await runtime.dispose();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("tracks negotiated connection metadata in runtime snapshots", async () => {
 		const fakeAgent = new FakeAgent();
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));

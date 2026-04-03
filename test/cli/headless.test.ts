@@ -470,6 +470,25 @@ describe("headless protocol helpers", () => {
 		expect(state.connection_role).toBe("controller");
 	});
 
+	it("accepts raw_agent_event messages without mutating derived runtime state", () => {
+		const state = createHeadlessRuntimeState();
+		const message = {
+			type: "raw_agent_event" as const,
+			event_type: "status" as const,
+			event: {
+				type: "status" as const,
+				status: "Working",
+				details: {},
+			},
+		};
+
+		expect(Value.Check(HeadlessFromAgentMessageSchema, message)).toBe(true);
+		applyIncomingHeadlessMessage(state, message);
+
+		expect(state.last_status).toBeUndefined();
+		expect(state.is_ready).toBe(false);
+	});
+
 	it("clears approval state on denied server_request_resolved messages", () => {
 		const state = createHeadlessRuntimeState();
 

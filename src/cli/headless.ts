@@ -29,6 +29,7 @@ import {
 	applyInitMessage,
 	applyOutgoingHeadlessMessage,
 	buildHeadlessCompactionMessage,
+	buildHeadlessRawAgentEventMessage,
 	buildHeadlessToolsSummary,
 	buildHeadlessUsage,
 	classifyHeadlessError,
@@ -255,6 +256,9 @@ export async function runHeadlessMode(
 	});
 
 	agent.subscribe((event) => {
+		if (state.capabilities?.raw_agent_events) {
+			sendMessage(buildHeadlessRawAgentEventMessage(event));
+		}
 		if (
 			event.type === "action_approval_required" &&
 			!approvalService?.requiresUserInteraction()

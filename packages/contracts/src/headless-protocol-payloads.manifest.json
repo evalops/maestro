@@ -23,6 +23,10 @@
 					"items": { "kind": "enumRef", "name": "headlessUtilityOperations" },
 					"uniqueItems": true,
 					"optional": true
+				},
+				"raw_agent_events": {
+					"kind": "boolean",
+					"optional": true
 				}
 			}
 		},
@@ -524,6 +528,15 @@
 					"kind": "enumRef",
 					"name": "headlessServerRequestResolvedBy"
 				}
+			}
+		},
+		"HeadlessRawAgentEventMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "raw_agent_event" },
+				"event_type": { "kind": "string" },
+				"event": { "kind": "unknown" }
 			}
 		},
 		"HeadlessUtilityCommandStartedMessageSchema": {

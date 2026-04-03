@@ -764,6 +764,10 @@ impl Default for SupervisorBuilder {
 #[cfg(test)]
 fn event_to_message(event: &AgentEvent) -> Option<FromAgentMessage> {
     match event {
+        AgentEvent::RawAgentEvent { event_type, event } => Some(FromAgentMessage::RawAgentEvent {
+            event_type: event_type.clone(),
+            event: event.clone(),
+        }),
         AgentEvent::Ready {
             protocol_version,
             model,

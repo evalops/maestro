@@ -277,6 +277,7 @@ impl AgentTransport {
             capabilities: Some(ClientCapabilities {
                 server_requests: Some(vec![ServerRequestType::Approval]),
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
+                raw_agent_events: None,
             }),
             role: Some(ConnectionRole::Controller),
             opt_out_notifications: None,
