@@ -1507,6 +1507,55 @@ describe("headless session handlers", () => {
 		expect(snapshot.state.controller_connection_id).toBeNull();
 	});
 
+	it("coalesces concurrent runtime disposal", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const runtime = await context.headlessRuntimeService.ensureRuntime({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context,
+			sessionManager: createSessionManagerForRequest(
+				createJsonRequest("POST", "/api/headless/sessions", {}),
+				"headless",
+			),
+		});
+
+		const internals = runtime as unknown as {
+			utilityCommands: {
+				dispose: (reason?: string) => Promise<void>;
+			};
+		};
+		const originalDispose = internals.utilityCommands.dispose.bind(
+			internals.utilityCommands,
+		);
+		let releaseDispose!: () => void;
+		const disposeGate = new Promise<void>((resolve) => {
+			releaseDispose = resolve;
+		});
+		const disposeSpy = vi
+			.spyOn(internals.utilityCommands, "dispose")
+			.mockImplementation(async (reason?: string) => {
+				await disposeGate;
+				return originalDispose(reason);
+			});
+
+		const firstDispose = runtime.dispose();
+		await Promise.resolve();
+		const secondDispose = runtime.dispose();
+
+		expect(disposeSpy).toHaveBeenCalledTimes(1);
+
+		releaseDispose();
+		await Promise.all([firstDispose, secondDispose]);
+
+		expect(disposeSpy).toHaveBeenCalledTimes(1);
+		expect(runtime.isDisposed()).toBe(true);
+	});
+
 	it("explicit unsubscribe releases the controller lease", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({

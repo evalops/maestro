@@ -505,6 +505,7 @@ export class HeadlessSessionRuntime {
 	private lastInit: HeadlessInitMessage | null = null;
 	private running = false;
 	private disposed = false;
+	private disposePromise: Promise<void> | null = null;
 	private updatedAt = Date.now();
 
 	private constructor(
@@ -600,16 +601,22 @@ export class HeadlessSessionRuntime {
 	}
 
 	async dispose(): Promise<void> {
+		if (this.disposePromise) {
+			return this.disposePromise;
+		}
 		if (this.disposed) {
 			return;
 		}
-		this.cancelPendingServerRequests(
-			"Headless runtime disposed before request completed",
-		);
-		await this.utilityCommands.dispose();
-		this.fileWatches.dispose();
-		this.agent.abort();
-		this.finalizeDisposal();
+		this.disposePromise = (async () => {
+			this.cancelPendingServerRequests(
+				"Headless runtime disposed before request completed",
+			);
+			await this.utilityCommands.dispose();
+			this.fileWatches.dispose();
+			this.agent.abort();
+			this.finalizeDisposal();
+		})();
+		return this.disposePromise;
 	}
 
 	getSnapshot(): HeadlessRuntimeSnapshot {
