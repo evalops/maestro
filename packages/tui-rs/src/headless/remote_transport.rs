@@ -22,8 +22,8 @@ use super::async_transport::AsyncTransportError;
 use super::messages::{
     ActiveFileWatch, ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities,
     ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage, HeadlessErrorType, InitConfig,
-    PendingApproval, StreamingResponse, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
-    UtilityCommandTerminalMode,
+    PendingApproval, ServerRequestType, StreamingResponse, ThinkingLevel, ToAgentMessage,
+    UtilityCommandShellMode, UtilityCommandTerminalMode, UtilityOperation,
 };
 
 /// Configuration for the remote headless transport.
@@ -552,7 +552,7 @@ impl RemoteAgentTransport {
             heartbeat_cancel,
         ));
 
-        Ok(Self {
+        let transport = Self {
             message_tx,
             event_rx,
             cancel_token,
@@ -566,7 +566,9 @@ impl RemoteAgentTransport {
             _reader_handle: reader_handle,
             _writer_handle: writer_handle,
             _heartbeat_handle: heartbeat_handle,
-        })
+        };
+        transport.send(build_remote_hello_message(&config))?;
+        Ok(transport)
     }
 
     pub fn send(&self, msg: ToAgentMessage) -> Result<(), AsyncTransportError> {
@@ -816,6 +818,57 @@ fn build_remote_server_requests(config: &RemoteTransportConfig) -> Vec<&'static 
         vec!["approval", "client_tool"]
     } else {
         vec!["approval"]
+    }
+}
+
+fn build_remote_server_request_types(config: &RemoteTransportConfig) -> Vec<ServerRequestType> {
+    let mut requests = vec![ServerRequestType::Approval];
+    if config.enable_client_tools {
+        requests.push(ServerRequestType::ClientTool);
+    }
+    requests
+}
+
+fn build_remote_utility_operation_types(config: &RemoteTransportConfig) -> Vec<UtilityOperation> {
+    let mut operations = Vec::new();
+    if config.enable_command_exec {
+        operations.push(UtilityOperation::CommandExec);
+    }
+    if config.enable_file_search {
+        operations.push(UtilityOperation::FileSearch);
+    }
+    if config.enable_file_read {
+        operations.push(UtilityOperation::FileRead);
+    }
+    if config.enable_file_watch {
+        operations.push(UtilityOperation::FileWatch);
+    }
+    operations
+}
+
+fn build_remote_connection_role(config: &RemoteTransportConfig) -> Option<ConnectionRole> {
+    match config.role.as_deref() {
+        Some("viewer") => Some(ConnectionRole::Viewer),
+        Some("controller") => Some(ConnectionRole::Controller),
+        _ => None,
+    }
+}
+
+fn build_remote_hello_message(config: &RemoteTransportConfig) -> ToAgentMessage {
+    ToAgentMessage::Hello {
+        protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
+        client_info: Some(ClientInfo {
+            name: config.client_name.clone(),
+            version: config.client_version.clone(),
+        }),
+        capabilities: Some(ClientCapabilities {
+            server_requests: Some(build_remote_server_request_types(config)),
+            utility_operations: Some(build_remote_utility_operation_types(config)),
+            raw_agent_events: Some(config.enable_raw_agent_events),
+        }),
+        role: build_remote_connection_role(config),
+        opt_out_notifications: (!config.opt_out_notifications.is_empty())
+            .then(|| config.opt_out_notifications.clone()),
     }
 }
 
@@ -1250,6 +1303,7 @@ async fn response_status_error(response: reqwest::Response) -> AsyncTransportErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::headless::HEADLESS_PROTOCOL_VERSION;
     use std::collections::VecDeque;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -1329,6 +1383,20 @@ mod tests {
         );
         let _ = socket.write_all(response.as_bytes()).await;
         let _ = socket.shutdown().await;
+    }
+
+    async fn wait_for_posted_bodies_len(
+        posted_bodies: &Arc<Mutex<Vec<String>>>,
+        expected_len: usize,
+    ) -> Vec<String> {
+        for _ in 0..50 {
+            let posted = posted_bodies.lock().await.clone();
+            if posted.len() >= expected_len {
+                return posted;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        posted_bodies.lock().await.clone()
     }
 
     async fn spawn_remote_headless_server(
@@ -1941,9 +2009,31 @@ mod tests {
                 "is_responding": false
             }
         });
-        let message_event = serde_json::json!({
+        let hello_ok_event = serde_json::json!({
             "type": "message",
             "cursor": 2,
+            "message": {
+                "type": "hello_ok",
+                "protocol_version": "2026-04-03",
+                "connection_id": "conn_remote",
+                "client_protocol_version": "2026-04-03",
+                "client_info": {
+                    "name": "maestro-tui-rs",
+                    "version": "1.0.0"
+                },
+                "capabilities": {
+                    "server_requests": ["approval"],
+                    "utility_operations": ["command_exec", "file_search", "file_read", "file_watch"],
+                    "raw_agent_events": false
+                },
+                "role": "controller",
+                "controller_connection_id": "conn_remote"
+            }
+        })
+        .to_string();
+        let message_event = serde_json::json!({
+            "type": "message",
+            "cursor": 3,
             "message": {
                 "type": "status",
                 "message": "Remote update"
@@ -1952,7 +2042,8 @@ mod tests {
         .to_string();
 
         let (addr, posted_bodies, request_paths, request_headers) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![message_event]).await;
+            spawn_remote_headless_server(snapshot.to_string(), vec![hello_ok_event, message_event])
+                .await;
 
         let mut config = RemoteTransportConfig {
             base_url: format!("http://{addr}"),
@@ -1979,7 +2070,48 @@ mod tests {
             Some("Be terse")
         );
 
-        let incoming = transport.recv_incoming().await.expect("incoming event");
+        let posted = wait_for_posted_bodies_len(&posted_bodies, 1).await;
+        assert_eq!(posted.len(), 1);
+        let sent = serde_json::from_str::<ToAgentMessage>(&posted[0]).expect("parse sent message");
+        assert!(matches!(
+            sent,
+            ToAgentMessage::Hello {
+                protocol_version,
+                client_info,
+                capabilities,
+                role,
+                ..
+            } if protocol_version.as_deref() == Some(HEADLESS_PROTOCOL_VERSION)
+                && client_info.as_ref().map(|info| info.name.as_str()) == Some("maestro-tui-rs")
+                && capabilities.as_ref().and_then(|items| items.server_requests.as_ref()).map(|items| items.len()) == Some(1)
+                && role == Some(ConnectionRole::Controller)
+        ));
+
+        let incoming = transport.recv_incoming().await.expect("incoming hello_ok");
+        match incoming {
+            RemoteIncoming::Message(FromAgentMessage::HelloOk {
+                connection_id,
+                controller_connection_id,
+                ..
+            }) => {
+                assert_eq!(connection_id.as_deref(), Some("conn_remote"));
+                assert_eq!(controller_connection_id.as_deref(), Some("conn_remote"));
+            }
+            other => panic!("expected remote hello_ok, got {other:?}"),
+        }
+        assert_eq!(
+            transport.state().client_protocol_version.as_deref(),
+            Some("2026-04-03")
+        );
+        assert_eq!(
+            transport.state().controller_connection_id.as_deref(),
+            Some("conn_remote")
+        );
+
+        let incoming = transport
+            .recv_incoming()
+            .await
+            .expect("incoming status event");
         match incoming {
             RemoteIncoming::Message(FromAgentMessage::Status { message }) => {
                 assert_eq!(message, "Remote update");
@@ -1995,16 +2127,9 @@ mod tests {
             .send(ToAgentMessage::Interrupt)
             .expect("send interrupt");
 
-        for _ in 0..50 {
-            if !posted_bodies.lock().await.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        let posted = posted_bodies.lock().await.clone();
-        assert_eq!(posted.len(), 1);
-        let sent = serde_json::from_str::<ToAgentMessage>(&posted[0]).expect("parse sent message");
+        let posted = wait_for_posted_bodies_len(&posted_bodies, 2).await;
+        assert_eq!(posted.len(), 2);
+        let sent = serde_json::from_str::<ToAgentMessage>(&posted[1]).expect("parse sent message");
         assert!(matches!(sent, ToAgentMessage::Interrupt));
 
         let headers = request_headers.lock().await.clone();
@@ -2042,7 +2167,7 @@ mod tests {
         }
 
         let posted = posted_bodies.lock().await.clone();
-        assert_eq!(posted.len(), 1);
+        assert_eq!(posted.len(), 2);
 
         let paths = request_paths.lock().await.clone();
         assert!(
@@ -2178,16 +2303,9 @@ mod tests {
             .resize_utility_command("cmd_pty".to_string(), 120, 40)
             .expect("send utility command resize");
 
-        for _ in 0..50 {
-            if !posted_bodies.lock().await.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        let posted = posted_bodies.lock().await.clone();
-        assert_eq!(posted.len(), 1);
-        let sent = serde_json::from_str::<ToAgentMessage>(&posted[0]).expect("parse sent message");
+        let posted = wait_for_posted_bodies_len(&posted_bodies, 2).await;
+        assert_eq!(posted.len(), 2);
+        let sent = serde_json::from_str::<ToAgentMessage>(&posted[1]).expect("parse sent message");
         assert!(matches!(
             sent,
             ToAgentMessage::UtilityCommandResize {
@@ -2238,16 +2356,9 @@ mod tests {
             )
             .expect("send utility file read");
 
-        for _ in 0..50 {
-            if !posted_bodies.lock().await.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        let posted = posted_bodies.lock().await.clone();
-        assert_eq!(posted.len(), 1);
-        let sent = serde_json::from_str::<ToAgentMessage>(&posted[0]).expect("parse sent message");
+        let posted = wait_for_posted_bodies_len(&posted_bodies, 2).await;
+        assert_eq!(posted.len(), 2);
+        let sent = serde_json::from_str::<ToAgentMessage>(&posted[1]).expect("parse sent message");
         assert!(matches!(
             sent,
             ToAgentMessage::UtilityFileRead {
