@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ActionApprovalService } from "../../src/agent/action-approval.js";
+import { ToolRetryService } from "../../src/agent/tool-retry.js";
 import { ServerRequestManager } from "../../src/server/server-request-manager.js";
 
 describe("ServerRequestManager", () => {
@@ -319,6 +320,105 @@ describe("ServerRequestManager", () => {
 			resolution: "failed",
 			reason:
 				"User input request timed out before the connected client responded.",
+			resolvedBy: "policy",
+		});
+	});
+
+	it("resolves tool retry prompts through the shared registry", () => {
+		const service = new ToolRetryService("prompt");
+		const retrySpy = vi.spyOn(service, "retry").mockReturnValue(true);
+		const listener = vi.fn();
+		manager.subscribe(listener);
+
+		manager.registerToolRetry({
+			sessionId: "sess_retry",
+			request: {
+				id: "retry_1",
+				toolCallId: "call_bash",
+				toolName: "bash",
+				args: { command: "ls" },
+				errorMessage: "Command failed",
+				attempt: 1,
+				maxAttempts: 3,
+				summary: "Retry bash command",
+			},
+			service,
+		});
+
+		expect(manager.listPending({ sessionId: "sess_retry" })).toEqual([
+			expect.objectContaining({
+				id: "retry_1",
+				kind: "tool_retry",
+				callId: "call_bash",
+				toolName: "bash",
+			}),
+		]);
+
+		expect(
+			manager.resolveToolRetry("retry_1", {
+				action: "retry",
+				reason: "Retry once more",
+				resolvedBy: "user",
+			}),
+		).toBe(true);
+		expect(retrySpy).toHaveBeenCalledWith("retry_1", "Retry once more");
+		expect(listener).toHaveBeenNthCalledWith(1, {
+			type: "registered",
+			request: expect.objectContaining({
+				id: "retry_1",
+				kind: "tool_retry",
+				sessionId: "sess_retry",
+				callId: "call_bash",
+			}),
+		});
+		expect(listener).toHaveBeenNthCalledWith(2, {
+			type: "resolved",
+			request: expect.objectContaining({
+				id: "retry_1",
+				kind: "tool_retry",
+				callId: "call_bash",
+			}),
+			resolution: "retried",
+			reason: "Retry once more",
+			resolvedBy: "user",
+		});
+	});
+
+	it("uses a tool-retry specific timeout reason during cleanup", () => {
+		const service = new ToolRetryService("prompt");
+		const abortSpy = vi.spyOn(service, "abort").mockReturnValue(true);
+		const listener = vi.fn();
+		manager.subscribe(listener);
+
+		manager.registerToolRetry({
+			sessionId: "sess_retry",
+			request: {
+				id: "retry_timeout",
+				toolCallId: "call_bash",
+				toolName: "bash",
+				args: { command: "ls" },
+				errorMessage: "Command failed",
+				attempt: 1,
+			},
+			service,
+			timeoutMs: 1,
+		});
+
+		manager.cleanup(Date.now() + 5);
+
+		expect(abortSpy).toHaveBeenCalledWith(
+			"retry_timeout",
+			"Tool retry request timed out before a retry decision was provided.",
+		);
+		expect(listener).toHaveBeenNthCalledWith(2, {
+			type: "resolved",
+			request: expect.objectContaining({
+				id: "retry_timeout",
+				kind: "tool_retry",
+			}),
+			resolution: "cancelled",
+			reason:
+				"Tool retry request timed out before a retry decision was provided.",
 			resolvedBy: "policy",
 		});
 	});

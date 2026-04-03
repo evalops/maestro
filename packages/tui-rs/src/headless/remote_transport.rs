@@ -270,6 +270,8 @@ struct RemoteRuntimeStateSnapshot {
     #[serde(default)]
     pending_user_inputs: Vec<PendingApproval>,
     #[serde(default)]
+    pending_tool_retries: Vec<PendingApproval>,
+    #[serde(default)]
     tracked_tools: Vec<PendingApproval>,
     #[serde(default)]
     active_tools: Vec<RemoteActiveToolState>,
@@ -316,6 +318,7 @@ impl RemoteRuntimeStateSnapshot {
             pending_approvals: self.pending_approvals,
             pending_client_tools: self.pending_client_tools,
             pending_user_inputs: self.pending_user_inputs,
+            pending_tool_retries: self.pending_tool_retries,
             tracked_tools: self
                 .tracked_tools
                 .into_iter()
@@ -1428,16 +1431,19 @@ mod tests {
             }),
             pending_approvals: vec![PendingApproval {
                 call_id: "call-1".to_string(),
+                request_id: None,
                 tool: "bash".to_string(),
                 args: serde_json::json!({"cmd": "ls"}),
             }],
             pending_client_tools: vec![PendingApproval {
                 call_id: "call-client".to_string(),
+                request_id: None,
                 tool: "artifacts".to_string(),
                 args: serde_json::json!({"command": "create", "filename": "report.txt"}),
             }],
             pending_user_inputs: vec![PendingApproval {
                 call_id: "call-user-input".to_string(),
+                request_id: None,
                 tool: "ask_user".to_string(),
                 args: serde_json::json!({
                     "questions": [{
@@ -1450,8 +1456,20 @@ mod tests {
                     }]
                 }),
             }],
+            pending_tool_retries: vec![PendingApproval {
+                call_id: "call-retry".to_string(),
+                request_id: Some("req-retry".to_string()),
+                tool: "bash".to_string(),
+                args: serde_json::json!({
+                    "tool_call_id": "call-retry",
+                    "args": {"cmd": "ls"},
+                    "error_message": "command failed",
+                    "attempt": 1
+                }),
+            }],
             tracked_tools: vec![PendingApproval {
                 call_id: "call-2".to_string(),
+                request_id: None,
                 tool: "read".to_string(),
                 args: serde_json::json!({"path": "package.json"}),
             }],
@@ -1507,6 +1525,7 @@ mod tests {
         assert_eq!(state.pending_approvals.len(), 1);
         assert_eq!(state.pending_client_tools.len(), 1);
         assert_eq!(state.pending_user_inputs.len(), 1);
+        assert_eq!(state.pending_tool_retries.len(), 1);
         assert_eq!(state.subscriber_count, 2);
         assert_eq!(
             state.controller_subscription_id.as_deref(),

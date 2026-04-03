@@ -241,6 +241,8 @@ pub struct AgentStateCheckpoint {
     #[serde(default)]
     pub pending_user_inputs: Vec<PendingApproval>,
     #[serde(default)]
+    pub pending_tool_retries: Vec<PendingApproval>,
+    #[serde(default)]
     pub tracked_tools: Vec<PendingApproval>,
     #[serde(default)]
     pub active_tools: Vec<ActiveToolCheckpoint>,
@@ -288,6 +290,7 @@ impl AgentStateCheckpoint {
             pending_approvals: state.pending_approvals.clone(),
             pending_client_tools: state.pending_client_tools.clone(),
             pending_user_inputs: state.pending_user_inputs.clone(),
+            pending_tool_retries: state.pending_tool_retries.clone(),
             tracked_tools: state.tracked_tools.values().cloned().collect(),
             active_tools: state
                 .active_tools
@@ -360,6 +363,7 @@ impl AgentStateCheckpoint {
             pending_approvals: self.pending_approvals,
             pending_client_tools: self.pending_client_tools,
             pending_user_inputs: self.pending_user_inputs,
+            pending_tool_retries: self.pending_tool_retries,
             tracked_tools: self
                 .tracked_tools
                 .into_iter()

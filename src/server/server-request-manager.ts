@@ -3,23 +3,36 @@ import type {
 	ActionApprovalRequest,
 	ActionApprovalService,
 } from "../agent/action-approval.js";
+import type {
+	ToolRetryDecision,
+	ToolRetryRequest,
+	ToolRetryService,
+} from "../agent/tool-retry.js";
 import type { ImageContent, TextContent } from "../agent/types.js";
 
 type ToolResultContent = TextContent | ImageContent;
 
-export type ServerRequestKind = "approval" | "client_tool" | "user_input";
+export type ServerRequestKind =
+	| "approval"
+	| "client_tool"
+	| "user_input"
+	| "tool_retry";
 export type ServerRequestResolution =
 	| "approved"
 	| "denied"
 	| "completed"
 	| "failed"
 	| "answered"
+	| "retried"
+	| "skipped"
+	| "aborted"
 	| "cancelled";
 
 export interface PendingServerRequestSnapshot {
 	id: string;
 	kind: ServerRequestKind;
 	sessionId?: string;
+	callId: string;
 	toolName: string;
 	args: unknown;
 	reason: string;
@@ -58,7 +71,16 @@ type ClientToolRequestEntry = PendingServerRequestSnapshot & {
 	cancel: (reason: string) => boolean;
 };
 
-type PendingServerRequestEntry = ApprovalRequestEntry | ClientToolRequestEntry;
+type ToolRetryRequestEntry = PendingServerRequestSnapshot & {
+	kind: "tool_retry";
+	timeoutMs: number;
+	resolve: (decision: ToolRetryDecision) => boolean;
+};
+
+type PendingServerRequestEntry =
+	| ApprovalRequestEntry
+	| ClientToolRequestEntry
+	| ToolRetryRequestEntry;
 
 type RegisterApprovalOptions = {
 	sessionId?: string;
@@ -79,8 +101,16 @@ type RegisterClientToolOptions = {
 	cancel: (reason: string) => boolean;
 };
 
+type RegisterToolRetryOptions = {
+	sessionId?: string;
+	request: ToolRetryRequest;
+	service: ToolRetryService;
+	timeoutMs?: number;
+};
+
 const DEFAULT_APPROVAL_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_CLIENT_TOOL_TIMEOUT_MS = 60 * 1000;
+const DEFAULT_TOOL_RETRY_TIMEOUT_MS = 60 * 60 * 1000;
 
 function getTimeoutReason(kind: ServerRequestKind): string {
 	switch (kind) {
@@ -90,6 +120,8 @@ function getTimeoutReason(kind: ServerRequestKind): string {
 			return "User input request timed out before the connected client responded.";
 		case "client_tool":
 			return "Client tool execution timed out after 60 seconds. The VS Code extension may not be responding.";
+		case "tool_retry":
+			return "Tool retry request timed out before a retry decision was provided.";
 	}
 }
 
@@ -110,6 +142,7 @@ export class ServerRequestManager {
 			id: request.id,
 			kind: "approval",
 			sessionId: options.sessionId,
+			callId: request.id,
 			toolName: request.toolName,
 			args: request.args,
 			reason: request.reason,
@@ -130,6 +163,7 @@ export class ServerRequestManager {
 			id: options.id,
 			kind,
 			sessionId: options.sessionId,
+			callId: options.id,
 			toolName: options.toolName,
 			args: options.args,
 			reason:
@@ -149,6 +183,45 @@ export class ServerRequestManager {
 		});
 	}
 
+	registerToolRetry(options: RegisterToolRetryOptions): void {
+		const { request, service } = options;
+		const entry: ToolRetryRequestEntry = {
+			id: request.id,
+			kind: "tool_retry",
+			sessionId: options.sessionId,
+			callId: request.toolCallId,
+			toolName: request.toolName,
+			args: {
+				tool_call_id: request.toolCallId,
+				args: request.args,
+				error_message: request.errorMessage,
+				attempt: request.attempt,
+				...(request.maxAttempts !== undefined
+					? { max_attempts: request.maxAttempts }
+					: {}),
+				...(request.summary ? { summary: request.summary } : {}),
+			},
+			reason: request.summary ?? "Tool retry decision required",
+			timestamp: Date.now(),
+			timeoutMs: options.timeoutMs ?? DEFAULT_TOOL_RETRY_TIMEOUT_MS,
+			resolve: (decision) => {
+				switch (decision.action) {
+					case "retry":
+						return service.retry(request.id, decision.reason);
+					case "skip":
+						return service.skip(request.id, decision.reason);
+					case "abort":
+						return service.abort(request.id, decision.reason);
+				}
+			},
+		};
+		this.pending.set(request.id, entry);
+		this.emit({
+			type: "registered",
+			request: this.toSnapshot(entry),
+		});
+	}
+
 	unregister(id: string): void {
 		this.pending.delete(id);
 	}
@@ -162,6 +235,7 @@ export class ServerRequestManager {
 			id: entry.id,
 			kind: entry.kind,
 			sessionId: entry.sessionId,
+			callId: entry.callId,
 			toolName: entry.toolName,
 			args: entry.args,
 			reason: entry.reason,
@@ -182,6 +256,7 @@ export class ServerRequestManager {
 				id: entry.id,
 				kind: entry.kind,
 				sessionId: entry.sessionId,
+				callId: entry.callId,
 				toolName: entry.toolName,
 				args: entry.args,
 				reason: entry.reason,
@@ -219,13 +294,45 @@ export class ServerRequestManager {
 		return handled;
 	}
 
+	resolveToolRetry(
+		id: string,
+		decision: Pick<ToolRetryDecision, "action" | "reason" | "resolvedBy">,
+	): boolean {
+		const entry = this.pending.get(id);
+		if (!entry || entry.kind !== "tool_retry") {
+			return false;
+		}
+		const request = this.toSnapshot(entry);
+		this.pending.delete(id);
+		const handled = entry.resolve({
+			action: decision.action,
+			reason: decision.reason,
+			resolvedBy: decision.resolvedBy,
+		});
+		if (handled) {
+			this.emit({
+				type: "resolved",
+				request,
+				resolution:
+					decision.action === "retry"
+						? "retried"
+						: decision.action === "skip"
+							? "skipped"
+							: "aborted",
+				reason: decision.reason,
+				resolvedBy: decision.resolvedBy,
+			});
+		}
+		return handled;
+	}
+
 	resolveClientTool(
 		id: string,
 		content: ToolResultContent[],
 		isError: boolean,
 	): boolean {
 		const entry = this.pending.get(id);
-		if (!entry || entry.kind === "approval") {
+		if (!entry || entry.kind === "approval" || entry.kind === "tool_retry") {
 			return false;
 		}
 		const request = this.toSnapshot(entry);
@@ -273,6 +380,23 @@ export class ServerRequestManager {
 					type: "resolved",
 					request,
 					resolution: resolvedBy === "runtime" ? "cancelled" : "denied",
+					reason,
+					resolvedBy,
+				});
+			}
+			return handled;
+		}
+		if (entry.kind === "tool_retry") {
+			const handled = entry.resolve({
+				action: "abort",
+				reason,
+				resolvedBy: resolvedBy === "runtime" ? "policy" : resolvedBy,
+			});
+			if (handled) {
+				this.emit({
+					type: "resolved",
+					request,
+					resolution: "cancelled",
 					reason,
 					resolvedBy,
 				});
@@ -331,6 +455,7 @@ export class ServerRequestManager {
 			id: entry.id,
 			kind: entry.kind,
 			sessionId: entry.sessionId,
+			callId: entry.callId,
 			toolName: entry.toolName,
 			args: entry.args,
 			reason: entry.reason,

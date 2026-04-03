@@ -136,6 +136,7 @@ import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-h
 import { configureSafeMode } from "./safety/safe-mode.js";
 import { ServerRequestActionApprovalService } from "./server/approval-service.js";
 import { clientToolService } from "./server/client-tools-service.js";
+import { ServerRequestToolRetryService } from "./server/tool-retry-service.js";
 import { SessionManager } from "./session/manager.js";
 import type { UpdateCheckResult } from "./update/check.js";
 import { isInsideGitRepository } from "./utils/git.js";
@@ -914,7 +915,12 @@ export async function main(args: string[]) {
 		: undefined;
 	const toolRetryMode: ToolRetryMode =
 		isInteractiveTui && !isHeadlessMode ? "prompt" : "skip";
-	const toolRetryService = new ToolRetryService(toolRetryMode);
+	const toolRetryService = isHeadlessMode
+		? new ServerRequestToolRetryService(
+				toolRetryMode,
+				() => sessionManager.getSessionId() ?? undefined,
+			)
+		: new ToolRetryService(toolRetryMode);
 
 	// ─────────────────────────────────────────────────────────────────────────────
 	// PHASE 10: Tool Registry and Sandbox Setup
@@ -1105,7 +1111,12 @@ export async function main(args: string[]) {
 		console.log(chalk.dim(`AGENTS.md generated at ${displayPath}`));
 	} else if (mode === "headless" || parsed.headless) {
 		// Headless mode - for native TUI communication
-		await runHeadlessMode(agent, sessionManager, approvalService);
+		await runHeadlessMode(
+			agent,
+			sessionManager,
+			approvalService,
+			toolRetryService,
+		);
 	} else if (mode === "rpc") {
 		// RPC mode - headless operation
 		const { runRpcMode } = await import("./cli/rpc-mode.js");

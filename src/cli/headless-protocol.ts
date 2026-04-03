@@ -10,6 +10,7 @@ import {
 	type HeadlessServerRequestResolvedBy,
 	type HeadlessServerRequestType,
 	type HeadlessThinkingLevel,
+	type HeadlessToolRetryDecisionAction,
 	type HeadlessUtilityCommandShellMode,
 	type HeadlessUtilityCommandStream,
 	type HeadlessUtilityCommandTerminalMode,
@@ -111,6 +112,8 @@ export interface HeadlessServerRequestResponseMessage {
 		output: string;
 		error?: string;
 	};
+	decision_action?: HeadlessToolRetryDecisionAction;
+	reason?: string;
 	content?: Array<
 		| {
 				type: "text";
@@ -455,6 +458,7 @@ export interface HeadlessStreamingResponseState {
 
 export interface HeadlessPendingApprovalState {
 	call_id: string;
+	request_id?: string;
 	tool: string;
 	args: unknown;
 }
@@ -521,6 +525,7 @@ export interface HeadlessRuntimeState {
 	pending_approvals: HeadlessPendingApprovalState[];
 	pending_client_tools: HeadlessPendingApprovalState[];
 	pending_user_inputs: HeadlessPendingApprovalState[];
+	pending_tool_retries: HeadlessPendingApprovalState[];
 	active_tools: HeadlessActiveToolState[];
 	active_utility_commands: HeadlessActiveUtilityCommandState[];
 	active_file_watches: HeadlessActiveFileWatchState[];
@@ -544,12 +549,33 @@ export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 		pending_approvals: [],
 		pending_client_tools: [],
 		pending_user_inputs: [],
+		pending_tool_retries: [],
 		active_tools: [],
 		active_utility_commands: [],
 		active_file_watches: [],
 		tracked_tools: [],
 		is_ready: false,
 		is_responding: false,
+	};
+}
+
+function getPendingRequestId(request: HeadlessPendingApprovalState): string {
+	return request.request_id ?? request.call_id;
+}
+
+function toPendingRequestState(params: {
+	call_id: string;
+	request_id: string;
+	tool: string;
+	args: unknown;
+}): HeadlessPendingApprovalState {
+	return {
+		call_id: params.call_id,
+		...(params.request_id !== params.call_id
+			? { request_id: params.request_id }
+			: {}),
+		tool: params.tool,
+		args: params.args,
 	};
 }
 
@@ -1178,7 +1204,7 @@ export function applyOutgoingHeadlessMessage(
 		case "server_request_response":
 			if (msg.request_type === "approval") {
 				state.pending_approvals = state.pending_approvals.filter(
-					(approval) => approval.call_id !== msg.request_id,
+					(approval) => getPendingRequestId(approval) !== msg.request_id,
 				);
 				if (!msg.approved) {
 					state.tracked_tools = state.tracked_tools.filter(
@@ -1187,11 +1213,15 @@ export function applyOutgoingHeadlessMessage(
 				}
 			} else if (msg.request_type === "client_tool") {
 				state.pending_client_tools = state.pending_client_tools.filter(
-					(request) => request.call_id !== msg.request_id,
+					(request) => getPendingRequestId(request) !== msg.request_id,
+				);
+			} else if (msg.request_type === "user_input") {
+				state.pending_user_inputs = state.pending_user_inputs.filter(
+					(request) => getPendingRequestId(request) !== msg.request_id,
 				);
 			} else {
-				state.pending_user_inputs = state.pending_user_inputs.filter(
-					(request) => request.call_id !== msg.request_id,
+				state.pending_tool_retries = state.pending_tool_retries.filter(
+					(request) => getPendingRequestId(request) !== msg.request_id,
 				);
 			}
 			return;
@@ -1201,6 +1231,7 @@ export function applyOutgoingHeadlessMessage(
 			state.pending_approvals = [];
 			state.pending_client_tools = [];
 			state.pending_user_inputs = [];
+			state.pending_tool_retries = [];
 			state.active_tools = [];
 			state.active_utility_commands = [];
 			state.active_file_watches = [];
@@ -1212,6 +1243,7 @@ export function applyOutgoingHeadlessMessage(
 			state.pending_approvals = [];
 			state.pending_client_tools = [];
 			state.pending_user_inputs = [];
+			state.pending_tool_retries = [];
 			state.active_tools = [];
 			state.active_utility_commands = [];
 			state.active_file_watches = [];
@@ -1311,6 +1343,9 @@ export function applyIncomingHeadlessMessage(
 			const pendingUserInput = state.pending_user_inputs.find(
 				(request) => request.call_id === msg.call_id,
 			);
+			const pendingToolRetry = state.pending_tool_retries.find(
+				(request) => request.call_id === msg.call_id,
+			);
 			state.active_tools = [
 				...state.active_tools.filter((tool) => tool.call_id !== msg.call_id),
 				{
@@ -1320,6 +1355,7 @@ export function applyIncomingHeadlessMessage(
 						pending?.tool ??
 						pendingClientTool?.tool ??
 						pendingUserInput?.tool ??
+						pendingToolRetry?.tool ??
 						"unknown",
 					output: "",
 				},
@@ -1344,6 +1380,9 @@ export function applyIncomingHeadlessMessage(
 				(request) => request.call_id !== msg.call_id,
 			);
 			state.pending_user_inputs = state.pending_user_inputs.filter(
+				(request) => request.call_id !== msg.call_id,
+			);
+			state.pending_tool_retries = state.pending_tool_retries.filter(
 				(request) => request.call_id !== msg.call_id,
 			);
 			state.tracked_tools = state.tracked_tools.filter(
@@ -1384,41 +1423,12 @@ export function applyIncomingHeadlessMessage(
 			}
 			return;
 		case "server_request":
-			state.tracked_tools = [
-				...state.tracked_tools.filter((tool) => tool.call_id !== msg.call_id),
-				{
-					call_id: msg.call_id,
-					tool: msg.tool,
-					args: msg.args,
-				},
-			];
-			if (msg.request_type === "approval") {
-				state.pending_approvals = [
-					...state.pending_approvals.filter(
-						(approval) => approval.call_id !== msg.call_id,
-					),
-					{
-						call_id: msg.call_id,
-						tool: msg.tool,
-						args: msg.args,
-					},
-				];
-			} else if (msg.request_type === "client_tool") {
-				state.pending_client_tools = [
-					...state.pending_client_tools.filter(
-						(request) => request.call_id !== msg.call_id,
-					),
-					{
-						call_id: msg.call_id,
-						tool: msg.tool,
-						args: msg.args,
-					},
-				];
-			} else {
-				state.pending_user_inputs = [
-					...state.pending_user_inputs.filter(
-						(request) => request.call_id !== msg.call_id,
-					),
+			if (
+				msg.request_type !== "tool_retry" ||
+				!state.tracked_tools.some((tool) => tool.call_id === msg.call_id)
+			) {
+				state.tracked_tools = [
+					...state.tracked_tools.filter((tool) => tool.call_id !== msg.call_id),
 					{
 						call_id: msg.call_id,
 						tool: msg.tool,
@@ -1426,11 +1436,60 @@ export function applyIncomingHeadlessMessage(
 					},
 				];
 			}
+			if (msg.request_type === "approval") {
+				state.pending_approvals = [
+					...state.pending_approvals.filter(
+						(approval) => approval.call_id !== msg.call_id,
+					),
+					toPendingRequestState({
+						call_id: msg.call_id,
+						request_id: msg.request_id,
+						tool: msg.tool,
+						args: msg.args,
+					}),
+				];
+			} else if (msg.request_type === "client_tool") {
+				state.pending_client_tools = [
+					...state.pending_client_tools.filter(
+						(request) => request.call_id !== msg.call_id,
+					),
+					toPendingRequestState({
+						call_id: msg.call_id,
+						request_id: msg.request_id,
+						tool: msg.tool,
+						args: msg.args,
+					}),
+				];
+			} else if (msg.request_type === "user_input") {
+				state.pending_user_inputs = [
+					...state.pending_user_inputs.filter(
+						(request) => request.call_id !== msg.call_id,
+					),
+					toPendingRequestState({
+						call_id: msg.call_id,
+						request_id: msg.request_id,
+						tool: msg.tool,
+						args: msg.args,
+					}),
+				];
+			} else {
+				state.pending_tool_retries = [
+					...state.pending_tool_retries.filter(
+						(request) => request.call_id !== msg.call_id,
+					),
+					toPendingRequestState({
+						call_id: msg.call_id,
+						request_id: msg.request_id,
+						tool: msg.tool,
+						args: msg.args,
+					}),
+				];
+			}
 			return;
 		case "server_request_resolved":
 			if (msg.request_type === "approval") {
 				state.pending_approvals = state.pending_approvals.filter(
-					(approval) => approval.call_id !== msg.call_id,
+					(approval) => getPendingRequestId(approval) !== msg.request_id,
 				);
 				if (msg.resolution !== "approved") {
 					state.tracked_tools = state.tracked_tools.filter(
@@ -1439,22 +1498,26 @@ export function applyIncomingHeadlessMessage(
 				}
 			} else if (msg.request_type === "client_tool") {
 				state.pending_client_tools = state.pending_client_tools.filter(
-					(request) => request.call_id !== msg.call_id,
+					(request) => getPendingRequestId(request) !== msg.request_id,
 				);
 				if (msg.resolution === "cancelled") {
 					state.tracked_tools = state.tracked_tools.filter(
 						(tool) => tool.call_id !== msg.call_id,
 					);
 				}
-			} else {
+			} else if (msg.request_type === "user_input") {
 				state.pending_user_inputs = state.pending_user_inputs.filter(
-					(request) => request.call_id !== msg.call_id,
+					(request) => getPendingRequestId(request) !== msg.request_id,
 				);
 				if (msg.resolution !== "answered") {
 					state.tracked_tools = state.tracked_tools.filter(
 						(tool) => tool.call_id !== msg.call_id,
 					);
 				}
+			} else {
+				state.pending_tool_retries = state.pending_tool_retries.filter(
+					(request) => getPendingRequestId(request) !== msg.request_id,
+				);
 			}
 			return;
 		case "utility_command_started":
@@ -1543,14 +1606,17 @@ export function applyIncomingHeadlessMessage(
 export function buildHeadlessServerRequestCancellationMessages(
 	state: Pick<
 		HeadlessRuntimeState,
-		"pending_approvals" | "pending_client_tools" | "pending_user_inputs"
+		| "pending_approvals"
+		| "pending_client_tools"
+		| "pending_user_inputs"
+		| "pending_tool_retries"
 	>,
 	reason: string,
 ): HeadlessServerRequestResolvedMessage[] {
 	return [
 		...state.pending_approvals.map((approval) => ({
 			type: "server_request_resolved" as const,
-			request_id: approval.call_id,
+			request_id: getPendingRequestId(approval),
 			request_type: "approval" as const,
 			call_id: approval.call_id,
 			resolution: "cancelled" as const,
@@ -1559,7 +1625,7 @@ export function buildHeadlessServerRequestCancellationMessages(
 		})),
 		...state.pending_client_tools.map((request) => ({
 			type: "server_request_resolved" as const,
-			request_id: request.call_id,
+			request_id: getPendingRequestId(request),
 			request_type: "client_tool" as const,
 			call_id: request.call_id,
 			resolution: "cancelled" as const,
@@ -1568,8 +1634,17 @@ export function buildHeadlessServerRequestCancellationMessages(
 		})),
 		...state.pending_user_inputs.map((request) => ({
 			type: "server_request_resolved" as const,
-			request_id: request.call_id,
+			request_id: getPendingRequestId(request),
 			request_type: "user_input" as const,
+			call_id: request.call_id,
+			resolution: "cancelled" as const,
+			reason,
+			resolved_by: "runtime" as const,
+		})),
+		...state.pending_tool_retries.map((request) => ({
+			type: "server_request_resolved" as const,
+			request_id: getPendingRequestId(request),
+			request_type: "tool_retry" as const,
 			call_id: request.call_id,
 			resolution: "cancelled" as const,
 			reason,

@@ -654,6 +654,101 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
+	it("tracks tool retry requests by request id without overwriting tracked tool args", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "call_bash",
+			tool: "bash",
+			args: { command: "ls" },
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "retry_1",
+			request_type: "tool_retry",
+			call_id: "call_bash",
+			tool: "bash",
+			args: {
+				tool_call_id: "call_bash",
+				args: { command: "ls" },
+				error_message: "Command failed",
+				attempt: 1,
+			},
+			reason: "Retry bash command",
+		});
+
+		expect(state.pending_tool_retries).toEqual([
+			{
+				call_id: "call_bash",
+				request_id: "retry_1",
+				tool: "bash",
+				args: {
+					tool_call_id: "call_bash",
+					args: { command: "ls" },
+					error_message: "Command failed",
+					attempt: 1,
+				},
+			},
+		]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_bash",
+				tool: "bash",
+				args: { command: "ls" },
+			},
+		]);
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "retry_2",
+			request_type: "tool_retry",
+			call_id: "call_bash",
+			tool: "bash",
+			args: {
+				tool_call_id: "call_bash",
+				args: { command: "ls" },
+				error_message: "Command failed again",
+				attempt: 2,
+			},
+			reason: "Retry bash command again",
+		});
+
+		expect(state.pending_tool_retries).toEqual([
+			{
+				call_id: "call_bash",
+				request_id: "retry_2",
+				tool: "bash",
+				args: {
+					tool_call_id: "call_bash",
+					args: { command: "ls" },
+					error_message: "Command failed again",
+					attempt: 2,
+				},
+			},
+		]);
+
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request_resolved",
+			request_id: "retry_2",
+			request_type: "tool_retry",
+			call_id: "call_bash",
+			resolution: "skipped",
+			reason: "Skip retry",
+			resolved_by: "user",
+		});
+
+		expect(state.pending_tool_retries).toEqual([]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_bash",
+				tool: "bash",
+				args: { command: "ls" },
+			},
+		]);
+	});
+
 	it("cancellation helper emits explicit cancelled resolutions for pending requests", () => {
 		const state = createHeadlessRuntimeState();
 
@@ -697,6 +792,20 @@ describe("headless protocol helpers", () => {
 			},
 			reason: "Agent requested structured user input",
 		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "retry_1",
+			request_type: "tool_retry",
+			call_id: "call_bash",
+			tool: "bash",
+			args: {
+				tool_call_id: "call_bash",
+				args: { command: "git push --force" },
+				error_message: "Command failed",
+				attempt: 1,
+			},
+			reason: "Retry bash command",
+		});
 
 		expect(
 			buildHeadlessServerRequestCancellationMessages(
@@ -727,6 +836,15 @@ describe("headless protocol helpers", () => {
 				request_id: "call_user_input",
 				request_type: "user_input",
 				call_id: "call_user_input",
+				resolution: "cancelled",
+				reason: "Interrupted before request completed",
+				resolved_by: "runtime",
+			},
+			{
+				type: "server_request_resolved",
+				request_id: "retry_1",
+				request_type: "tool_retry",
+				call_id: "call_bash",
 				resolution: "cancelled",
 				reason: "Interrupted before request completed",
 				resolved_by: "runtime",
@@ -845,6 +963,49 @@ describe("headless protocol helpers", () => {
 						},
 					],
 				},
+			},
+		]);
+	});
+
+	it("clears pending tool retry requests on outbound generic retry responses", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyIncomingHeadlessMessage(state, {
+			type: "tool_call",
+			call_id: "call_bash",
+			tool: "bash",
+			args: { command: "ls" },
+			requires_approval: false,
+		});
+		applyIncomingHeadlessMessage(state, {
+			type: "server_request",
+			request_id: "retry_1",
+			request_type: "tool_retry",
+			call_id: "call_bash",
+			tool: "bash",
+			args: {
+				tool_call_id: "call_bash",
+				args: { command: "ls" },
+				error_message: "Command failed",
+				attempt: 1,
+			},
+			reason: "Retry bash command",
+		});
+
+		applyOutgoingHeadlessMessage(state, {
+			type: "server_request_response",
+			request_id: "retry_1",
+			request_type: "tool_retry",
+			decision_action: "retry",
+			reason: "Retry once more",
+		});
+
+		expect(state.pending_tool_retries).toEqual([]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_bash",
+				tool: "bash",
+				args: { command: "ls" },
 			},
 		]);
 	});

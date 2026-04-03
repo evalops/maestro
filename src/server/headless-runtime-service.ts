@@ -12,6 +12,7 @@ import type {
 	ApprovalMode,
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
+import type { ToolRetryService } from "../agent/tool-retry.js";
 import type { AgentEvent, Attachment, ThinkingLevel } from "../agent/types.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
@@ -47,6 +48,7 @@ import {
 	type ServerRequestLifecycleEvent,
 	serverRequestManager,
 } from "./server-request-manager.js";
+import { ServerRequestToolRetryService } from "./tool-retry-service.js";
 
 const logger = createLogger("server:headless-runtime");
 
@@ -381,6 +383,7 @@ export class HeadlessSessionRuntime {
 	private readonly broker = new HeadlessRuntimeBroker();
 	private readonly state = createHeadlessRuntimeState();
 	private readonly approvalService: ActionApprovalService;
+	private readonly toolRetryService: ToolRetryService;
 	private readonly agent: Agent;
 	private readonly sessionManager: SessionManager;
 	private readonly registeredModel: RegisteredModel;
@@ -485,6 +488,7 @@ export class HeadlessSessionRuntime {
 		options: RuntimeOptions,
 		agent: Agent,
 		approvalService: ActionApprovalService,
+		toolRetryService: ToolRetryService,
 	) {
 		this.scopeKey = options.scope_key;
 		this.sessionId = options.session_id;
@@ -492,6 +496,7 @@ export class HeadlessSessionRuntime {
 		this.registeredModel = options.registeredModel;
 		this.subject = options.subject;
 		this.approvalService = approvalService;
+		this.toolRetryService = toolRetryService;
 		this.agent = agent;
 
 		this.agent.subscribe((event) => {
@@ -516,12 +521,19 @@ export class HeadlessSessionRuntime {
 			options.approvalMode,
 			options.session_id,
 		);
+		const toolRetryService = new ServerRequestToolRetryService(
+			options.capabilities?.server_requests?.includes("tool_retry")
+				? "prompt"
+				: "skip",
+			options.session_id,
+		);
 		const agent = await options.context.createAgent(
 			options.registeredModel,
 			options.thinkingLevel,
 			options.approvalMode,
 			{
 				approvalService,
+				toolRetryService,
 				enableClientTools: options.enableClientTools,
 				useClientAskUser:
 					options.capabilities?.server_requests?.includes("user_input") ??
@@ -536,7 +548,12 @@ export class HeadlessSessionRuntime {
 				includeConductorTools: options.client === "conductor",
 			},
 		);
-		return new HeadlessSessionRuntime(options, agent, approvalService);
+		return new HeadlessSessionRuntime(
+			options,
+			agent,
+			approvalService,
+			toolRetryService,
+		);
 	}
 
 	id(): string {
@@ -697,6 +714,15 @@ export class HeadlessSessionRuntime {
 			? [...preferred.optOutNotifications]
 			: undefined;
 		this.state.connection_role = preferred?.role;
+		this.syncToolRetryMode();
+	}
+
+	private syncToolRetryMode(): void {
+		const controller = this.getConnectionById(this.controllerConnectionId);
+		const supportsToolRetry =
+			controller?.role === "controller" &&
+			controller.capabilities?.server_requests?.includes("tool_retry");
+		this.toolRetryService.setMode(supportsToolRetry ? "prompt" : "skip");
 	}
 
 	private emitConnectionInfo(connectionId?: string): void {
@@ -1628,7 +1654,7 @@ export class HeadlessSessionRuntime {
 				type: "server_request",
 				request_id: event.request.id,
 				request_type: event.request.kind,
-				call_id: event.request.id,
+				call_id: event.request.callId,
 				tool: event.request.toolName,
 				args: event.request.args,
 				reason: event.request.reason,
@@ -1643,7 +1669,7 @@ export class HeadlessSessionRuntime {
 			type: "server_request_resolved",
 			request_id: event.request.id,
 			request_type: event.request.kind,
-			call_id: event.request.id,
+			call_id: event.request.callId,
 			resolution: event.resolution,
 			reason: event.reason,
 			resolved_by: event.resolvedBy,
@@ -1708,6 +1734,19 @@ export class HeadlessSessionRuntime {
 			if (!resolved) {
 				throw new Error(
 					`No pending approval found for request_id: ${msg.request_id}`,
+				);
+			}
+			return;
+		}
+		if (msg.request_type === "tool_retry") {
+			const resolved = serverRequestManager.resolveToolRetry(msg.request_id, {
+				action: msg.decision_action ?? "abort",
+				reason: msg.reason,
+				resolvedBy: "user",
+			});
+			if (!resolved) {
+				throw new Error(
+					`No pending tool retry request found for request_id: ${msg.request_id}`,
 				);
 			}
 			return;

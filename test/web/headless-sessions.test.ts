@@ -40,6 +40,7 @@ import {
 } from "../../src/server/headless-runtime-service.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
 import { ApiError } from "../../src/server/server-utils.js";
+import { ServerRequestToolRetryService } from "../../src/server/tool-retry-service.js";
 import { SessionManager } from "../../src/session/manager.js";
 
 const TEST_MODEL: RegisteredModel = {
@@ -2171,6 +2172,101 @@ describe("headless session handlers", () => {
 			});
 
 			expect(runtime.getSnapshot().state.pending_user_inputs).toEqual([]);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("replays tool retry requests and resolves them through generic server request responses", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval", "tool_retry"],
+				},
+				context,
+				sessionManager,
+			});
+
+			const toolRetryService = new ServerRequestToolRetryService("prompt", () =>
+				runtime.id(),
+			);
+			const decisionPromise = toolRetryService.requestDecision({
+				id: "retry_1",
+				toolCallId: "call_bash",
+				toolName: "bash",
+				args: { command: "ls" },
+				errorMessage: "Command failed",
+				attempt: 1,
+				summary: "Retry bash command",
+			});
+
+			expect(runtime.getSnapshot().state.pending_tool_retries).toEqual([
+				{
+					call_id: "call_bash",
+					request_id: "retry_1",
+					tool: "bash",
+					args: {
+						tool_call_id: "call_bash",
+						args: { command: "ls" },
+						error_message: "Command failed",
+						attempt: 1,
+						summary: "Retry bash command",
+					},
+				},
+			]);
+
+			await runtime.send({
+				type: "server_request_response",
+				request_id: "retry_1",
+				request_type: "tool_retry",
+				decision_action: "retry",
+				reason: "Try again",
+			});
+
+			await expect(decisionPromise).resolves.toEqual({
+				action: "retry",
+				reason: "Try again",
+				resolvedBy: "user",
+			});
+
+			expect(runtime.getSnapshot().state.pending_tool_retries).toEqual([]);
+			expect(
+				runtime.replayFrom(0)?.some((entry) => {
+					if (entry.type !== "message") {
+						return false;
+					}
+					return (
+						entry.message.type === "server_request" &&
+						entry.message.request_type === "tool_retry" &&
+						entry.message.request_id === "retry_1"
+					);
+				}),
+			).toBe(true);
+			expect(
+				runtime.replayFrom(0)?.some((entry) => {
+					if (entry.type !== "message") {
+						return false;
+					}
+					return (
+						entry.message.type === "server_request_resolved" &&
+						entry.message.request_type === "tool_retry" &&
+						entry.message.resolution === "retried"
+					);
+				}),
+			).toBe(true);
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
