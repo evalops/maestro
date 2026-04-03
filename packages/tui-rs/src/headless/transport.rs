@@ -279,6 +279,7 @@ impl AgentTransport {
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
             role: Some(ConnectionRole::Controller),
+            opt_out_notifications: None,
         })?;
         Ok(transport)
     }

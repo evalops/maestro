@@ -1,6 +1,15 @@
 import type { Static, TSchema } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import {
+	HeadlessFromAgentMessageSchema,
+	HeadlessRuntimeHeartbeatSnapshotSchema,
+	HeadlessRuntimeSnapshotSchema,
+	HeadlessRuntimeStreamEnvelopeSchema,
+	HeadlessRuntimeSubscriptionSnapshotSchema,
+	type HeadlessToAgentMessageSchema,
+	headlessToAgentMessageSchemasByType,
+} from "./headless-protocol-schemas.generated.js";
+import {
 	ComposerAgentEventSchema,
 	ComposerApprovalsStatusResponseSchema,
 	ComposerApprovalsUpdateRequestSchema,
@@ -83,6 +92,94 @@ export function assertSchema<T extends TSchema>(
 		const details = result.errors.join("; ");
 		throw new Error(`Invalid ${label}: ${details}`);
 	}
+}
+
+function getHeadlessMessageType(value: unknown): string | undefined {
+	if (typeof value !== "object" || value === null || !("type" in value)) {
+		return undefined;
+	}
+	const type = (value as { type?: unknown }).type;
+	return typeof type === "string" ? type : undefined;
+}
+
+export function validateHeadlessToAgentMessage(
+	value: unknown,
+): ValidationResult<Static<typeof HeadlessToAgentMessageSchema>> {
+	const type = getHeadlessMessageType(value);
+	if (!type) {
+		return {
+			ok: false,
+			errors: ["$.type Expected known headless command type"],
+		};
+	}
+	const schema =
+		headlessToAgentMessageSchemasByType[
+			type as keyof typeof headlessToAgentMessageSchemasByType
+		];
+	if (!schema) {
+		return {
+			ok: false,
+			errors: [`$.type Unknown headless command type: ${type}`],
+		};
+	}
+	return validateSchema(schema, value);
+}
+
+export function assertHeadlessToAgentMessage(
+	value: unknown,
+	label = "headless command",
+): asserts value is Static<typeof HeadlessToAgentMessageSchema> {
+	const result = validateHeadlessToAgentMessage(value);
+	if (result.ok) {
+		return;
+	}
+	if (
+		result.errors.length === 1 &&
+		result.errors[0]?.includes("Unknown headless command type")
+	) {
+		throw new Error("Unknown headless command type");
+	}
+	throw new Error(`Invalid ${label}: ${result.errors.join("; ")}`);
+}
+
+export const isHeadlessFromAgentMessage = (
+	value: unknown,
+): value is Static<typeof HeadlessFromAgentMessageSchema> =>
+	Value.Check(HeadlessFromAgentMessageSchema, value);
+
+export function assertHeadlessFromAgentMessage(
+	value: unknown,
+	label = "headless message",
+): asserts value is Static<typeof HeadlessFromAgentMessageSchema> {
+	assertSchema(HeadlessFromAgentMessageSchema, value, label);
+}
+
+export function assertHeadlessRuntimeSnapshot(
+	value: unknown,
+	label = "headless runtime snapshot",
+): asserts value is Static<typeof HeadlessRuntimeSnapshotSchema> {
+	assertSchema(HeadlessRuntimeSnapshotSchema, value, label);
+}
+
+export function assertHeadlessRuntimeStreamEnvelope(
+	value: unknown,
+	label = "headless runtime envelope",
+): asserts value is Static<typeof HeadlessRuntimeStreamEnvelopeSchema> {
+	assertSchema(HeadlessRuntimeStreamEnvelopeSchema, value, label);
+}
+
+export function assertHeadlessRuntimeSubscriptionSnapshot(
+	value: unknown,
+	label = "headless subscription snapshot",
+): asserts value is Static<typeof HeadlessRuntimeSubscriptionSnapshotSchema> {
+	assertSchema(HeadlessRuntimeSubscriptionSnapshotSchema, value, label);
+}
+
+export function assertHeadlessRuntimeHeartbeatSnapshot(
+	value: unknown,
+	label = "headless heartbeat snapshot",
+): asserts value is Static<typeof HeadlessRuntimeHeartbeatSnapshotSchema> {
+	assertSchema(HeadlessRuntimeHeartbeatSnapshotSchema, value, label);
 }
 
 export const isComposerMessage = (

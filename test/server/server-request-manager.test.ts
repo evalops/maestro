@@ -274,4 +274,52 @@ describe("ServerRequestManager", () => {
 			resolvedBy: "client",
 		});
 	});
+
+	it("uses a user-input specific timeout reason during cleanup", () => {
+		const resolve = vi.fn().mockReturnValue(true);
+		const cancel = vi.fn().mockReturnValue(true);
+		const listener = vi.fn();
+		manager.subscribe(listener);
+
+		manager.registerClientTool({
+			id: "user_input_timeout",
+			sessionId: "sess_user_input",
+			toolName: "ask_user",
+			args: {
+				questions: [
+					{
+						header: "Stack",
+						question: "Which schema library should we use?",
+						options: [
+							{
+								label: "Zod",
+								description: "Use Zod schemas",
+							},
+						],
+					},
+				],
+			},
+			kind: "user_input",
+			timeoutMs: 1,
+			resolve,
+			cancel,
+		});
+
+		manager.cleanup(Date.now() + 5);
+
+		expect(cancel).toHaveBeenCalledWith(
+			"User input request timed out before the connected client responded.",
+		);
+		expect(listener).toHaveBeenNthCalledWith(2, {
+			type: "resolved",
+			request: expect.objectContaining({
+				id: "user_input_timeout",
+				kind: "user_input",
+			}),
+			resolution: "failed",
+			reason:
+				"User input request timed out before the connected client responded.",
+			resolvedBy: "policy",
+		});
+	});
 });

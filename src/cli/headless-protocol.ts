@@ -5,12 +5,14 @@ import {
 	type HeadlessApprovalMode,
 	type HeadlessConnectionRole,
 	type HeadlessErrorType,
+	type HeadlessNotificationType,
 	type HeadlessServerRequestResolution,
 	type HeadlessServerRequestResolvedBy,
 	type HeadlessServerRequestType,
 	type HeadlessThinkingLevel,
 	type HeadlessUtilityCommandShellMode,
 	type HeadlessUtilityCommandStream,
+	type HeadlessUtilityCommandTerminalMode,
 	type HeadlessUtilityFileWatchChangeType,
 	type HeadlessUtilityOperation,
 	headlessProtocolVersion,
@@ -64,6 +66,7 @@ export interface HeadlessHelloMessage {
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
 	role?: HeadlessConnectionRole;
+	opt_out_notifications?: HeadlessNotificationType[];
 }
 
 export interface HeadlessInterruptMessage {
@@ -129,7 +132,10 @@ export interface HeadlessUtilityCommandStartMessage {
 	cwd?: string;
 	env?: Record<string, string>;
 	shell_mode?: HeadlessUtilityCommandShellMode;
+	terminal_mode?: HeadlessUtilityCommandTerminalMode;
 	allow_stdin?: boolean;
+	columns?: number;
+	rows?: number;
 }
 
 export interface HeadlessUtilityCommandTerminateMessage {
@@ -143,6 +149,13 @@ export interface HeadlessUtilityCommandStdinMessage {
 	command_id: string;
 	content: string;
 	eof?: boolean;
+}
+
+export interface HeadlessUtilityCommandResizeMessage {
+	type: "utility_command_resize";
+	command_id: string;
+	columns: number;
+	rows: number;
 }
 
 export interface HeadlessUtilityFileSearchMessage {
@@ -186,6 +199,7 @@ export type HeadlessToAgentMessage =
 	| HeadlessUtilityCommandStartMessage
 	| HeadlessUtilityCommandTerminateMessage
 	| HeadlessUtilityCommandStdinMessage
+	| HeadlessUtilityCommandResizeMessage
 	| HeadlessUtilityFileSearchMessage
 	| HeadlessUtilityFileWatchStartMessage
 	| HeadlessUtilityFileWatchStopMessage
@@ -293,8 +307,18 @@ export interface HeadlessUtilityCommandStartedMessage {
 	command: string;
 	cwd?: string;
 	shell_mode: HeadlessUtilityCommandShellMode;
+	terminal_mode: HeadlessUtilityCommandTerminalMode;
 	pid?: number;
+	columns?: number;
+	rows?: number;
 	owner_connection_id?: string;
+}
+
+export interface HeadlessUtilityCommandResizedMessage {
+	type: "utility_command_resized";
+	command_id: string;
+	columns: number;
+	rows: number;
 }
 
 export interface HeadlessUtilityCommandOutputMessage {
@@ -388,6 +412,7 @@ export interface HeadlessConnectionInfoMessage {
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	opt_out_notifications?: HeadlessNotificationType[];
 	role?: HeadlessConnectionRole;
 	connection_count?: number;
 	controller_connection_id?: string | null;
@@ -408,6 +433,7 @@ export type HeadlessFromAgentMessage =
 	| HeadlessServerRequestMessage
 	| HeadlessServerRequestResolvedMessage
 	| HeadlessUtilityCommandStartedMessage
+	| HeadlessUtilityCommandResizedMessage
 	| HeadlessUtilityCommandOutputMessage
 	| HeadlessUtilityCommandExitedMessage
 	| HeadlessUtilityFileSearchResultsMessage
@@ -444,7 +470,10 @@ export interface HeadlessActiveUtilityCommandState {
 	command: string;
 	cwd?: string;
 	shell_mode: HeadlessUtilityCommandShellMode;
+	terminal_mode: HeadlessUtilityCommandTerminalMode;
 	pid?: number;
+	columns?: number;
+	rows?: number;
 	owner_connection_id?: string;
 	output: string;
 }
@@ -464,6 +493,7 @@ export interface HeadlessConnectionState {
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	opt_out_notifications?: HeadlessNotificationType[];
 	subscription_count: number;
 	attached_subscription_count: number;
 	controller_lease_granted: boolean;
@@ -475,6 +505,7 @@ export interface HeadlessRuntimeState {
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	opt_out_notifications?: HeadlessNotificationType[];
 	connection_role?: HeadlessConnectionRole;
 	connection_count: number;
 	subscriber_count: number;
@@ -946,6 +977,7 @@ export class HeadlessProtocolTranslator {
 		protocol_version?: string;
 		client_info?: HeadlessClientInfo;
 		capabilities?: HeadlessClientCapabilities;
+		opt_out_notifications?: HeadlessNotificationType[];
 		role?: HeadlessConnectionRole;
 		connection_count?: number;
 		controller_connection_id?: string | null;
@@ -958,6 +990,7 @@ export class HeadlessProtocolTranslator {
 			client_protocol_version: metadata.protocol_version,
 			client_info: metadata.client_info,
 			capabilities: metadata.capabilities,
+			opt_out_notifications: metadata.opt_out_notifications,
 			role: metadata.role,
 			connection_count: metadata.connection_count,
 			controller_connection_id: metadata.controller_connection_id,
@@ -1087,6 +1120,7 @@ export function applyOutgoingHeadlessMessage(
 			state.client_protocol_version = msg.protocol_version;
 			state.client_info = msg.client_info;
 			state.capabilities = msg.capabilities;
+			state.opt_out_notifications = msg.opt_out_notifications;
 			state.connection_role = msg.role ?? state.connection_role ?? "controller";
 			state.connection_count = 1;
 			state.controller_connection_id =
@@ -1098,6 +1132,7 @@ export function applyOutgoingHeadlessMessage(
 					client_protocol_version: msg.protocol_version,
 					client_info: msg.client_info,
 					capabilities: msg.capabilities,
+					opt_out_notifications: msg.opt_out_notifications,
 					subscription_count: 1,
 					attached_subscription_count: 1,
 					controller_lease_granted: state.connection_role === "controller",
@@ -1135,6 +1170,7 @@ export function applyOutgoingHeadlessMessage(
 		case "utility_command_start":
 		case "utility_command_terminate":
 		case "utility_command_stdin":
+		case "utility_command_resize":
 		case "utility_file_search":
 		case "utility_file_watch_start":
 		case "utility_file_watch_stop":
@@ -1202,6 +1238,7 @@ export function applyIncomingHeadlessMessage(
 			state.client_protocol_version = msg.client_protocol_version;
 			state.client_info = msg.client_info;
 			state.capabilities = msg.capabilities;
+			state.opt_out_notifications = msg.opt_out_notifications;
 			state.connection_role = msg.role;
 			state.connection_count =
 				msg.connection_count ?? msg.connections?.length ?? 0;
@@ -1430,11 +1467,26 @@ export function applyIncomingHeadlessMessage(
 					command: msg.command,
 					cwd: msg.cwd,
 					shell_mode: msg.shell_mode,
+					terminal_mode: msg.terminal_mode,
 					pid: msg.pid,
+					columns: msg.columns,
+					rows: msg.rows,
 					owner_connection_id: msg.owner_connection_id,
 					output: "",
 				},
 			];
+			return;
+		case "utility_command_resized":
+			state.active_utility_commands = state.active_utility_commands.map(
+				(command) =>
+					command.command_id === msg.command_id
+						? {
+								...command,
+								columns: msg.columns,
+								rows: msg.rows,
+							}
+						: command,
+			);
 			return;
 		case "utility_command_output":
 			state.active_utility_commands = state.active_utility_commands.map(

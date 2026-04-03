@@ -151,6 +151,8 @@ pub enum ToAgentMessage {
         capabilities: Option<ClientCapabilities>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<ConnectionRole>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opt_out_notifications: Option<Vec<String>>,
     },
     /// Configure agent behavior before the first prompt
     Init {
@@ -208,7 +210,13 @@ pub enum ToAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         shell_mode: Option<UtilityCommandShellMode>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        terminal_mode: Option<UtilityCommandTerminalMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         allow_stdin: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        columns: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rows: Option<u32>,
     },
     /// Terminate a utility command on the runtime
     UtilityCommandTerminate {
@@ -222,6 +230,12 @@ pub enum ToAgentMessage {
         content: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         eof: Option<bool>,
+    },
+    /// Resize a PTY-backed utility command on the runtime
+    UtilityCommandResize {
+        command_id: String,
+        columns: u32,
+        rows: u32,
     },
     /// Search workspace file paths on the runtime
     UtilityFileSearch {
@@ -293,6 +307,8 @@ pub struct ConnectionState {
     pub client_info: Option<ClientInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<ClientCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opt_out_notifications: Option<Vec<String>>,
     #[serde(default)]
     pub subscription_count: usize,
     #[serde(default)]
@@ -355,6 +371,14 @@ pub enum UtilityCommandStream {
 pub enum UtilityCommandShellMode {
     Shell,
     Direct,
+}
+
+/// Terminal mode for utility commands.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UtilityCommandTerminalMode {
+    Pipe,
+    Pty,
 }
 
 /// File change type emitted by a running file watch.
@@ -554,6 +578,8 @@ pub enum FromAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         capabilities: Option<ClientCapabilities>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        opt_out_notifications: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<ConnectionRole>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         connection_count: Option<usize>,
@@ -571,10 +597,21 @@ pub enum FromAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
         shell_mode: UtilityCommandShellMode,
+        terminal_mode: UtilityCommandTerminalMode,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pid: Option<u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        columns: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rows: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         owner_connection_id: Option<String>,
+    },
+    /// Utility command terminal resized on the runtime
+    UtilityCommandResized {
+        command_id: String,
+        columns: u32,
+        rows: u32,
     },
     /// Utility command output chunk
     UtilityCommandOutput {
@@ -770,6 +807,7 @@ pub struct AgentState {
     pub client_protocol_version: Option<String>,
     pub client_info: Option<ClientInfo>,
     pub capabilities: Option<ClientCapabilities>,
+    pub opt_out_notifications: Option<Vec<String>>,
     pub connection_role: Option<ConnectionRole>,
     pub connection_count: usize,
     pub subscriber_count: usize,
@@ -867,7 +905,10 @@ pub struct ActiveUtilityCommand {
     pub command: String,
     pub cwd: Option<String>,
     pub shell_mode: UtilityCommandShellMode,
+    pub terminal_mode: UtilityCommandTerminalMode,
     pub pid: Option<u32>,
+    pub columns: Option<u32>,
+    pub rows: Option<u32>,
     pub owner_connection_id: Option<String>,
     pub output: String,
 }
@@ -892,10 +933,12 @@ impl AgentState {
                 client_info,
                 capabilities,
                 role,
+                opt_out_notifications,
             } => {
                 self.client_protocol_version = protocol_version.clone();
                 self.client_info = client_info.clone();
                 self.capabilities = capabilities.clone();
+                self.opt_out_notifications = opt_out_notifications.clone();
                 self.connection_role = Some(role.unwrap_or(ConnectionRole::Controller));
                 self.connection_count = 1;
                 self.controller_connection_id = match self.connection_role {
@@ -908,6 +951,7 @@ impl AgentState {
                     client_protocol_version: protocol_version.clone(),
                     client_info: client_info.clone(),
                     capabilities: capabilities.clone(),
+                    opt_out_notifications: opt_out_notifications.clone(),
                     subscription_count: 1,
                     attached_subscription_count: 1,
                     controller_lease_granted: matches!(
@@ -972,6 +1016,7 @@ impl AgentState {
             ToAgentMessage::UtilityCommandStart { .. } => {}
             ToAgentMessage::UtilityCommandTerminate { .. } => {}
             ToAgentMessage::UtilityCommandStdin { .. } => {}
+            ToAgentMessage::UtilityCommandResize { .. } => {}
             ToAgentMessage::UtilityFileSearch { .. } => {}
             ToAgentMessage::UtilityFileWatchStart { .. } => {}
             ToAgentMessage::UtilityFileWatchStop { .. } => {}
@@ -1031,6 +1076,7 @@ impl AgentState {
                 client_protocol_version,
                 client_info,
                 capabilities,
+                opt_out_notifications,
                 role,
                 connection_count,
                 controller_connection_id,
@@ -1040,6 +1086,7 @@ impl AgentState {
                 self.client_protocol_version = client_protocol_version;
                 self.client_info = client_info;
                 self.capabilities = capabilities;
+                self.opt_out_notifications = opt_out_notifications;
                 self.connection_role = role;
                 self.connection_count = connection_count.unwrap_or_default();
                 self.controller_connection_id = controller_connection_id;
@@ -1051,7 +1098,10 @@ impl AgentState {
                 command,
                 cwd,
                 shell_mode,
+                terminal_mode,
                 pid,
+                columns,
+                rows,
                 owner_connection_id,
             } => {
                 self.active_utility_commands.insert(
@@ -1061,11 +1111,25 @@ impl AgentState {
                         command,
                         cwd,
                         shell_mode,
+                        terminal_mode,
                         pid,
+                        columns,
+                        rows,
                         owner_connection_id,
                         output: String::new(),
                     },
                 );
+                None
+            }
+            FromAgentMessage::UtilityCommandResized {
+                command_id,
+                columns,
+                rows,
+            } => {
+                if let Some(command) = self.active_utility_commands.get_mut(&command_id) {
+                    command.columns = Some(columns);
+                    command.rows = Some(rows);
+                }
                 None
             }
             FromAgentMessage::UtilityCommandOutput {
@@ -1640,7 +1704,7 @@ mod tests {
 
     #[test]
     fn parse_connection_info_message() {
-        let json = r#"{"type":"connection_info","connection_id":"conn_remote","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"role":"controller","connection_count":1,"controller_connection_id":"conn_remote","connections":[{"connection_id":"conn_remote","role":"controller","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"subscription_count":1,"attached_subscription_count":1,"controller_lease_granted":true}]}"#;
+        let json = r#"{"type":"connection_info","connection_id":"conn_remote","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"opt_out_notifications":["status","heartbeat"],"role":"controller","connection_count":1,"controller_connection_id":"conn_remote","connections":[{"connection_id":"conn_remote","role":"controller","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"opt_out_notifications":["status","heartbeat"],"subscription_count":1,"attached_subscription_count":1,"controller_lease_granted":true}]}"#;
         let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
         match msg {
             FromAgentMessage::ConnectionInfo {
@@ -1648,6 +1712,7 @@ mod tests {
                 client_protocol_version,
                 client_info,
                 capabilities,
+                opt_out_notifications,
                 role,
                 connection_count,
                 controller_connection_id,
@@ -1665,6 +1730,10 @@ mod tests {
                         .as_ref()
                         .and_then(|caps| caps.server_requests.as_ref())
                         .map(|caps| caps.len()),
+                    Some(2)
+                );
+                assert_eq!(
+                    opt_out_notifications.as_ref().map(|items| items.len()),
                     Some(2)
                 );
                 assert_eq!(role, Some(ConnectionRole::Controller));
@@ -1715,6 +1784,7 @@ mod tests {
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
             role: Some(ConnectionRole::Controller),
+            opt_out_notifications: Some(vec!["status".to_string()]),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"hello""#));
@@ -1724,6 +1794,7 @@ mod tests {
         )));
         assert!(json.contains(r#""name":"maestro-tui-rs""#));
         assert!(json.contains(r#""role":"controller""#));
+        assert!(json.contains(r#""opt_out_notifications":["status"]"#));
     }
 
     #[test]
@@ -1752,7 +1823,10 @@ mod tests {
             cwd: None,
             env: None,
             shell_mode: Some(UtilityCommandShellMode::Direct),
+            terminal_mode: Some(UtilityCommandTerminalMode::Pipe),
             allow_stdin: Some(true),
+            columns: None,
+            rows: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"utility_command_start""#));
@@ -1772,6 +1846,19 @@ mod tests {
         assert!(json.contains(r#""command_id":"cmd_stdin""#));
         assert!(json.contains(r#""content":"hello maestro""#));
         assert!(json.contains(r#""eof":true"#));
+    }
+
+    #[test]
+    fn serialize_utility_command_resize_message() {
+        let msg = ToAgentMessage::UtilityCommandResize {
+            command_id: "cmd_stdin".to_string(),
+            columns: 120,
+            rows: 40,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"utility_command_resize""#));
+        assert!(json.contains(r#""columns":120"#));
+        assert!(json.contains(r#""rows":40"#));
     }
 
     #[test]
@@ -1898,7 +1985,10 @@ mod tests {
             command: "echo hi".to_string(),
             cwd: Some("/tmp/project".to_string()),
             shell_mode: UtilityCommandShellMode::Direct,
+            terminal_mode: UtilityCommandTerminalMode::Pipe,
             pid: Some(42),
+            columns: None,
+            rows: None,
             owner_connection_id: Some("conn_owned".to_string()),
         });
         state.handle_message(FromAgentMessage::UtilityFileWatchStarted {
@@ -1940,6 +2030,37 @@ mod tests {
         });
 
         assert!(state.active_file_watches.is_empty());
+    }
+
+    #[test]
+    fn state_updates_active_utility_command_dimensions_after_resize() {
+        let mut state = AgentState::default();
+        state.handle_message(FromAgentMessage::UtilityCommandStarted {
+            command_id: "cmd_pty".to_string(),
+            command: "node app.js".to_string(),
+            cwd: Some("/tmp/project".to_string()),
+            shell_mode: UtilityCommandShellMode::Direct,
+            terminal_mode: UtilityCommandTerminalMode::Pty,
+            pid: Some(321),
+            columns: Some(90),
+            rows: Some(30),
+            owner_connection_id: Some("conn_pty".to_string()),
+        });
+
+        state.handle_message(FromAgentMessage::UtilityCommandResized {
+            command_id: "cmd_pty".to_string(),
+            columns: 120,
+            rows: 40,
+        });
+
+        let command = state
+            .active_utility_commands
+            .get("cmd_pty")
+            .expect("active utility command");
+        assert_eq!(command.terminal_mode, UtilityCommandTerminalMode::Pty);
+        assert_eq!(command.columns, Some(120));
+        assert_eq!(command.rows, Some(40));
+        assert_eq!(command.owner_connection_id.as_deref(), Some("conn_pty"));
     }
 
     #[test]
@@ -2043,6 +2164,7 @@ mod tests {
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
             role: Some(ConnectionRole::Controller),
+            opt_out_notifications: Some(vec!["status".to_string()]),
         });
         let event = state.handle_message(FromAgentMessage::ConnectionInfo {
             connection_id: Some("conn_remote".to_string()),
@@ -2058,6 +2180,7 @@ mod tests {
                 ]),
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
+            opt_out_notifications: Some(vec!["status".to_string(), "connection_info".to_string()]),
             role: Some(ConnectionRole::Viewer),
             connection_count: Some(1),
             controller_connection_id: Some("conn_remote".to_string()),
@@ -2077,6 +2200,10 @@ mod tests {
                     ]),
                     utility_operations: Some(vec![UtilityOperation::CommandExec]),
                 }),
+                opt_out_notifications: Some(vec![
+                    "status".to_string(),
+                    "connection_info".to_string(),
+                ]),
                 subscription_count: 1,
                 attached_subscription_count: 1,
                 controller_lease_granted: false,
@@ -2095,6 +2222,13 @@ mod tests {
         );
         assert_eq!(state.connection_role, Some(ConnectionRole::Viewer));
         assert_eq!(state.connection_count, 1);
+        assert_eq!(
+            state
+                .opt_out_notifications
+                .as_ref()
+                .map(|items| items.len()),
+            Some(2)
+        );
         assert_eq!(
             state.controller_connection_id.as_deref(),
             Some("conn_remote")

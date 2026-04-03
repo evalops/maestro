@@ -180,7 +180,10 @@ pub struct ActiveUtilityCommandCheckpoint {
     pub command: String,
     pub cwd: Option<String>,
     pub shell_mode: super::messages::UtilityCommandShellMode,
+    pub terminal_mode: super::messages::UtilityCommandTerminalMode,
     pub pid: Option<u32>,
+    pub columns: Option<u32>,
+    pub rows: Option<u32>,
     pub owner_connection_id: Option<String>,
     pub output: String,
 }
@@ -205,6 +208,8 @@ pub struct AgentStateCheckpoint {
     pub client_info: Option<super::messages::ClientInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<super::messages::ClientCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opt_out_notifications: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_role: Option<super::messages::ConnectionRole>,
     #[serde(default)]
@@ -267,6 +272,7 @@ impl AgentStateCheckpoint {
             client_protocol_version: state.client_protocol_version.clone(),
             client_info: state.client_info.clone(),
             capabilities: state.capabilities.clone(),
+            opt_out_notifications: state.opt_out_notifications.clone(),
             connection_role: state.connection_role,
             connection_count: state.connection_count,
             subscriber_count: state.subscriber_count,
@@ -301,7 +307,10 @@ impl AgentStateCheckpoint {
                     command: command.command.clone(),
                     cwd: command.cwd.clone(),
                     shell_mode: command.shell_mode,
+                    terminal_mode: command.terminal_mode,
                     pid: command.pid,
+                    columns: command.columns,
+                    rows: command.rows,
                     owner_connection_id: command.owner_connection_id.clone(),
                     output: command.output.clone(),
                 })
@@ -335,6 +344,7 @@ impl AgentStateCheckpoint {
             client_protocol_version: self.client_protocol_version,
             client_info: self.client_info,
             capabilities: self.capabilities,
+            opt_out_notifications: self.opt_out_notifications,
             connection_role: self.connection_role,
             connection_count: self.connection_count,
             subscriber_count: self.subscriber_count,
@@ -384,7 +394,10 @@ impl AgentStateCheckpoint {
                             command: command.command,
                             cwd: command.cwd,
                             shell_mode: command.shell_mode,
+                            terminal_mode: command.terminal_mode,
                             pid: command.pid,
+                            columns: command.columns,
+                            rows: command.rows,
                             owner_connection_id: command.owner_connection_id,
                             output: command.output,
                         },
@@ -1208,7 +1221,10 @@ mod tests {
                 command: "echo hi".to_string(),
                 cwd: Some("/tmp/project".to_string()),
                 shell_mode: super::super::messages::UtilityCommandShellMode::Direct,
+                terminal_mode: super::super::messages::UtilityCommandTerminalMode::Pipe,
                 pid: Some(1234),
+                columns: None,
+                rows: None,
                 owner_connection_id: Some("conn_owned".to_string()),
             })
             .unwrap();

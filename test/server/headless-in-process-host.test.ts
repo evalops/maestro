@@ -13,6 +13,7 @@ import {
 	HEADLESS_PROTOCOL_VERSION,
 	type HeadlessRuntimeStreamEnvelope,
 } from "../../src/cli/headless-protocol.js";
+import { getHeadlessPtyPythonCommand } from "../../src/headless/pty-helper.js";
 import { HeadlessUtilityCommandManager } from "../../src/headless/utility-command-manager.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
 import { HeadlessInProcessHost } from "../../src/server/headless-in-process-host.js";
@@ -40,6 +41,17 @@ const TEST_MODEL: RegisteredModel = {
 	source: "builtin",
 	isLocal: false,
 };
+
+const supportsPty =
+	process.platform !== "win32" &&
+	(() => {
+		try {
+			getHeadlessPtyPythonCommand();
+			return true;
+		} catch {
+			return false;
+		}
+	})();
 
 class FakeAgent {
 	state = {
@@ -283,6 +295,125 @@ describe("HeadlessInProcessHost", () => {
 
 		stream.close();
 	});
+
+	it.skipIf(!supportsPty)(
+		"resizes PTY utility commands over the in-process control plane",
+		async () => {
+			const fakeAgent = new FakeAgent();
+			tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-in-process-"));
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const runtimeService = new HeadlessRuntimeService();
+			const host = new HeadlessInProcessHost(runtimeService);
+
+			const snapshot = await host.ensureSession({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				context: {
+					createAgent: vi.fn().mockResolvedValue(fakeAgent),
+				},
+				sessionManager,
+				capabilities: {
+					server_requests: ["approval"],
+					utility_operations: ["command_exec"],
+				},
+			});
+
+			const stream = host.attachStream({
+				scopeKey: "anon",
+				sessionId: snapshot.session_id,
+				role: "controller",
+				cursor: null,
+			});
+			expect((await readNextEnvelope(stream)).type).toBe("snapshot");
+
+			await host.send({
+				scopeKey: "anon",
+				sessionId: snapshot.session_id,
+				role: "controller",
+				message: {
+					type: "utility_command_start",
+					command_id: "cmd_pty",
+					command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify("setInterval(() => {}, 1000)")}`,
+					shell_mode: "direct",
+					terminal_mode: "pty",
+					columns: 88,
+					rows: 28,
+				},
+			});
+
+			let startedSeen = false;
+			while (!startedSeen) {
+				const next = await readNextEnvelope(stream);
+				startedSeen =
+					next.type === "message" &&
+					next.message.type === "utility_command_started" &&
+					next.message.command_id === "cmd_pty" &&
+					next.message.terminal_mode === "pty" &&
+					next.message.columns === 88 &&
+					next.message.rows === 28;
+			}
+
+			await host.send({
+				scopeKey: "anon",
+				sessionId: snapshot.session_id,
+				role: "controller",
+				message: {
+					type: "utility_command_resize",
+					command_id: "cmd_pty",
+					columns: 120,
+					rows: 40,
+				},
+			});
+
+			let resizedSeen = false;
+			while (!resizedSeen) {
+				const next = await readNextEnvelope(stream);
+				resizedSeen =
+					next.type === "message" &&
+					next.message.type === "utility_command_resized" &&
+					next.message.command_id === "cmd_pty" &&
+					next.message.columns === 120 &&
+					next.message.rows === 40;
+			}
+
+			expect(
+				host.getSnapshot("anon", snapshot.session_id).state
+					.active_utility_commands,
+			).toContainEqual(
+				expect.objectContaining({
+					command_id: "cmd_pty",
+					terminal_mode: "pty",
+					columns: 120,
+					rows: 40,
+				}),
+			);
+
+			await host.send({
+				scopeKey: "anon",
+				sessionId: snapshot.session_id,
+				role: "controller",
+				message: {
+					type: "utility_command_terminate",
+					command_id: "cmd_pty",
+				},
+			});
+
+			let exitedSeen = false;
+			while (!exitedSeen) {
+				const next = await readNextEnvelope(stream);
+				exitedSeen =
+					next.type === "message" &&
+					next.message.type === "utility_command_exited" &&
+					next.message.command_id === "cmd_pty";
+			}
+
+			stream.close();
+		},
+	);
 
 	it("searches workspace files over the in-process control plane", async () => {
 		const fakeAgent = new FakeAgent();

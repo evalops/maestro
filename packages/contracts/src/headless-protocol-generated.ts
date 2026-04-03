@@ -36,6 +36,15 @@ export type HeadlessServerRequestResolvedBy =
 export const headlessConnectionRoles = ["viewer", "controller"] as const;
 export type HeadlessConnectionRole = (typeof headlessConnectionRoles)[number];
 
+export const headlessNotificationTypes = [
+	"status",
+	"heartbeat",
+	"connection_info",
+	"compaction",
+] as const;
+export type HeadlessNotificationType =
+	(typeof headlessNotificationTypes)[number];
+
 export const headlessThinkingLevels = [
 	"off",
 	"minimal",
@@ -74,6 +83,10 @@ export const headlessUtilityCommandShellModes = ["shell", "direct"] as const;
 export type HeadlessUtilityCommandShellMode =
 	(typeof headlessUtilityCommandShellModes)[number];
 
+export const headlessUtilityCommandTerminalModes = ["pipe", "pty"] as const;
+export type HeadlessUtilityCommandTerminalMode =
+	(typeof headlessUtilityCommandTerminalModes)[number];
+
 export const headlessUtilityFileWatchChangeTypes = [
 	"create",
 	"modify",
@@ -94,6 +107,7 @@ export const headlessToAgentMessageTypes = [
 	"utility_command_start",
 	"utility_command_terminate",
 	"utility_command_stdin",
+	"utility_command_resize",
 	"utility_file_search",
 	"utility_file_watch_start",
 	"utility_file_watch_stop",
@@ -116,6 +130,7 @@ export const headlessFromAgentMessageTypes = [
 	"server_request",
 	"server_request_resolved",
 	"utility_command_started",
+	"utility_command_resized",
 	"utility_command_output",
 	"utility_command_exited",
 	"utility_file_search_results",

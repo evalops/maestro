@@ -1,7 +1,11 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { headlessProtocolVersion } from "@evalops/contracts";
+import {
+	HeadlessFromAgentMessageSchema,
+	headlessProtocolVersion,
+} from "@evalops/contracts";
+import { Value } from "@sinclair/typebox/value";
 import { describe, expect, it } from "vitest";
 import type { AssistantMessage } from "../../src/agent/types.js";
 import {
@@ -218,22 +222,21 @@ describe("headless protocol helpers", () => {
 
 	it("translates approval resolutions into server_request_resolved messages", () => {
 		const translator = new HeadlessProtocolTranslator();
-		expect(
-			translator.handleAgentEvent({
-				type: "action_approval_resolved",
-				request: {
-					id: "call_approval",
-					toolName: "bash",
-					args: { command: "rm -rf dist" },
-					reason: "Dangerous command",
-				},
-				decision: {
-					approved: false,
-					reason: "Denied by user",
-					resolvedBy: "user",
-				},
-			}),
-		).toEqual([
+		const messages = translator.handleAgentEvent({
+			type: "action_approval_resolved",
+			request: {
+				id: "call_approval",
+				toolName: "bash",
+				args: { command: "rm -rf dist" },
+				reason: "Dangerous command",
+			},
+			decision: {
+				approved: false,
+				reason: "Denied by user",
+				resolvedBy: "user",
+			},
+		});
+		expect(messages).toEqual([
 			{
 				type: "server_request_resolved",
 				request_id: "call_approval",
@@ -244,6 +247,9 @@ describe("headless protocol helpers", () => {
 				resolved_by: "user",
 			},
 		]);
+		for (const message of messages) {
+			expect(Value.Check(HeadlessFromAgentMessageSchema, message)).toBe(true);
+		}
 	});
 
 	it("translates client tool requests into legacy and generic request messages", () => {
@@ -360,12 +366,11 @@ describe("headless protocol helpers", () => {
 			args: { file_path: "package.json" },
 		});
 
-		expect(
-			translator.handleAgentEvent({
-				type: "message_end",
-				message: assistantMessage(),
-			}),
-		).toEqual([
+		const messages = translator.handleAgentEvent({
+			type: "message_end",
+			message: assistantMessage(),
+		});
+		expect(messages).toEqual([
 			expect.objectContaining({
 				type: "response_end",
 				tools_summary: expect.objectContaining({
@@ -373,6 +378,9 @@ describe("headless protocol helpers", () => {
 				}),
 			}),
 		]);
+		for (const message of messages) {
+			expect(Value.Check(HeadlessFromAgentMessageSchema, message)).toBe(true);
+		}
 	});
 
 	it("tracks non-approval tool names through tool_start", () => {
@@ -439,13 +447,17 @@ describe("headless protocol helpers", () => {
 			capabilities: { server_requests: ["approval"] },
 			role: "controller",
 		});
-		applyIncomingHeadlessMessage(state, {
-			type: "connection_info",
+		const connectionInfo = {
+			type: "connection_info" as const,
 			client_protocol_version: "2026-03-30",
 			client_info: { name: "maestro-tui-rs", version: "0.1.0" },
 			capabilities: { server_requests: ["approval"] },
-			role: "controller",
-		});
+			role: "controller" as const,
+		};
+		expect(Value.Check(HeadlessFromAgentMessageSchema, connectionInfo)).toBe(
+			true,
+		);
+		applyIncomingHeadlessMessage(state, connectionInfo);
 
 		expect(state.client_protocol_version).toBe("2026-03-30");
 		expect(state.client_info).toEqual({

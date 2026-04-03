@@ -4,6 +4,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import {
+	HeadlessRuntimeHeartbeatSnapshotSchema,
+	HeadlessRuntimeSnapshotSchema,
+	HeadlessRuntimeStreamEnvelopeSchema,
+	HeadlessRuntimeSubscriptionSnapshotSchema,
+} from "@evalops/contracts";
+import { Value } from "@sinclair/typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -316,17 +323,123 @@ describe("headless session runtime", () => {
 				system_prompt: "Be precise",
 				thinking_level: "high",
 			});
+			expect(Value.Check(HeadlessRuntimeSnapshotSchema, snapshot)).toBe(true);
 			expect(fakeAgent.prompts).toEqual([
 				{ content: "Summarize the session", attachments: undefined },
 			]);
 			expect(snapshot.state.last_status).toBe("Prompt: Summarize the session");
 
 			const replay = runtime.replayFrom(0);
+			for (const envelope of replay ?? []) {
+				expect(Value.Check(HeadlessRuntimeStreamEnvelopeSchema, envelope)).toBe(
+					true,
+				);
+			}
 			expect(
 				replay?.map((entry) =>
 					entry.type === "message" ? entry.message.type : entry.type,
 				),
 			).toEqual(["ready", "session_info", "status", "status"]);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("emits subscription and heartbeat payloads that satisfy generated schemas", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval"],
+					utility_operations: ["command_exec"],
+				},
+				context,
+				sessionManager,
+			});
+
+			const subscription = runtime.createSubscription({
+				role: "controller",
+				explicit: true,
+			});
+			expect(
+				Value.Check(HeadlessRuntimeSubscriptionSnapshotSchema, subscription),
+			).toBe(true);
+
+			const heartbeat = runtime.heartbeatConnection({
+				subscriptionId: subscription.subscription_id,
+			});
+			expect(
+				Value.Check(HeadlessRuntimeHeartbeatSnapshotSchema, heartbeat),
+			).toBe(true);
+
+			await runtime.dispose();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("filters opted-out notification types from subscription mailboxes", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval"],
+					utility_operations: ["command_exec"],
+				},
+				context,
+				sessionManager,
+			});
+
+			const subscription = runtime.createSubscription({
+				role: "controller",
+				explicit: true,
+				optOutNotifications: ["status", "heartbeat", "connection_info"],
+			});
+			expect(subscription.opt_out_notifications).toEqual([
+				"status",
+				"heartbeat",
+				"connection_info",
+			]);
+
+			const attached = runtime.attachSubscription(subscription.subscription_id);
+			expect(attached).not.toBeNull();
+			expect(attached?.next()).toMatchObject({ type: "snapshot" });
+			expect(attached?.next()).toBeNull();
+
+			await runtime.send({
+				type: "init",
+				system_prompt: "Be terse",
+			});
+			expect(attached?.next()).toBeNull();
+
+			attached?.enqueue(runtime.heartbeat());
+			expect(attached?.next()).toBeNull();
+
+			await runtime.dispose();
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
@@ -351,6 +464,7 @@ describe("headless session runtime", () => {
 				clientProtocolVersion: "2026-03-30",
 				clientInfo: { name: "maestro-web", version: "1.2.3" },
 				capabilities: { server_requests: ["approval", "client_tool"] },
+				optOutNotifications: ["status", "heartbeat"],
 				role: "controller",
 				context,
 				sessionManager,
@@ -365,7 +479,15 @@ describe("headless session runtime", () => {
 			expect(snapshot.state.capabilities).toEqual({
 				server_requests: ["approval", "client_tool"],
 			});
+			expect(snapshot.state.opt_out_notifications).toEqual([
+				"status",
+				"heartbeat",
+			]);
 			expect(snapshot.state.connection_role).toBe("controller");
+			expect(snapshot.state.connections[0]?.opt_out_notifications).toEqual([
+				"status",
+				"heartbeat",
+			]);
 
 			expect(
 				runtime
@@ -376,6 +498,46 @@ describe("headless session runtime", () => {
 							entry.message.type === "connection_info",
 					),
 			).toBe(true);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("inherits connection-level opt-out notifications for new subscriptions", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				clientProtocolVersion: "2026-04-02",
+				clientInfo: { name: "maestro-web", version: "1.2.3" },
+				capabilities: { server_requests: ["approval"] },
+				optOutNotifications: ["status", "connection_info"],
+				role: "controller",
+				context,
+				sessionManager,
+			});
+
+			const subscription = runtime.createSubscription({
+				role: "controller",
+				explicit: true,
+			});
+			expect(subscription.opt_out_notifications).toEqual([
+				"status",
+				"connection_info",
+			]);
+
+			await runtime.dispose();
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
@@ -523,6 +685,58 @@ describe("headless session runtime", () => {
 					}),
 				}),
 			});
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("suppresses approval-only headless messages in auto approval mode", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "auto",
+				context,
+				sessionManager,
+			});
+
+			fakeAgent.emit({
+				type: "action_approval_required",
+				request: {
+					id: "call_auto_approval",
+					toolName: "bash",
+					args: { command: "git push --force" },
+					reason: "Force push requires approval",
+				},
+			});
+
+			const replay = runtime.replayFrom(0) ?? [];
+			expect(
+				replay.find(
+					(entry) =>
+						entry.type === "message" &&
+						entry.message.type === "tool_call" &&
+						entry.message.call_id === "call_auto_approval",
+				),
+			).toBeUndefined();
+			expect(
+				replay.find(
+					(entry) =>
+						entry.type === "message" &&
+						entry.message.type === "server_request" &&
+						entry.message.request_id === "call_auto_approval",
+				),
+			).toBeUndefined();
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
@@ -1352,6 +1566,186 @@ describe("headless session handlers", () => {
 		}
 	});
 
+	it("rejects utility control messages from a different controller connection", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval"],
+					utility_operations: ["command_exec", "file_watch"],
+				},
+				context,
+				sessionManager,
+			});
+			const sessionId = runtime.getSnapshot().session_id;
+			if (!sessionId) {
+				throw new Error("Expected headless session id");
+			}
+
+			const first = runtime.createSubscription({ role: "controller" });
+			const second = runtime.createSubscription({
+				role: "controller",
+				takeControl: true,
+			});
+
+			await runtime.send(
+				{
+					type: "utility_command_start",
+					command_id: "cmd_owned",
+					command: `"${process.execPath}" -e "setInterval(() => {}, 1000)"`,
+					shell_mode: "direct",
+				},
+				{ subscriptionId: first.subscription_id },
+			);
+			await runtime.send(
+				{
+					type: "utility_file_watch_start",
+					watch_id: "watch_owned",
+					root_dir: tempDir,
+					debounce_ms: 10,
+				},
+				{ subscriptionId: first.subscription_id },
+			);
+
+			const commandStdinReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{
+					type: "utility_command_stdin",
+					command_id: "cmd_owned",
+					content: "status\n",
+				},
+				{
+					"x-maestro-headless-subscriber-id": second.subscription_id,
+					"x-maestro-headless-role": "controller",
+				},
+			);
+			const commandStdinRes = new MockResponse();
+			commandStdinRes.req = commandStdinReq;
+			await expect(
+				handleHeadlessSessionMessage(
+					commandStdinReq,
+					commandStdinRes as unknown as ServerResponse,
+					context,
+					{ id: sessionId },
+				),
+			).rejects.toMatchObject({
+				statusCode: 403,
+				message: "Headless command cmd_owned is owned by another connection",
+			});
+
+			const commandReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{
+					type: "utility_command_terminate",
+					command_id: "cmd_owned",
+				},
+				{
+					"x-maestro-headless-subscriber-id": second.subscription_id,
+					"x-maestro-headless-role": "controller",
+				},
+			);
+			const commandRes = new MockResponse();
+			commandRes.req = commandReq;
+			await expect(
+				handleHeadlessSessionMessage(
+					commandReq,
+					commandRes as unknown as ServerResponse,
+					context,
+					{ id: sessionId },
+				),
+			).rejects.toMatchObject({
+				statusCode: 403,
+				message: "Headless command cmd_owned is owned by another connection",
+			});
+
+			const commandResizeReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{
+					type: "utility_command_resize",
+					command_id: "cmd_owned",
+					columns: 100,
+					rows: 40,
+				},
+				{
+					"x-maestro-headless-subscriber-id": second.subscription_id,
+					"x-maestro-headless-role": "controller",
+				},
+			);
+			const commandResizeRes = new MockResponse();
+			commandResizeRes.req = commandResizeReq;
+			await expect(
+				handleHeadlessSessionMessage(
+					commandResizeReq,
+					commandResizeRes as unknown as ServerResponse,
+					context,
+					{ id: sessionId },
+				),
+			).rejects.toMatchObject({
+				statusCode: 403,
+				message: "Headless command cmd_owned is owned by another connection",
+			});
+
+			const watchReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{
+					type: "utility_file_watch_stop",
+					watch_id: "watch_owned",
+				},
+				{
+					"x-maestro-headless-subscriber-id": second.subscription_id,
+					"x-maestro-headless-role": "controller",
+				},
+			);
+			const watchRes = new MockResponse();
+			watchRes.req = watchReq;
+			await expect(
+				handleHeadlessSessionMessage(
+					watchReq,
+					watchRes as unknown as ServerResponse,
+					context,
+					{ id: sessionId },
+				),
+			).rejects.toMatchObject({
+				statusCode: 403,
+				message:
+					"Headless file watch watch_owned is owned by another connection",
+			});
+
+			expect(runtime.getSnapshot().state.active_utility_commands).toEqual([
+				expect.objectContaining({
+					command_id: "cmd_owned",
+					owner_connection_id: first.connection_id,
+				}),
+			]);
+			expect(runtime.getSnapshot().state.active_file_watches).toEqual([
+				expect.objectContaining({
+					watch_id: "watch_owned",
+					owner_connection_id: first.connection_id,
+				}),
+			]);
+
+			await runtime.dispose();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("passes client tool creation options through to the agent factory", async () => {
 		const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
 		const context = createContext({ createAgent });
@@ -1498,6 +1892,78 @@ describe("headless session handlers", () => {
 			statusCode: 403,
 			message: "Viewer headless connections cannot send messages",
 		});
+		expect(runtime.send).not.toHaveBeenCalled();
+	});
+
+	it("rejects malformed headless message payloads against generated schemas", async () => {
+		const runtime = {
+			assertCanSend: vi.fn(),
+			send: vi.fn().mockResolvedValue(undefined),
+		};
+		const context = createContext({
+			headlessRuntimeService: {
+				getRuntime: vi.fn().mockReturnValue(runtime),
+			} as unknown as HeadlessRuntimeService,
+		});
+		const req = createJsonRequest(
+			"POST",
+			"/api/headless/sessions/sess_123/messages",
+			{
+				type: "utility_command_stdin",
+				command_id: "cmd_missing_content",
+			},
+		);
+		const res = new MockResponse();
+		res.req = req;
+
+		await expect(
+			handleHeadlessSessionMessage(
+				req,
+				res as unknown as ServerResponse,
+				context,
+				{ id: "sess_123" },
+			),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			message: expect.stringContaining("content"),
+		});
+		expect(runtime.assertCanSend).not.toHaveBeenCalled();
+		expect(runtime.send).not.toHaveBeenCalled();
+	});
+
+	it("rejects unexpected properties on known headless message types", async () => {
+		const runtime = {
+			assertCanSend: vi.fn(),
+			send: vi.fn().mockResolvedValue(undefined),
+		};
+		const context = createContext({
+			headlessRuntimeService: {
+				getRuntime: vi.fn().mockReturnValue(runtime),
+			} as unknown as HeadlessRuntimeService,
+		});
+		const req = createJsonRequest(
+			"POST",
+			"/api/headless/sessions/sess_123/messages",
+			{
+				type: "interrupt",
+				unexpected: true,
+			},
+		);
+		const res = new MockResponse();
+		res.req = req;
+
+		await expect(
+			handleHeadlessSessionMessage(
+				req,
+				res as unknown as ServerResponse,
+				context,
+				{ id: "sess_123" },
+			),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			message: expect.stringContaining("additional properties"),
+		});
+		expect(runtime.assertCanSend).not.toHaveBeenCalled();
 		expect(runtime.send).not.toHaveBeenCalled();
 	});
 
@@ -1757,6 +2223,58 @@ describe("headless session handlers", () => {
 		expect(attached.stream.close).toHaveBeenCalledTimes(1);
 	});
 
+	it("passes explicit opt-out notifications through subscribe requests", async () => {
+		const runtime = {
+			createSubscription: vi.fn().mockReturnValue({
+				connection_id: "conn_remote",
+				subscription_id: "sub_remote",
+				opt_out_notifications: ["status", "heartbeat"],
+				role: "controller",
+				controller_lease_granted: true,
+				controller_subscription_id: "sub_remote",
+				controller_connection_id: "conn_remote",
+				lease_expires_at: "2026-04-02T00:00:15Z",
+				heartbeat_interval_ms: 15000,
+				snapshot: {
+					protocolVersion: HEADLESS_PROTOCOL_VERSION,
+					session_id: "sess_subscribe",
+					cursor: 1,
+					last_init: null,
+					state: createHeadlessRuntimeState(),
+				},
+			}),
+		};
+		const context = createContext({
+			headlessRuntimeService: {
+				getRuntime: vi.fn().mockReturnValue(runtime),
+			} as unknown as HeadlessRuntimeService,
+		});
+		const req = createJsonRequest(
+			"POST",
+			"/api/headless/sessions/sess_subscribe/subscribe",
+			{
+				optOutNotifications: ["status", "heartbeat"],
+			},
+		);
+		const res = new MockResponse();
+
+		await handleHeadlessSessionSubscribe(
+			req,
+			res as unknown as ServerResponse,
+			context,
+			{ id: "sess_subscribe" },
+		);
+
+		expect(runtime.createSubscription).toHaveBeenCalledWith(
+			expect.objectContaining({
+				optOutNotifications: ["status", "heartbeat"],
+			}),
+		);
+		expect(res.body).toContain(
+			'"opt_out_notifications":["status","heartbeat"]',
+		);
+	});
+
 	it("rejects explicit SSE attaches with unknown subscription ids before sending headers", () => {
 		const runtime = {
 			attachSubscription: vi.fn().mockReturnValue(null),
@@ -1825,6 +2343,53 @@ describe("headless session handlers", () => {
 		expect(res.body).toContain('"type":"reset"');
 		expect(res.body).toContain('"reason":"replay_gap"');
 		expect(res.body).toContain('"session_id":"sess_sse"');
+	});
+
+	it("passes opt-out notifications through implicit SSE attaches", () => {
+		const snapshot: HeadlessRuntimeSnapshot = {
+			protocolVersion: HEADLESS_PROTOCOL_VERSION,
+			session_id: "sess_sse",
+			cursor: 4,
+			last_init: null,
+			state: createHeadlessRuntimeState(),
+		};
+		const attached = createMockAttachedStream(
+			[
+				{
+					type: "snapshot",
+					snapshot,
+				},
+			],
+			{ overflowSnapshot: snapshot },
+		);
+		const runtime = {
+			createImplicitStream: vi.fn().mockReturnValue(attached.stream),
+			heartbeat: vi.fn().mockReturnValue({ type: "heartbeat", cursor: 4 }),
+		};
+		const context = createContext({
+			headlessRuntimeService: {
+				getRuntime: vi.fn().mockReturnValue(runtime),
+			} as unknown as HeadlessRuntimeService,
+		});
+		const req = createJsonRequest(
+			"GET",
+			"/api/headless/sessions/sess_sse/events?optOutNotifications=status,heartbeat",
+		);
+		const res = new MockResponse();
+
+		handleHeadlessSessionEvents(
+			req,
+			res as unknown as ServerResponse,
+			context,
+			{ id: "sess_sse" },
+		);
+
+		expect(runtime.createImplicitStream).toHaveBeenCalledWith(
+			expect.objectContaining({
+				optOutNotifications: ["status", "heartbeat"],
+			}),
+		);
+		req.emit("close");
 	});
 
 	it("coalesces lagged SSE subscribers into a reset envelope", () => {

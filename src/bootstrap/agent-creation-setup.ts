@@ -19,6 +19,7 @@ import {
 } from "../agent/context-providers.js";
 import { Agent, ProviderTransport } from "../agent/index.js";
 import type { ToolRetryConfig, ToolRetryService } from "../agent/tool-retry.js";
+import type { ClientToolExecutionService } from "../agent/transport.js";
 import type { AgentTool, Api, Model } from "../agent/types.js";
 import { composerManager } from "../composers/index.js";
 import type { AuthCredential } from "../providers/auth.js";
@@ -84,6 +85,7 @@ export function createAgentInstance(params: {
 	approvalService: ActionApprovalService;
 	toolRetryService: ToolRetryService;
 	toolRetryConfig?: ToolRetryConfig;
+	clientToolService?: ClientToolExecutionService;
 	requireCredential: (
 		providerName: string,
 		fatal: boolean,
@@ -103,6 +105,7 @@ export function createAgentInstance(params: {
 		approvalService,
 		toolRetryService,
 		toolRetryConfig,
+		clientToolService,
 		requireCredential,
 		enterpriseUser,
 		cwd,
@@ -165,6 +168,7 @@ export function createAgentInstance(params: {
 			approvalService,
 			toolRetryService,
 			toolRetryConfig,
+			clientToolService,
 			sessionTokenCounter,
 			auditLogger,
 		}),

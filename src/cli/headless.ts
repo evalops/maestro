@@ -7,8 +7,8 @@
  */
 
 import {
-	type HeadlessToAgentMessageType,
-	headlessToAgentMessageTypes,
+	assertHeadlessFromAgentMessage,
+	assertHeadlessToAgentMessage,
 } from "@evalops/contracts";
 import type { ActionApprovalService } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
@@ -16,6 +16,7 @@ import { HeadlessUtilityCommandManager } from "../headless/utility-command-manag
 import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
 import { HeadlessUtilityFileWatchManager } from "../headless/utility-file-watch-manager.js";
 import { clientToolService } from "../server/client-tools-service.js";
+import { serverRequestManager } from "../server/server-request-manager.js";
 import type { SessionManager } from "../session/manager.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
@@ -26,7 +27,6 @@ import {
 	applyInitMessage,
 	applyOutgoingHeadlessMessage,
 	buildHeadlessCompactionMessage,
-	buildHeadlessServerRequestCancellationMessages,
 	buildHeadlessToolsSummary,
 	buildHeadlessUsage,
 	classifyHeadlessError,
@@ -42,16 +42,25 @@ export {
 	classifyHeadlessError,
 };
 
-function isHeadlessToAgentMessageType(
-	value: string,
-): value is HeadlessToAgentMessageType {
-	return headlessToAgentMessageTypes.includes(
-		value as HeadlessToAgentMessageType,
-	);
-}
-
 function send(msg: HeadlessFromAgentMessage): void {
-	process.stdout.write(`${JSON.stringify(msg)}\n`);
+	try {
+		assertHeadlessFromAgentMessage(msg, "headless stdout message");
+		process.stdout.write(`${JSON.stringify(msg)}\n`);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		try {
+			process.stdout.write(
+				`${JSON.stringify({
+					type: "error",
+					message: `Failed to emit headless message: ${message}`,
+					fatal: false,
+					error_type: "protocol",
+				} satisfies HeadlessFromAgentMessage)}\n`,
+			);
+		} catch {
+			// Ignore fallback write failures; there is no safer recovery path on stdout.
+		}
+	}
 }
 
 function sendError(message: string, fatal: boolean): void {
@@ -75,13 +84,27 @@ export async function runHeadlessMode(
 		applyIncomingHeadlessMessage(state, msg);
 		send(msg);
 	};
+	const shouldHandleServerRequestEvent = (
+		sessionId: string | undefined,
+	): boolean => {
+		const currentSessionId = sessionManager.getSessionId() ?? undefined;
+		if (!currentSessionId) {
+			return sessionId === undefined;
+		}
+		return sessionId === currentSessionId;
+	};
 
-	const sendPendingRequestCancellations = (reason: string): void => {
-		for (const message of buildHeadlessServerRequestCancellationMessages(
-			state,
-			reason,
-		)) {
-			sendMessage(message);
+	const cancelPendingServerRequests = (reason: string): void => {
+		const sessionId = sessionManager.getSessionId() ?? undefined;
+		if (sessionId) {
+			serverRequestManager.cancelBySession(sessionId, reason, "runtime");
+		}
+		for (const request of [
+			...state.pending_approvals,
+			...state.pending_client_tools,
+			...state.pending_user_inputs,
+		]) {
+			serverRequestManager.cancel(request.call_id, reason, "runtime");
 		}
 	};
 	const utilityCommands = new HeadlessUtilityCommandManager((event) => {
@@ -91,10 +114,23 @@ export async function runHeadlessMode(
 					type: "utility_command_started",
 					command_id: event.command_id,
 					command: event.command,
-					cwd: event.cwd,
 					shell_mode: event.shell_mode,
-					pid: event.pid,
-					owner_connection_id: event.owner_connection_id,
+					terminal_mode: event.terminal_mode,
+					...(event.cwd ? { cwd: event.cwd } : {}),
+					...(event.pid !== undefined ? { pid: event.pid } : {}),
+					...(event.columns !== undefined ? { columns: event.columns } : {}),
+					...(event.rows !== undefined ? { rows: event.rows } : {}),
+					...(event.owner_connection_id
+						? { owner_connection_id: event.owner_connection_id }
+						: {}),
+				});
+				return;
+			case "resized":
+				sendMessage({
+					type: "utility_command_resized",
+					command_id: event.command_id,
+					columns: event.columns,
+					rows: event.rows,
 				});
 				return;
 			case "output":
@@ -151,9 +187,61 @@ export async function runHeadlessMode(
 		}
 	});
 
+	const unsubscribeServerRequests = serverRequestManager.subscribe((event) => {
+		if (!shouldHandleServerRequestEvent(event.request.sessionId)) {
+			return;
+		}
+		if (event.type === "registered") {
+			sendMessage({
+				type: "server_request",
+				request_id: event.request.id,
+				request_type: event.request.kind,
+				call_id: event.request.id,
+				tool: event.request.toolName,
+				args: event.request.args,
+				reason: event.request.reason,
+			});
+			return;
+		}
+		sendMessage({
+			type: "server_request_resolved",
+			request_id: event.request.id,
+			request_type: event.request.kind,
+			call_id: event.request.id,
+			resolution: event.resolution,
+			reason: event.reason,
+			resolved_by: event.resolvedBy,
+		});
+	});
+
 	agent.subscribe((event) => {
+		if (
+			event.type === "action_approval_required" &&
+			!approvalService?.requiresUserInteraction()
+		) {
+			return;
+		}
+		const pendingApprovalRegistration =
+			event.type === "action_approval_required" &&
+			approvalService?.requiresUserInteraction() &&
+			!serverRequestManager.get(event.request.id)
+				? {
+						sessionId: sessionManager.getSessionId() ?? undefined,
+						request: event.request,
+						service: approvalService,
+					}
+				: null;
 		for (const message of translator.handleAgentEvent(event)) {
+			if (
+				message.type === "server_request" ||
+				message.type === "server_request_resolved"
+			) {
+				continue;
+			}
 			sendMessage(message);
+		}
+		if (pendingApprovalRegistration) {
+			serverRequestManager.registerApproval(pendingApprovalRegistration);
 		}
 	});
 
@@ -170,22 +258,9 @@ export async function runHeadlessMode(
 	rl.on("line", async (line: string) => {
 		let msg: HeadlessToAgentMessage;
 		try {
-			const parsed = JSON.parse(line) as {
-				type?: string;
-			};
-			if (
-				typeof parsed !== "object" ||
-				parsed === null ||
-				typeof parsed.type !== "string" ||
-				!isHeadlessToAgentMessageType(parsed.type)
-			) {
-				sendError(
-					"Failed to parse command: Unknown headless command type",
-					false,
-				);
-				return;
-			}
-			msg = parsed as HeadlessToAgentMessage;
+			const parsed = JSON.parse(line) as unknown;
+			assertHeadlessToAgentMessage(parsed, "headless command");
+			msg = parsed;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			sendError(`Failed to parse command: ${message}`, false);
@@ -214,6 +289,7 @@ export async function runHeadlessMode(
 							protocol_version: msg.protocol_version,
 							client_info: msg.client_info,
 							capabilities: msg.capabilities,
+							opt_out_notifications: msg.opt_out_notifications,
 							role: msg.role ?? "controller",
 							connection_count: 1,
 							controller_connection_id:
@@ -256,7 +332,7 @@ export async function runHeadlessMode(
 
 				case "interrupt":
 				case "cancel":
-					sendPendingRequestCancellations(
+					cancelPendingServerRequests(
 						msg.type === "interrupt"
 							? "Interrupted before request completed"
 							: "Cancelled before request completed",
@@ -276,24 +352,20 @@ export async function runHeadlessMode(
 					break;
 
 				case "tool_response":
-					if (approvalService) {
-						if (msg.approved) {
-							const resolved = approvalService.approve(msg.call_id);
-							if (!resolved) {
-								sendError(
-									`No pending approval found for call_id: ${msg.call_id}`,
-									false,
-								);
-							}
-						} else {
-							const reason = msg.result?.error ?? "Denied by user";
-							const resolved = approvalService.deny(msg.call_id, reason);
-							if (!resolved) {
-								sendError(
-									`No pending approval found for call_id: ${msg.call_id}`,
-									false,
-								);
-							}
+					if (approvalService?.requiresUserInteraction()) {
+						const reason = msg.approved
+							? (msg.result?.output ?? "Approved")
+							: (msg.result?.error ?? "Denied by user");
+						const resolved = serverRequestManager.resolveApproval(msg.call_id, {
+							approved: msg.approved,
+							reason,
+							resolvedBy: "user",
+						});
+						if (!resolved) {
+							sendError(
+								`No pending approval found for call_id: ${msg.call_id}`,
+								false,
+							);
 						}
 					} else {
 						sendMessage({
@@ -315,18 +387,6 @@ export async function runHeadlessMode(
 							`No pending client tool request found for call_id: ${msg.call_id}`,
 							false,
 						);
-					} else {
-						sendMessage({
-							type: "server_request_resolved",
-							request_id: msg.call_id,
-							request_type: "client_tool",
-							call_id: msg.call_id,
-							resolution: msg.is_error ? "failed" : "completed",
-							reason: msg.is_error
-								? "Client tool result reported an error"
-								: undefined,
-							resolved_by: "client",
-						});
 					}
 					applyOutgoingHeadlessMessage(state, msg);
 					break;
@@ -334,24 +394,23 @@ export async function runHeadlessMode(
 
 				case "server_request_response":
 					if (msg.request_type === "approval") {
-						if (approvalService) {
-							if (msg.approved) {
-								const resolved = approvalService.approve(msg.request_id);
-								if (!resolved) {
-									sendError(
-										`No pending approval found for request_id: ${msg.request_id}`,
-										false,
-									);
-								}
-							} else {
-								const reason = msg.result?.error ?? "Denied by user";
-								const resolved = approvalService.deny(msg.request_id, reason);
-								if (!resolved) {
-									sendError(
-										`No pending approval found for request_id: ${msg.request_id}`,
-										false,
-									);
-								}
+						if (approvalService?.requiresUserInteraction()) {
+							const reason = msg.approved
+								? (msg.result?.output ?? "Approved")
+								: (msg.result?.error ?? "Denied by user");
+							const resolved = serverRequestManager.resolveApproval(
+								msg.request_id,
+								{
+									approved: msg.approved ?? false,
+									reason,
+									resolvedBy: "user",
+								},
+							);
+							if (!resolved) {
+								sendError(
+									`No pending approval found for request_id: ${msg.request_id}`,
+									false,
+								);
 							}
 						} else {
 							sendMessage({
@@ -391,7 +450,10 @@ export async function runHeadlessMode(
 						cwd: msg.cwd,
 						env: msg.env,
 						shell_mode: msg.shell_mode,
+						terminal_mode: msg.terminal_mode,
 						allow_stdin: msg.allow_stdin,
+						columns: msg.columns,
+						rows: msg.rows,
 					});
 					break;
 
@@ -414,6 +476,19 @@ export async function runHeadlessMode(
 						msg.content,
 						msg.eof,
 					);
+					break;
+
+				case "utility_command_resize":
+					if (
+						!state.capabilities?.utility_operations?.includes("command_exec")
+					) {
+						sendError(
+							"utility_command_resize requires command_exec capability",
+							false,
+						);
+						break;
+					}
+					await utilityCommands.resize(msg.command_id, msg.columns, msg.rows);
 					break;
 
 				case "utility_file_search":
@@ -465,7 +540,7 @@ export async function runHeadlessMode(
 					break;
 
 				case "shutdown":
-					sendPendingRequestCancellations("Shutdown before request completed");
+					cancelPendingServerRequests("Shutdown before request completed");
 					applyOutgoingHeadlessMessage(state, msg);
 					await utilityCommands.dispose(
 						"Headless runtime shutdown while utility command was still running",
@@ -484,6 +559,7 @@ export async function runHeadlessMode(
 
 	return new Promise<void>((resolve) => {
 		rl.on("close", () => {
+			unsubscribeServerRequests();
 			resolve();
 		});
 	});

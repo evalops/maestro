@@ -22,6 +22,7 @@ use super::messages::{
     ActiveFileWatch, ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities,
     ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage, HeadlessErrorType, InitConfig,
     PendingApproval, StreamingResponse, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
+    UtilityCommandTerminalMode,
 };
 
 /// Configuration for the remote headless transport.
@@ -57,6 +58,8 @@ pub struct RemoteTransportConfig {
     pub client_version: Option<String>,
     /// Optional connection role used for HTTP attach/message permissions.
     pub role: Option<String>,
+    /// Notification classes the subscriber does not want streamed live.
+    pub opt_out_notifications: Vec<String>,
     /// Whether a controller subscription should take over an existing controller lease.
     pub take_control: bool,
     /// Additional headers to send on every request.
@@ -83,11 +86,23 @@ impl Default for RemoteTransportConfig {
             client_name: "maestro-tui-rs".to_string(),
             client_version: option_env!("CARGO_PKG_VERSION").map(str::to_string),
             role: Some("controller".to_string()),
+            opt_out_notifications: vec![],
             take_control: false,
             headers: HashMap::new(),
             reconnect_delay: Duration::from_millis(500),
         }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UtilityCommandStartOptions {
+    pub cwd: Option<String>,
+    pub env: Option<HashMap<String, String>>,
+    pub shell_mode: Option<UtilityCommandShellMode>,
+    pub terminal_mode: Option<UtilityCommandTerminalMode>,
+    pub allow_stdin: Option<bool>,
+    pub columns: Option<u32>,
+    pub rows: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +132,8 @@ struct RemoteSessionSubscribeRequest {
     capabilities: Option<RemoteClientCapabilities>,
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
+    #[serde(rename = "optOutNotifications", skip_serializing_if = "Vec::is_empty")]
+    opt_out_notifications: Vec<String>,
     #[serde(
         rename = "takeControl",
         default,
@@ -155,6 +172,8 @@ struct RemoteSessionCreateRequest {
     enable_client_tools: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     capabilities: Option<RemoteClientCapabilities>,
+    #[serde(rename = "optOutNotifications", skip_serializing_if = "Vec::is_empty")]
+    opt_out_notifications: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     client: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -183,8 +202,13 @@ struct RemoteActiveUtilityCommandState {
     #[serde(default)]
     cwd: Option<String>,
     shell_mode: UtilityCommandShellMode,
+    terminal_mode: UtilityCommandTerminalMode,
     #[serde(default)]
     pid: Option<u32>,
+    #[serde(default)]
+    columns: Option<u32>,
+    #[serde(default)]
+    rows: Option<u32>,
     #[serde(default)]
     owner_connection_id: Option<String>,
     output: String,
@@ -213,6 +237,8 @@ struct RemoteRuntimeStateSnapshot {
     client_info: Option<ClientInfo>,
     #[serde(default)]
     capabilities: Option<ClientCapabilities>,
+    #[serde(default)]
+    opt_out_notifications: Option<Vec<String>>,
     #[serde(default)]
     connection_role: Option<ConnectionRole>,
     #[serde(default)]
@@ -274,6 +300,7 @@ impl RemoteRuntimeStateSnapshot {
             client_protocol_version: self.client_protocol_version,
             client_info: self.client_info,
             capabilities: self.capabilities,
+            opt_out_notifications: self.opt_out_notifications,
             connection_role: self.connection_role,
             connection_count: self.connection_count,
             subscriber_count: self.subscriber_count,
@@ -320,7 +347,10 @@ impl RemoteRuntimeStateSnapshot {
                             command: command.command,
                             cwd: command.cwd,
                             shell_mode: command.shell_mode,
+                            terminal_mode: command.terminal_mode,
                             pid: command.pid,
+                            columns: command.columns,
+                            rows: command.rows,
                             owner_connection_id: command.owner_connection_id,
                             output: command.output,
                         },
@@ -510,18 +540,18 @@ impl RemoteAgentTransport {
         &self,
         command_id: String,
         command: String,
-        cwd: Option<String>,
-        env: Option<HashMap<String, String>>,
-        shell_mode: Option<UtilityCommandShellMode>,
-        allow_stdin: Option<bool>,
+        options: UtilityCommandStartOptions,
     ) -> Result<(), AsyncTransportError> {
         self.send(ToAgentMessage::UtilityCommandStart {
             command_id,
             command,
-            cwd,
-            env,
-            shell_mode,
-            allow_stdin,
+            cwd: options.cwd,
+            env: options.env,
+            shell_mode: options.shell_mode,
+            terminal_mode: options.terminal_mode,
+            allow_stdin: options.allow_stdin,
+            columns: options.columns,
+            rows: options.rows,
         })
     }
 
@@ -546,6 +576,19 @@ impl RemoteAgentTransport {
             command_id,
             content,
             eof: Some(eof),
+        })
+    }
+
+    pub fn resize_utility_command(
+        &self,
+        command_id: String,
+        columns: u32,
+        rows: u32,
+    ) -> Result<(), AsyncTransportError> {
+        self.send(ToAgentMessage::UtilityCommandResize {
+            command_id,
+            columns,
+            rows,
         })
     }
 
@@ -718,6 +761,7 @@ async fn create_or_attach_session(
             server_requests: build_remote_server_requests(config),
             utility_operations: build_remote_utility_operations(config),
         }),
+        opt_out_notifications: config.opt_out_notifications.clone(),
         client: config.client.clone(),
         role: config.role.clone(),
     };
@@ -752,6 +796,7 @@ async fn subscribe_to_session(
             utility_operations: build_remote_utility_operations(config),
         }),
         role: config.role.clone(),
+        opt_out_notifications: config.opt_out_notifications.clone(),
         take_control: config.take_control,
     };
 
@@ -1343,6 +1388,7 @@ mod tests {
                 ]),
                 utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
             }),
+            opt_out_notifications: Some(vec!["status".to_string()]),
             connection_role: Some(ConnectionRole::Controller),
             connection_count: 1,
             subscriber_count: 2,
@@ -1363,6 +1409,7 @@ mod tests {
                     ]),
                     utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
                 }),
+                opt_out_notifications: Some(vec!["status".to_string()]),
                 subscription_count: 1,
                 attached_subscription_count: 1,
                 controller_lease_granted: true,
@@ -1418,7 +1465,10 @@ mod tests {
                 command: "echo hi".to_string(),
                 cwd: Some("/tmp/project".to_string()),
                 shell_mode: UtilityCommandShellMode::Direct,
+                terminal_mode: UtilityCommandTerminalMode::Pipe,
                 pid: Some(1234),
+                columns: None,
+                rows: None,
                 owner_connection_id: Some("conn-1".to_string()),
                 output: "hi\n".to_string(),
             }],
@@ -1446,6 +1496,13 @@ mod tests {
         assert_eq!(
             state.client_info.as_ref().map(|info| info.name.as_str()),
             Some("maestro-tui-rs")
+        );
+        assert_eq!(
+            state
+                .opt_out_notifications
+                .as_ref()
+                .map(|items| items.len()),
+            Some(1)
         );
         assert_eq!(state.pending_approvals.len(), 1);
         assert_eq!(state.pending_client_tools.len(), 1);
@@ -1496,6 +1553,7 @@ mod tests {
                 server_requests: vec!["approval", "client_tool"],
                 utility_operations: vec!["command_exec"],
             }),
+            opt_out_notifications: vec!["status".to_string()],
             client: Some("vscode".to_string()),
             role: Some("controller".to_string()),
         };
@@ -1511,8 +1569,34 @@ mod tests {
         assert_eq!(json["enableClientTools"], true);
         assert_eq!(json["capabilities"]["serverRequests"][0], "approval");
         assert_eq!(json["capabilities"]["serverRequests"][1], "client_tool");
+        assert_eq!(json["optOutNotifications"][0], "status");
         assert_eq!(json["client"], "vscode");
         assert_eq!(json["role"], "controller");
+    }
+
+    #[test]
+    fn remote_session_subscribe_request_serializes_opt_out_notifications() {
+        let request = RemoteSessionSubscribeRequest {
+            connection_id: Some("conn_remote".to_string()),
+            protocol_version: Some("2026-04-02".to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-tui-rs".to_string(),
+                version: Some("0.1.0".to_string()),
+            }),
+            capabilities: Some(RemoteClientCapabilities {
+                server_requests: vec!["approval", "client_tool", "user_input"],
+                utility_operations: vec!["command_exec", "file_watch"],
+            }),
+            role: Some("viewer".to_string()),
+            opt_out_notifications: vec!["status".to_string(), "heartbeat".to_string()],
+            take_control: false,
+        };
+
+        let json = serde_json::to_value(request).expect("serialize request");
+        assert_eq!(json["connectionId"], "conn_remote");
+        assert_eq!(json["role"], "viewer");
+        assert_eq!(json["optOutNotifications"][0], "status");
+        assert_eq!(json["optOutNotifications"][1], "heartbeat");
     }
 
     #[tokio::test]
@@ -1721,6 +1805,60 @@ mod tests {
 
         transport.shutdown().expect("shutdown");
         assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn remote_transport_sends_utility_command_resize_messages() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 1,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "active_tools": [],
+                "active_utility_commands": [],
+                "active_file_watches": [],
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+
+        let (addr, posted_bodies, _request_headers) =
+            spawn_remote_headless_server(snapshot.to_string(), Vec::new()).await;
+
+        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+
+        transport
+            .resize_utility_command("cmd_pty".to_string(), 120, 40)
+            .expect("send utility command resize");
+
+        for _ in 0..50 {
+            if !posted_bodies.lock().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let posted = posted_bodies.lock().await.clone();
+        assert_eq!(posted.len(), 1);
+        let sent = serde_json::from_str::<ToAgentMessage>(&posted[0]).expect("parse sent message");
+        assert!(matches!(
+            sent,
+            ToAgentMessage::UtilityCommandResize {
+                command_id,
+                columns,
+                rows,
+            } if command_id == "cmd_pty" && columns == 120 && rows == 40
+        ));
+
+        transport.shutdown().expect("shutdown");
     }
 
     #[tokio::test]

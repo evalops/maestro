@@ -30,6 +30,9 @@ import {
 } from "../../packages/contracts/src/schemas.js";
 import {
 	assertComposerChatRequest,
+	assertHeadlessFromAgentMessage,
+	assertHeadlessRuntimeStreamEnvelope,
+	assertHeadlessToAgentMessage,
 	isComposerAgentEvent,
 	validateSchema,
 } from "../../packages/contracts/src/validators.js";
@@ -66,6 +69,34 @@ describe("contracts validators", () => {
 			message: { role: "assistant", content: "Hi" },
 		});
 		expect(eventResult.ok).toBe(true);
+	});
+
+	it("rejects malformed headless commands with generated per-type schemas", () => {
+		expect(() =>
+			assertHeadlessToAgentMessage({
+				type: "prompt",
+				content: "hello",
+				unexpected: true,
+			}),
+		).toThrow(/Invalid headless command/);
+		expect(() =>
+			assertHeadlessToAgentMessage({ type: "totally_unknown_command" }),
+		).toThrow("Unknown headless command type");
+	});
+
+	it("accepts generated headless outbound envelopes", () => {
+		expect(() =>
+			assertHeadlessFromAgentMessage({
+				type: "status",
+				message: "ok",
+			}),
+		).not.toThrow();
+		expect(() =>
+			assertHeadlessRuntimeStreamEnvelope({
+				type: "heartbeat",
+				cursor: 3,
+			}),
+		).not.toThrow();
 	});
 
 	it("accepts slim toolcall updates without partial messages", () => {

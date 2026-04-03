@@ -8,9 +8,17 @@ const manifestPath = resolve(
 	rootDir,
 	"packages/contracts/src/headless-protocol.manifest.json",
 );
+const payloadManifestPath = resolve(
+	rootDir,
+	"packages/contracts/src/headless-protocol-payloads.manifest.json",
+);
 const tsOutputPath = resolve(
 	rootDir,
 	"packages/contracts/src/headless-protocol-generated.ts",
+);
+const tsSchemaOutputPath = resolve(
+	rootDir,
+	"packages/contracts/src/headless-protocol-schemas.generated.ts",
 );
 const rustOutputPath = resolve(
 	rootDir,
@@ -57,6 +65,10 @@ export type HeadlessServerRequestResolvedBy =
 export const headlessConnectionRoles = ${toTsConst(manifest.connectionRoles)};
 export type HeadlessConnectionRole = (typeof headlessConnectionRoles)[number];
 
+export const headlessNotificationTypes = ${toTsConst(manifest.notificationTypes)};
+export type HeadlessNotificationType =
+\t(typeof headlessNotificationTypes)[number];
+
 export const headlessThinkingLevels = ${toTsConst(manifest.thinkingLevels)};
 export type HeadlessThinkingLevel = (typeof headlessThinkingLevels)[number];
 
@@ -84,6 +96,12 @@ export const headlessUtilityCommandShellModes = ${toTsConst(
 export type HeadlessUtilityCommandShellMode =
 \t(typeof headlessUtilityCommandShellModes)[number];
 
+export const headlessUtilityCommandTerminalModes = ${toTsConst(
+		manifest.utilityCommandTerminalModes,
+	)};
+export type HeadlessUtilityCommandTerminalMode =
+\t(typeof headlessUtilityCommandTerminalModes)[number];
+
 export const headlessUtilityFileWatchChangeTypes = ${toTsConst(
 		manifest.utilityFileWatchChangeTypes,
 	)};
@@ -104,10 +122,193 @@ export type HeadlessFromAgentMessageType =
 `;
 }
 
-function formatTs(source) {
+function renderTypeboxSchema(schema) {
+	switch (schema.kind) {
+		case "string":
+			return "Type.String()";
+		case "boolean":
+			return "Type.Boolean()";
+		case "number":
+			return "Type.Number()";
+		case "unknown":
+			return "Type.Unknown()";
+		case "literal":
+			return schema.value === null
+				? "Type.Null()"
+				: `Type.Literal(${JSON.stringify(schema.value)})`;
+		case "ref":
+			return schema.name;
+		case "enumRef":
+			return `stringLiteralUnion(${schema.name})`;
+		case "array": {
+			const options = [];
+			if (schema.uniqueItems) {
+				options.push("uniqueItems: true");
+			}
+			return options.length > 0
+				? `Type.Array(${renderTypeboxSchema(schema.items)}, { ${options.join(", ")} })`
+				: `Type.Array(${renderTypeboxSchema(schema.items)})`;
+		}
+		case "record":
+			return `Type.Record(Type.String(), ${renderTypeboxSchema(schema.value)})`;
+		case "union":
+			return `Type.Union([${schema.variants.map((variant) => renderTypeboxSchema(variant)).join(", ")}])`;
+		case "object": {
+			const properties = Object.entries(schema.properties)
+				.map(([name, propertySchema]) => {
+					const rendered = renderTypeboxSchema(propertySchema);
+					return `${JSON.stringify(name)}: ${propertySchema.optional ? `Type.Optional(${rendered})` : rendered}`;
+				})
+				.join(",\n\t");
+			const options = [];
+			if (schema.additionalProperties === false) {
+				options.push("additionalProperties: false");
+			}
+			return options.length > 0
+				? `Type.Object({\n\t${properties}\n}, { ${options.join(", ")} })`
+				: `Type.Object({\n\t${properties}\n})`;
+		}
+		default:
+			throw new Error(`Unsupported headless payload schema kind: ${schema.kind}`);
+	}
+}
+
+function renderTsSchemas(payloadManifest, manifest) {
+	const enumRefs = new Set();
+	const schemaSections = [
+		payloadManifest.namedSchemas ?? {},
+		payloadManifest.toAgentSchemas ?? {},
+		payloadManifest.fromAgentSchemas ?? {},
+		payloadManifest.runtimeSchemas ?? {},
+	];
+	const visit = (schema) => {
+		if (!schema || typeof schema !== "object") {
+			return;
+		}
+		if (schema.kind === "enumRef") {
+			enumRefs.add(schema.name);
+			return;
+		}
+		if (schema.kind === "object") {
+			for (const value of Object.values(schema.properties ?? {})) {
+				visit(value);
+			}
+			return;
+		}
+		if (schema.kind === "array") {
+			visit(schema.items);
+			return;
+		}
+		if (schema.kind === "record") {
+			visit(schema.value);
+			return;
+		}
+		if (schema.kind === "union") {
+			for (const variant of schema.variants ?? []) {
+				visit(variant);
+			}
+		}
+	};
+	for (const section of schemaSections) {
+		for (const schema of Object.values(section)) {
+			visit(schema);
+		}
+	}
+
+	const enumImports = Array.from(enumRefs).sort();
+	const namedSchemaEntries = Object.entries(payloadManifest.namedSchemas ?? {});
+	const toAgentSchemaEntries = Object.entries(payloadManifest.toAgentSchemas ?? {});
+	const fromAgentSchemaEntries = Object.entries(
+		payloadManifest.fromAgentSchemas ?? {},
+	);
+	const runtimeSchemaEntries = Object.entries(payloadManifest.runtimeSchemas ?? {});
+	const getTypedMessageEntries = (entries) =>
+		entries.filter(
+			([, schema]) => typeof schema?.properties?.type?.value === "string",
+		);
+	const buildSchemaMapEntries = (entries) =>
+		getTypedMessageEntries(entries).map(([name, schema]) => {
+			const messageType = schema?.properties?.type?.value;
+			return [messageType, name];
+		});
+	const toAgentSchemaMapEntries = buildSchemaMapEntries(toAgentSchemaEntries);
+	const fromAgentSchemaMapEntries = buildSchemaMapEntries(fromAgentSchemaEntries);
+	const typedToAgentSchemaEntries = getTypedMessageEntries(toAgentSchemaEntries);
+	const typedFromAgentSchemaEntries =
+		getTypedMessageEntries(fromAgentSchemaEntries);
+	const renderEntries = (entries) =>
+		entries
+			.map(
+				([name, schema]) =>
+					`export const ${name} = ${renderTypeboxSchema(schema)};`,
+			)
+			.join("\n\n");
+
+	return `/**
+ * Auto-generated by \`scripts/headless-protocol-codegen.mjs\`.
+ * Do not edit manually; update \`headless-protocol-payloads.manifest.json\` instead.
+ */
+
+import { type Static, type TSchema, Type } from "@sinclair/typebox";
+import { ${enumImports.join(", ")} } from "./headless-protocol-generated.js";
+
+function stringLiteralUnion<const T extends readonly string[]>(values: T) {
+\treturn Type.Unsafe<T[number]>(
+\t\tType.Union(
+\t\t\tvalues.map((value) => Type.Literal(value)) as unknown as [
+\t\t\t\tTSchema,
+\t\t\t\t...TSchema[],
+\t\t\t],
+\t\t),
+\t);
+}
+
+${renderEntries(namedSchemaEntries)}
+
+${renderEntries(toAgentSchemaEntries)}
+
+export const headlessToAgentMessageSchemasByType = {
+\t${toAgentSchemaMapEntries
+		.map(([messageType, schemaName]) => `${JSON.stringify(messageType)}: ${schemaName},`)
+		.join("\n\t")}
+} as const;
+
+${renderEntries(fromAgentSchemaEntries)}
+
+${fromAgentSchemaEntries.length > 0
+	? `export const headlessFromAgentMessageSchemasByType = {
+\t${fromAgentSchemaMapEntries
+		.map(([messageType, schemaName]) => `${JSON.stringify(messageType)}: ${schemaName},`)
+		.join("\n\t")}
+} as const;
+
+`
+	: ""}export const HeadlessToAgentMessageSchema = Type.Union([
+\t${typedToAgentSchemaEntries.map(([name]) => name).join(",\n\t")},
+]);
+
+export type HeadlessToAgentMessageInput = Static<
+\ttypeof HeadlessToAgentMessageSchema
+>;${fromAgentSchemaEntries.length > 0
+	? `
+
+export const HeadlessFromAgentMessageSchema = Type.Union([
+\t${typedFromAgentSchemaEntries.map(([name]) => name).join(",\n\t")},
+]);
+
+export type HeadlessFromAgentMessageInput = Static<
+\ttypeof HeadlessFromAgentMessageSchema
+>;`
+	: ""}
+
+${renderEntries(runtimeSchemaEntries)}
+`;
+}
+
+function formatTs(source, filePath = tsOutputPath) {
 	const result = spawnSync(
 		"bunx",
-		["biome", "format", "--stdin-file-path", tsOutputPath],
+		["biome", "format", "--stdin-file-path", filePath],
 		{
 			cwd: rootDir,
 			encoding: "utf8",
@@ -143,6 +344,9 @@ pub const HEADLESS_SERVER_REQUEST_RESOLVED_BY: &[&str] = ${toRustArray(
 pub const HEADLESS_CONNECTION_ROLES: &[&str] = ${toRustArray(
 		manifest.connectionRoles,
 	)};
+pub const HEADLESS_NOTIFICATION_TYPES: &[&str] = ${toRustArray(
+		manifest.notificationTypes,
+	)};
 pub const HEADLESS_THINKING_LEVELS: &[&str] = ${toRustArray(
 		manifest.thinkingLevels,
 	)};
@@ -158,6 +362,9 @@ pub const HEADLESS_UTILITY_COMMAND_STREAMS: &[&str] = ${toRustArray(
 	)};
 pub const HEADLESS_UTILITY_COMMAND_SHELL_MODES: &[&str] = ${toRustArray(
 		manifest.utilityCommandShellModes,
+	)};
+pub const HEADLESS_UTILITY_COMMAND_TERMINAL_MODES: &[&str] = ${toRustArray(
+		manifest.utilityCommandTerminalModes,
 	)};
 pub const HEADLESS_UTILITY_FILE_WATCH_CHANGE_TYPES: &[&str] = ${toRustArray(
 		manifest.utilityFileWatchChangeTypes,
@@ -188,10 +395,18 @@ function formatRust(source) {
 async function main() {
 	const check = process.argv.includes("--check");
 	const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+	const payloadManifest = JSON.parse(await readFile(payloadManifestPath, "utf8"));
 	const targets = [
 		{
 			path: tsOutputPath,
-			content: formatTs(renderTs(manifest)),
+			content: formatTs(renderTs(manifest), tsOutputPath),
+		},
+		{
+			path: tsSchemaOutputPath,
+			content: formatTs(
+				renderTsSchemas(payloadManifest, manifest),
+				tsSchemaOutputPath,
+			),
 		},
 		{
 			path: rustOutputPath,

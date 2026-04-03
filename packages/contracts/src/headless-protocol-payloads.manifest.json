@@ -1,0 +1,1118 @@
+{
+	"namedSchemas": {
+		"HeadlessClientInfoSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"name": { "kind": "string" },
+				"version": { "kind": "string", "optional": true }
+			}
+		},
+		"HeadlessClientCapabilitiesSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"server_requests": {
+					"kind": "array",
+					"items": { "kind": "enumRef", "name": "headlessServerRequestTypes" },
+					"uniqueItems": true,
+					"optional": true
+				},
+				"utility_operations": {
+					"kind": "array",
+					"items": { "kind": "enumRef", "name": "headlessUtilityOperations" },
+					"uniqueItems": true,
+					"optional": true
+				}
+			}
+		},
+		"HeadlessOptOutNotificationsSchema": {
+			"kind": "array",
+			"items": { "kind": "enumRef", "name": "headlessNotificationTypes" },
+			"uniqueItems": true
+		},
+		"HeadlessToolResponseResultSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"success": { "kind": "boolean" },
+				"output": { "kind": "string" },
+				"error": { "kind": "string", "optional": true }
+			}
+		},
+		"HeadlessTextContentSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "text" },
+				"text": { "kind": "string" }
+			}
+		},
+		"HeadlessImageContentSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "image" },
+				"data": { "kind": "string" },
+				"mimeType": { "kind": "string" }
+			}
+		},
+		"HeadlessContentBlockSchema": {
+			"kind": "union",
+			"variants": [
+				{ "kind": "ref", "name": "HeadlessTextContentSchema" },
+				{ "kind": "ref", "name": "HeadlessImageContentSchema" }
+			]
+		}
+	},
+	"toAgentSchemas": {
+		"HeadlessHelloMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "hello" },
+				"protocol_version": { "kind": "string", "optional": true },
+				"client_info": {
+					"kind": "ref",
+					"name": "HeadlessClientInfoSchema",
+					"optional": true
+				},
+				"capabilities": {
+					"kind": "ref",
+					"name": "HeadlessClientCapabilitiesSchema",
+					"optional": true
+				},
+				"role": {
+					"kind": "enumRef",
+					"name": "headlessConnectionRoles",
+					"optional": true
+				},
+				"opt_out_notifications": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessNotificationTypes"
+					},
+					"optional": true
+				}
+			}
+		},
+		"HeadlessInitMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "init" },
+				"system_prompt": { "kind": "string", "optional": true },
+				"append_system_prompt": { "kind": "string", "optional": true },
+				"thinking_level": {
+					"kind": "enumRef",
+					"name": "headlessThinkingLevels",
+					"optional": true
+				},
+				"approval_mode": {
+					"kind": "enumRef",
+					"name": "headlessApprovalModes",
+					"optional": true
+				}
+			}
+		},
+		"HeadlessPromptMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "prompt" },
+				"content": { "kind": "string" },
+				"attachments": {
+					"kind": "array",
+					"items": { "kind": "string" },
+					"optional": true
+				}
+			}
+		},
+		"HeadlessInterruptMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "interrupt" }
+			}
+		},
+		"HeadlessToolResponseMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "tool_response" },
+				"call_id": { "kind": "string" },
+				"approved": { "kind": "boolean" },
+				"result": {
+					"kind": "ref",
+					"name": "HeadlessToolResponseResultSchema",
+					"optional": true
+				}
+			}
+		},
+		"HeadlessClientToolResultMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "client_tool_result" },
+				"call_id": { "kind": "string" },
+				"content": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessContentBlockSchema" }
+				},
+				"is_error": { "kind": "boolean" }
+			}
+		},
+		"HeadlessServerRequestResponseMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "server_request_response" },
+				"request_id": { "kind": "string" },
+				"request_type": {
+					"kind": "enumRef",
+					"name": "headlessServerRequestTypes"
+				},
+				"approved": { "kind": "boolean", "optional": true },
+				"result": {
+					"kind": "ref",
+					"name": "HeadlessToolResponseResultSchema",
+					"optional": true
+				},
+				"content": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessContentBlockSchema" },
+					"optional": true
+				},
+				"is_error": { "kind": "boolean", "optional": true }
+			}
+		},
+		"HeadlessUtilityCommandStartMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_start" },
+				"command_id": { "kind": "string" },
+				"command": { "kind": "string" },
+				"cwd": { "kind": "string", "optional": true },
+				"env": {
+					"kind": "record",
+					"value": { "kind": "string" },
+					"optional": true
+				},
+				"shell_mode": {
+					"kind": "enumRef",
+					"name": "headlessUtilityCommandShellModes",
+					"optional": true
+				},
+				"terminal_mode": {
+					"kind": "enumRef",
+					"name": "headlessUtilityCommandTerminalModes",
+					"optional": true
+				},
+				"allow_stdin": { "kind": "boolean", "optional": true },
+				"columns": { "kind": "number", "optional": true },
+				"rows": { "kind": "number", "optional": true }
+			}
+		},
+		"HeadlessUtilityCommandTerminateMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_terminate" },
+				"command_id": { "kind": "string" },
+				"force": { "kind": "boolean", "optional": true }
+			}
+		},
+		"HeadlessUtilityCommandStdinMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_stdin" },
+				"command_id": { "kind": "string" },
+				"content": { "kind": "string" },
+				"eof": { "kind": "boolean", "optional": true }
+			}
+		},
+		"HeadlessUtilityCommandResizeMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_resize" },
+				"command_id": { "kind": "string" },
+				"columns": { "kind": "number" },
+				"rows": { "kind": "number" }
+			}
+		},
+		"HeadlessUtilityFileSearchMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_search" },
+				"search_id": { "kind": "string" },
+				"query": { "kind": "string" },
+				"cwd": { "kind": "string", "optional": true },
+				"limit": { "kind": "number", "optional": true }
+			}
+		},
+		"HeadlessUtilityFileWatchStartMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_watch_start" },
+				"watch_id": { "kind": "string" },
+				"root_dir": { "kind": "string", "optional": true },
+				"include_patterns": {
+					"kind": "array",
+					"items": { "kind": "string" },
+					"optional": true
+				},
+				"exclude_patterns": {
+					"kind": "array",
+					"items": { "kind": "string" },
+					"optional": true
+				},
+				"debounce_ms": { "kind": "number", "optional": true }
+			}
+		},
+		"HeadlessUtilityFileWatchStopMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_watch_stop" },
+				"watch_id": { "kind": "string" }
+			}
+		},
+		"HeadlessCancelMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "cancel" }
+			}
+		},
+		"HeadlessShutdownMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "shutdown" }
+			}
+		}
+	},
+	"fromAgentSchemas": {
+		"HeadlessReadyMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "ready" },
+				"protocol_version": { "kind": "string" },
+				"model": { "kind": "string" },
+				"provider": { "kind": "string" },
+				"session_id": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					]
+				}
+			}
+		},
+		"HeadlessResponseStartMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "response_start" },
+				"response_id": { "kind": "string" }
+			}
+		},
+		"HeadlessResponseChunkMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "response_chunk" },
+				"response_id": { "kind": "string" },
+				"content": { "kind": "string" },
+				"is_thinking": { "kind": "boolean" }
+			}
+		},
+		"HeadlessResponseEndUsageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"input_tokens": { "kind": "number" },
+				"output_tokens": { "kind": "number" },
+				"cache_read_tokens": { "kind": "number" },
+				"cache_write_tokens": { "kind": "number" },
+				"total_tokens": { "kind": "number" },
+				"total_cost_usd": { "kind": "number" },
+				"model_id": { "kind": "string" },
+				"provider": { "kind": "string" }
+			}
+		},
+		"HeadlessToolsSummarySchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"tools_used": {
+					"kind": "array",
+					"items": { "kind": "string" }
+				},
+				"calls_succeeded": { "kind": "number" },
+				"calls_failed": { "kind": "number" },
+				"summary_labels": {
+					"kind": "array",
+					"items": { "kind": "string" },
+					"optional": true
+				}
+			}
+		},
+		"HeadlessResponseEndMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "response_end" },
+				"response_id": { "kind": "string" },
+				"usage": {
+					"kind": "ref",
+					"name": "HeadlessResponseEndUsageSchema"
+				},
+				"tools_summary": {
+					"kind": "ref",
+					"name": "HeadlessToolsSummarySchema"
+				},
+				"duration_ms": { "kind": "number" },
+				"ttft_ms": { "kind": "number", "optional": true }
+			}
+		},
+		"HeadlessToolCallMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "tool_call" },
+				"call_id": { "kind": "string" },
+				"tool": { "kind": "string" },
+				"args": { "kind": "unknown" },
+				"requires_approval": { "kind": "boolean" }
+			}
+		},
+		"HeadlessToolStartMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "tool_start" },
+				"call_id": { "kind": "string" }
+			}
+		},
+		"HeadlessToolOutputMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "tool_output" },
+				"call_id": { "kind": "string" },
+				"content": { "kind": "string" }
+			}
+		},
+		"HeadlessToolEndMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "tool_end" },
+				"call_id": { "kind": "string" },
+				"success": { "kind": "boolean" }
+			}
+		},
+		"HeadlessClientToolRequestMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "client_tool_request" },
+				"call_id": { "kind": "string" },
+				"tool": { "kind": "string" },
+				"args": { "kind": "unknown" }
+			}
+		},
+		"HeadlessServerRequestMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "server_request" },
+				"request_id": { "kind": "string" },
+				"request_type": {
+					"kind": "enumRef",
+					"name": "headlessServerRequestTypes"
+				},
+				"call_id": { "kind": "string" },
+				"tool": { "kind": "string" },
+				"args": { "kind": "unknown" },
+				"reason": { "kind": "string" }
+			}
+		},
+		"HeadlessServerRequestResolvedMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "server_request_resolved" },
+				"request_id": { "kind": "string" },
+				"request_type": {
+					"kind": "enumRef",
+					"name": "headlessServerRequestTypes"
+				},
+				"call_id": { "kind": "string" },
+				"resolution": {
+					"kind": "enumRef",
+					"name": "headlessServerRequestResolutions"
+				},
+				"reason": { "kind": "string", "optional": true },
+				"resolved_by": {
+					"kind": "enumRef",
+					"name": "headlessServerRequestResolvedBy"
+				}
+			}
+		},
+		"HeadlessUtilityCommandStartedMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_started" },
+				"command_id": { "kind": "string" },
+				"command": { "kind": "string" },
+				"cwd": { "kind": "string", "optional": true },
+				"shell_mode": {
+					"kind": "enumRef",
+					"name": "headlessUtilityCommandShellModes"
+				},
+				"terminal_mode": {
+					"kind": "enumRef",
+					"name": "headlessUtilityCommandTerminalModes"
+				},
+				"pid": { "kind": "number", "optional": true },
+				"columns": { "kind": "number", "optional": true },
+				"rows": { "kind": "number", "optional": true },
+				"owner_connection_id": { "kind": "string", "optional": true }
+			}
+		},
+		"HeadlessUtilityCommandResizedMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_resized" },
+				"command_id": { "kind": "string" },
+				"columns": { "kind": "number" },
+				"rows": { "kind": "number" }
+			}
+		},
+		"HeadlessUtilityCommandOutputMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_output" },
+				"command_id": { "kind": "string" },
+				"stream": {
+					"kind": "enumRef",
+					"name": "headlessUtilityCommandStreams"
+				},
+				"content": { "kind": "string" }
+			}
+		},
+		"HeadlessUtilityCommandExitedMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_exited" },
+				"command_id": { "kind": "string" },
+				"success": { "kind": "boolean" },
+				"exit_code": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "number" },
+						{ "kind": "literal", "value": null }
+					],
+					"optional": true
+				},
+				"signal": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					],
+					"optional": true
+				},
+				"reason": { "kind": "string", "optional": true }
+			}
+		},
+		"HeadlessUtilityFileSearchMatchSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"path": { "kind": "string" },
+				"score": { "kind": "number" }
+			}
+		},
+		"HeadlessUtilityFileSearchResultsMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_search_results" },
+				"search_id": { "kind": "string" },
+				"query": { "kind": "string" },
+				"cwd": { "kind": "string" },
+				"results": {
+					"kind": "array",
+					"items": {
+						"kind": "ref",
+						"name": "HeadlessUtilityFileSearchMatchSchema"
+					}
+				},
+				"truncated": { "kind": "boolean" }
+			}
+		},
+		"HeadlessUtilityFileWatchStartedMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_watch_started" },
+				"watch_id": { "kind": "string" },
+				"root_dir": { "kind": "string" },
+				"include_patterns": {
+					"kind": "array",
+					"items": { "kind": "string" },
+					"optional": true
+				},
+				"exclude_patterns": {
+					"kind": "array",
+					"items": { "kind": "string" },
+					"optional": true
+				},
+				"debounce_ms": { "kind": "number" },
+				"owner_connection_id": { "kind": "string", "optional": true }
+			}
+		},
+		"HeadlessUtilityFileWatchEventMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_watch_event" },
+				"watch_id": { "kind": "string" },
+				"change_type": {
+					"kind": "enumRef",
+					"name": "headlessUtilityFileWatchChangeTypes"
+				},
+				"path": { "kind": "string" },
+				"relative_path": { "kind": "string" },
+				"timestamp": { "kind": "number" },
+				"is_directory": { "kind": "boolean" }
+			}
+		},
+		"HeadlessUtilityFileWatchStoppedMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_watch_stopped" },
+				"watch_id": { "kind": "string" },
+				"reason": { "kind": "string", "optional": true }
+			}
+		},
+		"HeadlessErrorMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "error" },
+				"message": { "kind": "string" },
+				"fatal": { "kind": "boolean" },
+				"error_type": {
+					"kind": "enumRef",
+					"name": "headlessErrorTypes"
+				}
+			}
+		},
+		"HeadlessStatusMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "status" },
+				"message": { "kind": "string" }
+			}
+		},
+		"HeadlessCompactionMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "compaction" },
+				"summary": { "kind": "string" },
+				"first_kept_entry_index": { "kind": "number" },
+				"tokens_before": { "kind": "number" },
+				"auto": { "kind": "boolean" },
+				"custom_instructions": { "kind": "string", "optional": true },
+				"timestamp": { "kind": "string" }
+			}
+		},
+		"HeadlessSessionInfoMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "session_info" },
+				"session_id": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					]
+				},
+				"cwd": { "kind": "string" },
+				"git_branch": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					]
+				}
+			}
+		},
+		"HeadlessConnectionStateSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"connection_id": { "kind": "string" },
+				"role": {
+					"kind": "enumRef",
+					"name": "headlessConnectionRoles"
+				},
+				"client_protocol_version": { "kind": "string", "optional": true },
+				"client_info": {
+					"kind": "ref",
+					"name": "HeadlessClientInfoSchema",
+					"optional": true
+				},
+				"capabilities": {
+					"kind": "ref",
+					"name": "HeadlessClientCapabilitiesSchema",
+					"optional": true
+				},
+				"opt_out_notifications": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessNotificationTypes"
+					},
+					"optional": true
+				},
+				"subscription_count": { "kind": "number" },
+				"attached_subscription_count": { "kind": "number" },
+				"controller_lease_granted": { "kind": "boolean" },
+				"lease_expires_at": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					],
+					"optional": true
+				}
+			}
+		},
+		"HeadlessConnectionInfoMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "connection_info" },
+				"connection_id": { "kind": "string", "optional": true },
+				"client_protocol_version": { "kind": "string", "optional": true },
+				"client_info": {
+					"kind": "ref",
+					"name": "HeadlessClientInfoSchema",
+					"optional": true
+				},
+				"capabilities": {
+					"kind": "ref",
+					"name": "HeadlessClientCapabilitiesSchema",
+					"optional": true
+				},
+				"opt_out_notifications": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessNotificationTypes"
+					},
+					"optional": true
+				},
+				"role": {
+					"kind": "enumRef",
+					"name": "headlessConnectionRoles",
+					"optional": true
+				},
+				"connection_count": { "kind": "number", "optional": true },
+				"controller_connection_id": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					],
+					"optional": true
+				},
+				"lease_expires_at": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					],
+					"optional": true
+				},
+				"connections": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessConnectionStateSchema" },
+					"optional": true
+				}
+			}
+		}
+	},
+	"runtimeSchemas": {
+		"HeadlessPendingToolStateSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"call_id": { "kind": "string" },
+				"tool": { "kind": "string" },
+				"args": { "kind": "unknown" }
+			}
+		},
+		"HeadlessActiveToolStateSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"call_id": { "kind": "string" },
+				"tool": { "kind": "string" },
+				"output": { "kind": "string" }
+			}
+		},
+		"HeadlessStreamingResponseStateSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"response_id": { "kind": "string" },
+				"text": { "kind": "string" },
+				"thinking": { "kind": "string" },
+				"usage": {
+					"kind": "ref",
+					"name": "HeadlessResponseEndUsageSchema",
+					"optional": true
+				}
+			}
+		},
+		"HeadlessActiveUtilityCommandStateSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"command_id": { "kind": "string" },
+				"command": { "kind": "string" },
+				"cwd": { "kind": "string", "optional": true },
+				"shell_mode": {
+					"kind": "enumRef",
+					"name": "headlessUtilityCommandShellModes"
+				},
+				"terminal_mode": {
+					"kind": "enumRef",
+					"name": "headlessUtilityCommandTerminalModes"
+				},
+				"pid": { "kind": "number", "optional": true },
+				"columns": { "kind": "number", "optional": true },
+				"rows": { "kind": "number", "optional": true },
+				"owner_connection_id": { "kind": "string", "optional": true },
+				"output": { "kind": "string" }
+			}
+		},
+		"HeadlessActiveFileWatchStateSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"watch_id": { "kind": "string" },
+				"root_dir": { "kind": "string" },
+				"include_patterns": {
+					"kind": "array",
+					"items": { "kind": "string" },
+					"optional": true
+				},
+				"exclude_patterns": {
+					"kind": "array",
+					"items": { "kind": "string" },
+					"optional": true
+				},
+				"debounce_ms": { "kind": "number" },
+				"owner_connection_id": { "kind": "string", "optional": true }
+			}
+		},
+		"HeadlessRuntimeStateSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"protocol_version": { "kind": "string", "optional": true },
+				"client_protocol_version": { "kind": "string", "optional": true },
+				"client_info": {
+					"kind": "ref",
+					"name": "HeadlessClientInfoSchema",
+					"optional": true
+				},
+				"capabilities": {
+					"kind": "ref",
+					"name": "HeadlessClientCapabilitiesSchema",
+					"optional": true
+				},
+				"opt_out_notifications": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessNotificationTypes"
+					},
+					"optional": true
+				},
+				"connection_role": {
+					"kind": "enumRef",
+					"name": "headlessConnectionRoles",
+					"optional": true
+				},
+				"connection_count": { "kind": "number" },
+				"subscriber_count": { "kind": "number" },
+				"controller_subscription_id": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					],
+					"optional": true
+				},
+				"controller_connection_id": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					],
+					"optional": true
+				},
+				"connections": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessConnectionStateSchema" }
+				},
+				"model": { "kind": "string", "optional": true },
+				"provider": { "kind": "string", "optional": true },
+				"session_id": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					],
+					"optional": true
+				},
+				"cwd": { "kind": "string", "optional": true },
+				"git_branch": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					],
+					"optional": true
+				},
+				"current_response": {
+					"kind": "ref",
+					"name": "HeadlessStreamingResponseStateSchema",
+					"optional": true
+				},
+				"pending_approvals": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessPendingToolStateSchema" }
+				},
+				"pending_client_tools": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessPendingToolStateSchema" }
+				},
+				"pending_user_inputs": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessPendingToolStateSchema" }
+				},
+				"active_tools": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessActiveToolStateSchema" }
+				},
+				"active_utility_commands": {
+					"kind": "array",
+					"items": {
+						"kind": "ref",
+						"name": "HeadlessActiveUtilityCommandStateSchema"
+					}
+				},
+				"active_file_watches": {
+					"kind": "array",
+					"items": {
+						"kind": "ref",
+						"name": "HeadlessActiveFileWatchStateSchema"
+					}
+				},
+				"tracked_tools": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessPendingToolStateSchema" }
+				},
+				"last_error": { "kind": "string", "optional": true },
+				"last_error_type": {
+					"kind": "enumRef",
+					"name": "headlessErrorTypes",
+					"optional": true
+				},
+				"last_status": { "kind": "string", "optional": true },
+				"last_response_duration_ms": { "kind": "number", "optional": true },
+				"last_ttft_ms": { "kind": "number", "optional": true },
+				"is_ready": { "kind": "boolean" },
+				"is_responding": { "kind": "boolean" }
+			}
+		},
+		"HeadlessRuntimeSnapshotSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"protocolVersion": { "kind": "string" },
+				"session_id": { "kind": "string" },
+				"cursor": { "kind": "number" },
+				"last_init": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "ref", "name": "HeadlessInitMessageSchema" },
+						{ "kind": "literal", "value": null }
+					]
+				},
+				"state": { "kind": "ref", "name": "HeadlessRuntimeStateSchema" }
+			}
+		},
+		"HeadlessRuntimeSnapshotEnvelopeSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "snapshot" },
+				"snapshot": {
+					"kind": "ref",
+					"name": "HeadlessRuntimeSnapshotSchema"
+				}
+			}
+		},
+		"HeadlessRuntimeEventEnvelopeSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "message" },
+				"cursor": { "kind": "number" },
+				"message": {
+					"kind": "ref",
+					"name": "HeadlessFromAgentMessageSchema"
+				}
+			}
+		},
+		"HeadlessRuntimeHeartbeatEnvelopeSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "heartbeat" },
+				"cursor": { "kind": "number" }
+			}
+		},
+		"HeadlessRuntimeResetEnvelopeSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "reset" },
+				"reason": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "literal", "value": "lagged" },
+						{ "kind": "literal", "value": "replay_gap" }
+					]
+				},
+				"snapshot": {
+					"kind": "ref",
+					"name": "HeadlessRuntimeSnapshotSchema"
+				}
+			}
+		},
+		"HeadlessRuntimeStreamEnvelopeSchema": {
+			"kind": "union",
+			"variants": [
+				{
+					"kind": "ref",
+					"name": "HeadlessRuntimeSnapshotEnvelopeSchema"
+				},
+				{
+					"kind": "ref",
+					"name": "HeadlessRuntimeEventEnvelopeSchema"
+				},
+				{
+					"kind": "ref",
+					"name": "HeadlessRuntimeHeartbeatEnvelopeSchema"
+				},
+				{
+					"kind": "ref",
+					"name": "HeadlessRuntimeResetEnvelopeSchema"
+				}
+			]
+		},
+		"HeadlessRuntimeSubscriptionSnapshotSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"connection_id": { "kind": "string" },
+				"subscription_id": { "kind": "string" },
+				"opt_out_notifications": {
+					"kind": "ref",
+					"name": "HeadlessOptOutNotificationsSchema",
+					"optional": true
+				},
+				"role": {
+					"kind": "enumRef",
+					"name": "headlessConnectionRoles"
+				},
+				"controller_lease_granted": { "kind": "boolean" },
+				"controller_subscription_id": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					]
+				},
+				"controller_connection_id": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					]
+				},
+				"lease_expires_at": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					]
+				},
+				"heartbeat_interval_ms": { "kind": "number" },
+				"snapshot": {
+					"kind": "ref",
+					"name": "HeadlessRuntimeSnapshotSchema"
+				}
+			}
+		},
+		"HeadlessRuntimeHeartbeatSnapshotSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"connection_id": { "kind": "string" },
+				"controller_lease_granted": { "kind": "boolean" },
+				"controller_connection_id": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					]
+				},
+				"lease_expires_at": {
+					"kind": "union",
+					"variants": [
+						{ "kind": "string" },
+						{ "kind": "literal", "value": null }
+					]
+				},
+				"heartbeat_interval_ms": { "kind": "number" }
+			}
+		}
+	}
+}

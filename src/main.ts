@@ -134,6 +134,8 @@ import type { AuthMode } from "./providers/auth.js";
 import { AgentRuntimeController } from "./runtime/agent-runtime.js";
 import { registerBackgroundTaskShutdownHooks } from "./runtime/background-task-hooks.js";
 import { configureSafeMode } from "./safety/safe-mode.js";
+import { ServerRequestActionApprovalService } from "./server/approval-service.js";
+import { clientToolService } from "./server/client-tools-service.js";
 import { SessionManager } from "./session/manager.js";
 import type { UpdateCheckResult } from "./update/check.js";
 import { isInsideGitRepository } from "./utils/git.js";
@@ -899,7 +901,17 @@ export async function main(args: string[]) {
 	})();
 
 	// Create approval service that controls tool execution authorization
-	const approvalService = new ActionApprovalService(approvalModeOverride);
+	const approvalService = isHeadlessMode
+		? new ServerRequestActionApprovalService(
+				approvalModeOverride,
+				() => sessionManager.getSessionId() ?? undefined,
+			)
+		: new ActionApprovalService(approvalModeOverride);
+	const headlessClientToolService = isHeadlessMode
+		? clientToolService.forSession(
+				() => sessionManager.getSessionId() ?? undefined,
+			)
+		: undefined;
 	const toolRetryMode: ToolRetryMode =
 		isInteractiveTui && !isHeadlessMode ? "prompt" : "skip";
 	const toolRetryService = new ToolRetryService(toolRetryMode);
@@ -967,6 +979,7 @@ export async function main(args: string[]) {
 		sandboxMode: sandboxMode ?? null,
 		approvalService,
 		toolRetryService,
+		clientToolService: headlessClientToolService,
 		requireCredential,
 		enterpriseUser,
 		readonly: parsed.readonly,

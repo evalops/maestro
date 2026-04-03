@@ -1,3 +1,4 @@
+import type { HeadlessNotificationType } from "@evalops/contracts";
 import type { HeadlessToAgentMessage } from "../cli/headless-protocol.js";
 import type {
 	EnsureRuntimeOptions,
@@ -22,6 +23,7 @@ export interface HeadlessInProcessSubscribeOptions {
 	sessionId: string;
 	role?: "viewer" | "controller";
 	takeControl?: boolean;
+	optOutNotifications?: HeadlessNotificationType[];
 }
 
 export interface HeadlessInProcessStreamOptions {
@@ -29,6 +31,7 @@ export interface HeadlessInProcessStreamOptions {
 	sessionId: string;
 	role?: "viewer" | "controller";
 	cursor?: number | null;
+	optOutNotifications?: HeadlessNotificationType[];
 }
 
 export class HeadlessInProcessHost {
@@ -63,6 +66,7 @@ export class HeadlessInProcessHost {
 			role: options.role ?? "controller",
 			explicit: true,
 			takeControl: options.takeControl,
+			optOutNotifications: options.optOutNotifications,
 		});
 	}
 
@@ -75,6 +79,7 @@ export class HeadlessInProcessHost {
 		).createImplicitStream({
 			cursor: options.cursor ?? null,
 			role: options.role,
+			optOutNotifications: options.optOutNotifications,
 		});
 	}
 
