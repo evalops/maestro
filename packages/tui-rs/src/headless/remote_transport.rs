@@ -1438,7 +1438,10 @@ fn classify_remote_status(
         ),
         RemoteRequestKind::Subscribe => !matches!(
             status,
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::CONFLICT
+            StatusCode::UNAUTHORIZED
+                | StatusCode::FORBIDDEN
+                | StatusCode::NOT_FOUND
+                | StatusCode::CONFLICT
         ),
         RemoteRequestKind::Message => {
             status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
@@ -2204,6 +2207,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_transport_classifies_generic_subscribe_404_as_non_retryable() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+
+                    if path == "/api/headless/connections" {
+                        let body = serde_json::json!({
+                            "session_id": "sess_remote",
+                            "connection_id": "conn_remote",
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &body,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "application/json",
+                            r#"{"error":"route not found"}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    write_http_response(
+                        &mut socket,
+                        "HTTP/1.1 404 Not Found",
+                        "text/plain",
+                        "not found",
+                    )
+                    .await;
+                });
+            }
+        });
+
+        let error = match RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        {
+            Ok(_) => panic!("generic subscribe 404 should fail"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(
+            error,
+            AsyncTransportError::RemoteStatus {
+                status: 404,
+                retryable: false,
+                kind: RemoteErrorKind::Other,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
     async fn remote_transport_classifies_stream_404_as_retryable() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("addr");
@@ -2569,6 +2646,18 @@ mod tests {
             classify_remote_status(
                 StatusCode::NOT_FOUND,
                 RemoteRequestKind::Heartbeat,
+                r#"{"error":"route not found"}"#,
+            ),
+            (false, RemoteErrorKind::Other)
+        );
+    }
+
+    #[test]
+    fn retryability_keeps_generic_subscribe_404s_non_retryable() {
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::NOT_FOUND,
+                RemoteRequestKind::Subscribe,
                 r#"{"error":"route not found"}"#,
             ),
             (false, RemoteErrorKind::Other)
