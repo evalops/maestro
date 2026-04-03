@@ -39,15 +39,18 @@ Maestro is a coding agent with multi-model support, featuring terminal (TUI/CLI)
 Maestro exposes its capabilities through slash commands and git-aware helpers so you can inspect what changed and review it in git. The agent emphasizes explicit tools and visible state over opaque automation.
 
 Choose your interface:
-- **Terminal (TUI/CLI)**: Rich interactive terminal interface with keyboard shortcuts, file search, and command palette
-- **Web UI**: Modern browser-based interface for those who prefer a graphical environment (core parity; see parity appendix in `docs/WEB_UI.md`)
-- **Conductor (Chrome Extension)**: Browser-automation surface that connects to the Maestro web server via the Conductor Bridge (`docs/CONDUCTOR_BRIDGE.md`)
-- **VS Code**: Native extension with inline chat, diagnostics integration, and go-to-definition ([VS Code Extension](packages/vscode-extension/README.md))
-- **JetBrains IDEs**: Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs ([JetBrains Plugin](packages/jetbrains-plugin/README.md))
-- **Slack Bot**: Deploy as a Slack bot with Docker sandbox isolation ([`@evalops/slack-agent`](packages/slack-agent/README.md))
-- **GitHub Agent**: GitHub automation agent for label-driven issue work and PR creation ([`@evalops/github-agent`](packages/github-agent/README.md))
-- **Ambient Agent**: Long-running GitHub daemon for repository monitoring and PR generation ([Ambient Maestro design](docs/design/AMBIENT_AGENT.md))
-- **Headless**: Scriptable automation for CI/CD and evaluation pipelines
+
+| Interface | Description |
+|-----------|-------------|
+| [Terminal (TUI/CLI)](docs/FEATURES.md) | Interactive terminal with keyboard shortcuts, file search, and command palette |
+| [Web UI](docs/WEB_UI.md) | Browser-based interface with core feature parity |
+| [Conductor](docs/CONDUCTOR_BRIDGE.md) | Chrome extension for browser automation via the Maestro web server |
+| [VS Code](packages/vscode-extension/README.md) | Extension with inline chat, diagnostics integration, and go-to-definition |
+| [JetBrains](packages/jetbrains-plugin/README.md) | Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs |
+| [Slack Bot](packages/slack-agent/README.md) | Deployable Slack bot with Docker sandbox isolation |
+| [GitHub Agent](packages/github-agent/README.md) | Label-driven issue work and PR creation |
+| [Ambient Agent](docs/design/AMBIENT_AGENT.md) | Long-running daemon for repository monitoring and PR generation |
+| Headless | Scriptable automation for CI/CD and evaluation pipelines |
 
 ### Who It's For
 
