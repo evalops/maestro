@@ -294,6 +294,7 @@ export interface HeadlessUtilityCommandStartedMessage {
 	cwd?: string;
 	shell_mode: HeadlessUtilityCommandShellMode;
 	pid?: number;
+	owner_connection_id?: string;
 }
 
 export interface HeadlessUtilityCommandOutputMessage {
@@ -333,6 +334,7 @@ export interface HeadlessUtilityFileWatchStartedMessage {
 	include_patterns?: string[];
 	exclude_patterns?: string[];
 	debounce_ms: number;
+	owner_connection_id?: string;
 }
 
 export interface HeadlessUtilityFileWatchEventMessage {
@@ -443,6 +445,7 @@ export interface HeadlessActiveUtilityCommandState {
 	cwd?: string;
 	shell_mode: HeadlessUtilityCommandShellMode;
 	pid?: number;
+	owner_connection_id?: string;
 	output: string;
 }
 
@@ -452,6 +455,7 @@ export interface HeadlessActiveFileWatchState {
 	include_patterns?: string[];
 	exclude_patterns?: string[];
 	debounce_ms: number;
+	owner_connection_id?: string;
 }
 
 export interface HeadlessConnectionState {
@@ -1427,6 +1431,7 @@ export function applyIncomingHeadlessMessage(
 					cwd: msg.cwd,
 					shell_mode: msg.shell_mode,
 					pid: msg.pid,
+					owner_connection_id: msg.owner_connection_id,
 					output: "",
 				},
 			];
@@ -1460,6 +1465,7 @@ export function applyIncomingHeadlessMessage(
 					include_patterns: msg.include_patterns,
 					exclude_patterns: msg.exclude_patterns,
 					debounce_ms: msg.debounce_ms,
+					owner_connection_id: msg.owner_connection_id,
 				},
 			];
 			return;

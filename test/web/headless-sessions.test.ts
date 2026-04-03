@@ -1257,6 +1257,101 @@ describe("headless session handlers", () => {
 		expect(runtime?.getSnapshot().state.controller_subscription_id).toBeNull();
 	});
 
+	it("explicit unsubscribe cleans up utility resources owned by that connection", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval"],
+					utility_operations: ["file_watch"],
+				},
+				context,
+				sessionManager,
+			});
+			const sessionId = runtime.getSnapshot().session_id;
+			if (!sessionId) {
+				throw new Error("Expected headless session id");
+			}
+
+			const subscribeReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/subscribe`,
+				{ role: "controller" },
+			);
+			const subscribeRes = new MockResponse();
+			subscribeRes.req = subscribeReq;
+			await handleHeadlessSessionSubscribe(
+				subscribeReq,
+				subscribeRes as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			);
+			const { connection_id, subscription_id } = JSON.parse(subscribeRes.body);
+
+			const messageReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{
+					type: "utility_file_watch_start",
+					watch_id: "watch_owned",
+					root_dir: tempDir,
+					debounce_ms: 10,
+				},
+				{
+					"x-maestro-headless-subscriber-id": subscription_id,
+					"x-maestro-headless-role": "controller",
+				},
+			);
+			const messageRes = new MockResponse();
+			messageRes.req = messageReq;
+			await handleHeadlessSessionMessage(
+				messageReq,
+				messageRes as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			);
+			expect(JSON.parse(messageRes.body)).toEqual({ success: true });
+			expect(runtime.getSnapshot().state.active_file_watches).toEqual([
+				expect.objectContaining({
+					watch_id: "watch_owned",
+					owner_connection_id: connection_id,
+				}),
+			]);
+
+			const unsubscribeReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/unsubscribe`,
+				{ subscriptionId: subscription_id },
+			);
+			const unsubscribeRes = new MockResponse();
+			unsubscribeRes.req = unsubscribeReq;
+			await handleHeadlessSessionUnsubscribe(
+				unsubscribeReq,
+				unsubscribeRes as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			);
+
+			expect(JSON.parse(unsubscribeRes.body)).toEqual({ success: true });
+			expect(runtime.getSnapshot().state.active_file_watches).toEqual([]);
+			expect(runtime.getSnapshot().state.controller_connection_id).toBeNull();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("passes client tool creation options through to the agent factory", async () => {
 		const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
 		const context = createContext({ createAgent });

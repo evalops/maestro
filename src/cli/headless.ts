@@ -94,6 +94,7 @@ export async function runHeadlessMode(
 					cwd: event.cwd,
 					shell_mode: event.shell_mode,
 					pid: event.pid,
+					owner_connection_id: event.owner_connection_id,
 				});
 				return;
 			case "output":
@@ -126,6 +127,7 @@ export async function runHeadlessMode(
 					include_patterns: event.include_patterns,
 					exclude_patterns: event.exclude_patterns,
 					debounce_ms: event.debounce_ms,
+					owner_connection_id: event.owner_connection_id,
 				});
 				return;
 			case "event":

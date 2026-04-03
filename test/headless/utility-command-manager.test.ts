@@ -6,17 +6,29 @@ function waitForExit(
 	managerEvents: Array<{ type: string }>,
 	timeoutMs = 5000,
 ): Promise<void> {
+	return waitForEvent(
+		() => managerEvents.some((event) => event.type === "exited"),
+		timeoutMs,
+		"Timed out waiting for utility command to exit",
+	);
+}
+
+function waitForEvent(
+	check: () => boolean,
+	timeoutMs: number,
+	timeoutMessage: string,
+): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const startedAt = Date.now();
 		const timer = setInterval(() => {
-			if (managerEvents.some((event) => event.type === "exited")) {
+			if (check()) {
 				clearInterval(timer);
 				resolve();
 				return;
 			}
 			if (Date.now() - startedAt > timeoutMs) {
 				clearInterval(timer);
-				reject(new Error("Timed out waiting for utility command to exit"));
+				reject(new Error(timeoutMessage));
 			}
 		}, 20);
 	});
@@ -217,5 +229,66 @@ describe("HeadlessUtilityCommandManager", () => {
 			success: false,
 			reason: "Interrupted while utility command was still running",
 		});
+	});
+
+	it("disposes only commands owned by a closing connection", async () => {
+		const events: Array<Record<string, unknown>> = [];
+		manager = new HeadlessUtilityCommandManager((event) => {
+			events.push(event as Record<string, unknown>);
+		});
+
+		manager.start({
+			command_id: "cmd_owned",
+			command: `"${process.execPath}" -e "setInterval(() => {}, 1000)"`,
+			shell_mode: "direct",
+			owner_connection_id: "conn_owned",
+		});
+		manager.start({
+			command_id: "cmd_other",
+			command: `"${process.execPath}" -e "setInterval(() => {}, 1000)"`,
+			shell_mode: "direct",
+			owner_connection_id: "conn_other",
+		});
+
+		await manager.disposeOwnedByConnection(
+			"conn_owned",
+			"Owning connection closed while utility command was still running",
+		);
+		await waitForEvent(
+			() =>
+				events.some(
+					(event) =>
+						event.type === "exited" && event.command_id === "cmd_owned",
+				),
+			5000,
+			"Timed out waiting for owned utility command to exit",
+		);
+
+		expect(
+			events.find(
+				(event) => event.type === "started" && event.command_id === "cmd_owned",
+			),
+		).toMatchObject({
+			type: "started",
+			command_id: "cmd_owned",
+			owner_connection_id: "conn_owned",
+		});
+		expect(manager.snapshot()).toEqual([
+			expect.objectContaining({
+				command_id: "cmd_other",
+				owner_connection_id: "conn_other",
+			}),
+		]);
+
+		await manager.terminate("cmd_other");
+		await waitForEvent(
+			() =>
+				events.some(
+					(event) =>
+						event.type === "exited" && event.command_id === "cmd_other",
+				),
+			5000,
+			"Timed out waiting for remaining utility command to exit",
+		);
 	});
 });

@@ -181,6 +181,7 @@ pub struct ActiveUtilityCommandCheckpoint {
     pub cwd: Option<String>,
     pub shell_mode: super::messages::UtilityCommandShellMode,
     pub pid: Option<u32>,
+    pub owner_connection_id: Option<String>,
     pub output: String,
 }
 
@@ -191,6 +192,7 @@ pub struct ActiveFileWatchCheckpoint {
     pub include_patterns: Option<Vec<String>>,
     pub exclude_patterns: Option<Vec<String>>,
     pub debounce_ms: u32,
+    pub owner_connection_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -300,6 +302,7 @@ impl AgentStateCheckpoint {
                     cwd: command.cwd.clone(),
                     shell_mode: command.shell_mode,
                     pid: command.pid,
+                    owner_connection_id: command.owner_connection_id.clone(),
                     output: command.output.clone(),
                 })
                 .collect(),
@@ -312,6 +315,7 @@ impl AgentStateCheckpoint {
                     include_patterns: watch.include_patterns.clone(),
                     exclude_patterns: watch.exclude_patterns.clone(),
                     debounce_ms: watch.debounce_ms,
+                    owner_connection_id: watch.owner_connection_id.clone(),
                 })
                 .collect(),
             last_error: state.last_error.clone(),
@@ -381,6 +385,7 @@ impl AgentStateCheckpoint {
                             cwd: command.cwd,
                             shell_mode: command.shell_mode,
                             pid: command.pid,
+                            owner_connection_id: command.owner_connection_id,
                             output: command.output,
                         },
                     )
@@ -398,6 +403,7 @@ impl AgentStateCheckpoint {
                             include_patterns: watch.include_patterns,
                             exclude_patterns: watch.exclude_patterns,
                             debounce_ms: watch.debounce_ms,
+                            owner_connection_id: watch.owner_connection_id,
                         },
                     )
                 })
@@ -1196,6 +1202,26 @@ mod tests {
                 requires_approval: true,
             })
             .unwrap();
+        recorder
+            .record_received(&FromAgentMessage::UtilityCommandStarted {
+                command_id: "cmd_owned".to_string(),
+                command: "echo hi".to_string(),
+                cwd: Some("/tmp/project".to_string()),
+                shell_mode: super::super::messages::UtilityCommandShellMode::Direct,
+                pid: Some(1234),
+                owner_connection_id: Some("conn_owned".to_string()),
+            })
+            .unwrap();
+        recorder
+            .record_received(&FromAgentMessage::UtilityFileWatchStarted {
+                watch_id: "watch_owned".to_string(),
+                root_dir: "/tmp/project".to_string(),
+                include_patterns: Some(vec!["src/**".to_string()]),
+                exclude_patterns: Some(vec!["dist/**".to_string()]),
+                debounce_ms: 50,
+                owner_connection_id: Some("conn_owned".to_string()),
+            })
+            .unwrap();
         recorder.flush().unwrap();
         drop(recorder);
 
@@ -1227,6 +1253,22 @@ mod tests {
         );
         assert_eq!(replay.state.pending_approvals.len(), 1);
         assert_eq!(replay.state.pending_approvals[0].tool, "bash");
+        assert_eq!(
+            replay
+                .state
+                .active_utility_commands
+                .get("cmd_owned")
+                .and_then(|command| command.owner_connection_id.as_deref()),
+            Some("conn_owned")
+        );
+        assert_eq!(
+            replay
+                .state
+                .active_file_watches
+                .get("watch_owned")
+                .and_then(|watch| watch.owner_connection_id.as_deref()),
+            Some("conn_owned")
+        );
     }
 
     #[test]

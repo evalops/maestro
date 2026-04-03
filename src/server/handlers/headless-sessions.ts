@@ -365,7 +365,7 @@ export async function handleHeadlessSessionUnsubscribe(
 		req,
 		HeadlessSessionUnsubscribeSchema,
 	);
-	if (!runtime.unsubscribe(input.subscriptionId)) {
+	if (!(await runtime.unsubscribe(input.subscriptionId))) {
 		throw new ApiError(404, "Headless subscriber not found");
 	}
 	sendJson(res, 200, { success: true }, context.corsHeaders, req);

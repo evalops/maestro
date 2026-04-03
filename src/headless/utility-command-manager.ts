@@ -19,6 +19,7 @@ export interface HeadlessUtilityCommandStartRequest {
 	env?: Record<string, string>;
 	shell_mode?: HeadlessUtilityCommandShellMode;
 	allow_stdin?: boolean;
+	owner_connection_id?: string;
 }
 
 export interface HeadlessUtilityCommandStartedEvent {
@@ -28,6 +29,7 @@ export interface HeadlessUtilityCommandStartedEvent {
 	cwd?: string;
 	shell_mode: HeadlessUtilityCommandShellMode;
 	pid?: number;
+	owner_connection_id?: string;
 }
 
 export interface HeadlessUtilityCommandOutputEvent {
@@ -57,6 +59,7 @@ interface ActiveCommand {
 	cwd?: string;
 	shell_mode: HeadlessUtilityCommandShellMode;
 	allow_stdin: boolean;
+	owner_connection_id?: string;
 	output: string;
 	reason?: string;
 }
@@ -67,6 +70,7 @@ export interface HeadlessUtilityCommandSnapshot {
 	cwd?: string;
 	shell_mode: HeadlessUtilityCommandShellMode;
 	pid?: number;
+	owner_connection_id?: string;
 	output: string;
 }
 
@@ -84,6 +88,7 @@ export class HeadlessUtilityCommandManager {
 			cwd: active.cwd,
 			shell_mode: active.shell_mode,
 			pid: active.child.pid ?? undefined,
+			owner_connection_id: active.owner_connection_id,
 			output: active.output,
 		}));
 	}
@@ -128,6 +133,7 @@ export class HeadlessUtilityCommandManager {
 			cwd: resolvedCwd,
 			shell_mode: shellMode,
 			allow_stdin: allowStdin,
+			owner_connection_id: request.owner_connection_id,
 			output: "",
 		};
 		this.commands.set(request.command_id, active);
@@ -138,6 +144,7 @@ export class HeadlessUtilityCommandManager {
 			cwd: resolvedCwd,
 			shell_mode: shellMode,
 			pid: child.pid ?? undefined,
+			owner_connection_id: request.owner_connection_id,
 		});
 
 		child.stdout?.on("data", (chunk: Buffer) => {
@@ -237,6 +244,26 @@ export class HeadlessUtilityCommandManager {
 
 	async dispose(reason = "Headless runtime disposed"): Promise<void> {
 		const commandIds = Array.from(this.commands.keys());
+		for (const commandId of commandIds) {
+			const active = this.commands.get(commandId);
+			if (!active) {
+				continue;
+			}
+			try {
+				await this.terminate(commandId, false, reason);
+			} catch {
+				// Best-effort shutdown.
+			}
+		}
+	}
+
+	async disposeOwnedByConnection(
+		connectionId: string,
+		reason: string,
+	): Promise<void> {
+		const commandIds = Array.from(this.commands.entries())
+			.filter(([, active]) => active.owner_connection_id === connectionId)
+			.map(([commandId]) => commandId);
 		for (const commandId of commandIds) {
 			const active = this.commands.get(commandId);
 			if (!active) {

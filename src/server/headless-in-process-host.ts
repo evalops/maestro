@@ -78,11 +78,11 @@ export class HeadlessInProcessHost {
 		});
 	}
 
-	unsubscribe(
+	async unsubscribe(
 		scopeKey: string,
 		sessionId: string,
 		subscriptionId: string,
-	): boolean {
+	): Promise<boolean> {
 		return this.getRuntime(scopeKey, sessionId).unsubscribe(subscriptionId);
 	}
 
