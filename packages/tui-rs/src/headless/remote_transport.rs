@@ -154,7 +154,7 @@ struct RemoteSessionSubscriptionResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct RemoteSessionCreateRequest {
+struct RemoteConnectionCreateRequest {
     #[serde(rename = "protocolVersion", skip_serializing_if = "Option::is_none")]
     protocol_version: Option<String>,
     #[serde(rename = "clientInfo", skip_serializing_if = "Option::is_none")]
@@ -181,6 +181,12 @@ struct RemoteSessionCreateRequest {
     client: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
+    #[serde(
+        rename = "takeControl",
+        default,
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    take_control: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -189,6 +195,12 @@ struct RemoteClientCapabilities {
     server_requests: Vec<&'static str>,
     #[serde(rename = "utilityOperations", skip_serializing_if = "Vec::is_empty")]
     utility_operations: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteConnectionBootstrapResponse {
+    session_id: String,
+    connection_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -462,17 +474,12 @@ impl RemoteAgentTransport {
             .build()
             .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
 
-        let attached_session = create_or_attach_session(&client, &config).await?;
-        let bootstrap_connection_id = attached_session
-            .state
-            .connections
-            .first()
-            .map(|connection| connection.connection_id.clone());
+        let bootstrap = create_or_attach_connection(&client, &config).await?;
         let subscription = subscribe_to_session(
             &client,
             &config,
-            &attached_session.session_id,
-            bootstrap_connection_id.as_deref(),
+            &bootstrap.session_id,
+            Some(&bootstrap.connection_id),
         )
         .await?;
         let (session_id, cursor, last_init, state) = subscription.snapshot.into_state();
@@ -764,15 +771,15 @@ fn build_remote_server_requests(config: &RemoteTransportConfig) -> Vec<&'static 
     }
 }
 
-async fn create_or_attach_session(
+async fn create_or_attach_connection(
     client: &Client,
     config: &RemoteTransportConfig,
-) -> Result<RemoteRuntimeSnapshot, AsyncTransportError> {
+) -> Result<RemoteConnectionBootstrapResponse, AsyncTransportError> {
     let url = format!(
-        "{}/api/headless/sessions",
+        "{}/api/headless/connections",
         config.base_url.trim_end_matches('/')
     );
-    let request = RemoteSessionCreateRequest {
+    let request = RemoteConnectionCreateRequest {
         protocol_version: Some(super::HEADLESS_PROTOCOL_VERSION.to_string()),
         client_info: Some(ClientInfo {
             name: config.client_name.clone(),
@@ -790,6 +797,7 @@ async fn create_or_attach_session(
         opt_out_notifications: config.opt_out_notifications.clone(),
         client: config.client.clone(),
         role: config.role.clone(),
+        take_control: config.take_control,
     };
 
     let response = with_headers(client.post(url).json(&request), config, true)
@@ -1290,12 +1298,22 @@ mod tests {
                         };
                         request_headers.lock().await.push(headers);
 
-                        if path == "/api/headless/sessions" {
+                        if path == "/api/headless/connections" {
+                            let body = serde_json::json!({
+                                "session_id": "sess_remote",
+                                "connection_id": "conn_remote",
+                                "controller_connection_id": "conn_remote",
+                                "lease_expires_at": "2026-04-02T00:00:15Z",
+                                "heartbeat_interval_ms": 15000,
+                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
+                                    .expect("valid snapshot json"),
+                            })
+                            .to_string();
                             write_http_response(
                                 &mut socket,
                                 "HTTP/1.1 200 OK",
                                 "application/json",
-                                &snapshot_json,
+                                &body,
                             )
                             .await;
                             return;
@@ -1579,8 +1597,8 @@ mod tests {
     }
 
     #[test]
-    fn remote_session_create_request_serializes_client_tool_flags() {
-        let request = RemoteSessionCreateRequest {
+    fn remote_connection_create_request_serializes_client_tool_flags() {
+        let request = RemoteConnectionCreateRequest {
             protocol_version: Some("2026-03-30".to_string()),
             client_info: Some(ClientInfo {
                 name: "maestro-tui-rs".to_string(),
@@ -1598,6 +1616,7 @@ mod tests {
             opt_out_notifications: vec!["status".to_string()],
             client: Some("vscode".to_string()),
             role: Some("controller".to_string()),
+            take_control: true,
         };
 
         let json = serde_json::to_value(request).expect("serialize request");
@@ -1614,6 +1633,7 @@ mod tests {
         assert_eq!(json["optOutNotifications"][0], "status");
         assert_eq!(json["client"], "vscode");
         assert_eq!(json["role"], "controller");
+        assert_eq!(json["takeControl"], true);
     }
 
     #[test]
@@ -1733,23 +1753,23 @@ mod tests {
         assert!(matches!(sent, ToAgentMessage::Interrupt));
 
         let headers = request_headers.lock().await.clone();
-        let create_headers = headers.first().expect("create request headers");
+        let connection_headers = headers.first().expect("connection request headers");
         let subscribe_headers = headers.get(1).expect("subscribe request headers");
         let message_headers = headers.iter().find(|entry| {
             entry.iter().any(|(name, value)| {
                 name == "x-maestro-headless-subscriber-id" && value == "sub_remote"
             })
         });
-        assert!(create_headers
+        assert!(connection_headers
             .iter()
             .any(|(name, value)| { name == "authorization" && value == "Bearer secret" }));
-        assert!(create_headers
+        assert!(connection_headers
             .iter()
             .any(|(name, value)| { name == "x-maestro-client" && value == "tui-rs" }));
-        assert!(create_headers
+        assert!(connection_headers
             .iter()
             .any(|(name, value)| { name == "x-maestro-headless-role" && value == "controller" }));
-        assert!(create_headers
+        assert!(connection_headers
             .iter()
             .any(|(name, value)| { name == "x-composer-headless-role" && value == "controller" }));
         assert!(subscribe_headers

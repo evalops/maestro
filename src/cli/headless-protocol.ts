@@ -432,6 +432,19 @@ export interface HeadlessSessionInfoMessage {
 	git_branch: string | null;
 }
 
+export interface HeadlessHelloOkMessage {
+	type: "hello_ok";
+	protocol_version: string;
+	connection_id?: string;
+	client_protocol_version?: string;
+	client_info?: HeadlessClientInfo;
+	capabilities?: HeadlessClientCapabilities;
+	opt_out_notifications?: HeadlessNotificationType[];
+	role?: HeadlessConnectionRole;
+	controller_connection_id?: string | null;
+	lease_expires_at?: string | null;
+}
+
 export interface HeadlessConnectionInfoMessage {
 	type: "connection_info";
 	connection_id?: string;
@@ -447,6 +460,7 @@ export interface HeadlessConnectionInfoMessage {
 }
 
 export type HeadlessFromAgentMessage =
+	| HeadlessHelloOkMessage
 	| HeadlessReadyMessage
 	| HeadlessResponseStartMessage
 	| HeadlessResponseChunkMessage
@@ -1022,6 +1036,31 @@ export class HeadlessProtocolTranslator {
 		};
 	}
 
+	buildHelloOkMessage(metadata: {
+		connection_id?: string;
+		protocol_version: string;
+		client_protocol_version?: string;
+		client_info?: HeadlessClientInfo;
+		capabilities?: HeadlessClientCapabilities;
+		opt_out_notifications?: HeadlessNotificationType[];
+		role?: HeadlessConnectionRole;
+		controller_connection_id?: string | null;
+		lease_expires_at?: string | null;
+	}): HeadlessHelloOkMessage {
+		return {
+			type: "hello_ok",
+			protocol_version: metadata.protocol_version,
+			connection_id: metadata.connection_id,
+			client_protocol_version: metadata.client_protocol_version,
+			client_info: metadata.client_info,
+			capabilities: metadata.capabilities,
+			opt_out_notifications: metadata.opt_out_notifications,
+			role: metadata.role,
+			controller_connection_id: metadata.controller_connection_id,
+			lease_expires_at: metadata.lease_expires_at,
+		};
+	}
+
 	buildConnectionInfoMessage(metadata: {
 		connection_id?: string;
 		protocol_version?: string;
@@ -1284,6 +1323,15 @@ export function applyIncomingHeadlessMessage(
 	msg: HeadlessFromAgentMessage,
 ): void {
 	switch (msg.type) {
+		case "hello_ok":
+			state.protocol_version = msg.protocol_version;
+			state.client_protocol_version = msg.client_protocol_version;
+			state.client_info = msg.client_info;
+			state.capabilities = msg.capabilities;
+			state.opt_out_notifications = msg.opt_out_notifications;
+			state.connection_role = msg.role;
+			state.controller_connection_id = msg.controller_connection_id;
+			return;
 		case "ready":
 			state.protocol_version = msg.protocol_version;
 			state.model = msg.model;

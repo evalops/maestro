@@ -437,7 +437,7 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
-	it("tracks negotiated connection metadata in runtime state", () => {
+	it("tracks handshake metadata in runtime state", () => {
 		const state = createHeadlessRuntimeState();
 
 		applyOutgoingHeadlessMessage(state, {
@@ -447,18 +447,18 @@ describe("headless protocol helpers", () => {
 			capabilities: { server_requests: ["approval"] },
 			role: "controller",
 		});
-		const connectionInfo = {
-			type: "connection_info" as const,
+		const helloOk = {
+			type: "hello_ok" as const,
+			protocol_version: HEADLESS_PROTOCOL_VERSION,
 			client_protocol_version: "2026-03-30",
 			client_info: { name: "maestro-tui-rs", version: "0.1.0" },
 			capabilities: { server_requests: ["approval"] },
 			role: "controller" as const,
 		};
-		expect(Value.Check(HeadlessFromAgentMessageSchema, connectionInfo)).toBe(
-			true,
-		);
-		applyIncomingHeadlessMessage(state, connectionInfo);
+		expect(Value.Check(HeadlessFromAgentMessageSchema, helloOk)).toBe(true);
+		applyIncomingHeadlessMessage(state, helloOk);
 
+		expect(state.protocol_version).toBe(HEADLESS_PROTOCOL_VERSION);
 		expect(state.client_protocol_version).toBe("2026-03-30");
 		expect(state.client_info).toEqual({
 			name: "maestro-tui-rs",

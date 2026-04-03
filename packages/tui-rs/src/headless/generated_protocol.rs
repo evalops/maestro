@@ -52,6 +52,7 @@ pub const HEADLESS_TO_AGENT_MESSAGE_TYPES: &[&str] = &[
     "shutdown",
 ];
 pub const HEADLESS_FROM_AGENT_MESSAGE_TYPES: &[&str] = &[
+    "hello_ok",
     "ready",
     "response_start",
     "response_chunk",

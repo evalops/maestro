@@ -324,6 +324,23 @@ export async function runHeadlessMode(
 							: "skip",
 					);
 					sendMessage(
+						translator.buildHelloOkMessage({
+							connection_id: LOCAL_HEADLESS_CONNECTION_ID,
+							protocol_version: HEADLESS_PROTOCOL_VERSION,
+							client_protocol_version: msg.protocol_version,
+							client_info: msg.client_info,
+							capabilities: msg.capabilities,
+							opt_out_notifications: msg.opt_out_notifications,
+							role: msg.role ?? "controller",
+							controller_connection_id:
+								(msg.role ?? "controller") === "controller"
+									? LOCAL_HEADLESS_CONNECTION_ID
+									: null,
+							lease_expires_at: null,
+						}),
+						{ force: true },
+					);
+					sendMessage(
 						translator.buildConnectionInfoMessage({
 							connection_id: LOCAL_HEADLESS_CONNECTION_ID,
 							protocol_version: msg.protocol_version,
@@ -339,7 +356,6 @@ export async function runHeadlessMode(
 							lease_expires_at: null,
 							connections: state.connections,
 						}),
-						{ force: true },
 					);
 					if (
 						msg.protocol_version &&

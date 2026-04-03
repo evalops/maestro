@@ -317,6 +317,46 @@
 		}
 	},
 	"fromAgentSchemas": {
+		"HeadlessHelloOkMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "hello_ok" },
+				"protocol_version": { "kind": "string" },
+				"connection_id": { "kind": "string", "optional": true },
+				"client_protocol_version": { "kind": "string", "optional": true },
+				"client_info": {
+					"kind": "ref",
+					"name": "HeadlessClientInfoSchema",
+					"optional": true
+				},
+				"capabilities": {
+					"kind": "ref",
+					"name": "HeadlessClientCapabilitiesSchema",
+					"optional": true
+				},
+				"opt_out_notifications": {
+					"kind": "ref",
+					"name": "HeadlessOptOutNotificationsSchema",
+					"optional": true
+				},
+				"role": {
+					"kind": "enumRef",
+					"name": "headlessConnectionRoles",
+					"optional": true
+				},
+				"controller_connection_id": {
+					"kind": "string",
+					"optional": true,
+					"nullable": true
+				},
+				"lease_expires_at": {
+					"kind": "string",
+					"optional": true,
+					"nullable": true
+				}
+			}
+		},
 		"HeadlessReadyMessageSchema": {
 			"kind": "object",
 			"additionalProperties": false,

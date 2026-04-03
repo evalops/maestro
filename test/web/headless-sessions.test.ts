@@ -27,6 +27,7 @@ import type { RegisteredModel } from "../../src/models/registry.js";
 import type { WebServerContext } from "../../src/server/app-context.js";
 import { clientToolService } from "../../src/server/client-tools-service.js";
 import {
+	handleHeadlessConnectionCreate,
 	handleHeadlessSessionCreate,
 	handleHeadlessSessionEvents,
 	handleHeadlessSessionMessage,
@@ -1266,6 +1267,49 @@ describe("headless session handlers", () => {
 		expect(body.state.connection_role).toBe("viewer");
 	});
 
+	it("creates an explicit connection bootstrap without attaching a subscription", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const req = createJsonRequest("POST", "/api/headless/connections", {
+			model: TEST_MODEL.id,
+			protocolVersion: "2026-04-03",
+			clientInfo: { name: "maestro-tui-rs", version: "0.1.0" },
+			capabilities: {
+				serverRequests: ["approval", "client_tool"],
+				utilityOperations: ["command_exec", "file_read"],
+			},
+			role: "controller",
+		});
+		const res = new MockResponse();
+		res.req = req;
+
+		await handleHeadlessConnectionCreate(
+			req,
+			res as unknown as ServerResponse,
+			context,
+		);
+
+		const body = JSON.parse(res.body);
+		expect(body.connection_id).toEqual(expect.any(String));
+		expect(body.controller_lease_granted).toBe(true);
+		expect(body.role).toBe("controller");
+		expect(body.snapshot.state.connection_count).toBe(1);
+		expect(body.snapshot.state.subscriber_count).toBe(0);
+		expect(body.snapshot.state.controller_connection_id).toBe(
+			body.connection_id,
+		);
+		expect(body.snapshot.state.client_protocol_version).toBe("2026-04-03");
+		expect(body.snapshot.state.client_info).toEqual({
+			name: "maestro-tui-rs",
+			version: "0.1.0",
+		});
+		expect(Value.Check(HeadlessRuntimeSnapshotSchema, body.snapshot)).toBe(
+			true,
+		);
+	});
+
 	it("creates explicit subscriptions with controller lease metadata", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
@@ -1642,6 +1686,70 @@ describe("headless session handlers", () => {
 					truncated: true,
 				},
 			});
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("queues hello_ok only for the initiating subscription", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval"],
+				},
+				context,
+				sessionManager,
+			});
+
+			const subscription = runtime.createSubscription({
+				role: "controller",
+				optOutNotifications: ["connection_info"],
+			});
+			const attached = runtime.attachSubscription(subscription.subscription_id);
+			while (attached?.next()) {
+				// Drain any initial subscription envelopes.
+			}
+
+			await runtime.send(
+				{
+					type: "hello",
+					protocol_version: "2026-04-02",
+					client_info: { name: "maestro-web", version: "1.0.0" },
+					capabilities: { server_requests: ["approval"] },
+					opt_out_notifications: ["connection_info"],
+					role: "controller",
+				},
+				{ subscriptionId: subscription.subscription_id },
+			);
+
+			expect(attached?.next()).toMatchObject({
+				type: "message",
+				message: {
+					type: "hello_ok",
+					protocol_version: HEADLESS_PROTOCOL_VERSION,
+					connection_id: subscription.connection_id,
+					client_protocol_version: "2026-04-02",
+					opt_out_notifications: ["connection_info"],
+					role: "controller",
+				},
+			});
+			expect(attached?.next()).toBeNull();
+			expect(runtime.getSnapshot().state.client_protocol_version).toBe(
+				"2026-04-02",
+			);
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}

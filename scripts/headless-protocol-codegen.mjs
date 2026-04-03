@@ -128,37 +128,53 @@ export type HeadlessFromAgentMessageType =
 `;
 }
 
+function applyNullable(rendered, schema) {
+	return schema?.nullable ? `Type.Union([${rendered}, Type.Null()])` : rendered;
+}
+
 function renderTypeboxSchema(schema) {
 	switch (schema.kind) {
 		case "string":
-			return "Type.String()";
+			return applyNullable("Type.String()", schema);
 		case "boolean":
-			return "Type.Boolean()";
+			return applyNullable("Type.Boolean()", schema);
 		case "number":
-			return "Type.Number()";
+			return applyNullable("Type.Number()", schema);
 		case "unknown":
-			return "Type.Unknown()";
+			return applyNullable("Type.Unknown()", schema);
 		case "literal":
-			return schema.value === null
+			return applyNullable(
+				schema.value === null
 				? "Type.Null()"
-				: `Type.Literal(${JSON.stringify(schema.value)})`;
+				: `Type.Literal(${JSON.stringify(schema.value)})`,
+				schema,
+			);
 		case "ref":
-			return schema.name;
+			return applyNullable(schema.name, schema);
 		case "enumRef":
-			return `stringLiteralUnion(${schema.name})`;
+			return applyNullable(`stringLiteralUnion(${schema.name})`, schema);
 		case "array": {
 			const options = [];
 			if (schema.uniqueItems) {
 				options.push("uniqueItems: true");
 			}
-			return options.length > 0
+			return applyNullable(
+				options.length > 0
 				? `Type.Array(${renderTypeboxSchema(schema.items)}, { ${options.join(", ")} })`
-				: `Type.Array(${renderTypeboxSchema(schema.items)})`;
+				: `Type.Array(${renderTypeboxSchema(schema.items)})`,
+				schema,
+			);
 		}
 		case "record":
-			return `Type.Record(Type.String(), ${renderTypeboxSchema(schema.value)})`;
+			return applyNullable(
+				`Type.Record(Type.String(), ${renderTypeboxSchema(schema.value)})`,
+				schema,
+			);
 		case "union":
-			return `Type.Union([${schema.variants.map((variant) => renderTypeboxSchema(variant)).join(", ")}])`;
+			return applyNullable(
+				`Type.Union([${schema.variants.map((variant) => renderTypeboxSchema(variant)).join(", ")}])`,
+				schema,
+			);
 		case "object": {
 			const properties = Object.entries(schema.properties)
 				.map(([name, propertySchema]) => {
@@ -170,9 +186,12 @@ function renderTypeboxSchema(schema) {
 			if (schema.additionalProperties === false) {
 				options.push("additionalProperties: false");
 			}
-			return options.length > 0
+			return applyNullable(
+				options.length > 0
 				? `Type.Object({\n\t${properties}\n}, { ${options.join(", ")} })`
-				: `Type.Object({\n\t${properties}\n})`;
+				: `Type.Object({\n\t${properties}\n})`,
+				schema,
+			);
 		}
 		default:
 			throw new Error(`Unsupported headless payload schema kind: ${schema.kind}`);

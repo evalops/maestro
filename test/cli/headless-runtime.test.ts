@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionApprovalService } from "../../src/agent/action-approval.js";
+import { HEADLESS_PROTOCOL_VERSION } from "../../src/cli/headless-protocol.js";
 import { getHeadlessPtyPythonCommand } from "../../src/headless/pty-helper.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
 
@@ -193,7 +194,7 @@ describe("runHeadlessMode", () => {
 		).toBe(false);
 	});
 
-	it("echoes negotiated opt-out notifications in hello connection info", async () => {
+	it("returns an explicit hello_ok handshake acknowledgement", async () => {
 		let onLine: LineHandler | undefined;
 		let onClose: CloseHandler | undefined;
 		const readlineInterface = {
@@ -252,7 +253,7 @@ describe("runHeadlessMode", () => {
 		onClose?.();
 		await runPromise;
 
-		const connectionInfo = writes
+		const helloOk = writes
 			.join("")
 			.trim()
 			.split("\n")
@@ -260,9 +261,10 @@ describe("runHeadlessMode", () => {
 			.map(
 				(line) => JSON.parse(line) as { type: string; [key: string]: unknown },
 			)
-			.find((message) => message.type === "connection_info");
-		expect(connectionInfo).toMatchObject({
-			type: "connection_info",
+			.find((message) => message.type === "hello_ok");
+		expect(helloOk).toMatchObject({
+			type: "hello_ok",
+			protocol_version: HEADLESS_PROTOCOL_VERSION,
 			opt_out_notifications: ["status", "heartbeat"],
 		});
 	});
@@ -353,8 +355,11 @@ describe("runHeadlessMode", () => {
 			);
 
 		expect(
-			messages.filter((message) => message.type === "connection_info"),
+			messages.filter((message) => message.type === "hello_ok"),
 		).toHaveLength(1);
+		expect(
+			messages.filter((message) => message.type === "connection_info"),
+		).toHaveLength(0);
 		expect(messages.some((message) => message.type === "status")).toBe(false);
 		expect(messages.some((message) => message.type === "compaction")).toBe(
 			false,

@@ -129,6 +129,14 @@ export interface HeadlessRuntimeHeartbeatSnapshot {
 	heartbeat_interval_ms: number;
 }
 
+export interface HeadlessRuntimeConnectionSnapshot
+	extends HeadlessRuntimeHeartbeatSnapshot {
+	session_id: string;
+	role: HeadlessConnectionRole;
+	opt_out_notifications?: HeadlessNotificationType[];
+	snapshot: HeadlessRuntimeSnapshot;
+}
+
 export type HeadlessRuntimeStreamEnvelope =
 	| HeadlessRuntimeSnapshotEnvelope
 	| HeadlessRuntimeEventEnvelope
@@ -301,12 +309,26 @@ class HeadlessRuntimeBroker {
 	}
 
 	publish(message: HeadlessFromAgentMessage): HeadlessRuntimeEventEnvelope {
+		const envelope = this.createMessageEnvelope(message);
+		return this.publishEnvelope(envelope) as HeadlessRuntimeEventEnvelope;
+	}
+
+	createPrivateMessage(
+		message: HeadlessFromAgentMessage,
+	): HeadlessRuntimeEventEnvelope {
+		return this.createMessageEnvelope(message);
+	}
+
+	private createMessageEnvelope(
+		message: HeadlessFromAgentMessage,
+	): HeadlessRuntimeEventEnvelope {
+		assertHeadlessFromAgentMessage(message, "headless runtime message");
 		const envelope: HeadlessRuntimeEventEnvelope = {
 			type: "message",
 			cursor: this.nextCursor++,
 			message,
 		};
-		return this.publishEnvelope(envelope) as HeadlessRuntimeEventEnvelope;
+		return envelope;
 	}
 
 	publishSnapshot(
@@ -749,6 +771,33 @@ export class HeadlessSessionRuntime {
 				connections: this.state.connections,
 			}),
 		);
+	}
+
+	private enqueuePrivateMessage(
+		message: HeadlessFromAgentMessage,
+		metadata?: {
+			connectionId?: string | null;
+			subscriptionId?: string | null;
+		},
+	): void {
+		const subscriptionIds = metadata?.subscriptionId
+			? [metadata.subscriptionId]
+			: metadata?.connectionId
+				? Array.from(
+						this.connections.get(metadata.connectionId)?.subscriptionIds ?? [],
+					)
+				: [];
+		if (subscriptionIds.length === 0) {
+			return;
+		}
+		const envelope = this.broker.createPrivateMessage(message);
+		for (const subscriptionId of subscriptionIds) {
+			const subscriber = this.subscribers.get(subscriptionId);
+			if (!subscriber) {
+				continue;
+			}
+			subscriber.enqueue(envelope, (reason) => this.buildResetEnvelope(reason));
+		}
 	}
 
 	private getMessageConnectionId(metadata?: {
@@ -1267,6 +1316,28 @@ export class HeadlessSessionRuntime {
 					optOutNotifications: msg.opt_out_notifications,
 					role: msg.role,
 				});
+				const connection =
+					this.getConnectionById(
+						subscriber?.connectionId ?? metadata?.connectionId ?? undefined,
+					) ?? this.getPreferredConnection();
+				if (connection) {
+					this.enqueuePrivateMessage(
+						this.translator.buildHelloOkMessage({
+							connection_id: connection.id,
+							protocol_version: HEADLESS_PROTOCOL_VERSION,
+							client_protocol_version: connection.clientProtocolVersion,
+							client_info: connection.clientInfo,
+							capabilities: connection.capabilities,
+							opt_out_notifications: connection.optOutNotifications
+								? [...connection.optOutNotifications]
+								: undefined,
+							role: connection.role,
+							controller_connection_id: this.controllerConnectionId,
+							lease_expires_at: this.getLeaseExpiryIso(connection),
+						}),
+						metadata,
+					);
+				}
 				if (
 					msg.protocol_version &&
 					msg.protocol_version !== HEADLESS_PROTOCOL_VERSION
@@ -1807,6 +1878,7 @@ export type EnsureRuntimeOptions = {
 	approvalMode: ApprovalMode;
 	enableClientTools?: boolean;
 	client?: "vscode" | "jetbrains" | "conductor" | "generic";
+	registerConnection?: boolean;
 	context: Pick<WebServerContext, "createAgent">;
 	sessionManager: SessionManager;
 };
@@ -1848,11 +1920,12 @@ export class HeadlessRuntimeService {
 			sessionManager: options.sessionManager,
 		});
 		if (
-			options.clientProtocolVersion ||
-			options.clientInfo ||
-			options.capabilities ||
-			options.optOutNotifications ||
-			options.role
+			options.registerConnection !== false &&
+			(options.clientProtocolVersion ||
+				options.clientInfo ||
+				options.capabilities ||
+				options.optOutNotifications ||
+				options.role)
 		) {
 			runtime.registerConnection({
 				clientProtocolVersion: options.clientProtocolVersion,
