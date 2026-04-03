@@ -286,6 +286,23 @@ function rethrowHeadlessMessageError(error: unknown): never {
 	throw new ApiError(403, error.message);
 }
 
+function rethrowHeadlessConnectionLifecycleError(error: unknown): never {
+	if (!(error instanceof Error)) {
+		throw error;
+	}
+	if (error.message === "Headless connection not found") {
+		throw new ApiError(404, error.message);
+	}
+	if (
+		error.message.includes("Controller lease") ||
+		error.message ===
+			"Headless connection role does not match subscription role"
+	) {
+		throw new ApiError(409, error.message);
+	}
+	throw error;
+}
+
 async function ensureRuntime(
 	req: IncomingMessage,
 	context: WebServerContext,
@@ -443,7 +460,12 @@ export async function handleHeadlessConnectionCreate(
 		req,
 		HeadlessConnectionCreateSchema,
 	);
-	const connection = await ensureConnection(req, context, input);
+	let connection: HeadlessRuntimeConnectionSnapshot;
+	try {
+		connection = await ensureConnection(req, context, input);
+	} catch (error) {
+		rethrowHeadlessConnectionLifecycleError(error);
+	}
 	sendJson(res, 200, connection, context.corsHeaders, req);
 }
 
@@ -555,13 +577,7 @@ export async function handleHeadlessSessionHeartbeat(
 			subscriptionId: input.subscriptionId ?? getHeadlessSubscriberId(req),
 		});
 	} catch (error) {
-		if (
-			error instanceof Error &&
-			error.message === "Headless connection not found"
-		) {
-			throw new ApiError(404, error.message);
-		}
-		throw error;
+		rethrowHeadlessConnectionLifecycleError(error);
 	}
 	sendJson(res, 200, heartbeat, context.corsHeaders, req);
 }
@@ -589,13 +605,7 @@ export async function handleHeadlessSessionDisconnect(
 			req,
 		);
 	} catch (error) {
-		if (
-			error instanceof Error &&
-			error.message === "Headless connection not found"
-		) {
-			throw new ApiError(404, error.message);
-		}
-		throw error;
+		rethrowHeadlessConnectionLifecycleError(error);
 	}
 }
 

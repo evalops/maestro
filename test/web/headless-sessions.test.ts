@@ -1524,6 +1524,62 @@ describe("headless session handlers", () => {
 		}
 	});
 
+	it("returns 404 for a stale explicit connection bootstrap id", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const sessionManager = createSessionManagerForRequest(
+			createJsonRequest("POST", "/api/headless/sessions", {}),
+			false,
+		);
+		const { id: sessionId } = await sessionManager.createSession({
+			title: "Headless stale connection bootstrap",
+		});
+		const sessionFile = (
+			sessionManager as unknown as {
+				sessionFile: string;
+			}
+		).sessionFile;
+		const sessionLookupSpy = vi
+			.spyOn(SessionManager.prototype, "getSessionFileById")
+			.mockImplementation((id) => (id === sessionId ? sessionFile : null));
+
+		try {
+			await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				sessionId,
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				context,
+				sessionManager,
+				registerConnection: false,
+			});
+
+			const reuseReq = createJsonRequest("POST", "/api/headless/connections", {
+				sessionId,
+				connectionId: "conn_stale",
+				role: "controller",
+			});
+			const reuseRes = new MockResponse();
+			reuseRes.req = reuseReq;
+
+			await expect(
+				handleHeadlessConnectionCreate(
+					reuseReq,
+					reuseRes as unknown as ServerResponse,
+					context,
+				),
+			).rejects.toMatchObject({
+				statusCode: 404,
+				message: "Headless connection not found",
+			});
+		} finally {
+			sessionLookupSpy.mockRestore();
+		}
+	});
+
 	it("rejects a second explicit controller subscription while a lease is held", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
