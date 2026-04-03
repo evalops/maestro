@@ -279,7 +279,7 @@ Use a pre-existing container. Useful for custom configurations or persistent con
 
 ### Docker Compose Configuration
 
-The included `docker-compose.yml` provides production-ready settings:
+The included `docker-compose.yml` provides a reasonable starting sandbox configuration:
 
 ```yaml
 services:
