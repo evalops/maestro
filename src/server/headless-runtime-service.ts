@@ -1523,6 +1523,12 @@ export class HeadlessSessionRuntime {
 
 	private handleAgentEvent(event: AgentEvent): void {
 		if (
+			event.type === "action_approval_required" &&
+			!this.approvalService.requiresUserInteraction()
+		) {
+			return;
+		}
+		if (
 			event.type === "action_approval_resolved" &&
 			this.suppressedApprovalResolutionIds.delete(event.request.id)
 		) {

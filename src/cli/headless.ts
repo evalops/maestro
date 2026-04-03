@@ -43,8 +43,24 @@ export {
 };
 
 function send(msg: HeadlessFromAgentMessage): void {
-	assertHeadlessFromAgentMessage(msg, "headless stdout message");
-	process.stdout.write(`${JSON.stringify(msg)}\n`);
+	try {
+		assertHeadlessFromAgentMessage(msg, "headless stdout message");
+		process.stdout.write(`${JSON.stringify(msg)}\n`);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		try {
+			process.stdout.write(
+				`${JSON.stringify({
+					type: "error",
+					message: `Failed to emit headless message: ${message}`,
+					fatal: false,
+					error_type: "protocol",
+				} satisfies HeadlessFromAgentMessage)}\n`,
+			);
+		} catch {
+			// Ignore fallback write failures; there is no safer recovery path on stdout.
+		}
+	}
 }
 
 function sendError(message: string, fatal: boolean): void {
@@ -199,6 +215,12 @@ export async function runHeadlessMode(
 	});
 
 	agent.subscribe((event) => {
+		if (
+			event.type === "action_approval_required" &&
+			!approvalService?.requiresUserInteraction()
+		) {
+			return;
+		}
 		if (
 			event.type === "action_approval_required" &&
 			approvalService?.requiresUserInteraction() &&

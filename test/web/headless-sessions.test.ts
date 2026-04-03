@@ -690,6 +690,58 @@ describe("headless session runtime", () => {
 		}
 	});
 
+	it("suppresses approval-only headless messages in auto approval mode", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "auto",
+				context,
+				sessionManager,
+			});
+
+			fakeAgent.emit({
+				type: "action_approval_required",
+				request: {
+					id: "call_auto_approval",
+					toolName: "bash",
+					args: { command: "git push --force" },
+					reason: "Force push requires approval",
+				},
+			});
+
+			const replay = runtime.replayFrom(0) ?? [];
+			expect(
+				replay.find(
+					(entry) =>
+						entry.type === "message" &&
+						entry.message.type === "tool_call" &&
+						entry.message.call_id === "call_auto_approval",
+				),
+			).toBeUndefined();
+			expect(
+				replay.find(
+					(entry) =>
+						entry.type === "message" &&
+						entry.message.type === "server_request" &&
+						entry.message.request_id === "call_auto_approval",
+				),
+			).toBeUndefined();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("publishes cancelled client tool request resolutions before interrupt snapshots", async () => {
 		const fakeAgent = new FakeAgent();
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));

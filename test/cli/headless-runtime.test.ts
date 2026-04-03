@@ -25,6 +25,76 @@ describe("runHeadlessMode", () => {
 		vi.restoreAllMocks();
 		vi.resetModules();
 		vi.doUnmock("node:readline");
+		vi.doUnmock("@evalops/contracts");
+	});
+
+	it("falls back to a protocol error when outgoing message validation fails", async () => {
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+		vi.doMock("@evalops/contracts", async () => {
+			const actual =
+				await vi.importActual<typeof import("@evalops/contracts")>(
+					"@evalops/contracts",
+				);
+			return {
+				...actual,
+				assertHeadlessFromAgentMessage: vi.fn(() => {
+					throw new Error("schema drift");
+				}),
+			};
+		});
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn(),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+		);
+
+		await vi.waitFor(() => {
+			expect(onClose).toBeTypeOf("function");
+			expect(writes.length).toBeGreaterThan(0);
+		});
+
+		onClose?.();
+		await runPromise;
+
+		const messages = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as { type: string; message?: string });
+		expect(messages[0]).toMatchObject({
+			type: "error",
+			message: "Failed to emit headless message: schema drift",
+			fatal: false,
+			error_type: "protocol",
+		});
 	});
 
 	it("reports utility command runtime errors without parse prefixes", async () => {
@@ -439,6 +509,87 @@ describe("runHeadlessMode", () => {
 			call_id: "call_approval",
 			tool: "bash",
 		});
+	});
+
+	it("suppresses approval-only output in auto approval mode", async () => {
+		let onClose: CloseHandler | undefined;
+		let onAgentEvent: ((event: unknown) => void) | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn((handler: (event: unknown) => void) => {
+					onAgentEvent = handler;
+				}),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+			new ActionApprovalService("auto"),
+		);
+
+		await vi.waitFor(() => {
+			expect(onClose).toBeTypeOf("function");
+			expect(onAgentEvent).toBeTypeOf("function");
+		});
+
+		onAgentEvent?.({
+			type: "action_approval_required",
+			request: {
+				id: "call_auto_approval",
+				toolName: "bash",
+				args: { command: "git push --force" },
+				reason: "Force push requires approval",
+			},
+		});
+
+		onClose?.();
+		await runPromise;
+
+		const messages = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map(
+				(line) => JSON.parse(line) as { type: string; [key: string]: unknown },
+			);
+		expect(
+			messages.find(
+				(message) =>
+					message.type === "tool_call" &&
+					message.call_id === "call_auto_approval",
+			),
+		).toBeUndefined();
+		expect(
+			messages.find(
+				(message) =>
+					message.type === "server_request" &&
+					message.request_id === "call_auto_approval",
+			),
+		).toBeUndefined();
 	});
 
 	it("filters unrelated session server requests from local headless output", async () => {
