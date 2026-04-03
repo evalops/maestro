@@ -80,8 +80,33 @@ export async function runHeadlessMode(
 	const translator = new HeadlessProtocolTranslator();
 	const state = createHeadlessRuntimeState();
 
-	const sendMessage = (msg: HeadlessFromAgentMessage): void => {
+	const shouldFilterOutgoingMessage = (
+		msg: HeadlessFromAgentMessage,
+		force = false,
+	): boolean => {
+		if (force || !state.opt_out_notifications?.length) {
+			return false;
+		}
+		switch (msg.type) {
+			case "status":
+				return state.opt_out_notifications.includes("status");
+			case "compaction":
+				return state.opt_out_notifications.includes("compaction");
+			case "connection_info":
+				return state.opt_out_notifications.includes("connection_info");
+			default:
+				return false;
+		}
+	};
+
+	const sendMessage = (
+		msg: HeadlessFromAgentMessage,
+		options?: { force?: boolean },
+	): void => {
 		applyIncomingHeadlessMessage(state, msg);
+		if (shouldFilterOutgoingMessage(msg, options?.force)) {
+			return;
+		}
 		send(msg);
 	};
 	const shouldHandleServerRequestEvent = (
@@ -297,6 +322,7 @@ export async function runHeadlessMode(
 							lease_expires_at: null,
 							connections: state.connections,
 						}),
+						{ force: true },
 					);
 					if (
 						msg.protocol_version &&
