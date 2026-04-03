@@ -101,6 +101,21 @@ export class HeadlessUtilityFileWatchManager {
 		}));
 	}
 
+	get(watchId: string): HeadlessUtilityFileWatchSnapshot | undefined {
+		const active = this.watches.get(watchId);
+		if (!active) {
+			return undefined;
+		}
+		return {
+			watch_id: watchId,
+			root_dir: active.root_dir,
+			include_patterns: active.include_patterns,
+			exclude_patterns: active.exclude_patterns,
+			debounce_ms: active.debounce_ms,
+			owner_connection_id: active.owner_connection_id,
+		};
+	}
+
 	async start(request: HeadlessUtilityFileWatchStartRequest): Promise<void> {
 		if (this.watches.has(request.watch_id)) {
 			throw new Error(`Utility file watch already exists: ${request.watch_id}`);

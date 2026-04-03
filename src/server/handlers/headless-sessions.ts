@@ -5,6 +5,7 @@ import {
 	headlessConnectionRoles,
 	headlessServerRequestTypes,
 	headlessThinkingLevels,
+	headlessToAgentMessageSchemasByType,
 	headlessToAgentMessageTypes,
 	headlessUtilityOperations,
 } from "@evalops/contracts";
@@ -22,9 +23,14 @@ import type {
 	HeadlessRuntimeStreamEnvelope,
 	HeadlessSessionRuntime,
 } from "../headless-runtime-service.js";
-import { ApiError, getRequestHeader, sendJson } from "../server-utils.js";
+import {
+	ApiError,
+	getRequestHeader,
+	readRequestBody,
+	sendJson,
+} from "../server-utils.js";
 import { createSessionManagerForRequest } from "../session-scope.js";
-import { parseAndValidateJson } from "../validation.js";
+import { parseAndValidateJson, validatePayload } from "../validation.js";
 
 function stringLiteralUnion<const T extends readonly string[]>(values: T) {
 	return Type.Unsafe<T[number]>(
@@ -75,7 +81,7 @@ const HeadlessSessionCreateSchema = Type.Object({
 	approvalMode: Type.Optional(stringLiteralUnion(headlessApprovalModes)),
 });
 
-const HeadlessMessageSchema = Type.Object(
+const HeadlessMessageTypeSchema = Type.Object(
 	{
 		type: stringLiteralUnion(headlessToAgentMessageTypes),
 	},
@@ -128,7 +134,32 @@ type HeadlessSessionUnsubscribeInput = Static<
 type HeadlessSessionHeartbeatInput = Static<
 	typeof HeadlessSessionHeartbeatSchema
 >;
-type HeadlessMessageInput = Static<typeof HeadlessMessageSchema>;
+type HeadlessMessageTypeInput = Static<typeof HeadlessMessageTypeSchema>;
+
+async function parseHeadlessMessage(
+	req: IncomingMessage,
+): Promise<HeadlessToAgentMessage> {
+	const raw = await readRequestBody(req);
+	if (!raw.length) {
+		throw new ApiError(400, "Request body required");
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw.toString());
+	} catch {
+		throw new ApiError(400, "Invalid JSON payload");
+	}
+	const envelope = validatePayload<HeadlessMessageTypeInput>(
+		parsed,
+		HeadlessMessageTypeSchema,
+		"body",
+	);
+	return validatePayload<HeadlessToAgentMessage>(
+		parsed,
+		headlessToAgentMessageSchemasByType[envelope.type],
+		"body",
+	);
+}
 
 function getHeadlessRole(
 	req: IncomingMessage,
@@ -171,6 +202,29 @@ function getHeadlessConnectionId(req: IncomingMessage): string | undefined {
 
 function getScopeKey(req: IncomingMessage): string {
 	return getAuthSubject(req);
+}
+
+function rethrowHeadlessMessageError(error: unknown): never {
+	if (!(error instanceof Error)) {
+		throw error;
+	}
+	if (error.message === "Viewer headless connections cannot send messages") {
+		throw new ApiError(403, error.message);
+	}
+	if (error.message === "Headless subscriber not found") {
+		throw new ApiError(404, error.message);
+	}
+	if (
+		error.message === "Headless connection not found" ||
+		error.message === "Headless connection does not have controller access" ||
+		error.message.includes("is owned by another connection")
+	) {
+		throw new ApiError(403, error.message);
+	}
+	if (error.message.includes("Controller lease")) {
+		throw new ApiError(409, error.message);
+	}
+	throw new ApiError(403, error.message);
 }
 
 async function ensureRuntime(
@@ -482,10 +536,7 @@ export async function handleHeadlessSessionMessage(
 	params?: Record<string, string>,
 ) {
 	const runtime = getRuntime(req, context, params?.id);
-	const input = await parseAndValidateJson<HeadlessMessageInput>(
-		req,
-		HeadlessMessageSchema,
-	);
+	const input = await parseHeadlessMessage(req);
 	try {
 		runtime.assertCanSend(
 			getHeadlessRole(req),
@@ -493,29 +544,15 @@ export async function handleHeadlessSessionMessage(
 			getHeadlessConnectionId(req),
 		);
 	} catch (error) {
-		if (!(error instanceof Error)) {
-			throw error;
-		}
-		if (error.message === "Viewer headless connections cannot send messages") {
-			throw new ApiError(403, error.message);
-		}
-		if (error.message === "Headless subscriber not found") {
-			throw new ApiError(404, error.message);
-		}
-		if (
-			error.message === "Headless connection not found" ||
-			error.message === "Headless connection does not have controller access"
-		) {
-			throw new ApiError(403, error.message);
-		}
-		if (error.message.includes("Controller lease")) {
-			throw new ApiError(409, error.message);
-		}
-		throw new ApiError(403, error.message);
+		rethrowHeadlessMessageError(error);
 	}
-	await runtime.send(input as HeadlessToAgentMessage, {
-		connectionId: getHeadlessConnectionId(req),
-		subscriptionId: getHeadlessSubscriberId(req),
-	});
+	try {
+		await runtime.send(input as HeadlessToAgentMessage, {
+			connectionId: getHeadlessConnectionId(req),
+			subscriptionId: getHeadlessSubscriberId(req),
+		});
+	} catch (error) {
+		rethrowHeadlessMessageError(error);
+	}
 	sendJson(res, 200, { success: true }, context.corsHeaders, req);
 }

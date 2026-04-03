@@ -1,0 +1,271 @@
+{
+	"namedSchemas": {
+		"HeadlessClientInfoSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"name": { "kind": "string" },
+				"version": { "kind": "string", "optional": true }
+			}
+		},
+		"HeadlessClientCapabilitiesSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"server_requests": {
+					"kind": "array",
+					"items": { "kind": "enumRef", "name": "headlessServerRequestTypes" },
+					"uniqueItems": true,
+					"optional": true
+				},
+				"utility_operations": {
+					"kind": "array",
+					"items": { "kind": "enumRef", "name": "headlessUtilityOperations" },
+					"uniqueItems": true,
+					"optional": true
+				}
+			}
+		},
+		"HeadlessToolResponseResultSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"success": { "kind": "boolean" },
+				"output": { "kind": "string" },
+				"error": { "kind": "string", "optional": true }
+			}
+		},
+		"HeadlessTextContentSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "text" },
+				"text": { "kind": "string" }
+			}
+		},
+		"HeadlessImageContentSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "image" },
+				"data": { "kind": "string" },
+				"mimeType": { "kind": "string" }
+			}
+		},
+		"HeadlessContentBlockSchema": {
+			"kind": "union",
+			"variants": [
+				{ "kind": "ref", "name": "HeadlessTextContentSchema" },
+				{ "kind": "ref", "name": "HeadlessImageContentSchema" }
+			]
+		}
+	},
+	"toAgentSchemas": {
+		"HeadlessHelloMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "hello" },
+				"protocol_version": { "kind": "string", "optional": true },
+				"client_info": {
+					"kind": "ref",
+					"name": "HeadlessClientInfoSchema",
+					"optional": true
+				},
+				"capabilities": {
+					"kind": "ref",
+					"name": "HeadlessClientCapabilitiesSchema",
+					"optional": true
+				},
+				"role": {
+					"kind": "enumRef",
+					"name": "headlessConnectionRoles",
+					"optional": true
+				}
+			}
+		},
+		"HeadlessInitMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "init" },
+				"system_prompt": { "kind": "string", "optional": true },
+				"append_system_prompt": { "kind": "string", "optional": true },
+				"thinking_level": {
+					"kind": "enumRef",
+					"name": "headlessThinkingLevels",
+					"optional": true
+				},
+				"approval_mode": {
+					"kind": "enumRef",
+					"name": "headlessApprovalModes",
+					"optional": true
+				}
+			}
+		},
+		"HeadlessPromptMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "prompt" },
+				"content": { "kind": "string" },
+				"attachments": {
+					"kind": "array",
+					"items": { "kind": "string" },
+					"optional": true
+				}
+			}
+		},
+		"HeadlessInterruptMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "interrupt" }
+			}
+		},
+		"HeadlessToolResponseMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "tool_response" },
+				"call_id": { "kind": "string" },
+				"approved": { "kind": "boolean" },
+				"result": {
+					"kind": "ref",
+					"name": "HeadlessToolResponseResultSchema",
+					"optional": true
+				}
+			}
+		},
+		"HeadlessClientToolResultMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "client_tool_result" },
+				"call_id": { "kind": "string" },
+				"content": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessContentBlockSchema" }
+				},
+				"is_error": { "kind": "boolean" }
+			}
+		},
+		"HeadlessServerRequestResponseMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "server_request_response" },
+				"request_id": { "kind": "string" },
+				"request_type": {
+					"kind": "enumRef",
+					"name": "headlessServerRequestTypes"
+				},
+				"approved": { "kind": "boolean", "optional": true },
+				"result": {
+					"kind": "ref",
+					"name": "HeadlessToolResponseResultSchema",
+					"optional": true
+				},
+				"content": {
+					"kind": "array",
+					"items": { "kind": "ref", "name": "HeadlessContentBlockSchema" },
+					"optional": true
+				},
+				"is_error": { "kind": "boolean", "optional": true }
+			}
+		},
+		"HeadlessUtilityCommandStartMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_start" },
+				"command_id": { "kind": "string" },
+				"command": { "kind": "string" },
+				"cwd": { "kind": "string", "optional": true },
+				"env": {
+					"kind": "record",
+					"value": { "kind": "string" },
+					"optional": true
+				},
+				"shell_mode": {
+					"kind": "enumRef",
+					"name": "headlessUtilityCommandShellModes",
+					"optional": true
+				},
+				"allow_stdin": { "kind": "boolean", "optional": true }
+			}
+		},
+		"HeadlessUtilityCommandTerminateMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_terminate" },
+				"command_id": { "kind": "string" },
+				"force": { "kind": "boolean", "optional": true }
+			}
+		},
+		"HeadlessUtilityCommandStdinMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_stdin" },
+				"command_id": { "kind": "string" },
+				"content": { "kind": "string" },
+				"eof": { "kind": "boolean", "optional": true }
+			}
+		},
+		"HeadlessUtilityFileSearchMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_search" },
+				"search_id": { "kind": "string" },
+				"query": { "kind": "string" },
+				"cwd": { "kind": "string", "optional": true },
+				"limit": { "kind": "number", "optional": true }
+			}
+		},
+		"HeadlessUtilityFileWatchStartMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_watch_start" },
+				"watch_id": { "kind": "string" },
+				"root_dir": { "kind": "string", "optional": true },
+				"include_patterns": {
+					"kind": "array",
+					"items": { "kind": "string" },
+					"optional": true
+				},
+				"exclude_patterns": {
+					"kind": "array",
+					"items": { "kind": "string" },
+					"optional": true
+				},
+				"debounce_ms": { "kind": "number", "optional": true }
+			}
+		},
+		"HeadlessUtilityFileWatchStopMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_file_watch_stop" },
+				"watch_id": { "kind": "string" }
+			}
+		},
+		"HeadlessCancelMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "cancel" }
+			}
+		},
+		"HeadlessShutdownMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "shutdown" }
+			}
+		}
+	}
+}

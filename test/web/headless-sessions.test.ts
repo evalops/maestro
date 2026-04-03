@@ -1352,6 +1352,158 @@ describe("headless session handlers", () => {
 		}
 	});
 
+	it("rejects utility control messages from a different controller connection", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval"],
+					utility_operations: ["command_exec", "file_watch"],
+				},
+				context,
+				sessionManager,
+			});
+			const sessionId = runtime.getSnapshot().session_id;
+			if (!sessionId) {
+				throw new Error("Expected headless session id");
+			}
+
+			const first = runtime.createSubscription({ role: "controller" });
+			const second = runtime.createSubscription({
+				role: "controller",
+				takeControl: true,
+			});
+
+			await runtime.send(
+				{
+					type: "utility_command_start",
+					command_id: "cmd_owned",
+					command: `"${process.execPath}" -e "setInterval(() => {}, 1000)"`,
+					shell_mode: "direct",
+				},
+				{ subscriptionId: first.subscription_id },
+			);
+			await runtime.send(
+				{
+					type: "utility_file_watch_start",
+					watch_id: "watch_owned",
+					root_dir: tempDir,
+					debounce_ms: 10,
+				},
+				{ subscriptionId: first.subscription_id },
+			);
+
+			const commandStdinReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{
+					type: "utility_command_stdin",
+					command_id: "cmd_owned",
+					content: "status\n",
+				},
+				{
+					"x-maestro-headless-subscriber-id": second.subscription_id,
+					"x-maestro-headless-role": "controller",
+				},
+			);
+			const commandStdinRes = new MockResponse();
+			commandStdinRes.req = commandStdinReq;
+			await expect(
+				handleHeadlessSessionMessage(
+					commandStdinReq,
+					commandStdinRes as unknown as ServerResponse,
+					context,
+					{ id: sessionId },
+				),
+			).rejects.toMatchObject({
+				statusCode: 403,
+				message: "Headless command cmd_owned is owned by another connection",
+			});
+
+			const commandReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{
+					type: "utility_command_terminate",
+					command_id: "cmd_owned",
+				},
+				{
+					"x-maestro-headless-subscriber-id": second.subscription_id,
+					"x-maestro-headless-role": "controller",
+				},
+			);
+			const commandRes = new MockResponse();
+			commandRes.req = commandReq;
+			await expect(
+				handleHeadlessSessionMessage(
+					commandReq,
+					commandRes as unknown as ServerResponse,
+					context,
+					{ id: sessionId },
+				),
+			).rejects.toMatchObject({
+				statusCode: 403,
+				message: "Headless command cmd_owned is owned by another connection",
+			});
+
+			const watchReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{
+					type: "utility_file_watch_stop",
+					watch_id: "watch_owned",
+				},
+				{
+					"x-maestro-headless-subscriber-id": second.subscription_id,
+					"x-maestro-headless-role": "controller",
+				},
+			);
+			const watchRes = new MockResponse();
+			watchRes.req = watchReq;
+			await expect(
+				handleHeadlessSessionMessage(
+					watchReq,
+					watchRes as unknown as ServerResponse,
+					context,
+					{ id: sessionId },
+				),
+			).rejects.toMatchObject({
+				statusCode: 403,
+				message:
+					"Headless file watch watch_owned is owned by another connection",
+			});
+
+			expect(runtime.getSnapshot().state.active_utility_commands).toEqual([
+				expect.objectContaining({
+					command_id: "cmd_owned",
+					owner_connection_id: first.connection_id,
+				}),
+			]);
+			expect(runtime.getSnapshot().state.active_file_watches).toEqual([
+				expect.objectContaining({
+					watch_id: "watch_owned",
+					owner_connection_id: first.connection_id,
+				}),
+			]);
+
+			await runtime.dispose();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("passes client tool creation options through to the agent factory", async () => {
 		const createAgent = vi.fn().mockResolvedValue(new FakeAgent());
 		const context = createContext({ createAgent });
@@ -1498,6 +1650,78 @@ describe("headless session handlers", () => {
 			statusCode: 403,
 			message: "Viewer headless connections cannot send messages",
 		});
+		expect(runtime.send).not.toHaveBeenCalled();
+	});
+
+	it("rejects malformed headless message payloads against generated schemas", async () => {
+		const runtime = {
+			assertCanSend: vi.fn(),
+			send: vi.fn().mockResolvedValue(undefined),
+		};
+		const context = createContext({
+			headlessRuntimeService: {
+				getRuntime: vi.fn().mockReturnValue(runtime),
+			} as unknown as HeadlessRuntimeService,
+		});
+		const req = createJsonRequest(
+			"POST",
+			"/api/headless/sessions/sess_123/messages",
+			{
+				type: "utility_command_stdin",
+				command_id: "cmd_missing_content",
+			},
+		);
+		const res = new MockResponse();
+		res.req = req;
+
+		await expect(
+			handleHeadlessSessionMessage(
+				req,
+				res as unknown as ServerResponse,
+				context,
+				{ id: "sess_123" },
+			),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			message: expect.stringContaining("content"),
+		});
+		expect(runtime.assertCanSend).not.toHaveBeenCalled();
+		expect(runtime.send).not.toHaveBeenCalled();
+	});
+
+	it("rejects unexpected properties on known headless message types", async () => {
+		const runtime = {
+			assertCanSend: vi.fn(),
+			send: vi.fn().mockResolvedValue(undefined),
+		};
+		const context = createContext({
+			headlessRuntimeService: {
+				getRuntime: vi.fn().mockReturnValue(runtime),
+			} as unknown as HeadlessRuntimeService,
+		});
+		const req = createJsonRequest(
+			"POST",
+			"/api/headless/sessions/sess_123/messages",
+			{
+				type: "interrupt",
+				unexpected: true,
+			},
+		);
+		const res = new MockResponse();
+		res.req = req;
+
+		await expect(
+			handleHeadlessSessionMessage(
+				req,
+				res as unknown as ServerResponse,
+				context,
+				{ id: "sess_123" },
+			),
+		).rejects.toMatchObject({
+			statusCode: 400,
+			message: expect.stringContaining("additional properties"),
+		});
+		expect(runtime.assertCanSend).not.toHaveBeenCalled();
 		expect(runtime.send).not.toHaveBeenCalled();
 	});
 

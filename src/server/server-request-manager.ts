@@ -82,6 +82,17 @@ type RegisterClientToolOptions = {
 const DEFAULT_APPROVAL_TIMEOUT_MS = 60 * 60 * 1000;
 const DEFAULT_CLIENT_TOOL_TIMEOUT_MS = 60 * 1000;
 
+function getTimeoutReason(kind: ServerRequestKind): string {
+	switch (kind) {
+		case "approval":
+			return "Approval request timed out";
+		case "user_input":
+			return "User input request timed out before the connected client responded.";
+		case "client_tool":
+			return "Client tool execution timed out after 60 seconds. The VS Code extension may not be responding.";
+	}
+}
+
 export class ServerRequestManager {
 	private readonly pending = new Map<string, PendingServerRequestEntry>();
 	private readonly listeners = new Set<ServerRequestListener>();
@@ -303,14 +314,7 @@ export class ServerRequestManager {
 			if (now - entry.timestamp <= entry.timeoutMs) {
 				continue;
 			}
-			if (entry.kind === "approval") {
-				this.cancel(entry.id, "Approval request timed out");
-			} else {
-				this.cancel(
-					entry.id,
-					"Client tool execution timed out after 60 seconds. The VS Code extension may not be responding.",
-				);
-			}
+			this.cancel(entry.id, getTimeoutReason(entry.kind));
 		}
 	}
 

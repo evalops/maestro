@@ -93,6 +93,22 @@ export class HeadlessUtilityCommandManager {
 		}));
 	}
 
+	get(commandId: string): HeadlessUtilityCommandSnapshot | undefined {
+		const active = this.commands.get(commandId);
+		if (!active) {
+			return undefined;
+		}
+		return {
+			command_id: commandId,
+			command: active.command,
+			cwd: active.cwd,
+			shell_mode: active.shell_mode,
+			pid: active.child.pid ?? undefined,
+			owner_connection_id: active.owner_connection_id,
+			output: active.output,
+		};
+	}
+
 	start(request: HeadlessUtilityCommandStartRequest): void {
 		if (this.commands.has(request.command_id)) {
 			throw new Error(`Utility command already exists: ${request.command_id}`);

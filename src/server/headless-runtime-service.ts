@@ -674,6 +674,20 @@ export class HeadlessSessionRuntime {
 		return subscriber?.connectionId ?? metadata?.connectionId ?? undefined;
 	}
 
+	private assertUtilityOwnerAccess(
+		ownerConnectionId: string | undefined,
+		actorConnectionId: string | undefined,
+		resourceType: "command" | "file watch",
+		resourceId: string,
+	): void {
+		if (!ownerConnectionId || ownerConnectionId === actorConnectionId) {
+			return;
+		}
+		throw new Error(
+			`Headless ${resourceType} ${resourceId} is owned by another connection`,
+		);
+	}
+
 	private async disposeOwnedUtilitiesForConnection(
 		connectionId: string,
 	): Promise<void> {
@@ -719,6 +733,25 @@ export class HeadlessSessionRuntime {
 			({
 				id: metadata.connectionId ?? createConnectionId(),
 				role,
+				clientProtocolVersion:
+					metadata.clientProtocolVersion ??
+					this.state.client_protocol_version ??
+					undefined,
+				clientInfo:
+					metadata.clientInfo ??
+					(this.state.client_info ? { ...this.state.client_info } : undefined),
+				capabilities:
+					metadata.capabilities ??
+					(this.state.capabilities
+						? {
+								server_requests: this.state.capabilities.server_requests
+									? [...this.state.capabilities.server_requests]
+									: undefined,
+								utility_operations: this.state.capabilities.utility_operations
+									? [...this.state.capabilities.utility_operations]
+									: undefined,
+							}
+						: undefined),
 				subscriptionIds: new Set<string>(),
 				lastSeenAt: Date.now(),
 			} satisfies HeadlessConnectionRecord);
@@ -1223,6 +1256,12 @@ export class HeadlessSessionRuntime {
 				});
 				return;
 			case "utility_command_terminate":
+				this.assertUtilityOwnerAccess(
+					this.utilityCommands.get(msg.command_id)?.owner_connection_id,
+					this.getMessageConnectionId(metadata),
+					"command",
+					msg.command_id,
+				);
 				await this.utilityCommands.terminate(msg.command_id, msg.force);
 				return;
 			case "utility_command_stdin":
@@ -1233,6 +1272,12 @@ export class HeadlessSessionRuntime {
 						"utility_command_stdin requires command_exec capability",
 					);
 				}
+				this.assertUtilityOwnerAccess(
+					this.utilityCommands.get(msg.command_id)?.owner_connection_id,
+					this.getMessageConnectionId(metadata),
+					"command",
+					msg.command_id,
+				);
 				await this.utilityCommands.writeStdin(
 					msg.command_id,
 					msg.content,
@@ -1281,6 +1326,12 @@ export class HeadlessSessionRuntime {
 				});
 				return;
 			case "utility_file_watch_stop":
+				this.assertUtilityOwnerAccess(
+					this.fileWatches.get(msg.watch_id)?.owner_connection_id,
+					this.getMessageConnectionId(metadata),
+					"file watch",
+					msg.watch_id,
+				);
 				this.fileWatches.stop(msg.watch_id, "Stopped by controller");
 				return;
 		}
