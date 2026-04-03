@@ -8,6 +8,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use rand::Rng as _;
 use tokio::sync::mpsc;
 // Note: interval/timeout available for future health checking
 use tokio_util::sync::CancellationToken;
@@ -20,6 +21,32 @@ use super::remote_transport::{RemoteAgentTransport, RemoteIncoming, RemoteTransp
 use super::session::{SessionReader, SessionRecorder, SessionReplay};
 
 const MAX_STALE_REMOTE_REFERENCE_RETRIES: u32 = 3;
+const MIN_RECONNECT_SLEEP: Duration = Duration::from_millis(1);
+
+fn jittered_reconnect_delay_for_sample(
+    base_delay: Duration,
+    jitter_factor: f64,
+    jitter_sample: f64,
+) -> Duration {
+    if jitter_factor <= 0.0 || base_delay.is_zero() {
+        return base_delay;
+    }
+
+    let capped_sample = jitter_sample.clamp(-1.0, 1.0);
+    let jittered_secs = (base_delay.as_secs_f64()
+        + base_delay.as_secs_f64() * jitter_factor * capped_sample)
+        .max(MIN_RECONNECT_SLEEP.as_secs_f64());
+    Duration::from_secs_f64(jittered_secs)
+}
+
+fn jittered_reconnect_delay(base_delay: Duration, jitter_factor: f64) -> Duration {
+    if jitter_factor <= 0.0 || base_delay.is_zero() {
+        return base_delay;
+    }
+
+    let mut rng = rand::rng();
+    jittered_reconnect_delay_for_sample(base_delay, jitter_factor, rng.random_range(-1.0..=1.0))
+}
 
 /// Supervisor configuration
 #[derive(Debug, Clone)]
@@ -36,6 +63,8 @@ pub struct SupervisorConfig {
     pub max_reconnect_delay: Duration,
     /// Backoff multiplier for reconnection delay
     pub backoff_multiplier: f64,
+    /// Randomized reconnect jitter ratio (0.25 = +/-25%).
+    pub reconnect_jitter_factor: f64,
     /// Maximum total wall-clock time spent reconnecting before giving up.
     pub max_reconnect_elapsed: Duration,
     /// Health check interval
@@ -55,6 +84,7 @@ impl Default for SupervisorConfig {
             reconnect_delay: Duration::from_secs(1),
             max_reconnect_delay: Duration::from_secs(30),
             backoff_multiplier: 2.0,
+            reconnect_jitter_factor: 0.25,
             max_reconnect_elapsed: Duration::from_secs(600),
             health_check_interval: Duration::from_secs(30),
             health_check_timeout: Duration::from_secs(5),
@@ -410,7 +440,9 @@ impl AgentSupervisor {
                         .config
                         .max_reconnect_elapsed
                         .saturating_sub(reconnect_elapsed);
-                    let sleep_duration = delay.min(remaining_budget);
+                    let sleep_duration =
+                        jittered_reconnect_delay(delay, self.config.reconnect_jitter_factor)
+                            .min(remaining_budget);
                     if sleep_duration.is_zero() {
                         self.health_status = HealthStatus::Unhealthy;
                         let _ = self.event_tx.send(SupervisorEvent::HealthChanged {
@@ -944,6 +976,13 @@ impl SupervisorBuilder {
         self
     }
 
+    /// Set randomized reconnect jitter ratio (0.25 = +/-25%).
+    #[must_use]
+    pub fn reconnect_jitter_factor(mut self, jitter_factor: f64) -> Self {
+        self.config.reconnect_jitter_factor = jitter_factor;
+        self
+    }
+
     /// Set maximum total wall-clock time allowed for a reconnect loop.
     #[must_use]
     pub fn max_reconnect_elapsed(mut self, elapsed: Duration) -> Self {
@@ -1384,8 +1423,27 @@ mod tests {
         let config = SupervisorConfig::default();
         assert_eq!(config.max_reconnect_attempts, 5);
         assert_eq!(config.reconnect_delay, Duration::from_secs(1));
+        assert!((config.reconnect_jitter_factor - 0.25).abs() < f64::EPSILON);
         assert_eq!(config.max_reconnect_elapsed, Duration::from_secs(600));
         assert!(config.auto_reconnect);
+    }
+
+    #[test]
+    fn reconnect_jitter_sample_stays_within_expected_bounds() {
+        let base_delay = Duration::from_secs(4);
+
+        assert_eq!(
+            jittered_reconnect_delay_for_sample(base_delay, 0.25, -1.0),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            jittered_reconnect_delay_for_sample(base_delay, 0.25, 1.0),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            jittered_reconnect_delay_for_sample(base_delay, 0.25, 0.0),
+            base_delay
+        );
     }
 
     #[test]
