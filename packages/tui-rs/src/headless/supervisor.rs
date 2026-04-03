@@ -543,7 +543,9 @@ impl AgentSupervisor {
     }
 
     fn handle_transport_error(&mut self, error: AsyncTransportError) -> SupervisorEvent {
-        self.transport = None;
+        if let Some(transport) = self.transport.take() {
+            let _ = transport.shutdown();
+        }
         self.last_response = None;
         self.health_status = HealthStatus::Unhealthy;
         SupervisorEvent::Disconnected {
@@ -2241,6 +2243,57 @@ done
         assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
         assert!(!supervisor.pending_auto_reconnect);
         assert!(supervisor.poll().is_none());
+    }
+
+    #[tokio::test]
+    async fn non_retryable_remote_disconnect_shuts_down_transport() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 0,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let (addr, _posted_bodies, _request_headers, _request_bodies) =
+            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
+
+        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+        let cancel_token = transport.cancel_token();
+
+        let mut supervisor = SupervisorBuilder::new().build();
+        supervisor.transport = Some(ManagedTransport::Remote(transport));
+
+        let disconnect =
+            supervisor.handle_transport_disconnect(AsyncTransportError::RemoteStatus {
+                status: 409,
+                retryable: false,
+                kind: RemoteErrorKind::ControllerLeaseConflict,
+                message: "remote request failed with status 409 Conflict".to_string(),
+            });
+
+        assert!(matches!(
+            disconnect,
+            SupervisorEvent::Disconnected { ref error }
+                if error.contains("409 Conflict")
+        ));
+        tokio::time::timeout(Duration::from_secs(1), cancel_token.cancelled())
+            .await
+            .expect("cancel token should be cancelled");
+        assert!(supervisor.transport.is_none());
     }
 
     #[test]
