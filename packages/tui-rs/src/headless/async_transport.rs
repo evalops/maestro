@@ -47,6 +47,18 @@ impl Default for AsyncTransportConfig {
     }
 }
 
+/// Structured classification for remote HTTP/SSE transport failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteErrorKind {
+    Other,
+    StaleConnection,
+    StaleSubscriber,
+    ControllerLeaseConflict,
+    RoleConflict,
+    AccessDenied,
+    OwnershipConflict,
+}
+
 /// Error type for async transport operations
 #[derive(Debug)]
 pub enum AsyncTransportError {
@@ -71,6 +83,7 @@ pub enum AsyncTransportError {
         status: u16,
         message: String,
         retryable: bool,
+        kind: RemoteErrorKind,
     },
 }
 
@@ -108,6 +121,19 @@ impl AsyncTransportError {
             Self::RemoteStatus { retryable, .. } => *retryable,
             _ => true,
         }
+    }
+
+    /// Whether this error should consume the dedicated stale remote-reference
+    /// retry budget used for transient connection/subscriber misses.
+    #[must_use]
+    pub fn uses_stale_reference_retry_budget(&self) -> bool {
+        matches!(
+            self,
+            Self::RemoteStatus {
+                kind: RemoteErrorKind::StaleConnection | RemoteErrorKind::StaleSubscriber,
+                ..
+            }
+        )
     }
 }
 

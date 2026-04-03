@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::async_transport::AsyncTransportError;
+use super::async_transport::{AsyncTransportError, RemoteErrorKind};
 use super::messages::{
     ActiveFileWatch, ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities,
     ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage, HeadlessErrorType, InitConfig,
@@ -1300,32 +1300,44 @@ async fn decode_json_response<T: for<'de> Deserialize<'de>>(
         .map_err(|error| AsyncTransportError::Remote(error.to_string()))
 }
 
-fn is_retryable_remote_status(status: StatusCode, kind: RemoteRequestKind, body: &str) -> bool {
+fn classify_remote_status(
+    status: StatusCode,
+    kind: RemoteRequestKind,
+    body: &str,
+) -> (bool, RemoteErrorKind) {
     let trimmed_body = body.trim();
 
     if trimmed_body.contains("Headless connection not found") {
-        return !matches!(kind, RemoteRequestKind::Bootstrap);
+        return (
+            !matches!(kind, RemoteRequestKind::Bootstrap),
+            RemoteErrorKind::StaleConnection,
+        );
     }
     if trimmed_body.contains("Headless subscriber not found") {
-        return matches!(
-            kind,
-            RemoteRequestKind::Stream | RemoteRequestKind::Message | RemoteRequestKind::Heartbeat
+        return (
+            matches!(
+                kind,
+                RemoteRequestKind::Stream
+                    | RemoteRequestKind::Message
+                    | RemoteRequestKind::Heartbeat
+            ),
+            RemoteErrorKind::StaleSubscriber,
         );
     }
     if trimmed_body.contains("Controller lease") {
-        return false;
+        return (false, RemoteErrorKind::ControllerLeaseConflict);
     }
     if trimmed_body.contains("role does not match subscription role") {
-        return false;
+        return (false, RemoteErrorKind::RoleConflict);
     }
     if trimmed_body.contains("does not have controller access") {
-        return false;
+        return (false, RemoteErrorKind::AccessDenied);
     }
     if trimmed_body.contains("owned by another connection") {
-        return false;
+        return (false, RemoteErrorKind::OwnershipConflict);
     }
 
-    match kind {
+    let retryable = match kind {
         RemoteRequestKind::Bootstrap => !matches!(
             status,
             StatusCode::UNAUTHORIZED
@@ -1340,7 +1352,8 @@ fn is_retryable_remote_status(status: StatusCode, kind: RemoteRequestKind, body:
         RemoteRequestKind::Message | RemoteRequestKind::Stream | RemoteRequestKind::Heartbeat => {
             !matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
         }
-    }
+    };
+    (retryable, RemoteErrorKind::Other)
 }
 
 async fn response_status_error(
@@ -1359,9 +1372,11 @@ async fn response_status_error(
     } else {
         format!("remote request failed with status {status}: {body}")
     };
+    let (retryable, kind) = classify_remote_status(status, kind, &body);
     AsyncTransportError::RemoteStatus {
         status: status.as_u16(),
-        retryable: is_retryable_remote_status(status, kind, &body),
+        retryable,
+        kind,
         message,
     }
 }
@@ -2087,6 +2102,7 @@ mod tests {
             AsyncTransportError::RemoteStatus {
                 status: 409,
                 retryable: false,
+                kind: RemoteErrorKind::ControllerLeaseConflict,
                 ..
             }
         ));
@@ -2218,6 +2234,7 @@ mod tests {
             AsyncTransportError::RemoteStatus {
                 status: 404,
                 retryable: true,
+                kind: RemoteErrorKind::StaleSubscriber,
                 ..
             }
         ));
@@ -2227,20 +2244,62 @@ mod tests {
 
     #[test]
     fn retryability_allows_recovery_from_stale_message_connection_errors() {
-        assert!(is_retryable_remote_status(
-            StatusCode::FORBIDDEN,
-            RemoteRequestKind::Message,
-            r#"{"error":"Headless connection not found"}"#,
-        ));
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::FORBIDDEN,
+                RemoteRequestKind::Message,
+                r#"{"error":"Headless connection not found"}"#,
+            ),
+            (true, RemoteErrorKind::StaleConnection)
+        );
+    }
+
+    #[test]
+    fn retryability_stops_bootstrap_connection_not_found_retries() {
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::NOT_FOUND,
+                RemoteRequestKind::Bootstrap,
+                r#"{"error":"Headless connection not found"}"#,
+            ),
+            (false, RemoteErrorKind::StaleConnection)
+        );
     }
 
     #[test]
     fn retryability_keeps_controller_lease_conflicts_non_retryable() {
-        assert!(!is_retryable_remote_status(
-            StatusCode::CONFLICT,
-            RemoteRequestKind::Subscribe,
-            r#"{"error":"Controller lease is already held by another connection"}"#,
-        ));
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::CONFLICT,
+                RemoteRequestKind::Subscribe,
+                r#"{"error":"Controller lease is already held by another connection"}"#,
+            ),
+            (false, RemoteErrorKind::ControllerLeaseConflict)
+        );
+    }
+
+    #[test]
+    fn retryability_keeps_subscriber_not_found_retryable_for_streams() {
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::NOT_FOUND,
+                RemoteRequestKind::Stream,
+                r#"{"error":"Headless subscriber not found"}"#,
+            ),
+            (true, RemoteErrorKind::StaleSubscriber)
+        );
+    }
+
+    #[test]
+    fn retryability_stops_subscriber_not_found_retries_for_subscribe() {
+        assert_eq!(
+            classify_remote_status(
+                StatusCode::NOT_FOUND,
+                RemoteRequestKind::Subscribe,
+                r#"{"error":"Headless subscriber not found"}"#,
+            ),
+            (false, RemoteErrorKind::StaleSubscriber)
+        );
     }
 
     #[tokio::test]
