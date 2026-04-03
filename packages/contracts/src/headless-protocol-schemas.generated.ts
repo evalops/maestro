@@ -15,6 +15,7 @@ import {
 	headlessThinkingLevels,
 	headlessUtilityCommandShellModes,
 	headlessUtilityCommandStreams,
+	headlessUtilityCommandTerminalModes,
 	headlessUtilityFileWatchChangeTypes,
 	headlessUtilityOperations,
 } from "./headless-protocol-generated.js";
@@ -174,7 +175,12 @@ export const HeadlessUtilityCommandStartMessageSchema = Type.Object(
 		shell_mode: Type.Optional(
 			stringLiteralUnion(headlessUtilityCommandShellModes),
 		),
+		terminal_mode: Type.Optional(
+			stringLiteralUnion(headlessUtilityCommandTerminalModes),
+		),
 		allow_stdin: Type.Optional(Type.Boolean()),
+		columns: Type.Optional(Type.Number()),
+		rows: Type.Optional(Type.Number()),
 	},
 	{ additionalProperties: false },
 );
@@ -194,6 +200,16 @@ export const HeadlessUtilityCommandStdinMessageSchema = Type.Object(
 		command_id: Type.String(),
 		content: Type.String(),
 		eof: Type.Optional(Type.Boolean()),
+	},
+	{ additionalProperties: false },
+);
+
+export const HeadlessUtilityCommandResizeMessageSchema = Type.Object(
+	{
+		type: Type.Literal("utility_command_resize"),
+		command_id: Type.String(),
+		columns: Type.Number(),
+		rows: Type.Number(),
 	},
 	{ additionalProperties: false },
 );
@@ -254,6 +270,7 @@ export const headlessToAgentMessageSchemasByType = {
 	utility_command_start: HeadlessUtilityCommandStartMessageSchema,
 	utility_command_terminate: HeadlessUtilityCommandTerminateMessageSchema,
 	utility_command_stdin: HeadlessUtilityCommandStdinMessageSchema,
+	utility_command_resize: HeadlessUtilityCommandResizeMessageSchema,
 	utility_file_search: HeadlessUtilityFileSearchMessageSchema,
 	utility_file_watch_start: HeadlessUtilityFileWatchStartMessageSchema,
 	utility_file_watch_stop: HeadlessUtilityFileWatchStopMessageSchema,
@@ -406,8 +423,21 @@ export const HeadlessUtilityCommandStartedMessageSchema = Type.Object(
 		command: Type.String(),
 		cwd: Type.Optional(Type.String()),
 		shell_mode: stringLiteralUnion(headlessUtilityCommandShellModes),
+		terminal_mode: stringLiteralUnion(headlessUtilityCommandTerminalModes),
 		pid: Type.Optional(Type.Number()),
+		columns: Type.Optional(Type.Number()),
+		rows: Type.Optional(Type.Number()),
 		owner_connection_id: Type.Optional(Type.String()),
+	},
+	{ additionalProperties: false },
+);
+
+export const HeadlessUtilityCommandResizedMessageSchema = Type.Object(
+	{
+		type: Type.Literal("utility_command_resized"),
+		command_id: Type.String(),
+		columns: Type.Number(),
+		rows: Type.Number(),
 	},
 	{ additionalProperties: false },
 );
@@ -582,6 +612,7 @@ export const headlessFromAgentMessageSchemasByType = {
 	server_request: HeadlessServerRequestMessageSchema,
 	server_request_resolved: HeadlessServerRequestResolvedMessageSchema,
 	utility_command_started: HeadlessUtilityCommandStartedMessageSchema,
+	utility_command_resized: HeadlessUtilityCommandResizedMessageSchema,
 	utility_command_output: HeadlessUtilityCommandOutputMessageSchema,
 	utility_command_exited: HeadlessUtilityCommandExitedMessageSchema,
 	utility_file_search_results: HeadlessUtilityFileSearchResultsMessageSchema,
@@ -606,6 +637,7 @@ export const HeadlessToAgentMessageSchema = Type.Union([
 	HeadlessUtilityCommandStartMessageSchema,
 	HeadlessUtilityCommandTerminateMessageSchema,
 	HeadlessUtilityCommandStdinMessageSchema,
+	HeadlessUtilityCommandResizeMessageSchema,
 	HeadlessUtilityFileSearchMessageSchema,
 	HeadlessUtilityFileWatchStartMessageSchema,
 	HeadlessUtilityFileWatchStopMessageSchema,
@@ -630,6 +662,7 @@ export const HeadlessFromAgentMessageSchema = Type.Union([
 	HeadlessServerRequestMessageSchema,
 	HeadlessServerRequestResolvedMessageSchema,
 	HeadlessUtilityCommandStartedMessageSchema,
+	HeadlessUtilityCommandResizedMessageSchema,
 	HeadlessUtilityCommandOutputMessageSchema,
 	HeadlessUtilityCommandExitedMessageSchema,
 	HeadlessUtilityFileSearchResultsMessageSchema,
@@ -681,7 +714,10 @@ export const HeadlessActiveUtilityCommandStateSchema = Type.Object(
 		command: Type.String(),
 		cwd: Type.Optional(Type.String()),
 		shell_mode: stringLiteralUnion(headlessUtilityCommandShellModes),
+		terminal_mode: stringLiteralUnion(headlessUtilityCommandTerminalModes),
 		pid: Type.Optional(Type.Number()),
+		columns: Type.Optional(Type.Number()),
+		rows: Type.Optional(Type.Number()),
 		owner_connection_id: Type.Optional(Type.String()),
 		output: Type.String(),
 	},

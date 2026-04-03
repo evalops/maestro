@@ -205,7 +205,14 @@
 					"name": "headlessUtilityCommandShellModes",
 					"optional": true
 				},
-				"allow_stdin": { "kind": "boolean", "optional": true }
+				"terminal_mode": {
+					"kind": "enumRef",
+					"name": "headlessUtilityCommandTerminalModes",
+					"optional": true
+				},
+				"allow_stdin": { "kind": "boolean", "optional": true },
+				"columns": { "kind": "number", "optional": true },
+				"rows": { "kind": "number", "optional": true }
 			}
 		},
 		"HeadlessUtilityCommandTerminateMessageSchema": {
@@ -225,6 +232,16 @@
 				"command_id": { "kind": "string" },
 				"content": { "kind": "string" },
 				"eof": { "kind": "boolean", "optional": true }
+			}
+		},
+		"HeadlessUtilityCommandResizeMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_resize" },
+				"command_id": { "kind": "string" },
+				"columns": { "kind": "number" },
+				"rows": { "kind": "number" }
 			}
 		},
 		"HeadlessUtilityFileSearchMessageSchema": {
@@ -463,8 +480,24 @@
 					"kind": "enumRef",
 					"name": "headlessUtilityCommandShellModes"
 				},
+				"terminal_mode": {
+					"kind": "enumRef",
+					"name": "headlessUtilityCommandTerminalModes"
+				},
 				"pid": { "kind": "number", "optional": true },
+				"columns": { "kind": "number", "optional": true },
+				"rows": { "kind": "number", "optional": true },
 				"owner_connection_id": { "kind": "string", "optional": true }
+			}
+		},
+		"HeadlessUtilityCommandResizedMessageSchema": {
+			"kind": "object",
+			"additionalProperties": false,
+			"properties": {
+				"type": { "kind": "literal", "value": "utility_command_resized" },
+				"command_id": { "kind": "string" },
+				"columns": { "kind": "number" },
+				"rows": { "kind": "number" }
 			}
 		},
 		"HeadlessUtilityCommandOutputMessageSchema": {
@@ -774,7 +807,13 @@
 					"kind": "enumRef",
 					"name": "headlessUtilityCommandShellModes"
 				},
+				"terminal_mode": {
+					"kind": "enumRef",
+					"name": "headlessUtilityCommandTerminalModes"
+				},
 				"pid": { "kind": "number", "optional": true },
+				"columns": { "kind": "number", "optional": true },
+				"rows": { "kind": "number", "optional": true },
 				"owner_connection_id": { "kind": "string", "optional": true },
 				"output": { "kind": "string" }
 			}

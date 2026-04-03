@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { getHeadlessPtyPythonCommand } from "../../src/headless/pty-helper.js";
 import { HeadlessUtilityCommandManager } from "../../src/headless/utility-command-manager.js";
 
 function waitForExit(
@@ -33,6 +34,17 @@ function waitForEvent(
 		}, 20);
 	});
 }
+
+const supportsPty =
+	process.platform !== "win32" &&
+	(() => {
+		try {
+			getHeadlessPtyPythonCommand();
+			return true;
+		} catch {
+			return false;
+		}
+	})();
 
 describe("HeadlessUtilityCommandManager", () => {
 	let manager: HeadlessUtilityCommandManager | null = null;
@@ -188,6 +200,109 @@ describe("HeadlessUtilityCommandManager", () => {
 		await manager.terminate("cmd_no_stdin");
 		await waitForExit(events as Array<{ type: string }>);
 	});
+
+	it("rejects resize requests for non-PTY commands", async () => {
+		const events: Array<Record<string, unknown>> = [];
+		manager = new HeadlessUtilityCommandManager((event) => {
+			events.push(event as Record<string, unknown>);
+		});
+
+		manager.start({
+			command_id: "cmd_pipe_only",
+			command: `"${process.execPath}" -e "setInterval(() => {}, 1000)"`,
+			shell_mode: "direct",
+		});
+
+		await expect(manager.resize("cmd_pipe_only", 100, 40)).rejects.toThrow(
+			"Utility command resize is only supported for PTY commands: cmd_pipe_only",
+		);
+
+		await manager.terminate("cmd_pipe_only");
+		await waitForExit(events as Array<{ type: string }>);
+	});
+
+	it.skipIf(!supportsPty)(
+		"starts PTY-backed commands and applies resize events",
+		async () => {
+			const events: Array<Record<string, unknown>> = [];
+			manager = new HeadlessUtilityCommandManager((event) => {
+				events.push(event as Record<string, unknown>);
+			});
+
+			const script = [
+				"process.stdout.write(`START:${Number(process.stdout.isTTY)}:${process.stdout.columns}x${process.stdout.rows}\\n`);",
+				"process.stdout.on('resize', () => {",
+				"  process.stdout.write(`RESIZE:${process.stdout.columns}x${process.stdout.rows}\\n`);",
+				"});",
+				"setInterval(() => {}, 1000);",
+			].join("");
+			const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
+
+			await manager.start({
+				command_id: "cmd_pty",
+				command,
+				shell_mode: "direct",
+				terminal_mode: "pty",
+				columns: 90,
+				rows: 30,
+			});
+
+			await waitForEvent(
+				() =>
+					events.some(
+						(event) =>
+							event.type === "output" &&
+							event.command_id === "cmd_pty" &&
+							typeof event.content === "string" &&
+							event.content.includes("START:1:90x30"),
+					),
+				5000,
+				"Timed out waiting for PTY startup output",
+			);
+
+			expect(events[0]).toMatchObject({
+				type: "started",
+				command_id: "cmd_pty",
+				terminal_mode: "pty",
+				columns: 90,
+				rows: 30,
+			});
+			expect(manager.get("cmd_pty")).toMatchObject({
+				command_id: "cmd_pty",
+				terminal_mode: "pty",
+				columns: 90,
+				rows: 30,
+			});
+
+			await manager.resize("cmd_pty", 120, 50);
+			await waitForEvent(
+				() =>
+					events.some(
+						(event) =>
+							event.type === "resized" &&
+							event.command_id === "cmd_pty" &&
+							event.columns === 120 &&
+							event.rows === 50,
+					),
+				5000,
+				"Timed out waiting for PTY resize event",
+			);
+
+			expect(manager.get("cmd_pty")).toMatchObject({
+				command_id: "cmd_pty",
+				terminal_mode: "pty",
+				columns: 120,
+				rows: 50,
+			});
+
+			await manager.terminate("cmd_pty");
+			await waitForExit(events as Array<{ type: string }>);
+			expect(events.at(-1)).toMatchObject({
+				type: "exited",
+				command_id: "cmd_pty",
+			});
+		},
+	);
 
 	it("treats terminate as a no-op after natural exit", async () => {
 		const events: Array<Record<string, unknown>> = [];

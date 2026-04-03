@@ -96,6 +96,12 @@ export const headlessUtilityCommandShellModes = ${toTsConst(
 export type HeadlessUtilityCommandShellMode =
 \t(typeof headlessUtilityCommandShellModes)[number];
 
+export const headlessUtilityCommandTerminalModes = ${toTsConst(
+		manifest.utilityCommandTerminalModes,
+	)};
+export type HeadlessUtilityCommandTerminalMode =
+\t(typeof headlessUtilityCommandTerminalModes)[number];
+
 export const headlessUtilityFileWatchChangeTypes = ${toTsConst(
 		manifest.utilityFileWatchChangeTypes,
 	)};
@@ -356,6 +362,9 @@ pub const HEADLESS_UTILITY_COMMAND_STREAMS: &[&str] = ${toRustArray(
 	)};
 pub const HEADLESS_UTILITY_COMMAND_SHELL_MODES: &[&str] = ${toRustArray(
 		manifest.utilityCommandShellModes,
+	)};
+pub const HEADLESS_UTILITY_COMMAND_TERMINAL_MODES: &[&str] = ${toRustArray(
+		manifest.utilityCommandTerminalModes,
 	)};
 pub const HEADLESS_UTILITY_FILE_WATCH_CHANGE_TYPES: &[&str] = ${toRustArray(
 		manifest.utilityFileWatchChangeTypes,

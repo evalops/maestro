@@ -398,10 +398,23 @@ export class HeadlessSessionRuntime {
 						type: "utility_command_started",
 						command_id: event.command_id,
 						command: event.command,
-						cwd: event.cwd,
+						...(event.cwd ? { cwd: event.cwd } : {}),
 						shell_mode: event.shell_mode,
-						pid: event.pid,
-						owner_connection_id: event.owner_connection_id,
+						terminal_mode: event.terminal_mode,
+						...(event.pid !== undefined ? { pid: event.pid } : {}),
+						...(event.columns !== undefined ? { columns: event.columns } : {}),
+						...(event.rows !== undefined ? { rows: event.rows } : {}),
+						...(event.owner_connection_id
+							? { owner_connection_id: event.owner_connection_id }
+							: {}),
+					});
+					return;
+				case "resized":
+					this.publish({
+						type: "utility_command_resized",
+						command_id: event.command_id,
+						columns: event.columns,
+						rows: event.rows,
 					});
 					return;
 				case "output":
@@ -1355,7 +1368,10 @@ export class HeadlessSessionRuntime {
 					cwd: msg.cwd,
 					env: msg.env,
 					shell_mode: msg.shell_mode,
+					terminal_mode: msg.terminal_mode,
 					allow_stdin: msg.allow_stdin,
+					columns: msg.columns,
+					rows: msg.rows,
 					owner_connection_id: this.getMessageConnectionId(metadata),
 				});
 				return;
@@ -1386,6 +1402,26 @@ export class HeadlessSessionRuntime {
 					msg.command_id,
 					msg.content,
 					msg.eof,
+				);
+				return;
+			case "utility_command_resize":
+				if (
+					!this.state.capabilities?.utility_operations?.includes("command_exec")
+				) {
+					throw new Error(
+						"utility_command_resize requires command_exec capability",
+					);
+				}
+				this.assertUtilityOwnerAccess(
+					this.utilityCommands.get(msg.command_id)?.owner_connection_id,
+					this.getMessageConnectionId(metadata),
+					"command",
+					msg.command_id,
+				);
+				await this.utilityCommands.resize(
+					msg.command_id,
+					msg.columns,
+					msg.rows,
 				);
 				return;
 			case "utility_file_search":

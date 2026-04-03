@@ -1620,6 +1620,34 @@ describe("headless session handlers", () => {
 				message: "Headless command cmd_owned is owned by another connection",
 			});
 
+			const commandResizeReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{
+					type: "utility_command_resize",
+					command_id: "cmd_owned",
+					columns: 100,
+					rows: 40,
+				},
+				{
+					"x-maestro-headless-subscriber-id": second.subscription_id,
+					"x-maestro-headless-role": "controller",
+				},
+			);
+			const commandResizeRes = new MockResponse();
+			commandResizeRes.req = commandResizeReq;
+			await expect(
+				handleHeadlessSessionMessage(
+					commandResizeReq,
+					commandResizeRes as unknown as ServerResponse,
+					context,
+					{ id: sessionId },
+				),
+			).rejects.toMatchObject({
+				statusCode: 403,
+				message: "Headless command cmd_owned is owned by another connection",
+			});
+
 			const watchReq = createJsonRequest(
 				"POST",
 				`/api/headless/sessions/${sessionId}/messages`,

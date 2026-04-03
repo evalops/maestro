@@ -84,10 +84,23 @@ export async function runHeadlessMode(
 					type: "utility_command_started",
 					command_id: event.command_id,
 					command: event.command,
-					cwd: event.cwd,
 					shell_mode: event.shell_mode,
-					pid: event.pid,
-					owner_connection_id: event.owner_connection_id,
+					terminal_mode: event.terminal_mode,
+					...(event.cwd ? { cwd: event.cwd } : {}),
+					...(event.pid !== undefined ? { pid: event.pid } : {}),
+					...(event.columns !== undefined ? { columns: event.columns } : {}),
+					...(event.rows !== undefined ? { rows: event.rows } : {}),
+					...(event.owner_connection_id
+						? { owner_connection_id: event.owner_connection_id }
+						: {}),
+				});
+				return;
+			case "resized":
+				sendMessage({
+					type: "utility_command_resized",
+					command_id: event.command_id,
+					columns: event.columns,
+					rows: event.rows,
 				});
 				return;
 			case "output":

@@ -18,6 +18,7 @@
 	"utilityOperations": ["command_exec", "file_search", "file_watch"],
 	"utilityCommandStreams": ["stdout", "stderr"],
 	"utilityCommandShellModes": ["shell", "direct"],
+	"utilityCommandTerminalModes": ["pipe", "pty"],
 	"utilityFileWatchChangeTypes": ["create", "modify", "delete", "rename"],
 	"toAgentMessageTypes": [
 		"hello",
@@ -30,6 +31,7 @@
 		"utility_command_start",
 		"utility_command_terminate",
 		"utility_command_stdin",
+		"utility_command_resize",
 		"utility_file_search",
 		"utility_file_watch_start",
 		"utility_file_watch_stop",
@@ -49,6 +51,7 @@
 		"server_request",
 		"server_request_resolved",
 		"utility_command_started",
+		"utility_command_resized",
 		"utility_command_output",
 		"utility_command_exited",
 		"utility_file_search_results",

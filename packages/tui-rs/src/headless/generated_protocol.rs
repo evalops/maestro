@@ -23,6 +23,7 @@ pub const HEADLESS_ERROR_TYPES: &[&str] = &["transient", "fatal", "tool", "cance
 pub const HEADLESS_UTILITY_OPERATIONS: &[&str] = &["command_exec", "file_search", "file_watch"];
 pub const HEADLESS_UTILITY_COMMAND_STREAMS: &[&str] = &["stdout", "stderr"];
 pub const HEADLESS_UTILITY_COMMAND_SHELL_MODES: &[&str] = &["shell", "direct"];
+pub const HEADLESS_UTILITY_COMMAND_TERMINAL_MODES: &[&str] = &["pipe", "pty"];
 pub const HEADLESS_UTILITY_FILE_WATCH_CHANGE_TYPES: &[&str] =
     &["create", "modify", "delete", "rename"];
 pub const HEADLESS_TO_AGENT_MESSAGE_TYPES: &[&str] = &[
@@ -36,6 +37,7 @@ pub const HEADLESS_TO_AGENT_MESSAGE_TYPES: &[&str] = &[
     "utility_command_start",
     "utility_command_terminate",
     "utility_command_stdin",
+    "utility_command_resize",
     "utility_file_search",
     "utility_file_watch_start",
     "utility_file_watch_stop",
@@ -55,6 +57,7 @@ pub const HEADLESS_FROM_AGENT_MESSAGE_TYPES: &[&str] = &[
     "server_request",
     "server_request_resolved",
     "utility_command_started",
+    "utility_command_resized",
     "utility_command_output",
     "utility_command_exited",
     "utility_file_search_results",

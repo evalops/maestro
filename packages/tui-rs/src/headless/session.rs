@@ -180,7 +180,10 @@ pub struct ActiveUtilityCommandCheckpoint {
     pub command: String,
     pub cwd: Option<String>,
     pub shell_mode: super::messages::UtilityCommandShellMode,
+    pub terminal_mode: super::messages::UtilityCommandTerminalMode,
     pub pid: Option<u32>,
+    pub columns: Option<u32>,
+    pub rows: Option<u32>,
     pub owner_connection_id: Option<String>,
     pub output: String,
 }
@@ -304,7 +307,10 @@ impl AgentStateCheckpoint {
                     command: command.command.clone(),
                     cwd: command.cwd.clone(),
                     shell_mode: command.shell_mode,
+                    terminal_mode: command.terminal_mode,
                     pid: command.pid,
+                    columns: command.columns,
+                    rows: command.rows,
                     owner_connection_id: command.owner_connection_id.clone(),
                     output: command.output.clone(),
                 })
@@ -388,7 +394,10 @@ impl AgentStateCheckpoint {
                             command: command.command,
                             cwd: command.cwd,
                             shell_mode: command.shell_mode,
+                            terminal_mode: command.terminal_mode,
                             pid: command.pid,
+                            columns: command.columns,
+                            rows: command.rows,
                             owner_connection_id: command.owner_connection_id,
                             output: command.output,
                         },
@@ -1212,7 +1221,10 @@ mod tests {
                 command: "echo hi".to_string(),
                 cwd: Some("/tmp/project".to_string()),
                 shell_mode: super::super::messages::UtilityCommandShellMode::Direct,
+                terminal_mode: super::super::messages::UtilityCommandTerminalMode::Pipe,
                 pid: Some(1234),
+                columns: None,
+                rows: None,
                 owner_connection_id: Some("conn_owned".to_string()),
             })
             .unwrap();

@@ -22,6 +22,7 @@ use super::messages::{
     ActiveFileWatch, ActiveUtilityCommand, AgentState, ApprovalMode, ClientCapabilities,
     ClientInfo, ConnectionRole, ConnectionState, FromAgentMessage, HeadlessErrorType, InitConfig,
     PendingApproval, StreamingResponse, ThinkingLevel, ToAgentMessage, UtilityCommandShellMode,
+    UtilityCommandTerminalMode,
 };
 
 /// Configuration for the remote headless transport.
@@ -91,6 +92,17 @@ impl Default for RemoteTransportConfig {
             reconnect_delay: Duration::from_millis(500),
         }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UtilityCommandStartOptions {
+    pub cwd: Option<String>,
+    pub env: Option<HashMap<String, String>>,
+    pub shell_mode: Option<UtilityCommandShellMode>,
+    pub terminal_mode: Option<UtilityCommandTerminalMode>,
+    pub allow_stdin: Option<bool>,
+    pub columns: Option<u32>,
+    pub rows: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,8 +202,13 @@ struct RemoteActiveUtilityCommandState {
     #[serde(default)]
     cwd: Option<String>,
     shell_mode: UtilityCommandShellMode,
+    terminal_mode: UtilityCommandTerminalMode,
     #[serde(default)]
     pid: Option<u32>,
+    #[serde(default)]
+    columns: Option<u32>,
+    #[serde(default)]
+    rows: Option<u32>,
     #[serde(default)]
     owner_connection_id: Option<String>,
     output: String,
@@ -330,7 +347,10 @@ impl RemoteRuntimeStateSnapshot {
                             command: command.command,
                             cwd: command.cwd,
                             shell_mode: command.shell_mode,
+                            terminal_mode: command.terminal_mode,
                             pid: command.pid,
+                            columns: command.columns,
+                            rows: command.rows,
                             owner_connection_id: command.owner_connection_id,
                             output: command.output,
                         },
@@ -520,18 +540,18 @@ impl RemoteAgentTransport {
         &self,
         command_id: String,
         command: String,
-        cwd: Option<String>,
-        env: Option<HashMap<String, String>>,
-        shell_mode: Option<UtilityCommandShellMode>,
-        allow_stdin: Option<bool>,
+        options: UtilityCommandStartOptions,
     ) -> Result<(), AsyncTransportError> {
         self.send(ToAgentMessage::UtilityCommandStart {
             command_id,
             command,
-            cwd,
-            env,
-            shell_mode,
-            allow_stdin,
+            cwd: options.cwd,
+            env: options.env,
+            shell_mode: options.shell_mode,
+            terminal_mode: options.terminal_mode,
+            allow_stdin: options.allow_stdin,
+            columns: options.columns,
+            rows: options.rows,
         })
     }
 
@@ -556,6 +576,19 @@ impl RemoteAgentTransport {
             command_id,
             content,
             eof: Some(eof),
+        })
+    }
+
+    pub fn resize_utility_command(
+        &self,
+        command_id: String,
+        columns: u32,
+        rows: u32,
+    ) -> Result<(), AsyncTransportError> {
+        self.send(ToAgentMessage::UtilityCommandResize {
+            command_id,
+            columns,
+            rows,
         })
     }
 
@@ -1432,7 +1465,10 @@ mod tests {
                 command: "echo hi".to_string(),
                 cwd: Some("/tmp/project".to_string()),
                 shell_mode: UtilityCommandShellMode::Direct,
+                terminal_mode: UtilityCommandTerminalMode::Pipe,
                 pid: Some(1234),
+                columns: None,
+                rows: None,
                 owner_connection_id: Some("conn-1".to_string()),
                 output: "hi\n".to_string(),
             }],
@@ -1769,6 +1805,60 @@ mod tests {
 
         transport.shutdown().expect("shutdown");
         assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn remote_transport_sends_utility_command_resize_messages() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 1,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "active_tools": [],
+                "active_utility_commands": [],
+                "active_file_watches": [],
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+
+        let (addr, posted_bodies, _request_headers) =
+            spawn_remote_headless_server(snapshot.to_string(), Vec::new()).await;
+
+        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+
+        transport
+            .resize_utility_command("cmd_pty".to_string(), 120, 40)
+            .expect("send utility command resize");
+
+        for _ in 0..50 {
+            if !posted_bodies.lock().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let posted = posted_bodies.lock().await.clone();
+        assert_eq!(posted.len(), 1);
+        let sent = serde_json::from_str::<ToAgentMessage>(&posted[0]).expect("parse sent message");
+        assert!(matches!(
+            sent,
+            ToAgentMessage::UtilityCommandResize {
+                command_id,
+                columns,
+                rows,
+            } if command_id == "cmd_pty" && columns == 120 && rows == 40
+        ));
+
+        transport.shutdown().expect("shutdown");
     }
 
     #[tokio::test]
