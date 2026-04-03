@@ -464,6 +464,7 @@ describe("headless session runtime", () => {
 				clientProtocolVersion: "2026-03-30",
 				clientInfo: { name: "maestro-web", version: "1.2.3" },
 				capabilities: { server_requests: ["approval", "client_tool"] },
+				optOutNotifications: ["status", "heartbeat"],
 				role: "controller",
 				context,
 				sessionManager,
@@ -478,7 +479,15 @@ describe("headless session runtime", () => {
 			expect(snapshot.state.capabilities).toEqual({
 				server_requests: ["approval", "client_tool"],
 			});
+			expect(snapshot.state.opt_out_notifications).toEqual([
+				"status",
+				"heartbeat",
+			]);
 			expect(snapshot.state.connection_role).toBe("controller");
+			expect(snapshot.state.connections[0]?.opt_out_notifications).toEqual([
+				"status",
+				"heartbeat",
+			]);
 
 			expect(
 				runtime
@@ -489,6 +498,46 @@ describe("headless session runtime", () => {
 							entry.message.type === "connection_info",
 					),
 			).toBe(true);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("inherits connection-level opt-out notifications for new subscriptions", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				clientProtocolVersion: "2026-04-02",
+				clientInfo: { name: "maestro-web", version: "1.2.3" },
+				capabilities: { server_requests: ["approval"] },
+				optOutNotifications: ["status", "connection_info"],
+				role: "controller",
+				context,
+				sessionManager,
+			});
+
+			const subscription = runtime.createSubscription({
+				role: "controller",
+				explicit: true,
+			});
+			expect(subscription.opt_out_notifications).toEqual([
+				"status",
+				"connection_info",
+			]);
+
+			await runtime.dispose();
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}

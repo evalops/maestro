@@ -86,6 +86,14 @@
 					"kind": "enumRef",
 					"name": "headlessConnectionRoles",
 					"optional": true
+				},
+				"opt_out_notifications": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessNotificationTypes"
+					},
+					"optional": true
 				}
 			}
 		},
@@ -646,6 +654,14 @@
 					"name": "HeadlessClientCapabilitiesSchema",
 					"optional": true
 				},
+				"opt_out_notifications": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessNotificationTypes"
+					},
+					"optional": true
+				},
 				"subscription_count": { "kind": "number" },
 				"attached_subscription_count": { "kind": "number" },
 				"controller_lease_granted": { "kind": "boolean" },
@@ -674,6 +690,14 @@
 				"capabilities": {
 					"kind": "ref",
 					"name": "HeadlessClientCapabilitiesSchema",
+					"optional": true
+				},
+				"opt_out_notifications": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessNotificationTypes"
+					},
 					"optional": true
 				},
 				"role": {
@@ -789,6 +813,14 @@
 				"capabilities": {
 					"kind": "ref",
 					"name": "HeadlessClientCapabilitiesSchema",
+					"optional": true
+				},
+				"opt_out_notifications": {
+					"kind": "array",
+					"items": {
+						"kind": "enumRef",
+						"name": "headlessNotificationTypes"
+					},
 					"optional": true
 				},
 				"connection_role": {

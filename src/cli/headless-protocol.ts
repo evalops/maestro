@@ -5,6 +5,7 @@ import {
 	type HeadlessApprovalMode,
 	type HeadlessConnectionRole,
 	type HeadlessErrorType,
+	type HeadlessNotificationType,
 	type HeadlessServerRequestResolution,
 	type HeadlessServerRequestResolvedBy,
 	type HeadlessServerRequestType,
@@ -64,6 +65,7 @@ export interface HeadlessHelloMessage {
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
 	role?: HeadlessConnectionRole;
+	opt_out_notifications?: HeadlessNotificationType[];
 }
 
 export interface HeadlessInterruptMessage {
@@ -388,6 +390,7 @@ export interface HeadlessConnectionInfoMessage {
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	opt_out_notifications?: HeadlessNotificationType[];
 	role?: HeadlessConnectionRole;
 	connection_count?: number;
 	controller_connection_id?: string | null;
@@ -464,6 +467,7 @@ export interface HeadlessConnectionState {
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	opt_out_notifications?: HeadlessNotificationType[];
 	subscription_count: number;
 	attached_subscription_count: number;
 	controller_lease_granted: boolean;
@@ -475,6 +479,7 @@ export interface HeadlessRuntimeState {
 	client_protocol_version?: string;
 	client_info?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	opt_out_notifications?: HeadlessNotificationType[];
 	connection_role?: HeadlessConnectionRole;
 	connection_count: number;
 	subscriber_count: number;
@@ -946,6 +951,7 @@ export class HeadlessProtocolTranslator {
 		protocol_version?: string;
 		client_info?: HeadlessClientInfo;
 		capabilities?: HeadlessClientCapabilities;
+		opt_out_notifications?: HeadlessNotificationType[];
 		role?: HeadlessConnectionRole;
 		connection_count?: number;
 		controller_connection_id?: string | null;
@@ -958,6 +964,7 @@ export class HeadlessProtocolTranslator {
 			client_protocol_version: metadata.protocol_version,
 			client_info: metadata.client_info,
 			capabilities: metadata.capabilities,
+			opt_out_notifications: metadata.opt_out_notifications,
 			role: metadata.role,
 			connection_count: metadata.connection_count,
 			controller_connection_id: metadata.controller_connection_id,
@@ -1087,6 +1094,7 @@ export function applyOutgoingHeadlessMessage(
 			state.client_protocol_version = msg.protocol_version;
 			state.client_info = msg.client_info;
 			state.capabilities = msg.capabilities;
+			state.opt_out_notifications = msg.opt_out_notifications;
 			state.connection_role = msg.role ?? state.connection_role ?? "controller";
 			state.connection_count = 1;
 			state.controller_connection_id =
@@ -1098,6 +1106,7 @@ export function applyOutgoingHeadlessMessage(
 					client_protocol_version: msg.protocol_version,
 					client_info: msg.client_info,
 					capabilities: msg.capabilities,
+					opt_out_notifications: msg.opt_out_notifications,
 					subscription_count: 1,
 					attached_subscription_count: 1,
 					controller_lease_granted: state.connection_role === "controller",
@@ -1202,6 +1211,7 @@ export function applyIncomingHeadlessMessage(
 			state.client_protocol_version = msg.client_protocol_version;
 			state.client_info = msg.client_info;
 			state.capabilities = msg.capabilities;
+			state.opt_out_notifications = msg.opt_out_notifications;
 			state.connection_role = msg.role;
 			state.connection_count =
 				msg.connection_count ?? msg.connections?.length ?? 0;

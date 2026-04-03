@@ -206,6 +206,8 @@ pub struct AgentStateCheckpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<super::messages::ClientCapabilities>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opt_out_notifications: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_role: Option<super::messages::ConnectionRole>,
     #[serde(default)]
     pub connection_count: usize,
@@ -267,6 +269,7 @@ impl AgentStateCheckpoint {
             client_protocol_version: state.client_protocol_version.clone(),
             client_info: state.client_info.clone(),
             capabilities: state.capabilities.clone(),
+            opt_out_notifications: state.opt_out_notifications.clone(),
             connection_role: state.connection_role,
             connection_count: state.connection_count,
             subscriber_count: state.subscriber_count,
@@ -335,6 +338,7 @@ impl AgentStateCheckpoint {
             client_protocol_version: self.client_protocol_version,
             client_info: self.client_info,
             capabilities: self.capabilities,
+            opt_out_notifications: self.opt_out_notifications,
             connection_role: self.connection_role,
             connection_count: self.connection_count,
             subscriber_count: self.subscriber_count,

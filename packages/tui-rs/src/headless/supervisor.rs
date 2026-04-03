@@ -1182,12 +1182,14 @@ mod tests {
             .remote_base_url("http://127.0.0.1:8080")
             .remote_api_key("secret")
             .remote_session_id("sess_remote")
+            .remote_opt_out_notification("status")
             .build();
 
         let remote = supervisor.config.remote.expect("remote config");
         assert_eq!(remote.base_url, "http://127.0.0.1:8080");
         assert_eq!(remote.api_key.as_deref(), Some("secret"));
         assert_eq!(remote.session_id.as_deref(), Some("sess_remote"));
+        assert_eq!(remote.opt_out_notifications, vec!["status".to_string()]);
     }
 
     #[test]

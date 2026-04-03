@@ -151,6 +151,8 @@ pub enum ToAgentMessage {
         capabilities: Option<ClientCapabilities>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<ConnectionRole>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opt_out_notifications: Option<Vec<String>>,
     },
     /// Configure agent behavior before the first prompt
     Init {
@@ -293,6 +295,8 @@ pub struct ConnectionState {
     pub client_info: Option<ClientInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<ClientCapabilities>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opt_out_notifications: Option<Vec<String>>,
     #[serde(default)]
     pub subscription_count: usize,
     #[serde(default)]
@@ -554,6 +558,8 @@ pub enum FromAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         capabilities: Option<ClientCapabilities>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        opt_out_notifications: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<ConnectionRole>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         connection_count: Option<usize>,
@@ -770,6 +776,7 @@ pub struct AgentState {
     pub client_protocol_version: Option<String>,
     pub client_info: Option<ClientInfo>,
     pub capabilities: Option<ClientCapabilities>,
+    pub opt_out_notifications: Option<Vec<String>>,
     pub connection_role: Option<ConnectionRole>,
     pub connection_count: usize,
     pub subscriber_count: usize,
@@ -892,10 +899,12 @@ impl AgentState {
                 client_info,
                 capabilities,
                 role,
+                opt_out_notifications,
             } => {
                 self.client_protocol_version = protocol_version.clone();
                 self.client_info = client_info.clone();
                 self.capabilities = capabilities.clone();
+                self.opt_out_notifications = opt_out_notifications.clone();
                 self.connection_role = Some(role.unwrap_or(ConnectionRole::Controller));
                 self.connection_count = 1;
                 self.controller_connection_id = match self.connection_role {
@@ -908,6 +917,7 @@ impl AgentState {
                     client_protocol_version: protocol_version.clone(),
                     client_info: client_info.clone(),
                     capabilities: capabilities.clone(),
+                    opt_out_notifications: opt_out_notifications.clone(),
                     subscription_count: 1,
                     attached_subscription_count: 1,
                     controller_lease_granted: matches!(
@@ -1031,6 +1041,7 @@ impl AgentState {
                 client_protocol_version,
                 client_info,
                 capabilities,
+                opt_out_notifications,
                 role,
                 connection_count,
                 controller_connection_id,
@@ -1040,6 +1051,7 @@ impl AgentState {
                 self.client_protocol_version = client_protocol_version;
                 self.client_info = client_info;
                 self.capabilities = capabilities;
+                self.opt_out_notifications = opt_out_notifications;
                 self.connection_role = role;
                 self.connection_count = connection_count.unwrap_or_default();
                 self.controller_connection_id = controller_connection_id;
@@ -1640,7 +1652,7 @@ mod tests {
 
     #[test]
     fn parse_connection_info_message() {
-        let json = r#"{"type":"connection_info","connection_id":"conn_remote","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"role":"controller","connection_count":1,"controller_connection_id":"conn_remote","connections":[{"connection_id":"conn_remote","role":"controller","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"subscription_count":1,"attached_subscription_count":1,"controller_lease_granted":true}]}"#;
+        let json = r#"{"type":"connection_info","connection_id":"conn_remote","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"opt_out_notifications":["status","heartbeat"],"role":"controller","connection_count":1,"controller_connection_id":"conn_remote","connections":[{"connection_id":"conn_remote","role":"controller","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval","client_tool"]},"opt_out_notifications":["status","heartbeat"],"subscription_count":1,"attached_subscription_count":1,"controller_lease_granted":true}]}"#;
         let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
         match msg {
             FromAgentMessage::ConnectionInfo {
@@ -1648,6 +1660,7 @@ mod tests {
                 client_protocol_version,
                 client_info,
                 capabilities,
+                opt_out_notifications,
                 role,
                 connection_count,
                 controller_connection_id,
@@ -1665,6 +1678,10 @@ mod tests {
                         .as_ref()
                         .and_then(|caps| caps.server_requests.as_ref())
                         .map(|caps| caps.len()),
+                    Some(2)
+                );
+                assert_eq!(
+                    opt_out_notifications.as_ref().map(|items| items.len()),
                     Some(2)
                 );
                 assert_eq!(role, Some(ConnectionRole::Controller));
@@ -1715,6 +1732,7 @@ mod tests {
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
             role: Some(ConnectionRole::Controller),
+            opt_out_notifications: Some(vec!["status".to_string()]),
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains(r#""type":"hello""#));
@@ -1724,6 +1742,7 @@ mod tests {
         )));
         assert!(json.contains(r#""name":"maestro-tui-rs""#));
         assert!(json.contains(r#""role":"controller""#));
+        assert!(json.contains(r#""opt_out_notifications":["status"]"#));
     }
 
     #[test]
@@ -2043,6 +2062,7 @@ mod tests {
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
             role: Some(ConnectionRole::Controller),
+            opt_out_notifications: Some(vec!["status".to_string()]),
         });
         let event = state.handle_message(FromAgentMessage::ConnectionInfo {
             connection_id: Some("conn_remote".to_string()),
@@ -2058,6 +2078,7 @@ mod tests {
                 ]),
                 utility_operations: Some(vec![UtilityOperation::CommandExec]),
             }),
+            opt_out_notifications: Some(vec!["status".to_string(), "connection_info".to_string()]),
             role: Some(ConnectionRole::Viewer),
             connection_count: Some(1),
             controller_connection_id: Some("conn_remote".to_string()),
@@ -2077,6 +2098,10 @@ mod tests {
                     ]),
                     utility_operations: Some(vec![UtilityOperation::CommandExec]),
                 }),
+                opt_out_notifications: Some(vec![
+                    "status".to_string(),
+                    "connection_info".to_string(),
+                ]),
                 subscription_count: 1,
                 attached_subscription_count: 1,
                 controller_lease_granted: false,
@@ -2095,6 +2120,13 @@ mod tests {
         );
         assert_eq!(state.connection_role, Some(ConnectionRole::Viewer));
         assert_eq!(state.connection_count, 1);
+        assert_eq!(
+            state
+                .opt_out_notifications
+                .as_ref()
+                .map(|items| items.len()),
+            Some(2)
+        );
         assert_eq!(
             state.controller_connection_id.as_deref(),
             Some("conn_remote")

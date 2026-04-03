@@ -160,6 +160,8 @@ struct RemoteSessionCreateRequest {
     enable_client_tools: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     capabilities: Option<RemoteClientCapabilities>,
+    #[serde(rename = "optOutNotifications", skip_serializing_if = "Vec::is_empty")]
+    opt_out_notifications: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     client: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -218,6 +220,8 @@ struct RemoteRuntimeStateSnapshot {
     client_info: Option<ClientInfo>,
     #[serde(default)]
     capabilities: Option<ClientCapabilities>,
+    #[serde(default)]
+    opt_out_notifications: Option<Vec<String>>,
     #[serde(default)]
     connection_role: Option<ConnectionRole>,
     #[serde(default)]
@@ -279,6 +283,7 @@ impl RemoteRuntimeStateSnapshot {
             client_protocol_version: self.client_protocol_version,
             client_info: self.client_info,
             capabilities: self.capabilities,
+            opt_out_notifications: self.opt_out_notifications,
             connection_role: self.connection_role,
             connection_count: self.connection_count,
             subscriber_count: self.subscriber_count,
@@ -723,6 +728,7 @@ async fn create_or_attach_session(
             server_requests: build_remote_server_requests(config),
             utility_operations: build_remote_utility_operations(config),
         }),
+        opt_out_notifications: config.opt_out_notifications.clone(),
         client: config.client.clone(),
         role: config.role.clone(),
     };
@@ -1349,6 +1355,7 @@ mod tests {
                 ]),
                 utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
             }),
+            opt_out_notifications: Some(vec!["status".to_string()]),
             connection_role: Some(ConnectionRole::Controller),
             connection_count: 1,
             subscriber_count: 2,
@@ -1369,6 +1376,7 @@ mod tests {
                     ]),
                     utility_operations: Some(vec![crate::headless::UtilityOperation::CommandExec]),
                 }),
+                opt_out_notifications: Some(vec!["status".to_string()]),
                 subscription_count: 1,
                 attached_subscription_count: 1,
                 controller_lease_granted: true,
@@ -1453,6 +1461,13 @@ mod tests {
             state.client_info.as_ref().map(|info| info.name.as_str()),
             Some("maestro-tui-rs")
         );
+        assert_eq!(
+            state
+                .opt_out_notifications
+                .as_ref()
+                .map(|items| items.len()),
+            Some(1)
+        );
         assert_eq!(state.pending_approvals.len(), 1);
         assert_eq!(state.pending_client_tools.len(), 1);
         assert_eq!(state.pending_user_inputs.len(), 1);
@@ -1502,6 +1517,7 @@ mod tests {
                 server_requests: vec!["approval", "client_tool"],
                 utility_operations: vec!["command_exec"],
             }),
+            opt_out_notifications: vec!["status".to_string()],
             client: Some("vscode".to_string()),
             role: Some("controller".to_string()),
         };
@@ -1517,6 +1533,7 @@ mod tests {
         assert_eq!(json["enableClientTools"], true);
         assert_eq!(json["capabilities"]["serverRequests"][0], "approval");
         assert_eq!(json["capabilities"]["serverRequests"][1], "client_tool");
+        assert_eq!(json["optOutNotifications"][0], "status");
         assert_eq!(json["client"], "vscode");
         assert_eq!(json["role"], "controller");
     }

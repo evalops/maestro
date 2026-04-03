@@ -76,6 +76,7 @@ const HeadlessSessionCreateSchema = Type.Object({
 			),
 		}),
 	),
+	optOutNotifications: Type.Optional(HeadlessOptOutNotificationsSchema),
 	role: Type.Optional(stringLiteralUnion(headlessConnectionRoles)),
 	client: Type.Optional(
 		Type.Union([
@@ -331,6 +332,7 @@ async function ensureRuntime(
 					utility_operations: input.capabilities.utilityOperations,
 				}
 			: undefined,
+		optOutNotifications: input.optOutNotifications,
 		role,
 		registeredModel,
 		thinkingLevel: (input.thinkingLevel ?? "off") as ThinkingLevel,

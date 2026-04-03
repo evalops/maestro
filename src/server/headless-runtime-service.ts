@@ -262,6 +262,7 @@ interface HeadlessConnectionRecord {
 	clientProtocolVersion?: string;
 	clientInfo?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	optOutNotifications?: HeadlessNotificationType[];
 	subscriptionIds: Set<string>;
 	lastSeenAt: number;
 }
@@ -663,6 +664,9 @@ export class HeadlessSessionRuntime {
 			client_protocol_version: connection.clientProtocolVersion,
 			client_info: connection.clientInfo,
 			capabilities: connection.capabilities,
+			opt_out_notifications: connection.optOutNotifications
+				? [...connection.optOutNotifications]
+				: undefined,
 			subscription_count: connection.subscriptionIds.size,
 			attached_subscription_count: this.countAttachedSubscriptions(
 				connection.id,
@@ -685,6 +689,9 @@ export class HeadlessSessionRuntime {
 		this.state.client_protocol_version = preferred?.clientProtocolVersion;
 		this.state.client_info = preferred?.clientInfo;
 		this.state.capabilities = preferred?.capabilities;
+		this.state.opt_out_notifications = preferred?.optOutNotifications
+			? [...preferred.optOutNotifications]
+			: undefined;
 		this.state.connection_role = preferred?.role;
 	}
 
@@ -701,6 +708,9 @@ export class HeadlessSessionRuntime {
 				protocol_version: connection.clientProtocolVersion,
 				client_info: connection.clientInfo,
 				capabilities: connection.capabilities,
+				opt_out_notifications: connection.optOutNotifications
+					? [...connection.optOutNotifications]
+					: undefined,
 				role: connection.role,
 				connection_count: this.state.connection_count,
 				controller_connection_id: this.controllerConnectionId,
@@ -766,6 +776,7 @@ export class HeadlessSessionRuntime {
 		clientProtocolVersion?: string;
 		clientInfo?: HeadlessClientInfo;
 		capabilities?: HeadlessClientCapabilities;
+		optOutNotifications?: HeadlessNotificationType[];
 	}): HeadlessConnectionRecord {
 		const role = metadata.role ?? "controller";
 		const existing = metadata.connectionId
@@ -798,6 +809,11 @@ export class HeadlessSessionRuntime {
 									: undefined,
 							}
 						: undefined),
+				optOutNotifications:
+					metadata.optOutNotifications ??
+					(this.state.opt_out_notifications
+						? [...this.state.opt_out_notifications]
+						: undefined),
 				subscriptionIds: new Set<string>(),
 				lastSeenAt: Date.now(),
 			} satisfies HeadlessConnectionRecord);
@@ -810,6 +826,9 @@ export class HeadlessSessionRuntime {
 			metadata.clientProtocolVersion ?? connection.clientProtocolVersion;
 		connection.clientInfo = metadata.clientInfo ?? connection.clientInfo;
 		connection.capabilities = metadata.capabilities ?? connection.capabilities;
+		connection.optOutNotifications = metadata.optOutNotifications
+			? [...metadata.optOutNotifications]
+			: connection.optOutNotifications;
 		connection.lastSeenAt = Date.now();
 		this.connections.set(connection.id, connection);
 		return connection;
@@ -843,6 +862,7 @@ export class HeadlessSessionRuntime {
 			clientProtocolVersion: options?.clientProtocolVersion,
 			clientInfo: options?.clientInfo,
 			capabilities: options?.capabilities,
+			optOutNotifications: options?.optOutNotifications,
 		});
 		if (
 			explicit &&
@@ -858,7 +878,7 @@ export class HeadlessSessionRuntime {
 			role,
 			explicit,
 			connection.id,
-			options?.optOutNotifications,
+			options?.optOutNotifications ?? connection.optOutNotifications,
 		);
 		this.subscribers.set(subscriber.id, subscriber);
 		connection.subscriptionIds.add(subscriber.id);
@@ -1121,6 +1141,7 @@ export class HeadlessSessionRuntime {
 		clientProtocolVersion?: string;
 		clientInfo?: HeadlessClientInfo;
 		capabilities?: HeadlessClientCapabilities;
+		optOutNotifications?: HeadlessNotificationType[];
 		role?: HeadlessConnectionRole;
 		takeControl?: boolean;
 	}): HeadlessRuntimeHeartbeatSnapshot {
@@ -1131,6 +1152,7 @@ export class HeadlessSessionRuntime {
 			clientProtocolVersion: metadata.clientProtocolVersion,
 			clientInfo: metadata.clientInfo,
 			capabilities: metadata.capabilities,
+			optOutNotifications: metadata.optOutNotifications,
 		});
 		if (
 			role === "controller" &&
@@ -1164,12 +1186,14 @@ export class HeadlessSessionRuntime {
 		clientProtocolVersion?: string;
 		clientInfo?: HeadlessClientInfo;
 		capabilities?: HeadlessClientCapabilities;
+		optOutNotifications?: HeadlessNotificationType[];
 		role?: "viewer" | "controller";
 	}): void {
 		if (
 			!metadata.clientProtocolVersion &&
 			!metadata.clientInfo &&
 			!metadata.capabilities &&
+			!metadata.optOutNotifications &&
 			!metadata.role
 		) {
 			return;
@@ -1180,6 +1204,7 @@ export class HeadlessSessionRuntime {
 			clientProtocolVersion: metadata.clientProtocolVersion,
 			clientInfo: metadata.clientInfo,
 			capabilities: metadata.capabilities,
+			optOutNotifications: metadata.optOutNotifications,
 		});
 		this.emitConnectionInfo(connection.id);
 	}
@@ -1208,6 +1233,7 @@ export class HeadlessSessionRuntime {
 					clientProtocolVersion: msg.protocol_version,
 					clientInfo: msg.client_info,
 					capabilities: msg.capabilities,
+					optOutNotifications: msg.opt_out_notifications,
 					role: msg.role,
 				});
 				if (
@@ -1674,6 +1700,7 @@ export type EnsureRuntimeOptions = {
 	clientProtocolVersion?: string;
 	clientInfo?: HeadlessClientInfo;
 	capabilities?: HeadlessClientCapabilities;
+	optOutNotifications?: HeadlessNotificationType[];
 	role?: "viewer" | "controller";
 	registeredModel: RegisteredModel;
 	thinkingLevel: ThinkingLevel;
@@ -1724,12 +1751,14 @@ export class HeadlessRuntimeService {
 			options.clientProtocolVersion ||
 			options.clientInfo ||
 			options.capabilities ||
+			options.optOutNotifications ||
 			options.role
 		) {
 			runtime.registerConnection({
 				clientProtocolVersion: options.clientProtocolVersion,
 				clientInfo: options.clientInfo,
 				capabilities: options.capabilities,
+				optOutNotifications: options.optOutNotifications,
 				role: options.role,
 			});
 		}

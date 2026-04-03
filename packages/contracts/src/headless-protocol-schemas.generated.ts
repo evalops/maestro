@@ -97,6 +97,9 @@ export const HeadlessHelloMessageSchema = Type.Object(
 		client_info: Type.Optional(HeadlessClientInfoSchema),
 		capabilities: Type.Optional(HeadlessClientCapabilitiesSchema),
 		role: Type.Optional(stringLiteralUnion(headlessConnectionRoles)),
+		opt_out_notifications: Type.Optional(
+			Type.Array(stringLiteralUnion(headlessNotificationTypes)),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -534,6 +537,9 @@ export const HeadlessConnectionStateSchema = Type.Object(
 		client_protocol_version: Type.Optional(Type.String()),
 		client_info: Type.Optional(HeadlessClientInfoSchema),
 		capabilities: Type.Optional(HeadlessClientCapabilitiesSchema),
+		opt_out_notifications: Type.Optional(
+			Type.Array(stringLiteralUnion(headlessNotificationTypes)),
+		),
 		subscription_count: Type.Number(),
 		attached_subscription_count: Type.Number(),
 		controller_lease_granted: Type.Boolean(),
@@ -549,6 +555,9 @@ export const HeadlessConnectionInfoMessageSchema = Type.Object(
 		client_protocol_version: Type.Optional(Type.String()),
 		client_info: Type.Optional(HeadlessClientInfoSchema),
 		capabilities: Type.Optional(HeadlessClientCapabilitiesSchema),
+		opt_out_notifications: Type.Optional(
+			Type.Array(stringLiteralUnion(headlessNotificationTypes)),
+		),
 		role: Type.Optional(stringLiteralUnion(headlessConnectionRoles)),
 		connection_count: Type.Optional(Type.Number()),
 		controller_connection_id: Type.Optional(
@@ -697,6 +706,9 @@ export const HeadlessRuntimeStateSchema = Type.Object(
 		client_protocol_version: Type.Optional(Type.String()),
 		client_info: Type.Optional(HeadlessClientInfoSchema),
 		capabilities: Type.Optional(HeadlessClientCapabilitiesSchema),
+		opt_out_notifications: Type.Optional(
+			Type.Array(stringLiteralUnion(headlessNotificationTypes)),
+		),
 		connection_role: Type.Optional(stringLiteralUnion(headlessConnectionRoles)),
 		connection_count: Type.Number(),
 		subscriber_count: Type.Number(),
