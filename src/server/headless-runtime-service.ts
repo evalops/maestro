@@ -143,6 +143,13 @@ export interface HeadlessRuntimeConnectionSnapshot
 	snapshot: HeadlessRuntimeSnapshot;
 }
 
+export interface HeadlessRuntimeConnectionClosedSnapshot {
+	success: true;
+	connection_id: string;
+	controller_connection_id: string | null;
+	disconnected_subscription_ids: string[];
+}
+
 export type HeadlessRuntimeStreamEnvelope =
 	| HeadlessRuntimeSnapshotEnvelope
 	| HeadlessRuntimeEventEnvelope
@@ -1288,6 +1295,37 @@ export class HeadlessSessionRuntime {
 			"headless runtime heartbeat snapshot",
 		);
 		return snapshot;
+	}
+
+	async disconnectConnection(input: {
+		connectionId?: string | null;
+		subscriptionId?: string | null;
+	}): Promise<HeadlessRuntimeConnectionClosedSnapshot> {
+		const subscriber = input.subscriptionId
+			? this.subscribers.get(input.subscriptionId)
+			: undefined;
+		const connection = subscriber
+			? this.connections.get(subscriber.connectionId)
+			: this.getConnectionById(input.connectionId);
+		if (!connection) {
+			throw new Error("Headless connection not found");
+		}
+		const disconnectedSubscriptionIds = Array.from(connection.subscriptionIds);
+		for (const subscriptionId of disconnectedSubscriptionIds) {
+			await this.unsubscribe(subscriptionId, false);
+		}
+		const remaining = this.connections.get(connection.id);
+		if (remaining && remaining.subscriptionIds.size === 0) {
+			await this.disposeConnection(remaining, false);
+		}
+		this.updatedAt = Date.now();
+		this.syncSubscriptionState(true);
+		return {
+			success: true,
+			connection_id: connection.id,
+			controller_connection_id: this.controllerConnectionId,
+			disconnected_subscription_ids: disconnectedSubscriptionIds,
+		};
 	}
 
 	registerConnection(metadata: {

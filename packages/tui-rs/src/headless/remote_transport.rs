@@ -5,6 +5,7 @@
 //! SSE subscription for replayable inbound events.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use eventsource_stream::Eventsource;
@@ -455,6 +456,7 @@ pub struct RemoteAgentTransport {
     message_tx: mpsc::UnboundedSender<ToAgentMessage>,
     event_rx: mpsc::UnboundedReceiver<Result<RemoteIncoming, AsyncTransportError>>,
     cancel_token: CancellationToken,
+    shutdown_context: Arc<RemoteShutdownContext>,
     session_id: String,
     connection_id: String,
     subscription_id: String,
@@ -476,12 +478,21 @@ struct WriterLoopContext {
     cancel: CancellationToken,
 }
 
+struct RemoteShutdownContext {
+    client: Client,
+    config: RemoteTransportConfig,
+}
+
 impl RemoteAgentTransport {
     /// Connect to a remote headless session and begin streaming events.
     pub async fn connect(config: RemoteTransportConfig) -> Result<Self, AsyncTransportError> {
         let client = Client::builder()
             .build()
             .map_err(|error| AsyncTransportError::Remote(error.to_string()))?;
+        let shutdown_context = Arc::new(RemoteShutdownContext {
+            client: client.clone(),
+            config: config.clone(),
+        });
 
         let bootstrap = create_or_attach_connection(&client, &config).await?;
         let subscription = subscribe_to_session(
@@ -514,7 +525,7 @@ impl RemoteAgentTransport {
         ));
         let writer_handle = tokio::spawn(writer_loop(
             WriterLoopContext {
-                client,
+                client: client.clone(),
                 config: config.clone(),
                 session_id: session_id.clone(),
                 connection_id: connection_id.clone(),
@@ -540,6 +551,7 @@ impl RemoteAgentTransport {
             message_tx,
             event_rx,
             cancel_token,
+            shutdown_context,
             session_id,
             connection_id,
             subscription_id,
@@ -668,9 +680,31 @@ impl RemoteAgentTransport {
     }
 
     pub fn shutdown(&self) -> Result<(), AsyncTransportError> {
-        let result = self.send(ToAgentMessage::Shutdown);
-        self.cancel_token.cancel();
-        result
+        if self.cancel_token.is_cancelled() {
+            return Ok(());
+        }
+        let shutdown_context = Arc::clone(&self.shutdown_context);
+        let session_id = self.session_id.clone();
+        let connection_id = self.connection_id.clone();
+        let subscription_id = self.subscription_id.clone();
+        let cancel = self.cancel_token.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                disconnect_connection(
+                    &shutdown_context.client,
+                    &shutdown_context.config,
+                    &session_id,
+                    &connection_id,
+                    Some(&subscription_id),
+                )
+                .await;
+                cancel.cancel();
+            });
+            Ok(())
+        } else {
+            self.cancel_token.cancel();
+            Ok(())
+        }
     }
 
     pub(super) fn try_recv_incoming(
@@ -853,21 +887,21 @@ async fn subscribe_to_session(
     decode_json_response(response).await
 }
 
-async fn unsubscribe_from_session(
+async fn disconnect_connection(
     client: &Client,
     config: &RemoteTransportConfig,
     session_id: &str,
-    subscription_id: &str,
-    connection_id: Option<&str>,
+    connection_id: &str,
+    subscription_id: Option<&str>,
 ) {
     let url = format!(
-        "{}/api/headless/sessions/{session_id}/unsubscribe",
+        "{}/api/headless/sessions/{session_id}/disconnect",
         config.base_url.trim_end_matches('/')
     );
     let _ignored = with_headers(
         client.post(url).json(&serde_json::json!({
-            "subscriptionId": subscription_id,
             "connectionId": connection_id,
+            "subscriptionId": subscription_id,
         })),
         config,
         true,
@@ -925,7 +959,6 @@ async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver
                 let Some(message) = message else {
                     break;
                 };
-                let should_shutdown = matches!(message, ToAgentMessage::Shutdown);
                 let response = with_headers(
                     client
                         .post(&url)
@@ -941,20 +974,7 @@ async fn writer_loop(context: WriterLoopContext, mut rx: mpsc::UnboundedReceiver
                 .await;
 
                 match response {
-                    Ok(response) if response.status().is_success() => {
-                        if should_shutdown {
-                            unsubscribe_from_session(
-                                &client,
-                                &config,
-                                &session_id,
-                                &subscription_id,
-                                Some(&connection_id),
-                            )
-                                .await;
-                            cancel.cancel();
-                            break;
-                        }
-                    }
+                    Ok(response) if response.status().is_success() => {}
                     Ok(response) => {
                         let error = response_status_error(response).await;
                         let _ = event_tx.send(Err(error));
@@ -1280,16 +1300,19 @@ mod tests {
     ) -> (
         std::net::SocketAddr,
         Arc<Mutex<Vec<String>>>,
+        Arc<Mutex<Vec<String>>>,
         Arc<Mutex<Vec<Vec<(String, String)>>>>,
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let posted_bodies = Arc::new(Mutex::new(Vec::new()));
+        let request_paths = Arc::new(Mutex::new(Vec::new()));
         let request_headers = Arc::new(Mutex::new(Vec::new()));
         let events = Arc::new(Mutex::new(VecDeque::from(sse_events)));
 
         tokio::spawn({
             let posted_bodies = Arc::clone(&posted_bodies);
+            let request_paths = Arc::clone(&request_paths);
             let request_headers = Arc::clone(&request_headers);
             let events = Arc::clone(&events);
             async move {
@@ -1298,6 +1321,7 @@ mod tests {
                         break;
                     };
                     let posted_bodies = Arc::clone(&posted_bodies);
+                    let request_paths = Arc::clone(&request_paths);
                     let request_headers = Arc::clone(&request_headers);
                     let events = Arc::clone(&events);
                     let snapshot_json = snapshot_json.clone();
@@ -1307,6 +1331,7 @@ mod tests {
                         else {
                             return;
                         };
+                        request_paths.lock().await.push(path.clone());
                         request_headers.lock().await.push(headers);
 
                         if path == "/api/headless/connections" {
@@ -1361,6 +1386,19 @@ mod tests {
                                 "HTTP/1.1 200 OK",
                                 "application/json",
                                 r#"{"success":true}"#,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/disconnect")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
                             )
                             .await;
                             return;
@@ -1424,7 +1462,7 @@ mod tests {
             }
         });
 
-        (addr, posted_bodies, request_headers)
+        (addr, posted_bodies, request_paths, request_headers)
     }
 
     #[test]
@@ -1713,7 +1751,7 @@ mod tests {
         })
         .to_string();
 
-        let (addr, posted_bodies, request_headers) =
+        let (addr, posted_bodies, request_paths, request_headers) =
             spawn_remote_headless_server(snapshot.to_string(), vec![message_event]).await;
 
         let mut config = RemoteTransportConfig {
@@ -1795,6 +1833,22 @@ mod tests {
         assert!(message_headers.is_some());
 
         transport.shutdown().expect("shutdown");
+
+        for _ in 0..50 {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let posted = posted_bodies.lock().await.clone();
+        assert_eq!(posted.len(), 1);
+
+        let paths = request_paths.lock().await.clone();
+        assert!(
+            paths.iter().any(|path| path.ends_with("/disconnect")),
+            "expected remote shutdown to disconnect the explicit connection without shutting down the runtime"
+        );
         assert!(cancel_token.is_cancelled());
     }
 
@@ -1845,7 +1899,7 @@ mod tests {
         })
         .to_string();
 
-        let (addr, _posted_bodies, _request_headers) =
+        let (addr, _posted_bodies, _request_paths, _request_headers) =
             spawn_remote_headless_server(initial_snapshot.to_string(), vec![snapshot_event]).await;
 
         let config = RemoteTransportConfig {
@@ -1883,6 +1937,12 @@ mod tests {
         );
 
         transport.shutdown().expect("shutdown");
+        for _ in 0..50 {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(cancel_token.is_cancelled());
     }
 
@@ -1904,7 +1964,7 @@ mod tests {
             }
         });
 
-        let (addr, posted_bodies, _request_headers) =
+        let (addr, posted_bodies, _request_paths, _request_headers) =
             spawn_remote_headless_server(snapshot.to_string(), Vec::new()).await;
 
         let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
@@ -1958,7 +2018,7 @@ mod tests {
             }
         });
 
-        let (addr, posted_bodies, _request_headers) =
+        let (addr, posted_bodies, _request_paths, _request_headers) =
             spawn_remote_headless_server(snapshot.to_string(), Vec::new()).await;
 
         let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
@@ -2054,7 +2114,7 @@ mod tests {
         })
         .to_string();
 
-        let (addr, _posted_bodies, _request_headers) =
+        let (addr, _posted_bodies, _request_paths, _request_headers) =
             spawn_remote_headless_server(initial_snapshot.to_string(), vec![reset_event]).await;
 
         let config = RemoteTransportConfig {

@@ -144,6 +144,11 @@ const HeadlessSessionHeartbeatSchema = Type.Object({
 	subscriptionId: Type.Optional(Type.String()),
 });
 
+const HeadlessSessionDisconnectSchema = Type.Object({
+	connectionId: Type.Optional(Type.String()),
+	subscriptionId: Type.Optional(Type.String()),
+});
+
 type HeadlessSessionCreateInput = Static<typeof HeadlessSessionCreateSchema>;
 type HeadlessConnectionCreateInput = Static<
 	typeof HeadlessConnectionCreateSchema
@@ -156,6 +161,9 @@ type HeadlessSessionUnsubscribeInput = Static<
 >;
 type HeadlessSessionHeartbeatInput = Static<
 	typeof HeadlessSessionHeartbeatSchema
+>;
+type HeadlessSessionDisconnectInput = Static<
+	typeof HeadlessSessionDisconnectSchema
 >;
 type HeadlessMessageTypeInput = Static<typeof HeadlessMessageTypeSchema>;
 
@@ -554,6 +562,39 @@ export async function handleHeadlessSessionHeartbeat(
 		throw error;
 	}
 	sendJson(res, 200, heartbeat, context.corsHeaders, req);
+}
+
+export async function handleHeadlessSessionDisconnect(
+	req: IncomingMessage,
+	res: ServerResponse,
+	context: WebServerContext,
+	params?: Record<string, string>,
+) {
+	const runtime = getRuntime(req, context, params?.id);
+	const input = await parseAndValidateJson<HeadlessSessionDisconnectInput>(
+		req,
+		HeadlessSessionDisconnectSchema,
+	);
+	try {
+		sendJson(
+			res,
+			200,
+			await runtime.disconnectConnection({
+				connectionId: input.connectionId ?? getHeadlessConnectionId(req),
+				subscriptionId: input.subscriptionId ?? getHeadlessSubscriberId(req),
+			}),
+			context.corsHeaders,
+			req,
+		);
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			error.message === "Headless connection not found"
+		) {
+			throw new ApiError(404, error.message);
+		}
+		throw error;
+	}
 }
 
 export function handleHeadlessSessionEvents(

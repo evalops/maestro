@@ -216,6 +216,56 @@ describe("HeadlessInProcessHost", () => {
 		stream.close();
 	});
 
+	it("disconnects explicit in-process connections and clears controller lease", async () => {
+		const fakeAgent = new FakeAgent();
+		tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-in-process-"));
+		const sessionManager = new SessionManager(false, undefined, {
+			sessionDir: tempDir,
+		});
+		const runtimeService = new HeadlessRuntimeService();
+		const host = new HeadlessInProcessHost(runtimeService);
+
+		const snapshot = await host.ensureSession({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context: {
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			},
+			sessionManager,
+		});
+
+		const subscription = host.subscribe({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			role: "controller",
+		});
+
+		const disconnected = await host.disconnect({
+			scopeKey: "anon",
+			sessionId: snapshot.session_id,
+			connectionId: subscription.connection_id,
+		});
+
+		expect(disconnected).toEqual({
+			success: true,
+			connection_id: subscription.connection_id,
+			controller_connection_id: null,
+			disconnected_subscription_ids: [subscription.subscription_id],
+		});
+		expect(
+			host.getSnapshot("anon", snapshot.session_id).state.connection_count,
+		).toBe(0);
+		expect(
+			host.getSnapshot("anon", snapshot.session_id).state
+				.controller_connection_id,
+		).toBeNull();
+		expect(
+			host.getSnapshot("anon", snapshot.session_id).state.subscriber_count,
+		).toBe(0);
+	});
+
 	it("writes stdin to utility commands over the in-process control plane", async () => {
 		const fakeAgent = new FakeAgent();
 		tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-in-process-"));
