@@ -1236,130 +1236,123 @@ async fn reader_loop(
     cancel: CancellationToken,
 ) {
     let mut cursor = initial_cursor;
-    let reconnect_delay = config.reconnect_delay;
+    if cancel.is_cancelled() {
+        return;
+    }
+
+    let url = format!(
+        "{}/api/headless/sessions/{session_id}/events?cursor={cursor}&subscriptionId={subscription_id}",
+        config.base_url.trim_end_matches('/')
+    );
+    let response = match with_headers(client.get(url), &config, false).send().await {
+        Ok(response) => response,
+        Err(error) => {
+            let _ = event_tx.send(Err(AsyncTransportError::Remote(error.to_string())));
+            return;
+        }
+    };
+
+    if response.status() != StatusCode::OK {
+        let _ = event_tx.send(Err(response_status_error(
+            response,
+            RemoteRequestKind::Stream,
+        )
+        .await));
+        return;
+    }
+
+    let mut stream = response.bytes_stream().eventsource();
+    let mut saw_event = false;
 
     loop {
-        if cancel.is_cancelled() {
-            break;
-        }
-
-        let url = format!(
-            "{}/api/headless/sessions/{session_id}/events?cursor={cursor}&subscriptionId={subscription_id}",
-            config.base_url.trim_end_matches('/')
-        );
-        let response = match with_headers(client.get(url), &config, false).send().await {
-            Ok(response) => response,
-            Err(error) => {
-                let _ = event_tx.send(Err(AsyncTransportError::Remote(error.to_string())));
-                tokio::time::sleep(reconnect_delay).await;
-                continue;
-            }
-        };
-
-        if response.status() != StatusCode::OK {
-            let _ = event_tx.send(Err(response_status_error(
-                response,
-                RemoteRequestKind::Stream,
-            )
-            .await));
-            tokio::time::sleep(reconnect_delay).await;
-            continue;
-        }
-
-        let mut stream = response.bytes_stream().eventsource();
-        let mut saw_event = false;
-
-        loop {
-            tokio::select! {
-                () = cancel.cancelled() => return,
-                event = stream.next() => {
-                    match event {
-                        Some(Ok(event)) => {
-                            saw_event = true;
-                            match serde_json::from_str::<RemoteEnvelope>(&event.data) {
-                                Ok(RemoteEnvelope::Message { cursor: next_cursor, message }) => {
-                                    if !advances_remote_cursor(cursor, next_cursor) {
-                                        continue;
-                                    }
-                                    cursor = next_cursor;
-                                    if event_tx
-                                        .send(Ok(RemoteIncoming::Message(*message)))
-                                        .is_err()
-                                    {
-                                        return;
-                                    }
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            event = stream.next() => {
+                match event {
+                    Some(Ok(event)) => {
+                        saw_event = true;
+                        match serde_json::from_str::<RemoteEnvelope>(&event.data) {
+                            Ok(RemoteEnvelope::Message { cursor: next_cursor, message }) => {
+                                if !advances_remote_cursor(cursor, next_cursor) {
+                                    continue;
                                 }
-                                Ok(RemoteEnvelope::Snapshot { snapshot }) => {
-                                    if !advances_remote_cursor(cursor, snapshot.cursor) {
-                                        continue;
-                                    }
-                                    let (_snapshot_session_id, next_cursor, last_init, state) =
-                                        snapshot.into_state();
-                                    cursor = next_cursor;
-                                    if event_tx
-                                        .send(Ok(RemoteIncoming::Snapshot {
-                                            state: Box::new(state),
-                                            last_init,
-                                        }))
-                                        .is_err()
-                                    {
-                                        return;
-                                    }
-                                }
-                                Ok(RemoteEnvelope::Reset { reason, snapshot }) => {
-                                    if !advances_remote_cursor(cursor, snapshot.cursor) {
-                                        continue;
-                                    }
-                                    let (_snapshot_session_id, next_cursor, last_init, state) =
-                                        snapshot.into_state();
-                                    cursor = next_cursor;
-                                    if event_tx
-                                        .send(Ok(RemoteIncoming::Reset {
-                                            reason,
-                                            state: Box::new(state),
-                                            last_init,
-                                        }))
-                                        .is_err()
-                                    {
-                                        return;
-                                    }
-                                }
-                                Ok(RemoteEnvelope::Heartbeat { cursor: next_cursor }) => {
-                                    if !accepts_remote_heartbeat_cursor(cursor, next_cursor) {
-                                        continue;
-                                    }
-                                    cursor = cursor.max(next_cursor);
-                                    if event_tx.send(Ok(RemoteIncoming::Heartbeat)).is_err() {
-                                        return;
-                                    }
-                                }
-                                Err(error) => {
-                                    eprintln!("failed to decode remote event: {error}");
+                                cursor = next_cursor;
+                                if event_tx
+                                    .send(Ok(RemoteIncoming::Message(*message)))
+                                    .is_err()
+                                {
+                                    return;
                                 }
                             }
+                            Ok(RemoteEnvelope::Snapshot { snapshot }) => {
+                                if !advances_remote_cursor(cursor, snapshot.cursor) {
+                                    continue;
+                                }
+                                let (_snapshot_session_id, next_cursor, last_init, state) =
+                                    snapshot.into_state();
+                                cursor = next_cursor;
+                                if event_tx
+                                    .send(Ok(RemoteIncoming::Snapshot {
+                                        state: Box::new(state),
+                                        last_init,
+                                    }))
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            Ok(RemoteEnvelope::Reset { reason, snapshot }) => {
+                                if !advances_remote_cursor(cursor, snapshot.cursor) {
+                                    continue;
+                                }
+                                let (_snapshot_session_id, next_cursor, last_init, state) =
+                                    snapshot.into_state();
+                                cursor = next_cursor;
+                                if event_tx
+                                    .send(Ok(RemoteIncoming::Reset {
+                                        reason,
+                                        state: Box::new(state),
+                                        last_init,
+                                    }))
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            Ok(RemoteEnvelope::Heartbeat { cursor: next_cursor }) => {
+                                if !accepts_remote_heartbeat_cursor(cursor, next_cursor) {
+                                    continue;
+                                }
+                                cursor = cursor.max(next_cursor);
+                                if event_tx.send(Ok(RemoteIncoming::Heartbeat)).is_err() {
+                                    return;
+                                }
+                            }
+                            Err(error) => {
+                                eprintln!("failed to decode remote event: {error}");
+                            }
                         }
-                        Some(Err(error)) => {
-                            let _ = event_tx.send(Err(AsyncTransportError::Remote(error.to_string())));
-                            break;
-                        }
-                        None => break,
                     }
+                    Some(Err(error)) => {
+                        let _ = event_tx.send(Err(AsyncTransportError::Remote(error.to_string())));
+                        return;
+                    }
+                    None => break,
                 }
             }
         }
-
-        if cancel.is_cancelled() {
-            break;
-        }
-
-        if !saw_event {
-            let _ = event_tx.send(Err(AsyncTransportError::Remote(
-                "remote event stream closed before emitting data".to_string(),
-            )));
-        }
-
-        tokio::time::sleep(reconnect_delay).await;
     }
+
+    if cancel.is_cancelled() {
+        return;
+    }
+
+    let error = if saw_event {
+        AsyncTransportError::Remote("remote event stream closed after emitting data".to_string())
+    } else {
+        AsyncTransportError::Remote("remote event stream closed before emitting data".to_string())
+    };
+    let _ = event_tx.send(Err(error));
 }
 
 fn advances_remote_cursor(current_cursor: u64, next_cursor: u64) -> bool {
@@ -3491,6 +3484,187 @@ mod tests {
         assert_eq!(
             transport.state().last_status.as_deref(),
             Some("Remote update")
+        );
+
+        transport.shutdown().expect("shutdown");
+        for _ in 0..50 {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn remote_transport_surfaces_stream_closure_without_internal_reader_retry() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let request_paths = Arc::new(Mutex::new(Vec::new()));
+        let initial_snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 1,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "tracked_tools": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let status_event = serde_json::json!({
+            "type": "message",
+            "cursor": 2,
+            "message": {
+                "type": "status",
+                "message": "Remote update"
+            }
+        })
+        .to_string();
+        tokio::spawn({
+            let request_paths = Arc::clone(&request_paths);
+            let snapshot_json = initial_snapshot.to_string();
+            async move {
+                loop {
+                    let Ok((mut socket, _)) = listener.accept().await else {
+                        break;
+                    };
+                    let request_paths = Arc::clone(&request_paths);
+                    let snapshot_json = snapshot_json.clone();
+                    let status_event = status_event.clone();
+                    tokio::spawn(async move {
+                        let Some((path, _headers, _body)) = read_http_request(&mut socket).await
+                        else {
+                            return;
+                        };
+                        request_paths.lock().await.push(path.clone());
+
+                        if path == "/api/headless/connections" {
+                            let body = serde_json::json!({
+                                "session_id": "sess_remote",
+                                "connection_id": "conn_remote",
+                                "controller_connection_id": "conn_remote",
+                                "lease_expires_at": "2026-04-02T00:00:15Z",
+                                "heartbeat_interval_ms": 15000,
+                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
+                                    .expect("valid snapshot json"),
+                            })
+                            .to_string();
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                &body,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/subscribe")
+                        {
+                            let body = serde_json::json!({
+                                "connection_id": "conn_remote",
+                                "subscription_id": "sub_remote",
+                                "controller_connection_id": "conn_remote",
+                                "lease_expires_at": "2026-04-02T00:00:15Z",
+                                "heartbeat_interval_ms": 15000,
+                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
+                                    .expect("valid snapshot json"),
+                            })
+                            .to_string();
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                &body,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/disconnect")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/") && path.contains("/events?")
+                        {
+                            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
+                            if socket.write_all(headers.as_bytes()).await.is_err() {
+                                return;
+                            }
+                            let payload = format!("data: {status_event}\n\n");
+                            let _ = socket.write_all(payload.as_bytes()).await;
+                            let _ = socket.shutdown().await;
+                            return;
+                        }
+
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 404 Not Found",
+                            "text/plain",
+                            "not found",
+                        )
+                        .await;
+                    });
+                }
+            }
+        });
+
+        let config = RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            reconnect_delay: Duration::from_millis(5),
+            ..RemoteTransportConfig::default()
+        };
+
+        let mut transport = RemoteAgentTransport::connect(config)
+            .await
+            .expect("connect");
+        let cancel_token = transport.cancel_token();
+
+        let incoming = transport
+            .recv_incoming()
+            .await
+            .expect("incoming status event");
+        match incoming {
+            RemoteIncoming::Message(FromAgentMessage::Status { message }) => {
+                assert_eq!(message, "Remote update");
+            }
+            other => panic!("expected remote status message, got {other:?}"),
+        }
+
+        let error = transport
+            .recv_incoming()
+            .await
+            .expect_err("stream closure should surface as an incoming error");
+        assert!(
+            matches!(error, AsyncTransportError::Remote(message) if message.contains("closed after emitting data"))
+        );
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let paths = request_paths.lock().await.clone();
+        let event_requests = paths
+            .iter()
+            .filter(|path| path.contains("/events?"))
+            .count();
+        assert_eq!(
+            event_requests, 1,
+            "reader loop should not retry /events internally"
         );
 
         transport.shutdown().expect("shutdown");
