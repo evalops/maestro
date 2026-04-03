@@ -250,6 +250,17 @@ pub enum ToAgentMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u32>,
     },
+    /// Read a workspace file on the runtime
+    UtilityFileRead {
+        read_id: String,
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offset: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
     /// Start a filesystem watch on the runtime
     UtilityFileWatchStart {
         watch_id: String,
@@ -358,6 +369,7 @@ pub enum ApprovalMode {
 pub enum UtilityOperation {
     CommandExec,
     FileSearch,
+    FileRead,
     FileWatch,
 }
 
@@ -640,6 +652,18 @@ pub enum FromAgentMessage {
         query: String,
         cwd: String,
         results: Vec<UtilityFileSearchMatch>,
+        truncated: bool,
+    },
+    /// File read completed on the runtime
+    UtilityFileReadResult {
+        read_id: String,
+        path: String,
+        relative_path: String,
+        cwd: String,
+        content: String,
+        start_line: u32,
+        end_line: u32,
+        total_lines: u32,
         truncated: bool,
     },
     /// File watch started on the runtime
@@ -1045,6 +1069,7 @@ impl AgentState {
             ToAgentMessage::UtilityCommandStdin { .. } => {}
             ToAgentMessage::UtilityCommandResize { .. } => {}
             ToAgentMessage::UtilityFileSearch { .. } => {}
+            ToAgentMessage::UtilityFileRead { .. } => {}
             ToAgentMessage::UtilityFileWatchStart { .. } => {}
             ToAgentMessage::UtilityFileWatchStop { .. } => {}
             ToAgentMessage::Shutdown => {
@@ -1175,6 +1200,7 @@ impl AgentState {
                 None
             }
             FromAgentMessage::UtilityFileSearchResults { .. } => None,
+            FromAgentMessage::UtilityFileReadResult { .. } => None,
             FromAgentMessage::UtilityFileWatchStarted {
                 watch_id,
                 root_dir,
@@ -1948,6 +1974,23 @@ mod tests {
     }
 
     #[test]
+    fn serialize_utility_file_read_message() {
+        let msg = ToAgentMessage::UtilityFileRead {
+            read_id: "read_src".to_string(),
+            path: "src/headless/mod.rs".to_string(),
+            cwd: Some("/tmp/project".to_string()),
+            offset: Some(25),
+            limit: Some(40),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""type":"utility_file_read""#));
+        assert!(json.contains(r#""read_id":"read_src""#));
+        assert!(json.contains(r#""path":"src/headless/mod.rs""#));
+        assert!(json.contains(r#""offset":25"#));
+        assert!(json.contains(r#""limit":40"#));
+    }
+
+    #[test]
     fn parse_utility_file_watch_event_message() {
         let json = r#"{"type":"utility_file_watch_event","watch_id":"watch_src","change_type":"modify","path":"/tmp/project/src/app.ts","relative_path":"src/app.ts","timestamp":1234,"is_directory":false}"#;
         let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
@@ -1968,6 +2011,36 @@ mod tests {
                 assert!(!is_directory);
             }
             _ => panic!("Expected UtilityFileWatchEvent message"),
+        }
+    }
+
+    #[test]
+    fn parse_utility_file_read_result_message() {
+        let json = r#"{"type":"utility_file_read_result","read_id":"read_src","path":"/tmp/project/src/main.rs","relative_path":"src/main.rs","cwd":"/tmp/project","content":"fn main() {}","start_line":1,"end_line":1,"total_lines":1,"truncated":false}"#;
+        let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            FromAgentMessage::UtilityFileReadResult {
+                read_id,
+                path,
+                relative_path,
+                cwd,
+                content,
+                start_line,
+                end_line,
+                total_lines,
+                truncated,
+            } => {
+                assert_eq!(read_id, "read_src");
+                assert_eq!(path, "/tmp/project/src/main.rs");
+                assert_eq!(relative_path, "src/main.rs");
+                assert_eq!(cwd, "/tmp/project");
+                assert_eq!(content, "fn main() {}");
+                assert_eq!(start_line, 1);
+                assert_eq!(end_line, 1);
+                assert_eq!(total_lines, 1);
+                assert!(!truncated);
+            }
+            _ => panic!("Expected UtilityFileReadResult message"),
         }
     }
 

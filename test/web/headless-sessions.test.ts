@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1562,6 +1562,86 @@ describe("headless session handlers", () => {
 			expect(JSON.parse(unsubscribeRes.body)).toEqual({ success: true });
 			expect(runtime.getSnapshot().state.active_file_watches).toEqual([]);
 			expect(runtime.getSnapshot().state.controller_connection_id).toBeNull();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("streams utility file read results to the owning subscription", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			await writeFile(join(tempDir, "notes.txt"), "one\ntwo\nthree\nfour\n");
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				capabilities: {
+					server_requests: ["approval"],
+					utility_operations: ["file_read"],
+				},
+				context,
+				sessionManager,
+			});
+			const sessionId = runtime.getSnapshot().session_id;
+			if (!sessionId) {
+				throw new Error("Expected headless session id");
+			}
+
+			const subscription = runtime.createSubscription({ role: "controller" });
+			const attached = runtime.attachSubscription(subscription.subscription_id);
+			while (attached?.next()) {
+				// Drain connection-info messages queued during explicit subscription setup.
+			}
+
+			const messageReq = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${sessionId}/messages`,
+				{
+					type: "utility_file_read",
+					read_id: "read_remote",
+					path: "notes.txt",
+					cwd: tempDir,
+					offset: 2,
+					limit: 2,
+				},
+				{
+					"x-maestro-headless-subscriber-id": subscription.subscription_id,
+					"x-maestro-headless-role": "controller",
+				},
+			);
+			const messageRes = new MockResponse();
+			messageRes.req = messageReq;
+			await handleHeadlessSessionMessage(
+				messageReq,
+				messageRes as unknown as ServerResponse,
+				context,
+				{ id: sessionId },
+			);
+
+			expect(JSON.parse(messageRes.body)).toEqual({ success: true });
+			expect(attached?.next()).toMatchObject({
+				type: "message",
+				message: {
+					type: "utility_file_read_result",
+					read_id: "read_remote",
+					relative_path: "notes.txt",
+					cwd: tempDir,
+					content: "two\nthree",
+					start_line: 2,
+					end_line: 3,
+					total_lines: 4,
+					truncated: true,
+				},
+			});
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}

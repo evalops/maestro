@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ActionApprovalService } from "../../src/agent/action-approval.js";
 import { getHeadlessPtyPythonCommand } from "../../src/headless/pty-helper.js";
@@ -469,6 +472,108 @@ describe("runHeadlessMode", () => {
 		);
 		onClose?.();
 		await runPromise;
+	});
+
+	it("returns utility file read results for the local connection", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-read-"));
+		try {
+			await writeFile(join(tempDir, "notes.txt"), "one\ntwo\nthree\nfour\n");
+
+			const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+
+			const runPromise = runHeadlessMode(
+				{
+					state: { model: { id: "gpt-5.4", provider: "openai" } },
+					subscribe: vi.fn(),
+					prompt: vi.fn(),
+					abort: vi.fn(),
+				} as never,
+				{
+					getSessionId: () => "session-headless-test",
+				} as never,
+			);
+
+			await vi.waitFor(() => {
+				expect(onLine).toBeTypeOf("function");
+				expect(onClose).toBeTypeOf("function");
+			});
+
+			await onLine?.(
+				JSON.stringify({
+					type: "hello",
+					protocol_version: "1.0",
+					client_info: { name: "maestro-test", version: "0.1.0" },
+					capabilities: {
+						utility_operations: ["file_read"],
+					},
+					role: "controller",
+				}),
+			);
+			await onLine?.(
+				JSON.stringify({
+					type: "utility_file_read",
+					read_id: "read_local",
+					path: "notes.txt",
+					cwd: tempDir,
+					offset: 2,
+					limit: 2,
+				}),
+			);
+
+			await vi.waitFor(() => {
+				const messages = writes
+					.join("")
+					.trim()
+					.split("\n")
+					.filter(Boolean)
+					.map(
+						(line) =>
+							JSON.parse(line) as { type: string; [key: string]: unknown },
+					);
+				expect(messages).toContainEqual(
+					expect.objectContaining({
+						type: "utility_file_read_result",
+						read_id: "read_local",
+						relative_path: "notes.txt",
+						cwd: tempDir,
+						content: "two\nthree",
+						start_line: 2,
+						end_line: 3,
+						total_lines: 4,
+						truncated: true,
+					}),
+				);
+			});
+
+			onClose?.();
+			await runPromise;
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("rejects unknown headless command types at the protocol boundary", async () => {
