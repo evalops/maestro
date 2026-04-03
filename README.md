@@ -45,25 +45,25 @@ Choose your interface:
 - **VS Code**: Native extension with inline chat, diagnostics integration, and go-to-definition ([VS Code Extension](packages/vscode-extension/README.md))
 - **JetBrains IDEs**: Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs ([JetBrains Plugin](packages/jetbrains-plugin/README.md))
 - **Slack Bot**: Deploy as a Slack bot with Docker sandbox isolation ([`@evalops/slack-agent`](packages/slack-agent/README.md))
-- **GitHub Agent**: Autonomous agent that watches repos, implements issues, and creates PRs ([`@evalops/github-agent`](packages/github-agent/README.md))
-- **Ambient Agent**: Always-on GitHub daemon that watches repos and ships PRs ([Ambient Maestro design](docs/design/AMBIENT_AGENT.md))
+- **GitHub Agent**: GitHub automation agent for label-driven issue work and PR creation ([`@evalops/github-agent`](packages/github-agent/README.md))
+- **Ambient Agent**: Long-running GitHub daemon for repository monitoring and PR generation ([Ambient Maestro design](docs/design/AMBIENT_AGENT.md))
 - **Headless**: Scriptable automation for CI/CD and evaluation pipelines
 
 ### Why Multiple Interfaces?
 
-The terminal is home for many developers—fast, scriptable, distraction-free. But not every workflow fits a terminal session. Sometimes you're on a call, away from your dev machine, or collaborating with teammates who aren't terminal-native.
+The terminal is the primary interface, but the rest of the surfaces exist for workflows where a terminal session is not the best fit.
 
-**Web UI** lets you access Maestro from any browser. Share a session link with a colleague. Demo a feature without screen-sharing your terminal. Work from a tablet when you're not at your desk.
+**Web UI** exposes Maestro in a browser, including shared session links and the same core interaction model as the terminal.
 
-**IDE extensions** (VS Code, JetBrains) integrate Maestro directly into your editor. Get IDE-aware context—diagnostics, go-to-definition, find references—fed automatically to the agent. No copy-paste, no context switching.
+**IDE extensions** (VS Code, JetBrains) attach editor context such as diagnostics, go-to-definition, and references directly to agent interactions.
 
-**Slack** meets teams where they already communicate. Deploy a shared coding agent that your whole team can @mention. Queue up tasks asynchronously—ask the bot to run tests while you're in a meeting, check results when you're back. Scheduled tasks, approval workflows, and persistent memory mean the agent can operate as a background teammate rather than a tool you have to babysit.
+**Slack** provides a shared team interface for queueing work, reviewing results, and running tasks from channels where people already coordinate.
 
-**GitHub Agent** runs autonomously. Label an issue with `maestro-task` and walk away—it'll implement the feature, run tests, and open a PR. Useful for self-improvement pipelines, batch refactoring, or delegating routine tasks.
+**GitHub Agent** is for repository-driven workflows where labels or issues trigger implementation, checks, and PR creation.
 
-**Conductor** brings browser automation to Maestro. The Chrome extension connects to Maestro's web server, giving the agent eyes and hands in the browser—read pages, click elements, fill forms, capture screenshots. Useful for web scraping, testing workflows, or any task that requires interacting with web applications.
+**Conductor** connects browser automation to the Maestro web server for page inspection, form filling, screenshots, and browser-based test flows.
 
-Same agent, same tools, same core interaction model—just different surfaces optimized for different contexts.
+The runtime model is shared across these interfaces, but each surface adds different context and controls around it.
 
 ### Who It's For
 
@@ -900,8 +900,8 @@ Sessions are JSONL in `~/.maestro/agent/sessions/`. Use:
 | [`@evalops/maestro-web`](packages/web/README.md) | Web interface for Maestro |
 | [`@evalops/contracts`](packages/contracts/README.md) | Shared TypeScript definitions |
 | [`@evalops/slack-agent`](packages/slack-agent/README.md) | Slack bot with Docker sandbox isolation |
-| [`@evalops/github-agent`](packages/github-agent/README.md) | Autonomous GitHub agent for self-improvement pipelines |
-| [`ambient-agent-rs`](packages/ambient-agent-rs/README.md) | Always-on GitHub agent daemon (Ambient Maestro) |
+| [`@evalops/github-agent`](packages/github-agent/README.md) | GitHub automation agent for issue-driven workflows |
+| [`ambient-agent-rs`](packages/ambient-agent-rs/README.md) | Long-running GitHub agent daemon (Ambient Maestro) |
 | [Maestro for VS Code](packages/vscode-extension/README.md) | VS Code extension with inline chat and IDE integration |
 | [Maestro for JetBrains](packages/jetbrains-plugin/README.md) | Plugin for IntelliJ, WebStorm, PyCharm, and other JetBrains IDEs |
 
