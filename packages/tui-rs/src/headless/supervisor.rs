@@ -306,6 +306,7 @@ impl AgentSupervisor {
         if let Some(transport) = self.transport.take() {
             let _ = transport.shutdown();
         }
+        self.last_response = None;
         self.health_status = HealthStatus::Unhealthy;
         let _ = self.event_tx.send(SupervisorEvent::Disconnected {
             error: "Disconnected by request".to_string(),
@@ -421,6 +422,7 @@ impl AgentSupervisor {
         let should_replay_init = transport.needs_init_replay();
         let snapshot = transport.initial_snapshot();
         self.transport = Some(transport);
+        self.last_response = Some(Instant::now());
         if let Some((state, last_init)) = snapshot {
             self.apply_snapshot(state, last_init);
         }
@@ -466,20 +468,73 @@ impl AgentSupervisor {
 
     fn handle_transport_error(&mut self, error: AsyncTransportError) -> SupervisorEvent {
         self.transport = None;
+        self.last_response = None;
         self.health_status = HealthStatus::Unhealthy;
         SupervisorEvent::Disconnected {
             error: error.to_string(),
         }
     }
 
+    fn mark_response_received(&mut self, emit_health_event: bool) {
+        self.last_response = Some(Instant::now());
+        if emit_health_event && self.health_status != HealthStatus::Healthy {
+            self.health_status = HealthStatus::Healthy;
+            let _ = self.event_tx.send(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy,
+            });
+        }
+    }
+
+    fn next_health_deadline(&self) -> Option<Instant> {
+        let last_response = self.last_response?;
+        match self.health_status {
+            HealthStatus::Healthy => Some(last_response + self.config.health_check_interval),
+            HealthStatus::Degraded => Some(
+                last_response
+                    + self.config.health_check_interval
+                    + self.config.health_check_timeout,
+            ),
+            _ => None,
+        }
+    }
+
+    fn next_health_timeout(&self, now: Instant) -> Option<Duration> {
+        self.next_health_deadline()
+            .map(|deadline| deadline.saturating_duration_since(now))
+    }
+
+    fn due_health_transition(&mut self, now: Instant) -> Option<SupervisorEvent> {
+        let last_response = self.last_response?;
+        let silence = now.saturating_duration_since(last_response);
+        match self.health_status {
+            HealthStatus::Healthy if silence >= self.config.health_check_interval => {
+                self.health_status = HealthStatus::Degraded;
+                Some(SupervisorEvent::HealthChanged {
+                    status: HealthStatus::Degraded,
+                })
+            }
+            HealthStatus::Degraded
+                if silence
+                    >= self.config.health_check_interval + self.config.health_check_timeout =>
+            {
+                self.health_status = HealthStatus::Unhealthy;
+                Some(SupervisorEvent::HealthChanged {
+                    status: HealthStatus::Unhealthy,
+                })
+            }
+            _ => None,
+        }
+    }
+
     fn handle_transport_incoming(&mut self, incoming: ManagedIncoming) -> Option<SupervisorEvent> {
+        let emit_health_event = self.transport.is_some();
         match incoming {
             ManagedIncoming::Message(message) => {
-                self.last_response = Some(Instant::now());
+                self.mark_response_received(emit_health_event);
                 self.apply_agent_message(message)
             }
             ManagedIncoming::Snapshot { state, last_init } => {
-                self.last_response = Some(Instant::now());
+                self.mark_response_received(emit_health_event);
                 self.apply_snapshot(*state, last_init);
                 None
             }
@@ -488,12 +543,12 @@ impl AgentSupervisor {
                 state,
                 last_init,
             } => {
-                self.last_response = Some(Instant::now());
+                self.mark_response_received(emit_health_event);
                 self.apply_snapshot(*state, last_init);
                 None
             }
             ManagedIncoming::Heartbeat => {
-                self.last_response = Some(Instant::now());
+                self.mark_response_received(emit_health_event);
                 None
             }
         }
@@ -501,6 +556,10 @@ impl AgentSupervisor {
 
     /// Poll for events (non-blocking)
     pub fn poll(&mut self) -> Option<SupervisorEvent> {
+        if let Ok(event) = self.event_rx.try_recv() {
+            return Some(event);
+        }
+
         loop {
             let next_result = match self.transport.as_mut() {
                 Some(transport) => transport.try_recv_incoming(),
@@ -516,6 +575,12 @@ impl AgentSupervisor {
                     }
                 }
                 Err(error) => return Some(self.handle_transport_error(error)),
+            }
+        }
+
+        if self.transport.is_some() {
+            if let Some(event) = self.due_health_transition(Instant::now()) {
+                return Some(event);
             }
         }
 
@@ -537,24 +602,41 @@ impl AgentSupervisor {
     }
 
     async fn recv_internal(&mut self) -> Option<SupervisorEvent> {
-        if self.transport.is_some() {
-            loop {
-                let result = {
-                    let transport = self.transport.as_mut()?;
-                    transport.recv_incoming().await
-                };
-                match result {
-                    Ok(incoming) => {
-                        if let Some(event) = self.handle_transport_incoming(incoming) {
-                            return Some(event);
-                        }
+        loop {
+            if let Ok(event) = self.event_rx.try_recv() {
+                return Some(event);
+            }
+
+            if self.transport.is_none() {
+                return self.event_rx.recv().await;
+            }
+
+            let now = Instant::now();
+            if let Some(event) = self.due_health_transition(now) {
+                return Some(event);
+            }
+
+            let next_timeout = self.next_health_timeout(now);
+            let result = {
+                let transport = self.transport.as_mut()?;
+                if let Some(timeout) = next_timeout {
+                    match tokio::time::timeout(timeout, transport.recv_incoming()).await {
+                        Ok(result) => result,
+                        Err(_) => continue,
                     }
-                    Err(error) => return Some(self.handle_transport_error(error)),
+                } else {
+                    transport.recv_incoming().await
                 }
+            };
+            match result {
+                Ok(incoming) => {
+                    if let Some(event) = self.handle_transport_incoming(incoming) {
+                        return Some(event);
+                    }
+                }
+                Err(error) => return Some(self.handle_transport_error(error)),
             }
         }
-
-        self.event_rx.recv().await
     }
 
     /// Check current health status
@@ -1130,6 +1212,59 @@ mod tests {
     }
 
     #[test]
+    fn health_transitions_after_silence() {
+        let mut supervisor = AgentSupervisor::new(SupervisorConfig {
+            health_check_interval: Duration::from_secs(30),
+            health_check_timeout: Duration::from_secs(5),
+            ..SupervisorConfig::default()
+        });
+        let start = Instant::now();
+        supervisor.health_status = HealthStatus::Healthy;
+        supervisor.last_response = Some(start);
+
+        assert!(supervisor
+            .due_health_transition(start + Duration::from_secs(29))
+            .is_none());
+        assert!(matches!(
+            supervisor.due_health_transition(start + Duration::from_secs(30)),
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Degraded
+            })
+        ));
+        assert_eq!(supervisor.health(), HealthStatus::Degraded);
+        assert!(supervisor
+            .due_health_transition(start + Duration::from_secs(34))
+            .is_none());
+        assert!(matches!(
+            supervisor.due_health_transition(start + Duration::from_secs(35)),
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Unhealthy
+            })
+        ));
+        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn incoming_heartbeat_restores_healthy_status() {
+        let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+        supervisor.health_status = HealthStatus::Degraded;
+        supervisor.last_response = Some(
+            Instant::now()
+                .checked_sub(Duration::from_secs(90))
+                .expect("monotonic clock supports subtraction"),
+        );
+
+        supervisor.mark_response_received(true);
+        assert_eq!(supervisor.health(), HealthStatus::Healthy);
+        assert!(matches!(
+            supervisor.poll(),
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy
+            })
+        ));
+    }
+
+    #[test]
     fn test_supervisor_builder() {
         let supervisor = SupervisorBuilder::new()
             .cli_path("/usr/bin/composer")
@@ -1431,6 +1566,16 @@ done
         let mut supervisor = AgentSupervisor::new(config);
         supervisor.connect().await.expect("connect");
 
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Connected)
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy
+            })
+        ));
         for _ in 0..4 {
             let event = supervisor.recv().await.expect("event");
             assert!(matches!(event, SupervisorEvent::Agent(_)));
@@ -1691,6 +1836,78 @@ done
                 .iter()
                 .any(|(name, value)| name == "authorization" && value == "Bearer secret")
         }));
+
+        supervisor.disconnect();
+    }
+
+    #[tokio::test]
+    async fn recv_prioritizes_supervisor_events_before_remote_agent_messages() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 0,
+            "last_init": {
+                "system_prompt": "Persisted prompt",
+                "approval_mode": "prompt"
+            },
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "cwd": "/tmp/project",
+                "git_branch": "main",
+                "pending_approvals": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let status_event = serde_json::json!({
+            "type": "message",
+            "cursor": 1,
+            "message": {
+                "type": "status",
+                "message": "Remote status"
+            }
+        })
+        .to_string();
+        let (addr, _posted_bodies, _request_headers) =
+            spawn_remote_headless_server(snapshot.to_string(), vec![status_event]).await;
+
+        let mut supervisor = SupervisorBuilder::new()
+            .remote_base_url(format!("http://{addr}"))
+            .remote_api_key("secret")
+            .remote_session_id("sess_remote")
+            .build();
+
+        supervisor.connect().await.expect("connect");
+
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::StateHydrated {
+                session_id: Some(ref session_id)
+            }) if session_id == "sess_remote"
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Connected)
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy
+            })
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Agent(agent_event))
+                if matches!(
+                    *agent_event,
+                    AgentEvent::Status { ref message } if message == "Remote status"
+                )
+        ));
 
         supervisor.disconnect();
     }
