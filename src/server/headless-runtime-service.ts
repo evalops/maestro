@@ -77,6 +77,11 @@ const MAX_CONNECTION_IDLE_MS =
 const MAX_IDLE_MS =
 	Number.parseInt(process.env.MAESTRO_HEADLESS_RUNTIME_IDLE_MS || "", 10) ||
 	30 * 60 * 1000;
+const MAX_RUNTIME_CLEANUP_FAILURES =
+	Number.parseInt(
+		process.env.MAESTRO_HEADLESS_RUNTIME_MAX_CLEANUP_FAILURES || "",
+		10,
+	) || 3;
 
 export interface HeadlessRuntimeSnapshot {
 	protocolVersion: string;
@@ -601,11 +606,11 @@ export class HeadlessSessionRuntime {
 	}
 
 	async dispose(): Promise<void> {
-		if (this.disposePromise) {
-			return this.disposePromise;
-		}
 		if (this.disposed) {
 			return;
+		}
+		if (this.disposePromise) {
+			return this.disposePromise;
 		}
 		const disposePromise = (async () => {
 			this.cancelPendingServerRequests(
@@ -623,6 +628,30 @@ export class HeadlessSessionRuntime {
 			}
 		});
 		return disposePromise;
+	}
+
+	disposeBestEffort(reason: string): void {
+		if (this.disposed) {
+			return;
+		}
+		this.disposePromise = null;
+		try {
+			this.cancelPendingServerRequests(reason);
+		} catch (error) {
+			logger.warn("Failed to cancel pending headless server requests", {
+				error: error instanceof Error ? error.message : String(error),
+				sessionId: this.sessionId,
+			});
+		}
+		void this.utilityCommands.dispose(reason).catch((error) => {
+			logger.warn("Failed to dispose headless utility commands", {
+				error: error instanceof Error ? error.message : String(error),
+				sessionId: this.sessionId,
+			});
+		});
+		this.fileWatches.dispose(reason);
+		this.agent.abort();
+		this.finalizeDisposal();
 	}
 
 	getSnapshot(): HeadlessRuntimeSnapshot {
@@ -1762,6 +1791,7 @@ export class HeadlessSessionRuntime {
 		this.connections.clear();
 		this.controllerConnectionId = null;
 		this.syncSubscriptionState(false);
+		this.disposePromise = null;
 		this.disposed = true;
 		this.running = false;
 		this.unsubscribeServerRequestEvents();
@@ -1912,6 +1942,7 @@ export type EnsureRuntimeOptions = {
 
 export class HeadlessRuntimeService {
 	private readonly runtimes = new Map<string, HeadlessSessionRuntime>();
+	private readonly cleanupFailures = new Map<string, number>();
 
 	constructor() {
 		setInterval(() => {
@@ -1989,12 +2020,32 @@ export class HeadlessRuntimeService {
 						this.runtimes.delete(key);
 					}
 				}
+				this.cleanupFailures.delete(key);
 			} catch (error) {
+				const failures = (this.cleanupFailures.get(key) ?? 0) + 1;
+				this.cleanupFailures.set(key, failures);
 				logger.warn("Failed to cleanup headless runtime", {
+					attempts: failures,
 					error: error instanceof Error ? error.message : String(error),
 					sessionId: runtime.id(),
 					scopeKey: key,
 				});
+				if (runtime.isIdle(now) && failures >= MAX_RUNTIME_CLEANUP_FAILURES) {
+					logger.error(
+						"Force-disposing idle headless runtime after repeated cleanup failures",
+						undefined,
+						{
+							attempts: failures,
+							sessionId: runtime.id(),
+							scopeKey: key,
+						},
+					);
+					runtime.disposeBestEffort(
+						"Headless runtime forcibly disposed after repeated cleanup failures",
+					);
+					this.runtimes.delete(key);
+					this.cleanupFailures.delete(key);
+				}
 			}
 		}
 	}

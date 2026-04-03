@@ -1686,6 +1686,49 @@ describe("headless session handlers", () => {
 		expect(service.getRuntime("anon", secondRuntime.id())).toBeUndefined();
 	});
 
+	it("force-disposes idle runtimes after repeated cleanup failures", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const service = context.headlessRuntimeService;
+		const runtime = await service.ensureRuntime({
+			scope_key: "anon",
+			sessionId: "stuck",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context,
+			sessionManager: createSessionManagerForRequest(
+				createJsonRequest("POST", "/api/headless/sessions", {}),
+				"headless",
+			),
+		});
+
+		vi.spyOn(runtime, "isIdle").mockReturnValue(true);
+		vi.spyOn(runtime, "dispose").mockRejectedValue(
+			new Error("dispose keeps failing"),
+		);
+
+		const cleanup = (
+			service as unknown as {
+				cleanup: () => Promise<void>;
+			}
+		).cleanup.bind(service);
+
+		await cleanup();
+		expect(service.getRuntime("anon", runtime.id())).toBe(runtime);
+		expect(runtime.isDisposed()).toBe(false);
+
+		await cleanup();
+		expect(service.getRuntime("anon", runtime.id())).toBe(runtime);
+		expect(runtime.isDisposed()).toBe(false);
+
+		await cleanup();
+		expect(service.getRuntime("anon", runtime.id())).toBeUndefined();
+		expect(runtime.isDisposed()).toBe(true);
+	});
+
 	it("explicit unsubscribe releases the controller lease", async () => {
 		const fakeAgent = new FakeAgent();
 		const context = createContext({
