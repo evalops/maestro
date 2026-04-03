@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
-import { TOOL_CONFIG } from "../config/constants.js";
+import { isProbablyBinary } from "../utils/file-content.js";
 import { validatePath } from "../utils/path-validation.js";
 
 export interface HeadlessUtilityFileReadRequest {
@@ -22,21 +22,12 @@ export interface HeadlessUtilityFileReadResult {
 }
 
 const DEFAULT_LIMIT = 400;
-const MAX_LIMIT = TOOL_CONFIG.READ_DEFAULT_LIMIT;
+const MAX_LIMIT = 2_000;
 const MAX_FILE_BYTES =
 	Number.parseInt(
 		process.env.MAESTRO_HEADLESS_UTILITY_FILE_READ_MAX_BYTES || "",
 		10,
 	) || 2 * 1024 * 1024;
-
-function isProbablyBinary(buffer: Buffer): boolean {
-	for (const byte of buffer.subarray(0, 2048)) {
-		if (byte === 0) {
-			return true;
-		}
-	}
-	return false;
-}
 
 function toLines(text: string): string[] {
 	if (!text) {
