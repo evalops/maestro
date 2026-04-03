@@ -603,22 +603,13 @@ export class HeadlessSessionRuntime {
 		if (this.disposed) {
 			return;
 		}
-		for (const subscriber of this.subscribers.values()) {
-			subscriber.detach();
-		}
-		this.subscribers.clear();
-		this.connections.clear();
-		this.controllerConnectionId = null;
 		this.cancelPendingServerRequests(
 			"Headless runtime disposed before request completed",
 		);
-		this.syncSubscriptionState(false);
-		this.disposed = true;
-		this.running = false;
 		await this.utilityCommands.dispose();
 		this.fileWatches.dispose();
 		this.agent.abort();
-		this.unsubscribeServerRequestEvents();
+		this.finalizeDisposal();
 	}
 
 	getSnapshot(): HeadlessRuntimeSnapshot {
@@ -936,8 +927,19 @@ export class HeadlessSessionRuntime {
 				.size === 0
 				? this.controllerConnectionId
 				: undefined;
+		const requestedConnectionId =
+			options?.connectionId ?? reusableControllerConnectionId;
+		if (
+			explicit &&
+			role === "controller" &&
+			this.controllerConnectionId &&
+			this.controllerConnectionId !== requestedConnectionId &&
+			!options?.takeControl
+		) {
+			throw new Error("Controller lease is already held by another connection");
+		}
 		const connection = this.ensureConnection({
-			connectionId: options?.connectionId ?? reusableControllerConnectionId,
+			connectionId: requestedConnectionId,
 			role,
 			clientProtocolVersion: options?.clientProtocolVersion,
 			clientInfo: options?.clientInfo,
@@ -1439,9 +1441,8 @@ export class HeadlessSessionRuntime {
 					"Headless runtime shutdown while file watch was still running",
 				);
 				this.agent.abort();
-				this.disposed = true;
-				this.unsubscribeServerRequestEvents();
 				this.publishSnapshot();
+				this.finalizeDisposal();
 				return;
 			case "utility_command_start":
 				if (
@@ -1738,6 +1739,19 @@ export class HeadlessSessionRuntime {
 		if (publish) {
 			this.publishSnapshot();
 		}
+	}
+
+	private finalizeDisposal(): void {
+		for (const subscriber of this.subscribers.values()) {
+			subscriber.detach();
+		}
+		this.subscribers.clear();
+		this.connections.clear();
+		this.controllerConnectionId = null;
+		this.syncSubscriptionState(false);
+		this.disposed = true;
+		this.running = false;
+		this.unsubscribeServerRequestEvents();
 	}
 
 	private handleServerRequestEvent(event: ServerRequestLifecycleEvent): void {

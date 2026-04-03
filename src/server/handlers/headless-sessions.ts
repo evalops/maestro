@@ -52,7 +52,7 @@ const HeadlessOptOutNotificationsSchema = Type.Array(
 	},
 );
 
-const HeadlessSessionCreateSchema = Type.Object({
+const HeadlessCreateBaseProperties = {
 	sessionId: Type.Optional(Type.String()),
 	protocolVersion: Type.Optional(Type.String()),
 	clientInfo: Type.Optional(
@@ -89,45 +89,12 @@ const HeadlessSessionCreateSchema = Type.Object({
 	),
 	thinkingLevel: Type.Optional(stringLiteralUnion(headlessThinkingLevels)),
 	approvalMode: Type.Optional(stringLiteralUnion(headlessApprovalModes)),
-});
+} as const;
+
+const HeadlessSessionCreateSchema = Type.Object(HeadlessCreateBaseProperties);
 
 const HeadlessConnectionCreateSchema = Type.Object({
-	sessionId: Type.Optional(Type.String()),
-	protocolVersion: Type.Optional(Type.String()),
-	clientInfo: Type.Optional(
-		Type.Object({
-			name: Type.String(),
-			version: Type.Optional(Type.String()),
-		}),
-	),
-	model: Type.Optional(Type.String()),
-	enableClientTools: Type.Optional(Type.Boolean()),
-	capabilities: Type.Optional(
-		Type.Object({
-			serverRequests: Type.Optional(
-				Type.Array(stringLiteralUnion(headlessServerRequestTypes), {
-					uniqueItems: true,
-				}),
-			),
-			utilityOperations: Type.Optional(
-				Type.Array(stringLiteralUnion(headlessUtilityOperations), {
-					uniqueItems: true,
-				}),
-			),
-		}),
-	),
-	optOutNotifications: Type.Optional(HeadlessOptOutNotificationsSchema),
-	role: Type.Optional(stringLiteralUnion(headlessConnectionRoles)),
-	client: Type.Optional(
-		Type.Union([
-			Type.Literal("generic"),
-			Type.Literal("vscode"),
-			Type.Literal("jetbrains"),
-			Type.Literal("conductor"),
-		]),
-	),
-	thinkingLevel: Type.Optional(stringLiteralUnion(headlessThinkingLevels)),
-	approvalMode: Type.Optional(stringLiteralUnion(headlessApprovalModes)),
+	...HeadlessCreateBaseProperties,
 	takeControl: Type.Optional(Type.Boolean()),
 });
 

@@ -690,6 +690,7 @@
 			"additionalProperties": false,
 			"properties": {
 				"type": { "kind": "literal", "value": "error" },
+				"request_id": { "kind": "string", "optional": true },
 				"message": { "kind": "string" },
 				"fatal": { "kind": "boolean" },
 				"error_type": {

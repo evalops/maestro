@@ -41,6 +41,7 @@ import {
 } from "../../src/server/headless-runtime-service.js";
 import { serverRequestManager } from "../../src/server/server-request-manager.js";
 import { ApiError } from "../../src/server/server-utils.js";
+import { createSessionManagerForRequest } from "../../src/server/session-scope.js";
 import { ServerRequestToolRetryService } from "../../src/server/tool-retry-service.js";
 import { SessionManager } from "../../src/session/manager.js";
 
@@ -1405,6 +1406,21 @@ describe("headless session handlers", () => {
 			statusCode: 409,
 			message: "Controller lease is already held by another connection",
 		});
+
+		const runtime = await context.headlessRuntimeService.ensureRuntime({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context,
+			sessionManager: createSessionManagerForRequest(
+				createJsonRequest("POST", "/api/headless/sessions", {}),
+				"headless",
+			),
+			sessionId,
+			registerConnection: false,
+		});
+		expect(runtime.getSnapshot().state.connection_count).toBe(1);
 	});
 
 	it("allows explicit controller takeover when requested", async () => {
@@ -1459,6 +1475,36 @@ describe("headless session handlers", () => {
 		expect(second.snapshot.state.controller_subscription_id).toBe(
 			second.subscription_id,
 		);
+	});
+
+	it("fully clears runtime connection state after shutdown", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const runtime = await context.headlessRuntimeService.ensureRuntime({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context,
+			sessionManager: createSessionManagerForRequest(
+				createJsonRequest("POST", "/api/headless/sessions", {}),
+				"headless",
+			),
+		});
+
+		const subscription = runtime.createSubscription({ role: "controller" });
+		await runtime.send(
+			{ type: "shutdown" },
+			{ subscriptionId: subscription.subscription_id },
+		);
+
+		const snapshot = runtime.getSnapshot();
+		expect(runtime.isDisposed()).toBe(true);
+		expect(snapshot.state.connection_count).toBe(0);
+		expect(snapshot.state.subscriber_count).toBe(0);
+		expect(snapshot.state.controller_connection_id).toBeNull();
 	});
 
 	it("explicit unsubscribe releases the controller lease", async () => {

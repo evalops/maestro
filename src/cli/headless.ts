@@ -67,9 +67,14 @@ function send(msg: HeadlessFromAgentMessage): void {
 	}
 }
 
-function sendError(message: string, fatal: boolean): void {
+function sendError(
+	message: string,
+	fatal: boolean,
+	options?: { request_id?: string },
+): void {
 	send({
 		type: "error",
+		request_id: options?.request_id,
 		message,
 		fatal,
 		error_type: classifyHeadlessError(message, fatal),
@@ -599,12 +604,20 @@ export async function runHeadlessMode(
 						break;
 					}
 					{
-						const result = await readWorkspaceFile({
-							path: msg.path,
-							cwd: msg.cwd,
-							offset: msg.offset,
-							limit: msg.limit,
-						});
+						let result: Awaited<ReturnType<typeof readWorkspaceFile>>;
+						try {
+							result = await readWorkspaceFile({
+								path: msg.path,
+								cwd: msg.cwd,
+								offset: msg.offset,
+								limit: msg.limit,
+							});
+						} catch (error) {
+							const message =
+								error instanceof Error ? error.message : String(error);
+							sendError(message, false, { request_id: msg.read_id });
+							break;
+						}
 						sendMessage({
 							type: "utility_file_read_result",
 							read_id: msg.read_id,

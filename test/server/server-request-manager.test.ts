@@ -361,7 +361,7 @@ describe("ServerRequestManager", () => {
 				resolvedBy: "user",
 			}),
 		).toBe(true);
-		expect(retrySpy).toHaveBeenCalledWith("retry_1", "Retry once more");
+		expect(retrySpy).toHaveBeenCalledWith("retry_1", "Retry once more", "user");
 		expect(listener).toHaveBeenNthCalledWith(1, {
 			type: "registered",
 			request: expect.objectContaining({
@@ -381,6 +381,49 @@ describe("ServerRequestManager", () => {
 			resolution: "retried",
 			reason: "Retry once more",
 			resolvedBy: "user",
+		});
+	});
+
+	it("preserves runtime resolution metadata when cancelling tool retry prompts", () => {
+		const service = new ToolRetryService("prompt");
+		const abortSpy = vi.spyOn(service, "abort").mockReturnValue(true);
+		const listener = vi.fn();
+		manager.subscribe(listener);
+
+		manager.registerToolRetry({
+			sessionId: "sess_retry_runtime",
+			request: {
+				id: "retry_runtime",
+				toolCallId: "call_bash",
+				toolName: "bash",
+				args: { command: "ls" },
+				errorMessage: "Command failed",
+				attempt: 2,
+			},
+			service,
+		});
+
+		expect(
+			manager.cancel(
+				"retry_runtime",
+				"Interrupted before retry decision completed",
+				"runtime",
+			),
+		).toBe(true);
+		expect(abortSpy).toHaveBeenCalledWith(
+			"retry_runtime",
+			"Interrupted before retry decision completed",
+			"runtime",
+		);
+		expect(listener).toHaveBeenNthCalledWith(2, {
+			type: "resolved",
+			request: expect.objectContaining({
+				id: "retry_runtime",
+				kind: "tool_retry",
+			}),
+			resolution: "cancelled",
+			reason: "Interrupted before retry decision completed",
+			resolvedBy: "runtime",
 		});
 	});
 
@@ -409,6 +452,7 @@ describe("ServerRequestManager", () => {
 		expect(abortSpy).toHaveBeenCalledWith(
 			"retry_timeout",
 			"Tool retry request timed out before a retry decision was provided.",
+			"policy",
 		);
 		expect(listener).toHaveBeenNthCalledWith(2, {
 			type: "resolved",

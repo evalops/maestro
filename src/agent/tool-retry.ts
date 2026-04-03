@@ -29,7 +29,7 @@ export interface ToolRetryRequest {
 export interface ToolRetryDecision {
 	action: "retry" | "skip" | "abort";
 	reason?: string;
-	resolvedBy: "policy" | "user";
+	resolvedBy: "policy" | "user" | "runtime";
 }
 
 interface PendingEntry {
@@ -111,27 +111,39 @@ export class ToolRetryService {
 		});
 	}
 
-	retry(id: string, reason?: string): boolean {
+	retry(
+		id: string,
+		reason?: string,
+		resolvedBy: ToolRetryDecision["resolvedBy"] = "user",
+	): boolean {
 		return this.resolveEntry(id, {
 			action: "retry",
 			reason: reason ?? "Retrying",
-			resolvedBy: "user",
+			resolvedBy,
 		});
 	}
 
-	skip(id: string, reason?: string): boolean {
+	skip(
+		id: string,
+		reason?: string,
+		resolvedBy: ToolRetryDecision["resolvedBy"] = "user",
+	): boolean {
 		return this.resolveEntry(id, {
 			action: "skip",
 			reason: reason ?? "Skipped",
-			resolvedBy: "user",
+			resolvedBy,
 		});
 	}
 
-	abort(id: string, reason?: string): boolean {
+	abort(
+		id: string,
+		reason?: string,
+		resolvedBy: ToolRetryDecision["resolvedBy"] = "user",
+	): boolean {
 		return this.resolveEntry(id, {
 			action: "abort",
 			reason: reason ?? "Aborted",
-			resolvedBy: "user",
+			resolvedBy,
 		});
 	}
 

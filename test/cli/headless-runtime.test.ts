@@ -581,6 +581,102 @@ describe("runHeadlessMode", () => {
 		}
 	});
 
+	it("preserves the file read request id on local read errors", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-read-"));
+		try {
+			const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+
+			const runPromise = runHeadlessMode(
+				{
+					state: { model: { id: "gpt-5.4", provider: "openai" } },
+					subscribe: vi.fn(),
+					prompt: vi.fn(),
+					abort: vi.fn(),
+				} as never,
+				{
+					getSessionId: () => "session-headless-test",
+				} as never,
+			);
+
+			await vi.waitFor(() => {
+				expect(onLine).toBeTypeOf("function");
+				expect(onClose).toBeTypeOf("function");
+			});
+
+			await onLine?.(
+				JSON.stringify({
+					type: "hello",
+					protocol_version: "1.0",
+					client_info: { name: "maestro-test", version: "0.1.0" },
+					capabilities: {
+						utility_operations: ["file_read"],
+					},
+					role: "controller",
+				}),
+			);
+			await onLine?.(
+				JSON.stringify({
+					type: "utility_file_read",
+					read_id: "read_missing",
+					path: "missing.txt",
+					cwd: tempDir,
+				}),
+			);
+
+			await vi.waitFor(() => {
+				const messages = writes
+					.join("")
+					.trim()
+					.split("\n")
+					.filter(Boolean)
+					.map(
+						(line) =>
+							JSON.parse(line) as {
+								type: string;
+								request_id?: string;
+								message?: string;
+							},
+					);
+				expect(messages).toContainEqual(
+					expect.objectContaining({
+						type: "error",
+						request_id: "read_missing",
+						message: expect.stringContaining("missing.txt"),
+					}),
+				);
+			});
+
+			onClose?.();
+			await runPromise;
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects unknown headless command types at the protocol boundary", async () => {
 		let onLine: LineHandler | undefined;
 		let onClose: CloseHandler | undefined;

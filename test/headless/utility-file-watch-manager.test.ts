@@ -51,7 +51,7 @@ describe("HeadlessUtilityFileWatchManager", () => {
 
 		expect(stop).toHaveBeenCalledTimes(1);
 		expect(manager.snapshot()).toEqual([]);
-		expect(events).toEqual([{ type: "stopped", watch_id: "watch_src" }]);
+		expect(events).toEqual([]);
 	});
 
 	it("rejects missing watch roots without reporting a started watch", async () => {

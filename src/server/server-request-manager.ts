@@ -207,11 +207,23 @@ export class ServerRequestManager {
 			resolve: (decision) => {
 				switch (decision.action) {
 					case "retry":
-						return service.retry(request.id, decision.reason);
+						return service.retry(
+							request.id,
+							decision.reason,
+							decision.resolvedBy,
+						);
 					case "skip":
-						return service.skip(request.id, decision.reason);
+						return service.skip(
+							request.id,
+							decision.reason,
+							decision.resolvedBy,
+						);
 					case "abort":
-						return service.abort(request.id, decision.reason);
+						return service.abort(
+							request.id,
+							decision.reason,
+							decision.resolvedBy,
+						);
 				}
 			},
 		};
@@ -390,7 +402,7 @@ export class ServerRequestManager {
 			const handled = entry.resolve({
 				action: "abort",
 				reason,
-				resolvedBy: resolvedBy === "runtime" ? "policy" : resolvedBy,
+				resolvedBy,
 			});
 			if (handled) {
 				this.emit({

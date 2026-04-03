@@ -195,14 +195,17 @@ export class HeadlessUtilityFileWatchManager {
 		if (!active) {
 			return;
 		}
+		const shouldEmitStopped = active.started;
 		active.stopped = true;
 		this.watches.delete(watchId);
 		active.watcher.stop();
-		this.emit({
-			type: "stopped",
-			watch_id: watchId,
-			reason,
-		});
+		if (shouldEmitStopped) {
+			this.emit({
+				type: "stopped",
+				watch_id: watchId,
+				reason,
+			});
+		}
 	}
 
 	dispose(reason = "Headless runtime disposed"): void {
