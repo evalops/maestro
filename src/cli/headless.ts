@@ -42,6 +42,8 @@ export {
 	classifyHeadlessError,
 };
 
+const LOCAL_HEADLESS_CONNECTION_ID = "local";
+
 function send(msg: HeadlessFromAgentMessage): void {
 	try {
 		assertHeadlessFromAgentMessage(msg, "headless stdout message");
@@ -310,7 +312,7 @@ export async function runHeadlessMode(
 					applyOutgoingHeadlessMessage(state, msg);
 					sendMessage(
 						translator.buildConnectionInfoMessage({
-							connection_id: "local",
+							connection_id: LOCAL_HEADLESS_CONNECTION_ID,
 							protocol_version: msg.protocol_version,
 							client_info: msg.client_info,
 							capabilities: msg.capabilities,
@@ -318,7 +320,9 @@ export async function runHeadlessMode(
 							role: msg.role ?? "controller",
 							connection_count: 1,
 							controller_connection_id:
-								(msg.role ?? "controller") === "controller" ? "local" : null,
+								(msg.role ?? "controller") === "controller"
+									? LOCAL_HEADLESS_CONNECTION_ID
+									: null,
 							lease_expires_at: null,
 							connections: state.connections,
 						}),
@@ -480,6 +484,7 @@ export async function runHeadlessMode(
 						allow_stdin: msg.allow_stdin,
 						columns: msg.columns,
 						rows: msg.rows,
+						owner_connection_id: LOCAL_HEADLESS_CONNECTION_ID,
 					});
 					break;
 
@@ -558,6 +563,7 @@ export async function runHeadlessMode(
 						include_patterns: msg.include_patterns,
 						exclude_patterns: msg.exclude_patterns,
 						debounce_ms: msg.debounce_ms,
+						owner_connection_id: LOCAL_HEADLESS_CONNECTION_ID,
 					});
 					break;
 
