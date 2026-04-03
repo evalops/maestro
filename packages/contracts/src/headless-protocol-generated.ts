@@ -132,6 +132,7 @@ export type HeadlessToAgentMessageType =
 	(typeof headlessToAgentMessageTypes)[number];
 
 export const headlessFromAgentMessageTypes = [
+	"hello_ok",
 	"ready",
 	"response_start",
 	"response_chunk",

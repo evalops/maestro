@@ -20,6 +20,7 @@ import {
 } from "../approval-mode-store.js";
 import { getAuthSubject } from "../authz.js";
 import type {
+	HeadlessRuntimeConnectionSnapshot,
 	HeadlessRuntimeHeartbeatSnapshot,
 	HeadlessRuntimeStreamEnvelope,
 	HeadlessSessionRuntime,
@@ -90,6 +91,46 @@ const HeadlessSessionCreateSchema = Type.Object({
 	approvalMode: Type.Optional(stringLiteralUnion(headlessApprovalModes)),
 });
 
+const HeadlessConnectionCreateSchema = Type.Object({
+	sessionId: Type.Optional(Type.String()),
+	protocolVersion: Type.Optional(Type.String()),
+	clientInfo: Type.Optional(
+		Type.Object({
+			name: Type.String(),
+			version: Type.Optional(Type.String()),
+		}),
+	),
+	model: Type.Optional(Type.String()),
+	enableClientTools: Type.Optional(Type.Boolean()),
+	capabilities: Type.Optional(
+		Type.Object({
+			serverRequests: Type.Optional(
+				Type.Array(stringLiteralUnion(headlessServerRequestTypes), {
+					uniqueItems: true,
+				}),
+			),
+			utilityOperations: Type.Optional(
+				Type.Array(stringLiteralUnion(headlessUtilityOperations), {
+					uniqueItems: true,
+				}),
+			),
+		}),
+	),
+	optOutNotifications: Type.Optional(HeadlessOptOutNotificationsSchema),
+	role: Type.Optional(stringLiteralUnion(headlessConnectionRoles)),
+	client: Type.Optional(
+		Type.Union([
+			Type.Literal("generic"),
+			Type.Literal("vscode"),
+			Type.Literal("jetbrains"),
+			Type.Literal("conductor"),
+		]),
+	),
+	thinkingLevel: Type.Optional(stringLiteralUnion(headlessThinkingLevels)),
+	approvalMode: Type.Optional(stringLiteralUnion(headlessApprovalModes)),
+	takeControl: Type.Optional(Type.Boolean()),
+});
+
 const HeadlessMessageTypeSchema = Type.Object(
 	{
 		type: stringLiteralUnion(headlessToAgentMessageTypes),
@@ -135,6 +176,9 @@ const HeadlessSessionHeartbeatSchema = Type.Object({
 });
 
 type HeadlessSessionCreateInput = Static<typeof HeadlessSessionCreateSchema>;
+type HeadlessConnectionCreateInput = Static<
+	typeof HeadlessConnectionCreateSchema
+>;
 type HeadlessSessionSubscribeInput = Static<
 	typeof HeadlessSessionSubscribeSchema
 >;
@@ -267,7 +311,7 @@ function rethrowHeadlessMessageError(error: unknown): never {
 async function ensureRuntime(
 	req: IncomingMessage,
 	context: WebServerContext,
-	input: HeadlessSessionCreateInput,
+	input: HeadlessSessionCreateInput & { registerConnection?: boolean },
 ) {
 	const sessionManager = createSessionManagerForRequest(req, false);
 	const role = getHeadlessRole(req, input.role);
@@ -339,9 +383,43 @@ async function ensureRuntime(
 		approvalMode: effectiveApproval,
 		enableClientTools: input.enableClientTools,
 		client: input.client,
+		registerConnection: input.registerConnection ?? true,
 		context,
 		sessionManager,
 	});
+}
+
+async function ensureConnection(
+	req: IncomingMessage,
+	context: WebServerContext,
+	input: HeadlessConnectionCreateInput,
+): Promise<HeadlessRuntimeConnectionSnapshot> {
+	const runtime = await ensureRuntime(req, context, {
+		...input,
+		registerConnection: false,
+	});
+	const role = getHeadlessRole(req, input.role);
+	const heartbeat = runtime.registerConnection({
+		clientProtocolVersion: input.protocolVersion,
+		clientInfo: input.clientInfo,
+		capabilities: input.capabilities
+			? {
+					server_requests: input.capabilities.serverRequests,
+					utility_operations: input.capabilities.utilityOperations,
+				}
+			: undefined,
+		optOutNotifications: input.optOutNotifications,
+		role,
+		takeControl: input.takeControl,
+	});
+	const snapshot = runtime.getSnapshot();
+	return {
+		...heartbeat,
+		session_id: snapshot.session_id,
+		role,
+		opt_out_notifications: input.optOutNotifications,
+		snapshot,
+	};
 }
 
 function getRuntime(
@@ -373,6 +451,19 @@ export async function handleHeadlessSessionCreate(
 	);
 	const runtime = await ensureRuntime(req, context, input);
 	sendJson(res, 200, runtime.getSnapshot(), context.corsHeaders, req);
+}
+
+export async function handleHeadlessConnectionCreate(
+	req: IncomingMessage,
+	res: ServerResponse,
+	context: WebServerContext,
+) {
+	const input = await parseAndValidateJson<HeadlessConnectionCreateInput>(
+		req,
+		HeadlessConnectionCreateSchema,
+	);
+	const connection = await ensureConnection(req, context, input);
+	sendJson(res, 200, connection, context.corsHeaders, req);
 }
 
 export function handleHeadlessSessionState(

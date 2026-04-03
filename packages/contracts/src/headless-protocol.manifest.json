@@ -49,6 +49,7 @@
 		"shutdown"
 	],
 	"fromAgentMessageTypes": [
+		"hello_ok",
 		"ready",
 		"response_start",
 		"response_chunk",

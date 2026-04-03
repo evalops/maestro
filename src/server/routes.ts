@@ -31,6 +31,7 @@ import {
 	handleGuardianStatus,
 } from "./handlers/guardian.js";
 import {
+	handleHeadlessConnectionCreate,
 	handleHeadlessSessionCreate,
 	handleHeadlessSessionEvents,
 	handleHeadlessSessionHeartbeat,
@@ -105,6 +106,11 @@ export function createRoutes(context: WebServerContext): Route[] {
 			method: "GET",
 			path: "/readyz",
 			handler: (req, res) => handleReadyz(req, res, corsHeaders),
+		},
+		{
+			method: "POST",
+			path: "/api/headless/connections",
+			handler: (req, res) => handleHeadlessConnectionCreate(req, res, context),
 		},
 		{
 			method: "POST",

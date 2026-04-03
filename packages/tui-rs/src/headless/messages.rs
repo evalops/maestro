@@ -490,6 +490,26 @@ pub struct UtilityFileSearchMatch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromAgentMessage {
+    /// Handshake acknowledgement for a specific client connection
+    HelloOk {
+        protocol_version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        connection_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_protocol_version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_info: Option<ClientInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capabilities: Option<ClientCapabilities>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opt_out_notifications: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<ConnectionRole>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        controller_connection_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease_expires_at: Option<String>,
+    },
     /// Agent is ready
     Ready {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1091,6 +1111,26 @@ impl AgentState {
     /// Handle an incoming message and update state
     pub fn handle_message(&mut self, msg: FromAgentMessage) -> Option<AgentEvent> {
         match msg {
+            FromAgentMessage::HelloOk {
+                protocol_version,
+                connection_id: _connection_id,
+                client_protocol_version,
+                client_info,
+                capabilities,
+                opt_out_notifications,
+                role,
+                controller_connection_id,
+                lease_expires_at: _lease_expires_at,
+            } => {
+                self.protocol_version = Some(protocol_version);
+                self.client_protocol_version = client_protocol_version;
+                self.client_info = client_info;
+                self.capabilities = capabilities;
+                self.opt_out_notifications = opt_out_notifications;
+                self.connection_role = role;
+                self.controller_connection_id = controller_connection_id;
+                None
+            }
             FromAgentMessage::Ready {
                 protocol_version,
                 model,
@@ -1841,6 +1881,45 @@ mod tests {
     }
 
     #[test]
+    fn parse_hello_ok_message() {
+        let json = r#"{"type":"hello_ok","protocol_version":"2026-04-02","connection_id":"conn_remote","client_protocol_version":"2026-03-30","client_info":{"name":"maestro-web","version":"1.2.3"},"capabilities":{"server_requests":["approval"]},"opt_out_notifications":["status"],"role":"controller","controller_connection_id":"conn_remote"}"#;
+        let msg: FromAgentMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            FromAgentMessage::HelloOk {
+                protocol_version,
+                connection_id,
+                client_protocol_version,
+                client_info,
+                capabilities,
+                opt_out_notifications,
+                role,
+                controller_connection_id,
+                lease_expires_at,
+            } => {
+                assert_eq!(protocol_version, "2026-04-02");
+                assert_eq!(connection_id.as_deref(), Some("conn_remote"));
+                assert_eq!(client_protocol_version.as_deref(), Some("2026-03-30"));
+                assert_eq!(
+                    client_info.as_ref().map(|info| info.name.as_str()),
+                    Some("maestro-web")
+                );
+                assert_eq!(
+                    capabilities
+                        .as_ref()
+                        .and_then(|caps| caps.server_requests.as_ref())
+                        .map(|caps| caps.len()),
+                    Some(1)
+                );
+                assert_eq!(opt_out_notifications, Some(vec!["status".to_string()]));
+                assert_eq!(role, Some(ConnectionRole::Controller));
+                assert_eq!(controller_connection_id.as_deref(), Some("conn_remote"));
+                assert!(lease_expires_at.is_none());
+            }
+            _ => panic!("Expected HelloOk message"),
+        }
+    }
+
+    #[test]
     fn serialize_prompt_message() {
         let msg = ToAgentMessage::Prompt {
             content: "Hello".to_string(),
@@ -2385,6 +2464,41 @@ mod tests {
                 .and_then(|caps| caps.server_requests.as_ref())
                 .map(|caps| caps.len()),
             Some(2)
+        );
+    }
+
+    #[test]
+    fn state_tracks_protocol_version_from_hello_ok() {
+        let mut state = AgentState::default();
+
+        let event = state.handle_message(FromAgentMessage::HelloOk {
+            protocol_version: HEADLESS_PROTOCOL_VERSION.to_string(),
+            connection_id: Some("conn_remote".to_string()),
+            client_protocol_version: Some("2026-04-02".to_string()),
+            client_info: Some(ClientInfo {
+                name: "maestro-web".to_string(),
+                version: Some("1.2.3".to_string()),
+            }),
+            capabilities: Some(ClientCapabilities {
+                server_requests: Some(vec![ServerRequestType::Approval]),
+                utility_operations: Some(vec![UtilityOperation::FileRead]),
+            }),
+            opt_out_notifications: Some(vec!["connection_info".to_string()]),
+            role: Some(ConnectionRole::Controller),
+            controller_connection_id: Some("conn_remote".to_string()),
+            lease_expires_at: None,
+        });
+
+        assert!(event.is_none());
+        assert_eq!(
+            state.protocol_version.as_deref(),
+            Some(HEADLESS_PROTOCOL_VERSION)
+        );
+        assert_eq!(state.client_protocol_version.as_deref(), Some("2026-04-02"));
+        assert_eq!(state.connection_role, Some(ConnectionRole::Controller));
+        assert_eq!(
+            state.controller_connection_id.as_deref(),
+            Some("conn_remote")
         );
     }
 

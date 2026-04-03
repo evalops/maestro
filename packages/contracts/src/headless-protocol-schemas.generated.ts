@@ -296,6 +296,24 @@ export const headlessToAgentMessageSchemasByType = {
 	shutdown: HeadlessShutdownMessageSchema,
 } as const;
 
+export const HeadlessHelloOkMessageSchema = Type.Object(
+	{
+		type: Type.Literal("hello_ok"),
+		protocol_version: Type.String(),
+		connection_id: Type.Optional(Type.String()),
+		client_protocol_version: Type.Optional(Type.String()),
+		client_info: Type.Optional(HeadlessClientInfoSchema),
+		capabilities: Type.Optional(HeadlessClientCapabilitiesSchema),
+		opt_out_notifications: Type.Optional(HeadlessOptOutNotificationsSchema),
+		role: Type.Optional(stringLiteralUnion(headlessConnectionRoles)),
+		controller_connection_id: Type.Optional(
+			Type.Union([Type.String(), Type.Null()]),
+		),
+		lease_expires_at: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+	},
+	{ additionalProperties: false },
+);
+
 export const HeadlessReadyMessageSchema = Type.Object(
 	{
 		type: Type.Literal("ready"),
@@ -634,6 +652,7 @@ export const HeadlessConnectionInfoMessageSchema = Type.Object(
 );
 
 export const headlessFromAgentMessageSchemasByType = {
+	hello_ok: HeadlessHelloOkMessageSchema,
 	ready: HeadlessReadyMessageSchema,
 	response_start: HeadlessResponseStartMessageSchema,
 	response_chunk: HeadlessResponseChunkMessageSchema,
@@ -686,6 +705,7 @@ export type HeadlessToAgentMessageInput = Static<
 >;
 
 export const HeadlessFromAgentMessageSchema = Type.Union([
+	HeadlessHelloOkMessageSchema,
 	HeadlessReadyMessageSchema,
 	HeadlessResponseStartMessageSchema,
 	HeadlessResponseChunkMessageSchema,

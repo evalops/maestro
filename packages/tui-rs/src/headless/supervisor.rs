@@ -993,12 +993,22 @@ mod tests {
                         };
                         request_headers.lock().await.push(headers);
 
-                        if path == "/api/headless/sessions" {
+                        if path == "/api/headless/connections" {
+                            let body = serde_json::json!({
+                                "session_id": "sess_remote",
+                                "connection_id": "conn_remote",
+                                "controller_connection_id": "conn_remote",
+                                "lease_expires_at": "2026-04-02T00:00:15Z",
+                                "heartbeat_interval_ms": 15000,
+                                "snapshot": serde_json::from_str::<serde_json::Value>(&snapshot_json)
+                                    .expect("valid snapshot json"),
+                            })
+                            .to_string();
                             write_http_response(
                                 &mut socket,
                                 "HTTP/1.1 200 OK",
                                 "application/json",
-                                &snapshot_json,
+                                &body,
                             )
                             .await;
                             return;
