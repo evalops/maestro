@@ -1594,6 +1594,48 @@ describe("headless session handlers", () => {
 		expect(runtime.isDisposed()).toBe(true);
 	});
 
+	it("allows retrying runtime disposal after a synchronous failed attempt", async () => {
+		const fakeAgent = new FakeAgent();
+		const context = createContext({
+			createAgent: vi.fn().mockResolvedValue(fakeAgent),
+		});
+		const runtime = await context.headlessRuntimeService.ensureRuntime({
+			scope_key: "anon",
+			registeredModel: TEST_MODEL,
+			thinkingLevel: "off",
+			approvalMode: "prompt",
+			context,
+			sessionManager: createSessionManagerForRequest(
+				createJsonRequest("POST", "/api/headless/sessions", {}),
+				"headless",
+			),
+		});
+
+		const internals = runtime as unknown as {
+			utilityCommands: {
+				dispose: (reason?: string) => Promise<void>;
+			};
+		};
+		const originalDispose = internals.utilityCommands.dispose.bind(
+			internals.utilityCommands,
+		);
+		const disposeSpy = vi
+			.spyOn(internals.utilityCommands, "dispose")
+			.mockImplementationOnce(() => {
+				throw new Error("dispose failed synchronously");
+			})
+			.mockImplementation((reason?: string) => originalDispose(reason));
+
+		await expect(runtime.dispose()).rejects.toThrow(
+			"dispose failed synchronously",
+		);
+		expect(runtime.isDisposed()).toBe(false);
+
+		await expect(runtime.dispose()).resolves.toBeUndefined();
+		expect(disposeSpy).toHaveBeenCalledTimes(2);
+		expect(runtime.isDisposed()).toBe(true);
+	});
+
 	it("continues cleanup when one runtime disposal fails", async () => {
 		const firstAgent = new FakeAgent();
 		const secondAgent = new FakeAgent();

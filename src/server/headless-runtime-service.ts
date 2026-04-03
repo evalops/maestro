@@ -607,21 +607,22 @@ export class HeadlessSessionRuntime {
 		if (this.disposed) {
 			return;
 		}
-		this.disposePromise = (async () => {
-			try {
-				this.cancelPendingServerRequests(
-					"Headless runtime disposed before request completed",
-				);
-				await this.utilityCommands.dispose();
-				this.fileWatches.dispose();
-				this.agent.abort();
-				this.finalizeDisposal();
-			} catch (error) {
-				this.disposePromise = null;
-				throw error;
-			}
+		const disposePromise = (async () => {
+			this.cancelPendingServerRequests(
+				"Headless runtime disposed before request completed",
+			);
+			await this.utilityCommands.dispose();
+			this.fileWatches.dispose();
+			this.agent.abort();
+			this.finalizeDisposal();
 		})();
-		return this.disposePromise;
+		this.disposePromise = disposePromise;
+		void disposePromise.catch(() => {
+			if (this.disposePromise === disposePromise && !this.disposed) {
+				this.disposePromise = null;
+			}
+		});
+		return disposePromise;
 	}
 
 	getSnapshot(): HeadlessRuntimeSnapshot {
