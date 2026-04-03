@@ -144,6 +144,10 @@ impl ManagedTransport {
         }
     }
 
+    fn is_remote(&self) -> bool {
+        matches!(self, Self::Remote(_))
+    }
+
     fn try_recv_incoming(&mut self) -> Option<Result<ManagedIncoming, AsyncTransportError>> {
         match self {
             Self::Local(transport) => transport
@@ -239,6 +243,8 @@ pub struct AgentSupervisor {
     reconnect_attempts: u32,
     /// Whether a reconnect should be attempted on the next async receive cycle
     pending_auto_reconnect: bool,
+    /// Whether the next remote reconnect should reclaim controller ownership.
+    force_take_control_on_next_remote_connect: bool,
     /// Session recorder (optional)
     session_recorder: Option<SessionRecorder>,
     /// Cancellation token
@@ -261,6 +267,7 @@ impl AgentSupervisor {
             last_response: None,
             reconnect_attempts: 0,
             pending_auto_reconnect: false,
+            force_take_control_on_next_remote_connect: false,
             session_recorder: None,
             cancel_token: CancellationToken::new(),
         }
@@ -292,7 +299,13 @@ impl AgentSupervisor {
             if remote_config.session_id.is_none() {
                 remote_config.session_id = self.state.session_id.clone();
             }
-            RemoteAgentTransport::connect(remote_config.clone())
+            let mut effective_remote_config = remote_config.clone();
+            if self.force_take_control_on_next_remote_connect
+                && effective_remote_config.role.as_deref() != Some("viewer")
+            {
+                effective_remote_config.take_control = true;
+            }
+            RemoteAgentTransport::connect(effective_remote_config)
                 .await
                 .map(ManagedTransport::Remote)
         } else {
@@ -322,6 +335,7 @@ impl AgentSupervisor {
         }
         self.last_response = None;
         self.pending_auto_reconnect = false;
+        self.force_take_control_on_next_remote_connect = false;
         self.health_status = HealthStatus::Unhealthy;
         let _ = self.event_tx.send(SupervisorEvent::Disconnected {
             error: "Disconnected by request".to_string(),
@@ -445,6 +459,7 @@ impl AgentSupervisor {
 
     fn set_transport(&mut self, transport: ManagedTransport) -> Result<(), AsyncTransportError> {
         let remote_session_id = transport.remote_session_id().map(str::to_string);
+        let is_remote = transport.is_remote();
         let should_replay_init = transport.needs_init_replay();
         let snapshot = transport.initial_snapshot();
         self.transport = Some(transport);
@@ -455,6 +470,9 @@ impl AgentSupervisor {
         self.remember_remote_session_id(
             remote_session_id.or_else(|| self.state.session_id.clone()),
         );
+        if is_remote {
+            self.force_take_control_on_next_remote_connect = false;
+        }
         if should_replay_init {
             if let Err(error) = self.replay_saved_init() {
                 if let Some(transport) = self.transport.take() {
@@ -512,6 +530,13 @@ impl AgentSupervisor {
     }
 
     fn handle_transport_disconnect(&mut self, error: AsyncTransportError) -> SupervisorEvent {
+        if self
+            .transport
+            .as_ref()
+            .is_some_and(ManagedTransport::is_remote)
+        {
+            self.force_take_control_on_next_remote_connect = true;
+        }
         let event = self.handle_transport_error(error);
         self.schedule_auto_reconnect();
         event
@@ -562,6 +587,13 @@ impl AgentSupervisor {
                 self.health_status = HealthStatus::Unhealthy;
                 self.last_response = None;
                 if self.config.auto_reconnect {
+                    if self
+                        .transport
+                        .as_ref()
+                        .is_some_and(ManagedTransport::is_remote)
+                    {
+                        self.force_take_control_on_next_remote_connect = true;
+                    }
                     if let Some(transport) = self.transport.take() {
                         let _ = transport.shutdown();
                     }
@@ -1106,6 +1138,7 @@ mod tests {
     async fn spawn_remote_headless_server(
         snapshot_json: String,
         sse_events: Vec<String>,
+        require_take_control_on_reconnect: bool,
     ) -> (
         std::net::SocketAddr,
         Arc<Mutex<Vec<String>>>,
@@ -1156,6 +1189,35 @@ mod tests {
                             .push((path.clone(), body.clone()));
 
                         if path == "/api/headless/connections" {
+                            if require_take_control_on_reconnect {
+                                let connection_requests = request_bodies
+                                    .lock()
+                                    .await
+                                    .iter()
+                                    .filter(|(request_path, _)| {
+                                        request_path == "/api/headless/connections"
+                                    })
+                                    .count();
+                                if connection_requests > 1 {
+                                    let request_json =
+                                        serde_json::from_str::<serde_json::Value>(&body)
+                                            .expect("valid connection request json");
+                                    let take_control = request_json
+                                        .get("takeControl")
+                                        .and_then(serde_json::Value::as_bool)
+                                        .unwrap_or(false);
+                                    if !take_control {
+                                        write_http_response(
+                                            &mut socket,
+                                            "HTTP/1.1 409 Conflict",
+                                            "application/json",
+                                            r#"{"error":"Controller lease is already held by another connection"}"#,
+                                        )
+                                        .await;
+                                        return;
+                                    }
+                                }
+                            }
                             let body = serde_json::json!({
                                 "session_id": snapshot_session_id,
                                 "connection_id": "conn_remote",
@@ -1171,6 +1233,19 @@ mod tests {
                                 "HTTP/1.1 200 OK",
                                 "application/json",
                                 &body,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/disconnect")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
                             )
                             .await;
                             return;
@@ -1735,7 +1810,7 @@ done
         assert!(supervisor.state().is_ready);
 
         supervisor.connect().await.expect("connect");
-        for _ in 0..20 {
+        for _ in 0..80 {
             let log_contents = fs::read_to_string(&log_path).expect("read log");
             if log_contents.contains(r#""type":"init""#) {
                 break;
@@ -1872,7 +1947,7 @@ done
         })
         .to_string();
         let (addr, posted_bodies, request_headers, _request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![status_event]).await;
+            spawn_remote_headless_server(snapshot.to_string(), vec![status_event], false).await;
 
         let mut supervisor = SupervisorBuilder::new()
             .remote_base_url(format!("http://{addr}"))
@@ -1961,7 +2036,7 @@ done
         })
         .to_string();
         let (addr, _posted_bodies, _request_headers, _request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![status_event]).await;
+            spawn_remote_headless_server(snapshot.to_string(), vec![status_event], false).await;
 
         let mut supervisor = SupervisorBuilder::new()
             .remote_base_url(format!("http://{addr}"))
@@ -2132,7 +2207,7 @@ done
             }
         });
         let (addr, _posted_bodies, _request_headers, request_bodies) =
-            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
+            spawn_remote_headless_server(snapshot.to_string(), vec![], false).await;
 
         let mut supervisor = SupervisorBuilder::new()
             .remote_base_url(format!("http://{addr}"))
@@ -2218,6 +2293,113 @@ done
                 .get("sessionId")
                 .and_then(serde_json::Value::as_str),
             Some("sess_remote")
+        );
+
+        supervisor.disconnect();
+    }
+
+    #[tokio::test]
+    async fn remote_auto_reconnect_requests_take_control_for_stale_lease() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 0,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let (addr, _posted_bodies, _request_headers, request_bodies) =
+            spawn_remote_headless_server(snapshot.to_string(), vec![], true).await;
+
+        let mut supervisor = SupervisorBuilder::new()
+            .remote_base_url(format!("http://{addr}"))
+            .max_reconnect_attempts(1)
+            .reconnect_delay(Duration::from_millis(5))
+            .build();
+
+        supervisor.connect().await.expect("connect");
+        let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
+        assert!(matches!(
+            disconnect,
+            SupervisorEvent::Disconnected { ref error }
+                if error == "Communication channel closed"
+        ));
+
+        for _ in 0..6 {
+            let _ = supervisor.recv().await.expect("supervisor event");
+        }
+
+        let request_bodies = request_bodies.lock().await.clone();
+        let connection_requests = request_bodies
+            .into_iter()
+            .filter(|(path, _body)| path == "/api/headless/connections")
+            .map(|(_path, body)| {
+                serde_json::from_str::<serde_json::Value>(&body).expect("valid connection body")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(connection_requests.len(), 2);
+        assert_eq!(
+            connection_requests[1]
+                .get("takeControl")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+
+        supervisor.disconnect();
+    }
+
+    #[tokio::test]
+    async fn clean_remote_disconnect_does_not_force_take_control_on_manual_reconnect() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 0,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let (addr, _posted_bodies, _request_headers, request_bodies) =
+            spawn_remote_headless_server(snapshot.to_string(), vec![], false).await;
+
+        let mut supervisor = SupervisorBuilder::new()
+            .remote_base_url(format!("http://{addr}"))
+            .max_reconnect_attempts(1)
+            .reconnect_delay(Duration::from_millis(5))
+            .build();
+
+        supervisor.connect().await.expect("connect");
+        supervisor.disconnect();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        supervisor.reconnect().await.expect("manual reconnect");
+
+        let request_bodies = request_bodies.lock().await.clone();
+        let connection_requests = request_bodies
+            .into_iter()
+            .filter(|(path, _body)| path == "/api/headless/connections")
+            .map(|(_path, body)| {
+                serde_json::from_str::<serde_json::Value>(&body).expect("valid connection body")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(connection_requests.len(), 2);
+        assert!(
+            connection_requests[1].get("takeControl").is_none(),
+            "clean disconnects should not force controller takeover on the next manual reconnect"
         );
 
         supervisor.disconnect();
