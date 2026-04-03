@@ -36,7 +36,7 @@ Maestro is a coding agent with multi-model support, featuring terminal (TUI/CLI)
 
 ## Concept
 
-Maestro exposes its capabilities through slash commands and git-aware helpers so you can inspect what changed and review it in git. The agent emphasizes explicit tools and visible state over opaque automation.
+Maestro is a coding agent that reads and writes files, runs shell commands, searches code, and interacts with git and GitHub on your behalf. It supports multiple LLM providers (Anthropic, OpenAI, Google, Groq, and others) and runs across several interfaces — from an interactive terminal to a web UI to IDE extensions. Every action the agent takes is visible: you see the tool calls, approve risky operations, and review changes in git before committing.
 
 Choose your interface:
 
@@ -54,7 +54,7 @@ Choose your interface:
 
 ### Who It's For
 
-Developers who want explicit, scriptable AI assistance with good visibility into what the agent is doing. The terminal is the primary interface; the other surfaces exist for workflows where a terminal session is not the best fit. The runtime model is shared across all interfaces, but each adds different context and controls.
+Developers who want AI assistance they can see and control. The terminal is the primary interface; the web UI, IDE extensions, Slack bot, and GitHub agent cover workflows where a terminal isn't the best fit. All interfaces share the same runtime, tools, and security model.
 
 ## Installation
 
