@@ -608,13 +608,18 @@ export class HeadlessSessionRuntime {
 			return;
 		}
 		this.disposePromise = (async () => {
-			this.cancelPendingServerRequests(
-				"Headless runtime disposed before request completed",
-			);
-			await this.utilityCommands.dispose();
-			this.fileWatches.dispose();
-			this.agent.abort();
-			this.finalizeDisposal();
+			try {
+				this.cancelPendingServerRequests(
+					"Headless runtime disposed before request completed",
+				);
+				await this.utilityCommands.dispose();
+				this.fileWatches.dispose();
+				this.agent.abort();
+				this.finalizeDisposal();
+			} catch (error) {
+				this.disposePromise = null;
+				throw error;
+			}
 		})();
 		return this.disposePromise;
 	}
@@ -1974,11 +1979,21 @@ export class HeadlessRuntimeService {
 	private async cleanup(): Promise<void> {
 		const now = Date.now();
 		for (const [key, runtime] of this.runtimes.entries()) {
-			await runtime.expireIdleSubscriptions(now);
-			await runtime.expireIdleConnections(now);
-			if (runtime.isDisposed() || runtime.isIdle(now)) {
-				await runtime.dispose();
-				this.runtimes.delete(key);
+			try {
+				await runtime.expireIdleSubscriptions(now);
+				await runtime.expireIdleConnections(now);
+				if (runtime.isDisposed() || runtime.isIdle(now)) {
+					await runtime.dispose();
+					if (runtime.isDisposed()) {
+						this.runtimes.delete(key);
+					}
+				}
+			} catch (error) {
+				logger.warn("Failed to cleanup headless runtime", {
+					error: error instanceof Error ? error.message : String(error),
+					sessionId: runtime.id(),
+					scopeKey: key,
+				});
 			}
 		}
 	}
