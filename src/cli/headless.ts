@@ -180,7 +180,8 @@ export async function runHeadlessMode(
 	agent.subscribe((event) => {
 		if (
 			event.type === "action_approval_required" &&
-			approvalService?.requiresUserInteraction()
+			approvalService?.requiresUserInteraction() &&
+			!serverRequestManager.get(event.request.id)
 		) {
 			serverRequestManager.registerApproval({
 				sessionId: sessionManager.getSessionId() ?? undefined,

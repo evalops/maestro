@@ -5,7 +5,7 @@ import {
 } from "../agent/action-approval.js";
 import { serverRequestManager } from "./server-request-manager.js";
 
-export class WebActionApprovalService extends ActionApprovalService {
+export class ServerRequestActionApprovalService extends ActionApprovalService {
 	constructor(
 		mode?: ConstructorParameters<typeof ActionApprovalService>[0],
 		private readonly sessionId?: string,
@@ -31,3 +31,5 @@ export class WebActionApprovalService extends ActionApprovalService {
 		}
 	}
 }
+
+export class WebActionApprovalService extends ServerRequestActionApprovalService {}
