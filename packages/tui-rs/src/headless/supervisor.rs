@@ -1216,7 +1216,12 @@ fn event_to_message(event: &AgentEvent) -> Option<FromAgentMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::headless::{ActiveTool, HeadlessErrorType, StreamingResponse, TokenUsage};
+    use crate::headless::messages::{
+        ActiveFileWatch, ActiveUtilityCommand, UtilityCommandTerminalMode,
+    };
+    use crate::headless::{
+        ActiveTool, HeadlessErrorType, StreamingResponse, TokenUsage, UtilityCommandShellMode,
+    };
     use std::collections::VecDeque;
     use std::fs;
     use std::sync::{
@@ -1689,11 +1694,39 @@ mod tests {
                 started: Instant::now(),
             },
         );
+        supervisor.state.active_utility_commands.insert(
+            "cmd_disconnect".to_string(),
+            ActiveUtilityCommand {
+                command_id: "cmd_disconnect".to_string(),
+                command: "sleep 10".to_string(),
+                cwd: Some("/tmp/project".to_string()),
+                shell_mode: UtilityCommandShellMode::Shell,
+                terminal_mode: UtilityCommandTerminalMode::Pipe,
+                pid: Some(42),
+                columns: None,
+                rows: None,
+                owner_connection_id: Some("conn_remote".to_string()),
+                output: "partial".to_string(),
+            },
+        );
+        supervisor.state.active_file_watches.insert(
+            "watch_disconnect".to_string(),
+            ActiveFileWatch {
+                watch_id: "watch_disconnect".to_string(),
+                root_dir: "/tmp/project".to_string(),
+                include_patterns: None,
+                exclude_patterns: None,
+                debounce_ms: 250,
+                owner_connection_id: Some("conn_remote".to_string()),
+            },
+        );
 
         let _event = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
 
         assert!(supervisor.state().current_response.is_none());
         assert!(supervisor.state().active_tools.is_empty());
+        assert!(supervisor.state().active_utility_commands.is_empty());
+        assert!(supervisor.state().active_file_watches.is_empty());
         assert!(!supervisor.state().is_responding);
     }
 
@@ -1711,11 +1744,39 @@ mod tests {
                 started: Instant::now(),
             },
         );
+        supervisor.state.active_utility_commands.insert(
+            "cmd_manual".to_string(),
+            ActiveUtilityCommand {
+                command_id: "cmd_manual".to_string(),
+                command: "tail -f log".to_string(),
+                cwd: Some("/tmp/project".to_string()),
+                shell_mode: UtilityCommandShellMode::Direct,
+                terminal_mode: UtilityCommandTerminalMode::Pty,
+                pid: Some(7),
+                columns: Some(80),
+                rows: Some(24),
+                owner_connection_id: Some("conn_remote".to_string()),
+                output: "partial".to_string(),
+            },
+        );
+        supervisor.state.active_file_watches.insert(
+            "watch_manual".to_string(),
+            ActiveFileWatch {
+                watch_id: "watch_manual".to_string(),
+                root_dir: "/tmp/project".to_string(),
+                include_patterns: Some(vec!["src/**".to_string()]),
+                exclude_patterns: None,
+                debounce_ms: 250,
+                owner_connection_id: Some("conn_remote".to_string()),
+            },
+        );
 
         supervisor.disconnect();
 
         assert!(supervisor.state().current_response.is_none());
         assert!(supervisor.state().active_tools.is_empty());
+        assert!(supervisor.state().active_utility_commands.is_empty());
+        assert!(supervisor.state().active_file_watches.is_empty());
         assert!(!supervisor.state().is_responding);
     }
 
@@ -3157,6 +3218,32 @@ done
                 started: Instant::now(),
             },
         );
+        supervisor.state.active_utility_commands.insert(
+            "cmd_silence".to_string(),
+            ActiveUtilityCommand {
+                command_id: "cmd_silence".to_string(),
+                command: "sleep 10".to_string(),
+                cwd: Some("/tmp/project".to_string()),
+                shell_mode: UtilityCommandShellMode::Shell,
+                terminal_mode: UtilityCommandTerminalMode::Pipe,
+                pid: Some(99),
+                columns: None,
+                rows: None,
+                owner_connection_id: Some("conn_remote".to_string()),
+                output: "partial".to_string(),
+            },
+        );
+        supervisor.state.active_file_watches.insert(
+            "watch_silence".to_string(),
+            ActiveFileWatch {
+                watch_id: "watch_silence".to_string(),
+                root_dir: "/tmp/project".to_string(),
+                include_patterns: None,
+                exclude_patterns: Some(vec!["dist/**".to_string()]),
+                debounce_ms: 500,
+                owner_connection_id: Some("conn_remote".to_string()),
+            },
+        );
 
         assert!(matches!(
             supervisor.due_health_transition(Instant::now()),
@@ -3168,6 +3255,8 @@ done
         assert!(supervisor.pending_auto_reconnect);
         assert!(supervisor.state().current_response.is_none());
         assert!(supervisor.state().active_tools.is_empty());
+        assert!(supervisor.state().active_utility_commands.is_empty());
+        assert!(supervisor.state().active_file_watches.is_empty());
         assert!(!supervisor.state().is_responding);
     }
 }
