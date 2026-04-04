@@ -400,6 +400,15 @@ export async function runHeadlessMode(
 
 				case "interrupt":
 				case "cancel":
+					if (state.connection_role === "viewer") {
+						send({
+							type: "error",
+							message: `Viewer headless connections cannot ${msg.type} local sessions`,
+							fatal: false,
+							error_type: "protocol",
+						});
+						break;
+					}
 					cancelPendingServerRequests(
 						msg.type === "interrupt"
 							? "Interrupted before request completed"

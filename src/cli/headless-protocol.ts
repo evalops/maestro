@@ -1310,6 +1310,9 @@ export function applyOutgoingHeadlessMessage(
 			return;
 		case "interrupt":
 		case "cancel":
+			if (state.connection_role === "viewer") {
+				return;
+			}
 			state.current_response = undefined;
 			state.pending_approvals = [];
 			state.pending_client_tools = [];

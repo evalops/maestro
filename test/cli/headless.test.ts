@@ -986,6 +986,75 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
+	it("ignores viewer interrupt and cancel messages in derived runtime state", () => {
+		const state = createHeadlessRuntimeState();
+		state.connection_role = "viewer";
+		state.current_response = {
+			response_id: "resp_viewer",
+			text: "still here",
+			thinking: "",
+		};
+		state.pending_approvals = [
+			{
+				call_id: "call_viewer",
+				tool: "bash",
+				args: { command: "ls" },
+			},
+		];
+		state.tracked_tools = [
+			{
+				call_id: "call_viewer",
+				tool: "bash",
+				args: { command: "ls" },
+			},
+		];
+		state.is_responding = true;
+
+		applyOutgoingHeadlessMessage(state, { type: "interrupt" });
+		expect(state.current_response).toEqual({
+			response_id: "resp_viewer",
+			text: "still here",
+			thinking: "",
+		});
+		expect(state.pending_approvals).toEqual([
+			{
+				call_id: "call_viewer",
+				tool: "bash",
+				args: { command: "ls" },
+			},
+		]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_viewer",
+				tool: "bash",
+				args: { command: "ls" },
+			},
+		]);
+		expect(state.is_responding).toBe(true);
+
+		applyOutgoingHeadlessMessage(state, { type: "cancel" });
+		expect(state.current_response).toEqual({
+			response_id: "resp_viewer",
+			text: "still here",
+			thinking: "",
+		});
+		expect(state.pending_approvals).toEqual([
+			{
+				call_id: "call_viewer",
+				tool: "bash",
+				args: { command: "ls" },
+			},
+		]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_viewer",
+				tool: "bash",
+				args: { command: "ls" },
+			},
+		]);
+		expect(state.is_responding).toBe(true);
+	});
+
 	it("clears pending tool retry requests on outbound generic retry responses", () => {
 		const state = createHeadlessRuntimeState();
 
