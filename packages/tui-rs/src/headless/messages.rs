@@ -1016,15 +1016,19 @@ impl AgentState {
     /// Clear volatile runtime activity that can become stale across transport gaps.
     pub fn clear_transient_progress(&mut self) {
         self.current_response = None;
+        self.active_tools.clear();
+        self.active_utility_commands.clear();
+        self.active_file_watches.clear();
+        self.is_responding = false;
+    }
+
+    /// Clear request state that should not survive an explicit disconnect.
+    pub fn clear_pending_request_state(&mut self) {
         self.pending_approvals.clear();
         self.pending_client_tools.clear();
         self.pending_user_inputs.clear();
         self.pending_tool_retries.clear();
-        self.active_tools.clear();
-        self.active_utility_commands.clear();
-        self.active_file_watches.clear();
         self.tracked_tools.clear();
-        self.is_responding = false;
     }
 
     /// Handle an outbound message and update optimistic local state.

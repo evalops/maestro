@@ -377,6 +377,7 @@ impl AgentSupervisor {
             let _ = transport.shutdown();
         }
         self.clear_transient_progress_state();
+        self.clear_pending_request_state();
         self.last_response = None;
         self.pending_auto_reconnect = false;
         self.stale_reference_retries = 0;
@@ -598,6 +599,13 @@ impl AgentSupervisor {
 
     fn clear_transient_progress_state(&mut self) {
         self.state.clear_transient_progress();
+        if let Some(ref mut recorder) = self.session_recorder {
+            let _ = recorder.apply_snapshot(self.state.clone(), self.last_init.clone());
+        }
+    }
+
+    fn clear_pending_request_state(&mut self) {
+        self.state.clear_pending_request_state();
         if let Some(ref mut recorder) = self.session_recorder {
             let _ = recorder.apply_snapshot(self.state.clone(), self.last_init.clone());
         }
@@ -1777,14 +1785,14 @@ mod tests {
         let _event = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
 
         assert!(supervisor.state().current_response.is_none());
-        assert!(supervisor.state().pending_approvals.is_empty());
-        assert!(supervisor.state().pending_client_tools.is_empty());
-        assert!(supervisor.state().pending_user_inputs.is_empty());
-        assert!(supervisor.state().pending_tool_retries.is_empty());
+        assert_eq!(supervisor.state().pending_approvals.len(), 1);
+        assert_eq!(supervisor.state().pending_client_tools.len(), 1);
+        assert_eq!(supervisor.state().pending_user_inputs.len(), 1);
+        assert_eq!(supervisor.state().pending_tool_retries.len(), 1);
         assert!(supervisor.state().active_tools.is_empty());
         assert!(supervisor.state().active_utility_commands.is_empty());
         assert!(supervisor.state().active_file_watches.is_empty());
-        assert!(supervisor.state().tracked_tools.is_empty());
+        assert_eq!(supervisor.state().tracked_tools.len(), 4);
         assert!(!supervisor.state().is_responding);
     }
 
@@ -3423,14 +3431,14 @@ done
         assert!(!supervisor.is_connected());
         assert!(supervisor.pending_auto_reconnect);
         assert!(supervisor.state().current_response.is_none());
-        assert!(supervisor.state().pending_approvals.is_empty());
-        assert!(supervisor.state().pending_client_tools.is_empty());
-        assert!(supervisor.state().pending_user_inputs.is_empty());
-        assert!(supervisor.state().pending_tool_retries.is_empty());
+        assert_eq!(supervisor.state().pending_approvals.len(), 1);
+        assert_eq!(supervisor.state().pending_client_tools.len(), 1);
+        assert_eq!(supervisor.state().pending_user_inputs.len(), 1);
+        assert_eq!(supervisor.state().pending_tool_retries.len(), 1);
         assert!(supervisor.state().active_tools.is_empty());
         assert!(supervisor.state().active_utility_commands.is_empty());
         assert!(supervisor.state().active_file_watches.is_empty());
-        assert!(supervisor.state().tracked_tools.is_empty());
+        assert_eq!(supervisor.state().tracked_tools.len(), 4);
         assert!(!supervisor.state().is_responding);
     }
 }
