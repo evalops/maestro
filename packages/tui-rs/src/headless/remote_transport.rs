@@ -602,7 +602,9 @@ impl RemoteAgentTransport {
             _writer_handle: writer_handle,
             _heartbeat_handle: heartbeat_handle,
         };
-        transport.send(build_remote_hello_message(&config))?;
+        if transport.connection_role != Some(ConnectionRole::Viewer) {
+            transport.send(build_remote_hello_message(&config))?;
+        }
         Ok(transport)
     }
 
@@ -3227,7 +3229,7 @@ mod tests {
             }
         });
 
-        let (addr, posted_bodies, _request_paths, _request_headers) =
+        let (addr, posted_bodies, request_paths, _request_headers) =
             spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
 
         let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
@@ -3238,8 +3240,16 @@ mod tests {
         .await
         .expect("connect");
 
-        let posted = wait_for_posted_bodies_len(&posted_bodies, 1).await;
-        assert_eq!(posted.len(), 1);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(posted_bodies.lock().await.is_empty());
+        assert!(
+            request_paths
+                .lock()
+                .await
+                .iter()
+                .all(|path| !path.ends_with("/messages")),
+            "viewer connect should not post a bootstrap hello message"
+        );
 
         let prompt_error = transport
             .send(ToAgentMessage::Prompt {
@@ -3272,7 +3282,7 @@ mod tests {
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(posted_bodies.lock().await.len(), 1);
+        assert!(posted_bodies.lock().await.is_empty());
 
         transport.shutdown().expect("shutdown");
     }
