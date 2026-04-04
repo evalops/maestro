@@ -1013,6 +1013,13 @@ pub struct ActiveFileWatch {
 }
 
 impl AgentState {
+    /// Clear volatile progress indicators that can become stale across transport gaps.
+    pub fn clear_transient_progress(&mut self) {
+        self.current_response = None;
+        self.active_tools.clear();
+        self.is_responding = false;
+    }
+
     /// Handle an outbound message and update optimistic local state.
     pub fn handle_sent_message(&mut self, msg: &ToAgentMessage) {
         match msg {
