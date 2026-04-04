@@ -392,10 +392,12 @@ impl AgentSupervisor {
 
     /// Attempt reconnection with exponential backoff
     pub async fn reconnect(&mut self) -> Result<(), AsyncTransportError> {
-        self.health_status = HealthStatus::Reconnecting;
-        let _ = self.event_tx.send(SupervisorEvent::HealthChanged {
-            status: HealthStatus::Reconnecting,
-        });
+        if self.health_status != HealthStatus::Reconnecting {
+            self.health_status = HealthStatus::Reconnecting;
+            let _ = self.event_tx.send(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Reconnecting,
+            });
+        }
 
         let max_attempts = self.config.max_reconnect_attempts;
         let mut delay = self.config.reconnect_delay;
@@ -645,12 +647,25 @@ impl AgentSupervisor {
     }
 
     fn handle_transport_disconnect(&mut self, error: AsyncTransportError) -> SupervisorEvent {
-        let should_retry = self.should_schedule_disconnect_retry(&error);
-        let event = self.handle_transport_error(error);
-        if should_retry {
-            self.schedule_auto_reconnect();
+        let should_retry =
+            self.config.auto_reconnect && self.should_schedule_disconnect_retry(&error);
+        if let Some(transport) = self.transport.take() {
+            let _ = transport.shutdown();
         }
-        event
+        self.clear_transient_progress_state();
+        self.last_response = None;
+        if should_retry {
+            self.health_status = HealthStatus::Reconnecting;
+            self.schedule_auto_reconnect();
+            return SupervisorEvent::HealthChanged {
+                status: HealthStatus::Reconnecting,
+            };
+        }
+        self.health_status = HealthStatus::Unhealthy;
+        self.pending_auto_reconnect = false;
+        SupervisorEvent::Disconnected {
+            error: error.to_string(),
+        }
     }
 
     fn mark_response_received(&mut self, emit_health_event: bool) {
@@ -1951,9 +1966,11 @@ mod tests {
 
         assert!(matches!(
             event,
-            SupervisorEvent::Disconnected { ref error }
-                if error == "Communication channel closed"
+            SupervisorEvent::HealthChanged {
+                status: HealthStatus::Reconnecting
+            }
         ));
+        assert_eq!(supervisor.health(), HealthStatus::Reconnecting);
         assert!(supervisor.pending_auto_reconnect);
     }
 
@@ -2672,15 +2689,9 @@ done
         let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
         assert!(matches!(
             disconnect,
-            SupervisorEvent::Disconnected { ref error }
-                if error == "Communication channel closed"
-        ));
-
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
+            SupervisorEvent::HealthChanged {
                 status: HealthStatus::Reconnecting
-            })
+            }
         ));
         assert!(matches!(
             supervisor.recv().await,
@@ -2834,8 +2845,9 @@ done
                 });
             assert!(matches!(
                 disconnect,
-                SupervisorEvent::Disconnected { ref error }
-                    if error.contains("Headless subscriber not found")
+                SupervisorEvent::HealthChanged {
+                    status: HealthStatus::Reconnecting
+                }
             ));
             assert_eq!(supervisor.stale_reference_retries, attempt);
             assert!(supervisor.pending_auto_reconnect);
@@ -2875,8 +2887,9 @@ done
                 });
             assert!(matches!(
                 disconnect,
-                SupervisorEvent::Disconnected { ref error }
-                    if error.contains("Headless session not found")
+                SupervisorEvent::HealthChanged {
+                    status: HealthStatus::Reconnecting
+                }
             ));
             assert_eq!(supervisor.stale_reference_retries, attempt);
             assert!(supervisor.pending_auto_reconnect);
@@ -2978,8 +2991,9 @@ done
         let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
         assert!(matches!(
             disconnect,
-            SupervisorEvent::Disconnected { ref error }
-                if error == "Communication channel closed"
+            SupervisorEvent::HealthChanged {
+                status: HealthStatus::Reconnecting
+            }
         ));
 
         assert!(matches!(
@@ -2996,12 +3010,6 @@ done
             supervisor.recv().await,
             Some(SupervisorEvent::HealthChanged {
                 status: HealthStatus::Healthy
-            })
-        ));
-        assert!(matches!(
-            supervisor.recv().await,
-            Some(SupervisorEvent::HealthChanged {
-                status: HealthStatus::Reconnecting
             })
         ));
         assert!(matches!(
@@ -3210,8 +3218,9 @@ done
         let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
         assert!(matches!(
             disconnect,
-            SupervisorEvent::Disconnected { ref error }
-                if error == "Communication channel closed"
+            SupervisorEvent::HealthChanged {
+                status: HealthStatus::Reconnecting
+            }
         ));
 
         for _ in 0..6 {
