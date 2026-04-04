@@ -81,8 +81,6 @@ pub struct RemoteTransportConfig {
     pub take_control: bool,
     /// Additional headers to send on every request.
     pub headers: HashMap<String, String>,
-    /// Delay between SSE reconnect attempts.
-    pub reconnect_delay: Duration,
 }
 
 impl Default for RemoteTransportConfig {
@@ -109,7 +107,6 @@ impl Default for RemoteTransportConfig {
             opt_out_notifications: vec![],
             take_control: false,
             headers: HashMap::new(),
-            reconnect_delay: Duration::from_millis(500),
         }
     }
 }
@@ -3628,7 +3625,6 @@ mod tests {
 
         let config = RemoteTransportConfig {
             base_url: format!("http://{addr}"),
-            reconnect_delay: Duration::from_millis(5),
             ..RemoteTransportConfig::default()
         };
 
