@@ -71,6 +71,7 @@ const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const ORIGINATOR = "codex_cli_rs"; // Using the same originator as Codex CLI for compatibility
 const ISSUER = "https://auth.openai.com";
 const DEFAULT_PORT = 1455;
+const LOCAL_CALLBACK_ORIGIN = `http://127.0.0.1:${DEFAULT_PORT}`;
 
 interface OpenAITokenResponse {
 	access_token?: string;
@@ -216,7 +217,7 @@ export async function generateOpenAILoginUrl() {
 	base.searchParams.set("client_id", CLIENT_ID);
 	base.searchParams.set(
 		"redirect_uri",
-		`http://localhost:${DEFAULT_PORT}/auth/callback`,
+		`${LOCAL_CALLBACK_ORIGIN}/auth/callback`,
 	);
 	base.searchParams.set("scope", "openid profile email offline_access");
 	base.searchParams.set("code_challenge", pkce.challenge);
@@ -244,7 +245,7 @@ export async function exchangeOpenAIAuthorizationCode(
 		body: new URLSearchParams({
 			grant_type: "authorization_code",
 			code,
-			redirect_uri: `http://localhost:${DEFAULT_PORT}/auth/callback`,
+			redirect_uri: `${LOCAL_CALLBACK_ORIGIN}/auth/callback`,
 			client_id: CLIENT_ID,
 			code_verifier: verifier,
 		}).toString(),

@@ -23,7 +23,7 @@ const CLIENT_ID = decodeBase64(
 const CLIENT_SECRET = decodeBase64(
 	"R09DU1BYLTR1SGdNUG0tMW83U2stZ2VWNkN1NWNsWEZzeGw=",
 );
-const REDIRECT_URI = "http://localhost:8085/oauth2callback";
+const REDIRECT_URI = "http://127.0.0.1:8085/oauth2callback";
 const SCOPES = [
 	"https://www.googleapis.com/auth/cloud-platform",
 	"https://www.googleapis.com/auth/userinfo.email",

@@ -30,6 +30,7 @@ const logger = createLogger("oauth:openai");
 
 const CALLBACK_PORT = 1455;
 const CALLBACK_PATH = "/auth/callback";
+const CALLBACK_ORIGIN = `http://127.0.0.1:${CALLBACK_PORT}`;
 
 /**
  * Convert OpenAI provider credentials to generic OAuth credentials.
@@ -69,10 +70,7 @@ export async function loginOpenAI(
 			const server = createServer(
 				async (req: IncomingMessage, res: ServerResponse) => {
 					try {
-						const reqUrl = new URL(
-							req.url ?? "",
-							`http://localhost:${CALLBACK_PORT}`,
-						);
+						const reqUrl = new URL(req.url ?? "", CALLBACK_ORIGIN);
 
 						if (reqUrl.pathname !== CALLBACK_PATH) {
 							res.writeHead(404);
