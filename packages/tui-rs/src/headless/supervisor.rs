@@ -1217,7 +1217,7 @@ fn event_to_message(event: &AgentEvent) -> Option<FromAgentMessage> {
 mod tests {
     use super::*;
     use crate::headless::messages::{
-        ActiveFileWatch, ActiveUtilityCommand, UtilityCommandTerminalMode,
+        ActiveFileWatch, ActiveUtilityCommand, PendingApproval, UtilityCommandTerminalMode,
     };
     use crate::headless::{
         ActiveTool, HeadlessErrorType, StreamingResponse, TokenUsage, UtilityCommandShellMode,
@@ -1685,6 +1685,59 @@ mod tests {
         let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
         supervisor.state.current_response = Some(StreamingResponse::new("resp_disconnect".into()));
         supervisor.state.is_responding = true;
+        let approval = PendingApproval {
+            call_id: "call_disconnect".to_string(),
+            request_id: Some("req_disconnect".to_string()),
+            tool: "bash".to_string(),
+            args: serde_json::json!({ "command": "git push" }),
+        };
+        let client_tool = PendingApproval {
+            call_id: "call_client_disconnect".to_string(),
+            request_id: Some("req_client_disconnect".to_string()),
+            tool: "client_tool".to_string(),
+            args: serde_json::json!({ "name": "artifacts" }),
+        };
+        let user_input = PendingApproval {
+            call_id: "call_user_disconnect".to_string(),
+            request_id: Some("req_user_disconnect".to_string()),
+            tool: "ask_user".to_string(),
+            args: serde_json::json!({ "question": "continue?" }),
+        };
+        let tool_retry = PendingApproval {
+            call_id: "call_retry_disconnect".to_string(),
+            request_id: Some("req_retry_disconnect".to_string()),
+            tool: "bash".to_string(),
+            args: serde_json::json!({ "command": "retry" }),
+        };
+        supervisor.state.pending_approvals.push(approval.clone());
+        supervisor
+            .state
+            .pending_client_tools
+            .push(client_tool.clone());
+        supervisor
+            .state
+            .pending_user_inputs
+            .push(user_input.clone());
+        supervisor
+            .state
+            .pending_tool_retries
+            .push(tool_retry.clone());
+        supervisor
+            .state
+            .tracked_tools
+            .insert(approval.call_id.clone(), approval);
+        supervisor
+            .state
+            .tracked_tools
+            .insert(client_tool.call_id.clone(), client_tool);
+        supervisor
+            .state
+            .tracked_tools
+            .insert(user_input.call_id.clone(), user_input);
+        supervisor
+            .state
+            .tracked_tools
+            .insert(tool_retry.call_id.clone(), tool_retry);
         supervisor.state.active_tools.insert(
             "call_disconnect".to_string(),
             ActiveTool {
@@ -1724,9 +1777,14 @@ mod tests {
         let _event = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
 
         assert!(supervisor.state().current_response.is_none());
+        assert!(supervisor.state().pending_approvals.is_empty());
+        assert!(supervisor.state().pending_client_tools.is_empty());
+        assert!(supervisor.state().pending_user_inputs.is_empty());
+        assert!(supervisor.state().pending_tool_retries.is_empty());
         assert!(supervisor.state().active_tools.is_empty());
         assert!(supervisor.state().active_utility_commands.is_empty());
         assert!(supervisor.state().active_file_watches.is_empty());
+        assert!(supervisor.state().tracked_tools.is_empty());
         assert!(!supervisor.state().is_responding);
     }
 
@@ -1735,6 +1793,59 @@ mod tests {
         let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
         supervisor.state.current_response = Some(StreamingResponse::new("resp_manual".into()));
         supervisor.state.is_responding = true;
+        let approval = PendingApproval {
+            call_id: "call_manual".to_string(),
+            request_id: Some("req_manual".to_string()),
+            tool: "bash".to_string(),
+            args: serde_json::json!({ "command": "git push" }),
+        };
+        let client_tool = PendingApproval {
+            call_id: "call_client_manual".to_string(),
+            request_id: Some("req_client_manual".to_string()),
+            tool: "client_tool".to_string(),
+            args: serde_json::json!({ "name": "artifacts" }),
+        };
+        let user_input = PendingApproval {
+            call_id: "call_user_manual".to_string(),
+            request_id: Some("req_user_manual".to_string()),
+            tool: "ask_user".to_string(),
+            args: serde_json::json!({ "question": "continue?" }),
+        };
+        let tool_retry = PendingApproval {
+            call_id: "call_retry_manual".to_string(),
+            request_id: Some("req_retry_manual".to_string()),
+            tool: "bash".to_string(),
+            args: serde_json::json!({ "command": "retry" }),
+        };
+        supervisor.state.pending_approvals.push(approval.clone());
+        supervisor
+            .state
+            .pending_client_tools
+            .push(client_tool.clone());
+        supervisor
+            .state
+            .pending_user_inputs
+            .push(user_input.clone());
+        supervisor
+            .state
+            .pending_tool_retries
+            .push(tool_retry.clone());
+        supervisor
+            .state
+            .tracked_tools
+            .insert(approval.call_id.clone(), approval);
+        supervisor
+            .state
+            .tracked_tools
+            .insert(client_tool.call_id.clone(), client_tool);
+        supervisor
+            .state
+            .tracked_tools
+            .insert(user_input.call_id.clone(), user_input);
+        supervisor
+            .state
+            .tracked_tools
+            .insert(tool_retry.call_id.clone(), tool_retry);
         supervisor.state.active_tools.insert(
             "call_manual".to_string(),
             ActiveTool {
@@ -1774,9 +1885,14 @@ mod tests {
         supervisor.disconnect();
 
         assert!(supervisor.state().current_response.is_none());
+        assert!(supervisor.state().pending_approvals.is_empty());
+        assert!(supervisor.state().pending_client_tools.is_empty());
+        assert!(supervisor.state().pending_user_inputs.is_empty());
+        assert!(supervisor.state().pending_tool_retries.is_empty());
         assert!(supervisor.state().active_tools.is_empty());
         assert!(supervisor.state().active_utility_commands.is_empty());
         assert!(supervisor.state().active_file_watches.is_empty());
+        assert!(supervisor.state().tracked_tools.is_empty());
         assert!(!supervisor.state().is_responding);
     }
 
@@ -3209,6 +3325,59 @@ done
         );
         supervisor.state.current_response = Some(StreamingResponse::new("resp_silence".into()));
         supervisor.state.is_responding = true;
+        let approval = PendingApproval {
+            call_id: "call_silence".to_string(),
+            request_id: Some("req_silence".to_string()),
+            tool: "bash".to_string(),
+            args: serde_json::json!({ "command": "git push" }),
+        };
+        let client_tool = PendingApproval {
+            call_id: "call_client_silence".to_string(),
+            request_id: Some("req_client_silence".to_string()),
+            tool: "client_tool".to_string(),
+            args: serde_json::json!({ "name": "artifacts" }),
+        };
+        let user_input = PendingApproval {
+            call_id: "call_user_silence".to_string(),
+            request_id: Some("req_user_silence".to_string()),
+            tool: "ask_user".to_string(),
+            args: serde_json::json!({ "question": "continue?" }),
+        };
+        let tool_retry = PendingApproval {
+            call_id: "call_retry_silence".to_string(),
+            request_id: Some("req_retry_silence".to_string()),
+            tool: "bash".to_string(),
+            args: serde_json::json!({ "command": "retry" }),
+        };
+        supervisor.state.pending_approvals.push(approval.clone());
+        supervisor
+            .state
+            .pending_client_tools
+            .push(client_tool.clone());
+        supervisor
+            .state
+            .pending_user_inputs
+            .push(user_input.clone());
+        supervisor
+            .state
+            .pending_tool_retries
+            .push(tool_retry.clone());
+        supervisor
+            .state
+            .tracked_tools
+            .insert(approval.call_id.clone(), approval);
+        supervisor
+            .state
+            .tracked_tools
+            .insert(client_tool.call_id.clone(), client_tool);
+        supervisor
+            .state
+            .tracked_tools
+            .insert(user_input.call_id.clone(), user_input);
+        supervisor
+            .state
+            .tracked_tools
+            .insert(tool_retry.call_id.clone(), tool_retry);
         supervisor.state.active_tools.insert(
             "call_silence".to_string(),
             ActiveTool {
@@ -3254,9 +3423,14 @@ done
         assert!(!supervisor.is_connected());
         assert!(supervisor.pending_auto_reconnect);
         assert!(supervisor.state().current_response.is_none());
+        assert!(supervisor.state().pending_approvals.is_empty());
+        assert!(supervisor.state().pending_client_tools.is_empty());
+        assert!(supervisor.state().pending_user_inputs.is_empty());
+        assert!(supervisor.state().pending_tool_retries.is_empty());
         assert!(supervisor.state().active_tools.is_empty());
         assert!(supervisor.state().active_utility_commands.is_empty());
         assert!(supervisor.state().active_file_watches.is_empty());
+        assert!(supervisor.state().tracked_tools.is_empty());
         assert!(!supervisor.state().is_responding);
     }
 }
