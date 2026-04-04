@@ -11,9 +11,10 @@
  * - Transport integration
  */
 
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Type } from "@sinclair/typebox";
 import {
 	afterAll,
 	afterEach,
@@ -24,6 +25,7 @@ import {
 	it,
 	vi,
 } from "vitest";
+import type { AgentTool } from "../src/agent/types.js";
 import {
 	type HookCommandConfig,
 	type PostToolUseHookInput,
@@ -442,6 +444,63 @@ echo '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision
 
 			expect(result.blocked).toBe(false);
 			expect(result.updatedInput).toEqual({ command: "rm -i file.txt" });
+		});
+
+		it("should pass tool presentation metadata to command hooks", async () => {
+			const scriptPath = join(scriptsDir, "tool-presentation.sh");
+			const capturePath = join(testDir, "tool-presentation-input.json");
+			writeFileSync(
+				scriptPath,
+				`#!/bin/bash
+input=$(cat)
+printf '%s' "$input" > ${JSON.stringify(capturePath)}
+echo '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}'
+`,
+				{ mode: 0o755 },
+			);
+
+			const readTool: AgentTool = {
+				name: "read",
+				label: "Read",
+				description: "Read a file",
+				parameters: Type.Object({
+					path: Type.String(),
+				}),
+				getDisplayName: () => "Read package.json",
+				getToolUseSummary: () => "Read package.json",
+				getActivityDescription: () => "Reading package.json",
+				execute: async () => ({ content: [] }),
+			};
+
+			registerHook(
+				"PreToolUse",
+				{ type: "command", command: scriptPath },
+				"read",
+			);
+
+			const service = createToolHookService({
+				cwd: testDir,
+				sessionId: "test-session",
+				resolveTool: (toolName) => (toolName === "read" ? readTool : undefined),
+			});
+
+			const result = await service.runPreToolUseHooks({
+				type: "toolCall",
+				id: "test-1",
+				name: "read",
+				arguments: { path: `${testDir}/package.json` },
+			});
+
+			expect(result.blocked).toBe(false);
+			const capturedInput = JSON.parse(
+				readFileSync(capturePath, "utf-8"),
+			) as PreToolUseHookInput;
+			expect(capturedInput).toMatchObject({
+				tool_name: "read",
+				tool_display_name: "Read package.json",
+				tool_summary: "Read package.json",
+				tool_action_description: "Reading package.json",
+			});
 		});
 
 		it("should add context via PostToolUse hook", async () => {

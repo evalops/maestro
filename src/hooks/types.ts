@@ -54,9 +54,26 @@ export interface HookInputBase {
 }
 
 /**
+ * Optional human-facing tool presentation fields for hook consumers.
+ *
+ * Hooks can keep using `tool_name` for stable matching while reading these
+ * fields for user-visible summaries.
+ */
+export interface ToolPresentationHookFields {
+	/** Human-facing tool label */
+	tool_display_name?: string;
+	/** Compact summary of the specific tool call */
+	tool_summary?: string;
+	/** Present-tense description of the current tool activity */
+	tool_action_description?: string;
+}
+
+/**
  * Input for PreToolUse hooks - called before a tool is executed.
  */
-export interface PreToolUseHookInput extends HookInputBase {
+export interface PreToolUseHookInput
+	extends HookInputBase,
+		ToolPresentationHookFields {
 	hook_event_name: "PreToolUse";
 	/** Name of the tool about to be executed */
 	tool_name: string;
@@ -69,7 +86,9 @@ export interface PreToolUseHookInput extends HookInputBase {
 /**
  * Input for PostToolUse hooks - called after successful tool execution.
  */
-export interface PostToolUseHookInput extends HookInputBase {
+export interface PostToolUseHookInput
+	extends HookInputBase,
+		ToolPresentationHookFields {
 	hook_event_name: "PostToolUse";
 	/** Name of the tool that was executed */
 	tool_name: string;
@@ -86,7 +105,9 @@ export interface PostToolUseHookInput extends HookInputBase {
 /**
  * Input for EvalGate hooks - called to score tool execution.
  */
-export interface EvalGateHookInput extends HookInputBase {
+export interface EvalGateHookInput
+	extends HookInputBase,
+		ToolPresentationHookFields {
 	hook_event_name: "EvalGate";
 	/** Name of the tool that was executed */
 	tool_name: string;
@@ -103,7 +124,9 @@ export interface EvalGateHookInput extends HookInputBase {
 /**
  * Input for PostToolUseFailure hooks - called when tool execution fails.
  */
-export interface PostToolUseFailureHookInput extends HookInputBase {
+export interface PostToolUseFailureHookInput
+	extends HookInputBase,
+		ToolPresentationHookFields {
 	hook_event_name: "PostToolUseFailure";
 	/** Name of the tool that failed */
 	tool_name: string;

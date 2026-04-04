@@ -298,6 +298,8 @@ export class ProviderTransport implements AgentTransport {
 				? createToolHookService({
 						cwd: this.options.cwd,
 						sessionId: cfg.session?.id,
+						resolveTool: (toolName) =>
+							cfg.tools?.find((tool) => tool.name === toolName),
 					})
 				: undefined);
 

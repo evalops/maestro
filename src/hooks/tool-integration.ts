@@ -5,8 +5,13 @@
  * in the tool execution flow.
  */
 
-import type { ToolCall, ToolResultMessage } from "../agent/types.js";
+import type { AgentTool, ToolCall, ToolResultMessage } from "../agent/types.js";
 import { createLogger } from "../utils/logger.js";
+import {
+	describeToolActivity,
+	describeToolDisplayName,
+	summarizeToolUse,
+} from "../utils/tool-use-summary.js";
 import { executeHooks } from "./executor.js";
 import type {
 	EvalAssertion,
@@ -27,6 +32,34 @@ export interface ToolHookContext {
 	cwd: string;
 	/** Session ID if available */
 	sessionId?: string;
+	/** Optional tool lookup for richer presentation metadata */
+	resolveTool?: (toolName: string) => AgentTool | undefined;
+}
+
+interface ToolHookPresentationFields {
+	tool_display_name: string;
+	tool_summary: string;
+	tool_action_description: string;
+}
+
+function buildToolPresentationFields(
+	toolCall: ToolCall,
+	context: ToolHookContext,
+): ToolHookPresentationFields {
+	const tool = context.resolveTool?.(toolCall.name);
+	return {
+		tool_display_name: describeToolDisplayName(
+			toolCall.name,
+			toolCall.arguments,
+			tool,
+		),
+		tool_summary: summarizeToolUse(toolCall.name, toolCall.arguments, tool),
+		tool_action_description: describeToolActivity(
+			toolCall.name,
+			toolCall.arguments,
+			tool,
+		),
+	};
 }
 
 /**
@@ -129,6 +162,7 @@ export function createToolHookService(
 			toolCall: ToolCall,
 			signal?: AbortSignal,
 		): Promise<PreToolUseHookResult> {
+			const presentation = buildToolPresentationFields(toolCall, context);
 			const input: PreToolUseHookInput = {
 				hook_event_name: "PreToolUse",
 				cwd: context.cwd,
@@ -137,6 +171,7 @@ export function createToolHookService(
 				tool_name: toolCall.name,
 				tool_call_id: toolCall.id,
 				tool_input: toolCall.arguments,
+				...presentation,
 			};
 
 			const results = await executeHooks(input, context.cwd, signal);
@@ -212,6 +247,7 @@ export function createToolHookService(
 			result: ToolResultMessage,
 			signal?: AbortSignal,
 		): Promise<PostToolUseHookResult> {
+			const presentation = buildToolPresentationFields(toolCall, context);
 			// Extract output text for hook input
 			const outputText = result.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
@@ -229,6 +265,7 @@ export function createToolHookService(
 				tool_input: toolCall.arguments,
 				tool_output: outputText,
 				is_error: result.isError,
+				...presentation,
 			};
 
 			const results = await executeHooks(input, context.cwd, signal);
@@ -312,6 +349,7 @@ export function createToolHookService(
 			result: ToolResultMessage,
 			signal?: AbortSignal,
 		): Promise<PostToolUseHookResult> {
+			const presentation = buildToolPresentationFields(toolCall, context);
 			const outputText = result.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
 				.map((c) => c.text)
@@ -328,6 +366,7 @@ export function createToolHookService(
 				tool_input: toolCall.arguments,
 				tool_output: outputText,
 				is_error: result.isError,
+				...presentation,
 			};
 
 			const results = await executeHooks(input, context.cwd, signal);
@@ -400,6 +439,7 @@ export function createToolHookService(
 			error: string,
 			signal?: AbortSignal,
 		): Promise<PostToolUseHookResult> {
+			const presentation = buildToolPresentationFields(toolCall, context);
 			const input: PostToolUseFailureHookInput = {
 				hook_event_name: "PostToolUseFailure",
 				cwd: context.cwd,
@@ -409,6 +449,7 @@ export function createToolHookService(
 				tool_call_id: toolCall.id,
 				tool_input: toolCall.arguments,
 				error,
+				...presentation,
 			};
 
 			const results = await executeHooks(input, context.cwd, signal);

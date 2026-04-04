@@ -2,10 +2,13 @@
  * Tests for the comprehensive hook system.
  */
 
+import { Type } from "@sinclair/typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentTool } from "../src/agent/types.js";
 import {
 	type HookConfiguration,
 	type HookJsonOutput,
+	type PostToolUseHookInput,
 	type PreToolUseHookInput,
 	clearHookConfigCache,
 	clearRegisteredHooks,
@@ -487,6 +490,91 @@ describe("Hook System", () => {
 			});
 
 			expect(result.updatedInput).toEqual({ command: "ls -la" });
+		});
+
+		it("should include tool presentation metadata in PreToolUse hooks", async () => {
+			const capturedInputs: PreToolUseHookInput[] = [];
+			const readTool: AgentTool = {
+				name: "read",
+				label: "Read",
+				description: "Read a file",
+				parameters: Type.Object({
+					path: Type.String(),
+				}),
+				getDisplayName: () => "Read package.json",
+				getToolUseSummary: () => "Read package.json",
+				getActivityDescription: () => "Reading package.json",
+				execute: async () => ({ content: [] }),
+			};
+
+			registerHook("PreToolUse", {
+				type: "callback",
+				callback: async (input) => {
+					capturedInputs.push(input as PreToolUseHookInput);
+					return null;
+				},
+			});
+
+			const service = createToolHookService({
+				cwd: "/tmp/test",
+				resolveTool: (toolName) => (toolName === "read" ? readTool : undefined),
+			});
+
+			await service.runPreToolUseHooks({
+				type: "toolCall",
+				id: "test-1",
+				name: "read",
+				arguments: { path: "/tmp/package.json" },
+			});
+
+			expect(capturedInputs).toHaveLength(1);
+			expect(capturedInputs[0]).toMatchObject({
+				tool_name: "read",
+				tool_display_name: "Read package.json",
+				tool_summary: "Read package.json",
+				tool_action_description: "Reading package.json",
+			});
+		});
+
+		it("should include tool presentation metadata in PostToolUse hooks", async () => {
+			const capturedInputs: PostToolUseHookInput[] = [];
+
+			registerHook("PostToolUse", {
+				type: "callback",
+				callback: async (input) => {
+					capturedInputs.push(input as PostToolUseHookInput);
+					return null;
+				},
+			});
+
+			const service = createToolHookService({
+				cwd: "/tmp/test",
+			});
+
+			await service.runPostToolUseHooks(
+				{
+					type: "toolCall",
+					id: "test-1",
+					name: "bash",
+					arguments: { command: "npm test" },
+				},
+				{
+					role: "toolResult",
+					toolCallId: "test-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+			);
+
+			expect(capturedInputs).toHaveLength(1);
+			expect(capturedInputs[0]).toMatchObject({
+				tool_name: "bash",
+				tool_display_name: "Bash",
+				tool_summary: "Ran npm test",
+				tool_action_description: "Running npm test",
+			});
 		});
 	});
 

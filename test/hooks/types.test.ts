@@ -75,6 +75,24 @@ describe("Hook Types", () => {
 
 			expect(input.session_id).toBe("session_456");
 		});
+
+		it("supports optional tool presentation fields", () => {
+			const input: PreToolUseHookInput = {
+				hook_event_name: "PreToolUse",
+				cwd: "/tmp",
+				timestamp: new Date().toISOString(),
+				tool_name: "Read",
+				tool_call_id: "call_789",
+				tool_input: { path: "/etc/passwd" },
+				tool_display_name: "Read passwd file",
+				tool_summary: "Read passwd file",
+				tool_action_description: "Reading passwd file",
+			};
+
+			expect(input.tool_display_name).toBe("Read passwd file");
+			expect(input.tool_summary).toBe("Read passwd file");
+			expect(input.tool_action_description).toBe("Reading passwd file");
+		});
 	});
 
 	describe("PostToolUseHookInput", () => {
@@ -107,6 +125,26 @@ describe("Hook Types", () => {
 			};
 
 			expect(input.is_error).toBe(true);
+		});
+
+		it("supports optional tool presentation fields", () => {
+			const input: PostToolUseHookInput = {
+				hook_event_name: "PostToolUse",
+				cwd: "/tmp",
+				timestamp: new Date().toISOString(),
+				tool_name: "Bash",
+				tool_call_id: "call_456",
+				tool_input: { command: "cat nonexistent.txt" },
+				tool_output: "cat: nonexistent.txt: No such file or directory",
+				is_error: true,
+				tool_display_name: "Shell command",
+				tool_summary: "Ran cat nonexistent.txt",
+				tool_action_description: "Running cat nonexistent.txt",
+			};
+
+			expect(input.tool_display_name).toBe("Shell command");
+			expect(input.tool_summary).toBe("Ran cat nonexistent.txt");
+			expect(input.tool_action_description).toBe("Running cat nonexistent.txt");
 		});
 	});
 
