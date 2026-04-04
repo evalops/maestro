@@ -1164,6 +1164,100 @@ describe("runHeadlessMode", () => {
 		});
 	});
 
+	it("rejects viewer utility requests before starting local utilities", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn(),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+		);
+
+		await vi.waitFor(() => {
+			expect(onLine).toBeTypeOf("function");
+			expect(onClose).toBeTypeOf("function");
+		});
+
+		await onLine?.(
+			JSON.stringify({
+				type: "hello",
+				protocol_version: "1.0",
+				client_info: { name: "maestro-test", version: "0.1.0" },
+				capabilities: {
+					utility_operations: ["command_exec", "file_watch"],
+				},
+				role: "viewer",
+			}),
+		);
+		await onLine?.(
+			JSON.stringify({
+				type: "utility_command_start",
+				command_id: "cmd_viewer",
+				command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify("setTimeout(() => {}, 1000)")}`,
+				shell_mode: "direct",
+			}),
+		);
+		await onLine?.(
+			JSON.stringify({
+				type: "utility_file_watch_start",
+				watch_id: "watch_viewer",
+				root_dir: process.cwd(),
+			}),
+		);
+		onClose?.();
+		await runPromise;
+
+		const messages = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as { type: string; message?: string });
+
+		expect(messages).toContainEqual({
+			type: "error",
+			message: "Viewer headless connections cannot send messages",
+			fatal: false,
+			error_type: "protocol",
+		});
+		expect(
+			messages.some((message) => message.type === "utility_command_started"),
+		).toBe(false);
+		expect(
+			messages.some((message) => message.type === "utility_file_watch_started"),
+		).toBe(false);
+	});
+
 	it("rejects viewer user_input capability negotiation during hello", async () => {
 		let onLine: LineHandler | undefined;
 		let onClose: CloseHandler | undefined;
