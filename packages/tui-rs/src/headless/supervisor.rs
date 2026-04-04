@@ -2241,11 +2241,15 @@ mod tests {
         fs::write(
             &script_path,
             r#"#!/bin/sh
-log_file="${MAESTRO_TEST_LOG:?}"
-: > "$log_file"
+log_file="${MAESTRO_TEST_LOG:-}"
+if [ -n "$log_file" ]; then
+  : > "$log_file"
+fi
 printf '{"type":"ready","model":"test","provider":"test"}\n'
 while IFS= read -r line; do
-  printf '%s\n' "$line" >> "$log_file"
+  if [ -n "$log_file" ]; then
+    printf '%s\n' "$line" >> "$log_file"
+  fi
 done
 "#,
         )?;
