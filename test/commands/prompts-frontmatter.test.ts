@@ -1,4 +1,10 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -44,5 +50,40 @@ Review the PR.
 		expect(findPrompt(prompts, "pr-review")?.name).toBe("pr-review");
 		expect(findPrompt(prompts, "reviewpr")?.name).toBe("pr-review");
 		expect(findPrompt(prompts, "prr")?.name).toBe("pr-review");
+	});
+
+	it("reuses cached prompt catalogs until prompt files change", () => {
+		const promptPath = join(homeDir, ".maestro", "prompts", "review.md");
+		writeFileSync(
+			promptPath,
+			`---
+description: Initial description
+---
+
+Review the PR.
+`,
+		);
+
+		const first = loadPrompts(workspaceDir);
+		const second = loadPrompts(workspaceDir);
+
+		expect(second).toBe(first);
+		expect(first[0]?.description).toBe("Initial description");
+
+		writeFileSync(
+			promptPath,
+			`---
+description: Updated description
+---
+
+Review the PR.
+`,
+		);
+		const updatedTime = new Date(statSync(promptPath).mtimeMs + 10_000);
+		utimesSync(promptPath, updatedTime, updatedTime);
+
+		const third = loadPrompts(workspaceDir);
+		expect(third).not.toBe(first);
+		expect(third[0]?.description).toBe("Updated description");
 	});
 });

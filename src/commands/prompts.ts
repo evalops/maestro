@@ -31,8 +31,13 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
+import { buildDirectoriesFingerprint } from "./filesystem-catalog-cache.js";
 
 const logger = createLogger("commands:prompts");
+const promptCatalogCache = new Map<
+	string,
+	{ signature: string; prompts: PromptDefinition[] }
+>();
 
 /**
  * Prompt definition from YAML frontmatter.
@@ -312,6 +317,10 @@ export function loadPrompts(workspaceDir: string): PromptDefinition[] {
 	const userCommandsDir = join(PATHS.MAESTRO_HOME, "commands");
 	const projectPromptsDir = join(workspaceDir, ".maestro", "prompts");
 	const projectCommandsDir = join(workspaceDir, ".maestro", "commands");
+	const signature = buildDirectoriesFingerprint(
+		[userCommandsDir, userPromptsDir, projectCommandsDir, projectPromptsDir],
+		(entry) => entry.endsWith(".md"),
+	);
 
 	logger.debug("Scanning for prompts", {
 		userPromptsDir,
@@ -319,6 +328,15 @@ export function loadPrompts(workspaceDir: string): PromptDefinition[] {
 		userCommandsDir,
 		projectCommandsDir,
 	});
+
+	const cached = promptCatalogCache.get(workspaceDir);
+	if (cached?.signature === signature) {
+		logger.debug("Returning cached prompts", {
+			workspaceDir,
+			total: cached.prompts.length,
+		});
+		return cached.prompts;
+	}
 
 	// Commands dir first, prompts dir second (prompts override commands by name).
 	const userPrompts = [
@@ -356,6 +374,10 @@ export function loadPrompts(workspaceDir: string): PromptDefinition[] {
 		total: allPrompts.length,
 		user: userPrompts.length,
 		project: projectPrompts.length,
+	});
+	promptCatalogCache.set(workspaceDir, {
+		signature,
+		prompts: allPrompts,
 	});
 
 	return allPrompts;

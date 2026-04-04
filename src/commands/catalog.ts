@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { PATHS } from "../config/constants.js";
+import { buildDirectoriesFingerprint } from "./filesystem-catalog-cache.js";
 
 // Re-export prompts module
 export {
@@ -26,7 +27,12 @@ export interface ResolvedCommand extends CommandDefinition {
 	source: string;
 }
 
-const HOME_DIR = join(PATHS.MAESTRO_HOME, "commands");
+const commandCatalogCache = new Map<
+	string,
+	{ signature: string; catalog: ResolvedCommand[] }
+>();
+
+const getHomeCommandsDir = (): string => join(PATHS.MAESTRO_HOME, "commands");
 
 const escapeRegExp = (value: string): string =>
 	value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -65,9 +71,18 @@ export function parseCommandArgs(tokens: string[]): Record<string, string> {
 }
 
 export function loadCommandCatalog(workspaceDir: string): ResolvedCommand[] {
+	const homeDir = getHomeCommandsDir();
 	const sources: string[] = [];
 	const workspaceCommandsDir = join(workspaceDir, ".maestro", "commands");
-	sources.push(...listCommandFiles(HOME_DIR));
+	const signature = buildDirectoriesFingerprint(
+		[homeDir, workspaceCommandsDir],
+		(entry) => entry.endsWith(".json"),
+	);
+	const cached = commandCatalogCache.get(workspaceDir);
+	if (cached?.signature === signature) {
+		return cached.catalog;
+	}
+	sources.push(...listCommandFiles(homeDir));
 	sources.push(...listCommandFiles(workspaceCommandsDir));
 
 	const catalog: ResolvedCommand[] = [];
@@ -90,7 +105,12 @@ export function loadCommandCatalog(workspaceDir: string): ResolvedCommand[] {
 	for (const def of catalog) {
 		deduped.set(def.name, def);
 	}
-	return Array.from(deduped.values());
+	const resolved = Array.from(deduped.values());
+	commandCatalogCache.set(workspaceDir, {
+		signature,
+		catalog: resolved,
+	});
+	return resolved;
 }
 
 export function renderCommandPrompt(

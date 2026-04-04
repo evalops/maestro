@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -42,6 +48,46 @@ describe("command catalog", () => {
 			const catalog = loadCommandCatalog(work);
 			expect(catalog).toHaveLength(1);
 			expect(catalog[0]!.prompt).toContain("Yo");
+		});
+	});
+
+	it("uses the current HOME dynamically and invalidates cached catalogs on change", () => {
+		const home = tempDir();
+		const work = tempDir();
+		return withEnv({ HOME: home }, () => {
+			const homeDir = join(home, ".maestro", "commands");
+			mkdirSync(homeDir, { recursive: true });
+			const commandPath = join(homeDir, "cmd.json");
+			writeFileSync(
+				commandPath,
+				JSON.stringify({
+					name: "hello",
+					prompt: "Hi {{name}}",
+					description: "home",
+				}),
+			);
+
+			const first = loadCommandCatalog(work);
+			const second = loadCommandCatalog(work);
+			expect(first).toHaveLength(1);
+			expect(first[0]?.source).toBe(commandPath);
+			expect(second).toBe(first);
+
+			writeFileSync(
+				commandPath,
+				JSON.stringify({
+					name: "hello",
+					prompt: "Hey {{name}}",
+					description: "updated home",
+				}),
+			);
+			const updatedTime = new Date(statSync(commandPath).mtimeMs + 10_000);
+			utimesSync(commandPath, updatedTime, updatedTime);
+
+			const third = loadCommandCatalog(work);
+			expect(third).not.toBe(first);
+			expect(third[0]?.prompt).toBe("Hey {{name}}");
+			expect(third[0]?.description).toBe("updated home");
 		});
 	});
 
