@@ -34,6 +34,7 @@ import {
 	buildHeadlessUsage,
 	classifyHeadlessError,
 	createHeadlessRuntimeState,
+	headlessViewerCanSend,
 	loadPromptAttachments,
 } from "./headless-protocol.js";
 
@@ -46,16 +47,6 @@ export {
 };
 
 const LOCAL_HEADLESS_CONNECTION_ID = "local";
-
-function localHeadlessViewerCanSend(msg: HeadlessToAgentMessage): boolean {
-	switch (msg.type) {
-		case "hello":
-		case "shutdown":
-			return true;
-		default:
-			return false;
-	}
-}
 
 function send(msg: HeadlessFromAgentMessage): void {
 	try {
@@ -322,10 +313,7 @@ export async function runHeadlessMode(
 		}
 
 		try {
-			if (
-				state.connection_role === "viewer" &&
-				!localHeadlessViewerCanSend(msg)
-			) {
+			if (state.connection_role === "viewer" && !headlessViewerCanSend(msg)) {
 				send({
 					type: "error",
 					message: "Viewer headless connections cannot send messages",
