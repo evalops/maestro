@@ -7,6 +7,7 @@ import {
 	registerPostCompactionCleanup,
 	resetPostCompactionCleanupRegistry,
 } from "../../src/agent/compaction-cleanup.js";
+import type { CompactionHookService } from "../../src/agent/compaction-hooks.js";
 import {
 	type CompactionAgent,
 	type CompactionSessionManager,
@@ -90,6 +91,26 @@ function createMockSessionManager(): CompactionSessionManager {
 	};
 }
 
+function createMockHookService(
+	overrides?: Partial<{
+		blocked: boolean;
+		blockReason?: string;
+		additionalContext?: string;
+		systemMessage?: string;
+		preventContinuation: boolean;
+		stopReason?: string;
+	}>,
+): CompactionHookService {
+	return {
+		hasHooks: vi.fn().mockReturnValue(true),
+		runPreCompactHooks: vi.fn().mockResolvedValue({
+			blocked: false,
+			preventContinuation: false,
+			...overrides,
+		}),
+	};
+}
+
 /** Extract the messages passed to replaceMessages from the mock. */
 function getReplacedMessages(agent: CompactionAgent): AppMessage[] {
 	const mock = agent.replaceMessages as ReturnType<typeof vi.fn>;
@@ -155,6 +176,72 @@ describe("performCompaction", () => {
 		expect(sessionManager.saveCompaction).toHaveBeenCalledOnce();
 		// Should save summary + resume messages
 		expect(sessionManager.saveMessage).toHaveBeenCalledTimes(2);
+	});
+
+	it("merges PreCompact hook guidance into the summarization prompt", async () => {
+		const messages = buildConversation(10);
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+		const hookService = createMockHookService({
+			systemMessage: "Preserve unresolved risks.",
+			additionalContext: "Pending migration notes remain open.",
+		});
+
+		await performCompaction({
+			agent,
+			sessionManager,
+			customInstructions: "Focus on APIs",
+			hookService,
+		});
+
+		expect(hookService.runPreCompactHooks).toHaveBeenCalledWith(
+			"manual",
+			1050,
+			20000,
+			undefined,
+		);
+		expect(agent.generateSummary).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.stringContaining("Focus on APIs"),
+			expect.any(String),
+		);
+		expect(agent.generateSummary).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.stringContaining(
+				"Hook system guidance:\nPreserve unresolved risks.",
+			),
+			expect.any(String),
+		);
+		expect(agent.generateSummary).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.stringContaining(
+				"Hook context:\nPending migration notes remain open.",
+			),
+			expect.any(String),
+		);
+	});
+
+	it("returns failure when a PreCompact hook blocks compaction", async () => {
+		const messages = buildConversation(10);
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+		const hookService = createMockHookService({
+			blocked: true,
+			blockReason: "Compaction blocked by test hook",
+		});
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			hookService,
+		});
+
+		expect(result).toEqual({
+			success: false,
+			error: "Compaction blocked by test hook",
+		});
+		expect(agent.generateSummary).not.toHaveBeenCalled();
+		expect(sessionManager.saveCompaction).not.toHaveBeenCalled();
 	});
 
 	it("replaced messages start with summary and resume then kept messages", async () => {

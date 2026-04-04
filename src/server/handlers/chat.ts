@@ -23,6 +23,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
+import { buildCompactionHookContext } from "../../agent/compaction-hooks.js";
 import { runWithPromptRecovery } from "../../agent/prompt-recovery.js";
 import type {
 	Attachment as AgentAttachment,
@@ -671,6 +672,7 @@ export async function handleChat(
 			await runWithPromptRecovery({
 				agent,
 				sessionManager,
+				hookContext: buildCompactionHookContext(sessionManager, process.cwd()),
 				execute: () =>
 					breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
 			});

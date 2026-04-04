@@ -19,6 +19,7 @@
  */
 
 import type { Agent } from "../agent/agent.js";
+import { buildCompactionHookContext } from "../agent/compaction-hooks.js";
 import { performCompaction } from "../agent/compaction.js";
 import {
 	buildCompactionEvent,
@@ -67,6 +68,10 @@ export async function runRpcMode(
 				await runWithPromptRecovery({
 					agent,
 					sessionManager,
+					hookContext: buildCompactionHookContext(
+						sessionManager,
+						process.cwd(),
+					),
 					execute: () => agent.prompt(input.message),
 					callbacks: {
 						onCompacted: (result) => {
@@ -104,6 +109,10 @@ export async function runRpcMode(
 				await runWithPromptRecovery({
 					agent,
 					sessionManager,
+					hookContext: buildCompactionHookContext(
+						sessionManager,
+						process.cwd(),
+					),
 					execute: () => agent.continue(input.options),
 					callbacks: {
 						onCompacted: (result) => {
@@ -122,6 +131,11 @@ export async function runRpcMode(
 					agent,
 					sessionManager,
 					auto: false,
+					trigger: "manual",
+					hookContext: buildCompactionHookContext(
+						sessionManager,
+						process.cwd(),
+					),
 					customInstructions,
 					renderSummaryText: (summary: AssistantMessage) => {
 						const renderable = createRenderableMessage(summary as AppMessage);

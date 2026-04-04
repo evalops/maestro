@@ -1,4 +1,5 @@
 import type { Agent } from "../agent/agent.js";
+import { buildCompactionHookContext } from "../agent/compaction-hooks.js";
 import {
 	buildCompactionEvent,
 	runWithPromptRecovery,
@@ -53,6 +54,10 @@ export class AgentRuntimeController {
 				await runWithPromptRecovery({
 					agent: this.options.agent,
 					sessionManager: this.options.sessionManager,
+					hookContext: buildCompactionHookContext(
+						this.options.sessionManager,
+						process.cwd(),
+					),
 					execute: () => this.options.agent.prompt(text, attachments),
 					callbacks: {
 						onCompacting: () => {

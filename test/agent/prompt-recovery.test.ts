@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { CompactionHookService } from "../../src/agent/compaction-hooks.js";
 import {
 	recoverFromMaxOutput,
 	runWithPromptRecovery,
@@ -65,6 +66,16 @@ function createMockSessionManager() {
 		}),
 		saveCompaction: vi.fn(),
 		saveMessage: vi.fn(),
+	};
+}
+
+function createMockHookService(): CompactionHookService {
+	return {
+		hasHooks: vi.fn().mockReturnValue(true),
+		runPreCompactHooks: vi.fn().mockResolvedValue({
+			blocked: false,
+			preventContinuation: false,
+		}),
 	};
 }
 
@@ -205,6 +216,33 @@ describe("runWithPromptRecovery", () => {
 					"Continue directly with the user's unresolved request",
 				),
 			}),
+		);
+	});
+
+	it("uses the token_limit trigger for overflow recovery hooks", async () => {
+		const agent = createMockAgent([
+			...buildConversation(5),
+			createUserMessage("latest question"),
+		]);
+		const sessionManager = createMockSessionManager();
+		const hookService = createMockHookService();
+
+		await runWithPromptRecovery({
+			agent: agent as never,
+			sessionManager,
+			hookService,
+			execute: async () => {
+				throw new Error(
+					"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.",
+				);
+			},
+		});
+
+		expect(hookService.runPreCompactHooks).toHaveBeenCalledWith(
+			"token_limit",
+			550,
+			20000,
+			undefined,
 		);
 	});
 

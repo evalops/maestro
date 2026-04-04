@@ -35,6 +35,11 @@
 
 import type { SessionEntry } from "../session/types.js";
 import { runPostCompactionCleanup } from "./compaction-cleanup.js";
+import {
+	type CompactionHookContext,
+	type CompactionHookService,
+	createCompactionHookService,
+} from "./compaction-hooks.js";
 import { convertAppMessageToLlm } from "./custom-messages.js";
 import type { Api, AppMessage, AssistantMessage, Usage } from "./types.js";
 
@@ -875,6 +880,34 @@ export interface PerformCompactionResult {
 	error?: string;
 }
 
+function buildEffectiveCustomInstructions(
+	customInstructions: string | undefined,
+	hookResult?: {
+		systemMessage?: string;
+		additionalContext?: string;
+	},
+): string | undefined {
+	const trimmedCustomInstructions = customInstructions?.trim();
+	const hookSections = [
+		hookResult?.systemMessage?.trim()
+			? `Hook system guidance:\n${hookResult.systemMessage.trim()}`
+			: null,
+		hookResult?.additionalContext?.trim()
+			? `Hook context:\n${hookResult.additionalContext.trim()}`
+			: null,
+	].filter((section): section is string => Boolean(section));
+
+	if (hookSections.length === 0) {
+		return trimmedCustomInstructions || undefined;
+	}
+
+	if (!trimmedCustomInstructions) {
+		return hookSections.join("\n\n");
+	}
+
+	return `${trimmedCustomInstructions}\n\n${hookSections.join("\n\n")}`;
+}
+
 /**
  * Perform context compaction end-to-end: calculate boundary, generate summary,
  * replace messages, and persist to session.
@@ -894,11 +927,22 @@ export async function performCompaction(params: {
 	agent: CompactionAgent;
 	sessionManager: CompactionSessionManager;
 	auto?: boolean;
+	trigger?: "auto" | "manual" | "token_limit";
 	customInstructions?: string;
+	hookContext?: CompactionHookContext;
+	hookService?: CompactionHookService;
 	renderSummaryText?: (message: AssistantMessage) => string;
 }): Promise<PerformCompactionResult> {
-	const { agent, sessionManager, auto, customInstructions, renderSummaryText } =
-		params;
+	const {
+		agent,
+		sessionManager,
+		auto,
+		trigger,
+		customInstructions,
+		hookContext,
+		hookService,
+		renderSummaryText,
+	} = params;
 	const messages = [...agent.state.messages];
 	const keepCount = 6;
 
@@ -925,6 +969,48 @@ export async function performCompaction(params: {
 		return { success: false, error: "No earlier messages to compact" };
 	}
 
+	const tokensBefore = lastUsage ? calculateContextTokens(lastUsage) : 0;
+	let effectiveCustomInstructions = customInstructions;
+
+	const effectiveHookService =
+		hookService ??
+		(hookContext ? createCompactionHookService(hookContext) : undefined);
+
+	if (effectiveHookService) {
+		if (
+			!effectiveHookService.hasHooks ||
+			effectiveHookService.hasHooks("PreCompact")
+		) {
+			const hookResult = await effectiveHookService.runPreCompactHooks(
+				trigger ?? (auto ? "auto" : "manual"),
+				tokensBefore,
+				DEFAULT_COMPACTION_SETTINGS.keepRecentTokens,
+				hookContext?.signal,
+			);
+
+			if (hookResult.blocked) {
+				return {
+					success: false,
+					error:
+						hookResult.blockReason ?? "Compaction blocked by PreCompact hook",
+				};
+			}
+
+			if (hookResult.preventContinuation) {
+				return {
+					success: false,
+					error:
+						hookResult.stopReason ?? "Compaction prevented by PreCompact hook",
+				};
+			}
+
+			effectiveCustomInstructions = buildEffectiveCustomInstructions(
+				customInstructions,
+				hookResult,
+			);
+		}
+	}
+
 	// Look for previous summary (cascading)
 	const previousSummary = findPreviousSummary(messages);
 	const summaryInput: AppMessage[] = [];
@@ -942,7 +1028,7 @@ export async function performCompaction(params: {
 	let usedModel = false;
 
 	try {
-		const prompt = buildSummarizationPrompt(customInstructions);
+		const prompt = buildSummarizationPrompt(effectiveCustomInstructions);
 		const summary = await agent.generateSummary(
 			summaryInput,
 			prompt,
@@ -958,7 +1044,6 @@ export async function performCompaction(params: {
 	}
 
 	const decorated = decorateSummaryText(summaryText, older.length, usedModel);
-	const tokensBefore = lastUsage ? calculateContextTokens(lastUsage) : 0;
 
 	// Build summary and resume messages
 	const summaryMessage: AssistantMessage = {

@@ -1,6 +1,10 @@
 import { isContextOverflow as isOverflowError } from "../utils/context-overflow.js";
 import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
+import type {
+	CompactionHookContext,
+	CompactionHookService,
+} from "./compaction-hooks.js";
 import {
 	type CompactionSessionManager,
 	type PerformCompactionResult,
@@ -30,6 +34,8 @@ export interface RunWithPromptRecoveryOptions {
 	agent: Agent;
 	sessionManager: CompactionSessionManager;
 	execute: () => Promise<void>;
+	hookContext?: CompactionHookContext;
+	hookService?: CompactionHookService;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
 }
@@ -138,6 +144,8 @@ export async function recoverFromMaxOutput(
 async function recoverFromPromptOverflow(
 	agent: Agent,
 	sessionManager: CompactionSessionManager,
+	hookContext: CompactionHookContext | undefined,
+	hookService: CompactionHookService | undefined,
 	callbacks?: PromptRecoveryCallbacks,
 ): Promise<boolean> {
 	callbacks?.onCompacting?.();
@@ -148,6 +156,9 @@ async function recoverFromPromptOverflow(
 			agent,
 			sessionManager,
 			auto: true,
+			trigger: "token_limit",
+			hookContext,
+			hookService,
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -191,6 +202,8 @@ export async function runWithPromptRecovery(
 			const recovered = await recoverFromPromptOverflow(
 				agent,
 				sessionManager,
+				options.hookContext,
+				options.hookService,
 				callbacks,
 			);
 			if (recovered) {

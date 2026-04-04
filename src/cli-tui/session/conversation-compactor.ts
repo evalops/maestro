@@ -1,5 +1,6 @@
 import type { Container, TUI } from "@evalops/tui";
 import type { Agent } from "../../agent/agent.js";
+import { buildCompactionHookContext } from "../../agent/compaction-hooks.js";
 import {
 	type CompactionSettings,
 	DEFAULT_COMPACTION_SETTINGS,
@@ -87,6 +88,11 @@ export class ConversationCompactor {
 				agent: this.options.agent,
 				sessionManager: this.options.sessionManager,
 				auto: options?.auto,
+				trigger: options?.auto ? "auto" : "manual",
+				hookContext: buildCompactionHookContext(
+					this.options.sessionManager,
+					process.cwd(),
+				),
 				customInstructions: options?.customInstructions,
 				renderSummaryText: (summary: AssistantMessage) => {
 					const renderable = createRenderableMessage(summary as AppMessage);

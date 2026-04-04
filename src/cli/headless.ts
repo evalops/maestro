@@ -11,6 +11,7 @@ import {
 	assertHeadlessToAgentMessage,
 } from "@evalops/contracts";
 import type { ActionApprovalService } from "../agent/action-approval.js";
+import { buildCompactionHookContext } from "../agent/compaction-hooks.js";
 import type { Agent } from "../agent/index.js";
 import {
 	buildCompactionEvent,
@@ -426,6 +427,10 @@ export async function runHeadlessMode(
 					await runWithPromptRecovery({
 						agent,
 						sessionManager,
+						hookContext: buildCompactionHookContext(
+							sessionManager,
+							process.cwd(),
+						),
 						execute: async () => {
 							if (msg.attachments && msg.attachments.length > 0) {
 								const loaded = await loadPromptAttachments(

@@ -11,6 +11,7 @@ import type {
 	ActionApprovalService,
 	ApprovalMode,
 } from "../agent/action-approval.js";
+import { buildCompactionHookContext } from "../agent/compaction-hooks.js";
 import type { Agent } from "../agent/index.js";
 import {
 	buildCompactionEvent,
@@ -1737,6 +1738,10 @@ export class HeadlessSessionRuntime {
 			await runWithPromptRecovery({
 				agent: this.agent,
 				sessionManager: this.sessionManager,
+				hookContext: buildCompactionHookContext(
+					this.sessionManager,
+					process.cwd(),
+				),
 				execute: () =>
 					breaker.execute(() => this.agent.prompt(content, attachments)),
 				callbacks: {

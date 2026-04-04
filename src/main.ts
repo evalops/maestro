@@ -93,6 +93,7 @@ import {
 	ActionApprovalService,
 	type ApprovalMode,
 } from "./agent/action-approval.js";
+import { buildCompactionHookContext } from "./agent/compaction-hooks.js";
 import {
 	type Agent,
 	type Api,
@@ -302,6 +303,7 @@ async function runSingleShotMode(
 			await runWithPromptRecovery({
 				agent,
 				sessionManager,
+				hookContext: buildCompactionHookContext(sessionManager, process.cwd()),
 				execute: () => agent.prompt(message),
 			});
 		}

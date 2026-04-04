@@ -7,6 +7,7 @@
 import type { IncomingMessage } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
 import type { RawData, WebSocket } from "ws";
+import { buildCompactionHookContext } from "../../agent/compaction-hooks.js";
 import { runWithPromptRecovery } from "../../agent/prompt-recovery.js";
 import type {
 	Attachment as AgentAttachment,
@@ -750,6 +751,10 @@ export function handleChatWebSocket(
 				await runWithPromptRecovery({
 					agent,
 					sessionManager,
+					hookContext: buildCompactionHookContext(
+						sessionManager,
+						process.cwd(),
+					),
 					execute: () =>
 						breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
 				});

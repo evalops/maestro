@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { DateTime } from "luxon";
+import { buildCompactionHookContext } from "../../agent/compaction-hooks.js";
 import { runWithPromptRecovery } from "../../agent/prompt-recovery.js";
 import type { AgentEvent, AppMessage } from "../../agent/types.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
@@ -485,6 +486,7 @@ async function executeAutomation(
 		await runWithPromptRecovery({
 			agent,
 			sessionManager,
+			hookContext: buildCompactionHookContext(sessionManager, process.cwd()),
 			execute: () => agent.prompt(userInput),
 		});
 		await sessionManager.flush();
