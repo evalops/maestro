@@ -13,6 +13,7 @@ import {
 describe("webhook server", () => {
 	const servers: Array<{ stop(): Promise<void> }> = [];
 	const teamId = "T123";
+	const host = "127.0.0.1";
 
 	afterEach(async () => {
 		for (const s of servers) {
@@ -26,11 +27,11 @@ describe("webhook server", () => {
 	});
 
 	function urlFor(server: { port: number }, path: string): string {
-		return `http://localhost:${server.port}${path}`;
+		return `http://${host}:${server.port}${path}`;
 	}
 
 	it("responds to health check", async () => {
-		const server = createWebhookServer({ port: 0 }, async () => {});
+		const server = createWebhookServer({ port: 0, host }, async () => {});
 		servers.push(server);
 		await server.start();
 
@@ -41,7 +42,7 @@ describe("webhook server", () => {
 	});
 
 	it("returns 404 for unknown paths", async () => {
-		const server = createWebhookServer({ port: 0 }, async () => {});
+		const server = createWebhookServer({ port: 0, host }, async () => {});
 		servers.push(server);
 		await server.start();
 
@@ -52,7 +53,7 @@ describe("webhook server", () => {
 	it("receives generic webhook and calls callback", async () => {
 		const events: WebhookEvent[] = [];
 
-		const server = createWebhookServer({ port: 0 }, async (event) => {
+		const server = createWebhookServer({ port: 0, host }, async (event) => {
 			events.push(event);
 		});
 		servers.push(server);
@@ -74,7 +75,7 @@ describe("webhook server", () => {
 	it("parses GitHub push events", async () => {
 		const events: WebhookEvent[] = [];
 
-		const server = createWebhookServer({ port: 0 }, async (event) => {
+		const server = createWebhookServer({ port: 0, host }, async (event) => {
 			events.push(event);
 		});
 		servers.push(server);
@@ -99,7 +100,7 @@ describe("webhook server", () => {
 	it("parses GitHub PR events", async () => {
 		const events: WebhookEvent[] = [];
 
-		const server = createWebhookServer({ port: 0 }, async (event) => {
+		const server = createWebhookServer({ port: 0, host }, async (event) => {
 			events.push(event);
 		});
 		servers.push(server);
@@ -123,7 +124,7 @@ describe("webhook server", () => {
 	it("parses Stripe events", async () => {
 		const events: WebhookEvent[] = [];
 
-		const server = createWebhookServer({ port: 0 }, async (event) => {
+		const server = createWebhookServer({ port: 0, host }, async (event) => {
 			events.push(event);
 		});
 		servers.push(server);
@@ -146,7 +147,7 @@ describe("webhook server", () => {
 	it("parses Linear events", async () => {
 		const events: WebhookEvent[] = [];
 
-		const server = createWebhookServer({ port: 0 }, async (event) => {
+		const server = createWebhookServer({ port: 0, host }, async (event) => {
 			events.push(event);
 		});
 		servers.push(server);
@@ -172,7 +173,7 @@ describe("webhook server", () => {
 		const events: WebhookEvent[] = [];
 
 		const server = createWebhookServer(
-			{ port: 0, secrets: { github: secret } },
+			{ port: 0, host, secrets: { github: secret } },
 			async (event) => {
 				events.push(event);
 			},
@@ -212,7 +213,7 @@ describe("webhook server", () => {
 	});
 
 	it("rejects invalid JSON", async () => {
-		const server = createWebhookServer({ port: 0 }, async () => {});
+		const server = createWebhookServer({ port: 0, host }, async () => {});
 		servers.push(server);
 		await server.start();
 
@@ -228,7 +229,7 @@ describe("webhook server", () => {
 		const events: WebhookEvent[] = [];
 
 		const server = createWebhookServer(
-			{ port: 0, defaultChannel: "C12345" },
+			{ port: 0, host, defaultChannel: "C12345" },
 			async (event) => {
 				events.push(event);
 			},
@@ -253,7 +254,7 @@ describe("webhook server", () => {
 
 		const events: WebhookEvent[] = [];
 
-		const server = createWebhookServer({ port: 0 }, async (event) => {
+		const server = createWebhookServer({ port: 0, host }, async (event) => {
 			events.push(event);
 		});
 		servers.push(server);
