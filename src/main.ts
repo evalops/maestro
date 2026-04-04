@@ -93,15 +93,14 @@ import {
 	ActionApprovalService,
 	type ApprovalMode,
 } from "./agent/action-approval.js";
-import { buildCompactionHookContext } from "./agent/compaction-hooks.js";
 import {
 	type Agent,
 	type Api,
 	type Model,
 	isAssistantMessage,
 } from "./agent/index.js";
-import { runWithPromptRecovery } from "./agent/prompt-recovery.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
+import { runUserPromptWithRecovery } from "./agent/user-prompt-runtime.js";
 import { createAuthSetup, validateCodexFlags } from "./bootstrap/auth-setup.js";
 import {
 	disposeCheckpointService,
@@ -300,10 +299,11 @@ async function runSingleShotMode(
 			if (jsonlWriter) {
 				emitUserTurnEvent(jsonlWriter, nextTurnId, message);
 			}
-			await runWithPromptRecovery({
+			await runUserPromptWithRecovery({
 				agent,
 				sessionManager,
-				hookContext: buildCompactionHookContext(sessionManager, process.cwd()),
+				cwd: process.cwd(),
+				prompt: message,
 				execute: () => agent.prompt(message),
 			});
 		}

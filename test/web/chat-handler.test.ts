@@ -296,6 +296,116 @@ describe("handleChat", () => {
 		]);
 	});
 
+	it("runs UserPromptSubmit hooks before executing SSE chat prompts", async () => {
+		const queueNextRunPromptOnlyMessage = vi.fn();
+		const queueNextRunSystemPromptAddition = vi.fn();
+
+		registerHook("UserPromptSubmit", {
+			type: "callback",
+			callback: async () => ({
+				hookSpecificOutput: {
+					hookEventName: "UserPromptSubmit",
+					additionalContext: "Remember the repo coding conventions.",
+				},
+				systemMessage: "Avoid unnecessary refactors.",
+			}),
+		});
+
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = {};
+		req.end(
+			JSON.stringify({
+				messages: [{ role: "user", content: "hi" }],
+			}),
+		);
+
+		const res = makeRes();
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async () => {
+				type EventCallback = (e: unknown) => void | Promise<void>;
+				let subscriber: EventCallback | undefined;
+				return {
+					state: {
+						systemPrompt: "",
+						model: mockModel,
+						thinkingLevel: "off",
+						tools: [],
+						messages: [] as unknown[],
+						isStreaming: false,
+						streamMessage: null,
+						pendingToolCalls: new Map(),
+					},
+					subscribe: (fn: EventCallback) => {
+						subscriber = fn;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					queueNextRunPromptOnlyMessage,
+					queueNextRunSystemPromptAddition,
+					replaceMessages: () => {},
+					clearMessages: () => {},
+					prompt: async () => {
+						await subscriber?.({
+							type: "turn_end",
+							message: {
+								role: "assistant",
+								content: [{ type: "text", text: "Done" }],
+								api: mockModel.api,
+								provider: mockModel.provider,
+								model: mockModel.id,
+								usage: {
+									input: 1,
+									output: 1,
+									cacheRead: 0,
+									cacheWrite: 0,
+									cost: {
+										input: 0,
+										output: 0,
+										cacheRead: 0,
+										cacheWrite: 0,
+										total: 0,
+									},
+								},
+								stopReason: "stop",
+								timestamp: Date.now(),
+							},
+						});
+					},
+					abort: () => {},
+				} as unknown as Agent;
+			},
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		expect(queueNextRunSystemPromptAddition).toHaveBeenCalledWith(
+			"UserPromptSubmit hook system guidance:\nAvoid unnecessary refactors.",
+		);
+		expect(queueNextRunPromptOnlyMessage).toHaveBeenCalledWith({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text: "UserPromptSubmit hook context:\nRemember the repo coding conventions.",
+				},
+			],
+			timestamp: expect.any(Number),
+		});
+	});
+
 	it("persists user messages during streaming", async () => {
 		const composerHome = mkdtempSync(join(tmpdir(), "composer-home-"));
 		vi.stubEnv("MAESTRO_HOME", composerHome);

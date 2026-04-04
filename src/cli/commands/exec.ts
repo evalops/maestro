@@ -56,9 +56,8 @@ import AjvModule, {
 } from "ajv";
 import chalk from "chalk";
 import type { Agent } from "../../agent/agent.js";
-import { buildCompactionHookContext } from "../../agent/compaction-hooks.js";
-import { runWithPromptRecovery } from "../../agent/prompt-recovery.js";
 import type { AgentEvent } from "../../agent/types.js";
+import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
 import type { SessionManager } from "../../session/manager.js";
 import { resolveDefaultExport } from "../../utils/module-interop.js";
 import {
@@ -173,13 +172,11 @@ export async function runExecCommand(
 			}
 			emitUserTurn(normalized);
 			executedPrompts++;
-			await runWithPromptRecovery({
+			await runUserPromptWithRecovery({
 				agent: options.agent,
 				sessionManager: options.sessionManager,
-				hookContext: buildCompactionHookContext(
-					options.sessionManager,
-					process.cwd(),
-				),
+				cwd: process.cwd(),
+				prompt: normalized,
 				execute: () => options.agent.prompt(normalized),
 			});
 		}

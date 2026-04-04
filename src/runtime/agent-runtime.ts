@@ -1,10 +1,7 @@
 import type { Agent } from "../agent/agent.js";
-import { buildCompactionHookContext } from "../agent/compaction-hooks.js";
-import {
-	buildCompactionEvent,
-	runWithPromptRecovery,
-} from "../agent/prompt-recovery.js";
+import { buildCompactionEvent } from "../agent/prompt-recovery.js";
 import type { AppMessage } from "../agent/types.js";
+import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
 import { type PromptPayload, PromptQueue } from "../cli-tui/prompt-queue.js";
 import type { TuiRenderer } from "../cli-tui/tui-renderer.js";
 import { composerManager } from "../composers/index.js";
@@ -51,13 +48,12 @@ export class AgentRuntimeController {
 					}
 				}
 
-				await runWithPromptRecovery({
+				await runUserPromptWithRecovery({
 					agent: this.options.agent,
 					sessionManager: this.options.sessionManager,
-					hookContext: buildCompactionHookContext(
-						this.options.sessionManager,
-						process.cwd(),
-					),
+					cwd: process.cwd(),
+					prompt: text,
+					attachmentCount: attachments?.length ?? 0,
 					execute: () => this.options.agent.prompt(text, attachments),
 					callbacks: {
 						onCompacting: () => {

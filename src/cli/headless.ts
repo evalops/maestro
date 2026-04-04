@@ -11,13 +11,10 @@ import {
 	assertHeadlessToAgentMessage,
 } from "@evalops/contracts";
 import type { ActionApprovalService } from "../agent/action-approval.js";
-import { buildCompactionHookContext } from "../agent/compaction-hooks.js";
 import type { Agent } from "../agent/index.js";
-import {
-	buildCompactionEvent,
-	runWithPromptRecovery,
-} from "../agent/prompt-recovery.js";
+import { buildCompactionEvent } from "../agent/prompt-recovery.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
+import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
 import { readWorkspaceFile } from "../headless/utility-file-read.js";
 import { searchWorkspaceFiles } from "../headless/utility-file-search.js";
@@ -433,13 +430,12 @@ export async function runHeadlessMode(
 
 				case "prompt":
 					applyOutgoingHeadlessMessage(state, msg);
-					await runWithPromptRecovery({
+					await runUserPromptWithRecovery({
 						agent,
 						sessionManager,
-						hookContext: buildCompactionHookContext(
-							sessionManager,
-							process.cwd(),
-						),
+						cwd: process.cwd(),
+						prompt: msg.content,
+						attachmentCount: msg.attachments?.length ?? 0,
 						execute: async () => {
 							if (msg.attachments && msg.attachments.length > 0) {
 								const loaded = await loadPromptAttachments(

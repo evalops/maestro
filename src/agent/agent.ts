@@ -369,7 +369,9 @@ export class Agent {
 	private preprocessMessages?: PreprocessMessagesFn;
 	private steeringQueue: Array<QueuedMessage<AppMessage>> = [];
 	private followUpQueue: Array<QueuedMessage<AppMessage>> = [];
+	private nextRunPromptOnlyQueue: Message[] = [];
 	private promptOnlyQueue: Message[] = [];
+	private nextRunSystemPromptAdditions: string[] = [];
 	private steeringMode: "all" | "one" = "all";
 	private followUpMode: "all" | "one" = "all";
 	private queueMode: "all" | "one" = "all";
@@ -565,11 +567,24 @@ export class Agent {
 	}
 
 	private async dequeuePromptOnlyMessages(): Promise<Message[]> {
-		if (this.promptOnlyQueue.length === 0) {
+		if (
+			this.nextRunPromptOnlyQueue.length === 0 &&
+			this.promptOnlyQueue.length === 0
+		) {
 			return [];
 		}
-		const queued = [...this.promptOnlyQueue];
+		const queued = [...this.nextRunPromptOnlyQueue, ...this.promptOnlyQueue];
+		this.nextRunPromptOnlyQueue = [];
 		this.promptOnlyQueue = [];
+		return queued;
+	}
+
+	private dequeueNextRunSystemPromptAdditions(): string[] {
+		if (this.nextRunSystemPromptAdditions.length === 0) {
+			return [];
+		}
+		const queued = [...this.nextRunSystemPromptAdditions];
+		this.nextRunSystemPromptAdditions = [];
 		return queued;
 	}
 
@@ -759,6 +774,24 @@ export class Agent {
 		event: Omit<Extract<AgentEvent, { type: "compaction" }>, "type">,
 	): void {
 		this.emit({ type: "compaction", ...event });
+	}
+
+	/**
+	 * Queue a prompt-only message for the next run without persisting it to history.
+	 */
+	queueNextRunPromptOnlyMessage(message: Message): void {
+		this.nextRunPromptOnlyQueue.push(message);
+	}
+
+	/**
+	 * Queue transient system guidance for the next run.
+	 */
+	queueNextRunSystemPromptAddition(text: string): void {
+		const normalized = text.trim();
+		if (!normalized) {
+			return;
+		}
+		this.nextRunSystemPromptAdditions.push(normalized);
 	}
 
 	/**
@@ -981,7 +1014,9 @@ export class Agent {
 		this._state.pendingToolCalls.clear();
 		this.activeToolBatchIds = null;
 		this.completedToolBatch = [];
+		this.nextRunPromptOnlyQueue = [];
 		this.promptOnlyQueue = [];
+		this.nextRunSystemPromptAdditions = [];
 		this._state.error = undefined;
 		this.steeringQueue = [];
 		this.followUpQueue = [];
@@ -1066,6 +1101,11 @@ export class Agent {
 
 			// Inject Context from Environment (Terrarium Principle)
 			let systemPrompt = this._state.systemPrompt;
+			const nextRunSystemPromptAdditions =
+				this.dequeueNextRunSystemPromptAdditions();
+			if (nextRunSystemPromptAdditions.length > 0) {
+				systemPrompt = `${systemPrompt}\n\n${nextRunSystemPromptAdditions.join("\n\n")}`;
+			}
 			try {
 				const contextAdditions =
 					await this.contextManager.getCombinedSystemPrompt();
@@ -1249,6 +1289,11 @@ export class Agent {
 			// Inject Context from Environment
 			let systemPrompt =
 				options?.systemPromptOverride ?? this._state.systemPrompt;
+			const nextRunSystemPromptAdditions =
+				this.dequeueNextRunSystemPromptAdditions();
+			if (nextRunSystemPromptAdditions.length > 0) {
+				systemPrompt = `${systemPrompt}\n\n${nextRunSystemPromptAdditions.join("\n\n")}`;
+			}
 			try {
 				const contextAdditions =
 					await this.contextManager.getCombinedSystemPrompt();

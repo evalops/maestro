@@ -30,6 +30,7 @@ import type {
 	AppMessage,
 	AssistantMessage,
 } from "../agent/types.js";
+import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
 import {
 	createRenderableMessage,
 	renderMessageToPlainText,
@@ -65,13 +66,11 @@ export async function runRpcMode(
 			const input = JSON.parse(line);
 
 			if (input.type === "prompt" && input.message) {
-				await runWithPromptRecovery({
+				await runUserPromptWithRecovery({
 					agent,
 					sessionManager,
-					hookContext: buildCompactionHookContext(
-						sessionManager,
-						process.cwd(),
-					),
+					cwd: process.cwd(),
+					prompt: input.message,
 					execute: () => agent.prompt(input.message),
 					callbacks: {
 						onCompacted: (result) => {

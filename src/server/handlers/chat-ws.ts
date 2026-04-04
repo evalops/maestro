@@ -7,12 +7,11 @@
 import type { IncomingMessage } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
 import type { RawData, WebSocket } from "ws";
-import { buildCompactionHookContext } from "../../agent/compaction-hooks.js";
-import { runWithPromptRecovery } from "../../agent/prompt-recovery.js";
 import type {
 	Attachment as AgentAttachment,
 	AgentEvent,
 } from "../../agent/types.js";
+import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
 import {
 	createNotificationFromAgentEvent,
 	isNotificationEnabled,
@@ -761,13 +760,12 @@ export function handleChatWebSocket(
 
 			try {
 				const breaker = getAgentCircuitBreaker(registeredModel.provider);
-				await runWithPromptRecovery({
+				await runUserPromptWithRecovery({
 					agent,
 					sessionManager,
-					hookContext: buildCompactionHookContext(
-						sessionManager,
-						process.cwd(),
-					),
+					cwd: process.cwd(),
+					prompt: userInput,
+					attachmentCount: attachmentsToSend?.length ?? 0,
 					execute: () =>
 						breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
 				});

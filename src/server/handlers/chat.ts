@@ -23,12 +23,11 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
-import { buildCompactionHookContext } from "../../agent/compaction-hooks.js";
-import { runWithPromptRecovery } from "../../agent/prompt-recovery.js";
 import type {
 	Attachment as AgentAttachment,
 	AgentEvent,
 } from "../../agent/types.js";
+import { runUserPromptWithRecovery } from "../../agent/user-prompt-runtime.js";
 import {
 	createNotificationFromAgentEvent,
 	isNotificationEnabled,
@@ -681,10 +680,12 @@ export async function handleChat(
 			const breaker = getAgentCircuitBreaker(registeredModel.provider);
 
 			// Execute the agent with the user's input
-			await runWithPromptRecovery({
+			await runUserPromptWithRecovery({
 				agent,
 				sessionManager,
-				hookContext: buildCompactionHookContext(sessionManager, process.cwd()),
+				cwd: process.cwd(),
+				prompt: userInput,
+				attachmentCount: attachmentsToSend?.length ?? 0,
 				execute: () =>
 					breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
 			});

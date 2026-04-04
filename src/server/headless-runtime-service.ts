@@ -11,14 +11,11 @@ import type {
 	ActionApprovalService,
 	ApprovalMode,
 } from "../agent/action-approval.js";
-import { buildCompactionHookContext } from "../agent/compaction-hooks.js";
 import type { Agent } from "../agent/index.js";
-import {
-	buildCompactionEvent,
-	runWithPromptRecovery,
-} from "../agent/prompt-recovery.js";
+import { buildCompactionEvent } from "../agent/prompt-recovery.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
 import type { AgentEvent, Attachment, ThinkingLevel } from "../agent/types.js";
+import { runUserPromptWithRecovery } from "../agent/user-prompt-runtime.js";
 import {
 	HEADLESS_PROTOCOL_VERSION,
 	type HeadlessClientCapabilities,
@@ -1735,13 +1732,12 @@ export class HeadlessSessionRuntime {
 	): Promise<void> {
 		try {
 			const breaker = getAgentCircuitBreaker(this.registeredModel.provider);
-			await runWithPromptRecovery({
+			await runUserPromptWithRecovery({
 				agent: this.agent,
 				sessionManager: this.sessionManager,
-				hookContext: buildCompactionHookContext(
-					this.sessionManager,
-					process.cwd(),
-				),
+				cwd: process.cwd(),
+				prompt: content,
+				attachmentCount: attachments?.length ?? 0,
 				execute: () =>
 					breaker.execute(() => this.agent.prompt(content, attachments)),
 				callbacks: {
