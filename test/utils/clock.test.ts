@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { systemClock } from "../../src/utils/clock.js";
 
 describe("systemClock", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("now() returns a number", () => {
 		const t = systemClock.now();
 		expect(typeof t).toBe("number");
@@ -9,22 +13,24 @@ describe("systemClock", () => {
 	});
 
 	it("setTimeout invokes handler after delay", async () => {
+		vi.useFakeTimers();
 		let fired = false;
 		const id = systemClock.setTimeout(() => {
 			fired = true;
 		}, 10);
-		await new Promise((r) => setTimeout(r, 20));
+		await vi.advanceTimersByTimeAsync(20);
 		expect(fired).toBe(true);
 		systemClock.clearTimeout(id);
 	});
 
 	it("clearTimeout cancels the timer", async () => {
+		vi.useFakeTimers();
 		let fired = false;
 		const id = systemClock.setTimeout(() => {
 			fired = true;
 		}, 50);
 		systemClock.clearTimeout(id);
-		await new Promise((r) => setTimeout(r, 60));
+		await vi.advanceTimersByTimeAsync(60);
 		expect(fired).toBe(false);
 	});
 });
