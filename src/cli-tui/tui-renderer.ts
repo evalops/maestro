@@ -331,7 +331,7 @@ export class TuiRenderer {
 	private sessionView: SessionView;
 	private sessionStateController!: SessionStateController;
 	private importExportView?: ImportExportView;
-	private runCommandView: RunCommandView;
+	private runCommandView?: RunCommandView;
 	private bashModeView: BashModeView;
 	private gitView: GitView;
 	private toolStatusView: ToolStatusView;
@@ -820,11 +820,6 @@ export class TuiRenderer {
 		});
 		this.planView = planSubsystem.planView;
 		this.planController = planSubsystem.planController;
-		this.runCommandView = new RunCommandView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-		});
 		this.gitView = new GitView({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -1117,7 +1112,7 @@ export class TuiRenderer {
 		const registry = buildTuiCommandRegistry({
 			cwd: process.cwd(),
 			registryOptions: buildTuiCommandRegistryOptions({
-				runCommandView: this.runCommandView,
+				getRunCommandView: () => this.getRunCommandView(),
 				toolStatusView: this.toolStatusView,
 				sessionView: this.sessionView,
 				clearController: this.clearController,
@@ -1385,6 +1380,15 @@ export class TuiRenderer {
 				this.sessionContext.recordShareArtifact(filePath),
 		});
 		return this.importExportView;
+	}
+
+	private getRunCommandView(): RunCommandView {
+		this.runCommandView ??= new RunCommandView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+		});
+		return this.runCommandView;
 	}
 
 	private getFeedbackView(): FeedbackView {
@@ -2441,7 +2445,7 @@ export class TuiRenderer {
 				handleToolsCommand: (rawInput) =>
 					this.toolStatusView.handleToolsCommand(rawInput),
 				handleRunCommand: (rawInput) =>
-					this.runCommandView.handleRunCommand(rawInput),
+					this.getRunCommandView().handleRunCommand(rawInput),
 				handleCommandsCommand: (ctx) =>
 					this.customCommandsController.handleCommandsCommand(ctx),
 			});

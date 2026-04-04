@@ -38,13 +38,14 @@ function createDeps() {
 	};
 	const queuePanelController = { handleQueueCommand: vi.fn() };
 	const reportSelectorView = { show: vi.fn() };
+	const runCommandView = {
+		getRunScriptCompletions: vi.fn(() => null),
+		handleRunCommand: vi.fn(),
+	};
 	const thinkingSelectorView = { show: vi.fn() };
 
 	const deps = {
-		runCommandView: {
-			getRunScriptCompletions: vi.fn(() => null),
-			handleRunCommand: vi.fn(),
-		},
+		getRunCommandView: vi.fn(() => runCommandView),
 		toolStatusView: { handleToolsCommand: vi.fn() },
 		sessionView: {
 			handleSessionCommand: vi.fn(),
@@ -169,6 +170,7 @@ function createDeps() {
 		importExportView,
 		queuePanelController,
 		reportSelectorView,
+		runCommandView,
 		thinkingSelectorView,
 	};
 }
@@ -184,6 +186,7 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(deps.getCostView).not.toHaveBeenCalled();
 		expect(deps.getImportExportView).not.toHaveBeenCalled();
 		expect(deps.getReportSelectorView).not.toHaveBeenCalled();
+		expect(deps.getRunCommandView).not.toHaveBeenCalled();
 		expect(deps.getThinkingSelectorView).not.toHaveBeenCalled();
 		expect(deps.getFileSearchView).not.toHaveBeenCalled();
 		expect(deps.getQueuePanelController).not.toHaveBeenCalled();
@@ -200,9 +203,14 @@ describe("buildTuiCommandRegistryOptions", () => {
 			importExportView,
 			queuePanelController,
 			reportSelectorView,
+			runCommandView,
 			thinkingSelectorView,
 		} = createDeps();
 		const options = buildTuiCommandRegistryOptions(deps);
+
+		options.getRunScriptCompletions("te");
+		expect(deps.getRunCommandView).toHaveBeenCalledTimes(1);
+		expect(runCommandView.getRunScriptCompletions).toHaveBeenCalledTimes(1);
 
 		options.handleAbout(createCommandContext("/about"));
 		expect(deps.getAboutView).toHaveBeenCalledTimes(1);
@@ -215,6 +223,10 @@ describe("buildTuiCommandRegistryOptions", () => {
 		options.handleCost(createCommandContext("/cost", "today"));
 		expect(deps.getCostView).toHaveBeenCalledTimes(1);
 		expect(costView.handleCostCommand).toHaveBeenCalledTimes(1);
+
+		options.handleRun(createCommandContext("/run test", "test"));
+		expect(deps.getRunCommandView).toHaveBeenCalledTimes(2);
+		expect(runCommandView.handleRunCommand).toHaveBeenCalledTimes(1);
 
 		options.handleMention(createCommandContext("/mention src", "src"));
 		expect(deps.getFileSearchView).toHaveBeenCalledTimes(1);

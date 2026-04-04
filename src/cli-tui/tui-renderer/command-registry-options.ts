@@ -60,7 +60,7 @@ import type { CustomCommandsController } from "./custom-commands-controller.js";
 import type { UiStateController } from "./ui-state-controller.js";
 
 export interface TuiCommandRegistryDeps {
-	runCommandView: RunCommandView;
+	getRunCommandView: () => RunCommandView;
 	toolStatusView: ToolStatusView;
 	sessionView: SessionView;
 	clearController: ClearController;
@@ -144,7 +144,7 @@ export function buildTuiCommandRegistryOptions(
 
 	return {
 		getRunScriptCompletions: (prefix) =>
-			deps.runCommandView.getRunScriptCompletions(prefix),
+			deps.getRunCommandView().getRunScriptCompletions(prefix),
 		createContext: (ctx) => deps.createCommandContext(ctx),
 		showThinkingSelector: (_context) => deps.getThinkingSelectorView().show(),
 		showModelSelector: (_context) => deps.getModelSelectorView().show(),
@@ -210,7 +210,7 @@ export function buildTuiCommandRegistryOptions(
 		handlePreview: (context) =>
 			deps.gitView.handlePreviewCommand(context.rawInput),
 		handleRun: (context) =>
-			deps.runCommandView.handleRunCommand(context.rawInput),
+			deps.getRunCommandView().handleRunCommand(context.rawInput),
 		handleOllama: (context) =>
 			deps.getOllamaView().handleOllamaCommand(context.rawInput),
 		handleDiagnostics: (context) =>
