@@ -1022,6 +1022,15 @@ impl AgentState {
         self.is_responding = false;
     }
 
+    /// Clear request state that should not survive an explicit disconnect.
+    pub fn clear_pending_request_state(&mut self) {
+        self.pending_approvals.clear();
+        self.pending_client_tools.clear();
+        self.pending_user_inputs.clear();
+        self.pending_tool_retries.clear();
+        self.tracked_tools.clear();
+    }
+
     /// Handle an outbound message and update optimistic local state.
     pub fn handle_sent_message(&mut self, msg: &ToAgentMessage) {
         match msg {
