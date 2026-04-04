@@ -874,7 +874,11 @@ export class ComposerSidebarProvider
 						result: getEventProp<unknown>("result"),
 						isError: getEventProp<boolean>("isError"),
 					});
-				} else if (event.type === "status" || event.type === "compaction") {
+				} else if (
+					event.type === "status" ||
+					event.type === "compaction" ||
+					event.type === "tool_batch_summary"
+				) {
 					const statusText = formatVscodeRuntimeStatus(event);
 					if (statusText) {
 						this._view?.webview.postMessage({

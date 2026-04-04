@@ -69,6 +69,16 @@ describe("contracts validators", () => {
 			message: { role: "assistant", content: "Hi" },
 		});
 		expect(eventResult.ok).toBe(true);
+		const summaryEventResult = validateSchema(ComposerAgentEventSchema, {
+			type: "tool_batch_summary",
+			summary: "Read README.md +1 more",
+			summaryLabels: ["Read README.md", "Wrote notes.txt"],
+			toolCallIds: ["tool_0", "tool_1"],
+			toolNames: ["read", "write"],
+			callsSucceeded: 2,
+			callsFailed: 0,
+		});
+		expect(summaryEventResult.ok).toBe(true);
 	});
 
 	it("rejects malformed headless commands with generated per-type schemas", () => {

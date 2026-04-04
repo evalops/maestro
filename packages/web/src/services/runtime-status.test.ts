@@ -64,4 +64,18 @@ describe("web runtime status", () => {
 			}),
 		).toBe("Compacted conversation automatically");
 	});
+
+	it("formats tool batch summaries without a status prefix", () => {
+		expect(
+			formatWebRuntimeStatus({
+				type: "tool_batch_summary",
+				summary: "Read README.md +1 more",
+				summaryLabels: ["Read README.md", "Wrote notes.txt"],
+				toolCallIds: ["tool_0", "tool_1"],
+				toolNames: ["read", "write"],
+				callsSucceeded: 2,
+				callsFailed: 0,
+			}),
+		).toBe("Read README.md +1 more");
+	});
 });

@@ -525,6 +525,15 @@ export type ComposerAgentEvent =
 			result: unknown;
 			isError: boolean;
 	  }
+	| {
+			type: "tool_batch_summary";
+			summary: string;
+			summaryLabels: string[];
+			toolCallIds: string[];
+			toolNames: string[];
+			callsSucceeded: number;
+			callsFailed: number;
+	  }
 	| { type: "action_approval_required"; request: ComposerActionApprovalRequest }
 	| {
 			type: "action_approval_resolved";

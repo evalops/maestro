@@ -2,7 +2,7 @@ import type { AgentEvent } from "./api-client.js";
 
 type RuntimeStatusEvent = Extract<
 	AgentEvent,
-	{ type: "status" | "compaction" }
+	{ type: "status" | "compaction" | "tool_batch_summary" }
 >;
 
 export function formatWebRuntimeStatus(
@@ -25,5 +25,7 @@ export function formatWebRuntimeStatus(
 			return event.auto
 				? "Compacted conversation automatically"
 				: "Compacted conversation";
+		case "tool_batch_summary":
+			return event.summary.trim() || null;
 	}
 }

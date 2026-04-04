@@ -109,6 +109,11 @@ export class AgentEventRouter {
 				this.options.requestRender();
 				return;
 
+			case "tool_batch_summary":
+				this.options.loaderView.showToolBatchSummary(event.summary);
+				this.options.requestRender();
+				return;
+
 			case "agent_end":
 				this.options.runController.handleAgentEnd(() => {
 					this.options.streamingView.forceStopStreaming();

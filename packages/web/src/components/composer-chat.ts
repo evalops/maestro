@@ -2831,7 +2831,8 @@ export class ComposerChat extends LitElement {
 					}
 
 					case "status":
-					case "compaction": {
+					case "compaction":
+					case "tool_batch_summary": {
 						const nextRuntimeStatus = formatWebRuntimeStatus(agentEvent);
 						if (nextRuntimeStatus) {
 							this.runtimeStatus = nextRuntimeStatus;

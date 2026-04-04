@@ -111,6 +111,10 @@ export class LoaderView {
 		this.stageManager.markToolComplete(toolCallId);
 	}
 
+	showToolBatchSummary(summary: string): void {
+		this.options.footer.setToast(summary, "info", 4500);
+	}
+
 	finish(): void {
 		this.stageManager.finish();
 		if (this.loader) {

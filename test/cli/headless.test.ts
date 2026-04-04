@@ -383,6 +383,29 @@ describe("headless protocol helpers", () => {
 		}
 	});
 
+	it("translates tool batch summaries into transient status messages", () => {
+		const translator = new HeadlessProtocolTranslator();
+		const messages = translator.handleAgentEvent({
+			type: "tool_batch_summary",
+			summary: "Read README.md +1 more",
+			summaryLabels: ["Read README.md", "Wrote notes.txt"],
+			toolCallIds: ["tool_0", "tool_1"],
+			toolNames: ["read", "write"],
+			callsSucceeded: 2,
+			callsFailed: 0,
+		});
+
+		expect(messages).toEqual([
+			{
+				type: "status",
+				message: "Read README.md +1 more",
+			},
+		]);
+		for (const message of messages) {
+			expect(Value.Check(HeadlessFromAgentMessageSchema, message)).toBe(true);
+		}
+	});
+
 	it("tracks non-approval tool names through tool_start", () => {
 		const state = createHeadlessRuntimeState();
 

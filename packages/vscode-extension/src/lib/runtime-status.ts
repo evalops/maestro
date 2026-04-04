@@ -3,7 +3,7 @@ import type * as Contracts from "@evalops/contracts";
 
 type RuntimeStatusEvent = Extract<
 	Contracts.ComposerAgentEvent,
-	{ type: "status" | "compaction" }
+	{ type: "status" | "compaction" | "tool_batch_summary" }
 >;
 
 export function formatVscodeRuntimeStatus(
@@ -26,5 +26,7 @@ export function formatVscodeRuntimeStatus(
 			return event.auto
 				? "Compacted conversation automatically"
 				: "Compacted conversation";
+		case "tool_batch_summary":
+			return event.summary.trim() || undefined;
 	}
 }

@@ -986,6 +986,18 @@ export class HeadlessProtocolTranslator {
 						success: !event.isError,
 					},
 				];
+			case "tool_batch_summary": {
+				const message = event.summary.trim();
+				if (!message) {
+					return [];
+				}
+				return [
+					{
+						type: "status",
+						message,
+					},
+				];
+			}
 			case "action_approval_required":
 				return [
 					{

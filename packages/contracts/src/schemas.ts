@@ -364,6 +364,15 @@ export const ComposerAgentEventSchema = Type.Union([
 		isError: Type.Boolean(),
 	}),
 	Type.Object({
+		type: Type.Literal("tool_batch_summary"),
+		summary: Type.String(),
+		summaryLabels: Type.Array(Type.String()),
+		toolCallIds: Type.Array(Type.String()),
+		toolNames: Type.Array(Type.String()),
+		callsSucceeded: Type.Number(),
+		callsFailed: Type.Number(),
+	}),
+	Type.Object({
 		type: Type.Literal("action_approval_required"),
 		request: ComposerActionApprovalRequestSchema,
 	}),

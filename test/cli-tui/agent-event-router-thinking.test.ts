@@ -77,6 +77,7 @@ describe("AgentEventRouter reasoning summary streaming", () => {
 				maybeTransitionToResponding: vi.fn(),
 				registerToolStage: vi.fn(),
 				markToolComplete: vi.fn(),
+				showToolBatchSummary: vi.fn(),
 			} as unknown,
 			runController: {
 				handleAgentStart: vi.fn(),
@@ -134,5 +135,63 @@ describe("AgentEventRouter reasoning summary streaming", () => {
 			thinkingBlocks?: string[];
 		};
 		expect(lastRenderable?.thinkingBlocks?.[0]).toBe("Reasoning summary");
+	});
+
+	it("shows transient tool batch summaries through the loader view", () => {
+		const showToolBatchSummary = vi.fn();
+		const requestRender = vi.fn();
+		const chatContainer = new MockContainer();
+		const streamingView = new StreamingView({
+			chatContainer,
+			toolOutputView: noopToolOutputView,
+			pendingTools: new Map(),
+			lowBandwidth: { enabled: false, batchIntervalMs: 0, scrollbackLimit: 10 },
+			getCleanMode: () => "off",
+		});
+
+		const router = new AgentEventRouter({
+			messageView: { addMessage: vi.fn() } as unknown as {
+				addMessage: (message: unknown) => void;
+			},
+			streamingView,
+			loaderView: {
+				beginTurn: vi.fn(),
+				completeTurn: vi.fn(),
+				setStreamingActive: vi.fn(),
+				maybeTransitionToResponding: vi.fn(),
+				registerToolStage: vi.fn(),
+				markToolComplete: vi.fn(),
+				showToolBatchSummary,
+			} as unknown,
+			runController: {
+				handleAgentStart: vi.fn(),
+				handleAgentEnd: (cb: () => void) => cb(),
+			} as unknown,
+			sessionContext: {
+				beginTurn: vi.fn(),
+				completeTurn: vi.fn(),
+				setLastUserMessage: vi.fn(),
+				setLastAssistantMessage: vi.fn(),
+				recordToolUsage: vi.fn(),
+			} as unknown,
+			extractText: () => "",
+			clearEditor: vi.fn(),
+			requestRender,
+			clearPendingTools: vi.fn(),
+			refreshPlanHint: vi.fn(),
+		});
+
+		router.handle({
+			type: "tool_batch_summary",
+			summary: "Read README.md +1 more",
+			summaryLabels: ["Read README.md", "Wrote notes.txt"],
+			toolCallIds: ["tool_0", "tool_1"],
+			toolNames: ["read", "write"],
+			callsSucceeded: 2,
+			callsFailed: 0,
+		});
+
+		expect(showToolBatchSummary).toHaveBeenCalledWith("Read README.md +1 more");
+		expect(requestRender).toHaveBeenCalled();
 	});
 });

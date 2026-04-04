@@ -544,6 +544,114 @@ describe("headless session runtime", () => {
 		}
 	});
 
+	it("surfaces tool batch summaries as status messages for plain subscriptions", async () => {
+		const fakeAgent = new FakeAgent();
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
+				context,
+				sessionManager,
+			});
+
+			const plain = runtime.createSubscription({
+				role: "controller",
+				explicit: true,
+				capabilities: { server_requests: ["approval"] },
+			});
+			const raw = runtime.createSubscription({
+				role: "viewer",
+				explicit: true,
+				capabilities: {
+					server_requests: ["approval"],
+					raw_agent_events: true,
+				},
+			});
+
+			const plainAttached = runtime.attachSubscription(plain.subscription_id);
+			const rawAttached = runtime.attachSubscription(raw.subscription_id);
+			expect(plainAttached).not.toBeNull();
+			expect(rawAttached).not.toBeNull();
+
+			while (plainAttached?.next()) {
+				// drain initial snapshots/connection info
+			}
+			while (rawAttached?.next()) {
+				// drain initial snapshots/connection info
+			}
+
+			fakeAgent.emit({
+				type: "tool_batch_summary",
+				summary: "Read README.md +1 more",
+				summaryLabels: ["Read README.md", "Wrote notes.txt"],
+				toolCallIds: ["tool_0", "tool_1"],
+				toolNames: ["read", "write"],
+				callsSucceeded: 2,
+				callsFailed: 0,
+			});
+
+			const plainMessages: HeadlessRuntimeStreamEnvelope[] = [];
+			const rawMessages: HeadlessRuntimeStreamEnvelope[] = [];
+			for (
+				let next = plainAttached?.next();
+				next;
+				next = plainAttached?.next()
+			) {
+				plainMessages.push(next);
+			}
+			for (let next = rawAttached?.next(); next; next = rawAttached?.next()) {
+				rawMessages.push(next);
+			}
+
+			expect(
+				plainMessages
+					.filter((entry) => entry.type === "message")
+					.map((entry) => entry.message),
+			).toEqual([
+				{
+					type: "status",
+					message: "Read README.md +1 more",
+				},
+			]);
+			expect(
+				rawMessages
+					.filter((entry) => entry.type === "message")
+					.map((entry) => entry.message.type),
+			).toEqual(["raw_agent_event", "status"]);
+			expect(
+				rawMessages.find(
+					(entry) =>
+						entry.type === "message" &&
+						entry.message.type === "raw_agent_event",
+				),
+			).toMatchObject({
+				type: "message",
+				message: {
+					type: "raw_agent_event",
+					event_type: "tool_batch_summary",
+					event: {
+						type: "tool_batch_summary",
+						summary: "Read README.md +1 more",
+					},
+				},
+			});
+
+			await runtime.dispose();
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	it("tracks negotiated connection metadata in runtime snapshots", async () => {
 		const fakeAgent = new FakeAgent();
 		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-runtime-"));

@@ -79,6 +79,40 @@ function sentenceCase(value: string): string {
 	return `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
 }
 
+function uniqueLabels(values: string[]): string[] {
+	return [...new Set(values.filter((value) => value.trim().length > 0))];
+}
+
+function buildBatchLabel(labels: string[], max = 64): string {
+	if (labels.length === 0) {
+		return "Completed tool batch";
+	}
+	if (labels.length === 1) {
+		return labels[0]!;
+	}
+
+	let summary = labels[0]!;
+	for (let index = 1; index < labels.length; index += 1) {
+		const nextLabel = labels[index]!;
+		const remaining = labels.length - index - 1;
+		const candidate = `${summary}, ${nextLabel}`;
+		if (remaining === 0 && candidate.length <= max) {
+			return candidate;
+		}
+		if (remaining > 0) {
+			const overflowLabel = `${candidate} +${remaining} more`;
+			if (overflowLabel.length <= max) {
+				summary = candidate;
+				continue;
+			}
+			return `${summary} +${labels.length - index} more`;
+		}
+		return `${summary} +1 more`;
+	}
+
+	return summary;
+}
+
 function summarizeKnownTool(
 	toolName: string,
 	args: Record<string, unknown>,
@@ -171,4 +205,31 @@ export function summarizeToolUse(
 		return sentenceCase(known);
 	}
 	return sentenceCase(`Ran ${truncateLabel(humanizeToolName(toolName), 40)}`);
+}
+
+export interface ToolBatchSummaryEntry {
+	toolName: string;
+	args?: Record<string, unknown>;
+	isError?: boolean;
+}
+
+export interface ToolBatchSummary {
+	summary: string;
+	summaryLabels: string[];
+	callsSucceeded: number;
+	callsFailed: number;
+}
+
+export function summarizeToolBatch(
+	entries: ToolBatchSummaryEntry[],
+): ToolBatchSummary {
+	const summaryLabels = uniqueLabels(
+		entries.map((entry) => summarizeToolUse(entry.toolName, entry.args ?? {})),
+	);
+	return {
+		summary: buildBatchLabel(summaryLabels),
+		summaryLabels,
+		callsSucceeded: entries.filter((entry) => !entry.isError).length,
+		callsFailed: entries.filter((entry) => entry.isError).length,
+	};
 }

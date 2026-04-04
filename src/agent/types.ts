@@ -899,6 +899,8 @@ export type AppMessage =
 export interface PendingToolCall {
 	/** Name of the tool being executed */
 	toolName: string;
+	/** Original arguments passed to the tool */
+	args?: Record<string, unknown>;
 }
 
 /**
@@ -992,6 +994,7 @@ export interface AgentState {
  * - `tool_execution_start` - Tool execution started
  * - `tool_execution_update` - Tool execution produced partial output
  * - `tool_execution_end` - Tool execution completed
+ * - `tool_batch_summary` - Tool batch completed with a transient summary label
  * - `client_tool_request` - Client-side tool invocation needed
  *
  * ## Approval Events
@@ -1093,6 +1096,22 @@ export type AgentEvent =
 			result: ToolResultMessage;
 			/** Whether the tool returned an error */
 			isError: boolean;
+	  }
+	| {
+			/** Summary emitted after the final tool in a batch completes */
+			type: "tool_batch_summary";
+			/** Stable one-line summary of what the completed tool batch did */
+			summary: string;
+			/** Underlying per-tool summary labels used to build the summary */
+			summaryLabels: string[];
+			/** Tool call identifiers included in this batch */
+			toolCallIds: string[];
+			/** Tool names included in this batch */
+			toolNames: string[];
+			/** Successful tool calls in the batch */
+			callsSucceeded: number;
+			/** Failed tool calls in the batch */
+			callsFailed: number;
 	  }
 	| {
 			/** Tool execution produced partial output */

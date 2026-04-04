@@ -82,7 +82,10 @@
 
 import { validate as uuidValidate } from "uuid";
 import { createLogger } from "../utils/logger.js";
-import { summarizeToolUse } from "../utils/tool-use-summary.js";
+import {
+	summarizeToolBatch,
+	summarizeToolUse,
+} from "../utils/tool-use-summary.js";
 import {
 	AgentContextManager,
 	type AgentContextSource,
@@ -355,6 +358,13 @@ export class Agent {
 	private runningPrompt?: Promise<void>;
 	private resolveRunningPrompt?: () => void;
 	private contextManager: AgentContextManager;
+	private activeToolBatchIds: Set<string> | null = null;
+	private completedToolBatch: Array<{
+		toolCallId: string;
+		toolName: string;
+		args: Record<string, unknown>;
+		isError: boolean;
+	}> = [];
 
 	/**
 	 * Creates a new Agent instance.
@@ -678,6 +688,8 @@ export class Agent {
 		this._state.isStreaming = false;
 		this._state.streamMessage = null;
 		this._state.pendingToolCalls.clear();
+		this.activeToolBatchIds = null;
+		this.completedToolBatch = [];
 		this._state.error = undefined;
 		this._partialAccepted = null;
 	}
@@ -917,6 +929,8 @@ export class Agent {
 		this._state.isStreaming = false;
 		this._state.streamMessage = null;
 		this._state.pendingToolCalls.clear();
+		this.activeToolBatchIds = null;
+		this.completedToolBatch = [];
 		this._state.error = undefined;
 		this.steeringQueue = [];
 		this.followUpQueue = [];
@@ -1061,22 +1075,14 @@ export class Agent {
 					) {
 						lastStopReason = event.message.stopReason;
 					}
+					this.primeToolBatch(incoming);
 					this.emit(event);
 				} else if (event.type === "tool_execution_start") {
-					this._state.pendingToolCalls.set(event.toolCallId, {
-						toolName: event.toolName,
-					});
-					this.emitStatus(summarizeToolUse(event.toolName, event.args), {
-						kind: "tool_execution_summary",
-						toolCallId: event.toolCallId,
-						toolName: event.toolName,
-					});
-					this.emit(event);
+					this.handleToolExecutionStart(event);
 				} else if (event.type === "tool_execution_update") {
 					this.emit(event);
 				} else if (event.type === "tool_execution_end") {
-					this._state.pendingToolCalls.delete(event.toolCallId);
-					this.emit(event);
+					this.handleToolExecutionEnd(event);
 				} else {
 					this.emit(event);
 				}
@@ -1243,20 +1249,12 @@ export class Agent {
 					) {
 						lastStopReason = event.message.stopReason;
 					}
+					this.primeToolBatch(incoming);
 					this.emit(event);
 				} else if (event.type === "tool_execution_start") {
-					this._state.pendingToolCalls.set(event.toolCallId, {
-						toolName: event.toolName,
-					});
-					this.emitStatus(summarizeToolUse(event.toolName, event.args), {
-						kind: "tool_execution_summary",
-						toolCallId: event.toolCallId,
-						toolName: event.toolName,
-					});
-					this.emit(event);
+					this.handleToolExecutionStart(event);
 				} else if (event.type === "tool_execution_end") {
-					this._state.pendingToolCalls.delete(event.toolCallId);
-					this.emit(event);
+					this.handleToolExecutionEnd(event);
 				} else {
 					this.emit(event);
 				}
@@ -1298,6 +1296,80 @@ export class Agent {
 		}
 	}
 
+	private handleToolExecutionStart(
+		event: Extract<AgentEvent, { type: "tool_execution_start" }>,
+	): void {
+		this._state.pendingToolCalls.set(event.toolCallId, {
+			toolName: event.toolName,
+			args: event.args,
+		});
+		this.emitStatus(summarizeToolUse(event.toolName, event.args), {
+			kind: "tool_execution_summary",
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+		});
+		this.emit(event);
+	}
+
+	private handleToolExecutionEnd(
+		event: Extract<AgentEvent, { type: "tool_execution_end" }>,
+	): void {
+		const pending = this._state.pendingToolCalls.get(event.toolCallId);
+		this._state.pendingToolCalls.delete(event.toolCallId);
+		this.emit(event);
+		if (!pending) {
+			return;
+		}
+		this.completedToolBatch.push({
+			toolCallId: event.toolCallId,
+			toolName: event.toolName,
+			args: pending.args ?? {},
+			isError: event.isError,
+		});
+		if (this.activeToolBatchIds?.delete(event.toolCallId)) {
+			if (this.activeToolBatchIds.size > 0) {
+				return;
+			}
+			this.activeToolBatchIds = null;
+			this.emitToolBatchSummary();
+		}
+	}
+
+	private primeToolBatch(message: AppMessage): void {
+		if (message.role !== "assistant" || message.stopReason !== "toolUse") {
+			return;
+		}
+		const toolCallIds = message.content.flatMap((block) =>
+			block.type === "toolCall" ? [block.id] : [],
+		);
+		if (toolCallIds.length === 0) {
+			this.activeToolBatchIds = null;
+			this.completedToolBatch = [];
+			return;
+		}
+		this.activeToolBatchIds = new Set(toolCallIds);
+		this.completedToolBatch = [];
+	}
+
+	private emitToolBatchSummary(): void {
+		if (this.completedToolBatch.length === 0) {
+			return;
+		}
+		const batch = this.completedToolBatch;
+		this.completedToolBatch = [];
+		const { summary, summaryLabels, callsSucceeded, callsFailed } =
+			summarizeToolBatch(batch);
+		this.emit({
+			type: "tool_batch_summary",
+			summary,
+			summaryLabels,
+			toolCallIds: batch.map((entry) => entry.toolCallId),
+			toolNames: batch.map((entry) => entry.toolName),
+			callsSucceeded,
+			callsFailed,
+		});
+	}
+
 	private resolvePendingToolCalls(reason: string): void {
 		for (const [toolCallId, info] of this._state.pendingToolCalls.entries()) {
 			const abortedResult: ToolResultMessage = {
@@ -1314,7 +1386,7 @@ export class Agent {
 				timestamp: Date.now(),
 			};
 			this._state.messages = [...this._state.messages, abortedResult];
-			this.emit({
+			this.handleToolExecutionEnd({
 				type: "tool_execution_end",
 				toolCallId,
 				toolName: info.toolName,
