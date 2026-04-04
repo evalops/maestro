@@ -352,10 +352,10 @@ export class TuiRenderer {
 	private themeSelectorView?: ThemeSelectorView;
 	private modelSelectorView?: ModelSelectorView;
 	private reportSelectorView?: ReportSelectorView;
-	private treeSelectorView: TreeSelectorView;
+	private treeSelectorView?: TreeSelectorView;
 	private oauthFlowController!: OAuthFlowController;
 	private queueModeSelectorView: QueueModeSelectorView;
-	private userMessageSelectorView: UserMessageSelectorView;
+	private userMessageSelectorView?: UserMessageSelectorView;
 	private notificationView: NotificationView;
 	private backgroundTasksController: BackgroundTasksController;
 	private mcpEventsController: McpEventsController;
@@ -1016,7 +1016,7 @@ export class TuiRenderer {
 			callbacks: {
 				isAgentRunning: () => this.isAgentRunning,
 				getMessages: () => this.agent.state.messages ?? [],
-				showSelector: () => this.userMessageSelectorView.show(),
+				showSelector: () => this.getUserMessageSelectorView().show(),
 				createBranchedSession: (count) =>
 					this.sessionManager.createBranchedSession(this.agent.state, count),
 				setSessionFile: (path) => this.sessionManager.setSessionFile(path),
@@ -1079,49 +1079,6 @@ export class TuiRenderer {
 			modalManager: this.modalManager,
 			notificationView: this.notificationView,
 			onModeSelected: (kind, mode) => this.queueController.setMode(kind, mode),
-		});
-		this.userMessageSelectorView = new UserMessageSelectorView({
-			agent: this.agent,
-			sessionManager: this.sessionManager,
-			editor: this.editor,
-			modalManager: this.modalManager,
-			ui: this.ui,
-			notificationView: this.notificationView,
-			onBranchCreated: () => {
-				// Complete UI cleanup after branching (same as resetConversation)
-				this.sessionContext.resetArtifacts();
-				this.toolOutputView.clearTrackedComponents();
-				this.chatContainer.clear();
-				this.scrollContainer.clearHistory();
-				this.startupContainer.clear();
-				this.planView.syncHintWithStore();
-				this.footerHintsController.planHint = null;
-				this.footer.updateState(this.agent.state);
-				this.refreshFooterHint();
-				this.renderInitialMessages(this.agent.state);
-				this.ui.requestRender();
-			},
-		});
-		this.treeSelectorView = new TreeSelectorView({
-			agent: this.agent,
-			sessionManager: this.sessionManager,
-			editor: this.editor,
-			modalManager: this.modalManager,
-			ui: this.ui,
-			notificationView: this.notificationView,
-			onNavigated: () => {
-				this.sessionContext.resetArtifacts();
-				this.toolOutputView.clearTrackedComponents();
-				this.chatContainer.clear();
-				this.scrollContainer.clearHistory();
-				this.startupContainer.clear();
-				this.planView.syncHintWithStore();
-				this.footerHintsController.planHint = null;
-				this.footer.updateState(this.agent.state);
-				this.refreshFooterHint();
-				this.renderInitialMessages(this.agent.state);
-				this.ui.requestRender();
-			},
 		});
 		this.queuePanelController = new QueuePanelController({
 			queueController: this.queueController,
@@ -1229,7 +1186,7 @@ export class TuiRenderer {
 				handleStatsCommand: (context) => this.handleStatsCommand(context),
 				handleNewChatCommand: (context) =>
 					this.sessionStateController.handleNewChatCommand(context),
-				handleTreeCommand: (_context) => this.treeSelectorView.show(),
+				handleTreeCommand: (_context) => this.getTreeSelectorView().show(),
 				handleMcpCommand: (context) =>
 					this.delegatingHandlers.handleMcpCommand(context),
 				handleComposerCommand: (context) =>
@@ -1679,6 +1636,57 @@ export class TuiRenderer {
 				this.slashHintController?.toggleFavoriteCommand(name),
 		});
 		return this.commandPaletteView;
+	}
+
+	private getUserMessageSelectorView(): UserMessageSelectorView {
+		this.userMessageSelectorView ??= new UserMessageSelectorView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			editor: this.editor,
+			modalManager: this.modalManager,
+			ui: this.ui,
+			notificationView: this.notificationView,
+			onBranchCreated: () => {
+				// Complete UI cleanup after branching (same as resetConversation)
+				this.sessionContext.resetArtifacts();
+				this.toolOutputView.clearTrackedComponents();
+				this.chatContainer.clear();
+				this.scrollContainer.clearHistory();
+				this.startupContainer.clear();
+				this.planView.syncHintWithStore();
+				this.footerHintsController.planHint = null;
+				this.footer.updateState(this.agent.state);
+				this.refreshFooterHint();
+				this.renderInitialMessages(this.agent.state);
+				this.ui.requestRender();
+			},
+		});
+		return this.userMessageSelectorView;
+	}
+
+	private getTreeSelectorView(): TreeSelectorView {
+		this.treeSelectorView ??= new TreeSelectorView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			editor: this.editor,
+			modalManager: this.modalManager,
+			ui: this.ui,
+			notificationView: this.notificationView,
+			onNavigated: () => {
+				this.sessionContext.resetArtifacts();
+				this.toolOutputView.clearTrackedComponents();
+				this.chatContainer.clear();
+				this.scrollContainer.clearHistory();
+				this.startupContainer.clear();
+				this.planView.syncHintWithStore();
+				this.footerHintsController.planHint = null;
+				this.footer.updateState(this.agent.state);
+				this.refreshFooterHint();
+				this.renderInitialMessages(this.agent.state);
+				this.ui.requestRender();
+			},
+		});
+		return this.treeSelectorView;
 	}
 
 	async handleEvent(event: AgentEvent, state: AgentState): Promise<void> {
@@ -2349,7 +2357,7 @@ export class TuiRenderer {
 					this.sessionView.handleSessionsCommand(rawInput),
 				handleBranchCommand: (ctx) =>
 					this.branchController.handleBranchCommand(ctx),
-				showTree: () => this.treeSelectorView.show(),
+				showTree: () => this.getTreeSelectorView().show(),
 				handleQueueCommand: this.queuePanelController
 					? (ctx) => this.queuePanelController!.handleQueueCommand(ctx)
 					: null,
