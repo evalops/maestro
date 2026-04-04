@@ -126,21 +126,39 @@ describe("MessageQueue", () => {
 
 	it("handles async operations sequentially", async () => {
 		const events: string[] = [];
-		// Use objects to hold resolvers so TypeScript can track mutations
 		const resolvers: {
 			first: (() => void) | null;
 			second: (() => void) | null;
 		} = { first: null, second: null };
+		const started: {
+			first: Promise<void>;
+			second: Promise<void>;
+		} = {
+			first: Promise.resolve(),
+			second: Promise.resolve(),
+		};
+		const startedResolvers: {
+			first: (() => void) | null;
+			second: (() => void) | null;
+		} = { first: null, second: null };
+		started.first = new Promise<void>((resolve) => {
+			startedResolvers.first = resolve;
+		});
+		started.second = new Promise<void>((resolve) => {
+			startedResolvers.second = resolve;
+		});
 
 		const queue = new MessageQueue({
 			handler: {
 				respond: async (text) => {
 					events.push(`start:${text}`);
 					if (text === "first") {
+						startedResolvers.first?.();
 						await new Promise<void>((r) => {
 							resolvers.first = r;
 						});
 					} else if (text === "second") {
+						startedResolvers.second?.();
 						await new Promise<void>((r) => {
 							resolvers.second = r;
 						});
@@ -155,16 +173,13 @@ describe("MessageQueue", () => {
 		queue.enqueueMessage("second", "main", "test");
 		queue.enqueueMessage("third", "main", "test");
 
-		// Give time for first to start
-		await new Promise((r) => setTimeout(r, 10));
+		await started.first;
 		expect(events).toEqual(["start:first"]);
 
-		// Resolve first, second should start
 		resolvers.first?.();
-		await new Promise((r) => setTimeout(r, 10));
+		await started.second;
 		expect(events).toEqual(["start:first", "end:first", "start:second"]);
 
-		// Resolve second, third should run to completion
 		resolvers.second?.();
 		await queue.flush();
 		expect(events).toEqual([
