@@ -2281,6 +2281,10 @@ export class TuiRenderer {
 		this.provideFailureHints(errorMessage);
 	}
 
+	showInfo(message: string): void {
+		this.notificationView.showInfo(message);
+	}
+
 	public refreshFooterHint(): void {
 		this.footerHintsController.refresh();
 	}

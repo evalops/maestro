@@ -1,4 +1,5 @@
 import type { Agent } from "../agent/agent.js";
+import { recoverFromMaxOutput } from "../agent/max-output-recovery.js";
 import type { AppMessage } from "../agent/types.js";
 import { type PromptPayload, PromptQueue } from "../cli-tui/prompt-queue.js";
 import type { TuiRenderer } from "../cli-tui/tui-renderer.js";
@@ -45,6 +46,20 @@ export class AgentRuntimeController {
 				}
 
 				await this.options.agent.prompt(text, attachments);
+				await recoverFromMaxOutput(this.options.agent, {
+					onContinue: (attempt, maxContinuations) => {
+						this.renderer?.showInfo(
+							attempt === 1
+								? "Response hit the output limit. Continuing automatically..."
+								: `Response still hit the output limit. Continuing automatically (${attempt}/${maxContinuations})...`,
+						);
+					},
+					onExhausted: (maxContinuations) => {
+						this.renderer?.showInfo(
+							`Stopped after ${maxContinuations} automatic continuations because the response kept hitting the output limit.`,
+						);
+					},
+				});
 			},
 			(error) => {
 				if (this.options.onError) {

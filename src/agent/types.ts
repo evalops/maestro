@@ -1011,6 +1011,8 @@ export type AgentEvent =
 	| {
 			/** Agent execution started */
 			type: "agent_start";
+			/** Whether this execution is an automatic continuation of the current turn */
+			continuation?: boolean;
 	  }
 	| {
 			/** Agent execution completed */
@@ -1021,7 +1023,7 @@ export type AgentEvent =
 			aborted?: boolean;
 			/** If aborted with partial acceptance, contains the saved partial message */
 			partialAccepted?: AppMessage;
-			/** Final stop reason from the LLM - "length" indicates context overflow */
+			/** Final stop reason from the LLM - "length" indicates output hit the max token limit */
 			stopReason?: StopReason;
 	  }
 	| {

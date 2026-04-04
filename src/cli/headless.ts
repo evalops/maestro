@@ -12,6 +12,7 @@ import {
 } from "@evalops/contracts";
 import type { ActionApprovalService } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
+import { recoverFromMaxOutput } from "../agent/max-output-recovery.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
 import { readWorkspaceFile } from "../headless/utility-file-read.js";
@@ -436,6 +437,7 @@ export async function runHeadlessMode(
 					} else {
 						await agent.prompt(msg.content);
 					}
+					await recoverFromMaxOutput(agent);
 					break;
 
 				case "interrupt":

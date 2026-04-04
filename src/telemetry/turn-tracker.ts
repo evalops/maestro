@@ -109,7 +109,7 @@ export class TurnTracker {
 	private handleEvent(event: AgentEvent): void {
 		switch (event.type) {
 			case "agent_start":
-				this.startTurn();
+				this.startTurn(event.continuation === true);
 				break;
 
 			case "tool_execution_start":
@@ -190,8 +190,10 @@ export class TurnTracker {
 		}
 	}
 
-	private startTurn(): void {
-		this.turnNumber++;
+	private startTurn(isContinuation = false): void {
+		if (!isContinuation || this.turnNumber === 0) {
+			this.turnNumber++;
+		}
 		this.accumulatedUsage = null;
 
 		this.currentTurn = new TurnCollector(
@@ -248,16 +250,6 @@ export class TurnTracker {
 		if ("aborted" in event && event.aborted) {
 			status = "aborted";
 			abortReason = "user";
-		}
-
-		if (
-			"stopReason" in event &&
-			event.stopReason === "length" &&
-			!("aborted" in event && event.aborted)
-		) {
-			// Context overflow shows as "length" stop reason
-			status = "aborted";
-			abortReason = "context_overflow";
 		}
 
 		// Check for error in agent state

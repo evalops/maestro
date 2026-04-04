@@ -1,22 +1,16 @@
 /**
- * Event Subscriptions Setup - Turn tracking, auto-compaction, persistence, and notifications.
+ * Event Subscriptions Setup - Turn tracking, persistence, and notifications.
  *
  * Extracts event subscription wiring from main.ts Phase 14.5:
- * turn tracker creation + MCP context updates, auto-compaction handler
- * (delegates to performCompaction()), message persistence + session
- * initialization, and notification hook subscription.
+ * turn tracker creation + MCP context updates, message persistence +
+ * session initialization, and notification hook subscription.
  *
  * @module bootstrap/event-subscriptions-setup
  */
 
 import chalk from "chalk";
-import { performCompaction } from "../agent/compaction.js";
 import type { Agent } from "../agent/index.js";
-import type { AppMessage, AssistantMessage } from "../agent/types.js";
-import {
-	createRenderableMessage,
-	renderMessageToPlainText,
-} from "../conversation/render-model.js";
+import type { AppMessage } from "../agent/types.js";
 import {
 	createNotificationFromAgentEvent,
 	isNotificationEnabled,
@@ -44,8 +38,8 @@ export interface EventSubscriptionsResult {
 }
 
 /**
- * Wire up all agent event subscriptions: turn tracking, auto-compaction,
- * message persistence, session initialization, and notification hooks.
+ * Wire up all agent event subscriptions: turn tracking, message persistence,
+ * session initialization, and notification hooks.
  */
 export function setupEventSubscriptions(params: {
 	agent: Agent;
@@ -177,7 +171,6 @@ export function setupEventSubscriptions(params: {
 			}
 			return;
 		}
-
 		// Save messages on completion
 		if (event.type === "message_end") {
 			sessionManager.saveMessage(event.message);

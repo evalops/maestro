@@ -1152,7 +1152,7 @@ export class Agent {
 		const abortController = new AbortController();
 		this.abortController = abortController;
 
-		this.emit({ type: "agent_start" });
+		this.emit({ type: "agent_start", continuation: true });
 
 		let aborted = false;
 		let lastStopReason: import("./types.js").StopReason | undefined;
