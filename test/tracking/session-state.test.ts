@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createSessionState,
 	getContextWindowForModel,
@@ -17,6 +17,10 @@ import {
 } from "../../src/tracking/session-state.js";
 
 describe("session-state", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	describe("createSessionState", () => {
 		it("creates state with defaults", () => {
 			const state = createSessionState({
@@ -251,18 +255,18 @@ describe("session-state", () => {
 	});
 
 	describe("getSessionDuration", () => {
-		it("returns duration since start", async () => {
+		it("returns duration since start", () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 			const state = createSessionState({
 				sessionId: "test",
 				cwd: "/test",
 			});
 
-			// Wait a tiny bit - use slightly longer wait to avoid CI timing flakiness
-			await new Promise((resolve) => setTimeout(resolve, 15));
+			vi.advanceTimersByTime(15);
 
 			const duration = getSessionDuration(state);
-			// Relax assertion slightly to account for CI timing variations
-			expect(duration).toBeGreaterThanOrEqual(5);
+			expect(duration).toBe(15);
 		});
 	});
 

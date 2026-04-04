@@ -1,9 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LspClientManager } from "../../src/lsp/manager.js";
 import type { RootResolver } from "../../src/lsp/types.js";
 
 describe("LspClientManager root resolver", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("should await async root resolver", async () => {
+		vi.useFakeTimers();
 		const manager = new LspClientManager({ rootResolverTimeoutMs: 1000 });
 		const resolver = vi.fn<RootResolver>(async (file: string) => {
 			await new Promise((resolve) => setTimeout(resolve, 10));
@@ -14,24 +19,29 @@ describe("LspClientManager root resolver", () => {
 
 		const file = "/project/src/file.ts";
 
-		const resolved = await manager.resolveRootSafe(resolver, file, "test");
+		const resolvedPromise = manager.resolveRootSafe(resolver, file, "test");
+		await vi.advanceTimersByTimeAsync(10);
+		const resolved = await resolvedPromise;
 
 		expect(resolved).toBe("/tmp/root");
 		expect(resolver).toHaveBeenCalledWith(file);
 	});
 
 	it("should handle resolver timeout", async () => {
+		vi.useFakeTimers();
 		const manager = new LspClientManager({ rootResolverTimeoutMs: 5 });
 		const resolver = vi.fn<RootResolver>(
 			async (file: string) =>
 				new Promise((resolve) => setTimeout(() => resolve("/tmp/slow"), 20)),
 		);
 
-		const result = await manager.resolveRootSafe(
+		const resultPromise = manager.resolveRootSafe(
 			resolver,
 			"/project/slow.ts",
 			"timeout-test",
 		);
+		await vi.advanceTimersByTimeAsync(20);
+		const result = await resultPromise;
 
 		expect(result).toBeUndefined();
 		expect(resolver).toHaveBeenCalled();
