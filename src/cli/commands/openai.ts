@@ -16,6 +16,8 @@ import {
 	saveOpenAIOAuthCredential,
 } from "../../providers/openai-auth.js";
 
+const CALLBACK_ORIGIN = "http://127.0.0.1:1455";
+
 export async function handleOpenAICommand(
 	subcommand?: string,
 	_params: string[] = [],
@@ -53,7 +55,7 @@ async function handleLogin(): Promise<void> {
 
 	const server = createServer(
 		async (req: IncomingMessage, res: ServerResponse) => {
-			const reqUrl = new URL(req.url ?? "", "http://localhost:1455");
+			const reqUrl = new URL(req.url ?? "", CALLBACK_ORIGIN);
 
 			if (reqUrl.pathname === "/auth/callback") {
 				const code = reqUrl.searchParams.get("code");
