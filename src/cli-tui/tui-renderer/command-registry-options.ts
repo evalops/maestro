@@ -70,7 +70,6 @@ export interface TuiCommandRegistryDeps {
 	backgroundTasksController: BackgroundTasksController;
 	compactionController: CompactionController;
 	customCommandsController: CustomCommandsController;
-	queuePanelController?: QueuePanelController;
 	branchController: BranchController;
 	oauthFlowController: OAuthFlowController;
 	approvalService: ActionApprovalService;
@@ -97,6 +96,7 @@ export interface TuiCommandRegistryDeps {
 	getThemeSelectorView: () => ThemeSelectorView;
 	getLspView: () => LspView;
 	getFileSearchView: () => FileSearchView;
+	getQueuePanelController: () => QueuePanelController | null;
 	getMessages: () => AppMessage[];
 	createCommandContext: (ctx: {
 		command: SlashCommand;
@@ -234,8 +234,9 @@ export function buildTuiCommandRegistryOptions(
 		handleCommands: (context) =>
 			deps.customCommandsController.handleCommandsCommand(context),
 		handleQueue: (context) => {
-			if (deps.queuePanelController) {
-				deps.queuePanelController.handleQueueCommand(context);
+			const queuePanelController = deps.getQueuePanelController();
+			if (queuePanelController) {
+				queuePanelController.handleQueueCommand(context);
 				return;
 			}
 			context.showInfo("Prompt queue is not available.");

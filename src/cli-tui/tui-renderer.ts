@@ -354,7 +354,7 @@ export class TuiRenderer {
 	private reportSelectorView?: ReportSelectorView;
 	private treeSelectorView?: TreeSelectorView;
 	private oauthFlowController!: OAuthFlowController;
-	private queueModeSelectorView: QueueModeSelectorView;
+	private queueModeSelectorView?: QueueModeSelectorView;
 	private userMessageSelectorView?: UserMessageSelectorView;
 	private notificationView: NotificationView;
 	private backgroundTasksController: BackgroundTasksController;
@@ -1074,20 +1074,6 @@ export class TuiRenderer {
 			},
 		});
 
-		this.queueModeSelectorView = new QueueModeSelectorView({
-			ui: this.ui,
-			modalManager: this.modalManager,
-			notificationView: this.notificationView,
-			onModeSelected: (kind, mode) => this.queueController.setMode(kind, mode),
-		});
-		this.queuePanelController = new QueuePanelController({
-			queueController: this.queueController,
-			modalManager: this.modalManager,
-			ui: this.ui,
-			notificationView: this.notificationView,
-			queueModeSelectorView: this.queueModeSelectorView,
-			chatContainer: this.chatContainer,
-		});
 		this.conversationCompactor = new ConversationCompactor({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1141,7 +1127,6 @@ export class TuiRenderer {
 				backgroundTasksController: this.backgroundTasksController,
 				compactionController: this.compactionController,
 				customCommandsController: this.customCommandsController,
-				queuePanelController: this.queuePanelController,
 				branchController: this.branchController,
 				oauthFlowController: this.oauthFlowController,
 				approvalService: this.approvalService,
@@ -1168,6 +1153,7 @@ export class TuiRenderer {
 				getThemeSelectorView: () => this.getThemeSelectorView(),
 				getLspView: () => this.getLspView(),
 				getFileSearchView: () => this.getFileSearchView(),
+				getQueuePanelController: () => this.getQueuePanelController(),
 				getMessages: () => this.agent.state.messages,
 				createCommandContext: (ctx) => this.createCommandContext(ctx),
 				handleReviewCommand: (context) => this.handleReviewCommand(context),
@@ -1687,6 +1673,31 @@ export class TuiRenderer {
 			},
 		});
 		return this.treeSelectorView;
+	}
+
+	private getQueueModeSelectorView(): QueueModeSelectorView {
+		this.queueModeSelectorView ??= new QueueModeSelectorView({
+			ui: this.ui,
+			modalManager: this.modalManager,
+			notificationView: this.notificationView,
+			onModeSelected: (kind, mode) => this.queueController.setMode(kind, mode),
+		});
+		return this.queueModeSelectorView;
+	}
+
+	private getQueuePanelController(): QueuePanelController | null {
+		if (!this.queueController.hasQueue()) {
+			return null;
+		}
+		this.queuePanelController ??= new QueuePanelController({
+			queueController: this.queueController,
+			modalManager: this.modalManager,
+			ui: this.ui,
+			notificationView: this.notificationView,
+			queueModeSelectorView: this.getQueueModeSelectorView(),
+			chatContainer: this.chatContainer,
+		});
+		return this.queuePanelController;
 	}
 
 	async handleEvent(event: AgentEvent, state: AgentState): Promise<void> {
@@ -2358,9 +2369,14 @@ export class TuiRenderer {
 				handleBranchCommand: (ctx) =>
 					this.branchController.handleBranchCommand(ctx),
 				showTree: () => this.getTreeSelectorView().show(),
-				handleQueueCommand: this.queuePanelController
-					? (ctx) => this.queuePanelController!.handleQueueCommand(ctx)
-					: null,
+				handleQueueCommand: (ctx) => {
+					const queuePanelController = this.getQueuePanelController();
+					if (queuePanelController) {
+						queuePanelController.handleQueueCommand(ctx);
+						return;
+					}
+					ctx.showInfo("Prompt queue is not available.");
+				},
 				handleExportCommand: (rawInput) =>
 					this.getImportExportView().handleExportCommand(rawInput),
 				handleShareCommand: (rawInput) =>

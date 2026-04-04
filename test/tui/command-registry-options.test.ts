@@ -36,6 +36,7 @@ function createDeps() {
 		handleImportCommand: vi.fn(),
 		handleShareCommand: vi.fn(),
 	};
+	const queuePanelController = { handleQueueCommand: vi.fn() };
 	const reportSelectorView = { show: vi.fn() };
 	const thinkingSelectorView = { show: vi.fn() };
 
@@ -101,6 +102,7 @@ function createDeps() {
 		getThemeSelectorView: vi.fn(() => ({ show: vi.fn() })),
 		getLspView: vi.fn(() => ({ handleLspCommand: vi.fn() })),
 		getFileSearchView: vi.fn(() => fileSearchView),
+		getQueuePanelController: vi.fn(() => queuePanelController),
 		getMessages: vi.fn(() => []),
 		createCommandContext: vi.fn(
 			(input: {
@@ -165,6 +167,7 @@ function createDeps() {
 		feedbackView,
 		fileSearchView,
 		importExportView,
+		queuePanelController,
 		reportSelectorView,
 		thinkingSelectorView,
 	};
@@ -183,6 +186,7 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(deps.getReportSelectorView).not.toHaveBeenCalled();
 		expect(deps.getThinkingSelectorView).not.toHaveBeenCalled();
 		expect(deps.getFileSearchView).not.toHaveBeenCalled();
+		expect(deps.getQueuePanelController).not.toHaveBeenCalled();
 	});
 
 	it("resolves lazy views only when the matching command runs", async () => {
@@ -194,6 +198,7 @@ describe("buildTuiCommandRegistryOptions", () => {
 			feedbackView,
 			fileSearchView,
 			importExportView,
+			queuePanelController,
 			reportSelectorView,
 			thinkingSelectorView,
 		} = createDeps();
@@ -214,6 +219,10 @@ describe("buildTuiCommandRegistryOptions", () => {
 		options.handleMention(createCommandContext("/mention src", "src"));
 		expect(deps.getFileSearchView).toHaveBeenCalledTimes(1);
 		expect(fileSearchView.handleMentionCommand).toHaveBeenCalledTimes(1);
+
+		options.handleQueue(createCommandContext("/queue"));
+		expect(deps.getQueuePanelController).toHaveBeenCalledTimes(1);
+		expect(queuePanelController.handleQueueCommand).toHaveBeenCalledTimes(1);
 
 		await options.handleImportConfig(createCommandContext("/import", "config"));
 		expect(deps.getImportExportView).toHaveBeenCalledTimes(1);
