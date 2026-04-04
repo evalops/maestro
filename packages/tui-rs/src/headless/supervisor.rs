@@ -398,6 +398,10 @@ impl AgentSupervisor {
                 status: HealthStatus::Reconnecting,
             });
         }
+        if let Some(existing) = self.transport.take() {
+            let _ = existing.shutdown();
+        }
+        self.last_response = None;
 
         let max_attempts = self.config.max_reconnect_attempts;
         let mut delay = self.config.reconnect_delay;
@@ -3312,6 +3316,53 @@ done
             connection_requests[1].get("takeControl").is_none(),
             "clean disconnects should not force controller takeover on the next manual reconnect"
         );
+
+        supervisor.disconnect();
+    }
+
+    #[tokio::test]
+    async fn manual_remote_reconnect_shuts_down_existing_transport() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 0,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let (addr, _posted_bodies, _request_headers, _request_bodies) =
+            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
+
+        let mut supervisor = SupervisorBuilder::new()
+            .remote_base_url(format!("http://{addr}"))
+            .max_reconnect_attempts(1)
+            .reconnect_delay(Duration::from_millis(5))
+            .build();
+
+        supervisor.connect().await.expect("connect");
+        let cancel_token = supervisor
+            .transport
+            .as_ref()
+            .and_then(|transport| match transport {
+                ManagedTransport::Remote(transport) => Some(transport.cancel_token()),
+                ManagedTransport::Local(_) => None,
+            })
+            .expect("remote transport");
+
+        supervisor.reconnect().await.expect("manual reconnect");
+
+        tokio::time::timeout(Duration::from_secs(1), cancel_token.cancelled())
+            .await
+            .expect("manual reconnect should shut down the previous transport");
+        assert!(supervisor.is_connected());
 
         supervisor.disconnect();
     }
