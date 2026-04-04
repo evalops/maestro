@@ -138,8 +138,27 @@ export class ApprovalModal implements Component {
 	private describeTool(width: number): string[] {
 		const entries: string[] = [];
 		entries.push(
-			`${chalk.hex("#94a3b8")("Name:")} ${chalk.hex("#60a5fa").bold(this.options.request.toolName)}`,
+			`${chalk.hex("#94a3b8")("Name:")} ${chalk
+				.hex("#60a5fa")
+				.bold(
+					this.options.request.summaryLabel ||
+						this.options.request.displayName ||
+						this.options.request.toolName,
+				)}`,
 		);
+		if (
+			this.options.request.displayName &&
+			this.options.request.displayName !== this.options.request.toolName
+		) {
+			entries.push(
+				`${chalk.hex("#94a3b8")("Tool:")} ${chalk.hex("#e2e8f0")(this.options.request.toolName)}`,
+			);
+		}
+		if (this.options.request.actionDescription) {
+			entries.push(
+				`${chalk.hex("#94a3b8")("Summary:")} ${chalk.hex("#e2e8f0")(this.options.request.actionDescription)}`,
+			);
+		}
 		const action =
 			this.options.request.args &&
 			typeof this.options.request.args === "object" &&

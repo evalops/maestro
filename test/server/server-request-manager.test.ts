@@ -155,6 +155,9 @@ describe("ServerRequestManager", () => {
 			request: {
 				id: "approval_events",
 				toolName: "bash",
+				displayName: "Bash",
+				summaryLabel: "Ran git push --force",
+				actionDescription: "Running git push --force",
 				args: { command: "git push --force" },
 				reason: "Force push requires approval",
 			},
@@ -172,6 +175,9 @@ describe("ServerRequestManager", () => {
 				id: "approval_events",
 				kind: "approval",
 				sessionId: "sess_events",
+				displayName: "Bash",
+				summaryLabel: "Ran git push --force",
+				actionDescription: "Running git push --force",
 			}),
 		});
 		expect(listener).toHaveBeenNthCalledWith(2, {

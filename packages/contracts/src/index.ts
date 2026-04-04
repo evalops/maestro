@@ -468,6 +468,9 @@ export type ComposerAssistantMessageEvent =
 export interface ComposerActionApprovalRequest {
 	id: string;
 	toolName: string;
+	displayName?: string;
+	summaryLabel?: string;
+	actionDescription?: string;
 	args: unknown;
 	reason: string;
 }

@@ -12,6 +12,9 @@ describe("ApprovalModal", () => {
 			request: {
 				id: "req-1",
 				toolName: "background_tasks",
+				displayName: "Background Tasks",
+				summaryLabel: "Started background task",
+				actionDescription: "Starting background task",
 				reason:
 					"Background task shell mode requires manual approval because it enables pipes, redirects, and globbing across arbitrary commands.",
 				args: {
@@ -107,6 +110,31 @@ describe("ApprovalModal", () => {
 		expect(
 			lines.some((line) => line.includes("(no literal command provided)")),
 		).toBe(true);
+	});
+
+	it("shows summary-first tool labels and action descriptions", () => {
+		const modal = new ApprovalModal({
+			request: {
+				id: "req-summary",
+				toolName: "bash",
+				displayName: "Bash",
+				summaryLabel: "Ran rm -rf dist",
+				actionDescription: "Running rm -rf dist",
+				reason: "Dangerous command",
+				args: { command: "rm -rf dist" },
+			},
+			queueSize: 0,
+			onApprove: noop,
+			onDeny: noop,
+			onCancel: noop,
+		});
+		const text = modal
+			.render(70)
+			.map((line) => sanitizeAnsi(line))
+			.join("\n");
+		expect(text).toContain("Ran rm -rf dist");
+		expect(text).toContain("Running rm -rf dist");
+		expect(text).toContain("Tool:");
 	});
 
 	it("handles very narrow widths without overflowing", () => {

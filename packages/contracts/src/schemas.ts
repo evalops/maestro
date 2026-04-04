@@ -291,6 +291,9 @@ export const ComposerAssistantMessageEventSchema = Type.Union([
 export const ComposerActionApprovalRequestSchema = Type.Object({
 	id: Type.String(),
 	toolName: Type.String(),
+	displayName: Type.Optional(Type.String()),
+	summaryLabel: Type.Optional(Type.String()),
+	actionDescription: Type.Optional(Type.String()),
 	args: Type.Unknown(),
 	reason: Type.String(),
 });

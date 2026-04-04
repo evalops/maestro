@@ -2131,7 +2131,9 @@ export class TuiRenderer {
 	private handleApprovalRequired(request: ActionApprovalRequest): void {
 		this.approvalController?.enqueue(request);
 		const component = this.pendingTools.get(request.id);
-		component?.setPendingStatus(request.reason ?? "Awaiting approval");
+		component?.setPendingStatus(
+			request.actionDescription ?? request.reason ?? "Awaiting approval",
+		);
 		this.ui.requestRender();
 	}
 

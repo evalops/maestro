@@ -194,6 +194,20 @@ export class ComposerApproval extends LitElement {
 			margin-bottom: 0.5rem;
 		}
 
+		.tool-meta {
+			margin-top: -0.15rem;
+			margin-bottom: 0.55rem;
+			font-size: 0.7rem;
+			color: #8b949e;
+		}
+
+		.action-description {
+			margin-top: 0.65rem;
+			font-size: 0.73rem;
+			line-height: 1.5;
+			color: #c9d1d9;
+		}
+
 		.args-grid {
 			display: grid;
 			grid-template-columns: auto 1fr;
@@ -365,6 +379,25 @@ export class ComposerApproval extends LitElement {
 		return details;
 	}
 
+	private getToolTitle(): string {
+		return (
+			this.request?.summaryLabel ||
+			this.request?.displayName ||
+			this.request?.toolName ||
+			"Tool"
+		);
+	}
+
+	private getToolMeta(): string | null {
+		if (!this.request) return null;
+		const rawToolName = this.request.toolName?.trim();
+		const title = this.getToolTitle().trim();
+		if (rawToolName && title && rawToolName !== title) {
+			return rawToolName;
+		}
+		return null;
+	}
+
 	private getArgEntries(): Array<[string, unknown]> {
 		const args = this.getObjectArgs();
 		if (args) {
@@ -480,7 +513,12 @@ export class ComposerApproval extends LitElement {
 						<div class="section">
 							<div class="section-label">Tool</div>
 							<div class="tool-info">
-								<div class="tool-name">${this.request.toolName}</div>
+								<div class="tool-name">${this.getToolTitle()}</div>
+								${
+									this.getToolMeta()
+										? html`<div class="tool-meta">${this.getToolMeta()}</div>`
+										: ""
+								}
 								${
 									toolDetails.length > 0
 										? html`<div class="tool-summary">
@@ -492,6 +530,13 @@ export class ComposerApproval extends LitElement {
 													</span>
 												`,
 											)}
+										</div>`
+										: ""
+								}
+								${
+									this.request.actionDescription
+										? html`<div class="action-description">
+											${this.request.actionDescription}
 										</div>`
 										: ""
 								}

@@ -918,6 +918,9 @@ export class ComposerSidebarProvider
 					const request = getEventProp<{
 						id: string;
 						toolName: string;
+						displayName?: string;
+						summaryLabel?: string;
+						actionDescription?: string;
 						args: Record<string, unknown>;
 						reason: string;
 					}>("request");
@@ -926,6 +929,9 @@ export class ComposerSidebarProvider
 							type: "approval_required",
 							requestId: request.id,
 							toolName: request.toolName,
+							displayName: request.displayName,
+							summaryLabel: request.summaryLabel,
+							actionDescription: request.actionDescription,
 							args: request.args,
 							reason: request.reason,
 						});

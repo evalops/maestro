@@ -30,6 +30,12 @@ export interface ActionApprovalRequest {
 	id: string;
 	/** Name of the tool requesting approval */
 	toolName: string;
+	/** Optional human-facing label for the tool */
+	displayName?: string;
+	/** Optional compact summary of the requested action */
+	summaryLabel?: string;
+	/** Optional present-tense action description for approval UI */
+	actionDescription?: string;
 	/** Arguments the tool will be called with */
 	args: unknown;
 	/** Human-readable reason why approval is required */

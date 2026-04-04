@@ -12,6 +12,7 @@ const toolExecutionMock = vi.hoisted(() => {
 		args: Record<string, unknown>;
 		updateArgs: ReturnType<typeof vi.fn>;
 		updatePartialArgs: ReturnType<typeof vi.fn>;
+		updatePresentation: ReturnType<typeof vi.fn>;
 		updateResult: ReturnType<typeof vi.fn>;
 		updatePartialResult: ReturnType<typeof vi.fn>;
 	}> = [];
@@ -19,6 +20,7 @@ const toolExecutionMock = vi.hoisted(() => {
 	class ToolExecutionComponent {
 		public updateArgs = vi.fn();
 		public updatePartialArgs = vi.fn();
+		public updatePresentation = vi.fn();
 		public updateResult = vi.fn();
 		public updatePartialResult = vi.fn();
 

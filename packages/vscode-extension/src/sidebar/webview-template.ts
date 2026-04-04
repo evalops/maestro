@@ -758,6 +758,14 @@ export function getWebviewScript(): string {
 		function showApprovalRequest(msg) {
 			if (!currentAssistantMessage) createAssistantMessage();
 			const content = currentAssistantMessage.querySelector('.message-content');
+			const toolTitle = msg.summaryLabel || msg.displayName || msg.toolName;
+			const toolMeta =
+				msg.displayName && msg.displayName !== msg.toolName
+					? '<div class="approval-reason" style="margin-bottom: 8px">' + msg.toolName + '</div>'
+					: '';
+			const actionDescription = msg.actionDescription
+				? '<div class="approval-reason">' + msg.actionDescription + '</div>'
+				: '';
 
 			const div = document.createElement('div');
 			div.id = 'approval-' + msg.requestId;
@@ -765,9 +773,11 @@ export function getWebviewScript(): string {
 			div.innerHTML = \`
 				<div class="approval-header">
 					<span>Approval Required</span>
-					<span class="tool-name">\${msg.toolName}</span>
+					<span class="tool-name">\${toolTitle}</span>
 				</div>
+				\${toolMeta}
 				<div class="tool-code" style="margin-bottom: 8px; font-size: 11px">\${JSON.stringify(msg.args, null, 2)}</div>
+				\${actionDescription}
 				<div class="approval-reason">\${msg.reason || 'Requires confirmation'}</div>
 				<div class="approval-actions">
 					<button class="btn-approve" onclick="submitApproval('\${msg.requestId}', 'approved')">Approve</button>

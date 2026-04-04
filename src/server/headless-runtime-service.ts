@@ -1954,6 +1954,15 @@ export class HeadlessSessionRuntime {
 				request_type: event.request.kind,
 				call_id: event.request.callId,
 				tool: event.request.toolName,
+				...(event.request.displayName
+					? { display_name: event.request.displayName }
+					: {}),
+				...(event.request.summaryLabel
+					? { summary_label: event.request.summaryLabel }
+					: {}),
+				...(event.request.actionDescription
+					? { action_description: event.request.actionDescription }
+					: {}),
 				args: event.request.args,
 				reason: event.request.reason,
 			});

@@ -88,6 +88,19 @@ describe("contracts validators", () => {
 			args: { path: "README.md" },
 		});
 		expect(toolStartEvent.ok).toBe(true);
+		const approvalEvent = validateSchema(ComposerAgentEventSchema, {
+			type: "action_approval_required",
+			request: {
+				id: "approval_1",
+				toolName: "bash",
+				displayName: "Bash",
+				summaryLabel: "Ran rm -rf dist",
+				actionDescription: "Running rm -rf dist",
+				args: { command: "rm -rf dist" },
+				reason: "Dangerous command",
+			},
+		});
+		expect(approvalEvent.ok).toBe(true);
 	});
 
 	it("rejects malformed headless commands with generated per-type schemas", () => {

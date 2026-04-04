@@ -17,6 +17,11 @@ import type { WorkflowStateTracker } from "../../safety/workflow-state.js";
 import { trackToolBlocked } from "../../telemetry/security-events.js";
 import type { Clock } from "../../utils/clock.js";
 import { createLogger } from "../../utils/logger.js";
+import {
+	describeToolActivity,
+	describeToolDisplayName,
+	summarizeToolUse,
+} from "../../utils/tool-use-summary.js";
 import type { ActionApprovalService } from "../action-approval.js";
 import { validateToolArguments } from "../providers/validation.js";
 import type {
@@ -513,6 +518,21 @@ export async function* evaluateToolSafety(
 			const request = {
 				id: toolCall.id,
 				toolName: toolCall.name,
+				displayName: describeToolDisplayName(
+					toolCall.name,
+					sanitizedApprovalArgs,
+					toolDef,
+				),
+				summaryLabel: summarizeToolUse(
+					toolCall.name,
+					sanitizedApprovalArgs,
+					toolDef,
+				),
+				actionDescription: describeToolActivity(
+					toolCall.name,
+					sanitizedApprovalArgs,
+					toolDef,
+				),
 				args: sanitizedApprovalArgs,
 				reason: verdict.reason ?? "Approval required",
 			};

@@ -34,6 +34,9 @@ export interface PendingServerRequestSnapshot {
 	sessionId?: string;
 	callId: string;
 	toolName: string;
+	displayName?: string;
+	summaryLabel?: string;
+	actionDescription?: string;
 	args: unknown;
 	reason: string;
 	timestamp: number;
@@ -144,6 +147,9 @@ export class ServerRequestManager {
 			sessionId: options.sessionId,
 			callId: request.id,
 			toolName: request.toolName,
+			displayName: request.displayName,
+			summaryLabel: request.summaryLabel,
+			actionDescription: request.actionDescription,
 			args: request.args,
 			reason: request.reason,
 			timestamp: Date.now(),
@@ -469,6 +475,9 @@ export class ServerRequestManager {
 			sessionId: entry.sessionId,
 			callId: entry.callId,
 			toolName: entry.toolName,
+			displayName: entry.displayName,
+			summaryLabel: entry.summaryLabel,
+			actionDescription: entry.actionDescription,
 			args: entry.args,
 			reason: entry.reason,
 			timestamp: entry.timestamp,

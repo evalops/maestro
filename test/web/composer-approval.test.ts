@@ -89,6 +89,39 @@ describe("composer-approval", () => {
 		expect(preview?.textContent).toContain("line eight");
 	});
 
+	it("prefers summary labels and shows the action description", async () => {
+		const el = document.createElement("composer-approval") as HTMLElement & {
+			request: {
+				id: string;
+				toolName: string;
+				displayName?: string;
+				summaryLabel?: string;
+				actionDescription?: string;
+				args: Record<string, unknown>;
+				reason: string;
+			};
+			updateComplete?: Promise<void>;
+		};
+
+		el.request = {
+			id: "approval-summary-1",
+			toolName: "bash",
+			displayName: "Bash",
+			summaryLabel: "Ran rm -rf dist",
+			actionDescription: "Running rm -rf dist",
+			args: { command: "rm -rf dist" },
+			reason: "Dangerous command",
+		};
+
+		document.body.appendChild(el);
+		await el.updateComplete;
+
+		const text = (el.shadowRoot?.textContent ?? "").replace(/\s+/g, " ");
+		expect(text).toContain("Ran rm -rf dist");
+		expect(text).toContain("Running rm -rf dist");
+		expect(text).toContain("bash");
+	});
+
 	it("denies on Escape", async () => {
 		const el = document.createElement("composer-approval") as HTMLElement & {
 			request: {

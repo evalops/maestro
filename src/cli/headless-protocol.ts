@@ -301,6 +301,9 @@ export interface HeadlessServerRequestMessage {
 	request_type: HeadlessServerRequestType;
 	call_id: string;
 	tool: string;
+	display_name?: string;
+	summary_label?: string;
+	action_description?: string;
 	args: unknown;
 	reason: string;
 }
@@ -507,6 +510,9 @@ export interface HeadlessPendingApprovalState {
 	call_id: string;
 	request_id?: string;
 	tool: string;
+	display_name?: string;
+	summary_label?: string;
+	action_description?: string;
 	args: unknown;
 }
 
@@ -670,6 +676,9 @@ function toPendingRequestState(params: {
 	call_id: string;
 	request_id: string;
 	tool: string;
+	display_name?: string;
+	summary_label?: string;
+	action_description?: string;
 	args: unknown;
 }): HeadlessPendingApprovalState {
 	return {
@@ -678,6 +687,11 @@ function toPendingRequestState(params: {
 			? { request_id: params.request_id }
 			: {}),
 		tool: params.tool,
+		...(params.display_name ? { display_name: params.display_name } : {}),
+		...(params.summary_label ? { summary_label: params.summary_label } : {}),
+		...(params.action_description
+			? { action_description: params.action_description }
+			: {}),
 		args: params.args,
 	};
 }
@@ -1019,6 +1033,15 @@ export class HeadlessProtocolTranslator {
 						request_type: "approval",
 						call_id: event.request.id,
 						tool: event.request.toolName,
+						...(event.request.displayName
+							? { display_name: event.request.displayName }
+							: {}),
+						...(event.request.summaryLabel
+							? { summary_label: event.request.summaryLabel }
+							: {}),
+						...(event.request.actionDescription
+							? { action_description: event.request.actionDescription }
+							: {}),
 						args: event.request.args,
 						reason: event.request.reason,
 					},
@@ -1615,6 +1638,9 @@ export function applyIncomingHeadlessMessage(
 						call_id: msg.call_id,
 						request_id: msg.request_id,
 						tool: msg.tool,
+						display_name: msg.display_name,
+						summary_label: msg.summary_label,
+						action_description: msg.action_description,
 						args: msg.args,
 					}),
 				];
