@@ -601,6 +601,9 @@ function parseStructuredHookOutput(
 					result.permissionRequestResult = specific.decision;
 					result.permissionBehavior =
 						specific.decision.behavior === "allow" ? "allow" : "deny";
+					if (json.reason) {
+						result.hookPermissionDecisionReason = json.reason;
+					}
 					if (
 						specific.decision.behavior === "allow" &&
 						specific.decision.updatedInput

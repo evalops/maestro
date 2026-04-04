@@ -78,6 +78,15 @@ export interface ToolSafetyContext {
 			blockReason?: string;
 			updatedInput?: Record<string, unknown>;
 		}>;
+		runPermissionRequestHooks?: (
+			toolCall: ToolCall,
+			reason: string,
+			signal?: AbortSignal,
+		) => Promise<{
+			decision?: "allow" | "deny";
+			decisionReason?: string;
+			updatedInput?: Record<string, unknown>;
+		}>;
 	};
 	firewall: ActionFirewall;
 	// Mutable rate-limit state
@@ -511,7 +520,33 @@ export async function* evaluateToolSafety(
 
 	// 6. Approval flow
 	if (verdict.action === "require_approval") {
-		if (approvalService) {
+		let permissionHookMadeDecision = false;
+		if (hookService?.runPermissionRequestHooks) {
+			const permissionHookResult = await hookService.runPermissionRequestHooks(
+				effectiveToolCall,
+				verdict.reason ?? approvalReason ?? "Approval required",
+				signal,
+			);
+			if (permissionHookResult.updatedInput) {
+				effectiveToolCall = {
+					...effectiveToolCall,
+					arguments: permissionHookResult.updatedInput,
+				};
+			}
+			if (permissionHookResult.decision === "allow") {
+				permissionHookMadeDecision = true;
+				approvalAllowed = true;
+				approvalReason = permissionHookResult.decisionReason;
+			} else if (permissionHookResult.decision === "deny") {
+				permissionHookMadeDecision = true;
+				approvalAllowed = false;
+				approvalReason =
+					permissionHookResult.decisionReason ??
+					"Permission denied by PermissionRequest hook";
+			}
+		}
+
+		if (approvalService && !permissionHookMadeDecision) {
 			const sanitizedApprovalArgs = safetyMiddleware.sanitizeForLogging(
 				effectiveToolCall.arguments as Record<string, unknown>,
 			);
@@ -560,9 +595,9 @@ export async function* evaluateToolSafety(
 	if (!approvalAllowed) {
 		await logToolExecutionAudit(
 			auditLogger,
-			toolCall.name,
+			effectiveToolCall.name,
 			safetyMiddleware.sanitizeForLogging(
-				toolCall.arguments as Record<string, unknown>,
+				effectiveToolCall.arguments as Record<string, unknown>,
 			),
 			"denied",
 			0,

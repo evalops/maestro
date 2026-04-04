@@ -377,6 +377,25 @@ describe("Hook Types", () => {
 			expect(input.hook_event_name).toBe("PermissionRequest");
 			expect(input.reason).toBe("Destructive operation");
 		});
+
+		it("supports optional tool presentation fields", () => {
+			const input: PermissionRequestHookInput = {
+				hook_event_name: "PermissionRequest",
+				cwd: "/home/user",
+				timestamp: new Date().toISOString(),
+				tool_name: "Bash",
+				tool_call_id: "call_123",
+				tool_input: { command: "rm -rf /tmp/test" },
+				tool_display_name: "Shell command",
+				tool_summary: "Ran rm -rf /tmp/test",
+				tool_action_description: "Running rm -rf /tmp/test",
+				reason: "Destructive operation",
+			};
+
+			expect(input.tool_display_name).toBe("Shell command");
+			expect(input.tool_summary).toBe("Ran rm -rf /tmp/test");
+			expect(input.tool_action_description).toBe("Running rm -rf /tmp/test");
+		});
 	});
 
 	describe("PostCompactHookInput", () => {

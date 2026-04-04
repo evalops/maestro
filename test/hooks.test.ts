@@ -8,6 +8,7 @@ import type { AgentTool } from "../src/agent/types.js";
 import {
 	type HookConfiguration,
 	type HookJsonOutput,
+	type PermissionRequestHookInput,
 	type PostToolUseHookInput,
 	type PreToolUseHookInput,
 	clearHookConfigCache,
@@ -411,6 +412,7 @@ describe("Hook System", () => {
 			expect(service.runPreToolUseHooks).toBeDefined();
 			expect(service.runPostToolUseHooks).toBeDefined();
 			expect(service.runPostToolUseFailureHooks).toBeDefined();
+			expect(service.runPermissionRequestHooks).toBeDefined();
 		});
 
 		it("should run PreToolUse hooks and aggregate results", async () => {
@@ -574,6 +576,69 @@ describe("Hook System", () => {
 				tool_display_name: "Bash",
 				tool_summary: "Ran npm test",
 				tool_action_description: "Running npm test",
+			});
+		});
+
+		it("should run PermissionRequest hooks and return decisions", async () => {
+			const capturedInputs: PermissionRequestHookInput[] = [];
+			const readTool: AgentTool = {
+				name: "read",
+				label: "Read",
+				description: "Read a file",
+				parameters: Type.Object({
+					path: Type.String(),
+				}),
+				getDisplayName: () => "Read package.json",
+				getToolUseSummary: () => "Read package.json",
+				getActivityDescription: () => "Reading package.json",
+				execute: async () => ({ content: [] }),
+			};
+
+			registerHook("PermissionRequest", {
+				type: "callback",
+				callback: async (input) => {
+					capturedInputs.push(input as PermissionRequestHookInput);
+					return {
+						reason: "Allow read hooks",
+						hookSpecificOutput: {
+							hookEventName: "PermissionRequest",
+							decision: {
+								behavior: "allow",
+								updatedInput: { path: "/tmp/package.json", verified: true },
+							},
+						},
+					};
+				},
+			});
+
+			const service = createToolHookService({
+				cwd: "/tmp/test",
+				resolveTool: (toolName) => (toolName === "read" ? readTool : undefined),
+			});
+
+			const result = await service.runPermissionRequestHooks(
+				{
+					type: "toolCall",
+					id: "test-1",
+					name: "read",
+					arguments: { path: "/tmp/package.json" },
+				},
+				"Approval required",
+			);
+
+			expect(result.decision).toBe("allow");
+			expect(result.decisionReason).toBe("Allow read hooks");
+			expect(result.updatedInput).toEqual({
+				path: "/tmp/package.json",
+				verified: true,
+			});
+			expect(capturedInputs).toHaveLength(1);
+			expect(capturedInputs[0]).toMatchObject({
+				tool_name: "read",
+				reason: "Approval required",
+				tool_display_name: "Read package.json",
+				tool_summary: "Read package.json",
+				tool_action_description: "Reading package.json",
 			});
 		});
 	});

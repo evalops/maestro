@@ -17,6 +17,7 @@ import type {
 	EvalAssertion,
 	EvalGateHookInput,
 	HookExecutionResult,
+	PermissionRequestHookInput,
 	PostToolUseFailureHookInput,
 	PostToolUseHookInput,
 	PreToolUseHookInput,
@@ -111,6 +112,13 @@ export interface HookEvaluation {
 	rationale?: string;
 }
 
+export interface PermissionRequestHookResult {
+	decision?: "allow" | "deny";
+	decisionReason?: string;
+	updatedInput?: Record<string, unknown>;
+	hookResults: HookExecutionResult[];
+}
+
 /**
  * Service for integrating hooks with tool execution.
  */
@@ -149,6 +157,15 @@ export interface ToolHookService {
 		error: string,
 		signal?: AbortSignal,
 	): Promise<PostToolUseHookResult>;
+
+	/**
+	 * Run PermissionRequest hooks before falling back to user approval.
+	 */
+	runPermissionRequestHooks(
+		toolCall: ToolCall,
+		reason: string,
+		signal?: AbortSignal,
+	): Promise<PermissionRequestHookResult>;
 }
 
 /**
@@ -491,6 +508,61 @@ export function createToolHookService(
 				systemMessage,
 				preventContinuation,
 				stopReason,
+				hookResults: results,
+			};
+		},
+
+		async runPermissionRequestHooks(
+			toolCall: ToolCall,
+			reason: string,
+			signal?: AbortSignal,
+		): Promise<PermissionRequestHookResult> {
+			const presentation = buildToolPresentationFields(toolCall, context);
+			const input: PermissionRequestHookInput = {
+				hook_event_name: "PermissionRequest",
+				cwd: context.cwd,
+				session_id: context.sessionId,
+				timestamp: new Date().toISOString(),
+				tool_name: toolCall.name,
+				tool_call_id: toolCall.id,
+				tool_input: toolCall.arguments,
+				reason,
+				...presentation,
+			};
+
+			const results = await executeHooks(input, context.cwd, signal);
+
+			let decision: PermissionRequestHookResult["decision"];
+			let decisionReason: string | undefined;
+			let updatedInput: Record<string, unknown> | undefined;
+
+			for (const hookResult of results) {
+				if (
+					hookResult.permissionBehavior === "allow" ||
+					hookResult.permissionBehavior === "deny"
+				) {
+					decision = hookResult.permissionBehavior;
+					decisionReason =
+						hookResult.hookPermissionDecisionReason ??
+						hookResult.blockingError?.blockingError;
+					if (decision === "allow" && hookResult.updatedInput) {
+						updatedInput = hookResult.updatedInput;
+					}
+					break;
+				}
+			}
+
+			logger.debug("PermissionRequest hooks completed", {
+				toolName: toolCall.name,
+				decision,
+				hasUpdatedInput: Boolean(updatedInput),
+				resultCount: results.length,
+			});
+
+			return {
+				decision,
+				decisionReason,
+				updatedInput,
 				hookResults: results,
 			};
 		},

@@ -299,7 +299,9 @@ export interface PostCompactHookInput extends HookInputBase {
 /**
  * Input for PermissionRequest hooks - called when permission is required.
  */
-export interface PermissionRequestHookInput extends HookInputBase {
+export interface PermissionRequestHookInput
+	extends HookInputBase,
+		ToolPresentationHookFields {
 	hook_event_name: "PermissionRequest";
 	/** Tool requesting permission */
 	tool_name: string;
