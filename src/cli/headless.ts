@@ -359,8 +359,9 @@ export async function runHeadlessMode(
 					break;
 				}
 
-				case "hello":
+				case "hello": {
 					applyOutgoingHeadlessMessage(state, msg);
+					const effectiveRole = state.connection_role ?? "controller";
 					toolRetryService?.setMode(
 						msg.capabilities?.server_requests?.includes("tool_retry")
 							? "prompt"
@@ -374,9 +375,9 @@ export async function runHeadlessMode(
 							client_info: msg.client_info,
 							capabilities: msg.capabilities,
 							opt_out_notifications: msg.opt_out_notifications,
-							role: msg.role ?? "controller",
+							role: effectiveRole,
 							controller_connection_id:
-								(msg.role ?? "controller") === "controller"
+								effectiveRole === "controller"
 									? LOCAL_HEADLESS_CONNECTION_ID
 									: null,
 							lease_expires_at: null,
@@ -390,10 +391,10 @@ export async function runHeadlessMode(
 							client_info: msg.client_info,
 							capabilities: msg.capabilities,
 							opt_out_notifications: msg.opt_out_notifications,
-							role: msg.role ?? "controller",
+							role: effectiveRole,
 							connection_count: 1,
 							controller_connection_id:
-								(msg.role ?? "controller") === "controller"
+								effectiveRole === "controller"
 									? LOCAL_HEADLESS_CONNECTION_ID
 									: null,
 							lease_expires_at: null,
@@ -410,6 +411,7 @@ export async function runHeadlessMode(
 						});
 					}
 					break;
+				}
 
 				case "prompt":
 					applyOutgoingHeadlessMessage(state, msg);

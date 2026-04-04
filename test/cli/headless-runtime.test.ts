@@ -1327,6 +1327,101 @@ describe("runHeadlessMode", () => {
 		).toHaveLength(1);
 	});
 
+	it("echoes the effective viewer role when a follow-up hello omits role", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn(),
+				prompt: vi.fn(),
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+		);
+
+		await vi.waitFor(() => {
+			expect(onLine).toBeTypeOf("function");
+			expect(onClose).toBeTypeOf("function");
+		});
+
+		await onLine?.(
+			JSON.stringify({
+				type: "hello",
+				protocol_version: "1.0",
+				client_info: { name: "maestro-test", version: "0.1.0" },
+				capabilities: { server_requests: ["approval"] },
+				role: "viewer",
+			}),
+		);
+		await onLine?.(
+			JSON.stringify({
+				type: "hello",
+				protocol_version: "1.1",
+				client_info: { name: "maestro-test", version: "0.2.0" },
+				capabilities: { server_requests: ["approval"] },
+			}),
+		);
+		onClose?.();
+		await runPromise;
+
+		const messages = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const helloOkMessages = messages.filter(
+			(message) => message.type === "hello_ok",
+		);
+		const connectionInfoMessages = messages.filter(
+			(message) => message.type === "connection_info",
+		);
+
+		expect(helloOkMessages).toHaveLength(2);
+		expect(helloOkMessages.at(-1)).toMatchObject({
+			type: "hello_ok",
+			role: "viewer",
+			controller_connection_id: null,
+			client_protocol_version: "1.1",
+			client_info: { name: "maestro-test", version: "0.2.0" },
+		});
+		expect(connectionInfoMessages).toHaveLength(2);
+		expect(connectionInfoMessages.at(-1)).toMatchObject({
+			type: "connection_info",
+			role: "viewer",
+			controller_connection_id: null,
+			client_protocol_version: "1.1",
+			client_info: { name: "maestro-test", version: "0.2.0" },
+		});
+	});
+
 	it("rejects viewer prompt requests before sending them to the local agent", async () => {
 		let onLine: LineHandler | undefined;
 		let onClose: CloseHandler | undefined;
