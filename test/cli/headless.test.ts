@@ -524,6 +524,45 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
+	it("ignores hello renegotiation that changes the existing connection role", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyOutgoingHeadlessMessage(state, {
+			type: "hello",
+			protocol_version: "2026-03-30",
+			client_info: { name: "maestro-tui-rs", version: "0.1.0" },
+			capabilities: { server_requests: ["approval"] },
+			role: "viewer",
+		});
+		applyOutgoingHeadlessMessage(state, {
+			type: "hello",
+			protocol_version: "2026-03-31",
+			client_info: { name: "maestro-tui-rs", version: "0.2.0" },
+			capabilities: { server_requests: ["approval", "user_input"] },
+			role: "controller",
+		});
+
+		expect(state.client_protocol_version).toBe("2026-03-30");
+		expect(state.client_info).toEqual({
+			name: "maestro-tui-rs",
+			version: "0.1.0",
+		});
+		expect(state.capabilities).toEqual({
+			server_requests: ["approval"],
+		});
+		expect(state.connection_role).toBe("viewer");
+		expect(state.controller_connection_id).toBeNull();
+		expect(state.connections).toEqual([
+			expect.objectContaining({
+				role: "viewer",
+				client_protocol_version: "2026-03-30",
+				client_info: { name: "maestro-tui-rs", version: "0.1.0" },
+				capabilities: { server_requests: ["approval"] },
+				controller_lease_granted: false,
+			}),
+		]);
+	});
+
 	it("accepts raw_agent_event messages without mutating derived runtime state", () => {
 		const state = createHeadlessRuntimeState();
 		const message = {

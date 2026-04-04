@@ -34,6 +34,7 @@ import {
 	buildHeadlessUsage,
 	classifyHeadlessError,
 	createHeadlessRuntimeState,
+	headlessHelloChangesConnectionRole,
 	headlessViewerCanSend,
 	headlessViewerHasDisallowedCapabilities,
 	loadPromptAttachments,
@@ -314,6 +315,16 @@ export async function runHeadlessMode(
 		}
 
 		try {
+			if (headlessHelloChangesConnectionRole(msg, state.connection_role)) {
+				send({
+					type: "error",
+					message: "headless connection role cannot change after hello",
+					fatal: false,
+					error_type: "protocol",
+				});
+				return;
+			}
+
 			if (headlessViewerHasDisallowedCapabilities(msg, state.connection_role)) {
 				send({
 					type: "error",
