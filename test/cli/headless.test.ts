@@ -488,6 +488,42 @@ describe("headless protocol helpers", () => {
 		expect(state.connections).toEqual([]);
 	});
 
+	it("ignores viewer hello renegotiation that adds disallowed user_input requests", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyOutgoingHeadlessMessage(state, {
+			type: "hello",
+			protocol_version: "2026-03-30",
+			client_info: { name: "maestro-tui-rs", version: "0.1.0" },
+			capabilities: { server_requests: ["approval"] },
+			role: "viewer",
+		});
+		applyOutgoingHeadlessMessage(state, {
+			type: "hello",
+			protocol_version: "2026-03-31",
+			client_info: { name: "maestro-tui-rs", version: "0.2.0" },
+			capabilities: { server_requests: ["user_input"] },
+		});
+
+		expect(state.client_protocol_version).toBe("2026-03-30");
+		expect(state.client_info).toEqual({
+			name: "maestro-tui-rs",
+			version: "0.1.0",
+		});
+		expect(state.capabilities).toEqual({
+			server_requests: ["approval"],
+		});
+		expect(state.connection_role).toBe("viewer");
+		expect(state.connections).toEqual([
+			expect.objectContaining({
+				role: "viewer",
+				client_protocol_version: "2026-03-30",
+				client_info: { name: "maestro-tui-rs", version: "0.1.0" },
+				capabilities: { server_requests: ["approval"] },
+			}),
+		]);
+	});
+
 	it("accepts raw_agent_event messages without mutating derived runtime state", () => {
 		const state = createHeadlessRuntimeState();
 		const message = {

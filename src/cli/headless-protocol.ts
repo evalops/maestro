@@ -627,10 +627,13 @@ export function headlessViewerCanSend(msg: HeadlessToAgentMessage): boolean {
 
 export function headlessViewerHasDisallowedCapabilities(
 	msg: HeadlessToAgentMessage,
+	currentRole?: HeadlessConnectionRole,
 ): boolean {
+	const effectiveRole =
+		msg.type === "hello" ? (msg.role ?? currentRole) : currentRole;
 	return (
 		msg.type === "hello" &&
-		msg.role === "viewer" &&
+		effectiveRole === "viewer" &&
 		msg.capabilities?.server_requests?.includes("user_input") === true
 	);
 }
@@ -1242,7 +1245,7 @@ export function applyOutgoingHeadlessMessage(
 	state: HeadlessRuntimeState,
 	msg: HeadlessToAgentMessage,
 ): void {
-	if (headlessViewerHasDisallowedCapabilities(msg)) {
+	if (headlessViewerHasDisallowedCapabilities(msg, state.connection_role)) {
 		return;
 	}
 
