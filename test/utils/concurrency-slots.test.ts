@@ -5,6 +5,14 @@ import {
 } from "../../src/utils/concurrency-manager.js";
 import { ConcurrencySlots } from "../../src/utils/concurrency-slots.js";
 
+function createDeferred<T = void>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	const promise = new Promise<T>((res) => {
+		resolve = res;
+	});
+	return { promise, resolve };
+}
+
 describe("ConcurrencyManager", () => {
 	describe("constructor and basic state", () => {
 		it("creates with specified max slots", () => {
@@ -103,7 +111,6 @@ describe("ConcurrencyManager", () => {
 			});
 
 			// Should be queued, not acquired
-			await new Promise((r) => setTimeout(r, 10));
 			expect(secondAcquired).toBe(false);
 			expect(slots.getSnapshot().queued).toBe(1);
 
@@ -172,20 +179,36 @@ describe("ConcurrencyManager", () => {
 			const slots = new ConcurrencyManager(2);
 			let maxConcurrent = 0;
 			let current = 0;
+			const blockers = Array.from({ length: 4 }, () => createDeferred());
+			const pendingBlockers = [...blockers];
 
 			const work = async () => {
 				current += 1;
 				maxConcurrent = Math.max(maxConcurrent, current);
-				await new Promise((r) => setTimeout(r, 10));
+				const blocker = pendingBlockers.shift();
+				if (!blocker) {
+					throw new Error("missing blocker");
+				}
+				await blocker.promise;
 				current -= 1;
 			};
 
-			await Promise.all([
+			const workPromises = [
 				slots.withSlot(work),
 				slots.withSlot(work),
 				slots.withSlot(work),
 				slots.withSlot(work),
-			]);
+			];
+
+			await Promise.resolve();
+			expect(maxConcurrent).toBe(2);
+
+			for (const blocker of blockers) {
+				blocker.resolve();
+				await Promise.resolve();
+			}
+
+			await Promise.all(workPromises);
 
 			expect(maxConcurrent).toBe(2);
 			expect(slots.getSnapshot().active).toBe(0);
