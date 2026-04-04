@@ -65,7 +65,6 @@ export interface TuiCommandRegistryDeps {
 	sessionView: SessionView;
 	clearController: ClearController;
 	diagnosticsView: DiagnosticsView;
-	fileSearchView: FileSearchView;
 	planController?: PlanController;
 	gitView: GitView;
 	backgroundTasksController: BackgroundTasksController;
@@ -97,6 +96,7 @@ export interface TuiCommandRegistryDeps {
 	getModelSelectorView: () => ModelSelectorView;
 	getThemeSelectorView: () => ThemeSelectorView;
 	getLspView: () => LspView;
+	getFileSearchView: () => FileSearchView;
 	getMessages: () => AppMessage[];
 	createCommandContext: (ctx: {
 		command: SlashCommand;
@@ -177,7 +177,7 @@ export function buildTuiCommandRegistryOptions(
 		handleReview: (context) => deps.handleReviewCommand(context),
 		handleUndo: (context) => deps.handleEnhancedUndoCommand(context),
 		handleMention: (context) =>
-			deps.fileSearchView.handleMentionCommand(context.rawInput),
+			deps.getFileSearchView().handleMentionCommand(context.rawInput),
 		handleAccess: (context) => handleAccessCommand(context),
 		handlePii: (context) => handlePiiCommand(context),
 		handleAudit: (context) => handleAuditCommand(context),

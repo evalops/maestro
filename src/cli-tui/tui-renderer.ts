@@ -93,7 +93,7 @@ import {
 } from "./queue/index.js";
 import { RunCommandView } from "./run/run-command-view.js";
 import { RunController } from "./run/run-controller.js";
-import type { FileSearchView } from "./search/file-search-view.js";
+import { FileSearchView } from "./search/file-search-view.js";
 import { ModelSelectorView } from "./selectors/model-selector-view.js";
 import { QueueModeSelectorView } from "./selectors/queue-mode-selector-view.js";
 import { ReportSelectorView } from "./selectors/report-selector-view.js";
@@ -152,7 +152,7 @@ import {
 } from "./tui-renderer/skills-controller.js";
 import { type UiState, saveCommandPrefs, saveUiState } from "./ui-state.js";
 import { UpdateView } from "./update-view.js";
-import type { CommandPaletteView } from "./utils/commands/command-palette-view.js";
+import { CommandPaletteView } from "./utils/commands/command-palette-view.js";
 import { buildReviewPrompt } from "./utils/commands/review-prompt.js";
 import { SlashHintBar } from "./utils/commands/slash-hint-bar.js";
 import {
@@ -318,7 +318,7 @@ export class TuiRenderer {
 	private delegatingHandlers!: DelegatingCommandHandlerMap;
 	private footerHintsController!: FooterHintsController;
 	private toolOutputView: ToolOutputView;
-	private commandPaletteView: CommandPaletteView;
+	private commandPaletteView?: CommandPaletteView;
 	private slashCommands: SlashCommand[] = [];
 	private commandEntries: CommandEntry[] = [];
 	private recentCommands: string[] = [];
@@ -339,7 +339,7 @@ export class TuiRenderer {
 	private telemetryView?: TelemetryView;
 	private ollamaView?: OllamaView;
 	private lspView?: LspView;
-	private fileSearchView: FileSearchView;
+	private fileSearchView?: FileSearchView;
 	private conversationCompactor: ConversationCompactor;
 	private messageView: MessageView;
 	private feedbackView?: FeedbackView;
@@ -900,8 +900,6 @@ export class TuiRenderer {
 			explicitApiKey: this.explicitApiKey,
 			chatContainer: this.chatContainer,
 			ui: this.ui,
-			editor: this.editor,
-			modalManager: this.modalManager,
 			getCurrentModelMetadata: () => this.currentModelMetadata,
 			getPendingTools: () => this.pendingTools,
 			toolStatusView: this.toolStatusView,
@@ -909,19 +907,8 @@ export class TuiRenderer {
 			todoStorePath: getTodoStorePath(),
 			getApprovalMode: () => this.approvalService.getMode(),
 			getAlertCount: () => this.footer.getUnseenAlertCount(),
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			getCommands: () => this.slashCommands,
-			getRecentCommands: () =>
-				this.slashHintController?.getRecentCommands() ?? this.recentCommands,
-			getFavoriteCommands: () =>
-				this.slashHintController?.getFavoriteCommands() ??
-				this.favoriteCommands,
-			onToggleFavorite: (name) =>
-				this.slashHintController?.toggleFavoriteCommand(name),
 		});
 		this.diagnosticsView = utilityViews.diagnosticsView;
-		this.fileSearchView = utilityViews.fileSearchView;
-		this.commandPaletteView = utilityViews.commandPaletteView;
 		const toolingViews = createToolingViews({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -1192,7 +1179,6 @@ export class TuiRenderer {
 				sessionView: this.sessionView,
 				clearController: this.clearController,
 				diagnosticsView: this.diagnosticsView,
-				fileSearchView: this.fileSearchView,
 				planController: this.planController,
 				gitView: this.gitView,
 				backgroundTasksController: this.backgroundTasksController,
@@ -1224,6 +1210,7 @@ export class TuiRenderer {
 				getModelSelectorView: () => this.getModelSelectorView(),
 				getThemeSelectorView: () => this.getThemeSelectorView(),
 				getLspView: () => this.getLspView(),
+				getFileSearchView: () => this.getFileSearchView(),
 				getMessages: () => this.agent.state.messages,
 				createCommandContext: (ctx) => this.createCommandContext(ctx),
 				handleReviewCommand: (context) => this.handleReviewCommand(context),
@@ -1364,8 +1351,9 @@ export class TuiRenderer {
 			onKeepPartial: () => this.inputController.handleKeepPartialRequest(),
 			onCtrlC: () => this.handleCtrlC(),
 			onCtrlD: () => this.inputController.handleCtrlDExit(),
-			showCommandPalette: () => this.commandPaletteView.showCommandPalette(),
-			showFileSearch: () => this.fileSearchView.showFileSearch(),
+			showCommandPalette: () =>
+				this.getCommandPaletteView().showCommandPalette(),
+			showFileSearch: () => this.getFileSearchView().showFileSearch(),
 			onEditLastQueuedFollowUp: () => this.editLastQueuedFollowUp(),
 		});
 
@@ -1663,6 +1651,34 @@ export class TuiRenderer {
 			showError: (message) => this.notificationView.showError(message),
 		});
 		return this.lspView;
+	}
+
+	private getFileSearchView(): FileSearchView {
+		this.fileSearchView ??= new FileSearchView({
+			editor: this.editor,
+			modalManager: this.modalManager,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+		});
+		return this.fileSearchView;
+	}
+
+	private getCommandPaletteView(): CommandPaletteView {
+		this.commandPaletteView ??= new CommandPaletteView({
+			editor: this.editor,
+			modalManager: this.modalManager,
+			ui: this.ui,
+			getCommands: () => this.slashCommands,
+			getRecentCommands: () =>
+				this.slashHintController?.getRecentCommands() ?? this.recentCommands,
+			getFavoriteCommands: () =>
+				this.slashHintController?.getFavoriteCommands() ??
+				this.favoriteCommands,
+			onToggleFavorite: (name) =>
+				this.slashHintController?.toggleFavoriteCommand(name),
+		});
+		return this.commandPaletteView;
 	}
 
 	async handleEvent(event: AgentEvent, state: AgentState): Promise<void> {

@@ -30,6 +30,7 @@ function createDeps() {
 		handleBugCommand: vi.fn(),
 		handleFeedbackCommand: vi.fn(),
 	};
+	const fileSearchView = { handleMentionCommand: vi.fn() };
 	const importExportView = {
 		handleExportCommand: vi.fn(),
 		handleImportCommand: vi.fn(),
@@ -53,7 +54,6 @@ function createDeps() {
 			handleStatusCommand: vi.fn(),
 			handleDiagnosticsCommand: vi.fn(),
 		},
-		fileSearchView: { handleMentionCommand: vi.fn() },
 		gitView: { handlePreviewCommand: vi.fn() },
 		backgroundTasksController: { handleBackgroundCommand: vi.fn() },
 		compactionController: {
@@ -100,6 +100,7 @@ function createDeps() {
 		getModelSelectorView: vi.fn(() => ({ show: vi.fn() })),
 		getThemeSelectorView: vi.fn(() => ({ show: vi.fn() })),
 		getLspView: vi.fn(() => ({ handleLspCommand: vi.fn() })),
+		getFileSearchView: vi.fn(() => fileSearchView),
 		getMessages: vi.fn(() => []),
 		createCommandContext: vi.fn(
 			(input: {
@@ -162,6 +163,7 @@ function createDeps() {
 		configView,
 		costView,
 		feedbackView,
+		fileSearchView,
 		importExportView,
 		reportSelectorView,
 		thinkingSelectorView,
@@ -180,6 +182,7 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(deps.getImportExportView).not.toHaveBeenCalled();
 		expect(deps.getReportSelectorView).not.toHaveBeenCalled();
 		expect(deps.getThinkingSelectorView).not.toHaveBeenCalled();
+		expect(deps.getFileSearchView).not.toHaveBeenCalled();
 	});
 
 	it("resolves lazy views only when the matching command runs", async () => {
@@ -189,6 +192,7 @@ describe("buildTuiCommandRegistryOptions", () => {
 			configView,
 			costView,
 			feedbackView,
+			fileSearchView,
 			importExportView,
 			reportSelectorView,
 			thinkingSelectorView,
@@ -206,6 +210,10 @@ describe("buildTuiCommandRegistryOptions", () => {
 		options.handleCost(createCommandContext("/cost", "today"));
 		expect(deps.getCostView).toHaveBeenCalledTimes(1);
 		expect(costView.handleCostCommand).toHaveBeenCalledTimes(1);
+
+		options.handleMention(createCommandContext("/mention src", "src"));
+		expect(deps.getFileSearchView).toHaveBeenCalledTimes(1);
+		expect(fileSearchView.handleMentionCommand).toHaveBeenCalledTimes(1);
 
 		await options.handleImportConfig(createCommandContext("/import", "config"));
 		expect(deps.getImportExportView).toHaveBeenCalledTimes(1);
