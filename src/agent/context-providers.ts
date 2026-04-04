@@ -19,6 +19,11 @@ import type { AgentContextSource } from "./context-manager.js";
 
 const logger = createLogger("context-providers");
 
+function getLocalIsoDate(now: Date = new Date()): string {
+	const timezoneOffsetMs = now.getTimezoneOffset() * 60_000;
+	return new Date(now.getTime() - timezoneOffsetMs).toISOString().slice(0, 10);
+}
+
 export class TodoContextSource implements AgentContextSource {
 	name = "todo";
 
@@ -91,6 +96,15 @@ export class GitSnapshotContextSource implements AgentContextSource {
 
 	async getSystemPromptAdditions(): Promise<string | null> {
 		return getGitSnapshot(this.cwd);
+	}
+}
+
+export class CurrentDateContextSource implements AgentContextSource {
+	name = "current-date";
+	cacheScope = "session" as const;
+
+	async getSystemPromptAdditions(): Promise<string | null> {
+		return `Today's date is ${getLocalIsoDate()}.`;
 	}
 }
 

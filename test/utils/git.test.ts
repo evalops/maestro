@@ -258,7 +258,6 @@ describe("getGitSnapshot", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
-
 	it("reports git log failures separately from empty history", () => {
 		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
 		const binDir = mkdtempSync(join(tmpdir(), "composer-fake-git-bin-"));

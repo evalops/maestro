@@ -104,6 +104,29 @@ describe("AgentContextManager", () => {
 		});
 	});
 
+	it("caches null results for session-scoped sources", async () => {
+		const load = vi.fn(async () => null);
+		const manager = new AgentContextManager();
+		manager.addSource({
+			name: "empty-stable",
+			cacheScope: "session",
+			getSystemPromptAdditions: () => load(),
+		});
+
+		const first = await manager.getCombinedSystemPromptWithStatus();
+		const second = await manager.getCombinedSystemPromptWithStatus();
+
+		expect(first.prompt).toBe("");
+		expect(second.prompt).toBe("");
+		expect(load).toHaveBeenCalledTimes(1);
+		expect(second.sourceStatuses[0]).toMatchObject({
+			name: "empty-stable",
+			status: "empty",
+			cached: true,
+			durationMs: 0,
+		});
+	});
+
 	it("does not cache session-scoped source failures", async () => {
 		const load = vi
 			.fn<() => Promise<string | null>>()

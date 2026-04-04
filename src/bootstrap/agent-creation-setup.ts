@@ -12,6 +12,7 @@ import chalk from "chalk";
 import type { ActionApprovalService } from "../agent/action-approval.js";
 import {
 	BackgroundTaskContextSource,
+	CurrentDateContextSource,
 	FrameworkPreferenceContextSource,
 	GitSnapshotContextSource,
 	IDEContextSource,
@@ -176,6 +177,7 @@ export function createAgentInstance(params: {
 		contextSources: [
 			new TodoContextSource(),
 			new BackgroundTaskContextSource(),
+			new CurrentDateContextSource(),
 			new GitSnapshotContextSource(cwd),
 			new LspContextSource(),
 			new FrameworkPreferenceContextSource(),

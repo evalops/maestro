@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { TodoContextSource } from "../../src/agent/context-providers.js";
+import {
+	CurrentDateContextSource,
+	TodoContextSource,
+} from "../../src/agent/context-providers.js";
 import type { TodoStore } from "../../src/tools/todo.js";
 import * as todoTool from "../../src/tools/todo.js";
 
@@ -65,5 +68,28 @@ describe("TodoContextSource", () => {
 		const source = new TodoContextSource();
 		const result = await source.getSystemPromptAdditions();
 		expect(result).toBeNull();
+	});
+});
+
+describe("CurrentDateContextSource", () => {
+	it("returns the local date in ISO format and is session-cacheable", async () => {
+		vi.useFakeTimers();
+		try {
+			const now = new Date("2026-04-04T15:30:00.000Z");
+			vi.setSystemTime(now);
+
+			const source = new CurrentDateContextSource();
+			const result = await source.getSystemPromptAdditions();
+			const expectedDate = new Date(
+				now.getTime() - now.getTimezoneOffset() * 60_000,
+			)
+				.toISOString()
+				.slice(0, 10);
+
+			expect(source.cacheScope).toBe("session");
+			expect(result).toBe(`Today's date is ${expectedDate}.`);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

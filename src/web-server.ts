@@ -18,6 +18,7 @@ import type {
 } from "./agent/action-approval.js";
 import {
 	BackgroundTaskContextSource,
+	CurrentDateContextSource,
 	FrameworkPreferenceContextSource,
 	GitSnapshotContextSource,
 	IDEContextSource,
@@ -500,6 +501,7 @@ async function createAgent(
 		contextSources: [
 			new TodoContextSource(),
 			new BackgroundTaskContextSource(),
+			new CurrentDateContextSource(),
 			new GitSnapshotContextSource(process.cwd()),
 			new LspContextSource(),
 			new FrameworkPreferenceContextSource(),
