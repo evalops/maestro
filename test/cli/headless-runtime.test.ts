@@ -1085,7 +1085,85 @@ describe("runHeadlessMode", () => {
 			.map((line) => JSON.parse(line) as { type: string; message?: string });
 		expect(messages).toContainEqual({
 			type: "error",
-			message: "Viewer headless connections cannot interrupt local sessions",
+			message: "Viewer headless connections cannot send messages",
+			fatal: false,
+			error_type: "protocol",
+		});
+	});
+
+	it("rejects viewer prompt requests before sending them to the local agent", async () => {
+		let onLine: LineHandler | undefined;
+		let onClose: CloseHandler | undefined;
+		const readlineInterface = {
+			on(event: string, handler: LineHandler | CloseHandler) {
+				if (event === "line") {
+					onLine = handler as LineHandler;
+				}
+				if (event === "close") {
+					onClose = handler as CloseHandler;
+				}
+				return this;
+			},
+		};
+
+		vi.doMock("node:readline", () => ({
+			createInterface: () => readlineInterface,
+		}));
+
+		const writes: string[] = [];
+		vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => {
+			writes.push(String(chunk));
+			return true;
+		}) as typeof process.stdout.write);
+
+		const { runHeadlessMode } = await import("../../src/cli/headless.ts");
+		const prompt = vi.fn();
+
+		const runPromise = runHeadlessMode(
+			{
+				state: { model: { id: "gpt-5.4", provider: "openai" } },
+				subscribe: vi.fn(),
+				prompt,
+				abort: vi.fn(),
+			} as never,
+			{
+				getSessionId: () => "session-headless-test",
+			} as never,
+		);
+
+		await vi.waitFor(() => {
+			expect(onLine).toBeTypeOf("function");
+			expect(onClose).toBeTypeOf("function");
+		});
+
+		await onLine?.(
+			JSON.stringify({
+				type: "hello",
+				protocol_version: "1.0",
+				client_info: { name: "maestro-test", version: "0.1.0" },
+				role: "viewer",
+			}),
+		);
+		await onLine?.(
+			JSON.stringify({
+				type: "prompt",
+				content: "viewer should not send prompts",
+			}),
+		);
+		onClose?.();
+		await runPromise;
+
+		expect(prompt).not.toHaveBeenCalled();
+
+		const messages = writes
+			.join("")
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as { type: string; message?: string });
+		expect(messages).toContainEqual({
+			type: "error",
+			message: "Viewer headless connections cannot send messages",
 			fatal: false,
 			error_type: "protocol",
 		});

@@ -47,6 +47,16 @@ export {
 
 const LOCAL_HEADLESS_CONNECTION_ID = "local";
 
+function localHeadlessViewerCanSend(msg: HeadlessToAgentMessage): boolean {
+	switch (msg.type) {
+		case "hello":
+		case "shutdown":
+			return true;
+		default:
+			return false;
+	}
+}
+
 function send(msg: HeadlessFromAgentMessage): void {
 	try {
 		assertHeadlessFromAgentMessage(msg, "headless stdout message");
@@ -312,6 +322,19 @@ export async function runHeadlessMode(
 		}
 
 		try {
+			if (
+				state.connection_role === "viewer" &&
+				!localHeadlessViewerCanSend(msg)
+			) {
+				send({
+					type: "error",
+					message: "Viewer headless connections cannot send messages",
+					fatal: false,
+					error_type: "protocol",
+				});
+				return;
+			}
+
 			switch (msg.type) {
 				case "init": {
 					const applied = applyInitMessage(agent, msg, approvalService);
@@ -400,15 +423,6 @@ export async function runHeadlessMode(
 
 				case "interrupt":
 				case "cancel":
-					if (state.connection_role === "viewer") {
-						send({
-							type: "error",
-							message: `Viewer headless connections cannot ${msg.type} local sessions`,
-							fatal: false,
-							error_type: "protocol",
-						});
-						break;
-					}
 					cancelPendingServerRequests(
 						msg.type === "interrupt"
 							? "Interrupted before request completed"
