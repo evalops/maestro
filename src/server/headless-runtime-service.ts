@@ -41,6 +41,7 @@ import type { RegisteredModel } from "../models/registry.js";
 import { checkSessionLimits } from "../safety/policy.js";
 import type { SessionManager } from "../session/manager.js";
 import { toSessionModelMetadata } from "../session/manager.js";
+import { createRuntimeSessionSummaryUpdater } from "../session/runtime-summary-updater.js";
 import { createLogger } from "../utils/logger.js";
 import type { WebServerContext } from "./app-context.js";
 import { WebActionApprovalService } from "./approval-service.js";
@@ -534,6 +535,7 @@ export class HeadlessSessionRuntime {
 	private disposed = false;
 	private disposePromise: Promise<void> | null = null;
 	private updatedAt = Date.now();
+	private readonly updateSessionSummary: (event: AgentEvent) => void;
 
 	private constructor(
 		options: RuntimeOptions,
@@ -549,6 +551,9 @@ export class HeadlessSessionRuntime {
 		this.approvalService = approvalService;
 		this.toolRetryService = toolRetryService;
 		this.agent = agent;
+		this.updateSessionSummary = createRuntimeSessionSummaryUpdater(
+			this.sessionManager,
+		);
 
 		this.agent.subscribe((event) => {
 			this.handleAgentEvent(event);
@@ -1772,6 +1777,8 @@ export class HeadlessSessionRuntime {
 	}
 
 	private handleAgentEvent(event: AgentEvent): void {
+		this.updateSessionSummary(event);
+
 		if (
 			Array.from(this.connections.values()).some(
 				(connection) => connection.capabilities?.raw_agent_events,

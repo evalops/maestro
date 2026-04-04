@@ -29,6 +29,7 @@ import {
 	type SessionManager,
 	toSessionModelMetadata,
 } from "../session/manager.js";
+import { createRuntimeSessionSummaryUpdater } from "../session/runtime-summary-updater.js";
 import {
 	type TurnTracker,
 	createTurnTracker,
@@ -70,6 +71,8 @@ export function setupEventSubscriptions(params: {
 		cwd,
 		enterpriseContext,
 	} = params;
+	const updateSessionSummary =
+		createRuntimeSessionSummaryUpdater(sessionManager);
 
 	// ── Turn Tracker ─────────────────────────────────────────────────────────
 
@@ -131,6 +134,8 @@ export function setupEventSubscriptions(params: {
 	// ── Agent event subscription ─────────────────────────────────────────────
 
 	agent.subscribe(async (event) => {
+		updateSessionSummary(event);
+
 		// Handle context overflow with auto-compaction and retry
 		if (
 			event.type === "agent_end" &&

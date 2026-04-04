@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { DateTime } from "luxon";
 import type { AgentEvent, AppMessage } from "../../agent/types.js";
+import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
 import { createSessionManagerForScope } from "../session-scope.js";
@@ -465,8 +466,12 @@ async function executeAutomation(
 		: renderedPrompt;
 
 	let lastAssistantOutput: string | undefined;
+	const updateSessionSummary =
+		createRuntimeSessionSummaryUpdater(sessionManager);
 
 	const unsubscribe = agent.subscribe((event: AgentEvent) => {
+		updateSessionSummary(event);
+
 		if (event.type === "message_end") {
 			sessionManager.saveMessage(event.message);
 			if (event.message.role === "assistant") {

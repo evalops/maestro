@@ -18,6 +18,7 @@ import {
 } from "../../hooks/notification-hooks.js";
 import { checkSessionLimits } from "../../safety/policy.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
+import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { createLogger } from "../../utils/logger.js";
 import type { WebServerContext } from "../app-context.js";
 import {
@@ -602,8 +603,12 @@ export function handleChatWebSocket(
 				slimEvent.assistantMessageEvent = assistantEvent;
 				return slimEvent as AgentEvent;
 			};
+			const updateSessionSummary =
+				createRuntimeSessionSummaryUpdater(sessionManager);
 
 			const unsubscribe = agent.subscribe((event: AgentEvent) => {
+				updateSessionSummary(event);
+
 				wsSession.sendEvent(maybeSlimEvent(event));
 
 				if (event.type === "tool_execution_start") {

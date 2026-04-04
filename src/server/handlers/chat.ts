@@ -49,6 +49,7 @@ function getComposerTextContent(content: ComposerMessage["content"]): string {
 // SessionManager type import for annotations, value import for instantiation
 import type { SessionManager } from "../../session/manager.js";
 import { toSessionModelMetadata } from "../../session/manager.js";
+import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { recordSseSkip } from "../../telemetry.js";
 import type { WebServerContext } from "../app-context.js";
 import {
@@ -476,8 +477,12 @@ export async function handleChat(
 			slimEvent.assistantMessageEvent = assistantEvent;
 			return slimEvent as AgentEvent;
 		};
+		const updateSessionSummary =
+			createRuntimeSessionSummaryUpdater(sessionManager);
 
 		const unsubscribe = agent.subscribe((event: AgentEvent) => {
+			updateSessionSummary(event);
+
 			// Forward event to client
 			sendSSE(sseSession, maybeSlimEvent(event));
 
