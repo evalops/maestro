@@ -2728,7 +2728,21 @@ describe("headless session handlers", () => {
 		});
 	});
 
-	it("rejects viewer headless message posts", async () => {
+	it.each([
+		{
+			name: "interrupt",
+			message: { type: "interrupt" },
+		},
+		{
+			name: "hello",
+			message: {
+				type: "hello",
+				protocol_version: HEADLESS_PROTOCOL_VERSION,
+				client_info: { name: "maestro-test", version: "0.1.0" },
+				role: "viewer",
+			},
+		},
+	])("rejects viewer headless %s message posts", async ({ message }) => {
 		const runtime = {
 			assertCanSend: vi.fn().mockImplementation(() => {
 				throw new Error("Viewer headless connections cannot send messages");
@@ -2743,7 +2757,7 @@ describe("headless session handlers", () => {
 		const req = createJsonRequest(
 			"POST",
 			"/api/headless/sessions/sess_123/messages",
-			{ type: "interrupt" },
+			message,
 			{ "x-maestro-headless-role": "viewer" },
 		);
 		const res = new MockResponse();
