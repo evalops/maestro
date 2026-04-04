@@ -162,6 +162,13 @@ impl ManagedTransport {
         }
     }
 
+    async fn shutdown_and_wait(self) -> Result<(), AsyncTransportError> {
+        match self {
+            Self::Local(transport) => transport.shutdown(),
+            Self::Remote(transport) => transport.shutdown_and_wait().await,
+        }
+    }
+
     fn needs_init_replay(&self) -> bool {
         matches!(self, Self::Local(_))
     }
@@ -399,7 +406,7 @@ impl AgentSupervisor {
             });
         }
         if let Some(existing) = self.transport.take() {
-            let _ = existing.shutdown();
+            let _ = existing.shutdown_and_wait().await;
         }
         self.last_response = None;
 
@@ -3363,6 +3370,60 @@ done
             .await
             .expect("manual reconnect should shut down the previous transport");
         assert!(supervisor.is_connected());
+
+        supervisor.disconnect();
+    }
+
+    #[tokio::test]
+    async fn manual_remote_reconnect_disconnects_before_next_bootstrap() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 0,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let (addr, _posted_bodies, _request_headers, request_bodies) =
+            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
+
+        let mut supervisor = SupervisorBuilder::new()
+            .remote_base_url(format!("http://{addr}"))
+            .max_reconnect_attempts(1)
+            .reconnect_delay(Duration::from_millis(5))
+            .build();
+
+        supervisor.connect().await.expect("connect");
+        supervisor.reconnect().await.expect("manual reconnect");
+
+        let request_paths = request_bodies
+            .lock()
+            .await
+            .iter()
+            .map(|(path, _body)| path.clone())
+            .collect::<Vec<_>>();
+        let disconnect_index = request_paths
+            .iter()
+            .position(|path| path.ends_with("/disconnect"))
+            .expect("disconnect request");
+        let second_bootstrap_index = request_paths
+            .iter()
+            .enumerate()
+            .filter_map(|(index, path)| (path == "/api/headless/connections").then_some(index))
+            .nth(1)
+            .expect("second bootstrap request");
+        assert!(
+            disconnect_index < second_bootstrap_index,
+            "manual reconnect should disconnect the stale transport before bootstrapping a replacement"
+        );
 
         supervisor.disconnect();
     }

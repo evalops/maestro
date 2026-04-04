@@ -747,6 +747,40 @@ impl RemoteAgentTransport {
         }
     }
 
+    pub async fn shutdown_and_wait(self) -> Result<(), AsyncTransportError> {
+        let Self {
+            message_tx: _message_tx,
+            event_rx: _event_rx,
+            cancel_token,
+            shutdown_context,
+            session_id,
+            connection_id,
+            subscription_id,
+            heartbeat_interval: _heartbeat_interval,
+            state: _state,
+            last_init: _last_init,
+            _reader_handle,
+            _writer_handle,
+            _heartbeat_handle,
+        } = self;
+
+        if !cancel_token.is_cancelled() {
+            disconnect_connection(
+                &shutdown_context.client,
+                &shutdown_context.config,
+                &session_id,
+                &connection_id,
+                Some(&subscription_id),
+            )
+            .await;
+            cancel_token.cancel();
+        }
+
+        let (_reader_result, _writer_result, _heartbeat_result) =
+            tokio::join!(_reader_handle, _writer_handle, _heartbeat_handle);
+        Ok(())
+    }
+
     pub(super) fn try_recv_incoming(
         &mut self,
     ) -> Option<Result<RemoteIncoming, AsyncTransportError>> {
