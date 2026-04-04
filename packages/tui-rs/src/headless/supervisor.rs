@@ -22,6 +22,7 @@ use super::session::{SessionReader, SessionRecorder, SessionReplay};
 
 const MAX_STALE_REMOTE_REFERENCE_RETRIES: u32 = 3;
 const MIN_RECONNECT_SLEEP: Duration = Duration::from_millis(1);
+const REMOTE_COMPACTION_SILENCE_TIMEOUT: Duration = Duration::from_secs(180);
 
 fn jittered_reconnect_delay_for_sample(
     base_delay: Duration,
@@ -654,11 +655,29 @@ impl AgentSupervisor {
         )
     }
 
+    fn remote_compaction_timeout(&self) -> Option<Duration> {
+        if !self.silence_timeouts_enabled()
+            || self.config.remote.is_none()
+            || !self.state.is_responding
+        {
+            return None;
+        }
+
+        self.state
+            .last_status
+            .as_deref()
+            .filter(|status| status.trim().eq_ignore_ascii_case("compacting"))
+            .map(|_| REMOTE_COMPACTION_SILENCE_TIMEOUT)
+    }
+
     fn next_health_deadline(&self) -> Option<Instant> {
         if !self.silence_timeouts_enabled() {
             return None;
         }
         let last_response = self.last_response?;
+        if let Some(timeout) = self.remote_compaction_timeout() {
+            return Some(last_response + timeout);
+        }
         match self.health_status {
             HealthStatus::Healthy => Some(last_response + self.config.health_check_interval),
             HealthStatus::Degraded => Some(
@@ -681,6 +700,23 @@ impl AgentSupervisor {
         }
         let last_response = self.last_response?;
         let silence = now.saturating_duration_since(last_response);
+        if let Some(timeout) = self.remote_compaction_timeout() {
+            if silence < timeout {
+                return None;
+            }
+
+            self.health_status = HealthStatus::Unhealthy;
+            self.last_response = None;
+            if self.config.auto_reconnect {
+                if let Some(transport) = self.transport.take() {
+                    let _ = transport.shutdown();
+                }
+                self.pending_auto_reconnect = true;
+            }
+            return Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Unhealthy,
+            });
+        }
         match self.health_status {
             HealthStatus::Healthy if silence >= self.config.health_check_interval => {
                 self.health_status = HealthStatus::Degraded;
@@ -1521,6 +1557,90 @@ mod tests {
             .due_health_transition(start + Duration::from_secs(35))
             .is_none());
         assert_eq!(supervisor.health(), HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn compacting_remote_sessions_use_extended_silence_deadline() {
+        let mut supervisor = AgentSupervisor::new(SupervisorConfig {
+            health_check_interval: Duration::from_secs(30),
+            health_check_timeout: Duration::from_secs(5),
+            remote: Some(RemoteTransportConfig {
+                role: Some("controller".to_string()),
+                ..RemoteTransportConfig::default()
+            }),
+            ..SupervisorConfig::default()
+        });
+        let start = Instant::now();
+        supervisor.health_status = HealthStatus::Healthy;
+        supervisor.last_response = Some(start);
+        supervisor.state.is_responding = true;
+        supervisor.state.last_status = Some(" compacting ".to_string());
+
+        assert_eq!(
+            supervisor.next_health_deadline(),
+            Some(start + REMOTE_COMPACTION_SILENCE_TIMEOUT)
+        );
+        assert!(supervisor
+            .due_health_transition(start + Duration::from_secs(35))
+            .is_none());
+        assert_eq!(supervisor.health(), HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn completed_remote_responses_do_not_keep_compaction_timeout_override() {
+        let mut supervisor = AgentSupervisor::new(SupervisorConfig {
+            health_check_interval: Duration::from_secs(30),
+            health_check_timeout: Duration::from_secs(5),
+            remote: Some(RemoteTransportConfig {
+                role: Some("controller".to_string()),
+                ..RemoteTransportConfig::default()
+            }),
+            ..SupervisorConfig::default()
+        });
+        let start = Instant::now();
+        supervisor.health_status = HealthStatus::Healthy;
+        supervisor.last_response = Some(start);
+        supervisor.state.is_responding = false;
+        supervisor.state.last_status = Some("compacting".to_string());
+
+        assert_eq!(
+            supervisor.next_health_deadline(),
+            Some(start + Duration::from_secs(30))
+        );
+        assert!(matches!(
+            supervisor.due_health_transition(start + Duration::from_secs(30)),
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Degraded
+            })
+        ));
+    }
+
+    #[test]
+    fn compacting_remote_sessions_become_unhealthy_after_extended_timeout() {
+        let mut supervisor = AgentSupervisor::new(SupervisorConfig {
+            health_check_interval: Duration::from_secs(30),
+            health_check_timeout: Duration::from_secs(5),
+            remote: Some(RemoteTransportConfig {
+                role: Some("controller".to_string()),
+                ..RemoteTransportConfig::default()
+            }),
+            auto_reconnect: true,
+            ..SupervisorConfig::default()
+        });
+        let start = Instant::now();
+        supervisor.health_status = HealthStatus::Healthy;
+        supervisor.last_response = Some(start);
+        supervisor.state.is_responding = true;
+        supervisor.state.last_status = Some("compacting".to_string());
+
+        assert!(matches!(
+            supervisor.due_health_transition(start + REMOTE_COMPACTION_SILENCE_TIMEOUT),
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Unhealthy
+            })
+        ));
+        assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
+        assert!(supervisor.pending_auto_reconnect);
     }
 
     #[test]
