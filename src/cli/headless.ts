@@ -314,7 +314,7 @@ export async function runHeadlessMode(
 		}
 
 		try {
-			if (headlessViewerHasDisallowedCapabilities(msg)) {
+			if (headlessViewerHasDisallowedCapabilities(msg, state.connection_role)) {
 				send({
 					type: "error",
 					message:
