@@ -19,6 +19,7 @@ import type {
 import {
 	BackgroundTaskContextSource,
 	FrameworkPreferenceContextSource,
+	GitSnapshotContextSource,
 	IDEContextSource,
 	LspContextSource,
 	TodoContextSource,
@@ -499,6 +500,7 @@ async function createAgent(
 		contextSources: [
 			new TodoContextSource(),
 			new BackgroundTaskContextSource(),
+			new GitSnapshotContextSource(process.cwd()),
 			new LspContextSource(),
 			new FrameworkPreferenceContextSource(),
 			new IDEContextSource(),

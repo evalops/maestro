@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,10 +8,34 @@ import {
 	getCommitSha,
 	getCurrentBranch,
 	getGitRoot,
+	getGitSnapshot,
 	getGitState,
 	isDirtyWorkingTree,
 	isInsideGitRepository,
 } from "../../src/utils/git.js";
+
+function initGitRepo(directory: string): void {
+	execSync("git init", { cwd: directory, stdio: "ignore" });
+	execSync('git config user.email "test@example.com"', {
+		cwd: directory,
+		stdio: "ignore",
+	});
+	execSync('git config user.name "Test User"', {
+		cwd: directory,
+		stdio: "ignore",
+	});
+}
+
+function commitFile(
+	directory: string,
+	fileName: string,
+	content: string,
+	message: string,
+): void {
+	writeFileSync(join(directory, fileName), content);
+	execSync(`git add ${fileName}`, { cwd: directory, stdio: "ignore" });
+	execSync(`git commit -m "${message}"`, { cwd: directory, stdio: "ignore" });
+}
 
 describe("isInsideGitRepository", () => {
 	it("returns true when inside a git repository", () => {
@@ -180,6 +204,119 @@ describe("getGitRoot", () => {
 		try {
 			expect(getGitRoot(dir)).toBeUndefined();
 		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("getGitSnapshot", () => {
+	it("returns null outside a git repository", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-non-git-"));
+		try {
+			expect(getGitSnapshot(dir)).toBeNull();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("formats a repository snapshot with status and recent commits", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
+
+		try {
+			initGitRepo(dir);
+			commitFile(dir, "tracked.txt", "tracked\n", "initial commit");
+			writeFileSync(join(dir, "modified.txt"), "pending change\n");
+
+			const snapshot = getGitSnapshot(dir);
+
+			expect(snapshot).toContain("# Repository Snapshot");
+			expect(snapshot).toContain("Current branch:");
+			expect(snapshot).toContain("Working tree: dirty");
+			expect(snapshot).toContain("Status:");
+			expect(snapshot).toContain("modified.txt");
+			expect(snapshot).toContain("Recent commits:");
+			expect(snapshot).toContain("initial commit");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("truncates large git status snapshots", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
+
+		try {
+			initGitRepo(dir);
+			commitFile(dir, "tracked.txt", "tracked\n", "initial commit");
+			for (let i = 0; i < 20; i++) {
+				writeFileSync(join(dir, `file-${i}.txt`), `change ${i}\n`);
+			}
+
+			const snapshot = getGitSnapshot(dir, { maxStatusChars: 40 });
+
+			expect(snapshot).toContain("truncated because it exceeds 40 characters");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("reports git log failures separately from empty history", () => {
+		const dir = mkdtempSync(join(tmpdir(), "composer-git-snapshot-"));
+		const binDir = mkdtempSync(join(tmpdir(), "composer-fake-git-bin-"));
+		const gitPath = join(binDir, "git");
+		const originalPath = process.env.PATH;
+
+		try {
+			writeFileSync(
+				gitPath,
+				`#!/bin/sh
+args="$*"
+case "$args" in
+  "rev-parse --is-inside-work-tree")
+    printf 'true\\n'
+    exit 0
+    ;;
+  "rev-parse HEAD")
+    printf '0123456789abcdef0123456789abcdef01234567\\n'
+    exit 0
+    ;;
+  "rev-parse --abbrev-ref HEAD")
+    printf 'main\\n'
+    exit 0
+    ;;
+  "rev-parse --abbrev-ref --symbolic-full-name @{u}")
+    exit 1
+    ;;
+  "status --porcelain")
+    exit 0
+    ;;
+  "--no-optional-locks status --short")
+    printf ' M tracked.txt\\n'
+    exit 0
+    ;;
+  "--no-optional-locks log --oneline -n 5")
+    printf 'fatal: cannot read log\\n' >&2
+    exit 1
+    ;;
+esac
+
+printf 'unexpected args: %s\\n' "$args" >&2
+exit 1
+`,
+			);
+			chmodSync(gitPath, 0o755);
+			process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+
+			const snapshot = getGitSnapshot(dir);
+
+			expect(snapshot).toContain("Status:\nM tracked.txt");
+			expect(snapshot).toContain("Recent commits:\n(git log unavailable)");
+		} finally {
+			if (originalPath === undefined) {
+				Reflect.deleteProperty(process.env, "PATH");
+			} else {
+				process.env.PATH = originalPath;
+			}
+			rmSync(binDir, { recursive: true, force: true });
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});

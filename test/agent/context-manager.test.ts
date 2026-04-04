@@ -80,4 +80,58 @@ describe("AgentContextManager", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("caches session-scoped sources across calls", async () => {
+		const load = vi.fn(async () => "stable-context");
+		const manager = new AgentContextManager();
+		manager.addSource({
+			name: "stable",
+			cacheScope: "session",
+			getSystemPromptAdditions: () => load(),
+		});
+
+		const first = await manager.getCombinedSystemPromptWithStatus();
+		const second = await manager.getCombinedSystemPromptWithStatus();
+
+		expect(first.prompt).toBe("stable-context");
+		expect(second.prompt).toBe("stable-context");
+		expect(load).toHaveBeenCalledTimes(1);
+		expect(second.sourceStatuses[0]).toMatchObject({
+			name: "stable",
+			status: "success",
+			cached: true,
+			durationMs: 0,
+		});
+	});
+
+	it("does not cache session-scoped source failures", async () => {
+		const load = vi
+			.fn<() => Promise<string | null>>()
+			.mockRejectedValueOnce(new Error("transient failure"))
+			.mockResolvedValueOnce("recovered-context");
+		const manager = new AgentContextManager();
+		manager.addSource({
+			name: "unstable",
+			cacheScope: "session",
+			getSystemPromptAdditions: () => load(),
+		});
+
+		const first = await manager.getCombinedSystemPromptWithStatus();
+		const second = await manager.getCombinedSystemPromptWithStatus();
+
+		expect(first.prompt).toBe("");
+		expect(first.failureCount).toBe(1);
+		expect(first.sourceStatuses[0]).toMatchObject({
+			name: "unstable",
+			status: "error",
+			cached: false,
+		});
+		expect(second.prompt).toBe("recovered-context");
+		expect(second.sourceStatuses[0]).toMatchObject({
+			name: "unstable",
+			status: "success",
+			cached: false,
+		});
+		expect(load).toHaveBeenCalledTimes(2);
+	});
 });

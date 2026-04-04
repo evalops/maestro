@@ -68,6 +68,8 @@ export class ContextSourceError extends Error {
 export interface AgentContextSource {
 	/** Unique identifier for this source (used for filtering and logging) */
 	name: string;
+	/** Whether the source can be cached for the life of the manager/session. */
+	cacheScope?: "none" | "session";
 
 	/**
 	 * Fetch the context content to add to the system prompt.
@@ -98,6 +100,7 @@ export interface SourceLoadStatus {
 	name: string;
 	status: "success" | "timeout" | "error" | "skipped" | "empty";
 	durationMs: number;
+	cached?: boolean;
 	error?: string;
 	truncated?: boolean;
 	originalLength?: number;
@@ -127,6 +130,8 @@ export interface ContextLoadResult {
 export class AgentContextManager {
 	/** Registered context sources, loaded in parallel */
 	private sources: AgentContextSource[] = [];
+	/** Per-session cache for stable context sources. */
+	private readonly sourceCache = new Map<string, string | null>();
 	/** Resolved configuration with defaults applied */
 	private readonly options: Required<AgentContextOptions>;
 
@@ -188,8 +193,21 @@ export class AgentContextManager {
 						name: source.name,
 						status: "skipped" as const,
 						durationMs: 0,
+						cached: false,
 						content: null,
 					};
+				}
+
+				if (
+					source.cacheScope === "session" &&
+					this.sourceCache.has(source.name)
+				) {
+					return this.formatSourceResult(
+						source.name,
+						this.sourceCache.get(source.name) ?? null,
+						0,
+						true,
+					);
 				}
 
 				// Each source gets its own AbortController for independent cancellation
@@ -208,19 +226,6 @@ export class AgentContextManager {
 
 					const durationMs = this.options.clock.now() - sourceStart;
 
-					if (result === null) {
-						return {
-							name: source.name,
-							status: "empty" as const,
-							durationMs,
-							content: null,
-						};
-					}
-
-					const originalLength = result.length;
-					const truncated = truncate(result, this.options.maxCharsPerSource);
-					const wasTruncated = truncated.length < originalLength;
-
 					// Log slow sources (> 80% of timeout)
 					if (durationMs > this.options.sourceTimeoutMs * 0.8) {
 						logger.warn(`Context source '${source.name}' is slow`, {
@@ -232,14 +237,16 @@ export class AgentContextManager {
 						});
 					}
 
-					return {
-						name: source.name,
-						status: "success" as const,
+					if (source.cacheScope === "session") {
+						this.sourceCache.set(source.name, result);
+					}
+
+					return this.formatSourceResult(
+						source.name,
+						result,
 						durationMs,
-						content: truncated,
-						truncated: wasTruncated,
-						originalLength,
-					};
+						false,
+					);
 				} catch (error) {
 					const durationMs = this.options.clock.now() - sourceStart;
 
@@ -252,6 +259,7 @@ export class AgentContextManager {
 							name: source.name,
 							status: "timeout" as const,
 							durationMs,
+							cached: false,
 							content: null,
 							error: error.message,
 						};
@@ -266,6 +274,7 @@ export class AgentContextManager {
 						name: source.name,
 						status: "error" as const,
 						durationMs,
+						cached: false,
 						content: null,
 						error: error instanceof Error ? error.message : String(error),
 					};
@@ -281,9 +290,11 @@ export class AgentContextManager {
 				name: result.name,
 				status: result.status,
 				durationMs: result.durationMs,
-				error: result.error,
-				truncated: result.truncated,
-				originalLength: result.originalLength,
+				cached: result.cached,
+				error: "error" in result ? result.error : undefined,
+				truncated: "truncated" in result ? result.truncated : undefined,
+				originalLength:
+					"originalLength" in result ? result.originalLength : undefined,
 			});
 
 			if (result.content) {
@@ -332,6 +343,53 @@ export class AgentContextManager {
 			return true; // All enabled if no filter
 		}
 		return this.options.enabledSources.includes(name);
+	}
+
+	private formatSourceResult(
+		name: string,
+		content: string | null,
+		durationMs: number,
+		cached: boolean,
+	):
+		| {
+				name: string;
+				status: "empty";
+				durationMs: number;
+				cached: boolean;
+				content: null;
+		  }
+		| {
+				name: string;
+				status: "success";
+				durationMs: number;
+				cached: boolean;
+				content: string;
+				truncated: boolean;
+				originalLength: number;
+		  } {
+		if (content === null) {
+			return {
+				name,
+				status: "empty",
+				durationMs,
+				cached,
+				content: null,
+			};
+		}
+
+		const originalLength = content.length;
+		const truncated = truncate(content, this.options.maxCharsPerSource);
+		const wasTruncated = truncated.length < originalLength;
+
+		return {
+			name,
+			status: "success",
+			durationMs,
+			cached,
+			content: truncated,
+			truncated: wasTruncated,
+			originalLength,
+		};
 	}
 }
 

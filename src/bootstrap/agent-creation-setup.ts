@@ -13,6 +13,7 @@ import type { ActionApprovalService } from "../agent/action-approval.js";
 import {
 	BackgroundTaskContextSource,
 	FrameworkPreferenceContextSource,
+	GitSnapshotContextSource,
 	IDEContextSource,
 	LspContextSource,
 	TodoContextSource,
@@ -175,6 +176,7 @@ export function createAgentInstance(params: {
 		contextSources: [
 			new TodoContextSource(),
 			new BackgroundTaskContextSource(),
+			new GitSnapshotContextSource(cwd),
 			new LspContextSource(),
 			new FrameworkPreferenceContextSource(),
 			new IDEContextSource(),

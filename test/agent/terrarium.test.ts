@@ -8,6 +8,7 @@ class MockContextSource implements AgentContextSource {
 	constructor(
 		public name: string,
 		private content: string | null,
+		public cacheScope: "none" | "session" = "none",
 	) {}
 
 	async getSystemPromptAdditions(): Promise<string | null> {
@@ -139,5 +140,47 @@ describe("Environmental Context Injection (Terrarium Physics)", () => {
 		expect(lastPrompt).toContain("# Sun: Rising");
 		// Should not fail the prompt
 		expect(agent.state.messages.length).toBeGreaterThan(0);
+	});
+
+	it("reuses session-cached context across prompts", async () => {
+		const transport = new MockTransport();
+		transport.addResponse("assistant", "Cached context loaded.");
+
+		let loads = 0;
+		const cachedSource: AgentContextSource = {
+			name: "cached-source",
+			cacheScope: "session",
+			getSystemPromptAdditions: async () => {
+				loads += 1;
+				return "# Cached: Once";
+			},
+		};
+
+		const agent = new Agent({
+			transport,
+			initialState: {
+				model: {
+					id: "test-model",
+					name: "Test Model",
+					api: "anthropic-messages",
+					provider: "anthropic",
+					baseUrl: "https://api.anthropic.com",
+					reasoning: false,
+					toolUse: true,
+					input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					contextWindow: 1000,
+					maxTokens: 1000,
+				},
+				systemPrompt: "Base prompt.",
+			},
+			contextSources: [cachedSource],
+		});
+
+		await agent.prompt("First prompt");
+		await agent.prompt("Second prompt");
+
+		expect(loads).toBe(1);
+		expect(transport.lastSystemPrompt).toContain("# Cached: Once");
 	});
 });

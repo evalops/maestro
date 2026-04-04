@@ -12,6 +12,7 @@ import {
 	formatTodosSection,
 	loadStore,
 } from "../tools/todo.js";
+import { getGitSnapshot } from "../utils/git.js";
 import { createLogger } from "../utils/logger.js";
 import { isWithinCwd } from "../utils/path-validation.js";
 import type { AgentContextSource } from "./context-manager.js";
@@ -79,6 +80,17 @@ export class BackgroundTaskContextSource implements AgentContextSource {
 			});
 			return null;
 		}
+	}
+}
+
+export class GitSnapshotContextSource implements AgentContextSource {
+	name = "git-snapshot";
+	cacheScope = "session" as const;
+
+	constructor(private readonly cwd: string = process.cwd()) {}
+
+	async getSystemPromptAdditions(): Promise<string | null> {
+		return getGitSnapshot(this.cwd);
 	}
 }
 

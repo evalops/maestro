@@ -46,6 +46,34 @@
 
 import { spawnSync } from "node:child_process";
 
+const DEFAULT_GIT_STATUS_MAX_CHARS = 2000;
+const DEFAULT_GIT_RECENT_COMMIT_COUNT = 5;
+
+function runGitText(
+	cwd: string,
+	args: string[],
+): { ok: boolean; stdout: string; stderr: string } {
+	const result = spawnSync("git", args, {
+		cwd,
+		encoding: "utf-8",
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+
+	return {
+		ok: !result.error && result.status === 0,
+		stdout: (result.stdout ?? "").trim(),
+		stderr: (result.stderr ?? "").trim(),
+	};
+}
+
+function truncateGitText(text: string, maxChars: number): string {
+	if (text.length <= maxChars) {
+		return text;
+	}
+
+	return `${text.slice(0, maxChars)}\n... (truncated because it exceeds ${maxChars} characters. Run git status for full output.)`;
+}
+
 export function isInsideGitRepository(cwd: string = process.cwd()): boolean {
 	const result = spawnSync("git", ["rev-parse", "--is-inside-work-tree"], {
 		cwd,
@@ -80,6 +108,11 @@ export interface GitState {
 	behind?: number;
 	/** Remote tracking branch (e.g., "origin/main") */
 	upstream?: string;
+}
+
+export interface GitSnapshotOptions {
+	maxStatusChars?: number;
+	recentCommitCount?: number;
 }
 
 /**
@@ -236,4 +269,53 @@ export function getGitRoot(cwd: string = process.cwd()): string | undefined {
 	}
 
 	return (result.stdout ?? "").trim() || undefined;
+}
+
+export function getGitSnapshot(
+	cwd: string = process.cwd(),
+	options: GitSnapshotOptions = {},
+): string | null {
+	const state = getGitState(cwd);
+	if (!state.isRepo) {
+		return null;
+	}
+
+	const maxStatusChars = options.maxStatusChars ?? DEFAULT_GIT_STATUS_MAX_CHARS;
+	const recentCommitCount =
+		options.recentCommitCount ?? DEFAULT_GIT_RECENT_COMMIT_COUNT;
+
+	const statusResult = runGitText(cwd, [
+		"--no-optional-locks",
+		"status",
+		"--short",
+	]);
+	const logResult = runGitText(cwd, [
+		"--no-optional-locks",
+		"log",
+		"--oneline",
+		"-n",
+		String(recentCommitCount),
+	]);
+
+	const statusText = statusResult.ok
+		? truncateGitText(statusResult.stdout || "(clean)", maxStatusChars)
+		: "(git status unavailable)";
+	const recentCommits = logResult.ok
+		? logResult.stdout || "(no commits yet)"
+		: "(git log unavailable)";
+
+	const branch = state.branch ?? "(detached HEAD)";
+	const upstream = state.upstream
+		? `Upstream: ${state.upstream} (ahead ${state.ahead ?? 0}, behind ${state.behind ?? 0})`
+		: "Upstream: (none)";
+	const workingTree = state.isDirty ? "dirty" : "clean";
+
+	return [
+		"# Repository Snapshot",
+		`Current branch: ${branch}`,
+		upstream,
+		`Working tree: ${workingTree}`,
+		`Status:\n${statusText}`,
+		`Recent commits:\n${recentCommits}`,
+	].join("\n\n");
 }
