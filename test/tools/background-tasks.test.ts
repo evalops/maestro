@@ -44,7 +44,6 @@ const TASK_HOLD_MS = IS_CI ? 1500 : 500;
 const DEFAULT_WAIT_ATTEMPTS = IS_CI ? 80 : 50;
 const DEFAULT_WAIT_DELAY_MS = IS_CI ? 200 : 150;
 const DEFAULT_LOG_ATTEMPTS = IS_CI ? 60 : 40;
-const MTIME_BUMP_MS = IS_CI ? 1100 : 5;
 const joinParts = (...parts: string[]) => parts.join("");
 const SAMPLE_REDACTED_TOKEN = joinParts(
 	"sk",
@@ -288,14 +287,19 @@ describe("backgroundTasksTool", () => {
 		const { notificationsEnabled: beforeNotify } = getBackgroundTaskSettings();
 		expect(beforeNotify).toBe(false);
 
-		// Ensure a distinct mtime before writing.
-		await sleep(MTIME_BUMP_MS);
+		const previousMtimeMs = statSync(settingsPath).mtimeMs;
 		writeFileSync(
 			settingsPath,
 			JSON.stringify({ notificationsEnabled: true }, null, 2),
 		);
-		// Nudge mtime in case the fs timestamp resolution is coarse (linux runners).
-		utimesSync(settingsPath, new Date(), new Date());
+		// Bump mtime deterministically so stat-based reload detects the external edit
+		// without relying on wall-clock sleeps or filesystem timestamp resolution.
+		const bumpedMtimeMs = Math.max(
+			statSync(settingsPath).mtimeMs,
+			previousMtimeMs + 2_000,
+		);
+		const bumpedMtime = new Date(bumpedMtimeMs);
+		utimesSync(settingsPath, bumpedMtime, bumpedMtime);
 
 		await waitForCondition(() => {
 			const { notificationsEnabled } = getBackgroundTaskSettings();
