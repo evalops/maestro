@@ -20,7 +20,10 @@
 
 import type { Agent } from "../agent/agent.js";
 import { performCompaction } from "../agent/compaction.js";
-import { recoverFromMaxOutput } from "../agent/max-output-recovery.js";
+import {
+	buildCompactionEvent,
+	runWithPromptRecovery,
+} from "../agent/prompt-recovery.js";
 import type {
 	AgentEvent,
 	AppMessage,
@@ -61,8 +64,18 @@ export async function runRpcMode(
 			const input = JSON.parse(line);
 
 			if (input.type === "prompt" && input.message) {
-				await agent.prompt(input.message);
-				await recoverFromMaxOutput(agent);
+				await runWithPromptRecovery({
+					agent,
+					sessionManager,
+					execute: () => agent.prompt(input.message),
+					callbacks: {
+						onCompacted: (result) => {
+							console.log(
+								JSON.stringify(buildCompactionEvent(result, { auto: true })),
+							);
+						},
+					},
+				});
 			} else if (input.type === "abort") {
 				agent.abort();
 			} else if (input.type === "get_messages") {
@@ -88,8 +101,18 @@ export async function runRpcMode(
 					}),
 				);
 			} else if (input.type === "continue") {
-				await agent.continue(input.options);
-				await recoverFromMaxOutput(agent);
+				await runWithPromptRecovery({
+					agent,
+					sessionManager,
+					execute: () => agent.continue(input.options),
+					callbacks: {
+						onCompacted: (result) => {
+							console.log(
+								JSON.stringify(buildCompactionEvent(result, { auto: true })),
+							);
+						},
+					},
+				});
 			} else if (input.type === "compact") {
 				const customInstructions = input.customInstructions as
 					| string

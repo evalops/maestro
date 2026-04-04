@@ -129,48 +129,6 @@ export function setupEventSubscriptions(params: {
 
 	agent.subscribe(async (event) => {
 		updateSessionSummary(event);
-
-		// Handle context overflow with auto-compaction and retry
-		if (
-			event.type === "agent_end" &&
-			event.stopReason === "length" &&
-			!event.aborted
-		) {
-			console.error(
-				chalk.yellow("[auto-compact] Context overflow detected, compacting..."),
-			);
-
-			try {
-				const result = await performCompaction({
-					agent,
-					sessionManager,
-					auto: true,
-					renderSummaryText: (summary: AssistantMessage) => {
-						const renderable = createRenderableMessage(summary as AppMessage);
-						return renderable
-							? renderMessageToPlainText(renderable).trim()
-							: "";
-					},
-				});
-
-				if (!result.success) {
-					console.error(chalk.red(`[auto-compact] Failed: ${result.error}`));
-					return;
-				}
-
-				console.error(
-					chalk.green("[auto-compact] Compaction complete, continuing..."),
-				);
-				void agent.continue();
-			} catch (error) {
-				console.error(
-					chalk.red(
-						`[auto-compact] Failed: ${error instanceof Error ? error.message : String(error)}`,
-					),
-				);
-			}
-			return;
-		}
 		// Save messages on completion
 		if (event.type === "message_end") {
 			sessionManager.saveMessage(event.message);

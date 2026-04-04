@@ -99,6 +99,7 @@ import {
 	type Model,
 	isAssistantMessage,
 } from "./agent/index.js";
+import { runWithPromptRecovery } from "./agent/prompt-recovery.js";
 import { type ToolRetryMode, ToolRetryService } from "./agent/tool-retry.js";
 import { createAuthSetup, validateCodexFlags } from "./bootstrap/auth-setup.js";
 import {
@@ -213,6 +214,7 @@ async function runInteractiveMode(
 	);
 	const runtime = new AgentRuntimeController({
 		agent,
+		sessionManager,
 		renderer,
 		onError: (error) => {
 			const message =
@@ -297,7 +299,11 @@ async function runSingleShotMode(
 			if (jsonlWriter) {
 				emitUserTurnEvent(jsonlWriter, nextTurnId, message);
 			}
-			await agent.prompt(message);
+			await runWithPromptRecovery({
+				agent,
+				sessionManager,
+				execute: () => agent.prompt(message),
+			});
 		}
 
 		// In text mode, extract and output only the final text response

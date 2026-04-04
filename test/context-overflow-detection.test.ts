@@ -28,6 +28,13 @@ describe("Context Overflow Detection", () => {
 		it("should handle string errors", () => {
 			expect(isContextOverflow("prompt is too long")).toBe(true);
 		});
+
+		it("should detect Maestro's friendly Anthropic overflow wording", () => {
+			const error = new Error(
+				"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.",
+			);
+			expect(isContextOverflow(error)).toBe(true);
+		});
 	});
 
 	describe("OpenAI Error Patterns", () => {

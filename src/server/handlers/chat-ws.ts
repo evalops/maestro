@@ -7,6 +7,7 @@
 import type { IncomingMessage } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
 import type { RawData, WebSocket } from "ws";
+import { runWithPromptRecovery } from "../../agent/prompt-recovery.js";
 import type {
 	Attachment as AgentAttachment,
 	AgentEvent,
@@ -746,7 +747,12 @@ export function handleChatWebSocket(
 
 			try {
 				const breaker = getAgentCircuitBreaker(registeredModel.provider);
-				await breaker.execute(() => agent.prompt(userInput, attachmentsToSend));
+				await runWithPromptRecovery({
+					agent,
+					sessionManager,
+					execute: () =>
+						breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
+				});
 				wsSession.sendDone();
 			} catch (error) {
 				logger.error(

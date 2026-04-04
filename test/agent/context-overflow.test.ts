@@ -59,6 +59,13 @@ describe("isContextOverflow", () => {
 			);
 			expect(isContextOverflow(msg)).toBe(true);
 		});
+
+		it("detects Maestro's friendly Anthropic overflow message", () => {
+			const msg = createErrorMessage(
+				"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.",
+			);
+			expect(isContextOverflow(msg)).toBe(true);
+		});
 	});
 
 	describe("OpenAI errors", () => {

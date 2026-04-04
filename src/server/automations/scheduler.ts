@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { DateTime } from "luxon";
+import { runWithPromptRecovery } from "../../agent/prompt-recovery.js";
 import type { AgentEvent, AppMessage } from "../../agent/types.js";
 import { createRuntimeSessionSummaryUpdater } from "../../session/runtime-summary-updater.js";
 import { createLogger } from "../../utils/logger.js";
@@ -481,7 +482,11 @@ async function executeAutomation(
 	});
 
 	try {
-		await agent.prompt(userInput);
+		await runWithPromptRecovery({
+			agent,
+			sessionManager,
+			execute: () => agent.prompt(userInput),
+		});
 		await sessionManager.flush();
 		unsubscribe();
 		return { success: true, output: lastAssistantOutput, sessionId };

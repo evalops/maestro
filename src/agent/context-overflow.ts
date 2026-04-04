@@ -34,6 +34,7 @@ import type { AssistantMessage } from "./types.js";
 const OVERFLOW_PATTERNS = [
 	// Anthropic: "prompt is too long: 213462 tokens > 200000 maximum"
 	/prompt is too long/i,
+	/rejected this request because the prompt exceeded/i,
 	/max_tokens.*exceeded/i,
 
 	// OpenAI (Completions & Responses API)

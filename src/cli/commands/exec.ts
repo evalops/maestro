@@ -56,6 +56,7 @@ import AjvModule, {
 } from "ajv";
 import chalk from "chalk";
 import type { Agent } from "../../agent/agent.js";
+import { runWithPromptRecovery } from "../../agent/prompt-recovery.js";
 import type { AgentEvent } from "../../agent/types.js";
 import type { SessionManager } from "../../session/manager.js";
 import { resolveDefaultExport } from "../../utils/module-interop.js";
@@ -171,7 +172,11 @@ export async function runExecCommand(
 			}
 			emitUserTurn(normalized);
 			executedPrompts++;
-			await options.agent.prompt(normalized);
+			await runWithPromptRecovery({
+				agent: options.agent,
+				sessionManager: options.sessionManager,
+				execute: () => options.agent.prompt(normalized),
+			});
 		}
 
 		if (executedPrompts === 0) {

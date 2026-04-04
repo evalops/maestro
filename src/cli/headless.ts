@@ -12,7 +12,10 @@ import {
 } from "@evalops/contracts";
 import type { ActionApprovalService } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
-import { recoverFromMaxOutput } from "../agent/max-output-recovery.js";
+import {
+	buildCompactionEvent,
+	runWithPromptRecovery,
+} from "../agent/prompt-recovery.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
 import { HeadlessUtilityCommandManager } from "../headless/utility-command-manager.js";
 import { readWorkspaceFile } from "../headless/utility-file-read.js";
@@ -420,24 +423,58 @@ export async function runHeadlessMode(
 
 				case "prompt":
 					applyOutgoingHeadlessMessage(state, msg);
-					if (msg.attachments && msg.attachments.length > 0) {
-						const loaded = await loadPromptAttachments(
-							msg.attachments,
-							sendError,
-						);
-						if (loaded.length > 0) {
-							sendMessage({
-								type: "status",
-								message: `Loaded ${loaded.length} attachment(s)`,
-							});
-							await agent.prompt(msg.content, loaded);
-						} else {
+					await runWithPromptRecovery({
+						agent,
+						sessionManager,
+						execute: async () => {
+							if (msg.attachments && msg.attachments.length > 0) {
+								const loaded = await loadPromptAttachments(
+									msg.attachments,
+									sendError,
+								);
+								if (loaded.length > 0) {
+									sendMessage({
+										type: "status",
+										message: `Loaded ${loaded.length} attachment(s)`,
+									});
+									await agent.prompt(msg.content, loaded);
+									return;
+								}
+							}
 							await agent.prompt(msg.content);
-						}
-					} else {
-						await agent.prompt(msg.content);
-					}
-					await recoverFromMaxOutput(agent);
+						},
+						callbacks: {
+							onCompacting: () => {
+								sendMessage({
+									type: "status",
+									message:
+										"Prompt exceeded the context window. Compacting history and continuing automatically...",
+								});
+							},
+							onCompacted: (result) => {
+								sendMessage(
+									buildHeadlessCompactionMessage(
+										buildCompactionEvent(result, { auto: true }),
+									),
+								);
+							},
+							onMaxOutputContinue: (attempt, maxContinuations) => {
+								sendMessage({
+									type: "status",
+									message:
+										attempt === 1
+											? "Response hit the output limit. Continuing automatically..."
+											: `Response still hit the output limit. Continuing automatically (${attempt}/${maxContinuations})...`,
+								});
+							},
+							onMaxOutputExhausted: (maxContinuations) => {
+								sendMessage({
+									type: "status",
+									message: `Stopped after ${maxContinuations} automatic continuations because the response kept hitting the output limit.`,
+								});
+							},
+						},
+					});
 					break;
 
 				case "interrupt":

@@ -12,6 +12,10 @@ import type {
 	ApprovalMode,
 } from "../agent/action-approval.js";
 import type { Agent } from "../agent/index.js";
+import {
+	buildCompactionEvent,
+	runWithPromptRecovery,
+} from "../agent/prompt-recovery.js";
 import type { ToolRetryService } from "../agent/tool-retry.js";
 import type { AgentEvent, Attachment, ThinkingLevel } from "../agent/types.js";
 import {
@@ -29,6 +33,7 @@ import {
 	applyIncomingHeadlessMessage,
 	applyInitMessage,
 	applyOutgoingHeadlessMessage,
+	buildHeadlessCompactionMessage,
 	buildHeadlessRawAgentEventMessage,
 	createHeadlessRuntimeState,
 	loadPromptAttachments,
@@ -1729,7 +1734,43 @@ export class HeadlessSessionRuntime {
 	): Promise<void> {
 		try {
 			const breaker = getAgentCircuitBreaker(this.registeredModel.provider);
-			await breaker.execute(() => this.agent.prompt(content, attachments));
+			await runWithPromptRecovery({
+				agent: this.agent,
+				sessionManager: this.sessionManager,
+				execute: () =>
+					breaker.execute(() => this.agent.prompt(content, attachments)),
+				callbacks: {
+					onCompacting: () => {
+						this.publish({
+							type: "status",
+							message:
+								"Prompt exceeded the context window. Compacting history and continuing automatically...",
+						});
+					},
+					onCompacted: (result) => {
+						this.publish(
+							buildHeadlessCompactionMessage(
+								buildCompactionEvent(result, { auto: true }),
+							),
+						);
+					},
+					onMaxOutputContinue: (attempt, maxContinuations) => {
+						this.publish({
+							type: "status",
+							message:
+								attempt === 1
+									? "Response hit the output limit. Continuing automatically..."
+									: `Response still hit the output limit. Continuing automatically (${attempt}/${maxContinuations})...`,
+						});
+					},
+					onMaxOutputExhausted: (maxContinuations) => {
+						this.publish({
+							type: "status",
+							message: `Stopped after ${maxContinuations} automatic continuations because the response kept hitting the output limit.`,
+						});
+					},
+				},
+			});
 		} catch (error) {
 			const message =
 				error instanceof Error ? error.message : "Unknown remote runtime error";

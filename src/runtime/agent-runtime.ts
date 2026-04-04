@@ -1,9 +1,10 @@
 import type { Agent } from "../agent/agent.js";
-import { recoverFromMaxOutput } from "../agent/max-output-recovery.js";
+import { runWithPromptRecovery } from "../agent/prompt-recovery.js";
 import type { AppMessage } from "../agent/types.js";
 import { type PromptPayload, PromptQueue } from "../cli-tui/prompt-queue.js";
 import type { TuiRenderer } from "../cli-tui/tui-renderer.js";
 import { composerManager } from "../composers/index.js";
+import type { SessionManager } from "../session/manager.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("agent-runtime");
@@ -20,6 +21,7 @@ export interface InterruptResult {
 
 interface AgentRuntimeControllerOptions {
 	agent: Agent;
+	sessionManager: SessionManager;
 	renderer?: TuiRenderer;
 	onError?: (error: unknown) => void;
 }
@@ -45,19 +47,32 @@ export class AgentRuntimeController {
 					}
 				}
 
-				await this.options.agent.prompt(text, attachments);
-				await recoverFromMaxOutput(this.options.agent, {
-					onContinue: (attempt, maxContinuations) => {
-						this.renderer?.showInfo(
-							attempt === 1
-								? "Response hit the output limit. Continuing automatically..."
-								: `Response still hit the output limit. Continuing automatically (${attempt}/${maxContinuations})...`,
-						);
-					},
-					onExhausted: (maxContinuations) => {
-						this.renderer?.showInfo(
-							`Stopped after ${maxContinuations} automatic continuations because the response kept hitting the output limit.`,
-						);
+				await runWithPromptRecovery({
+					agent: this.options.agent,
+					sessionManager: this.options.sessionManager,
+					execute: () => this.options.agent.prompt(text, attachments),
+					callbacks: {
+						onCompacting: () => {
+							this.renderer?.showInfo(
+								"Prompt exceeded the context window. Compacting history and continuing automatically...",
+							);
+						},
+						onCompacted: () => {
+							this.renderer?.renderInitialMessages(this.options.agent.state);
+							this.renderer?.refreshFooterHint();
+						},
+						onMaxOutputContinue: (attempt, maxContinuations) => {
+							const prefix =
+								attempt === 1
+									? "Response hit the output limit. Continuing automatically..."
+									: `Response still hit the output limit. Continuing automatically (${attempt}/${maxContinuations})...`;
+							this.renderer?.showInfo(prefix);
+						},
+						onMaxOutputExhausted: (maxContinuations) => {
+							this.renderer?.showInfo(
+								`Stopped after ${maxContinuations} automatic continuations because the response kept hitting the output limit.`,
+							);
+						},
 					},
 				});
 			},

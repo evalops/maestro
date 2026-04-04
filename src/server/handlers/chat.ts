@@ -23,6 +23,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ComposerChatRequest, ComposerMessage } from "@evalops/contracts";
+import { runWithPromptRecovery } from "../../agent/prompt-recovery.js";
 import type {
 	Attachment as AgentAttachment,
 	AgentEvent,
@@ -667,7 +668,12 @@ export async function handleChat(
 			const breaker = getAgentCircuitBreaker(registeredModel.provider);
 
 			// Execute the agent with the user's input
-			await breaker.execute(() => agent.prompt(userInput, attachmentsToSend));
+			await runWithPromptRecovery({
+				agent,
+				sessionManager,
+				execute: () =>
+					breaker.execute(() => agent.prompt(userInput, attachmentsToSend)),
+			});
 
 			// Send completion signal if connection is still open
 			if (!res.writableEnded) {
