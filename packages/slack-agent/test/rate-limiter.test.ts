@@ -1,8 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RateLimiter, formatRateLimitMessage } from "../src/rate-limiter.js";
 
 describe("RateLimiter", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("enforces per-user limit", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 		const limiter = new RateLimiter({
 			maxPerUser: 2,
 			maxPerChannel: 100,
@@ -17,12 +23,13 @@ describe("RateLimiter", () => {
 		expect(third.limitedBy).toBe("user");
 		expect(formatRateLimitMessage(third)).toContain("rate limit");
 
-		// Wait for window to expire
-		await new Promise((r) => setTimeout(r, 110));
+		vi.advanceTimersByTime(110);
 		expect(limiter.check("u1", "c1").allowed).toBe(true);
 	});
 
 	it("enforces per-channel limit", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 		const limiter = new RateLimiter({
 			maxPerUser: 100,
 			maxPerChannel: 2,
@@ -36,8 +43,7 @@ describe("RateLimiter", () => {
 		expect(third.allowed).toBe(false);
 		expect(third.limitedBy).toBe("channel");
 
-		// Wait for window to expire
-		await new Promise((r) => setTimeout(r, 110));
+		vi.advanceTimersByTime(110);
 		expect(limiter.check("u3", "c1").allowed).toBe(true);
 	});
 
