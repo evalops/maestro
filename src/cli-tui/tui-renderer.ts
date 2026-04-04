@@ -330,28 +330,28 @@ export class TuiRenderer {
 	private planController?: PlanController;
 	private sessionView: SessionView;
 	private sessionStateController!: SessionStateController;
-	private importExportView: ImportExportView;
+	private importExportView?: ImportExportView;
 	private runCommandView: RunCommandView;
 	private bashModeView: BashModeView;
 	private gitView: GitView;
 	private toolStatusView: ToolStatusView;
 	private diagnosticsView: DiagnosticsView;
-	private telemetryView: TelemetryView;
-	private ollamaView: OllamaView;
-	private lspView: LspView;
+	private telemetryView?: TelemetryView;
+	private ollamaView?: OllamaView;
+	private lspView?: LspView;
 	private fileSearchView: FileSearchView;
 	private conversationCompactor: ConversationCompactor;
 	private messageView: MessageView;
-	private feedbackView: FeedbackView;
-	private aboutView: AboutView;
-	private changelogView: ChangelogView;
-	private hotkeysView: HotkeysView;
-	private trainingView: TrainingView;
-	private infoView: InfoView;
-	private thinkingSelectorView: ThinkingSelectorView;
-	private themeSelectorView: ThemeSelectorView;
-	private modelSelectorView: ModelSelectorView;
-	private reportSelectorView: ReportSelectorView;
+	private feedbackView?: FeedbackView;
+	private aboutView?: AboutView;
+	private changelogView?: ChangelogView;
+	private hotkeysView?: HotkeysView;
+	private trainingView?: TrainingView;
+	private infoView?: InfoView;
+	private thinkingSelectorView?: ThinkingSelectorView;
+	private themeSelectorView?: ThemeSelectorView;
+	private modelSelectorView?: ModelSelectorView;
+	private reportSelectorView?: ReportSelectorView;
 	private treeSelectorView: TreeSelectorView;
 	private oauthFlowController!: OAuthFlowController;
 	private queueModeSelectorView: QueueModeSelectorView;
@@ -360,10 +360,10 @@ export class TuiRenderer {
 	private backgroundTasksController: BackgroundTasksController;
 	private mcpEventsController: McpEventsController;
 	private resizeHandler: () => void;
-	private updateView: UpdateView;
-	private configView: ConfigView;
-	private costView: CostView;
-	private quotaView: QuotaView;
+	private updateView?: UpdateView;
+	private configView?: ConfigView;
+	private costView?: CostView;
+	private quotaView?: QuotaView;
 	private runController: RunController;
 	private agentEventBridge!: AgentEventBridge;
 	private readonly focusEditor = (): void => {
@@ -1087,92 +1087,11 @@ export class TuiRenderer {
 			},
 		});
 
-		this.importExportView = new ImportExportView({
-			agent: this.agent,
-			sessionManager: this.sessionManager,
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
-			recordShareArtifact: (filePath) =>
-				this.sessionContext.recordShareArtifact(filePath),
-		});
-		this.feedbackView = new FeedbackView({
-			agent: this.agent,
-			sessionManager: this.sessionManager,
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			toolStatusView: this.toolStatusView,
-			gitView: this.gitView,
-			version: this.version,
-			getApprovalMode: () => this.approvalService.getMode(),
-		});
-		this.aboutView = new AboutView({
-			agent: this.agent,
-			sessionManager: this.sessionManager,
-			gitView: this.gitView,
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			version: this.version,
-			telemetryStatus: () => this.miscHandlers.describeTelemetryStatus(),
-			otelStatus: () => getOpenTelemetryStatus(),
-			getApprovalMode: () => this.approvalService.getMode(),
-		});
-		this.changelogView = new ChangelogView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showError: (message: string) => this.notificationView.showError(message),
-		});
-		this.hotkeysView = new HotkeysView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-		});
-		this.infoView = new InfoView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			getSlashCommands: () => this.slashCommands,
-			isInteractive: () => this.terminalCapabilities.isTTY,
-			getRecentCommands: () => this.recentCommands,
-			getFavoriteCommands: () => this.favoriteCommands,
-		});
-		this.thinkingSelectorView = new ThinkingSelectorView({
-			agent: this.agent,
-			sessionManager: this.sessionManager,
-			modalManager: this.modalManager,
-			ui: this.ui,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-		});
-		this.themeSelectorView = new ThemeSelectorView({
-			currentTheme: () => getCurrentThemeName(),
-			modalManager: this.modalManager,
-			ui: this.ui,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			onThemeChange: () => this.ui.requestRender(),
-		});
-		this.modelSelectorView = new ModelSelectorView({
-			agent: this.agent,
-			sessionManager: this.sessionManager,
-			modalManager: this.modalManager,
-			ui: this.ui,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			modelScope: this.modelScope,
-		});
 		this.queueModeSelectorView = new QueueModeSelectorView({
 			ui: this.ui,
 			modalManager: this.modalManager,
 			notificationView: this.notificationView,
 			onModeSelected: (kind, mode) => this.queueController.setMode(kind, mode),
-		});
-		this.reportSelectorView = new ReportSelectorView({
-			modalManager: this.modalManager,
-			ui: this.ui,
-			onSelect: (type) => {
-				if (type === "bug") {
-					this.feedbackView.handleBugCommand();
-				} else {
-					this.feedbackView.handleFeedbackCommand();
-				}
-			},
 		});
 		this.userMessageSelectorView = new UserMessageSelectorView({
 			agent: this.agent,
@@ -1252,76 +1171,6 @@ export class TuiRenderer {
 				},
 			},
 		});
-		this.updateView = new UpdateView({
-			currentVersion: this.version,
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showError: (message) => this.notificationView.showError(message),
-		});
-		this.configView = new ConfigView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showError: (message) => this.notificationView.showError(message),
-			showInfo: (message) => this.notificationView.showInfo(message),
-		});
-		this.costView = new CostView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showError: (message) => this.notificationView.showError(message),
-		});
-		this.quotaView = new QuotaView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showError: (message) => this.notificationView.showError(message),
-			getSessionTokenUsage: () => {
-				const stats = calculateFooterStats(this.agent.state);
-				return stats.totalInput + stats.totalOutput;
-			},
-		});
-		this.telemetryView = new TelemetryView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showError: (message) => this.notificationView.showError(message),
-			onStatusChanged: (status) => {
-				this.telemetryStatus = status;
-				this.diagnosticsView.setTelemetryStatus(status);
-			},
-		});
-		this.trainingView = new TrainingView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showError: (message) => this.notificationView.showError(message),
-			onStatusChanged: (status) => {
-				this.trainingStatus = status;
-				this.diagnosticsView.setTrainingStatus(status);
-			},
-		});
-		this.ollamaView = new OllamaView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			showErrorMessage: (message) => this.notificationView.showError(message),
-			getRegisteredModels: () => getRegisteredModels(),
-			onUseModel: (model) => {
-				this.agent.setModel(model);
-				this.sessionManager.saveModelChange(
-					`${model.provider}/${model.id}`,
-					toSessionModelMetadata(model),
-				);
-				this.notificationView.showToast(`Switched to ${model.id}`, "success");
-				this.ui.requestRender();
-			},
-		});
-		this.lspView = new LspView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showInfo: (message) => this.notificationView.showInfo(message),
-			showError: (message) => this.notificationView.showError(message),
-		});
 		this.customCommandsController = createCustomCommandsController({
 			cwd: process.cwd(),
 			callbacks: {
@@ -1339,27 +1188,13 @@ export class TuiRenderer {
 			cwd: process.cwd(),
 			registryOptions: buildTuiCommandRegistryOptions({
 				runCommandView: this.runCommandView,
-				importExportView: this.importExportView,
 				toolStatusView: this.toolStatusView,
 				sessionView: this.sessionView,
-				reportSelectorView: this.reportSelectorView,
-				feedbackView: this.feedbackView,
-				aboutView: this.aboutView,
 				clearController: this.clearController,
 				diagnosticsView: this.diagnosticsView,
 				fileSearchView: this.fileSearchView,
-				infoView: this.infoView,
-				updateView: this.updateView,
-				changelogView: this.changelogView,
-				hotkeysView: this.hotkeysView,
-				configView: this.configView,
-				costView: this.costView,
-				quotaView: this.quotaView,
-				telemetryView: this.telemetryView,
-				trainingView: this.trainingView,
 				planController: this.planController,
 				gitView: this.gitView,
-				ollamaView: this.ollamaView,
 				backgroundTasksController: this.backgroundTasksController,
 				compactionController: this.compactionController,
 				customCommandsController: this.customCommandsController,
@@ -1370,11 +1205,25 @@ export class TuiRenderer {
 				notificationView: this.notificationView,
 				chatContainer: this.chatContainer,
 				ui: this.ui,
-				thinkingSelectorView: this.thinkingSelectorView,
-				modelSelectorView: this.modelSelectorView,
-				themeSelectorView: this.themeSelectorView,
 				uiStateController: this.uiStateController,
-				lspView: this.lspView,
+				getImportExportView: () => this.getImportExportView(),
+				getReportSelectorView: () => this.getReportSelectorView(),
+				getFeedbackView: () => this.getFeedbackView(),
+				getAboutView: () => this.getAboutView(),
+				getInfoView: () => this.getInfoView(),
+				getUpdateView: () => this.getUpdateView(),
+				getChangelogView: () => this.getChangelogView(),
+				getHotkeysView: () => this.getHotkeysView(),
+				getConfigView: () => this.getConfigView(),
+				getCostView: () => this.getCostView(),
+				getQuotaView: () => this.getQuotaView(),
+				getTelemetryView: () => this.getTelemetryView(),
+				getTrainingView: () => this.getTrainingView(),
+				getOllamaView: () => this.getOllamaView(),
+				getThinkingSelectorView: () => this.getThinkingSelectorView(),
+				getModelSelectorView: () => this.getModelSelectorView(),
+				getThemeSelectorView: () => this.getThemeSelectorView(),
+				getLspView: () => this.getLspView(),
 				getMessages: () => this.agent.state.messages,
 				createCommandContext: (ctx) => this.createCommandContext(ctx),
 				handleReviewCommand: (context) => this.handleReviewCommand(context),
@@ -1591,6 +1440,229 @@ export class TuiRenderer {
 
 		this.ui.start();
 		this.isInitialized = true;
+	}
+
+	private getImportExportView(): ImportExportView {
+		this.importExportView ??= new ImportExportView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			applyLoadedSessionContext: () => this.applyLoadedSessionContext(),
+			recordShareArtifact: (filePath) =>
+				this.sessionContext.recordShareArtifact(filePath),
+		});
+		return this.importExportView;
+	}
+
+	private getFeedbackView(): FeedbackView {
+		this.feedbackView ??= new FeedbackView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			toolStatusView: this.toolStatusView,
+			gitView: this.gitView,
+			version: this.version,
+			getApprovalMode: () => this.approvalService.getMode(),
+		});
+		return this.feedbackView;
+	}
+
+	private getAboutView(): AboutView {
+		this.aboutView ??= new AboutView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			gitView: this.gitView,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			version: this.version,
+			telemetryStatus: () => this.miscHandlers.describeTelemetryStatus(),
+			otelStatus: () => getOpenTelemetryStatus(),
+			getApprovalMode: () => this.approvalService.getMode(),
+		});
+		return this.aboutView;
+	}
+
+	private getChangelogView(): ChangelogView {
+		this.changelogView ??= new ChangelogView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showError: (message: string) => this.notificationView.showError(message),
+		});
+		return this.changelogView;
+	}
+
+	private getHotkeysView(): HotkeysView {
+		this.hotkeysView ??= new HotkeysView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+		});
+		return this.hotkeysView;
+	}
+
+	private getInfoView(): InfoView {
+		this.infoView ??= new InfoView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			getSlashCommands: () => this.slashCommands,
+			isInteractive: () => this.terminalCapabilities.isTTY,
+			getRecentCommands: () => this.recentCommands,
+			getFavoriteCommands: () => this.favoriteCommands,
+		});
+		return this.infoView;
+	}
+
+	private getThinkingSelectorView(): ThinkingSelectorView {
+		this.thinkingSelectorView ??= new ThinkingSelectorView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			modalManager: this.modalManager,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+		});
+		return this.thinkingSelectorView;
+	}
+
+	private getThemeSelectorView(): ThemeSelectorView {
+		this.themeSelectorView ??= new ThemeSelectorView({
+			currentTheme: () => getCurrentThemeName(),
+			modalManager: this.modalManager,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			onThemeChange: () => this.ui.requestRender(),
+		});
+		return this.themeSelectorView;
+	}
+
+	private getModelSelectorView(): ModelSelectorView {
+		this.modelSelectorView ??= new ModelSelectorView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			modalManager: this.modalManager,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			modelScope: this.modelScope,
+		});
+		return this.modelSelectorView;
+	}
+
+	private getReportSelectorView(): ReportSelectorView {
+		this.reportSelectorView ??= new ReportSelectorView({
+			modalManager: this.modalManager,
+			ui: this.ui,
+			onSelect: (type) => {
+				if (type === "bug") {
+					this.getFeedbackView().handleBugCommand();
+				} else {
+					this.getFeedbackView().handleFeedbackCommand();
+				}
+			},
+		});
+		return this.reportSelectorView;
+	}
+
+	private getUpdateView(): UpdateView {
+		this.updateView ??= new UpdateView({
+			currentVersion: this.version,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showError: (message) => this.notificationView.showError(message),
+		});
+		return this.updateView;
+	}
+
+	private getConfigView(): ConfigView {
+		this.configView ??= new ConfigView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showError: (message) => this.notificationView.showError(message),
+			showInfo: (message) => this.notificationView.showInfo(message),
+		});
+		return this.configView;
+	}
+
+	private getCostView(): CostView {
+		this.costView ??= new CostView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showError: (message) => this.notificationView.showError(message),
+		});
+		return this.costView;
+	}
+
+	private getQuotaView(): QuotaView {
+		this.quotaView ??= new QuotaView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showError: (message) => this.notificationView.showError(message),
+			getSessionTokenUsage: () => {
+				const stats = calculateFooterStats(this.agent.state);
+				return stats.totalInput + stats.totalOutput;
+			},
+		});
+		return this.quotaView;
+	}
+
+	private getTelemetryView(): TelemetryView {
+		this.telemetryView ??= new TelemetryView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showError: (message) => this.notificationView.showError(message),
+			onStatusChanged: (status) => {
+				this.telemetryStatus = status;
+				this.diagnosticsView.setTelemetryStatus(status);
+			},
+		});
+		return this.telemetryView;
+	}
+
+	private getTrainingView(): TrainingView {
+		this.trainingView ??= new TrainingView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showError: (message) => this.notificationView.showError(message),
+			onStatusChanged: (status) => {
+				this.trainingStatus = status;
+				this.diagnosticsView.setTrainingStatus(status);
+			},
+		});
+		return this.trainingView;
+	}
+
+	private getOllamaView(): OllamaView {
+		this.ollamaView ??= new OllamaView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			showErrorMessage: (message) => this.notificationView.showError(message),
+			getRegisteredModels: () => getRegisteredModels(),
+			onUseModel: (model) => {
+				this.agent.setModel(model);
+				this.sessionManager.saveModelChange(
+					`${model.provider}/${model.id}`,
+					toSessionModelMetadata(model),
+				);
+				this.notificationView.showToast(`Switched to ${model.id}`, "success");
+				this.ui.requestRender();
+			},
+		});
+		return this.ollamaView;
+	}
+
+	private getLspView(): LspView {
+		this.lspView ??= new LspView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfo: (message) => this.notificationView.showInfo(message),
+			showError: (message) => this.notificationView.showError(message),
+		});
+		return this.lspView;
 	}
 
 	async handleEvent(event: AgentEvent, state: AgentState): Promise<void> {
@@ -1918,7 +1990,7 @@ export class TuiRenderer {
 	): Promise<void> {
 		this.diagnosticsView.handleStatusCommand();
 		const costContext = this.createSyntheticContext("cost", "today");
-		this.costView.handleCostCommand(costContext);
+		this.getCostView().handleCostCommand(costContext);
 	}
 
 	private clearEditor(): void {
@@ -2266,9 +2338,9 @@ export class TuiRenderer {
 					? (ctx) => this.queuePanelController!.handleQueueCommand(ctx)
 					: null,
 				handleExportCommand: (rawInput) =>
-					this.importExportView.handleExportCommand(rawInput),
+					this.getImportExportView().handleExportCommand(rawInput),
 				handleShareCommand: (rawInput) =>
-					this.importExportView.handleShareCommand(rawInput),
+					this.getImportExportView().handleShareCommand(rawInput),
 				handleSessionRecoverCommand: (ctx) =>
 					this.sessionStateController.handleSessionRecoverCommand(ctx),
 				handleSessionCleanupCommand: (ctx) => {
@@ -2282,7 +2354,7 @@ export class TuiRenderer {
 					}
 				},
 				handleStatusCommand: () => this.diagnosticsView.handleStatusCommand(),
-				handleAboutCommand: () => this.aboutView.handleAboutCommand(),
+				handleAboutCommand: () => this.getAboutView().handleAboutCommand(),
 				handleContextCommand: (ctx) => this.handleContextCommand(ctx),
 				handleStatsCommand: (ctx) => this.handleStatsCommand(ctx),
 				handleBackgroundCommand: (ctx) =>
@@ -2290,13 +2362,15 @@ export class TuiRenderer {
 				handleDiagnosticsCommand: (rawInput) =>
 					this.diagnosticsView.handleDiagnosticsCommand(rawInput),
 				handleTelemetryCommand: (ctx) =>
-					this.telemetryView.handleTelemetryCommand(ctx),
+					this.getTelemetryView().handleTelemetryCommand(ctx),
 				handleTrainingCommand: (ctx) =>
-					this.trainingView.handleTrainingCommand(ctx),
-				handleConfigCommand: (ctx) => this.configView.handleConfigCommand(ctx),
-				handleLspCommand: (rawInput) => this.lspView.handleLspCommand(rawInput),
+					this.getTrainingView().handleTrainingCommand(ctx),
+				handleConfigCommand: (ctx) =>
+					this.getConfigView().handleConfigCommand(ctx),
+				handleLspCommand: (rawInput) =>
+					this.getLspView().handleLspCommand(rawInput),
 				handlePerfCommand: () => this.showPerfReport(),
-				showTheme: () => this.themeSelectorView.show(),
+				showTheme: () => this.getThemeSelectorView().show(),
 				handleCleanCommand: (ctx) =>
 					this.uiStateController.handleCleanCommand(ctx),
 				handleFooterCommand: (ctx) => this.handleFooterCommand(ctx),
@@ -2319,10 +2393,11 @@ export class TuiRenderer {
 						showInfo,
 					),
 				getAuthState: () => this.getActualAuthState(),
-				handleCostCommand: (ctx) => this.costView.handleCostCommand(ctx),
-				handleQuotaCommand: (ctx) => this.quotaView.handleQuotaCommand(ctx),
+				handleCostCommand: (ctx) => this.getCostView().handleCostCommand(ctx),
+				handleQuotaCommand: (ctx) =>
+					this.getQuotaView().handleQuotaCommand(ctx),
 				handleImportCommand: (rawInput) =>
-					this.importExportView.handleImportCommand(rawInput),
+					this.getImportExportView().handleImportCommand(rawInput),
 				handleToolsCommand: (rawInput) =>
 					this.toolStatusView.handleToolsCommand(rawInput),
 				handleRunCommand: (rawInput) =>

@@ -61,27 +61,13 @@ import type { UiStateController } from "./ui-state-controller.js";
 
 export interface TuiCommandRegistryDeps {
 	runCommandView: RunCommandView;
-	importExportView: ImportExportView;
 	toolStatusView: ToolStatusView;
 	sessionView: SessionView;
-	reportSelectorView: ReportSelectorView;
-	feedbackView: FeedbackView;
-	aboutView: AboutView;
 	clearController: ClearController;
 	diagnosticsView: DiagnosticsView;
 	fileSearchView: FileSearchView;
-	infoView: InfoView;
-	updateView: UpdateView;
-	changelogView: ChangelogView;
-	hotkeysView: HotkeysView;
-	configView: ConfigView;
-	costView: CostView;
-	quotaView: QuotaView;
-	telemetryView: TelemetryView;
-	trainingView: TrainingView;
 	planController?: PlanController;
 	gitView: GitView;
-	ollamaView: OllamaView;
 	backgroundTasksController: BackgroundTasksController;
 	compactionController: CompactionController;
 	customCommandsController: CustomCommandsController;
@@ -92,11 +78,25 @@ export interface TuiCommandRegistryDeps {
 	notificationView: NotificationView;
 	chatContainer: Container;
 	ui: TUI;
-	thinkingSelectorView: ThinkingSelectorView;
-	modelSelectorView: ModelSelectorView;
-	themeSelectorView: ThemeSelectorView;
 	uiStateController: UiStateController;
-	lspView: LspView;
+	getImportExportView: () => ImportExportView;
+	getReportSelectorView: () => ReportSelectorView;
+	getFeedbackView: () => FeedbackView;
+	getAboutView: () => AboutView;
+	getInfoView: () => InfoView;
+	getUpdateView: () => UpdateView;
+	getChangelogView: () => ChangelogView;
+	getHotkeysView: () => HotkeysView;
+	getConfigView: () => ConfigView;
+	getCostView: () => CostView;
+	getQuotaView: () => QuotaView;
+	getTelemetryView: () => TelemetryView;
+	getTrainingView: () => TrainingView;
+	getOllamaView: () => OllamaView;
+	getThinkingSelectorView: () => ThinkingSelectorView;
+	getModelSelectorView: () => ModelSelectorView;
+	getThemeSelectorView: () => ThemeSelectorView;
+	getLspView: () => LspView;
 	getMessages: () => AppMessage[];
 	createCommandContext: (ctx: {
 		command: SlashCommand;
@@ -146,30 +146,30 @@ export function buildTuiCommandRegistryOptions(
 		getRunScriptCompletions: (prefix) =>
 			deps.runCommandView.getRunScriptCompletions(prefix),
 		createContext: (ctx) => deps.createCommandContext(ctx),
-		showThinkingSelector: (_context) => deps.thinkingSelectorView.show(),
-		showModelSelector: (_context) => deps.modelSelectorView.show(),
-		showThemeSelector: (_context) => deps.themeSelectorView.show(),
+		showThinkingSelector: (_context) => deps.getThinkingSelectorView().show(),
+		showModelSelector: (_context) => deps.getModelSelectorView().show(),
+		showThemeSelector: (_context) => deps.getThemeSelectorView().show(),
 		handleExportSession: async (context) =>
-			deps.importExportView.handleExportCommand(context.rawInput),
+			deps.getImportExportView().handleExportCommand(context.rawInput),
 		handleShareSession: async (context) =>
-			deps.importExportView.handleShareCommand(context.rawInput),
+			deps.getImportExportView().handleShareCommand(context.rawInput),
 		handleTools: (context) =>
 			deps.toolStatusView.handleToolsCommand(context.rawInput),
 		handleToolHistory: (context) => deps.handleToolHistoryCommand(context),
 		handleSkills: (context) => deps.handleSkillsCommand(context),
 		handleImportConfig: (context) =>
-			deps.importExportView.handleImportCommand(context.rawInput),
+			deps.getImportExportView().handleImportCommand(context.rawInput),
 		handleSession: (context) =>
 			deps.sessionView.handleSessionCommand(context.rawInput),
 		handleSessions: (context) =>
 			deps.sessionView.handleSessionsCommand(context.rawInput),
 		handleReport: (context) =>
 			handleReportCommand(context, {
-				showBugReport: () => deps.feedbackView.handleBugCommand(),
-				showFeedback: () => deps.feedbackView.handleFeedbackCommand(),
-				showReportSelector: () => deps.reportSelectorView.show(),
+				showBugReport: () => deps.getFeedbackView().handleBugCommand(),
+				showFeedback: () => deps.getFeedbackView().handleFeedbackCommand(),
+				showReportSelector: () => deps.getReportSelectorView().show(),
 			}),
-		handleAbout: (_context) => deps.aboutView.handleAboutCommand(),
+		handleAbout: (_context) => deps.getAboutView().handleAboutCommand(),
 		handleHistory: (context) => deps.handleHistoryCommand(context),
 		handleClear: async (_context) =>
 			await deps.clearController.handleClearCommand(),
@@ -182,21 +182,23 @@ export function buildTuiCommandRegistryOptions(
 		handlePii: (context) => handlePiiCommand(context),
 		handleAudit: (context) => handleAuditCommand(context),
 		handleLimits: (context) => handleLimitsCommand(context),
-		showHelp: (_context) => deps.infoView.showHelp(),
-		handleUpdate: (_context) => deps.updateView.handleUpdateCommand(),
-		handleChangelog: (_context) => deps.changelogView.handleChangelogCommand(),
-		handleHotkeys: (_context) => deps.hotkeysView.handleHotkeysCommand(),
-		handleConfig: (context) => deps.configView.handleConfigCommand(context),
-		handleCost: (context) => deps.costView.handleCostCommand(context),
-		handleQuota: (context) => deps.quotaView.handleQuotaCommand(context),
+		showHelp: (_context) => deps.getInfoView().showHelp(),
+		handleUpdate: (_context) => deps.getUpdateView().handleUpdateCommand(),
+		handleChangelog: (_context) =>
+			deps.getChangelogView().handleChangelogCommand(),
+		handleHotkeys: (_context) => deps.getHotkeysView().handleHotkeysCommand(),
+		handleConfig: (context) =>
+			deps.getConfigView().handleConfigCommand(context),
+		handleCost: (context) => deps.getCostView().handleCostCommand(context),
+		handleQuota: (context) => deps.getQuotaView().handleQuotaCommand(context),
 		handleTelemetry: (context) =>
-			deps.telemetryView.handleTelemetryCommand(context),
+			deps.getTelemetryView().handleTelemetryCommand(context),
 		handleOtel: (_context) =>
 			otelHandler({
 				showInfo: (msg) => deps.notificationView.showInfo(msg),
 			}),
 		handleTraining: (context) =>
-			deps.trainingView.handleTrainingCommand(context),
+			deps.getTrainingView().handleTrainingCommand(context),
 		handleStats: (context) => deps.handleStatsCommand(context),
 		handlePlan: (context) => {
 			if (deps.planController) {
@@ -210,7 +212,7 @@ export function buildTuiCommandRegistryOptions(
 		handleRun: (context) =>
 			deps.runCommandView.handleRunCommand(context.rawInput),
 		handleOllama: (context) =>
-			deps.ollamaView.handleOllamaCommand(context.rawInput),
+			deps.getOllamaView().handleOllamaCommand(context.rawInput),
 		handleDiagnostics: (context) =>
 			deps.diagnosticsView.handleDiagnosticsCommand(context.rawInput),
 		handleBackground: (context) =>
@@ -278,7 +280,8 @@ export function buildTuiCommandRegistryOptions(
 		handleComposer: (context) => deps.handleComposerCommand(context),
 		handleZen: (context) => deps.uiStateController.handleZenCommand(context),
 		handleContext: (context) => deps.handleContextCommand(context),
-		handleLsp: (context) => deps.lspView.handleLspCommand(context.rawInput),
+		handleLsp: (context) =>
+			deps.getLspView().handleLspCommand(context.rawInput),
 		handleFramework: (context) => deps.handleFrameworkCommand(context),
 		handleClean: (context) =>
 			deps.uiStateController.handleCleanCommand(context),
