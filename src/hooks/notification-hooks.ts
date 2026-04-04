@@ -210,7 +210,7 @@ export async function sendNotification(
 	}
 
 	if (config.terminalNotify) {
-		sendTerminalNotification("Maestro", buildTerminalNotificationBody(payload));
+		sendTerminalNotification("Maestro", summarizeNotificationPayload(payload));
 	}
 
 	if (!config.program) {
@@ -268,7 +268,7 @@ export function notifyTurnComplete(summary: string): void {
 	// External program is handled by sendNotification with full payload
 }
 
-function buildTerminalNotificationBody(
+export function summarizeNotificationPayload(
 	payload: NotificationPayload,
 ): string | undefined {
 	switch (payload.type) {
