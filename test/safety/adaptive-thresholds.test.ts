@@ -55,9 +55,12 @@ describe("adaptive-thresholds", () => {
 		});
 
 		it("returns false for values within normal range", () => {
-			// Record consistent observations
-			for (let i = 0; i < 10; i++) {
-				thresholds.recordObservation("test_metric", 10 + Math.random());
+			// Use a deterministic baseline with realistic spread so the test does not
+			// randomly fail when EWMA variance happens to collapse around 10.5.
+			for (const value of [
+				10.0, 11.0, 10.2, 10.8, 10.3, 10.7, 10.4, 10.6, 10.45, 10.55,
+			]) {
+				thresholds.recordObservation("test_metric", value);
 			}
 
 			// Value close to mean should not be anomaly
