@@ -128,6 +128,11 @@ describe("recoverFromMaxOutput", () => {
 		});
 
 		expect(agent.continue).toHaveBeenCalledTimes(1);
+		expect(agent.continue).toHaveBeenCalledWith(
+			expect.objectContaining({
+				continuationPrompt: expect.stringContaining("Resume directly"),
+			}),
+		);
 		expect(onContinue).toHaveBeenCalledWith(1, 3);
 	});
 });
@@ -152,6 +157,13 @@ describe("runWithPromptRecovery", () => {
 
 		expect(sessionManager.saveCompaction).toHaveBeenCalledOnce();
 		expect(agent.continue).toHaveBeenCalledOnce();
+		expect(agent.continue).toHaveBeenCalledWith(
+			expect.objectContaining({
+				continuationPrompt: expect.stringContaining(
+					"Continue directly with the user's unresolved request",
+				),
+			}),
+		);
 		expect(agent.replaceMessages).toHaveBeenCalledOnce();
 	});
 
@@ -179,6 +191,13 @@ describe("runWithPromptRecovery", () => {
 
 		expect(sessionManager.saveCompaction).toHaveBeenCalledOnce();
 		expect(agent.continue).toHaveBeenCalledOnce();
+		expect(agent.continue).toHaveBeenCalledWith(
+			expect.objectContaining({
+				continuationPrompt: expect.stringContaining(
+					"Continue directly with the user's unresolved request",
+				),
+			}),
+		);
 	});
 
 	it("rethrows the original overflow error if compaction cannot run", async () => {

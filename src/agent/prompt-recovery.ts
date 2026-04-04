@@ -13,6 +13,10 @@ import type { AppMessage, AssistantMessage } from "./types.js";
 const logger = createLogger("agent:prompt-recovery");
 
 const DEFAULT_MAX_OUTPUT_CONTINUATIONS = 3;
+const MAX_OUTPUT_CONTINUATION_PROMPT =
+	"Output token limit hit. Resume directly with the unfinished answer. No apology, no recap, and no restating the task. Pick up mid-thought if needed, and keep the remaining work broken into smaller pieces.";
+const POST_COMPACTION_CONTINUATION_PROMPT =
+	"Continue directly with the user's unresolved request after compaction. No apology or recap unless it is required to finish correctly.";
 
 export interface PromptRecoveryCallbacks {
 	onCompacting?: () => void;
@@ -118,7 +122,9 @@ export async function recoverFromMaxOutput(
 
 		attempt += 1;
 		options?.callbacks?.onMaxOutputContinue?.(attempt, maxContinuations);
-		await agent.continue();
+		await agent.continue({
+			continuationPrompt: MAX_OUTPUT_CONTINUATION_PROMPT,
+		});
 	}
 
 	const lastAssistant = getLastAssistantMessage(agent.state.messages);
@@ -149,7 +155,9 @@ async function recoverFromPromptOverflow(
 	}
 
 	callbacks?.onCompacted?.(result);
-	await agent.continue();
+	await agent.continue({
+		continuationPrompt: POST_COMPACTION_CONTINUATION_PROMPT,
+	});
 	return true;
 }
 

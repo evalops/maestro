@@ -1133,6 +1133,11 @@ export class Agent {
 	async continue(options?: {
 		/** Override the system prompt for this continuation */
 		systemPromptOverride?: string;
+		/**
+		 * Provider-only user instruction appended for this continuation.
+		 * Not persisted to session history or shown in the UI.
+		 */
+		continuationPrompt?: string;
 	}): Promise<void> {
 		// Prevent concurrent prompts
 		if (this.runningPrompt) {
@@ -1171,6 +1176,17 @@ export class Agent {
 				transformedMessages,
 				this._state.model,
 			);
+			const continuationPrompt = options?.continuationPrompt?.trim();
+			const providerMessages = continuationPrompt
+				? [
+						...messagesToSend,
+						{
+							role: "user" as const,
+							content: continuationPrompt,
+							timestamp: Date.now(),
+						},
+					]
+				: messagesToSend;
 
 			// Determine reasoning level
 			const level = this._state.thinkingLevel;
@@ -1219,7 +1235,7 @@ export class Agent {
 			};
 
 			for await (const event of this.transport.run(
-				messagesToSend,
+				providerMessages,
 				continuationMessage,
 				runConfig,
 				abortController.signal,

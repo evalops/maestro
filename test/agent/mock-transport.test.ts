@@ -384,6 +384,113 @@ describe("Agent mock transport", () => {
 		expect(events.some((e) => e.type === "turn_end")).toBe(true);
 	});
 
+	it("continue() can append a provider-only continuation prompt", async () => {
+		let receivedMessages: Message[] | null = null;
+		let receivedUserMessage: Message | null = null;
+
+		class ContinuationPromptTransport implements AgentTransport {
+			async *continue(): AsyncGenerator<AgentEvent, void, unknown> {
+				yield* (async function* empty(): AsyncGenerator<AgentEvent> {})();
+			}
+
+			async *run(
+				messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				receivedMessages = messages;
+				receivedUserMessage = userMessage;
+				yield { type: "turn_start" };
+				yield { type: "message_start", message: userMessage };
+
+				const assistant: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: "continued" }],
+					api: "openai-completions",
+					provider: "mock",
+					model: "mock",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				};
+
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+				yield { type: "turn_end", message: assistant, toolResults: [] };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new ContinuationPromptTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				messages: [
+					{ role: "user", content: "Need the rest", timestamp: 1 },
+					{
+						role: "assistant",
+						content: [{ type: "text", text: "partial answer" }],
+						api: "openai-completions",
+						provider: "mock",
+						model: "mock",
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								total: 0,
+							},
+						},
+						stopReason: "length",
+						timestamp: 2,
+					},
+				],
+			},
+		});
+
+		await agent.continue({
+			continuationPrompt:
+				"Resume directly with the unfinished answer. No apology.",
+		});
+
+		expect(receivedMessages).not.toBeNull();
+		expect(receivedMessages).toHaveLength(3);
+		expect(receivedMessages?.at(-1)).toMatchObject({
+			role: "user",
+			content: "Resume directly with the unfinished answer. No apology.",
+		});
+		expect(receivedUserMessage).toMatchObject({
+			role: "user",
+			content: [],
+		});
+		expect(agent.state.messages).toHaveLength(3);
+		expect(
+			agent.state.messages.some(
+				(message) =>
+					message.role === "user" &&
+					typeof message.content === "string" &&
+					message.content.includes("Resume directly"),
+			),
+		).toBe(false);
+	});
+
 	it("clears stale agent errors before a subsequent successful prompt", async () => {
 		class FailThenSucceedTransport implements AgentTransport {
 			private attempts = 0;
