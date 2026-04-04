@@ -470,6 +470,7 @@ impl AgentSupervisor {
         };
 
         transport.send(msg.clone())?;
+        self.last_response = Some(Instant::now());
         if let Some(ref mut recorder) = self.session_recorder {
             let _ = recorder.record_sent(&msg);
             self.state = recorder.replay_state().clone();
@@ -1716,6 +1717,46 @@ mod tests {
         assert!(supervisor.state().current_response.is_none());
         assert!(supervisor.state().active_tools.is_empty());
         assert!(!supervisor.state().is_responding);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn send_resets_health_deadline_before_remote_reply_arrives() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script_path = create_test_headless_script(temp.path()).expect("script");
+
+        let mut config = SupervisorConfig::default();
+        config.transport.cli_path = script_path.to_string_lossy().into_owned();
+        config.health_check_interval = Duration::from_millis(10);
+        config.health_check_timeout = Duration::from_millis(10);
+        config.auto_reconnect = false;
+
+        let mut supervisor = AgentSupervisor::new(config);
+        supervisor.connect().await.expect("connect");
+
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::Connected)
+        ));
+        assert!(matches!(
+            supervisor.recv().await,
+            Some(SupervisorEvent::HealthChanged {
+                status: HealthStatus::Healthy
+            })
+        ));
+        let _ = supervisor.recv().await.expect("ready");
+
+        supervisor.health_status = HealthStatus::Degraded;
+        supervisor.last_response = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(25))
+                .expect("monotonic clock supports subtraction"),
+        );
+
+        supervisor.prompt("hello after idle").expect("prompt");
+
+        assert!(supervisor.due_health_transition(Instant::now()).is_none());
+        assert_eq!(supervisor.health(), HealthStatus::Degraded);
     }
 
     #[test]
