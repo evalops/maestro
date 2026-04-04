@@ -1262,6 +1262,8 @@ export interface AgentRunConfig {
 	getSteeringMessages?: <T>() => Promise<QueuedMessage<T>[]>;
 	/** Function to retrieve follow-up messages for batch sending */
 	getFollowUpMessages?: <T>() => Promise<QueuedMessage<T>[]>;
+	/** Function to retrieve prompt-only messages for the next turn. */
+	getPromptOnlyMessages?: () => Promise<Message[]>;
 	/** @deprecated Use getSteeringMessages/getFollowUpMessages instead */
 	getQueuedMessages?: <T>() => Promise<QueuedMessage<T>[]>;
 	/**

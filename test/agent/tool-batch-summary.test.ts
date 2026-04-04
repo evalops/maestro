@@ -212,6 +212,168 @@ describe("tool batch summary events", () => {
 		).toBe(false);
 	});
 
+	it("queues a prompt-only summary for the next turn without persisting it", async () => {
+		class PromptOnlyCaptureTransport implements AgentTransport {
+			public promptOnlyMessages: Message[] = [];
+
+			async *continue(): AsyncGenerator<AgentEvent, void, unknown> {}
+
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				yield { type: "message_start", message: userMessage };
+				yield { type: "message_end", message: userMessage };
+
+				const toolBatchMessage: AssistantMessage = {
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "tool_0",
+							name: "read",
+							arguments: { path: "README.md" },
+						},
+						{
+							type: "toolCall",
+							id: "tool_1",
+							name: "write",
+							arguments: { path: "notes.txt", content: "done" },
+						},
+					],
+					api: "openai-completions",
+					provider: "mock",
+					model: "mock-model",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "toolUse",
+					timestamp: Date.now(),
+				};
+				yield { type: "message_start", message: toolBatchMessage };
+				yield { type: "message_end", message: toolBatchMessage };
+
+				const readResult: ToolResultMessage = {
+					role: "toolResult",
+					toolCallId: "tool_0",
+					toolName: "read",
+					content: [{ type: "text", text: "README contents" }],
+					isError: false,
+					timestamp: Date.now(),
+				};
+				yield {
+					type: "tool_execution_start",
+					toolCallId: "tool_0",
+					toolName: "read",
+					args: { path: "README.md" },
+				};
+				yield {
+					type: "tool_execution_end",
+					toolCallId: "tool_0",
+					toolName: "read",
+					result: readResult,
+					isError: false,
+				};
+
+				const writeResult: ToolResultMessage = {
+					role: "toolResult",
+					toolCallId: "tool_1",
+					toolName: "write",
+					content: [{ type: "text", text: "Wrote notes.txt" }],
+					isError: false,
+					timestamp: Date.now(),
+				};
+				yield {
+					type: "tool_execution_start",
+					toolCallId: "tool_1",
+					toolName: "write",
+					args: { path: "notes.txt", content: "done" },
+				};
+				yield {
+					type: "tool_execution_end",
+					toolCallId: "tool_1",
+					toolName: "write",
+					result: writeResult,
+					isError: false,
+				};
+
+				this.promptOnlyMessages =
+					(await config.getPromptOnlyMessages?.()) ?? [];
+
+				const finalAssistant: AssistantMessage = {
+					role: "assistant",
+					content: [{ type: "text", text: "Done" }],
+					api: "openai-completions",
+					provider: "mock",
+					model: "mock-model",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							total: 0,
+						},
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				};
+				yield { type: "message_start", message: finalAssistant };
+				yield { type: "message_end", message: finalAssistant };
+			}
+		}
+
+		const transport = new PromptOnlyCaptureTransport();
+		const agent = new Agent({
+			transport,
+			initialState: { model: mockModel, tools: [] },
+		});
+
+		await agent.prompt("inspect and write");
+
+		expect(transport.promptOnlyMessages).toHaveLength(1);
+		expect(transport.promptOnlyMessages[0]).toMatchObject({
+			role: "user",
+			content: [
+				{
+					type: "text",
+					text:
+						"The following is a transient summary of the most recent tool activity:\n" +
+						"- Read README.md\n- Wrote notes.txt",
+				},
+			],
+		});
+		expect(
+			agent.state.messages.some(
+				(message) =>
+					message.role === "user" &&
+					Array.isArray(message.content) &&
+					message.content.some(
+						(block) =>
+							block.type === "text" &&
+							block.text.includes(
+								"transient summary of the most recent tool activity",
+							),
+					),
+			),
+		).toBe(false);
+	});
+
 	it("clears batch tracking state in transient and full resets", () => {
 		const transport: AgentTransport = {
 			async *run(): AsyncGenerator<AgentEvent, void, unknown> {},
@@ -229,6 +391,7 @@ describe("tool batch summary events", () => {
 				args: Record<string, unknown>;
 				isError: boolean;
 			}>;
+			promptOnlyQueue: Message[];
 		};
 
 		internalAgent.activeToolBatchIds = new Set(["tool_0"]);
@@ -240,9 +403,17 @@ describe("tool batch summary events", () => {
 				isError: false,
 			},
 		];
+		internalAgent.promptOnlyQueue = [
+			{
+				role: "user",
+				content: [{ type: "text", text: "summary" }],
+				timestamp: Date.now(),
+			},
+		];
 		agent.clearTransientRunState();
 		expect(internalAgent.activeToolBatchIds).toBeNull();
 		expect(internalAgent.completedToolBatch).toEqual([]);
+		expect(internalAgent.promptOnlyQueue).toEqual([]);
 
 		internalAgent.activeToolBatchIds = new Set(["tool_1"]);
 		internalAgent.completedToolBatch = [
@@ -253,8 +424,16 @@ describe("tool batch summary events", () => {
 				isError: false,
 			},
 		];
+		internalAgent.promptOnlyQueue = [
+			{
+				role: "user",
+				content: [{ type: "text", text: "summary" }],
+				timestamp: Date.now(),
+			},
+		];
 		agent.reset();
 		expect(internalAgent.activeToolBatchIds).toBeNull();
 		expect(internalAgent.completedToolBatch).toEqual([]);
+		expect(internalAgent.promptOnlyQueue).toEqual([]);
 	});
 });

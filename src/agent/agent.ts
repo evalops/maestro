@@ -215,6 +215,22 @@ function mapThinkingLevel(level: ThinkingLevel): ReasoningEffort | undefined {
 	}
 }
 
+function buildPromptOnlyToolBatchSummaryMessage(
+	summaryLabels: string[],
+): UserMessage {
+	const bulletList = summaryLabels.map((label) => `- ${label}`).join("\n");
+	return {
+		role: "user",
+		content: [
+			{
+				type: "text",
+				text: `The following is a transient summary of the most recent tool activity:\n${bulletList}`,
+			},
+		],
+		timestamp: Date.now(),
+	};
+}
+
 /**
  * Ensures prior assistant messages remain provider-compatible when switching models mid-session.
  *
@@ -351,6 +367,7 @@ export class Agent {
 	private preprocessMessages?: PreprocessMessagesFn;
 	private steeringQueue: Array<QueuedMessage<AppMessage>> = [];
 	private followUpQueue: Array<QueuedMessage<AppMessage>> = [];
+	private promptOnlyQueue: Message[] = [];
 	private steeringMode: "all" | "one" = "all";
 	private followUpMode: "all" | "one" = "all";
 	private queueMode: "all" | "one" = "all";
@@ -545,6 +562,15 @@ export class Agent {
 		return queued;
 	}
 
+	private async dequeuePromptOnlyMessages(): Promise<Message[]> {
+		if (this.promptOnlyQueue.length === 0) {
+			return [];
+		}
+		const queued = [...this.promptOnlyQueue];
+		this.promptOnlyQueue = [];
+		return queued;
+	}
+
 	private async dequeueQueuedMessages<T>(): Promise<QueuedMessage<T>[]> {
 		return this.dequeueFollowUpMessages<T>();
 	}
@@ -680,6 +706,7 @@ export class Agent {
 		this._state.pendingToolCalls.clear();
 		this.activeToolBatchIds = null;
 		this.completedToolBatch = [];
+		this.promptOnlyQueue = [];
 		this._state.error = undefined;
 		this._partialAccepted = null;
 	}
@@ -952,6 +979,7 @@ export class Agent {
 		this._state.pendingToolCalls.clear();
 		this.activeToolBatchIds = null;
 		this.completedToolBatch = [];
+		this.promptOnlyQueue = [];
 		this._state.error = undefined;
 		this.steeringQueue = [];
 		this.followUpQueue = [];
@@ -1058,6 +1086,7 @@ export class Agent {
 				preprocessMessages: this.preprocessMessages,
 				getSteeringMessages: async <T>() => this.dequeueSteeringMessages<T>(),
 				getFollowUpMessages: async <T>() => this.dequeueFollowUpMessages<T>(),
+				getPromptOnlyMessages: async () => this.dequeuePromptOnlyMessages(),
 				user: this._state.user,
 				session: this._state.session,
 				sandbox: this._state.sandbox,
@@ -1247,6 +1276,7 @@ export class Agent {
 				preprocessMessages: this.preprocessMessages,
 				getSteeringMessages: async <T>() => this.dequeueSteeringMessages<T>(),
 				getFollowUpMessages: async <T>() => this.dequeueFollowUpMessages<T>(),
+				getPromptOnlyMessages: async () => this.dequeuePromptOnlyMessages(),
 				user: this._state.user,
 				session: this._state.session,
 				sandbox: this._state.sandbox,
@@ -1410,6 +1440,11 @@ export class Agent {
 			callsSucceeded,
 			callsFailed,
 		});
+		if (summaryLabels.length > 0) {
+			this.promptOnlyQueue.push(
+				buildPromptOnlyToolBatchSummaryMessage(summaryLabels),
+			);
+		}
 	}
 
 	private resolvePendingToolCalls(reason: string): void {

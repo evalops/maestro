@@ -380,6 +380,7 @@ export class ProviderTransport implements AgentTransport {
 		const getSteeringMessages =
 			cfg.getSteeringMessages ?? cfg.getQueuedMessages;
 		const getFollowUpMessages = cfg.getFollowUpMessages;
+		const getPromptOnlyMessages = cfg.getPromptOnlyMessages;
 
 		let pendingMessages = getSteeringMessages
 			? await getSteeringMessages<AppMessage>()
@@ -413,6 +414,13 @@ export class ProviderTransport implements AgentTransport {
 				});
 				if (!limitCheck.allowed) {
 					throw new Error(limitCheck.reason);
+				}
+			}
+
+			if (getPromptOnlyMessages) {
+				const promptOnlyMessages = await getPromptOnlyMessages();
+				if (promptOnlyMessages.length > 0) {
+					allMessages.push(...promptOnlyMessages);
 				}
 			}
 
