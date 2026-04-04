@@ -111,6 +111,36 @@ export class LoaderView {
 		this.stageManager.markToolComplete(toolCallId);
 	}
 
+	showRuntimeStatus(status: string): void {
+		const normalized = status.trim();
+		if (!normalized) {
+			return;
+		}
+		this.options.footer.setToast(
+			normalized === "compacting"
+				? "Compacting conversation..."
+				: `Status: ${normalized}`,
+			"info",
+			4500,
+		);
+	}
+
+	showCompactionNotice(auto = false): void {
+		this.options.footer.setToast(
+			auto ? "Compacted conversation automatically" : "Compacted conversation",
+			"success",
+			4500,
+		);
+	}
+
+	showRuntimeError(message: string): void {
+		const normalized = message.trim();
+		if (!normalized) {
+			return;
+		}
+		this.options.footer.setToast(normalized, "danger");
+	}
+
 	showToolBatchSummary(summary: string): void {
 		this.options.footer.setToast(summary, "info", 4500);
 	}

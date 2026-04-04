@@ -520,17 +520,6 @@ export class Agent {
 		}
 	}
 
-	private emitStatus(
-		status: string,
-		details: Record<string, unknown> = {},
-	): void {
-		const normalized = status.trim();
-		if (!normalized) {
-			return;
-		}
-		this.emit({ type: "status", status: normalized, details });
-	}
-
 	private async dequeueSteeringMessages<T>(): Promise<QueuedMessage<T>[]> {
 		if (this.steeringQueue.length === 0) {
 			return [];
@@ -709,6 +698,37 @@ export class Agent {
 	injectMessage(m: AppMessage): void {
 		this._state.messages = [...this._state.messages, m];
 		this.emit({ type: "message_end", message: m });
+	}
+
+	/**
+	 * Emit a transient runtime status update without mutating conversation history.
+	 */
+	emitStatus(status: string, details: Record<string, unknown> = {}): void {
+		const normalized = status.trim();
+		if (!normalized) {
+			return;
+		}
+		this.emit({ type: "status", status: normalized, details });
+	}
+
+	/**
+	 * Emit a transient runtime error without mutating conversation history.
+	 */
+	emitError(message: string): void {
+		const normalized = message.trim();
+		if (!normalized) {
+			return;
+		}
+		this.emit({ type: "error", message: normalized });
+	}
+
+	/**
+	 * Emit a compaction lifecycle event without mutating conversation history.
+	 */
+	emitCompaction(
+		event: Omit<Extract<AgentEvent, { type: "compaction" }>, "type">,
+	): void {
+		this.emit({ type: "compaction", ...event });
 	}
 
 	/**

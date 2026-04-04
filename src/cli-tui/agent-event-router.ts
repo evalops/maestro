@@ -109,6 +109,21 @@ export class AgentEventRouter {
 				this.options.requestRender();
 				return;
 
+			case "status":
+				this.options.loaderView.showRuntimeStatus(event.status);
+				this.options.requestRender();
+				return;
+
+			case "compaction":
+				this.options.loaderView.showCompactionNotice(Boolean(event.auto));
+				this.options.requestRender();
+				return;
+
+			case "error":
+				this.options.loaderView.showRuntimeError(event.message);
+				this.options.requestRender();
+				return;
+
 			case "tool_batch_summary":
 				this.options.loaderView.showToolBatchSummary(event.summary);
 				this.options.requestRender();

@@ -77,6 +77,9 @@ describe("AgentEventRouter reasoning summary streaming", () => {
 				maybeTransitionToResponding: vi.fn(),
 				registerToolStage: vi.fn(),
 				markToolComplete: vi.fn(),
+				showRuntimeStatus: vi.fn(),
+				showCompactionNotice: vi.fn(),
+				showRuntimeError: vi.fn(),
 				showToolBatchSummary: vi.fn(),
 			} as unknown,
 			runController: {
@@ -135,6 +138,71 @@ describe("AgentEventRouter reasoning summary streaming", () => {
 			thinkingBlocks?: string[];
 		};
 		expect(lastRenderable?.thinkingBlocks?.[0]).toBe("Reasoning summary");
+	});
+
+	it("shows transient status, compaction, and error events through the loader view", () => {
+		const showRuntimeStatus = vi.fn();
+		const showCompactionNotice = vi.fn();
+		const showRuntimeError = vi.fn();
+		const requestRender = vi.fn();
+		const chatContainer = new MockContainer();
+		const streamingView = new StreamingView({
+			chatContainer,
+			toolOutputView: noopToolOutputView,
+			pendingTools: new Map(),
+			lowBandwidth: { enabled: false, batchIntervalMs: 0, scrollbackLimit: 10 },
+			getCleanMode: () => "off",
+		});
+
+		const router = new AgentEventRouter({
+			messageView: { addMessage: vi.fn() } as unknown as {
+				addMessage: (message: unknown) => void;
+			},
+			streamingView,
+			loaderView: {
+				beginTurn: vi.fn(),
+				completeTurn: vi.fn(),
+				setStreamingActive: vi.fn(),
+				maybeTransitionToResponding: vi.fn(),
+				registerToolStage: vi.fn(),
+				markToolComplete: vi.fn(),
+				showRuntimeStatus,
+				showCompactionNotice,
+				showRuntimeError,
+			} as unknown,
+			runController: {
+				handleAgentStart: vi.fn(),
+				handleAgentEnd: (cb: () => void) => cb(),
+			} as unknown,
+			sessionContext: {
+				beginTurn: vi.fn(),
+				completeTurn: vi.fn(),
+				setLastUserMessage: vi.fn(),
+				setLastAssistantMessage: vi.fn(),
+				recordToolUsage: vi.fn(),
+			} as unknown,
+			extractText: () => "",
+			clearEditor: vi.fn(),
+			requestRender,
+			clearPendingTools: vi.fn(),
+			refreshPlanHint: vi.fn(),
+		});
+
+		router.handle({ type: "status", status: "compacting", details: {} });
+		router.handle({
+			type: "compaction",
+			summary: "Compacted 12 messages",
+			firstKeptEntryIndex: 8,
+			tokensBefore: 4096,
+			auto: true,
+			timestamp: new Date(0).toISOString(),
+		});
+		router.handle({ type: "error", message: "Auto-compaction failed" });
+
+		expect(showRuntimeStatus).toHaveBeenCalledWith("compacting");
+		expect(showCompactionNotice).toHaveBeenCalledWith(true);
+		expect(showRuntimeError).toHaveBeenCalledWith("Auto-compaction failed");
+		expect(requestRender).toHaveBeenCalledTimes(3);
 	});
 
 	it("shows transient tool batch summaries through the loader view", () => {

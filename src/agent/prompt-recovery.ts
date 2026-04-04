@@ -21,6 +21,7 @@ const POST_COMPACTION_CONTINUATION_PROMPT =
 export interface PromptRecoveryCallbacks {
 	onCompacting?: () => void;
 	onCompacted?: (result: PerformCompactionResult) => void;
+	onCompactionFailed?: (message: string) => void;
 	onMaxOutputContinue?: (attempt: number, maxContinuations: number) => void;
 	onMaxOutputExhausted?: (maxContinuations: number) => void;
 }
@@ -141,16 +142,24 @@ async function recoverFromPromptOverflow(
 ): Promise<boolean> {
 	callbacks?.onCompacting?.();
 
-	const result = await performCompaction({
-		agent,
-		sessionManager,
-		auto: true,
-	});
+	let result: PerformCompactionResult;
+	try {
+		result = await performCompaction({
+			agent,
+			sessionManager,
+			auto: true,
+		});
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		callbacks?.onCompactionFailed?.(message);
+		throw error;
+	}
 
 	if (!result.success) {
 		logger.warn("Prompt overflow compaction failed", {
 			error: result.error,
 		});
+		callbacks?.onCompactionFailed?.(result.error ?? "unknown error");
 		return false;
 	}
 

@@ -144,10 +144,16 @@ describe("runWithPromptRecovery", () => {
 			createUserMessage("latest question"),
 		]);
 		const sessionManager = createMockSessionManager();
+		const onCompacting = vi.fn();
+		const onCompacted = vi.fn();
 
 		await runWithPromptRecovery({
 			agent: agent as never,
 			sessionManager,
+			callbacks: {
+				onCompacting,
+				onCompacted,
+			},
 			execute: async () => {
 				throw new Error(
 					"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.",
@@ -157,6 +163,8 @@ describe("runWithPromptRecovery", () => {
 
 		expect(sessionManager.saveCompaction).toHaveBeenCalledOnce();
 		expect(agent.continue).toHaveBeenCalledOnce();
+		expect(onCompacting).toHaveBeenCalledOnce();
+		expect(onCompacted).toHaveBeenCalledOnce();
 		expect(agent.continue).toHaveBeenCalledWith(
 			expect.objectContaining({
 				continuationPrompt: expect.stringContaining(
@@ -210,11 +218,15 @@ describe("runWithPromptRecovery", () => {
 			createUserMessage("latest question"),
 		]);
 		const sessionManager = createMockSessionManager();
+		const onCompactionFailed = vi.fn();
 
 		await expect(
 			runWithPromptRecovery({
 				agent: agent as never,
 				sessionManager,
+				callbacks: {
+					onCompactionFailed,
+				},
 				execute: async () => {
 					throw error;
 				},
@@ -223,6 +235,9 @@ describe("runWithPromptRecovery", () => {
 
 		expect(sessionManager.saveCompaction).not.toHaveBeenCalled();
 		expect(agent.continue).not.toHaveBeenCalled();
+		expect(onCompactionFailed).toHaveBeenCalledWith(
+			"Not enough history to compact",
+		);
 	});
 
 	it("rethrows assistant overflow errors if compaction cannot run", async () => {

@@ -1,5 +1,8 @@
 import type { Agent } from "../agent/agent.js";
-import { runWithPromptRecovery } from "../agent/prompt-recovery.js";
+import {
+	buildCompactionEvent,
+	runWithPromptRecovery,
+} from "../agent/prompt-recovery.js";
 import type { AppMessage } from "../agent/types.js";
 import { type PromptPayload, PromptQueue } from "../cli-tui/prompt-queue.js";
 import type { TuiRenderer } from "../cli-tui/tui-renderer.js";
@@ -53,13 +56,25 @@ export class AgentRuntimeController {
 					execute: () => this.options.agent.prompt(text, attachments),
 					callbacks: {
 						onCompacting: () => {
+							this.options.agent.emitStatus("compacting", {
+								auto: true,
+								trigger: "context_overflow",
+							});
 							this.renderer?.showInfo(
 								"Prompt exceeded the context window. Compacting history and continuing automatically...",
 							);
 						},
-						onCompacted: () => {
+						onCompacted: (result) => {
+							this.options.agent.emitCompaction(
+								buildCompactionEvent(result, { auto: true }),
+							);
 							this.renderer?.renderInitialMessages(this.options.agent.state);
 							this.renderer?.refreshFooterHint();
+						},
+						onCompactionFailed: (message) => {
+							this.options.agent.emitError(
+								`Auto-compaction failed: ${message}`,
+							);
 						},
 						onMaxOutputContinue: (attempt, maxContinuations) => {
 							const prefix =
