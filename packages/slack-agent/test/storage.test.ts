@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileStorageBackend } from "../src/storage.js";
 
 describe("FileStorageBackend", () => {
@@ -9,12 +9,15 @@ describe("FileStorageBackend", () => {
 	let storage: FileStorageBackend;
 
 	beforeEach(async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 		dir = await mkdtemp(join(tmpdir(), "slack-agent-storage-"));
 		storage = new FileStorageBackend(dir);
 	});
 
 	afterEach(async () => {
 		await rm(dir, { recursive: true, force: true });
+		vi.useRealTimers();
 	});
 
 	describe("get/set", () => {
@@ -55,7 +58,7 @@ describe("FileStorageBackend", () => {
 
 		it("treats expired keys as available", async () => {
 			await storage.set("expiring", { value: 1 }, 1);
-			await new Promise((r) => setTimeout(r, 10));
+			vi.advanceTimersByTime(10);
 
 			const result = await storage.setNX("expiring", { value: 2 });
 			expect(result).toBe(true);
@@ -87,7 +90,7 @@ describe("FileStorageBackend", () => {
 	describe("TTL expiration", () => {
 		it("returns null for expired values", async () => {
 			await storage.set("expiring", { data: "test" }, 1); // 1ms TTL
-			await new Promise((r) => setTimeout(r, 10));
+			vi.advanceTimersByTime(10);
 			const result = await storage.get("expiring");
 			expect(result).toBeNull();
 		});
@@ -123,7 +126,7 @@ describe("FileStorageBackend", () => {
 
 		it("returns false for expired key", async () => {
 			await storage.set("expired", { data: "test" }, 1);
-			await new Promise((r) => setTimeout(r, 10));
+			vi.advanceTimersByTime(10);
 			const result = await storage.exists("expired");
 			expect(result).toBe(false);
 		});
@@ -148,7 +151,7 @@ describe("FileStorageBackend", () => {
 
 		it("omits expired keys", async () => {
 			await storage.set("thread:C1:old", { data: 1 }, 1);
-			await new Promise((r) => setTimeout(r, 10));
+			vi.advanceTimersByTime(10);
 			await storage.set("thread:C1:new", { data: 2 });
 
 			const keys = await storage.keys("thread:*");
