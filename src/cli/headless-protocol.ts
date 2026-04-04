@@ -638,6 +638,18 @@ export function headlessViewerHasDisallowedCapabilities(
 	);
 }
 
+export function headlessHelloChangesConnectionRole(
+	msg: HeadlessToAgentMessage,
+	currentRole?: HeadlessConnectionRole,
+): boolean {
+	return (
+		msg.type === "hello" &&
+		currentRole !== undefined &&
+		msg.role !== undefined &&
+		msg.role !== currentRole
+	);
+}
+
 function getPendingRequestId(request: HeadlessPendingApprovalState): string {
 	return request.request_id ?? request.call_id;
 }
@@ -1245,6 +1257,10 @@ export function applyOutgoingHeadlessMessage(
 	state: HeadlessRuntimeState,
 	msg: HeadlessToAgentMessage,
 ): void {
+	if (headlessHelloChangesConnectionRole(msg, state.connection_role)) {
+		return;
+	}
+
 	if (headlessViewerHasDisallowedCapabilities(msg, state.connection_role)) {
 		return;
 	}
