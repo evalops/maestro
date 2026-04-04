@@ -234,6 +234,7 @@ async function recoverFromPromptOverflow(
 	hookContext: CompactionHookContext | undefined,
 	hookService: CompactionHookService | undefined,
 	customInstructions: string | undefined,
+	persistCustomInstructions: boolean,
 	callbacks?: PromptRecoveryCallbacks,
 ): Promise<boolean> {
 	callbacks?.onCompacting?.();
@@ -248,6 +249,7 @@ async function recoverFromPromptOverflow(
 			hookContext,
 			hookService,
 			customInstructions,
+			persistCustomInstructions,
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -300,6 +302,7 @@ export async function runWithPromptRecovery(
 				options.hookContext,
 				options.hookService,
 				overflowHookGuidance,
+				overflowHookGuidance === undefined,
 				callbacks,
 			);
 			if (recovered) {

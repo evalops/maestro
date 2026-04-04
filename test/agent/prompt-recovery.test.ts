@@ -323,6 +323,14 @@ describe("runWithPromptRecovery", () => {
 			),
 			expect.any(String),
 		);
+		expect(sessionManager.saveCompaction).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.any(Number),
+			expect.any(Number),
+			expect.objectContaining({
+				customInstructions: undefined,
+			}),
+		);
 	});
 
 	it("creates an Overflow hook service from hook context when none is provided", async () => {

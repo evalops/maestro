@@ -929,6 +929,7 @@ export async function performCompaction(params: {
 	auto?: boolean;
 	trigger?: "auto" | "manual" | "token_limit";
 	customInstructions?: string;
+	persistCustomInstructions?: boolean;
 	hookContext?: CompactionHookContext;
 	hookService?: CompactionHookService;
 	renderSummaryText?: (message: AssistantMessage) => string;
@@ -939,6 +940,7 @@ export async function performCompaction(params: {
 		auto,
 		trigger,
 		customInstructions,
+		persistCustomInstructions = true,
 		hookContext,
 		hookService,
 		renderSummaryText,
@@ -1080,7 +1082,9 @@ export async function performCompaction(params: {
 	// Persist compaction to session
 	sessionManager.saveCompaction(summaryText, boundary, tokensBefore, {
 		auto,
-		customInstructions,
+		customInstructions: persistCustomInstructions
+			? customInstructions
+			: undefined,
 		firstKeptEntryId,
 	});
 
