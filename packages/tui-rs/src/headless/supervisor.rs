@@ -376,6 +376,7 @@ impl AgentSupervisor {
         if let Some(transport) = self.transport.take() {
             let _ = transport.shutdown();
         }
+        self.clear_transient_progress_state();
         self.last_response = None;
         self.pending_auto_reconnect = false;
         self.stale_reference_retries = 0;
@@ -594,10 +595,18 @@ impl AgentSupervisor {
         event.map(|event| SupervisorEvent::Agent(Box::new(event)))
     }
 
+    fn clear_transient_progress_state(&mut self) {
+        self.state.clear_transient_progress();
+        if let Some(ref mut recorder) = self.session_recorder {
+            let _ = recorder.apply_snapshot(self.state.clone(), self.last_init.clone());
+        }
+    }
+
     fn handle_transport_error(&mut self, error: AsyncTransportError) -> SupervisorEvent {
         if let Some(transport) = self.transport.take() {
             let _ = transport.shutdown();
         }
+        self.clear_transient_progress_state();
         self.last_response = None;
         self.health_status = HealthStatus::Unhealthy;
         SupervisorEvent::Disconnected {
@@ -705,6 +714,7 @@ impl AgentSupervisor {
                 return None;
             }
 
+            self.clear_transient_progress_state();
             self.health_status = HealthStatus::Unhealthy;
             self.last_response = None;
             if self.config.auto_reconnect {
@@ -728,6 +738,7 @@ impl AgentSupervisor {
                 if silence
                     >= self.config.health_check_interval + self.config.health_check_timeout =>
             {
+                self.clear_transient_progress_state();
                 self.health_status = HealthStatus::Unhealthy;
                 self.last_response = None;
                 if self.config.auto_reconnect {
@@ -1204,7 +1215,7 @@ fn event_to_message(event: &AgentEvent) -> Option<FromAgentMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::headless::{HeadlessErrorType, TokenUsage};
+    use crate::headless::{ActiveTool, HeadlessErrorType, StreamingResponse, TokenUsage};
     use std::collections::VecDeque;
     use std::fs;
     use std::sync::{
@@ -1661,6 +1672,50 @@ mod tests {
                 status: HealthStatus::Healthy
             })
         ));
+    }
+
+    #[test]
+    fn transport_disconnect_clears_transient_progress_state() {
+        let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+        supervisor.state.current_response = Some(StreamingResponse::new("resp_disconnect".into()));
+        supervisor.state.is_responding = true;
+        supervisor.state.active_tools.insert(
+            "call_disconnect".to_string(),
+            ActiveTool {
+                call_id: "call_disconnect".to_string(),
+                tool: "read".to_string(),
+                output: "partial".to_string(),
+                started: Instant::now(),
+            },
+        );
+
+        let _event = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
+
+        assert!(supervisor.state().current_response.is_none());
+        assert!(supervisor.state().active_tools.is_empty());
+        assert!(!supervisor.state().is_responding);
+    }
+
+    #[test]
+    fn manual_disconnect_clears_transient_progress_state() {
+        let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
+        supervisor.state.current_response = Some(StreamingResponse::new("resp_manual".into()));
+        supervisor.state.is_responding = true;
+        supervisor.state.active_tools.insert(
+            "call_manual".to_string(),
+            ActiveTool {
+                call_id: "call_manual".to_string(),
+                tool: "write".to_string(),
+                output: "partial".to_string(),
+                started: Instant::now(),
+            },
+        );
+
+        supervisor.disconnect();
+
+        assert!(supervisor.state().current_response.is_none());
+        assert!(supervisor.state().active_tools.is_empty());
+        assert!(!supervisor.state().is_responding);
     }
 
     #[test]
@@ -3050,6 +3105,17 @@ done
                 .checked_sub(Duration::from_millis(25))
                 .expect("monotonic clock supports subtraction"),
         );
+        supervisor.state.current_response = Some(StreamingResponse::new("resp_silence".into()));
+        supervisor.state.is_responding = true;
+        supervisor.state.active_tools.insert(
+            "call_silence".to_string(),
+            ActiveTool {
+                call_id: "call_silence".to_string(),
+                tool: "grep".to_string(),
+                output: "partial".to_string(),
+                started: Instant::now(),
+            },
+        );
 
         assert!(matches!(
             supervisor.due_health_transition(Instant::now()),
@@ -3059,5 +3125,8 @@ done
         ));
         assert!(!supervisor.is_connected());
         assert!(supervisor.pending_auto_reconnect);
+        assert!(supervisor.state().current_response.is_none());
+        assert!(supervisor.state().active_tools.is_empty());
+        assert!(!supervisor.state().is_responding);
     }
 }
