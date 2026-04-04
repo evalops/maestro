@@ -1930,6 +1930,7 @@ mod tests {
         config.health_check_interval = Duration::from_millis(10);
         config.health_check_timeout = Duration::from_millis(10);
         config.auto_reconnect = false;
+        let degraded_timeout = config.health_check_interval + config.health_check_timeout;
 
         let mut supervisor = AgentSupervisor::new(config);
         supervisor.connect().await.expect("connect");
@@ -1947,15 +1948,15 @@ mod tests {
         let _ = supervisor.recv().await.expect("ready");
 
         supervisor.health_status = HealthStatus::Degraded;
-        supervisor.last_response = Some(
-            Instant::now()
-                .checked_sub(Duration::from_millis(25))
-                .expect("monotonic clock supports subtraction"),
-        );
+        let stale_response_at = Instant::now()
+            .checked_sub(Duration::from_millis(25))
+            .expect("monotonic clock supports subtraction");
+        supervisor.last_response = Some(stale_response_at);
 
         supervisor.prompt("hello after idle").expect("prompt");
 
-        assert!(supervisor.due_health_transition(Instant::now()).is_none());
+        let stale_deadline = stale_response_at + degraded_timeout;
+        assert!(supervisor.due_health_transition(stale_deadline).is_none());
         assert_eq!(supervisor.health(), HealthStatus::Degraded);
     }
 
