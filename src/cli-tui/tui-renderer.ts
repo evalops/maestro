@@ -408,11 +408,11 @@ export class TuiRenderer {
 	private groupedHandlers?: GroupedCommandHandlers;
 	private uiStateController!: UiStateController;
 	private quickSettingsController!: QuickSettingsController;
-	private branchController!: BranchController;
-	private clearController!: ClearController;
+	private branchController?: BranchController;
+	private clearController?: ClearController;
 	private compactionController!: CompactionController;
 	private slashHintController!: SlashHintController;
-	private customCommandsController!: CustomCommandsController;
+	private customCommandsController?: CustomCommandsController;
 
 	constructor(
 		agent: Agent,
@@ -983,69 +983,6 @@ export class TuiRenderer {
 			},
 		});
 
-		// Initialize branch controller for session branching
-		this.branchController = createBranchController({
-			callbacks: {
-				isAgentRunning: () => this.isAgentRunning,
-				getMessages: () => this.agent.state.messages ?? [],
-				showSelector: () => this.getUserMessageSelectorView().show(),
-				createBranchedSession: (count) =>
-					this.sessionManager.createBranchedSession(this.agent.state, count),
-				setSessionFile: (path) => this.sessionManager.setSessionFile(path),
-				resetConversation: (messages, seed, notification) =>
-					this.resetConversation(messages, seed, notification, {
-						preserveSession: true,
-					}),
-				addContent: (text) => {
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text(text, 1, 0));
-				},
-				requestRender: () => this.ui.requestRender(),
-			},
-		});
-
-		// Initialize clear controller for session clearing
-		this.clearController = createClearController({
-			callbacks: {
-				abortAndWait: async () => {
-					this.agent.abort();
-					await this.agent.waitForIdle();
-				},
-				setAgentRunning: (running) => {
-					this.isAgentRunning = running;
-				},
-				cancelQueuedPrompts: () =>
-					this.queueController.cancelAll({ silent: true }),
-				stopLoader: () => this.loaderView.stop(),
-				clearStatusContainer: () => this.statusContainer.clear(),
-				resetAgent: () => this.agent.reset(),
-				resetSession: () => this.sessionManager.reset(),
-				resetArtifacts: () => this.sessionContext.resetArtifacts(),
-				clearActiveSkills: () => this.skillsController.clearActiveSkills(),
-				clearToolTracking: () => this.toolOutputView.clearTrackedComponents(),
-				clearChatContainer: () => this.chatContainer.clear(),
-				clearScrollHistory: () => this.scrollContainer.clearHistory(),
-				clearStartupContainer: () => this.startupContainer.clear(),
-				syncPlanHint: () => this.planView.syncHintWithStore(),
-				setPlanHint: (hint) => {
-					this.footerHintsController.planHint = hint;
-				},
-				clearEditor: () => this.editor.setText(""),
-				clearPendingTools: () => this.pendingTools.clear(),
-				clearInterruptState: () => this.interruptController.clear(),
-				renderInitialMessages: (state) => this.renderInitialMessages(state),
-				getAgentState: () => this.agent.state,
-				updateFooterState: (state) => this.footer.updateState(state),
-				refreshFooterHint: () => this.refreshFooterHint(),
-				showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
-				showError: (msg) => {
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text(msg, 1, 1));
-				},
-				requestRender: () => this.ui.requestRender(),
-			},
-		});
-
 		this.conversationCompactor = new ConversationCompactor({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -1073,33 +1010,20 @@ export class TuiRenderer {
 				},
 			},
 		});
-		this.customCommandsController = createCustomCommandsController({
-			cwd: process.cwd(),
-			callbacks: {
-				addContent: (text) => {
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text(text, 1, 0));
-				},
-				setEditorText: (text) => this.editor.setText(text),
-				showToast: (msg, type) => this.notificationView.showToast(msg, type),
-				requestRender: () => this.ui.requestRender(),
-			},
-		});
-
 		const registry = buildTuiCommandRegistry({
 			cwd: process.cwd(),
 			registryOptions: buildTuiCommandRegistryOptions({
 				getRunCommandView: () => this.getRunCommandView(),
 				getToolStatusView: () => this.getToolStatusView(),
 				sessionView: this.sessionView,
-				clearController: this.clearController,
+				getClearController: () => this.getClearController(),
 				getDiagnosticsView: () => this.getDiagnosticsView(),
 				planController: this.planController,
 				gitView: this.gitView,
 				backgroundTasksController: this.backgroundTasksController,
 				compactionController: this.compactionController,
-				customCommandsController: this.customCommandsController,
-				branchController: this.branchController,
+				getCustomCommandsController: () => this.getCustomCommandsController(),
+				getBranchController: () => this.getBranchController(),
 				oauthFlowController: this.oauthFlowController,
 				approvalService: this.approvalService,
 				notificationView: this.notificationView,
@@ -1179,7 +1103,9 @@ export class TuiRenderer {
 					...context,
 					argumentText: combined,
 				};
-				this.customCommandsController.handlePromptsCommand(syntheticContext);
+				this.getCustomCommandsController().handlePromptsCommand(
+					syntheticContext,
+				);
 			},
 			logDebug: (message, meta) => logger.debug(message, meta),
 		});
@@ -1713,6 +1639,89 @@ export class TuiRenderer {
 			chatContainer: this.chatContainer,
 		});
 		return this.queuePanelController;
+	}
+
+	private getBranchController(): BranchController {
+		this.branchController ??= createBranchController({
+			callbacks: {
+				isAgentRunning: () => this.isAgentRunning,
+				getMessages: () => this.agent.state.messages ?? [],
+				showSelector: () => this.getUserMessageSelectorView().show(),
+				createBranchedSession: (count) =>
+					this.sessionManager.createBranchedSession(this.agent.state, count),
+				setSessionFile: (path) => this.sessionManager.setSessionFile(path),
+				resetConversation: (messages, seed, notification) =>
+					this.resetConversation(messages, seed, notification, {
+						preserveSession: true,
+					}),
+				addContent: (text) => {
+					this.chatContainer.addChild(new Spacer(1));
+					this.chatContainer.addChild(new Text(text, 1, 0));
+				},
+				requestRender: () => this.ui.requestRender(),
+			},
+		});
+		return this.branchController;
+	}
+
+	private getClearController(): ClearController {
+		this.clearController ??= createClearController({
+			callbacks: {
+				abortAndWait: async () => {
+					this.agent.abort();
+					await this.agent.waitForIdle();
+				},
+				setAgentRunning: (running) => {
+					this.isAgentRunning = running;
+				},
+				cancelQueuedPrompts: () =>
+					this.queueController.cancelAll({ silent: true }),
+				stopLoader: () => this.loaderView.stop(),
+				clearStatusContainer: () => this.statusContainer.clear(),
+				resetAgent: () => this.agent.reset(),
+				resetSession: () => this.sessionManager.reset(),
+				resetArtifacts: () => this.sessionContext.resetArtifacts(),
+				clearActiveSkills: () => this.skillsController.clearActiveSkills(),
+				clearToolTracking: () => this.toolOutputView.clearTrackedComponents(),
+				clearChatContainer: () => this.chatContainer.clear(),
+				clearScrollHistory: () => this.scrollContainer.clearHistory(),
+				clearStartupContainer: () => this.startupContainer.clear(),
+				syncPlanHint: () => this.planView.syncHintWithStore(),
+				setPlanHint: (hint) => {
+					this.footerHintsController.planHint = hint;
+				},
+				clearEditor: () => this.editor.setText(""),
+				clearPendingTools: () => this.pendingTools.clear(),
+				clearInterruptState: () => this.interruptController.clear(),
+				renderInitialMessages: (state) => this.renderInitialMessages(state),
+				getAgentState: () => this.agent.state,
+				updateFooterState: (state) => this.footer.updateState(state),
+				refreshFooterHint: () => this.refreshFooterHint(),
+				showSuccess: (msg) => this.notificationView.showToast(msg, "success"),
+				showError: (msg) => {
+					this.chatContainer.addChild(new Spacer(1));
+					this.chatContainer.addChild(new Text(msg, 1, 1));
+				},
+				requestRender: () => this.ui.requestRender(),
+			},
+		});
+		return this.clearController;
+	}
+
+	private getCustomCommandsController(): CustomCommandsController {
+		this.customCommandsController ??= createCustomCommandsController({
+			cwd: process.cwd(),
+			callbacks: {
+				addContent: (text) => {
+					this.chatContainer.addChild(new Spacer(1));
+					this.chatContainer.addChild(new Text(text, 1, 0));
+				},
+				setEditorText: (text) => this.editor.setText(text),
+				showToast: (msg, type) => this.notificationView.showToast(msg, type),
+				requestRender: () => this.ui.requestRender(),
+			},
+		});
+		return this.customCommandsController;
 	}
 
 	async handleEvent(event: AgentEvent, state: AgentState): Promise<void> {
@@ -2376,13 +2385,14 @@ export class TuiRenderer {
 				},
 				handleNewChatCommand: (ctx) =>
 					this.sessionStateController.handleNewChatCommand(ctx),
-				handleClearCommand: () => this.clearController.handleClearCommand(),
+				handleClearCommand: () =>
+					this.getClearController().handleClearCommand(),
 				handleSessionCommand: (rawInput) =>
 					this.sessionView.handleSessionCommand(rawInput),
 				handleSessionsCommand: (rawInput) =>
 					this.sessionView.handleSessionsCommand(rawInput),
 				handleBranchCommand: (ctx) =>
-					this.branchController.handleBranchCommand(ctx),
+					this.getBranchController().handleBranchCommand(ctx),
 				showTree: () => this.getTreeSelectorView().show(),
 				handleQueueCommand: (ctx) => {
 					const queuePanelController = this.getQueuePanelController();
@@ -2459,7 +2469,7 @@ export class TuiRenderer {
 				handleRunCommand: (rawInput) =>
 					this.getRunCommandView().handleRunCommand(rawInput),
 				handleCommandsCommand: (ctx) =>
-					this.customCommandsController.handleCommandsCommand(ctx),
+					this.getCustomCommandsController().handleCommandsCommand(ctx),
 			});
 		}
 		return this.groupedHandlers;

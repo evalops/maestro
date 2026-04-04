@@ -48,6 +48,12 @@ function createDeps() {
 		handleDiagnosticsCommand: vi.fn(),
 	};
 	const thinkingSelectorView = { show: vi.fn() };
+	const clearController = { handleClearCommand: vi.fn() };
+	const customCommandsController = {
+		handleCommandsCommand: vi.fn(),
+		handlePromptsCommand: vi.fn(),
+	};
+	const branchController = { handleBranchCommand: vi.fn() };
 
 	const deps = {
 		getRunCommandView: vi.fn(() => runCommandView),
@@ -56,7 +62,7 @@ function createDeps() {
 			handleSessionCommand: vi.fn(),
 			handleSessionsCommand: vi.fn(),
 		},
-		clearController: { handleClearCommand: vi.fn() },
+		getClearController: vi.fn(() => clearController),
 		getDiagnosticsView: vi.fn(() => diagnosticsView),
 		gitView: { handlePreviewCommand: vi.fn() },
 		backgroundTasksController: { handleBackgroundCommand: vi.fn() },
@@ -64,11 +70,8 @@ function createDeps() {
 			handleCompactCommand: vi.fn(),
 			handleAutocompactCommand: vi.fn(),
 		},
-		customCommandsController: {
-			handleCommandsCommand: vi.fn(),
-			handlePromptsCommand: vi.fn(),
-		},
-		branchController: { handleBranchCommand: vi.fn() },
+		getCustomCommandsController: vi.fn(() => customCommandsController),
+		getBranchController: vi.fn(() => branchController),
 		oauthFlowController: {
 			handleLoginCommand: vi.fn(),
 			handleLogoutCommand: vi.fn(),
@@ -176,6 +179,9 @@ function createDeps() {
 		toolStatusView,
 		diagnosticsView,
 		thinkingSelectorView,
+		clearController,
+		customCommandsController,
+		branchController,
 	};
 }
 
@@ -196,6 +202,9 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(deps.getThinkingSelectorView).not.toHaveBeenCalled();
 		expect(deps.getFileSearchView).not.toHaveBeenCalled();
 		expect(deps.getQueuePanelController).not.toHaveBeenCalled();
+		expect(deps.getClearController).not.toHaveBeenCalled();
+		expect(deps.getCustomCommandsController).not.toHaveBeenCalled();
+		expect(deps.getBranchController).not.toHaveBeenCalled();
 	});
 
 	it("resolves lazy views only when the matching command runs", async () => {
@@ -213,6 +222,9 @@ describe("buildTuiCommandRegistryOptions", () => {
 			toolStatusView,
 			diagnosticsView,
 			thinkingSelectorView,
+			clearController,
+			customCommandsController,
+			branchController,
 		} = createDeps();
 		const options = buildTuiCommandRegistryOptions(deps);
 
@@ -231,6 +243,10 @@ describe("buildTuiCommandRegistryOptions", () => {
 		options.handleCost(createCommandContext("/cost", "today"));
 		expect(deps.getCostView).toHaveBeenCalledTimes(1);
 		expect(costView.handleCostCommand).toHaveBeenCalledTimes(1);
+
+		await options.handleClear(createCommandContext("/clear"));
+		expect(deps.getClearController).toHaveBeenCalledTimes(1);
+		expect(clearController.handleClearCommand).toHaveBeenCalledTimes(1);
 
 		options.handleRun(createCommandContext("/run test", "test"));
 		expect(deps.getRunCommandView).toHaveBeenCalledTimes(2);
@@ -256,6 +272,10 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(deps.getQueuePanelController).toHaveBeenCalledTimes(1);
 		expect(queuePanelController.handleQueueCommand).toHaveBeenCalledTimes(1);
 
+		options.handleBranch(createCommandContext("/branch"));
+		expect(deps.getBranchController).toHaveBeenCalledTimes(1);
+		expect(branchController.handleBranchCommand).toHaveBeenCalledTimes(1);
+
 		await options.handleImportConfig(createCommandContext("/import", "config"));
 		expect(deps.getImportExportView).toHaveBeenCalledTimes(1);
 		expect(importExportView.handleImportCommand).toHaveBeenCalledTimes(1);
@@ -270,6 +290,18 @@ describe("buildTuiCommandRegistryOptions", () => {
 		);
 		expect(deps.getFeedbackView).toHaveBeenCalledTimes(1);
 		expect(feedbackView.handleBugCommand).toHaveBeenCalledTimes(1);
+
+		options.handleCommands(createCommandContext("/commands", "list"));
+		expect(deps.getCustomCommandsController).toHaveBeenCalledTimes(1);
+		expect(
+			customCommandsController.handleCommandsCommand,
+		).toHaveBeenCalledTimes(1);
+
+		options.handlePrompts(createCommandContext("/prompts", "list"));
+		expect(deps.getCustomCommandsController).toHaveBeenCalledTimes(2);
+		expect(customCommandsController.handlePromptsCommand).toHaveBeenCalledTimes(
+			1,
+		);
 
 		options.showThinkingSelector(createCommandContext("/thinking"));
 		expect(deps.getThinkingSelectorView).toHaveBeenCalledTimes(1);

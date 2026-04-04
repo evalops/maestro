@@ -63,14 +63,14 @@ export interface TuiCommandRegistryDeps {
 	getRunCommandView: () => RunCommandView;
 	getToolStatusView: () => ToolStatusView;
 	sessionView: SessionView;
-	clearController: ClearController;
+	getClearController: () => ClearController;
 	getDiagnosticsView: () => DiagnosticsView;
 	planController?: PlanController;
 	gitView: GitView;
 	backgroundTasksController: BackgroundTasksController;
 	compactionController: CompactionController;
-	customCommandsController: CustomCommandsController;
-	branchController: BranchController;
+	getCustomCommandsController: () => CustomCommandsController;
+	getBranchController: () => BranchController;
 	oauthFlowController: OAuthFlowController;
 	approvalService: ActionApprovalService;
 	notificationView: NotificationView;
@@ -172,7 +172,7 @@ export function buildTuiCommandRegistryOptions(
 		handleAbout: (_context) => deps.getAboutView().handleAboutCommand(),
 		handleHistory: (context) => deps.handleHistoryCommand(context),
 		handleClear: async (_context) =>
-			await deps.clearController.handleClearCommand(),
+			await deps.getClearController().handleClearCommand(),
 		showStatus: (_context) => deps.getDiagnosticsView().handleStatusCommand(),
 		handleReview: (context) => deps.handleReviewCommand(context),
 		handleUndo: (context) => deps.handleEnhancedUndoCommand(context),
@@ -232,7 +232,7 @@ export function buildTuiCommandRegistryOptions(
 			deps.handleCompactToolsCommand(context.rawInput),
 		handleSteer: (context) => deps.handleSteerCommand(context),
 		handleCommands: (context) =>
-			deps.customCommandsController.handleCommandsCommand(context),
+			deps.getCustomCommandsController().handleCommandsCommand(context),
 		handleQueue: (context) => {
 			const queuePanelController = deps.getQueuePanelController();
 			if (queuePanelController) {
@@ -242,7 +242,7 @@ export function buildTuiCommandRegistryOptions(
 			context.showInfo("Prompt queue is not available.");
 		},
 		handleBranch: (context) =>
-			deps.branchController.handleBranchCommand(context),
+			deps.getBranchController().handleBranchCommand(context),
 		handleTree: (context) => deps.handleTreeCommand(context),
 		handleLogin: (context) =>
 			deps.oauthFlowController.handleLoginCommand(context.argumentText, (msg) =>
@@ -293,7 +293,7 @@ export function buildTuiCommandRegistryOptions(
 		handleMemory: (context) => deps.handleMemoryCommand(context),
 		handleMode: (context) => deps.handleModeCommand(context),
 		handlePrompts: (context) =>
-			deps.customCommandsController.handlePromptsCommand(context),
+			deps.getCustomCommandsController().handlePromptsCommand(context),
 		handleCopy: (context) =>
 			handleCopyCommand(
 				context,
