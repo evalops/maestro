@@ -644,7 +644,20 @@ impl AgentSupervisor {
         }
     }
 
+    fn silence_timeouts_enabled(&self) -> bool {
+        !matches!(
+            self.config
+                .remote
+                .as_ref()
+                .and_then(|remote| remote.role.as_deref()),
+            Some("viewer")
+        )
+    }
+
     fn next_health_deadline(&self) -> Option<Instant> {
+        if !self.silence_timeouts_enabled() {
+            return None;
+        }
         let last_response = self.last_response?;
         match self.health_status {
             HealthStatus::Healthy => Some(last_response + self.config.health_check_interval),
@@ -663,6 +676,9 @@ impl AgentSupervisor {
     }
 
     fn due_health_transition(&mut self, now: Instant) -> Option<SupervisorEvent> {
+        if !self.silence_timeouts_enabled() {
+            return None;
+        }
         let last_response = self.last_response?;
         let silence = now.saturating_duration_since(last_response);
         match self.health_status {
@@ -1483,6 +1499,28 @@ mod tests {
             })
         ));
         assert_eq!(supervisor.health(), HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn remote_viewer_skips_silence_health_timeouts() {
+        let mut supervisor = AgentSupervisor::new(SupervisorConfig {
+            health_check_interval: Duration::from_secs(30),
+            health_check_timeout: Duration::from_secs(5),
+            remote: Some(RemoteTransportConfig {
+                role: Some("viewer".to_string()),
+                ..RemoteTransportConfig::default()
+            }),
+            ..SupervisorConfig::default()
+        });
+        let start = Instant::now();
+        supervisor.health_status = HealthStatus::Healthy;
+        supervisor.last_response = Some(start);
+
+        assert!(supervisor.next_health_deadline().is_none());
+        assert!(supervisor
+            .due_health_transition(start + Duration::from_secs(35))
+            .is_none());
+        assert_eq!(supervisor.health(), HealthStatus::Healthy);
     }
 
     #[test]
