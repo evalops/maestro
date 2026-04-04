@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardRegistry } from "../../packages/slack-agent/src/ui/dashboard-registry.js";
 
 describe("DashboardRegistry", () => {
@@ -39,24 +39,29 @@ describe("DashboardRegistry", () => {
 		expect(registry.list()).toHaveLength(1);
 	});
 
-	it("lists dashboards in reverse chronological order", async () => {
-		registry.register({
-			label: "First",
-			url: "https://first.example.com",
-			directory: "/app/1",
-			port: 8080,
-		});
-		// Ensure a different timestamp
-		await new Promise((r) => setTimeout(r, 5));
-		registry.register({
-			label: "Second",
-			url: "https://second.example.com",
-			directory: "/app/2",
-			port: 8081,
-		});
-		const list = registry.list();
-		expect(list).toHaveLength(2);
-		expect(list[0]!.label).toBe("Second");
+	it("lists dashboards in reverse chronological order", () => {
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+			registry.register({
+				label: "First",
+				url: "https://first.example.com",
+				directory: "/app/1",
+				port: 8080,
+			});
+			vi.advanceTimersByTime(1);
+			registry.register({
+				label: "Second",
+				url: "https://second.example.com",
+				directory: "/app/2",
+				port: 8081,
+			});
+			const list = registry.list();
+			expect(list).toHaveLength(2);
+			expect(list[0]!.label).toBe("Second");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("gets a dashboard by id", () => {
