@@ -46,6 +46,8 @@ export class ToolExecutionComponent extends Container {
 	private topLine: Text;
 	private bottomLine: Text;
 	private toolName: string;
+	private displayName?: string;
+	private summaryLabel?: string;
 	private args: Record<string, unknown>;
 	private partialArgs: Record<string, unknown>;
 	private collapsed = false;
@@ -86,11 +88,17 @@ export class ToolExecutionComponent extends Container {
 	constructor(
 		toolName: string,
 		args: Record<string, unknown>,
-		options: { disableAnimations?: boolean } = {},
+		options: {
+			disableAnimations?: boolean;
+			displayName?: string;
+			summaryLabel?: string;
+		} = {},
 	) {
 		super();
 		this.animate = !options.disableAnimations;
 		this.toolName = toolName;
+		this.displayName = options.displayName;
+		this.summaryLabel = options.summaryLabel;
 		this.args = args;
 		this.partialArgs = args;
 		this.defaultCollapsed = false;
@@ -162,10 +170,11 @@ export class ToolExecutionComponent extends Container {
 
 	private buildTopLine(): string {
 		const icon = this.getToolIcon();
-		const label = `${icon} ${summarizeToolUse(
-			this.toolName,
-			this.partialArgs,
-		)}`;
+		const label = `${icon} ${
+			this.summaryLabel ||
+			this.displayName ||
+			summarizeToolUse(this.toolName, this.partialArgs)
+		}`;
 		const status = this.getStatus();
 		const {
 			label: statusLabel,
@@ -218,6 +227,14 @@ export class ToolExecutionComponent extends Container {
 	updateArgs(args: Record<string, unknown>): void {
 		this.args = args;
 		this.partialArgs = args;
+		this.updateDisplay();
+	}
+
+	updatePresentation(
+		presentation: { displayName?: string; summaryLabel?: string } = {},
+	): void {
+		this.displayName = presentation.displayName ?? this.displayName;
+		this.summaryLabel = presentation.summaryLabel ?? this.summaryLabel;
 		this.updateDisplay();
 	}
 

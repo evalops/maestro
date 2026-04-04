@@ -68,6 +68,7 @@ export class AgentEventRouter {
 					event.toolCallId,
 					event.toolName,
 					event.args,
+					event.summaryLabel,
 				);
 				this.options.sessionContext.recordToolUsage(event.toolName);
 				this.options.sessionContext.recordToolStart(
@@ -79,6 +80,10 @@ export class AgentEventRouter {
 					event.toolCallId,
 					event.toolName,
 					event.args,
+					{
+						displayName: event.displayName,
+						summaryLabel: event.summaryLabel,
+					},
 				);
 				this.options.requestRender();
 				return;

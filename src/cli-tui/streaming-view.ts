@@ -98,15 +98,19 @@ export class StreamingView {
 		toolCallId: string,
 		name: string,
 		args: Record<string, unknown>,
+		presentation: { displayName?: string; summaryLabel?: string } = {},
 	): void {
 		if (this.options.pendingTools.has(toolCallId)) {
 			const component = this.options.pendingTools.get(toolCallId);
 			component?.updateArgs(args);
+			component?.updatePresentation(presentation);
 			return;
 		}
 		this.options.chatContainer.addChild(new Text("", 0, 0));
 		const component = new ToolExecutionComponent(name, args, {
 			disableAnimations: this.options.disableAnimations,
+			displayName: presentation.displayName,
+			summaryLabel: presentation.summaryLabel,
 		});
 		this.options.chatContainer.addChild(component);
 		this.options.pendingTools.set(toolCallId, component);

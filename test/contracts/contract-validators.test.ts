@@ -79,6 +79,15 @@ describe("contracts validators", () => {
 			callsFailed: 0,
 		});
 		expect(summaryEventResult.ok).toBe(true);
+		const toolStartEvent = validateSchema(ComposerAgentEventSchema, {
+			type: "tool_execution_start",
+			toolCallId: "tool_0",
+			toolName: "read",
+			displayName: "Read",
+			summaryLabel: "Read README.md",
+			args: { path: "README.md" },
+		});
+		expect(toolStartEvent.ok).toBe(true);
 	});
 
 	it("rejects malformed headless commands with generated per-type schemas", () => {

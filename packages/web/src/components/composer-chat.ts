@@ -90,6 +90,8 @@ interface ExtendedToolCall extends ComposerToolCall {
 	startTime?: number;
 	endTime?: number;
 	argsTruncated?: boolean;
+	displayName?: string;
+	summaryLabel?: string;
 }
 
 interface ActiveToolInfo {
@@ -2797,6 +2799,8 @@ export class ComposerChat extends LitElement {
 							] as ExtendedToolCall;
 							tool.status = "running";
 							tool.startTime = Date.now();
+							tool.displayName = agentEvent.displayName ?? tool.displayName;
+							tool.summaryLabel = agentEvent.summaryLabel ?? tool.summaryLabel;
 							this.messages = [...this.messages];
 						}
 						break;
@@ -2824,6 +2828,8 @@ export class ComposerChat extends LitElement {
 							tool.status = agentEvent.isError ? "error" : "completed";
 							tool.result = agentEvent.result;
 							tool.endTime = Date.now();
+							tool.displayName = agentEvent.displayName ?? tool.displayName;
+							tool.summaryLabel = agentEvent.summaryLabel ?? tool.summaryLabel;
 							this.messages = [...this.messages];
 						}
 						activeTools.delete(agentEvent.toolCallId);

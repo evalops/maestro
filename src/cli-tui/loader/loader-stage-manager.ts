@@ -65,12 +65,13 @@ export class LoaderStageManager {
 		toolCallId: string,
 		toolName: string,
 		args: Record<string, unknown> = {},
+		summaryLabel?: string,
 	): void {
 		if (this.toolStageMeta.has(toolCallId)) {
 			this.updateStage(toolCallId);
 			return;
 		}
-		const summary = summarizeToolUse(toolName, args);
+		const summary = summaryLabel || summarizeToolUse(toolName, args);
 		const groupKey = `${toolName}:${summary}`;
 		this.toolStageMeta.set(toolCallId, { toolName, summary, groupKey });
 		const respondingIndex = this.stages.findIndex(

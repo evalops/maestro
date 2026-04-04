@@ -177,6 +177,7 @@ export interface CreateToolOptions<Schema extends TSchema, Details> {
 	retryDelayMs?: number;
 	shouldRetry?: (error: unknown) => boolean;
 	getToolUseSummary?: (params: Static<Schema>) => string | null;
+	getDisplayName?: (params: Static<Schema>) => string | null;
 	getActivityDescription?: (params: Static<Schema>) => string | null;
 }
 
@@ -212,6 +213,10 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 		getToolUseSummary: options.getToolUseSummary
 			? (params: Record<string, unknown>) =>
 					options.getToolUseSummary?.(params as StaticSchema<Schema>) ?? null
+			: undefined,
+		getDisplayName: options.getDisplayName
+			? (params: Record<string, unknown>) =>
+					options.getDisplayName?.(params as StaticSchema<Schema>) ?? null
 			: undefined,
 		getActivityDescription: options.getActivityDescription
 			? (params: Record<string, unknown>) =>

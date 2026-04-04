@@ -70,8 +70,12 @@ function formatToolResult(result: unknown): string | undefined {
 
 function normalizeToolCall(tool: ComposerToolCall | ToolCall): ToolCall {
 	return {
-		id: "toolCallId" in tool ? tool.toolCallId : tool.id,
+		id:
+			("toolCallId" in tool ? tool.toolCallId : undefined) ??
+			("id" in tool ? tool.id : undefined),
 		name: tool.name,
+		displayName: "displayName" in tool ? tool.displayName : undefined,
+		summaryLabel: "summaryLabel" in tool ? tool.summaryLabel : undefined,
 		args: tool.args,
 		status: normalizeToolStatus(tool.status),
 		result: formatToolResult(tool.result),
@@ -147,6 +151,8 @@ function upsertToolCall(
 	toolCalls.push({
 		id: toolCallId,
 		name: patch.name,
+		displayName: patch.displayName,
+		summaryLabel: patch.summaryLabel,
 		args: patch.args,
 		status: patch.status,
 		result: patch.result,
@@ -224,6 +230,8 @@ export function applyAgentEventToMessage(
 	if (event.type === "tool_execution_start" && event.toolCallId) {
 		const index = upsertToolCall(message, event.toolCallId, {
 			name: event.toolName ?? "tool",
+			displayName: event.displayName,
+			summaryLabel: event.summaryLabel,
 			args: event.args,
 			status: "running",
 		});
@@ -234,6 +242,8 @@ export function applyAgentEventToMessage(
 	if (event.type === "tool_execution_update" && event.toolCallId) {
 		const index = upsertToolCall(message, event.toolCallId, {
 			name: event.toolName ?? "tool",
+			displayName: event.displayName,
+			summaryLabel: event.summaryLabel,
 			args: event.args,
 			status: "running",
 			result: formatToolResult(event.partialResult),
@@ -245,6 +255,8 @@ export function applyAgentEventToMessage(
 	if (event.type === "tool_execution_end" && event.toolCallId) {
 		const index = upsertToolCall(message, event.toolCallId, {
 			name: event.toolName ?? "tool",
+			displayName: event.displayName,
+			summaryLabel: event.summaryLabel,
 			status: event.isError ? "error" : "success",
 			result: formatToolResult(event.result),
 		});
@@ -311,6 +323,9 @@ export function applyAgentEventToMessage(
 
 	if (messageEvent.type === "toolcall_end") {
 		const toolCall = messageEvent.toolCall;
+		if (!toolCall) {
+			return;
+		}
 		state.toolCallJsonById.delete(toolCall.id);
 		state.toolCallArgsById.delete(toolCall.id);
 		const index = upsertToolCall(message, toolCall.id, {

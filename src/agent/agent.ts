@@ -84,7 +84,9 @@ import { validate as uuidValidate } from "uuid";
 import { createLogger } from "../utils/logger.js";
 import {
 	describeToolActivity,
+	describeToolDisplayName,
 	summarizeToolBatch,
+	summarizeToolUse,
 } from "../utils/tool-use-summary.js";
 import {
 	AgentContextManager,
@@ -1130,7 +1132,7 @@ export class Agent {
 				} else if (event.type === "tool_execution_start") {
 					this.handleToolExecutionStart(event);
 				} else if (event.type === "tool_execution_update") {
-					this.emit(event);
+					this.handleToolExecutionUpdate(event);
 				} else if (event.type === "tool_execution_end") {
 					this.handleToolExecutionEnd(event);
 				} else {
@@ -1320,6 +1322,8 @@ export class Agent {
 					this.emit(event);
 				} else if (event.type === "tool_execution_start") {
 					this.handleToolExecutionStart(event);
+				} else if (event.type === "tool_execution_update") {
+					this.handleToolExecutionUpdate(event);
 				} else if (event.type === "tool_execution_end") {
 					this.handleToolExecutionEnd(event);
 				} else {
@@ -1369,17 +1373,46 @@ export class Agent {
 		const tool = this._state.tools.find(
 			(candidate) => candidate.name === event.toolName,
 		);
+		const displayName = describeToolDisplayName(
+			event.toolName,
+			event.args,
+			tool,
+		);
+		const summaryLabel = summarizeToolUse(event.toolName, event.args, tool);
 		this._state.pendingToolCalls.set(event.toolCallId, {
 			toolName: event.toolName,
 			args: event.args,
 			tool,
+			displayName,
+			summaryLabel,
 		});
 		this.emitStatus(describeToolActivity(event.toolName, event.args, tool), {
 			kind: "tool_execution_summary",
 			toolCallId: event.toolCallId,
 			toolName: event.toolName,
+			displayName,
+			summaryLabel,
 		});
-		this.emit(event);
+		this.emit({ ...event, displayName, summaryLabel });
+	}
+
+	private handleToolExecutionUpdate(
+		event: Extract<AgentEvent, { type: "tool_execution_update" }>,
+	): void {
+		const pending = this._state.pendingToolCalls.get(event.toolCallId);
+		const tool = pending?.tool;
+		const displayName =
+			describeToolDisplayName(event.toolName, event.args, tool) ??
+			pending?.displayName;
+		const summaryLabel =
+			summarizeToolUse(event.toolName, event.args, tool) ??
+			pending?.summaryLabel;
+		if (pending) {
+			pending.args = event.args;
+			pending.displayName = displayName;
+			pending.summaryLabel = summaryLabel;
+		}
+		this.emit({ ...event, displayName, summaryLabel });
 	}
 
 	private handleToolExecutionEnd(
@@ -1387,7 +1420,11 @@ export class Agent {
 	): void {
 		const pending = this._state.pendingToolCalls.get(event.toolCallId);
 		this._state.pendingToolCalls.delete(event.toolCallId);
-		this.emit(event);
+		this.emit({
+			...event,
+			displayName: pending?.displayName,
+			summaryLabel: pending?.summaryLabel,
+		});
 		if (!pending) {
 			return;
 		}

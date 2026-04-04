@@ -509,12 +509,16 @@ export type ComposerAgentEvent =
 			type: "tool_execution_start";
 			toolCallId: string;
 			toolName: string;
+			displayName?: string;
+			summaryLabel?: string;
 			args: Record<string, unknown>;
 	  }
 	| {
 			type: "tool_execution_update";
 			toolCallId: string;
 			toolName: string;
+			displayName?: string;
+			summaryLabel?: string;
 			args: Record<string, unknown>;
 			partialResult: unknown;
 	  }
@@ -522,6 +526,8 @@ export type ComposerAgentEvent =
 			type: "tool_execution_end";
 			toolCallId: string;
 			toolName: string;
+			displayName?: string;
+			summaryLabel?: string;
 			result: unknown;
 			isError: boolean;
 	  }

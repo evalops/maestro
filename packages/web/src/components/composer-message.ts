@@ -824,6 +824,8 @@ export class ComposerMessage extends LitElement {
 								(tool, index) => html`
 								<composer-tool-execution
 									.toolName=${tool.name}
+									.displayName=${tool.displayName ?? ""}
+									.summaryLabel=${tool.summaryLabel ?? ""}
 									.toolCallId=${
 										tool.id || tool.toolCallId || `${tool.name}-${index}`
 									}

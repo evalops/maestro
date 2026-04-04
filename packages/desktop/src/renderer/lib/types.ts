@@ -29,6 +29,8 @@ export type ThinkingLevel =
 export interface ToolCall {
 	id?: string;
 	name: string;
+	displayName?: string;
+	summaryLabel?: string;
 	args?: Record<string, unknown>;
 	status?: "pending" | "running" | "success" | "error";
 	result?: string;
@@ -73,6 +75,8 @@ export interface AgentEvent {
 	message?: Message | ComposerMessage;
 	toolCallId?: string;
 	toolName?: string;
+	displayName?: string;
+	summaryLabel?: string;
 	args?: Record<string, unknown>;
 	partialResult?: unknown;
 	result?: unknown;

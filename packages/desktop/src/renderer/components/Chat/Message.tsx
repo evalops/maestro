@@ -231,6 +231,8 @@ export function Message({
 							<ToolCall
 								key={toolCall.id ?? index}
 								name={toolCall.name}
+								displayName={toolCall.displayName}
+								summaryLabel={toolCall.summaryLabel}
 								args={toolCall.args}
 								status={toolCall.status}
 								result={toolCall.result}

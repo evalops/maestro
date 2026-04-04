@@ -103,8 +103,14 @@ export class LoaderView {
 		toolCallId: string,
 		toolName: string,
 		args: Record<string, unknown> = {},
+		summaryLabel?: string,
 	): void {
-		this.stageManager.registerToolStage(toolCallId, toolName, args);
+		this.stageManager.registerToolStage(
+			toolCallId,
+			toolName,
+			args,
+			summaryLabel,
+		);
 	}
 
 	markToolComplete(toolCallId: string): void {

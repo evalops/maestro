@@ -1,8 +1,8 @@
 import type { AgentTool } from "../agent/types.js";
 
-type ToolSummaryProvider = Pick<
+type ToolPresentationProvider = Pick<
 	AgentTool,
-	"getActivityDescription" | "getToolUseSummary"
+	"label" | "getActivityDescription" | "getDisplayName" | "getToolUseSummary"
 >;
 
 function getStringArg(
@@ -282,7 +282,7 @@ function describeKnownToolActivity(
 }
 
 function summarizeWithToolDefinition(
-	tool: ToolSummaryProvider | undefined,
+	tool: ToolPresentationProvider | undefined,
 	args: Record<string, unknown>,
 ): string | null {
 	const summary = tool?.getToolUseSummary?.(args)?.trim();
@@ -290,17 +290,41 @@ function summarizeWithToolDefinition(
 }
 
 function describeWithToolDefinition(
-	tool: ToolSummaryProvider | undefined,
+	tool: ToolPresentationProvider | undefined,
 	args: Record<string, unknown>,
 ): string | null {
 	const activity = tool?.getActivityDescription?.(args)?.trim();
 	return activity ? sentenceCase(truncateLabel(activity, 64)) : null;
 }
 
+function displayWithToolDefinition(
+	tool: ToolPresentationProvider | undefined,
+	args: Record<string, unknown>,
+): string | null {
+	const displayName = tool?.getDisplayName?.(args)?.trim();
+	return displayName ? sentenceCase(truncateLabel(displayName, 64)) : null;
+}
+
+export function describeToolDisplayName(
+	toolName: string,
+	args: Record<string, unknown> = {},
+	tool?: ToolPresentationProvider,
+): string {
+	const toolDisplayName = displayWithToolDefinition(tool, args);
+	if (toolDisplayName) {
+		return toolDisplayName;
+	}
+	const label = tool?.label?.trim();
+	if (label) {
+		return sentenceCase(label);
+	}
+	return sentenceCase(humanizeToolName(toolName));
+}
+
 export function summarizeToolUse(
 	toolName: string,
 	args: Record<string, unknown> = {},
-	tool?: ToolSummaryProvider,
+	tool?: ToolPresentationProvider,
 ): string {
 	const toolSummary = summarizeWithToolDefinition(tool, args);
 	if (toolSummary) {
@@ -316,7 +340,7 @@ export function summarizeToolUse(
 export function describeToolActivity(
 	toolName: string,
 	args: Record<string, unknown> = {},
-	tool?: ToolSummaryProvider,
+	tool?: ToolPresentationProvider,
 ): string {
 	const toolActivity = describeWithToolDefinition(tool, args);
 	if (toolActivity) {
@@ -333,7 +357,7 @@ export interface ToolBatchSummaryEntry {
 	toolName: string;
 	args?: Record<string, unknown>;
 	isError?: boolean;
-	tool?: ToolSummaryProvider;
+	tool?: ToolPresentationProvider;
 }
 
 export interface ToolBatchSummary {

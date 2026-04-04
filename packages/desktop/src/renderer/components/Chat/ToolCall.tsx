@@ -9,6 +9,8 @@ import { CodeBlock } from "../common";
 
 export interface ToolCallProps {
 	name: string;
+	displayName?: string;
+	summaryLabel?: string;
 	args?: Record<string, unknown>;
 	status?: "pending" | "running" | "success" | "error";
 	result?: string;
@@ -16,6 +18,8 @@ export interface ToolCallProps {
 
 export function ToolCall({
 	name,
+	displayName,
+	summaryLabel,
 	args,
 	status = "success",
 	result,
@@ -133,7 +137,7 @@ export function ToolCall({
 
 				{/* Tool name */}
 				<span className="flex-1 text-sm font-medium text-text-primary">
-					{getToolLabel(name)}
+					{summaryLabel || displayName || getToolLabel(name)}
 				</span>
 
 				{/* Tool ID */}

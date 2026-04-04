@@ -857,14 +857,18 @@ export class ComposerSidebarProvider
 					);
 				} else if (event.type === "tool_execution_start") {
 					const toolName = getEventProp<string>("toolName");
+					const displayName = getEventProp<string>("displayName");
+					const summaryLabel = getEventProp<string>("summaryLabel");
 					const args = getEventProp<Record<string, unknown>>("args") ?? {};
 					this._view?.webview.postMessage({
 						type: "tool_start",
 						id: getEventProp<string>("toolCallId"),
-						name: toolName,
-						summaryLabel: toolName
-							? summarizeVscodeToolCall(toolName, args)
-							: undefined,
+						name: displayName || toolName,
+						summaryLabel: summaryLabel
+							? summaryLabel
+							: toolName
+								? summarizeVscodeToolCall(toolName, args)
+								: undefined,
 						args,
 					});
 				} else if (event.type === "tool_execution_end") {

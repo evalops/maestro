@@ -464,6 +464,8 @@ export class ComposerToolExecution extends LitElement {
 	`;
 
 	@property({ type: String }) toolName = "";
+	@property({ type: String }) displayName = "";
+	@property({ type: String }) summaryLabel = "";
 	@property({ type: String }) toolCallId = "";
 	@property({ type: Object }) args: Record<string, unknown> = {};
 	@property({ type: Boolean }) argsTruncated = false;
@@ -541,6 +543,14 @@ export class ComposerToolExecution extends LitElement {
 			artifacts: "🗂️",
 		};
 		return glyphs[toolName] || "🔧";
+	}
+
+	private getHeaderLabel(): string {
+		return this.summaryLabel || this.displayName || this.toolName;
+	}
+
+	private getToolLabel(): string {
+		return this.displayName || this.toolName;
 	}
 
 	private getFilePathFromArgs(): string | null {
@@ -775,7 +785,7 @@ export class ComposerToolExecution extends LitElement {
 							}
 						</div>
 						<span class="tool-glyph">${this.getToolGlyph(this.toolName)}</span>
-						<span>${this.toolName}</span>
+						<span>${this.getHeaderLabel()}</span>
 					</div>
 					<div style="display:flex; align-items:center; gap:0.35rem;">
 						<button class="collapse-toggle" @click=${this.toggleBodyCollapse}>
@@ -886,7 +896,7 @@ export class ComposerToolExecution extends LitElement {
 							}
 						</div>
 						<span class="tool-glyph">${this.getToolGlyph(this.toolName)}</span>
-						<span>${this.toolName}</span>
+						<span>${this.getHeaderLabel()}</span>
 						${
 							this.getFilePathFromArgs()
 								? html`<span

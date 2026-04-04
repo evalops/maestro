@@ -826,6 +826,7 @@ export class HeadlessProtocolTranslator {
 	private noteToolExecution(
 		toolName: string,
 		args?: Record<string, unknown>,
+		summaryLabel?: string,
 		succeeded?: boolean,
 	): void {
 		if (!this.currentResponseTelemetry) {
@@ -839,7 +840,7 @@ export class HeadlessProtocolTranslator {
 			this.currentResponseTelemetry.callsFailed += 1;
 		}
 		if (args) {
-			const summary = summarizeToolUse(toolName, args);
+			const summary = summaryLabel || summarizeToolUse(toolName, args);
 			if (
 				summary &&
 				!this.currentResponseTelemetry.toolSummaryLabels.includes(summary)
@@ -950,7 +951,7 @@ export class HeadlessProtocolTranslator {
 				return [responseEnd];
 			}
 			case "tool_execution_start":
-				this.noteToolExecution(event.toolName, event.args);
+				this.noteToolExecution(event.toolName, event.args, event.summaryLabel);
 				return [
 					{
 						type: "tool_call",
@@ -978,7 +979,12 @@ export class HeadlessProtocolTranslator {
 				];
 			}
 			case "tool_execution_end":
-				this.noteToolExecution(event.toolName, undefined, !event.isError);
+				this.noteToolExecution(
+					event.toolName,
+					undefined,
+					event.summaryLabel,
+					!event.isError,
+				);
 				return [
 					{
 						type: "tool_end",

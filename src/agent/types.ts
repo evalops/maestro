@@ -570,6 +570,8 @@ export interface AgentTool<
 	shouldRetry?: (error: unknown) => boolean;
 	/** Optional compact summary used after a tool finishes. */
 	getToolUseSummary?: (params: Record<string, unknown>) => string | null;
+	/** Optional human-facing label used for live tool UI. */
+	getDisplayName?: (params: Record<string, unknown>) => string | null;
 	/** Optional present-tense activity label used while a tool is running. */
 	getActivityDescription?: (params: Record<string, unknown>) => string | null;
 	/**
@@ -905,8 +907,15 @@ export interface PendingToolCall {
 	toolName: string;
 	/** Original arguments passed to the tool */
 	args?: Record<string, unknown>;
-	/** Optional tool-provided summary/activity formatter */
-	tool?: Pick<AgentTool, "getToolUseSummary" | "getActivityDescription">;
+	/** Tool metadata captured when execution started */
+	tool?: Pick<
+		AgentTool,
+		"label" | "getDisplayName" | "getToolUseSummary" | "getActivityDescription"
+	>;
+	/** Stable display name for live UI */
+	displayName?: string;
+	/** Stable compact summary for live UI */
+	summaryLabel?: string;
 }
 
 /**
@@ -1088,6 +1097,10 @@ export type AgentEvent =
 			toolCallId: string;
 			/** Name of the tool */
 			toolName: string;
+			/** Optional human-facing label for live UI */
+			displayName?: string;
+			/** Optional compact summary for live UI */
+			summaryLabel?: string;
 			/** Arguments passed to the tool */
 			args: Record<string, unknown>;
 	  }
@@ -1098,6 +1111,10 @@ export type AgentEvent =
 			toolCallId: string;
 			/** Name of the tool */
 			toolName: string;
+			/** Optional human-facing label for live UI */
+			displayName?: string;
+			/** Optional compact summary for live UI */
+			summaryLabel?: string;
 			/** Result from the tool */
 			result: ToolResultMessage;
 			/** Whether the tool returned an error */
@@ -1126,6 +1143,10 @@ export type AgentEvent =
 			toolCallId: string;
 			/** Name of the tool */
 			toolName: string;
+			/** Optional human-facing label for live UI */
+			displayName?: string;
+			/** Optional compact summary for live UI */
+			summaryLabel?: string;
 			/** Arguments passed to the tool */
 			args: Record<string, unknown>;
 			/** Partial tool result */

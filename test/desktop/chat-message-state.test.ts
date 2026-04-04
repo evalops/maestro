@@ -72,12 +72,16 @@ describe("desktop chat message state", () => {
 			type: "tool_execution_start",
 			toolCallId: "call-1",
 			toolName: "read",
+			displayName: "Read",
+			summaryLabel: "Read app.ts",
 			args: { path: "src/app.ts" },
 		};
 		const updateEvent: ComposerAgentEvent = {
 			type: "tool_execution_update",
 			toolCallId: "call-1",
 			toolName: "read",
+			displayName: "Read",
+			summaryLabel: "Read app.ts",
 			args: { path: "src/app.ts" },
 			partialResult: { lines: 42 },
 		};
@@ -85,6 +89,8 @@ describe("desktop chat message state", () => {
 			type: "tool_execution_end",
 			toolCallId: "call-1",
 			toolName: "read",
+			displayName: "Read",
+			summaryLabel: "Read app.ts",
 			result: "done",
 			isError: false,
 		};
@@ -98,6 +104,8 @@ describe("desktop chat message state", () => {
 			{
 				id: "call-1",
 				name: "read",
+				displayName: "Read",
+				summaryLabel: "Read app.ts",
 				args: { path: "src/app.ts" },
 				status: "success",
 				result: "done",
