@@ -608,10 +608,10 @@ impl RemoteAgentTransport {
 
     pub fn send(&self, msg: ToAgentMessage) -> Result<(), AsyncTransportError> {
         if self.connection_role == Some(ConnectionRole::Viewer)
-            && matches!(msg, ToAgentMessage::Interrupt | ToAgentMessage::Cancel)
+            && !matches!(msg, ToAgentMessage::Hello { .. })
         {
             return Err(AsyncTransportError::SendFailed(
-                "viewer connections cannot interrupt remote sessions".to_string(),
+                "viewer connections cannot send remote session messages".to_string(),
             ));
         }
         self.message_tx
@@ -3209,7 +3209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_viewer_transport_rejects_interrupt_and_cancel_messages() {
+    async fn remote_viewer_transport_rejects_controller_messages() {
         let snapshot = serde_json::json!({
             "protocolVersion": "2026-03-30",
             "session_id": "sess_remote",
@@ -3241,13 +3241,25 @@ mod tests {
         let posted = wait_for_posted_bodies_len(&posted_bodies, 1).await;
         assert_eq!(posted.len(), 1);
 
+        let prompt_error = transport
+            .send(ToAgentMessage::Prompt {
+                content: "viewer should stay read-only".to_string(),
+                attachments: None,
+            })
+            .expect_err("viewer prompt should be rejected");
+        assert!(matches!(
+            prompt_error,
+            AsyncTransportError::SendFailed(ref message)
+                if message.contains("viewer connections cannot send remote session messages")
+        ));
+
         let interrupt_error = transport
             .send(ToAgentMessage::Interrupt)
             .expect_err("viewer interrupt should be rejected");
         assert!(matches!(
             interrupt_error,
             AsyncTransportError::SendFailed(ref message)
-                if message.contains("viewer connections cannot interrupt remote sessions")
+                if message.contains("viewer connections cannot send remote session messages")
         ));
 
         let cancel_error = transport
@@ -3256,7 +3268,7 @@ mod tests {
         assert!(matches!(
             cancel_error,
             AsyncTransportError::SendFailed(ref message)
-                if message.contains("viewer connections cannot interrupt remote sessions")
+                if message.contains("viewer connections cannot send remote session messages")
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
