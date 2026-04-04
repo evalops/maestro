@@ -497,6 +497,7 @@ struct HeartbeatLoopContext {
     connection_id: String,
     subscription_id: String,
     event_tx: mpsc::UnboundedSender<Result<RemoteIncoming, AsyncTransportError>>,
+    emit_success_heartbeat: bool,
     interval: Duration,
     cancel: CancellationToken,
 }
@@ -576,6 +577,10 @@ impl RemoteAgentTransport {
             connection_id: connection_id.clone(),
             subscription_id: subscription_id.clone(),
             event_tx,
+            emit_success_heartbeat: config
+                .opt_out_notifications
+                .iter()
+                .any(|notification| notification == "heartbeat"),
             interval: heartbeat_interval,
             cancel: heartbeat_cancel,
         }));
@@ -1190,6 +1195,7 @@ async fn heartbeat_loop(context: HeartbeatLoopContext) {
         connection_id,
         subscription_id,
         event_tx,
+        emit_success_heartbeat,
         interval,
         cancel,
     } = context;
@@ -1208,7 +1214,14 @@ async fn heartbeat_loop(context: HeartbeatLoopContext) {
                     &subscription_id,
                 )
                 .await {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        if emit_success_heartbeat
+                            && event_tx.send(Ok(RemoteIncoming::Heartbeat)).is_err()
+                        {
+                            cancel.cancel();
+                            break;
+                        }
+                    }
                     Err(error) => {
                         if !should_surface_heartbeat_error(&error) {
                             continue;
@@ -3398,6 +3411,197 @@ mod tests {
 
         let incoming = transport.recv_incoming().await.expect("incoming heartbeat");
         assert!(matches!(incoming, RemoteIncoming::Heartbeat));
+        assert_eq!(
+            transport.state().last_status.as_deref(),
+            Some("Remote update")
+        );
+
+        transport.shutdown().expect("shutdown");
+        for _ in 0..50 {
+            if cancel_token.is_cancelled() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn remote_transport_synthesizes_liveness_when_stream_heartbeats_are_opted_out() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let Some((path, _headers, _body)) = read_http_request(&mut socket).await else {
+                        return;
+                    };
+
+                    if path == "/api/headless/connections" {
+                        let body = serde_json::json!({
+                            "session_id": "sess_remote",
+                            "connection_id": "conn_remote",
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &body,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/subscribe") {
+                        let body = serde_json::json!({
+                            "connection_id": "conn_remote",
+                            "subscription_id": "sub_remote",
+                            "controller_connection_id": "conn_remote",
+                            "lease_expires_at": "2026-04-02T00:00:15Z",
+                            "heartbeat_interval_ms": 1,
+                            "snapshot": {
+                                "protocolVersion": "2026-03-30",
+                                "session_id": "sess_remote",
+                                "cursor": 0,
+                                "state": {
+                                    "protocol_version": "2026-03-30",
+                                    "session_id": "sess_remote",
+                                    "pending_approvals": [],
+                                    "active_tools": [],
+                                    "active_utility_commands": [],
+                                    "active_file_watches": [],
+                                    "is_ready": true,
+                                    "is_responding": false
+                                }
+                            }
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            &body,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.contains("/events?") {
+                        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                        if socket.write_all(headers.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        let status_event = serde_json::json!({
+                            "type": "message",
+                            "cursor": 1,
+                            "message": {
+                                "type": "status",
+                                "message": "Remote update"
+                            }
+                        });
+                        let payload = format!("data: {status_event}\n\n");
+                        if socket.write_all(payload.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/heartbeat") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":25}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/messages") {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"success":true}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/disconnect")
+                    {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    if path.starts_with("/api/headless/sessions/") && path.ends_with("/unsubscribe")
+                    {
+                        write_http_response(
+                            &mut socket,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            r#"{"success":true}"#,
+                        )
+                        .await;
+                        return;
+                    }
+
+                    write_http_response(
+                        &mut socket,
+                        "HTTP/1.1 404 Not Found",
+                        "text/plain",
+                        "not found",
+                    )
+                    .await;
+                });
+            }
+        });
+
+        let mut transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            opt_out_notifications: vec!["heartbeat".to_string()],
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+        let cancel_token = transport.cancel_token();
+
+        let mut saw_status = false;
+        let mut saw_heartbeat = false;
+        for _ in 0..3 {
+            let incoming = tokio::time::timeout(Duration::from_secs(1), transport.recv_incoming())
+                .await
+                .expect("remote status or synthetic heartbeat should arrive before timeout")
+                .expect("remote status or synthetic heartbeat should be delivered");
+            match incoming {
+                RemoteIncoming::Message(FromAgentMessage::Status { message }) => {
+                    assert_eq!(message, "Remote update");
+                    saw_status = true;
+                }
+                RemoteIncoming::Heartbeat => {
+                    saw_heartbeat = true;
+                }
+                other => panic!("expected remote status or heartbeat, got {other:?}"),
+            }
+
+            if saw_status && saw_heartbeat {
+                break;
+            }
+        }
+        assert!(saw_status, "expected streamed status event");
+        assert!(saw_heartbeat, "expected synthetic heartbeat event");
         assert_eq!(
             transport.state().last_status.as_deref(),
             Some("Remote update")
