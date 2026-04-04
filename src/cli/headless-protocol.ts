@@ -619,7 +619,6 @@ export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 export function headlessViewerCanSend(msg: HeadlessToAgentMessage): boolean {
 	switch (msg.type) {
 		case "hello":
-		case "shutdown":
 			return true;
 		default:
 			return false;

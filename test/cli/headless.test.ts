@@ -986,7 +986,7 @@ describe("headless protocol helpers", () => {
 		]);
 	});
 
-	it("ignores viewer interrupt and cancel messages in derived runtime state", () => {
+	it("ignores viewer interrupt, cancel, and shutdown messages in derived runtime state", () => {
 		const state = createHeadlessRuntimeState();
 		state.connection_role = "viewer";
 		state.current_response = {
@@ -1033,6 +1033,28 @@ describe("headless protocol helpers", () => {
 		expect(state.is_responding).toBe(true);
 
 		applyOutgoingHeadlessMessage(state, { type: "cancel" });
+		expect(state.current_response).toEqual({
+			response_id: "resp_viewer",
+			text: "still here",
+			thinking: "",
+		});
+		expect(state.pending_approvals).toEqual([
+			{
+				call_id: "call_viewer",
+				tool: "bash",
+				args: { command: "ls" },
+			},
+		]);
+		expect(state.tracked_tools).toEqual([
+			{
+				call_id: "call_viewer",
+				tool: "bash",
+				args: { command: "ls" },
+			},
+		]);
+		expect(state.is_responding).toBe(true);
+
+		applyOutgoingHeadlessMessage(state, { type: "shutdown" });
 		expect(state.current_response).toEqual({
 			response_id: "resp_viewer",
 			text: "still here",
