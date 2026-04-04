@@ -415,7 +415,7 @@ describe("agent-runner", () => {
 			for (let i = 0; i < 5; i++) {
 				const num = i;
 				queue.push(async () => {
-					await new Promise((r) => setTimeout(r, 10));
+					await Promise.resolve();
 					processed.push(num);
 				});
 			}
