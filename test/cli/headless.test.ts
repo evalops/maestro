@@ -470,6 +470,24 @@ describe("headless protocol helpers", () => {
 		expect(state.connection_role).toBe("controller");
 	});
 
+	it("ignores viewer hello negotiation for disallowed user_input requests", () => {
+		const state = createHeadlessRuntimeState();
+
+		applyOutgoingHeadlessMessage(state, {
+			type: "hello",
+			protocol_version: "2026-03-30",
+			client_info: { name: "maestro-tui-rs", version: "0.1.0" },
+			capabilities: { server_requests: ["user_input"] },
+			role: "viewer",
+		});
+
+		expect(state.client_protocol_version).toBeUndefined();
+		expect(state.client_info).toBeUndefined();
+		expect(state.capabilities).toBeUndefined();
+		expect(state.connection_role).toBeUndefined();
+		expect(state.connections).toEqual([]);
+	});
+
 	it("accepts raw_agent_event messages without mutating derived runtime state", () => {
 		const state = createHeadlessRuntimeState();
 		const message = {

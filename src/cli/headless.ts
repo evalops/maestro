@@ -35,6 +35,7 @@ import {
 	classifyHeadlessError,
 	createHeadlessRuntimeState,
 	headlessViewerCanSend,
+	headlessViewerHasDisallowedCapabilities,
 	loadPromptAttachments,
 } from "./headless-protocol.js";
 
@@ -47,16 +48,6 @@ export {
 };
 
 const LOCAL_HEADLESS_CONNECTION_ID = "local";
-
-function viewerHelloNegotiatesDisallowedUserInput(
-	msg: HeadlessToAgentMessage,
-): boolean {
-	return (
-		msg.type === "hello" &&
-		msg.role === "viewer" &&
-		msg.capabilities?.server_requests?.includes("user_input") === true
-	);
-}
 
 function send(msg: HeadlessFromAgentMessage): void {
 	try {
@@ -323,7 +314,7 @@ export async function runHeadlessMode(
 		}
 
 		try {
-			if (viewerHelloNegotiatesDisallowedUserInput(msg)) {
+			if (headlessViewerHasDisallowedCapabilities(msg)) {
 				send({
 					type: "error",
 					message:
