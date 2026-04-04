@@ -652,7 +652,6 @@ impl AgentSupervisor {
         if let Some(transport) = self.transport.take() {
             let _ = transport.shutdown();
         }
-        self.clear_transient_progress_state();
         self.last_response = None;
         if should_retry {
             self.health_status = HealthStatus::Reconnecting;
@@ -661,6 +660,7 @@ impl AgentSupervisor {
                 status: HealthStatus::Reconnecting,
             };
         }
+        self.clear_transient_progress_state();
         self.health_status = HealthStatus::Unhealthy;
         self.pending_auto_reconnect = false;
         SupervisorEvent::Disconnected {
@@ -738,7 +738,6 @@ impl AgentSupervisor {
                 return None;
             }
 
-            self.clear_transient_progress_state();
             self.health_status = HealthStatus::Unhealthy;
             self.last_response = None;
             if self.config.auto_reconnect {
@@ -746,6 +745,8 @@ impl AgentSupervisor {
                     let _ = transport.shutdown();
                 }
                 self.pending_auto_reconnect = true;
+            } else {
+                self.clear_transient_progress_state();
             }
             return Some(SupervisorEvent::HealthChanged {
                 status: HealthStatus::Unhealthy,
@@ -762,7 +763,6 @@ impl AgentSupervisor {
                 if silence
                     >= self.config.health_check_interval + self.config.health_check_timeout =>
             {
-                self.clear_transient_progress_state();
                 self.health_status = HealthStatus::Unhealthy;
                 self.last_response = None;
                 if self.config.auto_reconnect {
@@ -770,6 +770,8 @@ impl AgentSupervisor {
                         let _ = transport.shutdown();
                     }
                     self.pending_auto_reconnect = true;
+                } else {
+                    self.clear_transient_progress_state();
                 }
                 Some(SupervisorEvent::HealthChanged {
                     status: HealthStatus::Unhealthy,
@@ -1704,7 +1706,7 @@ mod tests {
     }
 
     #[test]
-    fn transport_disconnect_clears_transient_progress_state() {
+    fn retryable_transport_disconnect_preserves_transient_progress_state() {
         let mut supervisor = AgentSupervisor::new(SupervisorConfig::default());
         supervisor.state.current_response = Some(StreamingResponse::new("resp_disconnect".into()));
         supervisor.state.is_responding = true;
@@ -1797,18 +1799,24 @@ mod tests {
             },
         );
 
-        let _event = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
+        assert!(matches!(
+            supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed),
+            SupervisorEvent::HealthChanged {
+                status: HealthStatus::Reconnecting
+            }
+        ));
 
-        assert!(supervisor.state().current_response.is_none());
+        assert!(supervisor.pending_auto_reconnect);
+        assert!(supervisor.state().current_response.is_some());
         assert_eq!(supervisor.state().pending_approvals.len(), 1);
         assert_eq!(supervisor.state().pending_client_tools.len(), 1);
         assert_eq!(supervisor.state().pending_user_inputs.len(), 1);
         assert_eq!(supervisor.state().pending_tool_retries.len(), 1);
-        assert!(supervisor.state().active_tools.is_empty());
-        assert!(supervisor.state().active_utility_commands.is_empty());
-        assert!(supervisor.state().active_file_watches.is_empty());
+        assert_eq!(supervisor.state().active_tools.len(), 1);
+        assert_eq!(supervisor.state().active_utility_commands.len(), 1);
+        assert_eq!(supervisor.state().active_file_watches.len(), 1);
         assert_eq!(supervisor.state().tracked_tools.len(), 4);
-        assert!(!supervisor.state().is_responding);
+        assert!(supervisor.state().is_responding);
     }
 
     #[test]
@@ -3444,15 +3452,15 @@ done
         ));
         assert!(!supervisor.is_connected());
         assert!(supervisor.pending_auto_reconnect);
-        assert!(supervisor.state().current_response.is_none());
+        assert!(supervisor.state().current_response.is_some());
         assert_eq!(supervisor.state().pending_approvals.len(), 1);
         assert_eq!(supervisor.state().pending_client_tools.len(), 1);
         assert_eq!(supervisor.state().pending_user_inputs.len(), 1);
         assert_eq!(supervisor.state().pending_tool_retries.len(), 1);
-        assert!(supervisor.state().active_tools.is_empty());
-        assert!(supervisor.state().active_utility_commands.is_empty());
-        assert!(supervisor.state().active_file_watches.is_empty());
+        assert_eq!(supervisor.state().active_tools.len(), 1);
+        assert_eq!(supervisor.state().active_utility_commands.len(), 1);
+        assert_eq!(supervisor.state().active_file_watches.len(), 1);
         assert_eq!(supervisor.state().tracked_tools.len(), 4);
-        assert!(!supervisor.state().is_responding);
+        assert!(supervisor.state().is_responding);
     }
 }
