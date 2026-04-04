@@ -8,6 +8,7 @@
  * - SubagentStop
  * - UserPromptSubmit
  * - PreCompact
+ * - PostCompact
  * - Notification
  * - Overflow
  * - PreMessage
@@ -22,6 +23,7 @@ import type {
 	NotificationHookInput,
 	OnErrorHookInput,
 	OverflowHookInput,
+	PostCompactHookInput,
 	PostMessageHookInput,
 	PreCompactHookInput,
 	PreMessageHookInput,
@@ -145,6 +147,15 @@ export interface SessionHookService {
 	): Promise<SessionHookResult>;
 
 	/**
+	 * Run PostCompact hooks after context compaction succeeds.
+	 */
+	runPostCompactHooks(
+		trigger: PostCompactHookInput["trigger"],
+		compactSummary: string,
+		signal?: AbortSignal,
+	): Promise<SessionHookResult>;
+
+	/**
 	 * Run Notification hooks for various notifications.
 	 */
 	runNotificationHooks(
@@ -207,6 +218,7 @@ export interface SessionHookService {
 			| "SubagentStop"
 			| "UserPromptSubmit"
 			| "PreCompact"
+			| "PostCompact"
 			| "Notification"
 			| "Overflow"
 			| "PreMessage"
@@ -456,6 +468,32 @@ export function createSessionHookService(
 			return processed;
 		},
 
+		async runPostCompactHooks(
+			trigger: PostCompactHookInput["trigger"],
+			compactSummary: string,
+			signal?: AbortSignal,
+		): Promise<SessionHookResult> {
+			const input: PostCompactHookInput = {
+				hook_event_name: "PostCompact",
+				cwd: context.cwd,
+				session_id: context.sessionId,
+				timestamp: new Date().toISOString(),
+				trigger,
+				compact_summary: compactSummary,
+			};
+
+			const results = await executeHooks(input, context.cwd, signal);
+			const processed = processResults(results);
+
+			logger.debug("PostCompact hooks completed", {
+				trigger,
+				summaryLength: compactSummary.length,
+				resultCount: results.length,
+			});
+
+			return processed;
+		},
+
 		async runNotificationHooks(
 			notificationType: string,
 			message: string,
@@ -612,6 +650,7 @@ export function createSessionHookService(
 				| "SubagentStop"
 				| "UserPromptSubmit"
 				| "PreCompact"
+				| "PostCompact"
 				| "Notification"
 				| "Overflow"
 				| "PreMessage"

@@ -32,6 +32,7 @@ export type HookEventType =
 	| "UserPromptSubmit"
 	| "Notification"
 	| "PreCompact"
+	| "PostCompact"
 	| "PermissionRequest"
 	| "Overflow"
 	| "PreMessage"
@@ -285,6 +286,17 @@ export interface PreCompactHookInput extends HookInputBase {
 }
 
 /**
+ * Input for PostCompact hooks - called after context compaction succeeds.
+ */
+export interface PostCompactHookInput extends HookInputBase {
+	hook_event_name: "PostCompact";
+	/** What triggered the compaction */
+	trigger: "auto" | "manual" | "token_limit";
+	/** Summary that replaced the compacted history */
+	compact_summary: string;
+}
+
+/**
  * Input for PermissionRequest hooks - called when permission is required.
  */
 export interface PermissionRequestHookInput extends HookInputBase {
@@ -390,6 +402,7 @@ export type HookInput =
 	| UserPromptSubmitHookInput
 	| NotificationHookInput
 	| PreCompactHookInput
+	| PostCompactHookInput
 	| PermissionRequestHookInput
 	| OverflowHookInput
 	| PreMessageHookInput
@@ -698,6 +711,13 @@ export interface UserPromptSubmitHookOutput {
 }
 
 /**
+ * Hook-specific output for PostCompact events.
+ */
+export interface PostCompactHookOutput {
+	hookEventName: "PostCompact";
+}
+
+/**
  * Hook-specific output for PermissionRequest events.
  */
 export interface PermissionRequestHookOutput {
@@ -736,6 +756,7 @@ export type HookSpecificOutput =
 	| SessionSwitchHookOutput
 	| SessionBeforeTreeHookOutput
 	| UserPromptSubmitHookOutput
+	| PostCompactHookOutput
 	| PermissionRequestHookOutput
 	| BranchHookOutput;
 

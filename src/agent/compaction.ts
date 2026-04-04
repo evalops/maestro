@@ -1102,6 +1102,18 @@ export async function performCompaction(params: {
 		firstKeptEntryIndex: boundary,
 	});
 
+	if (
+		effectiveHookService?.runPostCompactHooks &&
+		(!effectiveHookService.hasHooks ||
+			effectiveHookService.hasHooks("PostCompact"))
+	) {
+		await effectiveHookService.runPostCompactHooks(
+			trigger ?? (auto ? "auto" : "manual"),
+			summaryText,
+			hookContext?.signal,
+		);
+	}
+
 	return {
 		success: true,
 		compactedCount: older.length,

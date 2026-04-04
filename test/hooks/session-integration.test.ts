@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
 import { createSessionHookService } from "../../src/hooks/session-integration.js";
 import type {
 	OnErrorHookInput,
@@ -41,6 +42,7 @@ describe("SessionHookService", () => {
 			expect(service.runOverflowHooks).toBeDefined();
 			expect(service.runPreMessageHooks).toBeDefined();
 			expect(service.runPostMessageHooks).toBeDefined();
+			expect(service.runPostCompactHooks).toBeDefined();
 			expect(service.runOnErrorHooks).toBeDefined();
 			expect(service.hasHooks).toBeDefined();
 		});
@@ -130,6 +132,62 @@ describe("SessionHookService", () => {
 
 			expect(result).toBeDefined();
 			expect(result.hookResults).toBeInstanceOf(Array);
+		});
+	});
+
+	describe("PostCompact hooks", () => {
+		it("runs post-compact hooks with summary text", async () => {
+			const service = createSessionHookService({
+				cwd: testDir,
+				sessionId: "test-session",
+			});
+
+			const result = await service.runPostCompactHooks(
+				"auto",
+				"Condensed summary of the previous conversation",
+			);
+
+			expect(result).toBeDefined();
+			expect(result.blocked).toBe(false);
+		});
+
+		it("executes registered PostCompact hooks", async () => {
+			clearRegisteredHooks();
+			const capturedInputs: Array<{
+				trigger: string;
+				compact_summary: string;
+			}> = [];
+			registerHook("PostCompact", {
+				type: "callback",
+				callback: async (input) => {
+					capturedInputs.push({
+						trigger: (input as { trigger: string; compact_summary: string })
+							.trigger,
+						compact_summary: (
+							input as { trigger: string; compact_summary: string }
+						).compact_summary,
+					});
+					return {};
+				},
+			});
+
+			try {
+				const service = createSessionHookService({
+					cwd: testDir,
+					sessionId: "test-session",
+				});
+
+				await service.runPostCompactHooks("manual", "Saved summary");
+
+				expect(capturedInputs).toEqual([
+					{
+						trigger: "manual",
+						compact_summary: "Saved summary",
+					},
+				]);
+			} finally {
+				clearRegisteredHooks();
+			}
 		});
 	});
 
@@ -430,6 +488,7 @@ describe("SessionHookService", () => {
 				"SubagentStop",
 				"UserPromptSubmit",
 				"PreCompact",
+				"PostCompact",
 				"Notification",
 				"Overflow",
 				"PreMessage",

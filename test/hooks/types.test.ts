@@ -7,6 +7,7 @@ import type {
 	OnErrorHookInput,
 	OverflowHookInput,
 	PermissionRequestHookInput,
+	PostCompactHookInput,
 	PostMessageHookInput,
 	PostToolUseFailureHookInput,
 	PostToolUseHookInput,
@@ -22,7 +23,7 @@ import type {
 
 describe("Hook Types", () => {
 	describe("HookEventType", () => {
-		it("includes all 16 event types", () => {
+		it("includes all 17 event types", () => {
 			const eventTypes: HookEventType[] = [
 				"PreToolUse",
 				"PostToolUse",
@@ -35,6 +36,7 @@ describe("Hook Types", () => {
 				"UserPromptSubmit",
 				"Notification",
 				"PreCompact",
+				"PostCompact",
 				"PermissionRequest",
 				"Overflow",
 				"PreMessage",
@@ -42,7 +44,7 @@ describe("Hook Types", () => {
 				"OnError",
 			];
 
-			expect(eventTypes).toHaveLength(16);
+			expect(eventTypes).toHaveLength(17);
 		});
 	});
 
@@ -374,6 +376,22 @@ describe("Hook Types", () => {
 
 			expect(input.hook_event_name).toBe("PermissionRequest");
 			expect(input.reason).toBe("Destructive operation");
+		});
+	});
+
+	describe("PostCompactHookInput", () => {
+		it("includes trigger and compact summary", () => {
+			const input: PostCompactHookInput = {
+				hook_event_name: "PostCompact",
+				cwd: "/tmp",
+				timestamp: new Date().toISOString(),
+				trigger: "auto",
+				compact_summary: "Summary of earlier discussion",
+			};
+
+			expect(input.hook_event_name).toBe("PostCompact");
+			expect(input.trigger).toBe("auto");
+			expect(input.compact_summary).toBe("Summary of earlier discussion");
 		});
 	});
 

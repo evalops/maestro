@@ -19,6 +19,7 @@
  * - **UserPromptSubmit**: When user submits a prompt
  * - **Notification**: On various notifications
  * - **PreCompact**: Before context compaction
+ * - **PostCompact**: After context compaction succeeds
  * - **PermissionRequest**: When permission is required
  * - **Overflow**: When context overflow is detected
  * - **PreMessage**: Before user message is sent to model
@@ -71,6 +72,7 @@ export type {
 	UserPromptSubmitHookInput,
 	NotificationHookInput,
 	PreCompactHookInput,
+	PostCompactHookInput,
 	PermissionRequestHookInput,
 	OverflowHookInput,
 	PreMessageHookInput,
@@ -99,6 +101,7 @@ export type {
 	SubagentStartHookOutput,
 	SubagentStopHookOutput,
 	UserPromptSubmitHookOutput,
+	PostCompactHookOutput,
 	PermissionRequestHookOutput,
 	EvalAssertion,
 	// Result types

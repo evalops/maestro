@@ -26,6 +26,7 @@ const VALID_HOOK_EVENT_NAMES = new Set([
 	"UserPromptSubmit",
 	"Notification",
 	"PreCompact",
+	"PostCompact",
 	"PermissionRequest",
 ]);
 

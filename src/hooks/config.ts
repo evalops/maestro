@@ -404,6 +404,7 @@ function loadHooksFromEnv(): HookConfiguration {
 		USER_PROMPT_SUBMIT: "UserPromptSubmit",
 		NOTIFICATION: "Notification",
 		PRE_COMPACT: "PreCompact",
+		POST_COMPACT: "PostCompact",
 		PERMISSION_REQUEST: "PermissionRequest",
 	};
 
@@ -611,6 +612,7 @@ export function getMatchTarget(input: HookInput): string | undefined {
 		case "SessionStart":
 			return input.source;
 		case "PreCompact":
+		case "PostCompact":
 			return input.trigger;
 		case "Notification":
 			return input.notification_type;

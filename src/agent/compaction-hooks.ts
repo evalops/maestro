@@ -1,5 +1,8 @@
 import { createSessionHookService } from "../hooks/session-integration.js";
-import type { PreCompactHookInput } from "../hooks/types.js";
+import type {
+	PostCompactHookInput,
+	PreCompactHookInput,
+} from "../hooks/types.js";
 
 export interface CompactionHookContext {
 	cwd: string;
@@ -17,11 +20,16 @@ export interface CompactionHookResult {
 }
 
 export interface CompactionHookService {
-	hasHooks?(eventType: "PreCompact"): boolean;
+	hasHooks?(eventType: "PreCompact" | "PostCompact"): boolean;
 	runPreCompactHooks(
 		trigger: PreCompactHookInput["trigger"],
 		tokenCount: number,
 		targetTokenCount: number,
+		signal?: AbortSignal,
+	): Promise<CompactionHookResult>;
+	runPostCompactHooks?(
+		trigger: PostCompactHookInput["trigger"],
+		compactSummary: string,
 		signal?: AbortSignal,
 	): Promise<CompactionHookResult>;
 }

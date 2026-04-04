@@ -108,6 +108,10 @@ function createMockHookService(
 			preventContinuation: false,
 			...overrides,
 		}),
+		runPostCompactHooks: vi.fn().mockResolvedValue({
+			blocked: false,
+			preventContinuation: false,
+		}),
 	};
 }
 
@@ -242,6 +246,26 @@ describe("performCompaction", () => {
 		});
 		expect(agent.generateSummary).not.toHaveBeenCalled();
 		expect(sessionManager.saveCompaction).not.toHaveBeenCalled();
+	});
+
+	it("runs PostCompact hooks with the generated summary", async () => {
+		const messages = buildConversation(10);
+		const agent = createMockAgent(messages);
+		const sessionManager = createMockSessionManager();
+		const hookService = createMockHookService();
+
+		const result = await performCompaction({
+			agent,
+			sessionManager,
+			hookService,
+		});
+
+		expect(result.success).toBe(true);
+		expect(hookService.runPostCompactHooks).toHaveBeenCalledWith(
+			"manual",
+			"LLM summary of conversation",
+			undefined,
+		);
 	});
 
 	it("replaced messages start with summary and resume then kept messages", async () => {
