@@ -469,6 +469,7 @@ pub struct RemoteAgentTransport {
     event_rx: mpsc::UnboundedReceiver<Result<RemoteIncoming, AsyncTransportError>>,
     cancel_token: CancellationToken,
     shutdown_context: Arc<RemoteShutdownContext>,
+    connection_role: Option<ConnectionRole>,
     session_id: String,
     connection_id: String,
     subscription_id: String,
@@ -590,6 +591,7 @@ impl RemoteAgentTransport {
             event_rx,
             cancel_token,
             shutdown_context,
+            connection_role: build_remote_connection_role(&config),
             session_id,
             connection_id,
             subscription_id,
@@ -605,6 +607,13 @@ impl RemoteAgentTransport {
     }
 
     pub fn send(&self, msg: ToAgentMessage) -> Result<(), AsyncTransportError> {
+        if self.connection_role == Some(ConnectionRole::Viewer)
+            && matches!(msg, ToAgentMessage::Interrupt | ToAgentMessage::Cancel)
+        {
+            return Err(AsyncTransportError::SendFailed(
+                "viewer connections cannot interrupt remote sessions".to_string(),
+            ));
+        }
         self.message_tx
             .send(msg)
             .map_err(|_| AsyncTransportError::ChannelClosed)
@@ -753,6 +762,7 @@ impl RemoteAgentTransport {
             event_rx: _event_rx,
             cancel_token,
             shutdown_context,
+            connection_role: _connection_role,
             session_id,
             connection_id,
             subscription_id,
@@ -3196,6 +3206,63 @@ mod tests {
             "expected remote shutdown to disconnect the explicit connection without shutting down the runtime"
         );
         assert!(cancel_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn remote_viewer_transport_rejects_interrupt_and_cancel_messages() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 1,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+
+        let (addr, posted_bodies, _request_paths, _request_headers) =
+            spawn_remote_headless_server(snapshot.to_string(), vec![]).await;
+
+        let transport = RemoteAgentTransport::connect(RemoteTransportConfig {
+            base_url: format!("http://{addr}"),
+            role: Some("viewer".to_string()),
+            ..RemoteTransportConfig::default()
+        })
+        .await
+        .expect("connect");
+
+        let posted = wait_for_posted_bodies_len(&posted_bodies, 1).await;
+        assert_eq!(posted.len(), 1);
+
+        let interrupt_error = transport
+            .send(ToAgentMessage::Interrupt)
+            .expect_err("viewer interrupt should be rejected");
+        assert!(matches!(
+            interrupt_error,
+            AsyncTransportError::SendFailed(ref message)
+                if message.contains("viewer connections cannot interrupt remote sessions")
+        ));
+
+        let cancel_error = transport
+            .send(ToAgentMessage::Cancel)
+            .expect_err("viewer cancel should be rejected");
+        assert!(matches!(
+            cancel_error,
+            AsyncTransportError::SendFailed(ref message)
+                if message.contains("viewer connections cannot interrupt remote sessions")
+        ));
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(posted_bodies.lock().await.len(), 1);
+
+        transport.shutdown().expect("shutdown");
     }
 
     #[tokio::test]
