@@ -2743,38 +2743,48 @@ describe("headless session handlers", () => {
 			},
 		},
 	])("rejects viewer headless %s message posts", async ({ message }) => {
-		const runtime = {
-			assertCanSend: vi.fn().mockImplementation(() => {
-				throw new Error("Viewer headless connections cannot send messages");
-			}),
-			send: vi.fn().mockResolvedValue(undefined),
-		};
-		const context = createContext({
-			headlessRuntimeService: {
-				getRuntime: vi.fn().mockReturnValue(runtime),
-			} as unknown as HeadlessRuntimeService,
-		});
-		const req = createJsonRequest(
-			"POST",
-			"/api/headless/sessions/sess_123/messages",
-			message,
-			{ "x-maestro-headless-role": "viewer" },
-		);
-		const res = new MockResponse();
-		res.req = req;
-
-		await expect(
-			handleHeadlessSessionMessage(
-				req,
-				res as unknown as ServerResponse,
+		const tempDir = await mkdtemp(join(tmpdir(), "maestro-headless-viewer-"));
+		try {
+			const sessionManager = new SessionManager(false, undefined, {
+				sessionDir: tempDir,
+			});
+			const fakeAgent = new FakeAgent();
+			const context = createContext({
+				createAgent: vi.fn().mockResolvedValue(fakeAgent),
+			});
+			const runtime = await context.headlessRuntimeService.ensureRuntime({
+				scope_key: "anon",
+				registeredModel: TEST_MODEL,
+				thinkingLevel: "off",
+				approvalMode: "prompt",
 				context,
-				{ id: "sess_123" },
-			),
-		).rejects.toMatchObject({
-			statusCode: 403,
-			message: "Viewer headless connections cannot send messages",
-		});
-		expect(runtime.send).not.toHaveBeenCalled();
+				sessionManager,
+			});
+
+			const req = createJsonRequest(
+				"POST",
+				`/api/headless/sessions/${runtime.id()}/messages`,
+				message,
+				{ "x-maestro-headless-role": "viewer" },
+			);
+			const res = new MockResponse();
+			res.req = req;
+
+			await expect(
+				handleHeadlessSessionMessage(
+					req,
+					res as unknown as ServerResponse,
+					context,
+					{ id: runtime.id() },
+				),
+			).rejects.toMatchObject({
+				statusCode: 403,
+				message: "Viewer headless connections cannot send messages",
+			});
+			expect(fakeAgent.prompts).toEqual([]);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	it("rejects malformed headless message payloads against generated schemas", async () => {
