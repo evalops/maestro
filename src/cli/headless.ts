@@ -34,6 +34,7 @@ import {
 	buildHeadlessUsage,
 	classifyHeadlessError,
 	createHeadlessRuntimeState,
+	headlessViewerCanSend,
 	loadPromptAttachments,
 } from "./headless-protocol.js";
 
@@ -312,6 +313,16 @@ export async function runHeadlessMode(
 		}
 
 		try {
+			if (state.connection_role === "viewer" && !headlessViewerCanSend(msg)) {
+				send({
+					type: "error",
+					message: "Viewer headless connections cannot send messages",
+					fatal: false,
+					error_type: "protocol",
+				});
+				return;
+			}
+
 			switch (msg.type) {
 				case "init": {
 					const applied = applyInitMessage(agent, msg, approvalService);

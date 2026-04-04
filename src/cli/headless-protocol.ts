@@ -616,6 +616,15 @@ export function createHeadlessRuntimeState(): HeadlessRuntimeState {
 	};
 }
 
+export function headlessViewerCanSend(msg: HeadlessToAgentMessage): boolean {
+	switch (msg.type) {
+		case "hello":
+			return true;
+		default:
+			return false;
+	}
+}
+
 function getPendingRequestId(request: HeadlessPendingApprovalState): string {
 	return request.request_id ?? request.call_id;
 }
@@ -1223,6 +1232,10 @@ export function applyOutgoingHeadlessMessage(
 	state: HeadlessRuntimeState,
 	msg: HeadlessToAgentMessage,
 ): void {
+	if (state.connection_role === "viewer" && !headlessViewerCanSend(msg)) {
+		return;
+	}
+
 	switch (msg.type) {
 		case "hello":
 			state.client_protocol_version = msg.protocol_version;
