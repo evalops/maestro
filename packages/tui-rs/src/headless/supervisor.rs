@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use rand::Rng as _;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 // Note: interval/timeout available for future health checking
 use tokio_util::sync::CancellationToken;
 
@@ -297,6 +298,8 @@ pub struct AgentSupervisor {
     stale_reference_retries: u32,
     /// Whether a reconnect should be attempted on the next async receive cycle
     pending_auto_reconnect: bool,
+    /// Background teardown for a transport that must finish before the next connect/reconnect.
+    pending_transport_shutdown: Option<JoinHandle<()>>,
     /// Session recorder (optional)
     session_recorder: Option<SessionRecorder>,
     /// Cancellation token
@@ -320,6 +323,7 @@ impl AgentSupervisor {
             reconnect_attempts: 0,
             stale_reference_retries: 0,
             pending_auto_reconnect: false,
+            pending_transport_shutdown: None,
             session_recorder: None,
             cancel_token: CancellationToken::new(),
         }
@@ -363,6 +367,7 @@ impl AgentSupervisor {
 
     /// Connect to the agent
     pub async fn connect(&mut self) -> Result<(), AsyncTransportError> {
+        self.wait_for_pending_transport_shutdown().await;
         let transport = self.spawn_transport().await?;
         self.set_transport(transport)?;
         self.health_status = HealthStatus::Healthy;
@@ -381,7 +386,7 @@ impl AgentSupervisor {
             .as_ref()
             .is_some_and(ManagedTransport::is_remote);
         if let Some(transport) = self.transport.take() {
-            let _ = transport.shutdown();
+            self.begin_transport_shutdown(transport);
         }
         self.clear_transient_progress_state();
         self.clear_pending_request_state();
@@ -408,6 +413,7 @@ impl AgentSupervisor {
         if let Some(existing) = self.transport.take() {
             let _ = existing.shutdown_and_wait().await;
         }
+        self.wait_for_pending_transport_shutdown().await;
         self.last_response = None;
 
         let max_attempts = self.config.max_reconnect_attempts;
@@ -624,9 +630,30 @@ impl AgentSupervisor {
         }
     }
 
+    fn begin_transport_shutdown(&mut self, transport: ManagedTransport) {
+        if let Some(handle) = self.pending_transport_shutdown.take() {
+            handle.abort();
+        }
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            self.pending_transport_shutdown = Some(handle.spawn(async move {
+                let _ = transport.shutdown_and_wait().await;
+            }));
+        } else {
+            let _ = transport.shutdown();
+            self.pending_transport_shutdown = None;
+        }
+    }
+
+    async fn wait_for_pending_transport_shutdown(&mut self) {
+        if let Some(handle) = self.pending_transport_shutdown.take() {
+            let _ = handle.await;
+        }
+    }
+
     fn handle_transport_error(&mut self, error: AsyncTransportError) -> SupervisorEvent {
         if let Some(transport) = self.transport.take() {
-            let _ = transport.shutdown();
+            self.begin_transport_shutdown(transport);
         }
         self.clear_transient_progress_state();
         self.last_response = None;
@@ -661,7 +688,7 @@ impl AgentSupervisor {
         let should_retry =
             self.config.auto_reconnect && self.should_schedule_disconnect_retry(&error);
         if let Some(transport) = self.transport.take() {
-            let _ = transport.shutdown();
+            self.begin_transport_shutdown(transport);
         }
         self.last_response = None;
         if should_retry {
@@ -753,7 +780,7 @@ impl AgentSupervisor {
             self.last_response = None;
             if self.config.auto_reconnect {
                 if let Some(transport) = self.transport.take() {
-                    let _ = transport.shutdown();
+                    self.begin_transport_shutdown(transport);
                 }
                 self.pending_auto_reconnect = true;
             } else {
@@ -778,7 +805,7 @@ impl AgentSupervisor {
                 self.last_response = None;
                 if self.config.auto_reconnect {
                     if let Some(transport) = self.transport.take() {
-                        let _ = transport.shutdown();
+                        self.begin_transport_shutdown(transport);
                     }
                     self.pending_auto_reconnect = true;
                 } else {
@@ -1351,6 +1378,20 @@ mod tests {
         Arc<Mutex<Vec<Vec<(String, String)>>>>,
         Arc<Mutex<Vec<(String, String)>>>,
     ) {
+        spawn_remote_headless_server_with_options(snapshot_json, sse_events, None, None).await
+    }
+
+    async fn spawn_remote_headless_server_with_options(
+        snapshot_json: String,
+        sse_events: Vec<String>,
+        disconnect_response_delay: Option<Duration>,
+        lifecycle_markers: Option<Arc<Mutex<Vec<String>>>>,
+    ) -> (
+        std::net::SocketAddr,
+        Arc<Mutex<Vec<String>>>,
+        Arc<Mutex<Vec<Vec<(String, String)>>>>,
+        Arc<Mutex<Vec<(String, String)>>>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let posted_bodies = Arc::new(Mutex::new(Vec::new()));
@@ -1371,6 +1412,7 @@ mod tests {
             let request_bodies = Arc::clone(&request_bodies);
             let events = Arc::clone(&events);
             let snapshot_session_id = snapshot_session_id.clone();
+            let lifecycle_markers = lifecycle_markers.clone();
             async move {
                 loop {
                     let Ok((mut socket, _)) = listener.accept().await else {
@@ -1382,6 +1424,8 @@ mod tests {
                     let events = Arc::clone(&events);
                     let snapshot_json = snapshot_json.clone();
                     let snapshot_session_id = snapshot_session_id.clone();
+                    let disconnect_response_delay = disconnect_response_delay;
+                    let lifecycle_markers = lifecycle_markers.clone();
 
                     tokio::spawn(async move {
                         let Some((path, headers, body)) = read_http_request(&mut socket).await
@@ -1395,6 +1439,9 @@ mod tests {
                             .push((path.clone(), body.clone()));
 
                         if path == "/api/headless/connections" {
+                            if let Some(markers) = lifecycle_markers.as_ref() {
+                                markers.lock().await.push("bootstrap".to_string());
+                            }
                             let body = serde_json::json!({
                                 "session_id": snapshot_session_id,
                                 "connection_id": "conn_remote",
@@ -1418,6 +1465,12 @@ mod tests {
                         if path.starts_with("/api/headless/sessions/")
                             && path.ends_with("/disconnect")
                         {
+                            if let Some(markers) = lifecycle_markers.as_ref() {
+                                markers.lock().await.push("disconnect:start".to_string());
+                            }
+                            if let Some(delay) = disconnect_response_delay {
+                                tokio::time::sleep(delay).await;
+                            }
                             write_http_response(
                                 &mut socket,
                                 "HTTP/1.1 200 OK",
@@ -1425,6 +1478,9 @@ mod tests {
                                 r#"{"success":true,"connection_id":"conn_remote","controller_connection_id":null,"disconnected_subscription_ids":["sub_remote"]}"#,
                             )
                             .await;
+                            if let Some(markers) = lifecycle_markers.as_ref() {
+                                markers.lock().await.push("disconnect:end".to_string());
+                            }
                             return;
                         }
 
@@ -3423,6 +3479,85 @@ done
         assert!(
             disconnect_index < second_bootstrap_index,
             "manual reconnect should disconnect the stale transport before bootstrapping a replacement"
+        );
+
+        supervisor.disconnect();
+    }
+
+    #[tokio::test]
+    async fn auto_remote_reconnect_waits_for_disconnect_completion_before_next_bootstrap() {
+        let snapshot = serde_json::json!({
+            "protocolVersion": "2026-03-30",
+            "session_id": "sess_remote",
+            "cursor": 0,
+            "state": {
+                "protocol_version": "2026-03-30",
+                "model": "gpt-5.4",
+                "provider": "openai",
+                "session_id": "sess_remote",
+                "pending_approvals": [],
+                "active_tools": [],
+                "last_status": "Attached",
+                "is_ready": true,
+                "is_responding": false
+            }
+        });
+        let lifecycle_markers = Arc::new(Mutex::new(Vec::new()));
+        let (addr, _posted_bodies, _request_headers, _request_bodies) =
+            spawn_remote_headless_server_with_options(
+                snapshot.to_string(),
+                vec![],
+                Some(Duration::from_millis(50)),
+                Some(Arc::clone(&lifecycle_markers)),
+            )
+            .await;
+
+        let mut supervisor = SupervisorBuilder::new()
+            .remote_base_url(format!("http://{addr}"))
+            .max_reconnect_attempts(1)
+            .reconnect_delay(Duration::from_millis(5))
+            .build();
+
+        supervisor.connect().await.expect("connect");
+        let disconnect = supervisor.handle_transport_disconnect(AsyncTransportError::ChannelClosed);
+        assert!(matches!(
+            disconnect,
+            SupervisorEvent::HealthChanged {
+                status: HealthStatus::Reconnecting
+            }
+        ));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let markers = lifecycle_markers.lock().await.clone();
+                let bootstrap_count = markers
+                    .iter()
+                    .filter(|marker| *marker == "bootstrap")
+                    .count();
+                let saw_disconnect_end = markers.iter().any(|marker| marker == "disconnect:end");
+                if bootstrap_count >= 2 && saw_disconnect_end {
+                    break;
+                }
+                let _ = supervisor.recv().await.expect("supervisor event");
+            }
+        })
+        .await
+        .expect("auto reconnect should complete");
+
+        let lifecycle_markers = lifecycle_markers.lock().await.clone();
+        let disconnect_end_index = lifecycle_markers
+            .iter()
+            .position(|marker| marker == "disconnect:end")
+            .expect("disconnect completion marker");
+        let second_bootstrap_index = lifecycle_markers
+            .iter()
+            .enumerate()
+            .filter_map(|(index, marker)| (marker == "bootstrap").then_some(index))
+            .nth(1)
+            .expect("second bootstrap marker");
+        assert!(
+            disconnect_end_index < second_bootstrap_index,
+            "auto reconnect should wait for remote disconnect completion before bootstrapping a replacement"
         );
 
         supervisor.disconnect();
