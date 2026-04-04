@@ -1,16 +1,21 @@
 import { isContextOverflow as isOverflowError } from "../utils/context-overflow.js";
 import { createLogger } from "../utils/logger.js";
 import type { Agent } from "./agent.js";
+import * as compactionHooks from "./compaction-hooks.js";
 import type {
 	CompactionHookContext,
 	CompactionHookService,
+	OverflowHookService,
 } from "./compaction-hooks.js";
 import {
 	type CompactionSessionManager,
 	type PerformCompactionResult,
 	performCompaction,
 } from "./compaction.js";
-import { isContextOverflow as isAssistantContextOverflow } from "./context-overflow.js";
+import {
+	isContextOverflow as isAssistantContextOverflow,
+	parseOverflowDetails,
+} from "./context-overflow.js";
 import { isAssistantMessage } from "./type-guards.js";
 import type { AppMessage, AssistantMessage } from "./types.js";
 
@@ -36,6 +41,7 @@ export interface RunWithPromptRecoveryOptions {
 	execute: () => Promise<void>;
 	hookContext?: CompactionHookContext;
 	hookService?: CompactionHookService;
+	overflowHookService?: OverflowHookService;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
 }
@@ -107,6 +113,87 @@ function getPromptOverflowAssistantError(
 	return undefined;
 }
 
+function getOverflowErrorMessage(
+	newMessages: AppMessage[],
+	error?: unknown,
+): string | undefined {
+	if (error instanceof Error) {
+		return error.message;
+	}
+	if (typeof error === "string") {
+		return error;
+	}
+	return getLastAssistantMessage(newMessages)?.errorMessage;
+}
+
+function buildOverflowHookGuidance(result: {
+	systemMessage?: string;
+	additionalContext?: string;
+}): string | undefined {
+	const sections = [
+		result.systemMessage?.trim()
+			? `Overflow hook system guidance:\n${result.systemMessage.trim()}`
+			: null,
+		result.additionalContext?.trim()
+			? `Overflow hook context:\n${result.additionalContext.trim()}`
+			: null,
+	].filter((section): section is string => Boolean(section));
+
+	return sections.length > 0 ? sections.join("\n\n") : undefined;
+}
+
+async function runOverflowHooks(
+	agent: Agent,
+	newMessages: AppMessage[],
+	error: unknown,
+	options: RunWithPromptRecoveryOptions,
+): Promise<string | undefined> {
+	const { hookContext } = options;
+	const overflowHookService =
+		options.overflowHookService ??
+		(hookContext
+			? compactionHooks.createOverflowHookService(hookContext)
+			: undefined);
+	if (!overflowHookService) {
+		return undefined;
+	}
+	if (
+		overflowHookService.hasHooks &&
+		!overflowHookService.hasHooks("Overflow")
+	) {
+		return undefined;
+	}
+
+	const overflowMessage = getOverflowErrorMessage(newMessages, error);
+	const parsedDetails = overflowMessage
+		? parseOverflowDetails(overflowMessage)
+		: null;
+	const lastAssistant = getLastAssistantMessage(newMessages);
+	const fallbackTokenCount = lastAssistant?.usage
+		? lastAssistant.usage.input +
+			lastAssistant.usage.cacheRead +
+			lastAssistant.usage.cacheWrite
+		: agent.state.model.contextWindow;
+
+	const result = await overflowHookService.runOverflowHooks(
+		parsedDetails?.requestedTokens ?? fallbackTokenCount,
+		parsedDetails?.maxTokens ?? agent.state.model.contextWindow,
+		agent.state.model.id,
+		hookContext?.signal,
+	);
+
+	if (result.blocked) {
+		throw new Error(result.blockReason ?? "Overflow hook blocked recovery");
+	}
+	if (result.preventContinuation) {
+		throw new Error(
+			result.stopReason ?? "Overflow hook prevented automatic recovery",
+		);
+	}
+
+	return buildOverflowHookGuidance(result);
+}
+
 export async function recoverFromMaxOutput(
 	agent: Agent,
 	options?: {
@@ -146,6 +233,7 @@ async function recoverFromPromptOverflow(
 	sessionManager: CompactionSessionManager,
 	hookContext: CompactionHookContext | undefined,
 	hookService: CompactionHookService | undefined,
+	customInstructions: string | undefined,
 	callbacks?: PromptRecoveryCallbacks,
 ): Promise<boolean> {
 	callbacks?.onCompacting?.();
@@ -159,6 +247,7 @@ async function recoverFromPromptOverflow(
 			trigger: "token_limit",
 			hookContext,
 			hookService,
+			customInstructions,
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -199,11 +288,18 @@ export async function runWithPromptRecovery(
 
 	if (hasPromptOverflow(agent, newMessages, executionError)) {
 		try {
+			const overflowHookGuidance = await runOverflowHooks(
+				agent,
+				newMessages,
+				executionError,
+				options,
+			);
 			const recovered = await recoverFromPromptOverflow(
 				agent,
 				sessionManager,
 				options.hookContext,
 				options.hookService,
+				overflowHookGuidance,
 				callbacks,
 			);
 			if (recovered) {

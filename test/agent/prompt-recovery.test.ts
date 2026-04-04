@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { CompactionHookService } from "../../src/agent/compaction-hooks.js";
 import {
@@ -73,6 +76,16 @@ function createMockHookService(): CompactionHookService {
 	return {
 		hasHooks: vi.fn().mockReturnValue(true),
 		runPreCompactHooks: vi.fn().mockResolvedValue({
+			blocked: false,
+			preventContinuation: false,
+		}),
+	};
+}
+
+function createMockOverflowHookService() {
+	return {
+		hasHooks: vi.fn().mockReturnValue(true),
+		runOverflowHooks: vi.fn().mockResolvedValue({
 			blocked: false,
 			preventContinuation: false,
 		}),
@@ -243,6 +256,128 @@ describe("runWithPromptRecovery", () => {
 			550,
 			20000,
 			undefined,
+		);
+	});
+
+	it("runs Overflow hooks with parsed token counts before compaction", async () => {
+		const agent = createMockAgent([
+			...buildConversation(5),
+			createUserMessage("latest question"),
+		]);
+		const sessionManager = createMockSessionManager();
+		const overflowHookService = createMockOverflowHookService();
+
+		await runWithPromptRecovery({
+			agent: agent as never,
+			sessionManager,
+			overflowHookService,
+			execute: async () => {
+				throw new Error("prompt is too long: 213462 tokens > 200000 maximum");
+			},
+		});
+
+		expect(overflowHookService.runOverflowHooks).toHaveBeenCalledWith(
+			213462,
+			200000,
+			"claude-sonnet-4",
+			undefined,
+		);
+	});
+
+	it("passes Overflow hook guidance through the auto-compaction prompt", async () => {
+		const agent = createMockAgent([
+			...buildConversation(5),
+			createUserMessage("latest question"),
+		]);
+		const sessionManager = createMockSessionManager();
+		const overflowHookService = createMockOverflowHookService();
+		overflowHookService.runOverflowHooks.mockResolvedValue({
+			blocked: false,
+			preventContinuation: false,
+			systemMessage: "Retain security-sensitive decisions.",
+			additionalContext: "The last overflow happened during a release fix.",
+		});
+
+		await runWithPromptRecovery({
+			agent: agent as never,
+			sessionManager,
+			overflowHookService,
+			execute: async () => {
+				throw new Error(
+					"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.",
+				);
+			},
+		});
+
+		expect(agent.generateSummary).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.stringContaining(
+				"Overflow hook system guidance:\nRetain security-sensitive decisions.",
+			),
+			expect.any(String),
+		);
+		expect(agent.generateSummary).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.stringContaining(
+				"Overflow hook context:\nThe last overflow happened during a release fix.",
+			),
+			expect.any(String),
+		);
+	});
+
+	it("creates an Overflow hook service from hook context when none is provided", async () => {
+		const testDir = mkdtempSync(join(tmpdir(), "prompt-recovery-overflow-"));
+		const hookDir = join(testDir, ".maestro");
+		const hookScriptPath = join(hookDir, "overflow-hook.sh");
+		mkdirSync(hookDir, { recursive: true });
+		writeFileSync(
+			hookScriptPath,
+			`#!/bin/bash
+echo '{"continue": true, "systemMessage": "Preserve operator guidance from overflow hook."}'
+`,
+			{ mode: 0o755 },
+		);
+		writeFileSync(
+			join(hookDir, "hooks.json"),
+			JSON.stringify({
+				hooks: {
+					Overflow: [
+						{
+							matcher: "*",
+							hooks: [{ type: "command", command: hookScriptPath }],
+						},
+					],
+				},
+			}),
+		);
+
+		const agent = createMockAgent([
+			...buildConversation(5),
+			createUserMessage("latest question"),
+		]);
+		const sessionManager = createMockSessionManager();
+
+		try {
+			await runWithPromptRecovery({
+				agent: agent as never,
+				sessionManager,
+				hookContext: { cwd: testDir },
+				execute: async () => {
+					throw new Error(
+						"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.",
+					);
+				},
+			});
+		} finally {
+			rmSync(testDir, { recursive: true, force: true });
+		}
+
+		expect(agent.generateSummary).toHaveBeenCalledWith(
+			expect.any(Array),
+			expect.stringContaining(
+				"Overflow hook system guidance:\nPreserve operator guidance from overflow hook.",
+			),
+			expect.any(String),
 		);
 	});
 

@@ -26,6 +26,16 @@ export interface CompactionHookService {
 	): Promise<CompactionHookResult>;
 }
 
+export interface OverflowHookService {
+	hasHooks?(eventType: "Overflow"): boolean;
+	runOverflowHooks(
+		tokenCount: number,
+		maxTokens: number,
+		model?: string,
+		signal?: AbortSignal,
+	): Promise<CompactionHookResult>;
+}
+
 export function buildCompactionHookContext(
 	sessionManager: { getSessionId?: () => string | undefined },
 	cwd: string,
@@ -41,6 +51,15 @@ export function buildCompactionHookContext(
 export function createCompactionHookService(
 	context: CompactionHookContext,
 ): CompactionHookService {
+	return createSessionHookService({
+		cwd: context.cwd,
+		sessionId: context.sessionId,
+	});
+}
+
+export function createOverflowHookService(
+	context: CompactionHookContext,
+): OverflowHookService {
 	return createSessionHookService({
 		cwd: context.cwd,
 		sessionId: context.sessionId,
