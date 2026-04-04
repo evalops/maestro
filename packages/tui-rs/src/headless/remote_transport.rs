@@ -3803,6 +3803,32 @@ mod tests {
                             return;
                         }
 
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/heartbeat")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"connection_id":"conn_remote","controller_lease_granted":true,"controller_connection_id":"conn_remote","lease_expires_at":"2026-04-02T00:00:15Z","heartbeat_interval_ms":15000}"#,
+                            )
+                            .await;
+                            return;
+                        }
+
+                        if path.starts_with("/api/headless/sessions/")
+                            && path.ends_with("/messages")
+                        {
+                            write_http_response(
+                                &mut socket,
+                                "HTTP/1.1 200 OK",
+                                "application/json",
+                                r#"{"success":true}"#,
+                            )
+                            .await;
+                            return;
+                        }
+
                         if path.starts_with("/api/headless/sessions/") && path.contains("/events?")
                         {
                             let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n";
