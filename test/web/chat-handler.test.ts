@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "../../src/agent/agent.js";
+import { clearRegisteredHooks, registerHook } from "../../src/hooks/index.js";
 import type { RegisteredModel } from "../../src/models/registry.js";
 import type { WebServerContext } from "../../src/server/app-context.js";
 import {
@@ -89,6 +90,7 @@ interface MockPassThrough extends PassThrough {
 describe("handleChat", () => {
 	afterEach(() => {
 		resetApprovalModeStore();
+		clearRegisteredHooks();
 		vi.unstubAllEnvs();
 	});
 
@@ -182,6 +184,116 @@ describe("handleChat", () => {
 		// SSE stream writes contain DONE marker
 		expect(res.body).toContain("[DONE]");
 		expect(res.statusCode).toBe(200);
+	});
+
+	it("runs Notification hooks during SSE chat even without desktop notifications configured", async () => {
+		process.env.MAESTRO_NOTIFY_PROGRAM = "";
+		process.env.MAESTRO_NOTIFY_EVENTS = "";
+		process.env.MAESTRO_NOTIFY_TERMINAL = "";
+
+		const captured: Array<{ notification_type: string; message: string }> = [];
+		registerHook("Notification", {
+			type: "callback",
+			callback: async (input) => {
+				captured.push({
+					notification_type: (
+						input as { notification_type: string; message: string }
+					).notification_type,
+					message: (input as { notification_type: string; message: string })
+						.message,
+				});
+				return {};
+			},
+		});
+
+		const req = new PassThrough() as MockPassThrough;
+		req.method = "POST";
+		req.url = "/api/chat";
+		req.headers = {};
+		req.end(
+			JSON.stringify({
+				messages: [{ role: "user", content: "hi" }],
+			}),
+		);
+
+		const res = makeRes();
+
+		const context: Partial<WebServerContext> = {
+			createAgent: async () => {
+				type EventCallback = (e: unknown) => void | Promise<void>;
+				let subscriber: EventCallback | undefined;
+				const state = {
+					systemPrompt: "",
+					model: mockModel,
+					thinkingLevel: "off",
+					tools: [],
+					messages: [] as unknown[],
+					isStreaming: false,
+					streamMessage: null,
+					pendingToolCalls: new Map(),
+				};
+				return {
+					state,
+					subscribe: (fn: EventCallback) => {
+						subscriber = fn;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					replaceMessages: (messages: unknown[]) => {
+						state.messages = messages;
+					},
+					clearMessages: () => {},
+					prompt: async () => {
+						await subscriber?.({
+							type: "turn_end",
+							message: {
+								role: "assistant",
+								content: [{ type: "text", text: "Done" }],
+								api: mockModel.api,
+								provider: mockModel.provider,
+								model: mockModel.id,
+								usage: {
+									input: 1,
+									output: 1,
+									cacheRead: 0,
+									cacheWrite: 0,
+									cost: {
+										input: 0,
+										output: 0,
+										cacheRead: 0,
+										cacheWrite: 0,
+										total: 0,
+									},
+								},
+								stopReason: "stop",
+								timestamp: Date.now(),
+							},
+							toolResults: [],
+						});
+					},
+					abort: () => {},
+				} as unknown as Agent;
+			},
+			getRegisteredModel: async () => mockModel,
+			defaultApprovalMode: "prompt",
+			defaultProvider: "anthropic",
+			defaultModelId: mockModel.id,
+			corsHeaders: cors,
+		};
+
+		await handleChat(
+			req as unknown as IncomingMessage,
+			res as unknown as ServerResponse,
+			context as WebServerContext,
+		);
+
+		expect(captured).toEqual([
+			{
+				notification_type: "turn-complete",
+				message: "Done",
+			},
+		]);
 	});
 
 	it("persists user messages during streaming", async () => {

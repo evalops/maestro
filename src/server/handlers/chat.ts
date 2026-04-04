@@ -33,7 +33,9 @@ import {
 	createNotificationFromAgentEvent,
 	isNotificationEnabled,
 	sendNotification,
+	summarizeNotificationPayload,
 } from "../../hooks/notification-hooks.js";
+import { createSessionHookService } from "../../hooks/session-integration.js";
 import { checkSessionLimits } from "../../safety/policy.js";
 import { createLogger } from "../../utils/logger.js";
 
@@ -481,6 +483,10 @@ export async function handleChat(
 		};
 		const updateSessionSummary =
 			createRuntimeSessionSummaryUpdater(sessionManager);
+		const sessionHookService = createSessionHookService({
+			cwd: process.cwd(),
+			sessionId: sessionManager.getSessionId(),
+		});
 
 		const unsubscribe = agent.subscribe((event: AgentEvent) => {
 			updateSessionSummary(event);
@@ -596,27 +602,33 @@ export async function handleChat(
 				agent.state,
 				toSessionModelMetadata(registeredModel),
 			);
-		});
-
-		// Subscribe to agent events for notification hooks (if configured)
-		if (
-			isNotificationEnabled("turn-complete") ||
-			isNotificationEnabled("session-start") ||
-			isNotificationEnabled("session-end") ||
-			isNotificationEnabled("tool-execution") ||
-			isNotificationEnabled("error")
-		) {
-			agent.subscribe((event) => {
-				const payload = createNotificationFromAgentEvent(event, {
-					cwd: process.cwd(),
-					sessionId: sessionManager.getSessionId(),
-					messages: agent.state.messages,
-				});
-				if (payload) {
-					void sendNotification(payload);
-				}
+			const payload = createNotificationFromAgentEvent(event, {
+				cwd: process.cwd(),
+				sessionId: sessionManager.getSessionId(),
+				messages: agent.state.messages,
 			});
-		}
+			if (!payload) {
+				return;
+			}
+
+			if (sessionHookService.hasHooks("Notification")) {
+				void sessionHookService
+					.runNotificationHooks(
+						payload.type,
+						summarizeNotificationPayload(payload) ?? payload.type,
+					)
+					.catch((error) => {
+						logger.warn("Notification hooks failed", {
+							type: payload.type,
+							error: error instanceof Error ? error.message : String(error),
+						});
+					});
+			}
+
+			if (isNotificationEnabled(payload.type)) {
+				void sendNotification(payload);
+			}
+		});
 
 		// ===== Phase 6: Connection Close Handling =====
 		// Abort agent and cleanup when client disconnects
