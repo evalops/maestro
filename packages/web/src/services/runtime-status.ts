@@ -14,6 +14,9 @@ export function formatWebRuntimeStatus(
 			if (!status) {
 				return null;
 			}
+			if (event.details.kind === "tool_execution_summary") {
+				return status;
+			}
 			return status === "compacting"
 				? "Compacting conversation..."
 				: `Status: ${status}`;

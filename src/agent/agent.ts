@@ -82,6 +82,7 @@
 
 import { validate as uuidValidate } from "uuid";
 import { createLogger } from "../utils/logger.js";
+import { summarizeToolUse } from "../utils/tool-use-summary.js";
 import {
 	AgentContextManager,
 	type AgentContextSource,
@@ -507,6 +508,17 @@ export class Agent {
 				);
 			}
 		}
+	}
+
+	private emitStatus(
+		status: string,
+		details: Record<string, unknown> = {},
+	): void {
+		const normalized = status.trim();
+		if (!normalized) {
+			return;
+		}
+		this.emit({ type: "status", status: normalized, details });
 	}
 
 	private async dequeueSteeringMessages<T>(): Promise<QueuedMessage<T>[]> {
@@ -1054,6 +1066,11 @@ export class Agent {
 					this._state.pendingToolCalls.set(event.toolCallId, {
 						toolName: event.toolName,
 					});
+					this.emitStatus(summarizeToolUse(event.toolName, event.args), {
+						kind: "tool_execution_summary",
+						toolCallId: event.toolCallId,
+						toolName: event.toolName,
+					});
 					this.emit(event);
 				} else if (event.type === "tool_execution_update") {
 					this.emit(event);
@@ -1229,6 +1246,11 @@ export class Agent {
 					this.emit(event);
 				} else if (event.type === "tool_execution_start") {
 					this._state.pendingToolCalls.set(event.toolCallId, {
+						toolName: event.toolName,
+					});
+					this.emitStatus(summarizeToolUse(event.toolName, event.args), {
+						kind: "tool_execution_summary",
+						toolCallId: event.toolCallId,
 						toolName: event.toolName,
 					});
 					this.emit(event);

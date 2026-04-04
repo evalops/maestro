@@ -32,6 +32,16 @@ describe("web runtime status", () => {
 		).toBe("Status: planning");
 	});
 
+	it("formats live tool summaries without the generic prefix", () => {
+		expect(
+			formatWebRuntimeStatus({
+				type: "status",
+				status: "Read app.ts",
+				details: { kind: "tool_execution_summary" },
+			}),
+		).toBe("Read app.ts");
+	});
+
 	it("trims status values before formatting", () => {
 		expect(
 			formatWebRuntimeStatus({

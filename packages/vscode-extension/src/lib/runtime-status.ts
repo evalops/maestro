@@ -15,6 +15,9 @@ export function formatVscodeRuntimeStatus(
 			if (!status) {
 				return undefined;
 			}
+			if (event.details.kind === "tool_execution_summary") {
+				return status;
+			}
 			return status === "compacting"
 				? "Compacting conversation..."
 				: `Status: ${status}`;

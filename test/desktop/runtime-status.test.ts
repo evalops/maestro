@@ -22,6 +22,16 @@ describe("desktop runtime status", () => {
 		).toBe("Status: planning");
 	});
 
+	it("formats live tool summaries without the generic prefix", () => {
+		expect(
+			formatDesktopRuntimeStatus({
+				type: "status",
+				status: "Read app.ts",
+				details: { kind: "tool_execution_summary" },
+			}),
+		).toBe("Read app.ts");
+	});
+
 	it("formats compaction events", () => {
 		expect(
 			formatDesktopRuntimeStatus({

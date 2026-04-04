@@ -74,6 +74,20 @@ describe("Agent mock transport", () => {
 				event.type === "tool_execution_end",
 		);
 		expect(toolEvents.length).toBe(2);
+		expect(
+			events.find(
+				(event) =>
+					event.type === "status" &&
+					event.details.kind === "tool_execution_summary",
+			),
+		).toMatchObject({
+			type: "status",
+			status: "Read README.md",
+			details: {
+				kind: "tool_execution_summary",
+				toolName: "read",
+			},
+		});
 		const finalEvent = [...events].reverse().find(
 			(
 				event,
