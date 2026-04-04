@@ -625,6 +625,16 @@ export function headlessViewerCanSend(msg: HeadlessToAgentMessage): boolean {
 	}
 }
 
+export function headlessViewerHasDisallowedCapabilities(
+	msg: HeadlessToAgentMessage,
+): boolean {
+	return (
+		msg.type === "hello" &&
+		msg.role === "viewer" &&
+		msg.capabilities?.server_requests?.includes("user_input") === true
+	);
+}
+
 function getPendingRequestId(request: HeadlessPendingApprovalState): string {
 	return request.request_id ?? request.call_id;
 }
@@ -1232,6 +1242,10 @@ export function applyOutgoingHeadlessMessage(
 	state: HeadlessRuntimeState,
 	msg: HeadlessToAgentMessage,
 ): void {
+	if (headlessViewerHasDisallowedCapabilities(msg)) {
+		return;
+	}
+
 	if (state.connection_role === "viewer" && !headlessViewerCanSend(msg)) {
 		return;
 	}

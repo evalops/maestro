@@ -35,6 +35,7 @@ import {
 	classifyHeadlessError,
 	createHeadlessRuntimeState,
 	headlessViewerCanSend,
+	headlessViewerHasDisallowedCapabilities,
 	loadPromptAttachments,
 } from "./headless-protocol.js";
 
@@ -313,6 +314,17 @@ export async function runHeadlessMode(
 		}
 
 		try {
+			if (headlessViewerHasDisallowedCapabilities(msg)) {
+				send({
+					type: "error",
+					message:
+						"viewer headless connections cannot negotiate user_input requests",
+					fatal: false,
+					error_type: "protocol",
+				});
+				return;
+			}
+
 			if (state.connection_role === "viewer" && !headlessViewerCanSend(msg)) {
 				send({
 					type: "error",
