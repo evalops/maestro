@@ -48,6 +48,16 @@ export {
 
 const LOCAL_HEADLESS_CONNECTION_ID = "local";
 
+function viewerHelloNegotiatesDisallowedUserInput(
+	msg: HeadlessToAgentMessage,
+): boolean {
+	return (
+		msg.type === "hello" &&
+		msg.role === "viewer" &&
+		msg.capabilities?.server_requests?.includes("user_input") === true
+	);
+}
+
 function send(msg: HeadlessFromAgentMessage): void {
 	try {
 		assertHeadlessFromAgentMessage(msg, "headless stdout message");
@@ -313,6 +323,17 @@ export async function runHeadlessMode(
 		}
 
 		try {
+			if (viewerHelloNegotiatesDisallowedUserInput(msg)) {
+				send({
+					type: "error",
+					message:
+						"viewer headless connections cannot negotiate user_input requests",
+					fatal: false,
+					error_type: "protocol",
+				});
+				return;
+			}
+
 			if (state.connection_role === "viewer" && !headlessViewerCanSend(msg)) {
 				send({
 					type: "error",
