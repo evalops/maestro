@@ -160,23 +160,28 @@ describe("Tail Sampling", () => {
 	});
 
 	it("samples slow turns", async () => {
-		const collector = new TurnCollector("session-123", 100, {
-			slowThresholdMs: 10, // Very low threshold for testing
-			successSampleRate: 0, // Disable random sampling
-			alwaysSampleFirstN: 0, // Disable first turn sampling
-		});
+		vi.useFakeTimers();
+		try {
+			const collector = new TurnCollector("session-123", 100, {
+				slowThresholdMs: 10, // Very low threshold for testing
+				successSampleRate: 0, // Disable random sampling
+				alwaysSampleFirstN: 0, // Disable first turn sampling
+			});
 
-		// Wait to exceed threshold
-		await new Promise((resolve) => setTimeout(resolve, 20));
+			// Advance the fake clock past the slow threshold.
+			await vi.advanceTimersByTimeAsync(20);
 
-		const event = collector.complete(
-			"success",
-			{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			0,
-		);
+			const event = collector.complete(
+				"success",
+				{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				0,
+			);
 
-		expect(event.sampled).toBe(true);
-		expect(event.sampleReason).toBe("slow");
+			expect(event.sampled).toBe(true);
+			expect(event.sampleReason).toBe("slow");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("respects random sampling rate", () => {
