@@ -53,6 +53,7 @@ import { existsSync } from "node:fs";
 import { relative, resolve as resolvePath, sep } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { globSync } from "glob";
+import { isInsideGitRepository } from "../utils/git.js";
 import { expandTildePath } from "../utils/path-expansion.js";
 import { createTool } from "./tool-dsl.js";
 import { ensureTool } from "./tools-manager.js";
@@ -132,29 +133,32 @@ export const findTool = createTool<typeof findSchema, FindToolDetails>({
 			args.push("--hidden");
 		}
 
-		// Include .gitignore files so fd respects them even outside git repos
-		const gitignoreFiles = new Set<string>();
-		const rootGitignore = resolvePath(searchPath, ".gitignore");
-		if (existsSync(rootGitignore)) {
-			gitignoreFiles.add(rootGitignore);
-		}
-
-		try {
-			const nestedGitignores = globSync("**/.gitignore", {
-				cwd: searchPath,
-				dot: true,
-				absolute: true,
-				ignore: ["**/node_modules/**", "**/.git/**"],
-			});
-			for (const file of nestedGitignores) {
-				gitignoreFiles.add(file);
+		// fd already honors nested .gitignore files inside Git repositories.
+		// Only add explicit ignore files for non-repo directories.
+		if (!isInsideGitRepository(searchPath)) {
+			const gitignoreFiles = new Set<string>();
+			const rootGitignore = resolvePath(searchPath, ".gitignore");
+			if (existsSync(rootGitignore)) {
+				gitignoreFiles.add(rootGitignore);
 			}
-		} catch {
-			// Ignore glob errors
-		}
 
-		for (const gitignorePath of gitignoreFiles) {
-			args.push("--ignore-file", gitignorePath);
+			try {
+				const nestedGitignores = globSync("**/.gitignore", {
+					cwd: searchPath,
+					dot: true,
+					absolute: true,
+					ignore: ["**/node_modules/**", "**/.git/**"],
+				});
+				for (const file of nestedGitignores) {
+					gitignoreFiles.add(file);
+				}
+			} catch {
+				// Ignore glob errors
+			}
+
+			for (const gitignorePath of gitignoreFiles) {
+				args.push("--ignore-file", gitignorePath);
+			}
 		}
 
 		args.push(pattern);

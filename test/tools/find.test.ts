@@ -260,6 +260,42 @@ describe("find tool", () => {
 			expect(result).toBeDefined();
 		});
 
+		it.skipIf(!hasFd)(
+			"skips manual ignore files when searching inside a git repository",
+			async () => {
+				const result = await findTool.execute("find-14b", {
+					pattern: "nonexistent_pattern_xyz",
+				});
+
+				expect(result.details).toHaveProperty("command");
+				expect((result.details as { command: string }).command).not.toContain(
+					"--ignore-file",
+				);
+			},
+		);
+
+		it.skipIf(!hasFd)(
+			"still respects .gitignore files outside git repositories",
+			async () => {
+				writeFileSync(join(testDir, ".gitignore"), "ignored.txt\n");
+				writeFileSync(join(testDir, "ignored.txt"), "");
+				writeFileSync(join(testDir, "kept.txt"), "");
+
+				const result = await findTool.execute("find-14c", {
+					pattern: "*.txt",
+					path: testDir,
+				});
+
+				expect(result.isError).toBeFalsy();
+				const output = getTextOutput(result);
+				expect(output).toContain("kept.txt");
+				expect(output).not.toContain("ignored.txt");
+				expect((result.details as { command: string }).command).toContain(
+					"--ignore-file",
+				);
+			},
+		);
+
 		it.skipIf(!hasFd)("handles paths with spaces", async () => {
 			const dirWithSpaces = join(testDir, "dir with spaces");
 			mkdirSync(dirWithSpaces);
