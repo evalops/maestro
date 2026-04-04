@@ -629,13 +629,25 @@ export function headlessViewerHasDisallowedCapabilities(
 	msg: HeadlessToAgentMessage,
 	currentRole?: HeadlessConnectionRole,
 ): boolean {
+	return headlessViewerDisallowedCapability(msg, currentRole) !== undefined;
+}
+
+export function headlessViewerDisallowedCapability(
+	msg: HeadlessToAgentMessage,
+	currentRole?: HeadlessConnectionRole,
+): "user_input" | "tool_retry" | undefined {
 	const effectiveRole =
 		msg.type === "hello" ? (msg.role ?? currentRole) : currentRole;
-	return (
-		msg.type === "hello" &&
-		effectiveRole === "viewer" &&
-		msg.capabilities?.server_requests?.includes("user_input") === true
-	);
+	if (msg.type !== "hello" || effectiveRole !== "viewer") {
+		return undefined;
+	}
+	if (msg.capabilities?.server_requests?.includes("user_input") === true) {
+		return "user_input";
+	}
+	if (msg.capabilities?.server_requests?.includes("tool_retry") === true) {
+		return "tool_retry";
+	}
+	return undefined;
 }
 
 export function headlessHelloChangesConnectionRole(
