@@ -32,6 +32,8 @@ export type WebhookCallback = (event: WebhookEvent) => Promise<void>;
 
 export interface WebhookServerConfig {
 	port: number;
+	/** Optional host/interface to bind the server to */
+	host?: string;
 	/** Secret used to verify webhook signatures (optional per-source) */
 	secrets?: Record<string, string>;
 	/** Default Slack workspace/team ID to use for legacy /webhooks/:source routes */
@@ -234,7 +236,7 @@ export function createWebhookServer(
 				};
 				server.once("error", handleError);
 				server.once("listening", handleListening);
-				server.listen(config.port);
+				server.listen(config.port, config.host);
 			}),
 		stop: () =>
 			new Promise<void>((resolve, reject) => {
