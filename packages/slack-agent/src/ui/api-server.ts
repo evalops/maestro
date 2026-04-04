@@ -67,6 +67,7 @@ export interface ApiServerConfig {
 export interface ApiServerInstance {
 	start(): Promise<void>;
 	stop(): Promise<void>;
+	port: number;
 }
 
 interface OAuthState {
@@ -299,6 +300,7 @@ export function createApiServer(config: ApiServerConfig): ApiServerInstance {
 		slackOAuth,
 		workspaceManager: injectedWorkspaceManager,
 	} = config;
+	let boundPort = port;
 
 	// Ensure connector types are available for /connectors/types in standalone UI mode.
 	registerBuiltInConnectors();
@@ -1406,11 +1408,18 @@ export function createApiServer(config: ApiServerConfig): ApiServerInstance {
 	});
 
 	return {
+		get port() {
+			return boundPort;
+		},
 		start: () =>
 			new Promise<void>((resolve, reject) => {
 				server.listen(port, host, () => {
+					const address = server.address();
+					if (address && typeof address === "object") {
+						boundPort = address.port;
+					}
 					logger.logInfo(
-						`UI API server listening on ${host}:${port}${authToken ? " (auth required)" : ""}`,
+						`UI API server listening on ${host}:${boundPort}${authToken ? " (auth required)" : ""}`,
 					);
 					resolve();
 				});
