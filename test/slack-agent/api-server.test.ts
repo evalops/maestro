@@ -35,6 +35,7 @@ import {
 describe("ApiServer (workspace-scoped)", () => {
 	let testDir: string;
 	let server: ApiServerInstance;
+	const host = "127.0.0.1";
 	const port = 13456 + Math.floor(Math.random() * 1000);
 	let base: string;
 	const teamId = "T_TEST";
@@ -67,8 +68,9 @@ describe("ApiServer (workspace-scoped)", () => {
 			),
 		);
 
-		base = `http://localhost:${port}`;
+		base = `http://${host}:${port}`;
 		server = createApiServer({
+			host,
 			port,
 			workingDir: testDir,
 		});
