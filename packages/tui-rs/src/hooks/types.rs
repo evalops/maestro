@@ -40,6 +40,7 @@ pub enum HookEventType {
     SessionTree,
     UserPromptSubmit,
     PreCompact,
+    PostCompact,
     Notification,
     Overflow,
     /// Before sending user message to model
@@ -563,6 +564,10 @@ mod tests {
             serde_json::to_string(&HookEventType::EvalGate).unwrap(),
             "\"EvalGate\""
         );
+        assert_eq!(
+            serde_json::to_string(&HookEventType::PostCompact).unwrap(),
+            "\"PostCompact\""
+        );
     }
 
     #[test]
@@ -578,6 +583,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<HookEventType>("\"PermissionRequest\"").unwrap(),
             HookEventType::PermissionRequest
+        );
+        assert_eq!(
+            serde_json::from_str::<HookEventType>("\"PostCompact\"").unwrap(),
+            HookEventType::PostCompact
         );
     }
 

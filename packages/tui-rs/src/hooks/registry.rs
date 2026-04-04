@@ -321,6 +321,7 @@ impl HookRegistry {
             // These don't have dedicated hook vectors yet
             HookEventType::PostToolUseFailure
             | HookEventType::PreCompact
+            | HookEventType::PostCompact
             | HookEventType::Notification
             | HookEventType::SessionSwitch
             | HookEventType::SessionBeforeTree

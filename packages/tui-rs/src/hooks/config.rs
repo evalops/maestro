@@ -417,6 +417,7 @@ fn parse_event_type(name: &str) -> Option<HookEventType> {
         "SessionTree" => Some(HookEventType::SessionTree),
         "UserPromptSubmit" => Some(HookEventType::UserPromptSubmit),
         "PreCompact" => Some(HookEventType::PreCompact),
+        "PostCompact" => Some(HookEventType::PostCompact),
         "Notification" => Some(HookEventType::Notification),
         "Overflow" => Some(HookEventType::Overflow),
         "PreMessage" => Some(HookEventType::PreMessage),

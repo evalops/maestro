@@ -5,7 +5,7 @@ The Rust TUI includes a comprehensive hook system for intercepting and modifying
 ## Features
 
 - **Multiple backends**: Native Rust, Lua scripting, WASM plugins
-- **16 Event types**: Full lifecycle coverage from message to tool execution
+- **17 Event types**: Full lifecycle coverage from message to tool execution
 - **Safety hooks**: Built-in protection against dangerous commands
 - **Metrics**: Execution timing and call counts
 - **Hot reload**: Reload hooks without restarting
@@ -22,6 +22,7 @@ The Rust TUI includes a comprehensive hook system for intercepting and modifying
 | `SessionEnd` | Session ends | No | No |
 | `UserPromptSubmit` | User submits prompt | Yes | Yes |
 | `PreCompact` | Before compaction | Yes | No |
+| `PostCompact` | After compaction succeeds | No | No |
 | `Notification` | Various notifications | No | No |
 | `Overflow` | Context overflow detected | Yes | No |
 | `PreMessage` | Before sending to model | Yes | Yes (message) |

@@ -64,6 +64,7 @@ jobs:
           echo "| SubagentStop | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| EvalGate | ✅ |" >> $GITHUB_STEP_SUMMARY
           echo "| PermissionRequest | ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| PostCompact | ✅ |" >> $GITHUB_STEP_SUMMARY
 
   rust-hooks:
     name: Rust Hook Tests

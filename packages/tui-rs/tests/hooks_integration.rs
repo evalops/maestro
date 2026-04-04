@@ -734,6 +734,7 @@ fn test_registry_has_hooks_for_new_events() {
     assert!(!registry.has_hooks(HookEventType::SubagentStart));
     assert!(!registry.has_hooks(HookEventType::SubagentStop));
     assert!(!registry.has_hooks(HookEventType::PermissionRequest));
+    assert!(!registry.has_hooks(HookEventType::PostCompact));
 
     // Add hooks
     registry.register_pre_message(Arc::new(TestPreMessageHook {
