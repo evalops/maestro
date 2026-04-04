@@ -568,6 +568,10 @@ export interface AgentTool<
 	retryDelayMs?: number;
 	/** Optional tool-level retry predicate */
 	shouldRetry?: (error: unknown) => boolean;
+	/** Optional compact summary used after a tool finishes. */
+	getToolUseSummary?: (params: Record<string, unknown>) => string | null;
+	/** Optional present-tense activity label used while a tool is running. */
+	getActivityDescription?: (params: Record<string, unknown>) => string | null;
 	/**
 	 * Execute the tool with the given parameters.
 	 *
@@ -901,6 +905,8 @@ export interface PendingToolCall {
 	toolName: string;
 	/** Original arguments passed to the tool */
 	args?: Record<string, unknown>;
+	/** Optional tool-provided summary/activity formatter */
+	tool?: Pick<AgentTool, "getToolUseSummary" | "getActivityDescription">;
 }
 
 /**

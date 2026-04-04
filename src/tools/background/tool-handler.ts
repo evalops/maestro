@@ -179,6 +179,20 @@ export const backgroundTasksTool = createTool<
 	label: "background tasks",
 	description: "Run commands in the background and manage their lifecycle.",
 	schema: backgroundTaskSchema,
+	getToolUseSummary(params) {
+		if (params.action === "start") return "Started background task";
+		if (params.action === "stop") return "Stopped background task";
+		if (params.action === "logs") return "Viewed background logs";
+		if (params.action === "list") return "Listed background tasks";
+		return "Checked background tasks";
+	},
+	getActivityDescription(params) {
+		if (params.action === "start") return "Starting background task";
+		if (params.action === "stop") return "Stopping background task";
+		if (params.action === "logs") return "Reading background logs";
+		if (params.action === "list") return "Listing background tasks";
+		return "Checking background tasks";
+	},
 	async run(params, { respond }) {
 		if (params.action === "start") {
 			const restart =

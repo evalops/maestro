@@ -83,8 +83,8 @@
 import { validate as uuidValidate } from "uuid";
 import { createLogger } from "../utils/logger.js";
 import {
+	describeToolActivity,
 	summarizeToolBatch,
-	summarizeToolUse,
 } from "../utils/tool-use-summary.js";
 import {
 	AgentContextManager,
@@ -364,6 +364,7 @@ export class Agent {
 		toolName: string;
 		args: Record<string, unknown>;
 		isError: boolean;
+		tool?: Pick<AgentTool, "getToolUseSummary" | "getActivityDescription">;
 	}> = [];
 
 	/**
@@ -1335,11 +1336,15 @@ export class Agent {
 	private handleToolExecutionStart(
 		event: Extract<AgentEvent, { type: "tool_execution_start" }>,
 	): void {
+		const tool = this._state.tools.find(
+			(candidate) => candidate.name === event.toolName,
+		);
 		this._state.pendingToolCalls.set(event.toolCallId, {
 			toolName: event.toolName,
 			args: event.args,
+			tool,
 		});
-		this.emitStatus(summarizeToolUse(event.toolName, event.args), {
+		this.emitStatus(describeToolActivity(event.toolName, event.args, tool), {
 			kind: "tool_execution_summary",
 			toolCallId: event.toolCallId,
 			toolName: event.toolName,
@@ -1361,6 +1366,7 @@ export class Agent {
 			toolName: event.toolName,
 			args: pending.args ?? {},
 			isError: event.isError,
+			tool: pending.tool,
 		});
 		if (this.activeToolBatchIds?.delete(event.toolCallId)) {
 			if (this.activeToolBatchIds.size > 0) {

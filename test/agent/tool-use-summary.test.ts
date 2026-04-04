@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	describeToolActivity,
 	summarizeToolBatch,
 	summarizeToolUse,
 } from "../../src/utils/tool-use-summary.js";
@@ -42,6 +43,39 @@ describe("summarizeToolUse", () => {
 		expect(summarizeToolUse("mcp__github__search_issues", {})).toBe(
 			"Ran search issues",
 		);
+	});
+
+	it("uses tool-provided summary labels when available", () => {
+		expect(
+			summarizeToolUse(
+				"todo",
+				{ goal: "Ship hooks", items: [{ content: "wire runtime hooks" }] },
+				{
+					getToolUseSummary: (args) => `Planned tasks for ${String(args.goal)}`,
+				},
+			),
+		).toBe("Planned tasks for Ship hooks");
+	});
+
+	it("uses present-tense activity labels for running tools", () => {
+		expect(
+			describeToolActivity("read", {
+				file_path:
+					"/Users/jonathanhaas/Documents/Projects/maestro/package.json",
+			}),
+		).toBe("Reading package.json");
+	});
+
+	it("uses tool-provided activity descriptions when available", () => {
+		expect(
+			describeToolActivity(
+				"background_tasks",
+				{ action: "start" },
+				{
+					getActivityDescription: () => "Starting background task",
+				},
+			),
+		).toBe("Starting background task");
 	});
 
 	it("summarizes tool batches into a compact one-line label", () => {

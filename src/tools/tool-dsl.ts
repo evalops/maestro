@@ -176,6 +176,8 @@ export interface CreateToolOptions<Schema extends TSchema, Details> {
 	maxRetries?: number;
 	retryDelayMs?: number;
 	shouldRetry?: (error: unknown) => boolean;
+	getToolUseSummary?: (params: Static<Schema>) => string | null;
+	getActivityDescription?: (params: Static<Schema>) => string | null;
 }
 
 type StaticSchema<Schema extends TSchema> = Static<Schema>;
@@ -207,6 +209,15 @@ export function createTool<Schema extends TSchema, Details = undefined>(
 		maxRetries: options.maxRetries,
 		retryDelayMs: options.retryDelayMs,
 		shouldRetry: options.shouldRetry,
+		getToolUseSummary: options.getToolUseSummary
+			? (params: Record<string, unknown>) =>
+					options.getToolUseSummary?.(params as StaticSchema<Schema>) ?? null
+			: undefined,
+		getActivityDescription: options.getActivityDescription
+			? (params: Record<string, unknown>) =>
+					options.getActivityDescription?.(params as StaticSchema<Schema>) ??
+					null
+			: undefined,
 		execute: async (
 			toolCallId: string,
 			params: Record<string, unknown>,

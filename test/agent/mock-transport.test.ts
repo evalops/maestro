@@ -82,7 +82,7 @@ describe("Agent mock transport", () => {
 			),
 		).toMatchObject({
 			type: "status",
-			status: "Read README.md",
+			status: "Reading README.md",
 			details: {
 				kind: "tool_execution_summary",
 				toolName: "read",

@@ -455,6 +455,24 @@ Management:
 
 Call this tool IN PARALLEL with other tools to save time.`,
 	schema: todoSchema,
+	getToolUseSummary(params) {
+		if (params.updates?.length) {
+			return "Updated task list";
+		}
+		if (params.items) {
+			return `Planned tasks for ${params.goal}`;
+		}
+		return "Reviewed task list";
+	},
+	getActivityDescription(params) {
+		if (params.updates?.length) {
+			return "Updating task list";
+		}
+		if (params.items) {
+			return `Planning tasks for ${params.goal}`;
+		}
+		return "Reviewing task list";
+	},
 	async run(params, { respond }) {
 		const { goal, items, updates, includeSummary } = params;
 

@@ -1,3 +1,10 @@
+import type { AgentTool } from "../agent/types.js";
+
+type ToolSummaryProvider = Pick<
+	AgentTool,
+	"getActivityDescription" | "getToolUseSummary"
+>;
+
 function getStringArg(
 	args: Record<string, unknown>,
 	keys: readonly string[],
@@ -196,10 +203,109 @@ function summarizeKnownTool(
 	}
 }
 
+function describeKnownToolActivity(
+	toolName: string,
+	args: Record<string, unknown>,
+): string | null {
+	const normalized = toolName.trim().toLowerCase();
+	const filePath = getStringArg(args, [
+		"file_path",
+		"filePath",
+		"path",
+		"target_path",
+		"targetPath",
+		"filename",
+	]);
+	const directory = getStringArg(args, ["directory", "dir", "cwd"]);
+	const pattern = getStringArg(args, ["pattern", "query", "search", "regex"]);
+	const command = getStringArg(args, ["command", "cmd", "script"]);
+	const url = getStringArg(args, ["url", "uri"]);
+
+	switch (normalized) {
+		case "read":
+			return `Reading ${shortPathLabel(filePath ?? "file")}`;
+		case "write":
+		case "append":
+		case "create_file":
+		case "createfile":
+			return `Writing ${shortPathLabel(filePath ?? "file")}`;
+		case "edit":
+		case "multi_edit":
+		case "str_replace_based_edit":
+		case "apply_patch":
+			return `Editing ${shortPathLabel(filePath ?? "file")}`;
+		case "delete":
+		case "remove":
+		case "unlink":
+			return `Deleting ${shortPathLabel(filePath ?? "file")}`;
+		case "list":
+		case "ls":
+			return `Listing ${shortPathLabel(directory ?? filePath ?? "directory")}`;
+		case "glob":
+			return pattern
+				? `Matching ${quoteLabel(pattern)}`
+				: `Scanning ${shortPathLabel(directory ?? "workspace")}`;
+		case "grep":
+		case "search":
+		case "search_files":
+			return pattern
+				? `Searching for ${quoteLabel(pattern)}`
+				: "Searching files";
+		case "bash":
+		case "shell":
+		case "exec_command":
+			return command
+				? `Running ${truncateLabel(command, 52)}`
+				: "Running command";
+		case "webfetch":
+		case "fetch":
+		case "open":
+			return `Fetching ${shortUrlLabel(url ?? filePath ?? "resource")}`;
+		case "websearch":
+		case "search_query":
+			return pattern
+				? `Searching web for ${quoteLabel(pattern)}`
+				: "Searching web";
+		case "todo":
+			return "Updating task list";
+		case "background_tasks": {
+			const action = getStringArg(args, ["action"]);
+			if (action === "start") return "Starting background task";
+			if (action === "stop") return "Stopping background task";
+			if (action === "logs") return "Reading background logs";
+			if (action === "list") return "Listing background tasks";
+			return "Checking background tasks";
+		}
+		default:
+			return null;
+	}
+}
+
+function summarizeWithToolDefinition(
+	tool: ToolSummaryProvider | undefined,
+	args: Record<string, unknown>,
+): string | null {
+	const summary = tool?.getToolUseSummary?.(args)?.trim();
+	return summary ? sentenceCase(truncateLabel(summary, 64)) : null;
+}
+
+function describeWithToolDefinition(
+	tool: ToolSummaryProvider | undefined,
+	args: Record<string, unknown>,
+): string | null {
+	const activity = tool?.getActivityDescription?.(args)?.trim();
+	return activity ? sentenceCase(truncateLabel(activity, 64)) : null;
+}
+
 export function summarizeToolUse(
 	toolName: string,
 	args: Record<string, unknown> = {},
+	tool?: ToolSummaryProvider,
 ): string {
+	const toolSummary = summarizeWithToolDefinition(tool, args);
+	if (toolSummary) {
+		return toolSummary;
+	}
 	const known = summarizeKnownTool(toolName, args);
 	if (known) {
 		return sentenceCase(known);
@@ -207,10 +313,27 @@ export function summarizeToolUse(
 	return sentenceCase(`Ran ${truncateLabel(humanizeToolName(toolName), 40)}`);
 }
 
+export function describeToolActivity(
+	toolName: string,
+	args: Record<string, unknown> = {},
+	tool?: ToolSummaryProvider,
+): string {
+	const toolActivity = describeWithToolDefinition(tool, args);
+	if (toolActivity) {
+		return toolActivity;
+	}
+	const known = describeKnownToolActivity(toolName, args);
+	if (known) {
+		return sentenceCase(known);
+	}
+	return summarizeToolUse(toolName, args, tool);
+}
+
 export interface ToolBatchSummaryEntry {
 	toolName: string;
 	args?: Record<string, unknown>;
 	isError?: boolean;
+	tool?: ToolSummaryProvider;
 }
 
 export interface ToolBatchSummary {
@@ -224,7 +347,9 @@ export function summarizeToolBatch(
 	entries: ToolBatchSummaryEntry[],
 ): ToolBatchSummary {
 	const summaryLabels = uniqueLabels(
-		entries.map((entry) => summarizeToolUse(entry.toolName, entry.args ?? {})),
+		entries.map((entry) =>
+			summarizeToolUse(entry.toolName, entry.args ?? {}, entry.tool),
+		),
 	);
 	return {
 		summary: buildBatchLabel(summaryLabels),
