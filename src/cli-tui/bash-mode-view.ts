@@ -85,9 +85,15 @@ export class BashModeView {
 		this.homeDir = this.normalizePath(rawHome);
 		this.currentCwd = this.projectRoot;
 		this.defaultAutocomplete = options.defaultAutocomplete;
+		const previousOnHistoryNavigate = this.options.editor.onHistoryNavigate;
 		this.options.editor.onHistoryNavigate = (direction) =>
-			this.handleHistoryNavigate(direction);
-		this.options.editor.onChange = (text) => this.handleEditorChange(text);
+			this.handleHistoryNavigate(direction) ||
+			previousOnHistoryNavigate?.(direction) === true;
+		const previousOnChange = this.options.editor.onChange;
+		this.options.editor.onChange = (text) => {
+			previousOnChange?.(text);
+			this.handleEditorChange(text);
+		};
 		// Load persistent history
 		this.history = loadBashHistory();
 	}

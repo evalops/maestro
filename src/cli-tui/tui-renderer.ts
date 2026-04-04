@@ -323,6 +323,7 @@ export class TuiRenderer {
 	private commandEntries: CommandEntry[] = [];
 	private recentCommands: string[] = [];
 	private favoriteCommands = new Set<string>();
+	private defaultAutocompleteProvider!: SmartAutocompleteProvider;
 	private slashHintBar!: SlashHintBar;
 	private slashCommandMatcher!: SlashCommandMatcher;
 	private slashCycleState = new SlashCycleState();
@@ -332,7 +333,7 @@ export class TuiRenderer {
 	private sessionStateController!: SessionStateController;
 	private importExportView?: ImportExportView;
 	private runCommandView?: RunCommandView;
-	private bashModeView: BashModeView;
+	private bashModeView?: BashModeView;
 	private gitView: GitView;
 	private toolStatusView: ToolStatusView;
 	private diagnosticsView: DiagnosticsView;
@@ -706,7 +707,8 @@ export class TuiRenderer {
 			deps: {
 				editor: this.editor,
 				getPasteHandler: () => this.pasteHandler,
-				getBashModeView: () => this.bashModeView,
+				isBashModeActive: () => this.bashModeView?.isActive() ?? false,
+				getBashModeView: () => this.getBashModeView(),
 				getInterruptController: () => this.interruptController,
 				autoRetryController: this.autoRetryController,
 				consumeAttachments: (text) =>
@@ -1245,15 +1247,8 @@ export class TuiRenderer {
 			this.slashCommands,
 			process.cwd(),
 		);
+		this.defaultAutocompleteProvider = autocompleteProvider;
 		this.editor.setAutocompleteProvider(autocompleteProvider);
-		this.bashModeView = new BashModeView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			onStateChange: () => this.refreshFooterHint(),
-			editor: this.editor,
-			defaultAutocomplete: autocompleteProvider,
-		});
 
 		// Keep the chat viewport within the terminal viewport. We recompute on
 		// editor changes (including paste/history/backspace) so wrapping changes
@@ -1389,6 +1384,18 @@ export class TuiRenderer {
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
 		});
 		return this.runCommandView;
+	}
+
+	private getBashModeView(): BashModeView {
+		this.bashModeView ??= new BashModeView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+			onStateChange: () => this.refreshFooterHint(),
+			editor: this.editor,
+			defaultAutocomplete: this.defaultAutocompleteProvider,
+		});
+		return this.bashModeView;
 	}
 
 	private getFeedbackView(): FeedbackView {

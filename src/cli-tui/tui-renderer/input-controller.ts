@@ -14,6 +14,7 @@ import type { PromptPayload } from "../prompt-queue.js";
 export interface InputControllerDeps {
 	editor: CustomEditor;
 	getPasteHandler: () => PasteHandler;
+	isBashModeActive: () => boolean;
 	getBashModeView: () => BashModeView;
 	getInterruptController: () => InterruptController;
 	autoRetryController: AutoRetryController;
@@ -129,12 +130,14 @@ export class InputController {
 			);
 			return null;
 		}
-		const bashModeView = this.deps.getBashModeView();
-		if (await bashModeView.tryHandleOneOffInput(text)) {
-			return null;
-		}
-		if (await bashModeView.tryHandleInput(text)) {
-			return null;
+		if (this.deps.isBashModeActive() || text.startsWith("!")) {
+			const bashModeView = this.deps.getBashModeView();
+			if (await bashModeView.tryHandleOneOffInput(text)) {
+				return null;
+			}
+			if (await bashModeView.tryHandleInput(text)) {
+				return null;
+			}
 		}
 		const payload = this.deps.consumeAttachments(text);
 		const hasText = payload.text.trim().length > 0;
