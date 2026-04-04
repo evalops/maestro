@@ -61,10 +61,10 @@ import type { UiStateController } from "./ui-state-controller.js";
 
 export interface TuiCommandRegistryDeps {
 	getRunCommandView: () => RunCommandView;
-	toolStatusView: ToolStatusView;
+	getToolStatusView: () => ToolStatusView;
 	sessionView: SessionView;
 	clearController: ClearController;
-	diagnosticsView: DiagnosticsView;
+	getDiagnosticsView: () => DiagnosticsView;
 	planController?: PlanController;
 	gitView: GitView;
 	backgroundTasksController: BackgroundTasksController;
@@ -154,7 +154,7 @@ export function buildTuiCommandRegistryOptions(
 		handleShareSession: async (context) =>
 			deps.getImportExportView().handleShareCommand(context.rawInput),
 		handleTools: (context) =>
-			deps.toolStatusView.handleToolsCommand(context.rawInput),
+			deps.getToolStatusView().handleToolsCommand(context.rawInput),
 		handleToolHistory: (context) => deps.handleToolHistoryCommand(context),
 		handleSkills: (context) => deps.handleSkillsCommand(context),
 		handleImportConfig: (context) =>
@@ -173,7 +173,7 @@ export function buildTuiCommandRegistryOptions(
 		handleHistory: (context) => deps.handleHistoryCommand(context),
 		handleClear: async (_context) =>
 			await deps.clearController.handleClearCommand(),
-		showStatus: (_context) => deps.diagnosticsView.handleStatusCommand(),
+		showStatus: (_context) => deps.getDiagnosticsView().handleStatusCommand(),
 		handleReview: (context) => deps.handleReviewCommand(context),
 		handleUndo: (context) => deps.handleEnhancedUndoCommand(context),
 		handleMention: (context) =>
@@ -214,7 +214,7 @@ export function buildTuiCommandRegistryOptions(
 		handleOllama: (context) =>
 			deps.getOllamaView().handleOllamaCommand(context.rawInput),
 		handleDiagnostics: (context) =>
-			deps.diagnosticsView.handleDiagnosticsCommand(context.rawInput),
+			deps.getDiagnosticsView().handleDiagnosticsCommand(context.rawInput),
 		handleBackground: (context) =>
 			deps.backgroundTasksController.handleBackgroundCommand(context),
 		handleCompact: (context) => {

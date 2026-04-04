@@ -7,9 +7,8 @@ import type { TrainingStatus } from "../../training.js";
 import type { GitView } from "../git/git-view.js";
 import { DiagnosticsView } from "../status/diagnostics-view.js";
 import type { ToolExecutionComponent } from "../tool-execution.js";
-import type { ToolStatusView } from "../tool-status-view.js";
 
-export function createUtilityViews(params: {
+export function createDiagnosticsView(params: {
 	agent: Agent;
 	sessionManager: SessionManager;
 	telemetryStatus: TelemetryStatus;
@@ -20,14 +19,11 @@ export function createUtilityViews(params: {
 	ui: TUI;
 	getCurrentModelMetadata: () => SessionModelMetadata | undefined;
 	getPendingTools: () => Map<string, ToolExecutionComponent>;
-	toolStatusView: ToolStatusView;
 	gitView: GitView;
 	todoStorePath: string;
 	getApprovalMode: () => string;
 	getAlertCount: () => number;
-}): {
-	diagnosticsView: DiagnosticsView;
-} {
+}): DiagnosticsView {
 	const {
 		agent,
 		sessionManager,
@@ -39,7 +35,6 @@ export function createUtilityViews(params: {
 		ui,
 		getCurrentModelMetadata,
 		getPendingTools,
-		toolStatusView,
 		gitView,
 		todoStorePath,
 		getApprovalMode,
@@ -57,13 +52,11 @@ export function createUtilityViews(params: {
 		ui,
 		getCurrentModelMetadata,
 		getPendingTools,
-		toolStatusView,
 		gitView,
 		todoStorePath,
 		getApprovalMode,
 		getAlertCount,
 		getRenderStats: () => ui.getRenderStats(),
 	});
-
-	return { diagnosticsView };
+	return diagnosticsView;
 }

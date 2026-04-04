@@ -6,8 +6,10 @@ import {
 } from "../../tools/background-tasks.js";
 import type { GitView } from "../git/git-view.js";
 import { loadTodoStore } from "../plan-view.js";
-import { TOOL_FAILURE_LOG_PATH } from "../tool-status-view.js";
-import type { ToolStatusView } from "../tool-status-view.js";
+import {
+	TOOL_FAILURE_LOG_PATH,
+	readToolFailureData,
+} from "../tool-status-view.js";
 
 export interface HealthSnapshot {
 	toolFailures: number;
@@ -19,7 +21,6 @@ export interface HealthSnapshot {
 }
 
 interface HealthSnapshotOptions {
-	toolStatusView: ToolStatusView;
 	gitView: GitView;
 	todoStorePath: string;
 }
@@ -27,7 +28,7 @@ interface HealthSnapshotOptions {
 export function collectHealthSnapshot(
 	options: HealthSnapshotOptions,
 ): HealthSnapshot {
-	const { counts } = options.toolStatusView.getToolFailureData();
+	const { counts } = readToolFailureData();
 	const totalFailures = Array.from(counts.values()).reduce(
 		(sum: number, value: number) => sum + value,
 		0,

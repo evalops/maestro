@@ -16,15 +16,16 @@ import {
 import type { ValidatorRunResult } from "../safety/safe-mode.js";
 import type { SessionManager } from "../session/manager.js";
 import type { GitView } from "./git/git-view.js";
-import { TOOL_FAILURE_LOG_PATH } from "./tool-status-view.js";
-import type { ToolStatusView } from "./tool-status-view.js";
+import {
+	TOOL_FAILURE_LOG_PATH,
+	readToolFailureData,
+} from "./tool-status-view.js";
 
 interface FeedbackViewOptions {
 	agent: Agent;
 	sessionManager: SessionManager;
 	chatContainer: Container;
 	ui: TUI;
-	toolStatusView: ToolStatusView;
 	gitView: GitView;
 	version: string;
 	getApprovalMode: () => ApprovalMode;
@@ -156,8 +157,7 @@ export class FeedbackView {
 	}
 
 	private buildToolFailureSummary(): string | undefined {
-		const { recent, counts } =
-			this.options.toolStatusView.getToolFailureData(5);
+		const { recent, counts } = readToolFailureData(5);
 		if (recent.length === 0) {
 			return undefined;
 		}

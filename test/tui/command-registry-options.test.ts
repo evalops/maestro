@@ -42,20 +42,22 @@ function createDeps() {
 		getRunScriptCompletions: vi.fn(() => null),
 		handleRunCommand: vi.fn(),
 	};
+	const toolStatusView = { handleToolsCommand: vi.fn() };
+	const diagnosticsView = {
+		handleStatusCommand: vi.fn(),
+		handleDiagnosticsCommand: vi.fn(),
+	};
 	const thinkingSelectorView = { show: vi.fn() };
 
 	const deps = {
 		getRunCommandView: vi.fn(() => runCommandView),
-		toolStatusView: { handleToolsCommand: vi.fn() },
+		getToolStatusView: vi.fn(() => toolStatusView),
 		sessionView: {
 			handleSessionCommand: vi.fn(),
 			handleSessionsCommand: vi.fn(),
 		},
 		clearController: { handleClearCommand: vi.fn() },
-		diagnosticsView: {
-			handleStatusCommand: vi.fn(),
-			handleDiagnosticsCommand: vi.fn(),
-		},
+		getDiagnosticsView: vi.fn(() => diagnosticsView),
 		gitView: { handlePreviewCommand: vi.fn() },
 		backgroundTasksController: { handleBackgroundCommand: vi.fn() },
 		compactionController: {
@@ -171,6 +173,8 @@ function createDeps() {
 		queuePanelController,
 		reportSelectorView,
 		runCommandView,
+		toolStatusView,
+		diagnosticsView,
 		thinkingSelectorView,
 	};
 }
@@ -186,6 +190,8 @@ describe("buildTuiCommandRegistryOptions", () => {
 		expect(deps.getCostView).not.toHaveBeenCalled();
 		expect(deps.getImportExportView).not.toHaveBeenCalled();
 		expect(deps.getReportSelectorView).not.toHaveBeenCalled();
+		expect(deps.getToolStatusView).not.toHaveBeenCalled();
+		expect(deps.getDiagnosticsView).not.toHaveBeenCalled();
 		expect(deps.getRunCommandView).not.toHaveBeenCalled();
 		expect(deps.getThinkingSelectorView).not.toHaveBeenCalled();
 		expect(deps.getFileSearchView).not.toHaveBeenCalled();
@@ -204,6 +210,8 @@ describe("buildTuiCommandRegistryOptions", () => {
 			queuePanelController,
 			reportSelectorView,
 			runCommandView,
+			toolStatusView,
+			diagnosticsView,
 			thinkingSelectorView,
 		} = createDeps();
 		const options = buildTuiCommandRegistryOptions(deps);
@@ -227,6 +235,18 @@ describe("buildTuiCommandRegistryOptions", () => {
 		options.handleRun(createCommandContext("/run test", "test"));
 		expect(deps.getRunCommandView).toHaveBeenCalledTimes(2);
 		expect(runCommandView.handleRunCommand).toHaveBeenCalledTimes(1);
+
+		options.handleTools(createCommandContext("/tools"));
+		expect(deps.getToolStatusView).toHaveBeenCalledTimes(1);
+		expect(toolStatusView.handleToolsCommand).toHaveBeenCalledTimes(1);
+
+		options.showStatus(createCommandContext("/status"));
+		expect(deps.getDiagnosticsView).toHaveBeenCalledTimes(1);
+		expect(diagnosticsView.handleStatusCommand).toHaveBeenCalledTimes(1);
+
+		await options.handleDiagnostics(createCommandContext("/diag"));
+		expect(deps.getDiagnosticsView).toHaveBeenCalledTimes(2);
+		expect(diagnosticsView.handleDiagnosticsCommand).toHaveBeenCalledTimes(1);
 
 		options.handleMention(createCommandContext("/mention src", "src"));
 		expect(deps.getFileSearchView).toHaveBeenCalledTimes(1);

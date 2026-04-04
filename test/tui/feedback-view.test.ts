@@ -35,9 +35,6 @@ function createView(container: Container): FeedbackView {
 		} as unknown as FeedbackViewOptions["sessionManager"],
 		chatContainer: container,
 		ui: { requestRender: vi.fn() } as unknown as FeedbackViewOptions["ui"],
-		toolStatusView: {
-			getToolFailureData: () => ({ recent: [], counts: new Map() }),
-		} as unknown as FeedbackViewOptions["toolStatusView"],
 		gitView: {
 			getStatusSummary: () => "## main\n M src/index.ts",
 			getCurrentCommit: () => "abcdef",

@@ -19,6 +19,46 @@ interface ToolStatusViewOptions {
 	showInfoMessage: (message: string) => void;
 }
 
+export function readToolFailureData(limit = 5): {
+	recent: Array<{ tool: string; error: string; timestamp: string }>;
+	counts: Map<string, number>;
+} {
+	const result = {
+		recent: [] as Array<{ tool: string; error: string; timestamp: string }>,
+		counts: new Map<string, number>(),
+	};
+	try {
+		if (!existsSync(TOOL_FAILURE_LOG_PATH)) {
+			return result;
+		}
+		const raw = readFileSync(TOOL_FAILURE_LOG_PATH, "utf-8");
+		const lines = raw.split("\n").filter(Boolean).reverse();
+		for (const line of lines.slice(0, limit)) {
+			const parsed = JSON.parse(line) as {
+				tool?: string;
+				error?: string;
+				timestamp?: number;
+			};
+			if (parsed.tool) {
+				result.counts.set(
+					parsed.tool,
+					(result.counts.get(parsed.tool) ?? 0) + 1,
+				);
+			}
+			result.recent.push({
+				tool: parsed.tool ?? "unknown",
+				error: parsed.error ?? "unknown error",
+				timestamp: parsed.timestamp
+					? new Date(parsed.timestamp).toLocaleString()
+					: "unknown time",
+			});
+		}
+	} catch {
+		// ignore log parse issues
+	}
+	return result;
+}
+
 export class ToolStatusView {
 	constructor(private readonly options: ToolStatusViewOptions) {}
 
@@ -76,39 +116,6 @@ ${toolLines.join("\n\n")}\n\n${failureSection}\n\n${muted("Use /tools clear to r
 		recent: Array<{ tool: string; error: string; timestamp: string }>;
 		counts: Map<string, number>;
 	} {
-		const result = {
-			recent: [] as Array<{ tool: string; error: string; timestamp: string }>,
-			counts: new Map<string, number>(),
-		};
-		try {
-			if (!existsSync(TOOL_FAILURE_LOG_PATH)) {
-				return result;
-			}
-			const raw = readFileSync(TOOL_FAILURE_LOG_PATH, "utf-8");
-			const lines = raw.split("\n").filter(Boolean).reverse();
-			for (const line of lines.slice(0, limit)) {
-				const parsed = JSON.parse(line) as {
-					tool?: string;
-					error?: string;
-					timestamp?: number;
-				};
-				if (parsed.tool) {
-					result.counts.set(
-						parsed.tool,
-						(result.counts.get(parsed.tool) ?? 0) + 1,
-					);
-				}
-				result.recent.push({
-					tool: parsed.tool ?? "unknown",
-					error: parsed.error ?? "unknown error",
-					timestamp: parsed.timestamp
-						? new Date(parsed.timestamp).toLocaleString()
-						: "unknown time",
-				});
-			}
-		} catch {
-			// ignore log parse issues
-		}
-		return result;
+		return readToolFailureData(limit);
 	}
 }

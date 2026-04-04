@@ -17,10 +17,7 @@ import { getExaUsageSummary } from "../../tools/exa-usage.js";
 import type { TrainingStatus } from "../../training.js";
 import type { GitView } from "../git/git-view.js";
 import type { ToolExecutionComponent } from "../tool-execution.js";
-import {
-	TOOL_FAILURE_LOG_PATH,
-	type ToolStatusView,
-} from "../tool-status-view.js";
+import { TOOL_FAILURE_LOG_PATH } from "../tool-status-view.js";
 import {
 	buildBugReport,
 	buildFeedbackTemplate,
@@ -43,7 +40,6 @@ interface DiagnosticsViewOptions {
 	ui: TUI;
 	getCurrentModelMetadata: () => SessionModelMetadata | undefined;
 	getPendingTools: () => Map<string, ToolExecutionComponent>;
-	toolStatusView: ToolStatusView;
 	gitView: GitView;
 	todoStorePath: string;
 	getApprovalMode?: () => string;
@@ -312,7 +308,6 @@ ${copyNote}`;
 
 	private buildHealthSnapshot(): HealthSnapshot {
 		return collectHealthSnapshot({
-			toolStatusView: this.options.toolStatusView,
 			gitView: this.options.gitView,
 			todoStorePath: this.options.todoStorePath,
 		});

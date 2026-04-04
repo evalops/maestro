@@ -229,7 +229,7 @@ import {
 	type UiStateController,
 	createUiStateController,
 } from "./tui-renderer/ui-state-setup.js";
-import { createUtilityViews } from "./tui-renderer/utility-views-setup.js";
+import { createDiagnosticsView } from "./tui-renderer/utility-views-setup.js";
 import {
 	type ViewportController,
 	createViewportController,
@@ -335,8 +335,8 @@ export class TuiRenderer {
 	private runCommandView?: RunCommandView;
 	private bashModeView?: BashModeView;
 	private gitView: GitView;
-	private toolStatusView: ToolStatusView;
-	private diagnosticsView: DiagnosticsView;
+	private toolStatusView?: ToolStatusView;
+	private diagnosticsView?: DiagnosticsView;
 	private telemetryView?: TelemetryView;
 	private ollamaView?: OllamaView;
 	private lspView?: LspView;
@@ -844,12 +844,6 @@ export class TuiRenderer {
 			inMinimalMode: () => this.isMinimalMode(),
 		});
 		this.ui.setInterruptHandler(() => this.handleCtrlC());
-		this.toolStatusView = new ToolStatusView({
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			getTools: () => this.agent.state.tools,
-			showInfoMessage: (message) => this.notificationView.showInfo(message),
-		});
 		const sessionSubsystem = createSessionSubsystem({
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -887,25 +881,6 @@ export class TuiRenderer {
 			editor: this.editor,
 			refreshFooterHint: () => this.refreshFooterHint(),
 		});
-
-		const utilityViews = createUtilityViews({
-			agent: this.agent,
-			sessionManager: this.sessionManager,
-			telemetryStatus: this.telemetryStatus,
-			trainingStatus: this.trainingStatus,
-			version: this.version,
-			explicitApiKey: this.explicitApiKey,
-			chatContainer: this.chatContainer,
-			ui: this.ui,
-			getCurrentModelMetadata: () => this.currentModelMetadata,
-			getPendingTools: () => this.pendingTools,
-			toolStatusView: this.toolStatusView,
-			gitView: this.gitView,
-			todoStorePath: getTodoStorePath(),
-			getApprovalMode: () => this.approvalService.getMode(),
-			getAlertCount: () => this.footer.getUnseenAlertCount(),
-		});
-		this.diagnosticsView = utilityViews.diagnosticsView;
 		const toolingViews = createToolingViews({
 			chatContainer: this.chatContainer,
 			ui: this.ui,
@@ -1115,10 +1090,10 @@ export class TuiRenderer {
 			cwd: process.cwd(),
 			registryOptions: buildTuiCommandRegistryOptions({
 				getRunCommandView: () => this.getRunCommandView(),
-				toolStatusView: this.toolStatusView,
+				getToolStatusView: () => this.getToolStatusView(),
 				sessionView: this.sessionView,
 				clearController: this.clearController,
-				diagnosticsView: this.diagnosticsView,
+				getDiagnosticsView: () => this.getDiagnosticsView(),
 				planController: this.planController,
 				gitView: this.gitView,
 				backgroundTasksController: this.backgroundTasksController,
@@ -1386,6 +1361,36 @@ export class TuiRenderer {
 		return this.runCommandView;
 	}
 
+	private getToolStatusView(): ToolStatusView {
+		this.toolStatusView ??= new ToolStatusView({
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			getTools: () => this.agent.state.tools,
+			showInfoMessage: (message) => this.notificationView.showInfo(message),
+		});
+		return this.toolStatusView;
+	}
+
+	private getDiagnosticsView(): DiagnosticsView {
+		this.diagnosticsView ??= createDiagnosticsView({
+			agent: this.agent,
+			sessionManager: this.sessionManager,
+			telemetryStatus: this.telemetryStatus,
+			trainingStatus: this.trainingStatus,
+			version: this.version,
+			explicitApiKey: this.explicitApiKey,
+			chatContainer: this.chatContainer,
+			ui: this.ui,
+			getCurrentModelMetadata: () => this.currentModelMetadata,
+			getPendingTools: () => this.pendingTools,
+			gitView: this.gitView,
+			todoStorePath: getTodoStorePath(),
+			getApprovalMode: () => this.approvalService.getMode(),
+			getAlertCount: () => this.footer.getUnseenAlertCount(),
+		});
+		return this.diagnosticsView;
+	}
+
 	private getBashModeView(): BashModeView {
 		this.bashModeView ??= new BashModeView({
 			chatContainer: this.chatContainer,
@@ -1404,7 +1409,6 @@ export class TuiRenderer {
 			sessionManager: this.sessionManager,
 			chatContainer: this.chatContainer,
 			ui: this.ui,
-			toolStatusView: this.toolStatusView,
 			gitView: this.gitView,
 			version: this.version,
 			getApprovalMode: () => this.approvalService.getMode(),
@@ -1557,7 +1561,7 @@ export class TuiRenderer {
 			showError: (message) => this.notificationView.showError(message),
 			onStatusChanged: (status) => {
 				this.telemetryStatus = status;
-				this.diagnosticsView.setTelemetryStatus(status);
+				this.diagnosticsView?.setTelemetryStatus(status);
 			},
 		});
 		return this.telemetryView;
@@ -1571,7 +1575,7 @@ export class TuiRenderer {
 			showError: (message) => this.notificationView.showError(message),
 			onStatusChanged: (status) => {
 				this.trainingStatus = status;
-				this.diagnosticsView.setTrainingStatus(status);
+				this.diagnosticsView?.setTrainingStatus(status);
 			},
 		});
 		return this.trainingView;
@@ -2034,7 +2038,7 @@ export class TuiRenderer {
 	private async handleStatsCommand(
 		_context: CommandExecutionContext,
 	): Promise<void> {
-		this.diagnosticsView.handleStatusCommand();
+		this.getDiagnosticsView().handleStatusCommand();
 		const costContext = this.createSyntheticContext("cost", "today");
 		this.getCostView().handleCostCommand(costContext);
 	}
@@ -2404,14 +2408,15 @@ export class TuiRenderer {
 						);
 					}
 				},
-				handleStatusCommand: () => this.diagnosticsView.handleStatusCommand(),
+				handleStatusCommand: () =>
+					this.getDiagnosticsView().handleStatusCommand(),
 				handleAboutCommand: () => this.getAboutView().handleAboutCommand(),
 				handleContextCommand: (ctx) => this.handleContextCommand(ctx),
 				handleStatsCommand: (ctx) => this.handleStatsCommand(ctx),
 				handleBackgroundCommand: (ctx) =>
 					this.backgroundTasksController.handleBackgroundCommand(ctx),
 				handleDiagnosticsCommand: (rawInput) =>
-					this.diagnosticsView.handleDiagnosticsCommand(rawInput),
+					this.getDiagnosticsView().handleDiagnosticsCommand(rawInput),
 				handleTelemetryCommand: (ctx) =>
 					this.getTelemetryView().handleTelemetryCommand(ctx),
 				handleTrainingCommand: (ctx) =>
@@ -2450,7 +2455,7 @@ export class TuiRenderer {
 				handleImportCommand: (rawInput) =>
 					this.getImportExportView().handleImportCommand(rawInput),
 				handleToolsCommand: (rawInput) =>
-					this.toolStatusView.handleToolsCommand(rawInput),
+					this.getToolStatusView().handleToolsCommand(rawInput),
 				handleRunCommand: (rawInput) =>
 					this.getRunCommandView().handleRunCommand(rawInput),
 				handleCommandsCommand: (ctx) =>
