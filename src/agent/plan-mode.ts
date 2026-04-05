@@ -47,7 +47,7 @@ import {
 	readdirSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { PATHS } from "../config/constants.js";
 import { createLogger } from "../utils/logger.js";
 import { resolveEnvPath } from "../utils/path-expansion.js";
@@ -414,6 +414,37 @@ export function getCurrentPlanFilePath(
 	return state?.active ? state.filePath : null;
 }
 
+function isPathWithinDirectory(
+	filePath: string,
+	directoryPath: string,
+): boolean {
+	const normalizedDir = `${resolve(directoryPath)}${sep}`;
+	const normalizedFile = resolve(filePath);
+	return normalizedFile.startsWith(normalizedDir);
+}
+
+/**
+ * Get the tracked plan file path for compaction restoration.
+ *
+ * Active plan files are always eligible. Inactive plan files are only eligible
+ * when they still live under the current project's configured plan directory,
+ * which avoids restoring stale plans from another workspace.
+ */
+export function getPlanFilePathForCompactionRestore(
+	config: PlanModeConfig = getPlanModeConfig(),
+): string | null {
+	const state = loadPlanModeState(config);
+	if (!state?.filePath) {
+		return null;
+	}
+	if (state.active) {
+		return state.filePath;
+	}
+	return isPathWithinDirectory(state.filePath, config.planDir)
+		? state.filePath
+		: null;
+}
+
 /**
  * Read the current plan file content.
  *
@@ -435,6 +466,31 @@ export function readPlanFile(
 		return readFileSync(filePath, "utf-8");
 	} catch (err) {
 		logger.warn("Failed to read plan file", {
+			reason: err instanceof Error ? err.message : String(err),
+			filePath,
+		});
+		return null;
+	}
+}
+
+/**
+ * Read the tracked plan file content for compaction restoration.
+ *
+ * Unlike readPlanFile(), this can also read an inactive tracked plan when it
+ * still belongs to the current project's plan directory.
+ */
+export function readPlanFileForCompactionRestore(
+	config: PlanModeConfig = getPlanModeConfig(),
+): string | null {
+	const filePath = getPlanFilePathForCompactionRestore(config);
+	if (!filePath || !existsSync(filePath)) {
+		return null;
+	}
+
+	try {
+		return readFileSync(filePath, "utf-8");
+	} catch (err) {
+		logger.warn("Failed to read tracked plan file for compaction restore", {
 			reason: err instanceof Error ? err.message : String(err),
 			filePath,
 		});

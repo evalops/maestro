@@ -11,11 +11,13 @@ import {
 	exitPlanMode,
 	generatePlanFilePath,
 	getCurrentPlanFilePath,
+	getPlanFilePathForCompactionRestore,
 	getPlanModeConfig,
 	isPlanModeActive,
 	listPlanFiles,
 	loadPlanModeState,
 	readPlanFile,
+	readPlanFileForCompactionRestore,
 	savePlanModeState,
 	writePlanFile,
 } from "../../src/agent/plan-mode.js";
@@ -244,6 +246,39 @@ describe("Plan Mode Persistence", () => {
 		});
 	});
 
+	describe("getPlanFilePathForCompactionRestore", () => {
+		it("returns the plan file path when plan mode is active", () => {
+			const state = enterPlanMode({ config: testConfig });
+
+			expect(getPlanFilePathForCompactionRestore(testConfig)).toBe(
+				state.filePath,
+			);
+		});
+
+		it("returns the inactive tracked plan file when it is still in the current plan directory", () => {
+			const state = enterPlanMode({ config: testConfig });
+			exitPlanMode(testConfig);
+
+			expect(getPlanFilePathForCompactionRestore(testConfig)).toBe(
+				state.filePath,
+			);
+		});
+
+		it("does not restore an inactive tracked plan file from another workspace", () => {
+			savePlanModeState(
+				{
+					active: false,
+					filePath: "/tmp/other-project/plan.md",
+					createdAt: new Date().toISOString(),
+					updatedAt: new Date().toISOString(),
+				},
+				testConfig,
+			);
+
+			expect(getPlanFilePathForCompactionRestore(testConfig)).toBeNull();
+		});
+	});
+
 	describe("readPlanFile / writePlanFile", () => {
 		it("reads the current plan file", () => {
 			enterPlanMode({
@@ -273,6 +308,20 @@ describe("Plan Mode Persistence", () => {
 			const result = writePlanFile("content", testConfig);
 
 			expect(result).toBe(false);
+		});
+	});
+
+	describe("readPlanFileForCompactionRestore", () => {
+		it("reads the inactive tracked plan file when it belongs to the current project", () => {
+			enterPlanMode({
+				name: "Test",
+				config: testConfig,
+			});
+			exitPlanMode(testConfig);
+
+			const content = readPlanFileForCompactionRestore(testConfig);
+
+			expect(content).toContain("# Plan: Test");
 		});
 	});
 

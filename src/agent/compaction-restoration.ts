@@ -1,8 +1,8 @@
 import { createHookMessage } from "./custom-messages.js";
 import {
-	getCurrentPlanFilePath,
+	getPlanFilePathForCompactionRestore,
 	isPlanModeActive,
-	readPlanFile,
+	readPlanFileForCompactionRestore,
 } from "./plan-mode.js";
 import type { AppMessage } from "./types.js";
 
@@ -114,17 +114,13 @@ function hasPlanModeCompactionMessage(
 export function collectPlanMessagesForCompaction(
 	messages: AppMessage[],
 ): AppMessage[] {
-	if (!isPlanModeActive()) {
-		return [];
-	}
-
-	const filePath = getCurrentPlanFilePath();
+	const filePath = getPlanFilePathForCompactionRestore();
 	if (!filePath) {
 		return [];
 	}
 
 	const restoredMessages: AppMessage[] = [];
-	const planContent = readPlanFile();
+	const planContent = readPlanFileForCompactionRestore();
 	if (
 		typeof planContent === "string" &&
 		planContent.length > 0 &&
@@ -135,7 +131,7 @@ export function collectPlanMessagesForCompaction(
 		);
 	}
 
-	if (!hasPlanModeCompactionMessage(messages, filePath)) {
+	if (isPlanModeActive() && !hasPlanModeCompactionMessage(messages, filePath)) {
 		restoredMessages.push(buildPlanModeCompactionMessage(filePath));
 	}
 
