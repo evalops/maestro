@@ -489,8 +489,15 @@ describe("user prompt runtime", () => {
 			createAssistantMessage("LLM summary"),
 		);
 
+		const emittedAssistantStarts: AssistantMessage[] = [];
 		const emittedAssistantEnds: AssistantMessage[] = [];
 		agent.subscribe((event) => {
+			if (
+				event.type === "message_start" &&
+				event.message.role === "assistant"
+			) {
+				emittedAssistantStarts.push(event.message);
+			}
 			if (event.type === "message_end" && event.message.role === "assistant") {
 				emittedAssistantEnds.push(event.message);
 			}
@@ -516,6 +523,11 @@ describe("user prompt runtime", () => {
 		});
 
 		expect(sessionManager.saveCompaction).toHaveBeenCalledOnce();
+		expect(emittedAssistantStarts).toHaveLength(1);
+		expect(emittedAssistantStarts[0]?.stopReason).toBe("stop");
+		expect(extractAssistantText(emittedAssistantStarts[0])).toBe(
+			"Recovered response",
+		);
 		expect(emittedAssistantEnds).toHaveLength(1);
 		expect(emittedAssistantEnds[0]?.stopReason).toBe("stop");
 		expect(extractAssistantText(emittedAssistantEnds[0])).toBe(

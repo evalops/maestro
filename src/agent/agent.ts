@@ -1192,11 +1192,27 @@ export class Agent {
 				abortController.signal,
 			)) {
 				if (event.type === "message_start") {
+					if (
+						this.shouldWithholdRecoverableOverflowError(
+							event.message as AppMessage,
+						)
+					) {
+						this._state.streamMessage = null;
+						continue;
+					}
 					this._state.streamMessage = isCoreMessage(event.message)
 						? event.message
 						: null;
 					this.emit(event);
 				} else if (event.type === "message_update") {
+					if (
+						this.shouldWithholdRecoverableOverflowError(
+							event.message as AppMessage,
+						)
+					) {
+						this._state.streamMessage = null;
+						continue;
+					}
 					this._state.streamMessage = isCoreMessage(event.message)
 						? event.message
 						: null;
@@ -1405,11 +1421,27 @@ export class Agent {
 				abortController.signal,
 			)) {
 				if (event.type === "message_start") {
+					if (
+						this.shouldWithholdRecoverableOverflowError(
+							event.message as AppMessage,
+						)
+					) {
+						this._state.streamMessage = null;
+						continue;
+					}
 					this._state.streamMessage = isCoreMessage(event.message)
 						? event.message
 						: null;
 					this.emit(event);
 				} else if (event.type === "message_update") {
+					if (
+						this.shouldWithholdRecoverableOverflowError(
+							event.message as AppMessage,
+						)
+					) {
+						this._state.streamMessage = null;
+						continue;
+					}
 					this._state.streamMessage = isCoreMessage(event.message)
 						? event.message
 						: null;
