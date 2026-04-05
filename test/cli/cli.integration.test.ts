@@ -421,6 +421,25 @@ describe("CLI integration", () => {
 		expect(combined).toContain("Echo: hello");
 	});
 
+	it("marks SessionStart hooks as resume during --continue runs", async () => {
+		let sessionStartInput: Record<string, unknown> | undefined;
+
+		registerHook("SessionStart", {
+			type: "callback",
+			callback: async (input) => {
+				sessionStartInput = input as Record<string, unknown>;
+				return { continue: true };
+			},
+		});
+
+		await main(["--continue", "hello"]);
+
+		expect(sessionStartInput).toMatchObject({
+			hook_event_name: "SessionStart",
+			source: "resume",
+		});
+	});
+
 	it("runs SessionEnd hooks after a CLI prompt completes", async () => {
 		let sessionEndInput: Record<string, unknown> | undefined;
 

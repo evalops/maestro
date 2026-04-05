@@ -364,7 +364,11 @@ function resolveSessionStartHookSource(params: {
 	command?: string;
 	isInteractive: boolean;
 	headless?: boolean;
+	shouldRestoreSession?: boolean;
 }): string {
+	if (params.shouldRestoreSession) {
+		return "resume";
+	}
 	if (params.command === "exec") {
 		return "exec";
 	}
@@ -1138,6 +1142,7 @@ export async function main(args: string[]) {
 			command: parsed.command,
 			isInteractive,
 			headless: parsed.headless,
+			shouldRestoreSession,
 		}),
 	});
 
