@@ -117,8 +117,14 @@ export async function runRpcMode(
 						process.cwd(),
 					),
 					execute: () => agent.continue(input.options),
-					getPostKeepMessages: async () =>
-						collectPlanMessagesForCompaction(agent.state.messages),
+					getPostKeepMessages: async () => [
+						...collectPlanMessagesForCompaction(agent.state.messages),
+						...(await collectPersistedSessionStartHookMessages({
+							sessionManager,
+							cwd: process.cwd(),
+							source: "compact",
+						})),
+					],
 					callbacks: {
 						onCompacted: (result) => {
 							console.log(
