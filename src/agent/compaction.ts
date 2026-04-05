@@ -39,6 +39,7 @@ import {
 	resolveProjectDocCandidateFilenames,
 } from "../config/index.js";
 import type { SessionEntry } from "../session/types.js";
+import { readTool } from "../tools/read.js";
 import { createLogger } from "../utils/logger.js";
 import { expandUserPath } from "../utils/path-validation.js";
 import { runPostCompactionCleanup } from "./compaction-cleanup.js";
@@ -219,10 +220,73 @@ function shouldExcludeReadRestorePath(
 	return excludedBasenames.has(basename(filePath).toLowerCase());
 }
 
-function collectReadToolPathsByCallId(
+type ReadRestoreRequest = {
+	path: string;
+	offset?: number;
+	limit?: number;
+	mode?: "normal" | "head" | "tail";
+	lineNumbers?: boolean;
+	wrapInCodeFence?: boolean;
+	language?: string;
+	encoding?: "utf-8" | "utf-16le" | "latin1" | "ascii";
+};
+
+function parseOptionalInteger(value: unknown, minimum = 1): number | undefined {
+	return typeof value === "number" &&
+		Number.isInteger(value) &&
+		value >= minimum
+		? value
+		: undefined;
+}
+
+function parseReadRestoreRequest(
+	arguments_: Record<string, unknown>,
+): ReadRestoreRequest | null {
+	const rawPath = arguments_.path;
+	if (typeof rawPath !== "string") {
+		return null;
+	}
+
+	const mode =
+		arguments_.mode === "normal" ||
+		arguments_.mode === "head" ||
+		arguments_.mode === "tail"
+			? arguments_.mode
+			: undefined;
+	const lineNumbers =
+		typeof arguments_.lineNumbers === "boolean"
+			? arguments_.lineNumbers
+			: undefined;
+	const wrapInCodeFence =
+		typeof arguments_.wrapInCodeFence === "boolean"
+			? arguments_.wrapInCodeFence
+			: undefined;
+	const language =
+		typeof arguments_.language === "string" ? arguments_.language : undefined;
+	const encoding =
+		arguments_.encoding === "utf-8" ||
+		arguments_.encoding === "utf-16le" ||
+		arguments_.encoding === "latin1" ||
+		arguments_.encoding === "ascii"
+			? arguments_.encoding
+			: undefined;
+
+	return {
+		path: normalizeReadPath(rawPath),
+		offset: parseOptionalInteger(arguments_.offset),
+		limit: parseOptionalInteger(arguments_.limit),
+		mode,
+		lineNumbers,
+		wrapInCodeFence,
+		language,
+		encoding,
+	};
+}
+
+function collectReadRestoreRequestsByCallId(
 	messages: AppMessage[],
-): Map<string, string> {
-	const pathsByCallId = new Map<string, string>();
+): Map<string, ReadRestoreRequest> {
+	const requestsByCallId = new Map<string, ReadRestoreRequest>();
 	for (const message of messages) {
 		if (message.role !== "assistant") {
 			continue;
@@ -231,18 +295,18 @@ function collectReadToolPathsByCallId(
 			if (part.type !== "toolCall" || part.name !== "read") {
 				continue;
 			}
-			const rawPath = part.arguments.path;
-			if (typeof rawPath !== "string") {
+			const request = parseReadRestoreRequest(part.arguments);
+			if (!request) {
 				continue;
 			}
-			pathsByCallId.set(part.id, normalizeReadPath(rawPath));
+			requestsByCallId.set(part.id, request);
 		}
 	}
-	return pathsByCallId;
+	return requestsByCallId;
 }
 
 function collectVisibleReadPaths(messages: AppMessage[]): Set<string> {
-	const pathsByCallId = collectReadToolPathsByCallId(messages);
+	const requestsByCallId = collectReadRestoreRequestsByCallId(messages);
 	const visiblePaths = new Set<string>();
 	for (const message of messages) {
 		if (
@@ -252,12 +316,40 @@ function collectVisibleReadPaths(messages: AppMessage[]): Set<string> {
 		) {
 			continue;
 		}
-		const filePath = pathsByCallId.get(message.toolCallId);
-		if (filePath) {
-			visiblePaths.add(filePath);
+		const request = requestsByCallId.get(message.toolCallId);
+		if (request) {
+			visiblePaths.add(request.path);
 		}
 	}
 	return visiblePaths;
+}
+
+async function refreshReadRestoreContent(
+	request: ReadRestoreRequest,
+	toolCallId: string,
+): Promise<(TextContent | ImageContent)[] | null> {
+	const result = await readTool.execute(toolCallId, {
+		path: request.path,
+		offset: request.offset,
+		limit: request.limit,
+		mode: request.mode,
+		lineNumbers: request.lineNumbers,
+		wrapInCodeFence: request.wrapInCodeFence,
+		language: request.language,
+		encoding: request.encoding,
+		withDiagnostics: false,
+	});
+	if (result.isError) {
+		return null;
+	}
+	return result.content.filter(
+		(
+			block,
+		): block is
+			| { type: "text"; text: string }
+			| { type: "image"; data: string; mimeType: string } =>
+			block.type === "text" || block.type === "image",
+	);
 }
 
 function buildReadRestoreContent(
@@ -371,12 +463,13 @@ function truncateReadRestoreBlocks(
 	return restored;
 }
 
-function collectRecentReadRestoreMessages(
+async function collectRecentReadRestoreMessages(
 	compactedMessages: AppMessage[],
 	preservedMessages: AppMessage[],
-): AppMessage[] {
+): Promise<AppMessage[]> {
 	const visiblePaths = collectVisibleReadPaths(preservedMessages);
-	const pathsByCallId = collectReadToolPathsByCallId(compactedMessages);
+	const requestsByCallId =
+		collectReadRestoreRequestsByCallId(compactedMessages);
 	const currentPlanFilePath = getCurrentPlanFilePath();
 	const normalizedPlanFilePath = currentPlanFilePath
 		? normalizeReadPath(currentPlanFilePath)
@@ -401,7 +494,8 @@ function collectRecentReadRestoreMessages(
 			continue;
 		}
 
-		const filePath = pathsByCallId.get(message.toolCallId);
+		const request = requestsByCallId.get(message.toolCallId);
+		const filePath = request?.path;
 		if (
 			!filePath ||
 			visiblePaths.has(filePath) ||
@@ -412,7 +506,16 @@ function collectRecentReadRestoreMessages(
 			continue;
 		}
 
-		const content = buildReadRestoreContent(filePath, message.content);
+		const refreshedContent = request
+			? await refreshReadRestoreContent(
+					request,
+					`compaction-read-restore-${message.toolCallId}`,
+				)
+			: null;
+		const content = buildReadRestoreContent(
+			filePath,
+			refreshedContent ?? message.content,
+		);
 		if (
 			hasReadRestoreMessage(
 				[...compactedMessages, ...preservedMessages, ...restoredMessages],
@@ -1731,7 +1834,7 @@ export async function performCompaction(params: {
 	};
 
 	const postKeepMessages = [
-		...collectRecentReadRestoreMessages(older, keep),
+		...(await collectRecentReadRestoreMessages(older, keep)),
 		...((await getPostKeepMessages?.()) ?? []),
 	];
 	persistTailMessages(postKeepMessages);

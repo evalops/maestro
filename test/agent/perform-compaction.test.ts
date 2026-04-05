@@ -954,6 +954,42 @@ describe("performCompaction", () => {
 		});
 	});
 
+	it("refreshes restored read results from disk instead of replaying stale output", async () => {
+		const filePath = join(
+			mkdtempSync(join(tmpdir(), "maestro-read-restore-")),
+			"restored.ts",
+		);
+		writeFileSync(filePath, "export const restored = 'fresh';\n");
+
+		const messages = buildConversation(10);
+		messages.splice(
+			2,
+			0,
+			createReadToolCallMessage(filePath, "call-read-refresh"),
+			createReadToolResultMessage(
+				filePath,
+				"call-read-refresh",
+				"export const restored = 'stale';",
+			),
+		);
+		const agent = createMockAgentWithoutAppendMessage(messages);
+		const sessionManager = createMockSessionManager();
+
+		const result = await performCompaction({ agent, sessionManager });
+
+		expect(result.success).toBe(true);
+		const readRestore = getReplacedMessages(agent).find(
+			(message) =>
+				message.role === "hookMessage" &&
+				message.customType === "read-file" &&
+				message.details?.filePath === filePath,
+		);
+		expect(readRestore).toBeDefined();
+		const readRestoreText = JSON.stringify(readRestore?.content);
+		expect(readRestoreText).toContain("fresh");
+		expect(readRestoreText).not.toContain("stale");
+	});
+
 	it("does not restore read results that are still visible in the kept tail", async () => {
 		const messages = buildConversation(10);
 		messages.splice(
