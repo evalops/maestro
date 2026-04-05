@@ -1052,6 +1052,99 @@ describe("user prompt runtime", () => {
 		);
 	});
 
+	it("prepends caller post-keep messages before compact SessionStart output during overflow recovery", async () => {
+		const overflowMessage =
+			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";
+
+		registerHook("SessionStart", {
+			type: "callback",
+			callback: async () => ({
+				systemMessage: "Re-establish compacted context.",
+				hookSpecificOutput: {
+					hookEventName: "SessionStart",
+					additionalContext: "Compaction hook context",
+				},
+			}),
+		});
+
+		class OverflowThenSuccessTransport implements AgentTransport {
+			async *run(
+				_messages: Message[],
+				userMessage: Message,
+				_config: AgentRunConfig,
+			): AsyncGenerator<AgentEvent, void, unknown> {
+				if (typeof userMessage.content === "string") {
+					const assistant = {
+						...createAssistantMessage("Too much context"),
+						stopReason: "error" as const,
+						errorMessage: overflowMessage,
+					};
+					yield { type: "message_start", message: assistant };
+					yield { type: "message_end", message: assistant };
+					return;
+				}
+
+				const assistant = createAssistantMessage("Recovered response");
+				yield { type: "message_start", message: assistant };
+				yield { type: "message_end", message: assistant };
+			}
+		}
+
+		const agent = new Agent({
+			transport: new OverflowThenSuccessTransport(),
+			initialState: {
+				model: mockModel,
+				tools: [],
+				systemPrompt: "Base system prompt",
+			},
+		});
+		agent.replaceMessages(buildConversation(5));
+		vi.spyOn(agent, "generateSummary").mockResolvedValue(
+			createAssistantMessage("LLM summary"),
+		);
+		const sessionManager = {
+			getSessionId: () => "session-compact-skill-restore",
+			buildSessionContext: () => ({
+				messageEntries: Array.from({ length: 50 }, (_, index) => ({
+					id: `entry-${index}`,
+				})),
+			}),
+			saveCompaction: vi.fn(),
+			saveMessage: vi.fn(),
+		};
+		const getPostKeepMessages = vi.fn().mockResolvedValue([
+			{
+				role: "hookMessage" as const,
+				customType: "skill" as const,
+				content: "Injected instructions for debug",
+				display: false,
+				details: { name: "debug", action: "activate" },
+				timestamp: Date.now(),
+			},
+		]);
+
+		await runUserPromptWithRecovery({
+			agent,
+			sessionManager: sessionManager as never,
+			cwd: "/tmp/compact-skill-restore",
+			prompt: "latest question",
+			execute: () => agent.prompt("latest question"),
+			getPostKeepMessages,
+		});
+
+		expect(getPostKeepMessages).toHaveBeenCalledTimes(1);
+		const skillIndex = agent.state.messages.findIndex(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "skill",
+		);
+		const sessionStartIndex = agent.state.messages.findIndex(
+			(message) =>
+				message.role === "hookMessage" && message.customType === "SessionStart",
+		);
+		expect(skillIndex).toBeGreaterThan(-1);
+		expect(sessionStartIndex).toBeGreaterThan(skillIndex);
+	});
+
 	it("withholds recoverable overflow assistant errors until recovery succeeds", async () => {
 		const overflowMessage =
 			"Anthropic rejected this request because the prompt exceeded 200,000 tokens. Use /compact to summarize prior messages or remove large attachments, then retry.";

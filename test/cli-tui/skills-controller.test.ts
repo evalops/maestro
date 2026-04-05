@@ -81,6 +81,38 @@ describe("SkillsController", () => {
 		);
 	});
 
+	it("collects active skill restoration messages for ordered compaction replay", () => {
+		const skill = createSkill("debug");
+		vi.mocked(loadSkills).mockReturnValue({ skills: [skill], errors: [] });
+
+		let currentMessages: AppMessage[] = [];
+		const controller = new SkillsController({
+			deps: {
+				injectMessage: vi.fn((message: AppMessage) => {
+					currentMessages = [...currentMessages, message];
+				}),
+				getMessages: () => currentMessages,
+				cwd: () => process.cwd(),
+			},
+			callbacks: {
+				pushCommandOutput: vi.fn(),
+				showInfo: vi.fn(),
+				showError: vi.fn(),
+			},
+		});
+
+		controller.handleSkillsCommand(createCommandContext("activate debug"));
+		currentMessages = [];
+
+		expect(controller.collectActiveSkillMessagesForCompaction()).toEqual([
+			expect.objectContaining({
+				role: "hookMessage",
+				customType: "skill",
+				details: { name: "debug", action: "activate" },
+			}),
+		]);
+	});
+
 	it("skips reinjection when the compacted tail already preserved the active skill message", () => {
 		const skill = createSkill("debug");
 		vi.mocked(loadSkills).mockReturnValue({ skills: [skill], errors: [] });

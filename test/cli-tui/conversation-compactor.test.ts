@@ -17,7 +17,7 @@ describe("ConversationCompactor", () => {
 		vi.mocked(performCompaction).mockReset();
 	});
 
-	it("passes compact restoration messages into performCompaction and runs follow-up restoration before rerender", async () => {
+	it("passes compact restoration messages into performCompaction before rerender", async () => {
 		vi.mocked(performCompaction).mockResolvedValue({
 			success: true,
 			compactedCount: 3,
@@ -27,7 +27,6 @@ describe("ConversationCompactor", () => {
 		});
 
 		const getPostKeepMessages = vi.fn().mockResolvedValue([]);
-		const runAfterCompaction = vi.fn().mockResolvedValue(undefined);
 		const renderMessages = vi.fn();
 		const showInfoMessage = vi.fn();
 		const compactor = new ConversationCompactor({
@@ -41,7 +40,6 @@ describe("ConversationCompactor", () => {
 			renderMessages,
 			showInfoMessage,
 			getPostKeepMessages,
-			runAfterCompaction,
 		});
 
 		await compactor.compactHistory();
@@ -49,10 +47,6 @@ describe("ConversationCompactor", () => {
 		const params = vi.mocked(performCompaction).mock.calls[0]?.[0];
 		await params?.getPostKeepMessages?.();
 		expect(getPostKeepMessages).toHaveBeenCalledWith("compact");
-		expect(runAfterCompaction).toHaveBeenCalledWith("compact");
-		expect(runAfterCompaction.mock.invocationCallOrder[0]).toBeLessThan(
-			renderMessages.mock.invocationCallOrder[0],
-		);
 		expect(showInfoMessage).toHaveBeenCalledWith("Compacted 3 messages.");
 	});
 });

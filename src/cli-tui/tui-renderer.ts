@@ -70,7 +70,6 @@ import type {
 	CommandEntry,
 	CommandExecutionContext,
 } from "./commands/types.js";
-import { withTuiCompactionRestoration } from "./compaction-recovery.js";
 import { ConfigView } from "./config-view.js";
 import { ContextView } from "./context-view.js";
 import { CustomEditor } from "./custom-editor.js";
@@ -1015,16 +1014,18 @@ export class TuiRenderer {
 			toolComponents: this.toolOutputView.getTrackedComponents(),
 			renderMessages: () => this.renderInitialMessages(this.agent.state),
 			showInfoMessage: (message) => this.notificationView.showInfo(message),
-			getPostKeepMessages: (source) =>
-				collectPersistedSessionStartHookMessages({
-					sessionManager: this.sessionManager,
-					cwd: process.cwd(),
-					source,
-				}),
-			runAfterCompaction: async (source) => {
-				if (source === "compact") {
-					this.restoreActiveSkillsAfterCompaction();
-				}
+			getPostKeepMessages: async (source) => {
+				const skillMessages =
+					source === "compact"
+						? this.collectActiveSkillMessagesForCompaction()
+						: [];
+				const sessionStartMessages =
+					await collectPersistedSessionStartHookMessages({
+						sessionManager: this.sessionManager,
+						cwd: process.cwd(),
+						source,
+					});
+				return [...skillMessages, ...sessionStartMessages];
 			},
 		});
 		this.compactionController = createCompactionController({
@@ -1978,7 +1979,8 @@ export class TuiRenderer {
 							),
 							execute: () =>
 								this.agent.prompt(payload.text, payload.attachments),
-							callbacks: withTuiCompactionRestoration(undefined, this),
+							getPostKeepMessages: async () =>
+								this.collectActiveSkillMessagesForCompaction(),
 						}).catch((error) => {
 							this.restoreQueuedPromptBatchToEditor(steeringBatch);
 							const message =
@@ -2092,7 +2094,8 @@ export class TuiRenderer {
 				cwd: process.cwd(),
 				prompt,
 				execute: () => this.agent.prompt(prompt),
-				callbacks: withTuiCompactionRestoration(undefined, this),
+				getPostKeepMessages: async () =>
+					this.collectActiveSkillMessagesForCompaction(),
 			});
 		} catch (error) {
 			const message =
@@ -2353,6 +2356,10 @@ export class TuiRenderer {
 
 	public restoreActiveSkillsAfterCompaction(): number {
 		return this.skillsController.restoreActiveSkillsAfterCompaction();
+	}
+
+	public collectActiveSkillMessagesForCompaction(): AppMessage[] {
+		return this.skillsController.collectActiveSkillMessagesForCompaction();
 	}
 
 	public refreshFooterHint(): void {

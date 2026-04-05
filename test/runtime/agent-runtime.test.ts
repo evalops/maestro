@@ -21,14 +21,26 @@ describe("AgentRuntimeController", () => {
 			.mockResolvedValue(undefined);
 	});
 
-	it("restores active skills before rerendering after auto-compaction", async () => {
+	it("passes active skill restoration through the shared compaction path", async () => {
+		const skillMessages = [
+			{
+				role: "hookMessage" as const,
+				customType: "skill" as const,
+				content: "Injected instructions for debug",
+				display: false,
+				details: { name: "debug", action: "activate" },
+				timestamp: Date.now(),
+			},
+		];
 		const renderer = {
 			setInterruptCallback: vi.fn(),
 			ensureContextBudgetBeforePrompt: vi.fn().mockResolvedValue(undefined),
 			showInfo: vi.fn(),
 			renderInitialMessages: vi.fn(),
 			refreshFooterHint: vi.fn(),
-			restoreActiveSkillsAfterCompaction: vi.fn(),
+			collectActiveSkillMessagesForCompaction: vi
+				.fn()
+				.mockReturnValue(skillMessages),
 		} as never;
 		const agent = {
 			prompt: vi.fn().mockResolvedValue(undefined),
@@ -49,6 +61,9 @@ describe("AgentRuntimeController", () => {
 		);
 
 		const params = vi.mocked(runUserPromptWithRecovery).mock.calls[0]?.[0];
+		await expect(params?.getPostKeepMessages?.()).resolves.toEqual(
+			skillMessages,
+		);
 		expect(params?.callbacks?.onCompacted).toBeTypeOf("function");
 
 		params?.callbacks?.onCompacted?.({
@@ -59,11 +74,8 @@ describe("AgentRuntimeController", () => {
 			tokensBefore: 1234,
 		});
 
-		expect(renderer.restoreActiveSkillsAfterCompaction).toHaveBeenCalledTimes(
-			1,
-		);
-		expect(
-			renderer.restoreActiveSkillsAfterCompaction.mock.invocationCallOrder[0],
-		).toBeLessThan(renderer.renderInitialMessages.mock.invocationCallOrder[0]);
+		expect(renderer.collectActiveSkillMessagesForCompaction).toHaveBeenCalled();
+		expect(renderer.renderInitialMessages).toHaveBeenCalledTimes(1);
+		expect(renderer.refreshFooterHint).toHaveBeenCalledTimes(1);
 	});
 });

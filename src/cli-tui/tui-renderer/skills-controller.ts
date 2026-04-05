@@ -65,16 +65,16 @@ export class SkillsController {
 	 * away. The current message history is checked first so repeated compactions do
 	 * not duplicate still-preserved skill instructions.
 	 */
-	restoreActiveSkillsAfterCompaction(): number {
+	collectActiveSkillMessagesForCompaction(): AppMessage[] {
 		if (this.activeSkills.size === 0) {
-			return 0;
+			return [];
 		}
 
 		const injectedSkillNames = this.collectInjectedSkillNames(
 			this.deps.getMessages(),
 		);
 		const { skills } = loadSkills(this.deps.cwd());
-		let restoredCount = 0;
+		const restoredMessages: AppMessage[] = [];
 
 		for (const skillName of this.activeSkills) {
 			if (injectedSkillNames.has(skillName)) {
@@ -84,11 +84,18 @@ export class SkillsController {
 			if (!skill) {
 				continue;
 			}
-			this.injectSkillMessage(skill, "activate");
-			restoredCount += 1;
+			restoredMessages.push(this.buildSkillMessage(skill, "activate"));
 		}
 
-		return restoredCount;
+		return restoredMessages;
+	}
+
+	restoreActiveSkillsAfterCompaction(): number {
+		const restoredMessages = this.collectActiveSkillMessagesForCompaction();
+		for (const message of restoredMessages) {
+			this.deps.injectMessage(message);
+		}
+		return restoredMessages.length;
 	}
 
 	// ─── Command Handler ───────────────────────────────────────────────────
@@ -251,6 +258,13 @@ export class SkillsController {
 		skill: LoadedSkill,
 		action: "activate" | "deactivate",
 	): void {
+		this.deps.injectMessage(this.buildSkillMessage(skill, action));
+	}
+
+	private buildSkillMessage(
+		skill: LoadedSkill,
+		action: "activate" | "deactivate",
+	): AppMessage {
 		const content =
 			action === "activate"
 				? formatSkillForInjection(skill)
@@ -259,7 +273,7 @@ export class SkillsController {
 						"",
 						`Ignore previous instructions from the "${skill.name}" skill unless it is reactivated.`,
 					].join("\n");
-		const message: AppMessage = {
+		return {
 			role: "hookMessage",
 			customType: action === "activate" ? "skill" : "skill-deactivated",
 			content,
@@ -267,7 +281,6 @@ export class SkillsController {
 			details: { name: skill.name, action },
 			timestamp: Date.now(),
 		};
-		this.deps.injectMessage(message);
 	}
 
 	private collectInjectedSkillNames(messages: AppMessage[]): Set<string> {

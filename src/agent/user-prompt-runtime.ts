@@ -495,6 +495,7 @@ async function applyTokenBudgetContinuations(params: {
 	prompt: string;
 	messageStartIndex: number;
 	turnStartedAt: number;
+	getPostKeepMessages?: () => Promise<AppMessage[]>;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
 	signal?: AbortSignal;
@@ -564,12 +565,18 @@ async function applyTokenBudgetContinuations(params: {
 				params.cwd,
 			),
 			getPostKeepMessages: () =>
-				collectPersistedSessionStartHookMessages({
-					sessionManager: params.sessionManager,
-					cwd: params.cwd,
-					source: "compact",
-					signal: params.signal,
-				}),
+				Promise.all([
+					params.getPostKeepMessages?.() ?? Promise.resolve([]),
+					collectPersistedSessionStartHookMessages({
+						sessionManager: params.sessionManager,
+						cwd: params.cwd,
+						source: "compact",
+						signal: params.signal,
+					}),
+				]).then(([callerMessages, sessionStartMessages]) => [
+					...callerMessages,
+					...sessionStartMessages,
+				]),
 			execute: () =>
 				params.agent.continue({
 					continuationPrompt: decision.continuationPrompt,
@@ -591,6 +598,7 @@ export async function runUserPromptWithRecovery(params: {
 	attachmentNames?: string[];
 	signal?: AbortSignal;
 	execute: () => Promise<void>;
+	getPostKeepMessages?: () => Promise<AppMessage[]>;
 	callbacks?: PromptRecoveryCallbacks;
 	maxOutputContinuations?: number;
 }): Promise<void> {
@@ -617,6 +625,19 @@ export async function runUserPromptWithRecovery(params: {
 			: undefined,
 	);
 	try {
+		const collectPostKeepMessages = async (): Promise<AppMessage[]> => {
+			const [callerMessages, sessionStartMessages] = await Promise.all([
+				params.getPostKeepMessages?.() ?? Promise.resolve([]),
+				collectPersistedSessionStartHookMessages({
+					sessionManager: params.sessionManager,
+					cwd: params.cwd,
+					source: "compact",
+					signal: params.signal,
+				}),
+			]);
+			return [...callerMessages, ...sessionStartMessages];
+		};
+
 		throwIfAborted(params.signal);
 		await applyUserPromptSubmitHooks(params);
 		throwIfAborted(params.signal);
@@ -631,13 +652,7 @@ export async function runUserPromptWithRecovery(params: {
 			),
 			execute: params.execute,
 			callbacks: params.callbacks,
-			getPostKeepMessages: () =>
-				collectPersistedSessionStartHookMessages({
-					sessionManager: params.sessionManager,
-					cwd: params.cwd,
-					source: "compact",
-					signal: params.signal,
-				}),
+			getPostKeepMessages: collectPostKeepMessages,
 			maxOutputContinuations: params.maxOutputContinuations,
 		});
 		throwIfAborted(params.signal);
@@ -648,6 +663,7 @@ export async function runUserPromptWithRecovery(params: {
 			prompt: params.prompt,
 			messageStartIndex,
 			turnStartedAt,
+			getPostKeepMessages: params.getPostKeepMessages,
 			callbacks: params.callbacks,
 			maxOutputContinuations: params.maxOutputContinuations,
 			signal: params.signal,

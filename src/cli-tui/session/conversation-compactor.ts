@@ -26,7 +26,6 @@ interface ConversationCompactorOptions {
 	renderMessages: () => void;
 	showInfoMessage: (message: string) => void;
 	getPostKeepMessages?: (source: string) => Promise<AppMessage[]>;
-	runAfterCompaction?: (source: string) => Promise<void>;
 }
 
 /**
@@ -112,8 +111,6 @@ export class ConversationCompactor {
 				);
 				return;
 			}
-
-			await this.options.runAfterCompaction?.("compact");
 
 			this.options.chatContainer.clear();
 			this.options.toolComponents.clear();
